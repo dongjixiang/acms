@@ -41,6 +41,8 @@ async function openTask(taskId) {
     document.getElementById('task-detail-content').innerHTML = `
       <div class="detail-grid"><div><span class="label">类型:</span> ${t.type}</div><div><span class="label">优先级:</span> P${t.priority}</div><div><span class="label">预估:</span> ${t.estimated_hours}h</div><div><span class="label">执行者:</span> ${t.assigned_to || '未分配'}</div><div><span class="label">进度:</span> ${t.progress || 0}%</div><div><span class="label">父需求:</span> ${t.parent_id || '无'}</div></div>
       ${t.status === 'in_progress' ? `<div class="progress-bar" style="margin-top:8px"><div class="progress-fill" style="width:${t.progress || 0}%"></div></div>` : ''}
+      <h3>📝 任务描述</h3>
+      <div class="md-content">${renderMarkdown(t.description || '无详细描述')}</div>
       ${Object.keys(skills).length ? `<h3>🎯 技能</h3><div class="skills">${Object.entries(skills).map(([k, v]) => `<span class="skill-tag">${k}:${v}</span>`).join('')}</div>` : ''}
       <h3>📝 日志</h3><div>${log.length ? log.map(l => `<div class="log-entry">${new Date(l.time).toLocaleString('zh-CN')} — ${l.action}: ${escHtml(l.note || '')}</div>`).join('') : '<div class="empty">暂无</div>'}</div>
       ${subs.length ? `<h3>📦 提交</h3>${subs.map(s => `<div class="log-entry">${fmtDate(s.submittedAt)} — ${s.submittedBy}: ${escHtml(s.notes || '')}</div>`).join('')}` : ''}
