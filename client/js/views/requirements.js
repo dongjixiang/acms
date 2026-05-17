@@ -162,8 +162,10 @@ async function loadAiModels(reqId) {
 async function startAiClarify(reqId) {
   const modelId = document.getElementById(`ai-model-select-${reqId}`)?.value;
   if (!modelId) return toast('请先选择大模型', 'error');
-  // 重置历史
+  // 重置历史 + 推进到 clarifying 状态
   aiClarifyHistory[reqId] = [];
+  aiSelections[reqId] = {};
+  try { await Requirements.transition(reqId, 'clarifying'); } catch(e) { /* 可能已经是 clarifying */ }
   await sendAiClarify(reqId);
 }
 
