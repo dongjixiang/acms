@@ -34,11 +34,20 @@ async function loadAdminPage() {
             <label>模型名 *</label><input type="text" id="model-model" placeholder="deepseek-v4-pro">
           </div>
           <div class="form-group">
-            <label>Base URL (可选)</label><input type="text" id="model-url" placeholder="留空使用供应商默认">
+            <label>API 类型</label>
+            <select id="model-api">
+              <option value="openai-chat">OpenAI Chat (/v1/chat/completions)</option>
+              <option value="anthropic-messages">Anthropic Messages (/v1/messages)</option>
+            </select>
           </div>
         </div>
-        <div class="form-group">
-          <label>API Key</label><input type="password" id="model-key" placeholder="sk-...（留空则不修改）">
+        <div class="form-two-col">
+          <div class="form-group">
+            <label>Base URL</label><input type="text" id="model-url" placeholder="留空使用默认">
+          </div>
+          <div class="form-group">
+            <label>API Key</label><input type="password" id="model-key" placeholder="sk-...（留空则不修改）">
+          </div>
         </div>
         <input type="hidden" id="model-edit-id" value="">
         <div class="form-actions">
@@ -62,10 +71,12 @@ async function loadAdminPage() {
 }
 
 function renderModelRow(m) {
+  const apiLabel = m.api === 'anthropic-messages' ? ' [Anthropic]' : '';
   return `<div class="config-row" style="padding:8px 0">
     <div>
       <strong>${escHtml(m.name)}</strong>
       <span style="color:var(--text2);margin-left:8px">${m.provider} / ${m.model}</span>
+      ${m.api && m.api !== 'openai-chat' ? `<span style="color:var(--accent);margin-left:4px;font-size:11px">[${m.api}]</span>` : ''}
       ${m.baseUrl ? `<span style="color:var(--text2);font-size:11px;margin-left:8px">${m.baseUrl}</span>` : ''}
     </div>
     <div style="display:flex;gap:6px">
@@ -84,6 +95,7 @@ async function editModel(id) {
     document.getElementById('model-name').value = m.name;
     document.getElementById('model-provider').value = m.provider;
     document.getElementById('model-model').value = m.model;
+    document.getElementById('model-api').value = m.api || 'openai-chat';
     document.getElementById('model-url').value = m.baseUrl || '';
     document.getElementById('model-key').value = '';
     document.getElementById('model-key').placeholder = '留空则不修改';
@@ -95,6 +107,7 @@ function resetModelForm() {
   document.getElementById('model-name').value = '';
   document.getElementById('model-provider').value = '';
   document.getElementById('model-model').value = '';
+  document.getElementById('model-api').value = 'openai-chat';
   document.getElementById('model-url').value = '';
   document.getElementById('model-key').value = '';
   document.getElementById('model-key').placeholder = 'sk-...';
@@ -107,7 +120,11 @@ async function saveModel() {
   const model = document.getElementById('model-model').value.trim();
   if (!name || !provider || !model) return toast('请填写名称/供应商/模型', 'error');
 
-  const body = { name, provider, model, baseUrl: document.getElementById('model-url').value.trim() };
+  const body = {
+    name, provider, model,
+    api: document.getElementById('model-api').value,
+    baseUrl: document.getElementById('model-url').value.trim(),
+  };
   const keyVal = document.getElementById('model-key').value;
   if (keyVal) body.apiKey = keyVal;
 

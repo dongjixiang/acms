@@ -8,9 +8,9 @@ router.get('/active', (req, res) => res.json(modelStore.getActive()));
 
 router.post('/', (req, res, next) => {
   try {
-    const { name, provider, model, baseUrl, apiKey, systemPrompt } = req.body;
+    const { name, provider, model, baseUrl, apiKey, systemPrompt, api } = req.body;
     if (!name || !provider || !model) return res.status(400).json({ error: 'MISSING_FIELDS' });
-    res.status(201).json(modelStore.create({ name, provider, model, baseUrl, apiKey, systemPrompt }));
+    res.status(201).json(modelStore.create({ name, provider, model, baseUrl, apiKey, systemPrompt, api }));
   } catch (e) { next(e); }
 });
 

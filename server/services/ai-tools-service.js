@@ -1,6 +1,7 @@
 // AI 辅助服务 — MD文档生成 + 智能任务分解
 const modelStore = require('../stores/model-store');
 const reqStore = require('../stores/requirement-store');
+const { callLLM } = require('./llm-adapter');
 
 // ===== 生成 MD 需求文档 =====
 const DOC_SYSTEM_PROMPT = `你是一个专业的需求文档撰写专家。请根据以下需求信息，生成一份结构清晰、用户友好的 Markdown 格式需求文档。
@@ -13,12 +14,6 @@ const DOC_SYSTEM_PROMPT = `你是一个专业的需求文档撰写专家。请�
 5. 输出纯 Markdown 文本，不要用 JSON 包裹`;
 
 async function generateDoc(reqId, modelId) {
-  const model = modelStore.getById(modelId);
-  if (!model) throw Object.assign(new Error('模型不存在'), { status: 404 });
-
-  const apiKey = modelStore.getDecryptedKey(modelId);
-  if (!apiKey) throw Object.assign(new Error('模型未配置 API Key'), { status: 400 });
-
   const requirement = reqStore.getById(reqId);
   if (!requirement) throw Object.assign(new Error('需求不存在'), { status: 404 });
 
@@ -38,16 +33,8 @@ async function generateDoc(reqId, modelId) {
 - 需求摘要: ${srs.summary || ''}` },
   ];
 
-  const baseUrl = model.baseUrl || 'https://api.deepseek.com/v1';
-  const resp = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-    body: JSON.stringify({ model: model.model, messages, temperature: 0.5, max_tokens: 3000 }),
-  });
-
-  if (!resp.ok) throw Object.assign(new Error(`LLM 调用失败: ${resp.status}`), { status: 502 });
-  const data = await resp.json();
-  return { content: data.choices?.[0]?.message?.content || '', modelUsed: `${model.name}` };
+  const result = await callLLM(modelId, messages, { temperature: 0.5, maxTokens: 3000 });
+  return { content: result.content, modelUsed: result.modelUsed };
 }
 
 // ===== 智能任务分解 =====
@@ -87,12 +74,6 @@ const DECOMPOSE_SYSTEM_PROMPT = `你是一个经验丰富的技术项目经理�
 }`;
 
 async function decomposeRequirement(reqId, modelId) {
-  const model = modelStore.getById(modelId);
-  if (!model) throw Object.assign(new Error('模型不存在'), { status: 404 });
-
-  const apiKey = modelStore.getDecryptedKey(modelId);
-  if (!apiKey) throw Object.assign(new Error('模型未配置 API Key'), { status: 400 });
-
   const requirement = reqStore.getById(reqId);
   if (!requirement) throw Object.assign(new Error('需求不存在'), { status: 404 });
   if (requirement.status !== 'approved') throw Object.assign(new Error('只有已确认的需求才能分解'), { status: 400 });
@@ -113,20 +94,11 @@ Wiki 参考: ${requirement.wiki_path || '无'}
 请生成任务列表。` },
   ];
 
-  const baseUrl = model.baseUrl || 'https://api.deepseek.com/v1';
-  const resp = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-    body: JSON.stringify({ model: model.model, messages, temperature: 0.5, max_tokens: 3000, response_format: { type: 'json_object' } }),
-  });
-
-  if (!resp.ok) throw Object.assign(new Error(`LLM 调用失败: ${resp.status}`), { status: 502 });
-  const data = await resp.json();
-  const content = data.choices?.[0]?.message?.content;
+  const result = await callLLM(modelId, messages, { temperature: 0.5, maxTokens: 3000, jsonMode: true });
   try {
-    return { ...JSON.parse(content), modelUsed: `${model.name}` };
+    return { ...JSON.parse(result.content), modelUsed: result.modelUsed };
   } catch {
-    return { tasks: [], summary: '解析失败', modelUsed: `${model.name}` };
+    return { tasks: [], summary: '解析失败', modelUsed: result.modelUsed };
   }
 }
 

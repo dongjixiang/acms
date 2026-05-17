@@ -13,7 +13,7 @@ const store = {
     return m ? { ...m, apiKey: '***' } : null;
   },
 
-  create({ name, provider, model, baseUrl, apiKey, systemPrompt }) {
+  create({ name, provider, model, baseUrl, apiKey, systemPrompt, api }) {
     const id = `model_${Date.now().toString(36)}`;
     const now = new Date().toISOString();
     const entry = {
@@ -21,6 +21,7 @@ const store = {
       baseUrl: baseUrl || '',
       apiKey: encrypt(apiKey || ''),
       systemPrompt: systemPrompt || '',
+      api: api || 'openai-chat',
       created_at: now, updated_at: now,
     };
     collection('llm_models').insert(entry);

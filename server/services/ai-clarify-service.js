@@ -1,7 +1,7 @@
 // AI 澄清服务 — 连接大模型进行需求澄清
 const modelStore = require('../stores/model-store');
 const reqStore = require('../stores/requirement-store');
-const { getDecryptedKey } = require('../stores/model-store');
+const { callLLM } = require('./llm-adapter');
 
 const CLARIFY_SYSTEM_PROMPT = `你是一个专业的需求分析师。用户提交了一个需求，你需要通过选择题的方式帮助澄清需求细节。
 
@@ -40,12 +40,6 @@ const CLARIFY_SYSTEM_PROMPT = `你是一个专业的需求分析师。用户提�
 当前需求信息会以 JSON 格式提供。请始终保持 JSON 输出格式。`;
 
 async function clarify(reqId, modelId, userMessage, conversationHistory) {
-  const model = modelStore.getById(modelId);
-  if (!model) throw Object.assign(new Error('模型不存在'), { status: 404 });
-
-  const apiKey = getDecryptedKey(modelId);
-  if (!apiKey) throw Object.assign(new Error('模型未配置 API Key'), { status: 400 });
-
   const requirement = reqStore.getById(reqId);
   if (!requirement) throw Object.assign(new Error('需求不存在'), { status: 404 });
 
@@ -59,7 +53,7 @@ async function clarify(reqId, modelId, userMessage, conversationHistory) {
   };
 
   const messages = [
-    { role: 'system', content: model.systemPrompt || CLARIFY_SYSTEM_PROMPT },
+    { role: 'system', content: modelStore.getById(modelId)?.systemPrompt || CLARIFY_SYSTEM_PROMPT },
     { role: 'system', content: `当前需求上下文:\n${JSON.stringify(context, null, 2)}` },
     ...(conversationHistory || []).map(m => ({
       role: m.role === 'user' ? 'user' : 'assistant',
@@ -73,32 +67,14 @@ async function clarify(reqId, modelId, userMessage, conversationHistory) {
     messages.push({ role: 'user', content: '请开始分析这个需求，用选择题帮助我澄清细节。' });
   }
 
-  // 调用 LLM
-  const baseUrl = model.baseUrl || 'https://api.deepseek.com/v1';
-  const resp = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model: model.model,
-      messages,
-      temperature: 0.7,
-      max_tokens: 2000,
-      response_format: { type: 'json_object' },
-    }),
-  });
+  // 调用 LLM（适配器自动根据 model.api 选择格式）
+  const result = await callLLM(modelId, messages, { temperature: 0.7, maxTokens: 2000, jsonMode: true });
+  const content = result.content;
 
-  if (!resp.ok) {
-    const err = await resp.text();
-    throw Object.assign(new Error(`LLM 调用失败: ${resp.status} ${err}`), { status: 502 });
-  }
-
-  const data = await resp.json();
-  const content = data.choices?.[0]?.message?.content;
   let parsed;
   try {
     parsed = JSON.parse(content);
   } catch {
-    // 不是严格 JSON，尝试提取
     parsed = { message: content, choices: [], srs: srs, readyForReview: false };
   }
 
@@ -113,7 +89,7 @@ async function clarify(reqId, modelId, userMessage, conversationHistory) {
     choices: parsed.choices || [],
     srs: parsed.srs || srs,
     readyForReview: parsed.readyForReview || false,
-    modelUsed: `${model.name} (${model.model})`,
+    modelUsed: result.modelUsed,
   };
 }
 
