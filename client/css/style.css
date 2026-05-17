@@ -243,6 +243,16 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 .choice-btn { border: 1px solid var(--border) !important; }
 .choice-btn.choice-selected { background: var(--accent) !important; color: var(--bg) !important; border-color: var(--accent) !important; font-weight: bold; }
 
+/* Markdown rendered content */
+.md-content { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 16px; line-height: 1.8; margin: 8px 0; font-size: 14px; }
+.md-content h2 { font-size: 16px; margin: 16px 0 6px; }
+.md-content h3 { font-size: 14px; margin: 14px 0 4px; }
+.md-content h4 { font-size: 13px; margin: 12px 0 4px; }
+.md-content ul { padding-left: 8px; }
+.md-content li { margin: 2px 0 2px 16px; }
+.md-content code { background: var(--bg); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+.md-content blockquote { background: rgba(78,205,196,0.05); border-radius: 4px; }
+
 /* SRS preview */
 .srs-preview { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-top: 12px; max-height: 400px; overflow-y: auto; }
 .srs-preview pre { white-space: pre-wrap; font-size: 13px; line-height: 1.8; }

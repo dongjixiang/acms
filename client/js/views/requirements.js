@@ -46,7 +46,8 @@ async function openRequirement(id) {
     document.getElementById('detail-status').innerHTML = `<span class="status-badge badge-${req.status}">${App.statusLabels[req.status]}</span>`;
     const srs = safeParse(req.srs);
     document.getElementById('detail-content').innerHTML = `
-      <div class="section"><strong>描述:</strong> ${escHtml(req.structured_description || req.description || '无')}</div>
+      <div class="section"><strong>描述:</strong></div>
+      <div class="md-content">${renderMarkdown(req.structured_description || req.description)}</div>
       <div class="section"><strong>优先级:</strong> P${req.priority} | <strong>截止:</strong> ${req.deadline || '未设置'}</div>
       ${req.status === 'idea' || req.status === 'clarifying' ? renderAiClarifyPanel(req) : ''}
       ${req.status === 'review' ? renderReviewPanel(req) : ''}
