@@ -50,6 +50,7 @@ async function openRequirement(id) {
       <div class="section"><strong>优先级:</strong> P${req.priority} | <strong>截止:</strong> ${req.deadline || '未设置'}</div>
       <h3>💬 澄清对话</h3><div class="clarify-thread">${renderThread(req.clarifications || [])}</div>
       ${req.status === 'clarifying' ? renderClarifyInput(req) : ''}
+      ${req.status === 'idea' || req.status === 'clarifying' ? renderAiClarifyPanel(req) : ''}
       ${req.status === 'review' ? renderReviewPanel(req) : ''}
       ${req.status === 'approved' ? renderDecomposePanel(req) : ''}
       ${req.status === 'in_execution' ? `<div style="margin-top:12px"><button class="btn-primary" onclick="showWorkspaceView('kanban');refreshKanban('${req.id}');">📌 查看看板</button><button class="btn-small" style="margin-left:8px;background:rgba(255,217,61,0.15);color:var(--accent3);border-color:rgba(255,217,61,0.3)" onclick="showChangePanel('${id}')">📝 需求变更</button></div>` : ''}
@@ -61,6 +62,7 @@ async function openRequirement(id) {
       </div>
       <h3>📋 SRS</h3><div class="srs-preview"><pre>${escHtml(JSON.stringify(srs, null, 2))}</pre></div>`;
   } catch (e) { toast('加载失败: ' + e.message, 'error'); }
+  setTimeout(() => loadAiModels(id), 100);
 }
 
 function renderThread(cl) {
@@ -165,4 +167,131 @@ async function deleteRequirement(id) {
     toast('需求已删除', 'success');
     showWorkspaceView('requirements'); loadRequirements(); loadDashboard();
   } catch (e) { toast('删除失败: ' + e.message, 'error'); }
+}
+
+// ===== AI 澄清对话 =====
+let aiClarifyHistory = {}; // reqId → [{role, content}]
+
+function renderAiClarifyPanel(req) {
+  return `<div class="review-panel" id="ai-clarify-panel">
+    <h3>🤖 AI 智能澄清</h3>
+    <div class="form-inline" style="margin-bottom:12px">
+      <select id="ai-model-select-${req.id}" class="filter-select" style="flex:1">
+        <option value="">选择大模型...</option>
+      </select>
+      <button class="btn-primary" onclick="startAiClarify('${req.id}')">开始对话</button>
+    </div>
+    <div id="ai-clarify-messages-${req.id}" style="max-height:350px;overflow-y:auto;margin-bottom:12px"></div>
+    <div id="ai-clarify-choices-${req.id}"></div>
+    <div id="ai-clarify-srs-${req.id}" style="margin-top:12px"></div>
+    <div id="ai-clarify-actions-${req.id}" style="display:none;margin-top:12px">
+      <button class="btn-accept" onclick="submitAiSrs('${req.id}')">✅ 满意，提交审核</button>
+      <button class="btn-back" onclick="continueAiClarify('${req.id}')">继续澄清</button>
+    </div>
+    <div class="form-inline" style="margin-top:8px">
+      <input type="text" id="ai-clarify-input-${req.id}" placeholder="补充说明或选择后发送..." style="flex:1" onkeydown="if(event.key==='Enter')sendAiClarify('${req.id}')">
+      <button class="btn-primary" onclick="sendAiClarify('${req.id}')">发送</button>
+    </div>
+  </div>`;
+}
+
+// 打开面板时加载可用模型
+async function loadAiModels(reqId) {
+  try {
+    const models = await api('GET', '/models/active');
+    const sel = document.getElementById(`ai-model-select-${reqId}`);
+    if (sel) sel.innerHTML = '<option value="">选择大模型...</option>' + models.map(m => `<option value="${m.id}">${escHtml(m.name)} (${m.model})</option>`).join('');
+  } catch(e) {}
+}
+
+async function startAiClarify(reqId) {
+  const modelId = document.getElementById(`ai-model-select-${reqId}`)?.value;
+  if (!modelId) return toast('请先选择大模型', 'error');
+  // 重置历史
+  aiClarifyHistory[reqId] = [];
+  await sendAiClarify(reqId);
+}
+
+async function sendAiClarify(reqId, choiceAnswer) {
+  const modelId = document.getElementById(`ai-model-select-${reqId}`)?.value;
+  if (!modelId) return toast('请先选择大模型', 'error');
+
+  const input = document.getElementById(`ai-clarify-input-${reqId}`);
+  const userMsg = choiceAnswer || (input?.value?.trim() || '');
+  if (input && !choiceAnswer) input.value = '';
+
+  const msgsDiv = document.getElementById(`ai-clarify-messages-${reqId}`);
+  const choicesDiv = document.getElementById(`ai-clarify-choices-${reqId}`);
+  const srsDiv = document.getElementById(`ai-clarify-srs-${reqId}`);
+  const actionsDiv = document.getElementById(`ai-clarify-actions-${reqId}`);
+
+  if (userMsg) {
+    aiClarifyHistory[reqId] = aiClarifyHistory[reqId] || [];
+    aiClarifyHistory[reqId].push({ role: 'user', content: userMsg });
+  }
+
+  msgsDiv.innerHTML = '<div style="color:var(--text2);text-align:center;padding:12px">⏳ 正在思考...</div>';
+  try {
+    const result = await api('POST', `/ai/requirements/${reqId}/clarify-ai`, {
+      modelId,
+      message: userMsg || null,
+      history: aiClarifyHistory[reqId].filter(h => h.role === 'user' || h.role === 'assistant'),
+    });
+
+    // 展示对话历史
+    const displayHistory = aiClarifyHistory[reqId] || [];
+    msgsDiv.innerHTML = displayHistory.map(h =>
+      `<div class="clarify-msg ${h.role === 'user' ? 'user' : 'agent'}">
+        <div class="role">${h.role === 'user' ? '👤 你' : '🤖 AI'}</div>
+        <div>${escHtml(typeof h.content === 'string' ? h.content : h.content.message || '')}</div>
+      </div>`
+    ).join('') + `<div class="clarify-msg agent"><div class="role">🤖 AI (${escHtml(result.modelUsed)})</div><div>${escHtml(result.message)}</div></div>`;
+
+    // 保存 AI 回复到历史
+    aiClarifyHistory[reqId].push({ role: 'assistant', content: result });
+
+    // 渲染选择题
+    if (result.choices && result.choices.length > 0) {
+      choicesDiv.innerHTML = result.choices.map(c => `
+        <div style="margin:8px 0;padding:8px;background:var(--bg3);border-radius:6px">
+          <strong>${escHtml(c.question)}</strong>
+          <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">
+            ${c.options.map((opt, i) => `
+              <button class="btn-small" style="font-size:12px" onclick="sendAiClarify('${reqId}','选择 ${String.fromCharCode(65+i)}: ${opt.replace(/'/g,"\\'")}')">${String.fromCharCode(65+i)}. ${escHtml(opt)}</button>
+            `).join('')}
+            ${c.allowCustom ? `<button class="btn-small" style="font-size:12px;background:rgba(78,205,196,0.1)" onclick="document.getElementById('ai-clarify-input-${reqId}').focus()">✏️ 自定义</button>` : ''}
+          </div>
+        </div>
+      `).join('');
+    } else {
+      choicesDiv.innerHTML = '';
+    }
+
+    // 渲染 SRS 草稿
+    if (result.srs) {
+      srsDiv.innerHTML = `<h4>📋 当前 SRS 草稿</h4>
+        <div style="font-size:12px;margin:4px 0"><strong>范围:</strong> ${(result.srs.scopeIn||[]).join(', ')||'待确认'}</div>
+        <div style="font-size:12px;margin:4px 0"><strong>验收:</strong> ${(result.srs.acceptanceCriteria||[]).join('; ')||'待确认'}</div>
+        <div style="font-size:12px;margin:4px 0;color:var(--text2)">${result.srs.summary||''}</div>`;
+    }
+
+    // 是否可以提交审核
+    actionsDiv.style.display = result.readyForReview ? 'block' : 'none';
+
+  } catch (e) {
+    msgsDiv.innerHTML = `<div style="color:var(--accent2);padding:12px">❌ ${escHtml(e.message)}</div>`;
+  }
+}
+
+async function submitAiSrs(reqId) {
+  try {
+    await Requirements.submitReview(reqId);
+    toast('已提交审核', 'success');
+    openRequirement(reqId); loadRequirements(); loadDashboard();
+  } catch (e) { toast('提交失败: ' + e.message, 'error'); }
+}
+
+function continueAiClarify(reqId) {
+  document.getElementById(`ai-clarify-actions-${reqId}`).style.display = 'none';
+  document.getElementById(`ai-clarify-input-${reqId}`)?.focus();
 }

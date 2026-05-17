@@ -27,7 +27,7 @@ function load() {
     catch (e) { console.log('[DB] Corrupted file, starting fresh'); }
   }
   // 确保所有集合存在
-  const collections = ['projects','project_members','project_environments','project_repos','project_configs','requirements','clarification_threads','tasks','agents','events'];
+  const collections = ['projects','project_members','project_environments','project_repos','project_configs','requirements','clarification_threads','tasks','agents','events','llm_models'];
   for (const c of collections) { if (!db[c]) db[c] = []; }
 }
 
