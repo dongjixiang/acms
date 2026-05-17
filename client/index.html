@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ACMS — 智能体协同管理系统</title>
+<link rel="stylesheet" href="/client/css/style.css">
+</head>
+<body>
+<div id="app">
+  <header id="header">
+    <h1 id="header-title">🤖 <span data-i18n="app.title">智能体协同管理系统</span> <span class="version" data-i18n="app.version">v0.3</span></h1>
+    <div id="header-right">
+      <span id="current-project"></span>
+      <button id="btn-back-projects" class="btn-small" style="display:none" onclick="goToProjects()" data-i18n="nav.backToProjects">← 所有项目</button>
+      <select id="lang-switcher" onchange="I18n.setLang(this.value)">
+        <option value="zh">🇨🇳 中文</option>
+        <option value="en">🇺🇸 English</option>
+      </select>
+      <span id="connection-status" class="status-offline">● <span data-i18n="common.offline">离线</span></span>
+    </div>
+  </header>
+
+  <!-- ====== 项目首页 ====== -->
+  <main id="view-projects" class="view-main">
+    <div class="projects-page">
+      <div class="projects-hero">
+        <div class="hero-icon">📦</div>
+        <h2 data-i18n="projects.title">我的项目</h2>
+        <p class="subtitle" data-i18n="projects.subtitle">选择一个项目进入，或创建新项目开始协作</p>
+      </div>
+
+      <div id="project-grid" class="project-grid"></div>
+
+      <!-- 新建项目区域 -->
+      <div class="create-project-section">
+        <div class="create-project-card" id="create-project-toggle" onclick="toggleCreateProject()">
+          <div class="create-icon">➕</div>
+          <div class="create-text">
+            <strong data-i18n="projects.create">新建项目</strong>
+            <span>创建一个新的工作空间，管理需求、任务和知识库</span>
+          </div>
+        </div>
+
+        <div id="create-project-form" class="create-project-form" style="display:none">
+          <h3 data-i18n="projects.form.title">📦 新建项目</h3>
+          <div class="form-two-col">
+            <div class="form-group">
+              <label data-i18n="projects.form.name">项目名称 <span class="required">*</span></label>
+              <input type="text" id="proj-name" data-i18n-attr="placeholder" data-i18n="projects.form.namePlaceholder" placeholder="例如：智体城" required>
+            </div>
+            <div class="form-group">
+              <label data-i18n="projects.form.slug">项目标识</label>
+              <input type="text" id="proj-slug" data-i18n-attr="placeholder" data-i18n="projects.form.slugPlaceholder" placeholder="URL友好的英文标识">
+            </div>
+          </div>
+          <div class="form-group">
+            <label data-i18n="projects.form.desc">描述</label>
+            <textarea id="proj-desc" rows="3" data-i18n-attr="placeholder" data-i18n="projects.form.descPlaceholder" placeholder="项目的简要描述..."></textarea>
+          </div>
+          <div class="form-group">
+            <label data-i18n="projects.form.wiki">Obsidian Wiki 路径</label>
+            <input type="text" id="proj-wiki" data-i18n-attr="placeholder" data-i18n="projects.form.wikiPlaceholder" placeholder="D:/Wiki/项目名/">
+            <span class="form-hint">可选。设置后需求确认时将自动生成 Wiki 页面到此路径下</span>
+          </div>
+          <div class="form-actions">
+            <button class="btn-primary btn-lg" onclick="doCreateProject()" data-i18n="projects.form.submit">创建项目</button>
+            <button class="btn-back" onclick="toggleCreateProject()" data-i18n="projects.form.cancel">取消</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ====== 项目工作空间 ====== -->
+<div id="view-workspace" class="view-main">
+    <div id="main-layout">
+      <nav id="sidebar">
+        <button class="nav-btn active" data-view="dashboard">📊 <span data-i18n="nav.dashboard">仪表盘</span></button>
+        <button class="nav-btn" data-view="requirements">📋 <span data-i18n="nav.requirements">需求管理</span></button>
+        <button class="nav-btn" data-view="kanban">📌 <span data-i18n="nav.kanban">任务看板</span></button>
+        <button class="nav-btn" data-view="agents">🤖 <span>智能体协同</span></button>
+        <button class="nav-btn" data-view="settings">⚙️ <span data-i18n="nav.settings">项目设置</span></button>
+        <div id="sidebar-stats"></div>
+      </nav>
+
+      <section id="content">
+        <!-- 仪表盘 -->
+        <div id="view-dashboard" class="view active">
+          <div class="view-header"><h2 id="dash-name"></h2></div>
+          <div class="stats-row" id="dash-stats"></div>
+          <div class="dash-panels">
+            <div class="dash-panel"><h3 data-i18n="dashboard.recentReqs">📋 最近需求</h3><div id="dash-reqs"></div></div>
+            <div class="dash-panel"><h3 data-i18n="dashboard.activeTasks">📌 进行中的任务</h3><div id="dash-tasks"></div></div>
+          </div>
+        </div>
+
+        <!-- 需求管理 -->
+        <div id="view-requirements" class="view">
+          <div class="view-header">
+            <h2 data-i18n="requirements.title">📋 需求列表</h2>
+            <button class="btn-primary" onclick="showCreateReq()" data-i18n="requirements.create">➕ 新建需求</button>
+            <select id="status-filter" class="filter-select">
+              <option value="" data-i18n="requirements.filterAll">全部状态</option>
+              <option value="idea">💡 想法</option><option value="clarifying">❓ 澄清中</option><option value="review">👀 待审核</option><option value="approved">✅ 已确认</option><option value="in_execution">🔄 执行中</option><option value="done">🎉 已完成</option>
+            </select>
+          </div>
+          <div id="req-list"></div>
+          <div id="create-req-panel" class="panel-form" style="display:none">
+            <!-- JS 动态填充 -->
+          </div>
+        </div>
+
+        <!-- 任务看板 -->
+        <div id="view-kanban" class="view">
+          <div class="view-header">
+            <h2 data-i18n="kanban.title">📌 任务看板</h2>
+            <select id="kanban-req-filter" class="filter-select"><option value="">全部需求</option></select>
+            <button class="btn-small btn-accept" onclick="refreshKanban()">🔄 刷新</button>
+          </div>
+          <div class="kanban-container">
+            <div class="kanban-col" data-col="backlog"><div class="col-header">📥 <span data-i18n="kanban.cols.backlog">待认领</span> <span class="count" id="count-backlog">0</span></div><div class="col-body" id="col-backlog"></div></div>
+            <div class="kanban-col" data-col="in_progress"><div class="col-header">🔄 <span data-i18n="kanban.cols.in_progress">进行中</span> <span class="count" id="count-in_progress">0</span></div><div class="col-body" id="col-in_progress"></div></div>
+            <div class="kanban-col" data-col="review"><div class="col-header">👀 <span data-i18n="kanban.cols.review">待审核</span> <span class="count" id="count-review">0</span></div><div class="col-body" id="col-review"></div></div>
+            <div class="kanban-col" data-col="done"><div class="col-header">✅ <span data-i18n="kanban.cols.done">已完成</span> <span class="count" id="count-done">0</span></div><div class="col-body" id="col-done"></div></div>
+            <div class="kanban-col" data-col="archived"><div class="col-header">📦 <span data-i18n="kanban.cols.archived">已归档</span> <span class="count" id="count-archived">0</span></div><div class="col-body" id="col-archived"></div></div>
+          </div>
+        </div>
+
+        <!-- 智能体协同 -->
+        <div id="view-agents" class="view">
+          <div class="view-header"><h2>🤖 智能体协同</h2></div>
+          <div class="dash-panels">
+            <div class="dash-panel" style="grid-column:1">
+              <h3>📋 已注册智能体</h3>
+              <div id="agent-list"></div>
+              <div class="form-inline" style="margin-top:12px">
+                <input type="text" id="reg-agent-id" placeholder="智能体ID (如 agent-planner-001)">
+                <input type="text" id="reg-agent-name" placeholder="名称 (如 规划师)">
+                <button class="btn-small btn-accept" onclick="registerAgent()">注册</button>
+              </div>
+            </div>
+            <div class="dash-panel">
+              <h3>🎯 技能匹配推荐</h3>
+              <select id="match-agent-select" class="filter-select" onchange="loadMatchTasks()" style="width:100%">
+                <option value="">选择智能体查看匹配任务...</option>
+              </select>
+              <div id="match-results" style="margin-top:8px"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 项目设置 -->
+        <div id="view-settings" class="view">
+          <div class="view-header"><h2 data-i18n="settings.title">⚙️ 项目设置</h2></div>
+          <div class="settings-tabs">
+            <button class="tab-btn active" data-tab="tab-envs">🌐 <span data-i18n="settings.tabs.envs">环境</span></button>
+            <button class="tab-btn" data-tab="tab-repos">📦 <span data-i18n="settings.tabs.repos">仓库</span></button>
+            <button class="tab-btn" data-tab="tab-configs">🔧 <span data-i18n="settings.tabs.configs">配置</span></button>
+            <button class="tab-btn" data-tab="tab-members">👥 <span data-i18n="settings.tabs.members">成员</span></button>
+          </div>
+          <div class="tab-content active" id="tab-envs"><h3 data-i18n="settings.envs.title">环境地址</h3><div id="envs-list"></div><div class="form-inline" style="margin-top:12px"><input type="text" id="env-name" placeholder="dev/staging/prod"><input type="text" id="env-url" placeholder="http://localhost:3000"><button class="btn-small btn-accept" onclick="addEnv()">添加</button></div></div>
+          <div class="tab-content" id="tab-repos"><h3 data-i18n="settings.repos.title">代码仓库</h3><div id="repos-list"></div><div class="form-inline" style="margin-top:12px"><input type="text" id="repo-name" placeholder="仓库名"><input type="text" id="repo-url" placeholder="https://github.com/..."><button class="btn-small btn-accept" onclick="addRepo()">添加</button></div></div>
+          <div class="tab-content" id="tab-configs"><h3 data-i18n="settings.configs.title">配置项</h3><div id="configs-list"></div><div class="form-inline" style="margin-top:12px"><input type="text" id="cfg-key" placeholder="KEY"><input type="text" id="cfg-value" placeholder="VALUE"><button class="btn-small btn-accept" onclick="addConfig()">添加</button></div></div>
+          <div class="tab-content" id="tab-members"><h3 data-i18n="settings.members.title">项目成员</h3><div id="members-list"></div><div class="form-inline" style="margin-top:12px"><input type="text" id="member-id" placeholder="成员ID"><select id="member-type"><option value="human">👤 人</option><option value="agent">🤖 智能体</option></select><button class="btn-small btn-accept" onclick="addMember()">添加</button></div></div>
+        </div>
+
+        <!-- 需求详情 / 任务详情 -->
+        <div id="view-detail" class="view"><div class="view-header"><button class="btn-back" onclick="showWorkspaceView('requirements');loadRequirements();">← 返回</button><h2 id="detail-title"></h2><span id="detail-status"></span></div><div id="detail-content"></div></div>
+        <div id="view-task-detail" class="view"><div class="view-header"><button class="btn-back" onclick="showWorkspaceView('kanban');refreshKanban();">← 返回</button><h2 id="task-detail-title"></h2><span id="task-detail-status"></span></div><div id="task-detail-content"></div></div>
+      </section>
+    </div>
+  </div>
+
+  <div id="toast-container"></div>
+</div>
+
+<script src="/client/js/i18n.js"></script>
+<script src="/client/js/api.js"></script>
+<script src="/client/js/core/state.js"></script>
+<script src="/client/js/core/utils.js"></script>
+<script src="/client/js/core/router.js"></script>
+<script src="/client/js/views/projects.js"></script>
+<script src="/client/js/views/dashboard.js"></script>
+<script src="/client/js/views/requirements.js"></script>
+<script src="/client/js/views/kanban.js"></script>
+<script src="/client/js/views/agents.js"></script>
+<script src="/client/js/views/settings.js"></script>
+<script src="/client/js/app.js"></script>
+</body>
+</html>

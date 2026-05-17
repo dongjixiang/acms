@@ -1,0 +1,16 @@
+{
+  "name": "acms",
+  "version": "0.1.0",
+  "description": "Agent Collaboration Management System - 智能体协同管理系统",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "ws": "^8.18.0",
+    "uuid": "^10.0.0"
+  },
+  "type": "commonjs"
+}
