@@ -16,7 +16,10 @@ router.post('/', (req, res, next) => {
 
 router.patch('/:id', (req, res, next) => {
   try {
-    const updated = modelStore.update(req.params.id, req.body);
+    const updates = { ...req.body };
+    // 不更新 id, created_at
+    delete updates.id; delete updates.created_at;
+    const updated = modelStore.update(req.params.id, updates);
     if (!updated) return res.status(404).json({ error: 'MODEL_NOT_FOUND' });
     res.json({ ...updated, apiKey: '***' });
   } catch (e) { next(e); }

@@ -1,10 +1,14 @@
 // 路由 — 页面/视图切换
 // 依赖: core/state.js, core/utils.js
 
-// 顶层页面切换（项目列表 ↔ 工作空间）
+// 顶层页面切换（项目列表 ↔ 工作空间 ↔ 系统管理）
 function showView(id) {
-  document.getElementById('view-projects').style.display = 'none';
-  document.getElementById('view-workspace').style.display = 'none';
+  // 隐藏所有顶层页面
+  const pages = ['view-projects', 'view-workspace', 'view-admin'];
+  pages.forEach(pid => {
+    const el = document.getElementById(pid);
+    if (el) el.style.display = 'none';
+  });
   const el = document.getElementById(id);
   if (el) el.style.display = 'block';
 }

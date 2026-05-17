@@ -1,81 +1,142 @@
-// 系统管理视图 — 状态/日志/模型管理/数据管理
-async function showAdmin() {
-  document.getElementById('admin-overlay').style.display = 'flex';
+// 系统管理视图 — 独立全屏页面
+async function loadAdminPage() {
   try {
     const status = await api('GET', '/admin/status');
     const events = await api('GET', '/admin/events?limit=10');
     const models = await api('GET', '/models');
+
     document.getElementById('admin-content').innerHTML = `
       <h3>📊 系统状态</h3>
       <div class="stats-row" style="grid-template-columns:repeat(4,1fr);margin:12px 0">
         <div class="stat-card"><div class="num">${Math.floor(status.uptime/3600)}h${Math.floor((status.uptime%3600)/60)}m</div><div class="label">运行时间</div></div>
         <div class="stat-card"><div class="num">${status.memory.used}</div><div class="label">内存</div></div>
         <div class="stat-card"><div class="num">${status.node}</div><div class="label">Node.js</div></div>
-        <div class="stat-card"><div class="num">${status.counts.projects}P/${status.counts.requirements}R/${status.counts.tasks}T</div><div class="label">数据量</div></div>
+        <div class="stat-card"><div class="num">${status.counts.projects}P / ${status.counts.requirements}R / ${status.counts.tasks}T</div><div class="label">数据量</div></div>
       </div>
 
       <h3>🤖 大模型配置</h3>
       <div id="model-list" style="margin:8px 0">
-        ${models.map(m => `<div class="config-row">
-          <span><strong>${escHtml(m.name)}</strong> <span style="color:var(--text2)">${m.provider}/${m.model}</span></span>
-          <span><button class="btn-small btn-reject" onclick="deleteModel('${m.id}')" style="font-size:10px">🗑</button></span>
-        </div>`).join('') || '<div class="empty" style="padding:8px">暂无模型</div>'}
-      </div>
-      <div class="form-inline" style="margin-top:8px">
-        <input type="text" id="model-name" placeholder="名称 (如 DeepSeek)">
-        <input type="text" id="model-provider" placeholder="供应商 (deepseek/openai/ollama)">
-        <input type="text" id="model-model" placeholder="模型 (deepseek-v4-pro)">
-        <button class="btn-small btn-accept" onclick="addModel()">添加</button>
-      </div>
-      <div class="form-inline" style="margin-top:4px">
-        <input type="text" id="model-url" placeholder="Base URL (可选，默认用供应商的)" style="flex:2">
-        <input type="password" id="model-key" placeholder="API Key" style="flex:1">
+        ${models.map(m => renderModelRow(m)).join('') || '<div class="empty" style="padding:12px">暂无模型，请在下方添加</div>'}
       </div>
 
-      <h3 style="margin-top:16px">📋 最近事件</h3>
-      <div style="max-height:150px;overflow-y:auto;font-size:12px">
+      <div class="panel-form" style="margin-top:16px">
+        <h4>添加/编辑模型</h4>
+        <div class="form-two-col">
+          <div class="form-group">
+            <label>名称 *</label><input type="text" id="model-name" placeholder="DeepSeek">
+          </div>
+          <div class="form-group">
+            <label>供应商 *</label><input type="text" id="model-provider" placeholder="deepseek / openai / ollama">
+          </div>
+        </div>
+        <div class="form-two-col">
+          <div class="form-group">
+            <label>模型名 *</label><input type="text" id="model-model" placeholder="deepseek-v4-pro">
+          </div>
+          <div class="form-group">
+            <label>Base URL (可选)</label><input type="text" id="model-url" placeholder="留空使用供应商默认">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>API Key</label><input type="password" id="model-key" placeholder="sk-...（留空则不修改）">
+        </div>
+        <input type="hidden" id="model-edit-id" value="">
+        <div class="form-actions">
+          <button class="btn-primary" onclick="saveModel()">💾 保存</button>
+          <button class="btn-back" onclick="resetModelForm()">取消</button>
+        </div>
+      </div>
+
+      <h3 style="margin-top:24px">📋 最近事件</h3>
+      <div style="max-height:200px;overflow-y:auto;font-size:12px;background:var(--bg2);border-radius:8px;padding:12px">
         ${events.map(e => `<div class="log-entry"><strong>${e.type}</strong> ${e.actor_name||''} → ${e.target_type||''}/${e.target_id||''} <span style="color:var(--text2)">${new Date(e.timestamp).toLocaleString('zh-CN')}</span></div>`).join('')}
       </div>
 
-      <h3 style="margin-top:16px">🛠 数据管理</h3>
+      <h3 style="margin-top:24px">🛠 数据管理</h3>
       <div style="display:flex;gap:8px;margin-top:8px">
-        <button class="btn-small" onclick="doBackup()">💾 备份</button>
-        <button class="btn-small" onclick="doCleanup('events')">🧹 清理事件</button>
+        <button class="btn-small" onclick="doBackup()">💾 备份数据</button>
+        <button class="btn-small" onclick="doCleanup('events')">🧹 清理旧事件</button>
       </div>
     `;
-  } catch (e) { document.getElementById('admin-content').innerHTML = `<div class="empty">${e.message}</div>`; }
+  } catch (e) { document.getElementById('admin-content').innerHTML = `<div class="empty">加载失败: ${e.message}</div>`; }
 }
 
-function hideAdmin() { document.getElementById('admin-overlay').style.display = 'none'; }
+function renderModelRow(m) {
+  return `<div class="config-row" style="padding:8px 0">
+    <div>
+      <strong>${escHtml(m.name)}</strong>
+      <span style="color:var(--text2);margin-left:8px">${m.provider} / ${m.model}</span>
+      ${m.baseUrl ? `<span style="color:var(--text2);font-size:11px;margin-left:8px">${m.baseUrl}</span>` : ''}
+    </div>
+    <div style="display:flex;gap:6px">
+      <button class="btn-small" onclick="editModel('${m.id}')">✏️ 编辑</button>
+      <button class="btn-small btn-reject" onclick="deleteModel('${m.id}')">🗑</button>
+    </div>
+  </div>`;
+}
 
-async function addModel() {
+async function editModel(id) {
+  try {
+    const models = await api('GET', '/models');
+    const m = models.find(mm => mm.id === id);
+    if (!m) return;
+    document.getElementById('model-edit-id').value = id;
+    document.getElementById('model-name').value = m.name;
+    document.getElementById('model-provider').value = m.provider;
+    document.getElementById('model-model').value = m.model;
+    document.getElementById('model-url').value = m.baseUrl || '';
+    document.getElementById('model-key').value = '';
+    document.getElementById('model-key').placeholder = '留空则不修改';
+  } catch(e) { toast('加载失败: '+e.message, 'error'); }
+}
+
+function resetModelForm() {
+  document.getElementById('model-edit-id').value = '';
+  document.getElementById('model-name').value = '';
+  document.getElementById('model-provider').value = '';
+  document.getElementById('model-model').value = '';
+  document.getElementById('model-url').value = '';
+  document.getElementById('model-key').value = '';
+  document.getElementById('model-key').placeholder = 'sk-...';
+}
+
+async function saveModel() {
+  const id = document.getElementById('model-edit-id').value;
   const name = document.getElementById('model-name').value.trim();
   const provider = document.getElementById('model-provider').value.trim();
   const model = document.getElementById('model-model').value.trim();
   if (!name || !provider || !model) return toast('请填写名称/供应商/模型', 'error');
+
+  const body = { name, provider, model, baseUrl: document.getElementById('model-url').value.trim() };
+  const keyVal = document.getElementById('model-key').value;
+  if (keyVal) body.apiKey = keyVal;
+
   try {
-    await api('POST', '/models', {
-      name, provider, model,
-      baseUrl: document.getElementById('model-url').value.trim(),
-      apiKey: document.getElementById('model-key').value,
-    });
-    toast('模型已添加', 'success'); showAdmin();
-  } catch (e) { toast('添加失败: ' + e.message, 'error'); }
+    if (id) {
+      await api('PATCH', `/models/${id}`, body);
+      toast('模型已更新', 'success');
+    } else {
+      await api('POST', '/models', body);
+      toast('模型已添加', 'success');
+    }
+    resetModelForm();
+    loadAdminPage();
+  } catch(e) { toast('保存失败: '+e.message, 'error'); }
 }
 
 async function deleteModel(id) {
-  if (!confirm('删除此模型配置？')) return;
-  try { await api('DELETE', `/models/${id}`); toast('已删除', 'success'); showAdmin(); }
-  catch (e) { toast('失败: ' + e.message, 'error'); }
+  if (!confirm('确认删除此模型配置？')) return;
+  try { await api('DELETE', `/models/${id}`); toast('已删除', 'success'); loadAdminPage(); }
+  catch(e) { toast('失败: '+e.message, 'error'); }
 }
 
 async function doBackup() {
-  try { const r = await api('POST', '/admin/backup'); toast('备份: ' + r.backup, 'success'); }
-  catch (e) { toast('失败: ' + e.message, 'error'); }
+  try { const r = await api('POST', '/admin/backup'); toast('备份完成: ' + r.backup, 'success'); }
+  catch(e) { toast('失败: '+e.message, 'error'); }
 }
 
 async function doCleanup(type) {
   if (!confirm(`确认清理 ${type}？`)) return;
-  try { const r = await api('POST', '/admin/cleanup', { type }); toast(`已清理 ${r.cleaned} 条`, 'success'); showAdmin(); }
-  catch (e) { toast('失败: ' + e.message, 'error'); }
+  try { const r = await api('POST', '/admin/cleanup', { type }); toast(`已清理 ${r.cleaned} 条`, 'success'); loadAdminPage(); }
+  catch(e) { toast('失败: '+e.message, 'error'); }
 }
