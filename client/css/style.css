@@ -252,6 +252,14 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 .md-content li { margin: 2px 0 2px 16px; }
 .md-content code { background: var(--bg); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
 .md-content blockquote { background: rgba(78,205,196,0.05); border-radius: 4px; }
+.md-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+.md-content th { background: var(--bg); padding: 8px 12px; text-align: left; border-bottom: 2px solid var(--accent); }
+.md-content td { padding: 6px 12px; border-bottom: 1px solid var(--border); }
+.md-content hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+.md-content h1 { font-size: 18px; margin: 20px 0 8px; color: var(--accent); }
+.md-content h2 { font-size: 16px; margin: 16px 0 6px; color: var(--accent); }
+.md-content h3 { font-size: 14px; margin: 14px 0 4px; color: var(--accent); }
+.md-content h4 { font-size: 13px; margin: 12px 0 4px; color: var(--accent); }
 
 /* SRS preview */
 .srs-preview { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-top: 12px; max-height: 400px; overflow-y: auto; }
