@@ -23,7 +23,7 @@ async function doCreateReq() {
   const title = document.getElementById('create-title').value.trim();
   if (!title) return toast('请输入标题', 'error');
   try {
-    await Requirements.create({
+    const req = await Requirements.create({
       projectId: App.currentProjectId, title,
       description: document.getElementById('create-desc').value.trim(),
       priority: parseInt(document.getElementById('create-priority').value),
@@ -32,6 +32,8 @@ async function doCreateReq() {
     });
     toast('需求创建成功！', 'success');
     hideCreateReq(); loadRequirements(); loadDashboard();
+    // 创建后直接打开需求详情
+    openRequirement(req.id);
   } catch (e) { toast('创建失败: ' + e.message, 'error'); }
 }
 
@@ -54,6 +56,9 @@ async function openRequirement(id) {
       ${req.status === 'idea' ? `<div style="margin-top:12px"><button class="btn-primary" onclick="transitionReq('${id}','clarifying')">▶ 开始澄清</button></div>` : ''}
       ${req.status === 'clarifying' ? `<div style="margin-top:12px"><button class="btn-primary" onclick="simulateSubmitReview('${id}')">📝 提交审核</button></div>` : ''}
       ${req.wiki_path ? `<div class="section"><span class="wiki-link">📚 Wiki: ${escHtml(req.wiki_path)}</span></div>` : ''}
+      <div style="margin-top:16px;display:flex;gap:8px">
+        <button class="btn-small btn-reject" onclick="deleteRequirement('${id}')">🗑 删除需求</button>
+      </div>
       <h3>📋 SRS</h3><div class="srs-preview"><pre>${escHtml(JSON.stringify(srs, null, 2))}</pre></div>`;
   } catch (e) { toast('加载失败: ' + e.message, 'error'); }
 }
@@ -151,4 +156,13 @@ async function confirmChange(reqId) {
 function cancelChangePanel(reqId) {
   api('POST', `/changes/${reqId}/change/cancel`).catch(() => {});
   openRequirement(reqId);
+}
+
+async function deleteRequirement(id) {
+  if (!confirm('确认删除此需求？关联的任务和对话也将被删除。')) return;
+  try {
+    await api('DELETE', `/requirements/${id}`);
+    toast('需求已删除', 'success');
+    showWorkspaceView('requirements'); loadRequirements(); loadDashboard();
+  } catch (e) { toast('删除失败: ' + e.message, 'error'); }
 }

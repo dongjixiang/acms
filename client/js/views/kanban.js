@@ -49,6 +49,7 @@ async function openTask(taskId) {
         ${t.status === 'backlog' ? `<button class="btn-accept" onclick="claimTask('${t.id}')">认领</button>` : ''}
         ${t.status === 'in_progress' ? `<button class="btn-primary" onclick="updateTaskProgress('${t.id}')">更新进度</button><button class="btn-accept" onclick="submitTask('${t.id}')">提交审核</button>` : ''}
         ${t.status === 'review' ? `<button class="btn-accept" onclick="reviewTask('${t.id}','approved')">通过</button><button class="btn-reject" onclick="reviewTask('${t.id}','rejected')">驳回</button>` : ''}
+        <button class="btn-small btn-reject" style="margin-left:auto" onclick="deleteTask('${t.id}')">🗑 删除</button>
       </div>`;
   } catch (e) { toast('加载失败: ' + e.message, 'error'); }
 }
@@ -58,3 +59,9 @@ async function claimTask(tid) { const a = prompt('智能体ID:', 'agent-scholar-
 async function submitTask(tid) { const n = prompt('提交说明:') || '完成'; try { await Tasks.submit(tid, 'agent-scholar-001', [], n); toast('已提交', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
 async function reviewTask(tid, verdict) { const fb = verdict === 'rejected' ? prompt('驳回原因:') || '需修改' : '通过'; try { await Tasks.review(tid, verdict, fb); toast(verdict === 'approved' ? '通过 ✅' : '驳回 ↩', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
 async function updateTaskProgress(tid) { const p = prompt('进度(0-100):', '50'); if (p === null) return; try { await Tasks.progress(tid, parseInt(p)); toast('已更新', 'success'); openTask(tid); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
+
+async function deleteTask(id) {
+  if (!confirm('确认删除此任务？')) return;
+  try { await api('DELETE', `/tasks/${id}`); toast('任务已删除', 'success'); showWorkspaceView('kanban'); refreshKanban(); }
+  catch (e) { toast('删除失败: ' + e.message, 'error'); }
+}

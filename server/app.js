@@ -58,6 +58,7 @@ app.use('/api/tasks', require('./routes/tasks'));
 app.use('/api/agents', require('./routes/agents'));
 app.use('/api/wiki', require('./routes/wiki'));
 app.use('/api/changes', require('./routes/changes'));
+app.use('/api/admin', require('./routes/admin'));
 
 // 404
 app.use((req, res) => res.status(404).json({ error: 'NOT_FOUND' }));

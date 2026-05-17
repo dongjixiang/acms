@@ -109,4 +109,22 @@ router.post('/:id/release', (req, res) => {
   res.json(result);
 });
 
+// 删除任务
+router.delete('/:id', (req, res) => {
+  const task = taskStore.getById(req.params.id);
+  if (!task) return res.status(404).json({ error: 'TASK_NOT_FOUND' });
+  const { collection } = require('../db/connection');
+  collection('tasks').remove(t => t.id === req.params.id);
+  // 从父需求 task_ids 中移除
+  if (task.parent_id) {
+    const reqStore = require('../stores/requirement-store');
+    const parent = reqStore.getById(task.parent_id);
+    if (parent) {
+      const taskIds = JSON.parse(parent.task_ids || '[]').filter(tid => tid !== req.params.id);
+      reqStore.update(task.parent_id, { task_ids: JSON.stringify(taskIds) });
+    }
+  }
+  res.json({ success: true, message: `任务 ${task.title} 已删除` });
+});
+
 module.exports = router;

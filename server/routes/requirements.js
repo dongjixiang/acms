@@ -85,4 +85,17 @@ router.get('/stats/:projectId', (req, res) => {
   res.json(reqStore.getStats(req.params.projectId));
 });
 
+// 删除需求
+router.delete('/:id', (req, res) => {
+  const requirement = reqStore.getById(req.params.id);
+  if (!requirement) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+  const { collection } = require('../db/connection');
+  collection('clarification_threads').remove(c => c.requirement_id === req.params.id);
+  // 删除关联任务
+  const taskIds = JSON.parse(requirement.task_ids || '[]');
+  for (const tid of taskIds) collection('tasks').remove(t => t.id === tid);
+  collection('requirements').remove(r => r.id === req.params.id);
+  res.json({ success: true, message: `需求 ${requirement.title} 已删除` });
+});
+
 module.exports = router;

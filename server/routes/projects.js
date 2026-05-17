@@ -71,4 +71,24 @@ router.delete('/:id/configs/:key', (req, res) => {
   res.json({ success: true });
 });
 
+// 删除项目（级联删除关联数据）
+router.delete('/:id', (req, res) => {
+  const { collection } = require('../db/connection');
+  const project = projectStore.getById(req.params.id);
+  if (!project) return res.status(404).json({ error: 'PROJ_NOT_FOUND' });
+
+  collection('project_members').remove(m => m.project_id === req.params.id);
+  collection('project_environments').remove(e => e.project_id === req.params.id);
+  collection('project_repos').remove(r => r.project_id === req.params.id);
+  collection('project_configs').remove(c => c.project_id === req.params.id);
+  collection('requirements').remove(r => r.project_id === req.params.id);
+  collection('tasks').remove(t => t.project_id === req.params.id);
+  collection('clarification_threads').remove(c => {
+    const req = collection('requirements').findOne(r => r.id === c.requirement_id);
+    return !req || req.project_id === req.params.id;
+  });
+  collection('projects').remove(p => p.id === req.params.id);
+  res.json({ success: true, message: `项目 ${project.name} 已删除` });
+});
+
 module.exports = router;
