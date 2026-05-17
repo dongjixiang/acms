@@ -48,14 +48,10 @@ async function openRequirement(id) {
     document.getElementById('detail-content').innerHTML = `
       <div class="section"><strong>描述:</strong> ${escHtml(req.structured_description || req.description || '无')}</div>
       <div class="section"><strong>优先级:</strong> P${req.priority} | <strong>截止:</strong> ${req.deadline || '未设置'}</div>
-      <h3>💬 澄清对话</h3><div class="clarify-thread">${renderThread(req.clarifications || [])}</div>
-      ${req.status === 'clarifying' ? renderClarifyInput(req) : ''}
       ${req.status === 'idea' || req.status === 'clarifying' ? renderAiClarifyPanel(req) : ''}
       ${req.status === 'review' ? renderReviewPanel(req) : ''}
-      ${req.status === 'approved' ? renderDecomposePanel(req) : ''}
+      ${req.status === 'approved' ? renderAiDecomposePanel(req) : ''}
       ${req.status === 'in_execution' ? `<div style="margin-top:12px"><button class="btn-primary" onclick="showWorkspaceView('kanban');refreshKanban('${req.id}');">📌 查看看板</button><button class="btn-small" style="margin-left:8px;background:rgba(255,217,61,0.15);color:var(--accent3);border-color:rgba(255,217,61,0.3)" onclick="showChangePanel('${id}')">📝 需求变更</button></div>` : ''}
-      ${req.status === 'idea' ? `<div style="margin-top:12px"><button class="btn-primary" onclick="transitionReq('${id}','clarifying')">▶ 开始澄清</button></div>` : ''}
-      ${req.status === 'clarifying' ? `<div style="margin-top:12px"><button class="btn-primary" onclick="simulateSubmitReview('${id}')">📝 提交审核</button></div>` : ''}
       ${req.wiki_path ? `<div class="section"><span class="wiki-link">📚 Wiki: ${escHtml(req.wiki_path)}</span></div>` : ''}
       <div style="margin-top:16px;display:flex;gap:8px">
         <button class="btn-small btn-reject" onclick="deleteRequirement('${id}')">🗑 删除需求</button>
@@ -63,6 +59,7 @@ async function openRequirement(id) {
       <h3>📋 SRS</h3><div class="srs-preview"><pre>${escHtml(JSON.stringify(srs, null, 2))}</pre></div>`;
   } catch (e) { toast('加载失败: ' + e.message, 'error'); }
   setTimeout(() => loadAiModels(id), 100);
+  setTimeout(() => loadDecomposeModels(id), 100);
 }
 
 function renderThread(cl) {
@@ -70,54 +67,12 @@ function renderThread(cl) {
   return cl.map(c => `<div class="clarify-msg ${c.role}"><div class="role">${c.role === 'user' ? '👤 用户' : '🤖 ' + escHtml(c.agent_id || '')}</div><div>${escHtml(c.content)}</div></div>`).join('');
 }
 
-function renderClarifyInput(req) {
-  return `<div class="clarify-input-area"><input type="text" id="clarify-input-${req.id}" placeholder="输入回答..." onkeydown="if(event.key==='Enter')sendMsg('${req.id}')"><button class="btn-primary" onclick="sendMsg('${req.id}')">发送</button></div><div style="margin-top:8px"><button class="btn-small" onclick="simAgentAsk('${req.id}')">🤖 模拟提问</button></div>`;
-}
-
 function renderReviewPanel(req) {
   const s = safeParse(req.srs);
-  return `<div class="review-panel"><h3>📋 需求审核</h3><div>范围: ${(s.scopeIn || []).join(',')}</div><div>验收: ${(s.acceptanceCriteria || []).join(';')}</div><div class="review-actions"><button class="btn-accept" onclick="approveReq('${req.id}')">✅ 确认通过</button><button class="btn-reject" onclick="rejectReq('${req.id}')">❌ 驳回</button></div></div>`;
+  return `<div class="review-panel"><h3>📋 需求审核</h3><div>范围: ${(s.scopeIn||[]).join(',')}</div><div>验收: ${(s.acceptanceCriteria||[]).join(';')}</div><div class="review-actions"><button class="btn-accept" onclick="approveReq('${req.id}')">✅ 确认通过</button><button class="btn-reject" onclick="rejectReq('${req.id}')">❌ 驳回</button></div></div>`;
 }
 
-// ===== 分解面板 =====
-function renderDecomposePanel(req) {
-  const tasks = [{ title: '核心功能实现', type: 'coding', estimatedHours: 8 }, { title: '测试用例', type: 'testing', estimatedHours: 4 }, { title: '文档更新', type: 'documentation', estimatedHours: 2 }];
-  return `<div class="decompose-panel"><h3>📐 任务分解</h3><div id="decompose-items">${tasks.map((t, i) => renderDecItem(i, t)).join('')}</div><div style="margin-top:8px"><button class="btn-small btn-accept" onclick="addDecItem()">+ 添加</button></div><div style="margin-top:12px"><button class="btn-primary" onclick="doDec('${req.id}')">✅ 确认分解</button><button class="btn-small" style="margin-left:8px" onclick="autoDec('${req.id}','${escHtml(req.title).replace(/'/g, "\\'")}')">🤖 智能体分解</button></div></div>`;
-}
-
-function renderDecItem(i, t) { return `<div class="decompose-item"><input type="text" value="${escHtml(t.title || '')}" placeholder="标题" class="d-title" style="flex:2"><select class="d-type">${['coding', 'design', 'documentation', 'testing', 'audio', 'modeling'].map(v => `<option ${t.type === v ? 'selected' : ''}>${v}</option>`).join('')}</select><input type="number" value="${t.estimatedHours || 4}" class="d-hours" style="width:60px" min="0.5" step="0.5"><button class="btn-remove" onclick="this.parentElement.remove()">✕</button></div>`; }
-
-function addDecItem() { const c = document.getElementById('decompose-items'); const d = document.createElement('div'); d.innerHTML = renderDecItem(c.children.length, { title: '', type: 'coding', estimatedHours: 4 }); c.appendChild(d.firstElementChild); }
-
-async function autoDec(rid, title) {
-  const tasks = [{ title: title + ' — 核心功能', type: 'coding', estimatedHours: 8 }, { title: title + ' — 接口', type: 'coding', estimatedHours: 4 }, { title: title + ' — 测试', type: 'testing', estimatedHours: 4 }, { title: title + ' — 文档', type: 'documentation', estimatedHours: 2 }];
-  document.getElementById('decompose-items').innerHTML = tasks.map((t, i) => renderDecItem(i, t)).join('');
-  toast('智能体已生成任务', 'success');
-}
-
-async function doDec(rid) {
-  const items = document.querySelectorAll('#decompose-items .decompose-item');
-  const tasks = [];
-  items.forEach(el => {
-    const t = el.querySelector('.d-title')?.value?.trim();
-    if (t) tasks.push({ title: t, type: el.querySelector('.d-type')?.value || 'coding', estimatedHours: parseFloat(el.querySelector('.d-hours')?.value) || 4 });
-  });
-  if (!tasks.length) return toast('至少添加一个任务', 'error');
-  try {
-    const r = await Requirements.decompose(rid, tasks);
-    toast(`已创建 ${r.count} 个任务 ✅`, 'success');
-    loadDashboard(); if (typeof loadKanbanReqFilter === 'function') loadKanbanReqFilter();
-    openRequirement(rid);
-  } catch (e) { toast('分解失败: ' + e.message, 'error'); }
-}
-
-// ===== 操作 =====
-async function transitionReq(id, status) { try { await Requirements.transition(id, status); openRequirement(id); loadRequirements(); loadDashboard(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
-async function sendMsg(rid) { const i = document.getElementById(`clarify-input-${rid}`); if (!i?.value.trim()) return; try { await Requirements.answer(rid, -1, i.value, 'user'); i.value = ''; openRequirement(rid); } catch (e) { toast('失败: ' + e.message, 'error'); } }
-async function simAgentAsk(rid) { const qs = ['需要确认用户场景？', '性能要求？', '需要和现有系统集成吗？', '验收标准可以更具体吗？']; try { await Requirements.clarify(rid, qs[Math.floor(Math.random() * qs.length)], 'agent-analyst-001'); openRequirement(rid); } catch (e) { toast('失败: ' + e.message, 'error'); } }
-async function simulateSubmitReview(rid) { try { const req = await Requirements.get(rid); await Requirements.updateSrs(rid, { scopeIn: ['功能A'], acceptanceCriteria: ['正常运行'], summary: `「${req.title}」摘要`, description: req.description || '描述' }); await Requirements.submitReview(rid); openRequirement(rid); loadRequirements(); loadDashboard(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
-async function approveReq(id) { try { await Requirements.approve(id); toast('已确认 ✅', 'success'); openRequirement(id); loadRequirements(); loadDashboard(); if (typeof loadKanbanReqFilter === 'function') loadKanbanReqFilter(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
-async function rejectReq(id) { const r = prompt('驳回原因:'); try { await Requirements.reject(id, r || '需完善'); toast('已驳回', 'success'); openRequirement(id); loadRequirements(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
+// ===== 审核操作 =====
 
 // ===== 需求变更管理 =====
 async function showChangePanel(reqId) {
@@ -272,7 +227,14 @@ async function sendAiClarify(reqId, choiceAnswer) {
         <div style="font-size:12px;margin:4px 0;color:var(--text2)">${result.srs.summary||''}</div>`;
     }
 
-    actionsDiv.style.display = result.readyForReview ? 'block' : 'none';
+    // 是否可以提交审核
+    if (result.readyForReview) {
+      actionsDiv.style.display = 'block';
+      // 自动生成 MD 文档
+      generateMdDoc(reqId, modelId);
+    } else {
+      actionsDiv.style.display = 'none';
+    }
 
   } catch (e) {
     msgsDiv.innerHTML = `<div style="color:var(--accent2);padding:12px">❌ ${escHtml(e.message)}</div>`;
@@ -360,11 +322,107 @@ async function submitAllChoices(reqId) {
 }
 
 async function submitAiSrs(reqId) {
+  // 先保存编辑后的 MD 文档
+  const mdEditor = document.getElementById(`md-editor-${reqId}`);
+  if (mdEditor) {
+    await Requirements.updateSrs(reqId, { description: mdEditor.value });
+  }
   try {
     await Requirements.submitReview(reqId);
-    toast('已提交审核', 'success');
+    toast('需求已提交审核 ✅', 'success');
     openRequirement(reqId); loadRequirements(); loadDashboard();
   } catch (e) { toast('提交失败: ' + e.message, 'error'); }
+}
+
+// ===== AI 生成 MD 需求文档 =====
+async function generateMdDoc(reqId, modelId) {
+  const srsDiv = document.getElementById(`ai-clarify-srs-${reqId}`);
+  if (!srsDiv) return;
+
+  srsDiv.innerHTML += '<div style="margin-top:12px;color:var(--text2)">⏳ 正在生成需求文档...</div>';
+  try {
+    const result = await api('POST', `/ai-tools/requirements/${reqId}/generate-doc`, { modelId });
+    const mdContent = result.content || '';
+
+    srsDiv.innerHTML += `
+      <div style="margin-top:12px">
+        <h4>📝 需求文档 (Markdown) — 可编辑</h4>
+        <textarea id="md-editor-${reqId}" style="width:100%;min-height:300px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:12px;font-size:13px;font-family:monospace;resize:vertical">${escHtml(mdContent)}</textarea>
+        <div style="margin-top:8px;display:flex;gap:8px">
+          <button class="btn-accept" onclick="saveMdDoc('${reqId}')">💾 保存文档</button>
+          <button class="btn-primary" onclick="submitAiSrs('${reqId}')">✅ 确认并提交审核</button>
+        </div>
+      </div>`;
+  } catch(e) {
+    srsDiv.innerHTML += `<div style="color:var(--accent2);margin-top:8px">文档生成失败: ${escHtml(e.message)}</div>`;
+  }
+}
+
+async function saveMdDoc(reqId) {
+  const editor = document.getElementById(`md-editor-${reqId}`);
+  if (!editor) return;
+  try {
+    await Requirements.updateSrs(reqId, { description: editor.value });
+    toast('文档已保存 💾', 'success');
+  } catch(e) { toast('保存失败: '+e.message, 'error'); }
+}
+
+// ===== AI 智能任务分解面板 =====
+function renderAiDecomposePanel(req) {
+  return `<div class="decompose-panel">
+    <h3>🤖 AI 智能任务分解</h3>
+    <p style="font-size:13px;color:var(--text2);margin-bottom:12px">选择大模型，AI 将根据需求 SRS 自动分解任务（含设计说明和 Wiki 关联）</p>
+    <div class="form-inline" style="margin-bottom:12px">
+      <select id="ai-decompose-model-${req.id}" class="filter-select" style="flex:1">
+        <option value="">选择大模型...</option>
+      </select>
+      <button class="btn-primary" onclick="aiDecompose('${req.id}')">🤖 AI 分解</button>
+    </div>
+    <div id="ai-decompose-result-${req.id}"></div>
+  </div>`;
+}
+
+async function loadDecomposeModels(reqId) {
+  try {
+    const models = await api('GET', '/models/active');
+    const sel = document.getElementById(`ai-decompose-model-${reqId}`);
+    if (sel) sel.innerHTML = '<option value="">选择大模型...</option>' + models.map(m => `<option value="${m.id}">${escHtml(m.name)} (${m.model})</option>`).join('');
+  } catch(e) {}
+}
+
+async function aiDecompose(reqId) {
+  const modelId = document.getElementById(`ai-decompose-model-${reqId}`)?.value;
+  if (!modelId) return toast('请先选择大模型', 'error');
+
+  const resultDiv = document.getElementById(`ai-decompose-result-${reqId}`);
+  resultDiv.innerHTML = '<div style="color:var(--text2);padding:12px">⏳ AI 正在分析需求并分解任务...</div>';
+
+  try {
+    const result = await api('POST', `/ai-tools/requirements/${reqId}/decompose-ai`, { modelId });
+    resultDiv.innerHTML = `
+      <div style="color:var(--green);margin-bottom:8px">✅ 已创建 ${result.count} 个任务 (${escHtml(result.modelUsed)})</div>
+      <div style="font-size:12px;color:var(--text2);margin-bottom:12px">${escHtml(result.summary || '')}</div>
+      ${(result.tasks || []).map(t => `
+        <div class="agent-card" style="margin-bottom:6px">
+          <div style="display:flex;justify-content:space-between">
+            <strong>${escHtml(t.title)}</strong>
+            <span style="font-size:12px;color:var(--text2)">${t.estimated_hours}h · ${t.type}</span>
+          </div>
+          ${t.description ? `<div style="font-size:12px;color:var(--text2);margin:4px 0">${escHtml(t.description).substring(0,200)}</div>` : ''}
+          <div class="skills" style="margin-top:4px">
+            ${Object.entries(t.required_skills || {}).map(([k,v]) => `<span class="skill-tag">${k}:${v}</span>`).join('')}
+          </div>
+          ${t.linked_wiki && JSON.parse(t.linked_wiki||'[]').length ? `<div style="font-size:11px;color:var(--text2)">📚 ${JSON.parse(t.linked_wiki).map(w=>w.page).join(', ')}</div>` : ''}
+        </div>
+      `).join('')}
+      <div style="margin-top:12px">
+        <button class="btn-primary" onclick="showWorkspaceView('kanban');refreshKanban('${reqId}');">📌 查看看板</button>
+        <button class="btn-back" style="margin-left:8px" onclick="openRequirement('${reqId}')">刷新</button>
+      </div>`;
+    loadDashboard(); loadKanbanReqFilter();
+  } catch(e) {
+    resultDiv.innerHTML = `<div style="color:var(--accent2)">❌ ${escHtml(e.message)}</div>`;
+  }
 }
 
 function continueAiClarify(reqId) {
