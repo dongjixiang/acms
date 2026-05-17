@@ -220,21 +220,26 @@ async function sendAiClarify(reqId, choiceAnswer) {
   const userMsg = choiceAnswer || (input?.value?.trim() || '');
   if (input && !choiceAnswer) input.value = '';
 
+  // 收集当前所有已选择的选项
+  const selections = collectSelections(reqId);
+  const batchMsg = selections.length > 0 ? selections.join('；') : userMsg;
+  if (!batchMsg) return;
+
   const msgsDiv = document.getElementById(`ai-clarify-messages-${reqId}`);
   const choicesDiv = document.getElementById(`ai-clarify-choices-${reqId}`);
   const srsDiv = document.getElementById(`ai-clarify-srs-${reqId}`);
   const actionsDiv = document.getElementById(`ai-clarify-actions-${reqId}`);
 
-  if (userMsg) {
-    aiClarifyHistory[reqId] = aiClarifyHistory[reqId] || [];
-    aiClarifyHistory[reqId].push({ role: 'user', content: userMsg });
-  }
+  aiClarifyHistory[reqId] = aiClarifyHistory[reqId] || [];
+  aiClarifyHistory[reqId].push({ role: 'user', content: batchMsg });
 
   msgsDiv.innerHTML = '<div style="color:var(--text2);text-align:center;padding:12px">⏳ 正在思考...</div>';
+  choicesDiv.innerHTML = '';
+
   try {
     const result = await api('POST', `/ai/requirements/${reqId}/clarify-ai`, {
       modelId,
-      message: userMsg || null,
+      message: batchMsg,
       history: aiClarifyHistory[reqId].filter(h => h.role === 'user' || h.role === 'assistant'),
     });
 
@@ -247,24 +252,11 @@ async function sendAiClarify(reqId, choiceAnswer) {
       </div>`
     ).join('') + `<div class="clarify-msg agent"><div class="role">🤖 AI (${escHtml(result.modelUsed)})</div><div>${escHtml(result.message)}</div></div>`;
 
-    // 保存 AI 回复到历史
     aiClarifyHistory[reqId].push({ role: 'assistant', content: result });
 
-    // 渲染选择题
+    // 渲染选择题（带选择状态追踪）
     if (result.choices && result.choices.length > 0) {
-      choicesDiv.innerHTML = result.choices.map(c => `
-        <div style="margin:8px 0;padding:8px;background:var(--bg3);border-radius:6px">
-          <strong>${escHtml(c.question)}</strong>
-          <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">
-            ${c.options.map((opt, i) => `
-              <button class="btn-small" style="font-size:12px" onclick="sendAiClarify('${reqId}','选择 ${String.fromCharCode(65+i)}: ${opt.replace(/'/g,"\\'")}')">${String.fromCharCode(65+i)}. ${escHtml(opt)}</button>
-            `).join('')}
-            ${c.allowCustom ? `<button class="btn-small" style="font-size:12px;background:rgba(78,205,196,0.1)" onclick="document.getElementById('ai-clarify-input-${reqId}').focus()">✏️ 自定义</button>` : ''}
-          </div>
-        </div>
-      `).join('');
-    } else {
-      choicesDiv.innerHTML = '';
+      renderChoicesWithSubmit(reqId, result.choices);
     }
 
     // 渲染 SRS 草稿
@@ -275,12 +267,91 @@ async function sendAiClarify(reqId, choiceAnswer) {
         <div style="font-size:12px;margin:4px 0;color:var(--text2)">${result.srs.summary||''}</div>`;
     }
 
-    // 是否可以提交审核
     actionsDiv.style.display = result.readyForReview ? 'block' : 'none';
 
   } catch (e) {
     msgsDiv.innerHTML = `<div style="color:var(--accent2);padding:12px">❌ ${escHtml(e.message)}</div>`;
   }
+}
+
+// 追踪每个问题的选择状态: { reqId: { questionIndex: "选中的值" } }
+let aiSelections = {};
+
+function collectSelections(reqId) {
+  const sel = aiSelections[reqId] || {};
+  return Object.entries(sel)
+    .filter(([_, v]) => v)
+    .map(([k, v]) => v);
+}
+
+function renderChoicesWithSubmit(reqId, choices) {
+  const choicesDiv = document.getElementById(`ai-clarify-choices-${reqId}`);
+  if (!choicesDiv) return;
+
+  if (!aiSelections[reqId]) aiSelections[reqId] = {};
+
+  choicesDiv.innerHTML = choices.map((c, qi) => {
+    const current = aiSelections[reqId][qi] || '';
+    return `<div style="margin:8px 0;padding:8px;background:var(--bg3);border-radius:6px">
+      <strong>${escHtml(c.question)}</strong>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px" id="choice-group-${reqId}-${qi}">
+        ${c.options.map((opt, oi) => {
+          const val = `${String.fromCharCode(65+oi)}: ${opt}`;
+          const selected = current === val;
+          return `<button class="btn-small choice-btn ${selected ? 'choice-selected' : ''}"
+            style="font-size:12px;transition:all 0.15s"
+            onclick="toggleChoice('${reqId}',${qi},'${val.replace(/'/g,"\\'")}',this)">${String.fromCharCode(65+oi)}. ${escHtml(opt)}</button>`;
+        }).join('')}
+        ${c.allowCustom ? `<button class="btn-small" style="font-size:12px;background:rgba(78,205,196,0.1)" onclick="document.getElementById('ai-clarify-input-${reqId}').focus()">✏️ 自定义</button>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+
+  // 批量提交按钮
+  choicesDiv.innerHTML += `
+    <div style="margin-top:12px;text-align:center">
+      <button class="btn-primary btn-lg" onclick="submitAllChoices('${reqId}')"
+        style="padding:10px 32px;font-size:15px">
+        ✅ 确认所有选择，发送给 AI
+      </button>
+    </div>`;
+}
+
+function toggleChoice(reqId, qi, val, btn) {
+  const current = aiSelections[reqId][qi];
+  if (current === val) {
+    // 取消选择
+    aiSelections[reqId][qi] = '';
+    btn.classList.remove('choice-selected');
+  } else {
+    // 选择此项（单选：同一问题取消其他选项）
+    aiSelections[reqId][qi] = val;
+    // 更新同组按钮样式
+    const group = document.getElementById(`choice-group-${reqId}-${qi}`);
+    if (group) {
+      group.querySelectorAll('.choice-btn').forEach(b => b.classList.remove('choice-selected'));
+    }
+    btn.classList.add('choice-selected');
+  }
+}
+
+async function submitAllChoices(reqId) {
+  const selections = collectSelections(reqId);
+  if (selections.length === 0) {
+    const input = document.getElementById(`ai-clarify-input-${reqId}`);
+    const custom = input?.value?.trim();
+    if (!custom) return toast('请至少选择一个选项或输入自定义内容', 'error');
+  }
+  // 合并所有选择 + 自定义输入
+  const input = document.getElementById(`ai-clarify-input-${reqId}`);
+  const customMsg = input?.value?.trim() || '';
+  if (customMsg) {
+    aiClarifyHistory[reqId] = aiClarifyHistory[reqId] || [];
+    // custom input will be added as user message in sendAiClarify
+  }
+  await sendAiClarify(reqId);
+  // 清除选择状态
+  aiSelections[reqId] = {};
 }
 
 async function submitAiSrs(reqId) {

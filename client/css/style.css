@@ -239,6 +239,10 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 .form-inline select { padding: 8px 12px; background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); }
 .filter-select { padding: 6px 12px; background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); font-size: 13px; }
 
+/* Choice buttons */
+.choice-btn { border: 1px solid var(--border) !important; }
+.choice-btn.choice-selected { background: var(--accent) !important; color: var(--bg) !important; border-color: var(--accent) !important; font-weight: bold; }
+
 /* SRS preview */
 .srs-preview { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-top: 12px; max-height: 400px; overflow-y: auto; }
 .srs-preview pre { white-space: pre-wrap; font-size: 13px; line-height: 1.8; }
