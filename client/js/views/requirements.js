@@ -222,7 +222,12 @@ async function sendAiClarify(reqId, choiceAnswer) {
 
   // 收集当前所有已选择的选项
   const selections = collectSelections(reqId);
-  const batchMsg = selections.length > 0 ? selections.join('；') : userMsg;
+  const hasHistory = (aiClarifyHistory[reqId] || []).length > 0;
+  let batchMsg = selections.length > 0 ? selections.join('；') : userMsg;
+  // 首次对话：没有选择也没有输入时，发送初始提示
+  if (!batchMsg && !hasHistory) {
+    batchMsg = '请开始分析这个需求，用选择题帮助我澄清细节。';
+  }
   if (!batchMsg) return;
 
   const msgsDiv = document.getElementById(`ai-clarify-messages-${reqId}`);
