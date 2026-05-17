@@ -12,8 +12,8 @@
     <h1 id="header-title">🤖 <span data-i18n="app.title">智能体协同管理系统</span> <span class="version" data-i18n="app.version">v0.3</span></h1>
     <div id="header-right">
       <span id="current-project"></span>
-      <button id="btn-back-projects" class="btn-small" style="display:none" onclick="goToProjects()" data-i18n="nav.backToProjects">← 所有项目</button>
-      <button class="btn-small" onclick="showView('view-admin');loadAdminPage();" title="系统管理">⚙️</button>
+      <button id="btn-back-projects" class="btn-small" style="display:none !important" onclick="goToProjects()">← 所有项目</button>
+      <button class="btn-small" onclick="showView('view-admin');loadAdminPage();">⚙️</button>
       <select id="lang-switcher" onchange="I18n.setLang(this.value)">
         <option value="zh">🇨🇳 中文</option>
         <option value="en">🇺🇸 English</option>
