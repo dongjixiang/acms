@@ -243,14 +243,14 @@ async function sendAiClarify(reqId, choiceAnswer) {
   }
 }
 
-// 追踪每个问题的选择状态: { reqId: { questionIndex: "选中的值" } }
+// 追踪每个问题的选择状态: { reqId: { questionIndex: { values: ["A: opt1", "B: opt2"], multiple: bool } } }
 let aiSelections = {};
 
 function collectSelections(reqId) {
   const sel = aiSelections[reqId] || {};
   return Object.entries(sel)
-    .filter(([_, v]) => v)
-    .map(([k, v]) => v);
+    .filter(([_, v]) => v.values && v.values.length > 0)
+    .map(([k, v]) => v.values.join('，'));
 }
 
 function renderChoicesWithSubmit(reqId, choices) {
@@ -260,13 +260,18 @@ function renderChoicesWithSubmit(reqId, choices) {
   if (!aiSelections[reqId]) aiSelections[reqId] = {};
 
   choicesDiv.innerHTML = choices.map((c, qi) => {
-    const current = aiSelections[reqId][qi] || '';
+    const current = aiSelections[reqId][qi] || { values: [], multiple: c.allowMultiple || false };
+    current.multiple = c.allowMultiple || false;
+    aiSelections[reqId][qi] = current;
+    const selectedSet = new Set(current.values);
+
     return `<div style="margin:8px 0;padding:8px;background:var(--bg3);border-radius:6px">
       <strong>${escHtml(c.question)}</strong>
+      ${current.multiple ? '<span style="font-size:10px;color:var(--accent);margin-left:6px">[可多选]</span>' : ''}
       <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px" id="choice-group-${reqId}-${qi}">
         ${c.options.map((opt, oi) => {
           const val = `${String.fromCharCode(65+oi)}: ${opt}`;
-          const selected = current === val;
+          const selected = selectedSet.has(val);
           return `<button class="btn-small choice-btn ${selected ? 'choice-selected' : ''}"
             style="font-size:12px;transition:all 0.15s"
             onclick="toggleChoice('${reqId}',${qi},'${val.replace(/'/g,"\\'")}',this)">${String.fromCharCode(65+oi)}. ${escHtml(opt)}</button>`;
@@ -276,7 +281,6 @@ function renderChoicesWithSubmit(reqId, choices) {
     </div>`;
   }).join('');
 
-  // 批量提交按钮
   choicesDiv.innerHTML += `
     <div style="margin-top:12px;text-align:center">
       <button class="btn-primary btn-lg" onclick="submitAllChoices('${reqId}')"
@@ -287,21 +291,24 @@ function renderChoicesWithSubmit(reqId, choices) {
 }
 
 function toggleChoice(reqId, qi, val, btn) {
-  const current = aiSelections[reqId][qi];
-  if (current === val) {
+  const current = aiSelections[reqId][qi] || { values: [], multiple: false };
+  const idx = current.values.indexOf(val);
+
+  if (idx >= 0) {
     // 取消选择
-    aiSelections[reqId][qi] = '';
+    current.values.splice(idx, 1);
     btn.classList.remove('choice-selected');
   } else {
-    // 选择此项（单选：同一问题取消其他选项）
-    aiSelections[reqId][qi] = val;
-    // 更新同组按钮样式
-    const group = document.getElementById(`choice-group-${reqId}-${qi}`);
-    if (group) {
-      group.querySelectorAll('.choice-btn').forEach(b => b.classList.remove('choice-selected'));
+    if (!current.multiple) {
+      // 单选：清除同组其他选择
+      current.values = [];
+      const group = document.getElementById(`choice-group-${reqId}-${qi}`);
+      if (group) group.querySelectorAll('.choice-btn').forEach(b => b.classList.remove('choice-selected'));
     }
+    current.values.push(val);
     btn.classList.add('choice-selected');
   }
+  aiSelections[reqId][qi] = current;
 }
 
 async function submitAllChoices(reqId) {
