@@ -108,7 +108,23 @@
           </div>
           <div id="req-list"></div>
           <div id="create-req-panel" class="panel-form" style="display:none">
-            <!-- JS 动态填充 -->
+            <h3>➕ 新建需求</h3>
+            <label>需求标题 <span class="required">*</span></label>
+            <input type="text" id="create-title" placeholder="例如：天气特效系统">
+            <label>需求描述</label>
+            <textarea id="create-desc" rows="4" placeholder="描述你想要的功能或改进..."></textarea>
+            <div class="form-row">
+              <div><label>优先级</label><select id="create-priority">
+                <option value="1">P1 🔴</option><option value="2">P2 🟠</option>
+                <option value="3" selected>P3 🟡</option><option value="4">P4 🟢</option><option value="5">P5 ⚪</option>
+              </select></div>
+              <div><label>截止日期</label><input type="date" id="create-deadline"></div>
+            </div>
+            <label>标签</label><input type="text" id="create-tags" placeholder="天气,视觉效果">
+            <div class="form-actions">
+              <button class="btn-primary" onclick="doCreateReq()">提交需求</button>
+              <button class="btn-back" onclick="hideCreateReq()">取消</button>
+            </div>
           </div>
         </div>
 
