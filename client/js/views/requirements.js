@@ -262,8 +262,8 @@ function renderChoicesWithSubmit(reqId, choices) {
   if (!aiSelections[reqId]) aiSelections[reqId] = {};
 
   choicesDiv.innerHTML = choices.map((c, qi) => {
-    const current = aiSelections[reqId][qi] || { values: [], multiple: c.allowMultiple || false };
-    current.multiple = c.allowMultiple || false;
+    const current = aiSelections[reqId][qi] || { values: [], multiple: true };
+    current.multiple = true; // 全部多选
     aiSelections[reqId][qi] = current;
     const selectedSet = new Set(current.values);
 
