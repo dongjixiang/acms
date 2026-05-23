@@ -17,15 +17,20 @@ async function refreshKanban(parentId) {
     for (const col of ['backlog', 'in_progress', 'review', 'done', 'archived']) {
       const tasks = board[col] || [];
       document.getElementById(`count-${col}`).textContent = tasks.length;
-      document.getElementById(`col-${col}`).innerHTML = tasks.map(t => `
-        <div class="task-card priority-${t.priority || 3}" onclick="openTask('${t.id}')">
-          <div class="task-title">${escHtml(t.title)}</div>
-          <div class="task-meta"><span>${t.id}</span><span class="type-tag type-${t.type}">${App.typeLabels[t.type] || ''} ${t.type}</span><span>P${t.priority}</span>${t.assigned_to ? '<span>🐕</span>' : ''}${t.status === 'in_progress' ? `<span>${t.progress || 0}%</span>` : ''}</div>
-          ${t.status === 'in_progress' ? `<div class="progress-bar"><div class="progress-fill" style="width:${t.progress || 0}%"></div></div>` : ''}
-          ${t.status === 'backlog' ? `<div class="task-actions"><button class="btn-small btn-accept" onclick="event.stopPropagation();claimTask('${t.id}')">认领</button></div>` : ''}
-          ${t.status === 'in_progress' ? `<div class="task-actions"><button class="btn-small btn-accept" onclick="event.stopPropagation();submitTask('${t.id}')">提交</button></div>` : ''}
-          ${t.status === 'review' ? `<div class="task-actions"><button class="btn-small btn-accept" onclick="event.stopPropagation();reviewTask('${t.id}','approved')">通过</button><button class="btn-small btn-reject" onclick="event.stopPropagation();reviewTask('${t.id}','rejected')">驳回</button></div>` : ''}
-        </div>`).join('') || '<div class="empty" style="padding:12px">-</div>';
+      document.getElementById(`col-${col}`).innerHTML = tasks.map(t => {
+        const blocked = t.blocked === 1 || t.blocked === '1' || t.blocked === true;
+        const blockedClass = blocked ? ' task-blocked' : '';
+        return `
+        <div class="task-card priority-${t.priority || 3}${blockedClass}" onclick="openTask('${t.id}')">
+          <div class="task-title">${blocked ? '🔒 ' : ''}${escHtml(t.title)}</div>
+          <div class="task-meta"><span>${t.id}</span><span class="type-tag type-${t.type}">${App.typeLabels[t.type] || ''} ${t.type}</span><span>P${t.priority}</span>${t.assigned_to ? '<span>🐕</span>' : ''}${t.status === 'in_progress' ? '<span>${t.progress || 0}%</span>' : ''}</div>
+          ${t.status === 'in_progress' ? '<div class="progress-bar"><div class="progress-fill" style="width:${t.progress || 0}%"></div></div>' : ''}
+          ${blocked && t.status === 'backlog' ? '<div class="task-actions"><span style="font-size:11px;color:var(--accent3)">⏳ ${escHtml(t.block_reason || "等待依赖")}</span></div>' : ''}
+          ${!blocked && t.status === 'backlog' ? '<div class="task-actions"><button class="btn-small btn-accept" onclick="event.stopPropagation();claimTask(\"' + t.id + '\")">认领</button></div>' : ''}
+          ${t.status === 'in_progress' ? '<div class="task-actions"><button class="btn-small btn-accept" onclick="event.stopPropagation();submitTask(\"' + t.id + '\")">提交</button></div>' : ''}
+          ${t.status === 'review' ? '<div class="task-actions"><button class="btn-small btn-accept" onclick="event.stopPropagation();reviewTask(\"' + t.id + '\",\"approved\")">通过</button><button class="btn-small btn-reject" onclick="event.stopPropagation();reviewTask(\"' + t.id + '\",\"rejected\")">驳回</button></div>' : ''}
+        </div>`;
+      }).join('') || '<div class="empty" style="padding:12px">-</div>';
     }
   } catch (e) { toast('加载看板失败: ' + e.message, 'error'); }
 }
@@ -36,10 +41,23 @@ async function openTask(taskId) {
   try {
     const t = await Tasks.get(taskId);
     document.getElementById('task-detail-title').textContent = `${t.id}: ${escHtml(t.title)}`;
-    document.getElementById('task-detail-status').innerHTML = `<span class="status-badge badge-${t.status === 'in_progress' ? 'in_execution' : t.status === 'done' ? 'done' : 'clarifying'}">${t.status}</span>`;
+    document.getElementById('task-detail-status').innerHTML = `
+      <span class="status-badge badge-${t.status === 'in_progress' ? 'in_execution' : t.status === 'done' ? 'done' : 'clarifying'}">${t.status}</span>
+      <button class="btn-small" style="background:rgba(78,205,196,0.15);color:var(--green);border-color:rgba(78,205,196,0.3)" onclick="exportTask('${t.id}')">📥 导出描述</button>`;
     const skills = safeParse(t.required_skills), log = safeParse(t.execution_log), subs = safeParse(t.submissions), revs = safeParse(t.reviews);
     document.getElementById('task-detail-content').innerHTML = `
-      <div class="detail-grid"><div><span class="label">类型:</span> ${t.type}</div><div><span class="label">优先级:</span> P${t.priority}</div><div><span class="label">预估:</span> ${t.estimated_hours}h</div><div><span class="label">执行者:</span> ${t.assigned_to || '未分配'}</div><div><span class="label">进度:</span> ${t.progress || 0}%</div><div><span class="label">父需求:</span> ${t.parent_id || '无'}</div></div>
+      <div class="detail-grid">
+        <div><span class="label">类型:</span> ${t.type}</div>
+        <div><span class="label">优先级:</span> P${t.priority}</div>
+        <div><span class="label">预估:</span> ${t.estimated_hours}h</div>
+        <div><span class="label">执行者:</span>
+          <select id="assign-agent-${t.id}" onchange="assignTask('${t.id}', this.value)" style="font-size:12px;padding:2px 4px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:3px;max-width:160px">
+            <option value="">${t.assigned_to || '未分配'}</option>
+          </select>
+        </div>
+        <div><span class="label">进度:</span> ${t.progress || 0}%</div>
+        <div><span class="label">父需求:</span> ${t.parent_id || '无'}</div>
+      </div>
       ${t.status === 'in_progress' ? `<div class="progress-bar" style="margin-top:8px"><div class="progress-fill" style="width:${t.progress || 0}%"></div></div>` : ''}
       <h3>📝 任务描述</h3>
       <div class="md-content">${renderMarkdown(t.description || '无详细描述')}</div>
@@ -54,16 +72,46 @@ async function openTask(taskId) {
         <button class="btn-small btn-reject" style="margin-left:auto" onclick="deleteTask('${t.id}')">🗑 删除</button>
       </div>`;
   } catch (e) { toast('加载失败: ' + e.message, 'error'); }
+  setTimeout(() => loadAgentList(taskId), 100);
 }
 
 // ===== 任务操作 =====
+let _agentCache = null;
+async function loadAgentList(taskId) {
+  try {
+    const resp = await fetch('/api/agents', { headers: { 'X-API-Key': 'dev-key-001' } });
+    _agentCache = await resp.json();
+    const sel = document.getElementById('assign-agent-' + taskId);
+    if (!sel) return;
+    sel.innerHTML = '<option value="">' + (sel.querySelector('option')?.textContent || '选择智能体') + '</option>';
+    _agentCache.forEach(a => {
+      sel.innerHTML += '<option value="' + a.id + '">' + (a.name || a.id) + '</option>';
+    });
+  } catch(e) {}
+}
+async function assignTask(taskId, agentId) {
+  if (!agentId) return;
+  try {
+    await Tasks.claim(taskId, agentId);
+    toast('已分配给 ' + agentId + ' ✅', 'success');
+    refreshKanban(); openTask(taskId);
+  } catch(e) { toast('分配失败: ' + e.message, 'error'); }
+}
+
 async function claimTask(tid) { const a = prompt('智能体ID:', 'agent-scholar-001'); if (!a) return; try { await Tasks.claim(tid, a); toast('已认领 ✅', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
 async function submitTask(tid) { const n = prompt('提交说明:') || '完成'; try { await Tasks.submit(tid, 'agent-scholar-001', [], n); toast('已提交', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
-async function reviewTask(tid, verdict) { const fb = verdict === 'rejected' ? prompt('驳回原因:') || '需修改' : '通过'; try { await Tasks.review(tid, verdict, fb); toast(verdict === 'approved' ? '通过 ✅' : '驳回 ↩', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
-async function updateTaskProgress(tid) { const p = prompt('进度(0-100):', '50'); if (p === null) return; try { await Tasks.progress(tid, parseInt(p)); toast('已更新', 'success'); openTask(tid); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
+async function reviewTask(tid, verdict) { try { await Tasks.review(tid, verdict); toast(verdict === 'approved' ? '已通过 ✅' : '已驳回', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
+async function updateTaskProgress(tid) { const p = prompt('进度 (0-100):', '50'); if (!p) return; try { await api('POST', `/tasks/${tid}/progress`, { progress: parseInt(p), note: '手动更新' }); toast('进度已更新', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
+async function deleteTask(tid) { if (!confirm('确认删除此任务？')) return; try { await api('DELETE', `/tasks/${tid}`); toast('已删除', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
 
-async function deleteTask(id) {
-  if (!confirm('确认删除此任务？')) return;
-  try { await api('DELETE', `/tasks/${id}`); toast('任务已删除', 'success'); showWorkspaceView('kanban'); refreshKanban(); }
-  catch (e) { toast('删除失败: ' + e.message, 'error'); }
+async function exportTask(tid) {
+  try {
+    const res = await fetch(`/api/exports/task/${tid}`, { headers: { 'X-API-Key': 'dev-key-001' } });
+    if (!res.ok) throw new Error('导出失败');
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `${tid}.docx`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url); toast('文档已下载 ✅', 'success');
+  } catch (e) { toast('导出失败: ' + e.message, 'error'); }
 }

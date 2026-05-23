@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// ACMS 智能体工作进程 — 监听事件并自动响应
+// ACMS 智能体工作进程 — Skill 驱动的事件处理
 // 用法: node agent-worker.js [agent-id]
 
 const AGENT_ID = process.argv[2] || 'agent-xiaoji';
 const API = 'http://localhost:3300/api';
 const KEY = 'dev-key-001';
-const POLL_INTERVAL = 5000; // 5秒轮询
+const POLL_INTERVAL = 5000;
 
 const headers = { 'Content-Type': 'application/json', 'X-API-Key': KEY };
 
@@ -16,35 +16,41 @@ async function call(method, path, body = null) {
   return res.json();
 }
 
-// 获取智能体信息和订阅
-async function getAgentInfo() {
-  const agent = await call('GET', `/agents/${AGENT_ID}`);
-  const sub = await call('POST', `/agents/${AGENT_ID}/subscribe`);
-  return { agent, subscriptions: sub.subscriptions };
+// 事件类型 → Skill 映射表
+const EVENT_SKILL_MAP = {
+  'requirement.created': 'skill-requirement-clarify',
+  'requirement.approved': 'skill-task-decompose',
+};
+
+// 事件 → Skill 执行器
+async function executeSkillForEvent(event, skill) {
+  const skillName = skill.name;
+  const exec = JSON.parse(skill.execution || '{}');
+  const steps = exec.steps || [];
+  
+  console.log(`[Worker] 🎯 匹配到 Skill: ${skillName}`);
+  console.log(`[Worker] 执行步骤 (${steps.length} 步):`);
+  steps.forEach((s, i) => console.log(`  ${i + 1}. ${s}`));
+
+  if (event.type === 'requirement.created' && skill.id === 'skill-requirement-clarify') {
+    return handleClarifySkill(event, skill);
+  }
+  if (event.type === 'requirement.approved' && skill.id === 'skill-task-decompose') {
+    return handleDecomposeSkill(event, skill);
+  }
+  
+  console.log(`[Worker] Skill ${skill.id} 无对应执行器，跳过`);
 }
 
-// 获取上次处理的事件时间戳
-let lastEventTime = Date.now() - 60000;
-let processedEvents = new Set(); // 防止重复处理
-
-async function pollEvents(subscriptions) {
-  const events = await call('GET', `/agents/${AGENT_ID}/notifications`);
-  const newEvents = events.filter(e => e.timestamp > lastEventTime && !processedEvents.has(e.id));
-  lastEventTime = Date.now();
-  for (const e of newEvents) processedEvents.add(e.id);
-  // 限制 Set 大小
-  if (processedEvents.size > 1000) processedEvents = new Set([...processedEvents].slice(-500));
-  return newEvents;
-}
-
-// ===== 分析师: 处理新需求 =====
-async function handleNewRequirement(event) {
+// ===== Skill: 需求澄清 =====
+async function handleClarifySkill(event, skill) {
   const reqId = event.target_id;
-  console.log(`[分析师] 收到新需求: ${reqId}`);
+  console.log(`[Skill:需求澄清] 处理需求: ${reqId}`);
 
-  // 读取需求详情
   const req = await call('GET', `/requirements/${reqId}`);
-  console.log(`[分析师] 分析需求: ${req.title}`);
+  if (!req || req.error) { console.log(`[Skill:需求澄清] 需求不存在`); return; }
+
+  console.log(`[Skill:需求澄清] 标题: ${req.title}`);
 
   // 生成澄清问题
   const questions = generateClarifyingQuestions(req);
@@ -53,15 +59,13 @@ async function handleNewRequirement(event) {
       question: q,
       agentId: AGENT_ID,
     });
-    console.log(`[分析师] 提问: ${q}`);
-    // 间隔一下，模拟思考
+    console.log(`[Skill:需求澄清] 提问: ${q}`);
     await sleep(800);
   }
 
-  // 如果需求还在 idea 状态，推进到 clarifying
   if (req.status === 'idea') {
     await call('POST', `/requirements/${reqId}/transition`, { targetStatus: 'clarifying' });
-    console.log(`[分析师] 需求 → clarifying`);
+    console.log(`[Skill:需求澄清] 需求 → clarifying`);
   }
 }
 
@@ -78,7 +82,6 @@ function generateClarifyingQuestions(req) {
   if (!desc.includes('集成') && !desc.includes('对接') && !desc.includes('兼容')) {
     questions.push('是否需要和现有系统或模块集成？如果有，具体是哪些？');
   }
-  // 至少问2个
   if (questions.length < 2) {
     questions.push('验收标准可以再具体一些吗？比如"完成"的具体定义是什么？');
     questions.push('有没有技术上需要避免的方案，或者偏好的实现方式？');
@@ -86,70 +89,110 @@ function generateClarifyingQuestions(req) {
   return questions.slice(0, 3);
 }
 
-// ===== 规划师: 处理需求确认 =====
-async function handleRequirementApproved(event) {
+// ===== Skill: 任务分解 =====
+async function handleDecomposeSkill(event, skill) {
   const reqId = event.target_id;
-  console.log(`[规划师] 需求已确认: ${reqId}`);
+  console.log(`[Skill:任务分解] 处理需求: ${reqId}`);
 
   const req = await call('GET', `/requirements/${reqId}`);
-  console.log(`[规划师] 分析需求: ${req.title}`);
+  if (!req || req.error) { console.log(`[Skill:任务分解] 需求不存在`); return; }
 
-  // 自动生成任务分解
   const srs = JSON.parse(req.srs || '{}');
   const scopeIn = srs.scopeIn || [req.title];
   const tasks = [];
 
   if (scopeIn.length > 0) {
-    // 核心实现
     tasks.push({ title: `${scopeIn[0]} — 核心功能实现`, type: 'coding', estimatedHours: 8, requiredSkills: { coding: 1.5 } });
   }
   if (scopeIn.length > 1) {
     tasks.push({ title: `${scopeIn[1]} — 实现`, type: 'coding', estimatedHours: 6, requiredSkills: { coding: 1.5 } });
   }
-  // 通用任务
-  tasks.push({ title: `测试验证`, type: 'testing', estimatedHours: 4, requiredSkills: { testing: 1.0 } });
-  tasks.push({ title: `文档更新`, type: 'documentation', estimatedHours: 2, requiredSkills: { writing: 1.0 } });
+  tasks.push({ title: '测试验证', type: 'testing', estimatedHours: 4, requiredSkills: { testing: 1.0 } });
+  tasks.push({ title: '文档更新', type: 'documentation', estimatedHours: 2, requiredSkills: { writing: 1.0 } });
 
   const result = await call('POST', `/requirements/${reqId}/decompose`, { tasks });
-  console.log(`[规划师] 已分解为 ${result.count} 个任务`);
+  console.log(`[Skill:任务分解] 已分解为 ${result.count} 个任务`);
 }
 
-// ===== 执行者: 处理新任务 =====
-async function handleNewTask(event) {
+// ===== Skill: 任务执行 =====
+async function handleExecuteSkill(event, skill) {
   const taskId = event.target_id;
   const task = await call('GET', `/tasks/${taskId}`);
-  console.log(`[执行者] 发现新任务: ${task.title}`);
+  console.log(`[Skill:任务执行] 任务: ${task.title}`);
 
-  // 检查技能匹配
-  const matches = await call('GET', `/agents/${AGENT_ID}/match-tasks`);
-  const match = matches.find(m => m.taskId === taskId);
-  if (match && match.score > 2) {
-    // 认领高匹配任务
-    const result = await call('POST', `/tasks/${taskId}/claim`, { agentId: AGENT_ID });
-    if (!result.error) {
-      console.log(`[执行者] 认领了任务: ${task.title} (匹配度: ${match.score})`);
-    }
+  // 认领
+  const claimResult = await call('POST', `/tasks/${taskId}/claim`, { agentId: AGENT_ID });
+  if (claimResult.error) {
+    console.log(`[Skill:任务执行] 认领失败: ${claimResult.error}`);
+    return;
   }
-}
+  console.log(`[Skill:任务执行] 已认领: ${task.title}`);
 
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+  // 读取执行步骤
+  const exec = JSON.parse(skill.execution || '{}');
+  const steps = exec.steps || [];
+  console.log(`[Skill:任务执行] 执行 ${steps.length} 步:`);
+  for (const step of steps) console.log(`  → ${step}`);
+
+  // 模拟执行
+  await sleep(2000);
+
+  // 提交
+  await call('POST', `/tasks/${taskId}/submit`, {
+    agentId: AGENT_ID,
+    notes: `按 Skill "${skill.name}" 执行完成。\n步骤: ${steps.join(' → ')}`,
+  });
+  console.log(`[Skill:任务执行] 已提交审核`);
+}
 
 // ===== 主循环 =====
 async function main() {
-  console.log(`[Worker] 智能体 ${AGENT_ID} 启动`);
-  const { agent, subscriptions } = await getAgentInfo();
-  console.log(`[Worker] 角色: ${JSON.parse(agent.roles || '[]')}, 订阅: ${subscriptions.join(', ')}`);
+  console.log(`[Worker] 智能体 ${AGENT_ID} 启动 (Skill 驱动模式)`);
+
+  // 加载所有 Skill
+  const skills = await call('GET', '/skills');
+  console.log(`[Worker] 已加载 ${skills.length} 个 Skill:`);
+  skills.forEach(s => console.log(`  - ${s.id}: ${s.name}`));
+
+  // 订阅事件
+  const agent = await call('GET', `/agents/${AGENT_ID}`);
+  const sub = await call('POST', `/agents/${AGENT_ID}/subscribe`);
+  const subscriptions = sub.subscriptions || [];
+  console.log(`[Worker] 订阅事件: ${subscriptions.join(', ')}`);
+
+  let lastEventTime = Date.now() - 60000;
+  const processedEvents = new Set();
 
   while (true) {
     try {
-      const events = await pollEvents(subscriptions);
-      for (const event of events) {
-        if (event.type === 'requirement.created' && subscriptions.includes('requirement.created')) {
-          await handleNewRequirement(event);
-        } else if (event.type === 'requirement.approved' && subscriptions.includes('requirement.approved')) {
-          await handleRequirementApproved(event);
-        } else if (event.type === 'task.created' && subscriptions.includes('task.created')) {
-          await handleNewTask(event);
+      const events = await call('GET', `/agents/${AGENT_ID}/notifications`);
+      const newEvents = events.filter(e => e.timestamp > lastEventTime && !processedEvents.has(e.id));
+      lastEventTime = Date.now();
+      for (const e of newEvents) processedEvents.add(e.id);
+      if (processedEvents.size > 1000) {
+        const arr = [...processedEvents];
+        processedEvents.clear();
+        arr.slice(-500).forEach(x => processedEvents.add(x));
+      }
+
+      for (const event of newEvents) {
+        // 事件 → Skill 匹配
+        const skillId = EVENT_SKILL_MAP[event.type];
+        if (skillId) {
+          const skill = skills.find(s => s.id === skillId);
+          if (skill) {
+            await executeSkillForEvent(event, skill);
+            continue;
+          }
+        }
+
+        // 任务事件：用 Skill 匹配
+        if (event.type === 'task.created') {
+          const taskId = event.target_id;
+          const matches = await call('GET', `/skills/match/${taskId}`);
+          if (matches && matches.length > 0 && matches[0].score >= 3) {
+            await handleExecuteSkill(event, matches[0].skill);
+          }
         }
       }
     } catch (e) {
@@ -158,5 +201,7 @@ async function main() {
     await sleep(POLL_INTERVAL);
   }
 }
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 main().catch(e => { console.error('[Worker] 致命错误:', e.message); process.exit(1); });

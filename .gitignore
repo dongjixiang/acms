@@ -1,5 +1,7 @@
 node_modules/
-data/acms.json
+data/
+workspaces/
 .DS_Store
 *.log
+tmp_*.js
 tmp_append.txt

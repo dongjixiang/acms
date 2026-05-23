@@ -1,5 +1,6 @@
-/* ACMS 样式 — 暗色主题 */
-:root {
+/* ACMS 样式 — 暗色/浅色主题变量 */
+:root,
+[data-theme="dark"] {
   --bg: #0f0f1a;
   --bg2: #1a1a2e;
   --bg3: #252540;
@@ -14,6 +15,34 @@
   --radius: 8px;
   --shadow: 0 4px 16px rgba(0,0,0,0.3);
 }
+[data-theme="light"] {
+  --bg: #f5f5f7;
+  --bg2: #ffffff;
+  --bg3: #eeeef1;
+  --text: #1a1a2e;
+  --text2: #6e6e80;
+  --accent: #0ea89d;
+  --accent2: #e04545;
+  --accent3: #c8a008;
+  --green: #2ea043;
+  --blue: #2b7bd6;
+  --border: rgba(10, 120, 110, 0.18);
+  --shadow: 0 4px 16px rgba(0,0,0,0.08);
+}
+[data-theme="cream"] {
+  --bg: #fef9ef;
+  --bg2: #fffbf0;
+  --bg3: #f5eedc;
+  --text: #3d3022;
+  --text2: #8b7b65;
+  --accent: #5b8c5a;
+  --accent2: #d4785c;
+  --accent3: #c8960a;
+  --green: #3c8c40;
+  --blue: #4a7ab5;
+  --border: rgba(90, 130, 80, 0.18);
+  --shadow: 0 4px 16px rgba(0,0,0,0.06);
+}
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; line-height: 1.6; }
 ::-webkit-scrollbar { width: 6px; }
@@ -25,6 +54,13 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 #header h1 { font-size: 20px; color: var(--accent); }
 .version { font-size: 12px; color: var(--text2); margin-left: 8px; }
 #header-right { display: flex; gap: 16px; align-items: center; }
+
+/* 汉堡菜单按钮 — 默认隐藏 */
+#btn-hamburger { display: none; background: none; border: none; color: var(--text); font-size: 22px; cursor: pointer; padding: 4px 8px; border-radius: 6px; line-height: 1; }
+#btn-hamburger:hover { background: var(--bg3); }
+
+/* Sidebar 遮罩 — 默认隐藏 */
+#sidebar-backdrop { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 998; }
 #project-selector { padding: 6px 12px; background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); font-size: 14px; }
 #connection-status { font-size: 12px; padding: 4px 8px; border-radius: 4px; }
 .status-online { color: var(--green); background: rgba(107,255,107,0.1); }
@@ -46,6 +82,10 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 .view.active { display: block; }
 .view-header { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
 .view-header h2 { font-size: 20px; }
+#detail-status { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+#detail-status .status-badge { flex-shrink: 0; }
+#task-detail-status { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+#task-detail-status .status-badge { flex-shrink: 0; }
 
 /* Forms */
 .panel-form { background: var(--bg2); padding: 24px; border-radius: var(--radius); border: 1px solid var(--border); max-width: 700px; }
@@ -72,6 +112,15 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 .req-card .title { font-size: 16px; font-weight: bold; margin-bottom: 6px; }
 .req-card .meta { font-size: 12px; color: var(--text2); display: flex; gap: 12px; }
 .req-card .status-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-left: 8px; }
+
+/* Child requirement cards (indented) */
+.req-child-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; margin-bottom: 6px; margin-left: 24px; border-left: 3px solid var(--accent); cursor: pointer; transition: border-color 0.2s; }
+.req-child-card:hover { border-color: var(--accent); background: var(--bg3); }
+
+/* Split panel */
+.split-panel { background: var(--bg2); border: 1px dashed var(--accent); border-radius: var(--radius); padding: 16px; margin-bottom: 16px; }
+.split-panel h3 { margin: 0 0 4px 0; font-size: 16px; color: var(--accent); }
+.split-panel .split-child-row input { padding: 8px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); font-size: 13px; }
 
 /* Status badges */
 .badge-idea { background: rgba(107,170,255,0.15); color: var(--blue); }
@@ -134,6 +183,8 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 .task-card.priority-3 { border-left: 3px solid #ffd93d; }
 .task-card.priority-4 { border-left: 3px solid #4ecdc4; }
 .task-card.priority-5 { border-left: 3px solid #9090a0; }
+.task-card.task-blocked { opacity: 0.55; border-left: 3px solid var(--accent3); background: rgba(255,217,61,0.04); cursor: default; }
+.task-card.task-blocked:hover { border-color: var(--accent3); transform: none; }
 
 /* Tags */
 .type-tag { padding: 1px 6px; border-radius: 3px; font-size: 10px; }
@@ -260,7 +311,135 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 .md-content h2 { font-size: 16px; margin: 16px 0 6px; color: var(--accent); }
 .md-content h3 { font-size: 14px; margin: 14px 0 4px; color: var(--accent); }
 .md-content h4 { font-size: 13px; margin: 12px 0 4px; color: var(--accent); }
+.md-content pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px; overflow-x: auto; font-size: 13px; line-height: 1.5; margin: 12px 0; }
+.md-content pre code { background: none; padding: 0; font-size: inherit; }
+.md-content .code-lang { display: block; font-size: 11px; color: var(--text2); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+/* Mermaid 图表 */
+.mermaid-container { margin: 16px 0; padding: 12px; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; overflow-x: auto; text-align: center; white-space: pre; }
+.mermaid-container svg { max-width: 100%; height: auto; }
+.mermaid-failed { opacity: 0.7; }
+.mermaid-error { color: var(--accent2); font-size: 12px; padding: 8px; }
 
 /* SRS preview */
 .srs-preview { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-top: 12px; max-height: 400px; overflow-y: auto; }
 .srs-preview pre { white-space: pre-wrap; font-size: 13px; line-height: 1.8; }
+
+/* ================================================================
+   响应式适配 — 平板竖屏 (≤768px)
+   ================================================================ */
+@media (max-width: 768px) {
+  /* Header 允许换行 */
+  #header { flex-wrap: wrap; gap: 8px; padding: 10px 16px; }
+  #header h1 { font-size: 17px; }
+  #header-right { gap: 8px; }
+
+  /* Sidebar 收窄 */
+  #sidebar { width: 160px; padding: 12px; }
+  .nav-btn { padding: 8px 12px; font-size: 13px; }
+
+  /* 看板列缩小 */
+  .kanban-col { min-width: 160px; max-width: 240px; }
+  .task-card { font-size: 12px; padding: 8px 10px; }
+
+  /* 仪表盘统计 4列→2列 */
+  .stats-row { grid-template-columns: repeat(2, 1fr); }
+
+  /* 项目网格缩小 */
+  .project-grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+
+  /* 设置/创建表单 双列→单列 */
+  .form-two-col { grid-template-columns: 1fr; }
+  .form-row { flex-direction: column; }
+
+  /* 任务详情网格保持两列 */
+  .detail-grid { grid-template-columns: 1fr 1fr; }
+}
+
+/* ================================================================
+   响应式适配 — 手机 (≤480px)
+   ================================================================ */
+@media (max-width: 480px) {
+  /* Header 堆叠 */
+  #header { flex-direction: column; align-items: flex-start; }
+  #header h1 { font-size: 15px; }
+  #header-right { width: 100%; flex-wrap: wrap; gap: 6px; }
+
+  /* 汉堡按钮显示 */
+  #btn-hamburger { display: block; }
+
+  /* Sidebar 变为 overlay 滑出面板 */
+  #sidebar {
+    display: flex;
+    position: fixed;
+    top: 0; left: 0;
+    width: 260px; max-width: 80vw;
+    height: 100vh;
+    z-index: 999;
+    transform: translateX(-100%);
+    transition: transform 0.3s ease;
+    box-shadow: var(--shadow);
+  }
+  #sidebar.sidebar-open { transform: translateX(0); }
+
+  /* 遮罩层 */
+  #sidebar-backdrop.sidebar-open { display: block; }
+
+  /* 内容区恢复 padding */
+  #main-layout { height: calc(100vh - 90px); }
+  #content { padding: 12px; }
+
+  /* 看板垂直堆叠 */
+  .kanban-container { flex-direction: column; overflow-x: visible; }
+  .kanban-col { min-width: 100%; max-width: 100%; margin-bottom: 12px; }
+
+  /* 仪表盘全单列 */
+  .stats-row { grid-template-columns: 1fr; }
+  .dash-panels { grid-template-columns: 1fr; }
+
+  /* 项目网格单列 */
+  .project-grid { grid-template-columns: 1fr; }
+  .projects-hero { padding: 20px 10px; }
+  .hero-icon { font-size: 40px; }
+  .projects-hero h2 { font-size: 22px; }
+
+  /* 表单全宽 */
+  .panel-form { max-width: 100%; padding: 16px; }
+  .form-two-col { grid-template-columns: 1fr; }
+  .form-row { flex-direction: column; }
+
+  /* 视图头部堆叠 */
+  .view-header { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .view-header h2 { font-size: 17px; }
+
+  /* 任务详情网格 2列→1列 */
+  .detail-grid { grid-template-columns: 1fr; }
+
+  /* 需求/任务详情 padding 缩小 */
+  #detail-content, #task-detail-content { padding: 16px; }
+
+  /* 触屏友好按钮 */
+  .btn-primary, .btn-back, .btn-small, .btn-accept, .btn-reject { min-height: 44px; }
+
+  /* 创建项目卡片字号缩小 */
+  .create-project-card { padding: 14px 16px; }
+  .create-icon { width: 40px; height: 40px; font-size: 24px; }
+  .create-text strong { font-size: 14px; }
+
+  /* 系统管理页 */
+  #view-admin .projects-page { padding: 12px; }
+
+  /* 状态筛选和看板过滤器 */
+  #status-filter, #kanban-req-filter, .filter-select { width: 100%; }
+
+  /* 澄清输入区 */
+  .clarify-input-area { flex-direction: column; }
+
+  /* 审核操作按钮 */
+  .review-actions { flex-direction: column; }
+  .review-actions button { width: 100%; }
+
+  /* 设置标签栏 */
+  .settings-tabs { overflow-x: auto; }
+  .tab-btn { white-space: nowrap; flex-shrink: 0; }
+}

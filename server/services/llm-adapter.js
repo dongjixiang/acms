@@ -108,8 +108,10 @@ async function callAnthropic(model, messages, opts, apiKey) {
   }
 
   const data = await resp.json();
+  // 过滤 text 类型的块（兼容 thinking 块在前的模型如 MiniMax M2.7）
+  const textContent = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('');
   return {
-    content: data.content?.[0]?.text || '',
+    content: textContent || '',
     modelUsed: `${model.name} (${model.model})`,
   };
 }

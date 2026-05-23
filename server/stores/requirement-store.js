@@ -4,12 +4,13 @@ const { v4: uuidv4 } = require('uuid');
 const { canTransition, getNextStatuses, getGateErrors, shouldAutoAbandon } = require('../services/state-machine');
 
 class RequirementStore {
-  create({ projectId, title, description = '', priority = 3, tags = [], deadline = '', createdBy = '' }) {
+  create({ projectId, title, description = '', priority = 3, tags = [], deadline = '', createdBy = '', parentId = null }) {
     const id = `REQ-${Date.now().toString(36).toUpperCase()}`;
     const now = new Date().toISOString();
     const req = {
       id, project_id: projectId, title, description, structured_description: '',
       priority, tags: JSON.stringify(tags), deadline, status: 'idea', phase: '孵化',
+      parent_id: parentId || null, child_ids: '[]',
       refinement: JSON.stringify({ thread: [], clarifications: [], suggestionCount: 0, roundsToClarify: 0, readyForReview: false }),
       srs: JSON.stringify({ scopeIn: [], scopeOut: [], acceptanceCriteria: [], technicalConstraints: [], summary: '' }),
       approval: JSON.stringify({ submittedAt: null, submittedBy: null, approvedAt: null, approvedBy: null, rejections: [] }),
@@ -18,15 +19,18 @@ class RequirementStore {
       created_at: now, updated_at: now, completed_at: '',
     };
     collection('requirements').insert(req);
+    if (parentId) this.addChild(parentId, id);
     return req;
   }
 
   getById(id) { return collection('requirements').findOne(r => r.id === id) || null; }
 
-  list({ projectId, status, limit = 50, offset = 0 } = {}) {
+  list({ projectId, status, parentId, rootOnly = false, limit = 50, offset = 0 } = {}) {
     let reqs = collection('requirements').all();
     if (projectId) reqs = reqs.filter(r => r.project_id === projectId);
     if (status) reqs = reqs.filter(r => r.status === status);
+    if (rootOnly) reqs = reqs.filter(r => !r.parent_id);
+    if (parentId !== undefined) reqs = reqs.filter(r => r.parent_id === parentId);
     reqs.sort((a, b) => (a.priority || 99) - (b.priority || 99));
     return reqs.slice(offset, offset + limit);
   }
@@ -63,7 +67,14 @@ class RequirementStore {
       updates.completed_at = now;
     }
 
-    return this.update(id, updates);
+    const updated = this.update(id, updates);
+
+    // 子需求完成时，检查父需求是否所有子需求都已完成 → 自动完成父需求
+    if (targetStatus === 'done' && req.parent_id) {
+      this._checkParentCompletion(req.parent_id);
+    }
+
+    return updated;
   }
 
   addClarification(id, { role, agentId = '', content }) {
@@ -141,6 +152,74 @@ class RequirementStore {
     reqs.forEach(r => { byStatus[r.status] = (byStatus[r.status] || 0) + 1; });
     const active = reqs.filter(r => r.status !== 'done' && r.status !== 'abandoned').length;
     return { byStatus, total: reqs.length, active };
+  }
+
+  // ===== 父子层级方法 =====
+
+  findChildren(parentId) {
+    return collection('requirements').find(r => r.parent_id === parentId);
+  }
+
+  findRootReqs(projectId) {
+    return this.list({ projectId, rootOnly: true });
+  }
+
+  addChild(parentId, childId) {
+    const parent = this.getById(parentId);
+    if (!parent) return;
+    const childIds = JSON.parse(parent.child_ids || '[]');
+    if (!childIds.includes(childId)) {
+      childIds.push(childId);
+      this.update(parentId, { child_ids: JSON.stringify(childIds) });
+    }
+  }
+
+  getProgress(reqId) {
+    const children = this.findChildren(reqId);
+    if (!children.length) {
+      const req = this.getById(reqId);
+      return { total: 0, done: 0, percent: req && req.status === 'done' ? 100 : 0, isParent: false };
+    }
+    const done = children.filter(c => c.status === 'done').length;
+    return { total: children.length, done, percent: Math.round((done / children.length) * 100), isParent: true };
+  }
+
+  split(parentId, children) {
+    const parent = this.getById(parentId);
+    if (!parent) throw Object.assign(new Error('父需求不存在'), { status: 404, code: 'PARENT_NOT_FOUND' });
+
+    const created = [];
+    for (const child of children) {
+      const req = this.create({
+        projectId: parent.project_id,
+        title: child.title,
+        description: child.description || '',
+        priority: parent.priority,
+        parentId, // 这会自动调用 addChild
+        createdBy: parent.created_by,
+      });
+      created.push(req);
+    }
+
+    // 父需求转入 in_execution（如果当前是 approved 或 review）
+    if (parent.status === 'approved' || parent.status === 'review') {
+      this.transition(parentId, 'in_execution');
+    }
+
+    return { parent: this.getById(parentId), children: created };
+  }
+
+  _checkParentCompletion(parentId) {
+    const children = this.findChildren(parentId);
+    if (children.length === 0) return;
+    const allDone = children.every(c => c.status === 'done');
+    if (allDone) {
+      const parent = this.getById(parentId);
+      if (parent && parent.status !== 'done') {
+        this.transition(parentId, 'done');
+        console.log(`[ReqStore] Auto-completed parent ${parentId} (all ${children.length} children done)`);
+      }
+    }
   }
 }
 

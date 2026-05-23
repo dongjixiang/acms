@@ -8,9 +8,9 @@ const reqService = require('../services/requirement-service');
 // 创建需求
 router.post('/', (req, res, next) => {
   try {
-    const { projectId, title, description, priority, tags, deadline } = req.body;
+    const { projectId, title, description, priority, tags, deadline, parentId } = req.body;
     if (!projectId || !title) return res.status(400).json({ error: 'MISSING_FIELDS' });
-    const requirement = reqStore.create({ projectId, title, description, priority, tags, deadline, createdBy: req.agentId || 'user' });
+    const requirement = reqStore.create({ projectId, title, description, priority, tags, deadline, createdBy: req.agentId || 'user', parentId: parentId || null });
     eventBus.emit('requirement.created', { projectId, actor: { id: req.agentId || 'user', type: 'human' }, target: { type: 'requirement', id: requirement.id }, payload: { requirement } });
     res.status(201).json(requirement);
   } catch (e) { next(e); }
@@ -18,8 +18,14 @@ router.post('/', (req, res, next) => {
 
 // 需求列表
 router.get('/', (req, res) => {
-  const { projectId, status, limit, offset } = req.query;
-  res.json(reqStore.list({ projectId, status, limit: parseInt(limit) || 50, offset: parseInt(offset) || 0 }));
+  const { projectId, status, parentId, rootOnly, limit, offset } = req.query;
+  res.json(reqStore.list({
+    projectId, status,
+    parentId: parentId || undefined,
+    rootOnly: rootOnly === 'true',
+    limit: parseInt(limit) || 50,
+    offset: parseInt(offset) || 0
+  }));
 });
 
 // 需求详情
@@ -62,6 +68,20 @@ router.patch('/:id/srs', (req, res) => {
   res.json(requirement);
 });
 
+// 通用字段更新（deadline, title 等）
+router.patch('/:id', (req, res) => {
+  const { deadline, title, description, priority, tags } = req.body;
+  const updates = {};
+  if (deadline !== undefined) updates.deadline = deadline;
+  if (title !== undefined) updates.title = title;
+  if (description !== undefined) updates.description = description;
+  if (priority !== undefined) updates.priority = priority;
+  if (tags !== undefined) updates.tags = JSON.stringify(tags);
+  const requirement = reqStore.update(req.params.id, updates);
+  if (!requirement) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+  res.json(requirement);
+});
+
 // 审核流程（使用 service）
 router.post('/:id/submit-review', async (req, res, next) => {
   try { res.json(await reqService.submitForReview(req.params.id, req.agentId || 'analyst')); } catch (e) { next(e); }
@@ -90,12 +110,53 @@ router.delete('/:id', (req, res) => {
   const requirement = reqStore.getById(req.params.id);
   if (!requirement) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
   const { collection } = require('../db/connection');
+
+  // 如果有子需求，将它们改为根需求（解除父子关系）
+  const childIds = JSON.parse(requirement.child_ids || '[]');
+  for (const cid of childIds) {
+    collection('requirements').update(r => r.id === cid, { parent_id: null });
+  }
+
+  // 如果有父需求，从父需求的 child_ids 中移除自己
+  if (requirement.parent_id) {
+    const parent = reqStore.getById(requirement.parent_id);
+    if (parent) {
+      const pcids = JSON.parse(parent.child_ids || '[]').filter(id => id !== req.params.id);
+      collection('requirements').update(r => r.id === requirement.parent_id, { child_ids: JSON.stringify(pcids) });
+    }
+  }
+
   collection('clarification_threads').remove(c => c.requirement_id === req.params.id);
   // 删除关联任务
   const taskIds = JSON.parse(requirement.task_ids || '[]');
   for (const tid of taskIds) collection('tasks').remove(t => t.id === tid);
   collection('requirements').remove(r => r.id === req.params.id);
   res.json({ success: true, message: `需求 ${requirement.title} 已删除` });
+});
+
+// 需求拆分（创建子需求）
+router.post('/:id/split', (req, res, next) => {
+  try {
+    const { children } = req.body;
+    if (!children || !Array.isArray(children) || children.length === 0) {
+      return res.status(400).json({ error: 'MISSING_FIELDS', message: '需要提供 children 数组' });
+    }
+    const result = reqStore.split(req.params.id, children);
+    eventBus.emit('requirement.split', { projectId: result.parent.project_id, actor: { id: req.agentId || 'user', type: 'human' }, target: { type: 'requirement', id: req.params.id }, payload: { parent: result.parent, children: result.children } });
+    res.status(201).json(result);
+  } catch (e) { next(e); }
+});
+
+// 获取子需求
+router.get('/:id/children', (req, res) => {
+  const children = reqStore.findChildren(req.params.id);
+  res.json(children);
+});
+
+// 获取需求进度（聚合子需求进度）
+router.get('/:id/progress', (req, res) => {
+  const progress = reqStore.getProgress(req.params.id);
+  res.json(progress);
 });
 
 module.exports = router;

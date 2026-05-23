@@ -1,6 +1,8 @@
 // ACMS v0.3 — 应用入口（精简版）
 // 模块加载顺序: core → views → 初始化
 document.addEventListener('DOMContentLoaded', () => {
+  // 主题初始化最先执行，避免闪烁
+  App.initTheme();
   I18n.init().then(() => {
     initApp();
   });

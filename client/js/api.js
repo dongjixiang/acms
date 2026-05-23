@@ -39,7 +39,10 @@ var Requirements = {
   submitReview: function(id) { return api('POST', '/requirements/' + id + '/submit-review'); },
   approve: function(id) { return api('POST', '/requirements/' + id + '/approve'); },
   reject: function(id, reason) { return api('POST', '/requirements/' + id + '/reject', { reason: reason }); },
-  decompose: function(id, tasks) { return api('POST', '/requirements/' + id + '/decompose', { tasks: tasks }); }
+  decompose: function(id, tasks) { return api('POST', '/requirements/' + id + '/decompose', { tasks: tasks }); },
+  split: function(id, children) { return api('POST', '/requirements/' + id + '/split', { children: children }); },
+  children: function(id) { return api('GET', '/requirements/' + id + '/children'); },
+  progress: function(id) { return api('GET', '/requirements/' + id + '/progress'); }
 };
 
 // 任务

@@ -19,6 +19,7 @@ function goToProjects() {
   document.getElementById('btn-back-projects').style.display = 'none';
   document.getElementById('header-title').innerHTML = '🤖 智能体协同管理系统 <span class="version">v0.3</span>';
   showView('view-projects');
+  App.closeSidebar();
   if (typeof loadProjects === 'function') loadProjects();
 }
 
@@ -41,6 +42,8 @@ function showWorkspaceView(name) {
   document.querySelectorAll('#sidebar .nav-btn').forEach(b => b.classList.remove('active'));
   const btn = document.querySelector(`#sidebar [data-view="${name}"]`);
   if (btn) btn.classList.add('active');
+  // 移动端：导航后关闭 sidebar
+  App.closeSidebar();
 }
 
 function setupWorkspaceNav() {

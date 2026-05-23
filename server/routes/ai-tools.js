@@ -39,15 +39,53 @@ router.post('/requirements/:id/decompose-ai', async (req, res, next) => {
         priority: t.priority || requirement.priority,
         requiredSkills: t.requiredSkills || {},
         estimatedHours: t.estimatedHours || 4,
-        dependsOn: [], // 依赖稍后通过 taskId 映射
+        dependsOn: t.dependsOn || [],   // 先存标题，创建完毕后映射为 ID
         wikiContext: requirement.wiki_path || '',
         linkedWiki: (t.linkedWiki || []).map(w => ({ page: w, role: 'reference', autoLoad: false })),
       });
       createdTasks.push(task);
     }
 
-    // 更新需求状态
-    reqStore.transition(req.params.id, 'in_execution');
+    // 依赖映射：AI 返回的标题 → 实际 task ID
+    if (createdTasks.length > 1) {
+      const titleToId = {};
+      for (const t of createdTasks) { titleToId[t.title] = t.id; }
+
+      for (const t of createdTasks) {
+        const rawDepends = JSON.parse(t.depends_on || '[]');
+        const resolved = [];
+        for (const depTitle of rawDepends) {
+          const depId = titleToId[depTitle];
+          if (depId && depId !== t.id) resolved.push(depId);
+        }
+        if (resolved.length > 0) {
+          // 检测循环依赖
+          if (taskStore.detectCycle(t.id, resolved)) {
+            console.warn(`[ai-tools] 循环依赖已跳过: ${t.id} ← ${resolved}`);
+          } else {
+            taskStore.update(t.id, { depends_on: JSON.stringify(resolved) });
+            // 维护 depended_by（反向依赖）
+            for (const depId of resolved) {
+              const depTask = taskStore.getById(depId);
+              if (depTask) {
+                const depBy = JSON.parse(depTask.depended_by || '[]');
+                if (!depBy.includes(t.id)) {
+                  depBy.push(t.id);
+                  taskStore.update(depId, { depended_by: JSON.stringify(depBy) });
+                }
+              }
+            }
+            // 设置阻塞状态
+            taskStore.update(t.id, { blocked: 1, block_reason: '等待前置任务完成' });
+          }
+        }
+      }
+    }
+
+    // 仅当真正创建了任务才更新需求状态（失败时保留 approved，允许重试）
+    if (createdTasks.length > 0) {
+      reqStore.transition(req.params.id, 'in_execution');
+    }
 
     for (const task of createdTasks) {
       eventBus.emit('task.created', {
@@ -58,7 +96,13 @@ router.post('/requirements/:id/decompose-ai', async (req, res, next) => {
       });
     }
 
-    res.json({ tasks: createdTasks, count: createdTasks.length, summary: result.summary, modelUsed: result.modelUsed });
+    res.json({
+      tasks: createdTasks,
+      count: createdTasks.length,
+      summary: result.summary,
+      modelUsed: result.modelUsed,
+      success: createdTasks.length > 0,
+    });
   } catch (e) { next(e); }
 });
 

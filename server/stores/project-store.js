@@ -9,6 +9,13 @@ class ProjectStore {
       tech_stack: '{}', wiki_vault_path: wikiVaultPath, wiki_docs_path: wikiDocsPath,
       stats: '{}', created_at: now, updated_at: now };
     collection('projects').insert(project);
+
+    // 自动初始化项目工作区
+    try {
+      const workspace = require('../services/workspace-service');
+      workspace.init(slug || name);
+    } catch (e) { /* 非关键，静默失败 */ }
+
     return project;
   }
 

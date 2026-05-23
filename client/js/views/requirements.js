@@ -5,7 +5,7 @@ async function loadRequirements() {
   if (!App.currentProjectId) return;
   try {
     const status = document.getElementById('status-filter')?.value || '';
-    const reqs = await Requirements.list({ projectId: App.currentProjectId, status: status || undefined });
+    const reqs = await Requirements.list({ projectId: App.currentProjectId, status: status || undefined, rootOnly: true });
     const container = document.getElementById('req-list');
     if (!reqs.length) { container.innerHTML = '<div class="empty">暂无需求</div>'; return; }
     container.innerHTML = reqs.map(r => `
@@ -43,7 +43,9 @@ async function openRequirement(id) {
   try {
     const req = await Requirements.get(id);
     document.getElementById('detail-title').textContent = `${req.id}: ${escHtml(req.title)}`;
-    document.getElementById('detail-status').innerHTML = `<span class="status-badge badge-${req.status}">${App.statusLabels[req.status]}</span>`;
+    document.getElementById('detail-status').innerHTML = `
+      <span class="status-badge badge-${req.status}">${App.statusLabels[req.status]}</span>
+      <button class="btn-small" style="background:rgba(78,205,196,0.15);color:var(--green);border-color:rgba(78,205,196,0.3)" onclick="exportRequirement('${req.id}')">📥 导出 Word</button>`;
     const srs = safeParse(req.srs);
     document.getElementById('detail-content').innerHTML = `
       <div class="section"><strong>描述:</strong></div>
@@ -51,16 +53,18 @@ async function openRequirement(id) {
       <div class="section"><strong>优先级:</strong> P${req.priority} | <strong>截止:</strong> ${req.deadline || '未设置'}</div>
       ${req.status === 'idea' || req.status === 'clarifying' ? renderAiClarifyPanel(req) : ''}
       ${req.status === 'review' ? renderReviewPanel(req) : ''}
-      ${req.status === 'approved' ? renderAiDecomposePanel(req) : ''}
+      ${req.status === 'approved' ? renderAiDecomposePanel(req) + '<div style="margin-top:8px"><button class="btn-small" style="background:rgba(78,205,196,0.1);color:var(--green)" onclick="openSplitPanel(\'' + id + '\')">🔧 拆分需求</button></div>' : ''}
       ${req.status === 'in_execution' ? `<div style="margin-top:12px"><button class="btn-primary" onclick="showWorkspaceView('kanban');refreshKanban('${req.id}');">📌 查看看板</button><button class="btn-small" style="margin-left:8px;background:rgba(255,217,61,0.15);color:var(--accent3);border-color:rgba(255,217,61,0.3)" onclick="showChangePanel('${id}')">📝 需求变更</button></div>` : ''}
       ${req.wiki_path ? `<div class="section"><span class="wiki-link">📚 Wiki: ${escHtml(req.wiki_path)}</span></div>` : ''}
       <div style="margin-top:16px;display:flex;gap:8px">
         <button class="btn-small btn-reject" onclick="deleteRequirement('${id}')">🗑 删除需求</button>
       </div>
-      <h3>📋 SRS</h3><div class="srs-preview"><pre>${escHtml(JSON.stringify(srs, null, 2))}</pre></div>`;
+      <h3>📋 SRS</h3><div class="srs-preview"><pre>${escHtml(JSON.stringify(srs, null, 2))}</pre></div>
+      <div id="req-children" style="margin-top:16px"></div>`;
   } catch (e) { toast('加载失败: ' + e.message, 'error'); }
   setTimeout(() => loadAiModels(id), 100);
   setTimeout(() => loadDecomposeModels(id), 100);
+  setTimeout(() => loadRequirementChildren(id), 150);
 }
 
 function renderThread(cl) {
@@ -224,6 +228,28 @@ async function sendAiClarify(reqId, choiceAnswer) {
       renderChoicesWithSubmit(reqId, result.choices);
     }
 
+    // 渲染拆分建议
+    if (result.splitSuggestion && result.splitSuggestion.shouldSplit) {
+      const ss = result.splitSuggestion;
+      const choicesDiv = document.getElementById(`ai-clarify-choices-${reqId}`);
+      if (choicesDiv) {
+        choicesDiv.innerHTML += `
+          <div style="margin:12px 0;padding:12px;background:rgba(78,205,196,0.08);border:1px dashed var(--green);border-radius:6px">
+            <div style="font-weight:bold;color:var(--green);margin-bottom:6px">💡 拆分建议</div>
+            <div style="font-size:13px;color:var(--text2);margin-bottom:8px">${escHtml(ss.reason)}</div>
+            <div style="font-size:12px;color:var(--text2);margin-bottom:4px">建议拆分为 ${(ss.suggestedChildren||[]).length} 个子需求：</div>
+            ${(ss.suggestedChildren||[]).map(c => `
+              <div style="font-size:12px;padding:4px 8px;margin:2px 0;background:var(--bg);border-radius:4px">
+                <strong>${escHtml(c.title)}</strong>
+                ${c.description ? `<span style="color:var(--text2)"> — ${escHtml(c.description)}</span>` : ''}
+              </div>`).join('')}
+            <div style="margin-top:8px">
+              <button class="btn-primary btn-sm" onclick="openSplitPanel('${reqId}', ${JSON.stringify(ss.suggestedChildren || []).replace(/"/g, '&quot;')})">🔧 按此方案拆分</button>
+            </div>
+          </div>`;
+      }
+    }
+
     // 渲染 SRS 草稿
     if (result.srs) {
       srsDiv.innerHTML = `<h4>📋 当前 SRS 草稿</h4>
@@ -294,24 +320,30 @@ function renderChoicesWithSubmit(reqId, choices) {
 }
 
 function toggleChoice(reqId, qi, val, btn) {
-  const current = aiSelections[reqId][qi] || { values: [], multiple: false };
-  const idx = current.values.indexOf(val);
+  // 确保 aiSelections 存在
+  if (!aiSelections[reqId]) aiSelections[reqId] = {};
+  const current = aiSelections[reqId][qi];
+  // 如果 renderChoicesWithSubmit 还没设置，默认多选
+  if (!current) {
+    aiSelections[reqId][qi] = { values: [], multiple: true };
+  }
+  const sel = aiSelections[reqId][qi];
+  const idx = sel.values.indexOf(val);
 
   if (idx >= 0) {
     // 取消选择
-    current.values.splice(idx, 1);
+    sel.values.splice(idx, 1);
     btn.classList.remove('choice-selected');
   } else {
-    if (!current.multiple) {
+    if (!sel.multiple) {
       // 单选：清除同组其他选择
-      current.values = [];
+      sel.values = [];
       const group = document.getElementById(`choice-group-${reqId}-${qi}`);
       if (group) group.querySelectorAll('.choice-btn').forEach(b => b.classList.remove('choice-selected'));
     }
-    current.values.push(val);
+    sel.values.push(val);
     btn.classList.add('choice-selected');
   }
-  aiSelections[reqId][qi] = current;
 }
 
 async function submitAllChoices(reqId) {
@@ -440,4 +472,132 @@ async function aiDecompose(reqId) {
 function continueAiClarify(reqId) {
   document.getElementById(`ai-clarify-actions-${reqId}`).style.display = 'none';
   document.getElementById(`ai-clarify-input-${reqId}`)?.focus();
+}
+
+// ===== 需求拆分 =====
+
+function openSplitPanel(reqId, suggestedChildren) {
+  const panel = document.getElementById('split-panel');
+  if (panel) { panel.remove(); return; }
+
+  const container = document.getElementById('detail-content');
+  const div = document.createElement('div');
+  div.id = 'split-panel';
+  div.className = 'split-panel';
+  div.innerHTML = `
+    <h3>🔧 拆分子需求</h3>
+    <p style="font-size:13px;color:var(--text2);margin-bottom:12px">将当前需求拆分为多个子需求，每个子需求独立走澄清→评审→分解流程</p>
+    <div id="split-children-list">
+      ${(suggestedChildren || []).map((c, i) => `
+        <div class="split-child-row" style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
+          <input type="text" class="split-child-title" value="${escHtml(c.title || '')}" placeholder="子需求标题" style="flex:1">
+          <input type="text" class="split-child-desc" value="${escHtml(c.description || '')}" placeholder="简要描述（可选）" style="flex:2">
+          <button class="btn-small btn-reject" onclick="this.closest('.split-child-row').remove()" style="flex-shrink:0">✕</button>
+        </div>
+      `).join('')}
+    </div>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button class="btn-small" onclick="addSplitChildRow()" style="background:rgba(78,205,196,0.1);color:var(--green)">+ 添加子需求</button>
+      <button class="btn-primary" onclick="doSplit('${reqId}')">✅ 确认拆分</button>
+      <button class="btn-back" onclick="document.getElementById('split-panel').remove()">取消</button>
+    </div>
+  `;
+  container.insertBefore(div, container.firstChild);
+}
+
+function addSplitChildRow() {
+  const list = document.getElementById('split-children-list');
+  if (!list) return;
+  const row = document.createElement('div');
+  row.className = 'split-child-row';
+  row.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;align-items:center';
+  row.innerHTML = `
+    <input type="text" class="split-child-title" placeholder="子需求标题" style="flex:1">
+    <input type="text" class="split-child-desc" placeholder="简要描述（可选）" style="flex:2">
+    <button class="btn-small btn-reject" onclick="this.closest('.split-child-row').remove()" style="flex-shrink:0">✕</button>
+  `;
+  list.appendChild(row);
+}
+
+async function doSplit(reqId) {
+  const rows = document.querySelectorAll('#split-children-list .split-child-row');
+  const children = [];
+  rows.forEach(row => {
+    const title = row.querySelector('.split-child-title')?.value.trim();
+    if (title) {
+      children.push({
+        title,
+        description: row.querySelector('.split-child-desc')?.value.trim() || ''
+      });
+    }
+  });
+  if (!children.length) return toast('请至少添加一个子需求', 'error');
+  try {
+    const result = await Requirements.split(reqId, children);
+    toast(`已创建 ${result.children.length} 个子需求 ✅`, 'success');
+    document.getElementById('split-panel')?.remove();
+    openRequirement(reqId);
+    loadRequirements();
+    loadDashboard();
+  } catch (e) { toast('拆分失败: ' + e.message, 'error'); }
+}
+
+async function loadRequirementChildren(reqId) {
+  try {
+    const children = await Requirements.children(reqId);
+    const progress = await Requirements.progress(reqId);
+    const container = document.getElementById('req-children');
+    if (!container) return;
+
+    if (!children.length) {
+      container.innerHTML = '';
+      return;
+    }
+
+    container.innerHTML = `
+      <div style="margin-bottom:8px">
+        <strong>📦 子需求进度</strong>
+        <span style="margin-left:8px;font-size:12px;color:var(--text2)">${progress.done}/${progress.total} 已完成</span>
+        <div style="height:6px;background:var(--bg);border-radius:3px;margin-top:4px">
+          <div style="height:100%;width:${progress.percent}%;background:var(--green);border-radius:3px;transition:width 0.3s"></div>
+        </div>
+      </div>
+      ${children.map(c => `
+        <div class="req-child-card" onclick="openRequirement('${c.id}')" style="cursor:pointer">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div>
+              <span class="status-badge badge-${c.status}" style="font-size:10px;margin-right:6px">${App.statusLabels[c.status] || c.status}</span>
+              <strong>${escHtml(c.title)}</strong>
+            </div>
+            <span style="font-size:11px;color:var(--text2)">${c.id}</span>
+          </div>
+        </div>
+      `).join('')}
+    `;
+  } catch(e) {}
+}
+
+// ===== 导出需求为 Word =====
+async function exportRequirement(reqId) {
+  try {
+    const res = await fetch(`/api/exports/requirement/${reqId}`, {
+      headers: { 'X-API-Key': 'dev-key-001' }
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || '导出失败');
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${reqId}.docx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast('文档已下载 ✅', 'success');
+  } catch (e) {
+    toast('导出失败: ' + e.message, 'error');
+  }
 }

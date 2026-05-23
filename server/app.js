@@ -62,6 +62,9 @@ app.use('/api/admin', require('./routes/admin'));
 app.use('/api/models', require('./routes/models'));
 app.use('/api/ai', require('./routes/ai-clarify'));
 app.use('/api/ai-tools', require('./routes/ai-tools'));
+app.use('/api/exports', require('./routes/exports'));
+app.use('/api/workspace', require('./routes/workspace'));
+app.use('/api/skills', require('./routes/skills'));
 
 // 404
 app.use((req, res) => res.status(404).json({ error: 'NOT_FOUND' }));

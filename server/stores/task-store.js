@@ -9,7 +9,8 @@ class TaskStore {
     const now = new Date().toISOString();
     const task = {
       id, project_id: projectId, parent_id: parentId, title, description, type, priority,
-      status: 'backlog', blocked: 0, block_reason: '', depends_on: JSON.stringify(dependsOn),
+      status: 'backlog', blocked: (dependsOn && dependsOn.length > 0) ? 1 : 0,
+      block_reason: (dependsOn && dependsOn.length > 0) ? '等待前置任务完成' : '', depends_on: JSON.stringify(dependsOn),
       depended_by: '[]', sibling_ids: '[]', required_skills: JSON.stringify(requiredSkills),
       estimated_hours: estimatedHours, actual_hours: 0, assigned_to: '', assigned_at: '',
       assigned_role: 'executor', progress: 0, progress_note: '', last_progress_update: '',
@@ -18,6 +19,20 @@ class TaskStore {
       version: 1, created_at: now, updated_at: now, completed_at: '',
     };
     collection('tasks').insert(task);
+
+    // 维护反向依赖: 在每个前置任务的 depended_by 中加入自己
+    if (dependsOn && dependsOn.length > 0) {
+      for (const depId of dependsOn) {
+        const dep = this.getById(depId);
+        if (dep) {
+          const depBy = JSON.parse(dep.depended_by || '[]');
+          if (!depBy.includes(id)) {
+            depBy.push(id);
+            this.update(depId, { depended_by: JSON.stringify(depBy) });
+          }
+        }
+      }
+    }
 
     if (parentId) {
       const reqs = collection('requirements');
@@ -74,7 +89,29 @@ class TaskStore {
     if (targetStatus === 'in_progress' && actor.id) { updates.assigned_to = actor.id; updates.assigned_at = now; }
     if (targetStatus === 'done') updates.completed_at = now;
     if (targetStatus === 'backlog') { updates.assigned_to = ''; updates.assigned_at = ''; }
-    return collection('tasks').update(t => t.id === id, updates);
+    const result = collection('tasks').update(t => t.id === id, updates);
+
+    // 任务完成 → 自动解阻塞依赖它的任务
+    if (targetStatus === 'done') {
+      this._autoUnblockDependents(id);
+    }
+
+    return result;
+  }
+
+  _autoUnblockDependents(doneTaskId) {
+    const doneTask = this.getById(doneTaskId);
+    if (!doneTask) return;
+    const dependedBy = JSON.parse(doneTask.depended_by || '[]');
+    for (const depId of dependedBy) {
+      const dep = this.getById(depId);
+      if (!dep || dep.blocked !== 1) continue;
+      // 检查该任务的所有依赖是否都已满足
+      if (this.areDependenciesMet(depId)) {
+        this.update(depId, { blocked: 0, block_reason: '' });
+        console.log(`[TaskStore] 自动解阻塞: ${depId}（依赖 ${doneTaskId} 已完成）`);
+      }
+    }
   }
 
   claim(id, agentId) {
