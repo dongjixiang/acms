@@ -99,16 +99,34 @@ async function handleDecomposeSkill(event, skill) {
 
   const srs = JSON.parse(req.srs || '{}');
   const scopeIn = srs.scopeIn || [req.title];
+  const descLen = (req.description || '').length + (req.structured_description || '').length;
   const tasks = [];
 
-  if (scopeIn.length > 0) {
-    tasks.push({ title: `${scopeIn[0]} — 核心功能实现`, type: 'coding', estimatedHours: 8, requiredSkills: { coding: 1.5 } });
+  // 根据复杂度调整任务数
+  if (scopeIn.length <= 1 && descLen < 300) {
+    // 简单需求：只一个核心实现任务
+    tasks.push({ title: scopeIn[0] || req.title, type: 'coding', estimatedHours: 3, requiredSkills: { coding: 1.0 } });
+  } else if (scopeIn.length <= 2) {
+    // 中等需求
+    tasks.push({ title: `${scopeIn[0]} — 核心实现`, type: 'coding', estimatedHours: 6, requiredSkills: { coding: 1.5 } });
+    if (scopeIn.length > 1) {
+      tasks.push({ title: `${scopeIn[1]} — 实现`, type: 'coding', estimatedHours: 4, requiredSkills: { coding: 1.5 } });
+    }
+    tasks.push({ title: '测试验证', type: 'testing', estimatedHours: 2, requiredSkills: { testing: 1.0 } });
+  } else {
+    // 复杂需求：完整分解
+    if (scopeIn.length > 0) {
+      tasks.push({ title: `${scopeIn[0]} — 核心功能实现`, type: 'coding', estimatedHours: 8, requiredSkills: { coding: 1.5 } });
+    }
+    if (scopeIn.length > 1) {
+      tasks.push({ title: `${scopeIn[1]} — 实现`, type: 'coding', estimatedHours: 6, requiredSkills: { coding: 1.5 } });
+    }
+    if (scopeIn.length > 2) {
+      tasks.push({ title: `${scopeIn[2]} — 补充实现`, type: 'coding', estimatedHours: 4, requiredSkills: { coding: 1.0 } });
+    }
+    tasks.push({ title: '测试验证', type: 'testing', estimatedHours: 4, requiredSkills: { testing: 1.0 } });
+    tasks.push({ title: '文档更新', type: 'documentation', estimatedHours: 2, requiredSkills: { writing: 1.0 } });
   }
-  if (scopeIn.length > 1) {
-    tasks.push({ title: `${scopeIn[1]} — 实现`, type: 'coding', estimatedHours: 6, requiredSkills: { coding: 1.5 } });
-  }
-  tasks.push({ title: '测试验证', type: 'testing', estimatedHours: 4, requiredSkills: { testing: 1.0 } });
-  tasks.push({ title: '文档更新', type: 'documentation', estimatedHours: 2, requiredSkills: { writing: 1.0 } });
 
   const result = await call('POST', `/requirements/${reqId}/decompose`, { tasks });
   console.log(`[Skill:任务分解] 已分解为 ${result.count} 个任务`);

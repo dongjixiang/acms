@@ -68,6 +68,45 @@ async function generateDoc(reqId, modelId) {
   return { content: result.content, modelUsed: result.modelUsed };
 }
 
+// ===== 需求复杂度评估 =====
+function assessComplexity(requirement, srs) {
+  let score = 0;
+  const desc = (requirement.description || '').length;
+  const structured = (requirement.structured_description || '').length;
+  const scopeItems = (srs.scopeIn || []).length;
+  const acItems = (srs.acceptanceCriteria || []).length;
+  const constraints = (srs.technicalConstraints || []).length;
+
+  // 描述长度
+  if (desc > 200 || structured > 200) score += 1;
+  if (desc > 500 || structured > 500) score += 1;
+  // 功能范围项数
+  if (scopeItems >= 2) score += 1;
+  if (scopeItems >= 4) score += 1;
+  // 验收标准数
+  if (acItems >= 3) score += 1;
+  if (acItems >= 6) score += 1;
+  // 技术约束
+  if (constraints >= 2) score += 1;
+  // 关键词检测（复杂领域）
+  const complexKeywords = ['数据库', '缓存', '消息队列', '分布式', '微服务', 'API', 'auth', '认证', '权限', '实时', 'websocket', '并发', '事务', '支付', '加密'];
+  const text = (requirement.description + ' ' + requirement.structured_description + ' ' + requirement.title).toLowerCase();
+  const keywordHits = complexKeywords.filter(k => text.includes(k.toLowerCase())).length;
+  if (keywordHits >= 2) score += 1;
+  if (keywordHits >= 4) score += 1;
+
+  let complexity, taskRange;
+  if (score <= 2) {
+    complexity = '🟢 简单'; taskRange = '1-2 个任务';
+  } else if (score <= 4) {
+    complexity = '🟡 中等'; taskRange = '3-5 个任务';
+  } else {
+    complexity = '🔴 复杂'; taskRange = '6-8 个任务';
+  }
+
+  return `复杂度评估: ${complexity}（评分: ${score}）\n建议任务数: ${taskRange}\n${score <= 2 ? '注意: 这是简单需求，任务描述可以简洁，不需要测试/文档任务。' : ''}`;
+}
+
 // ===== JSON 修复工具 =====
 // LLM 输出的 JSON 常有：尾逗号、截断导致括号不匹配
 function repairJSON(text) {
@@ -113,8 +152,19 @@ function repairJSON(text) {
 // ===== 智能任务分解 =====
 const DECOMPOSE_SYSTEM_PROMPT = `你是一个经验丰富的技术项目经理。请根据需求规格说明，将需求分解为可执行的任务列表。
 
+**按复杂度调整粒度（重要！）：**
+
+| 复杂度 | 判断标准 | 任务数 | 示例 |
+|--------|---------|--------|------|
+| 🟢 简单 | 单一功能点、改文案/加字段/调样式 | **1-2个** | "给按钮加loading状态"、"增加导出按钮" |
+| 🟡 中等 | 独立功能模块、涉及2-3个文件 | **3-5个** | "用户登录功能"、"天气粒子特效" |
+| 🔴 复杂 | 跨系统/跨模块、涉及数据库/API/多端 | **6-8个** | "微服务拆分"、"实时协作编辑" |
+
+**简单需求的任务描述可以简洁**——只需要任务目标 + 验收方式即可，不需要写满6段。
+**简单需求不要强行拆出"测试任务"和"文档任务"**——如果改动很小（<10行代码），一个任务包含实现+自测即可。
+
 **分解原则：**
-1. 每个任务应该是独立可交付的单元，任务粒度控制在 0.5-3 天工作量
+1. 每个任务应该是独立可交付的单元
 2. 识别任务间的依赖关系（用任务标题引用，稍后系统会映射为 ID）
 3. 为每个任务标注所需技能和水平
 4. 如有相关 Wiki 文档（技术规范、API 文档），注明引用路径
@@ -183,6 +233,8 @@ async function decomposeRequirement(reqId, modelId) {
 
   messages.push(
     { role: 'user', content: `请分解以下需求：
+
+${assessComplexity(requirement, srs)}
 
 标题: ${requirement.title}
 描述: ${requirement.structured_description || requirement.description || ''}

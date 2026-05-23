@@ -23,7 +23,6 @@ document.addEventListener('DOMContentLoaded', () => {
     <h1 id="header-title">🤖 <span data-i18n="app.title">智能体协同管理系统</span> <span class="version" data-i18n="app.version">v0.3</span></h1>
     <div id="header-right">
       <span id="current-project"></span>
-      <button id="btn-back-projects" class="btn-small" style="display:none !important" onclick="goToProjects()">← 所有项目</button>
       <button class="btn-small" onclick="showView('view-admin');loadAdminPage();">⚙️</button>
       <button id="btn-theme-toggle" class="btn-small" onclick="App.toggleTheme()" title="切换主题">🌙</button>
       <select id="lang-switcher" onchange="I18n.setLang(this.value)">
@@ -101,6 +100,7 @@ document.addEventListener('DOMContentLoaded', () => {
     <div id="sidebar-backdrop" onclick="App.closeSidebar()"></div>
     <div id="main-layout">
       <nav id="sidebar">
+        <button class="nav-btn nav-back" onclick="goToProjects()" style="margin-bottom:8px;padding-bottom:12px;border-bottom:1px solid var(--border)">← <span data-i18n="nav.backToProjects">返回项目列表</span></button>
         <button class="nav-btn active" data-view="dashboard">📊 <span data-i18n="nav.dashboard">仪表盘</span></button>
         <button class="nav-btn" data-view="requirements">📋 <span data-i18n="nav.requirements">需求管理</span></button>
         <button class="nav-btn" data-view="kanban">📌 <span data-i18n="nav.kanban">任务看板</span></button>
@@ -130,13 +130,18 @@ document.addEventListener('DOMContentLoaded', () => {
               <option value="idea">💡 想法</option><option value="clarifying">❓ 澄清中</option><option value="review">👀 待审核</option><option value="approved">✅ 已确认</option><option value="in_execution">🔄 执行中</option><option value="done">🎉 已完成</option>
             </select>
           </div>
-          <div id="req-list"></div>
           <div id="create-req-panel" class="panel-form" style="display:none">
             <h3>➕ 新建需求</h3>
             <label>需求标题 <span class="required">*</span></label>
-            <input type="text" id="create-title" placeholder="例如：天气特效系统">
+            <div class="input-voice-row">
+              <input type="text" id="create-title" placeholder="例如：天气特效系统" style="flex:1">
+              <button class="btn-voice" onclick="startVoiceInput(document.getElementById('create-title'), this)" title="语音录入">🎤</button>
+            </div>
             <label>需求描述</label>
-            <textarea id="create-desc" rows="4" placeholder="描述你想要的功能或改进..."></textarea>
+            <div class="input-voice-row">
+              <textarea id="create-desc" rows="4" placeholder="描述你想要的功能或改进..." style="flex:1"></textarea>
+              <button class="btn-voice" onclick="startVoiceInput(document.getElementById('create-desc'), this)" title="语音录入">🎤</button>
+            </div>
             <div class="form-row">
               <div><label>优先级</label><select id="create-priority">
                 <option value="1">P1 🔴</option><option value="2">P2 🟠</option>
@@ -150,13 +155,14 @@ document.addEventListener('DOMContentLoaded', () => {
               <button class="btn-back" onclick="hideCreateReq()">取消</button>
             </div>
           </div>
+          <div id="req-list"></div>
         </div>
 
         <!-- 任务看板 -->
         <div id="view-kanban" class="view">
           <div class="view-header">
             <h2 data-i18n="kanban.title">📌 任务看板</h2>
-            <select id="kanban-req-filter" class="filter-select"><option value="">全部需求</option></select>
+            <select id="kanban-req-filter" class="filter-select" onchange="refreshKanban()"><option value="">全部需求</option></select>
             <button class="btn-small btn-accept" onclick="refreshKanban()">🔄 刷新</button>
           </div>
           <div class="kanban-container">
@@ -225,6 +231,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/core/state.js"></script>
 <script src="/client/js/core/utils.js"></script>
 <script src="/client/js/core/markdown.js"></script>
+<script src="/client/js/core/voice.js"></script>
 <script src="/client/js/core/router.js"></script>
 <script src="/client/js/views/projects.js"></script>
 <script src="/client/js/views/dashboard.js"></script>

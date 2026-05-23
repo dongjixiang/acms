@@ -16,7 +16,6 @@ function showView(id) {
 function goToProjects() {
   App.currentProjectId = null; App.currentProject = null;
   document.getElementById('current-project').textContent = '';
-  document.getElementById('btn-back-projects').style.display = 'none';
   document.getElementById('header-title').innerHTML = '🤖 智能体协同管理系统 <span class="version">v0.3</span>';
   showView('view-projects');
   App.closeSidebar();
@@ -26,7 +25,6 @@ function goToProjects() {
 function enterProject(proj) {
   App.currentProjectId = proj.id; App.currentProject = proj;
   document.getElementById('current-project').textContent = `📦 ${escHtml(proj.name)}`;
-  document.getElementById('btn-back-projects').style.display = 'inline-block';
   document.getElementById('header-title').innerHTML = `🤖 ${escHtml(proj.name)} <span class="version">v0.3</span>`;
   showView('view-workspace');
   setupWorkspaceNav();
@@ -47,7 +45,7 @@ function showWorkspaceView(name) {
 }
 
 function setupWorkspaceNav() {
-  document.querySelectorAll('#sidebar .nav-btn').forEach(btn => {
+  document.querySelectorAll('#sidebar .nav-btn:not(.nav-back)').forEach(btn => {
     btn.onclick = () => {
       const view = btn.dataset.view;
       showWorkspaceView(view);

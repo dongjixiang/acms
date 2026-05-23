@@ -1,6 +1,8 @@
 // 任务看板视图 — 五列 Kanban + 任务详情 + 操作
 // 依赖: core/state.js, core/utils.js, js/api.js
 
+let _kanbanFilterLoaded = false;
+
 async function loadKanbanReqFilter() {
   if (!App.currentProjectId) return;
   try {
@@ -12,6 +14,13 @@ async function loadKanbanReqFilter() {
 async function refreshKanban(parentId) {
   if (!App.currentProjectId) return;
   const filterVal = parentId || document.getElementById('kanban-req-filter')?.value || '';
+  // 加载智能体列表，构建卡片下拉框选项
+  let agentOpts = '<option value="">选择智能体</option>';
+  try {
+    const r = await fetch('/api/agents', { headers: { 'X-API-Key': 'dev-key-001' } });
+    (await r.json()).forEach(a => { agentOpts += '<option value="' + a.id + '">' + (a.name || a.id) + '</option>'; });
+  } catch(e) {}
+  if (!_kanbanFilterLoaded) { await loadKanbanReqFilter(); _kanbanFilterLoaded = true; }
   try {
     const board = await Tasks.board(App.currentProjectId, filterVal || undefined);
     for (const col of ['backlog', 'in_progress', 'review', 'done', 'archived']) {
@@ -23,10 +32,10 @@ async function refreshKanban(parentId) {
         return `
         <div class="task-card priority-${t.priority || 3}${blockedClass}" onclick="openTask('${t.id}')">
           <div class="task-title">${blocked ? '🔒 ' : ''}${escHtml(t.title)}</div>
-          <div class="task-meta"><span>${t.id}</span><span class="type-tag type-${t.type}">${App.typeLabels[t.type] || ''} ${t.type}</span><span>P${t.priority}</span>${t.assigned_to ? '<span>🐕</span>' : ''}${t.status === 'in_progress' ? '<span>${t.progress || 0}%</span>' : ''}</div>
+          <div class="task-meta"><span>${t.id}</span><span class="type-tag type-${t.type}">${App.typeLabels[t.type] || ''} ${t.type}</span><span>P${t.priority}</span>${t.assigned_to ? '<span>Agent: ' + escHtml(t.assigned_to) + '</span>' : ''}${t.status === 'in_progress' ? '<span>' + (t.progress || 0) + '%</span>' : ''}</div>
           ${t.status === 'in_progress' ? '<div class="progress-bar"><div class="progress-fill" style="width:${t.progress || 0}%"></div></div>' : ''}
-          ${blocked && t.status === 'backlog' ? '<div class="task-actions"><span style="font-size:11px;color:var(--accent3)">⏳ ${escHtml(t.block_reason || "等待依赖")}</span></div>' : ''}
-          ${!blocked && t.status === 'backlog' ? '<div class="task-actions"><button class="btn-small btn-accept" onclick="event.stopPropagation();claimTask(\"' + t.id + '\")">认领</button></div>' : ''}
+          ${blocked && t.status === 'backlog' ? `<div class="task-actions"><span style="font-size:11px;color:var(--accent3)">⏳ ${escHtml(t.block_reason || '等待依赖')}</span></div>` : ''}
+          ${!blocked && t.status === 'backlog' ? `<div class="task-actions" style="display:flex;gap:6px;align-items:center"><select value="${t.assigned_to||''}" onclick="event.stopPropagation()" onchange="event.stopPropagation();assignTaskCard('${t.id}',this.value)" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:3px;max-width:130px">${agentOpts}</select><button class="btn-small btn-accept" onclick="event.stopPropagation();claimTask('${t.id}')">认领</button></div>` : ''}
           ${t.status === 'in_progress' ? '<div class="task-actions"><button class="btn-small btn-accept" onclick="event.stopPropagation();submitTask(\"' + t.id + '\")">提交</button></div>' : ''}
           ${t.status === 'review' ? '<div class="task-actions"><button class="btn-small btn-accept" onclick="event.stopPropagation();reviewTask(\"' + t.id + '\",\"approved\")">通过</button><button class="btn-small btn-reject" onclick="event.stopPropagation();reviewTask(\"' + t.id + '\",\"rejected\")">驳回</button></div>' : ''}
         </div>`;
@@ -95,6 +104,16 @@ async function assignTask(taskId, agentId) {
     await Tasks.claim(taskId, agentId);
     toast('已分配给 ' + agentId + ' ✅', 'success');
     refreshKanban(); openTask(taskId);
+  } catch(e) { toast('分配失败: ' + e.message, 'error'); }
+}
+
+// 看板卡片快捷分配智能体
+async function assignTaskCard(taskId, agentId) {
+  if (!agentId) return;
+  try {
+    await Tasks.claim(taskId, agentId);
+    toast('已分配给 ' + agentId + ' ✅', 'success');
+    refreshKanban();
   } catch(e) { toast('分配失败: ' + e.message, 'error'); }
 }
 
