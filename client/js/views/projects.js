@@ -32,7 +32,6 @@ async function doCreateProject() {
       name,
       slug: document.getElementById('proj-slug').value.trim(),
       description: document.getElementById('proj-desc').value.trim(),
-      wikiVaultPath: document.getElementById('proj-wiki').value.trim(),
     });
     toast(t('toast.projectCreated'), 'success');
     document.getElementById('create-project-form').style.display = 'none';

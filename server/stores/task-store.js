@@ -77,8 +77,8 @@ class TaskStore {
     const task = this.getById(id);
     if (!task) return { error: 'TASK_NOT_FOUND' };
     const VALID = {
-      backlog: ['in_progress', 'archived'], in_progress: ['review', 'backlog', 'archived'],
-      review: ['done', 'in_progress', 'archived'], done: ['archived'], archived: [],
+      backlog: ['in_progress', 'archived'], in_progress: ['review', 'backlog', 'archived', 'frozen'],
+      review: ['done', 'in_progress', 'archived', 'frozen'], done: ['archived'], archived: ['backlog'],
       frozen: ['backlog', 'in_progress'],
     };
     if (!VALID[task.status]?.includes(targetStatus)) {

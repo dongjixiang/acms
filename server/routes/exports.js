@@ -1,8 +1,11 @@
-// 文档导出路由 — 将 Markdown 内容导出为 docx
+// 文档导出路由 — 将 Markdown 内容导出为 docx / 项目打包下载
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const router = express.Router();
 const { collection } = require('../db/connection');
 const { mdToDocx } = require('../services/export-service');
+const { createWorkspaceBundle } = require('../services/bundle-service');
 const workspace = require('../services/workspace-service');
 const projectStore = require('../stores/project-store');
 
@@ -72,6 +75,45 @@ router.get('/task/:id', async (req, res, next) => {
     res.setHeader('Content-Length', buf.length);
     res.send(buf);
   } catch (e) { next(e); }
+});
+
+/**
+ * 打包下载整个项目工作区
+ * GET /api/exports/project/:projectId/bundle
+ */
+router.get('/project/:projectId/bundle', async (req, res, next) => {
+  try {
+    const project = projectStore.getById(req.params.projectId);
+    if (!project) return res.status(404).json({ error: 'PROJECT_NOT_FOUND' });
+
+    const slug = project.slug || project.name;
+    const wsPath = path.join(__dirname, '..', '..', 'workspaces', slug);
+
+    if (!fs.existsSync(wsPath)) {
+      return res.status(404).json({ error: 'WORKSPACE_EMPTY', message: '工作区尚未初始化' });
+    }
+
+    // 检查是否有文件（排除空目录）
+    try {
+      const files = workspace.listFiles(slug);
+      if (!files.length) {
+        return res.status(404).json({ error: 'WORKSPACE_EMPTY', message: '工作区暂无文件' });
+      }
+    } catch (e) { /* 继续 */ }
+
+    const archive = createWorkspaceBundle(wsPath);
+
+    const safeName = (project.name || slug).replace(/[\\/:*?"<>|]/g, '_');
+    const date = new Date().toISOString().split('T')[0];
+    const filename = safeName + '-workspace-' + date + '.zip';
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', 'attachment; filename*=UTF-8\'\'' + encodeURIComponent(filename));
+
+    archive.pipe(res);
+  } catch (e) {
+    if (!res.headersSent) next(e);
+  }
 });
 
 module.exports = router;

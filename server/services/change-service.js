@@ -11,9 +11,14 @@ const service = {
   analyzeImpact(requirementId, changeDescription) {
     const requirement = reqStore.getById(requirementId);
     if (!requirement) throw Object.assign(new Error('需求不存在'), { status: 404, code: 'REQ_NOT_FOUND' });
-    if (!['in_execution', 'done'].includes(requirement.status)) {
+    // 只允许 in_execution 状态的需求进行变更（已完成的需求应走新需求流程）
+    if (!['in_execution'].includes(requirement.status)) {
       throw Object.assign(new Error('只有执行中的需求才能变更'), { status: 400, code: 'REQ_NOT_EXECUTING' });
     }
+
+    // 状态机: in_execution → change_requested → impact_analysis
+    reqStore.transition(requirementId, 'change_requested');
+    reqStore.transition(requirementId, 'impact_analysis');
 
     const taskIds = JSON.parse(requirement.task_ids || '[]');
     const tasks = taskIds.map(id => taskStore.getById(id)).filter(Boolean);
@@ -48,7 +53,7 @@ const service = {
     ].join('，');
 
     return {
-      requirement: { id: requirement.id, title: requirement.title, status: requirement.status },
+      requirement: { id: requirement.id, title: requirement.title, status: 'impact_analysis' },
       changeDescription,
       impact,
       estimatedExtraHours: impact.adjusted.length * 1 + impact.discarded.length * 2,
@@ -61,17 +66,27 @@ const service = {
   confirmChange(requirementId, analysisResult) {
     const requirement = reqStore.getById(requirementId);
     if (!requirement) throw Object.assign(new Error('需求不存在'), { status: 404, code: 'REQ_NOT_FOUND' });
-
-    const impact = analysisResult.impact;
-
-    // 冻结需要调整的进行中任务
-    for (const item of impact.adjusted) {
-      taskStore.transition(item.id, 'frozen');
+    if (requirement.status !== 'impact_analysis') {
+      throw Object.assign(new Error('需求未处于变更影响评估阶段，无法确认'), { status: 400, code: 'INVALID_TRANSITION' });
     }
 
-    // 归档需要重做的任务
-    for (const item of impact.discarded) {
-      taskStore.transition(item.id, 'archived');
+    const impact = analysisResult.impact;
+    const decisions = analysisResult.taskDecisions || {};
+
+    // 冻结需要调整的进行中/待审核任务（用户可选择 keep 跳过）
+    for (const item of impact.adjusted || []) {
+      const decision = decisions[item.id] || 'freeze';
+      if (decision !== 'keep') {
+        taskStore.transition(item.id, 'frozen');
+      }
+    }
+
+    // 归档需要重做的任务（用户可选择 keep 跳过）
+    for (const item of impact.discarded || []) {
+      const decision = decisions[item.id] || 'discard';
+      if (decision !== 'keep') {
+        taskStore.transition(item.id, 'archived');
+      }
     }
 
     // 记录变更历史
@@ -79,7 +94,7 @@ const service = {
     changeHistory.push({
       version: (requirement.current_version || 1) + 1,
       time: Date.now(),
-      reason: analysisResult.changeDescription,
+      reason: analysisResult.changeDescription || analysisResult.description || '用户提出变更',
       impact: {
         tasks_unchanged: impact.unchanged.length,
         tasks_adjusted: impact.adjusted.length,
@@ -113,12 +128,19 @@ const service = {
   cancelChange(requirementId) {
     const requirement = reqStore.getById(requirementId);
     if (!requirement) throw Object.assign(new Error('需求不存在'), { status: 404, code: 'REQ_NOT_FOUND' });
+    if (requirement.status !== 'impact_analysis') {
+      throw Object.assign(new Error('需求未处于变更影响评估阶段，无法取消'), { status: 400, code: 'INVALID_TRANSITION' });
+    }
 
     const taskIds = JSON.parse(requirement.task_ids || '[]');
     for (const tid of taskIds) {
       const task = taskStore.getById(tid);
-      if (task && task.status === 'frozen') {
+      if (!task) continue;
+      if (task.status === 'frozen') {
         taskStore.transition(tid, 'in_progress');
+      } else if (task.status === 'archived') {
+        // 变更取消时，被归档的 backlog 任务恢复
+        taskStore.transition(tid, 'backlog');
       }
     }
     reqStore.transition(requirementId, 'in_execution');

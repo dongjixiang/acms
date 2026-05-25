@@ -129,6 +129,23 @@ async function clarify(reqId, modelId, userMessage, conversationHistory) {
     })),
   ];
 
+  // 变更上下文感知: 如果需求经历过变更，注入变更背景
+  const changeHistory = JSON.parse(requirement.change_history || '[]');
+  if (changeHistory.length > 0) {
+    const lastChange = changeHistory[changeHistory.length - 1];
+    const changeContext = `## ⚠️ 这是一个经历过变更的需求
+
+上次变更 (v${lastChange.version}): ${lastChange.reason}
+影响: ${lastChange.impact.summary}
+
+**重要指示**:
+- 上面的 SRS 是变更前已确定的内容，请**不要重新追问已确定的细节**
+- 只针对变更部分（${lastChange.reason}）提出澄清问题
+- 如果变更描述已经足够清晰，可以在首轮直接设置 readyForReview=true
+- 你的选择题应该聚焦于变更带来的新不确定性，而非重复确认已有结论`;
+    messages.splice(2, 0, { role: 'system', content: changeContext });
+  }
+
   if (userMessage) {
     messages.push({ role: 'user', content: userMessage });
   } else if (!conversationHistory || conversationHistory.length === 0) {
@@ -136,7 +153,7 @@ async function clarify(reqId, modelId, userMessage, conversationHistory) {
   }
 
   // 调用 LLM（适配器自动根据 model.api 选择格式）
-  const result = await callLLM(modelId, messages, { temperature: 0.7, maxTokens: 4000, jsonMode: true });
+  const result = await callLLM(modelId, messages, { temperature: 0.7, maxTokens: 4000, jsonMode: true, projectId: requirement.project_id, caller: 'clarify' });
   const content = result.content;
 
   // 提取 JSON — 多层容错

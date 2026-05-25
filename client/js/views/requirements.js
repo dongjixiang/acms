@@ -54,12 +54,15 @@ async function openRequirement(id) {
       ${req.status === 'idea' || req.status === 'clarifying' ? renderAiClarifyPanel(req) : ''}
       ${req.status === 'review' ? renderReviewPanel(req) : ''}
       ${req.status === 'approved' ? renderAiDecomposePanel(req) + '<div style="margin-top:8px"><button class="btn-small" style="background:rgba(78,205,196,0.1);color:var(--green)" onclick="openSplitPanel(\'' + id + '\')">🔧 拆分需求</button></div>' : ''}
-      ${req.status === 'in_execution' ? `<div style="margin-top:12px"><button class="btn-primary" onclick="showWorkspaceView('kanban');refreshKanban('${req.id}');">📌 查看看板</button><button class="btn-small" style="margin-left:8px;background:rgba(255,217,61,0.15);color:var(--accent3);border-color:rgba(255,217,61,0.3)" onclick="showChangePanel('${id}')">📝 需求变更</button></div>` : ''}
+      ${req.status === 'in_execution' ? `<div id="change-btn-row" style="margin-top:12px"><button class="btn-primary" onclick="showWorkspaceView('kanban');refreshKanban('${req.id}');">📌 查看看板</button><button class="btn-small" style="margin-left:8px;background:rgba(255,217,61,0.15);color:var(--accent3);border-color:rgba(255,217,61,0.3)" onclick="showChangePanel('${id}')">📝 需求变更</button></div>` : ''}
+      ${req.status === 'change_requested' ? `<div id="change-btn-row" style="margin-top:12px;padding:12px;background:rgba(255,217,61,0.08);border:1px dashed var(--accent3);border-radius:8px"><span style="color:var(--accent3)">⏳ 变更分析中，请稍候...</span><button class="btn-small" style="margin-left:12px;background:rgba(255,100,100,0.15);color:#f44" onclick="cancelChangePanel('${id}')">取消变更</button></div>` : ''}
+      ${req.status === 'impact_analysis' ? `<div id="change-btn-row" style="margin-top:12px;padding:12px;background:rgba(78,205,196,0.08);border:1px dashed var(--green);border-radius:8px"><span style="color:var(--green)">📊 变更影响分析已完成</span><button class="btn-accept" style="margin-left:12px" onclick="confirmChangeSimple('${id}')">✅ 确认变更</button><button class="btn-small" style="margin-left:8px;background:rgba(255,100,100,0.15);color:#f44" onclick="cancelChangePanel('${id}')">取消变更</button></div>` : ''}
       ${req.wiki_path ? `<div class="section"><span class="wiki-link">📚 Wiki: ${escHtml(req.wiki_path)}</span></div>` : ''}
       <div style="margin-top:16px;display:flex;gap:8px">
         <button class="btn-small btn-reject" onclick="deleteRequirement('${id}')">🗑 删除需求</button>
       </div>
       <h3>📋 SRS</h3><div class="srs-preview"><pre>${escHtml(JSON.stringify(srs, null, 2))}</pre></div>
+      ${renderChangeHistory(req)}
       <div id="req-children" style="margin-top:16px"></div>`;
   } catch (e) { toast('加载失败: ' + e.message, 'error'); }
   setTimeout(() => loadAiModels(id), 100);
@@ -82,44 +85,158 @@ async function approveReq(id) { try { await Requirements.approve(id); toast('已
 async function rejectReq(id) { const r = prompt('驳回原因:'); try { await Requirements.reject(id, r || '需完善'); toast('已驳回', 'success'); openRequirement(id); loadRequirements(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
 
 // ===== 需求变更管理 =====
-async function showChangePanel(reqId) {
-  const desc = prompt('变更描述（例如：增加雷暴天气类型）:');
-  if (!desc) return;
-  try {
-    const analysis = await api('POST', `/changes/${reqId}/change/analyze`, { description: desc });
-    const content = document.getElementById('detail-content');
-    const existing = content.innerHTML;
-    content.innerHTML = `
-      <div class="review-panel" id="change-panel">
-        <h3>📊 变更影响报告</h3>
-        <p style="color:var(--text2);margin-bottom:12px">变更: ${escHtml(analysis.changeDescription)}</p>
-        <div style="margin-bottom:12px">
-          ${analysis.impact.unchanged.length ? `<div>✅ 无影响 (${analysis.impact.unchanged.length}): ${analysis.impact.unchanged.map(t => t.title).join(', ')}</div>` : ''}
-          ${analysis.impact.adjusted.length ? `<div>⚠️ 需调整 (${analysis.impact.adjusted.length}): ${analysis.impact.adjusted.map(t => t.title + '(' + t.reason + ')').join(', ')}</div>` : ''}
-          ${analysis.impact.discarded.length ? `<div>❌ 需重做 (${analysis.impact.discarded.length}): ${analysis.impact.discarded.map(t => t.title).join(', ')}</div>` : ''}
-        </div>
-        <p><strong>预估额外工时:</strong> ${analysis.estimatedExtraHours}h</p>
-        <p style="font-size:12px;color:var(--text2)">${analysis.impact.summary}</p>
-        <div class="review-actions">
-          <button class="btn-accept" onclick="confirmChange('${reqId}')">✅ 确认变更</button>
-          <button class="btn-reject" onclick="cancelChangePanel('${reqId}')">取消</button>
-        </div>
+let _currentChangeAnalysis = null;
+let _taskDecisions = {};
+
+// 步骤1: 显示结构化变更输入表单（插入在需求变更按钮下方）
+function showChangePanel(reqId) {
+  // 移除已有的变更面板
+  const oldForm = document.getElementById('change-form-panel');
+  if (oldForm) oldForm.remove();
+  const oldImpact = document.getElementById('change-impact-panel');
+  if (oldImpact) oldImpact.remove();
+
+  const btnRow = document.getElementById('change-btn-row');
+  if (!btnRow) return;
+  btnRow.insertAdjacentHTML('afterend', `
+    <div class="change-form-panel" id="change-form-panel">
+      <h3>📝 需求变更</h3>
+      <div class="form-row">
+        <label>变更类型</label>
+        <select id="change-type">
+          <option value="scope_add">🔵 范围增加 — 新增功能/模块</option>
+          <option value="scope_modify" selected>🟠 范围修改 — 调整已有逻辑</option>
+          <option value="scope_reduce">🔴 范围缩减 — 砍功能/简化</option>
+          <option value="text_only">🟢 纯文案/配置 — 不涉及代码逻辑</option>
+        </select>
       </div>
-      ${existing}`;
+      <div class="form-row">
+        <label>变更描述</label>
+        <textarea id="change-desc" placeholder="描述具体变更内容，例如：增加难度选择（初级9×9、中级16×16、高级30×16），需新增难度切换UI和调整地雷生成算法" rows="3"></textarea>
+      </div>
+      <div class="review-actions">
+        <button class="btn-reject" onclick="cancelChangePanel('${reqId}')">取消</button>
+        <button class="btn-accent" onclick="doAnalyzeChange('${reqId}')">🔍 分析影响</button>
+      </div>
+    </div>`);
+}
+
+// 步骤2: 调用分析API并渲染带任务开关的影响报告
+async function doAnalyzeChange(reqId) {
+  const desc = document.getElementById('change-desc')?.value.trim();
+  if (!desc) { toast('请输入变更描述', 'error'); return; }
+  const changeType = document.getElementById('change-type')?.value || 'scope_modify';
+  try {
+    const analysis = await api('POST', `/changes/${reqId}/change/analyze`, { description: desc, changeType });
+    _currentChangeAnalysis = analysis;
+    _taskDecisions = {};
+
+    // 默认决策：系统建议值
+    for (const t of analysis.impact.adjusted || []) _taskDecisions[t.id] = 'freeze';
+    for (const t of analysis.impact.discarded || []) _taskDecisions[t.id] = 'discard';
+
+    // 移除表单面板，准备渲染影响报告
+    const oldForm = document.getElementById('change-form-panel');
+    if (oldForm) oldForm.remove();
+    const oldImpact = document.getElementById('change-impact-panel');
+    if (oldImpact) oldImpact.remove();
+
+    const btnRow = document.getElementById('change-btn-row');
+    if (!btnRow) return;
+    const ch = analysis.impact;
+
+    function renderTaskRow(t, cssClass, defaultAction, keepLabel, actionLabel) {
+      let progressHtml = t.currentProgress !== undefined ? '<span class="task-progress">' + t.currentProgress + '%</span>' : '';
+      return '<div class="impact-row ' + cssClass + '">' +
+        '<select onchange="setTaskDecision(' + t.id + ', this.value)" class="task-decision">' +
+          '<option value="' + defaultAction + '" selected>' + actionLabel + '</option>' +
+          '<option value="keep">' + keepLabel + '</option>' +
+        '</select>' +
+        '<span class="task-title">' + escHtml(t.title) + '</span>' +
+        progressHtml +
+      '</div>';
+    }
+
+    function renderLockedRow(t) {
+      return '<div class="impact-row locked"><span class="lock-icon">🔒</span><span class="task-title">' + escHtml(t.title) + '</span></div>';
+    }
+
+    let unchangedHtml = ch.unchanged && ch.unchanged.length ?
+      '<div class="impact-group"><h4>✅ 无影响 (' + ch.unchanged.length + ')</h4>' + ch.unchanged.map(renderLockedRow).join('') + '</div>' : '';
+
+    let adjustedHtml = ch.adjusted && ch.adjusted.length ?
+      '<div class="impact-group"><h4>⚠️ 需评估 (' + ch.adjusted.length + ')</h4>' + ch.adjusted.map(function(t) { return renderTaskRow(t, 'adjustable', 'freeze', '✅ 保持不变', '🧊 冻结调整'); }).join('') + '</div>' : '';
+
+    let discardedHtml = ch.discarded && ch.discarded.length ?
+      '<div class="impact-group"><h4>❌ 建议重做 (' + ch.discarded.length + ')</h4>' + ch.discarded.map(function(t) { return renderTaskRow(t, 'discardable', 'discard', '✅ 保持待办', '🗑 归档重做'); }).join('') + '</div>' : '';
+
+    btnRow.insertAdjacentHTML('afterend', `
+      <div class="change-impact-panel" id="change-impact-panel">
+        <h3>📊 变更影响报告</h3>
+        <p class="change-desc-line">变更: ${escHtml(analysis.changeDescription)}</p>
+        ${unchangedHtml}${adjustedHtml}${discardedHtml}
+        <p class="extra-hours">⏱ 预估额外工时: <strong>${analysis.estimatedExtraHours}h</strong></p>
+        <div class="review-actions">
+          <button class="btn-reject" onclick="cancelChangePanel('${reqId}')">取消</button>
+          <button class="btn-accept" onclick="confirmChange('${reqId}')">✅ 确认变更</button>
+        </div>
+      </div>`);
+
   } catch (e) { toast('分析失败: ' + e.message, 'error'); }
 }
 
+function setTaskDecision(taskId, value) {
+  _taskDecisions[taskId] = value;
+}
+
+// 步骤3: 确认变更（携带用户的任务决策）
 async function confirmChange(reqId) {
   try {
-    await api('POST', `/changes/${reqId}/change/confirm`, { description: document.querySelector('#change-panel p')?.textContent?.replace('变更: ', '') || '' });
+    const payload = {
+      changeDescription: _currentChangeAnalysis?.changeDescription || (document.querySelector('.change-desc-line')?.textContent || '').replace('变更: ', ''),
+      impact: _currentChangeAnalysis?.impact || {},
+      taskDecisions: _taskDecisions || {},
+    };
+    await api('POST', `/changes/${reqId}/change/confirm`, payload);
+    _currentChangeAnalysis = null;
+    _taskDecisions = {};
+    toast('变更已生效，需求回到完善阶段', 'success');
+    openRequirement(reqId); loadRequirements(); loadDashboard();
+  } catch (e) { toast('确认失败: ' + e.message, 'error'); }
+}
+
+// 页面刷新后简化确认（无前端任务决策数据，使用服务端已存储的影响分析）
+async function confirmChangeSimple(reqId) {
+  try {
+    await api('POST', `/changes/${reqId}/change/confirm`, { changeDescription: '', impact: {}, taskDecisions: {} });
+    _currentChangeAnalysis = null;
+    _taskDecisions = {};
     toast('变更已生效，需求回到完善阶段', 'success');
     openRequirement(reqId); loadRequirements(); loadDashboard();
   } catch (e) { toast('确认失败: ' + e.message, 'error'); }
 }
 
 function cancelChangePanel(reqId) {
+  _currentChangeAnalysis = null;
+  _taskDecisions = {};
   api('POST', `/changes/${reqId}/change/cancel`).catch(() => {});
   openRequirement(reqId);
+}
+
+// ===== 变更历史 =====
+function renderChangeHistory(req) {
+  const history = safeParse(req.change_history);
+  if (!history || !history.length) return '';
+  return '<div class="change-history">' +
+    '<h3>📜 变更历史 (共 ' + history.length + ' 次)</h3>' +
+    history.slice().reverse().map(function(h) {
+      return '<div class="change-history-item">' +
+        '<div class="ch-version">v' + h.version + '</div>' +
+        '<div class="ch-reason">' + escHtml(h.reason) + '</div>' +
+        '<div class="ch-meta">' + fmtDate(new Date(h.time)) + ' · ' + (h.impact?.summary || '') + '</div>' +
+      '</div>';
+    }).join('') +
+  '</div>';
 }
 
 async function deleteRequirement(id) {

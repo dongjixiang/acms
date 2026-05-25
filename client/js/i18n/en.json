@@ -4,6 +4,7 @@
     "version": "v0.3"
   },
   "nav": {
+    "delivery": "Delivery",
     "projects": "Projects",
     "dashboard": "Dashboard",
     "requirements": "Requirements",
@@ -163,6 +164,14 @@
       "add": "Add",
       "empty": "No members"
     }
+  },
+  "workspace": {
+    "title": "Workspace",
+    "bundleDownload": "Download Bundle",
+    "preview": "Preview",
+    "experience": "Live Preview",
+    "previewNotSupported": "Preview not supported for this file type",
+    "empty": "Workspace is empty. Files will appear here automatically after requirements are processed."
   },
   "common": {
     "online": "Online",

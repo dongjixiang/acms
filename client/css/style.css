@@ -347,6 +347,118 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 .srs-preview { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-top: 12px; max-height: 400px; overflow-y: auto; }
 .srs-preview pre { white-space: pre-wrap; font-size: 13px; line-height: 1.8; }
 
+/* 变更历史 */
+.change-history { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
+.change-history h3 { font-size: 14px; color: var(--text); margin-bottom: 8px; }
+.change-history-item { padding: 8px 0 8px 12px; border-left: 2px solid var(--accent3); margin-bottom: 8px; }
+.change-history-item .ch-version { font-weight: 600; color: var(--accent3); font-size: 13px; }
+.change-history-item .ch-reason { color: var(--text); font-size: 13px; margin-top: 2px; }
+.change-history-item .ch-meta { font-size: 11px; color: var(--text2); margin-top: 4px; }
+
+/* 变更表单面板 */
+.change-form-panel { background: var(--bg); border: 1px solid var(--accent3); border-radius: var(--radius); padding: 16px; margin-bottom: 12px; }
+.change-form-panel h3 { font-size: 15px; color: var(--accent3); margin-bottom: 12px; }
+.change-form-panel .form-row { margin-bottom: 10px; }
+.change-form-panel .form-row label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 4px; }
+.change-form-panel .form-row select,
+.change-form-panel .form-row textarea { width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg2); color: var(--text); font-size: 13px; box-sizing: border-box; }
+.change-form-panel .form-row textarea { resize: vertical; min-height: 60px; }
+
+/* 变更影响报告面板 */
+.change-impact-panel { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 12px; }
+.change-impact-panel h3 { font-size: 15px; color: var(--text); margin-bottom: 8px; }
+.change-impact-panel .change-desc-line { color: var(--text2); font-size: 13px; margin-bottom: 12px; }
+.change-impact-panel .extra-hours { font-size: 13px; color: var(--text); margin: 12px 0 8px; padding-top: 12px; border-top: 1px solid var(--border); }
+.change-impact-panel .extra-hours strong { color: var(--accent3); }
+
+/* 影响分组 */
+.impact-group { margin-bottom: 10px; }
+.impact-group h4 { font-size: 13px; margin-bottom: 4px; color: var(--text); }
+.impact-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; padding-left: 8px; font-size: 13px; }
+.impact-row.locked { opacity: 0.65; }
+.impact-row .lock-icon { font-size: 11px; margin-right: 2px; }
+.impact-row .task-title { flex: 1; color: var(--text); }
+.impact-row .task-progress { font-size: 11px; color: var(--text2); background: var(--bg2); padding: 1px 6px; border-radius: 8px; }
+.impact-row .task-decision { font-size: 12px; padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg2); color: var(--text); flex-shrink: 0; }
+
+.btn-accent { padding: 6px 14px; border: 1px solid var(--accent3); border-radius: var(--radius); background: rgba(255,217,61,0.15); color: var(--accent3); cursor: pointer; font-size: 13px; }
+.btn-accent:hover { background: rgba(255,217,61,0.25); }
+
+/* ================================================================
+   工作区：操作栏 + 文件预览 + 一键体验
+   ================================================================ */
+/* 交付概览 stat-card（利用已有 stats-row 布局） */
+.stat-card {
+  background: var(--bg2); border-radius: var(--radius); padding: 16px;
+  text-align: center; box-shadow: var(--shadow);
+}
+.stat-num { font-size: 28px; font-weight: 700; color: var(--text); }
+.stat-label { font-size: 12px; color: var(--text2); margin-top: 4px; }
+
+/* 工作区操作栏 */
+.workspace-actions { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
+
+.btn-experience {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 10px 24px; font-size: 15px; font-weight: 600;
+  background: linear-gradient(135deg, #4ecdc4, #2ecc71);
+  color: #0f0f1a; border: none; border-radius: var(--radius);
+  cursor: pointer; transition: transform 0.2s, box-shadow 0.2s;
+}
+.btn-experience:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(78,205,196,0.4); }
+.btn-experience:active { transform: translateY(0); }
+
+.workspace-file-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.workspace-file-row:hover { background: var(--bg3); }
+.btn-experience-icon { background: var(--accent) !important; color: #0f0f1a !important; font-size: 12px !important; padding: 2px 6px !important; }
+
+/* 预览 Overlay */
+.preview-overlay {
+  display: none; flex-direction: column;
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  z-index: 9999; background: rgba(0,0,0,0.85);
+}
+.preview-overlay .preview-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 24px; background: var(--bg2); border-bottom: 1px solid var(--border);
+  color: var(--text); font-size: 15px; flex-shrink: 0;
+}
+.preview-overlay .preview-header button {
+  padding: 6px 14px; background: var(--accent2); color: #fff; border: none;
+  border-radius: var(--radius); cursor: pointer; font-size: 13px;
+}
+.preview-overlay .preview-header button:hover { opacity: 0.85; }
+
+.preview-body {
+  flex: 1; overflow-y: auto; padding: 0;
+}
+
+/* 代码预览 */
+.preview-code-wrap {
+  display: flex; font-family: 'Cascadia Code', 'Fira Code', 'Consolas', 'Monaco', monospace;
+  font-size: 13px; line-height: 1.6; min-height: 100%;
+}
+.preview-code-lines {
+  padding: 16px 0; background: var(--bg3); color: var(--text2);
+  text-align: right; user-select: none; flex-shrink: 0; overflow: hidden;
+}
+.preview-code-lines .ln { display: block; padding: 0 12px 0 8px; }
+.preview-code {
+  flex: 1; margin: 0; padding: 16px; background: var(--bg);
+  color: var(--text); white-space: pre-wrap; word-break: break-all;
+  overflow-x: auto;
+}
+
+/* 图片预览 */
+.preview-image-wrap {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 100%; padding: 24px;
+}
+.preview-image {
+  max-width: 90vw; max-height: 85vh; object-fit: contain;
+  border-radius: 4px; box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+}
+
 /* ================================================================
    响应式适配 — 平板竖屏 (≤768px)
    ================================================================ */

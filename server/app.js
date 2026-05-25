@@ -28,6 +28,61 @@ app.get('/api/i18n/:lang', (req, res) => {
   } catch (e) { res.json(require('../client/js/i18n/zh.json')); }
 });
 
+// ── 预览路由（令牌认证，无需 API Key，在 auth 之前）──
+const workspaceRouter = require('./routes/workspace');
+const previewTokens = workspaceRouter._previewTokens;
+const workspaceSvc = require('./services/workspace-service');
+
+app.use('/preview/:token', (req, res, next) => {
+  const token = req.params.token;
+  if (!token) return res.status(400).send('Missing preview token');
+
+  const entry = previewTokens.get(token);
+  if (!entry || Date.now() > entry.expires) {
+    return res.status(401).send('Preview token expired or invalid. Please go back to ACMS and re-open the preview.');
+  }
+
+  req._previewSlug = entry.slug;
+  next();
+});
+
+// 预览静态文件服务
+const mimeMap = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
+  '.woff': 'font/woff',
+  '.md': 'text/markdown; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
+  '.xml': 'application/xml; charset=utf-8',
+  '.pdf': 'application/pdf',
+  '.zip': 'application/zip',
+  '.webp': 'image/webp',
+};
+
+app.use('/preview/:token', (req, res, next) => {
+  const slug = req._previewSlug;
+  const wsPath = path.join(__dirname, '..', 'workspaces', slug);
+
+  express.static(wsPath, {
+    setHeaders: (res, filePath) => {
+      const ext = path.extname(filePath).toLowerCase();
+      if (mimeMap[ext]) res.setHeader('Content-Type', mimeMap[ext]);
+    },
+    index: 'index.html',
+  })(req, res, () => {
+    res.status(404).send('File not found in workspace. Make sure the deliverable has been generated.');
+  });
+});
+
 // 认证
 app.use(authMiddleware);
 app.use(agentMiddleware);
@@ -63,7 +118,7 @@ app.use('/api/models', require('./routes/models'));
 app.use('/api/ai', require('./routes/ai-clarify'));
 app.use('/api/ai-tools', require('./routes/ai-tools'));
 app.use('/api/exports', require('./routes/exports'));
-app.use('/api/workspace', require('./routes/workspace'));
+app.use('/api/workspace', workspaceRouter);
 app.use('/api/skills', require('./routes/skills'));
 
 // 404

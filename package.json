@@ -8,9 +8,10 @@
     "dev": "node --watch server/index.js"
   },
   "dependencies": {
+    "archiver": "^6.0.2",
     "express": "^4.21.0",
-    "ws": "^8.18.0",
-    "uuid": "^10.0.0"
+    "uuid": "^10.0.0",
+    "ws": "^8.18.0"
   },
   "type": "commonjs"
 }

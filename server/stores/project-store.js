@@ -1,12 +1,16 @@
 // 项目数据存储 (JSON 版)
 const { collection } = require('../db/connection');
+const path = require('path');
 
 class ProjectStore {
   create({ name, slug, description = '', wikiVaultPath = '', wikiDocsPath = 'docs/' }) {
     const id = `proj_${slug || name.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
     const now = new Date().toISOString();
-    const project = { id, name, slug: slug || name, description, status: 'active', visibility: 'team',
-      tech_stack: '{}', wiki_vault_path: wikiVaultPath, wiki_docs_path: wikiDocsPath,
+    // 默认 Wiki 路径：项目工作区下的 wiki/ 目录
+    const resolvedSlug = slug || name;
+    const defaultWikiPath = path.join(__dirname, '..', '..', 'workspaces', resolvedSlug, 'wiki');
+    const project = { id, name, slug: resolvedSlug, description, status: 'active', visibility: 'team',
+      tech_stack: '{}', wiki_vault_path: wikiVaultPath || defaultWikiPath, wiki_docs_path: wikiDocsPath,
       stats: '{}', created_at: now, updated_at: now };
     collection('projects').insert(project);
 

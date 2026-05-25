@@ -53,7 +53,7 @@ async function generateDoc(reqId, modelId) {
 - 需求摘要: ${srs.summary || ''}` },
   ];
 
-  const result = await callLLM(modelId, messages, { temperature: 0.5, maxTokens: 3000 });
+  const result = await callLLM(modelId, messages, { temperature: 0.5, maxTokens: 3000, projectId: requirement.project_id, caller: 'generateDoc' });
 
   // 自动保存到项目工作区
   try {
@@ -246,7 +246,7 @@ Wiki 参考: ${requirement.wiki_path || '无'}
 请生成任务列表。` }
   );
 
-  const result = await callLLM(modelId, messages, { temperature: 0.5, maxTokens: 8000, jsonMode: true });
+  const result = await callLLM(modelId, messages, { temperature: 0.5, maxTokens: 8000, jsonMode: true, projectId: requirement.project_id, caller: 'decompose' });
   const content = result.content;
 
   // 提取 JSON — 多层容错：直接解析 → 剥 markdown → 修复 → 拆解标题

@@ -8,7 +8,7 @@ const reqStore = require('../stores/requirement-store');
 // 读取 Wiki 页
 router.get('/:projectId/page', (req, res) => {
   const project = projectStore.getById(req.params.projectId);
-  if (!project || !project.wiki_vault_path) return res.status(404).json({ error: 'WIKI_NOT_CONFIGURED' });
+  if (!project) return res.status(404).json({ error: 'PROJ_NOT_FOUND' });
 
   const pagePath = req.query.path;
   if (!pagePath) return res.status(400).json({ error: 'MISSING_PATH' });
@@ -21,7 +21,7 @@ router.get('/:projectId/page', (req, res) => {
 // 列出 Wiki 目录
 router.get('/:projectId/tree', (req, res) => {
   const project = projectStore.getById(req.params.projectId);
-  if (!project || !project.wiki_vault_path) return res.status(404).json({ error: 'WIKI_NOT_CONFIGURED' });
+  if (!project) return res.status(404).json({ error: 'PROJ_NOT_FOUND' });
 
   const fs = require('fs');
   const path = require('path');
@@ -39,12 +39,11 @@ router.get('/:projectId/tree', (req, res) => {
 // 搜索 Wiki
 router.get('/:projectId/search', (req, res) => {
   const project = projectStore.getById(req.params.projectId);
-  if (!project || !project.wiki_vault_path) return res.status(404).json({ error: 'WIKI_NOT_CONFIGURED' });
+  if (!project) return res.status(404).json({ error: 'PROJ_NOT_FOUND' });
 
   const { q } = req.query;
   if (!q) return res.status(400).json({ error: 'MISSING_QUERY' });
 
-  // 简单全文搜索（遍历 .md 文件）
   const fs = require('fs');
   const path = require('path');
   const results = [];
@@ -81,7 +80,6 @@ router.post('/:projectId/sync', (req, res) => {
   const project = projectStore.getById(req.params.projectId);
   if (!project) return res.status(404).json({ error: 'PROJ_NOT_FOUND' });
 
-  // 同步所有需求到 Wiki
   const requirements = reqStore.list({ projectId: req.params.projectId, status: 'approved' })
     .concat(reqStore.list({ projectId: req.params.projectId, status: 'in_execution' }))
     .concat(reqStore.list({ projectId: req.params.projectId, status: 'done' }));
@@ -90,7 +88,7 @@ router.post('/:projectId/sync', (req, res) => {
   for (const req of requirements) {
     try {
       const content = wikiService.generateRequirementPage(req);
-      const pagePath = req.wiki_path || `docs/需求/${req.id}-${req.title.replace(/[/\\?%*:|"<>]/g, '-')}.md`;
+      const pagePath = req.wiki_path || `docs/需求/${req.id}-${req.title.replace(/[/\\?%*:|\"<>]/g, '-')}.md`;
       wikiService.writePage(project.wiki_vault_path, pagePath, content);
       reqStore.update(req.id, { wiki_path: pagePath, wiki_synced: 1, last_wiki_sync: new Date().toISOString() });
       synced++;

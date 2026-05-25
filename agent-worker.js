@@ -212,11 +212,44 @@ async function main() {
             await handleExecuteSkill(event, matches[0].skill);
           }
         }
+
+        // 需求变更事件：检查自己被分配的任务是否受影响
+        if (event.type === 'requirement.changed') {
+          await handleRequirementChanged(event);
+        }
       }
     } catch (e) {
       console.error(`[Worker] 错误: ${e.message}`);
     }
     await sleep(POLL_INTERVAL);
+  }
+}
+
+// 需求变更处理：检查自己被分配的任务是否被冻结/归档
+async function handleRequirementChanged(event) {
+  try {
+    const payload = event.payload || {};
+    const impact = payload.impact || {};
+    const affectedIds = [
+      ...(impact.adjusted || []).map(t => t.id),
+      ...(impact.discarded || []).map(t => t.id),
+    ];
+    if (!affectedIds.length) return;
+
+    for (const taskId of affectedIds) {
+      const task = await call('GET', `/tasks/${taskId}`);
+      if (!task || !task.id) continue;
+      if (task.assignedTo !== AGENT_ID) continue;
+
+      if (task.status === 'frozen') {
+        console.log(`[Worker] ⚠️ 任务 ${taskId} "${task.title}" 因需求变更被冻结，等待重新评估`);
+      } else if (task.status === 'archived') {
+        console.log(`[Worker] 🗑 任务 ${taskId} "${task.title}" 因需求变更被归档，自动放弃`);
+        // 可选：释放任务分配（如果 archived 状态仍保留 assignedTo）
+      }
+    }
+  } catch (e) {
+    console.error(`[Worker] 变更处理错误: ${e.message}`);
   }
 }
 

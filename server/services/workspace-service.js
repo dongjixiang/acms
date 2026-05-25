@@ -13,13 +13,13 @@ class WorkspaceService {
     const wsPath = path.join(WORKSPACE_ROOT, projectSlug);
     if (fs.existsSync(wsPath)) return wsPath;
 
-    const dirs = ['requirements', 'exports', 'code', 'deploy'];
+    const dirs = ['requirements', 'exports', 'code', 'deploy', 'wiki'];
     for (const d of dirs) {
       fs.mkdirSync(path.join(wsPath, d), { recursive: true });
     }
 
     // 自动生成 README.md
-    const readme = `# ${projectSlug}\n\n> ACMS 项目工作区 — 自动生成于 ${new Date().toISOString().split('T')[0]}\n\n## 📂 目录说明\n\n| 目录 | 用途 |\n|------|------|\n| requirements/ | 需求文档（AI 自动保存） |\n| exports/ | 导出文件（.docx / .pdf） |\n| code/ | 代码（Agent 产出 / 原型） |\n| deploy/ | 部署配置 |\n\n## 📝 备注\n\n（可自由编辑，ACMS 不会覆盖此区域）\n`;
+    const readme = '# ' + projectSlug + '\n\n> ACMS 项目工作区 — 自动生成于 ' + new Date().toISOString().split('T')[0] + '\n\n## 📂 目录说明\n\n| 目录 | 用途 |\n|------|------|\n| requirements/ | 需求文档（AI 自动保存） |\n| exports/ | 导出文件（.docx / .pdf） |\n| code/ | 代码（Agent 产出 / 原型） |\n| deploy/ | 部署配置 |\n| wiki/ | 项目知识库（默认 Wiki 路径） |\n\n## 📝 备注\n\n（可自由编辑，ACMS 不会覆盖此区域）\n';
     fs.writeFileSync(path.join(wsPath, 'README.md'), readme, 'utf-8');
 
     return wsPath;

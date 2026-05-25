@@ -1,4 +1,4 @@
-// 项目设置视图 — 环境/仓库/配置/成员
+// 项目设置视图 — 环境/仓库/配置/成员/工作区/技能
 // 依赖: core/state.js, core/utils.js, js/api.js
 
 function setupSettingsTabs() {
@@ -69,49 +69,24 @@ async function addMember() {
   try { await fetch(`/api/projects/${App.currentProjectId}/members`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' }, body: JSON.stringify({ memberId: id, memberType: t }) }); toast('成员已添加', 'success'); loadSettingsTab('tab-members'); } catch (e) { toast('失败: ' + e.message, 'error'); }
 }
 
-// ===== 工作区 tab =====
+// ===== 工作区 tab（已迁移至交付管理）=====
 async function loadWorkspaceTab() {
-  if (!App.currentProjectId) return;
+  // 工作区已经移到独立的 📦 交付管理 页面
+  // 这里保留基本显示，引导用户前往
   try {
-    const resp = await fetch(`/api/workspace/files/${App.currentProjectId}`, { headers: { 'X-API-Key': 'dev-key-001' } });
+    const resp = await fetch('/api/workspace/files/' + App.currentProjectId, { headers: { 'X-API-Key': 'dev-key-001' } });
     const data = await resp.json();
     document.getElementById('workspace-path').textContent = '📁 ' + (data.workspacePath || '');
-
     const files = data.files || [];
-    if (!files.length) {
-      document.getElementById('workspace-files').innerHTML = '<div class="empty" style="padding:12px">工作区为空。创建需求并生成文档后，文件会自动出现在这里。</div>';
-      return;
-    }
-
-    // 按目录分组
-    const byDir = {};
-    files.forEach(f => {
-      const dir = f.path.includes('/') ? f.path.substring(0, f.path.lastIndexOf('/')) : '/';
-      if (!byDir[dir]) byDir[dir] = [];
-      byDir[dir].push(f);
-    });
-
-    const sizeUnits = ['B', 'KB', 'MB'];
-    const fmtSize = (s) => { let i = 0; while (s > 1024 && i < 2) { s /= 1024; i++; } return s.toFixed(1) + ' ' + sizeUnits[i]; };
-
-    let html = '';
-    for (const [dir, items] of Object.entries(byDir)) {
-      html += `<div style="font-weight:bold;color:var(--accent);margin-top:12px;font-size:13px">📁 ${dir === '/' ? '根目录' : dir}</div>`;
-      items.forEach(f => {
-        const icon = f.type === '.md' ? '📝' : f.type === '.docx' ? '📄' : '📦';
-        html += `<div class="config-row" style="padding-left:16px;font-size:13px">
-          <span>${icon} ${escHtml(f.name)}</span>
-          <span style="font-size:11px;color:var(--text2)">${fmtSize(f.size)} · ${fmtDate(f.modified)}</span>
-        </div>`;
-      });
-    }
-    document.getElementById('workspace-files').innerHTML = html;
-
-    // 自动初始化工作区（如果不存在）
-    if (!files.length) {
-      fetch(`/api/workspace/init/${App.currentProjectId}`, { method: 'POST', headers: { 'X-API-Key': 'dev-key-001' } });
-    }
-  } catch (e) { document.getElementById('workspace-files').innerHTML = '<div style="color:var(--accent2)">加载失败: ' + escHtml(e.message) + '</div>'; }
+    document.getElementById('workspace-files').innerHTML =
+      '<div style="padding:16px;text-align:center">' +
+      '<p style="font-size:14px;margin-bottom:12px">📂 工作区共有 <strong>' + files.length + '</strong> 个文件</p>' +
+      '<p style="font-size:12px;color:var(--text2);margin-bottom:16px">完整交付管理功能（交付概览、文件浏览、打包下载、在线体验）已迁移至独立页面</p>' +
+      '<button class="btn-primary" onclick="showWorkspaceView(\'delivery\');loadDelivery();" style="font-size:14px;padding:10px 24px">📦 前往交付管理</button>' +
+      '</div>';
+  } catch (e) {
+    document.getElementById('workspace-files').innerHTML = '<div style="text-align:center;padding:16px;color:var(--text2)">无法加载工作区信息</div>';
+  }
 }
 
 // ===== 技能管理 tab =====
@@ -127,19 +102,19 @@ async function loadSkillsTab() {
     container.innerHTML = skills.map(s => {
       const exec = safeParse(s.execution);
       const matchOn = safeParse(s.match_on);
-      return `<div class="agent-card" style="margin-bottom:8px">
-        <div style="display:flex;justify-content:space-between;align-items:center">
-          <div>
-            <strong>${escHtml(s.name)}</strong>
-            <span style="font-size:11px;color:var(--text2);margin-left:8px">${escHtml(s.id)} · ${s.category}</span>
-          </div>
-          <button class="btn-small btn-reject" onclick="deleteSkill('${s.id}')">🗑</button>
-        </div>
-        <div style="font-size:12px;color:var(--text2);margin-top:4px">
-          匹配: type=${(matchOn.taskType||[]).join(',')} tags=${(matchOn.tags||[]).join(',')}
-          | 步骤: ${(exec.steps||[]).length} 步
-        </div>
-      </div>`;
+      return '<div class="agent-card" style="margin-bottom:8px">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center">' +
+          '<div>' +
+            '<strong>' + escHtml(s.name) + '</strong>' +
+            '<span style="font-size:11px;color:var(--text2);margin-left:8px">' + escHtml(s.id) + ' · ' + escHtml(s.category) + '</span>' +
+          '</div>' +
+          '<button class="btn-small btn-reject" onclick="deleteSkill(\'' + s.id + '\')">🗑</button>' +
+        '</div>' +
+        '<div style="font-size:12px;color:var(--text2);margin-top:4px">' +
+          '匹配: type=' + (matchOn.taskType||[]).join(',') + ' tags=' + (matchOn.tags||[]).join(',') +
+          ' | 步骤: ' + (exec.steps||[]).length + ' 步' +
+        '</div>' +
+      '</div>';
     }).join('');
   } catch(e) { document.getElementById('skills-list').innerHTML = '<div style="color:var(--accent2)">加载失败</div>'; }
 }
@@ -164,7 +139,7 @@ async function addSkill() {
 async function deleteSkill(id) {
   if (!confirm('确认删除此技能？')) return;
   try {
-    await fetch(`/api/skills/${id}`, { method: 'DELETE', headers: { 'X-API-Key': 'dev-key-001' } });
+    await fetch('/api/skills/' + id, { method: 'DELETE', headers: { 'X-API-Key': 'dev-key-001' } });
     toast('技能已删除', 'success');
     loadSkillsTab();
   } catch(e) { toast('删除失败: ' + e.message, 'error'); }

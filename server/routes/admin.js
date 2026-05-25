@@ -62,4 +62,22 @@ router.post('/cleanup', (req, res) => {
   res.json({ success: true, cleaned: count, type });
 });
 
+// Token 用量统计
+router.get('/token-stats', (req, res) => {
+  const tracker = require('../services/token-tracker');
+  const projectId = req.query.projectId;
+  if (projectId) {
+    return res.json(tracker.getProjectStats(projectId));
+  }
+  res.json(tracker.getGlobalStats());
+});
+
+// Token 调用明细
+router.get('/token-logs', (req, res) => {
+  const tracker = require('../services/token-tracker');
+  const projectId = req.query.projectId || '';
+  const limit = parseInt(req.query.limit) || 20;
+  res.json(tracker.getLogs(projectId, limit));
+});
+
 module.exports = router;

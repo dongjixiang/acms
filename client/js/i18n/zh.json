@@ -4,6 +4,7 @@
     "version": "v0.3"
   },
   "nav": {
+    "delivery": "交付管理",
     "projects": "项目管理",
     "dashboard": "仪表盘",
     "requirements": "需求管理",
@@ -163,6 +164,14 @@
       "add": "添加",
       "empty": "暂无成员"
     }
+  },
+  "workspace": {
+    "title": "工作区",
+    "bundleDownload": "打包下载",
+    "preview": "预览",
+    "experience": "一键体验",
+    "previewNotSupported": "此类型暂不支持预览",
+    "empty": "工作区为空。创建需求并生成文档后，文件会自动出现在这里。"
   },
   "common": {
     "online": "在线",

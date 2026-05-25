@@ -6,8 +6,8 @@ const modelStore = require('../stores/model-store');
  * 调用 LLM，自动根据 model.api 选择协议
  * @param {string} modelId
  * @param {Array}  messages - [{role, content}, ...]
- * @param {object} options - { temperature, maxTokens, jsonMode }
- * @returns {object} { content: string, modelUsed: string }
+ * @param {object} options - { temperature, maxTokens, jsonMode, projectId }
+ * @returns {object} { content, modelUsed, usage: { promptTokens, completionTokens, totalTokens } }
  */
 async function callLLM(modelId, messages, options = {}) {
   const model = modelStore.getById(modelId);
@@ -24,11 +24,22 @@ async function callLLM(modelId, messages, options = {}) {
     jsonMode: options.jsonMode ?? false,
   };
 
+  let result;
   if (api === 'anthropic-messages') {
-    return callAnthropic(model, messages, opts, apiKey);
+    result = await callAnthropic(model, messages, opts, apiKey);
+  } else {
+    result = await callOpenAI(model, messages, opts, apiKey);
   }
-  // 默认 openai-chat
-  return callOpenAI(model, messages, opts, apiKey);
+
+  // 记录 Token 用量（如果有 projectId）
+  if (options.projectId && result.usage) {
+    try {
+      const tracker = require('./token-tracker');
+      tracker.record(options.projectId, model.name || model.model, result.usage, options.caller || '');
+    } catch (e) { /* 非关键，静默失败 */ }
+  }
+
+  return result;
 }
 
 // ===== OpenAI Chat Completions =====
@@ -43,7 +54,6 @@ async function callOpenAI(model, messages, opts, apiKey) {
     max_tokens: opts.maxTokens,
   };
 
-  // MiniMax 的 OpenAI 兼容端点不支持 response_format
   if (opts.jsonMode && !isMiniMax) {
     body.response_format = { type: 'json_object' };
   }
@@ -60,9 +70,15 @@ async function callOpenAI(model, messages, opts, apiKey) {
   }
 
   const data = await resp.json();
+  const u = data.usage || {};
   return {
     content: data.choices?.[0]?.message?.content || '',
     modelUsed: `${model.name} (${model.model})`,
+    usage: {
+      promptTokens: u.prompt_tokens || 0,
+      completionTokens: u.completion_tokens || 0,
+      totalTokens: u.total_tokens || 0,
+    },
   };
 }
 
@@ -70,7 +86,6 @@ async function callOpenAI(model, messages, opts, apiKey) {
 async function callAnthropic(model, messages, opts, apiKey) {
   const baseUrl = model.baseUrl || 'https://api.anthropic.com';
 
-  // 分离 system 消息
   const systemParts = [];
   const chatMessages = [];
   for (const m of messages) {
@@ -108,11 +123,16 @@ async function callAnthropic(model, messages, opts, apiKey) {
   }
 
   const data = await resp.json();
-  // 过滤 text 类型的块（兼容 thinking 块在前的模型如 MiniMax M2.7）
   const textContent = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('');
+  const u = data.usage || {};
   return {
     content: textContent || '',
     modelUsed: `${model.name} (${model.model})`,
+    usage: {
+      promptTokens: u.input_tokens || 0,
+      completionTokens: u.output_tokens || 0,
+      totalTokens: (u.input_tokens || 0) + (u.output_tokens || 0),
+    },
   };
 }
 
