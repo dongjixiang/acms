@@ -120,6 +120,7 @@ app.use('/api/ai-tools', require('./routes/ai-tools'));
 app.use('/api/exports', require('./routes/exports'));
 app.use('/api/workspace', workspaceRouter);
 app.use('/api/skills', require('./routes/skills'));
+app.use('/api/bugs', require('./routes/bugs'));
 
 // 404
 app.use((req, res) => res.status(404).json({ error: 'NOT_FOUND' }));

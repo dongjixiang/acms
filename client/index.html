@@ -99,6 +99,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <button class="nav-btn active" data-view="dashboard">📊 <span data-i18n="nav.dashboard">仪表盘</span></button>
         <button class="nav-btn" data-view="requirements">📋 <span data-i18n="nav.requirements">需求管理</span></button>
         <button class="nav-btn" data-view="kanban">📌 <span data-i18n="nav.kanban">任务看板</span></button>
+        <button class="nav-btn" data-view="bugs">🐛 <span>缺陷管理</span></button>
         <button class="nav-btn" data-view="delivery">📦 <span data-i18n="nav.delivery">交付管理</span></button>
         <button class="nav-btn" data-view="agents">🤖 <span>智能体协同</span></button>
         <button class="nav-btn" data-view="settings">⚙️ <span data-i18n="nav.settings">项目设置</span></button>
@@ -210,6 +211,12 @@ document.addEventListener('DOMContentLoaded', () => {
           </div>
         </div>
 
+        <!-- 缺陷管理 -->
+        <div id="view-bugs" class="view">
+          <div class="view-header"><h2>🐛 缺陷管理</h2></div>
+          <div id="bug-panel"></div>
+        </div>
+
         <!-- 项目设置 -->
         <div id="view-settings" class="view">
           <div class="view-header"><h2 data-i18n="settings.title">⚙️ 项目设置</h2></div>
@@ -250,6 +257,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/dashboard.js"></script>
 <script src="/client/js/views/requirements.js"></script>
 <script src="/client/js/views/kanban.js"></script>
+<script src="/client/js/views/bugs.js"></script>
 <script src="/client/js/views/delivery.js"></script>
 <script src="/client/js/views/agents.js"></script>
 <script src="/client/js/views/settings.js"></script>

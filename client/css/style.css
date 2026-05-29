@@ -187,6 +187,10 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 .task-card.priority-5 { border-left: 3px solid #9090a0; }
 .task-card.task-blocked { opacity: 0.55; border-left: 3px solid var(--accent3); background: rgba(255,217,61,0.04); cursor: default; }
 .task-card.task-blocked:hover { border-color: var(--accent3); transform: none; }
+/* Bug 卡片特殊样式 */
+.task-card.bug-card { border-left: 3px solid #ff6666; background: linear-gradient(135deg, var(--bg3), rgba(255,100,100,0.04)); }
+.task-card.bug-card .task-title::before { content: '🐛 '; }
+.task-card.priority-1.bug-card { border-left: 3px solid #ff2222; }
 
 /* Tags */
 .type-tag { padding: 1px 6px; border-radius: 3px; font-size: 10px; }
@@ -489,6 +493,18 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
   /* 任务详情网格保持两列 */
   .detail-grid { grid-template-columns: 1fr 1fr; }
 }
+
+/* ========== 缺陷管理 ========== */
+.bug-form { padding: 16px 0; }
+.bug-result-success { padding: 16px; background: rgba(78,205,196,0.08); border: 1px solid rgba(78,205,196,0.2); border-radius: 8px; }
+.bug-result-success h4 { color: var(--green); margin: 0 0 8px; }
+.bug-clarify-message { padding: 16px; background: var(--bg3); border-radius: 8px; }
+.bug-choice-group { margin: 10px 0; padding: 10px; background: rgba(0,0,0,0.08); border-radius: 6px; }
+.bug-choice-q { font-weight: 600; font-size: 13px; margin-bottom: 6px; color: var(--text); }
+.bug-choice-opts { display: flex; flex-wrap: wrap; gap: 6px; }
+.bug-choice-btn { padding: 5px 12px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 12px; transition: all 0.15s; }
+.bug-choice-btn:hover { border-color: var(--accent); }
+.bug-choice-btn.selected { background: var(--accent); color: #fff; border-color: var(--accent); }
 
 /* ================================================================
    响应式适配 — 手机 (≤480px)

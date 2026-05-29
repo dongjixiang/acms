@@ -52,6 +52,7 @@ function setupWorkspaceNav() {
       if (view === 'dashboard' && typeof loadDashboard === 'function') loadDashboard();
       if (view === 'requirements' && typeof loadRequirements === 'function') loadRequirements();
       if (view === 'kanban' && typeof refreshKanban === 'function') refreshKanban();
+      if (view === 'bugs' && typeof loadBugView === 'function') loadBugView();
       if (view === 'delivery' && typeof loadDelivery === 'function') loadDelivery();
       if (view === 'agents' && typeof loadAgentsView === 'function') loadAgentsView();
       if (view === 'settings' && typeof loadSettings === 'function') loadSettings();

@@ -417,9 +417,50 @@ async function handleExecuteSkill(event, skill) {
     ? `按 Skill "${skill.name}" 执行完成，所有验证通过。`
     : `按 Skill "${skill.name}" 执行，验证未通过。`;
 
+  // 验证失败时自动创建缺陷
+  if (!allPassed && execLog.some(l => l.includes('❌'))) {
+    await autoCreateBug(projectId, task, execLog, skill);
+  }
+
   const notes = `${statusIcon} ${statusText}\n---\n执行日志:\n${execLog.join('\n')}`;
   await call('POST', `/tasks/${taskId}/submit`, { agentId: AGENT_ID, notes });
   console.log(`[Skill:任务执行] 已提交: ${statusIcon} ${allPassed ? '通过' : '失败'}`);
+}
+
+/**
+ * 验证失败时自动创建缺陷
+ */
+async function autoCreateBug(projectId, task, execLog, skill) {
+  try {
+    const failMsg = execLog.filter(l => l.includes('❌')).join('; ');
+    const title = `🐛 [verify失败] ${task.title}`;
+    const description = [
+      `## 自动创建的缺陷`,
+      ``,
+      `**来源**: verify_failure`,
+      `**任务**: ${task.id} — ${task.title}`,
+      `**Skill**: ${skill.name} (${skill.id})`,
+      ``,
+      `### 验证失败详情`,
+      failMsg,
+      ``,
+      `### 完整执行日志`,
+      execLog.join('\n'),
+    ].join('\n');
+
+    const result = await call('POST', '/bugs', {
+      projectId,
+      title,
+      description,
+      severity: 'major',
+      source: 'verify_failure',
+      sourceTaskId: task.id,
+      linkedRequirementId: task.parent_id || '',
+    });
+    console.log(`[自动缺陷] ✅ 已创建缺陷 BUG: ${result.task ? result.task.id : 'OK'}`);
+  } catch (e) {
+    console.log(`[自动缺陷] ⚠️ 创建失败: ${e.message}`);
+  }
 }
 
 // ===== 主循环 =====
