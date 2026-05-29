@@ -6,6 +6,7 @@ const AGENT_ID = process.argv[2] || 'agent-xiaoji';
 const API = 'http://localhost:3300/api';
 const KEY = 'dev-key-001';
 const POLL_INTERVAL = 5000;
+const MAX_RETRIES = 2;  // verify 失败后的最大重试次数
 
 const headers = { 'Content-Type': 'application/json', 'X-API-Key': KEY };
 
@@ -22,15 +23,212 @@ const EVENT_SKILL_MAP = {
   'requirement.approved': 'skill-task-decompose',
 };
 
-// 事件 → Skill 执行器
+// ============================================================
+//  通用步骤执行引擎
+// ============================================================
+
+/**
+ * 运行 verify checks，返回 { passed, failMsg, log[] }
+ */
+async function runVerifyChecks(projectId, step, cwd) {
+  const log = [];
+  let passed = true;
+  let failMsg = '';
+
+  for (const check of (step.checks || [])) {
+    const checkDesc = check.failMsg || check.type;
+    try {
+      if (check.type === 'read') {
+        const encodedPath = encodeURIComponent(check.path);
+        // 路径中的 {module} 替换为当前模块名（这里用通配符，实际由调用方处理）
+        const result = await call('GET', `/workspace/files/${projectId}/read?path=${encodedPath}`);
+        const content = result.content || '';
+        const size = content.length;
+
+        if (check.expect.size_gt !== undefined && size <= check.expect.size_gt) {
+          log.push(`   ❌ [验证-读] ${check.path}: 文件太小 (${size} ≤ ${check.expect.size_gt})`);
+          passed = false;
+          failMsg = check.failMsg;
+          break;
+        }
+        if (check.expect.content_contains && !content.includes(check.expect.content_contains)) {
+          log.push(`   ❌ [验证-读] ${check.path}: 不包含 "${check.expect.content_contains}"`);
+          passed = false;
+          failMsg = check.failMsg;
+          break;
+        }
+        log.push(`   ✅ [验证-读] ${check.path}: OK (${size} chars)`);
+      }
+      else if (check.type === 'exec') {
+        const result = await call('POST', `/workspace/files/${projectId}/exec`, {
+          cmd: check.cmd, cwd: cwd || '', timeout: 15000,
+        });
+        const exitOk = check.expect.exitCode === undefined || result.exitCode === check.expect.exitCode;
+        const stdoutOk = !check.expect.stdout_notEmpty || (result.stdout && result.stdout.trim().length > 0);
+
+        if (!exitOk) {
+          log.push(`   ❌ [验证-执行] ${check.failMsg}: exitCode=${result.exitCode}, stdout="${(result.stdout||'').substring(0, 80)}"`);
+          passed = false;
+          failMsg = check.failMsg + ` (exitCode=${result.exitCode})`;
+          break;
+        }
+        if (!stdoutOk) {
+          log.push(`   ❌ [验证-执行] ${check.failMsg}: stdout 为空`);
+          passed = false;
+          failMsg = check.failMsg + ' (stdout 为空)';
+          break;
+        }
+        log.push(`   ✅ [验证-执行] exitCode=${result.exitCode}`);
+      }
+    } catch (e) {
+      log.push(`   ❌ [验证-${check.type}] 异常: ${e.message}`);
+      passed = false;
+      failMsg = check.failMsg || e.message;
+      break;
+    }
+  }
+  return { passed, failMsg, log };
+}
+
+/**
+ * 执行单个步骤，返回 { ok, log }
+ */
+async function executeStep(step, task, projectId, cwd) {
+  const log = [];
+
+  switch (step.action) {
+    case 'read': {
+      const encoded = encodeURIComponent(step.path);
+      const result = await call('GET', `/workspace/files/${projectId}/read?path=${encoded}`);
+      if (!result || result.error) {
+        log.push(`[读] ${step.path}: ❌ ${(result||{}).error || 'NOT_FOUND'}`);
+      } else {
+        log.push(`[读] ${step.path}: ✅ (${(result.content || '').length} chars)`);
+      }
+      return { ok: true, log };
+    }
+
+    case 'write': {
+      const result = await call('POST', `/workspace/files/${projectId}/write`, {
+        path: step.path, content: step.content || '',
+      });
+      if (result.error) {
+        log.push(`[写] ${step.path}: ❌ ${result.error}`);
+        return { ok: false, log };
+      }
+      // 写后立即读取验证
+      const verify = await call('GET', `/workspace/files/${projectId}/read?path=${encodeURIComponent(step.path)}`);
+      const actualSize = (verify.content || '').length;
+      log.push(`[写] ${step.path}: ✅ (${result.size || actualSize} bytes)`);
+      return { ok: true, log };
+    }
+
+    case 'exec': {
+      const result = await call('POST', `/workspace/files/${projectId}/exec`, {
+        cmd: step.cmd, cwd: cwd || step.cwd || '', timeout: 30000,
+      });
+      const ok = result.exitCode === 0;
+      const out = (result.stdout || '').substring(0, 120);
+      log.push(`[执行] ${step.cmd}: ${ok ? '✅' : '❌'} exitCode=${result.exitCode}${out ? ' | ' + out : ''}`);
+      return { ok, log, result };
+    }
+
+    case 'verify': {
+      console.log(`  [验证] ${step.desc || ''}`);
+      const result = await runVerifyChecks(projectId, step, cwd);
+      log.push(...result.log);
+      if (result.passed) {
+        log.push(`[验证] ✅ 全部通过`);
+      }
+      return { ok: result.passed, log, failMsg: result.failMsg, verifyStep: step };
+    }
+
+    default:
+      log.push(`[跳过] 未知 action: ${step.action}`);
+      return { ok: true, log };
+  }
+}
+
+/**
+ * 尝试自动修复 verify 失败（简单的非 LLM 修复 + LLM 修复）
+ */
+async function attemptAutoFix(projectId, step, failInfo, task) {
+  console.log(`  🔧 尝试自动修复: ${failInfo.failMsg}`);
+  const fixLog = [];
+
+  // 策略 1: 检查是否是简单的语法错误（node --check 失败）
+  const syntaxCheck = failInfo.checks?.find(c =>
+    c.type === 'exec' && (c.cmd || '').includes('node --check') && failInfo.failMsg?.includes('SyntaxError')
+  );
+  if (syntaxCheck) {
+    // 读取文件，尝试基础修复
+    const files = (step.checks || [])
+      .filter(c => c.type === 'read')
+      .map(c => c.path);
+    for (const file of files) {
+      try {
+        const result = await call('GET', `/workspace/files/${projectId}/read?path=${encodeURIComponent(file)}`);
+        if (!result.content) continue;
+        let code = result.content;
+
+        // 简单修复：补齐常见缺失的闭合符号
+        const openCurly = (code.match(/{/g) || []).length;
+        const closeCurly = (code.match(/}/g) || []).length;
+        const openParen = (code.match(/\(/g) || []).length;
+        const closeParen = (code.match(/\)/g) || []).length;
+
+        if (openCurly > closeCurly) {
+          code += '\n' + '}'.repeat(openCurly - closeCurly);
+          fixLog.push(`   🔧 补齐 ${openCurly - closeCurly} 个缺失的 '}'`);
+        }
+        if (openParen > closeParen) {
+          code += ')'.repeat(openParen - closeParen);
+          fixLog.push(`   🔧 补齐 ${openParen - closeParen} 个缺失的 ')'`);
+        }
+
+        if (code !== result.content) {
+          await call('POST', `/workspace/files/${projectId}/write`, { path: file, content: code });
+          fixLog.push(`   ✅ 已更新 ${file}`);
+        }
+      } catch (e) {
+        fixLog.push(`   ⚠️ 修复 ${file} 失败: ${e.message}`);
+      }
+    }
+  }
+
+  // 策略 2: 调用 LLM 修复（如果 ACMS 有 AI 工具可用）
+  try {
+    const models = await call('GET', '/models/active');
+    if (models && models.id) {
+      // 收集错误上下文
+      const errorContext = `任务: ${task.title}\n错误: ${failInfo.failMsg}\n`;
+      const fixPrompt = `你是一个代码修复专家。以下任务执行时验证失败，请分析并给出修复方案（只给出需要修改的具体代码，不要解释）。\n\n${errorContext}`;
+
+      const fixResult = await call('POST', '/ai-tools/fix-error', {
+        taskId: task.id,
+        error: failInfo.failMsg,
+        projectId: projectId,
+        prompt: fixPrompt,
+      });
+      if (fixResult && fixResult.fixed) {
+        fixLog.push(`   🤖 LLM 修复已应用`);
+      }
+    }
+  } catch (e) {
+    fixLog.push(`   ⚠️ LLM 修复不可用: ${e.message}`);
+  }
+
+  fixLog.forEach(l => console.log(l));
+  return fixLog.length > 0;
+}
+
+// ============================================================
+//  Skill 事件执行器
+// ============================================================
+
 async function executeSkillForEvent(event, skill) {
   const skillName = skill.name;
-  const exec = JSON.parse(skill.execution || '{}');
-  const steps = exec.steps || [];
-  
   console.log(`[Worker] 🎯 匹配到 Skill: ${skillName}`);
-  console.log(`[Worker] 执行步骤 (${steps.length} 步):`);
-  steps.forEach((s, i) => console.log(`  ${i + 1}. ${s}`));
 
   if (event.type === 'requirement.created' && skill.id === 'skill-requirement-clarify') {
     return handleClarifySkill(event, skill);
@@ -38,7 +236,7 @@ async function executeSkillForEvent(event, skill) {
   if (event.type === 'requirement.approved' && skill.id === 'skill-task-decompose') {
     return handleDecomposeSkill(event, skill);
   }
-  
+
   console.log(`[Worker] Skill ${skill.id} 无对应执行器，跳过`);
 }
 
@@ -52,7 +250,6 @@ async function handleClarifySkill(event, skill) {
 
   console.log(`[Skill:需求澄清] 标题: ${req.title}`);
 
-  // 生成澄清问题
   const questions = generateClarifyingQuestions(req);
   for (const q of questions) {
     await call('POST', `/requirements/${reqId}/clarify`, {
@@ -102,19 +299,15 @@ async function handleDecomposeSkill(event, skill) {
   const descLen = (req.description || '').length + (req.structured_description || '').length;
   const tasks = [];
 
-  // 根据复杂度调整任务数
   if (scopeIn.length <= 1 && descLen < 300) {
-    // 简单需求：只一个核心实现任务
     tasks.push({ title: scopeIn[0] || req.title, type: 'coding', estimatedHours: 3, requiredSkills: { coding: 1.0 } });
   } else if (scopeIn.length <= 2) {
-    // 中等需求
     tasks.push({ title: `${scopeIn[0]} — 核心实现`, type: 'coding', estimatedHours: 6, requiredSkills: { coding: 1.5 } });
     if (scopeIn.length > 1) {
       tasks.push({ title: `${scopeIn[1]} — 实现`, type: 'coding', estimatedHours: 4, requiredSkills: { coding: 1.5 } });
     }
     tasks.push({ title: '测试验证', type: 'testing', estimatedHours: 2, requiredSkills: { testing: 1.0 } });
   } else {
-    // 复杂需求：完整分解
     if (scopeIn.length > 0) {
       tasks.push({ title: `${scopeIn[0]} — 核心功能实现`, type: 'coding', estimatedHours: 8, requiredSkills: { coding: 1.5 } });
     }
@@ -132,7 +325,7 @@ async function handleDecomposeSkill(event, skill) {
   console.log(`[Skill:任务分解] 已分解为 ${result.count} 个任务`);
 }
 
-// ===== Skill: 任务执行 =====
+// ===== Skill: 任务执行（重写 — 真正执行步骤 + verify + 自动修复重试） =====
 async function handleExecuteSkill(event, skill) {
   const taskId = event.target_id;
   const task = await call('GET', `/tasks/${taskId}`);
@@ -144,35 +337,99 @@ async function handleExecuteSkill(event, skill) {
     console.log(`[Skill:任务执行] 认领失败: ${claimResult.error}`);
     return;
   }
-  console.log(`[Skill:任务执行] 已认领: ${task.title}`);
+  console.log(`[Skill:任务执行] ✅ 已认领`);
 
-  // 读取执行步骤
+  const projectId = task.project_id;
   const exec = JSON.parse(skill.execution || '{}');
   const steps = exec.steps || [];
-  console.log(`[Skill:任务执行] 执行 ${steps.length} 步:`);
-  for (const step of steps) console.log(`  → ${step}`);
+  const execMode = exec.mode;  // "api" | "handler" | undefined (legacy)
 
-  // 模拟执行
-  await sleep(2000);
+  // 判断步骤格式：object-style 有 action 字段，string-style 是纯字符串
+  const isObjectStyle = steps.length > 0 && typeof steps[0] === 'object' && !!steps[0].action;
 
-  // 提交
-  await call('POST', `/tasks/${taskId}/submit`, {
-    agentId: AGENT_ID,
-    notes: `按 Skill "${skill.name}" 执行完成。\n步骤: ${steps.join(' → ')}`,
-  });
-  console.log(`[Skill:任务执行] 已提交审核`);
+  // === Path A: Legacy 字符串步骤（旧版 Skill，模拟执行） ===
+  if (!isObjectStyle) {
+    console.log(`[Skill:任务执行] 旧版 Skill (${steps.length} 步骤)，模拟执行...`);
+    steps.forEach((s, i) => console.log(`  ${i + 1}. ${s}`));
+    await sleep(2000);
+
+    await call('POST', `/tasks/${taskId}/submit`, {
+      agentId: AGENT_ID,
+      notes: `⚠️ 按 Skill "${skill.name}" 模拟执行完成（旧版 Skill，无 verify）。\n步骤: ${steps.join(' → ')}`,
+    });
+    console.log(`[Skill:任务执行] 已提交（旧版模式）`);
+    return;
+  }
+
+  // === Path B: Object-style 步骤（真正执行 read/write/exec/verify） ===
+  console.log(`[Skill:任务执行] 执行 ${steps.length} 步骤 (mode=${execMode || 'api'})...`);
+
+  const execLog = [];
+  let allPassed = true;
+  let retryCount = 0;
+  const cwd = exec.cwd || '';
+
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    console.log(`  步骤 ${i + 1}/${steps.length}: ${step.action} — ${step.desc || step.path || ''}`);
+
+    if (retryCount >= MAX_RETRIES) {
+      execLog.push(`⛔ 已达最大重试次数 (${MAX_RETRIES})，放弃`);
+      allPassed = false;
+      break;
+    }
+
+    const result = await executeStep(step, task, projectId, cwd);
+    execLog.push(...result.log);
+
+    if (!result.ok) {
+      if (step.action === 'verify' && result.failMsg) {
+        console.log(`  ❌ 验证失败: ${result.failMsg}`);
+        execLog.push(`❌ ${result.failMsg}`);
+
+        // 尝试自动修复
+        const fixed = await attemptAutoFix(projectId, step, result, task);
+        if (fixed) {
+          retryCount++;
+          console.log(`  🔄 重试第 ${retryCount} 次...`);
+          execLog.push(`🔄 自动修复后重试 (第 ${retryCount} 次)`);
+
+          // 重新执行前一步 (通常 verify 前面是 write 或 exec)
+          // 回退一步，让下次循环重新执行 verify
+          i--;  // 重新执行当前 verify 步骤
+          continue;
+        }
+
+        allPassed = false;
+        break;
+      } else {
+        // 非 verify 步骤失败（write/exec 失败）
+        execLog.push(`❌ 步骤失败，终止执行`);
+        allPassed = false;
+        break;
+      }
+    }
+  }
+
+  // === 提交 ===
+  const statusIcon = allPassed ? '✅' : '❌';
+  const statusText = allPassed
+    ? `按 Skill "${skill.name}" 执行完成，所有验证通过。`
+    : `按 Skill "${skill.name}" 执行，验证未通过。`;
+
+  const notes = `${statusIcon} ${statusText}\n---\n执行日志:\n${execLog.join('\n')}`;
+  await call('POST', `/tasks/${taskId}/submit`, { agentId: AGENT_ID, notes });
+  console.log(`[Skill:任务执行] 已提交: ${statusIcon} ${allPassed ? '通过' : '失败'}`);
 }
 
 // ===== 主循环 =====
 async function main() {
   console.log(`[Worker] 智能体 ${AGENT_ID} 启动 (Skill 驱动模式)`);
 
-  // 加载所有 Skill
   const skills = await call('GET', '/skills');
   console.log(`[Worker] 已加载 ${skills.length} 个 Skill:`);
   skills.forEach(s => console.log(`  - ${s.id}: ${s.name}`));
 
-  // 订阅事件
   const agent = await call('GET', `/agents/${AGENT_ID}`);
   const sub = await call('POST', `/agents/${AGENT_ID}/subscribe`);
   const subscriptions = sub.subscriptions || [];
@@ -194,7 +451,6 @@ async function main() {
       }
 
       for (const event of newEvents) {
-        // 事件 → Skill 匹配
         const skillId = EVENT_SKILL_MAP[event.type];
         if (skillId) {
           const skill = skills.find(s => s.id === skillId);
@@ -204,7 +460,6 @@ async function main() {
           }
         }
 
-        // 任务事件：用 Skill 匹配
         if (event.type === 'task.created') {
           const taskId = event.target_id;
           const matches = await call('GET', `/skills/match/${taskId}`);
@@ -213,7 +468,6 @@ async function main() {
           }
         }
 
-        // 需求变更事件：检查自己被分配的任务是否受影响
         if (event.type === 'requirement.changed') {
           await handleRequirementChanged(event);
         }
@@ -225,7 +479,6 @@ async function main() {
   }
 }
 
-// 需求变更处理：检查自己被分配的任务是否被冻结/归档
 async function handleRequirementChanged(event) {
   try {
     const payload = event.payload || {};
@@ -245,7 +498,6 @@ async function handleRequirementChanged(event) {
         console.log(`[Worker] ⚠️ 任务 ${taskId} "${task.title}" 因需求变更被冻结，等待重新评估`);
       } else if (task.status === 'archived') {
         console.log(`[Worker] 🗑 任务 ${taskId} "${task.title}" 因需求变更被归档，自动放弃`);
-        // 可选：释放任务分配（如果 archived 状态仍保留 assignedTo）
       }
     }
   } catch (e) {
