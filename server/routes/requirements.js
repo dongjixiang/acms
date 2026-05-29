@@ -35,9 +35,25 @@ router.get('/:id', (req, res) => {
   res.json({ ...requirement, clarifications: reqStore.getClarifications(req.params.id) });
 });
 
-// 状态转换
+// 状态转换 — 切换到 approved 时检查具体性
 router.post('/:id/transition', (req, res, next) => {
   try {
+    // 具体性门控: approved 前检查模糊表达
+    if (req.body.targetStatus === 'approved') {
+      const requirement = reqStore.getById(req.params.id);
+      if (requirement) {
+        const validator = require('../services/concreteness-validator');
+        const result = validator.validateRequirement(requirement);
+        if (!result.passed) {
+          return res.status(400).json({
+            error: 'VAGUE_REQUIREMENT',
+            message: '需求包含模糊表达，无法审批通过。请先澄清以下问题：',
+            warnings: result.warnings.filter(w => w.severity === 'error').slice(0, 5),
+            allWarnings: result.warnings,
+          });
+        }
+      }
+    }
     const result = reqStore.transition(req.params.id, req.body.targetStatus, { id: req.agentId || 'user', type: req.agentId ? 'agent' : 'human' });
     if (result.error) return res.status(400).json(result);
     eventBus.emit(`requirement.${req.body.targetStatus === 'approved' ? 'approved' : 'status_changed'}`, { projectId: result.project_id, actor: { id: req.agentId || 'user', type: 'human' }, target: { type: 'requirement', id: result.id }, payload: { requirement: result } });
