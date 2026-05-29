@@ -250,11 +250,12 @@ function detectDomain(requirement) {
   if (/API|接口|后端|服务|微服务|REST|GraphQL|gRPC|端点/.test(text)) return 'api';
   if (/页面|前端|UI|UX|交互|组件|表单|路由|SPA|PWA|响应式/.test(text)) return 'webapp';
   if (/文档|Wiki|手册|教程|指南|README|规范|标准/.test(text)) return 'documentation';
+  if (/竞品|产品规划|商业模式|定价|用户画像|市场分析|差异化|MVP|楔子|RICE/.test(text)) return 'product';
   return 'general';
 }
 
 function getDomainSkillId(type) {
-  const map = { game: 'skill-clarify-game', webapp: 'skill-clarify-webapp', api: 'skill-clarify-api', documentation: 'skill-clarify-documentation' };
+  const map = { game: 'skill-clarify-game', webapp: 'skill-clarify-webapp', api: 'skill-clarify-api', documentation: 'skill-clarify-documentation', product: 'skill-clarify-product' };
   return map[type] || 'skill-clarify-general';
 }
 
@@ -288,6 +289,12 @@ function buildDomainChecklist(type) {
     documentation: `1. 扫描 scopeIn: 是否有 "X~Y 个" 数量范围（章节/页面）但无具体标题和内容概要？
 2. 扫描描述: 是否有 "完整文档""全套手册" 但无受众和交付格式说明？
 3. 扫描 scopeIn: 是否有 "技术文档""用户手册""API文档" 但未区分受众？`,
+
+    product: `1. 扫描描述: 是否有 "用户" 但无具体画像（年龄/职位/痛点/频率）？
+2. 扫描描述: 是否有 "竞品""对比""差异化" 但无具体竞品名称和评价证据？
+3. 扫描 scopeIn: 是否有优先级排序但无量化依据（RICE/用户量/商业价值）？
+4. 扫描描述: 是否有 "MVP""第一版" 但无明确范围边界和验证假设？
+5. 扫描描述: 是否有 "定价""商业模式" 但无具体层级和转化路径？`,
   };
   return checklists[type] || getDefaultChecklist();
 }
@@ -304,6 +311,9 @@ function buildDomainExamples(type) {
 示例 — ❌ scopeIn: "实现认证" → ✅ scopeIn: "JWT认证: POST /auth/login → {token}, 过期24h, refresh端点: POST /auth/refresh"`,
 
     documentation: `示例 — ❌ scopeIn: "编写完整API文档" → ✅ scopeIn: "章节1: 快速开始(5min教程), 章节2: 认证指南(OAuth2流程+代码示例), 章节3: API参考(20个端点+请求/响应示例)"`,
+
+    product: `示例 — ❌ description: "做一个类似飞书的协作工具" → ✅ description: "差异化: 飞书审批不灵活(G2差评35%)→我们支持拖拽审批引擎。定位:「唯一为50-200人团队提供可视化审批引擎的协作平台」"
+示例 — ❌ scopeIn: "MVP包含核心功能" → ✅ scopeIn: "MVP: 任务管理+甘特图+飞书通知→验证假设「甘特图是付费驱动力」。不包含: 审批引擎/报表/移动端。成功指标: 30天留存≥40%"`,
   };
   return examples[type] || '';
 }

@@ -128,6 +128,7 @@ function detectDomain(requirement) {
   if (/API|接口|后端|服务|REST|GraphQL|端点/.test(text)) return 'api';
   if (/页面|前端|UI|组件|表单|路由|SPA/.test(text)) return 'webapp';
   if (/文档|Wiki|手册|教程|指南/.test(text)) return 'documentation';
+  if (/竞品|产品规划|商业模式|定价|用户画像|市场分析|差异化|MVP|楔子|RICE/.test(text)) return 'product';
   return 'general';
 }
 
