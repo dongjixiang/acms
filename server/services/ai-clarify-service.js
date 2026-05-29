@@ -153,7 +153,7 @@ async function clarify(reqId, modelId, userMessage, conversationHistory) {
   }
 
   // 调用 LLM（适配器自动根据 model.api 选择格式）
-  const result = await callLLM(modelId, messages, { temperature: 0.7, maxTokens: 4000, jsonMode: true, projectId: requirement.project_id, caller: 'clarify' });
+  const result = await callLLM(modelId, messages, { temperature: 0.7, maxTokens: 6000, jsonMode: true, projectId: requirement.project_id, caller: 'clarify' });
   const content = result.content;
 
   // 提取 JSON — 多层容错

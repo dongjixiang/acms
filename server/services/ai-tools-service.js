@@ -92,7 +92,7 @@ async function generateDoc(reqId, modelId) {
 - 需求摘要: ${srs.summary || ''}` },
   ];
 
-  const result = await callLLM(modelId, messages, { temperature: 0.5, maxTokens: 3000, projectId: requirement.project_id, caller: 'generateDoc' });
+  const result = await callLLM(modelId, messages, { temperature: 0.5, maxTokens: 6000, projectId: requirement.project_id, caller: 'generateDoc' });
 
   // 自动保存到项目工作区
   try {
