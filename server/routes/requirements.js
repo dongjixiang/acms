@@ -56,8 +56,23 @@ router.post('/:id/transition', (req, res, next) => {
     }
     const result = reqStore.transition(req.params.id, req.body.targetStatus, { id: req.agentId || 'user', type: req.agentId ? 'agent' : 'human' });
     if (result.error) return res.status(400).json(result);
+
+    // 审批通过后运行澄清自我改进
+    let improvementReport = null;
+    if (req.body.targetStatus === 'approved') {
+      try {
+        const clarifications = reqStore.getClarifications(req.params.id);
+        if (clarifications && clarifications.length > 0) {
+          const improvement = require('../services/clarify-improvement-service');
+          const report = improvement.analyzeClarification(result, clarifications);
+          improvementReport = report;
+          console.log(`[clarify-improve] ${result.id}: ${report.totalRounds}轮, ${report.totalVaguenessWarnings}模糊, ${report.suggestions.length}建议`);
+        }
+      } catch (e) { /* 非关键 */ }
+    }
+
     eventBus.emit(`requirement.${req.body.targetStatus === 'approved' ? 'approved' : 'status_changed'}`, { projectId: result.project_id, actor: { id: req.agentId || 'user', type: 'human' }, target: { type: 'requirement', id: result.id }, payload: { requirement: result } });
-    res.json(result);
+    res.json({ ...result, improvement: improvementReport });
   } catch (e) { next(e); }
 });
 

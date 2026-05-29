@@ -131,6 +131,7 @@ webhookService.start();
 app.set('webhookService', webhookService);
 app.use('/api/webhooks', require('./routes/webhooks'));
 app.use('/api/reports', require('./routes/reports'));
+app.use('/api/clarify-improve', require('./routes/clarify-improve'));
 
 // 404
 app.use((req, res) => res.status(404).json({ error: 'NOT_FOUND' }));
