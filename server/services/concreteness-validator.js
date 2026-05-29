@@ -10,6 +10,14 @@ const VAGUE_PATTERNS = [
   { pattern: /原创剧情|剧情线|剧情|故事线/g, severity: 'warning', message: () => '"剧情"需要至少说明主线概要（主角、冲突、章节结构）' },
   { pattern: /有趣的NPC|独特的BOSS|有意思的|cool的|好玩的/g, severity: 'error', message: () => '主观形容词无法执行——需要具体描述NPC/BOSS的名字、特点、行为' },
 
+  // 人物/角色无背景设定
+  { pattern: /(?:设计|创建|添加|加入)\s*(?:一些|几个)?\s*(人物|角色|英雄|敌人|怪物|主角|反派|队友)/g, severity: 'error', message: (m) => `"${m[0]}" 未说明具体人物——需要列出: 名字、身份/定位、核心能力/特点、在剧情中的作用` },
+  { pattern: /人物设定|角色设计|英雄设计|敌人设计/g, severity: 'warning', message: () => '"人物设定"需要具体信息: 每个角色的名字、背景故事、技能树、性格特征' },
+
+  // 地形/场景无具体内容
+  { pattern: /(?:设计|创建|添加|实现)\s*(?:一些|几个)?\s*(地形|场景|地图|关卡场景|战场|环境|地貌)/g, severity: 'error', message: (m) => `"${m[0]}" 未说明具体内容——需要列出: 地形名称、视觉风格、核心机制、尺寸/规模` },
+  { pattern: /地形设计|场景设计|地图设计|关卡设计/g, severity: 'warning', message: () => '"地形/场景设计"需明确: 每种地形的名称、视觉特征、影响游戏机制的方式、参考图或风格描述' },
+
   // 技术方案无决策
   { pattern: /现代(?:前端)?框架/gi, severity: 'warning', message: () => '"现代框架"未指定——需要明确是 React/Vue/Angular 及其版本' },
   { pattern: /合适的数据库|适当的缓存|高性能渲染|优秀的架构/gi, severity: 'warning', message: () => '技术选型未做决策——需明确具体方案和理由' },
