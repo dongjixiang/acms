@@ -1,4 +1,4 @@
-// 缺陷管理视图 — 提交缺陷 + AI 澄清 + 生成 bug task
+// 缺陷管理视图 — 缺陷列表 + AI 澄清提交
 // 依赖: core/state.js, core/utils.js, js/api.js
 
 var bugState = {
@@ -10,7 +10,8 @@ var bugState = {
   analysis: null,
 };
 
-async function loadBugView() {
+// ========== 入口：默认加载缺陷列表 ==========
+function loadBugView() {
   if (!App.currentProjectId) return;
   bugState.projectId = App.currentProjectId;
   bugState.conversationHistory = [];
@@ -18,33 +19,148 @@ async function loadBugView() {
   bugState.analysis = null;
   bugState.bugDescription = '';
 
-  // 加载模型列表
-  try {
-    var modelsResp = await fetch('/api/models', { headers: { 'X-API-Key': 'dev-key-001' } });
-    var models = await modelsResp.json();
-    var modelOpts = '<option value="">选择 AI 模型</option>';
-    models.forEach(function(m) {
-      modelOpts += '<option value="' + m.id + '">' + (m.name || m.id) + '</option>';
-    });
-    document.getElementById('bug-model-select').innerHTML = modelOpts;
-  } catch(e) {}
-
-  // 渲染表单
-  document.getElementById('bug-panel').innerHTML =
-    '<div class="bug-form">' +
-      '<h3>🐛 提交缺陷</h3>' +
-      '<p style="font-size:13px;color:var(--text2);margin-bottom:12px">描述你遇到的问题，AI 将帮你澄清细节并自动生成修复任务。</p>' +
-      '<textarea id="bug-desc-input" placeholder="请描述缺陷：什么页面/功能？什么操作触发的？实际结果 vs 期望结果？" style="width:100%;min-height:120px;padding:12px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:14px;resize:vertical;font-family:inherit"></textarea>' +
-      '<div style="display:flex;gap:8px;margin-top:12px;align-items:center">' +
-        '<select id="bug-model-select" style="padding:8px 12px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:13px">' + modelOpts + '</select>' +
-        '<button class="btn-accept" onclick="startBugClarify()" style="padding:8px 20px;font-size:14px">🤖 AI 澄清</button>' +
-        '<button class="btn-small" onclick="createBugDirect()" style="padding:8px 16px;font-size:12px">跳过澄清，直接创建</button>' +
-      '</div>' +
-      '<div id="bug-clarify-area" style="margin-top:16px"></div>' +
-    '</div>';
+  // 隐藏表单，显示列表
+  document.getElementById('bug-form-panel').style.display = 'none';
+  loadBugList();
 }
 
-// 启动 AI 澄清
+// ========== 缺陷列表 ==========
+async function loadBugList() {
+  var statusFilter = document.getElementById('bug-status-filter').value;
+  var severityFilter = document.getElementById('bug-severity-filter').value;
+
+  var query = 'projectId=' + encodeURIComponent(bugState.projectId);
+  if (statusFilter) query += '&status=' + encodeURIComponent(statusFilter);
+
+  try {
+    var resp = await fetch('/api/bugs?' + query, {
+      headers: { 'X-API-Key': 'dev-key-001' }
+    });
+    var bugs = await resp.json();
+
+    // 前端按严重级二次筛选
+    if (severityFilter) {
+      bugs = bugs.filter(function(b) { return b.bug_severity === severityFilter; });
+    }
+
+    renderBugList(bugs);
+  } catch(e) {
+    document.getElementById('bug-list').innerHTML =
+      '<div style="padding:32px;text-align:center;color:var(--text2)">❌ 加载失败: ' + escHtml(e.message) + '</div>';
+  }
+}
+
+function renderBugList(bugs) {
+  var el = document.getElementById('bug-list');
+
+  if (!bugs || bugs.length === 0) {
+    el.innerHTML = '<div class="bug-empty">' +
+      '<div class="bug-empty-icon">🐛</div>' +
+      '<p>暂无缺陷记录</p>' +
+      '<p style="font-size:12px;color:var(--text2)">点击"提交缺陷"报告新问题</p>' +
+      '</div>';
+    return;
+  }
+
+  // 表头 + 表格
+  var html = '<div class="bug-table-wrap">' +
+    '<table class="bug-table">' +
+    '<thead><tr>' +
+    '<th>缺陷</th>' +
+    '<th style="width:90px">严重级</th>' +
+    '<th style="width:90px">状态</th>' +
+    '<th>关联需求</th>' +
+    '<th>关联任务</th>' +
+    '<th style="width:70px">来源</th>' +
+    '<th style="width:100px">更新时间</th>' +
+    '</tr></thead>' +
+    '<tbody>';
+
+  bugs.forEach(function(bug) {
+    var severityBadge = getSeverityBadge(bug.bug_severity || 'major');
+    var statusBadge = getStatusBadge(bug.status || 'backlog');
+    var sourceLabel = getSourceLabel(bug.bug_source || 'manual');
+    var updated = formatDate(bug.updated_at || bug.created_at);
+
+    var reqLink = bug.parent_id && bug.requirementTitle
+      ? '<a href="#" class="bug-link" onclick="openRequirementDetail(\'' + bug.parent_id + '\');return false" title="' + escHtml(bug.requirementTitle) + '">' + escHtml(truncate(bug.requirementTitle, 20)) + '</a>'
+      : (bug.parent_id ? '<span class="bug-link-dim">' + bug.parent_id + '</span>' : '<span class="bug-link-none">—</span>');
+
+    var taskLink = bug.source_task_id && bug.sourceTaskTitle
+      ? '<a href="#" class="bug-link" onclick="openTask(\'' + bug.source_task_id + '\');return false" title="' + escHtml(bug.sourceTaskTitle) + '">' + escHtml(truncate(bug.sourceTaskTitle, 20)) + '</a>'
+      : (bug.source_task_id ? '<span class="bug-link-dim">' + bug.source_task_id + '</span>' : '<span class="bug-link-none">—</span>');
+
+    html += '<tr class="bug-row" onclick="openTask(\'' + bug.id + '\');return false" style="cursor:pointer">' +
+      '<td><div class="bug-row-title">' + escHtml(bug.title || '🐛 缺陷') + '</div></td>' +
+      '<td>' + severityBadge + '</td>' +
+      '<td>' + statusBadge + '</td>' +
+      '<td>' + reqLink + '</td>' +
+      '<td>' + taskLink + '</td>' +
+      '<td>' + sourceLabel + '</td>' +
+      '<td style="font-size:11px;color:var(--text2);white-space:nowrap">' + updated + '</td>' +
+      '</tr>';
+  });
+
+  html += '</tbody></table></div>';
+
+  // 统计摘要
+  var openCount = bugs.filter(function(b) { return b.status === 'backlog' || b.status === 'in_progress'; }).length;
+  var resolvedCount = bugs.filter(function(b) { return b.status === 'done'; }).length;
+  var criticalCount = bugs.filter(function(b) { return b.bug_severity === 'critical' && b.status !== 'done' && b.status !== 'archived'; }).length;
+  html += '<div class="bug-summary">' +
+    '共 <strong>' + bugs.length + '</strong> 个缺陷 · ' +
+    '未解决 <strong style="color:var(--accent3)">' + openCount + '</strong> · ' +
+    '已解决 <strong style="color:var(--green)">' + resolvedCount + '</strong>' +
+    (criticalCount > 0 ? ' · 🔴 紧急 <strong style="color:#ff4444">' + criticalCount + '</strong>' : '') +
+    '</div>';
+
+  el.innerHTML = html;
+}
+
+// ========== 表单切换 ==========
+function showBugForm() {
+  var panel = document.getElementById('bug-form-panel');
+  // 加载模型列表
+  try {
+    fetch('/api/models', { headers: { 'X-API-Key': 'dev-key-001' } })
+      .then(function(r) { return r.json(); })
+      .then(function(models) {
+        var modelOpts = '<option value="">选择 AI 模型</option>';
+        models.forEach(function(m) {
+          modelOpts += '<option value="' + m.id + '">' + (m.name || m.id) + '</option>';
+        });
+
+        panel.innerHTML =
+          '<div class="bug-form" style="border:1px solid var(--border);border-radius:8px;padding:20px;margin-bottom:16px;background:var(--bg3)">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">' +
+              '<h3 style="margin:0">🐛 提交缺陷</h3>' +
+              '<button class="btn-small" onclick="hideBugForm()" style="font-size:12px">✕ 关闭</button>' +
+            '</div>' +
+            '<p style="font-size:13px;color:var(--text2);margin-bottom:12px">描述你遇到的问题，AI 将帮你澄清细节并自动生成修复任务。</p>' +
+            '<textarea id="bug-desc-input" placeholder="请描述缺陷：什么页面/功能？什么操作触发的？实际结果 vs 期望结果？" style="width:100%;min-height:120px;padding:12px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:14px;resize:vertical;font-family:inherit"></textarea>' +
+            '<div style="display:flex;gap:8px;margin-top:12px;align-items:center">' +
+              '<select id="bug-model-select" style="padding:8px 12px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:13px">' + modelOpts + '</select>' +
+              '<button class="btn-accept" onclick="startBugClarify()" style="padding:8px 20px;font-size:14px">🤖 AI 澄清</button>' +
+              '<button class="btn-small" onclick="createBugDirect()" style="padding:8px 16px;font-size:12px">跳过澄清，直接创建</button>' +
+            '</div>' +
+            '<div id="bug-clarify-area" style="margin-top:16px"></div>' +
+          '</div>';
+        panel.style.display = 'block';
+      });
+  } catch(e) {
+    panel.innerHTML = '<div style="padding:16px;color:var(--red)">加载模型列表失败</div>';
+    panel.style.display = 'block';
+  }
+}
+
+function hideBugForm() {
+  document.getElementById('bug-form-panel').style.display = 'none';
+  bugState.conversationHistory = [];
+  bugState.readyToCreate = false;
+  bugState.analysis = null;
+}
+
+// ========== AI 澄清流程 ==========
 async function startBugClarify() {
   var desc = document.getElementById('bug-desc-input').value.trim();
   var modelId = document.getElementById('bug-model-select').value;
@@ -77,19 +193,17 @@ async function startBugClarify() {
   }
 }
 
-// 渲染 AI 澄清结果（选择题 + 分析）
 function renderBugClarifyResult(result) {
   var area = document.getElementById('bug-clarify-area');
   var html = '';
 
   if (result.phase === 'created') {
-    // 缺陷已创建
     html += '<div class="bug-result-success">' +
       '<h4>✅ 缺陷已创建为修复任务</h4>' +
       '<p>' + escHtml(result.message) + '</p>';
 
     if (result.analysis) {
-      html += '<div style="margin:8px 0;padding:10px;background:var(--bg3);border-radius:4px;font-size:13px">' +
+      html += '<div class="bug-analysis-panel">' +
         '<strong>分析结果:</strong><br>' +
         '严重级: <span style="color:' + getSeverityColor(result.analysis.severity) + '">' + result.analysis.severity + '</span><br>' +
         '复现步骤: ' + escHtml(result.analysis.reproduce_steps || '') + '<br>' +
@@ -106,18 +220,16 @@ function renderBugClarifyResult(result) {
     if (result.task) {
       html += '<p style="margin-top:12px">' +
         '<a href="#" onclick="openTask(\'' + result.task.id + '\');return false" style="color:var(--accent)">📋 查看任务: ' + result.task.id + '</a>' +
-        ' &nbsp; ' +
-        '<a href="#" onclick="showWorkspaceView(\'kanban\');refreshKanban();return false" style="color:var(--accent)">📌 查看看板</a>' +
         '</p>';
     }
-    html += '<button class="btn-small" onclick="loadBugView()" style="margin-top:12px">➕ 提交新缺陷</button></div>';
+    html += '<button class="btn-small" onclick="hideBugForm();loadBugList()" style="margin-top:12px">📋 返回缺陷列表</button>' +
+      ' &nbsp; <button class="btn-small" onclick="showBugForm()">➕ 提交新缺陷</button></div>';
   } else {
-    // 澄清中，显示选择题
     html += '<div class="bug-clarify-message">' +
       '<p style="font-size:14px;margin-bottom:12px">' + escHtml(result.message) + '</p>';
 
     if (result.analysis) {
-      html += '<div style="margin:8px 0;padding:8px 10px;background:var(--bg3);border-radius:4px;font-size:12px;color:var(--text2)">' +
+      html += '<div class="bug-analysis-inline">' +
         '📊 当前分析: 严重级 ' + (result.analysis.severity || '待定') + ' | ' +
         '期望: ' + escHtml(result.analysis.expected_behavior || '待分析') +
         '</div>';
@@ -140,7 +252,7 @@ function renderBugClarifyResult(result) {
 
       html += '<div style="margin-top:16px;display:flex;gap:8px">' +
         '<button class="btn-accept" onclick="submitBugChoices()" style="padding:8px 20px">✅ 确认选择，发送给 AI</button>' +
-        '<button class="btn-small" onclick="loadBugView()">取消</button>' +
+        '<button class="btn-small" onclick="hideBugForm();loadBugList()">取消</button>' +
         '</div>';
     }
 
@@ -150,6 +262,7 @@ function renderBugClarifyResult(result) {
   area.innerHTML = html;
 }
 
+// ========== 严重级/状态/来源 辅助 ==========
 function getSeverityColor(severity) {
   if (severity === 'critical') return '#ff4444';
   if (severity === 'major') return '#ff8c44';
@@ -157,7 +270,54 @@ function getSeverityColor(severity) {
   return '#9090a0';
 }
 
-// 切换选项选中
+function getSeverityBadge(severity) {
+  var color = getSeverityColor(severity);
+  return '<span class="bug-severity-badge" style="background:' + color + '1a;color:' + color + ';border:1px solid ' + color + '44">' + severity + '</span>';
+}
+
+function getStatusBadge(status) {
+  var map = {
+    backlog:   { label: '📥 待修复', color: '#9090a0' },
+    in_progress: { label: '🔄 修复中', color: '#4fc3f7' },
+    review:    { label: '👀 待审核', color: '#ffd93d' },
+    done:      { label: '✅ 已解决', color: '#4ecdc4' },
+    archived:  { label: '📦 已归档', color: '#9090a0' },
+  };
+  var info = map[status] || { label: status, color: '#9090a0' };
+  return '<span class="bug-status-badge" style="background:' + info.color + '1a;color:' + info.color + ';border:1px solid ' + info.color + '44">' + info.label + '</span>';
+}
+
+function getSourceLabel(source) {
+  var map = {
+    manual: '👤 人工',
+    verify_failure: '🤖 验证',
+    review_rejection: '👀 审核',
+  };
+  return map[source] || source;
+}
+
+function formatDate(isoStr) {
+  if (!isoStr) return '—';
+  var d = new Date(isoStr);
+  var now = new Date();
+  var diffMs = now - d;
+  var diffH = Math.floor(diffMs / 3600000);
+
+  if (diffH < 1) return '刚刚';
+  if (diffH < 24) return diffH + 'h 前';
+  if (diffH < 168) return Math.floor(diffH / 24) + 'd 前';
+
+  var month = (d.getMonth() + 1).toString().padStart(2, '0');
+  var day = d.getDate().toString().padStart(2, '0');
+  return month + '-' + day;
+}
+
+function truncate(str, maxLen) {
+  if (!str) return '';
+  return str.length > maxLen ? str.substring(0, maxLen) + '...' : str;
+}
+
+// ========== 选项交互 ==========
 function toggleBugChoice(btn) {
   var group = btn.parentElement;
   var multiple = group.getAttribute('data-multiple') === 'true';
@@ -171,7 +331,6 @@ function markBugChoiceSelected(input) {
   input.setAttribute('data-selected', input.value ? '1' : '0');
 }
 
-// 提交选择
 async function submitBugChoices() {
   var answers = [];
   document.querySelectorAll('.bug-choice-opts').forEach(function(group) {
@@ -190,8 +349,6 @@ async function submitBugChoices() {
   if (answers.length === 0) { toast('请至少选择一个选项', 'error'); return; }
 
   var answerMsg = answers.map(function(a) { return '问题' + (a.questionIndex + 1) + ': ' + a.answer; }).join('\n');
-
-  // 保存用户消息到历史
   bugState.conversationHistory.push({ role: 'user', content: answerMsg });
 
   var area = document.getElementById('bug-clarify-area');
@@ -217,7 +374,7 @@ async function submitBugChoices() {
   }
 }
 
-// 跳过澄清直接创建
+// ========== 跳过澄清直接创建 ==========
 async function createBugDirect() {
   var desc = document.getElementById('bug-desc-input').value.trim();
   if (!desc) { toast('请填写缺陷描述', 'error'); return; }
@@ -239,10 +396,23 @@ async function createBugDirect() {
     area.innerHTML = '<div class="bug-result-success">' +
       '<h4>✅ 缺陷已创建</h4>' +
       '<p>任务: <a href="#" onclick="openTask(\'' + result.task.id + '\');return false">' + result.task.id + '</a></p>' +
-      '<button class="btn-small" onclick="loadBugView()" style="margin-top:12px">➕ 提交新缺陷</button>' +
+      '<button class="btn-small" onclick="hideBugForm();loadBugList()" style="margin-top:12px">📋 返回缺陷列表</button>' +
+      ' &nbsp; <button class="btn-small" onclick="showBugForm()">➕ 提交新缺陷</button>' +
       '</div>';
     toast('缺陷任务已创建 ✅', 'success');
+    loadBugList(); // 后台刷新列表
   } catch(e) {
     toast('创建失败: ' + e.message, 'error');
+  }
+}
+
+// ========== 需求详情快捷跳转 ==========
+function openRequirementDetail(reqId) {
+  if (typeof openReq === 'function') {
+    openReq(reqId);
+  } else {
+    // fallback: 切换到需求视图
+    App.currentReqId = reqId;
+    showWorkspaceView('requirements');
   }
 }

@@ -102,6 +102,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <button class="nav-btn" data-view="bugs">🐛 <span>缺陷管理</span></button>
         <button class="nav-btn" data-view="delivery">📦 <span data-i18n="nav.delivery">交付管理</span></button>
         <button class="nav-btn" data-view="agents">🤖 <span>智能体协同</span></button>
+        <button class="nav-btn" data-view="reports">📊 <span>项目报告</span></button>
         <button class="nav-btn" data-view="settings">⚙️ <span data-i18n="nav.settings">项目设置</span></button>
         <div id="sidebar-stats"></div>
       </nav>
@@ -162,6 +163,11 @@ document.addEventListener('DOMContentLoaded', () => {
             <h2 data-i18n="kanban.title">📌 任务看板</h2>
             <select id="kanban-req-filter" class="filter-select" onchange="refreshKanban()"><option value="">全部需求</option></select>
             <button class="btn-small btn-accept" onclick="refreshKanban()">🔄 刷新</button>
+            <label class="toggle-switch" title="开启后，所有提交到 review 列的任务自动触发 Reviewer Agent 审核" style="margin-left:12px">
+              <input type="checkbox" id="auto-review-global" onchange="toggleGlobalAutoReview(this.checked)">
+              <span class="toggle-slider"></span>
+            </label>
+            <span style="font-size:13px;margin-left:4px">🤖 自动审核</span>
           </div>
           <div class="kanban-container">
             <div class="kanban-col" data-col="backlog"><div class="col-header">📥 <span data-i18n="kanban.cols.backlog">待认领</span> <span class="count" id="count-backlog">0</span></div><div class="col-body" id="col-backlog"></div></div>
@@ -213,8 +219,47 @@ document.addEventListener('DOMContentLoaded', () => {
 
         <!-- 缺陷管理 -->
         <div id="view-bugs" class="view">
-          <div class="view-header"><h2>🐛 缺陷管理</h2></div>
-          <div id="bug-panel"></div>
+          <div class="view-header">
+            <h2>🐛 缺陷管理</h2>
+            <select id="bug-status-filter" class="filter-select" onchange="loadBugList()">
+              <option value="">全部状态</option>
+              <option value="backlog">📥 待修复</option>
+              <option value="in_progress">🔄 修复中</option>
+              <option value="review">👀 待审核</option>
+              <option value="done">✅ 已解决</option>
+              <option value="archived">📦 已归档</option>
+            </select>
+            <select id="bug-severity-filter" class="filter-select" onchange="loadBugList()">
+              <option value="">全部严重级</option>
+              <option value="critical">🔴 Critical</option>
+              <option value="major">🟠 Major</option>
+              <option value="minor">🟡 Minor</option>
+              <option value="trivial">⚪ Trivial</option>
+            </select>
+            <button class="btn-primary" onclick="showBugForm()">➕ 提交缺陷</button>
+          </div>
+          <div id="bug-form-panel" style="display:none"></div>
+          <div id="bug-list"></div>
+        </div>
+
+        <!-- 项目报告 -->
+        <div id="view-reports" class="view">
+          <div class="view-header">
+            <h2>📊 项目报告</h2>
+            <select id="report-template" class="filter-select">
+              <option value="comprehensive">综合报告</option>
+              <option value="quality">质量审查</option>
+              <option value="agent">Agent 绩效</option>
+              <option value="progress">进度报告</option>
+              <option value="security">安全审查</option>
+            </select>
+            <button class="btn-small btn-accept" onclick="generateReport()">➕ 生成报告</button>
+          </div>
+          <div id="report-list"></div>
+          <div id="report-preview" style="display:none">
+            <button class="btn-small" onclick="closeReportPreview()" style="margin-bottom:12px">← 返回列表</button>
+            <div id="report-preview-content"></div>
+          </div>
         </div>
 
         <!-- 项目设置 -->
@@ -261,6 +306,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/delivery.js"></script>
 <script src="/client/js/views/agents.js"></script>
 <script src="/client/js/views/settings.js"></script>
+<script src="/client/js/views/reports.js"></script>
 <script src="/client/js/views/admin.js"></script>
 <script src="/client/js/app.js"></script>
 </body>

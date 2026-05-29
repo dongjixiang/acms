@@ -44,29 +44,31 @@ router.get('/:id/tasks', (req, res) => {
   res.json({ agent: { id: agent.id, name: agent.name, type: agent.type, roles }, assigned, reviewQueue: reviewTasks });
 });
 
-// 任务上下文注入（智能体认领任务时获取完整上下文）
+// 任务上下文注入（智能体认领任务时获取完整上下文）— 分层注入
+// ?layer=0    默认，仅 Layer 0: 任务目标 + 前置接口签名 + 产出签名 + 验收命令
+// ?layer=0,1  Layer 0 + 依赖契约详情 + 涉及文件清单
+// ?layer=0,1,2  全量: Layer 0+1 + wiki_context + 父需求 SRS
 router.get('/:id/context/:taskId', (req, res) => {
   const task = taskStore.getById(req.params.taskId);
   if (!task) return res.status(404).json({ error: 'TASK_NOT_FOUND' });
 
-  const context = {
-    task: {
-      id: task.id, title: task.title, description: task.description,
-      type: task.type, priority: task.priority, status: task.status,
-      requiredSkills: JSON.parse(task.required_skills || '{}'),
-      estimatedHours: task.estimated_hours,
-      dependsOn: JSON.parse(task.depends_on || '[]'),
-      linkedWiki: JSON.parse(task.linked_wiki || '[]'),
-    },
-  };
+  const contextService = require('../services/context-service');
+  const layerParam = req.query.layer || '0';
+  const layers = layerParam.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+  const maxLayer = layers.length > 0 ? Math.max(...layers) : 0;
 
-  // 注入父需求摘要
+  // 解析 depends_contract
+  const dependsContract = JSON.parse(task.depends_contract || '[]');
+
+  // 解析父需求
+  let parentRequirement = null;
   if (task.parent_id) {
     const parent = reqStore.getById(task.parent_id);
     if (parent) {
       const srs = JSON.parse(parent.srs || '{}');
-      context.parentRequirement = {
+      parentRequirement = {
         id: parent.id, title: parent.title,
+        description: parent.description || '',
         summary: srs.summary || parent.description?.substring(0, 200) || '',
         acceptanceCriteria: srs.acceptanceCriteria || [],
         wikiPath: parent.wiki_path || '',
@@ -74,7 +76,17 @@ router.get('/:id/context/:taskId', (req, res) => {
     }
   }
 
-  // 注入项目环境信息
+  // 按层级构建上下文
+  let context;
+  if (maxLayer >= 2) {
+    context = contextService.buildLayer2(task, dependsContract, parentRequirement);
+  } else if (maxLayer >= 1) {
+    context = contextService.buildLayer1(task, dependsContract);
+  } else {
+    context = contextService.buildLayer0(task, dependsContract);
+  }
+
+  // 注入项目环境信息 (所有层级都带，因为很小)
   if (task.project_id) {
     const project = projectStore.getById(task.project_id);
     if (project) {
@@ -85,6 +97,14 @@ router.get('/:id/context/:taskId', (req, res) => {
       };
     }
   }
+
+  // 附加上下文大小信息（帮助 Agent 决策是否请求更高 layer）
+  context._estimatedChars = contextService.estimateChars(context);
+  context._availableLayers = {
+    0: contextService.estimateChars(contextService.buildLayer0(task, dependsContract)),
+    1: contextService.estimateChars(contextService.buildLayer1(task, dependsContract)),
+    2: contextService.estimateChars(contextService.buildLayer2(task, dependsContract, parentRequirement)),
+  };
 
   res.json(context);
 });

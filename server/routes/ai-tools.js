@@ -40,6 +40,7 @@ router.post('/requirements/:id/decompose-ai', async (req, res, next) => {
         requiredSkills: t.requiredSkills || {},
         estimatedHours: t.estimatedHours || 4,
         dependsOn: t.dependsOn || [],   // 先存标题，创建完毕后映射为 ID
+        dependsContract: t.dependsContract || [],  // ★ 新增: 接口契约
         wikiContext: requirement.wiki_path || '',
         linkedWiki: (t.linkedWiki || []).map(w => ({ page: w, role: 'reference', autoLoad: false })),
       });

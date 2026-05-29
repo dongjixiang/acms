@@ -4,16 +4,20 @@ const { v4: uuidv4 } = require('uuid');
 
 class TaskStore {
   create({ projectId, parentId = '', title, description = '', type = 'coding', priority = 3,
-           requiredSkills = {}, estimatedHours = 0, dependsOn = [], wikiContext = '', linkedWiki = [] }) {
+           requiredSkills = {}, estimatedHours = 0, dependsOn = [], dependsContract = [],
+           wikiContext = '', linkedWiki = [], autoReview = false }) {
     const id = `T-${Date.now().toString(36).toUpperCase()}`;
     const now = new Date().toISOString();
     const task = {
       id, project_id: projectId, parent_id: parentId, title, description, type, priority,
       status: 'backlog', blocked: (dependsOn && dependsOn.length > 0) ? 1 : 0,
-      block_reason: (dependsOn && dependsOn.length > 0) ? '等待前置任务完成' : '', depends_on: JSON.stringify(dependsOn),
+      block_reason: (dependsOn && dependsOn.length > 0) ? '等待前置任务完成' : '',
+      depends_on: JSON.stringify(dependsOn),
+      depends_contract: JSON.stringify(dependsContract),
       depended_by: '[]', sibling_ids: '[]', required_skills: JSON.stringify(requiredSkills),
       estimated_hours: estimatedHours, actual_hours: 0, assigned_to: '', assigned_at: '',
       assigned_role: 'executor', progress: 0, progress_note: '', last_progress_update: '',
+      auto_review: autoReview ? 1 : 0, review_status: '',
       wiki_context: wikiContext, linked_wiki: JSON.stringify(linkedWiki),
       execution_log: '[]', submissions: '[]', reviews: '[]', artifacts: '{}',
       version: 1, created_at: now, updated_at: now, completed_at: '',

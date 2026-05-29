@@ -121,6 +121,16 @@ app.use('/api/exports', require('./routes/exports'));
 app.use('/api/workspace', workspaceRouter);
 app.use('/api/skills', require('./routes/skills'));
 app.use('/api/bugs', require('./routes/bugs'));
+app.use('/api/postmortem', require('./routes/postmortem'));
+
+// Webhook 服务初始化
+const eventBus = require('./services/event-bus');
+const WebhookService = require('./services/webhook-service');
+const webhookService = new WebhookService(eventBus);
+webhookService.start();
+app.set('webhookService', webhookService);
+app.use('/api/webhooks', require('./routes/webhooks'));
+app.use('/api/reports', require('./routes/reports'));
 
 // 404
 app.use((req, res) => res.status(404).json({ error: 'NOT_FOUND' }));

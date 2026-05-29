@@ -306,12 +306,34 @@ function createBugDirect(projectId, { title, description, severity, source, sour
 }
 
 /**
- * 列出缺陷（type='bug' 的 task）
+ * 列出缺陷（type='bug' 的 task），增强关联需求/任务标题
  */
 function listBugs(projectId, status) {
   let tasks = collection('tasks').find(t => t.project_id === projectId && t.type === 'bug');
   if (status) tasks = tasks.filter(t => t.status === status);
-  return tasks;
+
+  // 增强：附加关联需求标题和源任务标题
+  const enhanced = tasks.map(task => {
+    let requirementTitle = '';
+    let sourceTaskTitle = '';
+
+    if (task.parent_id) {
+      const req = collection('requirements').findOne(r => r.id === task.parent_id);
+      if (req) requirementTitle = req.title || '';
+    }
+    if (task.source_task_id) {
+      const srcTask = collection('tasks').findOne(t => t.id === task.source_task_id);
+      if (srcTask) sourceTaskTitle = srcTask.title || '';
+    }
+
+    return {
+      ...task,
+      requirementTitle,
+      sourceTaskTitle,
+    };
+  });
+
+  return enhanced;
 }
 
 module.exports = { processBugReport, createBugDirect, listBugs, BUG_CLARIFY_SYSTEM_PROMPT };

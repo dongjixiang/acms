@@ -90,9 +90,12 @@ async function openTask(taskId) {
       '<h3>📝 日志</h3><div>' + (log.length ? log.map(function(l) { return '<div class="log-entry">' + new Date(l.time).toLocaleString('zh-CN') + ' — ' + l.action + ': ' + escHtml(l.note || '') + '</div>'; }).join('') : '<div class="empty">暂无</div>') + '</div>' +
       (subs.length ? '<h3>📦 提交</h3>' + subs.map(function(s) { return '<div class="log-entry">' + fmtDate(s.submittedAt) + ' — ' + (s.submittedBy || '') + ': ' + escHtml(s.notes || '') + '</div>'; }).join('') : '') +
       (revs.length ? '<h3>👁 审核</h3>' + revs.map(function(r) { return '<div class="log-entry">' + fmtDate(r.reviewedAt) + ' — ' + (r.verdict === 'approved' ? '✅' : '❌') + ' ' + escHtml(r.feedback || '') + '</div>'; }).join('') : '') +
+      (t.review_status ? '<div class="review-status ' + t.review_status + '">' +
+        (t.review_status === 'reviewing' ? '🤖 审核中…' : t.review_status === 'approved' ? '✅ 自动审核通过' : t.review_status === 'rejected' ? '❌ 自动审核驳回' : '⚠️ ' + escHtml(t.review_status)) +
+      '</div>' : '') +
       '<div style="margin-top:16px;display:flex;gap:8px">' +
         (t.status === 'backlog' ? '<button class="btn-accept" onclick="claimTask(\'' + t.id + '\')">认领</button>' : '') +
-        (t.status === 'in_progress' ? '<button class="btn-primary" onclick="updateTaskProgress(\'' + t.id + '\')">更新进度</button><button class="btn-accept" onclick="submitTask(\'' + t.id + '\')">提交审核</button>' : '') +
+        (t.status === 'in_progress' ? '<button class="btn-primary" onclick="updateTaskProgress(\'' + t.id + '\')">更新进度</button><button class="btn-accept" onclick="submitTask(\'' + t.id + '\', ' + (t.auto_review ? 'true' : 'false') + ')">提交审核</button>' : '') +
         (t.status === 'review' ? '<button class="btn-accept" onclick="reviewTask(\'' + t.id + '\',\'approved\')">通过</button><button class="btn-reject" onclick="reviewTask(\'' + t.id + '\',\'rejected\')">驳回</button>' : '') +
         '<button class="btn-small btn-reject" style="margin-left:auto" onclick="deleteTask(\'' + t.id + '\')">🗑 删除</button>' +
       '</div>';
@@ -135,6 +138,7 @@ async function assignTaskCard(taskId, agentId) {
 async function claimTask(tid) { var a = prompt('智能体ID:', 'agent-scholar-001'); if (!a) return; try { await Tasks.claim(tid, a); toast('已认领 ✅', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
 async function submitTask(tid) { var n = prompt('提交说明:') || '完成'; try { await Tasks.submit(tid, 'agent-scholar-001', [], n); toast('已提交', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
 async function reviewTask(tid, verdict) { try { await Tasks.review(tid, verdict); toast(verdict === 'approved' ? '已通过 ✅' : '已驳回', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
+async function toggleAutoReview(tid, enabled) { try { await api('PATCH', '/tasks/' + tid + '/auto-review', { enabled: enabled }); toast(enabled ? '🤖 自动审核已开启' : '自动审核已关闭', 'success'); } catch (e) { toast('切换失败: ' + e.message, 'error'); } }
 async function updateTaskProgress(tid) { var p = prompt('进度 (0-100):', '50'); if (!p) return; try { await api('POST', '/tasks/' + tid + '/progress', { progress: parseInt(p), note: '手动更新' }); toast('进度已更新', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
 async function deleteTask(tid) { if (!confirm('确认删除此任务？')) return; try { await api('DELETE', '/tasks/' + tid); toast('已删除', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
 
@@ -148,4 +152,56 @@ async function exportTask(tid) {
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url); toast('文档已下载 ✅', 'success');
   } catch (e) { toast('导出失败: ' + e.message, 'error'); }
+}
+
+// ═══════════════════════════════════════
+// 全局自动审核 — 面板级轮询 review 列
+// ═══════════════════════════════════════
+let _autoReviewTimer = null;
+let _autoReviewBusy = false;
+
+function toggleGlobalAutoReview(enabled) {
+  if (enabled) {
+    if (_autoReviewTimer) return;
+    toast('🤖 Reviewer Agent 已启动，正在扫描待审核任务…', 'info');
+    _autoReviewTimer = setInterval(autoReviewPoll, 5000);
+    autoReviewPoll(); // 立即执行一次
+  } else {
+    clearInterval(_autoReviewTimer);
+    _autoReviewTimer = null;
+    toast('自动审核已停止', 'info');
+  }
+}
+
+async function autoReviewPoll() {
+  if (_autoReviewBusy) return;
+  _autoReviewBusy = true;
+  try {
+    // 获取 review 列所有待审任务
+    var resp = await fetch('/api/tasks?status=review&limit=20', { headers: { 'X-API-Key': 'dev-key-001' } });
+    var tasks = await resp.json();
+    if (!Array.isArray(tasks) || tasks.length === 0) { _autoReviewBusy = false; return; }
+
+    for (var t of tasks) {
+      // 跳过已由 Reviewer Agent 审核过的（避免重复）
+      var revs = safeParse(t.reviews);
+      if (Array.isArray(revs) && revs.some(function(r) { return r.reviewedBy === 'agent-reviewer-001'; })) continue;
+      // 跳过 Reviewer 自己执行的任务（SELF_REVIEW_FORBIDDEN）
+      if (t.assigned_to === 'agent-reviewer-001') continue;
+
+      try {
+        var result = await api('POST', '/tasks/' + t.id + '/review', {
+          verdict: 'approved',
+          reviewedBy: 'agent-reviewer-001',
+          autoReview: true
+        });
+        var verdict = result.reviewReport ? result.reviewReport.verdict : (result.verdict || 'approved');
+        console.log('🤖 Auto-reviewed', t.id, '→', verdict);
+      } catch(e) {
+        console.warn('Auto-review failed for', t.id, ':', e.message);
+      }
+    }
+    refreshKanban();
+  } catch(e) { /* */ }
+  _autoReviewBusy = false;
 }

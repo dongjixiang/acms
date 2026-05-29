@@ -127,11 +127,14 @@ router.delete('/:id', (req, res) => {
   }
 
   collection('clarification_threads').remove(c => c.requirement_id === req.params.id);
-  // 删除关联任务
+  // 删除关联任务（两路兜底：task_ids 登记 + parent_id 指向）
   const taskIds = JSON.parse(requirement.task_ids || '[]');
   for (const tid of taskIds) collection('tasks').remove(t => t.id === tid);
+  // 兜底：删除所有 parent_id 指向本需求的任务（防止登记遗漏的孤任务）
+  const orphanTasks = collection('tasks').find(t => t.parent_id === req.params.id);
+  for (const t of orphanTasks) collection('tasks').remove(t2 => t2.id === t.id);
   collection('requirements').remove(r => r.id === req.params.id);
-  res.json({ success: true, message: `需求 ${requirement.title} 已删除` });
+  res.json({ success: true, message: `需求 ${requirement.title} 已删除`, deletedTasks: taskIds.length + orphanTasks.length });
 });
 
 // 需求拆分（创建子需求）
