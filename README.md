@@ -31,6 +31,23 @@ Most PM tools (Jira, Linear, Notion) treat AI as an *add-on* — a chatbot bolte
 
 ---
 
+## 📸 Preview
+
+<div align="center">
+  <table>
+    <tr>
+      <td width="50%"><img src="screenshots/kanban.png" alt="AI Task Kanban Board" width="100%"/><br/><em>🤖 AI Task Kanban — auto-decomposed tasks with skill matching scores</em></td>
+      <td width="50%"><img src="screenshots/requirements.png" alt="AI Requirement Clarification" width="100%"/><br/><em>🧠 AI Requirement Clarification — multi-choice structured dialogue</em></td>
+    </tr>
+    <tr>
+      <td width="50%"><img src="screenshots/projects.png" alt="Project Dashboard" width="100%"/><br/><em>📂 Project Dashboard — manage all projects in one place</em></td>
+      <td width="50%"><img src="screenshots/reports.png" alt="Reports & Analytics" width="100%"/><br/><em>📊 Reports & Analytics — 5 templates with PDF/MD export</em></td>
+    </tr>
+  </table>
+</div>
+
+---
+
 ## 🏆 Key Differentiators
 
 ### 🧠 1. AI-Driven Requirements (Not a Chatbot — A Dialogue Engine)
