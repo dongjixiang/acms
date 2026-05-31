@@ -142,7 +142,7 @@ async function saveModel() {
 }
 
 async function deleteModel(id) {
-  if (!confirm('确认删除此模型配置？')) return;
+  if (!(await showConfirm('确认删除此模型配置？'))) return;
   try { await api('DELETE', `/models/${id}`); toast('已删除', 'success'); loadAdminPage(); }
   catch(e) { toast('失败: '+e.message, 'error'); }
 }
@@ -153,7 +153,7 @@ async function doBackup() {
 }
 
 async function doCleanup(type) {
-  if (!confirm(`确认清理 ${type}？`)) return;
+  if (!(await showConfirm(`确认清理 ${type}？此操作不可撤销。`))) return;
   try { const r = await api('POST', '/admin/cleanup', { type }); toast(`已清理 ${r.cleaned} 条`, 'success'); loadAdminPage(); }
   catch(e) { toast('失败: '+e.message, 'error'); }
 }

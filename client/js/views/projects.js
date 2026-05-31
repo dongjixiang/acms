@@ -40,7 +40,7 @@ async function doCreateProject() {
 }
 
 async function deleteProject(id, name) {
-  if (!confirm(`确认删除项目「${name}」？\n所有关联的需求、任务、配置都将被删除，此操作不可撤销。`)) return;
+  if (!(await showConfirm(`确认删除项目「${name}」？所有关联的需求、任务、配置都将被删除，此操作不可撤销。`))) return;
   try {
     await api('DELETE', `/projects/${id}`);
     toast('项目已删除', 'success');

@@ -2,6 +2,7 @@
 const modelStore = require('../stores/model-store');
 const reqStore = require('../stores/requirement-store');
 const { callLLM } = require('./llm-adapter');
+const validator = require('./concreteness-validator');
 
 const CLARIFY_SYSTEM_PROMPT = `你是一个专业的需求分析师。用户提交了一个需求，你需要通过选择题的方式帮助澄清需求细节。
 
@@ -195,10 +196,52 @@ async function clarify(reqId, modelId, userMessage, conversationHistory) {
     messages.splice(2, 0, { role: 'system', content: changeContext });
   }
 
+  // === 架构宪法上下文注入 ===
+  if (requirement.parent_id) {
+    // 子需求: 注入父需求的架构宪法 + 兄弟需求信息
+    try {
+      const parentReq = reqStore.getById(requirement.parent_id);
+      if (parentReq) {
+        const archSpec = JSON.parse(parentReq.arch_spec || '{}');
+        const siblings = reqStore.findChildren(requirement.parent_id)
+          .filter(c => c.id !== requirement.id);
+        const archContext = buildArchContext(requirement, parentReq, archSpec, siblings);
+        if (archContext) {
+          messages.splice(2, 0, { role: 'system', content: archContext });
+        }
+      }
+    } catch (e) { /* 非关键 */ }
+  } else {
+    // 主需求: 如果 ArchSpec 为空且范围可能过大，引导 LLM 先定义架构
+    const archSpec = JSON.parse(requirement.arch_spec || '{}');
+    const hasDecisions = archSpec.decisions && Object.keys(archSpec.decisions).length > 0;
+    if (!hasDecisions && !requirement.parent_id) {
+      messages.splice(2, 0, { role: 'system', content: buildArchPrompt() });
+    }
+  }
+
   if (userMessage) {
     messages.push({ role: 'user', content: userMessage });
   } else if (!conversationHistory || conversationHistory.length === 0) {
     messages.push({ role: 'user', content: '请开始分析这个需求，用选择题帮助我澄清细节。' });
+  }
+
+  // === A: 调 LLM 前注入具体性审查反馈 ===
+  const currentSrsData = JSON.parse(requirement.srs || '{}');
+  const preConcResult = validator.validateRequirement({
+    title: requirement.title,
+    description: currentSrsData.summary || requirement.description || '',
+    srs: requirement.srs,
+  });
+  if (!preConcResult.passed) {
+    const errors = preConcResult.warnings.filter(w => w.severity === 'error');
+    if (errors.length > 0) {
+      const fb = ['⚠️ [系统审查] 当前需求仍存在模糊表达，请在本次回复中针对每个问题提出选择题：'];
+      errors.forEach((e, i) => fb.push(`${i + 1}. [${e.pattern}] ${e.message}`));
+      fb.push('不要设置 readyForReview=true。');
+      messages.push({ role: 'system', content: fb.join('\n') });
+      console.log(`[clarify] A-预引导: 注入 ${errors.length} 个模糊点`);
+    }
   }
 
   // 调用 LLM（适配器自动根据 model.api 选择格式）
@@ -222,16 +265,87 @@ async function clarify(reqId, modelId, userMessage, conversationHistory) {
   }
 
   // 更新 SRS
+  let mergedSrs = srs;
   if (parsed.srs && Object.keys(parsed.srs).length > 0) {
-    const updatedSrs = { ...srs, ...parsed.srs };
-    reqStore.updateSrs(reqId, updatedSrs);
+    mergedSrs = { ...srs, ...parsed.srs };
+    reqStore.updateSrs(reqId, mergedSrs);
+
+    // 自动提取并保存架构宪法
+    if (mergedSrs.archSpec && Object.keys(mergedSrs.archSpec).length > 0) {
+      try {
+        reqStore.updateArchSpec(reqId, mergedSrs.archSpec);
+        console.log(`[clarify] archSpec 已保存: ${Object.keys(mergedSrs.archSpec).join(', ')}`);
+      } catch (e) { /* 非关键 */ }
+    }
+  }
+
+  // === B: LLM 回复后兜底审查 ===
+  let forceNotReady = false;
+  if (parsed.readyForReview) {
+    const tempReq = {
+      title: requirement.title,
+      description: mergedSrs.summary || (mergedSrs.scopeIn || []).join('; ') || requirement.description || '',
+      srs: JSON.stringify(mergedSrs),
+    };
+    const postConcResult = validator.validateRequirement(tempReq);
+    const hasErrors = postConcResult.warnings.some(w => w.severity === 'error');
+    const selfWarnings = parsed.vaguenessWarnings || [];
+
+    if (hasErrors || selfWarnings.length > 0) {
+      forceNotReady = true;
+
+      const allErrors = postConcResult.warnings.filter(w => w.severity === 'error');
+      const deduped = [];
+      const seen = new Set();
+      for (const e of allErrors) {
+        const key = e.pattern;
+        if (!seen.has(key)) { seen.add(key); deduped.push(e); }
+      }
+
+      // 替换消息: 不追加到 LLM 原消息上
+      parsed.message = `🔍 系统审查发现需求仍有 ${deduped.length} 个模糊点需要澄清：`;
+      deduped.slice(0, 5).forEach((e, i) => {
+        parsed.message += `\n${i + 1}. ${e.message}`;
+      });
+      if (selfWarnings.length > 0) {
+        parsed.message += `\n\n📋 AI 自查也发现了 ${selfWarnings.length} 个未解决的问题。`;
+      }
+      parsed.message += `\n\n请在下方选择题中输入具体内容，或直接在输入框中自由回复。`;
+
+      // 自动生成选择题: 每个模糊点一个可自定义的问题
+      parsed.choices = deduped.slice(0, 5).map((e, i) => ({
+        id: String.fromCharCode(65 + i),
+        question: e.message.replace(/^[""](.+)[""]$/, '$1'),
+        options: [],
+        allowCustom: true,
+        allowMultiple: false,
+      }));
+
+      console.log(`[clarify] B-兜底拦截: readyForReview 被覆盖，${allErrors.length}个error(去重${deduped.length}) + ${selfWarnings.length}个自查警告，已生成${parsed.choices.length}个选择题`);
+
+      // === 触发自我改进: AI 认为 ready 但系统发现了漏洞 → 优化领域 Skill ===
+      try {
+        const improvement = require('./clarify-improvement-service');
+        const clarifications = reqStore.getClarifications(reqId);
+        const report = improvement.analyzeClarification(requirement, clarifications);
+        if (report.skillPatches.length > 0) {
+          for (const patch of report.skillPatches) {
+            improvement.applySkillPatch(patch);
+            console.log(`[clarify] 自我改进: 已应用 skill-clarify-${patch.domain} 补丁 — ${patch.reason}`);
+          }
+        } else if (report.suggestions.length > 0) {
+          console.log(`[clarify] 自我改进: ${report.suggestions.length} 条建议 (未达到自动应用阈值)`);
+          report.suggestions.slice(0, 3).forEach(s => console.log(`  - [${s.type}] ${s.title}`));
+        }
+      } catch (e) { console.log('[clarify] 自我改进触发失败:', e.message); }
+    }
   }
 
   return {
     message: parsed.message || '',
     choices: parsed.choices || [],
     srs: parsed.srs || srs,
-    readyForReview: parsed.readyForReview || false,
+    readyForReview: forceNotReady ? false : (parsed.readyForReview || false),
     splitSuggestion: parsed.splitSuggestion || null,
     vaguenessWarnings: parsed.vaguenessWarnings || [],
     modelUsed: result.modelUsed,
@@ -317,3 +431,154 @@ function buildDomainExamples(type) {
   };
   return examples[type] || '';
 }
+
+// ═══════════════════════════════════════
+// 架构宪法上下文构建
+// ═══════════════════════════════════════
+
+/**
+ * 构建子需求的架构宪法上下文（注入给 LLM）
+ */
+function buildArchContext(childReq, parentReq, archSpec, siblings) {
+  const parts = [];
+  parts.push(`## 🏛️ 架构宪法 — 这是父需求「${parentReq.title}」定义的不可违背的架构边界`);
+  parts.push('你正在澄清的子需求属于该父需求的组成部分，必须遵守以下架构约束：');
+
+  // 规范化: 兼容旧的扁平格式和新的嵌套格式
+  const tech = archSpec.technical || archSpec;
+  const domain = archSpec.domain || {};
+  const contracts = archSpec.contracts || archSpec.interfaceRegistry || [];
+
+  // ── 业务架构 ──
+
+  if (domain.boundaries && domain.boundaries.length > 0) {
+    const myBoundary = domain.boundaries.find(b => b.module === childReq.title);
+    if (myBoundary) {
+      parts.push('\n### 📐 你的模块边界');
+      parts.push(`- 职责: ${myBoundary.description || myBoundary.module}`);
+      if (myBoundary.owns) parts.push(`- 管辖概念: ${myBoundary.owns.join(', ')}`);
+      if (myBoundary.doesNotOwn) parts.push(`- ⚠️ 不归你管: ${myBoundary.doesNotOwn}`);
+      if (myBoundary.dependsOn) parts.push(`- 依赖模块: ${myBoundary.dependsOn.join(', ')}`);
+    }
+  }
+
+  if (domain.glossary && domain.glossary.length > 0) {
+    parts.push('\n### 📖 共享术语表');
+    domain.glossary.slice(0, 5).forEach(g => {
+      parts.push(`- **${g.term}**: ${g.definition} (归${g.owner || '全局'}定义)`);
+    });
+  }
+
+  if (domain.businessRules && domain.businessRules.length > 0) {
+    const myRules = domain.businessRules.filter(
+      r => r.owner === childReq.title || (r.involves && r.involves.includes(childReq.title))
+    );
+    if (myRules.length > 0) {
+      parts.push('\n### 📋 与你相关的跨模块业务规则');
+      myRules.forEach(r => {
+        parts.push(`- ${r.rule} (主责: ${r.owner})`);
+      });
+    }
+  }
+
+  // ── 技术架构 ──
+
+  if (tech.decisions && Object.keys(tech.decisions).length > 0) {
+    parts.push('\n### 🔒 全局技术决策（不可被推翻）');
+    for (const [key, val] of Object.entries(tech.decisions)) {
+      parts.push(`- ${key}: ${val}`);
+    }
+  }
+
+  if (tech.sharedSchemas && tech.sharedSchemas.length > 0) {
+    parts.push('\n### 🔒 共享数据模型（必须使用）');
+    tech.sharedSchemas.forEach(s => {
+      parts.push(`- ${s.name}: ${s.fields ? JSON.stringify(s.fields) : s.description || ''}`);
+    });
+  }
+
+  if (tech.repository && tech.repository.layout) {
+    const layout = tech.repository.layout;
+    const myPath = Object.entries(layout).find(([, m]) => m === childReq.title);
+    parts.push('\n### 📂 交付目录规划');
+    parts.push(`- 仓库策略: ${tech.repository.strategy || '未指定'}`);
+    if (myPath) parts.push(`- 你的代码目录: ${myPath[0]}`);
+    if (layout['/packages/shared']) parts.push(`- 共享代码: ${Object.keys(layout).filter(k => layout[k] === '共享代码' || k.includes('shared')).join(', ') || layout['/packages/shared']}`);
+    if (tech.repository.conventions) {
+      parts.push(`- 约定: ${JSON.stringify(tech.repository.conventions)}`);
+    }
+  }
+
+  if (tech.constraints && Object.keys(tech.constraints).length > 0) {
+    parts.push('\n### 🔒 全局非功能约束');
+    for (const [key, val] of Object.entries(tech.constraints)) {
+      parts.push(`- ${key}: ${val}`);
+    }
+  }
+
+  // ── 模块契约 ──
+
+  if (contracts.length > 0) {
+    const myContracts = contracts.filter(
+      c => c.from === childReq.title || c.to === childReq.title
+    );
+    if (myContracts.length > 0) {
+      parts.push('\n### 📋 你预定的模块契约');
+      myContracts.forEach(c => {
+        const commitment = c.commitment || c.contract || '';
+        if (c.from === childReq.title) {
+          parts.push(`- 你对外提供: ${commitment} → ${c.to}${c.sla ? ` (SLA: ${c.sla})` : ''}`);
+        } else {
+          parts.push(`- 你需要消费: ${commitment} ← ${c.from}${c.sla ? ` (SLA: ${c.sla})` : ''}`);
+        }
+      });
+    }
+  }
+
+  // ── 兄弟需求 ──
+
+  if (siblings.length > 0) {
+    parts.push('\n### 👥 兄弟需求');
+    siblings.forEach(s => {
+      const sContracts = JSON.parse(s.interface_contracts || '[]');
+      parts.push(`- **${s.title}** (${s.id}) ${s.status === 'approved' ? '✅' : s.status}`);
+      if (sContracts.length > 0) {
+        sContracts.forEach(sc => {
+          parts.push(`  ${sc.direction === 'provides' ? '📤' : '📥'} ${sc.description}`);
+        });
+      }
+    });
+  }
+
+  parts.push(`\n**重要指示**：
+- 技术选型必须符合全局决策，不可选择其他技术栈
+- 数据模型必须使用共享 Schema，不可自定义冲突的定义
+- 读取兄弟需求提供的接口，声明你对外提供的接口
+- 你的接口声明将与其他子需求进行一致性检查`);
+
+  return parts.join('\n');
+}
+
+/**
+ * 构建主需求的架构引导提示（arch_spec 为空时注入）
+ * 优先从 Skill 文件加载，无 Skill 时用精简回退
+ */
+function buildArchPrompt() {
+  try {
+    const skillStore = require('../stores/skill-store');
+    const prompt = skillStore.loadPrompt('skill-arch-constitution');
+    if (prompt) return prompt;
+  } catch (e) { /* 回退到硬编码版本 */ }
+
+  return `## 🏛️ 架构宪法引导
+
+这是一个主需求。在澄清功能细节之前，请优先确认架构边界：
+
+**业务层面**: 模块边界、共享术语、跨模块业务规则、端到端流程
+**技术层面**: 全局技术选型、共享数据模型、交付目录规划、非功能约束
+**模块契约**: 子需求之间的调用关系和 SLA
+
+请在 SRS 中输出 archSpec。格式见 skill-arch-constitution。`;
+}
+
+module.exports = { clarify, CLARIFY_SYSTEM_PROMPT, buildArchContext, buildArchPrompt };

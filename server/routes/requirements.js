@@ -113,9 +113,51 @@ router.patch('/:id', (req, res) => {
   res.json(requirement);
 });
 
+// 架构宪法管理
+router.patch('/:id/arch-spec', (req, res) => {
+  try {
+    const { archSpec } = req.body;
+    if (!archSpec) return res.status(400).json({ error: 'MISSING_ARCH_SPEC' });
+    const requirement = reqStore.updateArchSpec(req.params.id, archSpec);
+    if (!requirement) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    res.json({ success: true, arch_spec: requirement.arch_spec });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.patch('/:id/interface-contracts', (req, res) => {
+  try {
+    const { contracts } = req.body;
+    if (!contracts) return res.status(400).json({ error: 'MISSING_CONTRACTS' });
+    const requirement = reqStore.updateInterfaceContracts(req.params.id, contracts);
+    if (!requirement) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    res.json({ success: true, interface_contracts: requirement.interface_contracts });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // 审核流程（使用 service）
 router.post('/:id/submit-review', async (req, res, next) => {
-  try { res.json(await reqService.submitForReview(req.params.id, req.agentId || 'analyst')); } catch (e) { next(e); }
+  try {
+    const result = await reqService.submitForReview(req.params.id, req.agentId || 'analyst');
+
+    // 契约验证: 如果该需求有父需求且所有兄弟都已 readyForReview，自动触发
+    const requirement = reqStore.getById(req.params.id);
+    if (requirement && requirement.parent_id) {
+      const children = reqStore.findChildren(requirement.parent_id);
+      const allReady = children.every(c => {
+        const ref = JSON.parse(c.refinement || '{}');
+        return c.status === 'review' || c.status === 'approved' || ref.readyForReview === true;
+      });
+      if (allReady && children.length >= 2) {
+        try {
+          const validator = require('../services/contract-validator');
+          const contractResult = validator.validateSiblingContracts(requirement.parent_id);
+          result.contractValidation = contractResult;
+        } catch (e) { /* 非关键 */ }
+      }
+    }
+
+    res.json(result);
+  } catch (e) { next(e); }
 });
 
 router.post('/:id/approve', async (req, res, next) => {
@@ -136,16 +178,64 @@ router.get('/stats/:projectId', (req, res) => {
   res.json(reqStore.getStats(req.params.projectId));
 });
 
+// 契约验证: 手动触发（前端可显式调用）
+router.post('/:id/validate-contracts', (req, res) => {
+  try {
+    const validator = require('../services/contract-validator');
+    const result = validator.validateSiblingContracts(req.params.id);
+    res.json(result);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 需求文档: 读取已生成的 Wiki MD 文件
+router.get('/:id/doc', (req, res) => {
+  try {
+    const requirement = reqStore.getById(req.params.id);
+    if (!requirement) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    const wikiPath = requirement.wiki_path;
+    if (!wikiPath) return res.json({ content: null, message: '暂无需求文档' });
+
+    const fs = require('fs');
+    const path = require('path');
+    const projectStore = require('../stores/project-store');
+    const project = projectStore.getById(requirement.project_id);
+    if (!project || !project.wiki_vault_path) return res.json({ content: null, message: '项目未配置 Wiki' });
+
+    const fullPath = path.join(project.wiki_vault_path, wikiPath);
+    if (!fs.existsSync(fullPath)) return res.json({ content: null, message: '文档文件不存在' });
+
+    const content = fs.readFileSync(fullPath, 'utf-8');
+    res.json({ content, path: wikiPath });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // 删除需求
 router.delete('/:id', (req, res) => {
   const requirement = reqStore.getById(req.params.id);
   if (!requirement) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
   const { collection } = require('../db/connection');
 
-  // 如果有子需求，将它们改为根需求（解除父子关系）
+  // 级联删除所有子需求（递归）
+  let deletedChildren = 0;
   const childIds = JSON.parse(requirement.child_ids || '[]');
-  for (const cid of childIds) {
-    collection('requirements').update(r => r.id === cid, { parent_id: null });
+  if (childIds.length > 0) {
+    for (const cid of childIds) {
+      const child = reqStore.getById(cid);
+      if (child) {
+        // 递归获取孙子需求
+        const grandChildIds = JSON.parse(child.child_ids || '[]');
+        for (const gcid of grandChildIds) {
+          collection('requirements').remove(r => r.id === gcid);
+          deletedChildren++;
+        }
+        // 删除子需求（含关联任务和澄清记录）
+        const childTaskIds = JSON.parse(child.task_ids || '[]');
+        for (const tid of childTaskIds) collection('tasks').remove(t => t.id === tid);
+        collection('requirements').remove(r => r.id === cid);
+        collection('clarification_threads').remove(c => c.requirement_id === cid);
+        deletedChildren++;
+      }
+    }
   }
 
   // 如果有父需求，从父需求的 child_ids 中移除自己
@@ -158,14 +248,13 @@ router.delete('/:id', (req, res) => {
   }
 
   collection('clarification_threads').remove(c => c.requirement_id === req.params.id);
-  // 删除关联任务（两路兜底：task_ids 登记 + parent_id 指向）
+  // 删除关联任务
   const taskIds = JSON.parse(requirement.task_ids || '[]');
   for (const tid of taskIds) collection('tasks').remove(t => t.id === tid);
-  // 兜底：删除所有 parent_id 指向本需求的任务（防止登记遗漏的孤任务）
   const orphanTasks = collection('tasks').find(t => t.parent_id === req.params.id);
   for (const t of orphanTasks) collection('tasks').remove(t2 => t2.id === t.id);
   collection('requirements').remove(r => r.id === req.params.id);
-  res.json({ success: true, message: `需求 ${requirement.title} 已删除`, deletedTasks: taskIds.length + orphanTasks.length });
+  res.json({ success: true, message: `需求 ${requirement.title} 已删除，级联删除 ${deletedChildren} 个子需求`, deletedTasks: taskIds.length + orphanTasks.length, deletedChildren });
 });
 
 // 需求拆分（创建子需求）

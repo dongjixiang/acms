@@ -103,7 +103,7 @@ async function exportReport(id, format) {
 }
 
 async function deleteReport(id) {
-  if (!confirm('确认删除此报告？')) return;
+  if (!(await showConfirm('确认删除此报告？'))) return;
   try {
     await fetch('/api/reports/' + id, { method: 'DELETE', headers: { 'X-API-Key': 'dev-key-001' } });
     closeReportPreview();

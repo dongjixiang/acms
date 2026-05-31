@@ -62,6 +62,7 @@ async function openRequirement(id) {
         <button class="btn-small btn-reject" onclick="deleteRequirement('${id}')">🗑 删除需求</button>
       </div>
       <h3>📋 SRS</h3><div class="srs-preview"><pre>${escHtml(JSON.stringify(srs, null, 2))}</pre></div>
+      ${renderArchSpec(req)}
       ${renderChangeHistory(req)}
       <div id="req-children" style="margin-top:16px"></div>`;
   } catch (e) { toast('加载失败: ' + e.message, 'error'); }
@@ -239,8 +240,119 @@ function renderChangeHistory(req) {
   '</div>';
 }
 
+// ===== 架构宪法展示 =====
+function renderArchSpec(req) {
+  const archSpec = safeParse(req.arch_spec);
+  const childIds = safeParse(req.child_ids || '[]');
+  const hasArch = archSpec && (archSpec.domain || archSpec.technical || archSpec.contracts || archSpec.decisions);
+  if (!hasArch && childIds.length === 0) return '';
+
+  const s = [];
+  s.push('<div class="arch-spec-panel" style="margin-top:16px;padding:16px;background:var(--bg2);border:1px solid var(--border);border-radius:8px">');
+  s.push('<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">');
+  s.push('<h3 style="margin:0">🏛️ 架构宪法</h3>');
+  s.push(`<button class="btn-small" onclick="toggleArchSpecEdit('${req.id}')" style="background:rgba(78,205,196,0.1);color:var(--green)">✏️ 编辑</button>`);
+  s.push('</div>');
+
+  if (!hasArch) {
+    s.push('<div style="color:var(--text2);font-size:13px">尚未定义架构宪法。拆分需求前建议先定义跨模块边界、技术决策和接口契约。</div>');
+    s.push(`<div id="arch-spec-edit-${req.id}" style="display:none;margin-top:12px">${archSpecEditor(req.id, archSpec)}</div>`);
+    s.push('</div>');
+    return s.join('');
+  }
+
+  // 业务架构
+  if (archSpec.domain) {
+    const d = archSpec.domain;
+    if (d.boundaries && d.boundaries.length > 0) {
+      s.push('<div style="margin-bottom:8px"><strong>📐 模块边界</strong></div>');
+      d.boundaries.forEach(b => {
+        s.push(`<div style="font-size:12px;padding:4px 8px;margin:2px 0;background:var(--bg);border-radius:4px">`);
+        s.push(`<strong>${escHtml(b.module)}</strong>`);
+        if (b.owns) s.push(` — 管辖: ${escHtml(b.owns.join(', '))}`);
+        if (b.dependsOn) s.push(`<br>↳ 依赖: ${escHtml(b.dependsOn.join(', '))}`);
+        s.push('</div>');
+      });
+    }
+    if (d.glossary && d.glossary.length > 0) {
+      s.push('<div style="margin-top:8px"><strong>📖 术语表</strong></div>');
+      d.glossary.forEach(g => s.push(`<div style="font-size:12px;color:var(--text2)">• <strong>${escHtml(g.term)}</strong>: ${escHtml(g.definition)}</div>`));
+    }
+    if (d.businessRules && d.businessRules.length > 0) {
+      s.push('<div style="margin-top:8px"><strong>📋 业务规则</strong></div>');
+      d.businessRules.forEach(r => s.push(`<div style="font-size:12px;color:var(--text2)">• ${escHtml(r.rule)} (主责: ${escHtml(r.owner)})</div>`));
+    }
+  }
+
+  // 技术架构
+  if (archSpec.technical || archSpec.decisions) {
+    const tech = archSpec.technical || archSpec;
+    s.push('<div style="margin-top:8px"><strong>🔧 技术决策</strong></div>');
+    if (tech.decisions) {
+      Object.entries(tech.decisions).forEach(([k, v]) => s.push(`<div style="font-size:12px;color:var(--text2)">• ${escHtml(k)}: ${escHtml(v)}</div>`));
+    }
+    if (tech.sharedSchemas && tech.sharedSchemas.length > 0) {
+      s.push('<div style="margin-top:4px"><strong>🗄 共享 Schema</strong></div>');
+      tech.sharedSchemas.forEach(sc => s.push(`<div style="font-size:12px;color:var(--text2)">• ${escHtml(sc.name)}</div>`));
+    }
+    if (tech.repository) {
+      s.push('<div style="margin-top:4px"><strong>📂 目录规划</strong></div>');
+      s.push(`<div style="font-size:12px;color:var(--text2)">策略: ${tech.repository.strategy || '-'}</div>`);
+      if (tech.repository.layout) {
+        Object.entries(tech.repository.layout).forEach(([k, v]) => s.push(`<div style="font-size:12px;color:var(--text2)">  ${k} → ${v}</div>`));
+      }
+    }
+    if (tech.constraints) {
+      s.push('<div style="margin-top:4px"><strong>📏 全局约束</strong></div>');
+      Object.entries(tech.constraints).forEach(([k, v]) => s.push(`<div style="font-size:12px;color:var(--text2)">• ${escHtml(k)}: ${escHtml(v)}</div>`));
+    }
+  }
+
+  // 模块契约
+  if (archSpec.contracts || archSpec.interfaceRegistry) {
+    const contracts = archSpec.contracts || archSpec.interfaceRegistry || [];
+    if (contracts.length > 0) {
+      s.push('<div style="margin-top:8px"><strong>🤝 模块契约</strong></div>');
+      contracts.forEach(c => {
+        const commitment = c.commitment || c.contract || '';
+        s.push(`<div style="font-size:12px;color:var(--text2)">• ${escHtml(c.from)} → ${escHtml(c.to)}: ${escHtml(commitment)}${c.sla ? ' (SLA:'+c.sla+')' : ''}</div>`);
+      });
+    }
+  }
+
+  s.push(`<div id="arch-spec-edit-${req.id}" style="display:none;margin-top:12px">${archSpecEditor(req.id, archSpec)}</div>`);
+  s.push('</div>');
+  return s.join('');
+}
+
+function archSpecEditor(reqId, archSpec) {
+  return `<textarea id="arch-spec-textarea-${reqId}" style="width:100%;min-height:200px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:12px;font-size:12px;font-family:monospace;resize:vertical">${escHtml(JSON.stringify(archSpec, null, 2))}</textarea>
+    <div style="margin-top:8px;display:flex;gap:8px">
+      <button class="btn-accept" onclick="saveArchSpec('${reqId}')">💾 保存宪法</button>
+      <button class="btn-back" onclick="toggleArchSpecEdit('${reqId}')">取消</button>
+    </div>`;
+}
+
+function toggleArchSpecEdit(reqId) {
+  const el = document.getElementById(`arch-spec-edit-${reqId}`);
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+async function saveArchSpec(reqId) {
+  const textarea = document.getElementById(`arch-spec-textarea-${reqId}`);
+  if (!textarea) return;
+  try {
+    const archSpec = JSON.parse(textarea.value);
+    await api('PATCH', `/requirements/${reqId}/arch-spec`, { archSpec });
+    toast('架构宪法已保存 ✅', 'success');
+    openRequirement(reqId);
+  } catch (e) {
+    toast('保存失败: ' + (e.message || 'JSON 格式错误'), 'error');
+  }
+}
+
 async function deleteRequirement(id) {
-  if (!confirm('确认删除此需求？关联的任务和对话也将被删除。')) return;
+  if (!(await showConfirm('确认删除此需求？关联的子需求、任务和对话也将被级联删除。'))) return;
   try {
     await api('DELETE', `/requirements/${id}`);
     toast('需求已删除', 'success');
@@ -250,6 +362,7 @@ async function deleteRequirement(id) {
 
 // ===== AI 澄清对话 =====
 let aiClarifyHistory = {}; // reqId → [{role, content}]
+let aiSplitSuggestion = {}; // reqId → splitSuggestion（持久保留，不随轮次消失）
 
 function renderAiClarifyPanel(req) {
   return `<div class="review-panel" id="ai-clarify-panel">
@@ -286,10 +399,16 @@ async function loadAiModels(reqId) {
 async function startAiClarify(reqId) {
   const modelId = document.getElementById(`ai-model-select-${reqId}`)?.value;
   if (!modelId) return toast('请先选择大模型', 'error');
-  // 重置历史 + 推进到 clarifying 状态
+  // 仅在 idea 状态时推进到 clarifying，避免从 review 等状态回退
+  try {
+    const req = await Requirements.get(reqId);
+    if (req && req.status === 'idea') {
+      await Requirements.transition(reqId, 'clarifying');
+    }
+  } catch(e) { /* 已是指定状态则忽略 */ }
   aiClarifyHistory[reqId] = [];
   aiSelections[reqId] = {};
-  try { await Requirements.transition(reqId, 'clarifying'); } catch(e) { /* 可能已经是 clarifying */ }
+  aiSplitSuggestion[reqId] = null;
   await sendAiClarify(reqId);
 }
 
@@ -345,29 +464,29 @@ async function sendAiClarify(reqId, choiceAnswer) {
       renderChoicesWithSubmit(reqId, result.choices);
     }
 
-    // 渲染拆分建议
+        // 渲染拆分建议（存入持久变量，放在 actions 区域保持可见）
     if (result.splitSuggestion && result.splitSuggestion.shouldSplit) {
-      const ss = result.splitSuggestion;
-      const choicesDiv = document.getElementById(`ai-clarify-choices-${reqId}`);
-      if (choicesDiv) {
-        choicesDiv.innerHTML += `
-          <div style="margin:12px 0;padding:12px;background:rgba(78,205,196,0.08);border:1px dashed var(--green);border-radius:6px">
-            <div style="font-weight:bold;color:var(--green);margin-bottom:6px">💡 拆分建议</div>
-            <div style="font-size:13px;color:var(--text2);margin-bottom:8px">${escHtml(ss.reason)}</div>
-            <div style="font-size:12px;color:var(--text2);margin-bottom:4px">建议拆分为 ${(ss.suggestedChildren||[]).length} 个子需求：</div>
-            ${(ss.suggestedChildren||[]).map(c => `
-              <div style="font-size:12px;padding:4px 8px;margin:2px 0;background:var(--bg);border-radius:4px">
-                <strong>${escHtml(c.title)}</strong>
-                ${c.description ? `<span style="color:var(--text2)"> — ${escHtml(c.description)}</span>` : ''}
-              </div>`).join('')}
-            <div style="margin-top:8px">
-              <button class="btn-primary btn-sm" onclick="openSplitPanel('${reqId}', ${JSON.stringify(ss.suggestedChildren || []).replace(/"/g, '&quot;')})">🔧 按此方案拆分</button>
-            </div>
-          </div>`;
-      }
+      aiSplitSuggestion[reqId] = result.splitSuggestion;
+    }
+    const ss = aiSplitSuggestion[reqId];
+    if (ss && ss.shouldSplit) {
+      actionsDiv.innerHTML = `
+        <div style="margin:12px 0;padding:12px;background:rgba(78,205,196,0.08);border:1px dashed var(--green);border-radius:6px">
+          <div style="font-weight:bold;color:var(--green);margin-bottom:6px">💡 拆分建议（先确认架构宪法再拆分）</div>
+          <div style="font-size:13px;color:var(--text2);margin-bottom:8px">${escHtml(ss.reason)}</div>
+          <div style="font-size:12px;color:var(--text2);margin-bottom:4px">建议拆分为 ${(ss.suggestedChildren||[]).length} 个子需求：</div>
+          ${(ss.suggestedChildren||[]).map(c => `
+            <div style="font-size:12px;padding:4px 8px;margin:2px 0;background:var(--bg);border-radius:4px">
+              <strong>${escHtml(c.title)}</strong>
+              ${c.description ? `<span style="color:var(--text2)"> — ${escHtml(c.description)}</span>` : ''}
+            </div>`).join('')}
+          <div style="margin-top:8px;display:flex;gap:8px">
+            <button class="btn-primary btn-sm" onclick="openSplitPanel('${reqId}', ${JSON.stringify(ss.suggestedChildren || []).replace(/"/g, '&quot;')})">🔧 先定宪法再拆分</button>
+          </div>
+        </div>` + actionsDiv.innerHTML;
     }
 
-    // 渲染 SRS 草稿
+// 渲染 SRS 草稿
     if (result.srs) {
       srsDiv.innerHTML = `<h4>📋 当前 SRS 草稿</h4>
         <div style="font-size:12px;margin:4px 0"><strong>范围:</strong> ${(result.srs.scopeIn||[]).join(', ')||'待确认'}</div>
@@ -378,6 +497,7 @@ async function sendAiClarify(reqId, choiceAnswer) {
     // 是否可以提交审核
     if (result.readyForReview) {
       actionsDiv.style.display = 'block';
+      actionsDiv.scrollIntoView({ behavior: 'smooth', block: 'center' });
       // 自动生成 MD 文档
       generateMdDoc(reqId, modelId);
     } else {
@@ -593,9 +713,25 @@ function continueAiClarify(reqId) {
 
 // ===== 需求拆分 =====
 
-function openSplitPanel(reqId, suggestedChildren) {
+async function openSplitPanel(reqId, suggestedChildren) {
   const panel = document.getElementById('split-panel');
   if (panel) { panel.remove(); return; }
+
+  // 检查架构宪法是否已定义
+  try {
+    const req = await Requirements.get(reqId);
+    if (req) {
+      const archSpec = safeParse(req.arch_spec);
+      const hasArch = archSpec && (archSpec.domain || archSpec.technical || archSpec.decisions);
+      if (!hasArch) {
+        const proceed = await showConfirm(
+          '⚠️ 尚未定义架构宪法。拆分前建议先确认跨模块边界、技术决策和接口契约。\n\n是否继续直接拆分？（不推荐）',
+          { title: '缺少架构宪法', confirmText: '继续拆分', cancelText: '返回澄清' }
+        );
+        if (!proceed) return;
+      }
+    }
+  } catch (e) { /* 如果获取失败，仍允许拆分 */ }
 
   const container = document.getElementById('detail-content');
   const div = document.createElement('div');
@@ -607,8 +743,8 @@ function openSplitPanel(reqId, suggestedChildren) {
     <div id="split-children-list">
       ${(suggestedChildren || []).map((c, i) => `
         <div class="split-child-row" style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
-          <input type="text" class="split-child-title" value="${escHtml(c.title || '')}" placeholder="子需求标题" style="flex:1">
-          <input type="text" class="split-child-desc" value="${escHtml(c.description || '')}" placeholder="简要描述（可选）" style="flex:2">
+          <input type="text" id="split-title-${i}" name="split-title-${i}" class="split-child-title" value="${escHtml(c.title || '')}" placeholder="子需求标题" style="flex:1">
+          <input type="text" id="split-desc-${i}" name="split-desc-${i}" class="split-child-desc" value="${escHtml(c.description || '')}" placeholder="简要描述（可选）" style="flex:2">
           <button class="btn-small btn-reject" onclick="this.closest('.split-child-row').remove()" style="flex-shrink:0">✕</button>
         </div>
       `).join('')}
@@ -619,18 +755,20 @@ function openSplitPanel(reqId, suggestedChildren) {
       <button class="btn-back" onclick="document.getElementById('split-panel').remove()">取消</button>
     </div>
   `;
-  container.insertBefore(div, container.firstChild);
+  container.appendChild(div);
+  div.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 function addSplitChildRow() {
   const list = document.getElementById('split-children-list');
   if (!list) return;
+  const idx = list.children.length;
   const row = document.createElement('div');
   row.className = 'split-child-row';
   row.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;align-items:center';
   row.innerHTML = `
-    <input type="text" class="split-child-title" placeholder="子需求标题" style="flex:1">
-    <input type="text" class="split-child-desc" placeholder="简要描述（可选）" style="flex:2">
+    <input type="text" id="split-title-new-${idx}" name="split-title-new-${idx}" class="split-child-title" placeholder="子需求标题" style="flex:1">
+    <input type="text" id="split-desc-new-${idx}" name="split-desc-new-${idx}" class="split-child-desc" placeholder="简要描述（可选）" style="flex:2">
     <button class="btn-small btn-reject" onclick="this.closest('.split-child-row').remove()" style="flex-shrink:0">✕</button>
   `;
   list.appendChild(row);

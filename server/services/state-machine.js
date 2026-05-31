@@ -16,11 +16,20 @@ const GATE_CONDITIONS = {
   'clarifying→review': (req) => {
     const errors = [];
     if (!req.title || req.title.trim().length === 0) errors.push('标题不能为空');
-    if (!req.structured_description || req.structured_description.length < 30) errors.push('需求描述不完整(至少30字)');
+    if (!req.structured_description || req.structured_description.length < 30) {
+      const srsCheck = typeof req.srs === 'string' ? JSON.parse(req.srs) : req.srs;
+      const summary = (srsCheck && srsCheck.summary) || '';
+      if (!summary || summary.length < 30) {
+        errors.push('需求描述不完整(至少30字)');
+      }
+    }
     const srs = typeof req.srs === 'string' ? JSON.parse(req.srs) : req.srs;
     if (!srs.acceptanceCriteria || srs.acceptanceCriteria.length === 0) errors.push('至少需要1条验收标准');
-    // SMART 检查：至少 1 条 AC 包含可衡量的数字指标
-    const hasMeasurableAC = (srs.acceptanceCriteria || []).some(ac => /\d+/.test(ac));
+    // SMART 检查：至少 1 条 AC 包含可衡量的数字指标（兼容字符串和对象格式）
+    const hasMeasurableAC = (srs.acceptanceCriteria || []).some(ac => {
+      const text = typeof ac === 'string' ? ac : (ac.criterion || ac.description || ac.text || JSON.stringify(ac));
+      return /\d+/.test(text);
+    });
     if (!hasMeasurableAC) errors.push('验收标准缺少可衡量的数字指标（如时间/数量/百分比），请补充');
     // 截止日期警告（不阻塞）
     if (!req.deadline || req.deadline.trim() === '') {

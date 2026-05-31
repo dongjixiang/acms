@@ -4,7 +4,7 @@ const { v4: uuidv4 } = require('uuid');
 const { canTransition, getNextStatuses, getGateErrors, shouldAutoAbandon } = require('../services/state-machine');
 
 class RequirementStore {
-  create({ projectId, title, description = '', priority = 3, tags = [], deadline = '', createdBy = '', parentId = null }) {
+  create({ projectId, title, description = '', priority = 3, tags = [], deadline = '', createdBy = '', parentId = null, archSpec = null, interfaceContracts = null }) {
     const id = `REQ-${Date.now().toString(36).toUpperCase()}`;
     const now = new Date().toISOString();
     const req = {
@@ -16,6 +16,9 @@ class RequirementStore {
       approval: JSON.stringify({ submittedAt: null, submittedBy: null, approvedAt: null, approvedBy: null, rejections: [] }),
       current_version: 1, change_history: '[]', wiki_path: '', wiki_synced: 0, last_wiki_sync: '',
       task_ids: '[]', progress: 0, created_by: createdBy, participants: '[]',
+      // 架构宪法: 主需求定义，子需求继承
+      arch_spec: archSpec ? JSON.stringify(archSpec) : '{}',
+      interface_contracts: interfaceContracts ? JSON.stringify(interfaceContracts) : '[]',
       created_at: now, updated_at: now, completed_at: '',
     };
     collection('requirements').insert(req);
@@ -117,7 +120,8 @@ class RequirementStore {
     const req = this.getById(id);
     const currentSrs = JSON.parse(req.srs || '{}');
     const merged = { ...currentSrs, ...srs };
-    this.update(id, { srs: JSON.stringify(merged), structured_description: srs.description || req.structured_description });
+    // 优先 srs.description，其次 merged.summary（LLM 标准字段），保留旧值兜底
+    this.update(id, { srs: JSON.stringify(merged), structured_description: srs.description || merged.summary || req.structured_description });
     return this.getById(id);
   }
 
@@ -188,6 +192,8 @@ class RequirementStore {
     const parent = this.getById(parentId);
     if (!parent) throw Object.assign(new Error('父需求不存在'), { status: 404, code: 'PARENT_NOT_FOUND' });
 
+    const parentArchSpec = JSON.parse(parent.arch_spec || '{}');
+
     const created = [];
     for (const child of children) {
       const req = this.create({
@@ -197,6 +203,8 @@ class RequirementStore {
         priority: parent.priority,
         parentId, // 这会自动调用 addChild
         createdBy: parent.created_by,
+        archSpec: parentArchSpec,  // 继承父的架构宪法
+        interfaceContracts: child.interfaceContracts || [], // 可预填
       });
       created.push(req);
     }
@@ -207,6 +215,16 @@ class RequirementStore {
     }
 
     return { parent: this.getById(parentId), children: created };
+  }
+
+  /** 更新需求的架构宪法 */
+  updateArchSpec(id, archSpec) {
+    return this.update(id, { arch_spec: JSON.stringify(archSpec) });
+  }
+
+  /** 更新需求的接口契约 */
+  updateInterfaceContracts(id, contracts) {
+    return this.update(id, { interface_contracts: JSON.stringify(contracts) });
   }
 
   _checkParentCompletion(parentId) {

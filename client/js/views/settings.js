@@ -137,7 +137,7 @@ async function addSkill() {
 }
 
 async function deleteSkill(id) {
-  if (!confirm('确认删除此技能？')) return;
+  if (!(await showConfirm('确认删除此技能？'))) return;
   try {
     await fetch('/api/skills/' + id, { method: 'DELETE', headers: { 'X-API-Key': 'dev-key-001' } });
     toast('技能已删除', 'success');
