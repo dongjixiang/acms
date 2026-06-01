@@ -1,0 +1,247 @@
+<!DOCTYPE html><html lang="zh-CN"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>审批管理</title>
+<link rel="stylesheet" href="../css/design-tokens.css"><link rel="stylesheet" href="../css/components.css"><link rel="stylesheet" href="../css/approval.css">
+<script src="../js/approval-flow.js"></script>
+<style>body{background:var(--color-gray-50);min-height:100vh}.page{padding:24px;max-width:1200px;margin:0 auto}
+.page h2{font-size:20px;margin:0 0 20px}.page-section{display:none}.page-section.active{display:block;animation:fadeIn .3s}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.ap-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:14px;margin-bottom:16px}
+.ap-detail-grid .dl{color:var(--color-text-secondary)}.overdue-tag{background:var(--color-error-bg);color:var(--color-error);padding:2px 8px;border-radius:999px;font-size:11px;margin-left:8px}
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:9999;align-items:center;justify-content:center}
+.modal-overlay.show{display:flex}.modal-box{background:#fff;border-radius:var(--radius-lg);padding:28px;width:480px;max-width:90vw;max-height:80vh;overflow-y:auto}
+.modal-box h3{margin:0 0 16px}
+.form-actions{display:flex;gap:12px;justify-content:flex-end;margin-top:16px}
+@media(max-width:768px){.page{padding:12px}.ap-detail-grid{grid-template-columns:1fr}}</style>
+</head><body>
+<div class="cross-nav" style="display:flex;gap:4px;background:#fff;border-radius:6px;padding:4px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,0.06);overflow-x:auto;flex-wrap:wrap;">
+  <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'home'},'*');return false;" style="padding:6px 12px;border-radius:4px;font-size:12px;color:#7A7A94;text-decoration:none;white-space:nowrap;">🏠 首页</a>
+  <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'apply'},'*');return false;" style="padding:6px 12px;border-radius:4px;font-size:12px;color:#7A7A94;text-decoration:none;white-space:nowrap;">📋 样片申请</a>
+  <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'approval'},'*');return false;" style="padding:6px 12px;border-radius:4px;font-size:12px;color:#7A7A94;text-decoration:none;white-space:nowrap;">✅ 审批管理</a>
+  <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'tracking'},'*');return false;" style="padding:6px 12px;border-radius:4px;font-size:12px;color:#7A7A94;text-decoration:none;white-space:nowrap;">🔍 样片跟踪</a>
+  <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'dashboard'},'*');return false;" style="padding:6px 12px;border-radius:4px;font-size:12px;color:#7A7A94;text-decoration:none;white-space:nowrap;">📊 数据分析</a>
+  <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'ai-detection'},'*');return false;" style="padding:6px 12px;border-radius:4px;font-size:12px;color:#7A7A94;text-decoration:none;white-space:nowrap;">🤖 AI异常检测</a>
+  <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'settings'},'*');return false;" style="padding:6px 12px;border-radius:4px;font-size:12px;color:#7A7A94;text-decoration:none;white-space:nowrap;">⚙️ 系统设置</a>
+  <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'erp'},'*');return false;" style="padding:6px 12px;border-radius:4px;font-size:12px;color:#7A7A94;text-decoration:none;white-space:nowrap;">🔗 ERP对接</a>
+</div>
+<div class="page">
+  <h2>✅ 审批管理</h2>
+  <div class="ap-stats-grid" id="statsGrid"></div>
+
+  <div class="ap-tabs">
+    <button class="ap-tab active" onclick="showSection('list','pending')">⏳ 待审批 <span class="badge" id="pendingBadge" style="background:var(--color-error);color:#fff;border-radius:10px;padding:0 6px;font-size:11px;margin-left:4px;">5</span></button>
+    <button class="ap-tab" onclick="showSection('list','approved')">✅ 已审批</button>
+    <button class="ap-tab" onclick="showSection('list','mine')">📝 我发起的</button>
+    <button class="ap-tab" onclick="showSection('history','')">📜 审批历史</button>
+    <button class="ap-tab" onclick="showSection('stats','')">⏱ 时效统计</button>
+  </div>
+
+  <!-- 列表视图 -->
+  <div class="page-section active" id="section-list"><div id="approvalList"></div></div>
+  <!-- 详情视图 -->
+  <div class="page-section" id="section-detail"><div id="approvalDetail"></div></div>
+  <!-- 历史视图 -->
+  <div class="page-section" id="section-history"><div id="historyContent"></div></div>
+  <!-- 统计视图 -->
+  <div class="page-section" id="section-stats"><div id="statsContent"></div></div>
+</div>
+
+<!-- 加签弹窗 -->
+<div class="modal-overlay" id="countersignModal" onclick="if(event.target===this)this.classList.remove('show')">
+  <div class="modal-box"><h3>➕ 加签</h3>
+    <div class="form-group"><label>选择加签人</label><select class="input" id="csPerson" style="width:100%"></select></div>
+    <div class="form-group" style="margin-top:12px;"><label>加签原因</label><textarea class="input" id="csReason" style="width:100%;min-height:60px;" placeholder="请填写加签原因"></textarea></div>
+    <div class="form-actions"><button class="btn btn-secondary" onclick="document.getElementById('countersignModal').classList.remove('show')">取消</button><button class="btn btn-primary" onclick="doCountersign()">确认加签</button></div>
+  </div>
+</div>
+<!-- 转交弹窗 -->
+<div class="modal-overlay" id="transferModal" onclick="if(event.target===this)this.classList.remove('show')">
+  <div class="modal-box"><h3>↻ 转交</h3>
+    <div class="form-group"><label>接收人</label><select class="input" id="tfPerson" style="width:100%"></select></div>
+    <div class="form-group" style="margin-top:12px;"><label>转交说明</label><textarea class="input" id="tfReason" style="width:100%;min-height:60px;" placeholder="请填写转交说明"></textarea></div>
+    <div class="form-actions"><button class="btn btn-secondary" onclick="document.getElementById('transferModal').classList.remove('show')">取消</button><button class="btn btn-primary" onclick="doTransfer()">确认转交</button></div>
+  </div>
+</div>
+
+<script>
+const apps = (window.MockData && MockData.applications) || [];
+let currentView = 'pending';
+let selectedApp = null;
+
+async function init() {
+  await ApprovalFlow.init();
+  renderStats();
+  renderList('pending');
+}
+
+function showSection(section, view) {
+  document.querySelectorAll('.page-section').forEach(el => el.classList.remove('active'));
+  document.getElementById('section-'+section).classList.add('active');
+  document.querySelectorAll('.ap-tab').forEach((t,i) => t.classList.toggle('active', i === Array.from(t.parentNode.children).indexOf(t)));
+  if (section === 'list') { currentView = view || 'pending'; renderList(currentView); }
+  if (section === 'history') renderHistory();
+  if (section === 'stats') renderStatsPage();
+}
+
+// 统计卡片
+function renderStats() {
+  const stats = { pending: apps.filter(a => a.status==='待审批'||a.status==='审批中').length, total: apps.length };
+  document.getElementById('pendingBadge').textContent = stats.pending;
+  document.getElementById('statsGrid').innerHTML = `
+    <div class="ap-stat-card"><div class="sc-value">${stats.pending}</div><div class="sc-label">待审批</div><div class="sc-sub" style="color:var(--color-error);">超期 2 件</div></div>
+    <div class="ap-stat-card"><div class="sc-value">${apps.filter(a=>a.status==='已通过').length}</div><div class="sc-label">本月已审批</div></div>
+    <div class="ap-stat-card"><div class="sc-value">18.5h</div><div class="sc-label">平均审批时长</div><div class="sc-sub" style="color:var(--color-success);">↑ 较上月快2.3h</div></div>
+    <div class="ap-stat-card"><div class="sc-value" style="color:var(--color-warning);">86.5%</div><div class="sc-label">通过率</div></div>`;
+}
+
+// 列表渲染
+function renderList(filter) {
+  let items = apps;
+  if (filter === 'pending') items = apps.filter(a => a.status==='待审批'||a.status==='审批中');
+  else if (filter === 'approved') items = apps.filter(a => a.status==='已通过'||a.status==='已发货');
+  else if (filter === 'mine') items = apps.filter(a => a.applicant === '张明' || a.applicant === '王芳');
+
+  const urgencyColor = {'高':'tag-error','中':'tag-warning','低':'tag-default'};
+  const overdueIds = ['APP-2026001','APP-2026015'];
+
+  document.getElementById('approvalList').innerHTML = items.map(a => {
+    const isOverdue = a.status==='待审批' && overdueIds.includes(a.id);
+    return `<div class="ap-card ${isOverdue?'overdue':''}" onclick="showDetail('${a.id}')">
+      <div class="ap-card-header">
+        <span class="ap-card-id">${a.id}</span>
+        <span><span class="tag ${urgencyColor[a.urgency]}">${a.urgency}</span>${isOverdue?' <span class="overdue-tag">⏰ 超期</span>':''}</span>
+      </div>
+      <div class="ap-card-info"><span>${a.applicant}</span><span>${a.customer}</span><span>${a.models.slice(0,2).join(',')}${a.models.length>2?'...':''}</span><span class="ap-amount">${a.created}</span></div>
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center;font-size:12px;">
+        <span style="color:var(--color-text-secondary);">审批路径:</span>
+        <span class="ap-flow-node" style="background:var(--color-warning-bg);color:var(--color-warning);">PM审批</span>
+        <span style="color:var(--color-gray-300);">→</span>
+        <span class="ap-flow-node" style="background:var(--color-gray-100);color:var(--color-gray-600);">${a.models.length > 3 ? '部门经理' : '财务审核'}</span>
+      </div>
+    </div>`;
+  }).join('');
+  if (!items.length) document.getElementById('approvalList').innerHTML = '<div style="text-align:center;padding:40px;color:var(--color-text-secondary);">暂无数据</div>';
+}
+
+// 详情
+function showDetail(appId) {
+  selectedApp = apps.find(a => a.id === appId);
+  if (!selectedApp) return;
+  showSection('detail','');
+  const a = selectedApp;
+  const amount = a.qty.reduce((s,v,i) => s + v * 10, 0); // mock amount
+  const flow = ApprovalFlow.matchRules(amount, a.qty.reduce((a,b)=>a+b,0), '欧美');
+  const isOverdue = a.status==='待审批' && ['APP-2026001','APP-2026015'].includes(a.id);
+  
+  document.getElementById('approvalDetail').innerHTML = `
+    <div style="background:#fff;border-radius:var(--radius-md);padding:24px;box-shadow:var(--shadow-sm);">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h3 style="margin:0;">${a.id} 申请详情</h3>
+        <span class="tag ${isOverdue?'tag-error':'tag-warning'}">${a.status}${isOverdue?' · 超期':''}</span>
+      </div>
+      <div class="ap-detail-grid">
+        <div><span class="dl">申请人:</span> ${a.applicant}</div><div><span class="dl">部门:</span> ${a.dept}</div>
+        <div><span class="dl">客户:</span> ${a.customer}</div><div><span class="dl">提交时间:</span> ${a.created}</div>
+        <div><span class="dl">金额预估:</span> ¥${amount.toLocaleString()}</div><div><span class="dl">紧急程度:</span> <span class="tag tag-error">${a.urgency}</span></div>
+      </div>
+      <h4 style="font-size:14px;margin:16px 0 8px;">型号明细</h4>
+      <table class="table"><thead><tr><th>型号</th><th>数量</th><th>原厂</th></tr></thead>
+        <tbody>${a.models.map((m,i) => `<tr><td>${m}</td><td>${a.qty[i]||'-'}</td><td>ST</td></tr>`).join('')}</tbody>
+      </table>
+      <div style="margin-top:16px;">
+        <h4 style="font-size:14px;margin:0 0 8px;">当前审批路径</h4>
+        <div class="ap-flow-display">
+          ${flow.approvers.map((ap,i) => `<span class="ap-flow-node" style="background:${i===0?'var(--color-warning-bg);color:var(--color-warning)':'var(--color-gray-100);color:var(--color-gray-600)'};">${ap}</span>${i < flow.approvers.length-1 ? '<span style="color:var(--color-gray-300)">→</span>' : ''}`).join('')}
+        </div>
+      </div>
+      ${a.status === '待审批' || a.status === '审批中' ? `
+      <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--color-gray-100);">
+        <h4 style="font-size:14px;margin:0 0 12px;">审批操作</h4>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;">
+          <button class="btn btn-primary" onclick="doApprove()">✓ 批准</button>
+          <button class="btn btn-danger" onclick="doReject()">✗ 拒绝</button>
+          <button class="btn btn-secondary" onclick="openCountersign()">➕ 加签</button>
+          <button class="btn btn-secondary" onclick="openTransfer()">↻ 转交</button>
+          <button class="btn btn-text" onclick="showSection('list',currentView)" style="margin-left:auto;">← 返回列表</button>
+        </div>
+      </div>` : `
+      <div style="margin-top:16px;">
+        <button class="btn btn-text" onclick="showSection('list',currentView)">← 返回列表</button>
+      </div>`}
+    </div>`;
+}
+
+// 操作
+function doApprove() { showToast('已批准：'+selectedApp.id,'success'); showSection('list',currentView); }
+function doReject() {
+  const r = prompt('请输入拒绝原因：');
+  if (r) { showToast('已拒绝：'+selectedApp.id,'error'); showSection('list',currentView); }
+}
+function openCountersign() {
+  const sel = document.getElementById('csPerson');
+  sel.innerHTML = ApprovalFlow.getApprovers().map(a => `<option value="${a.id}">${a.name} (${a.role})</option>`).join('');
+  document.getElementById('countersignModal').classList.add('show');
+}
+function doCountersign() {
+  const reason = document.getElementById('csReason').value.trim() || '加签确认';
+  showToast('已加签：'+document.getElementById('csPerson').selectedOptions[0].text,'success');
+  document.getElementById('countersignModal').classList.remove('show');
+}
+function openTransfer() {
+  const sel = document.getElementById('tfPerson');
+  sel.innerHTML = ApprovalFlow.getApprovers().map(a => `<option value="${a.id}">${a.name} (${a.role})</option>`).join('');
+  document.getElementById('transferModal').classList.add('show');
+}
+function doTransfer() {
+  showToast('已转交至：'+document.getElementById('tfPerson').selectedOptions[0].text,'info');
+  document.getElementById('transferModal').classList.remove('show');
+}
+
+// 历史
+function renderHistory() {
+  const history = ApprovalFlow.generateMockHistory('APP-2026001');
+  document.getElementById('historyContent').innerHTML = `
+    <div style="background:#fff;border-radius:var(--radius-md);padding:24px;box-shadow:var(--shadow-sm);">
+      <h3 style="margin:0 0 16px;">审批历史 - APP-2026001</h3>
+      <div class="ap-history-timeline">
+        ${history.map((h,i) => `<div class="ap-history-item ${i < history.length-1 ? 'done' : ''}">
+          <div class="hi-time">${h.time}</div>
+          <div class="hi-person">${h.person}</div>
+          <div class="hi-action">${h.action} ${h.comment ? '· '+h.comment : ''}</div>
+        </div>`).join('')}
+      </div>
+    </div>`;
+}
+
+// 时效统计
+function renderStatsPage() {
+  document.getElementById('statsContent').innerHTML = `
+    <div style="background:#fff;border-radius:var(--radius-md);padding:24px;box-shadow:var(--shadow-sm);">
+      <h3 style="margin:0 0 16px;">⏱ 审批时效统计</h3>
+      <table class="table"><thead><tr><th>申请ID</th><th>提交时间</th><th>当前状态</th><th>等待时长</th><th>状态</th></tr></thead>
+        <tbody>${apps.slice(0,8).map(a => {
+          const hours = Math.floor(Math.random() * 48);
+          const isOverdue = hours > 24;
+          return `<tr><td>${a.id}</td><td>${a.created}</td><td>${a.status}</td><td>${hours}小时</td>
+            <td>${isOverdue ? '<span class="tag tag-error">⏰ 超期</span>' : '<span class="tag tag-success">正常</span>'}</td></tr>`;
+        }).join('')}</tbody>
+      </table>
+      <div style="margin-top:16px;padding:12px;background:var(--color-gray-50);border-radius:var(--radius-sm);">
+        <div style="display:flex;gap:24px;font-size:13px;">
+          <span>平均审批时长: <strong>18.5 小时</strong></span>
+          <span>超期阈值: <strong>24 小时</strong></span>
+          <span>超期数量: <strong style="color:var(--color-error);">2 件</strong></span>
+        </div>
+      </div>
+    </div>`;
+}
+
+function showToast(msg, type) {
+  const c = document.querySelector('.toast-container') || document.body.appendChild(Object.assign(document.createElement('div'), {className:'toast-container'}));
+  const n = document.createElement('div'); n.className = 'toast toast-' + type; n.textContent = msg;
+  c.appendChild(n); setTimeout(() => n.remove(), 3000);
+}
+
+init();
+</script>
+</body></html>

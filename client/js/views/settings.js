@@ -32,6 +32,11 @@ async function loadSettingsTab(tab) {
     }
     if (tab === 'tab-configs') {
       document.getElementById('configs-list').innerHTML = (proj.configs || []).map(c => `<div class="config-row"><span class="key">${escHtml(c.key)}</span><span class="val">${escHtml(c.value)}</span><span style="font-size:11px;color:var(--text2)">${c.category}</span></div>`).join('') || '<div class="empty" style="padding:12px">暂无配置</div>';
+      // 自动归档天数
+      const acfg = (proj.configs || []).find(c => c.key === 'autoArchiveDays');
+      const days = acfg ? parseInt(acfg.value) : 3;
+      document.getElementById('auto-archive-days').value = days;
+      document.getElementById('auto-archive-status').textContent = '当前: ' + days + ' 天';
     }
     if (tab === 'tab-members') {
       document.getElementById('members-list').innerHTML = (proj.members || []).map(m => `<div class="config-row"><span class="key">${m.member_type === 'agent' ? '🤖' : '👤'} ${escHtml(m.member_id)}</span><span class="val">${m.member_role}</span></div>`).join('') || '<div class="empty" style="padding:12px">暂无成员</div>';
@@ -143,4 +148,18 @@ async function deleteSkill(id) {
     toast('技能已删除', 'success');
     loadSkillsTab();
   } catch(e) { toast('删除失败: ' + e.message, 'error'); }
+}
+
+async function saveAutoArchiveDays() {
+  const days = parseInt(document.getElementById('auto-archive-days').value);
+  if (isNaN(days) || days < 0) return toast('请输入有效天数（0-365）', 'error');
+  try {
+    await fetch(`/api/projects/${App.currentProjectId}/configs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+      body: JSON.stringify({ key: 'autoArchiveDays', value: String(days), category: 'archive' })
+    });
+    document.getElementById('auto-archive-status').textContent = '已保存: ' + days + ' 天';
+    toast('自动归档天数已更新 ✅', 'success');
+  } catch (e) { toast('保存失败: ' + e.message, 'error'); }
 }

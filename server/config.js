@@ -9,6 +9,6 @@ module.exports = {
     methods: 'GET,POST,PATCH,DELETE,OPTIONS',
   },
   static: {
-    maxAge: '1h',
+    maxAge: '2min',
   },
 };

@@ -1,0 +1,28 @@
+/* approval.css — 审批模块样式 */
+.ap-tabs { display: flex; gap: 4px; margin-bottom: 20px; background: var(--gray-100);
+  border-radius: var(--r-md); padding: 4px; overflow-x: auto; }
+.ap-tab { padding: 8px 18px; border-radius: var(--r-sm); cursor: pointer; font-size: 13px;
+  font-weight: 500; color: var(--text-secondary); white-space: nowrap; border: none;
+  background: none; transition: var(--transition); font-family: var(--font); }
+.ap-tab:hover { color: var(--text); }
+.ap-tab.active { color: #fff; background: var(--primary); box-shadow: var(--shadow-sm); }
+.ap-card { background: var(--bg-card); border-radius: var(--r-md); padding: 16px 20px;
+  margin-bottom: 10px; box-shadow: var(--shadow-sm); cursor: pointer; transition: var(--transition);
+  border: 1px solid var(--border-light); }
+.ap-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); border-color: var(--primary-border); }
+.ap-card.overdue { border-left: 4px solid var(--error); }
+.ap-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.ap-card-id { font-weight: 600; color: var(--primary); font-size: 14px; }
+.ap-card-info { font-size: 12px; color: var(--text-secondary); display: flex; gap: 16px; flex-wrap: wrap; }
+.ap-flow-display { display: flex; align-items: center; gap: 6px; padding: 10px 0; flex-wrap: wrap; }
+.ap-flow-node { padding: 4px 12px; border-radius: var(--r-full); font-size: 12px; }
+.ap-history-timeline { position: relative; padding-left: 24px; }
+.ap-history-timeline::before { content: ''; position: absolute; left: 8px; top: 0; bottom: 0; width: 2px; background: var(--gray-200); }
+.ap-history-item { position: relative; margin-bottom: 20px; }
+.ap-history-item::before { content: ''; position: absolute; left: -19px; top: 6px; width: 10px; height: 10px; border-radius: 50%; background: var(--primary); border: 2px solid #fff; box-shadow: 0 0 0 2px var(--primary); }
+.ap-history-item.done::before { background: var(--success); box-shadow: 0 0 0 2px var(--success); }
+.ap-stats-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(170px,1fr)); gap: 12px; margin-bottom: 20px; }
+.ap-stat-card { background: var(--bg-card); border-radius: var(--r-md); padding: 16px;
+  text-align: center; box-shadow: var(--shadow-sm); border: 1px solid var(--border-light); }
+.ap-stat-card .sc-value { font-size: 26px; font-weight: 700; color: var(--primary); }
+.ap-stat-card .sc-label { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }

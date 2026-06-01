@@ -1,0 +1,27 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>AI异常检测</title><link rel="stylesheet" href="../css/design-tokens.css"><link rel="stylesheet" href="../css/components.css"><script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script><style>body{background:var(--color-gray-50);min-height:100vh}.page{padding:24px;max-width:1200px;margin:0 auto}.page h2{font-size:20px;margin:0 0 20px}.card{background:#fff;border-radius:8px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.06)}.card h3{font-size:16px;margin:0 0 16px;padding-bottom:12px;border-bottom:1px solid var(--color-gray-100)}</style></head><body>
+<div class="page">
+  <h2>🤖 AI异常检测</h2>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
+    <div class="card"><h3>异常类型分布</h3><div style="height:220px;"><canvas id="pieChartAI"></canvas></div></div>
+    <div class="card"><h3>异常趋势</h3><div style="height:220px;"><canvas id="trendChartAI"></canvas></div></div>
+  </div>
+  <div class="card"><h3>告警列表</h3>
+    <table class="table"><thead><tr><th>等级</th><th>类型</th><th>标题</th><th>时间</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td><span class="tag tag-error">高</span></td><td>库存异常</td><td>Jetson Nano 库存低于安全阈值</td><td>05-24 08:30</td><td><span class="tag tag-warning">未处理</span></td></tr>
+        <tr><td><span class="tag tag-warning">中</span></td><td>频次异常</td><td>张明本月申请频次偏高</td><td>05-23 14:20</td><td><span class="tag tag-info">处理中</span></td></tr>
+        <tr><td><span class="tag tag-error">高</span></td><td>审批超时</td><td>APP-2026001 等待审批超48小时</td><td>05-22 10:00</td><td><span class="tag tag-warning">未处理</span></td></tr>
+        <tr><td><span class="tag tag-error">高</span></td><td>重复申请</td><td>华为技术同型号30天内重复申请</td><td>05-25 07:50</td><td><span class="tag tag-warning">未处理</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div style="text-align:right;font-size:12px;color:var(--color-text-secondary);">
+    <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'dashboard'},'*');return false;" style="color:var(--color-primary);">📊 查看数据看板</a>
+    <span style="margin:0 8px;">|</span>
+    <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'approval'},'*');return false;" style="color:var(--color-primary);">✅ 查看待审批</a>
+  </div>
+</div>
+<script>
+new Chart(document.getElementById('pieChartAI'),{type:'pie',data:{labels:['库存异常','频次异常','审批超时','重复申请','其他'],datasets:[{data:[30,22,18,8,12],backgroundColor:['#FF4D4F','#FA8C16','#1890FF','#EB2F96','#C4C4D4']}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'right'}}}});
+new Chart(document.getElementById('trendChartAI'),{type:'line',data:{labels:['5/1','5/5','5/10','5/15','5/20','5/25'],datasets:[{label:'告警数',data:[2,4,1,7,3,6],borderColor:'#FF4D4F',backgroundColor:'rgba(255,77,79,0.1)',fill:true,tension:0.3}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}});
+</script></body></html>

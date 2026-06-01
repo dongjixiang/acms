@@ -1,0 +1,113 @@
+<!DOCTYPE html><html lang="zh-CN"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>批量申请</title>
+<link rel="stylesheet" href="../css/design-tokens.css"><link rel="stylesheet" href="../css/components.css"><link rel="stylesheet" href="../css/form.css">
+<script src="../js/mock-data.js"></script><script src="../js/form-validator.js"></script><script src="../js/apply-common.js"></script>
+<style>body{background:var(--color-gray-50);min-height:100vh}.form-page h2{font-size:20px;margin:0 0 8px}.subtitle{font-size:13px;color:var(--color-text-secondary);margin-bottom:24px}
+.toolbar{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center}</style>
+</head><body>
+<div class="cross-nav" style="display:flex;gap:4px;background:#fff;border-radius:6px;padding:4px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,0.06);overflow-x:auto;flex-wrap:wrap;">
+  <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'home'},'*');return false;" style="padding:6px 12px;border-radius:4px;font-size:12px;color:#7A7A94;text-decoration:none;white-space:nowrap;">🏠 首页</a>
+  <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'apply'},'*');return false;" style="padding:6px 12px;border-radius:4px;font-size:12px;color:#7A7A94;text-decoration:none;white-space:nowrap;">📋 样片申请</a>
+  <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'approval'},'*');return false;" style="padding:6px 12px;border-radius:4px;font-size:12px;color:#7A7A94;text-decoration:none;white-space:nowrap;">✅ 审批管理</a>
+  <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'tracking'},'*');return false;" style="padding:6px 12px;border-radius:4px;font-size:12px;color:#7A7A94;text-decoration:none;white-space:nowrap;">🔍 样片跟踪</a>
+  <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'dashboard'},'*');return false;" style="padding:6px 12px;border-radius:4px;font-size:12px;color:#7A7A94;text-decoration:none;white-space:nowrap;">📊 数据分析</a>
+  <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'ai-detection'},'*');return false;" style="padding:6px 12px;border-radius:4px;font-size:12px;color:#7A7A94;text-decoration:none;white-space:nowrap;">🤖 AI异常检测</a>
+  <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'settings'},'*');return false;" style="padding:6px 12px;border-radius:4px;font-size:12px;color:#7A7A94;text-decoration:none;white-space:nowrap;">⚙️ 系统设置</a>
+  <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'erp'},'*');return false;" style="padding:6px 12px;border-radius:4px;font-size:12px;color:#7A7A94;text-decoration:none;white-space:nowrap;">🔗 ERP对接</a>
+</div>
+<div class="form-page">
+  <h2>📊 批量样片申请</h2>
+  <p class="subtitle">表格形式多型号批量录入 · 支持 Excel 模板导入</p>
+  <div class="form-card">
+    <div class="toolbar">
+      <button class="btn btn-primary btn-sm" onclick="addBatchRow()">+ 添加行</button>
+      <button class="btn btn-secondary btn-sm" onclick="downloadTemplate()">📥 下载Excel模板</button>
+      <button class="btn btn-secondary btn-sm" onclick="document.getElementById('excelInput').click()">📤 导入Excel</button>
+      <input type="file" id="excelInput" accept=".xlsx,.xls,.csv" style="display:none" onchange="importExcel(event)">
+      <span style="margin-left:auto;font-size:12px;color:var(--color-text-secondary);">共 <span id="batchCount">3</span> 行</span>
+    </div>
+    <table class="batch-grid"><thead><tr>
+      <th style="width:30px;">#</th><th>型号 <span style="color:red">*</span></th><th>原厂</th><th>MPQ</th><th>数量 <span style="color:red">*</span></th><th>CY</th><th>预计交期</th><th>用途</th><th style="width:40px;"></th>
+    </tr></thead><tbody id="batchBody"></tbody></table>
+  </div>
+  <div class="form-card"><h3>基本信息</h3>
+    <div class="grid grid-2"><div class="form-group"><label>申请人</label><input class="input" value="王芳"></div>
+    <div class="form-group"><label>部门</label><input class="input" value="华东销售部"></div>
+    <div class="form-group"><label>客户名称 <span style="color:red">*</span></label><input class="input" id="batchCustomer" placeholder="请输入客户名称"></div></div>
+  </div>
+  <div class="submit-bar" style="display:flex;justify-content:flex-end;gap:12px;padding-top:16px;border-top:1px solid var(--color-gray-100);">
+    <button class="btn btn-secondary" onclick="resetBatch()">重置</button>
+    <button class="btn btn-primary" onclick="submitBatch()">✉️ 批量提交</button>
+  </div>
+</div>
+<script>
+function getModels(){return (window.MockData&&MockData.models)||[]}
+let batchRows = [];
+function initBatch(){
+  batchRows = [
+    {model:'',manufacturer:'',mpq:'',qty:10,cy:'',delivery:'',usage:''},
+    {model:'',manufacturer:'',mpq:'',qty:20,cy:'',delivery:'',usage:''},
+    {model:'',manufacturer:'',mpq:'',qty:5,cy:'',delivery:'',usage:''}
+  ];
+  renderBatch();
+}
+function renderBatch(){
+  const tbody = document.getElementById('batchBody');
+  tbody.innerHTML = batchRows.map((r,i) => `<tr>
+    <td>${i+1}</td>
+    <td><select class="input" onchange="batchRows[${i}].model=this.value;updateRowInfo(${i})" style="min-width:160px;">
+      <option value="">请选择</option>${getModels().map(m => `<option value="${m.name}" ${m.name===r.model?'selected':''}>${m.name}</option>`).join('')}</select></td>
+    <td id="mf-${i}" style="font-size:12px;">${getRowManufacturer(r.model)}</td>
+    <td id="mpq-${i}" style="font-size:12px;"></td>
+    <td><input class="input" type="number" value="${r.qty}" min="1" onchange="batchRows[${i}].qty=+this.value" style="width:80px;"></td>
+    <td><input class="input" value="${r.cy||''}" placeholder="CY" style="width:60px;" onchange="batchRows[${i}].cy=this.value"></td>
+    <td><input class="input" type="date" value="${r.delivery||''}" onchange="batchRows[${i}].delivery=this.value" style="width:130px;"></td>
+    <td><input class="input" value="${r.usage||''}" placeholder="用途" onchange="batchRows[${i}].usage=this.value" style="width:100px;"></td>
+    <td><button class="btn btn-text btn-sm" style="color:var(--color-error)" onclick="batchRows.splice(${i},1);renderBatch()">✕</button></td>
+  </tr>`).join('');
+  document.getElementById('batchCount').textContent = batchRows.length;
+}
+function getRowManufacturer(model){
+  const m = getModels().find(x => x.name === model);
+  return m ? m.manufacturer : '';
+}
+function updateRowInfo(i){
+  const r = batchRows[i];
+  document.getElementById('mf-'+i).textContent = getRowManufacturer(r.model);
+  const mpqResult = Validator.validateMPQ(r.model, r.qty);
+  document.getElementById('mpq-'+i).textContent = mpqResult.mpq ? 'MPQ:'+mpqResult.mpq : '';
+}
+function addBatchRow(){
+  batchRows.push({model:'',manufacturer:'',mpq:'',qty:10,cy:'',delivery:'',usage:''});
+  renderBatch();
+}
+function downloadTemplate(){
+  const csv = '型号,数量,CY,预计交期,用途\nSTM32F103C8T6,10,2025,2026-06-30,客户验证\nESP32-WROOM-32,20,2025,2026-07-15,新项目评估\n';
+  const blob = new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'});
+  const a = document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='样片批量申请模板.csv'; a.click();
+  showToast('模板已下载','success');
+}
+function importExcel(e){
+  showToast('已读取 ' + (e.target.files.length)+' 个文件，模拟导入 ' + (Math.floor(Math.random()*5+3)) + ' 行数据','success');
+  for(let i=0;i<3;i++) batchRows.push({model:'STM32F103C8T6',manufacturer:'ST',mpq:2500,qty:50,cy:'2025',delivery:'2026-07-01',usage:'导入数据'});
+  renderBatch();
+}
+function showToast(msg,t){
+  const c=document.querySelector('.toast-container')||document.body.appendChild(Object.assign(document.createElement('div'),{className:'toast-container'}));
+  const n=document.createElement('div');n.className='toast toast-'+t;n.textContent=msg;c.appendChild(n);setTimeout(()=>n.remove(),3000);
+}
+function resetBatch(){batchRows=[{model:'',qty:10},{model:'',qty:20},{model:'',qty:5}];renderBatch();document.getElementById('batchCustomer').value='';}
+async function submitBatch(){
+  const customer = document.getElementById('batchCustomer').value.trim();
+  if(!customer){showToast('请输入客户名称','error');return;}
+  const validRows = batchRows.filter(r=>r.model);
+  if(validRows.length===0){showToast('请至少填写一行有效的型号数据','error');return;}
+  const btn = document.querySelector('.btn-primary'); btn.disabled=true; btn.textContent='⏳ 批量提交中...';
+  const result = await ApplyCommon.submitApplication({customer, models:validRows, type:'batch'});
+  showToast('批量申请提交成功！编号: '+result.appId+' ('+validRows.length+' 个型号)','success');
+  btn.textContent='✅ 已提交';
+}
+initBatch();
+</script>
+</body></html>

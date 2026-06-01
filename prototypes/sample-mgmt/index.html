@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sample管理 — 样片管理系统</title>
+<link rel="stylesheet" href="css/design-tokens.css">
+<link rel="stylesheet" href="css/layout.css">
+</head>
+<body>
+
+<!-- 登录页 -->
+<div class="login-screen" id="loginScreen">
+  <div class="login-card">
+    <div class="login-logo">
+      <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+        <rect width="36" height="36" rx="8" fill="#4F46E5"/>
+        <path d="M10 12h16v2H10v-2zm0 5h16v2H10v-2zm0 5h12v2H10v-2z" fill="#fff" opacity="0.9"/>
+      </svg>
+    </div>
+    <div class="login-sub">选择角色登录体验样片管理系统</div>
+    <div class="role-grid" id="roleSelector"></div>
+    <button class="btn btn-primary" style="width:100%;padding:9px;font-size:14px;" onclick="doLogin()">进入系统</button>
+  </div>
+</div>
+
+<!-- 主布局 -->
+<div class="app-layout" id="appLayout" style="display:none;">
+  <!-- 侧边栏 -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+      <svg width="28" height="28" viewBox="0 0 36 36" fill="none">
+        <rect width="36" height="36" rx="8" fill="#4F46E5"/>
+        <path d="M10 12h16v2H10v-2zm0 5h16v2H10v-2zm0 5h12v2H10v-2z" fill="#fff" opacity="0.9"/>
+      </svg>
+      <div>
+        <div class="sidebar-brand-text">Sample管理</div>
+        <div class="sidebar-brand-sub">样片管理系统</div>
+      </div>
+    </div>
+    <div class="sidebar-section">导航</div>
+    <nav class="sidebar-nav" id="sidebarNav"></nav>
+    <div class="sidebar-footer" id="sidebarUser" onclick="toggleDropdown()">
+      <div class="sidebar-avatar" id="sideAvatar">赵</div>
+      <div>
+        <div class="sidebar-user-name" id="sideName">赵强</div>
+        <div class="sidebar-user-role" id="sideRole">产品经理(PM)</div>
+      </div>
+    </div>
+    <div class="user-dropdown" id="userDropdown">
+      <div style="padding:8px 10px;font-size:11px;color:var(--text-muted);">切换角色</div>
+      <div id="roleSwitchList"></div>
+      <div class="dropdown-divider"></div>
+      <div class="dropdown-item" onclick="doLogout()">🚪 退出登录</div>
+    </div>
+  </aside>
+
+  <!-- 主内容 -->
+  <main class="main-content" id="mainContent">
+    <div class="content-area" id="contentArea"></div>
+  </main>
+</div>
+
+<script src="js/auth.js"></script>
+<script>
+let selectedUserId = null;
+let currentModule = 'home';
+
+// ── 登录 ──
+async function initLogin() {
+  await Auth.init();
+  const users = Auth.getUsers();
+  const colors = {sales:'#059669',fae:'#D97706',pm:'#4F46E5',admin:'#DC2626',approver:'#7C3AED',finance:'#0891B2'};
+  document.getElementById('roleSelector').innerHTML = users.map(u =>
+    `<div class="role-card ${u.id==='U003'?'selected':''}" onclick="selectRole('${u.id}')" id="role-${u.id}">
+      <div class="role-avatar" style="background:${colors[u.role]}">${u.avatar}</div>
+      <div class="role-name">${u.name}</div>
+      <div class="role-desc">${Auth.getRoleName(u.role)}</div>
+    </div>`
+  ).join('');
+  selectedUserId = 'U003';
+}
+
+function selectRole(id) {
+  document.querySelectorAll('.role-card').forEach(el => el.classList.remove('selected'));
+  document.getElementById('role-'+id).classList.add('selected');
+  selectedUserId = id;
+}
+
+function doLogin() {
+  if (!selectedUserId) return;
+  Auth.login(selectedUserId);
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('appLayout').style.display = 'flex';
+  renderApp();
+}
+
+function doLogout() {
+  Auth.logout();
+  document.getElementById('loginScreen').style.display = 'flex';
+  document.getElementById('appLayout').style.display = 'none';
+  document.getElementById('userDropdown').classList.remove('show');
+}
+
+function toggleDropdown() {
+  document.getElementById('userDropdown').classList.toggle('show');
+}
+document.addEventListener('click', e => {
+  if (!e.target.closest('.sidebar-footer')) document.getElementById('userDropdown')?.classList.remove('show');
+});
+
+// ── 渲染 ──
+function renderApp() {
+  const user = Auth.getCurrentUser();
+  const role = Auth.getCurrentRole();
+
+  if (document.getElementById('sideAvatar')) document.getElementById('sideAvatar').textContent = user.avatar;
+  if (document.getElementById('sideName')) document.getElementById('sideName').textContent = user.name;
+  if (document.getElementById('sideRole')) document.getElementById('sideRole').textContent = role.name;
+
+  const switchList = document.getElementById('roleSwitchList');
+  if (switchList) {
+    const users = Auth.getUsers();
+    switchList.innerHTML = users.map(u =>
+      `<div class="dropdown-item" onclick="switchRole('${u.id}')">
+        <span style="font-weight:500;">${u.avatar}</span>
+        <div><div>${u.name}</div><div style="font-size:10px;color:var(--text-muted);">${Auth.getRoleName(u.role)}</div></div>
+        ${u.id===user.id?'<span style="margin-left:auto;color:var(--primary);font-size:12px;">✓</span>':''}
+      </div>`
+    ).join('');
+  }
+
+  // 侧边栏
+  const sidebarNav = document.getElementById('sidebarNav');
+  if (sidebarNav) {
+    const modules = Auth.getAccessibleModules();
+    sidebarNav.innerHTML = modules.map((m,i) =>
+      `<div class="sidebar-item ${i===0?'active':''}" data-module="${m.key}" onclick="navigate('${m.key}')">
+        <span class="icon">${m.icon}</span> ${m.label}
+      </div>`
+    ).join('');
+  }
+
+  navigate('home');
+}
+
+function switchRole(id) {
+  Auth.login(id);
+  document.getElementById('userDropdown').classList.remove('show');
+  renderApp();
+}
+
+// ── 路由 ──
+const MODULE_FILES = {
+  'apply': 'pages/apply-wizard.html',
+  'apply-single': 'pages/apply-single.html',
+  'apply-batch': 'pages/apply-batch.html',
+  'apply-history': 'pages/apply-history.html',
+  'approval': 'pages/approval-list.html',
+  'tracking': 'pages/tracking.html',
+  'dashboard': 'pages/dashboard.html',
+  'ai-detection': 'pages/ai-detection.html',
+  'settings': 'pages/settings.html',
+  'history': 'pages/apply-history.html',
+  'erp': 'pages/erp-simulator.html'
+};
+
+function navigate(module) {
+  currentModule = module;
+  document.querySelectorAll('.sidebar-item').forEach(el =>
+    el.classList.toggle('active', el.dataset.module === module)
+  );
+
+  const contentArea = document.getElementById('contentArea');
+
+  if (module === 'home') {
+    const user = Auth.getCurrentUser() || {name:'用户'};
+    const role = Auth.getCurrentRole() || {name:'角色'};
+    const modules = Auth.getAccessibleModules() || [];
+    const apps = (window.MockData && MockData.applications) || [];
+    const pending = apps.filter(a => a.status==='待审批'||a.status==='审批中');
+
+    contentArea.innerHTML = `<div class="home-page fade-in">
+      <div class="welcome-card">
+        <h2>👋 你好，${user.name}</h2>
+        <p>${role.name} · 可访问 ${modules.length} 个功能模块</p>
+        <div class="quick-actions">
+          <button class="btn" id="qApply">⚡ 快速申请</button>
+          <button class="btn" id="qBatch">📊 批量申请</button>
+          <button class="btn" id="qApproval">✅ 待审批 ${pending.length>0?'('+pending.length+')':''}</button>
+        </div>
+      </div>
+      <div class="module-grid" id="moduleGrid"></div>
+      <div class="pending-card" id="pendingCard">
+        <div class="pending-header">
+          <h3>📋 待审批 · <span style="font-weight:400;color:var(--text-muted);font-size:13px;">${pending.length} 项</span></h3>
+          <button class="btn btn-sm btn-ghost" id="viewAll">查看全部 →</button>
+        </div>
+        <div id="pendingList"></div>
+      </div>
+    </div>`;
+
+    // Module grid
+    const grid = document.getElementById('moduleGrid');
+    modules.forEach(m => {
+      const card = document.createElement('div');
+      card.className = 'module-card';
+      card.innerHTML = `<div class="mc-icon">${m.icon}</div><div class="mc-title">${m.label}</div><div class="mc-desc">点击进入</div>`;
+      card.onclick = () => navigate(m.key);
+      grid.appendChild(card);
+    });
+
+    // Pending list
+    const pList = document.getElementById('pendingList');
+    if (pending.length === 0) {
+      pList.innerHTML = '<div style="text-align:center;padding:16px;color:var(--text-muted);font-size:13px;">暂无待审批申请</div>';
+    } else {
+      pending.slice(0,5).forEach(a => {
+        const row = document.createElement('div');
+        row.className = 'pending-row';
+        const colors = {'高':'#DC2626','中':'#D97706','低':'#94A3B8'};
+        row.innerHTML = `<span class="pending-dot" style="background:${colors[a.urgency]||'#94A3B8'}"></span>
+          <span style="font-weight:500;color:var(--primary);">${a.id}</span>
+          <span>${a.applicant}</span>
+          <span class="text-muted">${a.customer}</span>
+          <span class="text-muted">${a.models.slice(0,2).join(',')}</span>
+          <span style="margin-left:auto;"><span class="tag tag-primary" style="cursor:pointer;">审批</span></span>`;
+        row.onclick = () => navigate('approval');
+        pList.appendChild(row);
+      });
+    }
+
+    // Bind events
+    document.getElementById('qApply').onclick = () => navigate('apply');
+    document.getElementById('qBatch').onclick = () => navigate('apply-batch');
+    document.getElementById('qApproval').onclick = () => navigate('approval');
+    document.getElementById('viewAll').onclick = () => navigate('approval');
+    return;
+  }
+
+  const file = MODULE_FILES[module];
+  if (!file || file === '') {
+    contentArea.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:60vh;flex-direction:column;gap:8px;color:var(--text-muted);"><div style="font-size:40px;">🚧</div><div>功能开发中</div></div>';
+    return;
+  }
+
+  contentArea.innerHTML = `<iframe src="${file}" style="width:100%;height:100vh;border:none;" title="${module}"></iframe>`;
+}
+
+// ── 初始化 ──
+initLogin();
+</script>
+</body>
+</html>

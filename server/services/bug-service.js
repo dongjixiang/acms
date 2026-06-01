@@ -18,6 +18,12 @@ const BUG_CLARIFY_SYSTEM_PROMPT = `你是一个专业的缺陷分析师（Bug Tr
 - major: 主要功能异常，但有 workaround
 - minor: 边缘情况、UI 瑕疵、性能不达标但可用
 
+**🔍 根因分析要求（critical / major 必填）：**
+对于 critical 和 major 级别的缺陷，在 analysis 中必须分析 root_cause：
+1. **表层原因** — 代码层面的直接错误（如空指针、逻辑短路）
+2. **深层原因** — 流程/设计层面的系统性原因（如需求分析漏了入口、验收标准没覆盖边界、任务分解缺了集成任务）
+3. **可预防性评估** — 该缺陷是否可以通过改进需求澄清/任务分解/验收标准来预防？具体缺少什么检查？
+
 **回复格式（严格 JSON）：**
 {
   "message": "你的分析和友好的回复",
@@ -30,7 +36,12 @@ const BUG_CLARIFY_SYSTEM_PROMPT = `你是一个专业的缺陷分析师（Bug Tr
     "expected_behavior": "应该显示ZZ",
     "actual_behavior": "实际显示的是YY",
     "possible_cause": "可能是XX模块的状态管理问题",
-    "suggested_fix": "检查 XX 函数的状态更新逻辑"
+    "suggested_fix": "检查 XX 函数的状态更新逻辑",
+    "root_cause": {
+      "surface": "代码层面: XX函数中state未初始化导致空指针",
+      "deep": "流程层面: 需求澄清时未定义加载中状态，验收标准只测了正常路径",
+      "preventable": "是。如果验收标准包含「空数据态」「加载态」「错误态」三个场景的测试用例，该缺陷可在验收阶段被发现"
+    }
   },
   "linked_requirement_title": "需求标题（用于自动关联，可留空）",
   "linked_task_title": "关联任务标题（用于自动关联，可留空）",
@@ -198,6 +209,13 @@ function createBugTask(projectId, analysis, linkedRequirement, linkedTask, sourc
     `### 可能原因`,
     analysis.possible_cause || '待分析',
     ``,
+    `### 根因分析`,
+    analysis.root_cause ? [
+      `**表层原因**: ${analysis.root_cause.surface || '未分析'}`,
+      `**深层原因**: ${analysis.root_cause.deep || '未分析'}`,
+      `**可预防性**: ${analysis.root_cause.preventable || '未分析'}`,
+    ].join('\n') : '待分析',
+    ``,
     `### 建议修复方案`,
     analysis.suggested_fix || '待补充',
   ].join('\n');
@@ -224,6 +242,7 @@ function createBugTask(projectId, analysis, linkedRequirement, linkedTask, sourc
     actual_behavior: analysis.actual_behavior || '',
     bug_source: source || 'manual',
     source_task_id: linkedTask ? linkedTask.id : (source === 'verify_failure' ? analysis.source_task_id || '' : ''),
+    root_cause: analysis.root_cause ? JSON.stringify(analysis.root_cause) : '',
   });
 
   return task;

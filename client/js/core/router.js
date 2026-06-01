@@ -4,7 +4,7 @@
 // 顶层页面切换（项目列表 ↔ 工作空间 ↔ 系统管理）
 function showView(id) {
   // 隐藏所有顶层页面
-  const pages = ['view-projects', 'view-workspace', 'view-admin'];
+  const pages = ['view-projects', 'view-workspace', 'view-admin', 'view-improvements'];
   pages.forEach(pid => {
     const el = document.getElementById(pid);
     if (el) el.style.display = 'none';

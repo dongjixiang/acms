@@ -16,7 +16,10 @@ router.post('/', (req, res) => {
 
 // 项目列表
 router.get('/', (req, res) => {
-  res.json(projectStore.list());
+  const all = projectStore.list();
+  // 过滤掉系统项目（如 ACMS 自我改进）
+  const projects = all.filter(p => !p.system_project);
+  res.json(projects);
 });
 
 // 项目详情

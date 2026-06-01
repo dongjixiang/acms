@@ -188,6 +188,23 @@ router.post('/:id/review', async (req, res, next) => {
     target: { type: 'task', id: result.id }, payload: { task: result, verdict: autoVerdict, feedback: effectiveFeedback, reviewReport },
   });
 
+  // 严重缺陷解决后触发自我改进
+  if (autoVerdict === 'approved' && result && result.type === 'bug') {
+    const bugSeverity = result.bug_severity || '';
+    if (bugSeverity === 'critical' || bugSeverity === 'major') {
+      // fire-and-forget，不阻塞响应
+      setImmediate(async () => {
+        try {
+          const bugImprovement = require('../services/bug-improvement-service');
+          const report = await bugImprovement.analyzeBugImprovement(result);
+          console.log(`[BugImprovement] ${result.id}: ${report.summary.substring(0, 100)}`);
+        } catch (e) {
+          console.error(`[BugImprovement] 触发失败: ${e.message}`);
+        }
+      });
+    }
+  }
+
   res.json(responsePayload);
 });
 

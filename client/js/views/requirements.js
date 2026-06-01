@@ -500,6 +500,12 @@ async function sendAiClarify(reqId, choiceAnswer) {
       actionsDiv.scrollIntoView({ behavior: 'smooth', block: 'center' });
       // 自动生成 MD 文档
       generateMdDoc(reqId, modelId);
+    } else if (!result.choices || result.choices.length === 0) {
+      // 逃生口: readyForReview=false 且无选择题时，仍展示"继续澄清"按钮
+      // 让用户可以直接在输入框中打字推进，而不是卡死在无交互组件状态
+      actionsDiv.style.display = 'block';
+      document.querySelector('#ai-clarify-actions-' + reqId + ' .btn-accept').style.display = 'none';
+      actionsDiv.scrollIntoView({ behavior: 'smooth', block: 'center' });
     } else {
       actionsDiv.style.display = 'none';
     }

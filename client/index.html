@@ -23,6 +23,7 @@ document.addEventListener('DOMContentLoaded', () => {
     <h1 id="header-title">🤖 <span data-i18n="app.title">智能体协同管理系统</span> <span class="version" data-i18n="app.version">v0.3</span></h1>
     <div id="header-right">
       <span id="current-project"></span>
+      <button class="btn-small" onclick="showView('view-improvements');loadImprovements();" title="自我改进">🔄</button>
       <button class="btn-small" onclick="showView('view-admin');loadAdminPage();">⚙️</button>
       <button id="btn-theme-toggle" class="btn-small" onclick="App.toggleTheme()" title="切换主题">🌙</button>
       <select id="lang-switcher" onchange="I18n.setLang(this.value)">
@@ -76,7 +77,6 @@ document.addEventListener('DOMContentLoaded', () => {
           </div>
         </div>
       </div>
-    </div>
   </main>
 
   <!-- ====== 系统管理（独立页面） ====== -->
@@ -87,6 +87,28 @@ document.addEventListener('DOMContentLoaded', () => {
         <h2>⚙️ 系统管理</h2>
       </div>
       <div id="admin-content"></div>
+    </div>
+  </main>
+
+  <!-- ====== 自我改进（独立页面） ====== -->
+  <main id="view-improvements" class="view-main" style="display:none">
+    <div class="projects-page" style="display:flex;flex-direction:column;height:100%">
+      <div class="view-header" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;flex-shrink:0">
+        <button class="btn-back" onclick="showView('view-projects');loadProjects();">← 返回项目</button>
+        <h2>🔄 自我改进</h2>
+        <span id="imp-project-info" style="font-size:11px;color:var(--text2)"></span>
+      </div>
+      <div class="imp-tabs" style="flex-shrink:0">
+        <button class="imp-tab-btn active" data-tab="reports" onclick="switchImprovementTab('reports')">📋 改进报告</button>
+        <button class="imp-tab-btn" data-tab="board" onclick="switchImprovementTab('board')">📌 任务看板</button>
+      </div>
+      <div id="imp-reports-panel" class="imp-content-wrap" style="display:flex;flex:1;overflow:hidden">
+        <div id="imp-reports-list" class="imp-list-panel"></div>
+        <div id="imp-detail-panel" class="imp-detail-panel"></div>
+      </div>
+      <div id="imp-board-panel" class="imp-board-panel" style="display:none;flex:1;overflow:auto">
+        <div id="imp-board-content"></div>
+      </div>
     </div>
   </main>
 
@@ -275,7 +297,7 @@ document.addEventListener('DOMContentLoaded', () => {
           </div>
           <div class="tab-content active" id="tab-envs"><h3 data-i18n="settings.envs.title">环境地址</h3><div id="envs-list"></div><div class="form-inline" style="margin-top:12px"><input type="text" id="env-name" placeholder="dev/staging/prod"><input type="text" id="env-url" placeholder="http://localhost:3000"><button class="btn-small btn-accept" onclick="addEnv()">添加</button></div></div>
           <div class="tab-content" id="tab-repos"><h3 data-i18n="settings.repos.title">代码仓库</h3><div id="repos-list"></div><div class="form-inline" style="margin-top:12px"><input type="text" id="repo-name" placeholder="仓库名"><input type="text" id="repo-url" placeholder="https://github.com/..."><button class="btn-small btn-accept" onclick="addRepo()">添加</button></div></div>
-          <div class="tab-content" id="tab-configs"><h3 data-i18n="settings.configs.title">配置项</h3><div id="configs-list"></div><div class="form-inline" style="margin-top:12px"><input type="text" id="cfg-key" placeholder="KEY"><input type="text" id="cfg-value" placeholder="VALUE"><button class="btn-small btn-accept" onclick="addConfig()">添加</button></div></div>
+          <div class="tab-content" id="tab-configs"><h3 data-i18n="settings.configs.title">配置项</h3><div id="configs-list"></div><div class="config-section"><h4>📦 自动归档</h4><div class="form-inline"><input type="number" id="auto-archive-days" min="1" max="365" style="width:80px"><span style="margin:0 8px;color:var(--text2)">天</span><button class="btn-small btn-accept" onclick="saveAutoArchiveDays()">保存</button><span id="auto-archive-status" style="margin-left:8px;font-size:12px;color:var(--text2)"></span></div><p style="font-size:11px;color:var(--text2);margin-top:4px">任务完成后超过此天数自动归档。设为0表示不自动归档。</p></div><div class="form-inline" style="margin-top:12px"><input type="text" id="cfg-key" placeholder="KEY"><input type="text" id="cfg-value" placeholder="VALUE"><button class="btn-small btn-accept" onclick="addConfig()">添加</button></div></div>
           <div class="tab-content" id="tab-members"><h3 data-i18n="settings.members.title">项目成员</h3><div id="members-list"></div><div class="form-inline" style="margin-top:12px"><input type="text" id="member-id" placeholder="成员ID"><select id="member-type"><option value="human">👤 人</option><option value="agent">🤖 智能体</option></select><button class="btn-small btn-accept" onclick="addMember()">添加</button></div></div>
           <div class="tab-content" id="tab-skills"><h3>🎯 技能管理</h3><p style="font-size:12px;color:var(--text2);margin-bottom:12px">技能定义了常见任务类型的标准执行方法</p><div id="skills-list"></div><div class="form-inline" style="margin-top:12px"><input type="text" id="skill-id" placeholder="skill-id"><input type="text" id="skill-name" placeholder="技能名称"><button class="btn-small btn-accept" onclick="addSkill()">添加</button></div></div>
 <div class="tab-content" id="tab-workspace"><h3>📂 项目工作区</h3><p style="font-size:12px;color:var(--text2);margin-bottom:12px">工作区文件浏览已移至独立的 <a href="#" onclick="showWorkspaceView('delivery');loadDelivery();return false;" style="color:var(--accent)">📦 交付管理</a> 页面。点击前往查看完整交付物。</p><div id="workspace-path" style="font-size:11px;color:var(--text2);margin-bottom:8px"></div><div id="workspace-files"></div></div>
@@ -308,6 +330,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/settings.js"></script>
 <script src="/client/js/views/reports.js"></script>
 <script src="/client/js/views/admin.js"></script>
+<script src="/client/js/views/improvements.js"></script>
 <script src="/client/js/app.js"></script>
 </body>
 </html>

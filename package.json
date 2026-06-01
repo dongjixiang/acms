@@ -14,5 +14,8 @@
     "uuid": "^10.0.0",
     "ws": "^8.18.0"
   },
-  "type": "commonjs"
+  "type": "commonjs",
+  "devDependencies": {
+    "puppeteer-core": "^25.1.0"
+  }
 }

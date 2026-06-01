@@ -1,0 +1,97 @@
+<!DOCTYPE html><html lang="zh-CN"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>复制历史申请</title>
+<link rel="stylesheet" href="../css/design-tokens.css"><link rel="stylesheet" href="../css/components.css"><link rel="stylesheet" href="../css/form.css">
+<script src="../js/mock-data.js"></script><script src="../js/form-validator.js"></script><script src="../js/apply-common.js"></script>
+<style>body{background:var(--color-gray-50);min-height:100vh}.form-page h2{font-size:20px;margin:0 0 8px}.subtitle{font-size:13px;color:var(--color-text-secondary);margin-bottom:24px}
+.filter-bar{display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;align-items:center}
+.result-count{font-size:12px;color:var(--color-text-secondary)}</style>
+</head><body>
+<div class="cross-nav" style="display:flex;gap:4px;background:#fff;border-radius:6px;padding:4px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,0.06);overflow-x:auto;flex-wrap:wrap;">
+  <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'home'},'*');return false;" style="padding:6px 12px;border-radius:4px;font-size:12px;color:#7A7A94;text-decoration:none;white-space:nowrap;">🏠 首页</a>
+  <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'apply'},'*');return false;" style="padding:6px 12px;border-radius:4px;font-size:12px;color:#7A7A94;text-decoration:none;white-space:nowrap;">📋 样片申请</a>
+  <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'approval'},'*');return false;" style="padding:6px 12px;border-radius:4px;font-size:12px;color:#7A7A94;text-decoration:none;white-space:nowrap;">✅ 审批管理</a>
+  <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'tracking'},'*');return false;" style="padding:6px 12px;border-radius:4px;font-size:12px;color:#7A7A94;text-decoration:none;white-space:nowrap;">🔍 样片跟踪</a>
+  <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'dashboard'},'*');return false;" style="padding:6px 12px;border-radius:4px;font-size:12px;color:#7A7A94;text-decoration:none;white-space:nowrap;">📊 数据分析</a>
+  <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'ai-detection'},'*');return false;" style="padding:6px 12px;border-radius:4px;font-size:12px;color:#7A7A94;text-decoration:none;white-space:nowrap;">🤖 AI异常检测</a>
+  <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'settings'},'*');return false;" style="padding:6px 12px;border-radius:4px;font-size:12px;color:#7A7A94;text-decoration:none;white-space:nowrap;">⚙️ 系统设置</a>
+  <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'erp'},'*');return false;" style="padding:6px 12px;border-radius:4px;font-size:12px;color:#7A7A94;text-decoration:none;white-space:nowrap;">🔗 ERP对接</a>
+</div>
+<div class="form-page">
+  <h2>📋 从历史申请复制</h2>
+  <p class="subtitle">浏览历史申请记录，一键复制并编辑后重新提交</p>
+  <div class="form-card">
+    <div class="filter-bar">
+      <select class="input" id="filterStatus" style="width:130px;" onchange="renderHistory()">
+        <option value="">全部状态</option><option>已通过</option><option>已发货</option><option>已签收</option>
+      </select>
+      <input class="input" id="filterSearch" placeholder="搜索客户/型号..." style="width:200px;" oninput="renderHistory()">
+      <span class="result-count" id="resultCount"></span>
+    </div>
+    <div class="history-list" id="historyList"></div>
+  </div>
+</div>
+<script>
+const apps = (window.MockData && MockData.applications) || [];
+function renderHistory() {
+  const status = document.getElementById('filterStatus').value;
+  const kw = document.getElementById('filterSearch').value.toLowerCase();
+  let filtered = apps;
+  if (status) filtered = filtered.filter(a => a.status === status);
+  if (kw) filtered = filtered.filter(a => a.customer.toLowerCase().includes(kw) || a.models.some(m => m.toLowerCase().includes(kw)));
+  document.getElementById('resultCount').textContent = `共 ${filtered.length} 条记录`;
+  const container = document.getElementById('historyList');
+  container.innerHTML = filtered.slice(0,10).map(a => {
+    const statusColor = {'待审批':'tag-warning','审批中':'tag-info','已通过':'tag-success','已驳回':'tag-error','备货中':'tag-info','已发货':'tag-primary','已签收':'tag-default'};
+    return `<div class="history-card" onclick="copyApplication('${a.id}')">
+      <div class="hc-left"><div class="hc-id">${a.id}</div>
+        <div class="hc-info">${a.applicant} · ${a.customer} · ${a.created}</div>
+        <div class="hc-models">型号: ${a.models.join(', ')} · 数量: ${a.qty.join('+')}</div></div>
+      <div><span class="tag ${statusColor[a.status]||'tag-default'}">${a.status}</span>
+        <div class="hc-action" style="margin-top:8px;">📋</div></div>
+    </div>`;
+  }).join('');
+  if (!filtered.length) container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--color-text-secondary);">暂无匹配的历史记录</div>';
+}
+function copyApplication(appId) {
+  const app = apps.find(a => a.id === appId);
+  if (!app) return;
+  // 显示编辑弹窗
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;';
+  overlay.innerHTML = `<div style="background:#fff;border-radius:var(--radius-lg);padding:32px;width:600px;max-width:90vw;max-height:80vh;overflow-y:auto;">
+    <h3 style="margin:0 0 16px;">编辑申请 - 复制自 ${app.id}</h3>
+    <div class="grid grid-2"><div class="form-group"><label>客户名称</label><input class="input" id="editCustomer" value="${app.customer}"></div>
+    <div class="form-group"><label>申请人</label><input class="input" value="${app.applicant}"></div></div>
+    <h4 style="margin:16px 0 8px;font-size:14px;">型号</h4>
+    <div id="editModels"></div>
+    <div style="margin-top:16px;display:flex;gap:12px;justify-content:flex-end;">
+      <button class="btn btn-secondary" onclick="this.closest('[style]').remove()">取消</button>
+      <button class="btn btn-primary" onclick="submitCopy(this)">✉️ 提交复制申请</button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  const modelsContainer = overlay.querySelector('#editModels');
+  app.models.forEach((m,i) => {
+    modelsContainer.innerHTML += `<div class="model-row" style="grid-template-columns:3fr 1fr;">
+      <span>${m}</span>
+      <input class="input" type="number" value="${app.qty[i]||10}" min="1">
+    </div>`;
+  });
+  window._copyOverlay = overlay;
+}
+async function submitCopy(btn) {
+  btn.disabled=true; btn.textContent='⏳ 提交中...';
+  await new Promise(r => setTimeout(r, 600));
+  const appId = ApplyCommon.generateAppId();
+  btn.textContent='✅ 已提交';
+  showToast('复制申请提交成功！新编号: '+appId,'success');
+  setTimeout(() => { window._copyOverlay?.remove(); }, 1500);
+}
+function showToast(msg,t){
+  const c=document.querySelector('.toast-container')||document.body.appendChild(Object.assign(document.createElement('div'),{className:'toast-container'}));
+  const n=document.createElement('div');n.className='toast toast-'+t;n.textContent=msg;c.appendChild(n);setTimeout(()=>n.remove(),3000);
+}
+renderHistory();
+</script>
+</body></html>

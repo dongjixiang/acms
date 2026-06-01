@@ -1,0 +1,35 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>系统设置</title><link rel="stylesheet" href="../css/design-tokens.css"><link rel="stylesheet" href="../css/components.css"><style>body{background:var(--color-gray-50);min-height:100vh}.page{padding:24px;max-width:1200px;margin:0 auto}.page h2{font-size:20px;margin:0 0 20px}.card{background:#fff;border-radius:8px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.06)}.card h3{font-size:16px;margin:0 0 16px;padding-bottom:12px;border-bottom:1px solid var(--color-gray-100)}</style></head><body>
+<div class="page">
+  <h2>⚙️ 系统设置</h2>
+  <div class="card"><h3>用户管理</h3>
+    <table class="table"><thead><tr><th>姓名</th><th>角色</th><th>部门</th><th>邮箱</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody><tr><td>张明</td><td><span class="tag tag-primary">销售代表</span></td><td>华南销售部</td><td>zhangming@example.com</td><td><span class="tag tag-success">启用</span></td><td><button class="btn btn-text btn-sm">编辑</button></td></tr>
+      <tr><td>李华</td><td><span class="tag tag-info">FAE工程师</span></td><td>应用工程部</td><td>lihua@example.com</td><td><span class="tag tag-success">启用</span></td><td><button class="btn btn-text btn-sm">编辑</button></td></tr>
+      <tr><td>赵强</td><td><span class="tag tag-warning">产品经理</span></td><td>产品管理部</td><td>zhaoqiang@example.com</td><td><span class="tag tag-success">启用</span></td><td><button class="btn btn-text btn-sm">编辑</button></td></tr>
+      <tr><td>王芳</td><td><span class="tag tag-primary">销售代表</span></td><td>华东销售部</td><td>wangfang@example.com</td><td><span class="tag tag-error">已禁用</span></td><td><button class="btn btn-text btn-sm">编辑</button></td></tr>
+    </tbody></table>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+    <div class="card"><h3>审批规则配置</h3>
+      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--color-gray-100);font-size:13px;">
+        <span>自动审批（低额）</span><span>金额<100元</span><span><span class="tag tag-success">已启用</span></span></div>
+      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--color-gray-100);font-size:13px;">
+        <span>超时自动转交</span><span>待审批>24h</span><span><span class="tag tag-default">已停用</span></span></div>
+      <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:13px;">
+        <span>紧急绿色通道</span><span>紧急程度=高</span><span><span class="tag tag-success">已启用</span></span></div>
+    </div>
+    <div class="card"><h3>通知配置</h3>
+      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--color-gray-100);font-size:13px;">
+        <span>审批提醒</span><span><span class="tag tag-success">已开启</span></span></div>
+      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--color-gray-100);font-size:13px;">
+        <span>超时通知阈值</span><span>24小时</span></div>
+      <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:13px;">
+        <span>通知方式</span><span>站内信 + 邮件</span></div>
+    </div>
+  </div>
+  <div style="text-align:right;font-size:12px;color:var(--color-text-secondary);margin-top:8px;">
+    <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'approval'},'*');return false;" style="color:var(--color-primary);">✅ 审批规则管理</a>
+    <span style="margin:0 8px;">|</span>
+    <a href="#" onclick="window.parent.postMessage({type:'navigate',module:'erp'},'*');return false;" style="color:var(--color-primary);">🔗 ERP数据配置</a>
+  </div>
+</div></body></html>

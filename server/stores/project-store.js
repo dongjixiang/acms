@@ -25,6 +25,7 @@ class ProjectStore {
 
   getById(id) { return collection('projects').findOne(p => p.id === id); }
   list() { return collection('projects').all(); }
+  listPublic() { return collection('projects').find(p => p.system_project !== 1); }
 
   update(id, updates) {
     const now = new Date().toISOString();
