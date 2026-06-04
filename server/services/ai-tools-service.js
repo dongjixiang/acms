@@ -3,6 +3,11 @@ const modelStore = require('../stores/model-store');
 const reqStore = require('../stores/requirement-store');
 const { callLLM } = require('./llm-adapter');
 
+// ===== 工具函数 =====
+function safeArr(val) {
+  return Array.isArray(val) ? val : [];
+}
+
 // ===== 生成 MD 需求文档 =====
 const DOC_SYSTEM_PROMPT = `你是一个专业的需求文档撰写专家。请根据以下需求信息，生成一份结构清晰、用户友好的 Markdown 格式需求文档。
 
@@ -85,10 +90,10 @@ async function generateDoc(reqId, modelId) {
 需求标题: ${requirement.title}
 原始描述: ${requirement.description || ''}
 当前 SRS:
-- 功能范围: ${(srs.scopeIn || []).join('、') || '待定'}
-- 排除范围: ${(srs.scopeOut || []).join('、') || '无'}
-- 验收标准: ${(srs.acceptanceCriteria || []).join('；') || '待定'}
-- 技术约束: ${(srs.technicalConstraints || []).join('、') || '无'}
+- 功能范围: ${safeArr(srs.scopeIn).join('、') || '待定'}
+- 排除范围: ${safeArr(srs.scopeOut).join('、') || '无'}
+- 验收标准: ${safeArr(srs.acceptanceCriteria).join('；') || '待定'}
+- 技术约束: ${safeArr(srs.technicalConstraints).join('、') || '无'}
 - 需求摘要: ${srs.summary || ''}` },
   ];
 
@@ -372,9 +377,9 @@ ${assessComplexity(requirement, srs)}
 ${granularity.warnings.length > 0 ? `\\n⚠ **粒度警告：** ${granularity.warnings.join('；')}\\n如果需求过大，请在分解时主动提取可独立的子模块，标注为\"建议拆分为独立需求\"。\\n` : ''}
 标题: ${requirement.title}
 描述: ${requirement.structured_description || requirement.description || ''}
-功能范围: ${(srs.scopeIn || []).join('、')}
-验收标准: ${(srs.acceptanceCriteria || []).join('；')}
-技术约束: ${(srs.technicalConstraints || []).join('、')}
+功能范围: ${safeArr(srs.scopeIn).join('、')}
+验收标准: ${safeArr(srs.acceptanceCriteria).join('；')}
+技术约束: ${safeArr(srs.technicalConstraints).join('、')}
 Wiki 参考: ${requirement.wiki_path || '无'}
 
 请生成任务列表。` }

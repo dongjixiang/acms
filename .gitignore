@@ -5,3 +5,4 @@ workspaces/
 *.log
 tmp_*.js
 tmp_append.txt
+config.json

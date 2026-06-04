@@ -118,6 +118,73 @@ function applySkillPatch(skillPatch) {
   return { patched: true, file: skillFile };
 }
 
+/**
+ * 分析评审反馈 — 从 review_report 中提取常见问题模式
+ * @param {object} requirement
+ * @returns {Array} suggestions
+ */
+function analyzeReviewFeedback(requirement) {
+  const reviewReport = typeof requirement.review_report === 'string'
+    ? JSON.parse(requirement.review_report) : (requirement.review_report || {});
+  if (!reviewReport.issues || reviewReport.issues.length === 0) return [];
+
+  // 按维度统计错误频率
+  const dimCounts = {};
+  for (const issue of reviewReport.issues) {
+    const dim = issue.dimension || '其他';
+    dimCounts[dim] = (dimCounts[dim] || 0) + 1;
+  }
+
+  const suggestions = [];
+  const threshold = Math.ceil(reviewReport.issues.length / 2);
+  for (const [dim, count] of Object.entries(dimCounts)) {
+    if (count >= threshold) {
+      suggestions.push({
+        type: 'REVIEW_PATTERN',
+        severity: 'info',
+        title: `评审中「${dim}」维度问题出现 ${count} 次`,
+        detail: `该维度问题占比 ${Math.round(count / reviewReport.issues.length * 100)}%，建议增强对应 Prompt 规则`,
+        suggestedAction: `在 clarifiy-smart 或对应领域 Skill 中增加「${dim}」专项检查`,
+      });
+    }
+  }
+  return suggestions;
+}
+
+/**
+ * 分析执行反馈 — 从缺陷的 root_cause 中提取需求层面的改进信号
+ * @param {string} projectId
+ * @returns {Array} suggestions
+ */
+function analyzeExecutionFeedback(projectId) {
+  const taskStore = require('../stores/task-store');
+  const tasks = taskStore.list({ projectId }).filter(t => t.type === 'bug' && t.status === 'done');
+  if (tasks.length === 0) return [];
+
+  const scopeInMissCount = tasks.filter(t => {
+    try {
+      const artifacts = JSON.parse(t.artifacts || '{}');
+      return (artifacts.rootCause || t.description || '').includes('scopeIn') ||
+             (artifacts.rootCause || t.description || '').includes('遗漏');
+    } catch { return false; }
+  }).length;
+
+  if (scopeInMissCount >= 2) {
+    return [{
+      type: 'SCOPE_IN_MISS',
+      severity: 'warning',
+      title: `${scopeInMissCount} 个缺陷与 scopeIn 遗漏相关`,
+      detail: '执行中发现需求范围内缺失的功能或边界问题',
+      suggestedAction: '检查最近需求在澄清时是否遗漏了「用户流程完整性」检查',
+    }];
+  }
+  return [];
+}
+
+// ===== 导出增强 =====
+module.exports.analyzeReviewFeedback = analyzeReviewFeedback;
+module.exports.analyzeExecutionFeedback = analyzeExecutionFeedback;
+
 // ═══════════════════════════════════════
 // 分析辅助函数
 // ═══════════════════════════════════════
@@ -179,4 +246,5 @@ function inferNewDomain(requirement, gaps) {
   return null;
 }
 
-module.exports = { analyzeClarification, applySkillPatch, detectDomain };
+module.exports = { analyzeClarification, applySkillPatch, detectDomain, analyzeReviewFeedback, analyzeExecutionFeedback };
+

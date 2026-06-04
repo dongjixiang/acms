@@ -4,21 +4,24 @@ const { v4: uuidv4 } = require('uuid');
 const { canTransition, getNextStatuses, getGateErrors, shouldAutoAbandon } = require('../services/state-machine');
 
 class RequirementStore {
-  create({ projectId, title, description = '', priority = 3, tags = [], deadline = '', createdBy = '', parentId = null, archSpec = null, interfaceContracts = null }) {
+  create({ projectId, title, description = '', priority = 3, tags = [], deadline = '', createdBy = '', parentId = null, archSpec = null, interfaceContracts = null, srs = null, flowCoverage = null, status = null, role = null, changeLog = null }) {
     const id = `REQ-${Date.now().toString(36).toUpperCase()}`;
     const now = new Date().toISOString();
     const req = {
       id, project_id: projectId, title, description, structured_description: '',
-      priority, tags: JSON.stringify(tags), deadline, status: 'idea', phase: '孵化',
+      priority, tags: JSON.stringify(tags), deadline, status: status || 'idea', phase: status === 'clarifying' ? '澄清' : '孵化',
       parent_id: parentId || null, child_ids: '[]',
       refinement: JSON.stringify({ thread: [], clarifications: [], suggestionCount: 0, roundsToClarify: 0, readyForReview: false }),
-      srs: JSON.stringify({ scopeIn: [], scopeOut: [], acceptanceCriteria: [], technicalConstraints: [], summary: '' }),
+      srs: srs || JSON.stringify({ scopeIn: [], scopeOut: [], acceptanceCriteria: [], technicalConstraints: [], summary: '' }),
       approval: JSON.stringify({ submittedAt: null, submittedBy: null, approvedAt: null, approvedBy: null, rejections: [] }),
       current_version: 1, change_history: '[]', wiki_path: '', wiki_synced: 0, last_wiki_sync: '',
       task_ids: '[]', progress: 0, created_by: createdBy, participants: '[]',
-      // 架构宪法: 主需求定义，子需求继承
       arch_spec: archSpec ? JSON.stringify(archSpec) : '{}',
       interface_contracts: interfaceContracts ? JSON.stringify(interfaceContracts) : '[]',
+      role: role || 'normal',
+      flow_coverage: flowCoverage || '{}',
+      review_report: '{}',
+      change_log: changeLog || '[]',
       created_at: now, updated_at: now, completed_at: '',
     };
     collection('requirements').insert(req);

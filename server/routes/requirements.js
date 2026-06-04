@@ -257,16 +257,48 @@ router.delete('/:id', (req, res) => {
   res.json({ success: true, message: `需求 ${requirement.title} 已删除，级联删除 ${deletedChildren} 个子需求`, deletedTasks: taskIds.length + orphanTasks.length, deletedChildren });
 });
 
-// 需求拆分（创建子需求）
+// 获取拆分方案（AI 生成）
+router.post('/:id/split-proposal', async (req, res, next) => {
+  try {
+    const { generateSplitProposal } = require('../services/split-gate-service');
+    const proposal = await generateSplitProposal(req.params.id);
+    res.json(proposal);
+  } catch (e) { next(e); }
+});
+
+// 需求拆分（含流程地图 + 上下文继承 + 父需求修剪）
 router.post('/:id/split', (req, res, next) => {
   try {
     const { children } = req.body;
     if (!children || !Array.isArray(children) || children.length === 0) {
       return res.status(400).json({ error: 'MISSING_FIELDS', message: '需要提供 children 数组' });
     }
-    const result = reqStore.split(req.params.id, children);
+    const { executeSplit } = require('../services/split-gate-service');
+    const proposal = req.body.proposal || null;
+    const result = executeSplit(req.params.id, children, proposal);
     eventBus.emit('requirement.split', { projectId: result.parent.project_id, actor: { id: req.agentId || 'user', type: 'human' }, target: { type: 'requirement', id: req.params.id }, payload: { parent: result.parent, children: result.children } });
     res.status(201).json(result);
+  } catch (e) { next(e); }
+});
+
+// 父需求刷新 — 对比所有子需求的当前状态
+router.post('/:id/refresh-parent', async (req, res, next) => {
+  try {
+    const { triggerParentRefresh } = require('../services/sync-service');
+    const report = await triggerParentRefresh(req.params.id);
+    res.json(report);
+  } catch (e) { next(e); }
+});
+
+// 变更影响评估
+router.post('/:id/assess-impact', async (req, res, next) => {
+  try {
+    const { changeDescription } = req.body;
+    const requirement = reqStore.getById(req.params.id);
+    if (!requirement) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    const { assessChangeImpact } = require('../services/sync-service');
+    const result = await assessChangeImpact(requirement, changeDescription || '');
+    res.json(result);
   } catch (e) { next(e); }
 });
 
@@ -274,6 +306,16 @@ router.post('/:id/split', (req, res, next) => {
 router.get('/:id/children', (req, res) => {
   const children = reqStore.findChildren(req.params.id);
   res.json(children);
+});
+
+// 获取需求质量指标
+router.get('/metrics/:projectId', (req, res) => {
+  try {
+    const { persistAndCheck } = require('../services/metrics-service');
+    const result = persistAndCheck(req.params.projectId);
+    if (!result) return res.json({ metrics: null, triggers: [] });
+    res.json(result);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // 获取需求进度（聚合子需求进度）

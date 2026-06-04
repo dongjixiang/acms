@@ -4,100 +4,94 @@ const reqStore = require('../stores/requirement-store');
 const { callLLM } = require('./llm-adapter');
 const validator = require('./concreteness-validator');
 
-const CLARIFY_SYSTEM_PROMPT = `你是一个专业的需求分析师。用户提交了一个需求，你需要通过选择题的方式帮助澄清需求细节。
+// ===== Prompt 段从文件加载 =====
+const fs = require('fs');
+const path = require('path');
+const SEGMENTS_DIR = path.join(__dirname, '..', 'skills', 'prompts');
 
-**核心原则：**
-1. 尽量用选择题让用户选择，降低用户负担——不要问开放式问题
-2. **所有选择题默认允许多选（allowMultiple: true）**——让用户自由组合答案。如果发现用户选择有矛盾，在下一轮追问确认即可
-3. **首轮必须一次性列出所有独立问题**——功能范围、技术选型、性能指标、用户场景、验收标准等，能想到的全部在第一轮发出。不要分批！不要一个一个问题问！
-   **⚠️ 首轮必问用户流程**：必须包含一个关于「用户完整操作路径」的选择题。例如「用户从打开到关闭的完整流程是什么？经历了哪些界面？」确保所有界面和导航路径都明确覆盖，不遗漏入口和串联。
+const PROMPT_SEGMENTS = new Proxy({}, {
+  get(target, name) {
+    if (name in target) return target[name];
+    if (typeof name !== 'string' || name === 'then' || name === 'toJSON') return undefined;
+    try {
+      const filePath = path.join(SEGMENTS_DIR, `seg-${name}.md`);
+      if (fs.existsSync(filePath)) {
+        const raw = fs.readFileSync(filePath, 'utf-8');
+        // Strip YAML frontmatter if present
+        const content = raw.replace(/^---[\s\S]*?---\n*/, '').trim();
+        target[name] = content;
+        return content;
+      }
+    } catch (e) { /* 降级 */ }
+    return undefined;
+  }
+});
 
-4. 每次回复后，根据讨论结果更新需求规格说明（SRS）
-5. 当需求足够清晰时，生成完整的 SRS 并告知用户可以提交审核
+// 预加载所有段（首次访问时缓存）
+function loadAllSegments() {
+  try {
+    const files = fs.readdirSync(SEGMENTS_DIR).filter(f => f.startsWith('seg-') && f.endsWith('.md'));
+    for (const file of files) {
+      const name = file.replace('seg-', '').replace('.md', '');
+      const raw = fs.readFileSync(path.join(SEGMENTS_DIR, file), 'utf-8');
+      PROMPT_SEGMENTS[name] = raw.replace(/^---[\s\S]*?---\n*/, '').trim();
+    }
+  } catch (e) { /* 降级 */ }
+}
+loadAllSegments();
 
-**澄清轮次策略：**
-- 首轮：列出所有你能想到的问题（至少4-6个），一次性全部发出。不要犹豫，不要保留
-- 后续轮次：仅追问矛盾点、首轮遗漏的角度、或依赖性问题
-- 当所有关键决策点已确认，即可设置 readyForReview=true
 
-**回复格式（严格JSON）：**
-{
-  "message": "你的分析和对用户说的话（友好、简洁）",
-  "choices": [
-    { "id": "A", "question": "关于XX方面", "options": ["选项1", "选项2", "选项3"], "allowCustom": true, "allowMultiple": false }
-  ],
-  "srs": { ... },
-  "readyForReview": false,
-  "splitSuggestion": null,
-  "vaguenessWarnings": []
+// ===== Prompt 段组合器 =====
+function buildPrompt(phase, domain) {
+  const base = [PROMPT_SEGMENTS['role-base'], PROMPT_SEGMENTS['choices-format']];
+  switch (phase) {
+    case 'clarify-round1':
+      return [...base,
+        PROMPT_SEGMENTS['clarify-round1'],
+        PROMPT_SEGMENTS['clarify-self-review'],
+        PROMPT_SEGMENTS['clarify-smart'],
+        PROMPT_SEGMENTS['clarify-memo'],
+        PROMPT_SEGMENTS['clarify-split'],
+        PROMPT_SEGMENTS['concreteness-placeholders'],
+      ].join('\n\n');
+    case 'clarify-roundN':
+      return [...base,
+        PROMPT_SEGMENTS['clarify-roundN'],
+        PROMPT_SEGMENTS['clarify-self-review'],
+        PROMPT_SEGMENTS['clarify-smart'],
+        PROMPT_SEGMENTS['clarify-memo'],
+        PROMPT_SEGMENTS['concreteness-placeholders'],
+      ].join('\n\n');
+    case 'review':
+      return [PROMPT_SEGMENTS['role-base'],
+        PROMPT_SEGMENTS['review-5dim'],
+        PROMPT_SEGMENTS['review-level-l2'],
+      ].join('\n\n');
+    case 'split-gate':
+      return [PROMPT_SEGMENTS['role-base'],
+        PROMPT_SEGMENTS['split-generate'],
+      ].join('\n\n');
+    case 'sync-check':
+      return [PROMPT_SEGMENTS['role-base'],
+        PROMPT_SEGMENTS['sync-boundary'],
+      ].join('\n\n');
+    case 'change-impact':
+      return [PROMPT_SEGMENTS['role-base'],
+        PROMPT_SEGMENTS['change-impact'],
+      ].join('\n\n');
+    default:
+      return [...base,
+        PROMPT_SEGMENTS['clarify-roundN'],
+        PROMPT_SEGMENTS['clarify-self-review'],
+        PROMPT_SEGMENTS['clarify-smart'],
+        PROMPT_SEGMENTS['clarify-memo'],
+        PROMPT_SEGMENTS['concreteness-placeholders'],
+      ].join('\n\n');
+  }
 }
 
-**需求范围检测与拆分建议（splitSuggestion）：**
-- 如果用户需求涉及**多个独立子系统、功能模块、或差异很大的用户角色**（如"做一个电商平台"包含商品管理、订单、支付、用户中心），请在首轮回复中设置 splitSuggestion。
-- splitSuggestion 格式：
-  {
-    "shouldSplit": true,
-    "reason": "该需求涉及多个独立模块（商品管理、订单系统、用户中心），建议拆分为子需求分别管理，便于聚焦和并行推进",
-    "suggestedChildren": [
-      { "title": "商品管理模块", "description": "负责商品的创建、编辑、分类、上下架等功能" },
-      { "title": "订单系统", "description": "处理用户下单、订单状态流转、退款等功能" }
-    ]
-  }
-- 判断标准：需求描述中出现了 **3个以上明显不同的功能域**、或同时包含了**前端+后端+运维**等不同层面的工作、或模糊的大概念（"平台""系统""全套"）。
-- 如果需求范围适中（单一功能、单一模块），设置 splitSuggestion: null。
-- 不要滥用——只对确实过于庞大的需求建议拆分。
-
-**SMART 验收标准规则（重要！）：**
-- 每条 acceptanceCriteria 必须包含至少一个可衡量的数字指标（时间/数量/百分比/频率/阈值）
-- ❌ 错误: "用户可浏览商品列表"（不可衡量）
-- ✅ 正确: "商品列表页首屏加载 ≤ 1.5s，分页翻页 ≤ 500ms，支持 1000+ 商品无卡顿"
-- ❌ 错误: "系统稳定运行"（模糊）
-- ✅ 正确: "连续运行 7 天无崩溃，CPU 均值 ≤ 30%，内存 ≤ 512MB"
-- ❌ 错误: "界面美观"（主观）
-- ✅ 正确: "首屏渲染时间 ≤ 2s，Lighthouse Performance ≥ 80 分"
-- 如果当前信息不足以写出可衡量的 AC，请在选择题中追问具体指标
-- 每个 scopeIn 条目必须有对应的可衡量 AC
-
-**allowMultiple 使用规则：**
-- **默认所有问题设置 allowMultiple: true**，让用户自由多选
-- 仅当选项明显互斥且同时选择会导致逻辑矛盾时，才设 allowMultiple: false
-- 如果用户多选产生了矛盾，在下一轮单独追问澄清即可
-
-**何时设置 readyForReview=true：**
-- 所有关键决策点已确认（功能范围、技术方案、验收标准）
-- 没有明显的模糊点（参见 {{DOMAIN_RULES}}）
-- 用户表达了满意或想提交的意思
-- **⚠️ 具体性门控（必须全部通过才能 readyForReview=true）：**
-
-{{DOMAIN_CONCRETENESS_RULES}}
-
-3. **技术方案无决策**：「使用现代框架」「采用合适的数据库」「高性能渲染」
-   → 必须追问：哪个框架？哪个数据库？具体指标是什么？
-   → ❌ technicalConstraints: "使用现代前端框架"
-   → ✅ technicalConstraints: "使用 Vue 3 + Vite（决策理由: 团队熟悉，生态完善）"
-
-4. **验收标准无数字**：「保证流畅」「加载快」「画面好」
-   → 必须追问：帧率多少？加载时间多少秒？
-   → ❌ acceptanceCriteria: "游戏流畅运行"
-   → ✅ acceptanceCriteria: "帧率 ≥ 60fps (中档设备), 首屏加载 ≤ 2s, 内存 ≤ 200MB"
-
-**输出格式新增 vaguenessWarnings 字段：**
-- 当检测到模糊表达时，在 vaguenessWarnings 中列出具体问题和追问建议
-- 有 vaguenessWarnings 时，必须同时设置 readyForReview: false
-
-**⚠️ 每轮结束前必须执行自我审查（Self-Review）：**
-在生成 JSON 回复前，逐条检查 SRS，对照具体性门控规则和 {{DOMAIN_RULES}}：
-
-{{DOMAIN_SELF_REVIEW_CHECKLIST}}
-
-3. 扫描 technicalConstraints 中是否有 "现代XXX""合适的XXX" 但未做决策？
-4. 扫描 acceptanceCriteria 中是否每条都有可量化数字指标？
-
-**审查结果填入 vaguenessWarnings，并据此决定 readyForReview：**
-- vaguenessWarnings 为空 → 可以 readyForReview=true（其他条件也满足时）
-- vaguenessWarnings 非空 → 必须 readyForReview=false，并在 message 中逐条追问
-
-当前需求信息会以 JSON 格式提供。请始终保持 JSON 输出格式。`;
+// 保留 CLARIFY_SYSTEM_PROMPT 作为向后兼容的 fallback
+const CLARIFY_SYSTEM_PROMPT = buildPrompt('clarify-round1');
 
 // ===== JSON 提取（多层容错：清洗→正则→关键锚点→修复） =====
 function extractJSON(content) {
@@ -210,8 +204,13 @@ async function clarify(reqId, modelId, userMessage, conversationHistory) {
     }
   } catch (e) { /* 静默降级 */ }
 
+  // 检测阶段: 根据对话历史判断是首轮还是后续轮次
+  const isFirstRound = !conversationHistory || conversationHistory.length === 0;
+  const phase = isFirstRound ? 'clarify-round1' : 'clarify-roundN';
+  console.log(`[clarify] 阶段: ${phase} (历史 ${(conversationHistory||[]).length} 条)`);
+
   // 注入领域规则到核心提示词
-  const systemPrompt = (modelStore.getById(modelId)?.systemPrompt || skillPrompt || CLARIFY_SYSTEM_PROMPT)
+  const systemPrompt = (modelStore.getById(modelId)?.systemPrompt || buildPrompt(phase))
     .replace('{{DOMAIN_CONCRETENESS_RULES}}', domainRules || getDefaultConcretenessRules())
     .replace('{{DOMAIN_SELF_REVIEW_CHECKLIST}}', domainChecklist || getDefaultChecklist())
     .replace('{{DOMAIN_RULES}}', domainRules ? '领域特定规则（见下方具体性门控）' : '通用规则');
@@ -345,14 +344,21 @@ async function clarify(reqId, modelId, userMessage, conversationHistory) {
       choices: [],
       srs,
       readyForReview: false,
+      progressMemo: null,
       modelUsed: finalResult.modelUsed,
     };
   }
 
-  // 更新 SRS
+  // 更新 SRS — 归一化 scopeIn/acceptanceCriteria 为字符串数组
   let mergedSrs = srs;
   if (parsed.srs && Object.keys(parsed.srs).length > 0) {
-    mergedSrs = { ...srs, ...parsed.srs };
+    const normalizedSrs = { ...parsed.srs };
+    ['scopeIn', 'scopeOut', 'acceptanceCriteria', 'technicalConstraints'].forEach(key => {
+      if (Array.isArray(normalizedSrs[key])) {
+        normalizedSrs[key] = normalizeStrArr(normalizedSrs[key]);
+      }
+    });
+    mergedSrs = { ...srs, ...normalizedSrs };
     reqStore.updateSrs(reqId, mergedSrs);
 
     // 自动提取并保存架构宪法
@@ -437,11 +443,22 @@ async function clarify(reqId, modelId, userMessage, conversationHistory) {
     readyForReview: forceNotReady ? false : (parsed.readyForReview || false),
     splitSuggestion: parsed.splitSuggestion || null,
     vaguenessWarnings: parsed.vaguenessWarnings || [],
+    progressMemo: parsed.progressMemo || null,
     modelUsed: result.modelUsed,
   };
 }
 
-module.exports = { clarify, CLARIFY_SYSTEM_PROMPT };
+// ===== 归一化字符串数组（兼容 LLM 返回对象数组的情况） =====
+function normalizeStrArr(arr) {
+  if (!Array.isArray(arr)) return arr;
+  return arr.map(item => {
+    if (typeof item === 'string') return item;
+    if (item && typeof item === 'object') {
+      return item.item || item.title || item.description || JSON.stringify(item);
+    }
+    return String(item);
+  });
+}
 
 // ═══════════════════════════════════════
 // 领域感知函数
@@ -682,4 +699,4 @@ function buildArchPrompt() {
 请在 SRS 中输出 archSpec。格式见 skill-arch-constitution。`;
 }
 
-module.exports = { clarify, CLARIFY_SYSTEM_PROMPT, buildArchContext, buildArchPrompt };
+module.exports = { clarify, CLARIFY_SYSTEM_PROMPT, buildPrompt, PROMPT_SEGMENTS, buildArchContext, buildArchPrompt };

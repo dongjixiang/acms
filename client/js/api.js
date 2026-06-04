@@ -8,7 +8,11 @@ async function api(method, path, body) {
   if (body) opts.body = JSON.stringify(body);
   var res = await fetch(API_BASE + path, opts);
   var data = await res.json();
-  if (!res.ok) throw new Error(data.message || data.error || 'Request failed');
+  if (!res.ok) {
+    var err = new Error(data.message || data.error || 'Request failed');
+    err.data = data;
+    throw err;
+  }
   return data;
 }
 
@@ -40,9 +44,14 @@ var Requirements = {
   approve: function(id) { return api('POST', '/requirements/' + id + '/approve'); },
   reject: function(id, reason) { return api('POST', '/requirements/' + id + '/reject', { reason: reason }); },
   decompose: function(id, tasks) { return api('POST', '/requirements/' + id + '/decompose', { tasks: tasks }); },
-  split: function(id, children) { return api('POST', '/requirements/' + id + '/split', { children: children }); },
+  split: function(id, children, proposal) { 
+    return api('POST', '/requirements/' + id + '/split', { children: children, proposal: proposal || null }); 
+  },
   children: function(id) { return api('GET', '/requirements/' + id + '/children'); },
-  progress: function(id) { return api('GET', '/requirements/' + id + '/progress'); }
+  progress: function(id) { return api('GET', '/requirements/' + id + '/progress'); },
+  splitProposal: function(id) { return api('POST', '/requirements/' + id + '/split-proposal'); },
+  refreshParent: function(id) { return api('POST', '/requirements/' + id + '/refresh-parent'); },
+  assessImpact: function(id, desc) { return api('POST', '/requirements/' + id + '/assess-impact', { changeDescription: desc }); },
 };
 
 // 任务

@@ -1,6 +1,18 @@
 // 需求管理视图 — 列表 + 详情 + 澄清 + SRS + 审核 + 分解
 // 依赖: core/state.js, core/utils.js, js/api.js, views/kanban.js
 
+// 将数组项安全转为字符串（兼容 LLM 返回对象数组的情况）
+function fmtArr(arr, sep) {
+  if (!arr || !Array.isArray(arr)) return '';
+  return arr.map(item => {
+    if (typeof item === 'string') return item;
+    if (item && typeof item === 'object') {
+      return item.item || item.title || item.description || JSON.stringify(item);
+    }
+    return String(item);
+  }).join(sep || ', ');
+}
+
 async function loadRequirements() {
   if (!App.currentProjectId) return;
   try {
@@ -64,6 +76,7 @@ async function openRequirement(id) {
       <h3>📋 SRS</h3><div class="srs-preview"><pre>${escHtml(JSON.stringify(srs, null, 2))}</pre></div>
       ${renderArchSpec(req)}
       ${renderChangeHistory(req)}
+      ${req.role === 'container' && (req.child_ids && JSON.parse(req.child_ids||'[]').length > 0) ? '<div style="margin-top:12px;display:flex;gap:8px"><button class="btn-small" style="background:rgba(78,205,196,0.1);color:var(--green)" onclick="refreshParent(\'' + id + '\')">📊 刷新父需求</button></div>' : ''}
       <div id="req-children" style="margin-top:16px"></div>`;
   } catch (e) { toast('加载失败: ' + e.message, 'error'); }
   setTimeout(() => loadAiModels(id), 100);
@@ -78,7 +91,7 @@ function renderThread(cl) {
 
 function renderReviewPanel(req) {
   const s = safeParse(req.srs);
-  return `<div class="review-panel"><h3>📋 需求审核</h3><div>范围: ${(s.scopeIn||[]).join(',')}</div><div>验收: ${(s.acceptanceCriteria||[]).join(';')}</div><div class="review-actions"><button class="btn-accept" onclick="approveReq('${req.id}')">✅ 确认通过</button><button class="btn-reject" onclick="rejectReq('${req.id}')">❌ 驳回</button></div></div>`;
+  return `<div class="review-panel"><h3>📋 需求审核</h3><div>范围: ${fmtArr(s.scopeIn, ', ')}</div><div>验收: ${fmtArr(s.acceptanceCriteria, '; ')}</div><div class="review-actions"><button class="btn-accept" onclick="approveReq('${req.id}')">✅ 确认通过</button><button class="btn-reject" onclick="rejectReq('${req.id}')">❌ 驳回</button></div></div>`;
 }
 
 // ===== 审核操作 =====
@@ -457,6 +470,23 @@ async function sendAiClarify(reqId, choiceAnswer) {
       </div>`
     ).join('') + `<div class="clarify-msg agent"><div class="role">🤖 AI (${escHtml(result.modelUsed)})</div><div>${escHtml(result.message)}</div></div>`;
 
+    // 渲染 Progress Memo（每轮的状态摘要）
+    if (result.progressMemo && result.progressMemo.round) {
+      const pm = result.progressMemo;
+      const coverageColor = pm.flowCoverage < 60 ? 'var(--red)' : pm.flowCoverage < 90 ? 'var(--yellow)' : 'var(--green)';
+      const memoHtml = `<div style="margin:8px 0;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size:12px">
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+          <strong style="color:var(--text1)">📊 第 ${pm.round} 轮 Memo</strong>
+          <span style="color:${coverageColor};font-weight:bold">流程覆盖: ${pm.flowCoverage}%</span>
+        </div>
+        ${pm.confirmedScope ? `<div style="color:var(--text2);margin-bottom:2px">✅ 已确认: ${escHtml(pm.confirmedScope)}</div>` : ''}
+        ${pm.pendingDecisions && pm.pendingDecisions.length > 0 ? `<div style="color:var(--yellow)">⏳ 待定: ${pm.pendingDecisions.map(d => escHtml(d)).join('、')}</div>` : '<div style="color:var(--green)">🎯 待定项: 无</div>'}
+        ${pm.userFlow ? `<div style="color:var(--text2);margin-top:2px;font-family:monospace">🔄 流程: ${escHtml(pm.userFlow)}</div>` : ''}
+        ${pm.changesSinceLast ? `<div style="color:var(--blue);margin-top:2px">📝 变化: ${escHtml(pm.changesSinceLast)}</div>` : ''}
+      </div>`;
+      msgsDiv.insertAdjacentHTML('beforeend', memoHtml);
+    }
+
     aiClarifyHistory[reqId].push({ role: 'assistant', content: result });
 
     // 渲染选择题（带选择状态追踪）
@@ -489,8 +519,8 @@ async function sendAiClarify(reqId, choiceAnswer) {
 // 渲染 SRS 草稿
     if (result.srs) {
       srsDiv.innerHTML = `<h4>📋 当前 SRS 草稿</h4>
-        <div style="font-size:12px;margin:4px 0"><strong>范围:</strong> ${(result.srs.scopeIn||[]).join(', ')||'待确认'}</div>
-        <div style="font-size:12px;margin:4px 0"><strong>验收:</strong> ${(result.srs.acceptanceCriteria||[]).join('; ')||'待确认'}</div>
+        <div style="font-size:12px;margin:4px 0"><strong>范围:</strong> ${fmtArr(result.srs.scopeIn, ', ')||'待确认'}</div>
+        <div style="font-size:12px;margin:4px 0"><strong>验收:</strong> ${fmtArr(result.srs.acceptanceCriteria, '; ')||'待确认'}</div>
         <div style="font-size:12px;margin:4px 0;color:var(--text2)">${result.srs.summary||''}</div>`;
     }
 
@@ -618,7 +648,33 @@ async function submitAiSrs(reqId) {
     await Requirements.submitReview(reqId);
     toast('需求已提交审核 ✅', 'success');
     openRequirement(reqId); loadRequirements(); loadDashboard();
-  } catch (e) { toast('提交失败: ' + e.message, 'error'); }
+  } catch (e) {
+    // 处理 AI 评审不通过的情况
+    if (e.data && e.data.review) {
+      const review = e.data.review;
+      const issuesHtml = review.issues.map((i, idx) =>
+        `<div style="padding:8px;margin:4px 0;border-left:3px solid ${i.severity === 'error' ? 'var(--red)' : 'var(--yellow)'};background:var(--bg);border-radius:4px;font-size:12px">
+          <strong style="color:${i.severity === 'error' ? 'var(--red)' : 'var(--yellow)'}">[${i.dimension}]</strong>
+          <span style="color:var(--text1)">${escHtml(i.detail)}</span>
+          ${i.suggestion ? `<div style="color:var(--green);margin-top:2px">💡 ${escHtml(i.suggestion)}</div>` : ''}
+        </div>`
+      ).join('');
+
+      document.getElementById(`ai-clarify-actions-${reqId}`).innerHTML =
+        `<div style="margin:12px 0;padding:12px;border:1px solid var(--red);border-radius:6px;background:rgba(255,107,107,0.06)">
+          <div style="font-weight:bold;color:var(--red);margin-bottom:8px">🔍 AI 评审发现 ${review.issues.length} 个问题（评分 ${review.score}/5）</div>
+          ${issuesHtml}
+          <div style="margin-top:10px;color:var(--text2);font-size:12px">请在下方继续澄清这些问题，解决后再提交审核</div>
+          <div style="margin-top:8px">
+            <input type="text" id="clarify-input-${reqId}" placeholder="输入对评审问题的回复..." style="flex:1;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);width:calc(100% - 100px);margin-right:4px">
+            <button class="btn-primary" onclick="sendAiClarify('${reqId}')">继续澄清</button>
+          </div>
+        </div>`;
+      toast(`AI 评审未通过（${review.score}/5），请解决 ${review.issues.length} 个问题后重试`, 'error');
+    } else {
+      toast('提交失败: ' + e.message, 'error');
+    }
+  }
 }
 
 // ===== AI 生成 MD 需求文档 =====
@@ -719,35 +775,41 @@ function continueAiClarify(reqId) {
 
 // ===== 需求拆分 =====
 
+let splitProposalCache = {}; // reqId → last split proposal
+
 async function openSplitPanel(reqId, suggestedChildren) {
   const panel = document.getElementById('split-panel');
   if (panel) { panel.remove(); return; }
 
   // 检查架构宪法是否已定义
+  let hasArch = false;
   try {
     const req = await Requirements.get(reqId);
     if (req) {
       const archSpec = safeParse(req.arch_spec);
-      const hasArch = archSpec && (archSpec.domain || archSpec.technical || archSpec.decisions);
-      if (!hasArch) {
-        const proceed = await showConfirm(
-          '⚠️ 尚未定义架构宪法。拆分前建议先确认跨模块边界、技术决策和接口契约。\n\n是否继续直接拆分？（不推荐）',
-          { title: '缺少架构宪法', confirmText: '继续拆分', cancelText: '返回澄清' }
-        );
-        if (!proceed) return;
-      }
+      hasArch = archSpec && (archSpec.domain || archSpec.technical || archSpec.decisions);
     }
-  } catch (e) { /* 如果获取失败，仍允许拆分 */ }
+  } catch (e) { /* 降级 */ }
 
   const container = document.getElementById('detail-content');
   const div = document.createElement('div');
   div.id = 'split-panel';
   div.className = 'split-panel';
+
+  // 如果有 AI 建议的子需求，直接填充
+  const initialChildren = suggestedChildren || [];
+
   div.innerHTML = `
     <h3>🔧 拆分子需求</h3>
     <p style="font-size:13px;color:var(--text2);margin-bottom:12px">将当前需求拆分为多个子需求，每个子需求独立走澄清→评审→分解流程</p>
+    ${!hasArch ? '<div style="padding:8px;margin-bottom:8px;background:rgba(255,193,7,0.1);border:1px solid var(--yellow);border-radius:4px;font-size:12px;color:var(--yellow)">⚠️ 尚未定义架构宪法。建议先确认跨模块边界和技术决策。</div>' : ''}
+    <div style="margin-bottom:10px">
+      <button class="btn-primary btn-sm" onclick="generateSplitProposal('${reqId}')" id="split-gen-btn-${reqId}">🤖 AI 生成拆分方案</button>
+      <span id="split-gen-status-${reqId}" style="font-size:12px;color:var(--text2);margin-left:8px"></span>
+    </div>
+    <div id="split-flow-map-${reqId}" style="margin-bottom:10px;display:none"></div>
     <div id="split-children-list">
-      ${(suggestedChildren || []).map((c, i) => `
+      ${initialChildren.map((c, i) => `
         <div class="split-child-row" style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
           <input type="text" id="split-title-${i}" name="split-title-${i}" class="split-child-title" value="${escHtml(c.title || '')}" placeholder="子需求标题" style="flex:1">
           <input type="text" id="split-desc-${i}" name="split-desc-${i}" class="split-child-desc" value="${escHtml(c.description || '')}" placeholder="简要描述（可选）" style="flex:2">
@@ -763,6 +825,58 @@ async function openSplitPanel(reqId, suggestedChildren) {
   `;
   container.appendChild(div);
   div.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+async function generateSplitProposal(reqId) {
+  const btn = document.getElementById('split-gen-btn-' + reqId);
+  const status = document.getElementById('split-gen-status-' + reqId);
+  const flowDiv = document.getElementById('split-flow-map-' + reqId);
+  const list = document.getElementById('split-children-list');
+
+  btn.disabled = true;
+  status.textContent = '⏳ AI 正在分析...';
+
+  try {
+    const proposal = await Requirements.splitProposal(reqId);
+    splitProposalCache[reqId] = proposal;
+
+    if (proposal.shouldSplit === false) {
+      status.textContent = 'ℹ️ ' + (proposal.reason || '当前需求不需要拆分');
+      btn.disabled = false;
+      return;
+    }
+
+    // 显示流程地图
+    if (proposal.flowMap && proposal.flowMap.length > 0) {
+      flowDiv.style.display = 'block';
+      flowDiv.innerHTML = `<div style="padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size:12px">
+        <strong style="color:var(--green)">🔄 用户流程地图</strong>
+        <div style="margin-top:6px;font-family:monospace;color:var(--text1)">${escHtml(proposal.flowMap.join(' → '))}</div>
+        ${proposal.shellAdded ? `<div style="margin-top:4px;color:var(--yellow)">🏗️ 自动创建: ${escHtml(proposal.shellAdded)}</div>` : ''}
+        ${proposal.remainingParentScopeIn && proposal.remainingParentScopeIn.length > 0 ?
+          `<div style="margin-top:4px;color:var(--text2)">📦 父需求保留: ${proposal.remainingParentScopeIn.map(s => escHtml(s)).join('、')}</div>` : ''}
+      </div>`;
+    }
+
+    // 用 AI 建议的子需求替换列表
+    const children = proposal.children || [];
+    list.innerHTML = children.map((c, i) => {
+      const scopeHint = (c.inheritedScopeIn || []).length > 0 ? '继承: ' + c.inheritedScopeIn.join('; ').substring(0, 80) : '';
+      return `<div class="split-child-row" style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
+        <input type="text" id="split-title-${i}" name="split-title-${i}" class="split-child-title" value="${escHtml(c.title || '')}" placeholder="子需求标题" style="flex:1">
+        <input type="text" id="split-desc-${i}" name="split-desc-${i}" class="split-child-desc" value="${escHtml(c.description || scopeHint)}" placeholder="简要描述（可选）" style="flex:2">
+        ${c.isShell ? '<span style="font-size:11px;color:var(--yellow);flex-shrink:0">🏗️外壳</span>' : ''}
+        <button class="btn-small btn-reject" onclick="this.closest('.split-child-row').remove()" style="flex-shrink:0">✕</button>
+      </div>`;
+    }).join('');
+
+    status.textContent = `✅ 建议拆分为 ${children.length} 个子需求（可编辑调整）`;
+    btn.disabled = false;
+    toast('AI 拆分方案已生成 ✅', 'success');
+  } catch (e) {
+    status.textContent = '❌ ' + e.message;
+    btn.disabled = false;
+  }
 }
 
 function addSplitChildRow() {
@@ -794,13 +908,46 @@ async function doSplit(reqId) {
   });
   if (!children.length) return toast('请至少添加一个子需求', 'error');
   try {
-    const result = await Requirements.split(reqId, children);
+    const proposal = splitProposalCache[reqId] || null;
+    const result = await Requirements.split(reqId, children, proposal);
+    delete splitProposalCache[reqId];
     toast(`已创建 ${result.children.length} 个子需求 ✅`, 'success');
     document.getElementById('split-panel')?.remove();
     openRequirement(reqId);
     loadRequirements();
     loadDashboard();
   } catch (e) { toast('拆分失败: ' + e.message, 'error'); }
+}
+
+// ===== 父需求刷新 =====
+async function refreshParent(reqId) {
+  try {
+    const report = await Requirements.refreshParent(reqId);
+    const childrenHtml = report.childStatuses.map(c =>
+      `<div style="display:flex;justify-content:space-between;padding:4px 8px;margin:2px 0;background:var(--bg);border-radius:4px;font-size:12px">
+        <span>${escHtml(c.title)}</span>
+        <span style="color:${c.status === 'done' ? 'var(--green)' : 'var(--yellow)'}">${c.status}</span>
+      </div>`
+    ).join('');
+
+    const msg = `📊 父需求刷新完成
+    · ${report.doneCount}/${report.childrenCount} 子需求已完成
+    · 流程覆盖: ${report.flowCoverage}%
+    · ${report.uncoveredParentScopeIn.length} 条父 scopeIn 未被任何子需求覆盖`;
+
+    toast(msg.replace(/\n/g, ' '), report.flowCoverage < 100 ? 'warning' : 'success');
+
+    // 如果有未覆盖的父 scopeIn，高亮提醒
+    if (report.uncoveredParentScopeIn.length > 0) {
+      const childrenDiv = document.getElementById('req-children');
+      if (childrenDiv) {
+        const warningDiv = document.createElement('div');
+        warningDiv.style.cssText = 'padding:8px;margin-top:8px;background:rgba(255,193,7,0.1);border:1px solid var(--yellow);border-radius:4px;font-size:12px;color:var(--yellow)';
+        warningDiv.innerHTML = `<strong>⚠️ 未覆盖的父需求范围:</strong><br>${report.uncoveredParentScopeIn.map(s => '· ' + escHtml(s)).join('<br>')}`;
+        childrenDiv.appendChild(warningDiv);
+      }
+    }
+  } catch (e) { toast('刷新失败: ' + e.message, 'error'); }
 }
 
 async function loadRequirementChildren(reqId) {
