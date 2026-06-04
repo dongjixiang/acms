@@ -68,7 +68,7 @@ async function generateSplitProposal(requirementId) {
       inheritedAC: Array.isArray(c.inheritedAC) ? c.inheritedAC : [],
       coversFlowNodes: Array.isArray(c.coversFlowNodes) ? c.coversFlowNodes : [],
       isShell: !!c.isShell,
-    }));
+    })).filter(c => c.title && c.title.trim().length >= 2);  // 过滤空标题
 
     const flowMap = Array.isArray(parsed.flowMap) ? parsed.flowMap : [];
     const remainingScopeIn = Array.isArray(parsed.remainingParentScopeIn) ? parsed.remainingParentScopeIn : [];

@@ -46,6 +46,7 @@ async function callLLM(modelId, messages, options = {}) {
 async function callOpenAI(model, messages, opts, apiKey) {
   const baseUrl = model.baseUrl || 'https://api.deepseek.com/v1';
   const isMiniMax = baseUrl.includes('minimax');
+  const isDeepSeek = baseUrl.includes('deepseek');
 
   const body = {
     model: model.model,
@@ -54,8 +55,20 @@ async function callOpenAI(model, messages, opts, apiKey) {
     max_tokens: opts.maxTokens,
   };
 
-  if (opts.jsonMode && !isMiniMax) {
+  // jsonMode: 只对明确支持的 provider 发送 API 级 response_format
+  // OpenAI、Groq、Together 等支持；DeepSeek、MiniMax 等不支持或表现不稳定
+  const supportsJsonResponseFormat = !isMiniMax && !isDeepSeek;
+  if (opts.jsonMode && supportsJsonResponseFormat) {
     body.response_format = { type: 'json_object' };
+  }
+
+  // 对于不支持 API 级 json 约束的 provider，通过 prompt 提示强化
+  if (opts.jsonMode && !supportsJsonResponseFormat) {
+    const jsonReminder = {
+      role: 'system',
+      content: '【格式强制】你必须严格输出纯 JSON 对象，不要用 ```json 代码块包裹，不要添加任何额外文字、注释或说明。JSON 必须合法（无尾逗号、无截断），所有字符串字段使用双引号。',
+    };
+    messages.push(jsonReminder);
   }
 
   const resp = await fetch(`${baseUrl}/chat/completions`, {

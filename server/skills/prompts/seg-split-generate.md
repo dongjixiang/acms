@@ -21,6 +21,7 @@ c) 生成用户流程地图（用→连接节点）
 d) 标注每个子需求覆盖的流程节点下标
 
 **3. 输出格式（严格 JSON）：**
+**⚠️ children 中的每个子需求必须有非空、有意义的 title（至少4个中文字符），inheritedScopeIn 不能为空数组。title 为空或仅为占位符时系统会拒绝。**
 {
   "shouldSplit": true/false,
   "reason": "拆分/不拆分的理由",
