@@ -46,16 +46,17 @@ function showWorkspaceView(name) {
 
 function setupWorkspaceNav() {
   document.querySelectorAll('#sidebar .nav-btn:not(.nav-back)').forEach(btn => {
-    btn.onclick = () => {
+    btn.addEventListener('click', () => {
       const view = btn.dataset.view;
       showWorkspaceView(view);
       if (view === 'dashboard' && typeof loadDashboard === 'function') loadDashboard();
       if (view === 'requirements' && typeof loadRequirements === 'function') loadRequirements();
       if (view === 'kanban' && typeof refreshKanban === 'function') refreshKanban();
       if (view === 'bugs' && typeof loadBugView === 'function') loadBugView();
+      if (view === 'knowledge' && typeof loadKnowledgeView === 'function') loadKnowledgeView();
       if (view === 'delivery' && typeof loadDelivery === 'function') loadDelivery();
       if (view === 'agents' && typeof loadAgentsView === 'function') loadAgentsView();
       if (view === 'settings' && typeof loadSettings === 'function') loadSettings();
-    };
+    });
   });
 }

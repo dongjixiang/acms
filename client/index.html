@@ -122,6 +122,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <button class="nav-btn" data-view="requirements">📋 <span data-i18n="nav.requirements">需求管理</span></button>
         <button class="nav-btn" data-view="kanban">📌 <span data-i18n="nav.kanban">任务看板</span></button>
         <button class="nav-btn" data-view="bugs">🐛 <span>缺陷管理</span></button>
+        <button class="nav-btn" data-view="knowledge">📚 <span>知识库</span></button>
         <button class="nav-btn" data-view="delivery">📦 <span data-i18n="nav.delivery">交付管理</span></button>
         <button class="nav-btn" data-view="agents">🤖 <span>智能体协同</span></button>
         <button class="nav-btn" data-view="reports">📊 <span>项目报告</span></button>
@@ -197,6 +198,63 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="kanban-col" data-col="review"><div class="col-header">👀 <span data-i18n="kanban.cols.review">待审核</span> <span class="count" id="count-review">0</span></div><div class="col-body" id="col-review"></div></div>
             <div class="kanban-col" data-col="done"><div class="col-header">✅ <span data-i18n="kanban.cols.done">已完成</span> <span class="count" id="count-done">0</span></div><div class="col-body" id="col-done"></div></div>
             <div class="kanban-col" data-col="archived"><div class="col-header">📦 <span data-i18n="kanban.cols.archived">已归档</span> <span class="count" id="count-archived">0</span></div><div class="col-body" id="col-archived"></div></div>
+          </div>
+        </div>
+
+        <!-- 知识库 -->
+        <div id="view-knowledge" class="view">
+          <div class="view-header">
+            <h2>📚 项目知识库</h2>
+            <button class="btn-primary" style="padding:6px 14px;font-size:13px;cursor:pointer" onclick="showUploadDialog()">📤 上传文件</button>
+          </div>
+          <div id="knowledge-content" style="display:flex;gap:16px;height:calc(100% - 48px)">
+            <!-- 左侧：目录树 -->
+            <div id="knowledge-tree-panel" style="width:260px;flex-shrink:0;overflow-y:auto;border-right:1px solid var(--border);padding-right:12px">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+                <span style="font-size:12px;color:var(--text2)" id="knowledge-stats"></span>
+                <button class="btn-small" onclick="refreshKnowledge()" title="刷新">🔄</button>
+              </div>
+              <div id="knowledge-tree"></div>
+            </div>
+            <!-- 右侧：页面内容 / 上传文件列表 -->
+            <div id="knowledge-detail" style="flex:1;overflow-y:auto;padding-left:12px">
+              <div id="knowledge-index-summary"></div>
+              <div id="knowledge-page-content" style="display:none"></div>
+              <div id="knowledge-upload-list" style="margin-top:16px">
+                <h3 style="font-size:14px;margin-bottom:8px;color:var(--text2)">📂 已上传文件</h3>
+                <div id="knowledge-files"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 上传对话框 -->
+        <div id="upload-dialog-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center" onclick="if(event.target===this)hideUploadDialog()">
+          <div id="upload-dialog" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:20px;width:480px;max-width:90vw;box-shadow:0 8px 32px rgba(0,0,0,0.3)">
+            <h3 style="margin:0 0 4px 0;font-size:16px">📤 上传文件到知识库</h3>
+            <p style="margin:0 0 16px 0;font-size:12px;color:var(--text2)">上传后系统会自动扫描文件内容，AI 会分析并更新项目知识库。</p>
+
+            <div style="margin-bottom:14px">
+              <label style="display:block;font-size:13px;font-weight:bold;margin-bottom:6px">选择文件 <span class="required">*</span></label>
+              <div style="display:flex;align-items:center;gap:8px">
+                <button class="btn-small" onclick="document.getElementById('upload-file-input').click()" style="flex-shrink:0">📂 浏览...</button>
+                <input type="file" id="upload-file-input" style="display:none" onchange="onFileSelected(this)">
+                <span id="upload-file-name" style="font-size:13px;color:var(--text2)">未选择文件</span>
+              </div>
+            </div>
+
+            <div style="margin-bottom:16px">
+              <label style="display:block;font-size:13px;font-weight:bold;margin-bottom:6px">
+                📝 上传目的 <span style="font-weight:normal;color:var(--text2);font-size:12px">（选填，帮助 AI 更精准地分析内容）</span>
+              </label>
+              <textarea id="upload-purpose" rows="3" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:4px;background:var(--bg2);color:var(--text);font-size:13px;resize:vertical;box-sizing:border-box" placeholder="例如：这是一张游戏角色头像，需要更新到角色文档中&#10;或者：压缩包包含了后端API代码和数据库脚本"></textarea>
+            </div>
+
+            <div style="display:flex;justify-content:flex-end;gap:8px">
+              <button class="btn-back" onclick="hideUploadDialog()">取消</button>
+              <button class="btn-primary" id="upload-submit-btn" onclick="doUploadWithPurpose()" disabled>📤 上传</button>
+            </div>
+            <div id="upload-progress" style="display:none;margin-top:12px;padding:8px;background:var(--bg2);border-radius:4px;font-size:12px;color:var(--text2);text-align:center">⏳ 上传中...</div>
           </div>
         </div>
 
@@ -325,6 +383,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/requirements.js"></script>
 <script src="/client/js/views/kanban.js"></script>
 <script src="/client/js/views/bugs.js"></script>
+<script src="/client/js/views/knowledge.js"></script>
 <script src="/client/js/views/delivery.js"></script>
 <script src="/client/js/views/agents.js"></script>
 <script src="/client/js/views/settings.js"></script>
