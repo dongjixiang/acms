@@ -2,6 +2,9 @@
 // 支持: openai-chat, anthropic-messages
 const modelStore = require('../stores/model-store');
 
+// 默认请求超时（毫秒）
+const DEFAULT_TIMEOUT = 120000; // 120s
+
 /**
  * 调用 LLM，自动根据 model.api 选择协议
  * @param {string} modelId
@@ -71,28 +74,40 @@ async function callOpenAI(model, messages, opts, apiKey) {
     messages.push(jsonReminder);
   }
 
-  const resp = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-    body: JSON.stringify(body),
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT);
+  try {
+    const resp = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
 
-  if (!resp.ok) {
-    const err = await resp.text();
-    throw Object.assign(new Error(`LLM 调用失败: ${resp.status} ${err}`), { status: 502 });
+    if (!resp.ok) {
+      const err = await resp.text();
+      throw Object.assign(new Error(`LLM 调用失败: ${resp.status} ${err}`), { status: 502 });
+    }
+
+    const data = await resp.json();
+    const u = data.usage || {};
+    return {
+      content: data.choices?.[0]?.message?.content || '',
+      modelUsed: `${model.name} (${model.model})`,
+      usage: {
+        promptTokens: u.prompt_tokens || 0,
+        completionTokens: u.completion_tokens || 0,
+        totalTokens: u.total_tokens || 0,
+      },
+    };
+  } catch (e) {
+    clearTimeout(timeoutId);
+    if (e.name === 'AbortError') {
+      throw Object.assign(new Error(`LLM 请求超时 (${DEFAULT_TIMEOUT/1000}s): ${model.name} (${model.model})`), { status: 504, timeout: true });
+    }
+    throw e;
   }
-
-  const data = await resp.json();
-  const u = data.usage || {};
-  return {
-    content: data.choices?.[0]?.message?.content || '',
-    modelUsed: `${model.name} (${model.model})`,
-    usage: {
-      promptTokens: u.prompt_tokens || 0,
-      completionTokens: u.completion_tokens || 0,
-      totalTokens: u.total_tokens || 0,
-    },
-  };
 }
 
 // ===== Anthropic Messages =====
@@ -120,33 +135,45 @@ async function callAnthropic(model, messages, opts, apiKey) {
     body.system = systemParts.join('\n\n');
   }
 
-  const resp = await fetch(`${baseUrl}/v1/messages`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify(body),
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT);
+  try {
+    const resp = await fetch(`${baseUrl}/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
 
-  if (!resp.ok) {
-    const err = await resp.text();
-    throw Object.assign(new Error(`LLM 调用失败: ${resp.status} ${err}`), { status: 502 });
+    if (!resp.ok) {
+      const err = await resp.text();
+      throw Object.assign(new Error(`LLM 调用失败: ${resp.status} ${err}`), { status: 502 });
+    }
+
+    const data = await resp.json();
+    const textContent = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('');
+    const u = data.usage || {};
+    return {
+      content: textContent || '',
+      modelUsed: `${model.name} (${model.model})`,
+      usage: {
+        promptTokens: u.input_tokens || 0,
+        completionTokens: u.output_tokens || 0,
+        totalTokens: (u.input_tokens || 0) + (u.output_tokens || 0),
+      },
+    };
+  } catch (e) {
+    clearTimeout(timeoutId);
+    if (e.name === 'AbortError') {
+      throw Object.assign(new Error(`LLM 请求超时 (${DEFAULT_TIMEOUT/1000}s): ${model.name} (${model.model})`), { status: 504, timeout: true });
+    }
+    throw e;
   }
-
-  const data = await resp.json();
-  const textContent = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('');
-  const u = data.usage || {};
-  return {
-    content: textContent || '',
-    modelUsed: `${model.name} (${model.model})`,
-    usage: {
-      promptTokens: u.input_tokens || 0,
-      completionTokens: u.output_tokens || 0,
-      totalTokens: (u.input_tokens || 0) + (u.output_tokens || 0),
-    },
-  };
 }
 
 module.exports = { callLLM };
