@@ -587,10 +587,19 @@ async function generateImagePreview(reqId) {
   if (!container) return;
   const projectId = App.currentProjectId;
   if (!projectId) return toast('请先选择项目', 'error');
-  const srsEl = document.getElementById(`ai-clarify-srs-${reqId}`);
-  const srsText = srsEl ? srsEl.textContent : '';
-  const match = srsText.match(/范围:\s*(.+?)(?=验收|$)/);
-  const prompt = match ? match[1].split(/[,，、]/)[0] : '生成一张预览图';
+  // 从页面元素提取需求标题和 SRS scopeIn 构建有意义的 prompt
+  const titleEl = document.getElementById('detail-title');
+  const reqTitle = titleEl ? titleEl.textContent.replace(/^REQ-\w+:\s*/, '') : '';
+  const srsPre = document.querySelector('.srs-preview pre');
+  let scopeInText = '';
+  try {
+    const srsData = srsPre ? JSON.parse(srsPre.textContent) : null;
+    if (srsData && srsData.scopeIn && Array.isArray(srsData.scopeIn)) {
+      scopeInText = srsData.scopeIn.join('、').substring(0, 300);
+    }
+  } catch(e) { /* SRS 非 JSON 或不存在 */ }
+  const fullDesc = [reqTitle, scopeInText].filter(Boolean).join('：');
+  const prompt = fullDesc ? fullDesc.substring(0, 200) : '生成一张预览图';
   const loadingEl = document.createElement('div');
   loadingEl.style.cssText = 'padding:8px;font-size:12px;color:var(--text2)';
   loadingEl.textContent = '⏳ 正在生成图片预览...';
