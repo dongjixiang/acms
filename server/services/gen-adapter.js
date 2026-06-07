@@ -491,17 +491,20 @@ async function generateComfyUI(projectSlug, provider, prompt, params) {
         const uploadResult = await uploadResp.json();
         console.log(`[ComfyUI] Image registered: ${uploadResult.name}`);
         params._comfyImageName = uploadResult.name;
-        workflowFile = 'sdxl-refined-img2img.json';
+        // 根据 defaultWorkflow 推导 img2img 版本
+        const baseWf = provider.config.defaultWorkflow || 'sdxl-refined.json';
+        const img2imgWf = baseWf.replace('txt2img', 'img2img').replace('.json', '-img2img.json');
+        workflowFile = img2imgWf;
       } else {
         console.warn(`[ComfyUI] Upload failed, falling back to txt2img`);
-        workflowFile = 'sdxl-refined.json';
+        workflowFile = provider.config.defaultWorkflow || 'sdxl-refined.json';
       }
     } else {
       console.warn(`[ComfyUI] Input image not found: ${params.inputImage}, falling back to txt2img`);
-      workflowFile = 'sdxl-refined.json';
+      workflowFile = provider.config.defaultWorkflow || 'sdxl-refined.json';
     }
   } else {
-    workflowFile = 'sdxl-refined.json';
+    workflowFile = provider.config.defaultWorkflow || 'sdxl-refined.json';
   }
   // 检测 prompt 是否含中文，是则翻译为英文（SDXL CLIP 对中文支持极差）
   prompt = await ensureEnglishPrompt(prompt);
