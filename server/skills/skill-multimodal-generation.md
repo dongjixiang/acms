@@ -3,26 +3,26 @@ skill_id: skill-multimodal-generation
 category: generation
 created: 2026-06-07
 updated: 2026-06-07
-version: 1.1.0
+version: 1.2.0
 ---
 
-# 多模态生成（图片与音频）— MiniMax 一体化版
+# 多模态生成（图片、音频与视频）— MiniMax 一体化版
 
-> 为需求提供图片生成（image-gen）和音频生成（audio-gen）能力。支持 MiniMax 统一方案（一条 API Key 覆盖文本+视觉+图片生成+语音合成），以及 DALL-E、ComfyUI、ElevenLabs、Suno 等扩展 provider。生成的媒体自动进入项目知识库。
+> 为需求提供图片生成（image-gen）、音频生成（audio-gen）和视频生成（video-gen）能力。支持 MiniMax 统一方案（一条 API Key 覆盖文本+视觉+图片生成+语音合成+视频生成），以及 DALL-E、ComfyUI、ElevenLabs、Suno 等扩展 provider。生成的媒体自动进入项目知识库。
 
 ## 匹配规则
 
 | 匹配维度 | 值 |
 |---------|-----|
-| 任务类型 | `image-gen`, `audio-gen` |
-| 标签 | 图片, 音频, 生成, 配图, 音效, 语音, 配音, 多模态, MiniMax |
+| 任务类型 | `image-gen`, `audio-gen`, `video-gen` |
+| 标签 | 图片, 音频, 视频, 生成, 配图, 音效, 语音, 配音, 动画, 多模态, MiniMax |
 | 所需技能 | `multimodal: 1.0` |
 
 ## 触发场景
 
-1. **需求澄清阶段** — LLM 检测到需求涉及配图、UI 原型图、角色语音、背景音效等 → 向用户建议创建 `image-gen` / `audio-gen` 子需求
-2. **任务分解阶段** — `ai-tools-service.js` 的任务类型选择中包含 `image-gen` / `audio-gen`，LLM 自动识别需要多模态生成的任务
-3. **手动创建** — 用户直接在需求详情页创建 `image-gen` 或 `audio-gen` 类型任务
+1. **需求澄清阶段** — LLM 检测到需求涉及配图、UI 原型图、角色语音、背景音效、过场动画等 → 向用户建议创建 `image-gen` / `audio-gen` / `video-gen` 子需求
+2. **任务分解阶段** — `ai-tools-service.js` 的任务类型选择中包含 `image-gen` / `audio-gen` / `video-gen`，LLM 自动识别需要多模态生成的任务
+3. **手动创建** — 用户直接在需求详情页创建 `image-gen`、`audio-gen` 或 `video-gen` 类型任务
 
 ---
 
@@ -31,9 +31,9 @@ version: 1.1.0
 ### Step 1 — 解析任务要求
 
 从任务描述中提取：
-- **生成类型**: 图片 | 音频
-- **内容描述**: 需要生成什么（主题、风格、参考）
-- **规格参数**: 尺寸、格式、时长、音色等
+- **生成类型**: 图片 | 音频 | 视频
+- **内容描述**: 需要生成什么（主题、风格、参考、运镜）
+- **规格参数**: 尺寸、格式、时长、帧数、音色等
 - **关联需求**: 生成的媒体将服务于哪个需求/模块
 
 ### Step 2 — 选择 Provider
@@ -46,9 +46,12 @@ version: 1.1.0
 | 角色对话语音 | ElevenLabs | 自然度最高 |
 | **通用语音合成** | **MiniMax TTS** | **复用模型 Key，零额外配置** |
 | 背景音乐 / 音效 | Suno | 完整曲目 |
+| **通用视频生成** | **MiniMax 视频生成** | **云端 2-5min 出片，无需本地算力** |
+| 本地动画短片 | ComfyUI + HunyuanVideo | 免费，可无限迭代 |
+| 角色动画 / 像素动画 | ComfyUI + AnimateDiff | 适配游戏资源风格 |
 | 简单图示 / 图标 | DALL-E 3 / MiniMax | 最快出图 |
 
-**MiniMax 一体化优势**：只需在大模型配置里配一次 API Key，`modelRef` 自动继承给 `minimax-image` 和 `minimax-tts` 两个生成器，无需重复输入。
+**MiniMax 一体化优势**：只需在大模型配置里配一次 API Key，`modelRef` 自动继承给 minimax-image / minimax-tts / minimax-video 三个生成器，无需重复输入。
 
 ### Step 3 — 构建 Prompt
 
@@ -58,10 +61,21 @@ version: 1.1.0
 - 关联需求的澄清记录（提取用户偏好的风格描述）
 - 项目知识库中已有的媒体文件作为参考
 
+视频 prompt 构建建议：描述画面内容 + 运镜方式 + 风格 + 氛围 + 时长。
+
 ### Step 4 — 调用 Generation Adapter
 
 ```javascript
+// 图片
 const result = await genAdapter.generateImage({
+  projectSlug, providerId, prompt, params
+});
+// 音频
+const result = await genAdapter.generateAudio({
+  projectSlug, providerId, prompt, params
+});
+// 视频
+const result = await genAdapter.generateVideo({
   projectSlug, providerId, prompt, params
 });
 // 返回: { success, assetPath, mime, metadata }
@@ -71,6 +85,8 @@ const result = await genAdapter.generateImage({
 
 ```
 workspaces/{projectSlug}/assets/2026-06-07/{prompt}_{hash}.png
+workspaces/{projectSlug}/assets/2026-06-07/{prompt}_{hash}.mp4
+workspaces/{projectSlug}/assets/2026-06-07/{prompt}_{hash}.mp3
 ```
 
 ### Step 6 — 验证生成结果
@@ -79,12 +95,13 @@ workspaces/{projectSlug}/assets/2026-06-07/{prompt}_{hash}.png
 |------|---------|
 | 图片 | Vision AI 检查是否包含描述要素、风格匹配 |
 | 语音 | 检查文件存在 + 长度合理 |
+| 视频 | 检查文件存在 + 文件大小 + 时长合理性 |
 
 ### Step 7 — 录入知识库
 
 生成完成后自动调用 `scanGeneratedAsset()`：
 1. 运行 scanner pipeline
-2. AI 视觉分析（图片）
+2. AI 视觉分析（图片）/ 元数据提取（视频/音频）
 3. 创建 entities/{name}.md
 4. 自动关联到源需求
 
@@ -104,6 +121,8 @@ workspaces/{projectSlug}/assets/2026-06-07/{prompt}_{hash}.png
 | `gen-audio-minimax` | minimax-tts | MiniMax 语音合成 | `modelRef` 复用大模型 Key |
 | `gen-audio-elevenlabs` | elevenlabs | TTS 语音 | 自己的 config |
 | `gen-audio-suno` | suno | 音乐生成 | 自己的 config |
+| `gen-video-minimax` | minimax-video | MiniMax 视频生成 | `modelRef` 复用大模型 Key |
+| `gen-video-comfyui` | comfyui-video | ComfyUI HunyuanVideo | 自己的 config |
 
 ---
 
@@ -112,8 +131,8 @@ workspaces/{projectSlug}/assets/2026-06-07/{prompt}_{hash}.png
 | 维度 | 值 |
 |------|-----|
 | 标题 | 模板: {description} 生成 |
-| 类型 | `image-gen` (图片) 或 `audio-gen` (音频) |
-| 预估工时 | 2h（图片）、3h（音频含迭代） |
+| 类型 | `image-gen` (图片)、`audio-gen` (音频) 或 `video-gen` (视频) |
+| 预估工时 | 2h（图片）、3h（音频含迭代）、4h（视频含迭代）|
 | 所需技能 | `multimodal: 1.0` |
 
 ---

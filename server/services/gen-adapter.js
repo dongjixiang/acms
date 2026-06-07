@@ -469,8 +469,34 @@ async function generateComfyUI(projectSlug, provider, prompt, params) {
   if (params.inputImage) {
     // 先通过 /upload/image 注册图片，再引用
     const WORKSPACE_ROOT = path.join(__dirname, '..', '..', 'workspaces');
-    const srcPath = path.join(WORKSPACE_ROOT, params.inputImage);
-    if (fs.existsSync(srcPath)) {
+    // 兼容多种 inputImage 格式：
+    //   "proj_xxx/assets/..."（前端可能传 id）
+    //   "slug/assets/..."（slug）
+    //   "assets/..."（裸路径）
+    let projectSegment = projectSlug; // 函数参数名为 projectSlug 但实际是 id，保留兼容
+    let relPath = params.inputImage;
+    if (params.inputImage.startsWith(projectSlug + '/')) {
+      relPath = params.inputImage.slice(projectSlug.length + 1);
+    } else if (params.inputImage.startsWith('proj_') || params.inputImage.match(/^proj_[^/]+\//)) {
+      // 项目 id 形式：尝试找对应的 slug 目录
+      const idSeg = params.inputImage.split('/')[0];
+      relPath = params.inputImage.slice(idSeg.length + 1);
+      projectSegment = idSeg;
+    }
+    // 解析出真正的项目目录名：先试 projectSlug（实际可能是 id 或 slug），再试项目 id→slug 映射
+    const projectStore = require('../stores/project-store');
+    const proj = projectStore.getById(projectSlug);
+    const possibleDirs = [projectSlug];
+    if (proj?.slug) possibleDirs.push(proj.slug);
+    let srcPath = null;
+    for (const dir of possibleDirs) {
+      const tryPath = path.join(WORKSPACE_ROOT, dir, relPath);
+      if (fs.existsSync(tryPath)) {
+        srcPath = tryPath;
+        break;
+      }
+    }
+    if (srcPath && fs.existsSync(srcPath)) {
       const fileData = fs.readFileSync(srcPath);
       const ext = path.extname(srcPath) || '.png';
       const boundary = '----FormBoundary' + Date.now();
@@ -493,7 +519,15 @@ async function generateComfyUI(projectSlug, provider, prompt, params) {
         params._comfyImageName = uploadResult.name;
         // 根据 defaultWorkflow 推导 img2img 版本
         const baseWf = provider.config.defaultWorkflow || 'sdxl-refined.json';
-        const img2imgWf = baseWf.replace('txt2img', 'img2img').replace('.json', '-img2img.json');
+        // 修复：先看有没有 *-img2img.json 显式版本，没有再把 'txt2img' 替换为 'img2img'
+        const img2imgExplicit = baseWf.replace('.json', '-img2img.json');
+        const fsNode = require('fs');
+        let img2imgWf;
+        if (fsNode.existsSync(path.join(__dirname, '..', '..', 'workflows', img2imgExplicit))) {
+          img2imgWf = img2imgExplicit;
+        } else {
+          img2imgWf = baseWf.replace('txt2img', 'img2img');
+        }
         workflowFile = img2imgWf;
       } else {
         console.warn(`[ComfyUI] Upload failed, falling back to txt2img`);
@@ -621,14 +655,17 @@ function randomSeed() {
 
 function replaceWorkflowPrompt(workflow, prompt, params) {
   // 遍历 workflow 节点，替换 CLIPTextEncode 的 text 字段
+  // 修复：Z-Image 用 TextEncodeZImageOmni，HunyuanVideo 用 TextEncodeHunyuanDiT，
+  //       老的 SDXL 用 CLIPTextEncode——统一处理这三类 prompt 节点
   for (const [nodeId, node] of Object.entries(workflow)) {
-    if (node.class_type === 'CLIPTextEncode' && node.inputs) {
-      if (node.inputs.text === '{prompt}' || node.inputs.text === prompt || prompt) {
-        // 如果是 positive prompt 节点（没有 negative 关键词）
-        if (!node.inputs.text?.toLowerCase().includes('negative') &&
-            !node.inputs.text?.toLowerCase().includes('bad quality')) {
-          node.inputs.text = prompt;
-        }
+    const ct = node.class_type;
+    const isPromptNode = ct === 'CLIPTextEncode' || ct === 'TextEncodeZImageOmni' || ct === 'TextEncodeHunyuanDiT';
+    if (isPromptNode && node.inputs) {
+      // 判断是否是 positive（默认没有 negative 关键词）
+      const txt = (node.inputs.text || '').toLowerCase();
+      const isPositive = !txt.includes('negative') && !txt.includes('bad quality');
+      if (isPositive) {
+        node.inputs.text = prompt;
       }
     }
     if (node.class_type === 'KSampler' && node.inputs) {

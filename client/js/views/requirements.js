@@ -623,9 +623,11 @@ async function generateImagePreviewWithFeedback(reqId, inputId, oldPreviewId) {
   let basePrompt = '';
   let history = [];
   let prevImageUrl = '';
+  let prevAssetPath = '';  // 修复：提前在 remove 之前取出 assetPath，用于降级时 img2img
   if (oldPreview) {
     basePrompt = oldPreview.getAttribute('data-base-prompt') || '';
     prevImageUrl = oldPreview.getAttribute('data-prev-image') || '';
+    prevAssetPath = oldPreview.getAttribute('data-asset-path') || '';
     try { history = JSON.parse(oldPreview.getAttribute('data-feedback-history') || '[]'); } catch(e) {}
   }
   // 如果旧卡片没有数据（降级），从 DOM 提取
@@ -664,14 +666,11 @@ async function generateImagePreviewWithFeedback(reqId, inputId, oldPreviewId) {
   for (const pid of providers) {
     try {
       const params = { providerId: pid, prompt: enhancedPrompt.substring(0, 400) };
-      // ComfyUI 降级时传递上一张图片路径做 img2img
-      if (pid === 'gen-img-comfyui') {
-        // 从卡片上直接读取 assetPath，避免 URL 解析
-        const assetPath = oldPreview ? oldPreview.getAttribute('data-asset-path') : '';
-        if (assetPath) {
-          const projectSlug = (document.querySelector('.srs-preview') ? 'sanguo' : '');
-          params.inputImage = projectSlug + '/' + assetPath;
-        }
+      // ComfyUI 降级时传递上一张图片路径做 img2img（敏感词降级场景：拿上一张成功图重画）
+      if (pid === 'gen-img-comfyui' && prevAssetPath) {
+        // 修复：使用提前取出的 prevAssetPath（oldPreview 已在 line 654 被 remove），
+        //       用 App.currentProjectId 拼接（修复硬编码 'sanguo' bug），与下方 asset URL 格式保持一致
+        params.inputImage = App.currentProjectId + '/' + prevAssetPath;
       }
       const result = await api('POST', `/generate/image/${projectId}`, params);
       if (!result.success) { lastError = result.message || '生成失败'; continue; }

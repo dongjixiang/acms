@@ -6,3 +6,6 @@ workspaces/
 tmp_*.js
 tmp_append.txt
 config.json
+
+# Local test output
+tmp/
