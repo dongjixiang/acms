@@ -628,7 +628,7 @@ function replaceWorkflowPrompt(workflow, prompt, params) {
 // 检测文本是否含中文，如有则用 DeepSeek 翻译为英文
 async function ensureEnglishPrompt(text) {
   if (!text || !/[\u4e00-\u9fff]/.test(text)) return text;  // 无中文直接返回
-  const modelStore = require('./stores/model-store');
+  const modelStore = require('../stores/model-store');
   try {
     const model = modelStore.getDecryptedKey('model_mps18nz9');
     if (!model) return text;  // 无 DeepSeek 模型配置
