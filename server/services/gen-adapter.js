@@ -464,9 +464,45 @@ async function generateSuno(projectSlug, provider, text, params) {
 async function generateComfyUI(projectSlug, provider, prompt, params) {
   const baseUrl = provider.config.baseUrl || 'http://127.0.0.1:8000';
   const apiKey = provider.config.apiKey || '';
-  const workflowFile = 'sdxl-refined.json';
-  // 注意: 桌面版 ComfyUI 的 LoadImage 节点有 bug，img2img 暂时不可用
-  // 降级时统一走 txt2img，prompt 已在前端累积了所有优化意见
+  // 根据是否有 inputImage 选择工作流
+  let workflowFile;
+  if (params.inputImage) {
+    // 先通过 /upload/image 注册图片，再引用
+    const WORKSPACE_ROOT = path.join(__dirname, '..', '..', 'workspaces');
+    const srcPath = path.join(WORKSPACE_ROOT, params.inputImage);
+    if (fs.existsSync(srcPath)) {
+      const fileData = fs.readFileSync(srcPath);
+      const ext = path.extname(srcPath) || '.png';
+      const boundary = '----FormBoundary' + Date.now();
+      const uploadFileName = `acms_input_${Date.now()}${ext}`;
+      const header = Buffer.from(
+        '--' + boundary + '\r\n' +
+        'Content-Disposition: form-data; name="image"; filename="' + uploadFileName + '"\r\n' +
+        'Content-Type: image/' + (ext === '.jpg' ? 'jpeg' : 'png') + '\r\n\r\n'
+      );
+      const footer = Buffer.from('\r\n--' + boundary + '--\r\n');
+      const body = Buffer.concat([header, fileData, footer]);
+      const uploadResp = await fetch(`http://127.0.0.1:8000/upload/image`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'multipart/form-data; boundary=' + boundary, 'Content-Length': body.length },
+        body
+      });
+      if (uploadResp.ok) {
+        const uploadResult = await uploadResp.json();
+        console.log(`[ComfyUI] Image registered: ${uploadResult.name}`);
+        params._comfyImageName = uploadResult.name;
+        workflowFile = 'sdxl-refined-img2img.json';
+      } else {
+        console.warn(`[ComfyUI] Upload failed, falling back to txt2img`);
+        workflowFile = 'sdxl-refined.json';
+      }
+    } else {
+      console.warn(`[ComfyUI] Input image not found: ${params.inputImage}, falling back to txt2img`);
+      workflowFile = 'sdxl-refined.json';
+    }
+  } else {
+    workflowFile = 'sdxl-refined.json';
+  }
   // 检测 prompt 是否含中文，是则翻译为英文（SDXL CLIP 对中文支持极差）
   prompt = await ensureEnglishPrompt(prompt);
   if (params.negative_prompt) params.negative_prompt = await ensureEnglishPrompt(params.negative_prompt);
@@ -498,31 +534,13 @@ async function generateComfyUI(projectSlug, provider, prompt, params) {
     throw Object.assign(new Error(`ComfyUI workflow 解析失败: ${e.message}`), { status: 400 });
   }
 
-  // 如果有 inputImage，复制到 ComfyUI input 目录并设置 LoadImage 节点
-  if (params.inputImage) {
-    const WORKSPACE_ROOT = path.join(__dirname, '..', '..', 'workspaces');
-    const srcPath = path.join(WORKSPACE_ROOT, params.inputImage);
-    if (!fs.existsSync(srcPath)) {
-      throw Object.assign(new Error(`原图不存在: ${params.inputImage}`), { status: 400 });
-    }
-    // 复制到 ComfyUI input 目录
-    const comfyInputDir = 'D:\\Users\\swede\\AppData\\Local\\Programs\\ComfyUI\\resources\\ComfyUI\\input';
-    const ext = path.extname(srcPath) || '.png';
-    const inputFileName = `acms_input_${Date.now()}${ext}`;
-    const destPath = path.join(comfyInputDir, inputFileName);
-    fs.copyFileSync(srcPath, destPath);
-    console.log(`[ComfyUI] 已复制原图到: ${destPath}`);
-
-    // 设置 workflow 中的 LoadImage 节点 (node 9)
-    if (workflow["9"] && workflow["9"].class_type === "LoadImage") {
-      workflow["9"].inputs.image = inputFileName;
-    } else {
-      // 尝试在其他位置找 LoadImage 节点
-      for (const [nodeId, node] of Object.entries(workflow)) {
-        if (node.class_type === "LoadImage") {
-          node.inputs.image = inputFileName;
-          break;
-        }
+  // 如果有已上传的图片名，设置到 LoadImage 节点
+  if (params._comfyImageName) {
+    for (const [nodeId, node] of Object.entries(workflow)) {
+      if (node.class_type === 'LoadImage' && node.inputs) {
+        node.inputs.image = params._comfyImageName;
+        console.log(`[ComfyUI] LoadImage node ${nodeId} set to: ${params._comfyImageName}`);
+        break;
       }
     }
   }
