@@ -663,13 +663,12 @@ async function generateImagePreviewWithFeedback(reqId, inputId, oldPreviewId) {
     try {
       const params = { providerId: pid, prompt: enhancedPrompt.substring(0, 400) };
       // ComfyUI 降级时传递上一张图片路径做 img2img
-      if (pid === 'gen-img-comfyui' && prevImageUrl) {
-        // 从 URL 提取: /api/generate/assets/proj_xxx/assets/... -> assets/...
-        // 需要匹配第二个 /assets/，跳过 projectId 部分
-        const assetMatch = prevImageUrl.match(/\/assets\/[^/]+\/assets\/(.+)/);
-        if (assetMatch) {
+      if (pid === 'gen-img-comfyui') {
+        // 从卡片上直接读取 assetPath，避免 URL 解析
+        const assetPath = oldPreview ? oldPreview.getAttribute('data-asset-path') : '';
+        if (assetPath) {
           const projectSlug = (document.querySelector('.srs-preview') ? 'sanguo' : '');
-          params.inputImage = projectSlug + '/' + assetMatch[1];
+          params.inputImage = projectSlug + '/' + assetPath;
         }
       }
       const result = await api('POST', `/generate/image/${projectId}`, params);
@@ -686,6 +685,7 @@ async function generateImagePreviewWithFeedback(reqId, inputId, oldPreviewId) {
       previewEl.setAttribute('data-base-prompt', basePrompt);
       previewEl.setAttribute('data-feedback-history', JSON.stringify(history));
       previewEl.setAttribute('data-prev-image', imgUrl);
+      previewEl.setAttribute('data-asset-path', result.assetPath);
       previewEl.style.cssText = 'margin-top:4px;padding:8px;background:var(--bg2);border-radius:6px;border:1px solid var(--border)';
       previewEl.innerHTML = historyHtml + '<div style="display:flex;gap:12px;align-items:flex-start"><a href="' + imgUrl + '" target="_blank"><img src="' + imgUrl + '" style="max-width:200px;max-height:200px;border-radius:4px;border:1px solid var(--border)" onerror="this.style.display=\'none\'"></a><div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0"><button class="btn-small" style="font-size:10px" onclick="document.getElementById(\'' + previewId + '\').remove()">✕ 关闭</button><button class="btn-small" style="font-size:10px" onclick="generateImagePreview(\'' + reqId + '\')">🔄 重新生成</button></div></div><div style="margin-top:6px;display:flex;gap:4px"><input id="' + newInputId + '" type="text" placeholder="继续输入优化意见..." style="flex:1;font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg3);color:var(--text)"><button class="btn-small" style="font-size:10px;background:rgba(78,205,196,0.1);color:var(--green);border-color:rgba(78,205,196,0.3)" onclick="generateImagePreviewWithFeedback(\'' + reqId + '\',\'' + newInputId + '\',\'' + previewId + '\')">✏️ 继续优化</button></div>';
       container.prepend(previewEl);
@@ -734,6 +734,8 @@ async function generateImagePreview(reqId) {
       previewEl.setAttribute('data-base-prompt', prompt);
       previewEl.setAttribute('data-feedback-history', '[]');
       previewEl.setAttribute('data-prev-image', imgUrl);
+      // 直接存 assetPath，避免从 URL 解析
+      previewEl.setAttribute('data-asset-path', result.assetPath);
       previewEl.style.cssText = 'margin-top:4px;padding:8px;background:var(--bg2);border-radius:6px;border:1px solid var(--border)';
       previewEl.innerHTML = '<div style="display:flex;gap:12px;align-items:flex-start"><a href="' + imgUrl + '" target="_blank"><img src="' + imgUrl + '" style="max-width:200px;max-height:200px;border-radius:4px;border:1px solid var(--border)" onerror="this.style.display=\'none\'"></a><div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0"><button class="btn-small" style="font-size:10px" onclick="document.getElementById(\'' + previewId + '\').remove()">✕ 关闭</button><button class="btn-small" style="font-size:10px" onclick="generateImagePreview(\'' + reqId + '\')">🔄 重新生成</button></div></div><div style="margin-top:6px;display:flex;gap:4px"><input id="' + inputId + '" type="text" placeholder="输入优化意见（如：刘备穿白色汉服、手持双股剑）" style="flex:1;font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg3);color:var(--text)"><button class="btn-small" style="font-size:10px;background:rgba(78,205,196,0.1);color:var(--green);border-color:rgba(78,205,196,0.3)" onclick="generateImagePreviewWithFeedback(\'' + reqId + '\',\'' + inputId + '\',\'' + previewId + '\')">✏️ 优化</button></div>';
       container.prepend(previewEl);
