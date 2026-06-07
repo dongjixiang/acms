@@ -185,6 +185,19 @@ async function generateMinimaxImage(projectSlug, provider, prompt, params) {
   }
 
   const data = await resp.json();
+  // 检查 MiniMax 业务状态码
+  const baseResp = data.base_resp || {};
+  if (baseResp.status_code && baseResp.status_code !== 0) {
+    const codeMsg = {
+      1002: '触发限流，请稍后再试',
+      1004: '账号鉴权失败，请检查 API Key',
+      1008: '账号余额不足',
+      1026: '图片描述涉及敏感内容，请修改 prompt 后重试',
+      2013: '传入参数异常，请检查入参',
+      2049: '无效的 API Key',
+    };
+    throw Object.assign(new Error(`MiniMax 图片生成失败: ${codeMsg[baseResp.status_code] || baseResp.status_msg || '未知错误(代码' + baseResp.status_code + ')'}`), { status: 502 });
+  }
   const imageUrl = data.data?.image_urls?.[0];
   if (!imageUrl) throw new Error('MiniMax 返回无图片 URL');
 

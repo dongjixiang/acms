@@ -655,7 +655,7 @@ async function generateImagePreviewWithFeedback(reqId, inputId, oldPreviewId) {
   container.prepend(loadingEl);
 
   const projectId = App.currentProjectId;
-  const providers = ['gen-img-minimax', 'gen-img-openai'];
+  const providers = ['gen-img-minimax', 'gen-img-minimax', 'gen-img-openai'];
   let lastError = '';
   for (const pid of providers) {
     try {
@@ -705,7 +705,7 @@ async function generateImagePreview(reqId) {
   loadingEl.style.cssText = 'padding:8px;font-size:12px;color:var(--text2)';
   loadingEl.textContent = '⏳ 正在生成图片预览...';
   container.prepend(loadingEl);
-  const providers = ['gen-img-minimax', 'gen-img-openai'];
+  const providers = ['gen-img-minimax', 'gen-img-minimax', 'gen-img-openai'];
   let lastError = '';
   for (const pid of providers) {
     try {
