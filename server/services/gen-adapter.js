@@ -506,9 +506,9 @@ async function generateComfyUI(projectSlug, provider, prompt, params) {
   } else {
     workflowFile = provider.config.defaultWorkflow || 'sdxl-refined.json';
   }
-  // 检测 prompt 是否含中文，是则翻译为英文（SDXL CLIP 对中文支持极差）
-  prompt = await ensureEnglishPrompt(prompt);
-  if (params.negative_prompt) params.negative_prompt = await ensureEnglishPrompt(params.negative_prompt);
+  // 检测 prompt 是否含中文，是则翻译为英文（仅 SDXL CLIP 需要，Z-Image/Qwen 原生支持中文）
+  // prompt = await ensureEnglishPrompt(prompt);
+  // if (params.negative_prompt) params.negative_prompt = await ensureEnglishPrompt(params.negative_prompt);
 
   // 读取预设 workflow
   let workflow;
