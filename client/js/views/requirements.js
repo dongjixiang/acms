@@ -664,8 +664,9 @@ async function generateImagePreviewWithFeedback(reqId, inputId, oldPreviewId) {
       const params = { providerId: pid, prompt: enhancedPrompt.substring(0, 400) };
       // ComfyUI 降级时传递上一张图片路径做 img2img
       if (pid === 'gen-img-comfyui' && prevImageUrl) {
-        // 从 URL 提取相对路径: /api/generate/assets/proj_xxx/assets/... -> assets/...
-        const assetMatch = prevImageUrl.match(/\/assets\/(.+)/);
+        // 从 URL 提取: /api/generate/assets/proj_xxx/assets/... -> assets/...
+        // 需要匹配第二个 /assets/，跳过 projectId 部分
+        const assetMatch = prevImageUrl.match(/\/assets\/[^/]+\/assets\/(.+)/);
         if (assetMatch) {
           const projectSlug = (document.querySelector('.srs-preview') ? 'sanguo' : '');
           params.inputImage = projectSlug + '/' + assetMatch[1];
