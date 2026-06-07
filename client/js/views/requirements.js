@@ -582,6 +582,81 @@ function updateMediaPreviewButtons(reqId) {
     : '';
 }
 
+/**
+ * 从页面提取需求描述文本（用于语音预览的内容）
+ */
+function getRequirementAudioText() {
+  const srsPre = document.querySelector('.srs-preview pre');
+  if (srsPre) {
+    try {
+      const srsData = JSON.parse(srsPre.textContent);
+      if (srsData.summary) return srsData.summary;
+    } catch(e) {}
+  }
+  const mdContent = document.querySelector('.md-content');
+  if (mdContent) {
+    const text = mdContent.textContent.replace(/\s+/g, ' ').trim();
+    if (text.length > 10) return text.substring(0, 200);
+  }
+  const titleEl = document.getElementById('detail-title');
+  if (titleEl) {
+    const title = titleEl.textContent.replace(/^REQ-\w+:\s*/, '');
+    if (title) return title;
+  }
+  return '这是一段语音预览，用于确认音色和语速是否符合需求。';
+}
+
+/**
+ * 带反馈优化的图片生成 — 类似线框图反馈闭环
+ */
+async function generateImagePreviewWithFeedback(reqId, inputId, oldPreviewId) {
+  const feedback = document.getElementById(inputId);
+  if (!feedback) return;
+  const feedbackText = feedback.value.trim();
+  if (!feedbackText) return toast('请输入优化意见', 'error');
+  const titleEl = document.getElementById('detail-title');
+  const reqTitle = titleEl ? titleEl.textContent.replace(/^REQ-\w+:\s*/, '') : '';
+  const srsPre = document.querySelector('.srs-preview pre');
+  let scopeInText = '';
+  try {
+    const srsData = srsPre ? JSON.parse(srsPre.textContent) : null;
+    if (srsData && srsData.scopeIn && Array.isArray(srsData.scopeIn)) {
+      scopeInText = srsData.scopeIn.slice(0, 2).join('、').substring(0, 150);
+    }
+  } catch(e) {}
+  const basePrompt = [reqTitle, scopeInText].filter(Boolean).join('：').substring(0, 100);
+  const enhancedPrompt = basePrompt + '，修改意见：' + feedbackText;
+  const container = document.getElementById(`ai-clarify-media-actions-${reqId}`);
+  if (!container) return;
+  const oldPreview = document.getElementById(oldPreviewId);
+  if (oldPreview) oldPreview.remove();
+  const loadingEl = document.createElement('div');
+  loadingEl.style.cssText = 'padding:8px;font-size:12px;color:var(--text2)';
+  loadingEl.textContent = '⏳ 根据你的意见优化中...';
+  container.prepend(loadingEl);
+  const projectId = App.currentProjectId;
+  const providers = ['gen-img-minimax', 'gen-img-openai'];
+  let lastError = '';
+  for (const pid of providers) {
+    try {
+      const result = await api('POST', `/generate/image/${projectId}`, { providerId: pid, prompt: enhancedPrompt.substring(0, 400) });
+      if (!result.success) { lastError = result.message || '生成失败'; continue; }
+      const imgUrl = '/api/generate/assets/' + projectId + '/' + result.assetPath;
+      loadingEl.remove();
+      const previewId = 'img-preview-' + reqId + '-' + Date.now();
+      const newInputId = 'img-feedback-' + reqId + '-' + Date.now();
+      const previewEl = document.createElement('div');
+      previewEl.id = previewId;
+      previewEl.style.cssText = 'margin-top:4px;padding:8px;background:var(--bg2);border-radius:6px;border:1px solid var(--border)';
+      previewEl.innerHTML = '<div style="display:flex;gap:12px;align-items:flex-start"><a href="' + imgUrl + '" target="_blank"><img src="' + imgUrl + '" style="max-width:200px;max-height:200px;border-radius:4px;border:1px solid var(--border)" onerror="this.style.display=\'none\'"></a><div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0"><button class="btn-small" style="font-size:10px" onclick="document.getElementById(\'' + previewId + '\').remove()">✕ 关闭</button><button class="btn-small" style="font-size:10px" onclick="generateImagePreview(\'' + reqId + '\')">🔄 重新生成</button></div></div><div style="margin-top:6px;display:flex;gap:4px"><input id="' + newInputId + '" type="text" placeholder="继续输入优化意见..." style="flex:1;font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg3);color:var(--text)"><button class="btn-small" style="font-size:10px;background:rgba(78,205,196,0.1);color:var(--green);border-color:rgba(78,205,196,0.3)" onclick="generateImagePreviewWithFeedback(\'' + reqId + '\',\'' + newInputId + '\',\'' + previewId + '\')">✏️ 优化</button></div>';
+      container.prepend(previewEl);
+      return;
+    } catch (e) { lastError = e.message; }
+  }
+  loadingEl.textContent = '❌ 优化失败: ' + escHtml(lastError);
+  setTimeout(function() { loadingEl.remove(); }, 5000);
+}
+
 async function generateImagePreview(reqId) {
   const container = document.getElementById(`ai-clarify-media-actions-${reqId}`);
   if (!container) return;
@@ -613,10 +688,11 @@ async function generateImagePreview(reqId) {
       const imgUrl = '/api/generate/assets/' + projectId + '/' + result.assetPath;
       loadingEl.remove();
       const previewId = 'img-preview-' + reqId + '-' + Date.now();
+      const inputId = 'img-feedback-' + reqId + '-' + Date.now();
       const previewEl = document.createElement('div');
       previewEl.id = previewId;
       previewEl.style.cssText = 'margin-top:4px;padding:8px;background:var(--bg2);border-radius:6px;border:1px solid var(--border)';
-      previewEl.innerHTML = '<div style="display:flex;gap:12px;align-items:flex-start"><a href="' + imgUrl + '" target="_blank"><img src="' + imgUrl + '" style="max-width:200px;max-height:200px;border-radius:4px;border:1px solid var(--border)" onerror="this.style.display=\'none\'"></a><div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0"><button class="btn-small" style="font-size:10px" onclick="document.getElementById(\'' + previewId + '\').remove()">✕ 关闭</button><button class="btn-small" style="font-size:10px" onclick="generateImagePreview(\'' + reqId + '\')">🔄 重新生成</button></div></div>';
+      previewEl.innerHTML = '<div style="display:flex;gap:12px;align-items:flex-start"><a href="' + imgUrl + '" target="_blank"><img src="' + imgUrl + '" style="max-width:200px;max-height:200px;border-radius:4px;border:1px solid var(--border)" onerror="this.style.display=\'none\'"></a><div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0"><button class="btn-small" style="font-size:10px" onclick="document.getElementById(\'' + previewId + '\').remove()">✕ 关闭</button><button class="btn-small" style="font-size:10px" onclick="generateImagePreview(\'' + reqId + '\')">🔄 重新生成</button></div></div><div style="margin-top:6px;display:flex;gap:4px"><input id="' + inputId + '" type="text" placeholder="输入优化意见（如：刘备穿白色汉服、手持双股剑）" style="flex:1;font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg3);color:var(--text)"><button class="btn-small" style="font-size:10px;background:rgba(78,205,196,0.1);color:var(--green);border-color:rgba(78,205,196,0.3)" onclick="generateImagePreviewWithFeedback(\'' + reqId + '\',\'' + inputId + '\',\'' + previewId + '\')">✏️ 优化</button></div>';
       container.prepend(previewEl);
       return;
     } catch (e) { lastError = e.message; }
@@ -625,11 +701,12 @@ async function generateImagePreview(reqId) {
   setTimeout(function() { loadingEl.remove(); }, 5000);
 }
 
-async function generateAudioPreview(reqId) {
+async function generateAudioPreview(reqId, customText) {
   const container = document.getElementById(`ai-clarify-media-actions-${reqId}`);
   if (!container) return;
   const projectId = App.currentProjectId;
   if (!projectId) return toast('请先选择项目', 'error');
+  const audioText = customText || getRequirementAudioText();
   const loadingEl = document.createElement('div');
   loadingEl.style.cssText = 'padding:8px;font-size:12px;color:var(--text2)';
   loadingEl.textContent = '⏳ 正在生成语音试听...';
@@ -638,15 +715,16 @@ async function generateAudioPreview(reqId) {
   let lastError = '';
   for (const pid of providers) {
     try {
-      const result = await api('POST', `/generate/audio/${projectId}`, { providerId: pid, text: '这是一段语音预览，用于确认音色和语速是否符合需求。', params: {} });
+      const result = await api('POST', `/generate/audio/${projectId}`, { providerId: pid, text: audioText, params: {} });
       if (!result.success) { lastError = result.message || '生成失败'; continue; }
       const audioUrl = '/api/generate/assets/' + projectId + '/' + result.assetPath;
       loadingEl.remove();
       const previewId = 'audio-preview-' + reqId + '-' + Date.now();
+      const textInputId = 'audio-text-' + reqId + '-' + Date.now();
       const previewEl = document.createElement('div');
       previewEl.id = previewId;
       previewEl.style.cssText = 'margin-top:4px;padding:8px;background:var(--bg2);border-radius:6px;border:1px solid var(--border)';
-      previewEl.innerHTML = '<div style="display:flex;gap:12px;align-items:flex-start"><audio controls style="max-width:240px"><source src="' + audioUrl + '" type="' + (result.mime || 'audio/mpeg') + '"></audio><div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0"><button class="btn-small" style="font-size:10px" onclick="document.getElementById(\'' + previewId + '\').remove()">✕ 关闭</button><button class="btn-small" style="font-size:10px" onclick="generateAudioPreview(\'' + reqId + '\')">🔄 重新生成</button></div></div>';
+      previewEl.innerHTML = '<div style="margin-bottom:6px;font-size:11px;color:var(--text2);padding:4px 6px;background:var(--bg3);border-radius:4px;max-height:48px;overflow-y:auto">📄 ' + escHtml(audioText.substring(0, 100)) + '</div><div style="display:flex;gap:12px;align-items:flex-start"><audio controls style="max-width:240px"><source src="' + audioUrl + '" type="' + (result.mime || 'audio/mpeg') + '"></audio><div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0"><button class="btn-small" style="font-size:10px" onclick="document.getElementById(\'' + previewId + '\').remove()">✕ 关闭</button><button class="btn-small" style="font-size:10px" onclick="generateAudioPreview(\'' + reqId + '\')">🔄 重新生成</button></div></div><div style="margin-top:6px;display:flex;gap:4px"><input id="' + textInputId + '" type="text" placeholder="输入自定义文本朗读..." style="flex:1;font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg3);color:var(--text)"><button class="btn-small" style="font-size:10px;background:rgba(255,140,68,0.1);color:#ff8c44;border-color:rgba(255,140,68,0.3)" onclick="generateAudioPreviewWithText(\'' + reqId + '\',\'' + textInputId + '\',\'' + previewId + '\')">🔊 自定义朗读</button></div>';
       container.prepend(previewEl);
       return;
     } catch (e) { lastError = e.message; }
@@ -655,6 +733,18 @@ async function generateAudioPreview(reqId) {
   setTimeout(function() { loadingEl.remove(); }, 5000);
 }
 
+/**
+ * 自定义文本语音合成 — 用户输入任意文本进行语音试听
+ */
+async function generateAudioPreviewWithText(reqId, inputId, oldPreviewId) {
+  const input = document.getElementById(inputId);
+  if (!input) return;
+  const customText = input.value.trim();
+  if (!customText) return toast('请输入要朗读的文本', 'error');
+  const oldPreview = document.getElementById(oldPreviewId);
+  if (oldPreview) oldPreview.remove();
+  await generateAudioPreview(reqId, customText);
+}
 
 async function startAiClarify(reqId) {
   const modelId = document.getElementById(`ai-model-select-${reqId}`)?.value;
