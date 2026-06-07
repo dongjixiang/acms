@@ -464,7 +464,9 @@ async function generateSuno(projectSlug, provider, text, params) {
 async function generateComfyUI(projectSlug, provider, prompt, params) {
   const baseUrl = provider.config.baseUrl || 'http://127.0.0.1:8000';
   const apiKey = provider.config.apiKey || '';
-  const workflowFile = params.inputImage ? (provider.config.defaultWorkflow || 'img2img.json') : 'txt2img.json';
+  const workflowFile = 'sdxl-refined.json';
+  // 注意: 桌面版 ComfyUI 的 LoadImage 节点有 bug，img2img 暂时不可用
+  // 降级时统一走 txt2img，prompt 已在前端累积了所有优化意见
   // 检测 prompt 是否含中文，是则翻译为英文（SDXL CLIP 对中文支持极差）
   prompt = await ensureEnglishPrompt(prompt);
   if (params.negative_prompt) params.negative_prompt = await ensureEnglishPrompt(params.negative_prompt);
