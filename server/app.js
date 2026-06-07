@@ -134,6 +134,7 @@ app.use('/api/reports', require('./routes/reports'));
 app.use('/api/clarify-improve', require('./routes/clarify-improve'));
 app.use('/api/improvements', require('./routes/improvements'));
 app.use('/api/knowledge', require('./routes/knowledge'));
+app.use('/api/generate', require('./routes/gen'));
 
 // 404
 app.use((req, res) => res.status(404).json({ error: 'NOT_FOUND' }));

@@ -93,6 +93,9 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 .panel-form { background: var(--bg2); padding: 24px; border-radius: var(--radius); border: 1px solid var(--border); max-width: 700px; }
 .panel-form label { display: block; margin: 12px 0 4px; font-size: 13px; color: var(--text2); }
 .panel-form input, .panel-form textarea, .panel-form select { width: 100%; padding: 10px 14px; background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); font-size: 14px; font-family: inherit; }
+.panel-form .cap-check { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; font-size: 12px; cursor: pointer; user-select: none; }
+.panel-form .cap-check:hover { border-color: var(--accent); }
+.panel-form .cap-check input[type=checkbox] { width: auto; margin: 0; padding: 0; accent-color: var(--accent); }
 .panel-form textarea { resize: vertical; }
 .panel-form .required { color: var(--accent2); }
 .form-row { display: flex; gap: 16px; }
@@ -214,6 +217,8 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 .type-audio { background: rgba(255,140,68,0.15); color: #ff8c44; }
 .type-modeling { background: rgba(168,130,255,0.15); color: #a882ff; }
 .type-testing { background: rgba(255,217,61,0.2); color: var(--accent3); }
+.type-image-gen { background: rgba(78,205,196,0.15); color: var(--accent); }
+.type-audio-gen { background: rgba(255,140,68,0.15); color: #ff8c44; }
 
 /* Progress bar */
 .progress-bar { height: 4px; background: var(--bg); border-radius: 2px; margin-top: 6px; overflow: hidden; }

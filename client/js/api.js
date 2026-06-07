@@ -52,6 +52,8 @@ var Requirements = {
   splitProposal: function(id) { return api('POST', '/requirements/' + id + '/split-proposal'); },
   refreshParent: function(id) { return api('POST', '/requirements/' + id + '/refresh-parent'); },
   assessImpact: function(id, desc) { return api('POST', '/requirements/' + id + '/assess-impact', { changeDescription: desc }); },
+  validateCoverage: function(id) { return api('POST', '/requirements/' + id + '/validate-coverage'); },
+  validateAggregateCoverage: function(id) { return api('POST', '/requirements/' + id + '/validate-aggregate-coverage'); },
 };
 
 // 任务

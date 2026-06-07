@@ -2,6 +2,7 @@
 const reqStore = require('../stores/requirement-store');
 const taskStore = require('../stores/task-store');
 const eventBus = require('./event-bus');
+const { validateChildCoverage, detectIntegrationGaps, validateParentAggregateCoverage } = require('./coverage-validator');
 
 const service = {
   // 分解需求为任务
@@ -25,6 +26,59 @@ const service = {
     }
 
     reqStore.transition(requirementId, 'in_execution');
+
+    // ── 覆盖率验证（非阻塞，不中断流程）──
+    try {
+      const coverageReport = validateChildCoverage(requirement.id, created);
+      const integrationGap = detectIntegrationGaps(requirement.id, created);
+      reqStore.update(requirement.id, {
+        coverage_report: JSON.stringify({
+          coveragePct: coverageReport.coveragePct,
+          total: coverageReport.total,
+          uncovered: coverageReport.uncoveredItems,
+          warnings: coverageReport.warnings,
+          integrationGap: {
+            hasGap: integrationGap.hasIntegrationGap,
+            description: integrationGap.gapDescription,
+            suggestion: integrationGap.suggestion,
+            missingTypes: integrationGap.missingTypes,
+          },
+          taskCount: created.length,
+          validatedAt: new Date().toISOString(),
+        })
+      });
+
+      if (coverageReport.warnings.length > 0) {
+        console.log(`[coverage] ⚠ ${requirement.id} 任务覆盖率 ${coverageReport.coveragePct}%, ${coverageReport.warnings.length} 条警告`);
+      }
+
+      // 如果有父需求，异步触发聚合检查
+      if (requirement.parent_id) {
+        setImmediate(async () => {
+          try {
+            const aggregateCov = validateParentAggregateCoverage(requirement.parent_id);
+            if (aggregateCov.gaps.length > 0) {
+              reqStore.update(requirement.parent_id, {
+                aggregate_coverage_report: JSON.stringify({
+                  gaps: aggregateCov.gaps,
+                  coveragePct: aggregateCov.coveragePct,
+                  totalItems: aggregateCov.totalItems,
+                  childrenCoverage: aggregateCov.childrenCoverage,
+                  warnings: aggregateCov.warnings,
+                  updatedAt: new Date().toISOString(),
+                  lastChildId: requirement.id,
+                })
+              });
+              console.log(`[coverage] ⚠ 父需求 ${requirement.parent_id} 聚合覆盖率 ${aggregateCov.coveragePct}%`);
+            }
+          } catch (e) {
+            console.error(`[coverage] 父需求聚合验证异常: ${e.message}`);
+          }
+        });
+      }
+    } catch (e) {
+      console.error(`[coverage] 覆盖率验证异常（非关键）: ${e.message}`);
+    }
 
     eventBus.emit('requirement.decomposed', {
       projectId: requirement.project_id,

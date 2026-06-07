@@ -372,7 +372,9 @@ async function loadRequirementKnowledge(reqId) {
 
     // 获取已关联的知识
     const links = await api('GET', `/knowledge/${App.currentProjectId}/links/${reqId}`).catch(() => []);
-    const hasLinks = links && links.length > 0;
+    // 过滤掉已被删除的知识（页面文件不存在）
+    const validLinks = (links || []).filter(l => l.hasContent);
+    const hasLinks = validLinks.length > 0;
 
     // 先尝试自动匹配（如果没有任何关联）
     let matches = [];
@@ -387,15 +389,13 @@ async function loadRequirementKnowledge(reqId) {
       }
     }
 
-    let html = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">';
+    let html = '<div style="margin-bottom:8px">';
     html += '<h3 style="font-size:14px;margin:0">📚 关联知识</h3>';
-    html += '<div style="display:flex;gap:4px">';
-    html += `<button class="btn-small" style="font-size:10px" onclick="showKnowledgeMatchPanel('${reqId}')" title="匹配知识">🔍 匹配</button>`;
-    html += '</div></div>';
+    html += '</div>';
 
     if (hasLinks) {
       html += '<div style="display:flex;flex-direction:column;gap:4px">';
-      for (const link of links) {
+      for (const link of validLinks) {
         html += `<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;font-size:12px">
           <span>📄 ${escHtml(link.title)} <span style="color:var(--text2);font-size:10px">(${link.relevance === 'auto' ? '自动' : '手动'})</span></span>
           <div>
@@ -405,6 +405,8 @@ async function loadRequirementKnowledge(reqId) {
         </div>`;
       }
       html += '</div>';
+      // 匹配按钮放在最后
+      html += `<div style="margin-top:8px"><button class="btn-small" style="font-size:11px" onclick="showKnowledgeMatchPanel('${reqId}')">🔍 匹配更多知识</button></div>`;
     } else if (matches.length > 0) {
       // 显示自动匹配推荐
       html += '<div style="font-size:11px;color:var(--text2);margin-bottom:4px">自动匹配到以下相关知识：</div>';
@@ -417,8 +419,10 @@ async function loadRequirementKnowledge(reqId) {
         </div>`;
       }
       html += '</div>';
+      html += `<div style="margin-top:8px"><button class="btn-small" style="font-size:11px" onclick="showKnowledgeMatchPanel('${reqId}')">🔍 手动匹配</button></div>`;
     } else {
-      html += '<div style="font-size:12px;color:var(--text2);padding:4px 0">暂无关联知识。点击「匹配」手动搜索。</div>';
+      html += '<div style="font-size:12px;color:var(--text2);padding:4px 0">暂无关联知识。</div>';
+      html += `<div style="margin-top:8px"><button class="btn-small" style="font-size:11px" onclick="showKnowledgeMatchPanel('${reqId}')">🔍 匹配知识</button></div>`;
     }
 
     panel.innerHTML = html;

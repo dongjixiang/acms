@@ -135,6 +135,14 @@ async function loadDelivery() {
     const overview = await overviewResp.json();
 
     // 加载文件列表
+    let showAllFiles = false;
+    async function reloadFiles(showAll) {
+      showAllFiles = showAll;
+      const filesResp = await fetch('/api/workspace/files/' + App.currentProjectId + (showAll ? '?showAll=1' : ''), { headers: { 'X-API-Key': 'dev-key-001' } });
+      const filesData = await filesResp.json();
+      const files = filesData.files || [];
+      renderDeliveryFiles(files, showAll);
+    }
     const filesResp = await fetch('/api/workspace/files/' + App.currentProjectId, { headers: { 'X-API-Key': 'dev-key-001' } });
     const filesData = await filesResp.json();
     const files = filesData.files || [];
@@ -202,61 +210,76 @@ async function loadDelivery() {
     document.getElementById('delivery-req-list').innerHTML = reqListHtml;
 
     // ── 文件列表 ──
-    if (!files.length) {
-      document.getElementById('delivery-files').innerHTML = '<div class="empty" style="padding:20px;text-align:center">📭 暂无交付物<br><span style="font-size:12px;color:var(--text2)">创建需求并执行后，交付物会自动出现在这里</span></div>';
-      return;
-    }
-
-    // 按目录分组
-    const byDir = {};
-    files.forEach(f => {
-      const dir = f.path.includes('/') ? f.path.substring(0, f.path.lastIndexOf('/')) : '/';
-      if (!byDir[dir]) byDir[dir] = [];
-      byDir[dir].push(f);
-    });
-
-    const dirOrder = ['code', 'requirements', 'exports', 'deploy'];
-    let fileHtml = '';
-
-    // 先按固定顺序排，剩余按字母
-    const sortedDirs = Object.keys(byDir).sort((a, b) => {
-      const ia = dirOrder.indexOf(a), ib = dirOrder.indexOf(b);
-      if (ia === -1 && ib === -1) return a.localeCompare(b);
-      if (ia === -1) return 1;
-      if (ib === -1) return -1;
-      return ia - ib;
-    });
-
-    sortedDirs.forEach(dir => {
-      const items = byDir[dir];
-      const dirIcon = dir === 'code' ? '💻' : dir === 'requirements' ? '📝' : dir === 'exports' ? '📄' : dir === 'deploy' ? '🚀' : '📁';
-      fileHtml += '<div style="font-weight:bold;color:var(--accent);margin-top:12px;font-size:13px">' + dirIcon + ' ' + (dir === '/' ? '根目录' : dir) + ' <span style="color:var(--text2);font-weight:normal">(' + items.length + ')</span></div>';
-      items.forEach(f => {
-        const icon = _getFileIcon(f.type);
-        const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico', '.bmp'];
-        const isImage = imageExts.includes(f.type);
-        const isPreviewable = ['.md', '.html', '.js', '.py', '.json', '.css', '.txt', '.xml', '.yaml', '.yml', '.sql', '.sh', '.log', '.ts', '.bat'].includes(f.type) || isImage;
-
-        let previewBtn = '';
-        // HTML 文件：加一键体验按钮（🌐）
-        if (f.type === '.html') {
-          previewBtn = '<button class="btn-small btn-experience-icon" onclick="event.stopPropagation();openExperienceFile(\'' + escHtml(f.path).replace(/'/g, "\\'") + '\')" title="一键体验">🌐</button>';
-        }
-        if (isImage) {
-          previewBtn += '<button class="btn-small" onclick="event.stopPropagation();previewImageFile(\'' + escHtml(f.path).replace(/'/g, "\\'") + '\',\'' + escHtml(f.name).replace(/'/g, "\\'") + '\')" title="预览图片">👁</button>';
-        } else if (isPreviewable && f.size < 500000) {
-          previewBtn += '<button class="btn-small" onclick="event.stopPropagation();previewTextFile(\'' + escHtml(f.path).replace(/'/g, "\\'") + '\',\'' + escHtml(f.name).replace(/'/g, "\\'") + '\',\'' + escHtml(f.type).replace(/'/g, "\\'") + '\')" title="预览文件">👁</button>';
-        }
-
-        fileHtml += '<div class="config-row workspace-file-row" style="padding-left:16px;font-size:13px">';
-        fileHtml += '<span>' + icon + ' ' + escHtml(f.name) + '</span>';
-        fileHtml += '<span style="display:flex;align-items:center;gap:12px;font-size:11px;color:var(--text2)">' + _fmtSize(f.size) + ' · ' + fmtDate(f.modified) + previewBtn + '</span>';
-        fileHtml += '</div>';
-      });
-    });
-    document.getElementById('delivery-files').innerHTML = fileHtml;
+    renderDeliveryFiles(files, false);
 
   } catch (e) {
     document.getElementById('delivery-overview').innerHTML = '<div class="stat-card" style="grid-column:1/-1"><div class="stat-num" style="color:var(--accent2)">加载失败</div><div class="stat-label">' + escHtml(e.message) + '</div></div>';
   }
+}
+
+function renderDeliveryFiles(files, showAll) {
+  const container = document.getElementById('delivery-files');
+  if (!container) return;
+
+  if (!files.length) {
+    container.innerHTML = '<div class="empty" style="padding:20px;text-align:center">📭 暂无交付物<br><span style="font-size:12px;color:var(--text2)">创建需求并执行后，交付物会自动出现在这里</span></div>';
+    return;
+  }
+
+  // 显示/隐藏过滤提示
+  let filterHint = '';
+  if (!showAll) {
+    filterHint = '<div style="font-size:11px;color:var(--text2);margin-bottom:8px">🔇 已过滤 node_modules/dist/build 等构建产物 — <a href="#" style="color:var(--accent);text-decoration:underline" onclick="reloadFiles(true);return false">显示所有文件</a></div>';
+  } else {
+    filterHint = '<div style="font-size:11px;color:var(--text2);margin-bottom:8px">🔊 显示所有文件（含构建产物） — <a href="#" style="color:var(--accent);text-decoration:underline" onclick="reloadFiles(false);return false">恢复过滤</a></div>';
+  }
+
+  // 按目录分组
+  const byDir = {};
+  files.forEach(f => {
+    const dir = f.path.includes('/') ? f.path.substring(0, f.path.lastIndexOf('/')) : '/';
+    if (!byDir[dir]) byDir[dir] = [];
+    byDir[dir].push(f);
+  });
+
+  const dirOrder = ['code', 'requirements', 'exports', 'deploy'];
+  let fileHtml = filterHint;
+
+  // 先按固定顺序排，剩余按字母
+  const sortedDirs = Object.keys(byDir).sort((a, b) => {
+    const ia = dirOrder.indexOf(a), ib = dirOrder.indexOf(b);
+    if (ia === -1 && ib === -1) return a.localeCompare(b);
+    if (ia === -1) return 1;
+    if (ib === -1) return -1;
+    return ia - ib;
+  });
+
+  sortedDirs.forEach(dir => {
+    const items = byDir[dir];
+    const dirIcon = dir === 'code' ? '💻' : dir === 'requirements' ? '📝' : dir === 'exports' ? '📄' : dir === 'deploy' ? '🚀' : '📁';
+    fileHtml += '<div style="font-weight:bold;color:var(--accent);margin-top:12px;font-size:13px">' + dirIcon + ' ' + (dir === '/' ? '根目录' : dir) + ' <span style="color:var(--text2);font-weight:normal">(' + items.length + ')</span></div>';
+    items.forEach(f => {
+      const icon = _getFileIcon(f.type);
+      const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico', '.bmp'];
+      const isImage = imageExts.includes(f.type);
+      const isPreviewable = ['.md', '.html', '.js', '.py', '.json', '.css', '.txt', '.xml', '.yaml', '.yml', '.sql', '.sh', '.log', '.ts', '.bat'].includes(f.type) || isImage;
+
+      let previewBtn = '';
+      // HTML 文件：加一键体验按钮（🌐）
+      if (f.type === '.html') {
+        previewBtn = '<button class="btn-small btn-experience-icon" onclick="event.stopPropagation();openExperienceFile(\'' + escHtml(f.path).replace(/'/g, "\\'") + '\')" title="一键体验">🌐</button>';
+      }
+      if (isImage) {
+        previewBtn += '<button class="btn-small" onclick="event.stopPropagation();previewImageFile(\'' + escHtml(f.path).replace(/'/g, "\\'") + '\',\'' + escHtml(f.name).replace(/'/g, "\\'") + '\')" title="预览图片">👁</button>';
+      } else if (isPreviewable && f.size < 500000) {
+        previewBtn += '<button class="btn-small" onclick="event.stopPropagation();previewTextFile(\'' + escHtml(f.path).replace(/'/g, "\\'") + '\',\'' + escHtml(f.name).replace(/'/g, "\\'") + '\',\'' + escHtml(f.type).replace(/'/g, "\\'") + '\')" title="预览文件">👁</button>';
+      }
+
+      fileHtml += '<div class="config-row workspace-file-row" style="padding-left:16px;font-size:13px">';
+      fileHtml += '<span>' + icon + ' ' + escHtml(f.name) + '</span>';
+      fileHtml += '<span style="display:flex;align-items:center;gap:12px;font-size:11px;color:var(--text2)">' + _fmtSize(f.size) + ' · ' + fmtDate(f.modified) + previewBtn + '</span>';
+      fileHtml += '</div>';
+    });
+  });
+  container.innerHTML = fileHtml;
 }

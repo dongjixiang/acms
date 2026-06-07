@@ -577,8 +577,15 @@ scanners.push({
 async function analyzeFileWithLLM(promptText, imagePath, maxTokens = 1500) {
   try {
     const modelStore = require('../stores/model-store');
-    const allModels = modelStore.list();
-    const model = allModels.find(m => m.status === 'active') || allModels[0];
+    let model;
+    if (imagePath && fs.existsSync(imagePath)) {
+      // 视觉分析：优先找标注了 vision 能力的模型
+      const visionModels = modelStore.getActiveWithCapability('vision');
+      model = visionModels[0] || modelStore.getActive()[0];
+    } else {
+      // 纯文本分析：任何活跃模型都行
+      model = modelStore.getActive()[0];
+    }
     if (!model) return null;
 
     if (imagePath && fs.existsSync(imagePath)) {
@@ -1526,6 +1533,99 @@ async function scanFile(projectId, wikiVaultPath, fileRecordId) {
   }
 }
 
+/**
+ * 扫描生成的媒体资产（图片/音频），将结果录入知识库
+ * 这是多模态生成闭环的关键环节 — 生成的媒体自动沉淀为知识
+ *
+ * @param {string} projectId - 项目 ID
+ * @param {string} wikiVaultPath - Wiki 路径
+ * @param {string} workspaceAssetPath - 工作区 assets 中的相对路径（如 assets/2026-06-07/xxx.png）
+ * @param {object} options - { requirementId, taskId, prompt, metadata }
+ * @returns {object} { status, pagePath, synthesis }
+ */
+async function scanGeneratedAsset(projectId, wikiVaultPath, workspaceAssetPath, options = {}) {
+  const wsRoot = path.join(__dirname, '..', '..', 'workspaces');
+  const projectStore = require('../stores/project-store');
+  const project = projectStore.getById(projectId);
+  const projectSlug = project?.slug || projectId;
+  const fullPath = path.join(wsRoot, projectSlug, workspaceAssetPath);
+
+  if (!fs.existsSync(fullPath)) {
+    return { status: 'failed', error: `资产文件不存在: ${fullPath}` };
+  }
+
+  try {
+    const fileType = detectFileType(fullPath);
+    const ext = path.extname(fullPath).toLowerCase();
+    const isImage = fileType.type.startsWith('image/');
+    const isAudio = fileType.type.startsWith('audio/');
+
+    // 运行扫描管道
+    const result = runScannerPipeline(fullPath);
+    const findings = result.findings || [];
+
+    // 如果是图片，添加 AI 视觉分析
+    if (isImage) {
+      // 从 findings 中获取图片类型的 finding（由 scanner-image 产出）
+      const imageFindings = findings.filter(f => f.kind === 'image' && f.filePath);
+      if (imageFindings.length > 0) {
+        try {
+          await analyzeImageWithAI(imageFindings[0], projectId, wikiVaultPath, options.prompt || '');
+        } catch (e) {
+          console.error(`[scanGeneratedAsset] AI 视觉分析失败: ${e.message}`);
+        }
+      }
+    }
+
+    // 添加生成元数据到 findings（用于知识页面）
+    for (const f of findings) {
+      f.generatedBy = 'multimodal-generation';
+      f.sourcePrompt = options.prompt || '';
+      f.sourceTaskId = options.taskId || '';
+      f.sourceRequirementId = options.requirementId || '';
+      if (options.metadata) f.generationMeta = options.metadata;
+    }
+
+    // 知识合成
+    const synthesis = synthesizeKnowledge(projectId, wikiVaultPath, {
+      findings,
+    }, path.basename(workspaceAssetPath));
+
+    // 更新 index.md
+    updateIndexAfterScan(projectId, wikiVaultPath);
+
+    // 写 log
+    const logMsg = `gen-scan | ${path.basename(workspaceAssetPath)} — ${synthesis.created || 0} 页`;
+    const ks = require('./knowledge-service');
+    ks.appendLog(projectId, wikiVaultPath, logMsg);
+
+    // 如果有 requirementId，自动关联
+    let linkResult = null;
+    if (options.requirementId && synthesis.grouped && synthesis.grouped.length > 0) {
+      try {
+        const matcher = require('./knowledge-matcher');
+        const firstPage = synthesis.grouped[0] + '.md';
+        linkResult = matcher.linkRequirement(projectId, options.requirementId, firstPage, 'generation-auto');
+        console.log(`[scanGeneratedAsset] ✅ 已关联 ${options.requirementId} ↔ ${firstPage}`);
+      } catch (e) {
+        console.error(`[scanGeneratedAsset] 关联失败: ${e.message}`);
+      }
+    }
+
+    const pages = synthesis.grouped || [];
+    return {
+      status: 'scanned',
+      pagePath: pages.length > 0 ? pages[0] + '.md' : null,
+      allPages: pages.map(p => p + '.md'),
+      synthesis,
+      link: linkResult,
+    };
+  } catch (e) {
+    console.error(`[scanGeneratedAsset] 扫描失败: ${e.message}`);
+    return { status: 'failed', error: e.message };
+  }
+}
+
 module.exports = {
   detectFileType,
   extractArchive,
@@ -1536,4 +1636,5 @@ module.exports = {
   analyzeAllImages,
   enrichAllFindingsWithAI,
   analyzeFileWithLLM,
+  scanGeneratedAsset,
 };

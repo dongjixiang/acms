@@ -23,6 +23,12 @@ created: 2026-06-03
   "progressMemo": { "round": 1, "confirmedScope": "...", "pendingDecisions": ["..."], "userFlow": "...", "flowCoverage": 0, "changesSinceLast": null }
 }
 
+**⚠️ SRS 输出优化（重要！）：**
+- `srs` 字段**只返回本次修改/新增的部分**，不要返回完整的 SRS 数据！
+- 系统会自动将你返回的字段合并到现有 SRS 中，你只需输出变更内容即可
+- 如果本次无变更，设 `srs: {}` 即可
+- 这能大幅减少输出 token 消耗，避免回复被截断
+
 **⚠️ 字段类型强制约束（必须遵守）：**
 |- `scopeIn` 必须是 **字符串数组** `string[]`，例如 `["样片上传 — 支持拖拽和选择文件批量上传"]`。不允许使用对象数组（如 `{"item":"样片上传"}`）。
 |- `scopeOut` 同上是 `string[]`。

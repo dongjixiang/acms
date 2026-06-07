@@ -71,6 +71,20 @@ router.post('/:id/transition', (req, res, next) => {
       } catch (e) { /* 非关键 */ }
     }
 
+    // 需求进入执行阶段 → 自动生成知识页面
+    if (req.body.targetStatus === 'approved' || req.body.targetStatus === 'in_execution') {
+      try {
+        const synthesizer = require('../services/knowledge-synthesizer');
+        synthesizer.generateForRequirement(req.params.id).then(res => {
+          if (res.created) {
+            console.log(`[KnowledgeSynthesizer] ✅ ${req.params.id} → ${res.path}`);
+          } else if (!res.skipped) {
+            console.log(`[KnowledgeSynthesizer] ⚠️ ${req.params.id}: ${res.reason}`);
+          }
+        });
+      } catch (e) { /* 非关键 */ }
+    }
+
     eventBus.emit(`requirement.${req.body.targetStatus === 'approved' ? 'approved' : 'status_changed'}`, { projectId: result.project_id, actor: { id: req.agentId || 'user', type: 'human' }, target: { type: 'requirement', id: result.id }, payload: { requirement: result } });
     res.json({ ...result, improvement: improvementReport });
   } catch (e) { next(e); }
@@ -302,6 +316,25 @@ router.post('/:id/assess-impact', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// 覆盖率验证 — 手动触发：检查当前需求的任务是否覆盖 SRS
+router.post('/:id/validate-coverage', (req, res, next) => {
+  try {
+    const { validateChildCoverage, detectIntegrationGaps } = require('../services/coverage-validator');
+    const coverage = validateChildCoverage(req.params.id);
+    const integrationGap = detectIntegrationGaps(req.params.id);
+    res.json({ coverage, integrationGap });
+  } catch (e) { next(e); }
+});
+
+// 聚合覆盖率验证 — 容器父需求的子需求任务是否覆盖父需求原始 scopeIn
+router.post('/:id/validate-aggregate-coverage', (req, res, next) => {
+  try {
+    const { validateParentAggregateCoverage } = require('../services/coverage-validator');
+    const result = validateParentAggregateCoverage(req.params.id);
+    res.json(result);
+  } catch (e) { next(e); }
+});
+
 // 获取子需求
 router.get('/:id/children', (req, res) => {
   const children = reqStore.findChildren(req.params.id);
@@ -322,6 +355,17 @@ router.get('/metrics/:projectId', (req, res) => {
 router.get('/:id/progress', (req, res) => {
   const progress = reqStore.getProgress(req.params.id);
   res.json(progress);
+});
+
+// 获取数据模型预览（用于 review 阶段让用户提前发现数据/流程偏差）
+router.post('/:id/data-model-preview', async (req, res) => {
+  try {
+    const extractor = require('../services/data-model-extractor');
+    const result = await extractor.extractModel(req.params.id);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 module.exports = router;

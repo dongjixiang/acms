@@ -73,7 +73,7 @@ async function openRequirement(id) {
       ${req.status === 'change_requested' ? `<div id="change-btn-row" style="margin-top:12px;padding:12px;background:rgba(255,217,61,0.08);border:1px dashed var(--accent3);border-radius:8px"><span style="color:var(--accent3)">⏳ 变更分析中，请稍候...</span><button class="btn-small" style="margin-left:12px;background:rgba(255,100,100,0.15);color:#f44" onclick="cancelChangePanel('${id}')">取消变更</button></div>` : ''}
       ${req.status === 'impact_analysis' ? `<div id="change-btn-row" style="margin-top:12px;padding:12px;background:rgba(78,205,196,0.08);border:1px dashed var(--green);border-radius:8px"><span style="color:var(--green)">📊 变更影响分析已完成</span><button class="btn-accept" style="margin-left:12px" onclick="confirmChangeSimple('${id}')">✅ 确认变更</button><button class="btn-small" style="margin-left:8px;background:rgba(255,100,100,0.15);color:#f44" onclick="cancelChangePanel('${id}')">取消变更</button></div>` : ''}
       ${req.wiki_path ? `<div class="section"><span class="wiki-link">📚 Wiki: ${escHtml(req.wiki_path)}</span></div>` : ''}
-      <div id="req-knowledge-panel-${id}" style="margin-top:12px;padding:8px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--text2)">⏳ 加载关联知识...</div>
+      <div id="req-knowledge-panel-${id}" style="margin-top:12px;padding:8px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;font-size:12px;color:var(--text2)">⏳ 加载关联知识...</div>
       <div style="margin-top:16px;display:flex;gap:8px">
         <button class="btn-small btn-reject" onclick="deleteRequirement('${id}')">🗑 删除需求</button>
       </div>
@@ -89,6 +89,8 @@ async function openRequirement(id) {
   setTimeout(() => loadExistingMdEditor(id), 200);
   setTimeout(() => loadRequirementKnowledge(id), 250);
   setTimeout(() => generateDataModelPreview(id), 300);
+  // 页面加载后，如果存在 SRS，按需展示预览按钮
+  setTimeout(() => updateMediaPreviewButtons(id), 350);
 }
 
 function renderThread(cl) {
@@ -515,10 +517,7 @@ function renderAiClarifyPanel(req) {
     <div id="ai-clarify-messages-${req.id}" style="max-height:350px;overflow-y:auto;margin-bottom:12px"></div>
     <div id="ai-clarify-choices-${req.id}"></div>
     <div id="ai-clarify-srs-${req.id}" style="margin-top:12px"></div>
-    <div style="display:flex;gap:6px;margin-top:8px">
-      <button class="btn-small" style="background:rgba(147,112,219,0.12);color:var(--accent);border-color:rgba(147,112,219,0.25)" onclick="checkPrototypeSketches('${req.id}')">🎨 生成界面示意图</button>
-      <span style="font-size:10px;color:var(--text3);align-self:center">使用当前选择的模型</span>
-    </div>
+    <div id="ai-clarify-media-actions-${req.id}" style="margin-top:8px"></div>
     <div id="ai-clarify-sketches-${req.id}" style="margin-top:12px"></div>
     <div id="ai-clarify-actions-${req.id}" style="display:none;margin-top:12px">
       <button class="btn-accept" onclick="submitAiSrs('${req.id}')">✅ 满意，提交审核</button>
@@ -539,6 +538,96 @@ async function loadAiModels(reqId) {
     if (sel) sel.innerHTML = '<option value="">选择大模型...</option>' + models.map(m => `<option value="${m.id}">${escHtml(m.name)} (${m.model})</option>`).join('');
   } catch(e) {}
 }
+
+
+// ── 按需展示预览按钮 —— 从 SRS scopeIn 检测需求类型 ──
+function detectPreviewNeeds(srs) {
+  const text = JSON.stringify(srs.scopeIn || []).toLowerCase();
+  return {
+    prototype: /界面|页面|布局|导航|菜单|弹窗|表单|首页|列表|面板|设置|搜索|登录|注册/i.test(text),
+    image: /立绘|头像|icon|图标|角色|场景|素材|配图|海报|封面|渲染图|像素|sprite|背景图|插图|角色图/i.test(text),
+    audio: /语音|配音|音效|背景音乐|旁白|朗读|播报|tts|音乐|歌曲|音色|声线|台词|对白|录音/i.test(text),
+  };
+}
+
+function updateMediaPreviewButtons(reqId) {
+  const container = document.getElementById(`ai-clarify-media-actions-${reqId}`);
+  if (!container) return;
+
+  // 优先从澄清面板的 SRS 草稿读取，其次从页面底部的 SRS 预览区读取
+  let scopeInText = '';
+  const srsEl = document.getElementById(`ai-clarify-srs-${reqId}`);
+  if (srsEl && srsEl.textContent) {
+    const match = srsEl.textContent.match(/范围:\s*(.+?)(?=验收|$)/);
+    scopeInText = match ? match[1] : srsEl.textContent;
+  } else {
+    // 从页面底部 SRS 预览区读取
+    const srsPreview = document.querySelector('.srs-preview pre');
+    if (srsPreview) {
+      try {
+        const srs = JSON.parse(srsPreview.textContent);
+        scopeInText = (srs.scopeIn || []).join(' ');
+      } catch(e) {}
+    }
+  }
+
+  if (!scopeInText) { container.innerHTML = ''; return; }
+  const needs = detectPreviewNeeds({ scopeIn: [scopeInText] });
+  const buttons = [];
+  if (needs.prototype) buttons.push(`<button class="btn-small" style="background:rgba(147,112,219,0.12);color:var(--accent);border-color:rgba(147,112,219,0.25)" onclick="checkPrototypeSketches('${reqId}')">🎨 生成界面示意图</button>`);
+  if (needs.image) buttons.push(`<button class="btn-small" style="background:rgba(78,205,196,0.12);color:var(--accent);border-color:rgba(78,205,196,0.25)" onclick="generateImagePreview('${reqId}')">🎨 预览生成图片</button>`);
+  if (needs.audio) buttons.push(`<button class="btn-small" style="background:rgba(255,140,68,0.12);color:#ff8c44;border-color:rgba(255,140,68,0.25)" onclick="generateAudioPreview('${reqId}')">🔊 试听合成语音</button>`);
+  container.innerHTML = buttons.length > 0
+    ? '<div style="display:flex;gap:6px;flex-wrap:wrap">' + buttons.join('') + '<span style="font-size:10px;color:var(--text3);align-self:center">预览仅供参考</span></div>'
+    : '';
+}
+
+async function generateImagePreview(reqId) {
+  const container = document.getElementById(`ai-clarify-media-actions-${reqId}`);
+  if (!container) return;
+  const projectId = App.currentProjectId;
+  if (!projectId) return toast('请先选择项目', 'error');
+  const srsEl = document.getElementById(`ai-clarify-srs-${reqId}`);
+  const srsText = srsEl ? srsEl.textContent : '';
+  const match = srsText.match(/范围:\s*(.+?)(?=验收|$)/);
+  const prompt = match ? match[1].split(/[,，、]/)[0] : '生成一张预览图';
+  container.innerHTML = '<div style="padding:8px;font-size:12px;color:var(--text2)">⏳ 正在生成图片预览...</div>';
+  const providers = ['gen-img-minimax', 'gen-img-openai'];
+  let lastError = '';
+  for (const pid of providers) {
+    try {
+      const result = await api('POST', `/generate/image/${projectId}`, { providerId: pid, prompt: prompt.substring(0, 200) });
+      if (!result.success) { lastError = result.message || '生成失败'; continue; }
+      const imgUrl = '/api/generate/assets/' + projectId + '/' + result.assetPath;
+      container.innerHTML = '<div style="margin-top:4px"><img src="' + imgUrl + '" style="max-width:300px;max-height:250px;border-radius:6px;border:1px solid var(--border);cursor:pointer" onclick="window.open(\'' + imgUrl + '\',\'_blank\')" title="点击放大"><div style="display:flex;gap:4px;margin-top:6px"><button class="btn-small btn-accept" style="font-size:11px" onclick="generateImagePreview(\'' + reqId + '\')">🔄 重新生成</button><button class="btn-small" style="font-size:11px;background:rgba(78,205,196,0.1);color:var(--accent)" onclick="document.getElementById(\'ai-clarify-input-' + reqId + '\').value=\'图片风格需要调整: \';document.getElementById(\'ai-clarify-input-' + reqId + '\').focus()">✏️ 调整风格</button></div></div>';
+      return;
+    } catch (e) { lastError = e.message; }
+  }
+  container.innerHTML = '<div style="padding:8px;font-size:12px;color:var(--accent2)">❌ 生成失败: ' + escHtml(lastError) + '</div>';
+  setTimeout(function() { updateMediaPreviewButtons(reqId); }, 3000);
+}
+
+async function generateAudioPreview(reqId) {
+  const container = document.getElementById(`ai-clarify-media-actions-${reqId}`);
+  if (!container) return;
+  const projectId = App.currentProjectId;
+  if (!projectId) return toast('请先选择项目', 'error');
+  container.innerHTML = '<div style="padding:8px;font-size:12px;color:var(--text2)">⏳ 正在生成语音试听...</div>';
+  const providers = ['gen-audio-minimax', 'gen-audio-elevenlabs'];
+  let lastError = '';
+  for (const pid of providers) {
+    try {
+      const result = await api('POST', `/generate/audio/${projectId}`, { providerId: pid, text: '这是一段语音预览，用于确认音色和语速是否符合需求。', params: {} });
+      if (!result.success) { lastError = result.message || '生成失败'; continue; }
+      const audioUrl = '/api/generate/assets/' + projectId + '/' + result.assetPath;
+      container.innerHTML = '<div style="margin-top:4px;padding:8px;background:var(--bg2);border-radius:6px"><audio controls style="width:100%;max-width:300px"><source src="' + audioUrl + '" type="' + (result.mime || 'audio/mpeg') + '"></audio><div style="display:flex;gap:4px;margin-top:6px"><button class="btn-small btn-accept" style="font-size:11px" onclick="generateAudioPreview(\'' + reqId + '\')">🔄 重新生成</button><button class="btn-small" style="font-size:11px;background:rgba(255,140,68,0.1);color:#ff8c44" onclick="document.getElementById(\'ai-clarify-input-' + reqId + '\').value=\'语音需要调整: \';document.getElementById(\'ai-clarify-input-' + reqId + '\').focus()">✏️ 调整语音</button></div></div>';
+      return;
+    } catch (e) { lastError = e.message; }
+  }
+  container.innerHTML = '<div style="padding:8px;font-size:12px;color:var(--accent2)">❌ 生成失败: ' + escHtml(lastError) + '</div>';
+  setTimeout(function() { updateMediaPreviewButtons(reqId); }, 3000);
+}
+
 
 async function startAiClarify(reqId) {
   const modelId = document.getElementById(`ai-model-select-${reqId}`)?.value;
@@ -653,6 +742,8 @@ async function sendAiClarify(reqId, choiceAnswer) {
         <div style="font-size:12px;margin:4px 0"><strong>范围:</strong> ${fmtArr(result.srs.scopeIn, ', ')||'待确认'}</div>
         <div style="font-size:12px;margin:4px 0"><strong>验收:</strong> ${fmtArr(result.srs.acceptanceCriteria, '; ')||'待确认'}</div>
         <div style="font-size:12px;margin:4px 0;color:var(--text2)">${result.srs.summary||''}</div>`;
+      // SRS 更新后 → 按需展示预览按钮
+      updateMediaPreviewButtons(reqId);
     }
 
     // 是否可以提交审核
@@ -1024,11 +1115,31 @@ async function submitAiSrs(reqId) {
             <input type="text" id="ai-clarify-input-${reqId}" placeholder="输入对评审问题的回复..." style="flex:1;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);width:calc(100% - 100px);margin-right:4px">
             <button class="btn-primary" onclick="sendAiClarify('${reqId}')">继续澄清</button>
           </div>
+          <div style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px;text-align:center">
+            <button class="btn-small" style="background:rgba(255,217,61,0.12);color:var(--accent3);border-color:rgba(255,217,61,0.3);font-size:12px" onclick="forceSubmitReview('${reqId}')">⏭ 忽略评审意见，直接提交审核</button>
+            <div style="font-size:10px;color:var(--text3);margin-top:4px">AI 评审仅供参考，不阻塞流程</div>
+          </div>
         </div>`;
       toast(`AI 评审未通过（${review.score}/5），请解决 ${review.issues.length} 个问题后重试`, 'error');
     } else {
       toast('提交失败: ' + e.message, 'error');
     }
+  }
+}
+
+
+// ===== 忽略 AI 评审意见，直接提交 =====
+async function forceSubmitReview(reqId) {
+  if (!confirm('AI 评审发现的问题尚未解决，确认跳过评审直接提交审核？')) return;
+  const actionsDiv = document.getElementById(`ai-clarify-actions-${reqId}`);
+  if (actionsDiv) actionsDiv.innerHTML = '<div style="text-align:center;padding:12px;color:var(--text2)">\u23f3 \u6b63\u5728\u8df3\u8fc7\u8bc4\u5ba1\u63d0\u4ea4...</div>';
+  try {
+    await api('POST', `/requirements/${reqId}/transition`, { targetStatus: 'review' });
+    toast('\u5df2\u8df3\u8fc7 AI \u8bc4\u5ba1\uff0c\u9700\u6c42\u8fdb\u5165\u5f85\u5ba1\u6838\u72b6\u6001 \u2705', 'success');
+    openRequirement(reqId); loadRequirements(); loadDashboard();
+  } catch (e) {
+    toast('\u63d0\u4ea4\u5931\u8d25: ' + (e.data?.message || e.message), 'error');
+    openRequirement(reqId);
   }
 }
 

@@ -22,11 +22,12 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
-// 列出工作区文件
+// 列出工作区文件（支持 showAll 参数跳过过滤）
 router.get('/files/:projectId', (req, res) => {
   const slug = getSlug(req.params.projectId);
   if (!slug) return res.status(404).json({ error: 'PROJECT_NOT_FOUND' });
-  res.json({ projectSlug: slug, workspacePath: workspace.getPath(slug), files: workspace.listFiles(slug) });
+  const showAll = req.query.showAll === '1';
+  res.json({ projectSlug: slug, workspacePath: workspace.getPath(slug), files: workspace.listFiles(slug, { showAll }) });
 });
 
 // 读取文件内容

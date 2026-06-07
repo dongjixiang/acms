@@ -274,6 +274,27 @@ async function clarify(reqId, modelId, userMessage, conversationHistory) {
     }
   }
 
+  // === 项目知识库上下文注入 ===
+  try {
+    const knowledgeMatcher = require('./knowledge-matcher');
+    const project = require('../stores/project-store').getById(requirement.project_id);
+    if (project && project.wiki_vault_path) {
+      const matches = knowledgeMatcher.matchRequirement(
+        requirement.project_id, project.wiki_vault_path,
+        requirement.title, requirement.description || ''
+      );
+      if (matches.length > 0) {
+        const knowledgeCtx = knowledgeMatcher.buildKnowledgeContext(
+          matches, requirement.project_id, project.wiki_vault_path
+        );
+        if (knowledgeCtx) {
+          messages.splice(2, 0, { role: 'system', content: knowledgeCtx });
+          console.log(`[clarify] 注入 ${matches.length} 条相关知识 (${matches.filter(m=>m.relevance==='high').length} 条高相关)`);
+        }
+      }
+    }
+  } catch (e) { /* 非关键 */ }
+
   if (userMessage) {
     messages.push({ role: 'user', content: userMessage });
   } else if (!conversationHistory || conversationHistory.length === 0) {
@@ -299,7 +320,7 @@ async function clarify(reqId, modelId, userMessage, conversationHistory) {
   }
 
   // 调用 LLM（适配器自动根据 model.api 选择格式）
-  const result = await callLLM(modelId, messages, { temperature: 0.7, maxTokens: 6000, jsonMode: true, projectId: requirement.project_id, caller: 'clarify' });
+  const result = await callLLM(modelId, messages, { temperature: 0.7, maxTokens: 12000, jsonMode: true, projectId: requirement.project_id, caller: 'clarify' });
   const content = result.content;
 
   // 提取 JSON — 多层容错 + 自动重试
@@ -323,7 +344,7 @@ async function clarify(reqId, modelId, userMessage, conversationHistory) {
       content: '⚠️ 系统提示：你刚才的回复不是 JSON 格式。请严格按照以下 JSON 格式重新输出，不要添加任何额外文字：\n{\n  "message": "你的回复",\n  "choices": [{"id":"A","question":"问题","options":["选项1","选项2"]}],\n  "srs": {},\n  "readyForReview": false,\n  "splitSuggestion": null,\n  "vaguenessWarnings": []\n}',
     };
     try {
-      const retryResult = await callLLM(modelId, [...messages, retryMsg], { temperature: 0.3, maxTokens: 6000, jsonMode: true, projectId: requirement.project_id, caller: 'clarify-retry' });
+      const retryResult = await callLLM(modelId, [...messages, retryMsg], { temperature: 0.3, maxTokens: 12000, jsonMode: true, projectId: requirement.project_id, caller: 'clarify-retry' });
       const retryExtracted = extractJSON(retryResult.content);
       if (retryExtracted) {
         try { parsed = JSON.parse(repairJSON(retryExtracted)); } catch {}
@@ -339,6 +360,11 @@ async function clarify(reqId, modelId, userMessage, conversationHistory) {
   }
 
   if (!parsed) {
+    // 持久化：即使格式异常也保存用户消息（AI 回复为空）
+    try {
+      const userContent = userMessage || (conversationHistory && conversationHistory.length === 0 ? '请开始分析这个需求' : '');
+      if (userContent) reqStore.addClarification(reqId, { role: 'user', content: userContent });
+    } catch (e) { /* 非关键 */ }
     return {
       message: '抱歉，AI 回复格式异常，请重新输入您刚才的答案，或点击「继续澄清」按钮手动输入。',
       choices: [],
@@ -367,6 +393,47 @@ async function clarify(reqId, modelId, userMessage, conversationHistory) {
         reqStore.updateArchSpec(reqId, mergedSrs.archSpec);
         console.log(`[clarify] archSpec 已保存: ${Object.keys(mergedSrs.archSpec).join(', ')}`);
       } catch (e) { /* 非关键 */ }
+    }
+  }
+
+  // === B0: 自动补充验收标准 ===
+  // 当 LLM 标记 readyForReview 但 AC 为空时，从 scopeIn 中自动提取总体验收标准
+  // 这是对"LLM 把规格全塞进 scopeIn、AC 空着"的系统性修复
+  if (parsed.readyForReview && (!mergedSrs.acceptanceCriteria || mergedSrs.acceptanceCriteria.length === 0)) {
+    const scopeIn = mergedSrs.scopeIn || [];
+    if (scopeIn.length > 0) {
+      // 从 scopeIn 中提取可验证的规格作为总体验收标准
+      const generatedAC = [];
+      // 总体验收：所有 scopeIn 项完成
+      generatedAC.push(`所有 ${scopeIn.length} 项功能范围要求全部实现并符合描述规格`);
+
+      // 检测是否有文件格式要求
+      const formatItems = scopeIn.filter(s => /\.(png|wav|mp3|psd|svg|jpg|jpeg|gif|webp|pdf|docx?)/i.test(s));
+      if (formatItems.length > 0) generatedAC.push(`交付物格式符合 scopeIn 中指定的文件类型要求（${formatItems.map(s => s.match(/\.\w+/)?.[0]).filter(Boolean).join(', ') || '按约定格式'}）`);
+
+      // 检测是否有尺寸/规格要求
+      const sizeItems = scopeIn.filter(s => /\d+×\d+/i.test(s) || /\d+x\d+/i.test(s));
+      if (sizeItems.length > 0) generatedAC.push(`图片/音频资产尺寸和规格符合 scopeIn 中列出的具体参数`);
+
+      // 检测是否有数量要求
+      const countItems = scopeIn.filter(s => /\d+\s*[句张套个条]/i.test(s));
+      if (countItems.length > 0) generatedAC.push(`交付物数量达到 scopeIn 中约定的总数要求`);
+
+      // 检测是否有命名规范要求
+      if (scopeIn.some(s => /命名|文件.*名|目录/.test(s))) {
+        generatedAC.push(`交付物按 scopeIn 约定的目录结构和文件命名规范组织`);
+      }
+
+      // 检测是否有交付周期要求
+      if (scopeIn.some(s => /交付周期|工作[日天]/.test(s))) {
+        generatedAC.push(`按 scopeIn 约定的交付周期完成全部交付物`);
+      }
+
+      if (generatedAC.length > 0) {
+        mergedSrs.acceptanceCriteria = generatedAC;
+        reqStore.updateSrs(reqId, mergedSrs);
+        console.log(`[clarify] B0: 自动从 scopeIn 生成了 ${generatedAC.length} 条验收标准（原 AC 为空）`);
+      }
     }
   }
 
@@ -436,6 +503,18 @@ async function clarify(reqId, modelId, userMessage, conversationHistory) {
     }
   }
 
+  // 持久化澄清对话
+  try {
+    // 保存用户本轮消息
+    const userContent = userMessage || (conversationHistory && conversationHistory.length === 0 ? '请开始分析这个需求' : '');
+    if (userContent) reqStore.addClarification(reqId, { role: 'user', content: userContent });
+    // 保存 AI 回复
+    const aiContent = parsed.message || '';
+    if (aiContent) reqStore.addClarification(reqId, { role: 'agent', agentId: 'ai', content: aiContent });
+  } catch (e) {
+    console.error('[clarify] 持久化对话失败:', e.message);
+  }
+
   return {
     message: parsed.message || '',
     choices: parsed.choices || [],
@@ -466,6 +545,7 @@ function normalizeStrArr(arr) {
 
 function detectDomain(requirement) {
   const text = (requirement.title + ' ' + (requirement.description || '')).toLowerCase();
+  if (/原型|prototype|demo|演示|概念验证|poc/.test(text)) return 'prototype';
   if (/游戏|game|关卡|角色|NPC|BOSS|战斗|技能|副本|地图|武器|装备|升级|血量/.test(text)) return 'game';
   if (/API|接口|后端|服务|微服务|REST|GraphQL|gRPC|端点/.test(text)) return 'api';
   if (/页面|前端|UI|UX|交互|组件|表单|路由|SPA|PWA|响应式/.test(text)) return 'webapp';
@@ -475,7 +555,7 @@ function detectDomain(requirement) {
 }
 
 function getDomainSkillId(type) {
-  const map = { game: 'skill-clarify-game', webapp: 'skill-clarify-webapp', api: 'skill-clarify-api', documentation: 'skill-clarify-documentation', product: 'skill-clarify-product' };
+  const map = { game: 'skill-clarify-game', webapp: 'skill-clarify-webapp', api: 'skill-clarify-api', documentation: 'skill-clarify-documentation', product: 'skill-clarify-product', prototype: 'skill-clarify-prototype' };
   return map[type] || 'skill-clarify-general';
 }
 
@@ -486,7 +566,11 @@ function getDefaultConcretenessRules() {
 
 2. **通用规则 — 无名称/无设定的内容不可接受**：任何实体（页面、模块、接口、组件）必须有名称和简要说明
 
-3. **流程完整性规则**：当 scopeIn 包含 3 个以上独立子系统/模块时，必须至少有一条负责「界面入口/流程整合/导航串联」的条目。否则标记为模糊，追问「用户的操作路径是什么？从打开到退出的完整流程？」`;
+3. **技术方案无决策**：如果用户未明确指定技术方案，且描述中有「使用现代框架」「采用合适的数据库」「高性能渲染」等模糊表述，追问具体方案。
+   → ❌ technicalConstraints: "使用现代前端框架"
+   → ✅ technicalConstraints: "使用 Vue 3 + Vite"
+
+4. **流程完整性规则**：当 scopeIn 包含 3 个以上独立子系统/模块时，必须至少有一条负责「界面入口/流程整合/导航串联」的条目。否则标记为模糊，追问「用户的操作路径是什么？从打开到退出的完整流程？」`;
 }
 
 function getDefaultChecklist() {
@@ -520,6 +604,11 @@ function buildDomainChecklist(type) {
 4. 扫描 scopeIn: 是否全是内容章节，缺少「目录导航/索引页/搜索入口」？
    — 例：scopeIn:["安装指南","快速开始","API参考"] → 应补充"文档首页与导航架构"`,
 
+    prototype: `1. 扫描 scopeIn: 是否有未命名的页面/组件（用 "页面1""模块A" 代替具体名称）？
+2. 扫描描述: 是否有主观形容词（"漂亮""直观""好用"）但无具体布局/交互描述？
+3. **不要检查技术方案**——原型技术栈默认 HTML/CSS/JS，无需追问
+4. **不要检查性能指标**——原型不需要量化性能验收标准`,
+
     product: `1. 扫描描述: 是否有 "用户" 但无具体画像（年龄/职位/痛点/频率）？
 2. 扫描描述: 是否有 "竞品""对比""差异化" 但无具体竞品名称和评价证据？
 3. 扫描 scopeIn: 是否有优先级排序但无量化依据（RICE/用户量/商业价值）？
@@ -527,6 +616,15 @@ function buildDomainChecklist(type) {
 5. 扫描描述: 是否有 "定价""商业模式" 但无具体层级和转化路径？
 6. 扫描 scopeIn: 是否全是功能模块，缺少「入门体验/用户引导/核心路径」？
    — 例：scopeIn:["用户系统","内容管理","数据分析"] → 应补充"新用户引导流程与核心路径"`,
+
+    prototype: `1. 扫描 scopeIn: 是否有未命名的页面/组件（用 "页面1""模块A" 代替具体名称）？
+2. 扫描描述: 是否有主观形容词（"漂亮""直观""好用"）但无具体布局/交互描述？
+3. **不要检查技术方案**——原型技术栈默认 HTML/CSS/JS，无需追问
+4. **不要检查性能指标**——原型不需要量化性能验收标准`,
+
+    general: `1. 扫描 scopeIn: 是否有 "X~Y 个" 数量范围但无具体名称列表？
+2. 扫描描述: 是否有泛指实体（"模块""页面""功能"）但无名字和用途说明？
+3. 扫描 technicalConstraints 中是否有 "现代XXX""合适的XXX" 但未做决策？`,
   };
   return checklists[type] || getDefaultChecklist();
 }
@@ -546,6 +644,9 @@ function buildDomainExamples(type) {
 
     product: `示例 — ❌ description: "做一个类似飞书的协作工具" → ✅ description: "差异化: 飞书审批不灵活(G2差评35%)→我们支持拖拽审批引擎。定位:「唯一为50-200人团队提供可视化审批引擎的协作平台」"
 示例 — ❌ scopeIn: "MVP包含核心功能" → ✅ scopeIn: "MVP: 任务管理+甘特图+飞书通知→验证假设「甘特图是付费驱动力」。不包含: 审批引擎/报表/移动端。成功指标: 30天留存≥40%"`,
+
+    prototype: `示例 — scopeIn: "实现管理后台原型" -> scopeIn: "页面1: 登录页, 页面2: 数据看板, 页面3: 用户列表"
+提示: 原型用纯 HTML/CSS/JS，单文件或多文件均可，无需后端`,
   };
   return examples[type] || '';
 }

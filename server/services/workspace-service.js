@@ -4,6 +4,14 @@ const path = require('path');
 
 const WORKSPACE_ROOT = path.join(__dirname, '..', '..', 'workspaces');
 
+// 默认跳过的目录（构建产物 / 依赖 / 版本控制）
+const SKIP_DIRS = new Set([
+  'node_modules', '.git', '.svn',
+  'dist', 'build', '.next', '.nuxt', 'out', 'target',
+  '__pycache__', '.venv', 'venv', '.env',
+  '.cache', '.parcel-cache',
+]);
+
 class WorkspaceService {
 
   /**
@@ -68,17 +76,24 @@ class WorkspaceService {
 
   /**
    * 列出工作区文件（递归，树形结构）
+   * @param {string} projectSlug
+   * @param {object} [options] - { showAll: true } 不过滤目录
    */
-  listFiles(projectSlug) {
+  listFiles(projectSlug, options = {}) {
     const wsPath = path.join(WORKSPACE_ROOT, projectSlug);
     if (!fs.existsSync(wsPath)) return [];
 
     const result = [];
+    const showAll = options.showAll === true;
+
     const walk = (dir, prefix = '') => {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       for (const e of entries) {
         const relPath = prefix ? `${prefix}/${e.name}` : e.name;
+
         if (e.isDirectory()) {
+          // 跳过已知的构建产物/依赖目录（除非 showAll）
+          if (!showAll && SKIP_DIRS.has(e.name)) continue;
           walk(path.join(dir, e.name), relPath);
         } else {
           const stat = fs.statSync(path.join(dir, e.name));
@@ -92,6 +107,7 @@ class WorkspaceService {
         }
       }
     };
+
     walk(wsPath);
     return result;
   }

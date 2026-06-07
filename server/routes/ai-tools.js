@@ -5,6 +5,7 @@ const aiTools = require('../services/ai-tools-service');
 const reqStore = require('../stores/requirement-store');
 const taskStore = require('../stores/task-store');
 const eventBus = require('../services/event-bus');
+const { validateChildCoverage, detectIntegrationGaps, validateParentAggregateCoverage } = require('../services/coverage-validator');
 
 // 生成 MD 需求文档
 router.post('/requirements/:id/generate-doc', async (req, res, next) => {
@@ -88,6 +89,65 @@ router.post('/requirements/:id/decompose-ai', async (req, res, next) => {
       reqStore.transition(req.params.id, 'in_execution');
     }
 
+    // ── 覆盖率验证（非阻塞，不中断流程）──
+    let coverageReport = null;
+    let integrationGap = null;
+    try {
+      coverageReport = validateChildCoverage(requirement.id, createdTasks);
+      integrationGap = detectIntegrationGaps(requirement.id, createdTasks);
+
+      // 持久化覆盖率报告
+      const covStore = {
+        coveragePct: coverageReport.coveragePct,
+        total: coverageReport.total,
+        uncovered: coverageReport.uncoveredItems,
+        warnings: coverageReport.warnings,
+        integrationGap: {
+          hasGap: integrationGap.hasIntegrationGap,
+          description: integrationGap.gapDescription,
+          suggestion: integrationGap.suggestion,
+          missingTypes: integrationGap.missingTypes,
+        },
+        taskCount: createdTasks.length,
+        validatedAt: new Date().toISOString(),
+      };
+      reqStore.update(requirement.id, { coverage_report: JSON.stringify(covStore) });
+
+      if (coverageReport.warnings.length > 0) {
+        console.log(`[coverage] ⚠ ${requirement.id} 任务覆盖率 ${coverageReport.coveragePct}%, ${coverageReport.warnings.length} 条警告`);
+      }
+      if (integrationGap.hasIntegrationGap) {
+        console.log(`[coverage] ⚠ ${requirement.id} 存在集成缺口: ${integrationGap.gapDescription}`);
+      }
+
+      // 如果当前需求有父需求，异步触发父需求聚合覆盖率检查
+      if (requirement.parent_id) {
+        setImmediate(async () => {
+          try {
+            const aggregateCov = validateParentAggregateCoverage(requirement.parent_id);
+            if (aggregateCov.gaps.length > 0) {
+              reqStore.update(requirement.parent_id, {
+                aggregate_coverage_report: JSON.stringify({
+                  gaps: aggregateCov.gaps,
+                  coveragePct: aggregateCov.coveragePct,
+                  totalItems: aggregateCov.totalItems,
+                  childrenCoverage: aggregateCov.childrenCoverage,
+                  warnings: aggregateCov.warnings,
+                  updatedAt: new Date().toISOString(),
+                  lastChildId: requirement.id,
+                })
+              });
+              console.log(`[coverage] ⚠ 父需求 ${requirement.parent_id} 聚合覆盖率 ${aggregateCov.coveragePct}%, ${aggregateCov.gaps.length} 条缺口`);
+            }
+          } catch (e) {
+            console.error(`[coverage] 父需求聚合验证异常: ${e.message}`);
+          }
+        });
+      }
+    } catch (e) {
+      console.error(`[coverage] 覆盖率验证异常（非关键）: ${e.message}`);
+    }
+
     for (const task of createdTasks) {
       eventBus.emit('task.created', {
         projectId: requirement.project_id,
@@ -103,7 +163,69 @@ router.post('/requirements/:id/decompose-ai', async (req, res, next) => {
       summary: result.summary,
       modelUsed: result.modelUsed,
       success: createdTasks.length > 0,
+      coverage: coverageReport ? {
+        coveragePct: coverageReport.coveragePct,
+        uncovered: coverageReport.uncoveredItems,
+        warnings: coverageReport.warnings,
+        integrationGap: integrationGap ? {
+          hasGap: integrationGap.hasIntegrationGap,
+          suggestion: integrationGap.suggestion,
+        } : null,
+      } : null,
     });
+  } catch (e) { next(e); }
+});
+
+// 逐段润色
+router.post('/requirements/:id/refine-section', async (req, res, next) => {
+  try {
+    const { modelId, sectionTitle, sectionContent, fullDoc, instruction } = req.body;
+    if (!modelId || !sectionTitle || !sectionContent) {
+      return res.status(400).json({ error: 'MISSING_FIELDS', message: '缺少必要参数' });
+    }
+    const result = await aiTools.refineSection(modelId, sectionTitle, sectionContent, fullDoc, instruction);
+    res.json(result);
+  } catch (e) { next(e); }
+});
+
+// 编辑后关联检查
+router.post('/requirements/:id/check-consistency', async (req, res, next) => {
+  try {
+    const { modelId, editedSection, oldContent, newContent, fullDoc } = req.body;
+    if (!modelId || !editedSection || !oldContent || !newContent) {
+      return res.status(400).json({ error: 'MISSING_FIELDS', message: '缺少必要参数' });
+    }
+    // 日志：检查实际收到的数据（用正则避免字符编码问题）
+    console.log('[check-consistency] modelId:', modelId);
+    console.log('[check-consistency] editedSection:', editedSection);
+    var has50x30 = /50\s*\D+\s*30/.test(fullDoc || '');
+    var has50x46 = /50\s*\D+\s*46/.test(fullDoc || '');
+    console.log('[check-consistency] fullDoc 含 50?30:', has50x30);
+    console.log('[check-consistency] fullDoc 含 50?46:', has50x46);
+    console.log('[check-consistency] fullDoc length:', (fullDoc || '').length);
+    const result = await aiTools.checkConsistency(modelId, editedSection, oldContent, newContent, fullDoc);
+    // 兼容 MiniMax: content 可能含 thinking 块或 markdown 包裹，需要多层提取
+    let contentStr = result.content || '';
+    // 剥 markdown 代码块
+    contentStr = contentStr.replace(/```(?:json)?\s*/g, '').replace(/```/g, '').trim();
+    // 找首个 { 到匹配的 }
+    let parsed = null;
+    let depth = 0, inStr = false, escape = false, start = -1;
+    for (let i = 0; i < contentStr.length; i++) {
+      const ch = contentStr[i];
+      if (escape) { escape = false; continue; }
+      if (ch === '\\') { escape = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === '{') { if (start === -1) start = i; depth++; }
+      if (ch === '}') { depth--; if (depth === 0 && start >= 0) {
+        try { parsed = JSON.parse(contentStr.substring(start, i + 1)); } catch {}
+        break;
+      }}
+    }
+    if (!parsed) { try { parsed = JSON.parse(contentStr); } catch {} }
+    if (!parsed) parsed = { affectedSections: [] };
+    res.json({ ...parsed, modelUsed: result.modelUsed });
   } catch (e) { next(e); }
 });
 

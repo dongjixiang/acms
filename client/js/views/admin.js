@@ -49,6 +49,17 @@ async function loadAdminPage() {
             <label>API Key</label><input type="password" id="model-key" placeholder="sk-...（留空则不修改）">
           </div>
         </div>
+        <div class="form-group">
+          <label>模型能力</label>
+          <div id="model-capabilities" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px">
+            <label class="cap-check"><input type="checkbox" value="text" checked disabled> 📝 文本生成</label>
+            <label class="cap-check"><input type="checkbox" value="vision"> 👁️ 视觉理解</label>
+            <label class="cap-check"><input type="checkbox" value="json-mode"> 📋 结构化输出</label>
+            <label class="cap-check"><input type="checkbox" value="extended-thinking"> 🧠 扩展思考</label>
+            <label class="cap-check"><input type="checkbox" value="audio-input"> 🎤 音频理解</label>
+            <label class="cap-check"><input type="checkbox" value="function-calling"> 🔧 工具调用</label>
+          </div>
+        </div>
         <input type="hidden" id="model-edit-id" value="">
         <div class="form-actions">
           <button class="btn-primary" onclick="saveModel()">💾 保存</button>
@@ -72,12 +83,15 @@ async function loadAdminPage() {
 
 function renderModelRow(m) {
   const apiLabel = m.api === 'anthropic-messages' ? ' [Anthropic]' : '';
+  const caps = Array.isArray(m.capabilities) ? m.capabilities : (typeof m.capabilities === 'string' ? JSON.parse(m.capabilities) : ['text']);
+  const capIcons = { 'text': '📝', 'vision': '👁️', 'json-mode': '📋', 'extended-thinking': '🧠', 'audio-input': '🎤', 'function-calling': '🔧' };
   return `<div class="config-row" style="padding:8px 0">
     <div>
       <strong>${escHtml(m.name)}</strong>
       <span style="color:var(--text2);margin-left:8px">${m.provider} / ${m.model}</span>
       ${m.api && m.api !== 'openai-chat' ? `<span style="color:var(--accent);margin-left:4px;font-size:11px">[${m.api}]</span>` : ''}
       ${m.baseUrl ? `<span style="color:var(--text2);font-size:11px;margin-left:8px">${m.baseUrl}</span>` : ''}
+      <div style="font-size:11px;margin-top:3px;color:var(--text2)">${caps.map(c => capIcons[c] || '').join(' ')} ${caps.join(', ')}</div>
     </div>
     <div style="display:flex;gap:6px">
       <button class="btn-small" onclick="editModel('${m.id}')">✏️ 编辑</button>
@@ -99,6 +113,12 @@ async function editModel(id) {
     document.getElementById('model-url').value = m.baseUrl || '';
     document.getElementById('model-key').value = '';
     document.getElementById('model-key').placeholder = '留空则不修改';
+
+    // 填充能力复选框
+    const caps = Array.isArray(m.capabilities) ? m.capabilities : (typeof m.capabilities === 'string' ? JSON.parse(m.capabilities) : ['text']);
+    document.querySelectorAll('#model-capabilities input[type=checkbox]').forEach(cb => {
+      cb.checked = caps.includes(cb.value);
+    });
   } catch(e) { toast('加载失败: '+e.message, 'error'); }
 }
 
@@ -127,6 +147,15 @@ async function saveModel() {
   };
   const keyVal = document.getElementById('model-key').value;
   if (keyVal) body.apiKey = keyVal;
+
+  // 收集能力
+  const checkedCaps = [];
+  document.querySelectorAll('#model-capabilities input[type=checkbox]:not([disabled])').forEach(cb => {
+    if (cb.checked) checkedCaps.push(cb.value);
+  });
+  body.capabilities = checkedCaps;
+  // 始终包含 text 能力（基础能力，不可取消）
+  if (!body.capabilities.includes('text')) body.capabilities.unshift('text');
 
   try {
     if (id) {

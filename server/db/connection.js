@@ -13,7 +13,8 @@ const JSON_PATH = path.join(DATA_DIR, 'acms.json');
 const KNOWN_COLLECTIONS = [
   'projects', 'project_members', 'project_environments', 'project_repos',
   'project_configs', 'requirements', 'clarification_threads', 'tasks',
-  'agents', 'events', 'llm_models', 'skills', 'webhooks',
+  'agents', 'events', 'llm_models', 'skills', 'webhooks', 'knowledge_files',
+  'requirement_knowledge',
 ];
 
 // === 初始化 ===
@@ -149,17 +150,18 @@ function collection(name) {
         return null;
       },
 
-      /** 删除第一个匹配的文档 */
+      /** 删除所有匹配的文档 */
       remove(predicate) {
         const rows = db.prepare(`SELECT id, doc FROM "${name}"`).all();
+        let deleted = 0;
         for (const row of rows) {
           const doc = parseDoc(row);
           if (predicate(doc)) {
             db.prepare(`DELETE FROM "${name}" WHERE id = ?`).run(row.id);
-            return true;
+            deleted++;
           }
         }
-        return false;
+        return deleted > 0;
       },
 
     /** 返回所有文档（浅拷贝，防止调用者 mutate 影响缓存）*/

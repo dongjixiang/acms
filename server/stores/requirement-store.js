@@ -21,6 +21,8 @@ class RequirementStore {
       role: role || 'normal',
       flow_coverage: flowCoverage || '{}',
       review_report: '{}',
+      coverage_report: '{}',
+      aggregate_coverage_report: '{}',
       change_log: changeLog || '[]',
       created_at: now, updated_at: now, completed_at: '',
     };

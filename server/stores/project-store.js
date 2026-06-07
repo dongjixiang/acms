@@ -20,6 +20,12 @@ class ProjectStore {
       workspace.init(slug || name);
     } catch (e) { /* 非关键，静默失败 */ }
 
+    // 自动初始化项目知识库
+    try {
+      const knowledgeService = require('../services/knowledge-service');
+      knowledgeService.initKnowledgeBase(id, project.wiki_vault_path);
+    } catch (e) { /* 非关键，静默失败 */ }
+
     return project;
   }
 

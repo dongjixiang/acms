@@ -463,7 +463,117 @@ async function autoCreateBug(projectId, task, execLog, skill) {
   }
 }
 
-// ===== 主循环 =====
+// ===== 多模态生成处理器 =====
+async function handleGenerateTask(event) {
+  const taskId = event.target_id;
+  const task = await call('GET', `/tasks/${taskId}`);
+  if (!task || task.error) { console.log(`[Skill:生成] 任务不存在: ${taskId}`); return; }
+
+  const taskType = task.type; // image-gen or audio-gen
+  console.log(`[Skill:生成] 🎨 任务: ${task.title} (${taskType})`);
+
+  // 认领任务
+  const claimResult = await call('POST', `/tasks/${taskId}/claim`, { agentId: AGENT_ID });
+  if (claimResult.error) {
+    console.log(`[Skill:生成] 认领失败: ${claimResult.error}`);
+    return;
+  }
+  console.log(`[Skill:生成] ✅ 已认领`);
+
+  const projectId = task.project_id;
+  const typeLabel = taskType === 'image-gen' ? '图片' : '音频';
+
+  try {
+    // 读取父需求 SRS 获取更多上下文
+    let srsContext = '';
+    if (task.parent_id) {
+      const parentReq = await call('GET', `/requirements/${task.parent_id}`);
+      if (parentReq && !parentReq.error) {
+        const srs = JSON.parse(parentReq.srs || '{}');
+        const scopeIn = (srs.scopeIn || []).join('、');
+        const ac = (srs.acceptanceCriteria || []).join('；');
+        if (scopeIn || ac) {
+          srsContext = `\n需求上下文:\n- 功能范围: ${scopeIn}\n- 验收标准: ${ac}`;
+        }
+      }
+    }
+
+    // 构建 prompt
+    const taskTitle = task.title || '';
+    const taskDesc = task.description || '';
+    const prompt = `${taskTitle} — ${taskDesc}${srsContext ? '\n\n' + srsContext : ''}`;
+
+    console.log(`[Skill:生成] 构建 prompt (${prompt.length} chars)`);
+
+    // 调用生成 API
+    const endpoint = taskType === 'image-gen'
+      ? `/generate/image/${projectId}`
+      : `/generate/audio/${projectId}`;
+
+    const genResult = await call('POST', endpoint, {
+      prompt: prompt,
+      params: {},
+    });
+
+    if (genResult.error) {
+      throw new Error(`生成失败: ${genResult.error} — ${genResult.message || ''}`);
+    }
+
+    if (!genResult.success) {
+      throw new Error(`生成返回异常: ${JSON.stringify(genResult).substring(0, 200)}`);
+    }
+
+    console.log(`[Skill:生成] ✅ 生成完成: ${genResult.assetPath}`);
+
+    // 提交任务
+    const submitNotes = [
+      `🎨 ${typeLabel}生成完成`,
+      `Prompt: ${prompt.substring(0, 200)}`,
+      `文件: ${genResult.assetPath}`,
+      `类型: ${genResult.mime}`,
+      genResult.metadata ? `模型: ${genResult.metadata.model || ''}` : '',
+    ].filter(Boolean).join('\n');
+
+    await call('POST', `/tasks/${taskId}/submit`, {
+      agentId: AGENT_ID,
+      files: [genResult.assetPath],
+      artifacts: {
+        assetPath: genResult.assetPath,
+        mime: genResult.mime,
+        metadata: genResult.metadata || {},
+      },
+      notes: submitNotes,
+    });
+
+    console.log(`[Skill:生成] ✅ 已提交: ${genResult.assetPath}`);
+
+    // ── 知识库录入（非阻塞，自动将生成的媒体沉淀为项目知识）──
+    try {
+      const scanResult = await call('POST', `/generate/${projectId}/scan-asset`, {
+        assetPath: genResult.assetPath,
+        requirementId: task.parent_id || null,
+        taskId: task.id,
+        prompt: prompt,
+        metadata: genResult.metadata || null,
+      });
+      if (scanResult.status === 'scanned') {
+        console.log(`[Skill:生成] 📚 已录入知识库: ${scanResult.pagePath || 'OK'}`);
+      } else if (scanResult.status === 'failed') {
+        console.log(`[Skill:生成] ⚠️ 知识库录入跳过: ${scanResult.error}`);
+      }
+    } catch (e) {
+      console.log(`[Skill:生成] ⚠️ 知识库录入异常（非关键）: ${e.message}`);
+    }
+
+  } catch (e) {
+    console.error(`[Skill:生成] ❌ 失败: ${e.message}`);
+    // 提交失败状态
+    await call('POST', `/tasks/${taskId}/submit`, {
+      agentId: AGENT_ID,
+      notes: `❌ ${typeLabel}生成失败: ${e.message}`,
+    });
+  }
+}
 async function main() {
   console.log(`[Worker] 智能体 ${AGENT_ID} 启动 (Skill 驱动模式)`);
 
@@ -503,6 +613,12 @@ async function main() {
 
         if (event.type === 'task.created') {
           const taskId = event.target_id;
+          // 如果是多模态生成任务，走专用处理器
+          const taskBrief = await call('GET', `/tasks/${taskId}`);
+          if (taskBrief && !taskBrief.error && (taskBrief.type === 'image-gen' || taskBrief.type === 'audio-gen')) {
+            await handleGenerateTask(event);
+            continue;
+          }
           const matches = await call('GET', `/skills/match/${taskId}`);
           if (matches && matches.length > 0 && matches[0].score >= 3) {
             await handleExecuteSkill(event, matches[0].skill);

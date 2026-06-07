@@ -87,8 +87,8 @@ router.delete('/:id', (req, res) => {
   collection('requirements').remove(r => r.project_id === req.params.id);
   collection('tasks').remove(t => t.project_id === req.params.id);
   collection('clarification_threads').remove(c => {
-    const req = collection('requirements').findOne(r => r.id === c.requirement_id);
-    return !req || req.project_id === req.params.id;
+    const foundReq = collection('requirements').findOne(r => r.id === c.requirement_id);
+    return !foundReq || foundReq.project_id === req.params.id;
   });
   collection('projects').remove(p => p.id === req.params.id);
   res.json({ success: true, message: `项目 ${project.name} 已删除` });

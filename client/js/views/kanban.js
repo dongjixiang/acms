@@ -11,6 +11,51 @@ async function loadKanbanReqFilter() {
   } catch (e) { /* */ }
 }
 
+// 多模态生成任务 — 渲染媒体预览
+function renderGenPreview(t) {
+  try {
+    const subs = safeParse(t.submissions);
+    if (!subs || !subs.length) return '';
+    const lastSub = subs[subs.length - 1];
+    if (!lastSub || !lastSub.files) return '';
+
+    const assetPath = lastSub.files[0];
+    if (!assetPath) return '';
+
+    // 从 assetPath 推断 MIME（格式: assets/2026-06-07/filename.png）
+    const ext = (assetPath.split('.').pop() || '').toLowerCase();
+    const imageExts = ['png', 'jpg', 'jpeg', 'gif', 'webp'];
+    const audioExts = ['mp3', 'wav', 'ogg', 'm4a', 'flac'];
+
+    const projId = t.project_id;
+    const assetUrl = `/api/generate/assets/${projId}/${assetPath}`;
+
+    if (imageExts.includes(ext)) {
+      return `<h3>🎨 生成结果</h3>
+        <div style="margin:8px 0;text-align:center">
+          <img src="${assetUrl}" style="max-width:500px;max-height:400px;border-radius:8px;border:1px solid var(--border);box-shadow:0 2px 8px rgba(0,0,0,0.15)" alt="生成图片" onclick="window.open('${assetUrl}','_blank')">
+          <div style="font-size:11px;color:var(--text2);margin-top:4px">点击放大 | ${escHtml(assetPath)}</div>
+        </div>`;
+    }
+
+    if (audioExts.includes(ext)) {
+      return `<h3>🔊 生成结果</h3>
+        <div style="margin:8px 0;padding:12px;background:var(--bg2);border-radius:8px;text-align:center">
+          <audio controls style="width:100%;max-width:400px">
+            <source src="${assetUrl}" type="audio/${ext === 'mp3' ? 'mpeg' : ext}">
+            您的浏览器不支持音频播放
+          </audio>
+          <div style="font-size:11px;color:var(--text2);margin-top:4px">${escHtml(assetPath)}</div>
+        </div>`;
+    }
+
+    return `<div style="font-size:12px;padding:8px;background:var(--bg2);border-radius:6px">
+      📎 交付物: <a href="${assetUrl}" target="_blank">${escHtml(assetPath)}</a></div>`;
+  } catch (e) {
+    return '';
+  }
+}
+
 async function refreshKanban(parentId) {
   if (!App.currentProjectId) return;
   const filterVal = parentId || document.getElementById('kanban-req-filter')?.value || '';
@@ -89,6 +134,8 @@ async function openTask(taskId) {
       (Object.keys(skills).length ? '<h3>🎯 技能</h3><div class="skills">' + Object.entries(skills).map(function(e) { return '<span class="skill-tag">' + e[0] + ':' + e[1] + '</span>'; }).join('') + '</div>' : '') +
       '<h3>📝 日志</h3><div>' + (log.length ? log.map(function(l) { return '<div class="log-entry">' + new Date(l.time).toLocaleString('zh-CN') + ' — ' + l.action + ': ' + escHtml(l.note || '') + '</div>'; }).join('') : '<div class="empty">暂无</div>') + '</div>' +
       (subs.length ? '<h3>📦 提交</h3>' + subs.map(function(s) { return '<div class="log-entry">' + fmtDate(s.submittedAt) + ' — ' + (s.submittedBy || '') + ': ' + escHtml(s.notes || '') + '</div>'; }).join('') : '') +
+      // 生成任务展示媒体预览
+      ((t.type === 'image-gen' || t.type === 'audio-gen') && t.status === 'done' ? renderGenPreview(t) : '') +
       (revs.length ? '<h3>👁 审核</h3>' + revs.map(function(r) { return '<div class="log-entry">' + fmtDate(r.reviewedAt) + ' — ' + (r.verdict === 'approved' ? '✅' : '❌') + ' ' + escHtml(r.feedback || '') + '</div>'; }).join('') : '') +
       (t.review_status ? '<div class="review-status ' + t.review_status + '">' +
         (t.review_status === 'reviewing' ? '🤖 审核中…' : t.review_status === 'approved' ? '✅ 自动审核通过' : t.review_status === 'rejected' ? '❌ 自动审核驳回' : '⚠️ ' + escHtml(t.review_status)) +
