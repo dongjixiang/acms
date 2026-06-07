@@ -608,32 +608,52 @@ function getRequirementAudioText() {
 
 /**
  * 带反馈优化的图片生成 — 类似线框图反馈闭环
+ * 优化意见累积叠加，不替代需求
  */
 async function generateImagePreviewWithFeedback(reqId, inputId, oldPreviewId) {
   const feedback = document.getElementById(inputId);
   if (!feedback) return;
   const feedbackText = feedback.value.trim();
   if (!feedbackText) return toast('请输入优化意见', 'error');
-  const titleEl = document.getElementById('detail-title');
-  const reqTitle = titleEl ? titleEl.textContent.replace(/^REQ-\w+:\s*/, '') : '';
-  const srsPre = document.querySelector('.srs-preview pre');
-  let scopeInText = '';
-  try {
-    const srsData = srsPre ? JSON.parse(srsPre.textContent) : null;
-    if (srsData && srsData.scopeIn && Array.isArray(srsData.scopeIn)) {
-      scopeInText = srsData.scopeIn.slice(0, 2).join('、').substring(0, 150);
-    }
-  } catch(e) {}
-  const basePrompt = [reqTitle, scopeInText].filter(Boolean).join('：').substring(0, 100);
-  const enhancedPrompt = basePrompt + '，修改意见：' + feedbackText;
+
+  // 从旧卡片读取累积的 basePrompt 和反馈历史
+  const oldPreview = document.getElementById(oldPreviewId);
+  let basePrompt = '';
+  let history = [];
+  if (oldPreview) {
+    basePrompt = oldPreview.getAttribute('data-base-prompt') || '';
+    try { history = JSON.parse(oldPreview.getAttribute('data-feedback-history') || '[]'); } catch(e) {}
+  }
+  // 如果旧卡片没有数据（降级），从 DOM 提取
+  if (!basePrompt) {
+    const titleEl = document.getElementById('detail-title');
+    const reqTitle = titleEl ? titleEl.textContent.replace(/^REQ-\w+:\s*/, '') : '';
+    const srsPre = document.querySelector('.srs-preview pre');
+    let scopeInText = '';
+    try {
+      const srsData = srsPre ? JSON.parse(srsPre.textContent) : null;
+      if (srsData && srsData.scopeIn && Array.isArray(srsData.scopeIn)) {
+        scopeInText = srsData.scopeIn.slice(0, 2).join('、').substring(0, 150);
+      }
+    } catch(e) {}
+    basePrompt = [reqTitle, scopeInText].filter(Boolean).join('：').substring(0, 100);
+  }
+
+  // 累积新意见
+  history.push(feedbackText);
+  // 构建完整 prompt = 需求描述 + 所有累积的优化意见
+  const feedbackPart = history.map((h, i) => `优化${i + 1}：${h}`).join('；');
+  const enhancedPrompt = basePrompt + '，' + feedbackPart;
+
   const container = document.getElementById(`ai-clarify-media-actions-${reqId}`);
   if (!container) return;
-  const oldPreview = document.getElementById(oldPreviewId);
   if (oldPreview) oldPreview.remove();
+
   const loadingEl = document.createElement('div');
   loadingEl.style.cssText = 'padding:8px;font-size:12px;color:var(--text2)';
   loadingEl.textContent = '⏳ 根据你的意见优化中...';
   container.prepend(loadingEl);
+
   const projectId = App.currentProjectId;
   const providers = ['gen-img-minimax', 'gen-img-openai'];
   let lastError = '';
@@ -645,11 +665,17 @@ async function generateImagePreviewWithFeedback(reqId, inputId, oldPreviewId) {
       loadingEl.remove();
       const previewId = 'img-preview-' + reqId + '-' + Date.now();
       const newInputId = 'img-feedback-' + reqId + '-' + Date.now();
+      const historyHtml = history.length > 0
+        ? '<div style="margin-bottom:6px;font-size:10px;color:var(--text3);padding:4px 6px;background:var(--bg3);border-radius:4px;max-height:36px;overflow-y:auto">📝 ' + history.map((h, i) => '优化' + (i + 1) + ': ' + escHtml(h)).join(' → ') + '</div>'
+        : '';
       const previewEl = document.createElement('div');
       previewEl.id = previewId;
+      previewEl.setAttribute('data-base-prompt', basePrompt);
+      previewEl.setAttribute('data-feedback-history', JSON.stringify(history));
       previewEl.style.cssText = 'margin-top:4px;padding:8px;background:var(--bg2);border-radius:6px;border:1px solid var(--border)';
-      previewEl.innerHTML = '<div style="display:flex;gap:12px;align-items:flex-start"><a href="' + imgUrl + '" target="_blank"><img src="' + imgUrl + '" style="max-width:200px;max-height:200px;border-radius:4px;border:1px solid var(--border)" onerror="this.style.display=\'none\'"></a><div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0"><button class="btn-small" style="font-size:10px" onclick="document.getElementById(\'' + previewId + '\').remove()">✕ 关闭</button><button class="btn-small" style="font-size:10px" onclick="generateImagePreview(\'' + reqId + '\')">🔄 重新生成</button></div></div><div style="margin-top:6px;display:flex;gap:4px"><input id="' + newInputId + '" type="text" placeholder="继续输入优化意见..." style="flex:1;font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg3);color:var(--text)"><button class="btn-small" style="font-size:10px;background:rgba(78,205,196,0.1);color:var(--green);border-color:rgba(78,205,196,0.3)" onclick="generateImagePreviewWithFeedback(\'' + reqId + '\',\'' + newInputId + '\',\'' + previewId + '\')">✏️ 优化</button></div>';
+      previewEl.innerHTML = historyHtml + '<div style="display:flex;gap:12px;align-items:flex-start"><a href="' + imgUrl + '" target="_blank"><img src="' + imgUrl + '" style="max-width:200px;max-height:200px;border-radius:4px;border:1px solid var(--border)" onerror="this.style.display=\'none\'"></a><div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0"><button class="btn-small" style="font-size:10px" onclick="document.getElementById(\'' + previewId + '\').remove()">✕ 关闭</button><button class="btn-small" style="font-size:10px" onclick="generateImagePreview(\'' + reqId + '\')">🔄 重新生成</button></div></div><div style="margin-top:6px;display:flex;gap:4px"><input id="' + newInputId + '" type="text" placeholder="继续输入优化意见..." style="flex:1;font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg3);color:var(--text)"><button class="btn-small" style="font-size:10px;background:rgba(78,205,196,0.1);color:var(--green);border-color:rgba(78,205,196,0.3)" onclick="generateImagePreviewWithFeedback(\'' + reqId + '\',\'' + newInputId + '\',\'' + previewId + '\')">✏️ 继续优化</button></div>';
       container.prepend(previewEl);
+      feedback.value = '';
       return;
     } catch (e) { lastError = e.message; }
   }
@@ -691,6 +717,8 @@ async function generateImagePreview(reqId) {
       const inputId = 'img-feedback-' + reqId + '-' + Date.now();
       const previewEl = document.createElement('div');
       previewEl.id = previewId;
+      previewEl.setAttribute('data-base-prompt', prompt);
+      previewEl.setAttribute('data-feedback-history', '[]');
       previewEl.style.cssText = 'margin-top:4px;padding:8px;background:var(--bg2);border-radius:6px;border:1px solid var(--border)';
       previewEl.innerHTML = '<div style="display:flex;gap:12px;align-items:flex-start"><a href="' + imgUrl + '" target="_blank"><img src="' + imgUrl + '" style="max-width:200px;max-height:200px;border-radius:4px;border:1px solid var(--border)" onerror="this.style.display=\'none\'"></a><div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0"><button class="btn-small" style="font-size:10px" onclick="document.getElementById(\'' + previewId + '\').remove()">✕ 关闭</button><button class="btn-small" style="font-size:10px" onclick="generateImagePreview(\'' + reqId + '\')">🔄 重新生成</button></div></div><div style="margin-top:6px;display:flex;gap:4px"><input id="' + inputId + '" type="text" placeholder="输入优化意见（如：刘备穿白色汉服、手持双股剑）" style="flex:1;font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg3);color:var(--text)"><button class="btn-small" style="font-size:10px;background:rgba(78,205,196,0.1);color:var(--green);border-color:rgba(78,205,196,0.3)" onclick="generateImagePreviewWithFeedback(\'' + reqId + '\',\'' + inputId + '\',\'' + previewId + '\')">✏️ 优化</button></div>';
       container.prepend(previewEl);
