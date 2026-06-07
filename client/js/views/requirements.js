@@ -616,12 +616,14 @@ async function generateImagePreviewWithFeedback(reqId, inputId, oldPreviewId) {
   const feedbackText = feedback.value.trim();
   if (!feedbackText) return toast('请输入优化意见', 'error');
 
-  // 从旧卡片读取累积的 basePrompt 和反馈历史
+  // 从旧卡片读取累积的 basePrompt 和反馈历史，以及上一张图的路径
   const oldPreview = document.getElementById(oldPreviewId);
   let basePrompt = '';
   let history = [];
+  let prevImageUrl = '';
   if (oldPreview) {
     basePrompt = oldPreview.getAttribute('data-base-prompt') || '';
+    prevImageUrl = oldPreview.getAttribute('data-prev-image') || '';
     try { history = JSON.parse(oldPreview.getAttribute('data-feedback-history') || '[]'); } catch(e) {}
   }
   // 如果旧卡片没有数据（降级），从 DOM 提取
@@ -655,11 +657,21 @@ async function generateImagePreviewWithFeedback(reqId, inputId, oldPreviewId) {
   container.prepend(loadingEl);
 
   const projectId = App.currentProjectId;
-  const providers = ['gen-img-minimax', 'gen-img-minimax', 'gen-img-openai'];
+  const providers = ['gen-img-minimax', 'gen-img-minimax', 'gen-img-comfyui', 'gen-img-openai'];
   let lastError = '';
   for (const pid of providers) {
     try {
-      const result = await api('POST', `/generate/image/${projectId}`, { providerId: pid, prompt: enhancedPrompt.substring(0, 400) });
+      const params = { providerId: pid, prompt: enhancedPrompt.substring(0, 400) };
+      // ComfyUI 降级时传递上一张图片路径做 img2img
+      if (pid === 'gen-img-comfyui' && prevImageUrl) {
+        // 从 URL 提取相对路径: /api/generate/assets/proj_xxx/assets/... -> assets/...
+        const assetMatch = prevImageUrl.match(/\/assets\/(.+)/);
+        if (assetMatch) {
+          const projectSlug = (document.querySelector('.srs-preview') ? 'sanguo' : '');
+          params.inputImage = projectSlug + '/' + assetMatch[1];
+        }
+      }
+      const result = await api('POST', `/generate/image/${projectId}`, params);
       if (!result.success) { lastError = result.message || '生成失败'; continue; }
       const imgUrl = '/api/generate/assets/' + projectId + '/' + result.assetPath;
       loadingEl.remove();
@@ -672,6 +684,7 @@ async function generateImagePreviewWithFeedback(reqId, inputId, oldPreviewId) {
       previewEl.id = previewId;
       previewEl.setAttribute('data-base-prompt', basePrompt);
       previewEl.setAttribute('data-feedback-history', JSON.stringify(history));
+      previewEl.setAttribute('data-prev-image', imgUrl);
       previewEl.style.cssText = 'margin-top:4px;padding:8px;background:var(--bg2);border-radius:6px;border:1px solid var(--border)';
       previewEl.innerHTML = historyHtml + '<div style="display:flex;gap:12px;align-items:flex-start"><a href="' + imgUrl + '" target="_blank"><img src="' + imgUrl + '" style="max-width:200px;max-height:200px;border-radius:4px;border:1px solid var(--border)" onerror="this.style.display=\'none\'"></a><div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0"><button class="btn-small" style="font-size:10px" onclick="document.getElementById(\'' + previewId + '\').remove()">✕ 关闭</button><button class="btn-small" style="font-size:10px" onclick="generateImagePreview(\'' + reqId + '\')">🔄 重新生成</button></div></div><div style="margin-top:6px;display:flex;gap:4px"><input id="' + newInputId + '" type="text" placeholder="继续输入优化意见..." style="flex:1;font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg3);color:var(--text)"><button class="btn-small" style="font-size:10px;background:rgba(78,205,196,0.1);color:var(--green);border-color:rgba(78,205,196,0.3)" onclick="generateImagePreviewWithFeedback(\'' + reqId + '\',\'' + newInputId + '\',\'' + previewId + '\')">✏️ 继续优化</button></div>';
       container.prepend(previewEl);
@@ -705,7 +718,7 @@ async function generateImagePreview(reqId) {
   loadingEl.style.cssText = 'padding:8px;font-size:12px;color:var(--text2)';
   loadingEl.textContent = '⏳ 正在生成图片预览...';
   container.prepend(loadingEl);
-  const providers = ['gen-img-minimax', 'gen-img-minimax', 'gen-img-openai'];
+  const providers = ['gen-img-minimax', 'gen-img-minimax', 'gen-img-comfyui', 'gen-img-openai'];
   let lastError = '';
   for (const pid of providers) {
     try {
@@ -719,6 +732,7 @@ async function generateImagePreview(reqId) {
       previewEl.id = previewId;
       previewEl.setAttribute('data-base-prompt', prompt);
       previewEl.setAttribute('data-feedback-history', '[]');
+      previewEl.setAttribute('data-prev-image', imgUrl);
       previewEl.style.cssText = 'margin-top:4px;padding:8px;background:var(--bg2);border-radius:6px;border:1px solid var(--border)';
       previewEl.innerHTML = '<div style="display:flex;gap:12px;align-items:flex-start"><a href="' + imgUrl + '" target="_blank"><img src="' + imgUrl + '" style="max-width:200px;max-height:200px;border-radius:4px;border:1px solid var(--border)" onerror="this.style.display=\'none\'"></a><div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0"><button class="btn-small" style="font-size:10px" onclick="document.getElementById(\'' + previewId + '\').remove()">✕ 关闭</button><button class="btn-small" style="font-size:10px" onclick="generateImagePreview(\'' + reqId + '\')">🔄 重新生成</button></div></div><div style="margin-top:6px;display:flex;gap:4px"><input id="' + inputId + '" type="text" placeholder="输入优化意见（如：刘备穿白色汉服、手持双股剑）" style="flex:1;font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg3);color:var(--text)"><button class="btn-small" style="font-size:10px;background:rgba(78,205,196,0.1);color:var(--green);border-color:rgba(78,205,196,0.3)" onclick="generateImagePreviewWithFeedback(\'' + reqId + '\',\'' + inputId + '\',\'' + previewId + '\')">✏️ 优化</button></div>';
       container.prepend(previewEl);

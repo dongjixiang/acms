@@ -453,9 +453,9 @@ async function generateSuno(projectSlug, provider, text, params) {
 
 // ===== ComfyUI Provider (本地 Stable Diffusion) =====
 async function generateComfyUI(projectSlug, provider, prompt, params) {
-  const baseUrl = provider.config.baseUrl || 'http://localhost:8188';
-  const apiKey = provider.config.apiKey || '';  // 可选（有用户认证时）
-  const workflowFile = provider.config.defaultWorkflow || 'txt2img.json';
+  const baseUrl = provider.config.baseUrl || 'http://127.0.0.1:8000';
+  const apiKey = provider.config.apiKey || '';
+  const workflowFile = params.inputImage ? (provider.config.defaultWorkflow || 'img2img.json') : 'txt2img.json';
 
   // 读取预设 workflow
   let workflow;
@@ -464,19 +464,53 @@ async function generateComfyUI(projectSlug, provider, prompt, params) {
     if (fs.existsSync(workflowPath)) {
       workflow = JSON.parse(fs.readFileSync(workflowPath, 'utf-8'));
     } else {
-      // 默认 txt2img workflow — 给一个基本的 SD 工作流
+      // 兜底：基本 txt2img workflow
       workflow = {
-        "3": { "class_type": "KSampler", "inputs": { "seed": randomSeed(), "steps": params.steps || 20, "cfg": params.cfg || 7, "sampler_name": "euler", "scheduler": "normal", "denoise": 1, "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0] } },
+        "3": { "class_type": "KSampler", "inputs": { "seed": randomSeed(), "steps": params.steps || 20, "cfg": params.cfg || 7, "sampler_name": "euler", "scheduler": "normal", "denoise": params.denoise ?? 1, "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": params.inputImage ? ["5", 0] : ["5", 0] } },
         "4": { "class_type": "CheckpointLoaderSimple", "inputs": { "ckpt_name": params.checkpoint || "sd_xl_base_1.0.safetensors" } },
-        "5": { "class_type": "EmptyLatentImage", "inputs": { "width": params.width || 1024, "height": params.height || 1024, "batch_size": 1 } },
+        "5": params.inputImage
+          ? { "class_type": "VAEEncode", "inputs": { "pixels": ["9", 0], "vae": ["4", 2] } }
+          : { "class_type": "EmptyLatentImage", "inputs": { "width": params.width || 1024, "height": params.height || 1024, "batch_size": 1 } },
         "6": { "class_type": "CLIPTextEncode", "inputs": { "text": prompt, "clip": ["4", 1] } },
-        "7": { "class_type": "CLIPTextEncode", "inputs": { "text": params.negative_prompt || "", "clip": ["4", 1] } },
+        "7": { "class_type": "CLIPTextEncode", "inputs": { "text": params.negative_prompt || "blurry, low quality, distorted, deformed, ugly, bad anatomy, watermark, text, signature", "clip": ["4", 1] } },
         "8": { "class_type": "VAEDecode", "inputs": { "samples": ["3", 0], "vae": ["4", 2] } },
-        "9": { "class_type": "SaveImage", "inputs": { "filename_prefix": "comfyui_gen", "images": ["8", 0] } },
+        "9": params.inputImage ? { "class_type": "LoadImage", "inputs": { "image": "" } } : null,
+        "10": { "class_type": "SaveImage", "inputs": { "filename_prefix": "acms_gen", "images": ["8", 0] } },
       };
+      // 移除 null 节点
+      Object.keys(workflow).forEach(k => { if (workflow[k] === null) delete workflow[k]; });
     }
   } catch (e) {
     throw Object.assign(new Error(`ComfyUI workflow 解析失败: ${e.message}`), { status: 400 });
+  }
+
+  // 如果有 inputImage，复制到 ComfyUI input 目录并设置 LoadImage 节点
+  if (params.inputImage) {
+    const WORKSPACE_ROOT = path.join(__dirname, '..', '..', 'workspaces');
+    const srcPath = path.join(WORKSPACE_ROOT, params.inputImage);
+    if (!fs.existsSync(srcPath)) {
+      throw Object.assign(new Error(`原图不存在: ${params.inputImage}`), { status: 400 });
+    }
+    // 复制到 ComfyUI input 目录
+    const comfyInputDir = path.join(__dirname, '..', '..', '..', '..', 'Users', 'swede', 'AppData', 'Local', 'Programs', 'ComfyUI', 'resources', 'ComfyUI', 'input');
+    const ext = path.extname(srcPath) || '.png';
+    const inputFileName = `acms_input_${Date.now()}${ext}`;
+    const destPath = path.join(comfyInputDir, inputFileName);
+    fs.copyFileSync(srcPath, destPath);
+    console.log(`[ComfyUI] 已复制原图到: ${destPath}`);
+
+    // 设置 workflow 中的 LoadImage 节点 (node 9)
+    if (workflow["9"] && workflow["9"].class_type === "LoadImage") {
+      workflow["9"].inputs.image = inputFileName;
+    } else {
+      // 尝试在其他位置找 LoadImage 节点
+      for (const [nodeId, node] of Object.entries(workflow)) {
+        if (node.class_type === "LoadImage") {
+          node.inputs.image = inputFileName;
+          break;
+        }
+      }
+    }
   }
 
   // 替换 prompt 占位符
