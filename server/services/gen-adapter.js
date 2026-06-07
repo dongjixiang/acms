@@ -492,7 +492,7 @@ async function generateComfyUI(projectSlug, provider, prompt, params) {
       throw Object.assign(new Error(`原图不存在: ${params.inputImage}`), { status: 400 });
     }
     // 复制到 ComfyUI input 目录
-    const comfyInputDir = path.join(__dirname, '..', '..', '..', '..', 'Users', 'swede', 'AppData', 'Local', 'Programs', 'ComfyUI', 'resources', 'ComfyUI', 'input');
+    const comfyInputDir = 'D:\\Users\\swede\\AppData\\Local\\Programs\\ComfyUI\\resources\\ComfyUI\\input';
     const ext = path.extname(srcPath) || '.png';
     const inputFileName = `acms_input_${Date.now()}${ext}`;
     const destPath = path.join(comfyInputDir, inputFileName);
