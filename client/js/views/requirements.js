@@ -547,6 +547,7 @@ function detectPreviewNeeds(srs) {
     prototype: /界面|页面|布局|导航|菜单|弹窗|表单|首页|列表|面板|设置|搜索|登录|注册/i.test(text),
     image: /立绘|头像|icon|图标|角色|场景|素材|配图|海报|封面|渲染图|像素|sprite|背景图|插图|角色图|图片|照片|写真|美女|摄影|拍照|画作|绘制|生成.*图/i.test(text),
     audio: /语音|配音|音效|背景音乐|旁白|朗读|播报|tts|音乐|歌曲|音色|声线|台词|对白|录音/i.test(text),
+    video: /视频|动画|演示|宣传片|动态片段|特效镜头|场景动画|角色动画|过场动画|开场|片头|打斗|追逐|爆炸|飞行|奔跑|技能.*效果/i.test(text),
   };
 }
 
@@ -577,6 +578,7 @@ function updateMediaPreviewButtons(reqId) {
   if (needs.prototype) buttons.push(`<button class="btn-small" style="background:rgba(147,112,219,0.12);color:var(--accent);border-color:rgba(147,112,219,0.25)" onclick="checkPrototypeSketches('${reqId}')">🎨 生成界面示意图</button>`);
   if (needs.image) buttons.push(`<button class="btn-small" style="background:rgba(78,205,196,0.12);color:var(--accent);border-color:rgba(78,205,196,0.25)" onclick="generateImagePreview('${reqId}')">🎨 预览生成图片</button>`);
   if (needs.audio) buttons.push(`<button class="btn-small" style="background:rgba(255,140,68,0.12);color:#ff8c44;border-color:rgba(255,140,68,0.25)" onclick="generateAudioPreview('${reqId}')">🔊 试听合成语音</button>`);
+  if (needs.video) buttons.push(`<button class="btn-small" style="background:rgba(255,99,132,0.12);color:#ff6384;border-color:rgba(255,99,132,0.25)" onclick="generateVideoPreview('${reqId}')">🎬 预览生成视频</button>`);
   container.innerHTML = buttons.length > 0
     ? '<div style="display:flex;gap:6px;flex-wrap:wrap">' + buttons.join('') + '<span style="font-size:10px;color:var(--text3);align-self:center">预览仅供参考</span></div>'
     : '';
@@ -789,6 +791,136 @@ async function generateAudioPreviewWithText(reqId, inputId, oldPreviewId) {
   const oldPreview = document.getElementById(oldPreviewId);
   if (oldPreview) oldPreview.remove();
   await generateAudioPreview(reqId, customText);
+}
+
+/**
+ * 视频预览生成 — 从需求描述提取 prompt，走 MiniMax → ComfyUI 降级链
+ */
+async function generateVideoPreview(reqId) {
+  const container = document.getElementById(`ai-clarify-media-actions-${reqId}`);
+  if (!container) return;
+  const projectId = App.currentProjectId;
+  if (!projectId) return toast('请先选择项目', 'error');
+  // 从页面元素提取需求标题和 SRS scopeIn 构建 prompt
+  const titleEl = document.getElementById('detail-title');
+  const reqTitle = titleEl ? titleEl.textContent.replace(/^REQ-\w+:\s*/, '') : '';
+  const srsPre = document.querySelector('.srs-preview pre');
+  let scopeInText = '';
+  try {
+    const srsData = srsPre ? JSON.parse(srsPre.textContent) : null;
+    if (srsData && srsData.scopeIn && Array.isArray(srsData.scopeIn)) {
+      scopeInText = srsData.scopeIn.join('、').substring(0, 300);
+    }
+  } catch(e) { /* SRS 非 JSON 或不存在 */ }
+  const fullDesc = [reqTitle, scopeInText].filter(Boolean).join('：');
+  const prompt = fullDesc ? fullDesc.substring(0, 200) : '生成一段预览视频';
+  const loadingEl = document.createElement('div');
+  loadingEl.style.cssText = 'padding:8px;font-size:12px;color:var(--text2)';
+  loadingEl.textContent = '⏳ 正在生成视频预览（云端生成约需 1-3 分钟）...';
+  container.prepend(loadingEl);
+  const providers = ['gen-video-minimax', 'gen-video-comfyui'];
+  let lastError = '';
+  for (const pid of providers) {
+    try {
+      const result = await api('POST', `/generate/video/${projectId}`, { providerId: pid, prompt: prompt.substring(0, 200), params: {} });
+      if (!result.success) { lastError = result.message || '生成失败'; continue; }
+      const videoUrl = '/api/generate/assets/' + projectId + '/' + result.assetPath;
+      loadingEl.remove();
+      const previewId = 'video-preview-' + reqId + '-' + Date.now();
+      const inputId = 'video-feedback-' + reqId + '-' + Date.now();
+      const previewEl = document.createElement('div');
+      previewEl.id = previewId;
+      previewEl.setAttribute('data-base-prompt', prompt);
+      previewEl.setAttribute('data-feedback-history', '[]');
+      previewEl.setAttribute('data-prev-video', videoUrl);
+      previewEl.setAttribute('data-asset-path', result.assetPath);
+      previewEl.style.cssText = 'margin-top:4px;padding:8px;background:var(--bg2);border-radius:6px;border:1px solid var(--border)';
+      const mime = result.mime || 'video/mp4';
+      previewEl.innerHTML = '<div style="display:flex;gap:12px;align-items:flex-start"><video controls style="max-width:280px;max-height:200px;border-radius:4px;border:1px solid var(--border)" preload="metadata"><source src="' + videoUrl + '" type="' + mime + '"></video><div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0"><button class="btn-small" style="font-size:10px" onclick="document.getElementById(\'' + previewId + '\').remove()">✕ 关闭</button><button class="btn-small" style="font-size:10px" onclick="generateVideoPreview(\'' + reqId + '\')">🔄 重新生成</button></div></div><div style="margin-top:6px;display:flex;gap:4px"><input id="' + inputId + '" type="text" placeholder="输入优化意见（如：增加动态效果、调整色调）" style="flex:1;font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg3);color:var(--text)"><button class="btn-small" style="font-size:10px;background:rgba(255,99,132,0.1);color:#ff6384;border-color:rgba(255,99,132,0.3)" onclick="generateVideoPreviewWithFeedback(\'' + reqId + '\',\'' + inputId + '\',\'' + previewId + '\')">✏️ 优化</button></div>';
+      container.prepend(previewEl);
+      return;
+    } catch (e) { lastError = e.message; }
+  }
+  loadingEl.textContent = '❌ 生成失败: ' + escHtml(lastError);
+  setTimeout(function() { loadingEl.remove(); }, 5000);
+}
+
+/**
+ * 带反馈优化的视频生成 — 优化意见累积叠加
+ */
+async function generateVideoPreviewWithFeedback(reqId, inputId, oldPreviewId) {
+  const feedback = document.getElementById(inputId);
+  if (!feedback) return;
+  const feedbackText = feedback.value.trim();
+  if (!feedbackText) return toast('请输入优化意见', 'error');
+
+  const oldPreview = document.getElementById(oldPreviewId);
+  let basePrompt = '';
+  let history = [];
+  let prevVideoUrl = '';
+  if (oldPreview) {
+    basePrompt = oldPreview.getAttribute('data-base-prompt') || '';
+    prevVideoUrl = oldPreview.getAttribute('data-prev-video') || '';
+    try { history = JSON.parse(oldPreview.getAttribute('data-feedback-history') || '[]'); } catch(e) {}
+  }
+  if (!basePrompt) {
+    const titleEl = document.getElementById('detail-title');
+    const reqTitle = titleEl ? titleEl.textContent.replace(/^REQ-\w+:\s*/, '') : '';
+    const srsPre = document.querySelector('.srs-preview pre');
+    let scopeInText = '';
+    try {
+      const srsData = srsPre ? JSON.parse(srsPre.textContent) : null;
+      if (srsData && srsData.scopeIn && Array.isArray(srsData.scopeIn)) {
+        scopeInText = srsData.scopeIn.slice(0, 2).join('、').substring(0, 150);
+      }
+    } catch(e) {}
+    basePrompt = [reqTitle, scopeInText].filter(Boolean).join('：').substring(0, 100);
+  }
+
+  history.push(feedbackText);
+  const feedbackPart = history.map((h, i) => `优化${i + 1}：${h}`).join('；');
+  const enhancedPrompt = basePrompt + '，' + feedbackPart;
+
+  const container = document.getElementById(`ai-clarify-media-actions-${reqId}`);
+  if (!container) return;
+  if (oldPreview) oldPreview.remove();
+
+  const loadingEl = document.createElement('div');
+  loadingEl.style.cssText = 'padding:8px;font-size:12px;color:var(--text2)';
+  loadingEl.textContent = '⏳ 根据你的意见优化中...';
+  container.prepend(loadingEl);
+
+  const projectId = App.currentProjectId;
+  const providers = ['gen-video-minimax', 'gen-video-comfyui'];
+  let lastError = '';
+  for (const pid of providers) {
+    try {
+      const params = { providerId: pid, prompt: enhancedPrompt.substring(0, 400) };
+      const result = await api('POST', `/generate/video/${projectId}`, params);
+      if (!result.success) { lastError = result.message || '生成失败'; continue; }
+      const videoUrl = '/api/generate/assets/' + projectId + '/' + result.assetPath;
+      loadingEl.remove();
+      const previewId = 'video-preview-' + reqId + '-' + Date.now();
+      const newInputId = 'video-feedback-' + reqId + '-' + Date.now();
+      const historyHtml = history.length > 0
+        ? '<div style="margin-bottom:6px;font-size:10px;color:var(--text3);padding:4px 6px;background:var(--bg3);border-radius:4px;max-height:36px;overflow-y:auto">📝 ' + history.map((h, i) => '优化' + (i + 1) + ': ' + escHtml(h)).join(' → ') + '</div>'
+        : '';
+      const previewEl = document.createElement('div');
+      previewEl.id = previewId;
+      previewEl.setAttribute('data-base-prompt', basePrompt);
+      previewEl.setAttribute('data-feedback-history', JSON.stringify(history));
+      previewEl.setAttribute('data-prev-video', videoUrl);
+      previewEl.setAttribute('data-asset-path', result.assetPath);
+      previewEl.style.cssText = 'margin-top:4px;padding:8px;background:var(--bg2);border-radius:6px;border:1px solid var(--border)';
+      const mime = result.mime || 'video/mp4';
+      previewEl.innerHTML = historyHtml + '<div style="display:flex;gap:12px;align-items:flex-start"><video controls style="max-width:280px;max-height:200px;border-radius:4px;border:1px solid var(--border)" preload="metadata"><source src="' + videoUrl + '" type="' + mime + '"></video><div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0"><button class="btn-small" style="font-size:10px" onclick="document.getElementById(\'' + previewId + '\').remove()">✕ 关闭</button><button class="btn-small" style="font-size:10px" onclick="generateVideoPreview(\'' + reqId + '\')">🔄 重新生成</button></div></div><div style="margin-top:6px;display:flex;gap:4px"><input id="' + newInputId + '" type="text" placeholder="继续输入优化意见..." style="flex:1;font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg3);color:var(--text)"><button class="btn-small" style="font-size:10px;background:rgba(255,99,132,0.1);color:#ff6384;border-color:rgba(255,99,132,0.3)" onclick="generateVideoPreviewWithFeedback(\'' + reqId + '\',\'' + newInputId + '\',\'' + previewId + '\')">✏️ 继续优化</button></div>';
+      container.prepend(previewEl);
+      feedback.value = '';
+      return;
+    } catch (e) { lastError = e.message; }
+  }
+  loadingEl.textContent = '❌ 优化失败: ' + escHtml(lastError);
+  setTimeout(function() { loadingEl.remove(); }, 5000);
 }
 
 async function startAiClarify(reqId) {

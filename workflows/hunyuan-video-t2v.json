@@ -1,23 +1,24 @@
 {
   "1": {
-    "class_type": "UNETLoader",
+    "class_type": "DualCLIPLoader",
     "inputs": {
-      "unet_name": "hunyuan_video_t2v_fp8.safetensors",
-      "weight_dtype": "default"
+      "clip_name1": "clip_l.safetensors",
+      "clip_name2": "llava_llama3_fp8_scaled.safetensors",
+      "type": "hunyuan_video"
     }
   },
   "2": {
-    "class_type": "CLIPLoader",
+    "class_type": "CLIPTextEncode",
     "inputs": {
-      "clip_name": "model.safetensors",
-      "type": "stable_diffusion"
+      "text": "{prompt}",
+      "clip": ["1", 0]
     }
   },
   "3": {
     "class_type": "CLIPTextEncode",
     "inputs": {
-      "text": "",
-      "clip": ["2", 0]
+      "text": "negative, blurry, low quality, distorted",
+      "clip": ["1", 0]
     }
   },
   "4": {
@@ -30,26 +31,19 @@
     }
   },
   "5": {
-    "class_type": "CLIPLoader",
+    "class_type": "UNETLoader",
     "inputs": {
-      "clip_name": "llava_llama3_fp8_scaled.safetensors",
-      "type": "hunyuan_image"
+      "unet_name": "hunyuan_video_t2v_fp8.safetensors",
+      "weight_dtype": "default"
     }
   },
   "6": {
-    "class_type": "CLIPTextEncode",
-    "inputs": {
-      "text": "",
-      "clip": ["5", 0]
-    }
-  },
-  "7": {
     "class_type": "VAELoader",
     "inputs": {
       "vae_name": "hunyuan_video_vae.safetensors"
     }
   },
-  "8": {
+  "7": {
     "class_type": "KSampler",
     "inputs": {
       "seed": 42,
@@ -58,24 +52,24 @@
       "sampler_name": "euler",
       "scheduler": "normal",
       "denoise": 1,
-      "model": ["1", 0],
-      "positive": ["6", 0],
+      "model": ["5", 0],
+      "positive": ["2", 0],
       "negative": ["3", 0],
       "latent_image": ["4", 0]
     }
   },
-  "9": {
+  "8": {
     "class_type": "VAEDecode",
     "inputs": {
-      "samples": ["8", 0],
-      "vae": ["7", 0]
+      "samples": ["7", 0],
+      "vae": ["6", 0]
     }
   },
-  "10": {
+  "9": {
     "class_type": "SaveImage",
     "inputs": {
       "filename_prefix": "hyvideo",
-      "images": ["9", 0]
+      "images": ["8", 0]
     }
   }
 }

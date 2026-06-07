@@ -26,6 +26,7 @@ function renderGenPreview(t) {
     const ext = (assetPath.split('.').pop() || '').toLowerCase();
     const imageExts = ['png', 'jpg', 'jpeg', 'gif', 'webp'];
     const audioExts = ['mp3', 'wav', 'ogg', 'm4a', 'flac'];
+    const videoExts = ['mp4', 'webm', 'mov', 'avi', 'mkv'];
 
     const projId = t.project_id;
     const assetUrl = `/api/generate/assets/${projId}/${assetPath}`;
@@ -45,6 +46,17 @@ function renderGenPreview(t) {
             <source src="${assetUrl}" type="audio/${ext === 'mp3' ? 'mpeg' : ext}">
             您的浏览器不支持音频播放
           </audio>
+          <div style="font-size:11px;color:var(--text2);margin-top:4px">${escHtml(assetPath)}</div>
+        </div>`;
+    }
+
+    if (videoExts.includes(ext)) {
+      return `<h3>🎬 生成结果</h3>
+        <div style="margin:8px 0;padding:8px;background:var(--bg2);border-radius:8px;text-align:center">
+          <video controls style="max-width:480px;max-height:360px;border-radius:6px;border:1px solid var(--border)" preload="metadata">
+            <source src="${assetUrl}">
+            您的浏览器不支持视频播放
+          </video>
           <div style="font-size:11px;color:var(--text2);margin-top:4px">${escHtml(assetPath)}</div>
         </div>`;
     }

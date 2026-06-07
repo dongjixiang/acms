@@ -27,8 +27,8 @@ router.post('/', (req, res, next) => {
     if (!id || !type || !provider || !name) {
       return res.status(400).json({ error: 'MISSING_FIELDS', message: '缺少必填字段: id, type, provider, name' });
     }
-    if (!['image', 'audio'].includes(type)) {
-      return res.status(400).json({ error: 'INVALID_TYPE', message: 'type 必须是 image 或 audio' });
+    if (!['image', 'audio', 'video'].includes(type)) {
+      return res.status(400).json({ error: 'INVALID_TYPE', message: 'type 必须是 image, audio 或 video' });
     }
     const result = genStore.create({ id, type, provider, name, config, modelRef });
     res.status(201).json(result);
@@ -81,6 +81,22 @@ router.post('/audio/:projectId', async (req, res, next) => {
     const slug = project.slug || projectId;
 
     const result = await genAdapter.generateAudio(slug, providerId, text, params || {});
+    res.json(result);
+  } catch (e) { next(e); }
+});
+
+// ===== 视频生成 =====
+router.post('/video/:projectId', async (req, res, next) => {
+  try {
+    const { projectId } = req.params;
+    const { providerId, prompt, params } = req.body;
+    if (!prompt) return res.status(400).json({ error: 'MISSING_PROMPT', message: '需要 prompt 字段' });
+
+    const project = projectStore.getById(projectId);
+    if (!project) return res.status(404).json({ error: 'PROJECT_NOT_FOUND' });
+    const slug = project.slug || projectId;
+
+    const result = await genAdapter.generateVideo(slug, providerId, prompt, params || {});
     res.json(result);
   } catch (e) { next(e); }
 });

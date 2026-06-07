@@ -408,6 +408,15 @@ async function decomposeRequirement(reqId, modelId) {
       }
     }
 
+    // 视频生成能力
+    const videoGens = genStore.list('video');
+    if (videoGens.length > 0) {
+      capLines.push(`- 🎬 视频生成可用: ${videoGens.map(g => `${g.name}(${g.provider})`).join('、')}`);
+      if (requirement.description && /视频|动画|演示|宣传片|动态|片段|特效|场景动画|角色动画|过场/i.test(requirement.description)) {
+        capLines.push(`  ⚡ 当前需求涉及视频内容，建议创建 video-gen 类型任务`);
+      }
+    }
+
     if (capLines.length > 1) {
       messages.push({ role: 'system', content: capLines.join('\\n') });
     }

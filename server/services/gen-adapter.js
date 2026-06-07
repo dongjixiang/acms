@@ -681,6 +681,268 @@ async function ensureEnglishPrompt(text) {
 }
 
 // 小睡函数
+// ===== 视频生成调度 =====
+async function generateVideo(projectSlug, providerId, prompt, params = {}) {
+  let provider;
+  if (providerId) {
+    provider = genStore.getDecryptedConfig(providerId);
+    if (!provider) throw Object.assign(new Error('生成器不存在'), { status: 404 });
+  } else {
+    provider = genStore.getBestMatch('video', params.tags || []);
+    if (!provider) throw Object.assign(new Error('无可用视频生成器，请先注册'), { status: 400 });
+  }
+
+  console.log(`[gen] generateVideo: provider=${provider.provider} prompt="${prompt.substring(0, 60)}..."`);
+
+  switch (provider.provider) {
+    case 'minimax-video':
+      return await generateMinimaxVideo(projectSlug, provider, prompt, params);
+    case 'comfyui-video':
+      return await generateComfyUIVideo(projectSlug, provider, prompt, params);
+    default:
+      throw Object.assign(new Error(`不支持的视频生成 provider: ${provider.provider}`), { status: 400 });
+  }
+}
+
+// ===== MiniMax Video (文生视频) Provider =====
+// 提交：POST /v1/video_generation → 返回 task_id（异步）
+// 查询：GET /v1/query/video_generation?task_id=xxx
+async function generateMinimaxVideo(projectSlug, provider, prompt, params) {
+  const apiKey = provider.config.apiKey;
+  if (!apiKey) {
+    throw Object.assign(new Error('MiniMax 视频生成需要 API Key（可通过 modelRef 复用模型配置）'), { status: 400 });
+  }
+
+  const model = provider.config.model || 'video-01';
+  const body = { model, prompt };
+
+  // 提交视频生成任务
+  const resp = await fetch('https://api.minimaxi.com/v1/video_generation', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+    body: JSON.stringify(body),
+  });
+
+  if (!resp.ok) {
+    const errBody = await resp.text();
+    let parsed;
+    try { parsed = JSON.parse(errBody); } catch {}
+    const detail = parsed?.base_resp?.status_msg || parsed?.error?.message || parsed?.error || errBody;
+    throw Object.assign(new Error(`MiniMax 视频提交失败: ${detail}`), { status: 502, providerError: detail });
+  }
+
+  const data = await resp.json();
+  const taskId = data.task_id;
+  if (!taskId) throw new Error(`MiniMax 视频返回无 task_id: ${JSON.stringify(data).substring(0, 200)}`);
+
+  console.log(`[MinimaxVideo] task_id=${taskId}，开始轮询...`);
+
+  // 轮询等待完成（最多 10 分钟）
+  const maxPolls = 300;
+  for (let i = 0; i < maxPolls; i++) {
+    await sleep(2000);
+    const pollResp = await fetch(`https://api.minimaxi.com/v1/query/video_generation?task_id=${encodeURIComponent(taskId)}`, {
+      headers: { 'Authorization': `Bearer ${apiKey}` },
+    });
+    if (!pollResp.ok) continue;
+
+    const pollData = await pollResp.json();
+    const baseResp = pollData.base_resp || {};
+    if (baseResp.status_code && baseResp.status_code !== 0) {
+      if (baseResp.status_code === 2100) continue; // 任务处理中
+      throw Object.assign(new Error(`MiniMax 视频生成失败: ${baseResp.status_msg || '错误码' + baseResp.status_code}`), { status: 502 });
+    }
+
+    const videoUrl = pollData.data?.video_url;
+    if (videoUrl) {
+      console.log(`[MinimaxVideo] 生成完成，下载视频...`);
+      const videoResp = await fetch(videoUrl);
+      if (!videoResp.ok) throw new Error(`MiniMax 视频下载失败: ${videoResp.status}`);
+      const buffer = Buffer.from(await videoResp.arrayBuffer());
+      const mime = videoResp.headers.get('content-type') || 'video/mp4';
+      const ext = mime.includes('webm') ? '.webm' : '.mp4';
+
+      return saveAsset(projectSlug, buffer, ext, mime, {
+        prompt,
+        model: `minimax-${model}`,
+        taskId,
+        pollAttempts: i + 1,
+        duration: pollData.data?.duration || null,
+      });
+    }
+  }
+
+  throw new Error(`MiniMax 视频生成超时（10 分钟）task_id: ${taskId}`);
+}
+
+// ===== ComfyUI 视频生成 Provider =====
+// 使用 HunyuanVideo T2V workflow（hunyuan-video-t2v.json）或自定义 workflow
+// 本地运行较慢，作为 MiniMax 的降级兜底
+async function generateComfyUIVideo(projectSlug, provider, prompt, params) {
+  const baseUrl = provider.config.baseUrl || 'http://127.0.0.1:8000';
+  const apiKey = provider.config.apiKey || '';
+
+  // 选择 workflow
+  let workflowFile = provider.config.defaultWorkflow || 'hunyuan-video-t2v.json';
+  let workflow;
+  try {
+    const workflowPath = path.join(__dirname, '..', '..', 'workflows', workflowFile);
+    if (fs.existsSync(workflowPath)) {
+      workflow = JSON.parse(fs.readFileSync(workflowPath, 'utf-8'));
+    } else {
+      throw new Error(`视频 workflow 文件未找到: ${workflowFile}`);
+    }
+  } catch (e) {
+    throw Object.assign(new Error(`ComfyUI 视频 workflow 加载失败: ${e.message}`), { status: 400 });
+  }
+
+  // 替换 prompt 占位符
+  for (const [nodeId, node] of Object.entries(workflow)) {
+    if (node.class_type === 'CLIPTextEncode' && node.inputs) {
+      if (node.inputs.text === '{prompt}' || (!node.inputs.text?.toLowerCase().includes('negative') &&
+          !node.inputs.text?.toLowerCase().includes('bad quality'))) {
+        node.inputs.text = prompt;
+      }
+    }
+    // 支持覆盖 KSampler 参数
+    if (node.class_type === 'KSampler' && node.inputs) {
+      if (params.steps) node.inputs.steps = params.steps;
+      if (params.cfg) node.inputs.cfg = params.cfg;
+      if (params.seed !== undefined) node.inputs.seed = params.seed;
+      if (params.denoise !== undefined) node.inputs.denoise = params.denoise;
+    }
+    // 支持覆盖视频尺寸/长度
+    if (node.class_type === 'EmptyHunyuanLatentVideo' && node.inputs) {
+      if (params.width) node.inputs.width = params.width;
+      if (params.height) node.inputs.height = params.height;
+      if (params.length) node.inputs.length = params.length;
+    }
+  }
+
+  const body = { prompt: workflow };
+  const headers = { 'Content-Type': 'application/json' };
+  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+
+  const resp = await fetch(`${baseUrl}/prompt`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+
+  if (!resp.ok) {
+    const err = await resp.text();
+    throw Object.assign(new Error(`ComfyUI 视频调用失败: ${resp.status} ${err}`), { status: 502 });
+  }
+
+  const data = await resp.json();
+  const promptId = data.prompt_id;
+  if (!promptId) throw new Error('ComfyUI 返回无 prompt_id');
+
+  console.log(`[ComfyUI Video] 已提交 prompt: ${promptId}`);
+
+  // 轮询等待完成（最多 15 分钟，视频生成比图片慢得多）
+  const maxPolls = 900;
+  for (let i = 0; i < maxPolls; i++) {
+    await sleep(1000);
+    const histResp = await fetch(`${baseUrl}/history/${promptId}`, { headers });
+    if (histResp.ok) {
+      const history = await histResp.json();
+      const outputs = history[promptId]?.outputs;
+      if (outputs) {
+        // 收集所有输出节点中的图片/帧
+        const frames = [];
+        for (const [nodeId, nodeOutput] of Object.entries(outputs)) {
+          if (nodeOutput.images && nodeOutput.images.length > 0) {
+            for (const img of nodeOutput.images) {
+              frames.push(img);
+            }
+          }
+        }
+
+        if (frames.length > 0) {
+          if (frames.length === 1) {
+            // 单帧 → 保存为图片（可能是缩略图）
+            const img = frames[0];
+            const imgUrl = `${baseUrl}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || '')}&type=${img.type || 'output'}`;
+            const imgResp = await fetch(imgUrl);
+            if (imgResp.ok) {
+              const buffer = Buffer.from(await imgResp.arrayBuffer());
+              const mime = `image/${img.filename.endsWith('.png') ? 'png' : 'jpeg'}`;
+              const ext = img.filename.endsWith('.png') ? '.png' : '.jpg';
+              return saveAsset(projectSlug, buffer, ext, mime, {
+                prompt,
+                model: `comfyui-video-${workflowFile.replace('.json', '')}`,
+                comfyuiPromptId: promptId,
+                frameCount: 1,
+              });
+            }
+          } else {
+            // 多帧 → 下载所有帧，用 ffmpeg 合成为 MP4（如果可用）
+            // 或保存为 ZIP 包
+            console.log(`[ComfyUI Video] 生成 ${frames.length} 帧`);
+
+            // 下载所有帧到临时目录
+            const tmpDir = path.join(__dirname, '..', '..', 'tmp', `hyvideo_${promptId}`);
+            if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+
+            const imgUrls = [];
+            for (const img of frames) {
+              const imgUrl = `${baseUrl}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || '')}&type=${img.type || 'output'}`;
+              const imgResp = await fetch(imgUrl);
+              if (imgResp.ok) {
+                const buffer = Buffer.from(await imgResp.arrayBuffer());
+                const frameName = `${String(imgUrls.length).padStart(4, '0')}_${img.filename}`;
+                fs.writeFileSync(path.join(tmpDir, frameName), buffer);
+                imgUrls.push(imgUrl);
+              }
+            }
+
+            // 尝试用 ffmpeg 合成 MP4
+            try {
+              const { execSync } = require('child_process');
+              const mp4Path = path.join(tmpDir, 'output.mp4');
+              execSync(
+                `ffmpeg -y -framerate 8 -i "${tmpDir.replace(/\\/g, '/')}/%04d_*.png" -c:v libx264 -pix_fmt yuv420p "${mp4Path.replace(/\\/g, '/')}"`,
+                { timeout: 30000, stdio: 'pipe' }
+              );
+              const buffer = fs.readFileSync(mp4Path);
+              // 清理临时文件
+              fs.rmSync(tmpDir, { recursive: true, force: true });
+              return saveAsset(projectSlug, buffer, '.mp4', 'video/mp4', {
+                prompt,
+                model: `comfyui-video-${workflowFile.replace('.json', '')}`,
+                comfyuiPromptId: promptId,
+                frameCount: frames.length,
+                fps: 8,
+              });
+            } catch (ffmpegErr) {
+              // ffmpeg 不可用 → 返回 ZIP 包
+              console.warn(`[ComfyUI Video] ffmpeg 合成失败: ${ffmpegErr.message}，回退为 ZIP`);
+              const AdmZip = require('adm-zip');
+              const zip = new AdmZip();
+              const framesDir = fs.readdirSync(tmpDir);
+              for (const f of framesDir) {
+                zip.addLocalFile(path.join(tmpDir, f));
+              }
+              const zipBuffer = zip.toBuffer();
+              fs.rmSync(tmpDir, { recursive: true, force: true });
+              return saveAsset(projectSlug, zipBuffer, '.zip', 'application/zip', {
+                prompt,
+                model: `comfyui-video-${workflowFile.replace('.json', '')}`,
+                comfyuiPromptId: promptId,
+                frameCount: frames.length,
+                note: 'ffmpeg 不可用，帧以 ZIP 形式保存',
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  throw new Error(`ComfyUI 视频生成超时（15 分钟）promptId: ${promptId}`);
+}
+
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-module.exports = { generateImage, generateAudio };
+module.exports = { generateImage, generateAudio, generateVideo };
