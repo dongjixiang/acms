@@ -203,9 +203,18 @@ async function generateMinimaxImage(projectSlug, provider, prompt, params) {
 
   const imgResp = await fetch(imageUrl);
   const buffer = Buffer.from(await imgResp.arrayBuffer());
-  const mime = 'image/png';
+  // 根据实际 HTTP Content-Type 判断图片格式
+  const contentType = imgResp.headers.get('content-type') || '';
+  let ext, mime;
+  if (contentType.includes('jpeg') || contentType.includes('jpg')) {
+    ext = '.jpg'; mime = 'image/jpeg';
+  } else if (contentType.includes('webp')) {
+    ext = '.webp'; mime = 'image/webp';
+  } else {
+    ext = '.png'; mime = 'image/png';
+  }
 
-  return saveAsset(projectSlug, buffer, '.png', mime, {
+  return saveAsset(projectSlug, buffer, ext, mime, {
     prompt,
     model: `minimax-${model}`,
     size,
