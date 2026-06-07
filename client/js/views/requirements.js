@@ -545,7 +545,7 @@ function detectPreviewNeeds(srs) {
   const text = JSON.stringify(srs.scopeIn || []).toLowerCase();
   return {
     prototype: /界面|页面|布局|导航|菜单|弹窗|表单|首页|列表|面板|设置|搜索|登录|注册/i.test(text),
-    image: /立绘|头像|icon|图标|角色|场景|素材|配图|海报|封面|渲染图|像素|sprite|背景图|插图|角色图/i.test(text),
+    image: /立绘|头像|icon|图标|角色|场景|素材|配图|海报|封面|渲染图|像素|sprite|背景图|插图|角色图|图片|照片|写真|美女|摄影|拍照|画作|绘制|生成.*图/i.test(text),
     audio: /语音|配音|音效|背景音乐|旁白|朗读|播报|tts|音乐|歌曲|音色|声线|台词|对白|录音/i.test(text),
   };
 }
