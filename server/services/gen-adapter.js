@@ -465,6 +465,9 @@ async function generateComfyUI(projectSlug, provider, prompt, params) {
   const baseUrl = provider.config.baseUrl || 'http://127.0.0.1:8000';
   const apiKey = provider.config.apiKey || '';
   const workflowFile = params.inputImage ? (provider.config.defaultWorkflow || 'img2img.json') : 'txt2img.json';
+  // 检测 prompt 是否含中文，是则翻译为英文（SDXL CLIP 对中文支持极差）
+  prompt = await ensureEnglishPrompt(prompt);
+  if (params.negative_prompt) params.negative_prompt = await ensureEnglishPrompt(params.negative_prompt);
 
   // 读取预设 workflow
   let workflow;
@@ -620,6 +623,38 @@ function replaceWorkflowPrompt(workflow, prompt, params) {
     }
   }
   return workflow;
+}
+
+// 检测文本是否含中文，如有则用 DeepSeek 翻译为英文
+async function ensureEnglishPrompt(text) {
+  if (!text || !/[\u4e00-\u9fff]/.test(text)) return text;  // 无中文直接返回
+  const modelStore = require('./stores/model-store');
+  try {
+    const model = modelStore.getDecryptedKey('model_mps18nz9');
+    if (!model) return text;  // 无 DeepSeek 模型配置
+    const resp = await fetch('https://api.deepseek.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + model },
+      body: JSON.stringify({
+        model: 'deepseek-v4-flash',
+        messages: [
+          { role: 'system', content: '你是一个翻译助手。将用户输入的中文翻译为英文，只输出翻译结果，不要有任何额外说明。保留技术术语、人名和品牌名不变。' },
+          { role: 'user', content: text }
+        ],
+        max_tokens: 500,
+        temperature: 0,
+      })
+    });
+    if (!resp.ok) return text;
+    const data = await resp.json();
+    const translated = data.choices?.[0]?.message?.content?.trim();
+    if (!translated) return text;
+    console.log(`[Translate] "${text.substring(0, 50)}..." → "${translated.substring(0, 50)}..."`);
+    return translated;
+  } catch (e) {
+    console.warn(`[Translate] 翻译失败: ${e.message}`);
+    return text;
+  }
 }
 
 // 小睡函数
