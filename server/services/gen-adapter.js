@@ -142,20 +142,35 @@ async function generateDalle(projectSlug, provider, prompt, params) {
 }
 
 // ===== MiniMax Image Generation Provider =====
-// MiniMax 提供 OpenAI 兼容的图片生成接口，可复用模型配置的 API Key
+// 文档: https://platform.minimaxi.com/docs/api-reference/image-generation-t2i
+// 端点: POST https://api.minimaxi.com/v1/image_generation
+// 模型: image-01, image-01-live
 async function generateMinimaxImage(projectSlug, provider, prompt, params) {
   const apiKey = provider.config.apiKey;
   if (!apiKey) {
     throw Object.assign(new Error('MiniMax 图片生成需要 API Key（可通过 modelRef 复用模型配置）'), { status: 400 });
   }
 
-  const baseUrl = provider.config.baseUrl || 'https://api.minimaxi.com/v1';
   const model = provider.config.model || 'image-01';
+  // 将 OpenAI 风格 size (e.g. "1024x1024") 转为 aspect_ratio
   const size = params.size || provider.config.defaultParams?.size || '1024x1024';
+  const ratioMap = {
+    '1024x1024': '1:1', '1280x720': '16:9', '1152x864': '4:3',
+    '1248x832': '3:2', '832x1248': '2:3', '864x1152': '3:4',
+    '720x1280': '9:16', '1344x576': '21:9',
+  };
+  const aspectRatio = ratioMap[size] || '1:1';
 
-  const body = { model, prompt, n: 1, size };
+  const body = {
+    model,
+    prompt,
+    n: params.n || 1,
+    aspect_ratio: aspectRatio,
+    response_format: 'url',
+    aigc_watermark: false,
+  };
 
-  const resp = await fetch(`${baseUrl}/image/generations`, {
+  const resp = await fetch('https://api.minimaxi.com/v1/image_generation', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
     body: JSON.stringify(body),
@@ -165,12 +180,12 @@ async function generateMinimaxImage(projectSlug, provider, prompt, params) {
     const errBody = await resp.text();
     let parsed;
     try { parsed = JSON.parse(errBody); } catch {}
-    const detail = parsed?.error?.message || parsed?.error || errBody;
+    const detail = parsed?.base_resp?.status_msg || parsed?.error?.message || parsed?.error || errBody;
     throw Object.assign(new Error(`MiniMax 图片生成失败: ${detail}`), { status: 502, providerError: detail });
   }
 
   const data = await resp.json();
-  const imageUrl = data.data?.[0]?.url;
+  const imageUrl = data.data?.image_urls?.[0];
   if (!imageUrl) throw new Error('MiniMax 返回无图片 URL');
 
   const imgResp = await fetch(imageUrl);
@@ -181,21 +196,22 @@ async function generateMinimaxImage(projectSlug, provider, prompt, params) {
     prompt,
     model: `minimax-${model}`,
     size,
+    aspectRatio,
   });
 }
 
 // ===== MiniMax TTS (语音合成) Provider =====
-// MiniMax 语音合成 API: POST https://api.minimaxi.com/v1/speech/t2a
-// 可复用 MiniMax 模型的 API Key（通过 modelRef）
+// 文档: https://platform.minimaxi.com/docs/api-reference/speech-t2a-http
+// 端点: POST https://api.minimaxi.com/v1/t2a_v2
+// 模型: speech-2.8-hd, speech-2.5-turbo, speech-01
 async function generateMinimaxTTS(projectSlug, provider, text, params) {
   const apiKey = provider.config.apiKey;
   if (!apiKey) {
     throw Object.assign(new Error('MiniMax TTS 需要 API Key（可通过 modelRef 复用模型配置）'), { status: 400 });
   }
 
-  const baseUrl = provider.config.baseUrl || 'https://api.minimaxi.com/v1';
-  const model = provider.config.model || 'speech-01';       // speech-01 / speech-02
-  const voiceId = params.voice || provider.config.defaultParams?.voice || '';
+  const model = provider.config.model || 'speech-2.8-hd';
+  const voiceId = params.voice || provider.config.defaultParams?.voice || 'male-qn-qingse';
   const speed = params.speed ?? provider.config.defaultParams?.speed ?? 1.0;
   const volume = params.volume ?? provider.config.defaultParams?.volume ?? 1.0;
   const pitch = params.pitch ?? provider.config.defaultParams?.pitch ?? 0;
@@ -203,14 +219,23 @@ async function generateMinimaxTTS(projectSlug, provider, text, params) {
   const body = {
     model,
     text,
-    speed,
-    vol: volume,
-    pitch,
+    stream: false,
+    voice_setting: {
+      voice_id: voiceId,
+      speed,
+      vol: volume,
+      pitch,
+    },
+    audio_setting: {
+      format: 'mp3',
+      sample_rate: 32000,
+      bitrate: 128000,
+      channel: 1,
+    },
+    subtitle_enable: false,
   };
-  if (voiceId) body.voice_id = voiceId;
 
-  // MiniMax TTS 接口路径: 根据文档 https://platform.minimaxi.com/docs/api-reference/speech-t2a-http
-  const resp = await fetch(`${baseUrl}/speech/t2a`, {
+  const resp = await fetch('https://api.minimaxi.com/v1/t2a_v2', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -223,39 +248,27 @@ async function generateMinimaxTTS(projectSlug, provider, text, params) {
     const errBody = await resp.text();
     let parsed;
     try { parsed = JSON.parse(errBody); } catch {}
-    const detail = parsed?.error?.message || parsed?.error || parsed?.detail?.message || errBody;
+    const detail = parsed?.base_resp?.status_msg || parsed?.error?.message || parsed?.error || parsed?.detail?.message || errBody;
     throw Object.assign(new Error(`MiniMax TTS 调用失败: ${detail}`), { status: 502, providerError: detail });
   }
 
-  // 返回可能是音频二进制流或带 audio 字段的 JSON
-  const contentType = resp.headers.get('content-type') || '';
-
-  let buffer, ext, mime;
-  if (contentType.includes('application/json')) {
-    // JSON 响应，提取 audio 字段（base64 或 URL）
-    const data = await resp.json();
-    if (data.audio_data) {
-      buffer = Buffer.from(data.audio_data, 'base64');
-    } else if (data.audio_url) {
-      const audioResp = await fetch(data.audio_url);
-      buffer = Buffer.from(await audioResp.arrayBuffer());
-    } else {
-      throw new Error(`MiniMax TTS 返回格式异常: ${JSON.stringify(data).substring(0, 200)}`);
-    }
-    ext = '.mp3';
-    mime = 'audio/mpeg';
-  } else {
-    // 直接音频流
-    buffer = Buffer.from(await resp.arrayBuffer());
-    ext = '.mp3';
-    mime = 'audio/mpeg';
+  const data = await resp.json();
+  // 非流式返回 hex 编码的 audio
+  const hexAudio = data.data?.audio;
+  if (!hexAudio) {
+    throw new Error(`MiniMax TTS 返回格式异常: ${JSON.stringify(data).substring(0, 200)}`);
   }
+
+  const buffer = Buffer.from(hexAudio, 'hex');
+  const ext = '.mp3';
+  const mime = 'audio/mpeg';
 
   return saveAsset(projectSlug, buffer, ext, mime, {
     prompt: text,
     model: `minimax-${model}`,
     voice: voiceId || 'default',
     speed,
+    audioLength: data.extra_info?.audio_length || null,
   });
 }
 
