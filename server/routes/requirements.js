@@ -6,11 +6,32 @@ const eventBus = require('../services/event-bus');
 const reqService = require('../services/requirement-service');
 
 // 创建需求
-router.post('/', (req, res, next) => {
+router.post('/', async (req, res, next) => {
   try {
-    const { projectId, title, description, priority, tags, deadline, parentId } = req.body;
+    const { projectId, title, description, priority, tags, deadline, parentId, modelId, role, userRole } = req.body;
     if (!projectId || !title) return res.status(400).json({ error: 'MISSING_FIELDS' });
-    const requirement = reqStore.create({ projectId, title, description, priority, tags, deadline, createdBy: req.agentId || 'user', parentId: parentId || null });
+    const requirement = reqStore.create({ projectId, title, description, priority, tags, deadline, createdBy: req.agentId || 'user', parentId: parentId || null, userRole: userRole || role || '' });
+
+    // ── 同步：LLM 评估明确度（30 文档「一放一收」Step 2）──
+    try {
+      const { assessClarity } = require('../services/insight-previews');
+      const { clarity, reason, modelId: usedModel } = await assessClarity(title, description, modelId);
+      if (clarity) {
+        reqStore.update(requirement.id, { input_clarity: clarity, clarity_reason: reason || '' });
+        requirement.input_clarity = clarity;
+        requirement.clarity_reason = reason || '';
+        requirement.clarity_model = usedModel;
+      }
+    } catch (e) { console.error('[requirements.create] 明确度评估失败（非阻塞）:', e.message); }
+
+    // ── 异步：自动启动预览生成（fire-and-forget）──
+    // 触发条件：明确度非 high 时启动；high 也启动（让用户能预览对比），但 UI 不强推
+    try {
+      const { runPreviewJob } = require('../services/insight-previews');
+      setImmediate(() => runPreviewJob(requirement.id, { modelId, role })
+        .catch(e => console.error('[insight.auto] 任务异常:', e)));
+    } catch (e) { console.error('[requirements.create] 启动预览任务失败（非阻塞）:', e.message); }
+
     eventBus.emit('requirement.created', { projectId, actor: { id: req.agentId || 'user', type: 'human' }, target: { type: 'requirement', id: requirement.id }, payload: { requirement } });
     res.status(201).json(requirement);
   } catch (e) { next(e); }
@@ -366,6 +387,63 @@ router.post('/:id/data-model-preview', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ============================================================
+// 洞察类需求预览（30 文档「一放一收」Step 2）
+// ============================================================
+const insightService = require('../services/insight-previews');
+
+// 手动触发（也用于重新生成）
+router.post('/:id/insight-previews', async (req, res, next) => {
+  try {
+    const { modelId, imageProviderId, role } = req.body || {};
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    // 状态机：仅 idea 状态可生成
+    if (reqRec.status !== 'idea') {
+      return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
+    }
+    // fire-and-forget：立即返回，后台跑
+    setImmediate(() => insightService.runPreviewJob(req.params.id, { modelId, imageProviderId, role })
+      .catch(e => console.error('[insight] 任务异常:', e)));
+    res.status(202).json({ message: '预览任务已启动', status: 'pending' });
+  } catch (e) { next(e); }
+});
+
+// 查询预览状态（前端轮询用）
+router.get('/:id/insight-previews', (req, res, next) => {
+  try {
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    const previews = JSON.parse(reqRec.insight_previews || 'null');
+    res.json({
+      requirementId: req.params.id,
+      status: reqRec.status,
+      inputClarity: reqRec.input_clarity || null,
+      insightPreviews: previews,
+    });
+  } catch (e) { next(e); }
+});
+
+// 用户选某个变体
+router.post('/:id/insight-pick', (req, res, next) => {
+  try {
+    const { variantId } = req.body || {};
+    if (!variantId) return res.status(400).json({ error: 'MISSING_VARIANT_ID' });
+    const result = insightService.pickVariant(req.params.id, variantId);
+    if (result.error) return res.status(400).json(result);
+    res.json(result);
+  } catch (e) { next(e); }
+});
+
+// 跳过预览
+router.post('/:id/insight-skip', (req, res, next) => {
+  try {
+    const result = insightService.skipPreviews(req.params.id);
+    if (result.error) return res.status(400).json(result);
+    res.json(result);
+  } catch (e) { next(e); }
 });
 
 module.exports = router;

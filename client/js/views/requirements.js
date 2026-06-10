@@ -33,16 +33,58 @@ function hideCreateReq() { document.getElementById('create-req-panel').style.dis
 
 async function doCreateReq() {
   const title = document.getElementById('create-title').value.trim();
+  const description = document.getElementById('create-desc').value.trim();
   if (!title) return toast('请输入标题', 'error');
-  try {
-    const req = await Requirements.create({
-      projectId: App.currentProjectId, title,
-      description: document.getElementById('create-desc').value.trim(),
-      priority: parseInt(document.getElementById('create-priority').value),
-      deadline: document.getElementById('create-deadline').value,
-      tags: document.getElementById('create-tags').value.split(',').map(t => t.trim()).filter(Boolean),
+
+  // 高级选项只在用户展开时才读取
+  const advancedOpen = document.querySelector('.create-req-advanced')?.open;
+  const priorityRaw = document.getElementById('create-priority').value;
+  const priority = priorityRaw ? parseInt(priorityRaw, 10) : null;  // 空=系统推断
+  const deadline = document.getElementById('create-deadline').value || undefined;
+
+  // 软引导：title 极短（<5 字）且没描述，提示用户考虑走想法池
+  if (title.length < 5 && !description) {
+    const goIdea = await showConfirm('标题很短还没描述 — 听起来更像一个想法？\n\n点击"去想法池"会把内容转到轻量入口，AI 会帮你展开。\n点击"继续"仍提交为需求。', {
+      title: '💡 这可能是个想法',
+      confirmText: '去想法池',
+      cancelText: '继续',
+      type: 'info',
     });
-    toast('需求创建成功！', 'success');
+    if (goIdea) {
+      // 关闭当前面板 → 打开想法池弹窗并预填
+      hideCreateReq();
+      document.getElementById('create-title').value = '';
+      document.getElementById('create-desc').value = '';
+      if (typeof showIdeaDialog === 'function') {
+        showIdeaDialog();
+        setTimeout(() => {
+          const t = document.getElementById('idea-title');
+          const c = document.getElementById('idea-content');
+          if (t) t.value = title;
+          if (c) c.value = '（从「提个需求」转来 — 用户感觉这更像想法）';
+        }, 100);
+      } else {
+        toast('想法池功能未加载', 'error');
+      }
+      return;
+    }
+  }
+
+  try {
+    const data = {
+      projectId: App.currentProjectId, title, description,
+      tags: document.getElementById('create-tags').value.split(',').map(t => t.trim()).filter(Boolean),
+    };
+    if (priority !== null) data.priority = priority;
+    if (deadline) data.deadline = deadline;
+    // 30 文档「角色感知」Step 3：带当前用户角色，影响后续澄清提问方向
+    if (App.currentRole) {
+      data.userRole = App.currentRole;
+      data.role = App.currentRole;  // 兼容老字段
+    }
+
+    const req = await Requirements.create(data);
+    toast(advancedOpen ? '需求创建成功！' : '需求已记录 — AI 会在规划阶段自动定优先级', 'success');
     hideCreateReq(); loadRequirements(); loadDashboard();
     // 创建后直接打开需求详情
     openRequirement(req.id);
@@ -55,8 +97,13 @@ async function openRequirement(id) {
   try {
     const req = await Requirements.get(id);
     document.getElementById('detail-title').textContent = `${req.id}: ${escHtml(req.title)}`;
+    const roleLabels = { pm: '👤 PM', tech: '🛠 技术', design: '🎨 设计', test: '🧪 测试', 'agent:小吉': '🤖 Agent', system: '⚙️ 系统', anonymous: '👻 匿名' };
+    const roleTag = req.user_role
+      ? `<span class="role-tag-inline" title="提交时选中的角色">${escHtml(roleLabels[req.user_role] || req.user_role)}</span>`
+      : '';
     document.getElementById('detail-status').innerHTML = `
       <span class="status-badge badge-${req.status}">${App.statusLabels[req.status]}</span>
+      ${roleTag}
       ${req.clarifications && req.clarifications.length > 0 ? `<button class="btn-small" style="background:rgba(100,149,237,0.15);color:#6495ED;border-color:rgba(100,149,237,0.3)" onclick="showClarifyThread('${req.id}')">💬 查看澄清过程</button>` : ''}
       <button class="btn-small" style="background:rgba(78,205,196,0.15);color:var(--green);border-color:rgba(78,205,196,0.3)" onclick="exportRequirement('${req.id}')">📥 导出 Word</button>`;
     const srs = safeParse(req.srs);
@@ -65,6 +112,7 @@ async function openRequirement(id) {
       <div class="md-content">${renderMarkdown(req.structured_description || req.description)}</div>
       <div id="existing-md-editor-${id}" style="margin-top:12px"></div>
       <div class="section"><strong>优先级:</strong> P${req.priority} | <strong>截止:</strong> ${req.deadline || '未设置'}</div>
+    ${(req.status === 'idea') ? renderInsightPreviewPanel(req) : ''}
     ${req.status === 'idea' || req.status === 'clarifying' ? renderAiClarifyPanel(req) : ''}
     ${req.status === 'review' ? renderReviewPanel(req) : ''}
     ${['idea', 'clarifying', 'review', 'approved'].includes(req.status) ? `<div id="data-model-panel-${id}" style="margin-top:12px"></div>` : ''}
@@ -89,6 +137,8 @@ async function openRequirement(id) {
   setTimeout(() => loadExistingMdEditor(id), 200);
   setTimeout(() => loadRequirementKnowledge(id), 250);
   setTimeout(() => generateDataModelPreview(id), 300);
+  // 30 文档「一放一收」Step 2：如果是 idea 状态且已带 clarity，触发预览加载
+  setTimeout(() => maybeLoadInsightPreviews(id), 350);
   // 页面加载后，如果存在 SRS，按需展示预览按钮
   setTimeout(() => updateMediaPreviewButtons(id), 350);
 }
@@ -972,6 +1022,8 @@ async function sendAiClarify(reqId, choiceAnswer) {
       modelId,
       message: batchMsg,
       history: aiClarifyHistory[reqId].filter(h => h.role === 'user' || h.role === 'assistant'),
+      // 30 文档「角色感知」Step 3：把当前顶栏选中的角色带给后端
+      role: App.currentRole || 'pm',
     });
 
     // 展示对话历史
@@ -2662,5 +2714,194 @@ async function exportRequirement(reqId) {
     toast('文档已下载 ✅', 'success');
   } catch (e) {
     toast('导出失败: ' + e.message, 'error');
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// 30 文档「一放一收」Step 2：AI 视觉预览面板
+//  - 需求处于 idea 状态时渲染
+//  - 3 张互不重叠的视觉化方向，用户选 1 张 → 内容合并到 srs + 转 clarifying
+// ════════════════════════════════════════════════════════════════
+
+// 存轮询 timer，避免多次打开详情页时叠加
+const _insightPollers = {};
+
+function renderInsightPreviewPanel(req) {
+  const clarity = req.input_clarity;
+  const clarityBadge = clarity
+    ? { high: '🟢 明确', medium: '🟡 一般', low: '🔴 模糊' }[clarity] || clarity
+    : '⏳ 评估中…';
+  const reasonText = req.clarity_reason ? `<div class="insight-reason">${escHtml(req.clarity_reason)}</div>` : '';
+  return `
+    <div id="insight-preview-panel-${req.id}" class="insight-preview-panel">
+      <div class="insight-header">
+        <span class="insight-title">💭 AI 视觉预览</span>
+        <span class="insight-clarity-badge insight-clarity-${clarity || 'unknown'}">${clarityBadge}</span>
+        ${reasonText}
+      </div>
+      <div id="insight-preview-content-${req.id}" class="insight-preview-content">
+        <div class="insight-loading">🎨 AI 正在构想 3 个可能的方向…</div>
+      </div>
+      <div class="insight-footer" id="insight-footer-${req.id}" style="display:none">
+        <button class="btn-small btn-reject" onclick="skipInsightPreviews('${req.id}')">⏭ 跳过预览，直接澄清</button>
+        <button class="btn-small" onclick="regenerateInsightPreviews('${req.id}')">🔄 重新生成</button>
+      </div>
+    </div>
+  `;
+}
+
+async function maybeLoadInsightPreviews(reqId) {
+  // 清理旧轮询
+  if (_insightPollers[reqId]) {
+    clearInterval(_insightPollers[reqId]);
+    delete _insightPollers[reqId];
+  }
+  try {
+    const resp = await api('GET', `/requirements/${reqId}/insight-previews`);
+    const data = resp;
+    const previews = data.insightPreviews;
+    if (!previews || previews.status === 'pending') {
+      // 任务还没启动（老需求没自动启动），手动触发
+      const triggerResp = await api('POST', `/requirements/${reqId}/insight-previews`, {});
+      if (triggerResp && !triggerResp.error) {
+        // 启动轮询
+        _insightPollers[reqId] = setInterval(() => pollInsightPreviews(reqId), 3000);
+        setTimeout(() => pollInsightPreviews(reqId), 500);
+      }
+    } else if (previews.status === 'generating') {
+      _insightPollers[reqId] = setInterval(() => pollInsightPreviews(reqId), 3000);
+      renderInsightPreviewContent(reqId, previews);
+    } else {
+      // done / failed / skipped
+      renderInsightPreviewContent(reqId, previews);
+      if (previews.status === 'generating' || previews.status === 'pending') {
+        _insightPollers[reqId] = setInterval(() => pollInsightPreviews(reqId), 3000);
+      }
+    }
+  } catch (e) {
+    console.warn('[insight] 加载失败:', e.message);
+  }
+}
+
+async function pollInsightPreviews(reqId) {
+  try {
+    const resp = await api('GET', `/requirements/${reqId}/insight-previews`);
+    const previews = resp.insightPreviews;
+    if (!previews) return;
+    renderInsightPreviewContent(reqId, previews);
+    if (previews.status !== 'generating' && previews.status !== 'pending') {
+      clearInterval(_insightPollers[reqId]);
+      delete _insightPollers[reqId];
+    }
+  } catch (e) {
+    console.warn('[insight] 轮询失败:', e.message);
+  }
+}
+
+function renderInsightPreviewContent(reqId, previews) {
+  const container = document.getElementById(`insight-preview-content-${reqId}`);
+  if (!container) return;
+  const footer = document.getElementById(`insight-footer-${reqId}`);
+
+  if (previews.status === 'pending') {
+    container.innerHTML = '<div class="insight-loading">⏳ 等待启动…</div>';
+    return;
+  }
+  if (previews.status === 'generating') {
+    const v = previews.variants || [];
+    const done = v.filter(x => x.asset_path).length;
+    const hasLabels = v.some(x => x.label);
+    if (!hasLabels) {
+      container.innerHTML = '<div class="insight-loading">🤔 AI 在分析需求、想 3 个可能方向…</div>';
+    } else {
+      // 显示已生成的部分 + loading 占位
+      const cards = v.map((variant, i) => `
+        <div class="insight-card ${variant.asset_path ? 'ready' : 'pending'}">
+          <div class="insight-card-label">${escHtml(variant.label || `方向 ${String.fromCharCode(65+i)}`)}</div>
+          <div class="insight-card-image">
+            ${variant.asset_path
+              ? `<img src="/api/generate/assets/${App.currentProjectId}/${variant.asset_path}" alt="${escHtml(variant.label)}" />`
+              : `<div class="insight-card-loading">⏳ 生成中…</div>`}
+          </div>
+        </div>
+      `).join('');
+      container.innerHTML = `<div class="insight-grid">${cards}</div><div class="insight-status">${done}/${v.length} 已完成</div>`;
+    }
+    if (footer) footer.style.display = 'flex';
+    return;
+  }
+  if (previews.status === 'failed') {
+    container.innerHTML = `<div class="insight-error">❌ 预览生成失败：${escHtml(previews.error || '未知错误')}</div>`;
+    if (footer) footer.style.display = 'flex';
+    return;
+  }
+  // done
+  const pickedId = previews.picked_variant_id;
+  const v = previews.variants || [];
+  const cards = v.map((variant, i) => `
+    <div class="insight-card ${variant.asset_path ? 'ready' : 'failed'} ${pickedId === variant.id ? 'picked' : ''}">
+      <div class="insight-card-label">${escHtml(variant.label || `方向 ${String.fromCharCode(65+i)}`)}</div>
+      <div class="insight-card-image">
+        ${variant.asset_path
+          ? `<img src="/api/generate/assets/${App.currentProjectId}/${variant.asset_path}" alt="${escHtml(variant.label)}" />`
+          : `<div class="insight-card-failed">✗ ${escHtml(variant.error || '生成失败')}</div>`}
+      </div>
+      ${variant.asset_path
+        ? (pickedId === variant.id
+            ? `<div class="insight-picked-badge">✅ 已选</div>`
+            : `<button class="insight-pick-btn" onclick="pickInsightVariant('${reqId}','${variant.id}')">选这个</button>`)
+        : ''}
+    </div>
+  `).join('');
+  container.innerHTML = `<div class="insight-grid">${cards}</div>`;
+  if (pickedId) {
+    if (footer) footer.style.display = 'none';
+    container.insertAdjacentHTML('beforeend', '<div class="insight-picked-msg">🎉 你的选择已并入需求，状态已进入澄清阶段</div>');
+  } else {
+    if (footer) footer.style.display = 'flex';
+  }
+}
+
+async function pickInsightVariant(reqId, variantId) {
+  try {
+    const resp = await api('POST', `/requirements/${reqId}/insight-pick`, { variantId });
+    if (resp.error) {
+      toast('选择失败: ' + resp.error, 'error');
+      return;
+    }
+    toast('✅ 已选择，需求进入澄清阶段', 'success');
+    // 重新打开详情页刷新状态
+    setTimeout(() => openRequirement(reqId), 800);
+  } catch (e) {
+    toast('选择失败: ' + e.message, 'error');
+  }
+}
+
+async function skipInsightPreviews(reqId) {
+  try {
+    const resp = await api('POST', `/requirements/${reqId}/insight-skip`, {});
+    if (resp.error) {
+      toast('跳过失败: ' + resp.error, 'error');
+      return;
+    }
+    toast('已跳过预览，可直接进入澄清', 'success');
+    setTimeout(() => openRequirement(reqId), 500);
+  } catch (e) {
+    toast('跳过失败: ' + e.message, 'error');
+  }
+}
+
+async function regenerateInsightPreviews(reqId) {
+  if (!await showConfirm('重新生成 3 张预览图会消耗 token，确认？', { type: 'info' })) return;
+  try {
+    const resp = await api('POST', `/requirements/${reqId}/insight-previews`, {});
+    if (resp.error) {
+      toast('启动失败: ' + resp.error, 'error');
+      return;
+    }
+    toast('🔄 重新生成已启动', 'success');
+    maybeLoadInsightPreviews(reqId);
+  } catch (e) {
+    toast('启动失败: ' + e.message, 'error');
   }
 }

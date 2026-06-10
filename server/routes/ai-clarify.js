@@ -8,9 +8,16 @@ const sketchGenerator = require('../services/prototype-sketch-generator');
 // 发起/继续澄清对话
 router.post('/requirements/:id/clarify-ai', async (req, res, next) => {
   try {
-    const { modelId, message, history } = req.body;
+    const { modelId, message, history, role } = req.body;
     if (!modelId) return res.status(400).json({ error: 'MISSING_MODEL', message: '请选择大模型' });
-    const result = await aiClarify.clarify(req.params.id, modelId, message, history);
+    // 30 文档「角色感知」Step 3：role 不传时 fallback 到需求自己的 user_role（让历史数据也受益）
+    let effectiveRole = role;
+    if (!effectiveRole) {
+      const reqStore = require('../stores/requirement-store');
+      const r = reqStore.getById(req.params.id);
+      effectiveRole = r?.user_role || '';
+    }
+    const result = await aiClarify.clarify(req.params.id, modelId, message, history, effectiveRole);
     res.json(result);
   } catch (e) { next(e); }
 });

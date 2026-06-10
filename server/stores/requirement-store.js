@@ -4,7 +4,7 @@ const { v4: uuidv4 } = require('uuid');
 const { canTransition, getNextStatuses, getGateErrors, shouldAutoAbandon } = require('../services/state-machine');
 
 class RequirementStore {
-  create({ projectId, title, description = '', priority = 3, tags = [], deadline = '', createdBy = '', parentId = null, archSpec = null, interfaceContracts = null, srs = null, flowCoverage = null, status = null, role = null, changeLog = null }) {
+  create({ projectId, title, description = '', priority = 3, tags = [], deadline = '', createdBy = '', parentId = null, archSpec = null, interfaceContracts = null, srs = null, flowCoverage = null, status = null, role = null, changeLog = null, userRole = null }) {
     const id = `REQ-${Date.now().toString(36).toUpperCase()}`;
     const now = new Date().toISOString();
     const req = {
@@ -24,6 +24,8 @@ class RequirementStore {
       coverage_report: '{}',
       aggregate_coverage_report: '{}',
       change_log: changeLog || '[]',
+      // 30 文档「角色感知」：提交需求时的用户角色（PM/技术/设计/...），影响澄清 prompt + 列表展示
+      user_role: userRole || '',
       created_at: now, updated_at: now, completed_at: '',
     };
     collection('requirements').insert(req);

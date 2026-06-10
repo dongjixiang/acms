@@ -2,6 +2,7 @@
 window.App = {
   currentProjectId: null,
   currentProject: null,
+  currentRole: localStorage.getItem('acms-current-role') || 'pm',  // 30 文档「角色感知」Step 3
   ws: null,
   WS_URL: `ws://${location.hostname}:3301/ws`,
   statusLabels: { idea: '💡 想法', clarifying: '❓ 澄清中', review: '👀 待审核', approved: '✅ 已确认', in_execution: '🔄 执行中', done: '🎉 已完成', abandoned: '🗑 已放弃' },
@@ -82,4 +83,25 @@ window.App = {
     if (backdrop) backdrop.classList.remove('sidebar-open');
     if (btn) btn.textContent = '☰';
   },
+
+  // 30 文档「角色感知」Step 3：设置当前用户角色，影响后续创建需求/澄清的方向
+  setCurrentRole(role) {
+    this.currentRole = role || 'pm';
+    localStorage.setItem('acms-current-role', this.currentRole);
+    // 同步下拉框（防止从代码改 currentRole 时 UI 落后）
+    const sel = document.getElementById('role-switcher');
+    if (sel && sel.value !== this.currentRole) sel.value = this.currentRole;
+    // 轻量提示
+    if (typeof toast === 'function') {
+      const labels = { pm: 'PM', tech: '技术', design: '设计', test: '测试', 'agent:小吉': 'Agent', system: '系统', anonymous: '匿名' };
+      toast(`已切换到「${labels[this.currentRole] || this.currentRole}」`, 'info', 1500);
+    }
+  },
 };
+
+// 启动时同步下拉框
+document.addEventListener('DOMContentLoaded', () => {
+  const sel = document.getElementById('role-switcher');
+  if (sel && window.App.currentRole) sel.value = window.App.currentRole;
+});
+

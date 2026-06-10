@@ -93,6 +93,57 @@ function buildPrompt(phase, domain) {
 // 保留 CLARIFY_SYSTEM_PROMPT 作为向后兼容的 fallback
 const CLARIFY_SYSTEM_PROMPT = buildPrompt('clarify-round1');
 
+// ===== 角色感知（30 文档「一放一收」Step 3）=====
+// 根据用户角色裁剪提问方向：
+//   - 业务角色（PM/设计/...）：聚焦场景、用户故事、验收标准
+//   - 技术角色（架构师/开发/...）：聚焦实现方案、技术约束、风险
+//   - Agent 角色：能问任何问题
+//   - 匿名：不感知角色，按通用规则
+const ROLE_PROFILES = {
+  pm: {
+    label: '产品经理（PM）',
+    focus: '业务场景、用户故事、转化漏斗、运营策略、验收标准',
+    avoid: '数据库 schema、API 协议、并发模型、性能预算等技术细节',
+  },
+  tech: {
+    label: '架构师/技术',
+    focus: '技术架构、API 契约、数据模型、性能、并发、可维护性、风险评估',
+    avoid: '用户故事、转化漏斗、运营策略、UI 视觉等纯业务问题',
+  },
+  design: {
+    label: '设计师',
+    focus: '交互流程、视觉规范、信息层级、可访问性、跨端一致性',
+    avoid: '后端架构、数据库设计、性能优化等技术问题',
+  },
+  test: {
+    label: '测试',
+    focus: '边界条件、异常路径、回归点、可测性、自动化策略',
+    avoid: '产品定位、运营策略等宏观问题',
+  },
+  // 架构师/开发者复用 tech 模板
+  'agent:小吉': { label: 'Agent（小吉）', focus: '通用', avoid: '' },
+  'agent:other': { label: 'Agent（其他）', focus: '通用', avoid: '' },
+  system: { label: '系统', focus: '通用', avoid: '' },
+  anonymous: { label: '匿名用户', focus: '通用', avoid: '' },
+};
+// architecture/developer 复用 tech（按需 resolve 时才取，避免初始化顺序问题）
+ROLE_PROFILES.architecture = { label: '架构师', focus: ROLE_PROFILES.tech.focus, avoid: ROLE_PROFILES.tech.avoid };
+ROLE_PROFILES.developer = { label: '开发者', focus: ROLE_PROFILES.tech.focus, avoid: ROLE_PROFILES.tech.avoid };
+
+function buildRoleContext(userRole) {
+  const profile = ROLE_PROFILES[userRole] || { label: userRole, focus: '通用', avoid: '' };
+  let ctx = `## 👤 用户角色：${profile.label}\n\n`;
+  ctx += `**重要指示**：根据用户的角色（${profile.label}）调整你的提问方向和深度。\n\n`;
+  if (profile.focus && profile.focus !== '通用') {
+    ctx += `**聚焦**：${profile.focus}\n\n`;
+  }
+  if (profile.avoid) {
+    ctx += `**避免**：${profile.avoid}\n\n`;
+  }
+  ctx += `如果用户给的回答里包含了其他维度的关键信息，请记录到 SRS，但不要继续追问不属于他/她专业领域的问题。`;
+  return ctx;
+}
+
 // ===== JSON 提取（多层容错：清洗→正则→关键锚点→修复） =====
 function extractJSON(content) {
   // 1. 直接解析（整个字符串就是 JSON）
@@ -179,7 +230,7 @@ function repairJSON(text) {
   return fixed;
 }
 
-async function clarify(reqId, modelId, userMessage, conversationHistory) {
+async function clarify(reqId, modelId, userMessage, conversationHistory, userRole = '') {
   const requirement = reqStore.getById(reqId);
   if (!requirement) throw Object.assign(new Error('需求不存在'), { status: 404 });
 
@@ -227,11 +278,20 @@ async function clarify(reqId, modelId, userMessage, conversationHistory) {
   const messages = [
     { role: 'system', content: systemPrompt },
     { role: 'system', content: `当前需求上下文:\n${JSON.stringify(context, null, 2)}` },
-    ...(conversationHistory || []).map(m => ({
+  ];
+
+  // 30 文档「角色感知」：根据用户角色裁剪提问方向
+  if (userRole) {
+    messages.push({ role: 'system', content: buildRoleContext(userRole) });
+  }
+
+  // 把对话历史拼到 role context 之后
+  if (conversationHistory && conversationHistory.length > 0) {
+    messages.push(...conversationHistory.map(m => ({
       role: m.role === 'user' ? 'user' : 'assistant',
       content: m.role === 'user' ? m.content : (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)),
-    })),
-  ];
+    })));
+  }
 
   // 变更上下文感知: 如果需求经历过变更，注入变更背景
   const changeHistory = JSON.parse(requirement.change_history || '[]');
