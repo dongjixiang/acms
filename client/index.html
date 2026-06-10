@@ -23,6 +23,16 @@ document.addEventListener('DOMContentLoaded', () => {
     <h1 id="header-title">🤖 <span data-i18n="app.title">智能体协同管理系统</span> <span class="version" data-i18n="app.version">v0.3</span></h1>
     <div id="header-right">
       <span id="current-project"></span>
+      <button class="btn-small" onclick="showIdeaDialog()" title="记录想法">💡</button>
+      <select id="role-switcher" class="role-switcher" onchange="App.setCurrentRole(this.value)" title="你的角色（影响澄清提问方向）">
+        <option value="pm">👤 PM</option>
+        <option value="tech">🛠 技术</option>
+        <option value="design">🎨 设计</option>
+        <option value="test">🧪 测试</option>
+        <option value="agent:小吉">🤖 Agent</option>
+        <option value="system">⚙️ 系统</option>
+        <option value="anonymous">匿名</option>
+      </select>
       <button class="btn-small" onclick="showView('view-improvements');loadImprovements();" title="自我改进">🔄</button>
       <button class="btn-small" onclick="showView('view-admin');loadAdminPage();">⚙️</button>
       <button id="btn-theme-toggle" class="btn-small" onclick="App.toggleTheme()" title="切换主题">🌙</button>
@@ -103,7 +113,10 @@ document.addEventListener('DOMContentLoaded', () => {
         <button class="imp-tab-btn" data-tab="board" onclick="switchImprovementTab('board')">📌 任务看板</button>
       </div>
       <div id="imp-reports-panel" class="imp-content-wrap" style="display:flex;flex:1;overflow:hidden">
-        <div id="imp-reports-list" class="imp-list-panel"></div>
+        <div style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+          <div id="imp-reports-toolbar" class="imp-reports-toolbar" style="display:none"></div>
+          <div id="imp-reports-list" class="imp-list-panel"></div>
+        </div>
         <div id="imp-detail-panel" class="imp-detail-panel"></div>
       </div>
       <div id="imp-board-panel" class="imp-board-panel" style="display:none;flex:1;overflow:auto">
@@ -153,7 +166,10 @@ document.addEventListener('DOMContentLoaded', () => {
             </select>
           </div>
           <div id="create-req-panel" class="panel-form" style="display:none">
-            <h3>➕ 新建需求</h3>
+            <h3>💭 提个需求</h3>
+            <div class="create-req-hint">
+              先随便写，AI 会帮你理清 — 模糊的会先出预览，规范的直接进澄清。
+            </div>
             <label>需求标题 <span class="required">*</span></label>
             <div class="input-voice-row">
               <input type="text" id="create-title" placeholder="例如：天气特效系统" style="flex:1">
@@ -161,19 +177,28 @@ document.addEventListener('DOMContentLoaded', () => {
             </div>
             <label>需求描述</label>
             <div class="input-voice-row">
-              <textarea id="create-desc" rows="4" placeholder="描述你想要的功能或改进..." style="flex:1"></textarea>
+              <textarea id="create-desc" rows="4" placeholder="描述你想要的功能或改进…越具体 AI 越能帮你；模糊也没关系。" style="flex:1"></textarea>
               <button class="btn-voice" onclick="startVoiceInput(document.getElementById('create-desc'), this)" title="语音录入">🎤</button>
             </div>
-            <div class="form-row">
-              <div><label>优先级</label><select id="create-priority">
-                <option value="1">P1 🔴</option><option value="2">P2 🟠</option>
-                <option value="3" selected>P3 🟡</option><option value="4">P4 🟢</option><option value="5">P5 ⚪</option>
-              </select></div>
-              <div><label>截止日期</label><input type="date" id="create-deadline"></div>
-            </div>
-            <label>标签</label><input type="text" id="create-tags" placeholder="天气,视觉效果">
+            <label>标签 <span class="optional-hint">（可选，逗号分隔）</span></label>
+            <input type="text" id="create-tags" placeholder="AI 会根据描述自动建议，确认即可">
+            <details class="create-req-advanced">
+              <summary>高级选项</summary>
+              <div class="form-row">
+                <div><label>优先级</label><select id="create-priority">
+                  <option value="">— 系统推断 —</option>
+                  <option value="1">P1 🔴</option>
+                  <option value="2">P2 🟠</option>
+                  <option value="3" selected>P3 🟡</option>
+                  <option value="4">P4 🟢</option>
+                  <option value="5">P5 ⚪</option>
+                </select></div>
+                <div><label>截止日期</label><input type="date" id="create-deadline"></div>
+              </div>
+              <div class="advanced-hint">不知道就空着 — 优先级会在规划阶段基于澄清结果自动定；截止日期在任务分解时设。</div>
+            </details>
             <div class="form-actions">
-              <button class="btn-primary" onclick="doCreateReq()">提交需求</button>
+              <button class="btn-primary" onclick="doCreateReq()">📥 提交</button>
               <button class="btn-back" onclick="hideCreateReq()">取消</button>
             </div>
           </div>

@@ -15,27 +15,132 @@ class ImprovementReportStore {
    * @param {string} data.summary - 摘要
    * @param {Array} data.improvements - 改进建议列表 [{ dimension, issue, suggestion, priority }]
    */
-  create(data) {
-    const id = `IMP-${Date.now().toString(36).toUpperCase()}`;
+  _baseFields(data) {
     const now = new Date().toISOString();
-    const report = {
-      id,
+    return {
       project_id: data.projectId || '',
       source_task_id: data.sourceTaskId || '',
-      source_type: data.sourceType || 'bug',
+      source_type: data.sourceType || 'bug',      // bug | clarify | postmortem | idea
+      source_user_id: data.sourceUserId || '',
+      source_user_name: data.sourceUserName || '',
+      source_role: data.sourceRole || '',         // PM | tech | agent:<name> | system | anonymous
+      source_context: data.sourceContext || '',   // 自由文本：来源会话/触发点/灵感来源
       severity: data.severity || 'major',
       root_cause: JSON.stringify(data.rootCause || {}),
       summary: data.summary || '',
       improvements: JSON.stringify(data.improvements || []),
-      status: 'pending',           // pending | approved | declined
+      status: 'pending',           // pending | approved | declined | merged
       task_id: '',                 // 审核通过后创建的改进任务 ID
       feedback: '',
+      merged_into: '',             // 合并到哪个报告 ID（仅 merged 状态使用）
+      related_ids: JSON.stringify(data.relatedIds || []), // 合并来源列表
       created_at: now,
       updated_at: now,
     };
+  }
+
+  create(data) {
+    const id = `IMP-${Date.now().toString(36).toUpperCase()}`;
+    const report = { id, ...this._baseFields(data) };
     collection('improvement_reports').insert(report);
-    console.log(`[ImprovementReport] 创建 ${id}: ${data.summary?.substring(0, 60)}`);
+    console.log(`[ImprovementReport] 创建 ${id} [${report.source_type}] [${report.source_role || 'anonymous'}] ${report.summary?.substring(0, 60)}`);
     return report;
+  }
+
+  /**
+   * 创建一条想法（idea 来源）
+   * @param {object} data
+   * @param {string} data.title - 想法标题
+   * @param {string} data.content - 想法详细内容
+   * @param {string} data.summary - 一句话摘要（可选，没传就从 content 截）
+   * @param {string} data.sourceUserId / sourceUserName / sourceRole / sourceContext
+   * @param {Array}  data.improvements - AI 预分析的改进建议
+   */
+  createIdea(data) {
+    const summary = data.summary || (data.content || '').substring(0, 80) || data.title || '';
+    return this.create({
+      ...data,
+      summary,
+      sourceType: 'idea',
+      severity: data.severity || 'minor', // 想法默认 minor，严重程度由审核时判断
+    });
+  }
+
+  /**
+   * 列出想法（source_type=idea）
+   * @param {object} opts
+   * @param {string} opts.status - 状态过滤
+   * @param {string} opts.sourceUserId - 来源用户过滤
+   * @param {string} opts.sourceRole - 来源角色过滤
+   */
+  listIdeas({ status, sourceUserId, sourceRole } = {}) {
+    let reports = collection('improvement_reports').find(r => r.source_type === 'idea');
+    if (status) reports = reports.filter(r => r.status === status);
+    if (sourceUserId) reports = reports.filter(r => r.source_user_id === sourceUserId);
+    if (sourceRole) reports = reports.filter(r => r.source_role === sourceRole);
+    reports.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    return reports.map(r => ({
+      ...r,
+      improvements: (() => { try { return JSON.parse(r.improvements || '[]'); } catch { return []; } })(),
+      root_cause: (() => { try { return JSON.parse(r.root_cause || '{}'); } catch { return {}; } })(),
+    }));
+  }
+
+  /**
+   * 合并多条 idea 为一条新报告
+   * @param {string[]} sourceIds - 被合并的 idea ID 列表
+   * @param {object}  mergedData - 合并后报告的字段（title/summary/improvements/sourceUserId...）
+   * @returns {object} { report, merged: number, sources: [...] }
+   */
+  mergeIdeas(sourceIds, mergedData) {
+    if (!Array.isArray(sourceIds) || sourceIds.length < 2) {
+      return { error: 'NEED_AT_LEAST_TWO_IDS' };
+    }
+    const sources = sourceIds.map(id => this.getById(id)).filter(Boolean);
+    if (sources.length !== sourceIds.length) {
+      return { error: 'SOME_IDS_NOT_FOUND' };
+    }
+    if (sources.some(s => s.source_type !== 'idea')) {
+      return { error: 'ONLY_IDEAS_CAN_BE_MERGED' };
+    }
+    if (sources.some(s => s.status !== 'pending')) {
+      return { error: 'ONLY_PENDING_CAN_BE_MERGED', statuses: sources.map(s => s.status) };
+    }
+
+    const now = new Date().toISOString();
+    // 收集所有改进建议去重
+    const allImprovements = [];
+    const seen = new Set();
+    for (const s of sources) {
+      let imps = [];
+      try { imps = JSON.parse(s.improvements || '[]'); } catch {}
+      for (const imp of imps) {
+        const key = (imp.suggestion || imp.issue || '').substring(0, 50);
+        if (!seen.has(key)) { seen.add(key); allImprovements.push(imp); }
+      }
+    }
+
+    const newReport = this.create({
+      ...mergedData,
+      sourceType: 'idea',
+      severity: mergedData.severity || 'major',
+      relatedIds: sourceIds,
+      improvements: mergedData.improvements?.length ? mergedData.improvements : allImprovements,
+      sourceContext: mergedData.sourceContext ||
+        `合并自 ${sourceIds.length} 条想法: ${sourceIds.join(', ')}`,
+    });
+
+    // 标记源 idea 为 merged
+    for (const id of sourceIds) {
+      collection('improvement_reports').update(r => r.id === id, {
+        status: 'merged',
+        merged_into: newReport.id,
+        updated_at: now,
+      });
+    }
+
+    console.log(`[ImprovementReport] 合并 ${sourceIds.length} → ${newReport.id}`);
+    return { report: newReport, merged: sourceIds.length, sources };
   }
 
   getById(id) {

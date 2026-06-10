@@ -3,6 +3,15 @@ const express = require('express');
 const router = express.Router();
 const reportStore = require('../stores/improvement-report-store');
 
+// 从请求头提取用户身份（轻量实现：透传客户端声明，未来接真实用户系统时替换此处）
+function extractUser(req) {
+  return {
+    userId:   req.header('X-User-Id')   || '',
+    userName: req.header('X-User-Name') || 'anonymous',
+    role:     req.header('X-User-Role') || 'anonymous',
+  };
+}
+
 // 获取自我改进项目信息
 router.get('/project', (req, res) => {
   const { collection } = require('../db/connection');
@@ -51,6 +60,77 @@ router.post('/reports/:id/review', (req, res) => {
 router.get('/board', (req, res) => {
   const board = reportStore.getBoard();
   res.json(board);
+});
+
+// === 想法（idea）端点 ===
+// 客户端提交流：任何用户/agent 都能提交，自动带上来源身份
+
+// 提交一条想法
+router.post('/ideas', (req, res) => {
+  const { title, content, summary, sourceContext, improvements, severity, sourceUserId, sourceUserName, sourceRole } = req.body || {};
+  if (!title && !content) {
+    return res.status(400).json({ error: 'EMPTY_IDEA', message: 'title 和 content 至少要有一个' });
+  }
+
+  // 优先用 body 显式传的 sourceUserId/Role，否则从 header 推断
+  const headerUser = extractUser(req);
+  const idea = reportStore.createIdea({
+    title: title || (content || '').substring(0, 40),
+    content: content || '',
+    summary,
+    sourceUserId:   sourceUserId   || headerUser.userId,
+    sourceUserName: sourceUserName || headerUser.userName,
+    sourceRole:     sourceRole     || headerUser.role,
+    sourceContext,
+    improvements,
+    severity,
+  });
+  res.status(201).json(idea);
+});
+
+// 列出想法
+router.get('/ideas', (req, res) => {
+  const { status, sourceUserId, sourceRole } = req.query;
+  const ideas = reportStore.listIdeas({ status, sourceUserId, sourceRole });
+  res.json(ideas);
+});
+
+// 合并多条想法
+router.post('/ideas/merge', (req, res) => {
+  const { sourceIds, ...mergedData } = req.body || {};
+  if (!Array.isArray(sourceIds) || sourceIds.length < 2) {
+    return res.status(400).json({ error: 'NEED_AT_LEAST_TWO_IDS' });
+  }
+  const headerUser = extractUser(req);
+  const result = reportStore.mergeIdeas(sourceIds, {
+    ...mergedData,
+    sourceUserId:   mergedData.sourceUserId   || headerUser.userId,
+    sourceUserName: mergedData.sourceUserName || headerUser.userName,
+    sourceRole:     mergedData.sourceRole     || headerUser.role,
+  });
+  if (result.error) {
+    const statusCode = result.error === 'ONLY_PENDING_CAN_BE_MERGED' ? 409 : 400;
+    return res.status(statusCode).json(result);
+  }
+  res.status(201).json(result);
+});
+
+// 想法统计：按来源/状态聚合（给自我改进项目 dashboard 用）
+router.get('/ideas/stats', (req, res) => {
+  const all = reportStore.listIdeas();
+  const byStatus = {};
+  const byRole = {};
+  const byUser = {};
+  for (const r of all) {
+    byStatus[r.status] = (byStatus[r.status] || 0) + 1;
+    const role = r.source_role || 'anonymous';
+    byRole[role] = (byRole[role] || 0) + 1;
+    if (r.source_user_id) {
+      const k = `${r.source_user_name || r.source_user_id} (${r.source_role || '?'})`;
+      byUser[k] = (byUser[k] || 0) + 1;
+    }
+  }
+  res.json({ total: all.length, byStatus, byRole, byUser });
 });
 
 module.exports = router;
