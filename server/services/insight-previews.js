@@ -7,7 +7,7 @@
 //   requirement.input_clarity: 'high' | 'medium' | 'low' | null
 //   requirement.insight_previews: {
 //     status: 'pending' | 'generating' | 'done' | 'failed' | 'skipped',
-//     variants: [{ id, label, prompt, asset_path, mime, model, picked }],
+//     variants: [{ id, label, rationale, prompt, asset_path, mime, model, picked }],
 //     started_at, completed_at, error, picked_variant_id
 //   }
 const { callLLM } = require('./llm-adapter');
@@ -40,13 +40,13 @@ const VARIANTS_SYSTEM_PROMPT = `你是 ACMS 系统的「需求可视化助手」
 要求：
 - 3 个方向必须**互不重叠**（不重复的具象化角度）
 - 每个方向都应该**视觉化**（不是抽象描述）
-- image prompt 用英文，30-80 词，包含主体、环境、风格、光线、构图
+- image prompt 用中文（≤80字），包含主体、环境、风格、光线、构图（Z-Image/Qwen-Image 对中文实体保真度更好，无需翻译）
 - 不要包含"3D/2D"等限制词前缀（让模型自由发挥）
 - 输出严格 JSON，格式：
 {"variants":[
-  {"label":"方向A","prompt":"English image prompt..."},
-  {"label":"方向B","prompt":"English image prompt..."},
-  {"label":"方向C","prompt":"English image prompt..."}
+  {"label":"方向A","rationale":"为什么选这个角度（≤20字）","prompt":"English image prompt..."},
+  {"label":"方向B","rationale":"...","prompt":"..."},
+  {"label":"方向C","rationale":"...","prompt":"..."}
 ]}
 不要任何额外文字、markdown 代码块、解释。`;
 
@@ -164,6 +164,7 @@ async function generatePreviewImages(projectSlug, providerId, variants) {
       return {
         id: `v${idx}_${Date.now().toString(36).toUpperCase()}`,
         label: v.label,
+        rationale: v.rationale || '',
         prompt: v.prompt,
         asset_path: result.assetPath,
         mime: result.mime,
@@ -176,6 +177,7 @@ async function generatePreviewImages(projectSlug, providerId, variants) {
       return {
         id: `v${idx}_${Date.now().toString(36).toUpperCase()}`,
         label: v.label,
+        rationale: v.rationale || '',
         prompt: v.prompt,
         asset_path: null,
         mime: null,
