@@ -24,13 +24,13 @@ router.post('/', async (req, res, next) => {
       }
     } catch (e) { console.error('[requirements.create] 明确度评估失败（非阻塞）:', e.message); }
 
-    // ── 异步：自动启动预览生成（fire-and-forget）──
-    // 触发条件：明确度非 high 时启动；high 也启动（让用户能预览对比），但 UI 不强推
+    // ── 异步：自动启动思路简报（v0.3「思路先于画面」改造）──
+    // 思路简报是文本，~1500 tokens；图片预览改为用户手动触发
     try {
-      const { runPreviewJob } = require('../services/insight-previews');
-      setImmediate(() => runPreviewJob(requirement.id, { modelId, role })
-        .catch(e => console.error('[insight.auto] 任务异常:', e)));
-    } catch (e) { console.error('[requirements.create] 启动预览任务失败（非阻塞）:', e.message); }
+      const { runBriefJob } = require('../services/thinking-brief');
+      setImmediate(() => runBriefJob(requirement.id, { modelId, role })
+        .catch(e => console.error('[brief.auto] 任务异常:', e)));
+    } catch (e) { console.error('[requirements.create] 启动思路简报任务失败（非阻塞）:', e.message); }
 
     eventBus.emit('requirement.created', { projectId, actor: { id: req.agentId || 'user', type: 'human' }, target: { type: 'requirement', id: requirement.id }, payload: { requirement } });
     res.status(201).json(requirement);
@@ -443,6 +443,43 @@ router.post('/:id/insight-skip', (req, res, next) => {
     const result = insightService.skipPreviews(req.params.id);
     if (result.error) return res.status(400).json(result);
     res.json(result);
+  } catch (e) { next(e); }
+});
+
+// ============================================================
+// 思路简报（v0.3「思路先于画面」改造）
+//   - 创建需求时自动生成（POST / 已无 endpoint 显式触发）
+//   - 前端通过 GET 读取，必要时通过 POST /regen 重新生成
+// ============================================================
+const briefService = require('../services/thinking-brief');
+
+// 查询思路简报（前端轮询用）
+router.get('/:id/thinking-brief', (req, res, next) => {
+  try {
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    const brief = briefService.getBrief(req.params.id);
+    res.json({
+      requirementId: req.params.id,
+      status: reqRec.status,
+      thinkingBrief: brief,  // null = 还没生成
+    });
+  } catch (e) { next(e); }
+});
+
+// 重新生成思路简报（用户主动操作）
+router.post('/:id/thinking-brief/regen', async (req, res, next) => {
+  try {
+    const { modelId, role } = req.body || {};
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    if (reqRec.status !== 'idea') {
+      return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
+    }
+    // fire-and-forget：立即返回，后台跑
+    setImmediate(() => briefService.runBriefJob(req.params.id, { modelId, role })
+      .catch(e => console.error('[brief.regen] 任务异常:', e)));
+    res.status(202).json({ message: '思路简报重新生成已启动', status: 'generating' });
   } catch (e) { next(e); }
 });
 

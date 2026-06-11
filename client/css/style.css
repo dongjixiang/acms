@@ -818,10 +818,90 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 .insight-clarity-unknown{ background: var(--bg3); color: var(--text2); }
 .insight-reason { width: 100%; font-size: 11px; color: var(--text2); margin-top: 4px; line-height: 1.5; }
 .insight-preview-content { margin-top: 12px; }
-.insight-loading {
-  padding: 24px; text-align: center; color: var(--text2); font-size: 13px;
-  background: var(--bg); border-radius: 6px; border: 1px dashed var(--border);
+.insight-empty {
+  padding: 16px; text-align: center; color: var(--text2); font-size: 12px;
+  background: var(--bg); border-radius: 6px;
+  font-style: italic;
 }
+
+/* ═══ v0.3「思路先于画面」：AI 思路面板样式 ═══ */
+.idea-panel {
+  margin-top: 12px; padding: 12px;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+}
+.idea-section {
+  margin-top: 10px; padding: 10px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+}
+.idea-section:first-of-type { margin-top: 0; }
+.idea-section-thinking { border-left: 3px solid var(--accent); }
+.idea-section-visual { border-left: 3px solid #4ecdc4; }
+.idea-section-visual > summary {
+  cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text);
+  padding: 2px 0; user-select: none; list-style: none;
+}
+.idea-section-visual > summary::-webkit-details-marker { display: none; }
+.idea-section-visual > summary::before { content: "▶ "; font-size: 10px; color: var(--text2); }
+.idea-section-visual[open] > summary::before { content: "▼ "; }
+.idea-section-title {
+  font-size: 13px; font-weight: 600; color: var(--text);
+  margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border);
+}
+.idea-section-actions {
+  display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap;
+}
+.thinking-brief-content { margin-top: 4px; }
+.brief-block { margin-top: 12px; }
+.brief-block:first-child { margin-top: 0; }
+.brief-block-title {
+  font-size: 12px; font-weight: 600; color: var(--accent);
+  margin-bottom: 6px;
+}
+.brief-tree { display: flex; flex-direction: column; gap: 6px; }
+.brief-branch {
+  padding: 8px 10px; background: var(--bg2); border-radius: 6px;
+  border-left: 3px solid var(--accent);
+}
+.brief-branch-label {
+  font-size: 12px; font-weight: 600; color: var(--text);
+  margin-bottom: 3px;
+}
+.brief-branch-desc {
+  font-size: 11px; color: var(--text2); line-height: 1.5; margin-bottom: 4px;
+}
+.brief-branch-meta {
+  font-size: 10px; color: var(--text2); margin-bottom: 4px;
+  font-style: italic;
+}
+.brief-branch-proscons {
+  display: flex; flex-wrap: wrap; gap: 6px; font-size: 10px;
+}
+.brief-pro {
+  padding: 2px 6px; background: rgba(78,205,196,0.15);
+  color: #4ecdc4; border-radius: 3px;
+}
+.brief-con {
+  padding: 2px 6px; background: rgba(255,107,107,0.12);
+  color: #ff9999; border-radius: 3px;
+}
+.brief-questions {
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.brief-question {
+  padding: 5px 10px; background: var(--bg2); border-radius: 14px;
+  font-size: 11px; color: var(--text);
+  border: 1px solid var(--border); cursor: default;
+}
+.brief-question:hover { border-color: var(--accent); }
+.brief-refs { display: flex; flex-direction: column; gap: 4px; }
+.brief-ref {
+  font-size: 11px; padding: 4px 8px; background: var(--bg2);
+  border-radius: 4px; display: flex; gap: 6px;
+}
+.brief-ref b { color: var(--text); }
+.brief-ref span { color: var(--text2); }
+.insight-preview-panel-inner { margin-top: 8px; }
+
 .insight-status { font-size: 11px; color: var(--text2); text-align: center; margin-top: 8px; }
 .insight-error {
   padding: 16px; background: rgba(255,107,107,0.1); color: var(--accent2);
@@ -843,6 +923,26 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 .insight-card-label {
   font-size: 12px; font-weight: 600; color: var(--text); text-align: center;
   padding: 8px 10px; background: var(--bg3); border-bottom: 1px solid var(--border);
+}
+.insight-card-rationale {
+  font-size: 11px; color: var(--text2); text-align: left;
+  padding: 6px 10px; background: var(--bg2); border-bottom: 1px solid var(--border);
+  line-height: 1.4; font-style: italic;
+}
+.insight-card-prompt {
+  font-size: 11px; padding: 4px 10px 8px; background: var(--bg2);
+}
+.insight-card-prompt summary {
+  cursor: pointer; color: var(--accent); font-size: 11px;
+  padding: 2px 0; user-select: none;
+}
+.insight-card-prompt summary:hover { text-decoration: underline; }
+.insight-card-prompt code {
+  display: block; margin-top: 4px; padding: 6px 8px;
+  background: var(--bg3); border-radius: 4px;
+  font-size: 10px; line-height: 1.5; color: var(--text2);
+  font-family: 'Consolas', 'Monaco', monospace;
+  word-break: break-all; white-space: pre-wrap;
 }
 .insight-card-image {
   width: 100%; aspect-ratio: 1/1; background: var(--bg3);

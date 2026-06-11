@@ -112,7 +112,7 @@ async function openRequirement(id) {
       <div class="md-content">${renderMarkdown(req.structured_description || req.description)}</div>
       <div id="existing-md-editor-${id}" style="margin-top:12px"></div>
       <div class="section"><strong>优先级:</strong> P${req.priority} | <strong>截止:</strong> ${req.deadline || '未设置'}</div>
-    ${(req.status === 'idea') ? renderInsightPreviewPanel(req) : ''}
+    ${(req.status === 'idea') ? renderIdeaPanel(req) : ''}
     ${req.status === 'idea' || req.status === 'clarifying' ? renderAiClarifyPanel(req) : ''}
     ${req.status === 'review' ? renderReviewPanel(req) : ''}
     ${['idea', 'clarifying', 'review', 'approved'].includes(req.status) ? `<div id="data-model-panel-${id}" style="margin-top:12px"></div>` : ''}
@@ -137,8 +137,10 @@ async function openRequirement(id) {
   setTimeout(() => loadExistingMdEditor(id), 200);
   setTimeout(() => loadRequirementKnowledge(id), 250);
   setTimeout(() => generateDataModelPreview(id), 300);
-  // 30 文档「一放一收」Step 2：如果是 idea 状态且已带 clarity，触发预览加载
-  setTimeout(() => maybeLoadInsightPreviews(id), 350);
+  // v0.3「思路先于画面」: idea 状态自动加载思路简报，视觉预览按需触发
+  setTimeout(() => loadThinkingBrief(id), 350);
+  // 兼容旧逻辑：尝试加载已存在的预览（如用户之前手动生成过）
+  setTimeout(() => maybeLoadInsightPreviews(id), 400);
   // 页面加载后，如果存在 SRS，按需展示预览按钮
   setTimeout(() => updateMediaPreviewButtons(id), 350);
 }
@@ -2718,37 +2720,62 @@ async function exportRequirement(reqId) {
 }
 
 // ════════════════════════════════════════════════════════════════
-// 30 文档「一放一收」Step 2：AI 视觉预览面板
-//  - 需求处于 idea 状态时渲染
-//  - 3 张互不重叠的视觉化方向，用户选 1 张 → 内容合并到 srs + 转 clarifying
+// v0.3「思路先于画面」改造：AI 思路面板 + 按需视觉预览
+//   - 需求处于 idea 状态时渲染
+//   - 思路区（默认展开）：决策树 / 追问清单 / 类比参考
+//   - 视觉区（默认收起）：点按钮才生成 3 张方向图
 // ════════════════════════════════════════════════════════════════
 
 // 存轮询 timer，避免多次打开详情页时叠加
 const _insightPollers = {};
+const _briefPollers = {};
 
-function renderInsightPreviewPanel(req) {
+function renderIdeaPanel(req) {
   const clarity = req.input_clarity;
   const clarityBadge = clarity
     ? { high: '🟢 明确', medium: '🟡 一般', low: '🔴 模糊' }[clarity] || clarity
     : '⏳ 评估中…';
   const reasonText = req.clarity_reason ? `<div class="insight-reason">${escHtml(req.clarity_reason)}</div>` : '';
   return `
-    <div id="insight-preview-panel-${req.id}" class="insight-preview-panel">
+    <div id="idea-panel-${req.id}" class="idea-panel">
       <div class="insight-header">
-        <span class="insight-title">💭 AI 视觉预览</span>
+        <span class="insight-title">💡 AI 思路 + 视觉预览</span>
         <span class="insight-clarity-badge insight-clarity-${clarity || 'unknown'}">${clarityBadge}</span>
         ${reasonText}
       </div>
-      <div id="insight-preview-content-${req.id}" class="insight-preview-content">
-        <div class="insight-loading">🎨 AI 正在构想 3 个可能的方向…</div>
+
+      <!-- 思路区：默认展开 -->
+      <div class="idea-section idea-section-thinking">
+        <div class="idea-section-title">🌳 决策树 · 追问 · 类比</div>
+        <div id="thinking-brief-content-${req.id}" class="thinking-brief-content">
+          <div class="insight-loading">⏳ AI 正在解读需求、构建思路…</div>
+        </div>
+        <div class="idea-section-actions">
+          <button class="btn-small" onclick="regenerateThinkingBrief('${req.id}')">↻ 重新生成思路</button>
+          <button class="btn-small btn-reject" onclick="skipThinkingBrief('${req.id}')">👉 跳过思路，直接进入澄清</button>
+        </div>
       </div>
-      <div class="insight-footer" id="insight-footer-${req.id}" style="display:none">
-        <button class="btn-small btn-reject" onclick="skipInsightPreviews('${req.id}')">⏭ 跳过预览，直接澄清</button>
-        <button class="btn-small" onclick="regenerateInsightPreviews('${req.id}')">🔄 重新生成</button>
-      </div>
+
+      <!-- 视觉区：默认收起 -->
+      <details class="idea-section idea-section-visual">
+        <summary class="idea-section-title">🎨 视觉预览（按需生成 3 张方向图）</summary>
+        <div id="insight-preview-panel-${req.id}" class="insight-preview-panel-inner">
+          <div id="insight-preview-content-${req.id}" class="insight-preview-content">
+            <div class="insight-empty">👇 点击下方按钮生成 3 张方向图（约 30s，会消耗 token）</div>
+          </div>
+          <div class="insight-footer" id="insight-footer-${req.id}" style="display:none">
+            <button class="btn-small btn-reject" onclick="skipInsightPreviews('${req.id}')">⏭ 跳过预览，直接澄清</button>
+            <button class="btn-small" onclick="regenerateInsightPreviews('${req.id}')">🔄 重新生成</button>
+          </div>
+        </div>
+        <div class="idea-section-actions">
+          <button class="btn-small" onclick="triggerInsightPreviews('${req.id}')">🎨 生成 3 张方向图</button>
+        </div>
+      </details>
     </div>
   `;
 }
+
 
 async function maybeLoadInsightPreviews(reqId) {
   // 清理旧轮询
@@ -2818,6 +2845,7 @@ function renderInsightPreviewContent(reqId, previews) {
       const cards = v.map((variant, i) => `
         <div class="insight-card ${variant.asset_path ? 'ready' : 'pending'}">
           <div class="insight-card-label">${escHtml(variant.label || `方向 ${String.fromCharCode(65+i)}`)}</div>
+          ${variant.rationale ? `<div class="insight-card-rationale">💭 ${escHtml(variant.rationale)}</div>` : ''}
           <div class="insight-card-image">
             ${variant.asset_path
               ? `<img src="/api/generate/assets/${App.currentProjectId}/${variant.asset_path}" alt="${escHtml(variant.label)}" />`
@@ -2838,21 +2866,25 @@ function renderInsightPreviewContent(reqId, previews) {
   // done
   const pickedId = previews.picked_variant_id;
   const v = previews.variants || [];
-  const cards = v.map((variant, i) => `
+  const cards = v.map((variant, i) => {
+    const safeId = `insight-prompt-${reqId}-${variant.id}`;
+    return `
     <div class="insight-card ${variant.asset_path ? 'ready' : 'failed'} ${pickedId === variant.id ? 'picked' : ''}">
       <div class="insight-card-label">${escHtml(variant.label || `方向 ${String.fromCharCode(65+i)}`)}</div>
+      ${variant.rationale ? `<div class="insight-card-rationale">💭 ${escHtml(variant.rationale)}</div>` : ''}
       <div class="insight-card-image">
         ${variant.asset_path
           ? `<img src="/api/generate/assets/${App.currentProjectId}/${variant.asset_path}" alt="${escHtml(variant.label)}" />`
           : `<div class="insight-card-failed">✗ ${escHtml(variant.error || '生成失败')}</div>`}
       </div>
+      ${variant.prompt ? `<details class="insight-card-prompt"><summary>查看生成 prompt</summary><code>${escHtml(variant.prompt)}</code></details>` : ''}
       ${variant.asset_path
         ? (pickedId === variant.id
             ? `<div class="insight-picked-badge">✅ 已选</div>`
             : `<button class="insight-pick-btn" onclick="pickInsightVariant('${reqId}','${variant.id}')">选这个</button>`)
         : ''}
     </div>
-  `).join('');
+  `;}).join('');
   container.innerHTML = `<div class="insight-grid">${cards}</div>`;
   if (pickedId) {
     if (footer) footer.style.display = 'none';
@@ -2900,6 +2932,143 @@ async function regenerateInsightPreviews(reqId) {
       return;
     }
     toast('🔄 重新生成已启动', 'success');
+    maybeLoadInsightPreviews(reqId);
+  } catch (e) {
+    toast('启动失败: ' + e.message, 'error');
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// v0.3「思路先于画面」: 思路简报加载 / 重新生成 / 跳过
+// ════════════════════════════════════════════════════════════════
+
+async function loadThinkingBrief(reqId) {
+  // 清理旧轮询
+  if (_briefPollers[reqId]) {
+    clearInterval(_briefPollers[reqId]);
+    delete _briefPollers[reqId];
+  }
+  try {
+    const resp = await api('GET', `/requirements/${reqId}/thinking-brief`);
+    const brief = resp.thinkingBrief;
+    renderThinkingBriefContent(reqId, brief);
+    if (brief && (brief.status === 'generating' || brief.status === 'pending')) {
+      _briefPollers[reqId] = setInterval(() => pollThinkingBrief(reqId), 2500);
+    }
+  } catch (e) {
+    console.warn('[brief] 加载失败:', e.message);
+  }
+}
+
+async function pollThinkingBrief(reqId) {
+  try {
+    const resp = await api('GET', `/requirements/${reqId}/thinking-brief`);
+    const brief = resp.thinkingBrief;
+    renderThinkingBriefContent(reqId, brief);
+    if (!brief || (brief.status !== 'generating' && brief.status !== 'pending')) {
+      clearInterval(_briefPollers[reqId]);
+      delete _briefPollers[reqId];
+    }
+  } catch (e) {
+    console.warn('[brief] 轮询失败:', e.message);
+  }
+}
+
+function renderThinkingBriefContent(reqId, brief) {
+  const container = document.getElementById(`thinking-brief-content-${reqId}`);
+  if (!container) return;
+
+  if (!brief) {
+    container.innerHTML = '<div class="insight-loading">⏳ 思路简报待生成…</div>';
+    return;
+  }
+  if (brief.status === 'pending' || brief.status === 'generating') {
+    container.innerHTML = '<div class="insight-loading">🤔 AI 正在解读需求、构建思路…</div>';
+    return;
+  }
+  if (brief.status === 'failed') {
+    container.innerHTML = `<div class="insight-error">❌ 思路生成失败：${escHtml(brief.error || '未知错误')}</div>`;
+    return;
+  }
+
+  // done: 渲染三块
+  const tree = (brief.decision_tree || []).map((t, i) => `
+    <div class="brief-branch">
+      <div class="brief-branch-label">${String.fromCharCode(65+i)} ${escHtml(t.label || '')}</div>
+      <div class="brief-branch-desc">${escHtml(t.desc || '')}</div>
+      ${t.examples ? `<div class="brief-branch-meta"><b>典型:</b> ${escHtml(t.examples)}</div>` : ''}
+      <div class="brief-branch-proscons">
+        ${t.pros ? `<span class="brief-pro">+ ${escHtml(t.pros)}</span>` : ''}
+        ${t.cons ? `<span class="brief-con">- ${escHtml(t.cons)}</span>` : ''}
+      </div>
+    </div>
+  `).join('');
+
+  const questions = (brief.questions || []).map(q => `
+    <div class="brief-question">❓ ${escHtml(q)}</div>
+  `).join('');
+
+  const references = (brief.references || []).map(r => `
+    <div class="brief-ref">
+      <b>${escHtml(r.name || '')}</b>
+      <span>${escHtml(r.desc || '')}</span>
+    </div>
+  `).join('');
+
+  container.innerHTML = `
+    <div class="brief-block">
+      <div class="brief-block-title">🌳 决策树</div>
+      <div class="brief-tree">${tree || '<div class="insight-empty">未生成</div>'}</div>
+    </div>
+    <div class="brief-block">
+      <div class="brief-block-title">❓ 追问清单（点哪个聊哪个）</div>
+      <div class="brief-questions">${questions || '<div class="insight-empty">未生成</div>'}</div>
+    </div>
+    <div class="brief-block">
+      <div class="brief-block-title">🔍 类比参考</div>
+      <div class="brief-refs">${references || '<div class="insight-empty">未生成</div>'}</div>
+    </div>
+  `;
+}
+
+async function regenerateThinkingBrief(reqId) {
+  if (!await showConfirm('重新生成思路简报会消耗 token，确认？', { type: 'info' })) return;
+  try {
+    const resp = await api('POST', `/requirements/${reqId}/thinking-brief/regen`, {});
+    if (resp.error) {
+      toast('启动失败: ' + resp.error, 'error');
+      return;
+    }
+    toast('🔄 思路简报重新生成中…', 'success');
+    loadThinkingBrief(reqId);
+  } catch (e) {
+    toast('启动失败: ' + e.message, 'error');
+  }
+}
+
+function skipThinkingBrief(reqId) {
+  // 「跳过思路」目前只是收起思路区 + 展开视觉区；不调后端
+  // 后续如果需要状态记录，可以加 /thinking-brief/skip endpoint
+  toast('👉 跳过思路，可直接进入澄清阶段', 'info', 2000);
+  const visualSection = document.querySelector(`#idea-panel-${reqId} .idea-section-visual`);
+  if (visualSection) {
+    visualSection.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+}
+
+// 「按需触发」视觉预览：点按钮才生成
+async function triggerInsightPreviews(reqId) {
+  try {
+    const resp = await api('POST', `/requirements/${reqId}/insight-previews`, {});
+    if (resp.error) {
+      toast('启动失败: ' + resp.error, 'error');
+      return;
+    }
+    toast('🎨 正在生成 3 张方向图…', 'success');
+    // 展开视觉区让用户看到 loading
+    const visualSection = document.querySelector(`#idea-panel-${reqId} .idea-section-visual`);
+    if (visualSection && !visualSection.open) visualSection.open = true;
+    // 启动轮询
     maybeLoadInsightPreviews(reqId);
   } catch (e) {
     toast('启动失败: ' + e.message, 'error');
