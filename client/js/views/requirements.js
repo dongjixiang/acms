@@ -3337,22 +3337,23 @@ function renderBranchDetailContent(panel, detail, reqId, branchIdx) {
     const imgStatus = f.image_status;
     let imgBlock;
     if (imgStatus === 'done' && f.image_asset) {
-      // 用 <div> 包裹图片 + 自己处理 click（避免被外层 <label> 触发 checkbox toggle）
-      imgBlock = `<div class="branch-feature-img-clickable" onclick="event.preventDefault();event.stopPropagation();expandFeatureImage('${reqId}', ${branchIdx}, ${i})" title="点击放大"><img src="/api/generate/assets/${App.currentProjectId}/${f.image_asset}" class="branch-feature-img" alt="${escHtml(f.title)}" loading="lazy" /></div>`;
+      // 注意：外层是 <div> 而非 <label>，避免点图片触发 label 默认行为勾选 checkbox
+      // checkbox 通过点击文字/checkbox 本身切换；点图片仅放大
+      imgBlock = `<div class="branch-feature-img-clickable" onclick="event.stopPropagation();expandFeatureImage('${reqId}', ${branchIdx}, ${i})" title="点击放大"><img src="/api/generate/assets/${App.currentProjectId}/${f.image_asset}" class="branch-feature-img" alt="${escHtml(f.title)}" loading="lazy" /></div>`;
     } else if (imgStatus === 'failed') {
       imgBlock = `<div class="branch-feature-img-failed">🖼 配图失败</div>`;
     } else {
       imgBlock = `<div class="branch-feature-img-loading">⏳ 配图中…</div>`;
     }
     return `
-      <label class="branch-feature-card" data-feature-idx="${i}">
-        <input type="checkbox" class="branch-feature-check" data-feature-title="${escHtml(f.title)}">
+      <div class="branch-feature-card" data-feature-idx="${i}">
+        <input type="checkbox" class="branch-feature-check" id="branch-feature-${reqId}-${branchIdx}-${i}" data-feature-title="${escHtml(f.title)}" onclick="event.stopPropagation()">
         <div class="branch-feature-img-wrap">${imgBlock}</div>
-        <div class="branch-feature-text">
+        <label for="branch-feature-${reqId}-${branchIdx}-${i}" class="branch-feature-text" onclick="event.stopPropagation()">
           <div class="branch-feature-title">${escHtml(f.title)}</div>
           <div class="branch-feature-desc">${escHtml(f.desc)}</div>
-        </div>
-      </label>
+        </label>
+      </div>
     `;
   }).join('');
 
