@@ -2680,7 +2680,7 @@ async function restoreDescriptionHistory(reqId, historyIdx) {
     // 简化：调 rewrite，supplement 携带"用户选择恢复历史版本"的意图
     const resp = await api('POST', `/requirements/${reqId}/rewrite-description`, {
       supplement: `(用户操作：从描述历史中选择了 v${historyIdx + 1} 版本作为基础，请基于此重整)`,
-      modelId: 'model_mps18nz9',
+      modelId: null,  // 让后端自动选可用文本模型（避免硬编码 ID 在不同服务器上找不到）
       autoRegenBrief: true,
     });
     if (resp.error) {
@@ -3265,7 +3265,8 @@ async function expandBranchDetail(reqId, branchIdx) {
   panel.innerHTML = '<div class="insight-loading">⏳ AI 正在分析产品特色…</div>';
   try {
     // 启动生成（fire-and-forget 后端可能立即返 202）
-    await api('POST', `/requirements/${reqId}/thinking-brief/branch-detail`, { branchIdx, modelId: 'model_mps18nz9' });
+    // modelId: null 让后端自动选可用文本模型（避免硬编码 ID 在不同服务器上找不到）
+    await api('POST', `/requirements/${reqId}/thinking-brief/branch-detail`, { branchIdx, modelId: null });
   } catch (e) {
     // 已生成过的（重复点）不报错
     console.log('[branch-detail] 启动请求:', e.message);
@@ -3466,7 +3467,7 @@ async function confirmBranchFeatures(reqId, branchIdx) {
   try {
     const resp = await api('POST', `/requirements/${reqId}/rewrite-description`, {
       supplement,
-      modelId: 'model_mps18nz9',
+      modelId: null,  // 让后端自动选可用文本模型（避免硬编码 ID 在不同服务器上找不到）
       autoRegenBrief: true,
     });
     if (resp.error) {
@@ -3493,7 +3494,7 @@ async function submitIdeaSupplement(reqId) {
   try {
     const resp = await api('POST', `/requirements/${reqId}/rewrite-description`, {
       supplement,
-      modelId: 'model_mps18nz9',
+      modelId: null,  // 让后端自动选可用文本模型
       autoRegenBrief: true,
     });
     if (resp.error) {
