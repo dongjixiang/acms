@@ -2977,7 +2977,7 @@ function renderIdeaPanel(req) {
               💡 补充想法并重整
             </button>
             <button class="btn-small" onclick="regenerateThinkingBrief('${req.id}')">↻ 重新生成思路</button>
-            <button class="btn-small btn-reject" onclick="skipThinkingBrief('${req.id}')">👉 跳过思路，直接进入澄清</button>
+            <button class="btn-small btn-reject" onclick="skipThinkingBrief('${req.id}')">✅ 够了，进澄清</button>
           </div>
         </div>
       </div>
@@ -3526,7 +3526,7 @@ async function regenerateThinkingBrief(reqId) {
 function skipThinkingBrief(reqId) {
   // 「跳过思路」目前只是收起思路区 + 展开视觉区；不调后端
   // 后续如果需要状态记录，可以加 /thinking-brief/skip endpoint
-  toast('👉 跳过思路，可直接进入澄清阶段', 'info', 2000);
+  toast('✅ 进入澄清阶段', 'info', 2000);
   const visualSection = document.querySelector(`#idea-panel-${reqId} .idea-section-visual`);
   if (visualSection) {
     visualSection.scrollIntoView({ behavior: 'smooth', block: 'center' });

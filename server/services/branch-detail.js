@@ -86,8 +86,10 @@ async function generateFeatures(title, description, branch, role, modelId) {
     jsonMode: true,
   });
 
-  // 多层 JSON 提取（兼容 markdown 包裹 / 深度嵌套）
+  // 多层 JSON 提取（兼容 markdown 包裹 / 深度嵌套 / 中文思考前缀）
   let content = (result.content || '').trim();
+  // 诊断：把原始 content 落盘（解析失败时排查用）
+  try { require('fs').writeFileSync('/tmp/branch-detail-last-llm.txt', content, 'utf8'); } catch {}
   if (content.startsWith('```')) {
     content = content.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
   }
@@ -95,7 +97,15 @@ async function generateFeatures(title, description, branch, role, modelId) {
   if (jsonStart >= 0) content = content.substring(jsonStart);
   const jsonEnd = content.lastIndexOf('}');
   if (jsonEnd > jsonStart) content = content.substring(0, jsonEnd + 1);
-  const parsed = JSON.parse(content);
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch (e) {
+    // 把诊断快照 + 错误位置一并写日志
+    const ctx = content.substring(Math.max(0, 916 - 50), Math.min(content.length, 916 + 50));
+    console.error(`[branch-detail] JSON parse failed: ${e.message}\n  content length: ${content.length}\n  context @916: ...${ctx}...`);
+    throw e;
+  }
 
   const features = Array.isArray(parsed.features) ? parsed.features : [];
   // 校验：每个 feature 至少有 title/desc/image_prompt
