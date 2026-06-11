@@ -20,7 +20,12 @@ const modelStore = require('../stores/model-store');
 const reqStore = require('../stores/requirement-store');
 
 // ===== Prompt =====
-const THINKING_SYSTEM_PROMPT = `你是 ACMS 系统的「需求解读助手」。面对一个模糊需求，你的工作是帮用户打开思路——而不是直接给方案。
+const THINKING_SYSTEM_PROMPT = `你是 ACMS 系统的「需求解读助手」。面对一个需求，你的工作是帮用户打开思路——而不是直接给方案。
+
+【重要原则】如果用户输入中包含「上一轮决策树」字段：
+- 你这次的输出必须**和上一轮有明显不同**——可以是更细分的场景、不同的用户角色切入、用户没考虑过的层面、或者基于已勾选/补充的延伸
+- 不要换汤不换药（同样的方向换名字、稍微改 desc 算无效输出）
+- 如果发现「确实想不到新角度」，就诚实地回到原方向但深化它（更具体的场景、更细的分类）
 
 请输出三块内容：
 
@@ -68,11 +73,12 @@ function pickDefaultLlm() {
  * @param {string} title
  * @param {string} description
  * @param {string} clarity
+ * @param {Array} [oldDecisionTree] - 上一轮的决策树（如有）—— 用于差异化
  * @param {string} [role] - 用户角色（PM/技术/...）
  * @param {string} [modelId]
  * @returns {Promise<{decision_tree, questions, references, modelId}>}
  */
-async function generateBrief(title, description, clarity, role, modelId) {
+async function generateBrief(title, description, clarity, oldDecisionTree, role, modelId) {
   const model = modelId ? modelStore.getById(modelId) : pickDefaultLlm();
   if (!model) throw new Error('NO_LLM_AVAILABLE');
   const messages = [
@@ -84,6 +90,15 @@ async function generateBrief(title, description, clarity, role, modelId) {
       role ? `用户角色: ${role}` : '',
     ].filter(Boolean).join('\n') },
   ];
+
+  // 如果有上一轮决策树，作为独立的 system message 注入（避免和 user 段混在一起）
+  if (Array.isArray(oldDecisionTree) && oldDecisionTree.length > 0) {
+    const oldLabels = oldDecisionTree.map(t => t.label || '').filter(Boolean);
+    messages.push({
+      role: 'system',
+      content: `【上一轮决策树】用户已经看过这些方向了：\n${oldLabels.map((l, i) => `${String.fromCharCode(65 + i)}. ${l}`).join('\n')}\n\n请这次给出**明显不同**的方向——更细分的场景、不同的用户视角、或基于用户已勾选/补充的延伸。如果实在想不到新角度，至少在 desc 里给更具体的落地场景。`,
+    });
+  }
   const result = await callLLM(model.id, messages, {
     temperature: 0.7,
     maxTokens: 1200,
@@ -133,8 +148,17 @@ async function runBriefJob(requirementId, opts = {}) {
   console.log(`[brief] ${requirementId} 开始生成思路简报`);
 
   try {
+    // 读取旧决策树（用于差异化）—— 启动前读，避免被本次 update 清空后取不到
+    let oldDecisionTree = [];
+    try {
+      const oldBrief = JSON.parse(req.thinking_brief || 'null');
+      if (oldBrief && Array.isArray(oldBrief.decision_tree)) {
+        oldDecisionTree = oldBrief.decision_tree;
+      }
+    } catch (e) { /* 静默降级 */ }
+
     const brief = await generateBrief(
-      req.title, req.description, req.input_clarity, opts.role, opts.modelId
+      req.title, req.description, req.input_clarity, oldDecisionTree, opts.role, opts.modelId
     );
     reqStore.update(requirementId, {
       thinking_brief: JSON.stringify({
@@ -153,6 +177,10 @@ async function runBriefJob(requirementId, opts = {}) {
     reqStore.update(requirementId, {
       thinking_brief: JSON.stringify({
         status: 'failed',
+        decision_tree: [],
+        questions: [],
+        references: [],
+        // 不保留 branch_details — 新决策树没生成前，旧特色无意义
         error: e.message,
         generated_at: new Date().toISOString(),
       }),

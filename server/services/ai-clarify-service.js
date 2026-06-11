@@ -575,8 +575,21 @@ async function clarify(reqId, modelId, userMessage, conversationHistory, userRol
     console.error('[clarify] 持久化对话失败:', e.message);
   }
 
+  // 透传 strategy + strategyContent（v0.3.1 思路先于画面 增量：让 AI 自选澄清手段）
+  // strategy: 'choices' | 'decision_tree'（Phase 1 试点只支持这 2 个）
+  // strategyContent: strategy 非 choices 时携带结构化数据（branches / references / question...）
+  const validStrategies = ['choices', 'decision_tree'];
+  const strategy = validStrategies.includes(parsed.strategy) ? parsed.strategy : 'choices';
+  // 容错：必须是对象；branches 必须是对象数组
+  let strategyContent = (parsed.content && typeof parsed.content === 'object') ? parsed.content : {};
+  if (strategy === 'decision_tree' && !Array.isArray(strategyContent.branches)) {
+    strategyContent = {}; // 决策树缺失 branches → 降级回 choices
+  }
+
   return {
     message: parsed.message || '',
+    strategy,
+    content: strategyContent,
     choices: parsed.choices || [],
     srs: parsed.srs || srs,
     readyForReview: forceNotReady ? false : (parsed.readyForReview || false),

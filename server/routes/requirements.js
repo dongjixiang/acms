@@ -136,11 +136,17 @@ router.patch('/:id/srs', (req, res) => {
 
 // 通用字段更新（deadline, title 等）
 router.patch('/:id', (req, res) => {
-  const { deadline, title, description, priority, tags } = req.body;
+  const { deadline, title, description, description_append, priority, tags } = req.body;
   const updates = {};
   if (deadline !== undefined) updates.deadline = deadline;
   if (title !== undefined) updates.title = title;
   if (description !== undefined) updates.description = description;
+  // v0.3.2 增量：description_append 追加到原 description 末尾（决策树详情面板勾选用）
+  if (description_append !== undefined) {
+    const r = reqStore.getById(req.params.id);
+    if (!r) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    updates.description = (r.description || '') + description_append;
+  }
   if (priority !== undefined) updates.priority = priority;
   if (tags !== undefined) updates.tags = JSON.stringify(tags);
   const requirement = reqStore.update(req.params.id, updates);
@@ -480,6 +486,95 @@ router.post('/:id/thinking-brief/regen', async (req, res, next) => {
     setImmediate(() => briefService.runBriefJob(req.params.id, { modelId, role })
       .catch(e => console.error('[brief.regen] 任务异常:', e)));
     res.status(202).json({ message: '思路简报重新生成已启动', status: 'generating' });
+  } catch (e) { next(e); }
+});
+
+// ============================================================
+// 决策树分支详情（v0.3.2 极简思路区 增量）
+//   用户点开分支的「类比徽章」→ 生成 5-7 个该分支的设计特色 + 配图
+// ============================================================
+const branchDetailService = require('../services/branch-detail');
+const rewriteService = require('../services/rewrite-description');
+const briefServiceRegen = require('../services/thinking-brief');
+
+// 启动生成（fire-and-forget，立即返回 202）
+router.post('/:id/thinking-brief/branch-detail', async (req, res, next) => {
+  try {
+    const { branchIdx, modelId, role } = req.body || {};
+    if (typeof branchIdx !== 'number' || branchIdx < 0) {
+      return res.status(400).json({ error: 'INVALID_BRANCH_IDX' });
+    }
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+
+    setImmediate(() => branchDetailService.runBranchDetailJob(req.params.id, branchIdx, { modelId, role })
+      .catch(e => console.error('[branch-detail] 任务异常:', e)));
+    res.status(202).json({ message: '分支详情生成已启动', status: 'generating' });
+  } catch (e) { next(e); }
+});
+
+// 读取详情（前端轮询用）
+router.get('/:id/thinking-brief/branch-detail/:branchIdx', (req, res, next) => {
+  try {
+    const branchIdx = parseInt(req.params.branchIdx, 10);
+    if (isNaN(branchIdx) || branchIdx < 0) {
+      return res.status(400).json({ error: 'INVALID_BRANCH_IDX' });
+    }
+    const detail = branchDetailService.getBranchDetail(req.params.id, branchIdx);
+    if (!detail) return res.status(404).json({ error: 'NOT_GENERATED' });
+    res.json({ branchDetail: detail });
+  } catch (e) { next(e); }
+});
+
+// ============================================================
+// 需求描述重新组织（v0.3.2 增量）
+//   - 勾选特色 / 手工补充 → LLM 把「原始 + 痕迹」重新组织成结构化描述
+//   - 旧描述进 description_history（最近 5 份）
+//   - 重新组织完成后自动触发「重新生成思路」（基于最新描述）
+// ============================================================
+router.post('/:id/rewrite-description', async (req, res, next) => {
+  try {
+    const { supplement, modelId, role, autoRegenBrief } = req.body || {};
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+
+    // 同步执行 rewrite（前端要立即看新描述）
+    const result = await rewriteService.runRewriteJob(req.params.id, { supplement, modelId });
+
+    // autoRegenBrief 默认 true：基于最新 description 重新生成思路
+    let briefRegen = null;
+    if (autoRegenBrief !== false) {
+      setImmediate(() => briefServiceRegen.runBriefJob(req.params.id, { modelId, role })
+        .catch(e => console.error('[rewrite] 自动重新生成思路异常:', e.message)));
+      briefRegen = 'started';
+    }
+
+    res.json({
+      description: result.description,
+      modelId: result.modelId,
+      historyCount: result.historyCount,
+      briefRegen,
+    });
+  } catch (e) { next(e); }
+});
+
+// 读取描述历史（v0.3.2 增量）
+router.get('/:id/description-history', (req, res, next) => {
+  try {
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    let history = [];
+    try { history = JSON.parse(reqRec.description_history || '[]'); } catch { history = []; }
+    res.json({
+      history: history.map((h, i) => ({
+        index: i,
+        description: h.description || '',
+        supplement: h.supplement || null,
+        rewritten_at: h.rewritten_at || null,
+        model: h.model || null,
+      })),
+      currentDescription: reqRec.description || '',
+    });
   } catch (e) { next(e); }
 });
 

@@ -2,6 +2,7 @@
 id: seg-clarify-round1
 type: prompt-segment
 created: 2026-06-03
+updated: 2026-06-11
 ---
 
 **⚠️ 首轮规则（必须遵守）：**
@@ -12,3 +13,40 @@ created: 2026-06-03
 
 **澄清轮次策略：**
 - 首轮：列出所有你能想到的问题（至少4-6个），一次性全部发出。不要犹豫，不要保留
+
+**🧰 澄清手段（strategy 字段）：**
+
+在每轮回复中，你必须先判断「用户此刻最需要什么帮助」，然后从下面的手段中选一个最合适的——不要每次都用同一种。
+
+| strategy | 适用场景 | 产出格式 |
+|---|---|---|
+| `choices` | 用户已知选项 / 已有参照 / 选 A 还是选 B 清楚 | 4-6 个选择题（默认） |
+| `decision_tree` | 用户表述很模糊、关键词空泛（如「要快」「好看」「好用」），或用户对需求大方向有困惑 | 3 个互不重叠的决策分支，每个带 label/desc/pros/cons/examples |
+
+**如何选 strategy：**
+- 用户描述 ≤ 20 字、且包含空泛词（「要」「想」「类似」「差不多」「风格」）→ 倾向 `decision_tree` 打开思路
+- 用户描述 ≥ 50 字、有具体场景或对象 → 倾向 `choices` 收口细节
+- 首轮默认 `choices`（首轮主要目的是收口不是打开），除非第一眼看不出方向
+
+**⚠️ 重要约束（Phase 1 试点）：**
+- 本轮**只用一个** strategy（不要同时出选择题和决策树）
+- 选了 `decision_tree` 时 `choices` 留空数组 `[]`
+- 选了 `choices` 时 `content` 留空对象 `{}`
+
+**decision_tree 输出格式（content 字段）：**
+```json
+{
+  "message": "你说的『要快』比较模糊，我先帮你拆出 3 种『快』的形态，你看看更像哪种？",
+  "strategy": "decision_tree",
+  "content": {
+    "branches": [
+      {"label": "页面响应 < 1s", "desc": "任何点击立即有反馈", "pros": "操作不卡顿", "cons": "后端压力大", "examples": "Slack"},
+      {"label": "首屏 < 2s", "desc": "用户进入页面看到内容快", "pros": "用户留存高", "cons": "首屏后可能慢", "examples": "Notion"},
+      {"label": "完整加载 < 3s", "desc": "所有数据都到位再呈现", "pros": "完整可交互", "cons": "白屏时间长", "examples": "Figma"}
+    ]
+  },
+  "choices": [],
+  "srs": {...},
+  "readyForReview": false
+}
+```

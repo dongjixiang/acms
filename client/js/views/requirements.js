@@ -108,8 +108,11 @@ async function openRequirement(id) {
       <button class="btn-small" style="background:rgba(78,205,196,0.15);color:var(--green);border-color:rgba(78,205,196,0.3)" onclick="exportRequirement('${req.id}')">📥 导出 Word</button>`;
     const srs = safeParse(req.srs);
     document.getElementById('detail-content').innerHTML = `
-      <div class="section"><strong>描述:</strong></div>
-      <div class="md-content">${renderMarkdown(req.structured_description || req.description)}</div>
+      <div class="section" style="display:flex;justify-content:space-between;align-items:center">
+        <strong>描述:</strong>
+        <button class="btn-small" onclick="showDescriptionHistory('${id}')" title="查看历史版本" style="font-size:10px">📜 历史</button>
+      </div>
+      <div class="md-content" id="description-content-${id}">${renderMarkdown(req.structured_description || req.description)}</div>
       <div id="existing-md-editor-${id}" style="margin-top:12px"></div>
       <div class="section"><strong>优先级:</strong> P${req.priority} | <strong>截止:</strong> ${req.deadline || '未设置'}</div>
     ${(req.status === 'idea') ? renderIdeaPanel(req) : ''}
@@ -1056,8 +1059,12 @@ async function sendAiClarify(reqId, choiceAnswer) {
 
     aiClarifyHistory[reqId].push({ role: 'assistant', content: result });
 
-    // 渲染选择题（带选择状态追踪）
-    if (result.choices && result.choices.length > 0) {
+    // 渲染交互组件：按 strategy 分发（v0.3.1 思路先于画面 增量）
+    // - choices: 原有的 4-6 个选择题
+    // - decision_tree: 3 个互斥分支卡片（点击 = 单选 + 自动送 AI）
+    if (result.strategy === 'decision_tree' && result.content && result.content.branches) {
+      renderDecisionTree(reqId, result.content.branches);
+    } else if (result.choices && result.choices.length > 0) {
       renderChoicesWithSubmit(reqId, result.choices);
     }
 
@@ -1099,9 +1106,10 @@ async function sendAiClarify(reqId, choiceAnswer) {
       actionsDiv.scrollIntoView({ behavior: 'smooth', block: 'center' });
       // 自动生成 MD 文档
       generateMdDoc(reqId, modelId);
-    } else if (!result.choices || result.choices.length === 0) {
+    } else if (result.strategy !== 'decision_tree' && (!result.choices || result.choices.length === 0)) {
       // 逃生口: readyForReview=false 且无选择题时，仍展示"继续澄清"按钮
       // 让用户可以直接在输入框中打字推进，而不是卡死在无交互组件状态
+      // 注意：decision_tree 模式天然没 choices，不触发此逃生口
       actionsDiv.style.display = 'block';
       const acceptBtn = document.querySelector('#ai-clarify-actions-' + reqId + ' .btn-accept');
       if (acceptBtn) acceptBtn.style.display = 'none';
@@ -1290,6 +1298,102 @@ function collectSelections(reqId) {
   return Object.entries(sel)
     .filter(([_, v]) => v.values && v.values.length > 0)
     .map(([k, v]) => v.values.join('，'));
+}
+
+// ===== Decision Tree 渲染（v0.3.1 思路先于画面 增量）=====
+// AI 在 strategy='decision_tree' 时输出 3 个互斥分支
+// 用户点击任一分支 → 自动把该分支的 desc+examples 作为回答送回 AI
+function renderDecisionTree(reqId, branches) {
+  const choicesDiv = document.getElementById(`ai-clarify-choices-${reqId}`);
+  if (!choicesDiv) return;
+
+  if (!Array.isArray(branches) || branches.length === 0) {
+    choicesDiv.innerHTML = '<div style="color:var(--text2);padding:8px">决策树数据为空，请直接在输入框中描述你的想法</div>';
+    return;
+  }
+
+  // 顶部简短引导
+  const intro = `<div style="margin:6px 0 10px;padding:8px 12px;background:rgba(255,217,61,0.08);border-left:3px solid var(--accent3);font-size:12px;color:var(--text2);border-radius:4px">
+    🌳 AI 给出了 ${branches.length} 个方向。点卡片就是选这个方向——也可以先点输入框补充自己的想法。
+  </div>`;
+
+  // 渲染分支卡片网格
+  const cards = branches.map((b, i) => {
+    const label = b.label || `方向 ${String.fromCharCode(65 + i)}`;
+    const desc = b.desc || '';
+    const pros = b.pros || '';
+    const cons = b.cons || '';
+    const examples = b.examples || '';
+    return `<div class="dt-branch-card" data-branch-idx="${i}"
+      style="cursor:pointer;padding:12px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;transition:all 0.15s"
+      onclick="pickDecisionBranch('${reqId}', ${i})">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span style="display:inline-block;width:24px;height:24px;line-height:24px;text-align:center;background:var(--accent);color:#000;border-radius:50%;font-weight:bold;font-size:13px">${String.fromCharCode(65 + i)}</span>
+        <strong style="font-size:14px;color:var(--text1)">${escHtml(label)}</strong>
+      </div>
+      <div style="font-size:12px;color:var(--text2);margin-bottom:8px;line-height:1.5">${escHtml(desc)}</div>
+      ${(pros || cons) ? `<div style="font-size:11px;margin-bottom:6px">
+        ${pros ? `<span style="color:var(--green);margin-right:8px">+ ${escHtml(pros)}</span>` : ''}
+        ${cons ? `<span style="color:var(--red)">- ${escHtml(cons)}</span>` : ''}
+      </div>` : ''}
+      ${examples ? `<div style="font-size:11px;color:var(--text3);border-top:1px dashed var(--border);padding-top:6px">💡 典型: ${escHtml(examples)}</div>` : ''}
+    </div>`;
+  }).join('');
+
+  choicesDiv.innerHTML = intro +
+    `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:8px">${cards}</div>` +
+    `<div style="text-align:center;margin-top:8px">
+      <button class="btn-small btn-reject" onclick="skipDecisionTree('${reqId}')" style="font-size:11px">都不太对，我想自己说</button>
+    </div>`;
+
+  // 鼠标悬停效果（用 CSS hover 会被内联 style 覆盖，用 JS 模拟）
+  choicesDiv.querySelectorAll('.dt-branch-card').forEach(card => {
+    card.addEventListener('mouseenter', () => {
+      card.style.borderColor = 'var(--accent)';
+      card.style.background = 'var(--bg2)';
+    });
+    card.addEventListener('mouseleave', () => {
+      card.style.borderColor = 'var(--border)';
+      card.style.background = 'var(--bg3)';
+    });
+  });
+}
+
+// 用户点了某个分支 → 把分支信息作为回答送回 AI
+async function pickDecisionBranch(reqId, idx) {
+  // 拿当前轮 AI 回复里的 branches（从 history 取）
+  const last = (aiClarifyHistory[reqId] || []).filter(h => h.role === 'assistant').slice(-1)[0];
+  const branches = last?.content?.branches || [];
+  const b = branches[idx];
+  if (!b) return;
+
+  // 把分支的关键信息组成一句自然语言回答
+  const parts = [];
+  parts.push(`我倾向「${b.label}」方向`);
+  if (b.desc) parts.push(`(${b.desc})`);
+  if (b.examples) parts.push(`参考 ${b.examples} 的体验`);
+  // 用户可叠加输入框内容
+  const input = document.getElementById(`ai-clarify-input-${reqId}`);
+  const custom = input?.value?.trim();
+  if (custom) parts.push(`补充：${custom}`);
+
+  // 把这条消息写进 input（视觉反馈）然后发送
+  if (input) {
+    input.value = parts.join('，');
+    input.focus();
+  }
+  await sendAiClarify(reqId);
+}
+
+// 「都不太对」→ 提示用户直接在输入框里说
+function skipDecisionTree(reqId) {
+  const input = document.getElementById(`ai-clarify-input-${reqId}`);
+  if (input) {
+    input.value = '';
+    input.placeholder = '说说你的想法（不限方向，AI 会接着问）';
+    input.focus();
+  }
+  toast('👉 直接在输入框里说你的想法，AI 会接着问', 'info', 2500);
 }
 
 function renderChoicesWithSubmit(reqId, choices) {
@@ -2482,6 +2586,120 @@ function closeClarifyThread() {
   if (overlay) overlay.remove();
 }
 
+// ===== 描述历史弹窗（v0.3.2 增量）=====
+async function showDescriptionHistory(reqId) {
+  if (document.getElementById('desc-history-overlay')) return;
+
+  const overlay = document.createElement('div');
+  overlay.id = 'desc-history-overlay';
+  overlay.className = 'modal-overlay';
+  overlay.onclick = function(e) { if (e.target === overlay) closeDescriptionHistory(); };
+  overlay.innerHTML = `
+    <div class="modal-content" style="width:82vw;max-width:900px;max-height:82vh;display:flex;flex-direction:column">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h3 style="margin:0">📜 描述历史</h3>
+        <button class="btn-small btn-reject" onclick="closeDescriptionHistory()">✕ 关闭</button>
+      </div>
+      <div id="desc-history-body" style="flex:1;overflow-y:auto;padding-right:8px">
+        <div style="text-align:center;padding:20px;color:var(--text2)">⏳ 加载中…</div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  // 加载历史
+  try {
+    const resp = await api('GET', `/requirements/${reqId}/description-history`);
+    renderDescriptionHistory(reqId, resp);
+  } catch (e) {
+    document.getElementById('desc-history-body').innerHTML = `<div style="text-align:center;padding:20px;color:var(--red)">❌ ${escHtml(e.message)}</div>`;
+  }
+}
+
+function renderDescriptionHistory(reqId, data) {
+  const body = document.getElementById('desc-history-body');
+  const history = data.history || [];
+  const current = data.currentDescription || '';
+
+  if (history.length === 0) {
+    body.innerHTML = `
+      <div style="text-align:center;padding:30px;color:var(--text2)">
+        <div style="font-size:14px;margin-bottom:8px">📭 暂无历史版本</div>
+        <div style="font-size:12px">当你点击「💡 补充想法并重整」或勾选特色时，会保留旧版描述到这里</div>
+      </div>
+    `;
+    return;
+  }
+
+  // 按时间倒序展示（最新在最上面）
+  const sorted = [...history].reverse();
+  const itemsHtml = sorted.map((h, i) => {
+    const realIdx = history.length - 1 - i;  // 对应原始索引
+    const time = h.rewritten_at ? new Date(h.rewritten_at).toLocaleString() : '未知时间';
+    const supplementHtml = h.supplement
+      ? `<div style="margin-top:6px;padding:6px 8px;background:rgba(139,92,246,0.08);border-left:2px solid var(--accent);border-radius:0 4px 4px 0;font-size:11px;color:var(--text2)">
+          💡 触发补充: ${escHtml(h.supplement)}
+        </div>`
+      : '';
+    return `
+      <div class="desc-history-item" data-history-idx="${realIdx}" style="margin-bottom:14px;padding:12px;background:var(--bg2);border:1px solid var(--border);border-radius:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <strong style="font-size:12px;color:var(--text)">📄 v${realIdx + 1}</strong>
+          <span style="font-size:10px;color:var(--text2)">${time}</span>
+        </div>
+        ${supplementHtml}
+        <div class="desc-history-text" data-idx="${realIdx}" style="margin-top:8px;font-size:12px;color:var(--text);line-height:1.6;white-space:pre-wrap;max-height:240px;overflow-y:auto;padding:8px;background:var(--bg);border-radius:4px">${escHtml(h.description || '(空)')}</div>
+        <div style="margin-top:8px;display:flex;gap:6px;justify-content:flex-end">
+          <button class="btn-small" onclick="restoreDescriptionHistory('${reqId}', ${realIdx})" title="用这个旧版本替换当前描述（会触发重新生成思路）">↩️ 用此版本覆盖当前</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  // 当前版本（最上面，最显眼）
+  const currentHtml = `
+    <div class="desc-history-item" style="margin-bottom:14px;padding:12px;background:rgba(78,205,196,0.08);border:2px solid var(--green);border-radius:8px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <strong style="font-size:12px;color:var(--green)">✨ 当前版本</strong>
+        <span style="font-size:10px;color:var(--text2)">最新</span>
+      </div>
+      <div style="margin-top:8px;font-size:12px;color:var(--text);line-height:1.6;white-space:pre-wrap;max-height:240px;overflow-y:auto;padding:8px;background:var(--bg);border-radius:4px">${escHtml(current)}</div>
+    </div>
+  `;
+
+  body.innerHTML = currentHtml + itemsHtml;
+}
+
+// 「用此版本覆盖当前」：把旧版本当 supplement 写回去，让 LLM 重新组织（保留手动选择痕迹 + 重新生成思路）
+async function restoreDescriptionHistory(reqId, historyIdx) {
+  if (!await showConfirm('用此旧版本覆盖当前描述？\n\n会触发 AI 重新组织（基于你选中的旧版）并重新生成决策树。', { type: 'warning' })) return;
+  toast('⏳ 正在恢复并重新组织…', 'info', 2000);
+  try {
+    // 把"用 history v{idx} 替换"作为 supplement，原文会让 LLM 知道意图
+    // 实际做法：直接把 history[historyIdx].description 写回 req.description，再触发 regen
+    // 简化：调 rewrite，supplement 携带"用户选择恢复历史版本"的意图
+    const resp = await api('POST', `/requirements/${reqId}/rewrite-description`, {
+      supplement: `(用户操作：从描述历史中选择了 v${historyIdx + 1} 版本作为基础，请基于此重整)`,
+      modelId: 'model_mps18nz9',
+      autoRegenBrief: true,
+    });
+    if (resp.error) {
+      toast('恢复失败: ' + resp.error, 'error');
+      return;
+    }
+    toast('✅ 已恢复，思路正在重生…', 'success', 2000);
+    closeDescriptionHistory();
+    setTimeout(() => openRequirement(reqId), 500);
+  } catch (e) {
+    toast('恢复失败: ' + e.message, 'error');
+  }
+}
+
+function closeDescriptionHistory() {
+  const overlay = document.getElementById('desc-history-overlay');
+  if (overlay) overlay.remove();
+}
+
 // ===== 需求拆分 =====
 
 let splitProposalCache = {}; // reqId → last split proposal
@@ -2746,13 +2964,21 @@ function renderIdeaPanel(req) {
 
       <!-- 思路区：默认展开 -->
       <div class="idea-section idea-section-thinking">
-        <div class="idea-section-title">🌳 决策树 · 追问 · 类比</div>
+        <div class="idea-section-title">🌳 决策树</div>
         <div id="thinking-brief-content-${req.id}" class="thinking-brief-content">
           <div class="insight-loading">⏳ AI 正在解读需求、构建思路…</div>
         </div>
-        <div class="idea-section-actions">
-          <button class="btn-small" onclick="regenerateThinkingBrief('${req.id}')">↻ 重新生成思路</button>
-          <button class="btn-small btn-reject" onclick="skipThinkingBrief('${req.id}')">👉 跳过思路，直接进入澄清</button>
+        <div class="idea-section-thinking-input">
+          <textarea id="idea-supplement-input-${req.id}" class="idea-supplement-textarea"
+            placeholder="💬 有进一步想法？补充到这里，提交后会重新组织需求描述并刷新决策树…"
+            rows="2"></textarea>
+          <div class="idea-supplement-actions">
+            <button class="btn-small btn-primary" onclick="submitIdeaSupplement('${req.id}')">
+              💡 补充想法并重整
+            </button>
+            <button class="btn-small" onclick="regenerateThinkingBrief('${req.id}')">↻ 重新生成思路</button>
+            <button class="btn-small btn-reject" onclick="skipThinkingBrief('${req.id}')">👉 跳过思路，直接进入澄清</button>
+          </div>
         </div>
       </div>
 
@@ -2951,6 +3177,7 @@ async function loadThinkingBrief(reqId) {
   try {
     const resp = await api('GET', `/requirements/${reqId}/thinking-brief`);
     const brief = resp.thinkingBrief;
+    _briefCache[reqId] = brief;  // 缓存供详情面板取 branch 数据
     renderThinkingBriefContent(reqId, brief);
     if (brief && (brief.status === 'generating' || brief.status === 'pending')) {
       _briefPollers[reqId] = setInterval(() => pollThinkingBrief(reqId), 2500);
@@ -2964,6 +3191,7 @@ async function pollThinkingBrief(reqId) {
   try {
     const resp = await api('GET', `/requirements/${reqId}/thinking-brief`);
     const brief = resp.thinkingBrief;
+    _briefCache[reqId] = brief;  // 缓存供详情面板取 branch 数据
     renderThinkingBriefContent(reqId, brief);
     if (!brief || (brief.status !== 'generating' && brief.status !== 'pending')) {
       clearInterval(_briefPollers[reqId]);
@@ -2991,44 +3219,292 @@ function renderThinkingBriefContent(reqId, brief) {
     return;
   }
 
-  // done: 渲染三块
+  // done: 只渲染决策树（v0.3.2 极简思路区）
+  // 追问清单和类比参考：整块移除（用户已确认不需要）
+  // 类比信息嵌在 decision_tree 分支的 examples 字段里（保持不变）
+  // examples 可点击 → 展开详情面板（异步生成界面/功能/流程 + 勾选回流）
   const tree = (brief.decision_tree || []).map((t, i) => `
-    <div class="brief-branch">
+    <div class="brief-branch" data-branch-idx="${i}">
       <div class="brief-branch-label">${String.fromCharCode(65+i)} ${escHtml(t.label || '')}</div>
       <div class="brief-branch-desc">${escHtml(t.desc || '')}</div>
-      ${t.examples ? `<div class="brief-branch-meta"><b>典型:</b> ${escHtml(t.examples)}</div>` : ''}
+      ${t.examples ? `<button class="brief-branch-analogy-btn" onclick="expandBranchDetail('${reqId}', ${i})" title="查看详细的产品介绍">💡 ${escHtml(t.examples)} ▾</button>` : ''}
       <div class="brief-branch-proscons">
         ${t.pros ? `<span class="brief-pro">+ ${escHtml(t.pros)}</span>` : ''}
         ${t.cons ? `<span class="brief-con">- ${escHtml(t.cons)}</span>` : ''}
       </div>
     </div>
-  `).join('');
-
-  const questions = (brief.questions || []).map(q => `
-    <div class="brief-question">❓ ${escHtml(q)}</div>
-  `).join('');
-
-  const references = (brief.references || []).map(r => `
-    <div class="brief-ref">
-      <b>${escHtml(r.name || '')}</b>
-      <span>${escHtml(r.desc || '')}</span>
-    </div>
+    <div id="branch-detail-${reqId}-${i}" class="branch-detail-panel" style="display:none"></div>
   `).join('');
 
   container.innerHTML = `
     <div class="brief-block">
-      <div class="brief-block-title">🌳 决策树</div>
       <div class="brief-tree">${tree || '<div class="insight-empty">未生成</div>'}</div>
     </div>
-    <div class="brief-block">
-      <div class="brief-block-title">❓ 追问清单（点哪个聊哪个）</div>
-      <div class="brief-questions">${questions || '<div class="insight-empty">未生成</div>'}</div>
-    </div>
-    <div class="brief-block">
-      <div class="brief-block-title">🔍 类比参考</div>
-      <div class="brief-refs">${references || '<div class="insight-empty">未生成</div>'}</div>
+  `;
+}
+
+// ===== Branch Detail 面板（v0.3.2 极简思路区 增量）=====
+// 点击决策树分支的「类比徽章」→ 展开/收起详情面板
+// 内容：5-7 个该分支的设计特色（LLM 生成）+ 配图（异步生成）+ 勾选充实
+let _briefCache = {}; // reqId → brief 缓存
+let _branchDetailPollers = {}; // reqId-branchIdx → interval
+
+async function expandBranchDetail(reqId, branchIdx) {
+  const panel = document.getElementById(`branch-detail-${reqId}-${branchIdx}`);
+  if (!panel) return;
+
+  // 已展开 → 收起
+  if (panel.style.display === 'block' && panel.innerHTML) {
+    panel.style.display = 'none';
+    stopBranchDetailPolling(reqId, branchIdx);
+    return;
+  }
+  panel.style.display = 'block';
+
+  // 第一次点开：调 endpoint 启动生成 + 立即轮询
+  panel.innerHTML = '<div class="insight-loading">⏳ AI 正在分析产品特色…</div>';
+  try {
+    // 启动生成（fire-and-forget 后端可能立即返 202）
+    await api('POST', `/requirements/${reqId}/thinking-brief/branch-detail`, { branchIdx, modelId: 'model_mps18nz9' });
+  } catch (e) {
+    // 已生成过的（重复点）不报错
+    console.log('[branch-detail] 启动请求:', e.message);
+  }
+  startBranchDetailPolling(reqId, branchIdx, panel);
+}
+
+function startBranchDetailPolling(reqId, branchIdx, panel) {
+  stopBranchDetailPolling(reqId, branchIdx);
+  const key = `${reqId}-${branchIdx}`;
+  const tick = async () => {
+    try {
+      const resp = await api('GET', `/requirements/${reqId}/thinking-brief/branch-detail/${branchIdx}`);
+      const detail = resp.branchDetail;
+      renderBranchDetailContent(panel, detail, reqId, branchIdx);
+      // 状态终态：done / failed → 停轮询
+      if (detail && (detail.status === 'done' || detail.status === 'failed')) {
+        // 等所有 image 状态也终态再停
+        const allImgDone = !detail.features || detail.features.every(f => f.image_status === 'done' || f.image_status === 'failed');
+        if (allImgDone) stopBranchDetailPolling(reqId, branchIdx);
+      }
+    } catch (e) {
+      if (e.message && e.message.includes('NOT_GENERATED')) {
+        // 后端还没开始生成，等
+        panel.innerHTML = '<div class="insight-loading">⏳ 等待生成启动…</div>';
+      } else {
+        panel.innerHTML = `<div class="insight-error">❌ ${escHtml(e.message)}</div>`;
+        stopBranchDetailPolling(reqId, branchIdx);
+      }
+    }
+  };
+  _branchDetailPollers[key] = setInterval(tick, 2000);
+  tick(); // 立即拉一次
+}
+
+function stopBranchDetailPolling(reqId, branchIdx) {
+  const key = `${reqId}-${branchIdx}`;
+  if (_branchDetailPollers[key]) {
+    clearInterval(_branchDetailPollers[key]);
+    delete _branchDetailPollers[key];
+  }
+}
+
+function renderBranchDetailContent(panel, detail, reqId, branchIdx) {
+  if (!detail) {
+    panel.innerHTML = '<div class="insight-loading">⏳ 等待生成启动…</div>';
+    return;
+  }
+  if (detail.status === 'generating' && (!detail.features || detail.features.length === 0)) {
+    panel.innerHTML = '<div class="insight-loading">🤔 AI 正在分析该方向的设计特色…</div>';
+    return;
+  }
+  if (detail.status === 'failed') {
+    panel.innerHTML = `<div class="insight-error">❌ 特色生成失败：${escHtml(detail.error || '未知错误')}</div>
+      <button class="btn-small" style="margin-top:8px" onclick="retryBranchDetail('${reqId}', ${branchIdx})">↻ 重试</button>`;
+    return;
+  }
+
+  // 渲染特色列表
+  const features = detail.features || [];
+  const branchLetter = String.fromCharCode(65 + branchIdx);
+  // 从 brief cache 拿 branch label
+  const brief = _briefCache[reqId];
+  const branch = brief?.decision_tree?.[branchIdx];
+  const branchLabel = branch?.label || '';
+
+  const featuresHtml = features.map((f, i) => {
+    const imgStatus = f.image_status;
+    let imgBlock;
+    if (imgStatus === 'done' && f.image_asset) {
+      // 用 <div> 包裹图片 + 自己处理 click（避免被外层 <label> 触发 checkbox toggle）
+      imgBlock = `<div class="branch-feature-img-clickable" onclick="event.preventDefault();event.stopPropagation();expandFeatureImage('${reqId}', ${branchIdx}, ${i})" title="点击放大"><img src="/api/generate/assets/${App.currentProjectId}/${f.image_asset}" class="branch-feature-img" alt="${escHtml(f.title)}" loading="lazy" /></div>`;
+    } else if (imgStatus === 'failed') {
+      imgBlock = `<div class="branch-feature-img-failed">🖼 配图失败</div>`;
+    } else {
+      imgBlock = `<div class="branch-feature-img-loading">⏳ 配图中…</div>`;
+    }
+    return `
+      <label class="branch-feature-card" data-feature-idx="${i}">
+        <input type="checkbox" class="branch-feature-check" data-feature-title="${escHtml(f.title)}">
+        <div class="branch-feature-img-wrap">${imgBlock}</div>
+        <div class="branch-feature-text">
+          <div class="branch-feature-title">${escHtml(f.title)}</div>
+          <div class="branch-feature-desc">${escHtml(f.desc)}</div>
+        </div>
+      </label>
+    `;
+  }).join('');
+
+  panel.innerHTML = `
+    <div class="branch-detail-inner">
+      <div class="branch-detail-header">
+        <strong>${branchLetter} ${escHtml(branchLabel)} · 设计特色</strong>
+        <button class="branch-detail-close" onclick="expandBranchDetail('${reqId}', ${branchIdx})">✕</button>
+      </div>
+      <div class="branch-detail-intro">
+        💡 AI 从「${escHtml(branch?.examples || branchLabel)}」中提炼出 ${features.length} 个独特的设计特色。勾选你感兴趣的方向，充实到你的想法。
+      </div>
+      <div class="branch-feature-grid">
+        ${featuresHtml}
+      </div>
+      <div class="branch-detail-actions">
+        <button class="btn-small btn-primary" onclick="confirmBranchFeatures('${reqId}', ${branchIdx})">
+          ✅ 用这些特色充实我的想法
+        </button>
+        <button class="btn-small" onclick="expandBranchDetail('${reqId}', ${branchIdx})">← 收起</button>
+      </div>
     </div>
   `;
+}
+
+// 全屏放大查看特色配图（v0.3.2 增量，复用 expandWireframe 的 modal 模式）
+function expandFeatureImage(reqId, branchIdx, featureIdx) {
+  const brief = _briefCache[reqId];
+  const detail = brief?.branch_details?.[branchIdx];
+  const f = detail?.features?.[featureIdx];
+  if (!f || f.image_status !== 'done' || !f.image_asset) return;
+
+  // 移除已存在的 modal
+  const existing = document.getElementById('feature-image-modal');
+  if (existing) document.body.removeChild(existing);
+
+  const overlay = document.createElement('div');
+  overlay.id = 'feature-image-modal';
+  overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;cursor:pointer';
+  overlay.onclick = function(e) { if (e.target === overlay) document.body.removeChild(overlay); };
+
+  const modal = document.createElement('div');
+  modal.style.cssText = 'background:#1a1a1a;border-radius:8px;padding:20px;max-width:94vw;max-height:94vh;cursor:default;box-shadow:0 8px 32px rgba(0,0,0,0.5);display:flex;flex-direction:column;align-items:center';
+  modal.onclick = function(e) { e.stopPropagation(); };
+
+  // 标题
+  const title = document.createElement('div');
+  title.style.cssText = 'font-size:14px;font-weight:bold;color:#fff;margin-bottom:6px;text-align:center';
+  title.textContent = f.title;
+
+  // 描述
+  const desc = document.createElement('div');
+  desc.style.cssText = 'font-size:12px;color:#aaa;margin-bottom:12px;text-align:center;max-width:600px';
+  desc.textContent = f.desc;
+
+  // 大图（自适应窗口，最大 90vh/90vw）
+  const img = document.createElement('img');
+  img.src = `/api/generate/assets/${App.currentProjectId}/${f.image_asset}`;
+  img.alt = f.title;
+  img.style.cssText = 'max-width:90vw;max-height:80vh;object-fit:contain;border-radius:4px;background:#000';
+
+  // 关闭按钮
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '✕ 关闭';
+  closeBtn.style.cssText = 'margin-top:12px;background:rgba(255,255,255,0.1);color:#fff;border:1px solid rgba(255,255,255,0.3);border-radius:4px;padding:6px 16px;font-size:12px;cursor:pointer';
+  closeBtn.onclick = function() { document.body.removeChild(overlay); };
+
+  modal.appendChild(title);
+  modal.appendChild(desc);
+  modal.appendChild(img);
+  modal.appendChild(closeBtn);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  // ESC 关闭
+  const onKey = (e) => {
+    if (e.key === 'Escape' && document.body.contains(overlay)) {
+      document.body.removeChild(overlay);
+      document.removeEventListener('keydown', onKey);
+    }
+  };
+  document.addEventListener('keydown', onKey);
+}
+
+function retryBranchDetail(reqId, branchIdx) {
+  const panel = document.getElementById(`branch-detail-${reqId}-${branchIdx}`);
+  if (panel) panel.innerHTML = '<div class="insight-loading">⏳ 重新启动生成…</div>';
+  expandBranchDetail(reqId, branchIdx);
+}
+
+// 勾选提交：调 rewrite endpoint（自动重整 + 自动重生思路）
+async function confirmBranchFeatures(reqId, branchIdx) {
+  const checked = Array.from(document.querySelectorAll(`#branch-detail-${reqId}-${branchIdx} .branch-feature-check:checked`));
+  if (checked.length === 0) {
+    toast('请先勾选至少一个感兴趣的特色', 'warning');
+    return;
+  }
+  const brief = _briefCache[reqId];
+  const branch = brief?.decision_tree?.[branchIdx];
+  if (!branch) return;
+  const examples = branch.examples || branch.label;
+  const titles = checked.map(cb => cb.dataset.featureTitle).join('、');
+  // 把勾选痕迹作为 supplement 喂给 rewrite（原文 + 痕迹一起重整）
+  const supplement = `（从「${examples}」学到的特色：${titles}）`;
+
+  // 关掉面板
+  const panel = document.getElementById(`branch-detail-${reqId}-${branchIdx}`);
+  if (panel) panel.style.display = 'none';
+  stopBranchDetailPolling(reqId, branchIdx);
+
+  toast(`⏳ 正在重新组织需求描述…`, 'info', 2000);
+  try {
+    const resp = await api('POST', `/requirements/${reqId}/rewrite-description`, {
+      supplement,
+      modelId: 'model_mps18nz9',
+      autoRegenBrief: true,
+    });
+    if (resp.error) {
+      toast('重整失败: ' + resp.error, 'error');
+      return;
+    }
+    toast(`✅ 已重整，思路正在重生…`, 'success', 2000);
+    // 刷新详情页（新的 description + 新的 decision_tree）
+    setTimeout(() => openRequirement(reqId), 500);
+  } catch (e) {
+    toast('重整失败: ' + e.message, 'error');
+  }
+}
+
+// 手工补充想法提交（v0.3.2 增量）
+async function submitIdeaSupplement(reqId) {
+  const input = document.getElementById(`idea-supplement-input-${reqId}`);
+  const supplement = input?.value?.trim();
+  if (!supplement) {
+    toast('先写点想法再补充', 'warning');
+    return;
+  }
+  toast('⏳ 正在重新组织需求描述…', 'info', 2000);
+  try {
+    const resp = await api('POST', `/requirements/${reqId}/rewrite-description`, {
+      supplement,
+      modelId: 'model_mps18nz9',
+      autoRegenBrief: true,
+    });
+    if (resp.error) {
+      toast('补充失败: ' + resp.error, 'error');
+      return;
+    }
+    toast('✅ 已重整，思路正在重生…', 'success', 2000);
+    setTimeout(() => openRequirement(reqId), 500);
+  } catch (e) {
+    toast('补充失败: ' + e.message, 'error');
+  }
 }
 
 async function regenerateThinkingBrief(reqId) {
