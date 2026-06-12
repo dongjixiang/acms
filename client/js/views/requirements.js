@@ -116,7 +116,7 @@ async function openRequirement(id) {
       <div id="existing-md-editor-${id}" style="margin-top:12px"></div>
       <div class="section"><strong>优先级:</strong> P${req.priority} | <strong>截止:</strong> ${req.deadline || '未设置'}</div>
     ${(req.status === 'idea') ? renderIdeaPanel(req) : ''}
-    ${req.status === 'idea' || req.status === 'clarifying' ? renderAiClarifyPanel(req) : ''}
+    ${req.status === 'clarifying' ? renderAiClarifyPanel(req) : ''}
     ${req.status === 'review' ? renderReviewPanel(req) : ''}
     ${['clarifying', 'review', 'approved'].includes(req.status) ? `<div id="data-model-panel-${id}" style="margin-top:12px"></div>` : ''}
       ${req.status === 'approved' ? renderAiDecomposePanel(req) + '<div style="margin-top:8px"><button class="btn-small" style="background:rgba(78,205,196,0.1);color:var(--green)" onclick="openSplitPanel(\'' + id + '\')">🔧 拆分需求</button></div>' : ''}
@@ -134,7 +134,7 @@ async function openRequirement(id) {
       ${req.role === 'container' && (req.child_ids && JSON.parse(req.child_ids||'[]').length > 0) ? '<div style="margin-top:12px;display:flex;gap:8px"><button class="btn-small" style="background:rgba(78,205,196,0.1);color:var(--green)" onclick="refreshParent(\'' + id + '\')">📊 刷新父需求</button></div>' : ''}
       <div id="req-children" style="margin-top:16px"></div>`;
   } catch (e) { toast('加载失败: ' + e.message, 'error'); }
-  setTimeout(() => loadAiModels(id), 100);
+  if (req.status === 'clarifying') setTimeout(() => loadAiModels(id), 100);
   setTimeout(() => loadDecomposeModels(id), 100);
   setTimeout(() => loadRequirementChildren(id), 150);
   setTimeout(() => loadExistingMdEditor(id), 200);
