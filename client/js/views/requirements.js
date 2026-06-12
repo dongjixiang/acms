@@ -1312,9 +1312,9 @@ function renderDecisionTree(reqId, branches) {
     return;
   }
 
-  // 顶部简短引导
-  const intro = `<div style="margin:6px 0 10px;padding:8px 12px;background:rgba(255,217,61,0.08);border-left:3px solid var(--accent3);font-size:12px;color:var(--text2);border-radius:4px">
-    🌳 AI 给出了 ${branches.length} 个方向。点卡片就是选这个方向——也可以先点输入框补充自己的想法。
+  // 顶部简短引导（无缩进、无绿色线条，仅一行小字提示）
+  const intro = `<div style="margin:4px 0 8px;font-size:12px;color:var(--text2)">
+    点卡片就是选这个方向，也可以先点下面输入框补充自己的想法。
   </div>`;
 
   // 渲染分支卡片网格
@@ -2964,7 +2964,7 @@ function renderIdeaPanel(req) {
 
       <!-- 思路区：默认展开 -->
       <div class="idea-section idea-section-thinking">
-        <div class="idea-section-title">🌳 决策树</div>
+        <div class="idea-section-title">💡 AI 给你的几个可能方向</div>
         <div id="thinking-brief-content-${req.id}" class="thinking-brief-content">
           <div class="insight-loading">⏳ AI 正在解读需求、构建思路…</div>
         </div>
@@ -3245,7 +3245,7 @@ function renderThinkingBriefContent(reqId, brief) {
 
 // ===== Branch Detail 面板（v0.3.2 极简思路区 增量）=====
 // 点击决策树分支的「类比徽章」→ 展开/收起详情面板
-// 内容：5-7 个该分支的设计特色（LLM 生成）+ 配图（异步生成）+ 勾选充实
+// 内容：3-5 个该分支的设计特色（LLM 生成）+ 配图（异步生成）+ 勾选充实
 let _briefCache = {}; // reqId → brief 缓存
 let _branchDetailPollers = {}; // reqId-branchIdx → interval
 

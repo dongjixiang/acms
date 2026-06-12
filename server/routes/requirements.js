@@ -491,7 +491,7 @@ router.post('/:id/thinking-brief/regen', async (req, res, next) => {
 
 // ============================================================
 // 决策树分支详情（v0.3.2 极简思路区 增量）
-//   用户点开分支的「类比徽章」→ 生成 5-7 个该分支的设计特色 + 配图
+//   用户点开分支的「类比徽章」→ 生成 3-5 个该分支的设计特色 + 配图
 // ============================================================
 const branchDetailService = require('../services/branch-detail');
 const rewriteService = require('../services/rewrite-description');

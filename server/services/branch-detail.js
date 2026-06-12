@@ -1,7 +1,7 @@
 // 决策树分支详情服务（v0.3.2 极简思路区 增量）
-// 用户点开决策树分支的「类比徽章」→ 后端调 LLM 生成 5+ 个该分支/类比的「设计特色」
+// 用户点开决策树分支的「类比徽章」→ 后端调 LLM 生成 3-5 个该分支/类比的「设计特色」
 // 每个特色：{ title, desc, image_prompt, image_asset?, image_status }
-// 流程：先调 LLM 出 5+ 特色（带 image_prompt），再异步批量生图
+// 流程：先调 LLM 出 3-5 特色（带 image_prompt），再异步批量生图
 // 缓存：requirement.thinking_brief.branch_details[idx] = { status, features, started_at, completed_at, error }
 const { callLLM } = require('./llm-adapter');
 const modelStore = require('../stores/model-store');
@@ -11,7 +11,7 @@ const projectStore = require('../stores/project-store');
 const { collection } = require('../db/connection');
 
 // ===== Prompt =====
-const FEATURES_SYSTEM_PROMPT = `你是 ACMS 系统的「产品特色分析助手」。给定一个需求和一个决策树分支（带类比产品），你的工作是从该类比产品中**提炼出 5-7 个独特的设计特色**——这些特色是该产品**独有**的，不是通用维度。
+const FEATURES_SYSTEM_PROMPT = `你是 ACMS 系统的「产品特色分析助手」。给定一个需求和一个决策树分支（带类比产品），你的工作是从该类比产品中**提炼出 3-5 个独特的设计特色**——这些特色是该产品**独有**的，不是通用维度。
 
 每个特色结构：
 - title (≤ 15 字): 特色的简短名称（用户一眼能看懂）
@@ -22,7 +22,7 @@ const FEATURES_SYSTEM_PROMPT = `你是 ACMS 系统的「产品特色分析助手
 1. **特色要具体到产品**——不要「界面美观」「流程顺畅」这种空话；要「AI 自动填字段」「Pipeline 多阶段看板」这种该产品独有的
 2. **涵盖不同维度**——不要全是功能点；可以有交互细节、视觉处理、数据展示、协作方式等
 3. **image_prompt 要中文**（MiniMax 中文实体保真度更好）——描述一个具体场景，例如「一个看板界面，多列卡片表示销售线索的不同阶段」
-4. **特色数量 5-7 个**——不要少于 5 个，也不要超过 7 个
+4. **特色数量 3-5 个**——不要少于 3 个，也不要超过 5 个
 
 输出严格 JSON，格式：
 {
@@ -55,7 +55,7 @@ function pickDefaultImageProvider() {
 }
 
 /**
- * 调 LLM 生成特色（5-7 个）
+ * 调 LLM 生成特色（3-5 个）
  * @param {string} title 需求标题
  * @param {string} description 需求描述
  * @param {object} branch 分支 { label, desc, examples, pros, cons }
@@ -148,7 +148,7 @@ async function runBranchDetailJob(requirementId, branchIdx, opts = {}) {
   console.log(`[branch-detail] ${requirementId}/${branchIdx} 开始生成特色+配图`);
 
   try {
-    // Step 1: LLM 生成特色（5-7 个）
+    // Step 1: LLM 生成特色（3-5 个）
     const { features, modelId } = await generateFeatures(
       req.title, req.description, branch, opts.role, opts.modelId
     );
