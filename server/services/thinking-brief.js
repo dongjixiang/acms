@@ -1,18 +1,19 @@
-// 思路简报服务（30 文档 v0.3「思路先于画面」改造）
-// 思路面板：需求刚创建时，AI 生成三块结构性内容
-//   1. 决策树: 3 种不同的实现形态/方向（互不重叠）
-//   2. 追问清单: 5 个未定义的关键维度（用户可点选聊）
-//   3. 类比参考: 3 个最接近的真实产品（带说明）
-// 与 insight-previews 的区别：
-//   - 文本，不调图片生成
-//   - token 成本 ~1/4（~1500 vs ~6000）
-//   - 创建需求时自动生成（同步 + 缓存）
+// 思路简报服务（30 文档 v0.3「思路先于画面」改造 → v0.3.3「多轮对话式澄清」改造）
+// 思路面板：AI 用对话方式帮用户打开思路，而不是直接塞 3 个方向
+// 流程（Phase 1）：
+//   1. AI 开场（opening）：友好、积极、表达 AI 对需求的理解、提出 1-2 个开放问题
+//   2. 用户回答（→ submitIdeaSupplement）→ LLM 重整需求描述 + 重评明确度 + 重生思路简报
+//   3. 后续轮次：opening 被新理解 + 新问题覆盖；如明确度上升 → 同时补充 decision_tree / questions / references（按需辅助）
 // 字段：
 //   requirement.thinking_brief: {
 //     status: 'pending' | 'generating' | 'done' | 'failed',
+//     opening: string,                 // AI 开场（友好理解 + 开放问题）—— 第一轮必出，后续轮次刷新
+//     ai_understanding: string,        // AI 对当前需求的核心理解（≤60字）
+//     followup_question: string,       // 当前的开放追问（≤40字）—— 用户回答后会被刷新
 //     decision_tree: [{label, desc, pros, cons, examples}],
 //     questions: [string],
 //     references: [{name, desc}],
+//     chat_round: number,              // 对话轮次（首次=1）
 //     model, generated_at, error
 //   }
 const { callLLM } = require('./llm-adapter');
@@ -20,43 +21,51 @@ const modelStore = require('../stores/model-store');
 const reqStore = require('../stores/requirement-store');
 
 // ===== Prompt =====
-const THINKING_SYSTEM_PROMPT = `你是 ACMS 系统的「需求解读助手」。面对一个需求，你的工作是帮用户打开思路——而不是直接给方案。
+// Phase 1 改造：把"直接给 3 方向"换成"AI 先友好开场 + 提开放问题"。
+// 后续轮次：如果明确度上升（medium/high），LLM 可选填 decision_tree / questions / references 作为辅助手段。
+const THINKING_SYSTEM_PROMPT = `你是 ACMS 系统的「需求澄清助手」。你的工作是用**对话**的方式帮用户打开思路——而不是直接给方案。
 
-【重要原则】如果用户输入中包含「上一轮决策树」字段：
+## 态度原则
+- **友好积极**：像有经验的同事在白板前和你聊这个需求。不要冷淡、不要机械、不要"作为AI我将…"。
+- **展示理解**：先说你对需求的理解（不是复述，而是提炼核心意图 + 你看到的最关键的取舍）。
+- **不给选项**：用**开放问题**引导用户说出自己的取舍、场景、顾虑。最多 1-2 个问题，问题是用户能用一两句话答得出来的。
+
+## 输出格式（严格 JSON）
+{
+  "ai_understanding": "≤60 字。AI 对需求核心意图的理解（不是复述，是提炼）。",
+  "opening": "≤120 字。开场白：先 1 句致意 + 1 句理解 + 1-2 个开放问题。整体语气像聊天，不要分点列。",
+  "followup_question": "≤40 字。当前最关键的一个开放追问（用户回答后会刷新）。如本轮不需追问则填空串。"
+}
+
+## 重要原则（多轮对话时）
+如果用户输入中包含「上一轮决策树」字段：
 - 你这次的输出必须**和上一轮有明显不同**——可以是更细分的场景、不同的用户角色切入、用户没考虑过的层面、或者基于已勾选/补充的延伸
 - 不要换汤不换药（同样的方向换名字、稍微改 desc 算无效输出）
 - 如果发现「确实想不到新角度」，就诚实地回到原方向但深化它（更具体的场景、更细的分类）
 
-请输出三块内容：
+## 后续轮次（明确度 medium/high 时）
+如果用户已提供了较多上下文（多轮对话后），**可选**在输出末尾追加：
+- decision_tree: 3 个互不重叠的实现形态/方向（用户可作辅助参考，但不是必选）
+- questions: 3-5 个未定义的关键维度
+- references: 2-3 个最接近的真实产品
 
-1. **决策树** (decision_tree): 列出 3 种互不重叠的实现形态/方向。
-   - 每个方向是一个完整的、有代表性的设计哲学
-   - 不只是 UI 风格区别，而是产品形态区别
-   - 每个方向给: label (≤10 字) / desc (≤40 字说是什么) / pros (≤20 字) / cons (≤20 字) / examples (典型产品名 1-2 个)
-
-2. **追问清单** (questions): 5 个未定义的关键维度。
-   - 这些是该需求落地时必须先回答的问题
-   - 不重复决策树已经暗示的维度
-   - 简短、具体（≤15 字/条）
-
-3. **类比参考** (references): 3 个最接近的真实产品。
-   - 名称 + 一句话说明它和当前需求的相似之处
-   - 优先选用户可能听过的产品
-   - 不要编造产品名，拿不准就别写
+第一轮**不要**输出 decision_tree/questions/references——首轮只用开场 + 问题即可。
 
 输出严格 JSON，格式：
 {
-  "decision_tree": [
-    {"label":"...","desc":"...","pros":"...","cons":"...","examples":"..."},
-    {"label":"...","desc":"...","pros":"...","cons":"...","examples":"..."},
-    {"label":"...","desc":"...","pros":"...","cons":"...","examples":"..."}
-  ],
-  "questions": ["...","...","...","...","..."],
-  "references": [
-    {"name":"...","desc":"..."},
-    {"name":"...","desc":"..."},
-    {"name":"...","desc":"..."}
-  ]
+  "ai_understanding": "...",
+  "opening": "...",
+  "followup_question": "..."
+}
+
+如果输出包含决策树等扩展：
+{
+  "ai_understanding": "...",
+  "opening": "...",
+  "followup_question": "...",
+  "decision_tree": [{"label":"...","desc":"...","pros":"...","cons":"...","examples":"..."}],
+  "questions": ["..."],
+  "references": [{"name":"...","desc":"..."}]
 }
 
 不要任何额外文字、markdown 代码块、解释。`;
@@ -116,6 +125,9 @@ async function generateBrief(title, description, clarity, oldDecisionTree, role,
   if (jsonEnd > jsonStart) content = content.substring(0, jsonEnd + 1);
   const parsed = JSON.parse(content);
   return {
+    ai_understanding: typeof parsed.ai_understanding === 'string' ? parsed.ai_understanding : '',
+    opening: typeof parsed.opening === 'string' ? parsed.opening : '',
+    followup_question: typeof parsed.followup_question === 'string' ? parsed.followup_question : '',
     decision_tree: Array.isArray(parsed.decision_tree) ? parsed.decision_tree : [],
     questions: Array.isArray(parsed.questions) ? parsed.questions : [],
     references: Array.isArray(parsed.references) ? parsed.references : [],
@@ -136,9 +148,13 @@ async function runBriefJob(requirementId, opts = {}) {
   reqStore.update(requirementId, {
     thinking_brief: JSON.stringify({
       status: 'generating',
+      opening: '',
+      ai_understanding: '',
+      followup_question: '',
       decision_tree: [],
       questions: [],
       references: [],
+      chat_round: 0,
       started_at: new Date().toISOString(),
       generated_at: null,
       error: null,
@@ -160,12 +176,18 @@ async function runBriefJob(requirementId, opts = {}) {
     const brief = await generateBrief(
       req.title, req.description, req.input_clarity, oldDecisionTree, opts.role, opts.modelId
     );
+    // 计算对话轮次：旧 chat_round + 1（如无则 =1）
+    const oldRound = (() => { try { return JSON.parse(req.thinking_brief || 'null')?.chat_round || 0; } catch { return 0; } })();
     reqStore.update(requirementId, {
       thinking_brief: JSON.stringify({
         status: 'done',
+        opening: brief.opening,
+        ai_understanding: brief.ai_understanding,
+        followup_question: brief.followup_question,
         decision_tree: brief.decision_tree,
         questions: brief.questions,
         references: brief.references,
+        chat_round: oldRound + 1,
         generated_at: new Date().toISOString(),
         model: brief.modelId,
         error: null,
@@ -177,9 +199,13 @@ async function runBriefJob(requirementId, opts = {}) {
     reqStore.update(requirementId, {
       thinking_brief: JSON.stringify({
         status: 'failed',
+        opening: '',
+        ai_understanding: '',
+        followup_question: '',
         decision_tree: [],
         questions: [],
         references: [],
+        chat_round: 0,
         // 不保留 branch_details — 新决策树没生成前，旧特色无意义
         error: e.message,
         generated_at: new Date().toISOString(),

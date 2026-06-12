@@ -2964,19 +2964,19 @@ function renderIdeaPanel(req) {
 
       <!-- 思路区：默认展开 -->
       <div class="idea-section idea-section-thinking">
-        <div class="idea-section-title">💡 AI 给你的几个可能方向</div>
+        <div class="idea-section-title">💭 AI 正在和你聊这个想法</div>
         <div id="thinking-brief-content-${req.id}" class="thinking-brief-content">
           <div class="insight-loading">⏳ AI 正在解读需求、构建思路…</div>
         </div>
         <div class="idea-section-thinking-input">
           <textarea id="idea-supplement-input-${req.id}" class="idea-supplement-textarea"
-            placeholder="💬 有进一步想法？补充到这里，提交后会重新组织需求描述并刷新决策树…"
+            placeholder="💬 回答 AI 的问题，或补充你的想法…"
             rows="2"></textarea>
           <div class="idea-supplement-actions">
             <button class="btn-small btn-primary" onclick="submitIdeaSupplement('${req.id}')">
-              💡 补充想法并重整
+              💬 回答并继续
             </button>
-            <button class="btn-small" onclick="regenerateThinkingBrief('${req.id}')">↻ 重新生成思路</button>
+            <button class="btn-small" onclick="regenerateThinkingBrief('${req.id}')">↻ 换个问法</button>
             <button class="btn-small btn-reject" onclick="skipThinkingBrief('${req.id}')">✅ 够了，进澄清</button>
           </div>
         </div>
@@ -3211,7 +3211,7 @@ function renderThinkingBriefContent(reqId, brief) {
     return;
   }
   if (brief.status === 'pending' || brief.status === 'generating') {
-    container.innerHTML = '<div class="insight-loading">🤔 AI 正在解读需求、构建思路…</div>';
+    container.innerHTML = `<div class="insight-loading">${brief.chat_round && brief.chat_round > 1 ? '🤔 AI 在整理你的新回答…' : '🤔 AI 正在理解你的想法…'}</div>`;
     return;
   }
   if (brief.status === 'failed') {
@@ -3219,10 +3219,32 @@ function renderThinkingBriefContent(reqId, brief) {
     return;
   }
 
-  // done: 只渲染决策树（v0.3.2 极简思路区）
-  // 追问清单和类比参考：整块移除（用户已确认不需要）
-  // 类比信息嵌在 decision_tree 分支的 examples 字段里（保持不变）
-  // examples 可点击 → 展开详情面板（异步生成界面/功能/流程 + 勾选回流）
+  // done: v0.3.3 对话式思路区
+  // 优先渲染 AI 开场气泡（ai_understanding + opening + followup_question）
+  // 决策树 / 追问清单 / 类比参考：仅当 LLM 在后续轮次主动补充时显示（Phase 2 辅助手段路由器启用后才常见）
+  const opening = brief.opening || '';
+  const understanding = brief.ai_understanding || '';
+  const followup = brief.followup_question || '';
+  const round = brief.chat_round || 1;
+
+  // AI 气泡（开场 = 致意 + 理解 + 追问）
+  const openingBlock = (understanding || opening) ? `
+    <div class="brief-opening">
+      ${round > 1 ? `<div class="brief-round-tag">第 ${round} 轮对话</div>` : ''}
+      ${understanding ? `<div class="brief-understanding"><strong>我的理解：</strong>${escHtml(understanding)}</div>` : ''}
+      ${opening ? `<div class="brief-opening-text">${escHtml(opening)}</div>` : ''}
+    </div>
+  ` : '';
+
+  // 当前追问（独立高亮，用户最容易看到）
+  const followupBlock = followup ? `
+    <div class="brief-followup">
+      <span class="brief-followup-label">💬 当前最想知道的：</span>
+      <span class="brief-followup-text">${escHtml(followup)}</span>
+    </div>
+  ` : '';
+
+  // 决策树（可选，LLM 在明确度上升时才补）
   const tree = (brief.decision_tree || []).map((t, i) => `
     <div class="brief-branch" data-branch-idx="${i}">
       <div class="brief-branch-label">${String.fromCharCode(65+i)} ${escHtml(t.label || '')}</div>
@@ -3236,9 +3258,29 @@ function renderThinkingBriefContent(reqId, brief) {
     <div id="branch-detail-${reqId}-${i}" class="branch-detail-panel" style="display:none"></div>
   `).join('');
 
+  // 追问清单（可选）
+  const questionsBlock = (brief.questions && brief.questions.length > 0) ? `
+    <div class="brief-questions">
+      <div class="brief-questions-title">📋 还有这些维度你可以聊聊：</div>
+      <ul>${brief.questions.map(q => `<li>${escHtml(q)}</li>`).join('')}</ul>
+    </div>
+  ` : '';
+
+  // 类比参考（可选）
+  const refsBlock = (brief.references && brief.references.length > 0) ? `
+    <div class="brief-references">
+      <div class="brief-references-title">🏷 可以参考这些产品：</div>
+      <div class="brief-references-list">${brief.references.map(r => `<span class="brief-ref-chip" title="${escHtml(r.desc || '')}">${escHtml(r.name)}</span>`).join('')}</div>
+    </div>
+  ` : '';
+
   container.innerHTML = `
     <div class="brief-block">
-      <div class="brief-tree">${tree || '<div class="insight-empty">未生成</div>'}</div>
+      ${openingBlock}
+      ${followupBlock}
+      ${tree ? `<div class="brief-tree">${tree}</div>` : ''}
+      ${questionsBlock}
+      ${refsBlock}
     </div>
   `;
 }

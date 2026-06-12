@@ -541,6 +541,24 @@ router.post('/:id/rewrite-description', async (req, res, next) => {
     // 同步执行 rewrite（前端要立即看新描述）
     const result = await rewriteService.runRewriteJob(req.params.id, { supplement, modelId });
 
+    // v0.3.3：重整后同步重评明确度 → 徽章立刻更新
+    // （用最新的 title + description 评估；modelId 不传，让后端按 capabilities 自动选）
+    let clarityResult = null;
+    try {
+      const { assessClarity } = require('../services/insight-previews');
+      const fresh = reqStore.getById(req.params.id);
+      if (fresh) {
+        clarityResult = await assessClarity(fresh.title, fresh.description, null);
+        if (clarityResult?.clarity) {
+          reqStore.update(req.params.id, {
+            input_clarity: clarityResult.clarity,
+            clarity_reason: clarityResult.reason || '',
+            clarity_model: clarityResult.modelId,
+          });
+        }
+      }
+    } catch (e) { console.error('[rewrite] 重评明确度失败（非阻塞）:', e.message); }
+
     // autoRegenBrief 默认 true：基于最新 description 重新生成思路
     let briefRegen = null;
     if (autoRegenBrief !== false) {
@@ -554,6 +572,8 @@ router.post('/:id/rewrite-description', async (req, res, next) => {
       modelId: result.modelId,
       historyCount: result.historyCount,
       briefRegen,
+      clarity: clarityResult?.clarity || null,
+      clarityReason: clarityResult?.reason || null,
     });
   } catch (e) { next(e); }
 });
