@@ -141,7 +141,11 @@ async function openRequirement(id) {
   if (req.status !== 'idea') setTimeout(() => loadRequirementKnowledge(id), 250);
   if (req.status !== 'idea') setTimeout(() => generateDataModelPreview(id), 300);
   // v0.3「思路先于画面」: idea 状态自动加载思路简报，视觉预览按需触发
-  setTimeout(() => loadThinkingBrief(id), 350);
+  setTimeout(() => ACMSThinkingBrief.load(id), 350);
+  if (req.status === 'idea') {
+    // Phase 2: brief 加载后顺便拉 assist 数据（路由器可能已自动跑了某种）
+    setTimeout(() => ACMSAssistDispatcher.loadAll(id), 500);
+  }
   // 兼容旧逻辑：尝试加载已存在的预览（如用户之前手动生成过）
   setTimeout(() => maybeLoadInsightPreviews(id), 400);
   // 页面加载后，如果存在 SRS，按需展示预览按钮
@@ -3167,362 +3171,101 @@ async function regenerateInsightPreviews(reqId) {
 // ════════════════════════════════════════════════════════════════
 // v0.3「思路先于画面」: 思路简报加载 / 重新生成 / 跳过
 // ════════════════════════════════════════════════════════════════
+// ===== Decision Tree 渲染（v0.3.1 思路先于画面 增量，澄清阶段用）=====
+// AI 在 strategy='decision_tree' 时输出 3 个互斥分支
+// 用户点击任一分支 → 自动把该分支的 desc+examples 作为回答送回 AI
+// 注意：idea 阶段的决策树已经迁到 client/js/views/assists/decision-tree.js
+function renderDecisionTree(reqId, branches) {
+  const choicesDiv = document.getElementById(`ai-clarify-choices-${reqId}`);
+  if (!choicesDiv) return;
 
-async function loadThinkingBrief(reqId) {
-  // 清理旧轮询
-  if (_briefPollers[reqId]) {
-    clearInterval(_briefPollers[reqId]);
-    delete _briefPollers[reqId];
-  }
-  try {
-    const resp = await api('GET', `/requirements/${reqId}/thinking-brief`);
-    const brief = resp.thinkingBrief;
-    _briefCache[reqId] = brief;  // 缓存供详情面板取 branch 数据
-    renderThinkingBriefContent(reqId, brief);
-    if (brief && (brief.status === 'generating' || brief.status === 'pending')) {
-      _briefPollers[reqId] = setInterval(() => pollThinkingBrief(reqId), 2500);
-    }
-  } catch (e) {
-    console.warn('[brief] 加载失败:', e.message);
-  }
-}
-
-async function pollThinkingBrief(reqId) {
-  try {
-    const resp = await api('GET', `/requirements/${reqId}/thinking-brief`);
-    const brief = resp.thinkingBrief;
-    _briefCache[reqId] = brief;  // 缓存供详情面板取 branch 数据
-    renderThinkingBriefContent(reqId, brief);
-    if (!brief || (brief.status !== 'generating' && brief.status !== 'pending')) {
-      clearInterval(_briefPollers[reqId]);
-      delete _briefPollers[reqId];
-    }
-  } catch (e) {
-    console.warn('[brief] 轮询失败:', e.message);
-  }
-}
-
-function renderThinkingBriefContent(reqId, brief) {
-  const container = document.getElementById(`thinking-brief-content-${reqId}`);
-  if (!container) return;
-
-  if (!brief) {
-    container.innerHTML = '<div class="insight-loading">⏳ 思路简报待生成…</div>';
-    return;
-  }
-  if (brief.status === 'pending' || brief.status === 'generating') {
-    container.innerHTML = `<div class="insight-loading">${brief.chat_round && brief.chat_round > 1 ? '🤔 AI 在整理你的新回答…' : '🤔 AI 正在理解你的想法…'}</div>`;
-    return;
-  }
-  if (brief.status === 'failed') {
-    container.innerHTML = `<div class="insight-error">❌ 思路生成失败：${escHtml(brief.error || '未知错误')}</div>`;
+  if (!Array.isArray(branches) || branches.length === 0) {
+    choicesDiv.innerHTML = '<div style="color:var(--text2);padding:8px">决策树数据为空，请直接在输入框中描述你的想法</div>';
     return;
   }
 
-  // done: v0.3.3 对话式思路区
-  // 优先渲染 AI 开场气泡（ai_understanding + opening + followup_question）
-  // 决策树 / 追问清单 / 类比参考：仅当 LLM 在后续轮次主动补充时显示（Phase 2 辅助手段路由器启用后才常见）
-  const opening = brief.opening || '';
-  const understanding = brief.ai_understanding || '';
-  const followup = brief.followup_question || '';
-  const round = brief.chat_round || 1;
+  // 顶部简短引导（无缩进、无绿色线条，仅一行小字提示）
+  const intro = `<div style="margin:4px 0 8px;font-size:12px;color:var(--text2)">
+    点卡片就是选这个方向，也可以先点下面输入框补充自己的想法。
+  </div>`;
 
-  // AI 气泡（开场 = 致意 + 理解 + 追问）
-  const openingBlock = (understanding || opening) ? `
-    <div class="brief-opening">
-      ${round > 1 ? `<div class="brief-round-tag">第 ${round} 轮对话</div>` : ''}
-      ${understanding ? `<div class="brief-understanding"><strong>我的理解：</strong>${escHtml(understanding)}</div>` : ''}
-      ${opening ? `<div class="brief-opening-text">${escHtml(opening)}</div>` : ''}
-    </div>
-  ` : '';
-
-  // 当前追问（独立高亮，用户最容易看到）
-  const followupBlock = followup ? `
-    <div class="brief-followup">
-      <span class="brief-followup-label">💬 当前最想知道的：</span>
-      <span class="brief-followup-text">${escHtml(followup)}</span>
-    </div>
-  ` : '';
-
-  // 决策树（可选，LLM 在明确度上升时才补）
-  const tree = (brief.decision_tree || []).map((t, i) => `
-    <div class="brief-branch" data-branch-idx="${i}">
-      <div class="brief-branch-label">${String.fromCharCode(65+i)} ${escHtml(t.label || '')}</div>
-      <div class="brief-branch-desc">${escHtml(t.desc || '')}</div>
-      ${t.examples ? `<button class="brief-branch-analogy-btn" onclick="expandBranchDetail('${reqId}', ${i})" title="查看详细的产品介绍">💡 ${escHtml(t.examples)} ▾</button>` : ''}
-      <div class="brief-branch-proscons">
-        ${t.pros ? `<span class="brief-pro">+ ${escHtml(t.pros)}</span>` : ''}
-        ${t.cons ? `<span class="brief-con">- ${escHtml(t.cons)}</span>` : ''}
+  // 渲染分支卡片网格
+  const cards = branches.map((b, i) => {
+    const label = b.label || `方向 ${String.fromCharCode(65 + i)}`;
+    const desc = b.desc || '';
+    const pros = b.pros || '';
+    const cons = b.cons || '';
+    const examples = b.examples || '';
+    return `<div class="dt-branch-card" data-branch-idx="${i}"
+      style="cursor:pointer;padding:12px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;transition:all 0.15s"
+      onclick="pickDecisionBranch('${reqId}', ${i})">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span style="display:inline-block;width:24px;height:24px;line-height:24px;text-align:center;background:var(--accent);color:#000;border-radius:50%;font-weight:bold;font-size:13px">${String.fromCharCode(65 + i)}</span>
+        <strong style="font-size:14px;color:var(--text1)">${escHtml(label)}</strong>
       </div>
-    </div>
-    <div id="branch-detail-${reqId}-${i}" class="branch-detail-panel" style="display:none"></div>
-  `).join('');
-
-  // 追问清单（可选）
-  const questionsBlock = (brief.questions && brief.questions.length > 0) ? `
-    <div class="brief-questions">
-      <div class="brief-questions-title">📋 还有这些维度你可以聊聊：</div>
-      <ul>${brief.questions.map(q => `<li>${escHtml(q)}</li>`).join('')}</ul>
-    </div>
-  ` : '';
-
-  // 类比参考（可选）
-  const refsBlock = (brief.references && brief.references.length > 0) ? `
-    <div class="brief-references">
-      <div class="brief-references-title">🏷 可以参考这些产品：</div>
-      <div class="brief-references-list">${brief.references.map(r => `<span class="brief-ref-chip" title="${escHtml(r.desc || '')}">${escHtml(r.name)}</span>`).join('')}</div>
-    </div>
-  ` : '';
-
-  container.innerHTML = `
-    <div class="brief-block">
-      ${openingBlock}
-      ${followupBlock}
-      ${tree ? `<div class="brief-tree">${tree}</div>` : ''}
-      ${questionsBlock}
-      ${refsBlock}
-    </div>
-  `;
-}
-
-// ===== Branch Detail 面板（v0.3.2 极简思路区 增量）=====
-// 点击决策树分支的「类比徽章」→ 展开/收起详情面板
-// 内容：3-5 个该分支的设计特色（LLM 生成）+ 配图（异步生成）+ 勾选充实
-let _briefCache = {}; // reqId → brief 缓存
-let _branchDetailPollers = {}; // reqId-branchIdx → interval
-
-async function expandBranchDetail(reqId, branchIdx) {
-  const panel = document.getElementById(`branch-detail-${reqId}-${branchIdx}`);
-  if (!panel) return;
-
-  // 已展开 → 收起
-  if (panel.style.display === 'block' && panel.innerHTML) {
-    panel.style.display = 'none';
-    stopBranchDetailPolling(reqId, branchIdx);
-    return;
-  }
-  panel.style.display = 'block';
-
-  // 第一次点开：调 endpoint 启动生成 + 立即轮询
-  panel.innerHTML = '<div class="insight-loading">⏳ AI 正在分析产品特色…</div>';
-  try {
-    // 启动生成（fire-and-forget 后端可能立即返 202）
-    // modelId: null 让后端自动选可用文本模型（避免硬编码 ID 在不同服务器上找不到）
-    await api('POST', `/requirements/${reqId}/thinking-brief/branch-detail`, { branchIdx, modelId: null });
-  } catch (e) {
-    // 已生成过的（重复点）不报错
-    console.log('[branch-detail] 启动请求:', e.message);
-  }
-  startBranchDetailPolling(reqId, branchIdx, panel);
-}
-
-function startBranchDetailPolling(reqId, branchIdx, panel) {
-  stopBranchDetailPolling(reqId, branchIdx);
-  const key = `${reqId}-${branchIdx}`;
-  const tick = async () => {
-    try {
-      const resp = await api('GET', `/requirements/${reqId}/thinking-brief/branch-detail/${branchIdx}`);
-      const detail = resp.branchDetail;
-      renderBranchDetailContent(panel, detail, reqId, branchIdx);
-      // 状态终态：done / failed → 停轮询
-      if (detail && (detail.status === 'done' || detail.status === 'failed')) {
-        // 等所有 image 状态也终态再停
-        const allImgDone = !detail.features || detail.features.every(f => f.image_status === 'done' || f.image_status === 'failed');
-        if (allImgDone) stopBranchDetailPolling(reqId, branchIdx);
-      }
-    } catch (e) {
-      if (e.message && e.message.includes('NOT_GENERATED')) {
-        // 后端还没开始生成，等
-        panel.innerHTML = '<div class="insight-loading">⏳ 等待生成启动…</div>';
-      } else {
-        panel.innerHTML = `<div class="insight-error">❌ ${escHtml(e.message)}</div>`;
-        stopBranchDetailPolling(reqId, branchIdx);
-      }
-    }
-  };
-  _branchDetailPollers[key] = setInterval(tick, 2000);
-  tick(); // 立即拉一次
-}
-
-function stopBranchDetailPolling(reqId, branchIdx) {
-  const key = `${reqId}-${branchIdx}`;
-  if (_branchDetailPollers[key]) {
-    clearInterval(_branchDetailPollers[key]);
-    delete _branchDetailPollers[key];
-  }
-}
-
-function renderBranchDetailContent(panel, detail, reqId, branchIdx) {
-  if (!detail) {
-    panel.innerHTML = '<div class="insight-loading">⏳ 等待生成启动…</div>';
-    return;
-  }
-  if (detail.status === 'generating' && (!detail.features || detail.features.length === 0)) {
-    panel.innerHTML = '<div class="insight-loading">🤔 AI 正在分析该方向的设计特色…</div>';
-    return;
-  }
-  if (detail.status === 'failed') {
-    panel.innerHTML = `<div class="insight-error">❌ 特色生成失败：${escHtml(detail.error || '未知错误')}</div>
-      <button class="btn-small" style="margin-top:8px" onclick="retryBranchDetail('${reqId}', ${branchIdx})">↻ 重试</button>`;
-    return;
-  }
-
-  // 渲染特色列表
-  const features = detail.features || [];
-  const branchLetter = String.fromCharCode(65 + branchIdx);
-  // 从 brief cache 拿 branch label
-  const brief = _briefCache[reqId];
-  const branch = brief?.decision_tree?.[branchIdx];
-  const branchLabel = branch?.label || '';
-
-  const featuresHtml = features.map((f, i) => {
-    const imgStatus = f.image_status;
-    let imgBlock;
-    if (imgStatus === 'done' && f.image_asset) {
-      // 注意：外层是 <div> 而非 <label>，避免点图片触发 label 默认行为勾选 checkbox
-      // checkbox 通过点击文字/checkbox 本身切换；点图片仅放大
-      imgBlock = `<div class="branch-feature-img-clickable" onclick="event.stopPropagation();expandFeatureImage('${reqId}', ${branchIdx}, ${i})" title="点击放大"><img src="/api/generate/assets/${App.currentProjectId}/${f.image_asset}" class="branch-feature-img" alt="${escHtml(f.title)}" loading="lazy" /></div>`;
-    } else if (imgStatus === 'failed') {
-      imgBlock = `<div class="branch-feature-img-failed">🖼 配图失败</div>`;
-    } else {
-      imgBlock = `<div class="branch-feature-img-loading">⏳ 配图中…</div>`;
-    }
-    return `
-      <div class="branch-feature-card" data-feature-idx="${i}">
-        <input type="checkbox" class="branch-feature-check" id="branch-feature-${reqId}-${branchIdx}-${i}" data-feature-title="${escHtml(f.title)}" onclick="event.stopPropagation()">
-        <div class="branch-feature-img-wrap">${imgBlock}</div>
-        <label for="branch-feature-${reqId}-${branchIdx}-${i}" class="branch-feature-text" onclick="event.stopPropagation()">
-          <div class="branch-feature-title">${escHtml(f.title)}</div>
-          <div class="branch-feature-desc">${escHtml(f.desc)}</div>
-        </label>
-      </div>
-    `;
+      <div style="font-size:12px;color:var(--text2);margin-bottom:8px;line-height:1.5">${escHtml(desc)}</div>
+      ${(pros || cons) ? `<div style="font-size:11px;margin-bottom:6px">
+        ${pros ? `<span style="color:var(--green);margin-right:8px">+ ${escHtml(pros)}</span>` : ''}
+        ${cons ? `<span style="color:var(--red)">- ${escHtml(cons)}</span>` : ''}
+      </div>` : ''}
+      ${examples ? `<div style="font-size:11px;color:var(--text3);border-top:1px dashed var(--border);padding-top:6px">💡 典型: ${escHtml(examples)}</div>` : ''}
+    </div>`;
   }).join('');
 
-  panel.innerHTML = `
-    <div class="branch-detail-inner">
-      <div class="branch-detail-header">
-        <strong>${branchLetter} ${escHtml(branchLabel)} · 设计特色</strong>
-        <button class="branch-detail-close" onclick="expandBranchDetail('${reqId}', ${branchIdx})">✕</button>
-      </div>
-      <div class="branch-detail-intro">
-        💡 AI 从「${escHtml(branch?.examples || branchLabel)}」中提炼出 ${features.length} 个独特的设计特色。勾选你感兴趣的方向，充实到你的想法。
-      </div>
-      <div class="branch-feature-grid">
-        ${featuresHtml}
-      </div>
-      <div class="branch-detail-actions">
-        <button class="btn-small btn-primary" onclick="confirmBranchFeatures('${reqId}', ${branchIdx})">
-          ✅ 用这些特色充实我的想法
-        </button>
-        <button class="btn-small" onclick="expandBranchDetail('${reqId}', ${branchIdx})">← 收起</button>
-      </div>
-    </div>
-  `;
-}
+  choicesDiv.innerHTML = intro +
+    `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:8px">${cards}</div>` +
+    `<div style="text-align:center;margin-top:8px">
+      <button class="btn-small btn-reject" onclick="skipDecisionTree('${reqId}')" style="font-size:11px">都不太对，我想自己说</button>
+    </div>`;
 
-// 全屏放大查看特色配图（v0.3.2 增量，复用 expandWireframe 的 modal 模式）
-function expandFeatureImage(reqId, branchIdx, featureIdx) {
-  const brief = _briefCache[reqId];
-  const detail = brief?.branch_details?.[branchIdx];
-  const f = detail?.features?.[featureIdx];
-  if (!f || f.image_status !== 'done' || !f.image_asset) return;
-
-  // 移除已存在的 modal
-  const existing = document.getElementById('feature-image-modal');
-  if (existing) document.body.removeChild(existing);
-
-  const overlay = document.createElement('div');
-  overlay.id = 'feature-image-modal';
-  overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;cursor:pointer';
-  overlay.onclick = function(e) { if (e.target === overlay) document.body.removeChild(overlay); };
-
-  const modal = document.createElement('div');
-  modal.style.cssText = 'background:#1a1a1a;border-radius:8px;padding:20px;max-width:94vw;max-height:94vh;cursor:default;box-shadow:0 8px 32px rgba(0,0,0,0.5);display:flex;flex-direction:column;align-items:center';
-  modal.onclick = function(e) { e.stopPropagation(); };
-
-  // 标题
-  const title = document.createElement('div');
-  title.style.cssText = 'font-size:14px;font-weight:bold;color:#fff;margin-bottom:6px;text-align:center';
-  title.textContent = f.title;
-
-  // 描述
-  const desc = document.createElement('div');
-  desc.style.cssText = 'font-size:12px;color:#aaa;margin-bottom:12px;text-align:center;max-width:600px';
-  desc.textContent = f.desc;
-
-  // 大图（自适应窗口，最大 90vh/90vw）
-  const img = document.createElement('img');
-  img.src = `/api/generate/assets/${App.currentProjectId}/${f.image_asset}`;
-  img.alt = f.title;
-  img.style.cssText = 'max-width:90vw;max-height:80vh;object-fit:contain;border-radius:4px;background:#000';
-
-  // 关闭按钮
-  const closeBtn = document.createElement('button');
-  closeBtn.textContent = '✕ 关闭';
-  closeBtn.style.cssText = 'margin-top:12px;background:rgba(255,255,255,0.1);color:#fff;border:1px solid rgba(255,255,255,0.3);border-radius:4px;padding:6px 16px;font-size:12px;cursor:pointer';
-  closeBtn.onclick = function() { document.body.removeChild(overlay); };
-
-  modal.appendChild(title);
-  modal.appendChild(desc);
-  modal.appendChild(img);
-  modal.appendChild(closeBtn);
-  overlay.appendChild(modal);
-  document.body.appendChild(overlay);
-
-  // ESC 关闭
-  const onKey = (e) => {
-    if (e.key === 'Escape' && document.body.contains(overlay)) {
-      document.body.removeChild(overlay);
-      document.removeEventListener('keydown', onKey);
-    }
-  };
-  document.addEventListener('keydown', onKey);
-}
-
-function retryBranchDetail(reqId, branchIdx) {
-  const panel = document.getElementById(`branch-detail-${reqId}-${branchIdx}`);
-  if (panel) panel.innerHTML = '<div class="insight-loading">⏳ 重新启动生成…</div>';
-  expandBranchDetail(reqId, branchIdx);
-}
-
-// 勾选提交：调 rewrite endpoint（自动重整 + 自动重生思路）
-async function confirmBranchFeatures(reqId, branchIdx) {
-  const checked = Array.from(document.querySelectorAll(`#branch-detail-${reqId}-${branchIdx} .branch-feature-check:checked`));
-  if (checked.length === 0) {
-    toast('请先勾选至少一个感兴趣的特色', 'warning');
-    return;
-  }
-  const brief = _briefCache[reqId];
-  const branch = brief?.decision_tree?.[branchIdx];
-  if (!branch) return;
-  const examples = branch.examples || branch.label;
-  const titles = checked.map(cb => cb.dataset.featureTitle).join('、');
-  // 把勾选痕迹作为 supplement 喂给 rewrite（原文 + 痕迹一起重整）
-  const supplement = `（从「${examples}」学到的特色：${titles}）`;
-
-  // 关掉面板
-  const panel = document.getElementById(`branch-detail-${reqId}-${branchIdx}`);
-  if (panel) panel.style.display = 'none';
-  stopBranchDetailPolling(reqId, branchIdx);
-
-  toast(`⏳ 正在重新组织需求描述…`, 'info', 2000);
-  try {
-    const resp = await api('POST', `/requirements/${reqId}/rewrite-description`, {
-      supplement,
-      modelId: null,  // 让后端自动选可用文本模型（避免硬编码 ID 在不同服务器上找不到）
-      autoRegenBrief: true,
+  // 鼠标悬停效果（用 CSS hover 会被内联 style 覆盖，用 JS 模拟）
+  choicesDiv.querySelectorAll('.dt-branch-card').forEach(card => {
+    card.addEventListener('mouseenter', () => {
+      card.style.borderColor = 'var(--accent)';
+      card.style.background = 'var(--bg2)';
     });
-    if (resp.error) {
-      toast('重整失败: ' + resp.error, 'error');
-      return;
-    }
-    toast(`✅ 已重整，思路正在重生…`, 'success', 2000);
-    // 刷新详情页（新的 description + 新的 decision_tree）
-    setTimeout(() => openRequirement(reqId), 500);
-  } catch (e) {
-    toast('重整失败: ' + e.message, 'error');
+    card.addEventListener('mouseleave', () => {
+      card.style.borderColor = 'var(--border)';
+      card.style.background = 'var(--bg3)';
+    });
+  });
+}
+
+// 用户点了某个分支 → 把分支信息作为回答送回 AI
+async function pickDecisionBranch(reqId, idx) {
+  // 拿当前轮 AI 回复里的 branches（从 history 取）
+  const last = (aiClarifyHistory[reqId] || []).filter(h => h.role === 'assistant').slice(-1)[0];
+  const branches = last?.content?.branches || [];
+  const b = branches[idx];
+  if (!b) return;
+
+  // 把分支的关键信息组成一句自然语言回答
+  const parts = [];
+  parts.push(`我倾向「${b.label}」方向`);
+  if (b.desc) parts.push(`(${b.desc})`);
+  if (b.examples) parts.push(`参考 ${b.examples} 的体验`);
+  // 用户可叠加输入框内容
+  const input = document.getElementById(`ai-clarify-input-${reqId}`);
+  const custom = input?.value?.trim();
+  if (custom) parts.push(`补充：${custom}`);
+
+  // 把这条消息写进 input（视觉反馈）然后发送
+  if (input) {
+    input.value = parts.join('，');
+    input.focus();
   }
+  await sendAiClarify(reqId);
+}
+
+// 「都不太对」→ 提示用户直接在输入框里说
+function skipDecisionTree(reqId) {
+  const input = document.getElementById(`ai-clarify-input-${reqId}`);
+  if (input) {
+    input.value = '';
+    input.placeholder = '说说你的想法（不限方向，AI 会接着问）';
+    input.focus();
+  }
+  toast('👉 直接在输入框里说你的想法，AI 会接着问', 'info', 2500);
 }
 
 // 手工补充想法提交（v0.3.2 增量）
@@ -3545,6 +3288,8 @@ async function submitIdeaSupplement(reqId) {
       return;
     }
     toast('✅ 已重整，思路正在重生…', 'success', 2000);
+    // Phase 2: 后端 rewrite 后会自动跑路由器 → 触发某种 assist
+    // 刷新页面，让新 brief + 新 assist 都重新加载
     setTimeout(() => openRequirement(reqId), 500);
   } catch (e) {
     toast('补充失败: ' + e.message, 'error');
@@ -3560,7 +3305,7 @@ async function regenerateThinkingBrief(reqId) {
       return;
     }
     toast('🔄 思路简报重新生成中…', 'success');
-    loadThinkingBrief(reqId);
+    ACMSThinkingBrief.load(reqId);
   } catch (e) {
     toast('启动失败: ' + e.message, 'error');
   }

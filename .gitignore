@@ -9,3 +9,7 @@ config.json
 
 # Local test output
 tmp/
+
+# Server stdout/stderr (本地运行产出)
+server_out.txt
+server_err.txt

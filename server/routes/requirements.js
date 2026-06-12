@@ -490,6 +490,139 @@ router.post('/:id/thinking-brief/regen', async (req, res, next) => {
 });
 
 // ============================================================
+// 辅助手段（v0.3.3 Phase 2）
+//   LLM 路由器 + 5 种独立 assist（decision_tree/scenarios/diagnosis/tradeoff/arch）
+//   POST /assist/run       → 路由器选一种 → 调对应 service → 返回 method + status
+//   GET  /assist           → 列出已生成的辅助手段 + 当前状态（前端轮询）
+//   POST /assist/:method   → 手动指定 method（跳过路由器，用户主动触发某一种）
+// ============================================================
+const assists = require('../services/assists');
+const { pickNext: pickAssistNext } = require('../services/assists/router');
+
+// 列出所有已生成的辅助手段（前端轮询用）
+router.get('/:id/assist', (req, res, next) => {
+  try {
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+
+    const result = {};
+    for (const method of ['decision_tree', 'scenarios', 'diagnosis', 'tradeoff', 'arch']) {
+      const svc = assists.getAssist(method);
+      if (svc && svc.getAssist) {
+        result[method] = svc.getAssist(req.params.id);
+      }
+    }
+    // visual 复用 insight_previews
+    try {
+      result.visual = reqRec.insight_previews ? JSON.parse(reqRec.insight_previews) : null;
+    } catch { result.visual = null; }
+
+    res.json({ assists: result });
+  } catch (e) { next(e); }
+});
+
+// 路由器自动选一种
+router.post('/:id/assist/run', async (req, res, next) => {
+  try {
+    const { modelId, role } = req.body || {};
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    if (reqRec.status !== 'idea') {
+      return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
+    }
+
+    // 收集已用 methods
+    const usedMethods = [];
+    for (const method of ['decision_tree', 'scenarios', 'diagnosis', 'tradeoff', 'arch']) {
+      const svc = assists.getAssist(method);
+      const data = svc && svc.getAssist ? svc.getAssist(req.params.id) : null;
+      if (data && (data.used || data.status === 'done')) usedMethods.push(method);
+    }
+
+    // 读 brief 拿 ai_understanding
+    let aiUnderstanding = '';
+    try {
+      const brief = JSON.parse(reqRec.thinking_brief || 'null');
+      aiUnderstanding = brief?.ai_understanding || '';
+    } catch {}
+
+    const pick = await pickAssistNext({
+      clarity: reqRec.input_clarity,
+      chatRound: (() => { try { return JSON.parse(reqRec.thinking_brief || 'null')?.chat_round || 1; } catch { return 1; } })(),
+      usedMethods,
+      aiUnderstanding,
+    }, modelId);
+
+    if (!pick.method) {
+      return res.json({ method: null, reason: pick.reason || '无可推荐', status: 'idle' });
+    }
+
+    const svc = assists.getAssist(pick.method);
+    if (!svc || !svc.runAssistJob) {
+      return res.status(500).json({ error: 'ASSIST_NOT_FOUND', method: pick.method });
+    }
+
+    setImmediate(() => svc.runAssistJob(req.params.id, { modelId, role })
+      .catch(e => console.error(`[assist.${pick.method}] 任务异常:`, e.message)));
+
+    res.status(202).json({
+      method: pick.method,
+      reason: pick.reason,
+      status: 'generating',
+    });
+  } catch (e) { next(e); }
+});
+
+// 手动指定 method（用户主动选）
+router.post('/:id/assist/:method', async (req, res, next) => {
+  try {
+    const { method } = req.params;
+    const { modelId, role } = req.body || {};
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    if (reqRec.status !== 'idea') {
+      return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
+    }
+
+    const svc = assists.getAssist(method);
+    if (!svc) return res.status(400).json({ error: 'UNKNOWN_METHOD', method });
+    if (method === 'visual') {
+      // visual 走 insight-previews 旧 endpoint
+      return res.status(400).json({ error: 'USE_INSIGHT_PREVIEWS_ENDPOINT', hint: 'POST /requirements/:id/insight-previews' });
+    }
+    if (!svc.runAssistJob) return res.status(500).json({ error: 'ASSIST_HAS_NO_RUNNER' });
+
+    setImmediate(() => svc.runAssistJob(req.params.id, { modelId, role })
+      .catch(e => console.error(`[assist.${method}] 任务异常:`, e.message)));
+
+    res.status(202).json({ method, status: 'generating' });
+  } catch (e) { next(e); }
+});
+
+// 标记用户"使用"了某个辅助手段（勾选/表态）
+router.post('/:id/assist/:method/use', async (req, res, next) => {
+  try {
+    const { method } = req.params;
+    const body = req.body || {};
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+
+    const svc = assists.getAssist(method);
+    if (!svc) return res.status(400).json({ error: 'UNKNOWN_METHOD', method });
+
+    let result = null;
+    if (method === 'decision_tree') result = svc.markUsed(req.params.id, body.branchIdx);
+    else if (method === 'scenarios') result = svc.markPicked(req.params.id, body.idx);
+    else if (method === 'diagnosis') result = svc.markUsed(req.params.id);
+    else if (method === 'tradeoff') result = svc.setPick(req.params.id, body.dimIdx, body.pick);
+    else if (method === 'arch') result = svc.togglePick(req.params.id, body.idx);
+    else return res.status(400).json({ error: 'METHOD_HAS_NO_USE_HANDLER' });
+
+    res.json({ method, result });
+  } catch (e) { next(e); }
+});
+
+// ============================================================
 // 决策树分支详情（v0.3.2 极简思路区 增量）
 //   用户点开分支的「类比徽章」→ 生成 3-5 个该分支的设计特色 + 配图
 // ============================================================
@@ -562,8 +695,38 @@ router.post('/:id/rewrite-description', async (req, res, next) => {
     // autoRegenBrief 默认 true：基于最新 description 重新生成思路
     let briefRegen = null;
     if (autoRegenBrief !== false) {
-      setImmediate(() => briefServiceRegen.runBriefJob(req.params.id, { modelId, role })
-        .catch(e => console.error('[rewrite] 自动重新生成思路异常:', e.message)));
+      setImmediate(async () => {
+        try {
+          await briefServiceRegen.runBriefJob(req.params.id, { modelId, role });
+          // v0.3.3 Phase 2：brief 完成后自动调路由器选一种辅助手段
+          try {
+            const fresh = reqStore.getById(req.params.id);
+            if (fresh && fresh.status === 'idea') {
+              const usedMethods = [];
+              for (const method of ['decision_tree', 'scenarios', 'diagnosis', 'tradeoff', 'arch']) {
+                const svc = assists.getAssist(method);
+                const data = svc && svc.getAssist ? svc.getAssist(req.params.id) : null;
+                if (data && (data.used || data.status === 'done')) usedMethods.push(method);
+              }
+              let aiUnderstanding = '';
+              try { aiUnderstanding = JSON.parse(fresh.thinking_brief || 'null')?.ai_understanding || ''; } catch {}
+              const pick = await pickAssistNext({
+                clarity: fresh.input_clarity,
+                chatRound: (() => { try { return JSON.parse(fresh.thinking_brief || 'null')?.chat_round || 1; } catch { return 1; } })(),
+                usedMethods,
+                aiUnderstanding,
+              }, modelId);
+              if (pick.method) {
+                const svc = assists.getAssist(pick.method);
+                if (svc && svc.runAssistJob) {
+                  await svc.runAssistJob(req.params.id, { modelId, role });
+                  console.log(`[rewrite.assist] ${req.params.id} 自动跑了 ${pick.method}`);
+                }
+              }
+            }
+          } catch (e) { console.error('[rewrite.assist] 自动辅助失败:', e.message); }
+        } catch (e) { console.error('[rewrite] 自动重新生成思路异常:', e.message); }
+      });
       briefRegen = 'started';
     }
 

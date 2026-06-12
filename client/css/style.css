@@ -1181,3 +1181,158 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
   display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px;
   padding-top: 12px; border-top: 1px dashed var(--border);
 }
+
+/* ===== v0.3.3 多轮对话式澄清 Phase 2 ===== */
+
+/* 思路区：对话气泡 */
+.brief-opening {
+  padding: 10px 12px;
+  background: rgba(139, 92, 246, 0.08);
+  border-radius: 8px;
+  margin-bottom: 8px;
+}
+.brief-round-tag {
+  font-size: 10px; color: var(--accent); margin-bottom: 4px;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.brief-understanding {
+  font-size: 12px; color: var(--text); margin-bottom: 6px;
+  line-height: 1.5;
+}
+.brief-understanding strong { color: var(--accent); margin-right: 4px; }
+.brief-opening-text {
+  font-size: 12px; color: var(--text2); line-height: 1.6;
+}
+
+/* 当前追问高亮 */
+.brief-followup {
+  padding: 8px 12px;
+  background: rgba(255, 217, 61, 0.08);
+  border-left: 3px solid var(--accent3);
+  border-radius: 4px;
+  margin: 8px 0;
+  font-size: 12px;
+}
+.brief-followup-label {
+  color: var(--accent3); font-weight: 600; margin-right: 6px;
+}
+.brief-followup-text { color: var(--text); }
+
+/* 辅助手段区域 */
+.assist-area {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+  display: flex; flex-direction: column; gap: 12px;
+}
+.assist-block {
+  /* 通用块 */
+}
+.assist-section-title {
+  font-size: 13px; font-weight: 600; color: var(--accent);
+  margin-bottom: 6px;
+}
+.assist-intro {
+  font-size: 11px; color: var(--text2); margin-bottom: 8px;
+  line-height: 1.5;
+}
+.assist-intro-good {
+  color: var(--green);
+}
+.assist-used-tag {
+  font-size: 11px; color: var(--green); margin-top: 6px;
+  padding: 4px 8px; background: rgba(78, 205, 196, 0.08);
+  border-radius: 4px;
+}
+
+/* 辅助手段卡片 */
+.assist-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+.assist-grid-cols-1 {
+  grid-template-columns: 1fr;
+}
+.assist-card {
+  padding: 10px 12px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  transition: all 0.15s;
+}
+.assist-card:hover {
+  border-color: var(--accent);
+  background: var(--bg3);
+}
+.assist-card-picked {
+  border-color: var(--green);
+  background: rgba(78, 205, 196, 0.06);
+}
+.assist-card-narrow {
+  padding: 8px 10px;
+}
+.assist-card-header {
+  display: flex; align-items: center; gap: 6px; margin-bottom: 6px;
+}
+.assist-card-letter {
+  display: inline-block; width: 22px; height: 22px;
+  line-height: 22px; text-align: center;
+  background: var(--accent); color: #000; border-radius: 50%;
+  font-weight: bold; font-size: 12px;
+}
+.assist-card-cat {
+  font-size: 10px; padding: 2px 6px; border-radius: 3px;
+}
+.assist-picked-badge {
+  font-size: 10px; color: var(--green); margin-left: auto;
+}
+.assist-card-meta {
+  font-size: 11px; color: var(--text2); margin-bottom: 4px;
+  font-style: italic;
+}
+.assist-card-row {
+  font-size: 11px; color: var(--text2); line-height: 1.5;
+  margin-bottom: 3px;
+}
+.assist-label {
+  font-weight: 600; color: var(--text); margin-right: 4px;
+}
+.assist-card-quote {
+  font-size: 11px; color: var(--text3); font-style: italic;
+  padding: 4px 6px; background: var(--bg3); border-radius: 3px;
+  margin: 4px 0; border-left: 2px solid var(--border);
+}
+.assist-pick-btn {
+  margin-top: 8px; width: 100%;
+}
+.assist-actions {
+  margin-top: 10px;
+}
+
+/* 取舍清单 */
+.assist-tradeoff-opts {
+  display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px;
+}
+.assist-tradeoff-opt {
+  flex: 1; min-width: 100px; padding: 6px 10px;
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 4px; font-size: 11px; color: var(--text);
+  cursor: pointer; transition: all 0.15s;
+}
+.assist-tradeoff-opt:hover {
+  border-color: var(--accent); background: var(--bg2);
+}
+.assist-tradeoff-opt-picked {
+  background: var(--accent); color: #000; border-color: var(--accent);
+}
+
+/* 信息架构模块元素 */
+.assist-arch-elements {
+  display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px;
+}
+.assist-arch-element {
+  font-size: 10px; padding: 2px 6px;
+  background: rgba(139, 92, 246, 0.15); color: var(--accent);
+  border-radius: 3px;
+}

@@ -1,28 +1,23 @@
-// 思路简报服务（30 文档 v0.3「思路先于画面」改造 → v0.3.3「多轮对话式澄清」改造）
-// 思路面板：AI 用对话方式帮用户打开思路，而不是直接塞 3 个方向
-// 流程（Phase 1）：
-//   1. AI 开场（opening）：友好、积极、表达 AI 对需求的理解、提出 1-2 个开放问题
-//   2. 用户回答（→ submitIdeaSupplement）→ LLM 重整需求描述 + 重评明确度 + 重生思路简报
-//   3. 后续轮次：opening 被新理解 + 新问题覆盖；如明确度上升 → 同时补充 decision_tree / questions / references（按需辅助）
+// 思路简报服务（v0.3.3「多轮对话式澄清」改造）
+// 思路面板只管「对话流」：AI 开场 + 用户回答 + 重新理解 + 新问题
+// 决策树 / 追问 / 类比参考 → 已迁出到 server/services/assists/*（独立服务，独立字段，独立组件）
 // 字段：
 //   requirement.thinking_brief: {
 //     status: 'pending' | 'generating' | 'done' | 'failed',
-//     opening: string,                 // AI 开场（友好理解 + 开放问题）—— 第一轮必出，后续轮次刷新
-//     ai_understanding: string,        // AI 对当前需求的核心理解（≤60字）
-//     followup_question: string,       // 当前的开放追问（≤40字）—— 用户回答后会被刷新
-//     decision_tree: [{label, desc, pros, cons, examples}],
-//     questions: [string],
-//     references: [{name, desc}],
-//     chat_round: number,              // 对话轮次（首次=1）
+//     opening: string,
+//     ai_understanding: string,
+//     followup_question: string,
+//     chat_round: number,
 //     model, generated_at, error
 //   }
+// 决策树字段（兼容旧 brief 渲染）：
+//   requirement.assist_decision_tree: { status, tree, ... }  ← 由 assists/decision-tree.js 写
 const { callLLM } = require('./llm-adapter');
 const modelStore = require('../stores/model-store');
 const reqStore = require('../stores/requirement-store');
 
 // ===== Prompt =====
-// Phase 1 改造：把"直接给 3 方向"换成"AI 先友好开场 + 提开放问题"。
-// 后续轮次：如果明确度上升（medium/high），LLM 可选填 decision_tree / questions / references 作为辅助手段。
+// v0.3.3: brief 只管对话流；决策树完全迁出
 const THINKING_SYSTEM_PROMPT = `你是 ACMS 系统的「需求澄清助手」。你的工作是用**对话**的方式帮用户打开思路——而不是直接给方案。
 
 ## 态度原则
@@ -43,29 +38,11 @@ const THINKING_SYSTEM_PROMPT = `你是 ACMS 系统的「需求澄清助手」。
 - 不要换汤不换药（同样的方向换名字、稍微改 desc 算无效输出）
 - 如果发现「确实想不到新角度」，就诚实地回到原方向但深化它（更具体的场景、更细的分类）
 
-## 后续轮次（明确度 medium/high 时）
-如果用户已提供了较多上下文（多轮对话后），**可选**在输出末尾追加：
-- decision_tree: 3 个互不重叠的实现形态/方向（用户可作辅助参考，但不是必选）
-- questions: 3-5 个未定义的关键维度
-- references: 2-3 个最接近的真实产品
-
-第一轮**不要**输出 decision_tree/questions/references——首轮只用开场 + 问题即可。
-
 输出严格 JSON，格式：
 {
   "ai_understanding": "...",
   "opening": "...",
   "followup_question": "..."
-}
-
-如果输出包含决策树等扩展：
-{
-  "ai_understanding": "...",
-  "opening": "...",
-  "followup_question": "...",
-  "decision_tree": [{"label":"...","desc":"...","pros":"...","cons":"...","examples":"..."}],
-  "questions": ["..."],
-  "references": [{"name":"...","desc":"..."}]
 }
 
 不要任何额外文字、markdown 代码块、解释。`;
@@ -128,9 +105,6 @@ async function generateBrief(title, description, clarity, oldDecisionTree, role,
     ai_understanding: typeof parsed.ai_understanding === 'string' ? parsed.ai_understanding : '',
     opening: typeof parsed.opening === 'string' ? parsed.opening : '',
     followup_question: typeof parsed.followup_question === 'string' ? parsed.followup_question : '',
-    decision_tree: Array.isArray(parsed.decision_tree) ? parsed.decision_tree : [],
-    questions: Array.isArray(parsed.questions) ? parsed.questions : [],
-    references: Array.isArray(parsed.references) ? parsed.references : [],
     modelId: model.id,
   };
 }
@@ -151,9 +125,6 @@ async function runBriefJob(requirementId, opts = {}) {
       opening: '',
       ai_understanding: '',
       followup_question: '',
-      decision_tree: [],
-      questions: [],
-      references: [],
       chat_round: 0,
       started_at: new Date().toISOString(),
       generated_at: null,
@@ -184,9 +155,6 @@ async function runBriefJob(requirementId, opts = {}) {
         opening: brief.opening,
         ai_understanding: brief.ai_understanding,
         followup_question: brief.followup_question,
-        decision_tree: brief.decision_tree,
-        questions: brief.questions,
-        references: brief.references,
         chat_round: oldRound + 1,
         generated_at: new Date().toISOString(),
         model: brief.modelId,
@@ -202,11 +170,7 @@ async function runBriefJob(requirementId, opts = {}) {
         opening: '',
         ai_understanding: '',
         followup_question: '',
-        decision_tree: [],
-        questions: [],
-        references: [],
         chat_round: 0,
-        // 不保留 branch_details — 新决策树没生成前，旧特色无意义
         error: e.message,
         generated_at: new Date().toISOString(),
       }),
