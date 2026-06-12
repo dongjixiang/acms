@@ -118,17 +118,17 @@ async function openRequirement(id) {
     ${(req.status === 'idea') ? renderIdeaPanel(req) : ''}
     ${req.status === 'idea' || req.status === 'clarifying' ? renderAiClarifyPanel(req) : ''}
     ${req.status === 'review' ? renderReviewPanel(req) : ''}
-    ${['idea', 'clarifying', 'review', 'approved'].includes(req.status) ? `<div id="data-model-panel-${id}" style="margin-top:12px"></div>` : ''}
+    ${['clarifying', 'review', 'approved'].includes(req.status) ? `<div id="data-model-panel-${id}" style="margin-top:12px"></div>` : ''}
       ${req.status === 'approved' ? renderAiDecomposePanel(req) + '<div style="margin-top:8px"><button class="btn-small" style="background:rgba(78,205,196,0.1);color:var(--green)" onclick="openSplitPanel(\'' + id + '\')">🔧 拆分需求</button></div>' : ''}
       ${req.status === 'in_execution' ? `<div id="change-btn-row" style="margin-top:12px"><button class="btn-primary" onclick="showWorkspaceView('kanban');refreshKanban('${req.id}');">📌 查看看板</button><button class="btn-small" style="margin-left:8px;background:rgba(255,217,61,0.15);color:var(--accent3);border-color:rgba(255,217,61,0.3)" onclick="showChangePanel('${id}')">📝 需求变更</button></div>` : ''}
       ${req.status === 'change_requested' ? `<div id="change-btn-row" style="margin-top:12px;padding:12px;background:rgba(255,217,61,0.08);border:1px dashed var(--accent3);border-radius:8px"><span style="color:var(--accent3)">⏳ 变更分析中，请稍候...</span><button class="btn-small" style="margin-left:12px;background:rgba(255,100,100,0.15);color:#f44" onclick="cancelChangePanel('${id}')">取消变更</button></div>` : ''}
       ${req.status === 'impact_analysis' ? `<div id="change-btn-row" style="margin-top:12px;padding:12px;background:rgba(78,205,196,0.08);border:1px dashed var(--green);border-radius:8px"><span style="color:var(--green)">📊 变更影响分析已完成</span><button class="btn-accept" style="margin-left:12px" onclick="confirmChangeSimple('${id}')">✅ 确认变更</button><button class="btn-small" style="margin-left:8px;background:rgba(255,100,100,0.15);color:#f44" onclick="cancelChangePanel('${id}')">取消变更</button></div>` : ''}
       ${req.wiki_path ? `<div class="section"><span class="wiki-link">📚 Wiki: ${escHtml(req.wiki_path)}</span></div>` : ''}
-      <div id="req-knowledge-panel-${id}" style="margin-top:12px;padding:8px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;font-size:12px;color:var(--text2)">⏳ 加载关联知识...</div>
+      ${req.status !== 'idea' ? `<div id="req-knowledge-panel-${id}" style="margin-top:12px;padding:8px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;font-size:12px;color:var(--text2)">⏳ 加载关联知识...</div>` : ''}
       <div style="margin-top:16px;display:flex;gap:8px">
         <button class="btn-small btn-reject" onclick="deleteRequirement('${id}')">🗑 删除需求</button>
       </div>
-      <h3>📋 SRS</h3><div class="srs-preview"><pre>${escHtml(JSON.stringify(srs, null, 2))}</pre></div>
+      ${req.status !== 'idea' ? `<h3>📋 SRS</h3><div class="srs-preview"><pre>${escHtml(JSON.stringify(srs, null, 2))}</pre></div>` : ''}
       ${renderArchSpec(req)}
       ${renderChangeHistory(req)}
       ${req.role === 'container' && (req.child_ids && JSON.parse(req.child_ids||'[]').length > 0) ? '<div style="margin-top:12px;display:flex;gap:8px"><button class="btn-small" style="background:rgba(78,205,196,0.1);color:var(--green)" onclick="refreshParent(\'' + id + '\')">📊 刷新父需求</button></div>' : ''}
@@ -138,8 +138,8 @@ async function openRequirement(id) {
   setTimeout(() => loadDecomposeModels(id), 100);
   setTimeout(() => loadRequirementChildren(id), 150);
   setTimeout(() => loadExistingMdEditor(id), 200);
-  setTimeout(() => loadRequirementKnowledge(id), 250);
-  setTimeout(() => generateDataModelPreview(id), 300);
+  if (req.status !== 'idea') setTimeout(() => loadRequirementKnowledge(id), 250);
+  if (req.status !== 'idea') setTimeout(() => generateDataModelPreview(id), 300);
   // v0.3「思路先于画面」: idea 状态自动加载思路简报，视觉预览按需触发
   setTimeout(() => loadThinkingBrief(id), 350);
   // 兼容旧逻辑：尝试加载已存在的预览（如用户之前手动生成过）
