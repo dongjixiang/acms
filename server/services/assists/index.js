@@ -8,7 +8,7 @@
 //   assist_diagnosis:      { generated_at, issues, status }
 //   assist_tradeoff:       { generated_at, dimensions, picks, status }
 //   assist_arch:           { generated_at, modules, status }
-//   assist_visual:         { generated_at, variants, status }   ← 复用 insight_previews
+//   assist_visual:         复用 insight_previews（status/variants 写到 insight_previews 字段）
 //
 // 每个 service 必须暴露：name / runAssistJob(reqId, opts) / getAssist(reqId)
 
@@ -17,6 +17,7 @@ const scenarios = require('./scenarios');
 const diagnosis = require('./diagnosis');
 const tradeoff = require('./tradeoff');
 const arch = require('./arch');
+const visual = require('./visual');
 
 const ASSISTS = {
   decision_tree: decisionTree,
@@ -24,7 +25,7 @@ const ASSISTS = {
   diagnosis: diagnosis,
   tradeoff: tradeoff,
   arch: arch,
-  visual: { name: 'visual', field: 'insight_previews' }, // 复用现有 insight-previews（不重写）
+  visual: visual,  // v0.3.3 B+++：作为第 6 种辅助手段接入路由器
 };
 
 const ASSIST_METHODS = Object.keys(ASSISTS);

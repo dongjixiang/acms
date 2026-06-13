@@ -11,6 +11,7 @@
 //     started_at, completed_at, error, picked_variant_id
 //   }
 const { callLLM } = require('./llm-adapter');
+const { safeParseJSON } = require('./json-extractor');
 const modelStore = require('../stores/model-store');
 const genAdapter = require('./gen-adapter');
 const reqStore = require('../stores/requirement-store');
@@ -20,12 +21,20 @@ const { collection } = require('../db/connection');
 const PROVIDER_ID = null; // null = genStore.getBestMatch 自动选
 
 // ===== Prompt 1: 明确度判定 =====
+// v0.3.3 B 方案补丁（2026-06-13）：调松判定门槛 — 多多反馈"开放问题太多是思维负担"
+// 旧标准：high 要"具体场景+边界+输入输出示例+验收点"4 项全有，medium 要"意图+大致方向"
+// 新标准：high "主要要素都有"（用户+场景+核心功能），medium "意图明确+至少 1 个具体维度"
+// 目的：让重整后的需求更容易评到 medium → 路由器优先选具象化手段（scenarios/tradeoff/arch）而不是 diagnosis
 const CLARITY_SYSTEM_PROMPT = `你是 ACMS 系统的「需求明确度评估员」。根据用户给出的需求标题和描述，判断其明确程度。
 
-评估标准：
-- **high**: 描述包含具体场景、边界条件、输入输出示例、验收点；用户知道要什么。
-- **medium**: 描述了意图和大致方向，但缺细节（如没说边界、没说验收标准）。
-- **low**: 只有标题或描述极短（一两句话），用户自己可能也不太清楚具体要什么。
+评估标准（**调松版**，避免过度挑刺）：
+- **high**: 描述里有明确的**用户群体** + **使用场景** + **核心功能/价值** 三个要素（不一定都全，但至少有用户和场景），意图清晰、可以直接进入细化。
+- **medium**: 描述里有**明确意图**（用户知道大概要什么）+ 至少一个**具体维度**（场景/功能/数据/界面任一有具体描述），但还有空白可以填充。这是大多数需求的状态。
+- **low**: 描述只有标题、极短的一句话、或纯抽象形容词（"做个好用的"、"高效的"等），用户自己也不太清楚要什么。
+
+判定原则：
+- **宁松勿严**：如果描述里有任何具体要素（具体角色名、具体功能名、具体场景），优先评 medium 而不是 low
+- **关注"意图清晰度"**而不是"细节完整度"——用户知道要做 A 给 B 用，意图就清晰，即使没说边界也算 medium
 
 输出严格 JSON，格式：
 {"clarity":"high|medium|low","reason":"一句话说明（≤30字）"}
@@ -94,14 +103,9 @@ async function assessClarity(title, description, modelId) {
       maxTokens: 200,
       jsonMode: true,
     });
-    let content = (result.content || '').trim();
-    // 尝试提取 JSON（防止 LLM 偶尔带 markdown 包裹）
-    if (content.startsWith('```')) {
-      content = content.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
-    }
-    const jsonStart = content.indexOf('{');
-    if (jsonStart >= 0) content = content.substring(jsonStart);
-    const parsed = JSON.parse(content);
+    // v0.3.3 B 方案补丁：多层 JSON 提取
+    const parsed = safeParseJSON(result.content);
+    if (!parsed) throw new Error('LLM 返回无法解析为 JSON');
     const clarity = ['high', 'medium', 'low'].includes(parsed.clarity) ? parsed.clarity : null;
     return { clarity, reason: parsed.reason || '', modelId: model.id };
   } catch (e) {
@@ -136,13 +140,9 @@ async function generateVariants(title, description, clarity, role, modelId) {
     maxTokens: 800,
     jsonMode: true,
   });
-  let content = (result.content || '').trim();
-  if (content.startsWith('```')) {
-    content = content.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
-  }
-  const jsonStart = content.indexOf('{');
-  if (jsonStart >= 0) content = content.substring(jsonStart);
-  const parsed = JSON.parse(content);
+  // v0.3.3 B 方案补丁：多层 JSON 提取
+  const parsed = safeParseJSON(result.content);
+  if (!parsed) throw new Error('LLM 返回无法解析为 JSON');
   return { variants: parsed.variants || [], modelId: model.id };
 }
 

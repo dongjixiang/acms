@@ -133,23 +133,22 @@ async function openRequirement(id) {
       ${renderChangeHistory(req)}
       ${req.role === 'container' && (req.child_ids && JSON.parse(req.child_ids||'[]').length > 0) ? '<div style="margin-top:12px;display:flex;gap:8px"><button class="btn-small" style="background:rgba(78,205,196,0.1);color:var(--green)" onclick="refreshParent(\'' + id + '\')">📊 刷新父需求</button></div>' : ''}
       <div id="req-children" style="margin-top:16px"></div>`;
+    if (req.status === 'clarifying') setTimeout(() => loadAiModels(id), 100);
+    setTimeout(() => loadDecomposeModels(id), 100);
+    setTimeout(() => loadRequirementChildren(id), 150);
+    setTimeout(() => loadExistingMdEditor(id), 200);
+    if (req.status !== 'idea') setTimeout(() => loadRequirementKnowledge(id), 250);
+    if (req.status !== 'idea') setTimeout(() => generateDataModelPreview(id), 300);
+    // v0.3「思路先于画面」: idea 状态自动加载思路简报，视觉预览由路由器或 assist dispatcher 拉
+    setTimeout(() => ACMSThinkingBrief.load(id), 350);
+    if (req.status === 'idea') {
+      // Phase 2: brief 加载后顺便拉 assist 数据（路由器可能已自动跑了某种）
+      // v0.3.3 B+++：visual 也由 dispatcher 拉（包含在 ASSIST_METHODS 里），不再单独调 maybeLoadInsightPreviews
+      setTimeout(() => ACMSAssistDispatcher.loadAll(id), 500);
+    }
+    // 页面加载后，如果存在 SRS，按需展示预览按钮
+    setTimeout(() => updateMediaPreviewButtons(id), 350);
   } catch (e) { toast('加载失败: ' + e.message, 'error'); }
-  if (req.status === 'clarifying') setTimeout(() => loadAiModels(id), 100);
-  setTimeout(() => loadDecomposeModels(id), 100);
-  setTimeout(() => loadRequirementChildren(id), 150);
-  setTimeout(() => loadExistingMdEditor(id), 200);
-  if (req.status !== 'idea') setTimeout(() => loadRequirementKnowledge(id), 250);
-  if (req.status !== 'idea') setTimeout(() => generateDataModelPreview(id), 300);
-  // v0.3「思路先于画面」: idea 状态自动加载思路简报，视觉预览按需触发
-  setTimeout(() => ACMSThinkingBrief.load(id), 350);
-  if (req.status === 'idea') {
-    // Phase 2: brief 加载后顺便拉 assist 数据（路由器可能已自动跑了某种）
-    setTimeout(() => ACMSAssistDispatcher.loadAll(id), 500);
-  }
-  // 兼容旧逻辑：尝试加载已存在的预览（如用户之前手动生成过）
-  setTimeout(() => maybeLoadInsightPreviews(id), 400);
-  // 页面加载后，如果存在 SRS，按需展示预览按钮
-  setTimeout(() => updateMediaPreviewButtons(id), 350);
 }
 
 function renderThread(cl) {
@@ -2961,7 +2960,7 @@ function renderIdeaPanel(req) {
   return `
     <div id="idea-panel-${req.id}" class="idea-panel">
       <div class="insight-header">
-        <span class="insight-title">💡 AI 思路 + 视觉预览</span>
+        <span class="insight-title">💡 AI 思路</span>
         <span class="insight-clarity-badge insight-clarity-${clarity || 'unknown'}">${clarityBadge}</span>
         ${reasonText}
       </div>
@@ -2977,31 +2976,15 @@ function renderIdeaPanel(req) {
             placeholder="💬 回答 AI 的问题，或补充你的想法…"
             rows="2"></textarea>
           <div class="idea-supplement-actions">
+            <!-- v0.4 Phase 3.7：按钮文字改"发送"（聊天化，行为不变） -->
             <button class="btn-small btn-primary" onclick="submitIdeaSupplement('${req.id}')">
-              💬 回答并继续
+              📤 发送
             </button>
             <button class="btn-small" onclick="regenerateThinkingBrief('${req.id}')">↻ 换个问法</button>
             <button class="btn-small btn-reject" onclick="skipThinkingBrief('${req.id}')">✅ 够了，进澄清</button>
           </div>
         </div>
       </div>
-
-      <!-- 视觉区：默认收起 -->
-      <details class="idea-section idea-section-visual">
-        <summary class="idea-section-title">🎨 视觉预览（按需生成 3 张方向图）</summary>
-        <div id="insight-preview-panel-${req.id}" class="insight-preview-panel-inner">
-          <div id="insight-preview-content-${req.id}" class="insight-preview-content">
-            <div class="insight-empty">👇 点击下方按钮生成 3 张方向图（约 30s，会消耗 token）</div>
-          </div>
-          <div class="insight-footer" id="insight-footer-${req.id}" style="display:none">
-            <button class="btn-small btn-reject" onclick="skipInsightPreviews('${req.id}')">⏭ 跳过预览，直接澄清</button>
-            <button class="btn-small" onclick="regenerateInsightPreviews('${req.id}')">🔄 重新生成</button>
-          </div>
-        </div>
-        <div class="idea-section-actions">
-          <button class="btn-small" onclick="triggerInsightPreviews('${req.id}')">🎨 生成 3 张方向图</button>
-        </div>
-      </details>
     </div>
   `;
 }
@@ -3268,18 +3251,33 @@ function skipDecisionTree(reqId) {
   toast('👉 直接在输入框里说你的想法，AI 会接着问', 'info', 2500);
 }
 
-// 手工补充想法提交（v0.3.2 增量）
+// 手工补充想法提交（v0.3.2 增量；v0.3.3 Phase 2：兼容 assist 表态）
+//   textarea 为空时，检查用户是否在 assist 卡片上做过表态（勾选/挑场景/表态）——
 async function submitIdeaSupplement(reqId) {
   const input = document.getElementById(`idea-supplement-input-${reqId}`);
-  const supplement = input?.value?.trim();
+  const supplement = input?.value?.trim() || '';
+
+  // 如果 textarea 没字，检查有没有 assist 表态可以作为"用户输入"
+  let assistSummary = '';
   if (!supplement) {
-    toast('先写点想法再补充', 'warning');
-    return;
+    try {
+      assistSummary = collectAssistSignals(reqId);
+    } catch (e) { console.warn('[submitIdeaSupplement] 扫 assist 失败:', e); }
+
+    if (!assistSummary) {
+      toast('先写点想法再补充，或在辅助手段里勾选/表态', 'warning');
+      return;
+    }
   }
+
   toast('⏳ 正在重新组织需求描述…', 'info', 2000);
   try {
+    // textarea 空时，把 assist 表态汇总作为 supplement（让 LLM 有东西重整）
+    // v0.3.3 B+++：传 supplementSource 让后端区分来源 → supplement_history 累加
+    const finalSupplement = supplement || assistSummary;
     const resp = await api('POST', `/requirements/${reqId}/rewrite-description`, {
-      supplement,
+      supplement: finalSupplement,
+      supplementSource: supplement ? 'idea_supplement' : 'assist_signals',
       modelId: null,  // 让后端自动选可用文本模型
       autoRegenBrief: true,
     });
@@ -3288,12 +3286,95 @@ async function submitIdeaSupplement(reqId) {
       return;
     }
     toast('✅ 已重整，思路正在重生…', 'success', 2000);
-    // Phase 2: 后端 rewrite 后会自动跑路由器 → 触发某种 assist
-    // 刷新页面，让新 brief + 新 assist 都重新加载
+    // 清空输入框，避免下次重复提交
+    if (input) input.value = '';
+    // Phase 2: brief 重生会自动触发路由器 → 推下一种 assist
     setTimeout(() => openRequirement(reqId), 500);
   } catch (e) {
     toast('补充失败: ' + e.message, 'error');
   }
+}
+
+// 扫一遍 assist-area-{reqId}，汇总用户已做的表态（读 _briefCache 或用 ACMSThinkingBrief 的缓存）
+// 返回简短描述用作 supplement；没有表态返回空字符串
+function collectAssistSignals(reqId) {
+  // 从客户端缓存的 brief 数据读 assist 状态
+  // 注意：assist 状态在 dispatcher 里没暴露 cache，我们通过最近一次 GET /assist 的结果来读
+  const cache = window._lastAssistCache?.[reqId] || {};
+  const parts = [];
+
+  // 决策树详情面板：勾选的设计特色（DOM 状态，confirmBranchFeatures 未被触发也能读）
+  // 这一段必须放在最前 —— 即使决策树本身的 used=false，只要用户勾选了 checkbox 就视为已表态
+  try {
+    const checkedFeatureBoxes = Array.from(
+      document.querySelectorAll(`#assist-area-${reqId} .branch-feature-check:checked`)
+    );
+    if (checkedFeatureBoxes.length > 0) {
+      const titles = checkedFeatureBoxes.map(cb => cb.dataset.featureTitle).filter(Boolean);
+      if (titles.length > 0) {
+        // 拿分支信息（来自 decision_tree 的 brief 缓存或 cache）
+        const brief = window.ACMSThinkingBrief?.getBrief?.(reqId);
+        const detailPanel = checkedFeatureBoxes[0].closest('.branch-detail-panel');
+        const branchIdx = detailPanel ? Number(detailPanel.id.match(/-(\d+)$/)?.[1]) : null;
+        const tree = brief?.decision_tree || cache.decision_tree?.tree || [];
+        const branch = (branchIdx !== null && !isNaN(branchIdx)) ? tree[branchIdx] : null;
+        const branchLabel = branch?.label || '';
+        const branchExamples = branch?.examples || branchLabel;
+        const branchPart = branchLabel ? `「${branchLabel}（参考 ${branchExamples}）」方向` : '你勾选的方向';
+        parts.push(`（${branchPart}的设计特色：${titles.join('、')}）`);
+      }
+    }
+  } catch (e) { console.warn('[collectAssistSignals] 扫决策树设计特色失败:', e); }
+
+  // 决策树：used_branch_idx 标识选了哪个分支
+  if (cache.decision_tree?.used && typeof cache.decision_tree.used_branch_idx === 'number') {
+    const brief = window.ACMSThinkingBrief?.getBrief?.(reqId);
+    const tree = brief?.decision_tree || cache.decision_tree?.tree || [];
+    const branch = tree[cache.decision_tree.used_branch_idx];
+    if (branch) {
+      parts.push(`（已选决策树方向「${branch.label || 'A'}」：${branch.desc || ''}）`);
+    } else {
+      parts.push(`（已选决策树方向 #${cache.decision_tree.used_branch_idx}）`);
+    }
+  }
+
+  // 场景：picked 标识挑了哪个场景
+  if (cache.scenarios?.picked !== null && cache.scenarios?.picked !== undefined && Array.isArray(cache.scenarios?.scenarios)) {
+    const s = cache.scenarios.scenarios[cache.scenarios.picked];
+    if (s) {
+      parts.push(`（用户表示自己最像这个场景：${s.title || ''} - ${s.persona || ''} ${s.context || ''} ${s.pain || ''}）`);
+    }
+  }
+
+  // 体检：used=true 表示看完了
+  if (cache.diagnosis?.used && Array.isArray(cache.diagnosis?.issues)) {
+    parts.push(`（用户已看完体检报告，关注 ${cache.diagnosis.issues.length} 处模糊点）`);
+  }
+
+  // 取舍：picks 字典表示在哪些维度表了态
+  if (cache.tradeoff?.used && cache.tradeoff?.picks && Object.keys(cache.tradeoff.picks).length > 0) {
+    const picks = cache.tradeoff.picks;
+    const dims = cache.tradeoff.dimensions || [];
+    const dimTexts = Object.keys(picks).map(i => {
+      const d = dims[Number(i)];
+      if (!d) return null;
+      return `${d.axis || ('维度' + (Number(i) + 1))} → ${picks[i]}`;
+    }).filter(Boolean);
+    if (dimTexts.length > 0) {
+      parts.push(`（用户对取舍维度的表态：${dimTexts.join('；')}）`);
+    }
+  }
+
+  // 信息架构：picked 数组表示圈了哪些模块
+  if (cache.arch?.used && Array.isArray(cache.arch?.picked) && cache.arch.picked.length > 0) {
+    const mods = cache.arch.modules || [];
+    const names = cache.arch.picked.map(i => mods[i]?.name).filter(Boolean);
+    if (names.length > 0) {
+      parts.push(`（用户圈出想要的模块：${names.join('、')}）`);
+    }
+  }
+
+  return parts.join(' ');
 }
 
 async function regenerateThinkingBrief(reqId) {
@@ -3311,13 +3392,27 @@ async function regenerateThinkingBrief(reqId) {
   }
 }
 
-function skipThinkingBrief(reqId) {
-  // 「跳过思路」目前只是收起思路区 + 展开视觉区；不调后端
-  // 后续如果需要状态记录，可以加 /thinking-brief/skip endpoint
-  toast('✅ 进入澄清阶段', 'info', 2000);
-  const visualSection = document.querySelector(`#idea-panel-${reqId} .idea-section-visual`);
-  if (visualSection) {
-    visualSection.scrollIntoView({ behavior: 'smooth', block: 'center' });
+// v0.3.3 B+++ 补丁（2026-06-13）：「够了进澄清」真的切状态 + 重渲染
+//   之前是死代码：toast + 滚动视觉区，需求 status 还是 idea → 永远看不到澄清面板
+//   修法：调 POST /:id/transition 把 status 切到 clarifying，成功后 openRequirement 重渲染
+//   状态机：idea → clarifying 合法且无 gate（state-machine.js:3）
+async function skipThinkingBrief(reqId) {
+  try {
+    const resp = await api('POST', `/requirements/${reqId}/transition`, { targetStatus: 'clarifying' });
+    if (resp.error) {
+      toast('进入澄清失败: ' + resp.error, 'error');
+      return;
+    }
+    toast('✅ 进入澄清阶段', 'success', 2000);
+    // 重渲染详情页：idea 面板消失，renderAiClarifyPanel 出现
+    openRequirement(reqId);
+    // 滚到澄清面板顶部
+    setTimeout(() => {
+      const panel = document.getElementById('ai-clarify-panel');
+      if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 300);
+  } catch (e) {
+    toast('进入澄清失败: ' + e.message, 'error');
   }
 }
 

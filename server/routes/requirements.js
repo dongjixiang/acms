@@ -56,9 +56,99 @@ router.get('/:id', (req, res) => {
   res.json({ ...requirement, clarifications: reqStore.getClarifications(req.params.id) });
 });
 
+// ============================================================
+// v0.4 Phase 2c：诊断纠偏（用户主动改 diagnosis.type）
+//   POST /:id/correct-diagnosis  { type: 'vague'|'conflicted'|'blank' }
+//   行为：
+//     1. 校验 status === 'idea'
+//     2. 改 brief.diagnosis.type + 写入 corrected_at + previous_type
+//     3. 清掉旧 dialog（让 brief 重生时重新生成）
+//     4. 异步触发 brief 重生（让 diagnosis label/guide/dialog 基于新 type 重新生成）
+// ============================================================
+router.post('/:id/correct-diagnosis', async (req, res, next) => {
+  try {
+    const VALID = ['vague', 'conflicted', 'blank'];
+    const { type } = req.body || {};
+    if (!VALID.includes(type)) {
+      return res.status(400).json({ error: 'INVALID_TYPE', validTypes: VALID });
+    }
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    if (reqRec.status !== 'idea') {
+      return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
+    }
+
+    // 读 brief，校验 diagnosis 已存在
+    let brief;
+    try { brief = JSON.parse(reqRec.thinking_brief || 'null'); } catch { brief = null; }
+    if (!brief || !brief.diagnosis || !brief.diagnosis.type) {
+      return res.status(409).json({ error: 'NO_DIAGNOSIS_TO_CORRECT' });
+    }
+    if (brief.diagnosis.type === type) {
+      return res.json({ ok: true, diagnosis: brief.diagnosis, briefRegen: 'no_change', reason: 'same type, no action' });
+    }
+
+    // 改 diagnosis.type + 写标记
+    const corrected = {
+      ...brief.diagnosis,
+      type,
+      corrected_at: new Date().toISOString(),
+      previous_type: brief.diagnosis.type,
+    };
+    brief.diagnosis = corrected;
+    brief.dialog = null;  // 清掉旧 dialog，让 brief 重生时重新生成
+    reqStore.update(req.params.id, { thinking_brief: JSON.stringify(brief) });
+    console.log(`[correct-diagnosis] ${req.params.id}: ${corrected.previous_type} → ${type}`);
+
+    // 异步触发 brief 重生（让 diagnosis label/guide/dialog 基于新 type 重新生成）
+    //   v0.4 Phase 2c：传 skipDiagnosisRegen + preserveDiagnosisType 让 brief 重生保留 type
+    const previousType = brief.diagnosis.type;
+    setImmediate(async () => {
+      try {
+        const { runBriefJob } = require('../services/thinking-brief');
+        await runBriefJob(req.params.id, {
+          skipDiagnosisRegen: true,
+          preserveDiagnosisType: type,
+          previousType,
+        });
+      } catch (e) {
+        console.error(`[correct-diagnosis] ${req.params.id} brief 重生失败（非阻塞）:`, e.message);
+      }
+    });
+
+    res.json({ ok: true, diagnosis: corrected, briefRegen: 'started' });
+  } catch (e) { next(e); }
+});
+
 // 状态转换 — 切换到 approved 时检查具体性
 router.post('/:id/transition', (req, res, next) => {
   try {
+    // v0.4 Phase 4.1：idea → clarifying 时先固化（生成 summary）
+    //   调 elicit-solidify service 产出"我们讨论了什么"摘要，存到 brief.summary
+    //   失败不阻塞 transition（fallback 走 raw brief 内容）
+    if (req.body.targetStatus === 'clarifying') {
+      try {
+        const elicitorAdapter = require('../services/elicitor-adapter');
+        if (elicitorAdapter.canRun().ok) {
+          const { generateSummary } = require('../services/elicitor-solidify');
+          const fresh = reqStore.getById(req.params.id);
+          if (fresh && fresh.status === 'idea') {
+            const currentBrief = JSON.parse(fresh.thinking_brief || 'null');
+            if (currentBrief && currentBrief.status === 'done') {
+              generateSummary(currentBrief, fresh, null).then(summary => {
+                if (summary) {
+                  const updated = JSON.parse(fresh.thinking_brief || '{}');
+                  updated.summary = summary;
+                  reqStore.update(req.params.id, { thinking_brief: JSON.stringify(updated) });
+                  console.log(`[transition.solidify] ${req.params.id} summary 已生成`);
+                }
+              }).catch(e => console.warn('[transition.solidify] 非阻塞失败:', e.message));
+            }
+          }
+        }
+      } catch (e) { console.warn('[transition.solidify] 非阻塞:', e.message); }
+    }
+
     // 具体性门控: approved 前检查模糊表达
     if (req.body.targetStatus === 'approved') {
       const requirement = reqStore.getById(req.params.id);
@@ -506,20 +596,40 @@ router.get('/:id/assist', (req, res, next) => {
     if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
 
     const result = {};
-    for (const method of ['decision_tree', 'scenarios', 'diagnosis', 'tradeoff', 'arch']) {
+    // v0.3.3 B+++：用统一的 assist registry 拉所有 method（含 visual）
+    for (const method of assists.ASSIST_METHODS) {
       const svc = assists.getAssist(method);
       if (svc && svc.getAssist) {
-        result[method] = svc.getAssist(req.params.id);
+        const data = svc.getAssist(req.params.id);
+        if (data) result[method] = data;
       }
     }
-    // visual 复用 insight_previews
-    try {
-      result.visual = reqRec.insight_previews ? JSON.parse(reqRec.insight_previews) : null;
-    } catch { result.visual = null; }
 
     res.json({ assists: result });
   } catch (e) { next(e); }
 });
+
+// 收集已用 methods（用户表态过的 = 永远锁）
+//   用单独的 usedMethods[] 表示，避免和"本轮已生成"混在一起
+// round_used_methods = 本轮（与当前 chat_round 一致）已生成过的 method
+function collectAssistState(reqId, currentRound) {
+  const usedMethods = [];
+  const roundUsedMethods = [];
+  const all = reqStore.getById(reqId);
+  if (!all) return { usedMethods, roundUsedMethods };
+  for (const method of assists.ASSIST_METHODS) {
+    const svc = assists.getAssist(method);
+    const data = svc && svc.getAssist ? svc.getAssist(reqId) : null;
+    if (!data) continue;
+    // 用户表态过（used=true）→ 永远锁
+    if (data.used) usedMethods.push(method);
+    // 生成过 + 轮次匹配 → 本轮锁
+    if (data.status === 'done' && typeof data.generated_at_round === 'number' && data.generated_at_round === currentRound) {
+      roundUsedMethods.push(method);
+    }
+  }
+  return { usedMethods, roundUsedMethods };
+}
 
 // 路由器自动选一种
 router.post('/:id/assist/run', async (req, res, next) => {
@@ -531,26 +641,30 @@ router.post('/:id/assist/run', async (req, res, next) => {
       return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
     }
 
-    // 收集已用 methods
-    const usedMethods = [];
-    for (const method of ['decision_tree', 'scenarios', 'diagnosis', 'tradeoff', 'arch']) {
-      const svc = assists.getAssist(method);
-      const data = svc && svc.getAssist ? svc.getAssist(req.params.id) : null;
-      if (data && (data.used || data.status === 'done')) usedMethods.push(method);
-    }
+    const currentRound = (() => { try { return JSON.parse(reqRec.thinking_brief || 'null')?.chat_round || 1; } catch { return 1; } })();
+    const { usedMethods, roundUsedMethods } = collectAssistState(req.params.id, currentRound);
 
-    // 读 brief 拿 ai_understanding
+    // 读 brief 拿 ai_understanding + followup_question（当前对话焦点）
     let aiUnderstanding = '';
+    let followupQuestion = '';
+    let diagnosis = null;
     try {
       const brief = JSON.parse(reqRec.thinking_brief || 'null');
       aiUnderstanding = brief?.ai_understanding || '';
+      followupQuestion = brief?.followup_question || '';
+      diagnosis = brief?.diagnosis || null;  // v0.4 Phase 2a
     } catch {}
 
+    // /assist/run 是用户主动召唤，force=true 跳过"首轮豁免"
     const pick = await pickAssistNext({
       clarity: reqRec.input_clarity,
-      chatRound: (() => { try { return JSON.parse(reqRec.thinking_brief || 'null')?.chat_round || 1; } catch { return 1; } })(),
+      chatRound: currentRound,
       usedMethods,
+      roundUsedMethods,
       aiUnderstanding,
+      followupQuestion,
+      diagnosis,  // v0.4 Phase 2a：传 diagnosis 让路由器感知
+      force: true,
     }, modelId);
 
     if (!pick.method) {
@@ -562,7 +676,8 @@ router.post('/:id/assist/run', async (req, res, next) => {
       return res.status(500).json({ error: 'ASSIST_NOT_FOUND', method: pick.method });
     }
 
-    setImmediate(() => svc.runAssistJob(req.params.id, { modelId, role })
+    // 把 currentRound 传给 assist service，让它写入 generated_at_round 字段（用于下次判定本轮）
+    setImmediate(() => svc.runAssistJob(req.params.id, { modelId, role, chatRound: currentRound })
       .catch(e => console.error(`[assist.${pick.method}] 任务异常:`, e.message)));
 
     res.status(202).json({
@@ -586,13 +701,13 @@ router.post('/:id/assist/:method', async (req, res, next) => {
 
     const svc = assists.getAssist(method);
     if (!svc) return res.status(400).json({ error: 'UNKNOWN_METHOD', method });
-    if (method === 'visual') {
-      // visual 走 insight-previews 旧 endpoint
-      return res.status(400).json({ error: 'USE_INSIGHT_PREVIEWS_ENDPOINT', hint: 'POST /requirements/:id/insight-previews' });
-    }
+    // v0.3.3 B+++：visual 现在有 runAssistJob（复用 insight-previews 的 runPreviewJob）
+    //   不再返回 USE_INSIGHT_PREVIEWS_ENDPOINT 错误
     if (!svc.runAssistJob) return res.status(500).json({ error: 'ASSIST_HAS_NO_RUNNER' });
 
-    setImmediate(() => svc.runAssistJob(req.params.id, { modelId, role })
+    // 手动触发也带上 chatRound（如果用户用手动端点，意图是"我已经决定要这个 method"，仍记本轮已用）
+    const manualRound = (() => { try { return JSON.parse(reqRec.thinking_brief || 'null')?.chat_round || 1; } catch { return 1; } })();
+    setImmediate(() => svc.runAssistJob(req.params.id, { modelId, role, chatRound: manualRound })
       .catch(e => console.error(`[assist.${method}] 任务异常:`, e.message)));
 
     res.status(202).json({ method, status: 'generating' });
@@ -616,6 +731,11 @@ router.post('/:id/assist/:method/use', async (req, res, next) => {
     else if (method === 'diagnosis') result = svc.markUsed(req.params.id);
     else if (method === 'tradeoff') result = svc.setPick(req.params.id, body.dimIdx, body.pick);
     else if (method === 'arch') result = svc.togglePick(req.params.id, body.idx);
+    else if (method === 'visual') {
+      // v0.3.3 B+++：visual 选中某个变体 → 复用 insightPreviews.pickVariant（会写 picked + 合并到 srs.summary）
+      const { pickVariant } = require('../services/insight-previews');
+      result = pickVariant(req.params.id, body.variantId);
+    }
     else return res.status(400).json({ error: 'METHOD_HAS_NO_USE_HANDLER' });
 
     res.json({ method, result });
@@ -655,7 +775,24 @@ router.get('/:id/thinking-brief/branch-detail/:branchIdx', (req, res, next) => {
     }
     const detail = branchDetailService.getBranchDetail(req.params.id, branchIdx);
     if (!detail) return res.status(404).json({ error: 'NOT_GENERATED' });
-    res.json({ branchDetail: detail });
+
+    // v0.3.3：附带当前决策树数据（assist_decision_tree），前端渲染详情面板时拿 branch label/desc
+    const reqRec = reqStore.getById(req.params.id);
+    let tree = [];
+    if (reqRec) {
+      try {
+        const assist = JSON.parse(reqRec.assist_decision_tree || 'null');
+        if (assist && Array.isArray(assist.tree)) tree = assist.tree;
+      } catch { /* 静默 */ }
+      // 老 brief.decision_tree 兜底
+      if (tree.length === 0) {
+        try {
+          const brief = JSON.parse(reqRec.thinking_brief || 'null');
+          if (brief && Array.isArray(brief.decision_tree)) tree = brief.decision_tree;
+        } catch { /* 静默 */ }
+      }
+    }
+    res.json({ branchDetail: { ...detail, tree } });
   } catch (e) { next(e); }
 });
 
@@ -667,12 +804,14 @@ router.get('/:id/thinking-brief/branch-detail/:branchIdx', (req, res, next) => {
 // ============================================================
 router.post('/:id/rewrite-description', async (req, res, next) => {
   try {
-    const { supplement, modelId, role, autoRegenBrief } = req.body || {};
+    const { supplement, modelId, role, autoRegenBrief, supplementSource } = req.body || {};
     const reqRec = reqStore.getById(req.params.id);
     if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
 
     // 同步执行 rewrite（前端要立即看新描述）
-    const result = await rewriteService.runRewriteJob(req.params.id, { supplement, modelId });
+    // v0.3.3 B+++：把 supplementSource 一并传入 → 写入 supplement_history 时带标签
+    //   标签让 LLM 知道这条补充是来自「用户手写/决策树勾选/scenario 选/arch 圈/...」
+    const result = await rewriteService.runRewriteJob(req.params.id, { supplement, modelId, supplementSource });
 
     // v0.3.3：重整后同步重评明确度 → 徽章立刻更新
     // （用最新的 title + description 评估；modelId 不传，让后端按 capabilities 自动选）
@@ -698,33 +837,9 @@ router.post('/:id/rewrite-description', async (req, res, next) => {
       setImmediate(async () => {
         try {
           await briefServiceRegen.runBriefJob(req.params.id, { modelId, role });
-          // v0.3.3 Phase 2：brief 完成后自动调路由器选一种辅助手段
-          try {
-            const fresh = reqStore.getById(req.params.id);
-            if (fresh && fresh.status === 'idea') {
-              const usedMethods = [];
-              for (const method of ['decision_tree', 'scenarios', 'diagnosis', 'tradeoff', 'arch']) {
-                const svc = assists.getAssist(method);
-                const data = svc && svc.getAssist ? svc.getAssist(req.params.id) : null;
-                if (data && (data.used || data.status === 'done')) usedMethods.push(method);
-              }
-              let aiUnderstanding = '';
-              try { aiUnderstanding = JSON.parse(fresh.thinking_brief || 'null')?.ai_understanding || ''; } catch {}
-              const pick = await pickAssistNext({
-                clarity: fresh.input_clarity,
-                chatRound: (() => { try { return JSON.parse(fresh.thinking_brief || 'null')?.chat_round || 1; } catch { return 1; } })(),
-                usedMethods,
-                aiUnderstanding,
-              }, modelId);
-              if (pick.method) {
-                const svc = assists.getAssist(pick.method);
-                if (svc && svc.runAssistJob) {
-                  await svc.runAssistJob(req.params.id, { modelId, role });
-                  console.log(`[rewrite.assist] ${req.params.id} 自动跑了 ${pick.method}`);
-                }
-              }
-            }
-          } catch (e) { console.error('[rewrite.assist] 自动辅助失败:', e.message); }
+          // v0.3.3 B 方案：路由器调用已内嵌到 runBriefJob 内部，brief 完成自动调一次
+          //   这里不再重复触发，避免同一 chat_round 选多种
+          console.log(`[rewrite.assist] ${req.params.id} brief 已重生（路由器在 brief 内部触发）`);
         } catch (e) { console.error('[rewrite] 自动重新生成思路异常:', e.message); }
       });
       briefRegen = 'started';
@@ -734,6 +849,7 @@ router.post('/:id/rewrite-description', async (req, res, next) => {
       description: result.description,
       modelId: result.modelId,
       historyCount: result.historyCount,
+      supplementHistoryCount: result.supplementHistoryCount,  // v0.3.3 B+++ 累加计数
       briefRegen,
       clarity: clarityResult?.clarity || null,
       clarityReason: clarityResult?.reason || null,

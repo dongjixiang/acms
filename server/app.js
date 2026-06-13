@@ -4,6 +4,10 @@ const path = require('path');
 const config = require('./config');
 const { authMiddleware, agentMiddleware } = require('./middleware/auth');
 
+// v0.4 Phase 0.4：启动时 elicitor SKILL 健康检查（不健康只 warn 不 throw）
+const elicitorAdapter = require('./services/elicitor-adapter');
+elicitorAdapter.startupHealthCheck();
+
 const app = express();
 
 // 基础中间件

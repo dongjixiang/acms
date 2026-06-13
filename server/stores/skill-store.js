@@ -94,6 +94,38 @@ class SkillStore {
     return null;
   }
 
+  // 从 prompts/${skillId}/${step}.md 加载多文件 SKILL 的某一 step 提示词
+  // 用于支持 elicitor 这类一个 SKILL 含多个 prompt 文件的结构（v0.4 Phase 0）
+  // 旧 skill 用顶层 prompts/${skillId}.md 不受影响
+  //
+  // dirName 参数：SKILL id 不一定等于目录名（elicitor SKILL id='skill-requirement-elicitor'，
+  //   目录名='elicitor'）。默认回退到 id，向后兼容。
+  loadPromptStep(skillId, stepName, dirName = null) {
+    try {
+      const dir = dirName || skillId;
+      const promptPath = path.join(SKILLS_DIR, dir, 'prompts', `${stepName}.md`);
+      if (fs.existsSync(promptPath)) {
+        return fs.readFileSync(promptPath, 'utf-8').trim();
+      }
+    } catch (e) { /* */ }
+    return null;
+  }
+
+  // 列出 SKILL 的所有 step prompt 文件名（不含 .md 后缀）
+  // 用于健康检查（Phase 0.4 验证所有 prompt 文件可读）
+  listPromptSteps(skillId, dirName = null) {
+    try {
+      const dir = dirName || skillId;
+      const promptsDir = path.join(SKILLS_DIR, dir, 'prompts');
+      if (!fs.existsSync(promptsDir)) return [];
+      return fs.readdirSync(promptsDir)
+        .filter(f => f.endsWith('.md'))
+        .map(f => f.replace(/\.md$/, ''))
+        .sort();
+    } catch (e) { /* */ }
+    return [];
+  }
+
   // 生成 SKILL.md 文件（Obsidian 可读）
   _writeSkillFile(skill) {
     if (!fs.existsSync(SKILLS_DIR)) fs.mkdirSync(SKILLS_DIR, { recursive: true });

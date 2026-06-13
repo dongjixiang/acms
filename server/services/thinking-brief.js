@@ -8,11 +8,13 @@
 //     ai_understanding: string,
 //     followup_question: string,
 //     chat_round: number,
+//     diagnosis: { type: 'vague'|'conflicted'|'blank'|null, label: string, guide: string, confidence: number } | null,
 //     model, generated_at, error
 //   }
 // 决策树字段（兼容旧 brief 渲染）：
 //   requirement.assist_decision_tree: { status, tree, ... }  ← 由 assists/decision-tree.js 写
 const { callLLM } = require('./llm-adapter');
+const { safeParseJSON } = require('./json-extractor');
 const modelStore = require('../stores/model-store');
 const reqStore = require('../stores/requirement-store');
 
@@ -29,8 +31,30 @@ const THINKING_SYSTEM_PROMPT = `你是 ACMS 系统的「需求澄清助手」。
 {
   "ai_understanding": "≤60 字。AI 对需求核心意图的理解（不是复述，是提炼）。",
   "opening": "≤120 字。开场白：先 1 句致意 + 1 句理解 + 1-2 个开放问题。整体语气像聊天，不要分点列。",
-  "followup_question": "≤40 字。当前最关键的一个开放追问（用户回答后会刷新）。如本轮不需追问则填空串。"
+  "followup_question": "≤40 字。当前最关键的一个开放追问（用户回答后会刷新）。如本轮不需追问则填空串。",
+  "diagnosis": {
+    "type": "vague | conflicted | blank | null",
+    "label": "≤10 字。给用户看的简短标签（如『已有一个大致方向，想具体化』）。如果描述为空或无法判断则填空串。",
+    "guide": "≤30 字。给用户的引导语，说明接下来要做什么（如『我们先做一些具象化的练习』）。如果 type 为 null 则填空串。",
+    "confidence": 0.0~1.0
+  }
 }
+
+## diagnosis 字段判断规则
+
+如果需求描述为空或仅有一两句话的抽象描述（< 20 字），则：
+- diagnosis.type = null
+- diagnosis.label = ""
+- diagnosis.guide = ""
+- diagnosis.confidence = 0
+
+否则根据描述判断：
+
+- **vague**（已有一个大致方向，想具体化）：能描述"是什么"但说不清"具体怎么做"
+- **conflicted**（有好几个想法在犹豫）：提到两种以上可能性或自相矛盾
+- **blank**（完全开放，没头绪）：只有模糊的领域，没有具体方向
+
+confidence < 0.6 时默认走 vague（宁松勿严）。
 
 ## 重要原则（多轮对话时）
 如果用户输入中包含「上一轮决策树」字段：
@@ -42,7 +66,8 @@ const THINKING_SYSTEM_PROMPT = `你是 ACMS 系统的「需求澄清助手」。
 {
   "ai_understanding": "...",
   "opening": "...",
-  "followup_question": "..."
+  "followup_question": "...",
+  "diagnosis": { "type": "...", "label": "...", "guide": "...", "confidence": 0.0 }
 }
 
 不要任何额外文字、markdown 代码块、解释。`;
@@ -90,21 +115,29 @@ async function generateBrief(title, description, clarity, oldDecisionTree, role,
     maxTokens: 1200,
     jsonMode: true,
   });
-  let content = (result.content || '').trim();
-  // 多层 JSON 提取（兼容 markdown 包裹 / 深度嵌套）
-  if (content.startsWith('```')) {
-    content = content.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+  // v0.3.3 B 方案补丁（2026-06-13）：多层 JSON 提取（兼容 markdown / 截断 / 嵌套）
+  const parsed = safeParseJSON(result.content);
+  if (!parsed) throw new Error('LLM 返回无法解析为 JSON');
+
+  // v0.4 Phase 1.1：防御 diagnosis 字段缺失或格式异常
+  // 截断 / 解析失败时降级为 null，前端不渲染诊断标签
+  const VALID_TYPES = ['vague', 'conflicted', 'blank', null];
+  let diagnosis = null;
+  const rawDiag = parsed.diagnosis;
+  if (rawDiag && typeof rawDiag === 'object' && VALID_TYPES.includes(rawDiag.type)) {
+    diagnosis = {
+      type: rawDiag.type,
+      label: typeof rawDiag.label === 'string' ? rawDiag.label.slice(0, 10) : '',
+      guide: typeof rawDiag.guide === 'string' ? rawDiag.guide.slice(0, 30) : '',
+      confidence: typeof rawDiag.confidence === 'number' ? Math.max(0, Math.min(1, rawDiag.confidence)) : 0,
+    };
   }
-  const jsonStart = content.indexOf('{');
-  if (jsonStart >= 0) content = content.substring(jsonStart);
-  // 找最外层 {...}
-  const jsonEnd = content.lastIndexOf('}');
-  if (jsonEnd > jsonStart) content = content.substring(0, jsonEnd + 1);
-  const parsed = JSON.parse(content);
+
   return {
     ai_understanding: typeof parsed.ai_understanding === 'string' ? parsed.ai_understanding : '',
     opening: typeof parsed.opening === 'string' ? parsed.opening : '',
     followup_question: typeof parsed.followup_question === 'string' ? parsed.followup_question : '',
+    diagnosis,
     modelId: model.id,
   };
 }
@@ -118,6 +151,11 @@ async function runBriefJob(requirementId, opts = {}) {
   const req = reqStore.getById(requirementId);
   if (!req) return;
 
+  // v0.4 Phase 2c：纠偏触发的重生 → 保留 diagnosis.type
+  //   opts.skipDiagnosisRegen = true 时：LLM 只重生 opening/followup，diagnosis.type 沿用旧值
+  //   opts.preserveDiagnosisType = 旧 type（从 correct-diagnosis 路由传入）
+  const skipDiagRegen = opts.skipDiagnosisRegen === true;
+
   // 标记 generating
   reqStore.update(requirementId, {
     thinking_brief: JSON.stringify({
@@ -125,6 +163,8 @@ async function runBriefJob(requirementId, opts = {}) {
       opening: '',
       ai_understanding: '',
       followup_question: '',
+      diagnosis: skipDiagRegen && opts.preserveDiagnosisType ? { type: opts.preserveDiagnosisType } : null,
+      dialog: null,
       chat_round: 0,
       started_at: new Date().toISOString(),
       generated_at: null,
@@ -132,7 +172,7 @@ async function runBriefJob(requirementId, opts = {}) {
       model: null,
     }),
   });
-  console.log(`[brief] ${requirementId} 开始生成思路简报`);
+  console.log(`[brief] ${requirementId} 开始生成思路简报${skipDiagRegen ? '（纠偏后重生，保留 diagnosis.type=' + opts.preserveDiagnosisType + '）' : ''}`);
 
   try {
     // 读取旧决策树（用于差异化）—— 启动前读，避免被本次 update 清空后取不到
@@ -149,19 +189,111 @@ async function runBriefJob(requirementId, opts = {}) {
     );
     // 计算对话轮次：旧 chat_round + 1（如无则 =1）
     const oldRound = (() => { try { return JSON.parse(req.thinking_brief || 'null')?.chat_round || 0; } catch { return 0; } })();
+    const newRound = oldRound + 1;
+
+    // v0.4 Phase 2c：纠偏触发的重生 → 保留 diagnosis.type，只重生 label/guide
+    //   LLM 仍会产出新 diagnosis，但我们用 opts.preserveDiagnosisType 强制覆盖 type
+    //   label/guide/confidence 沿用 LLM 新产出（让用户看到基于新 type 的解读）
+    let finalDiagnosis = brief.diagnosis;
+    if (skipDiagRegen && opts.preserveDiagnosisType && brief.diagnosis) {
+      finalDiagnosis = {
+        ...brief.diagnosis,
+        type: opts.preserveDiagnosisType,  // 强制保留用户纠正的 type
+        label: brief.diagnosis.label || '',  // label 沿用 LLM 新产出
+        guide: brief.diagnosis.guide || '',
+        confidence: brief.diagnosis.confidence || 0,
+        corrected_at: new Date().toISOString(),
+        previous_type: opts.previousType || null,
+      };
+    }
+
     reqStore.update(requirementId, {
       thinking_brief: JSON.stringify({
         status: 'done',
         opening: brief.opening,
         ai_understanding: brief.ai_understanding,
         followup_question: brief.followup_question,
-        chat_round: oldRound + 1,
+        diagnosis: finalDiagnosis,
+        dialog: null,  // v0.4 Phase 2b：诊断对话引导问题（异步生成，下面填）
+        chat_round: newRound,
         generated_at: new Date().toISOString(),
         model: brief.modelId,
         error: null,
       }),
     });
-    console.log(`[brief] ${requirementId} 思路简报完成`);
+    console.log(`[brief] ${requirementId} 思路简报完成（chat_round=${newRound}）`);
+
+    // v0.4 Phase 2b：brief 完成后异步生成诊断对话引导问题
+    //   - fire-and-forget，不阻塞 brief job
+    //   - 写入 thinking_brief.dialog
+    //   - diagnosis.type === null 时 dialog 保持 null（不生成）
+    setImmediate(async () => {
+      try {
+        const { generateDialog } = require('./elicitor-dialog');
+        const freshAfterBrief = reqStore.getById(requirementId);
+        if (!freshAfterBrief || freshAfterBrief.status !== 'idea') return;
+        const currentBrief = JSON.parse(freshAfterBrief.thinking_brief || 'null');
+        if (!currentBrief || currentBrief.status !== 'done') return;
+
+        const dialog = await generateDialog(currentBrief, freshAfterBrief, opts.modelId);
+        if (dialog) {
+          const updated = JSON.parse(freshAfterBrief.thinking_brief || '{}');
+          updated.dialog = dialog;
+          reqStore.update(requirementId, { thinking_brief: JSON.stringify(updated) });
+          console.log(`[brief.dialog] ${requirementId} 引导问题已生成（${dialog.chosen_method}）`);
+        }
+      } catch (e) {
+        console.error(`[brief.dialog] ${requirementId} 生成失败（非阻塞）:`, e.message);
+      }
+    });
+
+    // v0.3.3 B 方案：brief 完成后自动调路由器选 1 种辅助手段
+    //   不论是首轮 brief 还是后续 regen，每次 brief 完成都会自动推一种
+    //   路由器内部用 roundUsedMethods 锁本轮，确保同一 chat_round 不重复推
+    try {
+      const { pickNext } = require('./assists/router');
+      const assists = require('./assists');
+      const fresh = reqStore.getById(requirementId);
+      if (fresh && fresh.status === 'idea') {
+        // 收集 usedMethods（用户用过 = 永远锁）+ roundUsedMethods（本轮已生成 = 本轮锁）
+        const usedMethods = [];
+        const roundUsedMethods = [];
+        for (const method of ['decision_tree', 'scenarios', 'diagnosis', 'tradeoff', 'arch']) {
+          const svc = assists.getAssist(method);
+          const data = svc && svc.getAssist ? svc.getAssist(requirementId) : null;
+          if (!data) continue;
+          if (data.used) usedMethods.push(method);
+          if (data.status === 'done' && typeof data.generated_at_round === 'number' && data.generated_at_round === newRound) {
+            roundUsedMethods.push(method);
+          }
+        }
+        const aiUnderstanding = brief.ai_understanding || '';
+        const followupQuestion = brief.followup_question || '';
+        const pick = await pickNext({
+          clarity: fresh.input_clarity,
+          chatRound: newRound,
+          usedMethods,
+          roundUsedMethods,
+          aiUnderstanding,
+          followupQuestion,
+          diagnosis: brief.diagnosis,  // v0.4 Phase 2a：传 diagnosis 让路由器感知
+        }, opts.modelId);
+        if (pick.method) {
+          const svc = assists.getAssist(pick.method);
+          if (svc && svc.runAssistJob) {
+            // fire-and-forget：不阻塞 brief job；透传焦点让生成内容围绕它
+            setImmediate(() => svc.runAssistJob(requirementId, { modelId: opts.modelId, role: opts.role, chatRound: newRound, followupQuestion })
+              .catch(e => console.error(`[brief.assist] ${requirementId} ${pick.method} 异常:`, e.message)));
+            console.log(`[brief.assist] ${requirementId} 自动选了 ${pick.method}（round=${newRound}, focus="${followupQuestion.slice(0, 30)}"）`);
+          }
+        } else if (newRound <= 2) {
+          // v0.3.3 B 方案补丁：首轮/第二轮豁免（让用户先自己思考）
+          console.log(`[brief.assist] ${requirementId} chat_round=${newRound} 触发首轮豁免，暂不推辅助手段`);
+        } else {
+          console.log(`[brief.assist] ${requirementId} 本轮不推荐辅助: ${pick.reason}`);
+        }
+      }
+    } catch (e) { console.error('[brief.assist] 自动选辅助失败（非阻塞）:', e.message); }
   } catch (e) {
     console.error(`[brief] ${requirementId} 思路简报生成失败:`, e.message);
     reqStore.update(requirementId, {
@@ -170,6 +302,7 @@ async function runBriefJob(requirementId, opts = {}) {
         opening: '',
         ai_understanding: '',
         followup_question: '',
+        diagnosis: null,
         chat_round: 0,
         error: e.message,
         generated_at: new Date().toISOString(),

@@ -127,12 +127,21 @@ async function runBranchDetailJob(requirementId, branchIdx, opts = {}) {
   let brief;
   try { brief = JSON.parse(req.thinking_brief || 'null'); }
   catch { brief = null; }
-  if (!brief || !Array.isArray(brief.decision_tree) || !brief.decision_tree[branchIdx]) {
-    console.error(`[branch-detail] ${requirementId}/${branchIdx} 找不到 decision_tree`);
+
+  // v0.3.3 数据源切换：决策树迁出到 assist_decision_tree 独立字段（Phase 2）
+  // 老 brief.decision_tree 仍作为 fallback 兼容
+  let branch = null;
+  let assistTree = null;
+  try { assistTree = JSON.parse(req.assist_decision_tree || 'null'); } catch { /* 静默 */ }
+  if (assistTree && Array.isArray(assistTree.tree) && assistTree.tree[branchIdx]) {
+    branch = assistTree.tree[branchIdx];
+  } else if (brief && Array.isArray(brief.decision_tree) && brief.decision_tree[branchIdx]) {
+    branch = brief.decision_tree[branchIdx];
+  }
+  if (!branch) {
+    console.error(`[branch-detail] ${requirementId}/${branchIdx} 找不到 decision_tree（已查 assist_decision_tree + thinking_brief.decision_tree）`);
     return;
   }
-
-  const branch = brief.decision_tree[branchIdx];
 
   // 初始化 branch_details[idx]
   brief.branch_details = brief.branch_details || [];

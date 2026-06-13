@@ -5,6 +5,27 @@ const modelStore = require('../stores/model-store');
 // 默认请求超时（毫秒）
 const DEFAULT_TIMEOUT = 120000; // 120s
 
+// ── v0.3.3 B+++ 补丁（2026-06-13）：DEBUG 模式开关 ──
+// 配合 index.js 启动时的 ACMS_LLM_DEBUG 环境变量
+// 开启后把 LLM request/response/parse 全 dump 到 data/acms-llm-debug.log
+// 配合文件 logger（data/acms.log）可以诊断 5 轮没辅助手段 / tradeoff 解析失败 等问题
+// 自动 rotate（5MB → .old）
+const LLM_DEBUG = process.env.ACMS_LLM_DEBUG === '1';
+const DEBUG_LOG_FILE = require('path').join(__dirname, '..', 'data', 'acms-llm-debug.log');
+const DEBUG_LOG_MAX_BYTES = 5 * 1024 * 1024;
+function _debugDump(tag, payload) {
+  if (!LLM_DEBUG) return;
+  try {
+    require('fs').mkdirSync(require('path').dirname(DEBUG_LOG_FILE), { recursive: true });
+    if (require('fs').existsSync(DEBUG_LOG_FILE) && require('fs').statSync(DEBUG_LOG_FILE).size > DEBUG_LOG_MAX_BYTES) {
+      require('fs').renameSync(DEBUG_LOG_FILE, DEBUG_LOG_FILE + '.old');
+      require('fs').writeFileSync(DEBUG_LOG_FILE, `[rotated at ${new Date().toISOString()}]\n`);
+    }
+    const line = `\n=== [${new Date().toISOString()}] ${tag} ===\n` + JSON.stringify(payload, null, 2) + '\n';
+    require('fs').appendFileSync(DEBUG_LOG_FILE, line);
+  } catch {}
+}
+
 /**
  * 调用 LLM，自动根据 model.api 选择协议
  * @param {string} modelId
@@ -27,12 +48,32 @@ async function callLLM(modelId, messages, options = {}) {
     jsonMode: options.jsonMode ?? false,
   };
 
+  // ── DEBUG 模式：dump 完整入参 ──
+  _debugDump('LLM_REQUEST', {
+    modelId,
+    model: { name: model.name, model: model.model, api, baseUrl: model.baseUrl, isMiniMax: (model.baseUrl || '').includes('minimax'), isDeepSeek: (model.baseUrl || '').includes('deepseek') },
+    opts,
+    messagesCount: messages.length,
+    messagesTotalChars: messages.reduce((s, m) => s + (m.content?.length || 0), 0),
+    messages: messages.map(m => ({ role: m.role, contentLen: m.content?.length || 0, content: m.content })),
+    caller: options.caller || '(none)',
+  });
+
   let result;
   if (api === 'anthropic-messages') {
     result = await callAnthropic(model, messages, opts, apiKey);
   } else {
     result = await callOpenAI(model, messages, opts, apiKey);
   }
+
+  // ── DEBUG 模式：dump 完整返回 ──
+  _debugDump('LLM_RESPONSE', {
+    modelId,
+    contentLen: result.content?.length || 0,
+    content: result.content,
+    usage: result.usage,
+    finishReason: result.finishReason || '(n/a)',
+  });
 
   // 记录 Token 用量（如果有 projectId）
   if (options.projectId && result.usage) {

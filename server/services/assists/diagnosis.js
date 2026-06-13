@@ -2,7 +2,7 @@
 // AI 扫描需求描述里的模糊表达 / 缺的关键维度，给出 3-5 条诊断 + 改进方向
 // 字段：requirement.assist_diagnosis
 
-const { callLLM } = require('../llm-adapter');
+const { callLLMWithRetry } = require('../json-extractor');
 const modelStore = require('../../stores/model-store');
 const reqStore = require('../../stores/requirement-store');
 
@@ -14,6 +14,9 @@ function pickDefaultLlm() {
 }
 
 const DIAGNOSIS_PROMPT = `你是 ACMS 系统的「需求体检助手」。给定一个需求，扫描描述里**具体**的模糊表达 / 缺的关键维度，给出 3-5 条诊断。
+
+## 焦点优先（v0.3.3 B 方案补丁）
+如果输入里包含「当前对话焦点」（followup_question），**诊断要围绕这个焦点展开**——比如焦点是"眼睛 vs 耳朵"，就扫描述里关于视听表达的具体词；焦点是"面向谁"，就扫描述里关于用户群体的具体词。**不要凭空扫整个描述里所有可能的模糊点。**
 
 每条诊断：
 - quote (≤50 字): 引用原描述里的具体一段（让用户知道是哪一句）
@@ -63,33 +66,25 @@ async function runAssistJob(requirementId, opts = {}) {
         content: [
           `需求标题: ${req.title || '(空)'}`,
           `需求描述: ${req.description || '(空)'}`,
-        ].join('\n'),
+          opts.followupQuestion ? `当前对话焦点: ${opts.followupQuestion}` : '',
+        ].filter(Boolean).join('\n'),
       },
     ];
 
-    const result = await callLLM(model.id, messages, {
-      temperature: 0.3,
-      maxTokens: 800,
-      jsonMode: true,
+    // v0.3.3 B++ 补丁：用 callLLMWithRetry（公共重试工具）替代直接 callLLM
+    const parsed = await callLLMWithRetry(model, messages, {
+      temperature: 0.3, maxTokens: 800, jsonMode: true, serviceName: 'assist:diagnosis',
     });
-
-    let content = (result.content || '').trim();
-    if (content.startsWith('```')) {
-      content = content.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
-    }
-    const jsonStart = content.indexOf('{');
-    const jsonEnd = content.lastIndexOf('}');
-    if (jsonStart >= 0 && jsonEnd > jsonStart) {
-      content = content.substring(jsonStart, jsonEnd + 1);
-    }
-    const parsed = JSON.parse(content);
-    const issues = Array.isArray(parsed.issues) ? parsed.issues.slice(0, 6) : [];
+    if (!parsed) throw new Error('LLM 返回无法解析为 JSON（已重试 1 次）');
+    if (!Array.isArray(parsed.issues)) throw new Error('LLM 返回缺少 issues 字段');
+    const issues = parsed.issues.slice(0, 6);
 
     reqStore.update(requirementId, {
       assist_diagnosis: JSON.stringify({
         status: 'done',
         issues,
         generated_at: new Date().toISOString(),
+        generated_at_round: typeof opts.chatRound === 'number' ? opts.chatRound : null,
         model: model.id,
         error: null,
         used: false,

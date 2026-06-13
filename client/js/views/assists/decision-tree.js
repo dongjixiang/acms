@@ -96,9 +96,14 @@
 
     const features = detail.features || [];
     const branchLetter = String.fromCharCode(65 + branchIdx);
-    // 从 thinking-brief cache 拿 branch label
+    // v0.3.3：决策树已迁到 assist_decision_tree 独立字段
+    // 后端 GET 会附带 tree 字段（从 assist_decision_tree 或老 brief.decision_tree 取）
+    // 老 brief 缓存也作为 fallback（兼容未重启服务时浏览器缓存的场景）
     const brief = window.ACMSThinkingBrief ? window.ACMSThinkingBrief.getBrief(reqId) : null;
-    const branch = brief?.decision_tree?.[branchIdx] || (detail.tree ? detail.tree[branchIdx] : null);
+    const branch =
+      (detail.tree && detail.tree[branchIdx]) ||
+      (brief?.decision_tree?.[branchIdx]) ||
+      null;
     const branchLabel = branch?.label || '';
 
     const featuresHtml = features.map((f, i) => {
@@ -134,9 +139,6 @@
         </div>
         <div class="branch-feature-grid">${featuresHtml}</div>
         <div class="branch-detail-actions">
-          <button class="btn-small btn-primary" onclick="ACMSAssists.get('decision_tree').confirmBranchFeatures('${reqId}', ${branchIdx})">
-            ✅ 用这些特色充实我的想法
-          </button>
           <button class="btn-small" onclick="ACMSAssists.get('decision_tree').expandBranchDetail('${reqId}', ${branchIdx})">← 收起</button>
         </div>
       </div>

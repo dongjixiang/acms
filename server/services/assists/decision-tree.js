@@ -2,7 +2,7 @@
 // 从原 thinking-brief.js 拆出，作为独立 assist 服务
 // 字段：requirement.assist_decision_tree
 
-const { callLLM } = require('../llm-adapter');
+const { callLLMWithRetry } = require('../json-extractor');
 const modelStore = require('../../stores/model-store');
 const reqStore = require('../../stores/requirement-store');
 const branchDetail = require('../branch-detail');
@@ -15,6 +15,9 @@ function pickDefaultLlm() {
 }
 
 const DECISION_TREE_PROMPT = `你是 ACMS 系统的「决策树助手」。给定一个需求，给出 3 个互不重叠的实现形态/方向。每个方向是一个完整的、有代表性的设计哲学。
+
+## 焦点优先（v0.3.3 B 方案补丁）
+如果输入里包含「当前对话焦点」（followup_question），**3 个方向必须围绕这个焦点展开**——把焦点里隐含的方向选择具象化成 3 条互斥路径（如焦点问"先做哪个"，方向就要把"先做 X / 先做 Y / 先做 Z"展开）。**不要凭空从需求整体再列通用方向。**
 
 每个方向给:
 - label (≤10 字): 方向名称
@@ -66,33 +69,25 @@ async function runAssistJob(requirementId, opts = {}) {
           `需求标题: ${req.title || '(空)'}`,
           `需求描述: ${req.description || '(空)'}`,
           opts.role ? `用户角色: ${opts.role}` : '',
+          opts.followupQuestion ? `当前对话焦点: ${opts.followupQuestion}` : '',
         ].filter(Boolean).join('\n'),
       },
     ];
 
-    const result = await callLLM(model.id, messages, {
-      temperature: 0.7,
-      maxTokens: 900,
-      jsonMode: true,
+    // v0.3.3 B++ 补丁：用 callLLMWithRetry（公共重试工具）替代直接 callLLM
+    const parsed = await callLLMWithRetry(model, messages, {
+      temperature: 0.7, maxTokens: 900, jsonMode: true, serviceName: 'assist:decision_tree',
     });
-
-    let content = (result.content || '').trim();
-    if (content.startsWith('```')) {
-      content = content.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
-    }
-    const jsonStart = content.indexOf('{');
-    const jsonEnd = content.lastIndexOf('}');
-    if (jsonStart >= 0 && jsonEnd > jsonStart) {
-      content = content.substring(jsonStart, jsonEnd + 1);
-    }
-    const parsed = JSON.parse(content);
-    const tree = Array.isArray(parsed.tree) ? parsed.tree.slice(0, 3) : [];
+    if (!parsed) throw new Error('LLM 返回无法解析为 JSON（已重试 1 次）');
+    if (!Array.isArray(parsed.tree)) throw new Error('LLM 返回缺少 tree 字段');
+    const tree = parsed.tree.slice(0, 3);
 
     reqStore.update(requirementId, {
       assist_decision_tree: JSON.stringify({
         status: 'done',
         tree,
         generated_at: new Date().toISOString(),
+        generated_at_round: typeof opts.chatRound === 'number' ? opts.chatRound : null,
         model: model.id,
         error: null,
         used: false,

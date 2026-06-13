@@ -2,7 +2,7 @@
 // AI 给出 3 个典型用户场景，让用户挑"我最像哪一个" → 帮用户具象化目标用户
 // 字段：requirement.assist_scenarios
 
-const { callLLM } = require('../llm-adapter');
+const { callLLMWithRetry } = require('../json-extractor');
 const modelStore = require('../../stores/model-store');
 const reqStore = require('../../stores/requirement-store');
 
@@ -14,6 +14,9 @@ function pickDefaultLlm() {
 }
 
 const SCENARIOS_PROMPT = `你是 ACMS 系统的「场景剧本助手」。给定一个需求，给出 3 个**真实可信**的典型用户场景。
+
+## 焦点优先（v0.3.3 B 方案补丁）
+如果输入里包含「当前对话焦点」（followup_question），**3 个场景必须围绕这个焦点展开**——比如焦点问"面向谁"，场景就要把不同用户群体具象化；焦点问"何时何地用"，场景就要把使用时机具象化。**不要凭空从需求整体再造一套场景。**
 
 每个场景的结构：
 - title (≤15 字): 场景的一句话标题（如"市场经理的周五下午"）
@@ -65,27 +68,18 @@ async function runAssistJob(requirementId, opts = {}) {
           `需求标题: ${req.title || '(空)'}`,
           `需求描述: ${req.description || '(空)'}`,
           opts.role ? `用户角色: ${opts.role}` : '',
+          opts.followupQuestion ? `当前对话焦点: ${opts.followupQuestion}` : '',
         ].filter(Boolean).join('\n'),
       },
     ];
 
-    const result = await callLLM(model.id, messages, {
-      temperature: 0.7,
-      maxTokens: 1200,
-      jsonMode: true,
+    // v0.3.3 B++ 补丁：用 callLLMWithRetry（公共重试工具）替代直接 callLLM
+    const parsed = await callLLMWithRetry(model, messages, {
+      temperature: 0.7, maxTokens: 1200, jsonMode: true, serviceName: 'assist:scenarios',
     });
-
-    let content = (result.content || '').trim();
-    if (content.startsWith('```')) {
-      content = content.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
-    }
-    const jsonStart = content.indexOf('{');
-    const jsonEnd = content.lastIndexOf('}');
-    if (jsonStart >= 0 && jsonEnd > jsonStart) {
-      content = content.substring(jsonStart, jsonEnd + 1);
-    }
-    const parsed = JSON.parse(content);
-    const scenarios = Array.isArray(parsed.scenarios) ? parsed.scenarios.slice(0, 3) : [];
+    if (!parsed) throw new Error('LLM 返回无法解析为 JSON（已重试 1 次）');
+    if (!Array.isArray(parsed.scenarios)) throw new Error('LLM 返回缺少 scenarios 字段');
+    const scenarios = parsed.scenarios.slice(0, 3);
 
     reqStore.update(requirementId, {
       assist_scenarios: JSON.stringify({
@@ -93,6 +87,7 @@ async function runAssistJob(requirementId, opts = {}) {
         scenarios,
         picked: null,
         generated_at: new Date().toISOString(),
+        generated_at_round: typeof opts.chatRound === 'number' ? opts.chatRound : null,
         model: model.id,
         error: null,
         used: false,

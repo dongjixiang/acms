@@ -807,19 +807,19 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
   box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
 .insight-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.insight-title { font-size: 14px; font-weight: 600; color: var(--text); }
+.insight-title { font-size: 16px; font-weight: 600; color: var(--text); }
 .insight-clarity-badge {
-  font-size: 10px; padding: 2px 8px; border-radius: 10px;
+  font-size: 12px; padding: 2px 8px; border-radius: 10px;
   font-weight: 500; letter-spacing: 0.3px;
 }
 .insight-clarity-high   { background: rgba(78,205,196,0.2); color: #4ecdc4; }
 .insight-clarity-medium { background: rgba(255,217,61,0.2);  color: var(--accent3); }
 .insight-clarity-low    { background: rgba(255,107,107,0.2); color: var(--accent2); }
 .insight-clarity-unknown{ background: var(--bg3); color: var(--text2); }
-.insight-reason { width: 100%; font-size: 11px; color: var(--text2); margin-top: 4px; line-height: 1.5; }
+.insight-reason { width: 100%; font-size: 13px; color: var(--text2); margin-top: 4px; line-height: 1.5; }
 .insight-preview-content { margin-top: 12px; }
 .insight-empty {
-  padding: 16px; text-align: center; color: var(--text2); font-size: 12px;
+  padding: 16px; text-align: center; color: var(--text2); font-size: 14px;
   background: var(--bg); border-radius: 6px;
   font-style: italic;
 }
@@ -837,14 +837,14 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 .idea-section-thinking { border-left: 3px solid var(--accent); }
 .idea-section-visual { border-left: 3px solid #4ecdc4; }
 .idea-section-visual > summary {
-  cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text);
+  cursor: pointer; font-size: 15px; font-weight: 600; color: var(--text);
   padding: 2px 0; user-select: none; list-style: none;
 }
 .idea-section-visual > summary::-webkit-details-marker { display: none; }
-.idea-section-visual > summary::before { content: "▶ "; font-size: 10px; color: var(--text2); }
+.idea-section-visual > summary::before { content: "▶ "; font-size: 12px; color: var(--text2); }
 .idea-section-visual[open] > summary::before { content: "▼ "; }
 .idea-section-title {
-  font-size: 13px; font-weight: 600; color: var(--text);
+  font-size: 15px; font-weight: 600; color: var(--text);
   margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border);
 }
 .idea-section-actions {
@@ -854,7 +854,7 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 .brief-block { margin-top: 12px; }
 .brief-block:first-child { margin-top: 0; }
 .brief-block-title {
-  font-size: 12px; font-weight: 600; color: var(--accent);
+  font-size: 14px; font-weight: 600; color: var(--accent);
   margin-bottom: 6px;
 }
 .brief-tree { display: flex; flex-direction: column; gap: 6px; }
@@ -863,18 +863,18 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
   border-left: 3px solid var(--accent);
 }
 .brief-branch-label {
-  font-size: 12px; font-weight: 600; color: var(--text);
+  font-size: 14px; font-weight: 600; color: var(--text);
   margin-bottom: 3px;
 }
 .brief-branch-desc {
-  font-size: 11px; color: var(--text2); line-height: 1.5; margin-bottom: 4px;
+  font-size: 13px; color: var(--text2); line-height: 1.5; margin-bottom: 4px;
 }
 .brief-branch-meta {
-  font-size: 10px; color: var(--text2); margin-bottom: 4px;
+  font-size: 12px; color: var(--text2); margin-bottom: 4px;
   font-style: italic;
 }
 .brief-branch-proscons {
-  display: flex; flex-wrap: wrap; gap: 6px; font-size: 10px;
+  display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px;
 }
 .brief-pro {
   padding: 2px 6px; background: rgba(78,205,196,0.15);
@@ -889,7 +889,7 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 }
 .brief-question {
   padding: 5px 10px; background: var(--bg2); border-radius: 14px;
-  font-size: 11px; color: var(--text);
+  font-size: 13px; color: var(--text);
   display: block;
   margin: 4px 0;
 }
@@ -899,7 +899,7 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
   display: inline-block;
   margin: 4px 0 6px;
   padding: 3px 8px;
-  font-size: 11px;
+  font-size: 13px;
   background: rgba(139, 92, 246, 0.12);
   color: var(--accent);
   border: 1px dashed var(--accent);
@@ -931,7 +931,7 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
   justify-content: space-between;
   align-items: center;
   margin-bottom: 8px;
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text);
 }
 .branch-detail-close {
@@ -939,7 +939,7 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
   border: none;
   color: var(--text2);
   cursor: pointer;
-  font-size: 14px;
+  font-size: 16px;
   padding: 0 4px;
 }
 .branch-detail-close:hover { color: var(--text); }
@@ -950,20 +950,20 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 }
 .branch-detail-section:last-of-type { border-bottom: none; }
 .branch-detail-section-title {
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--accent);
   margin-bottom: 3px;
 }
 .branch-detail-section-body {
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text2);
   line-height: 1.5;
 }
 .branch-interest-option {
   display: block;
   padding: 3px 0;
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text);
   cursor: pointer;
 }
@@ -975,7 +975,7 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
   margin-top: 6px;
 }
 .branch-detail-intro {
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text2);
   margin-bottom: 10px;
   padding: 6px 8px;
@@ -1045,7 +1045,7 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 }
 .branch-feature-img-loading,
 .branch-feature-img-failed {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text3);
   text-align: center;
   padding: 4px;
@@ -1054,7 +1054,7 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
   color: var(--red);
 }
 .branch-feature-title {
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--text);
   margin-bottom: 3px;
@@ -1062,7 +1062,7 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
   padding-right: 18px;  /* 留出 checkbox 空间 */
 }
 .branch-feature-desc {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text2);
   line-height: 1.4;
 }
@@ -1075,7 +1075,7 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 }
 .idea-supplement-textarea {
   width: 100%;
-  font-size: 12px;
+  font-size: 14px;
   font-family: inherit;
   padding: 8px 10px;
   background: var(--bg2);
@@ -1102,17 +1102,17 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 .brief-question:hover { border-color: var(--accent); }
 .brief-refs { display: flex; flex-direction: column; gap: 4px; }
 .brief-ref {
-  font-size: 11px; padding: 4px 8px; background: var(--bg2);
+  font-size: 13px; padding: 4px 8px; background: var(--bg2);
   border-radius: 4px; display: flex; gap: 6px;
 }
 .brief-ref b { color: var(--text); }
 .brief-ref span { color: var(--text2); }
 .insight-preview-panel-inner { margin-top: 8px; }
 
-.insight-status { font-size: 11px; color: var(--text2); text-align: center; margin-top: 8px; }
+.insight-status { font-size: 13px; color: var(--text2); text-align: center; margin-top: 8px; }
 .insight-error {
   padding: 16px; background: rgba(255,107,107,0.1); color: var(--accent2);
-  border-radius: 6px; font-size: 12px; line-height: 1.5;
+  border-radius: 6px; font-size: 14px; line-height: 1.5;
 }
 .insight-grid {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
@@ -1128,26 +1128,26 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 .insight-card.failed { opacity: 0.5; border-color: rgba(255,107,107,0.3); }
 .insight-card.picked { border-color: #4ecdc4; box-shadow: 0 0 0 3px rgba(78,205,196,0.2); }
 .insight-card-label {
-  font-size: 12px; font-weight: 600; color: var(--text); text-align: center;
+  font-size: 14px; font-weight: 600; color: var(--text); text-align: center;
   padding: 8px 10px; background: var(--bg3); border-bottom: 1px solid var(--border);
 }
 .insight-card-rationale {
-  font-size: 11px; color: var(--text2); text-align: left;
+  font-size: 13px; color: var(--text2); text-align: left;
   padding: 6px 10px; background: var(--bg2); border-bottom: 1px solid var(--border);
   line-height: 1.4; font-style: italic;
 }
 .insight-card-prompt {
-  font-size: 11px; padding: 4px 10px 8px; background: var(--bg2);
+  font-size: 13px; padding: 4px 10px 8px; background: var(--bg2);
 }
 .insight-card-prompt summary {
-  cursor: pointer; color: var(--accent); font-size: 11px;
+  cursor: pointer; color: var(--accent); font-size: 13px;
   padding: 2px 0; user-select: none;
 }
 .insight-card-prompt summary:hover { text-decoration: underline; }
 .insight-card-prompt code {
   display: block; margin-top: 4px; padding: 6px 8px;
   background: var(--bg3); border-radius: 4px;
-  font-size: 10px; line-height: 1.5; color: var(--text2);
+  font-size: 12px; line-height: 1.5; color: var(--text2);
   font-family: 'Consolas', 'Monaco', monospace;
   word-break: break-all; white-space: pre-wrap;
 }
@@ -1158,24 +1158,24 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 }
 .insight-card-image img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .insight-card-loading, .insight-card-failed {
-  font-size: 11px; color: var(--text2); padding: 12px; text-align: center;
+  font-size: 13px; color: var(--text2); padding: 12px; text-align: center;
 }
 .insight-card-failed { color: var(--accent2); }
 .insight-pick-btn {
   margin: 0; padding: 8px; background: var(--accent); color: var(--bg);
-  border: none; border-top: 1px solid var(--border); font-size: 12px;
+  border: none; border-top: 1px solid var(--border); font-size: 14px;
   font-weight: 600; cursor: pointer; transition: background 0.15s;
 }
 .insight-pick-btn:hover { background: var(--green); }
 .insight-picked-badge {
   position: absolute; top: 8px; right: 8px;
   background: #4ecdc4; color: #1a1a1a; padding: 4px 8px; border-radius: 4px;
-  font-size: 10px; font-weight: 700; letter-spacing: 0.3px;
+  font-size: 12px; font-weight: 700; letter-spacing: 0.3px;
 }
 .insight-picked-msg {
   margin-top: 12px; padding: 10px 14px; background: rgba(78,205,196,0.1);
   border-left: 3px solid #4ecdc4; border-radius: 4px;
-  color: #4ecdc4; font-size: 12px; line-height: 1.5;
+  color: #4ecdc4; font-size: 14px; line-height: 1.5;
 }
 .insight-footer {
   display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px;
@@ -1192,16 +1192,16 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
   margin-bottom: 8px;
 }
 .brief-round-tag {
-  font-size: 10px; color: var(--accent); margin-bottom: 4px;
+  font-size: 12px; color: var(--accent); margin-bottom: 4px;
   text-transform: uppercase; letter-spacing: 0.5px;
 }
 .brief-understanding {
-  font-size: 12px; color: var(--text); margin-bottom: 6px;
+  font-size: 14px; color: var(--text); margin-bottom: 6px;
   line-height: 1.5;
 }
 .brief-understanding strong { color: var(--accent); margin-right: 4px; }
 .brief-opening-text {
-  font-size: 12px; color: var(--text2); line-height: 1.6;
+  font-size: 14px; color: var(--text2); line-height: 1.6;
 }
 
 /* 当前追问高亮 */
@@ -1211,12 +1211,167 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
   border-left: 3px solid var(--accent3);
   border-radius: 4px;
   margin: 8px 0;
-  font-size: 12px;
+  font-size: 14px;
 }
 .brief-followup-label {
   color: var(--accent3); font-weight: 600; margin-right: 6px;
 }
 .brief-followup-text { color: var(--text); }
+
+/* v0.4 Phase 3.9：位置指示（直接读 diagnosis.type —— 单一数据源） */
+.brief-position-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  margin: 0 0 8px;
+  background: rgba(107,170,255,0.10);  /* 默认 blue */
+  border: 1px solid rgba(107,170,255,0.30);
+  border-radius: 16px;
+  font-size: 14px;
+  color: var(--text);
+  font-weight: 500;
+}
+.brief-position-hint[data-position-color="accent"] {
+  background: rgba(78,205,196,0.10);
+  border-color: rgba(78,205,196,0.30);
+}
+.brief-position-hint[data-position-color="green"] {
+  background: rgba(107,255,107,0.10);
+  border-color: rgba(107,255,107,0.30);
+}
+.brief-position-emoji { font-size: 16px; }
+.brief-position-text { color: var(--text); }
+
+/* v0.4 Phase 3.8：用户原始描述气泡（消除⏳等待感） */
+.brief-user-bubble {
+  padding: 10px 14px;
+  margin: 0 0 8px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 14px;
+  color: var(--text2);
+  font-style: italic;
+}
+.brief-user-bubble-label {
+  display: block;
+  font-size: 11px;
+  color: var(--text2);
+  margin-bottom: 4px;
+  font-style: normal;
+}
+
+/* v0.4 Phase 4.1：固化摘要（idea → clarifying 前 AI 自动出"我们讨论了什么"） */
+.brief-summary {
+  padding: 12px 16px;
+  margin: 8px 0;
+  background: rgba(78,205,196,0.06);  /* 跟 dialog 同色系，区别于诊断蓝 */
+  border: 1px solid rgba(78,205,196,0.25);
+  border-radius: 8px;
+  font-size: 14px;
+}
+.brief-summary-header {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 6px;
+}
+.brief-summary-text {
+  color: var(--text);
+  line-height: 1.6;
+  margin-bottom: 8px;
+}
+.brief-summary-section-title {
+  font-size: 11px;
+  color: var(--text2);
+  margin-top: 8px;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.brief-summary-boundaries ul,
+.brief-summary-tradeoffs ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--text2);
+  line-height: 1.5;
+}
+.brief-summary-boundaries li strong { color: var(--text); }
+.brief-summary-conf { color: var(--text2); font-size: 11px; }
+.brief-summary-tradeoffs li { color: var(--accent3); }
+
+/* v0.4 Phase 3.10：assist 卡片来源说明（"为什么看到这个"） */
+.assist-source-note {
+  display: block;
+  font-size: 11px;
+  color: var(--text2);
+  font-style: italic;
+  margin: 4px 0 8px;
+  padding: 4px 8px;
+  background: rgba(255,255,255,0.03);
+  border-left: 2px solid var(--border);
+  border-radius: 0 4px 4px 0;
+}
+
+/* v0.4 Phase 1.2：诊断标签（不可点，按 B 方案推迟到 Phase 2.6） */
+.brief-diagnosis {
+  display: inline-block;
+  padding: 4px 10px;
+  margin: 4px 0 8px;
+  background: rgba(107,170,255,0.10);
+  border: 1px solid rgba(107,170,255,0.30);
+  border-radius: 12px;
+  font-size: 12px;
+  color: var(--text2);
+  cursor: default;  /* B 方案：不可点 */
+}
+.brief-diagnosis-icon { margin-right: 4px; }
+.brief-diagnosis-label { color: var(--blue); font-weight: 500; }
+.brief-diagnosis-guide { color: var(--text); }
+
+/* v0.4 Phase 2c：纠偏下拉（不显眼，紧凑） */
+.brief-diagnosis-correction {
+  margin-left: 8px;
+  padding: 2px 6px;
+  font-size: 11px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text2);
+  cursor: pointer;
+}
+.brief-diagnosis-correction:hover { border-color: var(--blue); }
+
+/* v0.4 Phase 2b：诊断对话引导问题（展示用，不做完整对话循环） */
+.brief-dialog {
+  padding: 10px 14px;
+  margin: 8px 0;
+  background: rgba(78,205,196,0.08);  /* 青绿色，跟 --accent 同色系 */
+  border-left: 3px solid var(--accent);
+  border-radius: 0 6px 6px 0;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.brief-dialog-icon { margin-right: 6px; }
+.brief-dialog-method {
+  display: inline-block;
+  padding: 2px 6px;
+  margin-right: 6px;
+  background: rgba(78,205,196,0.20);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 500;
+}
+.brief-dialog-text { color: var(--text); }
+.brief-dialog-schema {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text2);
+  font-style: italic;
+}
 
 /* 辅助手段区域 */
 .assist-area {
@@ -1229,18 +1384,18 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
   /* 通用块 */
 }
 .assist-section-title {
-  font-size: 13px; font-weight: 600; color: var(--accent);
+  font-size: 15px; font-weight: 600; color: var(--accent);
   margin-bottom: 6px;
 }
 .assist-intro {
-  font-size: 11px; color: var(--text2); margin-bottom: 8px;
+  font-size: 13px; color: var(--text2); margin-bottom: 8px;
   line-height: 1.5;
 }
 .assist-intro-good {
   color: var(--green);
 }
 .assist-used-tag {
-  font-size: 11px; color: var(--green); margin-top: 6px;
+  font-size: 13px; color: var(--green); margin-top: 6px;
   padding: 4px 8px; background: rgba(78, 205, 196, 0.08);
   border-radius: 4px;
 }
@@ -1279,27 +1434,27 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
   display: inline-block; width: 22px; height: 22px;
   line-height: 22px; text-align: center;
   background: var(--accent); color: #000; border-radius: 50%;
-  font-weight: bold; font-size: 12px;
+  font-weight: bold; font-size: 14px;
 }
 .assist-card-cat {
-  font-size: 10px; padding: 2px 6px; border-radius: 3px;
+  font-size: 12px; padding: 2px 6px; border-radius: 3px;
 }
 .assist-picked-badge {
-  font-size: 10px; color: var(--green); margin-left: auto;
+  font-size: 12px; color: var(--green); margin-left: auto;
 }
 .assist-card-meta {
-  font-size: 11px; color: var(--text2); margin-bottom: 4px;
+  font-size: 13px; color: var(--text2); margin-bottom: 4px;
   font-style: italic;
 }
 .assist-card-row {
-  font-size: 11px; color: var(--text2); line-height: 1.5;
+  font-size: 13px; color: var(--text2); line-height: 1.5;
   margin-bottom: 3px;
 }
 .assist-label {
   font-weight: 600; color: var(--text); margin-right: 4px;
 }
 .assist-card-quote {
-  font-size: 11px; color: var(--text3); font-style: italic;
+  font-size: 13px; color: var(--text3); font-style: italic;
   padding: 4px 6px; background: var(--bg3); border-radius: 3px;
   margin: 4px 0; border-left: 2px solid var(--border);
 }
@@ -1317,7 +1472,7 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 .assist-tradeoff-opt {
   flex: 1; min-width: 100px; padding: 6px 10px;
   background: var(--bg3); border: 1px solid var(--border);
-  border-radius: 4px; font-size: 11px; color: var(--text);
+  border-radius: 4px; font-size: 13px; color: var(--text);
   cursor: pointer; transition: all 0.15s;
 }
 .assist-tradeoff-opt:hover {
@@ -1332,7 +1487,7 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
   display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px;
 }
 .assist-arch-element {
-  font-size: 10px; padding: 2px 6px;
+  font-size: 12px; padding: 2px 6px;
   background: rgba(139, 92, 246, 0.15); color: var(--accent);
   border-radius: 3px;
 }

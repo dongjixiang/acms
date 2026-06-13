@@ -2,7 +2,7 @@
 // AI 列出 5-8 个核心页面/模块的卡片布局，让用户圈出"我要这些"
 // 字段：requirement.assist_arch
 
-const { callLLM } = require('../llm-adapter');
+const { callLLMWithRetry } = require('../json-extractor');
 const modelStore = require('../../stores/model-store');
 const reqStore = require('../../stores/requirement-store');
 
@@ -14,6 +14,9 @@ function pickDefaultLlm() {
 }
 
 const ARCH_PROMPT = `你是 ACMS 系统的「信息架构助手」。给定一个需求，列出 5-8 个核心**页面/模块**（不是功能点，是用户在系统里能看到/进入的"单元"）。
+
+## 焦点优先（v0.3.3 B 方案补丁）
+如果输入里包含「当前对话焦点」（followup_question），**模块设计要围绕这个焦点**——比如焦点是"系统长什么样"，就出核心页面；焦点是"用户从哪进入"，entry 字段就要特别强调入口路径；焦点是"页面/模块怎么组织"，模块列表就要按用户访问顺序组织。**不要凭空从需求整体列通用模块。**
 
 每个模块：
 - name (≤12 字): 模块名称（如"客户详情" / "Pipeline 看板" / "数据看板"）
@@ -61,27 +64,18 @@ async function runAssistJob(requirementId, opts = {}) {
         content: [
           `需求标题: ${req.title || '(空)'}`,
           `需求描述: ${req.description || '(空)'}`,
-        ].join('\n'),
+          opts.followupQuestion ? `当前对话焦点: ${opts.followupQuestion}` : '',
+        ].filter(Boolean).join('\n'),
       },
     ];
 
-    const result = await callLLM(model.id, messages, {
-      temperature: 0.4,
-      maxTokens: 1200,
-      jsonMode: true,
+    // v0.3.3 B++ 补丁：用 callLLMWithRetry（公共重试工具）替代直接 callLLM
+    const parsed = await callLLMWithRetry(model, messages, {
+      temperature: 0.4, maxTokens: 1200, jsonMode: true, serviceName: 'assist:arch',
     });
-
-    let content = (result.content || '').trim();
-    if (content.startsWith('```')) {
-      content = content.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
-    }
-    const jsonStart = content.indexOf('{');
-    const jsonEnd = content.lastIndexOf('}');
-    if (jsonStart >= 0 && jsonEnd > jsonStart) {
-      content = content.substring(jsonStart, jsonEnd + 1);
-    }
-    const parsed = JSON.parse(content);
-    const modules = Array.isArray(parsed.modules) ? parsed.modules.slice(0, 8) : [];
+    if (!parsed) throw new Error('LLM 返回无法解析为 JSON（已重试 1 次）');
+    if (!Array.isArray(parsed.modules)) throw new Error('LLM 返回缺少 modules 字段');
+    const modules = parsed.modules.slice(0, 8);
 
     reqStore.update(requirementId, {
       assist_arch: JSON.stringify({
@@ -89,6 +83,7 @@ async function runAssistJob(requirementId, opts = {}) {
         modules,
         picked: [],
         generated_at: new Date().toISOString(),
+        generated_at_round: typeof opts.chatRound === 'number' ? opts.chatRound : null,
         model: model.id,
         error: null,
         used: false,
