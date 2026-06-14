@@ -3659,6 +3659,14 @@ function chatToggleCard(el, reqId, method) {
   el.classList.toggle('selected');
 }
 
+// 决策树/取舍等卡片的点击选择委托（仅限 chat-assist-clickable，不干扰场景按钮）
+document.addEventListener('click', function(e) {
+  const target = e.target.closest('.chat-assist-clickable:not(.assist-card)');
+  if (target && target.closest('.chat-assist-layer')) {
+    target.classList.toggle('selected');
+  }
+});
+
 async function chatSend(reqId) {
   const input = document.getElementById(`chat-input-${reqId}`);
   const text = input?.value?.trim();
