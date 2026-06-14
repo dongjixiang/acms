@@ -1237,6 +1237,49 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 .chat-assist-layer .brief-branch-label { font-size: 13px; }
 .chat-assist-layer .brief-branch-desc,
 .chat-assist-layer .brief-branch-proscons { font-size: 12.5px; }
+/* 决策树对话框内样式覆盖 */
+.chat-assist-layer .brief-branch {
+  padding: 8px 10px !important;
+  background: var(--bg) !important;
+  border-radius: 6px !important;
+  border: 1px solid var(--border) !important;
+  border-left: 3px solid var(--accent) !important;
+  cursor: pointer; transition: all .12s;
+}
+.chat-assist-layer .brief-branch:hover {
+  border-color: var(--text3);
+  background: var(--bg2);
+}
+.chat-assist-layer .brief-branch.selected {
+  border-color: var(--accent);
+  background: rgba(78,205,196,0.06);
+  border-left-width: 4px;
+}
+.chat-assist-layer .brief-branch-label {
+  font-size: 13px !important;
+  font-weight: 600; color: var(--text);
+  display: flex; align-items: center; gap: 6px; margin-bottom: 2px;
+}
+.chat-assist-layer .brief-branch-desc {
+  font-size: 12px !important;
+  color: var(--text2); line-height: 1.4; margin-bottom: 4px;
+}
+.chat-assist-layer .brief-pro {
+  font-size: 11px; padding: 1px 6px;
+  background: rgba(78,205,196,0.12); color: #4ecdc4; border-radius: 3px;
+}
+.chat-assist-layer .brief-con {
+  font-size: 11px; padding: 1px 6px;
+  background: rgba(255,107,107,0.1); color: #ff9999; border-radius: 3px;
+}
+.chat-assist-layer .brief-branch-analogy-btn {
+  font-size: 11px; margin: 2px 0 0; padding: 2px 6px;
+  background: rgba(139,92,246,0.08); color: var(--accent);
+  border: none; border-radius: 4px; cursor: pointer; font-family: inherit;
+}
+.chat-assist-layer .brief-branch-analogy-btn:hover {
+  background: rgba(139,92,246,0.18);
+}
 .chat-assist-layer .assist-tradeoff-opt { font-size: 12px; }
 /* 选中态 */
 .chat-assist-clickable.selected {
