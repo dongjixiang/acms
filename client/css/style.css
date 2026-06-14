@@ -806,7 +806,7 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
   padding: 16px; margin-top: 12px; margin-bottom: 12px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
-.insight-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.insight-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; position: relative; }
 .insight-title { font-size: 16px; font-weight: 600; color: var(--text); }
 .insight-clarity-badge {
   font-size: 12px; padding: 2px 8px; border-radius: 10px;
@@ -895,21 +895,10 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 }
 
 /* ===== v0.3.2 极简思路区 增量 ===== */
-.brief-branch-analogy-btn {
-  display: inline-block;
-  margin: 4px 0 6px;
-  padding: 3px 8px;
-  font-size: 13px;
-  background: rgba(139, 92, 246, 0.12);
-  color: var(--accent);
-  border: 1px dashed var(--accent);
-  border-radius: 12px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.brief-branch-analogy-btn:hover {
-  background: rgba(139, 92, 246, 0.22);
-  border-style: solid;
+.brief-branch-analogy-info {
+  font-size: 12px; color: var(--text2); margin: 4px 0;
+  padding: 3px 8px; background: rgba(78,205,196,0.06);
+  border-radius: 3px;
 }
 .branch-detail-panel {
   margin: 4px 0 8px 14px;
@@ -1233,7 +1222,11 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 }
 
 /* 其他卡片：统一字体 */
-.chat-assist-layer .brief-branch { font-size: 13px; }
+.chat-assist-layer .brief-branch { font-size: 13px; cursor: pointer; }
+.chat-assist-layer .brief-branch:hover { border-left-color: var(--accent); opacity: 0.92; }
+.chat-assist-layer .brief-branch-label { pointer-events: none; }
+.chat-assist-layer .brief-branch-desc { pointer-events: none; }
+.chat-assist-layer .brief-branch-proscons { pointer-events: none; }
 .chat-assist-layer .brief-branch-label { font-size: 13px; }
 .chat-assist-layer .brief-branch-desc,
 .chat-assist-layer .brief-branch-proscons { font-size: 12.5px; }
@@ -1281,12 +1274,46 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
   background: rgba(139,92,246,0.18);
 }
 .chat-assist-layer .assist-tradeoff-opt { font-size: 12px; }
-/* 选中态 */
+/* 全屏按钮 */
+.chat-maximize-btn {
+  position: absolute; top: 10px; right: 10px;
+  background: none; border: 1px solid var(--border);
+  color: var(--text2); cursor: pointer; font-size: 16px; line-height: 1;
+  padding: 2px 6px; border-radius: 3px; transition: all .12s;
+  z-index: 1;
+}
+.chat-maximize-btn:hover { background: var(--bg3); color: var(--text); }
+
+/* 全屏态：整个 idea-panel 铺满视口 */
+.idea-panel.chat-maximized {
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  z-index: 9999; background: var(--bg);
+  display: flex; flex-direction: column; padding: 8px 12px;
+  overflow: hidden;
+}
+.idea-panel.chat-maximized .chat-stream-container {
+  flex: 1; display: flex; flex-direction: column; min-height: 0;
+  height: auto; max-height: none;
+}
+.idea-panel.chat-maximized .chat-stream {
+  flex: 1; max-height: none; overflow-y: auto;
+}
+
+/* 选中态：整张卡片作为一个选项，不显示 ✅ 徽章（防止被误认为独立选择框） */
 .chat-assist-clickable.selected {
   border-color: var(--accent) !important;
+  background: rgba(78,205,196,0.12) !important;
+  box-shadow: 0 0 0 1px var(--accent);
+}
+/* 决策树分支选中：内联子元素不设独立背景，突出整卡一致性 */
+.chat-assist-layer .brief-branch.selected {
+  border-left-color: var(--accent);
+  border-left-width: 4px;
 }
 .chat-assist-opt-clickable.selected {
-  background: rgba(78,205,196,0.1);
+  background: #1b6e3a;
+  color: #fff;
+  border-color: #1b6e3a;
 }
 .chat-assist-option {
   display: flex; align-items: flex-start; gap: 8px;
@@ -1362,9 +1389,9 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
   margin-top: 6px; padding: 5px 8px;
   font-size: 11px; color: var(--accent); cursor: pointer;
   background: rgba(78,205,196,0.06);
-  border: 1px dashed rgba(78,205,196,0.25);
+  border: 1px dashed rgba(78,205,196,0.3);
   border-radius: 6px; transition: all .12s;
-  text-align: center;
+  text-align: left;
 }
 .chat-assist-suggest:hover {
   background: rgba(78,205,196,0.12);
@@ -1827,3 +1854,32 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
   background: rgba(139, 92, 246, 0.15); color: var(--accent);
   border-radius: 3px;
 }
+
+/* 竞品分析对比表 */
+.comp-table {
+  width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px;
+}
+.comp-table th {
+  background: var(--bg3); padding: 6px 8px; text-align: left; font-weight: 600;
+  border-bottom: 1px solid var(--border);
+}
+.comp-table td {
+  padding: 5px 8px; border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.comp-priority-高 { color: var(--red); font-weight: 600; }
+.comp-priority-中 { color: var(--accent); }
+.comp-priority-低 { color: var(--text3); }
+
+/* 借鉴卡片分组表格 */
+.ref-cat-section { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.ref-cat-header { font-size: 13px; font-weight: 600; padding: 5px 10px; }
+.ref-aspect-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.ref-aspect-table td { padding: 6px 10px; border-top: 1px solid var(--border); vertical-align: middle; }
+.ref-aspect-name { font-weight: 600; width: 30%; color: var(--text); }
+.ref-aspect-desc { color: var(--text2); }
+.ref-aspect-action { width: 40px; text-align: center; }
+.ref-aspect-pick { width: 40px; text-align: center; }
+.ref-aspect-row .btn-small { padding: 2px 6px; min-width: 28px; }
+.ref-aspect-row { cursor: default; transition: background .1s; }
+.ref-aspect-row:hover { background: var(--bg2); }
