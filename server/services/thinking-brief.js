@@ -87,19 +87,32 @@ function pickDefaultLlm() {
  * @param {Array} [oldDecisionTree] - 上一轮的决策树（如有）—— 用于差异化
  * @param {string} [role] - 用户角色（PM/技术/...）
  * @param {string} [modelId]
+ * @param {Array} [supplementHistory] - 用户历次补充（v0.3.5 修复：让 AI 看到补充后再生成 brief）
  * @returns {Promise<{decision_tree, questions, references, modelId}>}
  */
-async function generateBrief(title, description, clarity, oldDecisionTree, role, modelId) {
+async function generateBrief(title, description, clarity, oldDecisionTree, role, modelId, supplementHistory = []) {
   const model = modelId ? modelStore.getById(modelId) : pickDefaultLlm();
   if (!model) throw new Error('NO_LLM_AVAILABLE');
+  // v0.3.5 修复：把 supplement_history 拼进 user message，让 AI 看到补充后再生成 brief
+  const userParts = [
+    `需求标题: ${title || '(空)'}`,
+    `需求描述: ${description || '(空)'}`,
+    `明确度: ${clarity || 'unknown'}`,
+    role ? `用户角色: ${role}` : '',
+  ];
+  if (Array.isArray(supplementHistory) && supplementHistory.length > 0) {
+    userParts.push('---');
+    userParts.push('【用户已补充的内容】（按时间顺序）:');
+    supplementHistory.forEach((h, i) => {
+      const sourceTag = h.source ? ` [来源: ${h.source}]` : '';
+      userParts.push(`#${i + 1}${sourceTag}: ${h.text || ''}`);
+    });
+    userParts.push('---');
+    userParts.push('请把「原始需求描述 + 用户历次补充」视为完整输入。用户已经在补充里说过的偏好、场景、考虑，请不要再追问 —— 你的 followup_question 应该是补充内容之后的下一个真正开放问题。');
+  }
   const messages = [
     { role: 'system', content: THINKING_SYSTEM_PROMPT },
-    { role: 'user', content: [
-      `需求标题: ${title || '(空)'}`,
-      `需求描述: ${description || '(空)'}`,
-      `明确度: ${clarity || 'unknown'}`,
-      role ? `用户角色: ${role}` : '',
-    ].filter(Boolean).join('\n') },
+    { role: 'user', content: userParts.filter(Boolean).join('\n') },
   ];
 
   // 如果有上一轮决策树，作为独立的 system message 注入（避免和 user 段混在一起）
@@ -184,8 +197,16 @@ async function runBriefJob(requirementId, opts = {}) {
       }
     } catch (e) { /* 静默降级 */ }
 
+    // v0.3.5 修复：读 supplement_history，让 generateBrief 看到用户的历次补充
+    let supplementHistory = [];
+    try {
+      supplementHistory = JSON.parse(req.supplement_history || '[]');
+      if (!Array.isArray(supplementHistory)) supplementHistory = [];
+    } catch (e) { /* 静默降级 */ }
+
     const brief = await generateBrief(
-      req.title, req.description, req.input_clarity, oldDecisionTree, opts.role, opts.modelId
+      req.title, req.description, req.input_clarity, oldDecisionTree, opts.role, opts.modelId,
+      supplementHistory  // v0.3.5 新增
     );
     // 计算对话轮次：旧 chat_round + 1（如无则 =1）
     const oldRound = (() => { try { return JSON.parse(req.thinking_brief || 'null')?.chat_round || 0; } catch { return 0; } })();

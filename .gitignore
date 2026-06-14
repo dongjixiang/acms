@@ -8,6 +8,7 @@ tmp_append.txt
 config.json
 
 # Local test output
+server_out*.txt
 tmp/
 
 # Server stdout/stderr (本地运行产出)

@@ -85,17 +85,33 @@ function pickDefaultImageProvider() {
  * @param {string} title
  * @param {string} description
  * @param {string} [modelId]
+ * @param {Array} [supplementHistory] - 用户历次补充（v0.3.5 修复：让 AI 看到补充后再评估）
  * @returns {Promise<{clarity, reason, modelId}>}
  */
-async function assessClarity(title, description, modelId) {
+async function assessClarity(title, description, modelId, supplementHistory = []) {
   const model = modelId ? modelStore.getById(modelId) : pickDefaultLlm();
   if (!model) {
     console.warn('[insight] 无可用 LLM 模型，跳过明确度评估');
     return { clarity: null, reason: 'NO_LLM_AVAILABLE', modelId: null };
   }
+  // v0.3.5 修复：把 supplement_history 拼进 user message，让 AI 看到补充后再评估清晰度
+  const userParts = [
+    `需求标题: ${title || '(空)'}`,
+    `需求描述: ${description || '(空)'}`,
+  ];
+  if (Array.isArray(supplementHistory) && supplementHistory.length > 0) {
+    userParts.push('---');
+    userParts.push('【用户已补充的内容】（按时间顺序，已包含本次）:');
+    supplementHistory.forEach((h, i) => {
+      const sourceTag = h.source ? ` [来源: ${h.source}]` : '';
+      userParts.push(`#${i + 1}${sourceTag}: ${h.text || ''}`);
+    });
+    userParts.push('---');
+    userParts.push('请把「原始需求描述 + 用户历次补充」视为完整输入，重新评估明确度。用户补充应该让需求变清晰 —— 别忽略这些补充。');
+  }
   const messages = [
     { role: 'system', content: CLARITY_SYSTEM_PROMPT },
-    { role: 'user', content: `需求标题: ${title || '(空)'}\n\n需求描述: ${description || '(空)'}` },
+    { role: 'user', content: userParts.join('\n') },
   ];
   try {
     const result = await callLLM(model.id, messages, {
@@ -201,9 +217,17 @@ async function runPreviewJob(requirementId, opts = {}) {
   const project = projectStore.getById(req.project_id);
   const projectSlug = project?.slug || req.project_id;
 
-  // 1. 标记 generating
+  // 读现有 insight_previews（保留 runAssistJob 写入的 generated_at_round / generated_at）
+  // 修复：之前每次 update 都完全覆盖整个 JSON 字符串，导致 generated_at_round 丢失，
+  //   dispatcher 过滤时永远拿不到本轮的 visual → 用户看不到预览
+  const readExisting = () => {
+    try { return JSON.parse(reqStore.getById(requirementId)?.insight_previews || '{}'); } catch { return {}; }
+  };
+
+  // 1. 标记 generating（spread 现有保留 generated_at_round）
   reqStore.update(requirementId, {
     insight_previews: JSON.stringify({
+      ...readExisting(),
       status: 'generating',
       variants: [],
       started_at: new Date().toISOString(),
@@ -221,16 +245,17 @@ async function runPreviewJob(requirementId, opts = {}) {
     );
     if (!variants || variants.length === 0) throw new Error('LLM 未返回有效变体');
 
-    // 3. 写回中间状态（让前端能看到 "正在准备图片..."）
+    // 3. 写回中间状态（让前端能看到 "正在准备图片..."）（spread 保留 generated_at_round）
     reqStore.update(requirementId, {
       insight_previews: JSON.stringify({
+        ...readExisting(),
         status: 'generating',
         variants: variants.map((v, i) => ({
           id: `v${i}_pending`, label: v.label, prompt: v.prompt,
           asset_path: null, mime: null, model: null, picked: false, error: null,
         })),
-        started_at: JSON.parse(reqStore.getById(requirementId).insight_previews || '{}').started_at,
-        completed_at: null, error: null, picked_variant_id: null,
+        completed_at: null,
+        error: null,
       }),
     });
 
@@ -238,22 +263,26 @@ async function runPreviewJob(requirementId, opts = {}) {
     const imageProviderId = opts.imageProviderId || pickDefaultImageProvider();
     const results = await generatePreviewImages(projectSlug, imageProviderId, variants);
 
-    // 5. 写回最终结果
+    // 5. 写回最终结果（spread 保留 generated_at_round + started_at）
     const hasAnySuccess = results.some(r => r.asset_path);
-    const finalState = {
-      status: hasAnySuccess ? 'done' : 'failed',
-      variants: results,
-      started_at: JSON.parse(reqStore.getById(requirementId).insight_previews || '{}').started_at,
-      completed_at: new Date().toISOString(),
-      error: hasAnySuccess ? null : '所有图片生成均失败',
-      picked_variant_id: null,
-    };
-    reqStore.update(requirementId, { insight_previews: JSON.stringify(finalState) });
+    const existingAfterGenerating = readExisting();
+    reqStore.update(requirementId, {
+      insight_previews: JSON.stringify({
+        ...existingAfterGenerating,
+        status: hasAnySuccess ? 'done' : 'failed',
+        variants: results,
+        started_at: existingAfterGenerating.started_at || new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+        error: hasAnySuccess ? null : '所有图片生成均失败',
+        picked_variant_id: null,
+      }),
+    });
     console.log(`[insight] ${requirementId} 预览完成，${results.filter(r => r.asset_path).length}/3 成功`);
   } catch (e) {
     console.error(`[insight] ${requirementId} 预览任务失败:`, e.message);
     reqStore.update(requirementId, {
       insight_previews: JSON.stringify({
+        ...readExisting(),
         status: 'failed',
         variants: [],
         started_at: new Date().toISOString(),

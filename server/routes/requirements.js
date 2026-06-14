@@ -797,6 +797,93 @@ router.get('/:id/thinking-brief/branch-detail/:branchIdx', (req, res, next) => {
 });
 
 // ============================================================
+// v0.3.5 新增：仅追加补充（不动 description）
+//   📤 发送按钮用 → 保留用户最初输入的描述，不被 LLM 自动改写
+//   旧的 /rewrite-description 路由保留 → 给「✨ AI 重新组织」按钮 + 决策树勾选 + 描述历史恢复用
+// ============================================================
+router.post('/:id/supplement', async (req, res, next) => {
+  try {
+    const { supplement, supplementSource, autoRegenBrief } = req.body || {};
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    if (reqRec.status !== 'idea') {
+      return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
+    }
+
+    // 仅追加 supplement_history，不动 description（保留创作主权）
+    const result = await rewriteService.addSupplement(req.params.id, { supplement, supplementSource });
+
+    // 触发 brief 重生 + 重评 clarity（v0.3.5 修复：让 AI 看到补充后重新评估）
+    //   跟原 /rewrite-description 一致，让 brief + clarity 跟 supplement_history 同步
+    let briefRegen = null;
+    if (autoRegenBrief !== false) {
+      setImmediate(async () => {
+        try {
+          // 先读最新的 supplement_history（addSupplement 已经写入）
+          const fresh = reqStore.getById(req.params.id);
+          let supplementHistory = [];
+          try {
+            supplementHistory = JSON.parse(fresh?.supplement_history || '[]');
+            if (!Array.isArray(supplementHistory)) supplementHistory = [];
+          } catch (e) { /* 静默降级 */ }
+
+          await briefServiceRegen.runBriefJob(req.params.id, {});
+          console.log(`[supplement.assist] ${req.params.id} brief 已重生（路由器在 brief 内部触发）`);
+
+          // v0.3.5 修复：brief 重生后同步重评 clarity，让用户看到"补充让需求变清晰"的反馈
+          try {
+            const { assessClarity } = require('../services/insight-previews');
+            const afterFresh = reqStore.getById(req.params.id);
+            if (afterFresh) {
+              const clarityResult = await assessClarity(
+                afterFresh.title, afterFresh.description, null,
+                supplementHistory  // 把 supplement_history 喂给 clarity 评估
+              );
+              if (clarityResult?.clarity) {
+                reqStore.update(req.params.id, {
+                  input_clarity: clarityResult.clarity,
+                  clarity_reason: clarityResult.reason || '',
+                  clarity_model: clarityResult.modelId,
+                });
+                console.log(`[supplement.clarity] ${req.params.id} 重新评估明确度: ${clarityResult.clarity}`);
+              }
+            }
+          } catch (e) { console.error('[supplement] 重评明确度失败（非阻塞）:', e.message); }
+        } catch (e) {
+          console.error('[supplement] 自动重新生成思路异常:', e.message);
+        }
+      });
+      briefRegen = 'started';
+    }
+
+    res.json({
+      supplementHistoryCount: result.supplementHistoryCount,
+      added: result.added,
+      briefRegen,
+    });
+  } catch (e) { next(e); }
+});
+
+// v0.3.5 新增：读取补充历史（前端 idea panel 展示用）
+router.get('/:id/supplement-history', (req, res, next) => {
+  try {
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    let history = [];
+    try { history = JSON.parse(reqRec.supplement_history || '[]'); } catch { history = []; }
+    res.json({
+      history: history.map((h, i) => ({
+        index: i,
+        text: h.text || '',
+        source: h.source || 'idea_supplement',
+        at: h.at || null,
+      })),
+      totalCount: history.length,
+    });
+  } catch (e) { next(e); }
+});
+
+// ============================================================
 // 需求描述重新组织（v0.3.2 增量）
 //   - 勾选特色 / 手工补充 → LLM 把「原始 + 痕迹」重新组织成结构化描述
 //   - 旧描述进 description_history（最近 5 份）
@@ -820,7 +907,13 @@ router.post('/:id/rewrite-description', async (req, res, next) => {
       const { assessClarity } = require('../services/insight-previews');
       const fresh = reqStore.getById(req.params.id);
       if (fresh) {
-        clarityResult = await assessClarity(fresh.title, fresh.description, null);
+        // v0.3.5 修复：clarity 评估也要看 supplement_history
+        let supplementHistory = [];
+        try {
+          supplementHistory = JSON.parse(fresh.supplement_history || '[]');
+          if (!Array.isArray(supplementHistory)) supplementHistory = [];
+        } catch (e) { /* 静默降级 */ }
+        clarityResult = await assessClarity(fresh.title, fresh.description, null, supplementHistory);
         if (clarityResult?.clarity) {
           reqStore.update(req.params.id, {
             input_clarity: clarityResult.clarity,

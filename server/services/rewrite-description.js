@@ -119,6 +119,47 @@ async function retryableParse(messages, model) {
 }
 
 /**
+ * 仅追加补充（v0.3.5 新增）
+ * 与 runRewriteJob 的区别：
+ *   - 不调 LLM
+ *   - 不改写 description
+ *   - 不写 description_history
+ *   - 只追加 supplement_history（保留用户原始创作主权）
+ *   - description 保持不变 —— 用户最初的描述永远不动
+ * @param {string} requirementId
+ * @param {object} opts { supplement, supplementSource }
+ *   - supplement: 本次补充内容
+ *   - supplementSource: 来源标签（同 runRewriteJob）
+ * @returns {Promise<{supplementHistoryCount}>}
+ */
+async function addSupplement(requirementId, opts = {}) {
+  const req = reqStore.getById(requirementId);
+  if (!req) throw new Error('REQ_NOT_FOUND');
+
+  let supplementHistory = [];
+  try { supplementHistory = JSON.parse(req.supplement_history || '[]'); } catch { supplementHistory = []; }
+  if (Array.isArray(supplementHistory) === false) supplementHistory = [];
+
+  if (opts.supplement && opts.supplement.trim()) {
+    supplementHistory.push({
+      text: opts.supplement.trim(),
+      source: opts.supplementSource || 'idea_supplement',
+      at: new Date().toISOString(),
+    });
+  } else {
+    // 没内容就不追加（保持幂等）
+    return { supplementHistoryCount: supplementHistory.length, added: false };
+  }
+
+  reqStore.update(requirementId, {
+    supplement_history: JSON.stringify(supplementHistory),
+  });
+
+  console.log(`[supplement] ${requirementId} 补充已追加（不动 description），supplement_history: ${supplementHistory.length} 条`);
+  return { supplementHistoryCount: supplementHistory.length, added: true };
+}
+
+/**
  * 同步执行：rewrite + 保存到数据库
  * - 旧 description 写入 description_history（最近 5 份）
  * - 新 description 替换
@@ -182,4 +223,4 @@ async function runRewriteJob(requirementId, opts = {}) {
   };
 }
 
-module.exports = { rewriteDescription, runRewriteJob };
+module.exports = { rewriteDescription, runRewriteJob, addSupplement };

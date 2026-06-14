@@ -1097,6 +1097,61 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
   flex-wrap: wrap;
   margin-top: 8px;
 }
+
+/* v0.3.5 补充历史面板 */
+.supplement-history-panel {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+  font-size: 12px;
+}
+.supplement-history-header {
+  color: var(--text2);
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.supplement-history-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+.supplement-history-item:last-child {
+  border-bottom: none;
+}
+.supplement-history-source {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--accent);
+  background: rgba(78,205,196,0.1);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.supplement-history-time {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text2);
+  font-family: monospace;
+}
+.supplement-history-text {
+  flex: 1 1 auto;
+  color: var(--text);
+  font-style: italic;
+}
+.supplement-history-empty {
+  color: var(--text2);
+  font-style: italic;
+  padding: 4px 0;
+}
+.supplement-history-error {
+  color: var(--accent2);
+  padding: 4px 0;
+}
+.supplement-history-loading {
+  color: var(--text2);
+  font-style: italic;
+}
   border: 1px solid var(--border); cursor: default;
 }
 .brief-question:hover { border-color: var(--accent); }

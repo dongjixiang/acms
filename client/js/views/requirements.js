@@ -145,6 +145,8 @@ async function openRequirement(id) {
       // Phase 2: brief 加载后顺便拉 assist 数据（路由器可能已自动跑了某种）
       // v0.3.3 B+++：visual 也由 dispatcher 拉（包含在 ASSIST_METHODS 里），不再单独调 maybeLoadInsightPreviews
       setTimeout(() => ACMSAssistDispatcher.loadAll(id), 500);
+      // v0.3.5 新增：加载补充历史展示
+      setTimeout(() => loadSupplementHistory(id), 600);
     }
     // 页面加载后，如果存在 SRS，按需展示预览按钮
     setTimeout(() => updateMediaPreviewButtons(id), 350);
@@ -2976,12 +2978,18 @@ function renderIdeaPanel(req) {
             placeholder="💬 回答 AI 的问题，或补充你的想法…"
             rows="2"></textarea>
           <div class="idea-supplement-actions">
-            <!-- v0.4 Phase 3.7：按钮文字改"发送"（聊天化，行为不变） -->
+            <!-- v0.3.4 Phase 3.7：按钮文字改"发送"（聊天化，行为不变） -->
             <button class="btn-small btn-primary" onclick="submitIdeaSupplement('${req.id}')">
               📤 发送
             </button>
+            <!-- v0.3.5 新增：用户显式召唤 AI 重整描述（不动 description 的反向操作） -->
+            <button class="btn-small" onclick="aiRewriteDescription('${req.id}')" title="根据你的全部补充重新组织需求描述，旧版本会进历史记录">✨ AI 重整</button>
             <button class="btn-small" onclick="regenerateThinkingBrief('${req.id}')">↻ 换个问法</button>
             <button class="btn-small btn-reject" onclick="skipThinkingBrief('${req.id}')">✅ 够了，进澄清</button>
+          </div>
+          <!-- v0.3.5 新增：📋 补充历史展示（强化用户创作主权 —— 看到自己一路补充了什么） -->
+          <div id="supplement-history-${req.id}" class="supplement-history-panel">
+            <div class="supplement-history-loading">⏳ 加载补充历史…</div>
           </div>
         </div>
       </div>
@@ -3270,28 +3278,122 @@ async function submitIdeaSupplement(reqId) {
     }
   }
 
-  toast('⏳ 正在重新组织需求描述…', 'info', 2000);
+  toast('⏳ 正在记录你的补充…', 'info', 2000);
   try {
-    // textarea 空时，把 assist 表态汇总作为 supplement（让 LLM 有东西重整）
-    // v0.3.3 B+++：传 supplementSource 让后端区分来源 → supplement_history 累加
+    // textarea 空时，把 assist 表态汇总作为 supplement（让 LLM 有东西参考）
+    // v0.3.5 改进：调新路由 /supplement，不动 description，保留用户最初输入
     const finalSupplement = supplement || assistSummary;
-    const resp = await api('POST', `/requirements/${reqId}/rewrite-description`, {
+    const resp = await api('POST', `/requirements/${reqId}/supplement`, {
       supplement: finalSupplement,
       supplementSource: supplement ? 'idea_supplement' : 'assist_signals',
-      modelId: null,  // 让后端自动选可用文本模型
       autoRegenBrief: true,
     });
     if (resp.error) {
       toast('补充失败: ' + resp.error, 'error');
       return;
     }
-    toast('✅ 已重整，思路正在重生…', 'success', 2000);
+    toast(`✅ 已记录补充（#${resp.supplementHistoryCount}），思路正在重生…`, 'success', 2000);
     // 清空输入框，避免下次重复提交
     if (input) input.value = '';
-    // Phase 2: brief 重生会自动触发路由器 → 推下一种 assist
-    setTimeout(() => openRequirement(reqId), 500);
+    // v0.3.5 改进：局部刷新 brief + assist 区域，不 reload 整个需求详情页
+    //   - 保留用户滚动位置、输入焦点、临时草稿
+    //   - brief + assist 后台异步重生，30s 内会自然更新
+    relocalRefreshBriefAndAssist(reqId);
   } catch (e) {
     toast('补充失败: ' + e.message, 'error');
+  }
+}
+
+/**
+ * 局部刷新 brief + assist 区域（v0.3.5 新增）
+ * 不 reload 整个需求详情页，只重载下面这两个区域：
+ *   - ACMSThinkingBrief（思路简报）
+ *   - ACMSAssistDispatcher（辅助手段卡片）
+ * @param {string} reqId
+ */
+function relocalRefreshBriefAndAssist(reqId) {
+  try {
+    if (window.ACMSThinkingBrief?.load) {
+      window.ACMSThinkingBrief.load(reqId);
+    }
+  } catch (e) { console.warn('[relocalRefresh] brief reload 失败:', e.message); }
+  try {
+    if (window.ACMSAssistDispatcher?.loadAll) {
+      window.ACMSAssistDispatcher.loadAll(reqId);
+    }
+  } catch (e) { console.warn('[relocalRefresh] assist reload 失败:', e.message); }
+  // v0.3.5 新增：补充历史也刷新
+  try { loadSupplementHistory(reqId); } catch (e) { console.warn('[relocalRefresh] supplement history reload 失败:', e.message); }
+}
+
+/**
+ * 加载补充历史展示（v0.3.5 新增）
+ * 调 GET /:id/supplement-history，把每条补充渲染到 idea panel 下方
+ * @param {string} reqId
+ */
+async function loadSupplementHistory(reqId) {
+  const container = document.getElementById(`supplement-history-${reqId}`);
+  if (!container) return;
+  try {
+    const resp = await api('GET', `/requirements/${reqId}/supplement-history`);
+    const history = resp.history || [];
+    if (history.length === 0) {
+      container.innerHTML = '<div class="supplement-history-empty">📋 你还没补充过内容（📤 发送会追加补充记录）</div>';
+      return;
+    }
+    // 按时间倒序展示（最新的在上面）
+    const items = history.slice().reverse().map(h => {
+      const sourceLabels = {
+        idea_supplement: '📤 手工',
+        assist_signals: '🎯 辅助手段',
+        decision_tree_features: '🌳 决策树',
+        tradeoff_pick: '⚖️ 取舍',
+        scenario_pick: '👥 场景',
+        arch_pick: '🏗️ 架构',
+        diagnosis_use: '🩺 体检',
+      };
+      const sourceLabel = sourceLabels[h.source] || h.source;
+      const atShort = h.at ? h.at.substring(11, 16) : '';  // HH:MM
+      const preview = (h.text || '').substring(0, 80) + ((h.text || '').length > 80 ? '…' : '');
+      return `<div class="supplement-history-item">
+        <span class="supplement-history-source">${sourceLabel}</span>
+        <span class="supplement-history-time">${atShort}</span>
+        <div class="supplement-history-text">${escHtml(preview)}</div>
+      </div>`;
+    }).join('');
+    container.innerHTML = `<div class="supplement-history-header">📋 你补充的内容（${history.length} 条）</div>${items}`;
+  } catch (e) {
+    container.innerHTML = `<div class="supplement-history-error">❌ 加载补充历史失败：${escHtml(e.message)}</div>`;
+  }
+}
+
+/**
+ * ✨ AI 重整描述（v0.3.5 新增）
+ * 与 📤 发送相反：
+ *   - 用户显式召唤 AI 重整
+ *   - 调原 /rewrite-description 路由 → description 会被覆盖（旧版本进 history）
+ *   - 整页 reload（因为 description 改了，需要刷新顶部）
+ * @param {string} reqId
+ */
+async function aiRewriteDescription(reqId) {
+  if (!await showConfirm('AI 会根据你的全部补充重新组织需求描述，旧版本会进历史记录，确认重整？', { type: 'info' })) return;
+  toast('⏳ AI 正在重新组织…', 'info', 2000);
+  try {
+    // 把 supplement_history 整段喂给 LLM 重整（即使 textarea 空也走完整重整）
+    const resp = await api('POST', `/requirements/${reqId}/rewrite-description`, {
+      supplement: '',  // 空 supplement → 让后端走纯 history 重整
+      supplementSource: 'idea_supplement',
+      autoRegenBrief: true,
+    });
+    if (resp.error) {
+      toast('重整失败: ' + resp.error, 'error');
+      return;
+    }
+    toast('✅ 描述已重整，思路正在重生…', 'success', 2000);
+    // 整页 reload（因为 description 改了，需要刷新顶部 + 历史按钮）
+    setTimeout(() => openRequirement(reqId), 500);
+  } catch (e) {
+    toast('重整失败: ' + e.message, 'error');
   }
 }
 
