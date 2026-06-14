@@ -3679,7 +3679,7 @@ function renderAssistLayer(container, reqId, assists) {
     const title = { decision_tree:'🌳 决策树', scenarios:'👥 场景', tradeoff:'⚖️ 取舍', arch:'🏗️ 架构', diagnosis:'🩺 体检', visual:'🎨 视觉' }[method]||method;
     let opts = '';
     if (method === 'decision_tree') opts = (d.tree||[]).map(t => `<div class="chat-assist-option" onclick="chatToggleOpt(this)"><span class="chat-opt-cb">✓</span><div><div class="chat-opt-title">${escHtml(t.label||'')}</div></div></div>`).join('');
-    else if (method === 'scenarios') opts = (d.scenarios||[]).map(s => `<div class="chat-assist-option" onclick="chatToggleOpt(this)"><span class="chat-opt-cb">✓</span><div><div class="chat-opt-title">${escHtml(s.name||'')}</div>${s.desc?`<div class="chat-opt-desc">${escHtml(s.desc)}</div>`:''}</div></div>`).join('');
+    else if (method === 'scenarios') opts = (d.scenarios||[]).map(s => `<div class="chat-assist-option" onclick="chatToggleOpt(this)"><span class="chat-opt-cb">✓</span><div><div class="chat-opt-title">${escHtml(s.title||s.name||'')}</div>${s.context||s.desc?`<div class="chat-opt-desc">${escHtml(s.context||s.desc||'')}</div>`:''}</div></div>`).join('');
     else if (method === 'tradeoff') opts = (d.dimensions||[]).map(dm => `<div class="chat-assist-option" onclick="chatToggleOpt(this)"><span class="chat-opt-cb">✓</span><div><div class="chat-opt-title">${escHtml(dm.dimension||'')}</div>${dm.options?`<div class="chat-opt-desc">${escHtml(dm.options.join(' / '))}</div>`:''}</div></div>`).join('');
     else if (method === 'arch') opts = (d.modules||[]).map(m => `<div class="chat-assist-option" onclick="chatToggleOpt(this)"><span class="chat-opt-cb">✓</span><div><div class="chat-opt-title">${escHtml(m.name||'')}</div></div></div>`).join('');
     if (!opts) continue;
