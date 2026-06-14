@@ -3577,7 +3577,10 @@ function renderAssistLayer(container, reqId, assists) {
     const d = assists[method];
     if (!d || d.status !== 'done' || d.used) continue;
     const cr = (_chatState[reqId]?.briefRound) || 1;
-    if (d.generated_at_round !== cr) continue;
+    if (d.generated_at_round !== cr) {
+      if (method === 'decision_tree') console.log(`[assist.render] decision_tree SKIP round: generated=${d.generated_at_round} chatState=${cr}`);
+      continue;
+    }
 
     // 检查数据指纹：没变化就不重建（避免用户选中态丢失）
     const fingerprint = JSON.stringify({ status: d.status, scenarios: d.scenarios, tree: d.tree, dimensions: d.dimensions, modules: d.modules, used: d.used });
@@ -3592,6 +3595,7 @@ function renderAssistLayer(container, reqId, assists) {
     let innerHtml = '';
     const mod = window.ACMSAssists?.get?.(method);
     if (mod && mod.render) {
+      if (method === 'decision_tree') console.log(`[assist.render] decision_tree rendering, tree items: ${d.tree?.length || 0}`);
       try {
         const raw = mod.render(reqId, d);
         // 去掉 regen/actions 行 + secondary 按钮，保留 pick 按钮
