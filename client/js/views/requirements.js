@@ -3675,7 +3675,10 @@ function renderAssistLayer(container, reqId, assists) {
     const d = assists[method];
     if (!d || d.status !== 'done' || d.used) continue;
     const cr = (_chatState[reqId]?.briefRound) || 1;
-    if (d.generated_at_round !== cr) continue;
+    if (d.generated_at_round !== cr) {
+      console.log(`[assist.render] ${method} round mismatch: generated=${d.generated_at_round} vs chatState=${cr}, _chatState exists=${!!_chatState[reqId]}`);
+      continue;
+    }
     const title = { decision_tree:'🌳 决策树', scenarios:'👥 场景', tradeoff:'⚖️ 取舍', arch:'🏗️ 架构', diagnosis:'🩺 体检', visual:'🎨 视觉' }[method]||method;
     let opts = '';
     if (method === 'decision_tree') opts = (d.tree||[]).map(t => `<div class="chat-assist-option" onclick="chatToggleOpt(this)"><span class="chat-opt-cb">✓</span><div><div class="chat-opt-title">${escHtml(t.label||'')}</div></div></div>`).join('');
