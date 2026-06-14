@@ -3540,7 +3540,8 @@ function renderBriefBubble(container, brief) {
   if (!brief || brief.status !== 'done') return;
   const hasResponse = brief.opening || brief.followup_question;
   const hasThinking = brief.ai_understanding;
-  if (!hasResponse && !hasThinking) return;
+  const hasSuggest = brief.suggested_assist && brief.suggested_assist.method;
+  if (!hasResponse && !hasThinking && !hasSuggest) return;
 
   let respHtml = '';
   if (brief.opening) respHtml += `<div>${escHtml(brief.opening)}</div>`;
@@ -3550,10 +3551,14 @@ function renderBriefBubble(container, brief) {
     ? `<div class="chat-thinking" style="display:none"><div class="chat-thinking-inner">${escHtml(brief.ai_understanding)}</div></div>`
     : '';
 
+  const suggestHtml = hasSuggest
+    ? `<div class="chat-assist-suggest" onclick="chatAssist('${container.id?.replace('chat-stream-msgs-', '') || ''}','${brief.suggested_assist.method}')">💡 ${escHtml(brief.suggested_assist.reason || '试试' + brief.suggested_assist.method)} →</div>`
+    : '';
+
   const toggleAttr = hasThinking ? ` data-has-thinking="1"` : '';
   const div = document.createElement('div');
   div.className = 'chat-bubble chat-bubble-ai';
-  div.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">🤖 AI</span><span class="chat-time">第${brief.chat_round||1}轮</span>${hasThinking ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}</div><div class="chat-response"${toggleAttr}>${respHtml}</div>${thinkingHtml}`;
+  div.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">🤖 AI</span><span class="chat-time">第${brief.chat_round||1}轮</span>${hasThinking ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}</div><div class="chat-response"${toggleAttr}>${respHtml}</div>${thinkingHtml}${suggestHtml}`;
   container.appendChild(div);
 }
 
@@ -3717,8 +3722,11 @@ function connectStreamingBrief(reqId, container) {
         const thinkingHtml = data.brief.ai_understanding
           ? `<div class="chat-thinking" style="display:none"><div class="chat-thinking-inner">${escHtml(data.brief.ai_understanding)}</div></div>`
           : '';
+        const suggestHtml = data.brief.suggested_assist?.method
+          ? `<div class="chat-assist-suggest" onclick="chatAssist('${reqId}','${data.brief.suggested_assist.method}')">💡 ${escHtml(data.brief.suggested_assist.reason || '试试' + data.brief.suggested_assist.method)} →</div>`
+          : '';
         streamingBubble.className = 'chat-bubble chat-bubble-ai';
-        streamingBubble.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">🤖 AI</span><span class="chat-time">第${data.brief.chat_round||1}轮</span>${data.brief.ai_understanding ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}</div><div class="chat-response">${respHtml}</div>${thinkingHtml}`;
+        streamingBubble.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">🤖 AI</span><span class="chat-time">第${data.brief.chat_round||1}轮</span>${data.brief.ai_understanding ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}</div><div class="chat-response">${respHtml}</div>${thinkingHtml}${suggestHtml}`;
         delete streamingBubble.dataset.streaming;
         chatScrollToBottom(container);
         // 尝试加载 assist

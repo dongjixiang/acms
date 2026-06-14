@@ -456,34 +456,48 @@ async function* runBriefJobStream(requirementId, opts = {}) {
         }
         const brief = {
           status: 'done', opening: typeof parsed.opening === 'string' ? parsed.opening : '',
-          ai_understanding: typeof parsed.ai_understanding === 'string' ? parsed.ai_understanding : '',
           followup_question: typeof parsed.followup_question === 'string' ? parsed.followup_question : '',
           diagnosis, dialog: null, chat_round: newRound,
           generated_at: new Date().toISOString(), model: model.id, error: null,
         };
+
+        // v0.3.6：路由器选一种辅助手段作为建议（仅建议，不自动生成）
+        let suggestedAssist = null;
+        try {
+          const { pickNext } = require('./assists/router');
+          const assists = require('./assists');
+          const fresh = reqStore.getById(requirementId);
+          if (fresh && fresh.status === 'idea') {
+            const usedMethods = [];
+            const roundUsedMethods = [];
+            for (const method of ['decision_tree', 'scenarios', 'diagnosis', 'tradeoff', 'arch']) {
+              const svc = assists.getAssist(method);
+              const data = svc && svc.getAssist ? svc.getAssist(requirementId) : null;
+              if (!data) continue;
+              if (data.used) usedMethods.push(method);
+              if (data.status === 'done' && typeof data.generated_at_round === 'number' && data.generated_at_round === newRound) roundUsedMethods.push(method);
+            }
+            const result = await pickNext({
+              clarity: fresh.input_clarity,
+              chatRound: newRound,
+              usedMethods,
+              roundUsedMethods,
+              aiUnderstanding: brief.ai_understanding || '',
+              followupQuestion: brief.followup_question || '',
+              diagnosis: brief.diagnosis || null,
+              force: true, // 跳过首轮豁免（建议不强制生成）
+            }, opts.modelId);
+            if (result && result.method) {
+              suggestedAssist = { method: result.method, reason: result.reason || '' };
+            }
+          }
+        } catch (e) { console.error('[brief.stream.suggest] 异常:', e.message); }
+        brief.suggested_assist = suggestedAssist;
+
         reqStore.update(requirementId, { thinking_brief: JSON.stringify(brief) });
         console.log(`[brief.stream] ${requirementId} 流式生成完成（chat_round=${newRound}）`);
 
-        // v0.3.6 流式完成后的后处理：路由器 + clarity 评估（跟 runBriefJob 一致）
-        setImmediate(async () => {
-          try {
-            const { pickNext } = require('./assists/router');
-            const assists = require('./assists');
-            const fresh = reqStore.getById(requirementId);
-            if (fresh && fresh.status === 'idea') {
-              const usedMethods = [];
-              const roundUsedMethods = [];
-              for (const method of ['decision_tree', 'scenarios', 'diagnosis', 'tradeoff', 'arch']) {
-                const svc = assists.getAssist(method);
-                const data = svc && svc.getAssist ? svc.getAssist(requirementId) : null;
-                if (!data) continue;
-                if (data.used) usedMethods.push(method);
-                if (data.status === 'done' && typeof data.generated_at_round === 'number' && data.generated_at_round === newRound) roundUsedMethods.push(method);
-              }
-              pickNext(fresh, { usedMethods, roundUsedMethods, chatRound: newRound }, opts.modelId).catch(e => console.error('[brief.stream.router] 异常:', e.message));
-            }
-          } catch (e) { console.error('[brief.stream.router] 异常:', e.message); }
-        });
+        // v0.3.6 流式完成后的后处理（去掉路由器自动触发，仅保留 dialog + clarity）
         setImmediate(async () => {
           try {
             const { generateDialog } = require('./elicitor-dialog');

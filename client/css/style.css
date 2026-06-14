@@ -1357,6 +1357,20 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 }
 @keyframes cursorBlink { 50% { opacity: 0; } }
 
+/* v0.3.6 AI 建议辅助手段按钮 */
+.chat-assist-suggest {
+  margin-top: 6px; padding: 5px 8px;
+  font-size: 11px; color: var(--accent); cursor: pointer;
+  background: rgba(78,205,196,0.06);
+  border: 1px dashed rgba(78,205,196,0.25);
+  border-radius: 6px; transition: all .12s;
+  text-align: center;
+}
+.chat-assist-suggest:hover {
+  background: rgba(78,205,196,0.12);
+  border-style: solid;
+}
+
 /* v0.3.6 AI 回复 + 可折叠思考过程 */
 .chat-response-q {
   margin-top: 6px;
