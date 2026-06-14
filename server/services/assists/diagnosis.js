@@ -7,6 +7,9 @@ const modelStore = require('../../stores/model-store');
 const reqStore = require('../../stores/requirement-store');
 
 function pickDefaultLlm() {
+  // v0.3.6：优先使用系统配置的「默认思路模型」
+  const defaultGen = modelStore.getDefaultGenModel();
+  if (defaultGen) return defaultGen;
   const all = modelStore.list();
   return all.find(m => m.capabilities?.includes('text') || m.type === 'chat' || m.type === 'text')
       || all[0]

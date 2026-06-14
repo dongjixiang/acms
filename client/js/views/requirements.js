@@ -3674,7 +3674,7 @@ function renderAssistLayer(container, reqId, assists) {
   for (const method of ['diagnosis', 'scenarios', 'tradeoff', 'arch', 'decision_tree', 'visual']) {
     const d = assists[method];
     if (!d || d.status !== 'done' || d.used) continue;
-    const cr = (window.ACMSThinkingBrief?.getBrief?.(reqId)?.chat_round) || 1;
+    const cr = (_chatState[reqId]?.briefRound) || 1;
     if (d.generated_at_round !== cr) continue;
     const title = { decision_tree:'🌳 决策树', scenarios:'👥 场景', tradeoff:'⚖️ 取舍', arch:'🏗️ 架构', diagnosis:'🩺 体检', visual:'🎨 视觉' }[method]||method;
     let opts = '';
@@ -3802,7 +3802,20 @@ async function chatRegen(reqId) {
 }
 
 async function chatAssist(reqId, method) {
-  try { await api('POST', `/requirements/${reqId}/assist/${method}`, {}); toast(`🔄 ${method} 正在生成…`, 'info', 2000); }
+  try {
+    const resp = await api('POST', `/requirements/${reqId}/assist/${method}`, {});
+    toast(`🔄 ${method} 正在生成…`, 'info', 2000);
+    // 等 1.5s 后主动拉一次 assist，不需要等轮询
+    setTimeout(async () => {
+      try {
+        const r = await api('GET', `/requirements/${reqId}/assist`);
+        const d = r.assists?.[method];
+        console.log(`[chatAssist] ${method} data:`, JSON.stringify(d).slice(0, 300));
+        const container = document.getElementById(`chat-stream-msgs-${reqId}`);
+        if (container) renderAssistLayer(container, reqId, r.assists || {});
+      } catch {}
+    }, 1500);
+  }
   catch(e) { toast('失败: '+e.message, 'error'); }
 }
 

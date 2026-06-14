@@ -194,6 +194,7 @@ async function callLLMWithRetry(model, messages, opts = {}) {
   const baseMaxTokens = opts.maxTokens ?? 1500;
   const jsonMode = opts.jsonMode !== false;
   const serviceName = opts.serviceName || 'LLM';
+  let lastError = '';
   for (let attempt = 1; attempt <= 2; attempt++) {
     const thisTemp = attempt === 1 ? baseTemp : Math.max(0.1, baseTemp - 0.1);
     const thisMaxTokens = attempt === 1 ? baseMaxTokens : baseMaxTokens + 300;
@@ -205,6 +206,7 @@ async function callLLMWithRetry(model, messages, opts = {}) {
         jsonMode,
       });
     } catch (e) {
+      lastError = e.message;
       console.warn(`[${serviceName}] callLLM 异常（attempt ${attempt}/2）: ${e.message}`);
       continue;
     }
@@ -220,12 +222,12 @@ async function callLLMWithRetry(model, messages, opts = {}) {
     _debugDump('JSON_PARSE_FAIL', {
       serviceName, attempt, temp: thisTemp, maxTokens: thisMaxTokens,
       contentLen: result.content?.length || 0,
-      fullContent: result.content,  // 不截断，全 dump
-      // 标记在哪失败（截 100 字符）
+      fullContent: result.content,
       failHint: preview.slice(0, 100),
     });
   }
-  return null;
+  // 两次都失败 → 抛出原始错误（如果有）或通用错误
+  throw new Error(lastError || `LLM 调用失败（已重试 1 次）`);
 }
 
 module.exports = { extractJSON, safeParseJSON, callLLMWithRetry };

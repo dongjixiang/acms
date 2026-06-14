@@ -7,6 +7,9 @@ const modelStore = require('../../stores/model-store');
 const reqStore = require('../../stores/requirement-store');
 
 function pickDefaultLlm() {
+  // v0.3.6：优先使用系统配置的「默认思路模型」
+  const defaultGen = modelStore.getDefaultGenModel();
+  if (defaultGen) return defaultGen;
   const all = modelStore.list();
   return all.find(m => m.capabilities?.includes('text') || m.type === 'chat' || m.type === 'text')
       || all[0]
@@ -91,11 +94,9 @@ async function runAssistJob(requirementId, opts = {}) {
       { role: 'user', content: userParts.filter(Boolean).join('\n') },
     ];
 
-    // v0.3.3 B++ 补丁：用 callLLMWithRetry（公共重试工具）替代直接 callLLM
     const parsed = await callLLMWithRetry(model, messages, {
       temperature: 0.7, maxTokens: 1200, jsonMode: true, serviceName: 'assist:scenarios',
     });
-    if (!parsed) throw new Error('LLM 返回无法解析为 JSON（已重试 1 次）');
     if (!Array.isArray(parsed.scenarios)) throw new Error('LLM 返回缺少 scenarios 字段');
     const scenarios = parsed.scenarios.slice(0, 3);
 

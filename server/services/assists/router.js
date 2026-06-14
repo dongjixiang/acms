@@ -14,6 +14,9 @@ const { ASSIST_METHODS } = require('./index');
 const elicitorAdapter = require('../elicitor-adapter');  // v0.4 Phase 0：软开关 + 健康检查
 
 function pickDefaultLlm() {
+  // v0.3.6：优先使用系统配置的「默认思路模型」
+  const defaultGen = modelStore.getDefaultGenModel();
+  if (defaultGen) return defaultGen;
   const all = modelStore.list();
   return all.find(m => m.capabilities?.includes('text') || m.type === 'chat' || m.type === 'text')
       || all[0]
