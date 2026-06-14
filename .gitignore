@@ -14,3 +14,6 @@ tmp/
 # Server stdout/stderr (本地运行产出)
 server_out.txt
 server_err.txt
+
+# 探索性原型/草图 (不入仓库，保留本地工作)
+sketches/
