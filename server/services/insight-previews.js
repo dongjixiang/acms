@@ -128,13 +128,13 @@ async function assessClarity(title, description, modelId, supplementHistory = []
     { role: 'user', content: userParts.join('\n') },
   ];
   try {
-    const result = await callLLM(model.id, messages, {
+    const { callLLMWithRetry } = require('./json-extractor');
+    const parsed = await callLLMWithRetry(model, messages, {
       temperature: 0.3,
-      maxTokens: 200,
+      maxTokens: 800,
       jsonMode: true,
+      serviceName: 'assessClarity',
     });
-    // v0.3.3 B 方案补丁：多层 JSON 提取
-    const parsed = safeParseJSON(result.content);
     if (!parsed) throw new Error('LLM 返回无法解析为 JSON');
     const clarity = ['high', 'medium', 'low'].includes(parsed.clarity) ? parsed.clarity : null;
     return { clarity, reason: parsed.reason || '', modelId: model.id };
