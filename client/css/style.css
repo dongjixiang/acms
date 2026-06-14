@@ -1148,69 +1148,59 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
   padding: 0 5px; border-radius: 3px; margin-right: 5px; line-height: 1.6;
 }
 
-/* Assist card layer - 对话流内统一字体和尺寸 */
+/* ── 对话流内 assist 卡片（覆盖原样式）── */
 .chat-assist-layer { align-self: flex-start; width: 100%; animation: chatFadeIn .25s ease; }
 .chat-assist-layer .assist-section-title { font-size: 13px; }
-.chat-assist-layer .assist-card { font-size: 13px; }
-.chat-assist-layer .assist-card-header strong { font-size: 13px; }
-.chat-assist-layer .assist-card-letter { font-size: 14px; }
-.chat-assist-layer .assist-card-meta,
-.chat-assist-layer .assist-card-row,
-.chat-assist-layer .assist-card-quote { font-size: 12.5px; }
+.chat-assist-layer .assist-intro { font-size: 12px; color: var(--text3); }
+.chat-assist-layer .assist-grid { gap: 8px; }
+
+/* 场景卡片：紧凑 + 清晰层次 */
+.chat-assist-layer .assist-card {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 0 0 6px 0;
+}
+.chat-assist-layer .assist-card:hover {
+  border-color: var(--border); background: transparent;
+}
+.chat-assist-layer .assist-card-header {
+  display: flex; align-items: center; gap: 5px;
+  padding: 5px 8px; margin-bottom: 4px;
+  background: rgba(78,205,196,0.12);
+  border-bottom: 1px solid var(--border);
+}
+.chat-assist-layer .assist-card-letter {
+  width: 18px; height: 18px; border-radius: 3px;
+  background: rgba(78,205,196,0.3); color: #4ecdc4;
+  font-size: 11px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.chat-assist-layer .assist-card-header strong {
+  font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.chat-assist-layer .assist-card-meta {
+  font-size: 11px; padding: 0 8px; color: var(--text2);
+}
+.chat-assist-layer .assist-card-row {
+  display: flex; align-items: baseline; gap: 2px;
+  padding: 0 8px; font-size: 11.5px; line-height: 1.5;
+}
+.chat-assist-layer .assist-label { white-space: nowrap; flex-shrink: 0; }
+.chat-assist-layer .assist-card-quote {
+  font-size: 11px; padding: 2px 8px; margin: 0 8px 2px;
+  font-style: italic; color: var(--text3);
+}
+.chat-assist-layer .assist-pick-btn,
+.chat-assist-layer .chat-assist-clickable .btn-small.btn-primary,
+.chat-assist-layer .chat-assist-clickable .btn-small {
+  width: 100%; margin-top: auto; padding: 5px 8px; font-size: 11px;
+}
+
+/* 其他卡片：统一字体 */
 .chat-assist-layer .brief-branch { font-size: 13px; }
 .chat-assist-layer .brief-branch-label { font-size: 13px; }
 .chat-assist-layer .brief-branch-desc,
 .chat-assist-layer .brief-branch-proscons { font-size: 12.5px; }
 .chat-assist-layer .assist-tradeoff-opt { font-size: 12px; }
-.chat-assist-layer .assist-intro { font-size: 12px; color: var(--text3); }
-.chat-assist-layer .assist-grid { gap: 8px; }
-/* 场景卡片紧凑 + 全宽按钮 */
-.chat-assist-layer .assist-card {
-  max-width: 100%;
-  display: flex; flex-direction: column;
-  padding: 0 0 8px 0;
-  gap: 0;
-}
-/* 取消卡片 hover 变化 */
-.chat-assist-layer .assist-card:hover {
-  border-color: var(--border);
-  background: transparent;
-}
-.chat-assist-layer .assist-card-meta,
-.chat-assist-layer .assist-card-row,
-.chat-assist-layer .assist-card-quote { font-size: 11.5px; line-height: 1.4; }
-.chat-assist-layer .assist-card-row {
-  display: flex; align-items: baseline; gap: 2px;
-  padding: 0 8px; margin-bottom: 1px;
-}
-.chat-assist-layer .assist-label { white-space: nowrap; flex-shrink: 0; font-size: 11px; }
-.chat-assist-layer .assist-card-meta { padding: 2px 8px 0; }
-.chat-assist-layer .assist-card-quote {
-  font-size: 11.5px; padding: 2px 8px; margin: 0 8px 2px; line-height: 1.4;
-}
-.chat-assist-layer .assist-pick-btn,
-.chat-assist-layer .chat-assist-clickable .btn-small.btn-primary,
-.chat-assist-layer .chat-assist-clickable .btn-small {
-  width: 100%; margin-top: auto; padding: 4px 8px; font-size: 11px;
-}
-.chat-assist-layer .assist-card-header {
-  border-bottom: 1px solid var(--border);
-  padding: 5px 8px;
-  display: flex; align-items: center; gap: 6px;
-  background: rgba(78,205,196,0.1);
-  margin-bottom: 4px;
-}
-.chat-assist-layer .assist-card-header strong {
-  font-size: 12px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-/* 去掉字母单独徽章（表头整行已有背景） */
-.chat-assist-layer .assist-card-letter {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 18px; height: 18px; border-radius: 3px;
-  background: rgba(78,205,196,0.2); color: #4ecdc4;
-  font-size: 11px; font-weight: 700; flex-shrink: 0;
-}
 /* 选中态 */
 .chat-assist-clickable.selected, .chat-assist-opt-clickable.selected {
   outline: 2px solid var(--accent);
