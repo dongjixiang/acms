@@ -734,7 +734,7 @@ router.post('/:id/assist/run', async (req, res, next) => {
 router.post('/:id/assist/:method', async (req, res, next) => {
   try {
     const { method } = req.params;
-    const { modelId, role } = req.body || {};
+    const { modelId, role, productName } = req.body || {};
     const reqRec = reqStore.getById(req.params.id);
     if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
     if (reqRec.status !== 'idea') {
@@ -743,16 +743,13 @@ router.post('/:id/assist/:method', async (req, res, next) => {
 
     const svc = assists.getAssist(method);
     if (!svc) return res.status(400).json({ error: 'UNKNOWN_METHOD', method });
-    // v0.3.3 B+++：visual 现在有 runAssistJob（复用 insight-previews 的 runPreviewJob）
-    //   不再返回 USE_INSIGHT_PREVIEWS_ENDPOINT 错误
     if (!svc.runAssistJob) return res.status(500).json({ error: 'ASSIST_HAS_NO_RUNNER' });
 
-    // 手动触发也带上 chatRound（如果用户用手动端点，意图是"我已经决定要这个 method"，仍记本轮已用）
     const deepDiveOf = req.body?.deepDiveOf;
     const manualBrief = (() => { try { return JSON.parse(reqRec.thinking_brief || 'null'); } catch { return null; } })();
     const manualRound = manualBrief?.chat_round || 1;
     const manualFocus = manualBrief?.followup_question || '';
-    setImmediate(() => svc.runAssistJob(req.params.id, { modelId, role, chatRound: manualRound, followupQuestion: manualFocus, deepDiveOf })
+    setImmediate(() => svc.runAssistJob(req.params.id, { modelId, role, chatRound: manualRound, followupQuestion: manualFocus, deepDiveOf, productName })
       .catch(e => console.error(`[assist.${method}] 任务异常:`, e.message)));
 
     res.status(202).json({ method, status: 'generating' });
@@ -773,7 +770,7 @@ router.post('/:id/assist/:method/regenerate', async (req, res, next) => {
     }
 
     // 只有 3 种适合换（scenarios / decision_tree / visual）
-    const REGENERATABLE = ['scenarios', 'decision_tree', 'visual'];
+    const REGENERATABLE = ['scenarios', 'decision_tree', 'visual', 'reference'];
     if (!REGENERATABLE.includes(method)) {
       return res.status(400).json({ error: 'METHOD_NOT_REGENERATABLE', method });
     }

@@ -1071,7 +1071,7 @@ async function sendAiClarify(reqId, choiceAnswer) {
 
     // 渲染交互组件：按 strategy 分发（v0.3.1 思路先于画面 增量）
     // - choices: 原有的 4-6 个选择题
-    // - decision_tree: 3 个互斥分支卡片（点击 = 单选 + 自动送 AI）
+    // - decision_tree: 3 个互斥分支卡片（点击=选中预览，提交按钮=拼回答送 AI；v0.4 暖橙描边）
     if (result.strategy === 'decision_tree' && result.content && result.content.branches) {
       renderDecisionTree(reqId, result.content.branches);
     } else if (result.choices && result.choices.length > 0) {
@@ -1308,102 +1308,6 @@ function collectSelections(reqId) {
   return Object.entries(sel)
     .filter(([_, v]) => v.values && v.values.length > 0)
     .map(([k, v]) => v.values.join('，'));
-}
-
-// ===== Decision Tree 渲染（v0.3.1 思路先于画面 增量）=====
-// AI 在 strategy='decision_tree' 时输出 3 个互斥分支
-// 用户点击任一分支 → 自动把该分支的 desc+examples 作为回答送回 AI
-function renderDecisionTree(reqId, branches) {
-  const choicesDiv = document.getElementById(`ai-clarify-choices-${reqId}`);
-  if (!choicesDiv) return;
-
-  if (!Array.isArray(branches) || branches.length === 0) {
-    choicesDiv.innerHTML = '<div style="color:var(--text2);padding:8px">决策树数据为空，请直接在输入框中描述你的想法</div>';
-    return;
-  }
-
-  // 顶部简短引导（无缩进、无绿色线条，仅一行小字提示）
-  const intro = `<div style="margin:4px 0 8px;font-size:12px;color:var(--text2)">
-    点卡片就是选这个方向，也可以先点下面输入框补充自己的想法。
-  </div>`;
-
-  // 渲染分支卡片网格
-  const cards = branches.map((b, i) => {
-    const label = b.label || `方向 ${String.fromCharCode(65 + i)}`;
-    const desc = b.desc || '';
-    const pros = b.pros || '';
-    const cons = b.cons || '';
-    const examples = b.examples || '';
-    return `<div class="dt-branch-card" data-branch-idx="${i}"
-      style="cursor:pointer;padding:12px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;transition:all 0.15s"
-      onclick="pickDecisionBranch('${reqId}', ${i})">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-        <span style="display:inline-block;width:24px;height:24px;line-height:24px;text-align:center;background:var(--accent);color:#000;border-radius:50%;font-weight:bold;font-size:13px">${String.fromCharCode(65 + i)}</span>
-        <strong style="font-size:14px;color:var(--text1)">${escHtml(label)}</strong>
-      </div>
-      <div style="font-size:12px;color:var(--text2);margin-bottom:8px;line-height:1.5">${escHtml(desc)}</div>
-      ${(pros || cons) ? `<div style="font-size:11px;margin-bottom:6px">
-        ${pros ? `<span style="color:var(--green);margin-right:8px">+ ${escHtml(pros)}</span>` : ''}
-        ${cons ? `<span style="color:var(--red)">- ${escHtml(cons)}</span>` : ''}
-      </div>` : ''}
-      ${examples ? `<div style="font-size:11px;color:var(--text3);border-top:1px dashed var(--border);padding-top:6px">💡 典型: ${escHtml(examples)}</div>` : ''}
-    </div>`;
-  }).join('');
-
-  choicesDiv.innerHTML = intro +
-    `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:8px">${cards}</div>` +
-    `<div style="text-align:center;margin-top:8px">
-      <button class="btn-small btn-reject" onclick="skipDecisionTree('${reqId}')" style="font-size:11px">都不太对，我想自己说</button>
-    </div>`;
-
-  // 鼠标悬停效果（用 CSS hover 会被内联 style 覆盖，用 JS 模拟）
-  choicesDiv.querySelectorAll('.dt-branch-card').forEach(card => {
-    card.addEventListener('mouseenter', () => {
-      card.style.borderColor = 'var(--accent)';
-      card.style.background = 'var(--bg2)';
-    });
-    card.addEventListener('mouseleave', () => {
-      card.style.borderColor = 'var(--border)';
-      card.style.background = 'var(--bg3)';
-    });
-  });
-}
-
-// 用户点了某个分支 → 把分支信息作为回答送回 AI
-async function pickDecisionBranch(reqId, idx) {
-  // 拿当前轮 AI 回复里的 branches（从 history 取）
-  const last = (aiClarifyHistory[reqId] || []).filter(h => h.role === 'assistant').slice(-1)[0];
-  const branches = last?.content?.branches || [];
-  const b = branches[idx];
-  if (!b) return;
-
-  // 把分支的关键信息组成一句自然语言回答
-  const parts = [];
-  parts.push(`我倾向「${b.label}」方向`);
-  if (b.desc) parts.push(`(${b.desc})`);
-  if (b.examples) parts.push(`参考 ${b.examples} 的体验`);
-  // 用户可叠加输入框内容
-  const input = document.getElementById(`ai-clarify-input-${reqId}`);
-  const custom = input?.value?.trim();
-  if (custom) parts.push(`补充：${custom}`);
-
-  // 把这条消息写进 input（视觉反馈）然后发送
-  if (input) {
-    input.value = parts.join('，');
-    input.focus();
-  }
-  await sendAiClarify(reqId);
-}
-
-// 「都不太对」→ 提示用户直接在输入框里说
-function skipDecisionTree(reqId) {
-  const input = document.getElementById(`ai-clarify-input-${reqId}`);
-  if (input) {
-    input.value = '';
-    input.placeholder = '说说你的想法（不限方向，AI 会接着问）';
-    input.focus();
-  }
-  toast('👉 直接在输入框里说你的想法，AI 会接着问', 'info', 2500);
 }
 
 function renderChoicesWithSubmit(reqId, choices) {
@@ -3166,10 +3070,12 @@ async function regenerateInsightPreviews(reqId) {
 // ════════════════════════════════════════════════════════════════
 // v0.3「思路先于画面」: 思路简报加载 / 重新生成 / 跳过
 // ════════════════════════════════════════════════════════════════
-// ===== Decision Tree 渲染（v0.3.1 思路先于画面 增量，澄清阶段用）=====
+// ===== Decision Tree 渲染（v0.4 — 暖橙描边 + 提交按钮）=====
 // AI 在 strategy='decision_tree' 时输出 3 个互斥分支
-// 用户点击任一分支 → 自动把该分支的 desc+examples 作为回答送回 AI
-// 注意：idea 阶段的决策树已经迁到 client/js/views/assists/decision-tree.js
+// 用户点击卡片 = 选中预览；点击「✓ 确认采用这个方向」= 拼成自然语言回答 + 调 sendAiClarify 推进
+// 注意：idea 阶段的决策树走 ACMSAssists 注册（client/js/views/assists/decision-tree.js）
+// 需求阶段保留在 requirements.js（走老架构：渲染到 #ai-clarify-choices-${reqId}，提交后调 sendAiClarify）
+// v0.3.1 早期版本曾被重复定义在 line 1313-1407，v0.4 改版时已清理（2026-06-14）
 function renderDecisionTree(reqId, branches) {
   const choicesDiv = document.getElementById(`ai-clarify-choices-${reqId}`);
   if (!choicesDiv) return;
@@ -3179,80 +3085,100 @@ function renderDecisionTree(reqId, branches) {
     return;
   }
 
-  // 顶部简短引导（无缩进、无绿色线条，仅一行小字提示）
-  const intro = `<div style="margin:4px 0 8px;font-size:12px;color:var(--text2)">
-    点卡片就是选这个方向，也可以先点下面输入框补充自己的想法。
-  </div>`;
-
-  // 渲染分支卡片网格
+  // 渲染分支卡片（用 CSS class，无 inline style）
   const cards = branches.map((b, i) => {
     const label = b.label || `方向 ${String.fromCharCode(65 + i)}`;
-    const desc = b.desc || '';
-    const pros = b.pros || '';
-    const cons = b.cons || '';
-    const examples = b.examples || '';
-    return `<div class="dt-branch-card" data-branch-idx="${i}"
-      style="cursor:pointer;padding:12px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;transition:all 0.15s"
-      onclick="pickDecisionBranch('${reqId}', ${i})">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-        <span style="display:inline-block;width:24px;height:24px;line-height:24px;text-align:center;background:var(--accent);color:#000;border-radius:50%;font-weight:bold;font-size:13px">${String.fromCharCode(65 + i)}</span>
-        <strong style="font-size:14px;color:var(--text1)">${escHtml(label)}</strong>
+    return `
+    <div class="dt-branch" data-branch-idx="${i}">
+      <div class="dt-branch-head">
+        <span class="dt-branch-letter">${String.fromCharCode(65 + i)}</span>
+        <span class="dt-branch-label">${escHtml(label)}</span>
       </div>
-      <div style="font-size:12px;color:var(--text2);margin-bottom:8px;line-height:1.5">${escHtml(desc)}</div>
-      ${(pros || cons) ? `<div style="font-size:11px;margin-bottom:6px">
-        ${pros ? `<span style="color:var(--green);margin-right:8px">+ ${escHtml(pros)}</span>` : ''}
-        ${cons ? `<span style="color:var(--red)">- ${escHtml(cons)}</span>` : ''}
-      </div>` : ''}
-      ${examples ? `<div style="font-size:11px;color:var(--text3);border-top:1px dashed var(--border);padding-top:6px">💡 典型: ${escHtml(examples)}</div>` : ''}
+      <div class="dt-branch-desc">${escHtml(b.desc || '')}</div>
+      ${b.examples ? `<div class="dt-branch-analogy">💡 ${escHtml(b.examples)}</div>` : ''}
+      <div class="dt-proscons">
+        ${b.pros ? `<div class="dt-pc dt-pc-pro"><span class="dt-pc-mark">+</span>${escHtml(b.pros)}</div>` : ''}
+        ${b.cons ? `<div class="dt-pc dt-pc-con"><span class="dt-pc-mark">−</span>${escHtml(b.cons)}</div>` : ''}
+      </div>
     </div>`;
   }).join('');
 
-  choicesDiv.innerHTML = intro +
-    `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:8px">${cards}</div>` +
-    `<div style="text-align:center;margin-top:8px">
-      <button class="btn-small btn-reject" onclick="skipDecisionTree('${reqId}')" style="font-size:11px">都不太对，我想自己说</button>
-    </div>`;
+  choicesDiv.innerHTML = `
+    <div class="dt-block">
+      <div class="dt-title">🌳 决策树 · 3 个互斥方向</div>
+      <div class="dt-tree">${cards}</div>
+      <div class="dt-footer">
+        <span>点卡片切换选中 · 也可直接在输入框里补充自己的想法</span>
+        <div class="dt-footer-actions">
+          <button class="dt-btn" onclick="skipDecisionTree('${reqId}')">↩ 我想说点别的</button>
+          <button class="dt-btn dt-btn-primary" id="dt-req-submit-${reqId}" disabled onclick="submitDecisionBranch('${reqId}')">✓ 确认采用这个方向</button>
+        </div>
+      </div>
+    </div>
+  `;
 
-  // 鼠标悬停效果（用 CSS hover 会被内联 style 覆盖，用 JS 模拟）
-  choicesDiv.querySelectorAll('.dt-branch-card').forEach(card => {
-    card.addEventListener('mouseenter', () => {
-      card.style.borderColor = 'var(--accent)';
-      card.style.background = 'var(--bg2)';
-    });
-    card.addEventListener('mouseleave', () => {
-      card.style.borderColor = 'var(--border)';
-      card.style.background = 'var(--bg3)';
+  // 卡片 click → 切换 selected + 启用提交按钮
+  choicesDiv.querySelectorAll('.dt-branch').forEach(card => {
+    card.addEventListener('click', () => {
+      const wasSelected = card.classList.contains('selected');
+      choicesDiv.querySelectorAll('.dt-branch').forEach(c => c.classList.remove('selected'));
+      if (!wasSelected) {
+        card.classList.add('selected');
+        const submitBtn = document.getElementById(`dt-req-submit-${reqId}`);
+        if (submitBtn) submitBtn.disabled = false;
+      } else {
+        const submitBtn = document.getElementById(`dt-req-submit-${reqId}`);
+        if (submitBtn) submitBtn.disabled = true;
+      }
     });
   });
 }
 
-// 用户点了某个分支 → 把分支信息作为回答送回 AI
-async function pickDecisionBranch(reqId, idx) {
-  // 拿当前轮 AI 回复里的 branches（从 history 取）
+// 提交：把分支信息拼成自然语言回答 → 写进 input → 调 sendAiClarify 推进
+async function submitDecisionBranch(reqId) {
+  const choicesDiv = document.getElementById(`ai-clarify-choices-${reqId}`);
+  if (!choicesDiv) return;
+  const selected = choicesDiv.querySelector('.dt-branch.selected');
+  if (!selected) {
+    toast('请先选一个方向', 'info', 1500);
+    return;
+  }
+  const idx = parseInt(selected.dataset.branchIdx);
+
+  // 拿当前轮 AI 回复里的 branches
   const last = (aiClarifyHistory[reqId] || []).filter(h => h.role === 'assistant').slice(-1)[0];
   const branches = last?.content?.branches || [];
   const b = branches[idx];
   if (!b) return;
 
-  // 把分支的关键信息组成一句自然语言回答
+  // 拼一句自然语言回答（保留原 pickDecisionBranch 行为）
   const parts = [];
   parts.push(`我倾向「${b.label}」方向`);
   if (b.desc) parts.push(`(${b.desc})`);
   if (b.examples) parts.push(`参考 ${b.examples} 的体验`);
-  // 用户可叠加输入框内容
   const input = document.getElementById(`ai-clarify-input-${reqId}`);
   const custom = input?.value?.trim();
   if (custom) parts.push(`补充：${custom}`);
 
-  // 把这条消息写进 input（视觉反馈）然后发送
+  // 写进 input + 锁住卡片 + 禁用提交按钮（即时视觉反馈）
   if (input) {
     input.value = parts.join('，');
     input.focus();
   }
+  choicesDiv.querySelectorAll('.dt-branch').forEach(c => {
+    c.classList.remove('selected');
+    c.style.cursor = 'default';
+  });
+  const submitBtn = document.getElementById(`dt-req-submit-${reqId}`);
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = '✓ 已提交';
+  }
+
   await sendAiClarify(reqId);
 }
 
-// 「都不太对」→ 提示用户直接在输入框里说
+// 「我想说点别的」→ 提示用户直接在输入框里说（保留原 skipDecisionTree 行为）
 function skipDecisionTree(reqId) {
   const input = document.getElementById(`ai-clarify-input-${reqId}`);
   if (input) {
@@ -3261,6 +3187,21 @@ function skipDecisionTree(reqId) {
     input.focus();
   }
   toast('👉 直接在输入框里说你的想法，AI 会接着问', 'info', 2500);
+}
+
+// 兼容旧 onclick 引用：pickDecisionBranch(reqId, idx)
+// 老 HTML 模板可能仍调用此名（chat-assist-layer 注入的旧模板），重定向到 submitDecisionBranch
+async function pickDecisionBranch(reqId, idx) {
+  // 先选中对应卡片
+  const choicesDiv = document.getElementById(`ai-clarify-choices-${reqId}`);
+  if (choicesDiv) {
+    const card = choicesDiv.querySelector(`.dt-branch[data-branch-idx="${idx}"]`);
+    if (card) {
+      choicesDiv.querySelectorAll('.dt-branch').forEach(c => c.classList.remove('selected'));
+      card.classList.add('selected');
+    }
+  }
+  return await submitDecisionBranch(reqId);
 }
 
 /**
@@ -3468,7 +3409,7 @@ async function loadChatStream(reqId) {
     } else if (brief && brief.status === 'generating') {
       container.insertAdjacentHTML('beforeend', '<div class="chat-typing"><span></span><span></span><span></span></div>');
     }
-    try { const r = await api('GET', `/requirements/${reqId}/assist`); renderAssistLayer(container, reqId, r.assists || {}); } catch {}
+    try { const r = await api('GET', `/requirements/${reqId}/assist`); renderAssistLayer(container, reqId, r.assists || {}); } catch(e) { console.warn('[loadChatStream] assist load error:', e.message); }
     chatScrollToBottom(container);
     startChatPolling(reqId);
   } catch (e) {
@@ -3514,7 +3455,29 @@ function startChatPolling(reqId) {
       // assist 层（移除旧层 + 加新层，始终只显示最新一张）
       const r = await api('GET', `/requirements/${reqId}/assist`);
       renderAssistLayer(container, reqId, r.assists || {});
-    } catch {}
+      // 检测显式选中的 assist 是否完成（合并 pollAssistUntilDone）
+      const explicit = window._explicitAssist?.[reqId];
+      if (explicit) {
+        const ad = r.assists?.[explicit];
+        if (ad) {
+          if (ad.status === 'done') {
+            console.log(`[chatAssist] ${explicit} done, rendering`);
+            if (window._explicitAssist) delete window._explicitAssist[reqId];
+            renderAssistLayer(container, reqId, r.assists || {});
+          } else if (ad.status === 'failed') {
+            console.error(`[chatAssist] ${explicit} failed:`, ad.error || 'unknown');
+            toast(`❌ ${explicit} 生成失败: ${ad.error || '未知错误'}`, 'error', 5000);
+            if (window._explicitAssist) delete window._explicitAssist[reqId];
+          } else {
+            // 生成中：每 3 次轮询打一次日志
+            if (c % 3 === 0) console.log(`[chatAssist] ${explicit} still ${ad.status} (tick #${c})`);
+          }
+        } else {
+          // 数据还没写入（setImmediate 延迟）
+          if (c % 3 === 0) console.log(`[chatAssist] ${explicit} waiting for data (tick #${c})`);
+        }
+      }
+    } catch(e) { console.warn('[chatPoll] polling error:', e.message); }
   }, 3000);
 }
 
@@ -3581,9 +3544,12 @@ function renderAssistLayer(container, reqId, assists) {
   // 跟踪已渲染的 assist 数据指纹，避免不必要重建（v0.3.6）
   if (!window._assistRenderCache) window._assistRenderCache = {};
 
-  for (const method of ['diagnosis', 'scenarios', 'tradeoff', 'arch', 'decision_tree', 'visual', 'competitive', 'reference']) {
+  for (const method of ['diagnosis', 'reference', 'scenarios', 'tradeoff', 'arch', 'decision_tree', 'visual', 'competitive']) {
     const d = assists[method];
     if (!d || d.status !== 'done' || d.used) continue;
+    // 用户显式选了某个 assist → 只显示那个，其他跳过
+    const explicit = window._explicitAssist?.[reqId];
+    if (explicit && explicit !== method) continue;
     const cr = (_chatState[reqId]?.briefRound) || 1;
     if (d.generated_at_round !== cr) {
       if (method === 'decision_tree') console.log(`[assist.render] decision_tree SKIP round: generated=${d.generated_at_round} chatState=${cr}`);
@@ -3592,7 +3558,7 @@ function renderAssistLayer(container, reqId, assists) {
 
     // 检查数据指纹：没变化就不重建（避免用户选中态丢失）
     // v0.3.6：+aspects+picked 确保借鉴卡片选中态变化能被检测到
-    const fingerprint = JSON.stringify({ status: d.status, scenarios: d.scenarios, tree: d.tree, dimensions: d.dimensions, modules: d.modules, aspects: d.aspects, picked: d.picked, used: d.used });
+    const fingerprint = JSON.stringify({ status: d.status, scenarios: d.scenarios, tree: d.tree, dimensions: d.dimensions, modules: d.modules, aspects: d.aspects, profile: d.profile, insights: d.insights, picked: d.picked, used: d.used });
     const cacheKey = `${reqId}_${method}`;
     if (window._assistRenderCache[cacheKey] === fingerprint) continue; // 没变化，跳过该方法
     window._assistRenderCache[cacheKey] = fingerprint;
@@ -3603,7 +3569,8 @@ function renderAssistLayer(container, reqId, assists) {
     // 使用原组件渲染器获取视觉内容，替换交互为对话流选择
     let innerHtml = '';
     const mod = window.ACMSAssists?.get?.(method);
-    if (mod && mod.render) {
+      if (method === 'reference') console.log(`[assist.render] reference rendering, has mod:`, !!mod, `data mode:`, d?.mode, `status:`, d?.status);
+      if (mod && mod.render) {
       if (method === 'decision_tree') console.log(`[assist.render] decision_tree rendering, tree items: ${d.tree?.length || 0}`);
       try {
         const raw = mod.render(reqId, d);
@@ -3627,7 +3594,10 @@ function renderAssistLayer(container, reqId, assists) {
           stripped = stripped
             .replace(/<button class="(?:assist-pick-btn|btn-small btn-primary assist-pick-btn)[\s\S]*?<\/button>/g, '');
           if (method === 'decision_tree') {
-            stripped = stripped.replace(/class="brief-branch/g, 'class="brief-branch chat-assist-clickable"');
+            // v0.4 决策树用 .dt-branch；老 brief-branch 兼容（任何残留老卡片）
+            stripped = stripped
+              .replace(/class="dt-branch/g, 'class="dt-branch chat-assist-clickable"')
+              .replace(/class="brief-branch/g, 'class="brief-branch chat-assist-clickable"');
           } else if (method === 'tradeoff') {
             stripped = stripped.replace(/<button class="assist-tradeoff-opt/g, '<span class="assist-tradeoff-opt chat-assist-opt-clickable"');
             stripped = stripped.replace(/<\/button>/g, '</span>');
@@ -3673,9 +3643,10 @@ function chatToggleCard(el, reqId, method) {
 document.addEventListener('click', function(e) {
   const target = e.target.closest('.chat-assist-clickable:not(.assist-card)');
   if (target && target.closest('.chat-assist-layer')) {
-    // 决策树分支互斥：同层其他分支取消选中
-    if (target.closest('.brief-tree')) {
-      target.closest('.brief-tree').querySelectorAll('.chat-assist-clickable.selected').forEach(sib => sib.classList.remove('selected'));
+    // 决策树分支互斥：同层其他分支取消选中（v0.4 兼容 .dt-tree 和 .brief-tree）
+    const tree = target.closest('.brief-tree, .dt-tree');
+    if (tree) {
+      tree.querySelectorAll('.chat-assist-clickable.selected').forEach(sib => sib.classList.remove('selected'));
     }
     target.classList.toggle('selected');
   }
@@ -3748,15 +3719,8 @@ function connectStreamingBrief(reqId, container) {
         streamingBubble.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">🤖 AI</span><span class="chat-time">第${data.brief.chat_round||1}轮</span>${data.brief.ai_understanding ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}</div><div class="chat-response">${respHtml}</div>${thinkingHtml}${suggestHtml}`;
         delete streamingBubble.dataset.streaming;
         chatScrollToBottom(container);
-        // v0.3.6：auto_assist 自动触发辅助工具
-        const autoMethod = data.brief.auto_assist?.method;
-        if (autoMethod === 'competitive') {
-          toast('🔍 检测到竞品类问题，正在自动分析…', 'info', 2000);
-          setTimeout(() => chatAssist(reqId, 'competitive'), 800);
-        } else if (autoMethod === 'reference') {
-          toast('🏛 检测到参考需求，正在生成借鉴卡片…', 'info', 2000);
-          setTimeout(() => chatAssist(reqId, 'reference'), 800);
-        }
+        // 只保留 suggested_assist（气泡底部的 💡 链接），不自动触发
+        // auto_assist 逻辑已移除（2026-06-14：用户自主点击更可靠）
         // 尝试加载 assist
         loadStreamAssist(reqId, container);
       } else if (data.type === 'error') {
@@ -3780,7 +3744,7 @@ async function loadStreamAssist(reqId, container) {
   try {
     const r = await api('GET', `/requirements/${reqId}/assist`);
     renderAssistLayer(container, reqId, r.assists || {});
-  } catch {}
+  } catch(e) { console.warn('[loadStreamAssist] error:', e.message); }
 }
 
 async function chatRegen(reqId) {
@@ -3807,34 +3771,19 @@ async function chatAssist(reqId, method, extraBody) {
       if (k.startsWith(reqId + '_')) delete window._assistRenderCache[k];
     });
   }
+  // 标记用户显式选择了哪个 assist，renderAssistLayer 只显示这个
+  if (!window._explicitAssist) window._explicitAssist = {};
+  window._explicitAssist[reqId] = method;
   try {
     const body = extraBody || {};
     await api('POST', `/requirements/${reqId}/assist/${method}`, body);
     toast(`🔄 ${method} 正在生成…`, 'info', 2000);
-    startChatPolling(reqId);
-    pollAssistUntilDone(reqId, method, 0);
+    startChatPolling(reqId);  // 统一轮询，pollAssistUntilDone 已合并到 startChatPolling 内部
   }
   catch(e) { toast('失败: '+e.message, 'error'); }
 }
 
-/** 主动轮询直到 assist 完成或超时 */
-function pollAssistUntilDone(reqId, method, attempt) {
-  if (attempt >= 30) return; // 最多等 ~60s
-  setTimeout(async () => {
-    try {
-      const r = await api('GET', `/requirements/${reqId}/assist`);
-      const d = r.assists?.[method];
-      if (d && d.status === 'done') {
-        const container = document.getElementById(`chat-stream-msgs-${reqId}`);
-        if (container) renderAssistLayer(container, reqId, r.assists || {});
-        console.log(`[chatAssist] ${method} done, rendering`);
-      } else {
-        if (attempt % 5 === 0) console.log(`[chatAssist] ${method} still ${d?.status || 'waiting'} (attempt ${attempt})`);
-        pollAssistUntilDone(reqId, method, attempt + 1);
-      }
-    } catch {}
-  }, 2000);
-}
+/** pollAssistUntilDone 已合并到 startChatPolling（2026-06-14） */
 
 async function chatSendAssistPick(reqId, method) {
   const layer = document.querySelector(`#chat-stream-msgs-${reqId} .chat-assist-layer[data-assist-method="${method}"]`);
