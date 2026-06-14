@@ -3755,20 +3755,31 @@ async function chatRegen(reqId) {
 
 async function chatAssist(reqId, method) {
   try {
-    const resp = await api('POST', `/requirements/${reqId}/assist/${method}`, {});
+    await api('POST', `/requirements/${reqId}/assist/${method}`, {});
     toast(`🔄 ${method} 正在生成…`, 'info', 2000);
-    // 等 1.5s 后主动拉一次 assist，不需要等轮询
-    setTimeout(async () => {
-      try {
-        const r = await api('GET', `/requirements/${reqId}/assist`);
-        const d = r.assists?.[method];
-        console.log(`[chatAssist] ${method} data:`, JSON.stringify(d).slice(0, 300));
-        const container = document.getElementById(`chat-stream-msgs-${reqId}`);
-        if (container) renderAssistLayer(container, reqId, r.assists || {});
-      } catch {}
-    }, 1500);
+    // 重启主轮询（可能已超时停止），加上主动重试
+    startChatPolling(reqId);
+    // 主动轮询最多 10 次
+    pollAssistUntilDone(reqId, method, 0);
   }
   catch(e) { toast('失败: '+e.message, 'error'); }
+}
+
+/** 主动轮询直到 assist 完成或超时 */
+function pollAssistUntilDone(reqId, method, attempt) {
+  if (attempt >= 10) return; // 最多等 ~15s
+  setTimeout(async () => {
+    try {
+      const r = await api('GET', `/requirements/${reqId}/assist`);
+      const d = r.assists?.[method];
+      if (d && d.status === 'done') {
+        const container = document.getElementById(`chat-stream-msgs-${reqId}`);
+        if (container) renderAssistLayer(container, reqId, r.assists || {});
+      } else {
+        pollAssistUntilDone(reqId, method, attempt + 1);
+      }
+    } catch {}
+  }, 1500);
 }
 
 async function chatSendAssistPick(reqId, method) {
