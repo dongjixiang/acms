@@ -1181,15 +1181,16 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 }
 .chat-assist-layer .assist-card-header {
   border-bottom: 1px solid var(--border);
-  padding-bottom: 4px; margin-bottom: 0;
+  padding: 5px 8px; margin: -8px -8px 4px -8px;
   display: flex; align-items: center; gap: 6px;
+  background: rgba(78,205,196,0.06);
 }
 .chat-assist-layer .assist-card-header strong { font-size: 12px; }
-/* 选项字母徽章 */
+/* 去掉字母单独徽章（表头整行已有背景） */
 .chat-assist-layer .assist-card-letter {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 18px; height: 18px; border-radius: 4px;
-  background: rgba(78,205,196,0.15); color: #4ecdc4;
+  width: 18px; height: 18px; border-radius: 3px;
+  background: rgba(78,205,196,0.2); color: #4ecdc4;
   font-size: 11px; font-weight: 700; flex-shrink: 0;
 }
 /* 选中态 */

@@ -3579,13 +3579,13 @@ function renderAssistLayer(container, reqId, assists) {
     const cr = (_chatState[reqId]?.briefRound) || 1;
     if (d.generated_at_round !== cr) continue;
 
-    // 检查数据是否变化（避免闪烁）
+    // 检查数据指纹：没变化就不重建（避免用户选中态丢失）
     const fingerprint = JSON.stringify({ status: d.status, scenarios: d.scenarios, tree: d.tree, dimensions: d.dimensions, modules: d.modules, used: d.used });
     const cacheKey = `${reqId}_${method}`;
     if (window._assistRenderCache[cacheKey] === fingerprint) return; // 没变化，不重建
     window._assistRenderCache[cacheKey] = fingerprint;
 
-    // 移除旧层
+    // 移除旧层（确定要重建时才删）
     container.querySelectorAll(`.chat-assist-layer[data-assist-method="${method}"]`).forEach(el => el.remove());
 
     // 使用原组件渲染器获取视觉内容，替换交互为对话流选择
