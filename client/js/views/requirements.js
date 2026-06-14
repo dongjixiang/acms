@@ -3642,23 +3642,13 @@ function renderAssistLayer(container, reqId, assists) {
 
 function chatToggleOpt(el) { el.classList.toggle('selected'); }
 
-/** 点击卡片上的选择按钮（场景/架构）— 即选即发 */
+/** 点击卡片上的选择按钮（场景/架构）— 切换选中态 */
 function chatPickCard(reqId, method, btn) {
   const card = btn.closest('[class*="assist-card"]');
-  const label = card?.querySelector('strong')?.textContent?.trim() || card?.querySelector('.assist-card-letter')?.textContent?.trim() || '选项';
-  const supplement = `[${method}] ${label}`;
-  const c = document.getElementById(`chat-stream-msgs-${reqId}`);
-  if (c) {
-    renderChatBubble(c, {role:'user', text:supplement, at:new Date().toISOString()});
-    btn.disabled = true;
-    btn.textContent = '✅ 已选';
-    // 移除卡片层
-    c.querySelectorAll('.chat-assist-layer').forEach(el=>el.remove());
-    c.insertAdjacentHTML('beforeend','<div class="chat-typing"><span></span><span></span><span></span></div>');
-    chatScrollToBottom(c);
-  }
-  // 写入 supplement + 触发 SSE 流式
-  chatSendSupplement(reqId, supplement, `${method}_pick`);
+  if (!card) return;
+  const isSelected = card.classList.toggle('selected');
+  btn.textContent = isSelected ? '✅ 已选' : '👆 我最像这个';
+  btn.className = isSelected ? 'btn-small btn-primary' : 'btn-small';
 }
 
 /** 卡片选择切换（场景/决策树/架构等原组件卡片） */
@@ -3790,14 +3780,15 @@ async function chatSendAssistPick(reqId, method) {
   const layer = document.querySelector(`#chat-stream-msgs-${reqId} .chat-assist-layer[data-assist-method="${method}"]`);
   if (!layer) return;
   // 支持两种选择模式：勾选列表项 或 卡片选择
+  // 支持多种选择模式
   const selOpts = layer.querySelectorAll('.chat-assist-option.selected');
-  const selCards = layer.querySelectorAll('.chat-assist-clickable.selected, .chat-assist-opt-clickable.selected');
+  const selCards = layer.querySelectorAll('.chat-assist-clickable.selected');
   if (selOpts.length === 0 && selCards.length === 0) { toast('请先选择选项', 'warning'); return; }
   const labels = [];
   selOpts.forEach(el => labels.push(el.querySelector('.chat-opt-title')?.textContent?.trim()||''));
   selCards.forEach(el => {
-    const t = el.querySelector('strong')?.textContent?.trim() || el.querySelector('.assist-card-letter')?.textContent?.trim() || el.textContent?.trim().substring(0, 40) || '';
-    labels.push(t);
+    const t = el.querySelector('strong')?.textContent?.trim() || el.querySelector('.assist-card-letter')?.textContent?.trim() || '';
+    if (t) labels.push(t);
   });
   const supplement = `[${method}] ${labels.join('；')}`;
   const c = document.getElementById(`chat-stream-msgs-${reqId}`);
