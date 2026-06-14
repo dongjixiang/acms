@@ -1154,45 +1154,82 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 .chat-assist-layer .assist-intro { font-size: 12px; color: var(--text3); }
 .chat-assist-layer .assist-grid { gap: 8px; }
 
-/* 场景卡片：紧凑 + 清晰层次 */
+/* 场景卡片：紧凑 + 清晰层次
+   用 !important 覆盖原样式（原 .assist-card-row 等在后定义） */
 .chat-assist-layer .assist-card {
-  display: flex; flex-direction: column; gap: 2px;
-  padding: 0 0 6px 0;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 2px !important;
+  padding: 0 0 6px 0 !important;
 }
 .chat-assist-layer .assist-card:hover {
-  border-color: var(--border); background: transparent;
+  border-color: var(--border) !important;
+  background: transparent !important;
 }
 .chat-assist-layer .assist-card-header {
-  display: flex; align-items: center; gap: 5px;
-  padding: 5px 8px; margin-bottom: 4px;
-  background: rgba(78,205,196,0.12);
-  border-bottom: 1px solid var(--border);
+  display: flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  padding: 5px 8px !important;
+  margin-bottom: 4px !important;
+  background: rgba(78,205,196,0.12) !important;
+  border-bottom: 1px solid var(--border) !important;
 }
 .chat-assist-layer .assist-card-letter {
-  width: 18px; height: 18px; border-radius: 3px;
-  background: rgba(78,205,196,0.3); color: #4ecdc4;
-  font-size: 11px; font-weight: 700;
-  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  width: 18px !important;
+  height: 18px !important;
+  border-radius: 3px !important;
+  background: rgba(78,205,196,0.3) !important;
+  color: #4ecdc4 !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  flex-shrink: 0 !important;
 }
 .chat-assist-layer .assist-card-header strong {
-  font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-size: 12px !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
 }
 .chat-assist-layer .assist-card-meta {
-  font-size: 11px; padding: 0 8px; color: var(--text2);
+  font-size: 11px !important;
+  padding: 0 8px !important;
+  color: var(--text2) !important;
 }
 .chat-assist-layer .assist-card-row {
-  display: flex; align-items: baseline; gap: 2px;
-  padding: 0 8px; font-size: 11.5px; line-height: 1.5;
+  display: flex !important;
+  align-items: baseline !important;
+  gap: 2px !important;
+  padding: 0 8px !important;
+  margin-bottom: 1px !important;
+  font-size: 11.5px !important;
+  line-height: 1.5 !important;
+  color: var(--text2) !important;
 }
-.chat-assist-layer .assist-label { white-space: nowrap; flex-shrink: 0; }
+.chat-assist-layer .assist-label {
+  white-space: nowrap !important;
+  flex-shrink: 0 !important;
+  font-weight: 600 !important;
+  color: var(--text) !important;
+  margin-right: 4px !important;
+}
 .chat-assist-layer .assist-card-quote {
-  font-size: 11px; padding: 2px 8px; margin: 0 8px 2px;
-  font-style: italic; color: var(--text3);
+  font-size: 11px !important;
+  padding: 2px 8px !important;
+  margin: 0 8px 2px !important;
+  font-style: italic !important;
+  color: var(--text3) !important;
 }
 .chat-assist-layer .assist-pick-btn,
 .chat-assist-layer .chat-assist-clickable .btn-small.btn-primary,
 .chat-assist-layer .chat-assist-clickable .btn-small {
-  width: 100%; margin-top: auto; padding: 5px 8px; font-size: 11px;
+  width: 100% !important;
+  margin-top: auto !important;
+  padding: 5px 8px !important;
+  font-size: 11px !important;
 }
 
 /* 其他卡片：统一字体 */
@@ -1202,10 +1239,11 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 .chat-assist-layer .brief-branch-proscons { font-size: 12.5px; }
 .chat-assist-layer .assist-tradeoff-opt { font-size: 12px; }
 /* 选中态 */
-.chat-assist-clickable.selected, .chat-assist-opt-clickable.selected {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-  border-radius: 6px;
+.chat-assist-clickable.selected {
+  border-color: var(--accent) !important;
+}
+.chat-assist-opt-clickable.selected {
+  background: rgba(78,205,196,0.1);
 }
 .chat-assist-option {
   display: flex; align-items: flex-start; gap: 8px;

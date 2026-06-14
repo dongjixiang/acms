@@ -3608,10 +3608,9 @@ function renderAssistLayer(container, reqId, assists) {
           stripped = stripped
             .replace(/onclick="ACMSAssistDispatcher\.useAssist\([^)]+\)"/g, '')
             .replace(/<button class="btn-small btn-primary assist-pick-btn"/g, '<button class="btn-small btn-primary" onclick="chatPickCard(\'' + reqId + '\',\'' + method + '\',this)"');
-          stripped = stripped.replace(/class="assist-card/g, 'class="assist-card chat-assist-clickable"');
-          stripped = stripped.replace(/class="assist-card-narrow/g, 'class="assist-card-narrow chat-assist-clickable"');
+          // 场景/架构不设 clickable（通过按钮交互，点卡片内容不触发选择）
         } else {
-          // 其他：去掉 pick 按钮
+          // 其他：去掉 pick 按钮，设 clickable
           stripped = stripped
             .replace(/<button class="(?:assist-pick-btn|btn-small btn-primary assist-pick-btn)[\s\S]*?<\/button>/g, '');
           if (method === 'decision_tree') {
@@ -3655,14 +3654,6 @@ function chatPickCard(reqId, method, btn) {
 function chatToggleCard(el, reqId, method) {
   el.classList.toggle('selected');
 }
-
-// 对话流 assist 卡片的点击选择委托（v0.3.6）
-document.addEventListener('click', function(e) {
-  const target = e.target.closest('.chat-assist-clickable, .chat-assist-opt-clickable');
-  if (target && target.closest('.chat-assist-layer')) {
-    target.classList.toggle('selected');
-  }
-});
 
 async function chatSend(reqId) {
   const input = document.getElementById(`chat-input-${reqId}`);
