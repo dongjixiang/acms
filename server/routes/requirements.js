@@ -718,7 +718,8 @@ router.post('/:id/assist/run', async (req, res, next) => {
     }
 
     // 把 currentRound 传给 assist service，让它写入 generated_at_round 字段（用于下次判定本轮）
-    setImmediate(() => svc.runAssistJob(req.params.id, { modelId, role, chatRound: currentRound })
+    // 同时传 followupQuestion，让 assist 生成内容紧扣当前对话焦点
+    setImmediate(() => svc.runAssistJob(req.params.id, { modelId, role, chatRound: currentRound, followupQuestion })
       .catch(e => console.error(`[assist.${pick.method}] 任务异常:`, e.message)));
 
     res.status(202).json({
@@ -747,8 +748,11 @@ router.post('/:id/assist/:method', async (req, res, next) => {
     if (!svc.runAssistJob) return res.status(500).json({ error: 'ASSIST_HAS_NO_RUNNER' });
 
     // 手动触发也带上 chatRound（如果用户用手动端点，意图是"我已经决定要这个 method"，仍记本轮已用）
-    const manualRound = (() => { try { return JSON.parse(reqRec.thinking_brief || 'null')?.chat_round || 1; } catch { return 1; } })();
-    setImmediate(() => svc.runAssistJob(req.params.id, { modelId, role, chatRound: manualRound })
+    const deepDiveOf = req.body?.deepDiveOf;
+    const manualBrief = (() => { try { return JSON.parse(reqRec.thinking_brief || 'null'); } catch { return null; } })();
+    const manualRound = manualBrief?.chat_round || 1;
+    const manualFocus = manualBrief?.followup_question || '';
+    setImmediate(() => svc.runAssistJob(req.params.id, { modelId, role, chatRound: manualRound, followupQuestion: manualFocus, deepDiveOf })
       .catch(e => console.error(`[assist.${method}] 任务异常:`, e.message)));
 
     res.status(202).json({ method, status: 'generating' });
@@ -779,12 +783,15 @@ router.post('/:id/assist/:method/regenerate', async (req, res, next) => {
 
     // 标记当前 batch 已被"换过"（不进 used，因为用户没选）
     //   存到 req 上的标记字段，让 runAssistJob / dispatcher 知道该换
-    const chatRound = (() => { try { return JSON.parse(reqRec.thinking_brief || 'null')?.chat_round || 1; } catch { return 1; } })();
+    const regenBrief = (() => { try { return JSON.parse(reqRec.thinking_brief || 'null'); } catch { return null; } })();
+    const chatRound = regenBrief?.chat_round || 1;
+    const regenFocus = regenBrief?.followup_question || '';
 
     setImmediate(() => svc.runAssistJob(req.params.id, {
       modelId,
       role,
       chatRound,
+      followupQuestion: regenFocus,
       forceRegenerate: true,  // 关键：让 service 知道这是"换一批"调用
     }).catch(e => console.error(`[assist.regen.${method}] 任务异常:`, e.message)));
 
@@ -813,6 +820,14 @@ router.post('/:id/assist/:method/use', async (req, res, next) => {
       // v0.3.3 B+++：visual 选中某个变体 → 复用 insightPreviews.pickVariant（会写 picked + 合并到 srs.summary）
       const { pickVariant } = require('../services/insight-previews');
       result = pickVariant(req.params.id, body.variantId);
+    }
+    else if (method === 'competitive') {
+      // v0.3.6：竞品分析 → 标记已阅
+      result = svc.markUsed(req.params.id);
+    }
+    else if (method === 'reference') {
+      // v0.3.6：借鉴卡片 → 切换选中
+      result = svc.togglePick(req.params.id, body.idx);
     }
     else return res.status(400).json({ error: 'METHOD_HAS_NO_USE_HANDLER' });
 
@@ -952,7 +967,11 @@ router.get('/:id/supplement-history', (req, res, next) => {
     res.json({
       history: history.map((h, i) => ({
         index: i,
+        role: h.role || 'user',
         text: h.text || '',
+        opening: h.opening || '',
+        understanding: h.understanding || '',
+        followup_question: h.followup_question || '',
         source: h.source || 'idea_supplement',
         at: h.at || null,
       })),

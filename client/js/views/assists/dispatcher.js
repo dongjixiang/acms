@@ -97,7 +97,7 @@
   //     - 其他轮的（不管 used 没用过）→ 一律隐藏
     const brief = window.ACMSThinkingBrief?.getBrief?.(reqId);
     const currentRound = brief?.chat_round || 1;
-    const order = ['diagnosis', 'scenarios', 'tradeoff', 'arch', 'decision_tree', 'visual'];
+    const order = ['diagnosis', 'scenarios', 'tradeoff', 'arch', 'decision_tree', 'visual', 'competitive', 'reference'];
     const html = order
       .filter(m => {
         const d = data[m];

@@ -2968,6 +2968,7 @@ function renderIdeaPanel(req) {
     <div id="idea-panel-${req.id}" class="idea-panel">
       <div class="insight-header">
         <span class="insight-title">💬 对话式想法澄清</span>
+        <button class="chat-maximize-btn" onclick="toggleChatMaximize('${req.id}')" title="全屏">⛶</button>
         <span class="insight-clarity-badge insight-clarity-${clarity || 'unknown'}">${clarityBadge}</span>
         ${reasonText}
       </div>
@@ -2989,6 +2990,8 @@ function renderIdeaPanel(req) {
           <div class="chat-extras">
             <button onclick="chatAssist('${req.id}', 'decision_tree')">🌳 决策树</button>
             <button onclick="chatAssist('${req.id}', 'scenarios')">👥 场景</button>
+            <button onclick="chatAssist('${req.id}', 'competitive')">🏢 竞品</button>
+            <button onclick="chatAssist('${req.id}', 'reference')">🏛 借鉴</button>
             <button onclick="chatRewrite('${req.id}')">✨ 整理</button>
             <button onclick="chatDone('${req.id}')" style="border-color:rgba(255,68,68,0.2);color:#f55">✅ 够了</button>
           </div>
@@ -3578,7 +3581,7 @@ function renderAssistLayer(container, reqId, assists) {
   // 跟踪已渲染的 assist 数据指纹，避免不必要重建（v0.3.6）
   if (!window._assistRenderCache) window._assistRenderCache = {};
 
-  for (const method of ['diagnosis', 'scenarios', 'tradeoff', 'arch', 'decision_tree', 'visual']) {
+  for (const method of ['diagnosis', 'scenarios', 'tradeoff', 'arch', 'decision_tree', 'visual', 'competitive', 'reference']) {
     const d = assists[method];
     if (!d || d.status !== 'done' || d.used) continue;
     const cr = (_chatState[reqId]?.briefRound) || 1;
@@ -3588,7 +3591,8 @@ function renderAssistLayer(container, reqId, assists) {
     }
 
     // 检查数据指纹：没变化就不重建（避免用户选中态丢失）
-    const fingerprint = JSON.stringify({ status: d.status, scenarios: d.scenarios, tree: d.tree, dimensions: d.dimensions, modules: d.modules, used: d.used });
+    // v0.3.6：+aspects+picked 确保借鉴卡片选中态变化能被检测到
+    const fingerprint = JSON.stringify({ status: d.status, scenarios: d.scenarios, tree: d.tree, dimensions: d.dimensions, modules: d.modules, aspects: d.aspects, picked: d.picked, used: d.used });
     const cacheKey = `${reqId}_${method}`;
     if (window._assistRenderCache[cacheKey] === fingerprint) continue; // 没变化，跳过该方法
     window._assistRenderCache[cacheKey] = fingerprint;
@@ -3616,7 +3620,7 @@ function renderAssistLayer(container, reqId, assists) {
         if (method === 'scenarios' || method === 'arch') {
           stripped = stripped
             .replace(/onclick="ACMSAssistDispatcher\.useAssist\([^)]+\)"/g, '')
-            .replace(/<button class="btn-small btn-primary assist-pick-btn"/g, '<button class="btn-small btn-primary" onclick="chatPickCard(\'' + reqId + '\',\'' + method + '\',this)"');
+            .replace(/<button class="btn-small[^"]*assist-pick-btn\s*"/g, '<button class="btn-small btn-primary" onclick="chatPickCard(\'' + reqId + '\',\'' + method + '\',this)"');
           // 场景/架构不设 clickable（通过按钮交互，点卡片内容不触发选择）
         } else {
           // 其他：去掉 pick 按钮，设 clickable
@@ -3664,11 +3668,26 @@ function chatToggleCard(el, reqId, method) {
   el.classList.toggle('selected');
 }
 
-// 决策树/取舍等卡片的点击选择委托（仅限 chat-assist-clickable，不干扰场景按钮）
+// 决策树/架构等卡片的点击选择委托（仅限 chat-assist-clickable，不干扰场景按钮）
+// v0.3.6 D：决策树分支互斥（同一层内只能选一个）
 document.addEventListener('click', function(e) {
   const target = e.target.closest('.chat-assist-clickable:not(.assist-card)');
   if (target && target.closest('.chat-assist-layer')) {
+    // 决策树分支互斥：同层其他分支取消选中
+    if (target.closest('.brief-tree')) {
+      target.closest('.brief-tree').querySelectorAll('.chat-assist-clickable.selected').forEach(sib => sib.classList.remove('selected'));
+    }
     target.classList.toggle('selected');
+  }
+  // v0.3.6 B：取舍清单选项（chat-assist-opt-clickable）独立委托
+  // 同一维度内互斥（同一 .assist-card 内只能选一个）
+  const opt = e.target.closest('.chat-assist-opt-clickable');
+  if (opt && opt.closest('.chat-assist-layer')) {
+    const card = opt.closest('.assist-card');
+    if (card) {
+      card.querySelectorAll('.chat-assist-opt-clickable').forEach(sib => sib.classList.remove('selected'));
+    }
+    opt.classList.add('selected');
   }
 });
 
@@ -3729,6 +3748,15 @@ function connectStreamingBrief(reqId, container) {
         streamingBubble.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">🤖 AI</span><span class="chat-time">第${data.brief.chat_round||1}轮</span>${data.brief.ai_understanding ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}</div><div class="chat-response">${respHtml}</div>${thinkingHtml}${suggestHtml}`;
         delete streamingBubble.dataset.streaming;
         chatScrollToBottom(container);
+        // v0.3.6：auto_assist 自动触发辅助工具
+        const autoMethod = data.brief.auto_assist?.method;
+        if (autoMethod === 'competitive') {
+          toast('🔍 检测到竞品类问题，正在自动分析…', 'info', 2000);
+          setTimeout(() => chatAssist(reqId, 'competitive'), 800);
+        } else if (autoMethod === 'reference') {
+          toast('🏛 检测到参考需求，正在生成借鉴卡片…', 'info', 2000);
+          setTimeout(() => chatAssist(reqId, 'reference'), 800);
+        }
         // 尝试加载 assist
         loadStreamAssist(reqId, container);
       } else if (data.type === 'error') {
@@ -3769,7 +3797,7 @@ async function chatRegen(reqId) {
   } catch(e) { toast('失败: '+e.message, 'error'); }
 }
 
-async function chatAssist(reqId, method) {
+async function chatAssist(reqId, method, extraBody) {
   // 手动触发前，先把当前显示的其他 assist 卡片从 DOM 移除
   const c = document.getElementById(`chat-stream-msgs-${reqId}`);
   if (c) c.querySelectorAll('.chat-assist-layer').forEach(el => el.remove());
@@ -3780,7 +3808,8 @@ async function chatAssist(reqId, method) {
     });
   }
   try {
-    await api('POST', `/requirements/${reqId}/assist/${method}`, {});
+    const body = extraBody || {};
+    await api('POST', `/requirements/${reqId}/assist/${method}`, body);
     toast(`🔄 ${method} 正在生成…`, 'info', 2000);
     startChatPolling(reqId);
     pollAssistUntilDone(reqId, method, 0);
@@ -3814,10 +3843,23 @@ async function chatSendAssistPick(reqId, method) {
   // 支持多种选择模式
   const selOpts = layer.querySelectorAll('.chat-assist-option.selected');
   const selCards = layer.querySelectorAll('.chat-assist-clickable.selected');
-  if (selOpts.length === 0 && selCards.length === 0) { toast('请先选择选项', 'warning'); return; }
+  const selTradeoff = layer.querySelectorAll('.chat-assist-opt-clickable.selected');
+  // v0.3.6 C：场景/架构卡片（chatPickCard 切换 .selected 在 .assist-card 上）
+  const selAssistCards = layer.querySelectorAll('.assist-card.selected');
+  if (selOpts.length === 0 && selCards.length === 0 && selTradeoff.length === 0 && selAssistCards.length === 0) { toast('请先选择选项', 'warning'); return; }
   const labels = [];
   selOpts.forEach(el => labels.push(el.querySelector('.chat-opt-title')?.textContent?.trim()||''));
   selCards.forEach(el => {
+    const t = el.querySelector('strong')?.textContent?.trim() || el.querySelector('.assist-card-letter')?.textContent?.trim() || '';
+    if (t) labels.push(t);
+  });
+  // v0.3.6 B：取舍选项文本（选项文本直接是元素内容）
+  selTradeoff.forEach(el => {
+    const t = el.textContent?.trim();
+    if (t) labels.push(t);
+  });
+  // v0.3.6 C：场景/架构卡片文本提取
+  selAssistCards.forEach(el => {
     const t = el.querySelector('strong')?.textContent?.trim() || el.querySelector('.assist-card-letter')?.textContent?.trim() || '';
     if (t) labels.push(t);
   });
@@ -3852,6 +3894,19 @@ async function chatDone(reqId) {
     openRequirement(reqId);
     setTimeout(()=>{const p=document.getElementById('ai-clarify-panel'); if(p) p.scrollIntoView({behavior:'smooth',block:'start'});}, 300);
   } catch(e) { toast('操作失败: '+e.message, 'error'); }
+}
+
+/** 全屏切换（整个 idea-panel 全屏覆盖视口） */
+function toggleChatMaximize(reqId) {
+  const panel = document.getElementById(`idea-panel-${reqId}`);
+  if (!panel) return;
+  const isMaximized = panel.classList.toggle('chat-maximized');
+  const btn = panel.querySelector('.chat-maximize-btn');
+  if (btn) {
+    btn.textContent = isMaximized ? '⤡' : '⛶';
+    btn.title = isMaximized ? '恢复' : '全屏';
+  }
+  document.body.style.overflow = isMaximized ? 'hidden' : '';
 }
 
 function chatScrollToBottom(container) { if (container) container.scrollTop = container.scrollHeight; }
