@@ -1098,133 +1098,10 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
   margin-top: 8px;
 }
 
-/* v0.3.5 补充历史面板 → v0.3.6 改为对话流（需求描述下方） */
-.supplement-history-panel {
-  margin: 10px 0;
-  padding: 8px;
-  background: var(--bg2);
-  border-radius: 6px;
-  font-size: 12px;
-}
-.supplement-history-header {
-  color: var(--text2);
-  font-weight: 600;
-  margin-bottom: 8px;
-  font-size: 11px;
-  cursor: pointer;
-  user-select: none;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.supplement-history-header:hover {
-  color: var(--text);
-}
+/* ── 对话历史追溯 toggle（用于 clarifying 面板）── */
 .supplement-history-toggle {
   font-size: 10px;
   transition: transform 0.15s;
-}
-.supplement-history-header.collapsed .supplement-history-toggle {
-  /* 已用 textContent 切换，无需额外 transform */
-}
-.supplement-history-stream {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.supplement-history-stream.collapsed {
-  display: none;
-}
-.supplement-history-item {
-  display: flex;
-  gap: 6px;
-  padding: 6px 8px;
-  border-radius: 6px;
-  max-width: 90%;
-}
-.supplement-history-item--assistant {
-  align-self: flex-start;
-  background: rgba(78,205,196,0.08);
-  border: 1px solid rgba(78,205,196,0.15);
-}
-.supplement-history-item--user {
-  align-self: flex-end;
-  background: rgba(100,149,237,0.08);
-  border: 1px solid rgba(100,149,237,0.15);
-}
-.supplement-history-role-icon {
-  flex: 0 0 auto;
-  font-size: 14px;
-  line-height: 1.4;
-}
-.supplement-history-body {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-.supplement-history-meta {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  margin-bottom: 2px;
-}
-.supplement-history-source {
-  font-size: 10px;
-  color: var(--text2);
-  background: transparent;
-  padding: 0;
-  border-radius: 0;
-}
-.supplement-history-item--assistant .supplement-history-source {
-  color: rgba(78,205,196,0.8);
-}
-.supplement-history-item--user .supplement-history-source {
-  color: rgba(100,149,237,0.8);
-}
-.supplement-history-time {
-  font-size: 10px;
-  color: var(--text3);
-  font-family: monospace;
-}
-.supplement-history-text {
-  color: var(--text);
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-/* v0.3.6：AI 条目的开场/理解/追问分字段 */
-.supplement-history-part {
-  margin-top: 4px;
-}
-.supplement-history-part:first-child {
-  margin-top: 0;
-}
-.supplement-history-label {
-  display: inline-block;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--accent);
-  margin-right: 6px;
-  background: rgba(78,205,196,0.12);
-  padding: 0 5px;
-  border-radius: 3px;
-  line-height: 1.6;
-}
-.supplement-history-item--user .supplement-history-label {
-  color: #6495ED;
-  background: rgba(100,149,237,0.12);
-}
-.supplement-history-empty {
-  color: var(--text2);
-  font-style: italic;
-  padding: 4px 0;
-}
-.supplement-history-error {
-  color: var(--accent2);
-  padding: 4px 0;
-}
-.supplement-history-loading {
-  color: var(--text2);
-  font-style: italic;
 }
 
 /* ── v0.3.6 对话式想法澄清 ── */
@@ -1273,13 +1150,6 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 
 /* Assist card layer */
 .chat-assist-layer { align-self: flex-start; max-width: 94%; width: 100%; animation: chatFadeIn .25s ease; }
-.chat-assist-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
-.chat-assist-header {
-  padding: 7px 12px; font-size: 11px; font-weight: 600; color: #ffd93d;
-  background: rgba(255,217,61,0.06); border-bottom: 1px solid var(--border);
-  display: flex; align-items: center; gap: 6px;
-}
-.chat-assist-body { padding: 8px 12px 10px; }
 .chat-assist-option {
   display: flex; align-items: flex-start; gap: 8px;
   padding: 6px 8px; margin: 3px 0; border-radius: 6px; cursor: pointer;
