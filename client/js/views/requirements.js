@@ -3754,12 +3754,19 @@ async function chatRegen(reqId) {
 }
 
 async function chatAssist(reqId, method) {
+  // 手动触发前，先把当前显示的其他 assist 卡片从 DOM 移除
+  const c = document.getElementById(`chat-stream-msgs-${reqId}`);
+  if (c) c.querySelectorAll('.chat-assist-layer').forEach(el => el.remove());
+  // 清除缓存指纹，确保新卡片可以渲染
+  if (window._assistRenderCache) {
+    Object.keys(window._assistRenderCache).forEach(k => {
+      if (k.startsWith(reqId + '_')) delete window._assistRenderCache[k];
+    });
+  }
   try {
     await api('POST', `/requirements/${reqId}/assist/${method}`, {});
     toast(`🔄 ${method} 正在生成…`, 'info', 2000);
-    // 重启主轮询（可能已超时停止），加上主动重试
     startChatPolling(reqId);
-    // 主动轮询最多 10 次
     pollAssistUntilDone(reqId, method, 0);
   }
   catch(e) { toast('失败: '+e.message, 'error'); }
