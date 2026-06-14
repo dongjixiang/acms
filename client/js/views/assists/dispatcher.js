@@ -97,11 +97,14 @@
   //     - 其他轮的（不管 used 没用过）→ 一律隐藏
     const brief = window.ACMSThinkingBrief?.getBrief?.(reqId);
     const currentRound = brief?.chat_round || 1;
-    const order = ['diagnosis', 'scenarios', 'tradeoff', 'arch', 'decision_tree', 'visual', 'competitive', 'reference'];
+    const order = ['diagnosis', 'reference', 'scenarios', 'tradeoff', 'arch', 'decision_tree', 'visual', 'competitive'];
     const html = order
       .filter(m => {
         const d = data[m];
         if (!d) return false;
+        // 用户显式选了某个 assist → 只显示那个和正在生成中的
+        const explicit = window._explicitAssist?.[reqId];
+        if (explicit && explicit !== m && d.status !== 'generating' && d.status !== 'pending') return false;
         // 正在生成（status 字段已写但 generated_at_round 可能还没写）→ 显示
         if (d.status === 'generating' || d.status === 'pending') return true;
         // 当前轮生成 → 整体显示（用户表态了也保留，没表态也保留）
