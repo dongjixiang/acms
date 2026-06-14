@@ -18,6 +18,8 @@ const diagnosis = require('./diagnosis');
 const tradeoff = require('./tradeoff');
 const arch = require('./arch');
 const visual = require('./visual');
+const competitive = require('./competitive');
+const reference = require('./reference');
 
 const ASSISTS = {
   decision_tree: decisionTree,
@@ -26,6 +28,8 @@ const ASSISTS = {
   tradeoff: tradeoff,
   arch: arch,
   visual: visual,  // v0.3.3 B+++：作为第 6 种辅助手段接入路由器
+  competitive: competitive, // v0.3.6：竞品分析
+  reference: reference, // v0.3.6：借鉴卡片 — 参考产品/服务，选灵感方向
 };
 
 const ASSIST_METHODS = Object.keys(ASSISTS);
