@@ -2982,8 +2982,8 @@ function renderIdeaPanel(req) {
               placeholder="回答 AI 的问题，或补充你的想法…"
               oninput="chatAutoGrow(this)"></textarea>
             <div class="chat-input-actions">
-              <button class="btn btn-primary" onclick="chatSend('${req.id}')">📤 发送</button>
-              <button class="btn" onclick="chatRegen('${req.id}')" title="换个问法">↻</button>
+              <button class="btn-small btn-primary" onclick="chatSend('${req.id}')">📤 发送</button>
+              <button class="btn-small" onclick="chatRegen('${req.id}')" title="换个问法">↻</button>
             </div>
           </div>
           <div class="chat-extras">
@@ -3626,7 +3626,7 @@ function renderAssistLayer(container, reqId, assists) {
     const el = document.createElement('div');
     el.className = 'chat-assist-layer';
     el.dataset.assistMethod = method;
-    el.innerHTML = `<div class="chat-assist-card"><div class="chat-assist-body">${innerHtml}<div class="chat-assist-actions" style="margin-top:10px"><button class="btn btn-accept btn-sm" onclick="chatSendAssistPick('${reqId}','${method}')">✅ 发送选择</button><button class="btn btn-sm" onclick="chatAssistRegen('${reqId}','${method}')">↻ 换一批</button><button class="btn btn-sm" onclick="chatSkipAssist(this)">跳过</button></div></div></div>`;
+    el.innerHTML = `<div class="chat-assist-card"><div class="chat-assist-body">${innerHtml}<div class="chat-assist-actions" style="margin-top:10px"><button class="btn-small btn-accept" onclick="chatSendAssistPick('${reqId}','${method}')">✅ 发送选择</button><button class="btn-small" onclick="chatAssistRegen('${reqId}','${method}')">↻ 换一批</button><button class="btn-small" onclick="chatSkipAssist(this)">跳过</button></div></div></div>`;
     container.appendChild(el);
     break; // 同一时间只显示一张卡片
   }
