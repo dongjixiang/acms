@@ -3260,114 +3260,6 @@ function skipDecisionTree(reqId) {
   toast('👉 直接在输入框里说你的想法，AI 会接着问', 'info', 2500);
 }
 
-// 手工补充想法提交（v0.3.2 增量；v0.3.3 Phase 2：兼容 assist 表态）
-//   textarea 为空时，检查用户是否在 assist 卡片上做过表态（勾选/挑场景/表态）——
-async function submitIdeaSupplement(reqId) {
-  const input = document.getElementById(`idea-supplement-input-${reqId}`);
-  const supplement = input?.value?.trim() || '';
-
-  // 如果 textarea 没字，检查有没有 assist 表态可以作为"用户输入"
-  let assistSummary = '';
-  if (!supplement) {
-    try {
-      assistSummary = collectAssistSignals(reqId);
-    } catch (e) { console.warn('[submitIdeaSupplement] 扫 assist 失败:', e); }
-
-    if (!assistSummary) {
-      toast('先写点想法再补充，或在辅助手段里勾选/表态', 'warning');
-      return;
-    }
-  }
-
-  toast('⏳ 正在记录你的补充…', 'info', 2000);
-  try {
-    // textarea 空时，把 assist 表态汇总作为 supplement（让 LLM 有东西参考）
-    // v0.3.5 改进：调新路由 /supplement，不动 description，保留用户最初输入
-    const finalSupplement = supplement || assistSummary;
-    const resp = await api('POST', `/requirements/${reqId}/supplement`, {
-      supplement: finalSupplement,
-      supplementSource: supplement ? 'idea_supplement' : 'assist_signals',
-      autoRegenBrief: true,
-    });
-    if (resp.error) {
-      toast('补充失败: ' + resp.error, 'error');
-      return;
-    }
-    toast(`✅ 已记录补充（#${resp.supplementHistoryCount}），思路正在重生…`, 'success', 2000);
-    // 清空输入框，避免下次重复提交
-    if (input) input.value = '';
-    // v0.3.5 改进：局部刷新 brief + assist 区域，不 reload 整个需求详情页
-    //   - 保留用户滚动位置、输入焦点、临时草稿
-    //   - brief + assist 后台异步重生，30s 内会自然更新
-    relocalRefreshBriefAndAssist(reqId);
-  } catch (e) {
-    toast('补充失败: ' + e.message, 'error');
-  }
-}
-
-/**
- * 局部刷新 brief + assist 区域（v0.3.5 新增）
- * 不 reload 整个需求详情页，只重载下面这两个区域：
- *   - ACMSThinkingBrief（思路简报）
- *   - ACMSAssistDispatcher（辅助手段卡片）
- * @param {string} reqId
- */
-function relocalRefreshBriefAndAssist(reqId) {
-  try {
-    if (window.ACMSThinkingBrief?.load) {
-      window.ACMSThinkingBrief.load(reqId);
-    }
-  } catch (e) { console.warn('[relocalRefresh] brief reload 失败:', e.message); }
-  try {
-    if (window.ACMSAssistDispatcher?.loadAll) {
-      window.ACMSAssistDispatcher.loadAll(reqId);
-    }
-  } catch (e) { console.warn('[relocalRefresh] assist reload 失败:', e.message); }
-  // v0.3.5 新增：补充历史也刷新
-  try { loadSupplementHistory(reqId); } catch (e) { console.warn('[relocalRefresh] supplement history reload 失败:', e.message); }
-}
-
-/**
- * 加载补充历史展示（v0.3.5 新增）
- * 调 GET /:id/supplement-history，把每条补充渲染到 idea panel 下方
- * @param {string} reqId
- */
-async function loadSupplementHistory(reqId) {
-  const container = document.getElementById(`supplement-history-${reqId}`);
-  if (!container) return;
-  try {
-    const resp = await api('GET', `/requirements/${reqId}/supplement-history`);
-    const history = resp.history || [];
-    if (history.length === 0) {
-      container.innerHTML = '<div class="supplement-history-empty">📋 你还没补充过内容（📤 发送会追加补充记录）</div>';
-      return;
-    }
-    // 按时间倒序展示（最新的在上面）
-    const items = history.slice().reverse().map(h => {
-      const sourceLabels = {
-        idea_supplement: '📤 手工',
-        assist_signals: '🎯 辅助手段',
-        decision_tree_features: '🌳 决策树',
-        tradeoff_pick: '⚖️ 取舍',
-        scenario_pick: '👥 场景',
-        arch_pick: '🏗️ 架构',
-        diagnosis_use: '🩺 体检',
-      };
-      const sourceLabel = sourceLabels[h.source] || h.source;
-      const atShort = h.at ? h.at.substring(11, 16) : '';  // HH:MM
-      const preview = (h.text || '').substring(0, 80) + ((h.text || '').length > 80 ? '…' : '');
-      return `<div class="supplement-history-item">
-        <span class="supplement-history-source">${sourceLabel}</span>
-        <span class="supplement-history-time">${atShort}</span>
-        <div class="supplement-history-text">${escHtml(preview)}</div>
-      </div>`;
-    }).join('');
-    container.innerHTML = `<div class="supplement-history-header">📋 你补充的内容（${history.length} 条）</div>${items}`;
-  } catch (e) {
-    container.innerHTML = `<div class="supplement-history-error">❌ 加载补充历史失败：${escHtml(e.message)}</div>`;
-  }
-}
-
 /**
  * ✨ AI 重整描述（v0.3.5 新增）
  * 与 📤 发送相反：
@@ -3702,13 +3594,15 @@ function renderAssistLayer(container, reqId, assists) {
     if (mod && mod.render) {
       try {
         const raw = mod.render(reqId, d);
-        // 去掉所有原按钮 + action 行 + regen 行，保留纯视觉内容
+        // 去掉 pick 按钮 + regen 行 + intro，保留交互按钮（如决策树的 expandBranchDetail）
         innerHtml = raw
-          .replace(/<button[\s\S]*?<\/button>/g, '')
+          .replace(/<button class="(?:assist-pick-btn|btn-small btn-primary assist-pick-btn)[\s\S]*?<\/button>/g, '')
           .replace(/<div class="assist-actions[\s\S]*?<\/div>/g, '')
           .replace(/<div class="assist-regen-row[\s\S]*?<\/div>/g, '')
-          .replace(/<div class="assist-intro[\s\S]*?<\/div>/g, '')
+          .replace(/<button class="btn-small btn-secondary[\s\S]*?<\/button>/g, '')
           .trim();
+        // 保留 assist-intro 但改为更淡的样式（通过添加额外 class）
+        innerHtml = innerHtml.replace(/class="assist-intro/g, 'class="assist-intro assist-intro-dialog"');
         // 给每个卡片添加可点击选择功能
         if (method === 'scenarios' || method === 'arch') {
           innerHtml = innerHtml.replace(/class="assist-card/g, 'class="assist-card chat-assist-clickable"');
