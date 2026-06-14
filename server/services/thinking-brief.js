@@ -29,9 +29,9 @@ const THINKING_SYSTEM_PROMPT = `你是 ACMS 系统的「需求澄清助手」。
 
 ## 输出格式（严格 JSON）
 {
-  "ai_understanding": "≤60 字。AI 对需求核心意图的理解（不是复述，是提炼）。",
-  "opening": "≤120 字。开场白：先 1 句致意 + 1 句理解 + 1-2 个开放问题。整体语气像聊天，不要分点列。",
-  "followup_question": "≤40 字。当前最关键的一个开放追问（用户回答后会刷新）。如本轮不需追问则填空串。",
+  "ai_understanding": "AI 对需求核心意图的理解（不是复述，是提炼）。",
+  "opening": "开场白：先致意 + 理解 + 开放问题。整体语气像聊天，不要分点列。可以较长地回答用户的问题。",
+  "followup_question": "当前最关键的一个开放追问（用户回答后会刷新）。如本轮不需追问则填空串。",
   "diagnosis": {
     "type": "vague | conflicted | blank | null",
     "label": "≤10 字。给用户看的简短标签（如『已有一个大致方向，想具体化』）。如果描述为空或无法判断则填空串。",
@@ -70,12 +70,26 @@ confidence < 0.6 时默认走 vague（宁松勿严）。
 - 检验标准：你的 followup_question 能不能从补充里直接推断出来？如果能，说明你问错了——应该问补充里**没回答**的真正空白点
 - 反例：补充里说"FAE 痛点是 XX，销售痛点是 YY"，但 followup 问"销售和 FAE 第一屏看什么"——这是错的，因为"第一屏"在补充里还没提，可以问；"FAE 痛点"已经提了，不能问
 
+## 知识/竞品类问题处理（v0.3.6）
+如果用户最新一条补充是问**某个产品或竞品的介绍/功能/评价**（如"介绍一下ModelN"、"XX怎么样"、"有没有类似产品"）：
+- **不要直接当作需求假设**——用户只是在搜集信息
+- **opening** 用 1-2 句话简要回答（字数放宽到 ≤200 字），语气像同事科普
+- **followup_question** 改成引导："了解了这些信息后，你的需求方向是什么？"
+- **auto_assist** 设为 \`{"method":"competitive","reason":"用户想了解竞品信息，是否要展开竞品分析？"}\`
+
+## 借鉴/参考类问题处理（v0.3.6）
+如果用户最新一条补充是**说要参考/借鉴某个产品**（如"可参考XX"、"像XX一样"、"借鉴XX的做法"）：
+- **opening** 简要回应该参考方向（"明白，我们可以从 XX 找灵感"）
+- **followup_question** 必须包含该产品名，改成引导："你对 ModelN 的哪些方面感兴趣？咱们从功能、流程、特色上挑"
+- **auto_assist** 设为 \`{"method":"reference","reason":"用户提到可参考的产品，是否要拆解其功能和流程？"}\`
+
 输出严格 JSON，格式：
 {
   "ai_understanding": "...",
   "opening": "...",
   "followup_question": "...",
-  "diagnosis": { "type": "...", "label": "...", "guide": "...", "confidence": 0.0 }
+  "diagnosis": { "type": "...", "label": "...", "guide": "...", "confidence": 0.0 },
+  "auto_assist": null  // 可选：仅当用户问竞品/产品时设为 {"method":"competitive","reason":"..."}，其他情况为 null
 }
 
 不要任何额外文字、markdown 代码块、解释。`;
@@ -149,7 +163,7 @@ async function generateBrief(title, description, clarity, oldDecisionTree, role,
   console.log(`[brief.debug] ${title?.substring(0, 30) || '(空)'}: system=${THINKING_SYSTEM_PROMPT.length}字, user=${userParts.filter(Boolean).join('\n').length}字, supplement_count=${supplementHistory.length}, has_old_decision_tree=${oldDecisionTree?.length || 0}`);
   const result = await callLLM(model.id, messages, {
     temperature: 0.7,
-    maxTokens: 1200,
+    maxTokens: 2500,  // v0.3.6：去掉了字数硬约束
     jsonMode: true,
   });
   // v0.3.7 调试日志：dump LLM 实际返回的 followup_question（验证修复效果后删除）
@@ -438,12 +452,24 @@ async function* runBriefJobStream(requirementId, opts = {}) {
   const { callLLMStream } = require('./llm-adapter');
   let fullContent = '';
   try {
-    for await (const event of callLLMStream(model.id, messages, { temperature: 0.7, maxTokens: 1200 })) {
+    // v0.3.6：去掉字数硬约束后，maxTokens 从 1200 增至 2500 给足空间
+for await (const event of callLLMStream(model.id, messages, { temperature: 0.7, maxTokens: 2500 })) {
       if (event.type === 'token') {
         fullContent += event.text;
         yield { type: 'token', text: event.text };
       } else if (event.type === 'done') {
-        const parsed = safeParseJSON(fullContent);
+        let parsed = safeParseJSON(fullContent);
+        // v0.3.6：流式解析失败时降级为非流式重试
+        if (!parsed) {
+          console.log(`[brief.stream] 流式 JSON 解析失败（len=${fullContent.length}），降级为非流式`);
+          try {
+            const { callLLMWithRetry } = require('./json-extractor');
+            parsed = await callLLMWithRetry(model, messages, { temperature: 0.5, maxTokens: 2000, jsonMode: true, serviceName: 'brief:stream_fallback' });
+          } catch (e) {
+            console.error('[brief.stream] 降级失败:', e.message);
+            yield { type: 'error', message: 'LLM 返回无法解析为 JSON' }; return;
+          }
+        }
         if (!parsed) { yield { type: 'error', message: 'LLM 返回无法解析为 JSON' }; return; }
 
         const oldRound = (() => { try { return JSON.parse(req.thinking_brief || 'null')?.chat_round || 0; } catch { return 0; } })();
@@ -459,11 +485,17 @@ async function* runBriefJobStream(requirementId, opts = {}) {
           followup_question: typeof parsed.followup_question === 'string' ? parsed.followup_question : '',
           diagnosis, dialog: null, chat_round: newRound,
           generated_at: new Date().toISOString(), model: model.id, error: null,
+          // v0.3.6：LLM 检测到知识/竞品问题时标记自动触发
+          auto_assist: parsed.auto_assist && ['competitive', 'reference'].includes(parsed.auto_assist.method) ? { method: parsed.auto_assist.method, reason: parsed.auto_assist.reason || '' } : null,
         };
 
         // v0.3.6：路由器选一种辅助手段作为建议（仅建议，不自动生成）
         let suggestedAssist = null;
-        try {
+        // v0.3.6：如果 LLM 标记了 auto_assist（知识/竞品问题），优先于路由器
+        if (brief.auto_assist) {
+          suggestedAssist = brief.auto_assist;
+        } else {
+          try {
           const { pickNext } = require('./assists/router');
           const assists = require('./assists');
           const fresh = reqStore.getById(requirementId);
@@ -492,6 +524,7 @@ async function* runBriefJobStream(requirementId, opts = {}) {
             }
           }
         } catch (e) { console.error('[brief.stream.suggest] 异常:', e.message); }
+        } // else 结束
         brief.suggested_assist = suggestedAssist;
 
         reqStore.update(requirementId, { thinking_brief: JSON.stringify(brief) });
