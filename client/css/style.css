@@ -1168,12 +1168,26 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 .chat-assist-layer .assist-card {
   max-width: 100%;
   display: flex; flex-direction: column;
-  padding: 8px;
-  gap: 2px;
+  padding: 0 0 8px 0;
+  gap: 0;
+}
+/* 取消卡片 hover 变化 */
+.chat-assist-layer .assist-card:hover {
+  border-color: var(--border);
+  background: transparent;
 }
 .chat-assist-layer .assist-card-meta,
 .chat-assist-layer .assist-card-row,
 .chat-assist-layer .assist-card-quote { font-size: 11.5px; line-height: 1.4; }
+.chat-assist-layer .assist-card-row {
+  display: flex; align-items: baseline; gap: 2px;
+  padding: 0 8px; margin-bottom: 1px;
+}
+.chat-assist-layer .assist-label { white-space: nowrap; flex-shrink: 0; font-size: 11px; }
+.chat-assist-layer .assist-card-meta { padding: 2px 8px 0; }
+.chat-assist-layer .assist-card-quote {
+  font-size: 11.5px; padding: 2px 8px; margin: 0 8px 2px; line-height: 1.4;
+}
 .chat-assist-layer .assist-pick-btn,
 .chat-assist-layer .chat-assist-clickable .btn-small.btn-primary,
 .chat-assist-layer .chat-assist-clickable .btn-small {
@@ -1181,11 +1195,15 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 }
 .chat-assist-layer .assist-card-header {
   border-bottom: 1px solid var(--border);
-  padding: 5px 8px; margin: -8px -8px 4px -8px;
+  padding: 5px 8px;
   display: flex; align-items: center; gap: 6px;
-  background: rgba(78,205,196,0.06);
+  background: rgba(78,205,196,0.1);
+  margin-bottom: 4px;
 }
-.chat-assist-layer .assist-card-header strong { font-size: 12px; }
+.chat-assist-layer .assist-card-header strong {
+  font-size: 12px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 /* 去掉字母单独徽章（表头整行已有背景） */
 .chat-assist-layer .assist-card-letter {
   display: inline-flex; align-items: center; justify-content: center;
