@@ -1148,8 +1148,28 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
   padding: 0 5px; border-radius: 3px; margin-right: 5px; line-height: 1.6;
 }
 
-/* Assist card layer */
-.chat-assist-layer { align-self: flex-start; max-width: 94%; width: 100%; animation: chatFadeIn .25s ease; }
+/* Assist card layer - 对话流内统一字体和尺寸 */
+.chat-assist-layer { align-self: flex-start; width: 100%; animation: chatFadeIn .25s ease; }
+.chat-assist-layer .assist-section-title { font-size: 13px; }
+.chat-assist-layer .assist-card { font-size: 13px; }
+.chat-assist-layer .assist-card-header strong { font-size: 13px; }
+.chat-assist-layer .assist-card-letter { font-size: 14px; }
+.chat-assist-layer .assist-card-meta,
+.chat-assist-layer .assist-card-row,
+.chat-assist-layer .assist-card-quote { font-size: 12.5px; }
+.chat-assist-layer .brief-branch { font-size: 13px; }
+.chat-assist-layer .brief-branch-label { font-size: 13px; }
+.chat-assist-layer .brief-branch-desc,
+.chat-assist-layer .brief-branch-proscons { font-size: 12.5px; }
+.chat-assist-layer .assist-tradeoff-opt { font-size: 12px; }
+.chat-assist-layer .assist-intro { font-size: 12px; color: var(--text3); }
+.chat-assist-layer .assist-grid { gap: 8px; }
+/* 卡片选中态 */
+.chat-assist-clickable.selected, .chat-assist-opt-clickable.selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 6px;
+}
 .chat-assist-option {
   display: flex; align-items: flex-start; gap: 8px;
   padding: 6px 8px; margin: 3px 0; border-radius: 6px; cursor: pointer;

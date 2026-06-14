@@ -3594,26 +3594,34 @@ function renderAssistLayer(container, reqId, assists) {
     if (mod && mod.render) {
       try {
         const raw = mod.render(reqId, d);
-        // 去掉 pick 按钮 + regen 行 + intro，保留交互按钮（如决策树的 expandBranchDetail）
-        innerHtml = raw
-          .replace(/<button class="(?:assist-pick-btn|btn-small btn-primary assist-pick-btn)[\s\S]*?<\/button>/g, '')
+        // 去掉 regen/actions 行 + secondary 按钮，保留 pick 按钮
+        let stripped = raw
           .replace(/<div class="assist-actions[\s\S]*?<\/div>/g, '')
           .replace(/<div class="assist-regen-row[\s\S]*?<\/div>/g, '')
           .replace(/<button class="btn-small btn-secondary[\s\S]*?<\/button>/g, '')
           .trim();
-        // 保留 assist-intro 但改为更淡的样式（通过添加额外 class）
-        innerHtml = innerHtml.replace(/class="assist-intro/g, 'class="assist-intro assist-intro-dialog"');
-        // 给每个卡片添加可点击选择功能
+        // 保留 assist-intro
+        stripped = stripped.replace(/class="assist-intro/g, 'class="assist-intro assist-intro-dialog"');
+
+        // 场景/架构：保留 pick 按钮，替换 onclick 为对话流
         if (method === 'scenarios' || method === 'arch') {
-          innerHtml = innerHtml.replace(/class="assist-card/g, 'class="assist-card chat-assist-clickable"');
-          innerHtml = innerHtml.replace(/class="assist-card-narrow/g, 'class="assist-card-narrow chat-assist-clickable"');
-        } else if (method === 'decision_tree') {
-          innerHtml = innerHtml.replace(/class="brief-branch/g, 'class="brief-branch chat-assist-clickable"');
-        } else if (method === 'tradeoff') {
-          // tradeoff 的选项是按钮，把按钮变 span
-          innerHtml = innerHtml.replace(/<button class="assist-tradeoff-opt/g, '<span class="assist-tradeoff-opt chat-assist-opt-clickable"');
-          innerHtml = innerHtml.replace(/<\/button>/g, '</span>');
+          stripped = stripped
+            .replace(/onclick="ACMSAssistDispatcher\.useAssist\([^)]+\)"/g, '')
+            .replace(/<button class="btn-small btn-primary assist-pick-btn"/g, '<button class="btn-small btn-primary" onclick="chatPickCard(\'' + reqId + '\',\'' + method + '\',this)"');
+          stripped = stripped.replace(/class="assist-card/g, 'class="assist-card chat-assist-clickable"');
+          stripped = stripped.replace(/class="assist-card-narrow/g, 'class="assist-card-narrow chat-assist-clickable"');
+        } else {
+          // 其他：去掉 pick 按钮
+          stripped = stripped
+            .replace(/<button class="(?:assist-pick-btn|btn-small btn-primary assist-pick-btn)[\s\S]*?<\/button>/g, '');
+          if (method === 'decision_tree') {
+            stripped = stripped.replace(/class="brief-branch/g, 'class="brief-branch chat-assist-clickable"');
+          } else if (method === 'tradeoff') {
+            stripped = stripped.replace(/<button class="assist-tradeoff-opt/g, '<span class="assist-tradeoff-opt chat-assist-opt-clickable"');
+            stripped = stripped.replace(/<\/button>/g, '</span>');
+          }
         }
+        innerHtml = stripped;
       } catch (e) { innerHtml = `<div class="insight-error">❌ 渲染失败: ${e.message}</div>`; }
     } else {
       // 降级：简易标题
@@ -3633,6 +3641,25 @@ function renderAssistLayer(container, reqId, assists) {
 }
 
 function chatToggleOpt(el) { el.classList.toggle('selected'); }
+
+/** 点击卡片上的选择按钮（场景/架构）— 即选即发 */
+function chatPickCard(reqId, method, btn) {
+  const card = btn.closest('[class*="assist-card"]');
+  const label = card?.querySelector('strong')?.textContent?.trim() || card?.querySelector('.assist-card-letter')?.textContent?.trim() || '选项';
+  const supplement = `[${method}] ${label}`;
+  const c = document.getElementById(`chat-stream-msgs-${reqId}`);
+  if (c) {
+    renderChatBubble(c, {role:'user', text:supplement, at:new Date().toISOString()});
+    btn.disabled = true;
+    btn.textContent = '✅ 已选';
+    // 移除卡片层
+    c.querySelectorAll('.chat-assist-layer').forEach(el=>el.remove());
+    c.insertAdjacentHTML('beforeend','<div class="chat-typing"><span></span><span></span><span></span></div>');
+    chatScrollToBottom(c);
+  }
+  // 写入 supplement + 触发 SSE 流式
+  chatSendSupplement(reqId, supplement, `${method}_pick`);
+}
 
 /** 卡片选择切换（场景/决策树/架构等原组件卡片） */
 function chatToggleCard(el, reqId, method) {
@@ -3654,25 +3681,11 @@ async function chatSend(reqId) {
   const c = document.getElementById(`chat-stream-msgs-${reqId}`);
   if (c) {
     renderChatBubble(c, { role:'user', text, at:new Date().toISOString() });
+    c?.querySelectorAll('.chat-assist-layer').forEach(el=>el.remove());
     chatScrollToBottom(c);
   }
   input.value = ''; input.style.height = 'auto';
-  try {
-    // 只存 supplement，不触发后端 brief 生成（由 SSE 接管）
-    const r = await api('POST', `/requirements/${reqId}/supplement`, { supplement:text, supplementSource:'idea_supplement', autoRegenBrief:false });
-    if (r.error) { toast('补充失败: '+r.error, 'error'); return; }
-    toast('✅ 已记录', 'success', 1500);
-    c?.querySelectorAll('.chat-assist-layer').forEach(el=>el.remove());
-
-    // 同步 supplement_history 计数，避免轮询重复渲染用户气泡
-    if (r.supplementHistoryCount) {
-      const state = _chatState[reqId];
-      if (state) state.histCount = r.supplementHistoryCount;
-    }
-
-    // 打开 SSE 流式连接，实时输出 AI 思路
-    connectStreamingBrief(reqId, c);
-  } catch(e) { toast('补充失败: '+e.message, 'error'); }
+  chatSendSupplement(reqId, text, 'idea_supplement');
 }
 
 /** 连接 SSE 流式思路简报 */
@@ -3789,8 +3802,7 @@ async function chatSendAssistPick(reqId, method) {
   const supplement = `[${method}] ${labels.join('；')}`;
   const c = document.getElementById(`chat-stream-msgs-${reqId}`);
   if (c) { renderChatBubble(c, {role:'user', text:supplement, at:new Date().toISOString()}); layer.remove(); c.insertAdjacentHTML('beforeend','<div class="chat-typing"><span></span><span></span><span></span></div>'); chatScrollToBottom(c); }
-  try { await api('POST', `/requirements/${reqId}/rewrite-description`, {supplement, supplementSource:`${method}_pick`, autoRegenBrief:true}); toast('✅ 已记录', 'success', 1500); }
-  catch(e) { toast('失败: '+e.message, 'error'); }
+  chatSendSupplement(reqId, supplement, `${method}_pick`);
 }
 
 async function chatAssistRegen(reqId, method) {
@@ -3821,6 +3833,20 @@ async function chatDone(reqId) {
 }
 
 function chatScrollToBottom(container) { if (container) container.scrollTop = container.scrollHeight; }
+
+/** 发送 supplement + 触发 SSE 流式（被 chatPickCard / chatSend 共用） */
+async function chatSendSupplement(reqId, supplement, source) {
+  try {
+    const r = await api('POST', `/requirements/${reqId}/supplement`, { supplement, supplementSource: source, autoRegenBrief: false });
+    if (r.error) { toast('补充失败: '+r.error, 'error'); return; }
+    if (r.supplementHistoryCount) {
+      const state = _chatState[reqId];
+      if (state) state.histCount = r.supplementHistoryCount;
+    }
+    const c = document.getElementById(`chat-stream-msgs-${reqId}`);
+    connectStreamingBrief(reqId, c);
+  } catch(e) { toast('补充失败: '+e.message, 'error'); }
+}
 
 /** 切换澄清面板的对话追溯（v0.3.6） */
 async function toggleClarifyHistory(reqId) {
