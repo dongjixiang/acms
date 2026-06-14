@@ -18,7 +18,7 @@
       <div class="assist-card">
         <div class="assist-card-header">
           <span class="assist-card-letter">${String.fromCharCode(65+i)}</span>
-          <strong>${escHtml(c.name)}</strong>
+          <a href="#" onclick="event.preventDefault();chatAssist('${reqId}','reference',{productName:'${escHtml(c.name).replace(/'/g, "\\'")}'})" class="comp-ref-link" title="查看该产品的深度借鉴简报">${escHtml(c.name)}</a>
           <span style="font-size:11px;color:var(--text3);margin-left:auto">${escHtml(c.category||'')}</span>
         </div>
         <div class="assist-card-row">${escHtml(c.description||'')}</div>

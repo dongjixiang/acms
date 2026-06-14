@@ -1,138 +1,173 @@
-// 借鉴卡片辅助手段（v0.3.6）
-// 统一表格渲染，支持无限递归深入 + 选择
+// 借鉴卡片 v2 — 产品简报模式（2026-06-14）
+// 渲染：产品全景 + 可视化图表 + 核心理念 + "应用到需求"按钮
+// 替代旧版表格选择器模式
 (function () {
   function render(reqId, data) {
-    if (!data) return '';
-    if (data.mode === 'deepdive' || data.mode === 'decompose') {
-      if (Array.isArray(data.aspects) && data.aspects.length > 0) {
-        return renderTable(reqId, data);
-      }
-    }
-    if (Array.isArray(data.references) && data.references.length > 0) {
-      return renderRecommend(reqId, data);
-    }
-    return '';
-  }
+    if (!data || data.mode !== 'brief' || data.status !== 'done') return '';
+    const product = escHtml(data.target_product || '');
+    const profile = data.profile || {};
+    const diagrams = data.diagrams || [];
+    const insights = data.insights || [];
 
-  // ===== 统一表格渲染（level1 decompose + deepdive 共用） =====
-  function renderTable(reqId, data) {
-    const aspects = data.aspects || [];
-    const picked = data.picked || [];
-    const product = escHtml(data.target_product || '参考产品');
-    const isDeepDive = data.mode === 'deepdive';
-    // 当前级别路径（deepdive 才有 path）
-    const currentPath = isDeepDive ? (data.deepdive_path || []).concat([data.parent_aspect || '']) : [];
-    const title = isDeepDive
-      ? currentPath.join(' > ')
-      : product;
-
-    // 按 category 分组
-    const CAT_ORDER = ['功能', '流程', '特色', '架构', '理念', '细节'];
-    const groups = {};
-    CAT_ORDER.forEach(c => groups[c] = []);
-    aspects.forEach(a => { const c = a.category || '其他'; if (!groups[c]) groups[c] = []; groups[c].push(a); });
-    const sortedGroups = Object.keys(groups).filter(c => groups[c].length > 0)
-      .sort((a, b) => {
-        const ia = CAT_ORDER.indexOf(a); const ib = CAT_ORDER.indexOf(b);
-        return (ia >= 0 ? ia : 99) - (ib >= 0 ? ib : 99);
-      });
-
-    const categoryBg = {
-      '功能': 'rgba(78,205,196,0.15)', '流程': 'rgba(100,149,237,0.15)',
-      '特色': 'rgba(255,165,0,0.15)', '架构': 'rgba(139,92,246,0.15)',
-      '理念': 'rgba(255,107,107,0.15)', '细节': 'rgba(200,200,200,0.15)',
-    };
-
-    const tableHtml = sortedGroups.map(cat => {
-      const bg = categoryBg[cat] || 'var(--bg3)';
-      const items = groups[cat].map(a => {
-        const idx = aspects.indexOf(a);
-        const isPicked = picked.includes(idx);
-        const safeName = escHtml(a.name);
-        const safeDesc = escHtml(a.desc || '');
-        // 用于 [深入] 的路径
-        const nextPath = isDeepDive
-          ? JSON.stringify(currentPath.concat([a.name])).replace(/'/g, "\\'")
-          : JSON.stringify([a.name]).replace(/'/g, "\\'");
-        return `
-        <tr class="ref-aspect-row">
-          <td class="ref-aspect-name">${safeName}</td>
-          <td class="ref-aspect-desc">${safeDesc}${a.why_helpful ? `<br><span style="font-size:11px;color:var(--text3);font-style:italic">💡 ${escHtml(a.why_helpful)}</span>` : ''}</td>
-          <td class="ref-aspect-action">
-            <button class="btn-small" onclick="referenceDeepDive('${reqId}','${escHtml(product)}','${safeName}','${safeDesc}', '${nextPath}')" style="font-size:11px">🔍</button>
-          </td>
-          <td class="ref-aspect-pick">
-            <button class="btn-small ${isPicked ? 'btn-primary' : ''}" onclick="referencePick('${reqId}', ${idx})" style="font-size:11px">
-              ${isPicked ? '✅' : '☐'}
-            </button>
-          </td>
-        </tr>`;
-      }).join('');
-      return `
-        <div class="ref-cat-section">
-          <div class="ref-cat-header" style="background:${bg};padding:4px 10px;font-size:13px;font-weight:600;border-radius:4px 4px 0 0">${cat}（${groups[cat].length}）</div>
-          <table class="ref-aspect-table">
-            <colgroup><col style="width:28%"><col><col style="width:40px"><col style="width:40px"></colgroup>
-            <tbody>${items}</tbody>
-          </table>
+    // ── 产品全景 ──
+    const profileHtml = Object.keys(profile).length > 0 ? `
+      <div class="brief-top">
+        <h2><span>🏛</span> ${product} · 产品简报</h2>
+        <div class="profile-grid">
+          ${['定位','核心功能','工作流程','典型用户'].filter(k => profile[k]).map(k => `
+            <div class="profile-row">
+              <span class="key">${k}</span>
+              <span class="val">${escHtml(profile[k])}</span>
+            </div>
+          `).join('')}
         </div>
-        <div style="height:5px"></div>`;
-    }).join('');
+      </div>` : '';
 
-    return `
-      <div class="assist-section-title">🏛 ${title} · ${aspects.length} 项</div>
-      <div class="assist-intro">${isDeepDive ? '继续深入或选择感兴趣的方向。' : '按类型分组，点击🔍深入，点击☐选择。'}</div>
-      ${tableHtml}
-    `;
-  }
+    // ── 图表 ──
+    const diagramHtml = diagrams.map(d => renderDiagram(d)).join('');
 
-  // ===== 推荐模式（多个产品） =====
-  function renderRecommend(reqId, data) {
-    const refs = data.references || [];
-    const cards = refs.map((r, i) => {
-      const inspirs = (r.inspirations || []).map(insp => `<li>${escHtml(insp)}</li>`).join('');
+    // ── 核心理念 ──
+    const insightHtml = insights.map((ins, i) => {
+      const colors = ['n1','n2','n3'];
       return `
-      <div class="assist-card assist-card-narrow">
-        <div class="assist-card-header">
-          <span class="assist-card-letter">${String.fromCharCode(65+i)}</span>
-          <strong>${escHtml(r.name || '')}</strong>
-          <span style="font-size:11px;color:var(--text3);margin-left:auto">${escHtml(r.category||'')}</span>
+      <div class="insight-block">
+        <div class="head">
+          <span class="num ${colors[i] || 'n1'}">${i + 1}</span>
+          <span class="label">${escHtml(ins.title || '')}</span>
         </div>
-        <div class="assist-card-row" style="font-style:italic;color:var(--text2)">💡 ${escHtml(r.why || '')}</div>
-        ${inspirs ? `<ul style="margin:4px 0 6px 16px;padding:0;font-size:12px">${inspirs}</ul>` : ''}
+        <div class="desc">${escHtml(ins.desc || '')}</div>
+        <div class="insight-apply-btn" onclick="referenceApplyInsight('${reqId}', this)">+ 应用到需求</div>
       </div>`;
     }).join('');
+
+    // ── 底部 ──
+    const footerHtml = insights.length > 0 ? `
+      <div class="brief-footer">
+        <span class="hint">💡 点「应用到需求」可将借鉴点注入对话继续讨论</span>
+        <div class="btn-row">
+          <button class="btn-small" onclick="chatAssistRegen('${reqId}','reference')" style="font-size:11px">↻ 换一批核心理念</button>
+          <button class="btn-small btn-primary" onclick="referenceApplyAll('${reqId}')" style="font-size:11px">✅ 全部引用到对话</button>
+        </div>
+      </div>` : '';
+
     return `
-      <div class="assist-section-title">🏛 借鉴卡片 · ${refs.length} 个参考产品</div>
-      <div class="assist-grid">${cards}</div>
-    `;
+      <div class="ref-brief">
+        ${profileHtml}
+        ${diagramHtml}
+        ${insightHtml}
+        ${footerHtml}
+      </div>`;
   }
 
-  window.ACMSAssists.register('reference', { name: '借鉴卡片', render });
-})();
-
-/** 全局函数：点 🔍 深入（递归） */
-function referenceDeepDive(reqId, product, aspectName, aspectDesc, pathJson) {
-  let path = [];
-  try { path = JSON.parse(pathJson || '[]'); } catch {}
-  toast(`🔍 深入「${aspectName}」…`, 'info', 1500);
-  chatAssist(reqId, 'reference', { deepDiveOf: { product, aspectName, aspectDesc, path } });
-}
-
-/** 全局函数：点 ☐/✅ 选择（立即切换 DOM + 调 API） */
-function referencePick(reqId, idx) {
-  // 即时切换 DOM，不等轮询
-  const layer = document.querySelector(`#chat-stream-msgs-${reqId} .chat-assist-layer[data-assist-method="reference"]`);
-  if (layer) {
-    const rows = layer.querySelectorAll('.ref-aspect-row');
-    if (rows[idx]) {
-      const btn = rows[idx].querySelector('.ref-aspect-pick .btn-small');
-      if (btn) {
-        const isNow = btn.textContent.trim() === '✅';
-        btn.textContent = isNow ? '☐' : '✅';
-        btn.className = isNow ? 'btn-small' : 'btn-small btn-primary';
-      }
+  // ── 图表渲染 ──
+  function renderDiagram(d) {
+    if (!d || !d.type) return '';
+    switch (d.type) {
+      case 'flow': return renderFlow(d);
+      case 'grid': return renderGrid(d);
+      case 'layers': return renderLayers(d);
+      default: return '';
     }
   }
-  ACMSAssistDispatcher.useAssist(reqId, 'reference', { idx });
+
+  function renderFlow(d) {
+    const nodes = (d.nodes || []).map((n, i) => `
+      <div class="df-node df-n${i + 1}">
+        <span class="icon">${n.icon || '📋'}</span>
+        <span class="label"><strong>${escHtml(n.label || '')}</strong>${n.detail ? '<br>' + escHtml(n.detail) : ''}</span>
+      </div>`).join('<span class="df-arrow">→</span>');
+    const tags = (d.tags || []).map(t => `<span class="df-tag">${escHtml(t)}</span>`).join('');
+    return `
+      <div class="diagram-section">
+        <div class="diagram-title">📊 ${escHtml(d.title || '')} <span class="sub">${escHtml(d.subtitle || '')}</span></div>
+        <div class="data-flow">${nodes}</div>
+        ${tags ? `<div class="df-tags">${tags}</div>` : ''}
+      </div>`;
+  }
+
+  function renderGrid(d) {
+    const views = (d.views || []).map(v => `
+      <div class="view-card">
+        <span class="vicon">${v.icon || '📊'}</span>
+        <span class="vname">${escHtml(v.name || '')}</span>
+        <span class="vdesc">${escHtml(v.desc || '')}</span>
+      </div>`).join('');
+    return `
+      <div class="diagram-section">
+        <div class="diagram-title">🖼️ ${escHtml(d.title || '')} <span class="sub">${escHtml(d.subtitle || '')}</span></div>
+        <div class="view-showcase">
+          <div class="view-source">
+            <span class="icon">🗄️</span>
+            <span class="label">${escHtml(d.source_label || '')}</span>
+            <span class="sub">${escHtml(d.source_detail || '')}</span>
+          </div>
+          <div class="view-grid">${views}</div>
+        </div>
+      </div>`;
+  }
+
+  function renderLayers(d) {
+    const layers = (d.layers || []).map((l, i) => `
+      <div class="perm-card perm-l${i + 1}">
+        <div class="plevel">${escHtml(l.level || '')}</div>
+        <div class="pname">${escHtml(l.name || '')}</div>
+        <div class="pdesc">${escHtml(l.desc || '')}</div>
+      </div>`).join('');
+    return `
+      <div class="diagram-section">
+        <div class="diagram-title">🔒 ${escHtml(d.title || '')} <span class="sub">${escHtml(d.subtitle || '')}</span></div>
+        <div class="perm-layers">${layers}</div>
+      </div>`;
+  }
+
+  window.ACMSAssists.register('reference', { name: '借鉴卡片（产品简报）', render });
+})();
+
+// ── 全局函数 ──
+/** 应用到需求：切换选中态 */
+function referenceApplyInsight(reqId, btn) {
+  const block = btn.closest('.insight-block');
+  if (!block) return;
+  const isSelected = block.classList.toggle('selected');
+  btn.textContent = isSelected ? '✅ 已选' : '+ 应用到需求';
+}
+
+/** 全部引用到对话：把选中的理念发送到对话流 */
+function referenceApplyAll(reqId) {
+  const layer = document.querySelector(`#chat-stream-msgs-${reqId} .chat-assist-layer[data-assist-method="reference"]`);
+  if (!layer) return;
+  const brief = layer.querySelector('.ref-brief');
+  if (!brief) return;
+
+  // 收集被选中的 insight（如果都没选则全选）
+  const selected = brief.querySelectorAll('.insight-block.selected');
+  const blocks = selected.length > 0 ? selected : brief.querySelectorAll('.insight-block');
+
+  if (blocks.length === 0) {
+    toast('没有可引用的理念', 'info', 1500);
+    return;
+  }
+
+  const parts = ['参考了以下产品设计：'];
+  blocks.forEach(b => {
+    const title = b.querySelector('.label')?.textContent?.trim();
+    const desc = b.querySelector('.desc')?.textContent?.trim();
+    if (title) parts.push(`\n💡 ${title}`);
+    if (desc) parts.push(`  ${desc}`);
+  });
+
+  const text = parts.join('\n');
+  const input = document.getElementById(`ai-clarify-input-${reqId}`);
+  if (!input) return;
+  input.value = text;
+
+  // 自动发送
+  const sendBtn = document.querySelector(`#chat-stream-${reqId} .btn-primary[onclick*="chatSend"]`);
+  if (sendBtn) {
+    sendBtn.click();
+    toast('✅ 已发送借鉴理念到对话', 'success', 1500);
+  } else {
+    input.focus();
+    toast('✅ 已填入输入框，请点击发送', 'success', 1500);
+  }
 }
