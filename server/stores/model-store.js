@@ -93,6 +93,44 @@ const store = {
       : (m.capabilities || ['text']);
     return caps.includes(capability);
   },
+
+  // v0.3.6：获取默认思路模型（用于 brief / clarity / rewrite）
+  // 回退：第一个有 text 能力的 active 模型 → 第一个 active 模型 → null
+  getDefaultGenModel() {
+    const sysConfigs = require('./../db/connection').collection('system_configs');
+    const config = sysConfigs.findOne(c => c.key === 'default_gen_model');
+    const defaultId = config ? config.value : null;
+
+    const active = collection('llm_models').find(m => m.status === 'active')
+      .map(m => ({
+        ...m,
+        capabilities: typeof m.capabilities === 'string'
+          ? JSON.parse(m.capabilities || '["text"]')
+          : (m.capabilities || ['text']),
+      }));
+
+    // 优先：用户指定的默认模型
+    if (defaultId) {
+      const found = active.find(m => m.id === defaultId);
+      if (found) return found;
+    }
+    // 其次：第一个有 text 能力的
+    const textModel = active.find(m => m.capabilities?.includes('text') || m.type === 'chat' || m.type === 'text');
+    if (textModel) return textModel;
+    // 最后：第一个 active 的
+    return active[0] || null;
+  },
+
+  // v0.3.6：设置默认思路模型
+  setDefaultGenModel(id) {
+    const sysConfigs = require('./../db/connection').collection('system_configs');
+    const existing = sysConfigs.findOne(c => c.key === 'default_gen_model');
+    if (existing) {
+      sysConfigs.update(c => c.key === 'default_gen_model', { ...existing, value: id, updated_at: new Date().toISOString() });
+    } else {
+      sysConfigs.insert({ key: 'default_gen_model', value: id, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+    }
+  },
 };
 
 module.exports = store;

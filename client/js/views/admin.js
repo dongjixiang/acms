@@ -4,6 +4,8 @@ async function loadAdminPage() {
     const status = await api('GET', '/admin/status');
     const events = await api('GET', '/admin/events?limit=10');
     const models = await api('GET', '/models');
+    const generators = await api('GET', '/generate');
+    const defaultGen = await api('GET', '/admin/default-gen-model');
 
     document.getElementById('admin-content').innerHTML = `
       <h3>📊 系统状态</h3>
@@ -14,9 +16,9 @@ async function loadAdminPage() {
         <div class="stat-card"><div class="num">${status.counts.projects}P / ${status.counts.requirements}R / ${status.counts.tasks}T</div><div class="label">数据量</div></div>
       </div>
 
-      <h3>🤖 大模型配置</h3>
+      <h3>🤖 大模型配置 <span style="font-size:12px;font-weight:400;color:var(--text2)">⭐ 默认思路: ${defaultGen.name || '未设置'}</span></h3>
       <div id="model-list" style="margin:8px 0">
-        ${models.map(m => renderModelRow(m)).join('') || '<div class="empty" style="padding:12px">暂无模型，请在下方添加</div>'}
+        ${models.map(m => renderModelRow(m, defaultGen.id)).join('') || '<div class="empty" style="padding:12px">暂无模型，请在下方添加</div>'}
       </div>
 
       <div class="panel-form" style="margin-top:16px">
@@ -67,6 +69,77 @@ async function loadAdminPage() {
         </div>
       </div>
 
+      <h3 style="margin-top:24px">🖼️ 生成器配置</h3>
+      <p style="color:var(--text2);font-size:13px;margin:4px 0 8px">图片/音频/视频生成器，可在系统运行时增删改，<code>gen-adapter</code> 根据 provider 字段自动路由</p>
+      <div id="gen-list" style="margin:8px 0">
+        ${renderGenList(generators)}
+      </div>
+
+      <div class="panel-form" style="margin-top:16px">
+        <h4>添加/编辑生成器</h4>
+        <div class="form-two-col">
+          <div class="form-group">
+            <label>ID *</label><input type="text" id="gen-id" placeholder="gen-img-minimax（唯一标识，不可重复）">
+          </div>
+          <div class="form-group">
+            <label>类型 *</label>
+            <select id="gen-type">
+              <option value="image">🖼️ 图片</option>
+              <option value="audio">🎵 音频</option>
+              <option value="video">🎬 视频</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-two-col">
+          <div class="form-group">
+            <label>Provider *</label>
+            <select id="gen-provider">
+              <optgroup label="图片">
+                <option value="minimax-image">MiniMax Image</option>
+                <option value="openai-dalle">OpenAI DALL-E</option>
+                <option value="comfyui">ComfyUI</option>
+              </optgroup>
+              <optgroup label="音频">
+                <option value="elevenlabs">ElevenLabs TTS</option>
+                <option value="suno">Suno Music</option>
+                <option value="minimax-audio">MiniMax Audio</option>
+              </optgroup>
+              <optgroup label="视频">
+                <option value="minimax-video">MiniMax Video</option>
+                <option value="animatediff">AnimateDiff (ComfyUI)</option>
+              </optgroup>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>名称 *</label><input type="text" id="gen-name" placeholder="MiniMax 图片生成">
+          </div>
+        </div>
+        <div class="form-two-col">
+          <div class="form-group">
+            <label>Base URL</label><input type="text" id="gen-url" placeholder="留空使用默认">
+          </div>
+          <div class="form-group">
+            <label>API Key</label><input type="password" id="gen-key" placeholder="sk-...（留空则不修改）">
+          </div>
+        </div>
+        <div class="form-two-col">
+          <div class="form-group">
+            <label>关联模型引用</label>
+            <select id="gen-model-ref"><option value="">— 不使用模型 API Key —</option>${models.map(m => `<option value="${escHtml(m.id)}">${escHtml(m.name)} (${escHtml(m.provider)}/${escHtml(m.model)})</option>`).join('')}</select>
+            <span style="font-size:11px;color:var(--text2)">如果选择了关联模型，生成器将复用该模型的 API Key</span>
+          </div>
+          <div class="form-group">
+            <label>优先级</label><input type="number" id="gen-priority" value="99" min="1" max="999" style="width:80px">
+            <span style="font-size:11px;color:var(--text2)">数字越小越优先（自动匹配时使用）</span>
+          </div>
+        </div>
+        <input type="hidden" id="gen-edit-id" value="">
+        <div class="form-actions">
+          <button class="btn-primary" onclick="saveGenerator()">💾 保存</button>
+          <button class="btn-back" onclick="resetGenForm()">取消</button>
+        </div>
+      </div>
+
       <h3 style="margin-top:24px">📋 最近事件</h3>
       <div style="max-height:200px;overflow-y:auto;font-size:12px;background:var(--bg2);border-radius:8px;padding:12px">
         ${events.map(e => `<div class="log-entry"><strong>${e.type}</strong> ${e.actor_name||''} → ${e.target_type||''}/${e.target_id||''} <span style="color:var(--text2)">${new Date(e.timestamp).toLocaleString('zh-CN')}</span></div>`).join('')}
@@ -81,19 +154,21 @@ async function loadAdminPage() {
   } catch (e) { document.getElementById('admin-content').innerHTML = `<div class="empty">加载失败: ${e.message}</div>`; }
 }
 
-function renderModelRow(m) {
+function renderModelRow(m, defaultGenId) {
   const apiLabel = m.api === 'anthropic-messages' ? ' [Anthropic]' : '';
   const caps = Array.isArray(m.capabilities) ? m.capabilities : (typeof m.capabilities === 'string' ? JSON.parse(m.capabilities) : ['text']);
   const capIcons = { 'text': '📝', 'vision': '👁️', 'json-mode': '📋', 'extended-thinking': '🧠', 'audio-input': '🎤', 'function-calling': '🔧' };
-  return `<div class="config-row" style="padding:8px 0">
+  const isDefault = m.id === defaultGenId;
+  return `<div class="config-row" style="padding:8px 0${isDefault ? ';background:rgba(255,217,61,0.06);border-radius:6px;padding:8px' : ''}">
     <div>
-      <strong>${escHtml(m.name)}</strong>
+      <strong>${isDefault ? '⭐ ' : ''}${escHtml(m.name)}</strong>
       <span style="color:var(--text2);margin-left:8px">${m.provider} / ${m.model}</span>
       ${m.api && m.api !== 'openai-chat' ? `<span style="color:var(--accent);margin-left:4px;font-size:11px">[${m.api}]</span>` : ''}
       ${m.baseUrl ? `<span style="color:var(--text2);font-size:11px;margin-left:8px">${m.baseUrl}</span>` : ''}
       <div style="font-size:11px;margin-top:3px;color:var(--text2)">${caps.map(c => capIcons[c] || '').join(' ')} ${caps.join(', ')}</div>
     </div>
-    <div style="display:flex;gap:6px">
+    <div style="display:flex;gap:6px;align-items:center">
+      ${isDefault ? '<span style="font-size:11px;color:var(--accent3);font-weight:600">默认思路</span>' : `<button class="btn-small" onclick="setDefaultGenModel('${m.id}')" title="设为默认思路模型">⭐</button>`}
       <button class="btn-small" onclick="editModel('${m.id}')">✏️ 编辑</button>
       <button class="btn-small btn-reject" onclick="deleteModel('${m.id}')">🗑</button>
     </div>
@@ -185,4 +260,117 @@ async function doCleanup(type) {
   if (!(await showConfirm(`确认清理 ${type}？此操作不可撤销。`))) return;
   try { const r = await api('POST', '/admin/cleanup', { type }); toast(`已清理 ${r.cleaned} 条`, 'success'); loadAdminPage(); }
   catch(e) { toast('失败: '+e.message, 'error'); }
+}
+
+// ===== 生成器配置 =====
+
+function renderGenList(generators) {
+  if (!generators || generators.length === 0) {
+    return '<div class="empty" style="padding:12px">暂无生成器，请在下方添加</div>';
+  }
+  const typeIcons = { image: '🖼️', audio: '🎵', video: '🎬' };
+  const providerLabels = {
+    'minimax-image': 'MiniMax', 'openai-dalle': 'DALL-E', 'comfyui': 'ComfyUI',
+    'elevenlabs': 'ElevenLabs', 'suno': 'Suno', 'minimax-audio': 'MiniMax',
+    'minimax-video': 'MiniMax', 'animatediff': 'AnimateDiff',
+  };
+  return `<div style="font-size:12px;display:flex;flex-direction:column;gap:4px">
+    ${generators.map(g => {
+      const cfg = g.config || {};
+      return `<div class="config-row">
+        <div>
+          <strong>${typeIcons[g.type] || '📦'} ${escHtml(g.name)}</strong>
+          <span style="color:var(--text2);margin-left:8px">${providerLabels[g.provider] || g.provider}</span>
+          <span style="color:var(--text3);font-size:11px;margin-left:6px">(${g.id})</span>
+          ${g.model_ref ? `<span style="color:var(--accent);font-size:11px;margin-left:6px">🔗 ${escHtml(g.model_ref)}</span>` : ''}
+          ${cfg.priority ? `<span style="color:var(--text2);font-size:11px;margin-left:6px">P${cfg.priority}</span>` : ''}
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="btn-small" onclick="editGenerator('${g.id}')">✏️</button>
+          <button class="btn-small btn-reject" onclick="deleteGenerator('${g.id}')">🗑</button>
+        </div>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+async function editGenerator(id) {
+  try {
+    const gens = await api('GET', '/generate');
+    const g = gens.find(gg => gg.id === id);
+    if (!g) return toast('生成器不存在', 'error');
+    document.getElementById('gen-edit-id').value = id;
+    document.getElementById('gen-id').value = g.id;
+    document.getElementById('gen-id').disabled = true;
+    document.getElementById('gen-type').value = g.type;
+    document.getElementById('gen-provider').value = g.provider;
+    document.getElementById('gen-name').value = g.name;
+    const cfg = g.config || {};
+    document.getElementById('gen-url').value = cfg.baseUrl || '';
+    document.getElementById('gen-key').value = '';
+    document.getElementById('gen-key').placeholder = '留空则不修改';
+    document.getElementById('gen-model-ref').value = g.model_ref || '';
+    document.getElementById('gen-priority').value = cfg.priority || 99;
+  } catch(e) { toast('加载失败: '+e.message, 'error'); }
+}
+
+function resetGenForm() {
+  document.getElementById('gen-edit-id').value = '';
+  document.getElementById('gen-id').value = '';
+  document.getElementById('gen-id').disabled = false;
+  document.getElementById('gen-type').value = 'image';
+  document.getElementById('gen-provider').value = 'minimax-image';
+  document.getElementById('gen-name').value = '';
+  document.getElementById('gen-url').value = '';
+  document.getElementById('gen-key').value = '';
+  document.getElementById('gen-key').placeholder = 'sk-...';
+  document.getElementById('gen-model-ref').value = '';
+  document.getElementById('gen-priority').value = 99;
+}
+
+async function saveGenerator() {
+  const editId = document.getElementById('gen-edit-id').value;
+  const id = document.getElementById('gen-id').value.trim();
+  const type = document.getElementById('gen-type').value;
+  const provider = document.getElementById('gen-provider').value;
+  const name = document.getElementById('gen-name').value.trim();
+  if (!id || !type || !provider || !name) return toast('请填写 ID/类型/Provider/名称', 'error');
+
+  const config = {
+    baseUrl: document.getElementById('gen-url').value.trim() || undefined,
+    priority: parseInt(document.getElementById('gen-priority').value) || 99,
+  };
+  const keyVal = document.getElementById('gen-key').value;
+  if (keyVal) config.apiKey = keyVal;
+
+  const modelRef = document.getElementById('gen-model-ref').value || '';
+
+  const body = { id, type, provider, name, config, modelRef };
+
+  try {
+    if (editId) {
+      await api('PATCH', `/generate/${editId}`, body);
+      toast('生成器已更新', 'success');
+    } else {
+      await api('POST', '/generate', body);
+      toast('生成器已添加', 'success');
+    }
+    resetGenForm();
+    loadAdminPage();
+  } catch(e) { toast('保存失败: '+e.message, 'error'); }
+}
+
+async function deleteGenerator(id) {
+  if (!(await showConfirm(`确认删除生成器「${id}」？`))) return;
+  try { await api('DELETE', `/generate/${id}`); toast('已删除', 'success'); loadAdminPage(); }
+  catch(e) { toast('失败: '+e.message, 'error'); }
+}
+
+// v0.3.6：设为默认思路模型
+async function setDefaultGenModel(modelId) {
+  try {
+    await api('POST', '/admin/default-gen-model', { modelId });
+    toast('默认思路模型已更新', 'success');
+    loadAdminPage();
+  } catch(e) { toast('设置失败: '+e.message, 'error'); }
 }

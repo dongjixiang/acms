@@ -4,6 +4,7 @@ const router = express.Router();
 const reqStore = require('../stores/requirement-store');
 const eventBus = require('../services/event-bus');
 const reqService = require('../services/requirement-service');
+const modelStore = require('../stores/model-store');
 
 // 创建需求
 router.post('/', async (req, res, next) => {
@@ -579,6 +580,46 @@ router.post('/:id/thinking-brief/regen', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// v0.3.6 流式思路简报（SSE）
+// 连接后触发 brief 生成，逐 token 推送
+router.get('/:id/thinking-brief/stream', async (req, res, next) => {
+  try {
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no'); // nginx 兼容
+    res.flushHeaders();
+
+    const send = (type, data) => {
+      res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+    };
+
+    send('status', { message: '开始生成思路简报…' });
+
+    const defaultModel = modelStore.getDefaultGenModel();
+    const modelId = defaultModel?.id || null;
+
+    for await (const event of briefService.runBriefJobStream(req.params.id, { modelId })) {
+      if (event.type === 'token') {
+        send('token', { text: event.text });
+      } else if (event.type === 'done') {
+        send('done', { brief: event.brief });
+        break;
+      } else if (event.type === 'error') {
+        send('error', { message: event.message });
+        break;
+      }
+    }
+    res.end();
+  } catch (e) {
+    // 流中断或异常，尝试发 error 事件
+    try { res.write(`data: ${JSON.stringify({ type: 'error', message: e.message })}\n\n`); res.end(); } catch {}
+  }
+});
+
 // ============================================================
 // 辅助手段（v0.3.3 Phase 2）
 //   LLM 路由器 + 5 种独立 assist（decision_tree/scenarios/diagnosis/tradeoff/arch）
@@ -688,7 +729,7 @@ router.post('/:id/assist/run', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// 手动指定 method（用户主动选）
+    // 手动指定 method（用户主动选）
 router.post('/:id/assist/:method', async (req, res, next) => {
   try {
     const { method } = req.params;
@@ -711,6 +752,43 @@ router.post('/:id/assist/:method', async (req, res, next) => {
       .catch(e => console.error(`[assist.${method}] 任务异常:`, e.message)));
 
     res.status(202).json({ method, status: 'generating' });
+  } catch (e) { next(e); }
+});
+
+// v0.3.6：「都不符合，再换一批」按钮
+//   跟 /assist/:method 的区别：强制重跑（绕过 visual.js 的 already_done 保护 + scenarios/decision-tree 也会重跑）
+//   旧选择不进 used（因为用户没选），但标记这批已被换过（避免下次换出同样内容）
+router.post('/:id/assist/:method/regenerate', async (req, res, next) => {
+  try {
+    const { method } = req.params;
+    const { modelId, role } = req.body || {};
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    if (reqRec.status !== 'idea') {
+      return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
+    }
+
+    // 只有 3 种适合换（scenarios / decision_tree / visual）
+    const REGENERATABLE = ['scenarios', 'decision_tree', 'visual'];
+    if (!REGENERATABLE.includes(method)) {
+      return res.status(400).json({ error: 'METHOD_NOT_REGENERATABLE', method });
+    }
+
+    const svc = assists.getAssist(method);
+    if (!svc || !svc.runAssistJob) return res.status(500).json({ error: 'ASSIST_HAS_NO_RUNNER' });
+
+    // 标记当前 batch 已被"换过"（不进 used，因为用户没选）
+    //   存到 req 上的标记字段，让 runAssistJob / dispatcher 知道该换
+    const chatRound = (() => { try { return JSON.parse(reqRec.thinking_brief || 'null')?.chat_round || 1; } catch { return 1; } })();
+
+    setImmediate(() => svc.runAssistJob(req.params.id, {
+      modelId,
+      role,
+      chatRound,
+      forceRegenerate: true,  // 关键：让 service 知道这是"换一批"调用
+    }).catch(e => console.error(`[assist.regen.${method}] 任务异常:`, e.message)));
+
+    res.status(202).json({ method, status: 'generating', regenerate: true });
   } catch (e) { next(e); }
 });
 

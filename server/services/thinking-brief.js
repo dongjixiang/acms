@@ -62,6 +62,14 @@ confidence < 0.6 时默认走 vague（宁松勿严）。
 - 不要换汤不换药（同样的方向换名字、稍微改 desc 算无效输出）
 - 如果发现「确实想不到新角度」，就诚实地回到原方向但深化它（更具体的场景、更细的分类）
 
+## 重要原则（用户已补充时）—— v0.3.7 修复「所答非所问」
+如果用户输入中包含【用户已补充的内容】字段（按时间顺序的历次补充）：
+- **ai_understanding 必须包含补充里提出的具体关键词、痛点、场景**（不是泛泛"用户要做某事"）
+- **opening 的 1 句理解必须直接回应补充里的核心痛点**（如"你说 FAE 痛点是 XX，我接下来会从 YY 切入"）
+- **followup_question 必须是补充之后的下一个真正开放问题**——**绝对不要**重复追问用户已经说过的话题（如不要问"你最在意哪个场景"，因为补充里已经列了）
+- 检验标准：你的 followup_question 能不能从补充里直接推断出来？如果能，说明你问错了——应该问补充里**没回答**的真正空白点
+- 反例：补充里说"FAE 痛点是 XX，销售痛点是 YY"，但 followup 问"销售和 FAE 第一屏看什么"——这是错的，因为"第一屏"在补充里还没提，可以问；"FAE 痛点"已经提了，不能问
+
 输出严格 JSON，格式：
 {
   "ai_understanding": "...",
@@ -73,6 +81,9 @@ confidence < 0.6 时默认走 vague（宁松勿严）。
 不要任何额外文字、markdown 代码块、解释。`;
 
 function pickDefaultLlm() {
+  // v0.3.6：优先使用系统配置的「默认思路模型」
+  const defaultGen = modelStore.getDefaultGenModel();
+  if (defaultGen) return defaultGen;
   const all = modelStore.list();
   return all.find(m => m.capabilities?.includes('text') || m.type === 'chat' || m.type === 'text')
       || all[0]
@@ -102,13 +113,24 @@ async function generateBrief(title, description, clarity, oldDecisionTree, role,
   ];
   if (Array.isArray(supplementHistory) && supplementHistory.length > 0) {
     userParts.push('---');
-    userParts.push('【用户已补充的内容】（按时间顺序）:');
+    userParts.push('【需求对话历史】（按时间顺序，包含 AI 提问和用户回答）:');
     supplementHistory.forEach((h, i) => {
-      const sourceTag = h.source ? ` [来源: ${h.source}]` : '';
-      userParts.push(`#${i + 1}${sourceTag}: ${h.text || ''}`);
+      const sourceTag = h.source ? ` [${h.source}]` : '';
+      const atTag = h.at ? ` @${h.at.substring(11, 16)}` : '';
+      if (h.role === 'assistant') {
+        const lines = [];
+        if (h.opening) lines.push(`  开场: ${h.opening}`);
+        if (h.understanding) lines.push(`  理解: ${h.understanding}`);
+        if (h.followup_question) lines.push(`  追问: ${h.followup_question}`);
+        // 旧格式降级
+        if (lines.length === 0 && h.text) lines.push(`  ${h.text}`);
+        userParts.push(`#${i + 1} 🤖 AI${sourceTag}${atTag}:\n${lines.join('\n')}`);
+      } else {
+        userParts.push(`#${i + 1} ➡️ 用户${sourceTag}${atTag}: ${h.text || ''}`);
+      }
     });
     userParts.push('---');
-    userParts.push('请把「原始需求描述 + 用户历次补充」视为完整输入。用户已经在补充里说过的偏好、场景、考虑，请不要再追问 —— 你的 followup_question 应该是补充内容之后的下一个真正开放问题。');
+    userParts.push('请把「原始需求描述 + 以上全部对话历史」视为完整输入。用户已经在对话里回答过的内容，请不要再追问 —— 你的 followup_question 应该是对话之后的下一个真正开放问题。');
   }
   const messages = [
     { role: 'system', content: THINKING_SYSTEM_PROMPT },
@@ -123,11 +145,16 @@ async function generateBrief(title, description, clarity, oldDecisionTree, role,
       content: `【上一轮决策树】用户已经看过这些方向了：\n${oldLabels.map((l, i) => `${String.fromCharCode(65 + i)}. ${l}`).join('\n')}\n\n请这次给出**明显不同**的方向——更细分的场景、不同的用户视角、或基于用户已勾选/补充的延伸。如果实在想不到新角度，至少在 desc 里给更具体的落地场景。`,
     });
   }
+  // v0.3.7 调试日志：一次性 dump LLM 实际看到的 messages（验证修复效果后删除）
+  console.log(`[brief.debug] ${title?.substring(0, 30) || '(空)'}: system=${THINKING_SYSTEM_PROMPT.length}字, user=${userParts.filter(Boolean).join('\n').length}字, supplement_count=${supplementHistory.length}, has_old_decision_tree=${oldDecisionTree?.length || 0}`);
   const result = await callLLM(model.id, messages, {
     temperature: 0.7,
     maxTokens: 1200,
     jsonMode: true,
   });
+  // v0.3.7 调试日志：dump LLM 实际返回的 followup_question（验证修复效果后删除）
+  const _debugParsed = safeParseJSON(result.content);
+  console.log(`[brief.debug] ${title?.substring(0, 30) || '(空)'}: followup_question="${(_debugParsed?.followup_question || '').substring(0, 60)}"`);
   // v0.3.3 B 方案补丁（2026-06-13）：多层 JSON 提取（兼容 markdown / 截断 / 嵌套）
   const parsed = safeParseJSON(result.content);
   if (!parsed) throw new Error('LLM 返回无法解析为 JSON');
@@ -333,6 +360,171 @@ async function runBriefJob(requirementId, opts = {}) {
 }
 
 /**
+ * 流式生成思路简报（v0.3.6 SSE 实时输出）
+ * 与 runBriefJob 逻辑相同，但通过 async generator 逐 token 产出
+ * @yields {type: 'token', text: string}
+ * @yields {type: 'done', brief: object}
+ * @yields {type: 'error', message: string}
+ */
+async function* runBriefJobStream(requirementId, opts = {}) {
+  const req = reqStore.getById(requirementId);
+  if (!req) { yield { type: 'error', message: 'REQ_NOT_FOUND' }; return; }
+
+  reqStore.update(requirementId, {
+    thinking_brief: JSON.stringify({
+      status: 'generating', opening: '', ai_understanding: '',
+      followup_question: '', diagnosis: null, dialog: null,
+      chat_round: 0, started_at: new Date().toISOString(),
+      generated_at: null, error: null, model: null,
+    }),
+  });
+
+  let oldDecisionTree = [];
+  try {
+    const oldBrief = JSON.parse(req.thinking_brief || 'null');
+    if (oldBrief && Array.isArray(oldBrief.decision_tree)) oldDecisionTree = oldBrief.decision_tree;
+  } catch {}
+
+  let supplementHistory = [];
+  try {
+    supplementHistory = JSON.parse(req.supplement_history || '[]');
+    if (!Array.isArray(supplementHistory)) supplementHistory = [];
+  } catch {}
+
+  const model = opts.modelId ? modelStore.getById(opts.modelId) : pickDefaultLlm();
+  if (!model) { yield { type: 'error', message: 'NO_LLM_AVAILABLE' }; return; }
+
+  const userParts = [
+    `需求标题: ${req.title || '(空)'}`,
+    `需求描述: ${req.description || '(空)'}`,
+    `明确度: ${req.input_clarity || 'unknown'}`,
+    opts.role ? `用户角色: ${opts.role}` : '',
+  ];
+
+  if (Array.isArray(supplementHistory) && supplementHistory.length > 0) {
+    userParts.push('---');
+    userParts.push('【需求对话历史】（按时间顺序，包含 AI 提问和用户回答）:');
+    supplementHistory.forEach((h, i) => {
+      const sourceTag = h.source ? ` [${h.source}]` : '';
+      const atTag = h.at ? ` @${h.at.substring(11, 16)}` : '';
+      if (h.role === 'assistant') {
+        const lines = [];
+        if (h.opening) lines.push(`  开场: ${h.opening}`);
+        if (h.understanding) lines.push(`  理解: ${h.understanding}`);
+        if (h.followup_question) lines.push(`  追问: ${h.followup_question}`);
+        if (lines.length === 0 && h.text) lines.push(`  ${h.text}`);
+        userParts.push(`#${i + 1} 🤖 AI${sourceTag}${atTag}:\n${lines.join('\n')}`);
+      } else {
+        userParts.push(`#${i + 1} ➡️ 用户${sourceTag}${atTag}: ${h.text || ''}`);
+      }
+    });
+    userParts.push('---');
+    userParts.push('请把「原始需求描述 + 以上全部对话历史」视为完整输入。用户已经在对话里回答过的内容，请不要再追问 —— 你的 followup_question 应该是对话之后的下一个真正开放问题。');
+  }
+
+  const messages = [
+    { role: 'system', content: THINKING_SYSTEM_PROMPT },
+    { role: 'user', content: userParts.filter(Boolean).join('\n') },
+  ];
+
+  if (Array.isArray(oldDecisionTree) && oldDecisionTree.length > 0) {
+    const oldLabels = oldDecisionTree.map(t => t.label || '').filter(Boolean);
+    messages.push({
+      role: 'system',
+      content: `【上一轮决策树】用户已经看过这些方向了：\n${oldLabels.map((l, i) => `${String.fromCharCode(65 + i)}. ${l}`).join('\n')}\n\n请这次给出**明显不同**的方向。`,
+    });
+  }
+
+  const { callLLMStream } = require('./llm-adapter');
+  let fullContent = '';
+  try {
+    for await (const event of callLLMStream(model.id, messages, { temperature: 0.7, maxTokens: 1200 })) {
+      if (event.type === 'token') {
+        fullContent += event.text;
+        yield { type: 'token', text: event.text };
+      } else if (event.type === 'done') {
+        const parsed = safeParseJSON(fullContent);
+        if (!parsed) { yield { type: 'error', message: 'LLM 返回无法解析为 JSON' }; return; }
+
+        const oldRound = (() => { try { return JSON.parse(req.thinking_brief || 'null')?.chat_round || 0; } catch { return 0; } })();
+        const newRound = oldRound + 1;
+        const VALID_TYPES = ['vague', 'conflicted', 'blank', null];
+        let diagnosis = null;
+        const rawDiag = parsed.diagnosis;
+        if (rawDiag && typeof rawDiag === 'object' && VALID_TYPES.includes(rawDiag.type)) {
+          diagnosis = { type: rawDiag.type, label: typeof rawDiag.label === 'string' ? rawDiag.label.slice(0, 10) : '', guide: typeof rawDiag.guide === 'string' ? rawDiag.guide.slice(0, 30) : '', confidence: typeof rawDiag.confidence === 'number' ? Math.max(0, Math.min(1, rawDiag.confidence)) : 0 };
+        }
+        const brief = {
+          status: 'done', opening: typeof parsed.opening === 'string' ? parsed.opening : '',
+          ai_understanding: typeof parsed.ai_understanding === 'string' ? parsed.ai_understanding : '',
+          followup_question: typeof parsed.followup_question === 'string' ? parsed.followup_question : '',
+          diagnosis, dialog: null, chat_round: newRound,
+          generated_at: new Date().toISOString(), model: model.id, error: null,
+        };
+        reqStore.update(requirementId, { thinking_brief: JSON.stringify(brief) });
+        console.log(`[brief.stream] ${requirementId} 流式生成完成（chat_round=${newRound}）`);
+
+        // v0.3.6 流式完成后的后处理：路由器 + clarity 评估（跟 runBriefJob 一致）
+        setImmediate(async () => {
+          try {
+            const { pickNext } = require('./assists/router');
+            const assists = require('./assists');
+            const fresh = reqStore.getById(requirementId);
+            if (fresh && fresh.status === 'idea') {
+              const usedMethods = [];
+              const roundUsedMethods = [];
+              for (const method of ['decision_tree', 'scenarios', 'diagnosis', 'tradeoff', 'arch']) {
+                const svc = assists.getAssist(method);
+                const data = svc && svc.getAssist ? svc.getAssist(requirementId) : null;
+                if (!data) continue;
+                if (data.used) usedMethods.push(method);
+                if (data.status === 'done' && typeof data.generated_at_round === 'number' && data.generated_at_round === newRound) roundUsedMethods.push(method);
+              }
+              pickNext(fresh, { usedMethods, roundUsedMethods, chatRound: newRound }, opts.modelId).catch(e => console.error('[brief.stream.router] 异常:', e.message));
+            }
+          } catch (e) { console.error('[brief.stream.router] 异常:', e.message); }
+        });
+        setImmediate(async () => {
+          try {
+            const { generateDialog } = require('./elicitor-dialog');
+            const fresh = reqStore.getById(requirementId);
+            if (fresh && fresh.status === 'idea') {
+              const currentBrief = JSON.parse(fresh.thinking_brief || 'null');
+              if (currentBrief && currentBrief.status === 'done') {
+                const dialog = await generateDialog(currentBrief, fresh, opts.modelId);
+                if (dialog) {
+                  const updated = JSON.parse(fresh.thinking_brief || '{}');
+                  updated.dialog = dialog;
+                  reqStore.update(requirementId, { thinking_brief: JSON.stringify(updated) });
+                }
+              }
+            }
+          } catch (e) { console.error('[brief.stream.dialog] 异常:', e.message); }
+        });
+        setImmediate(async () => {
+          try {
+            const { assessClarity } = require('./insight-previews');
+            const fresh = reqStore.getById(requirementId);
+            if (fresh) {
+              let sh = [];
+              try { sh = JSON.parse(fresh.supplement_history || '[]'); if (!Array.isArray(sh)) sh = []; } catch {}
+              const result = await assessClarity(fresh.title, fresh.description, null, sh);
+              if (result?.clarity) reqStore.update(requirementId, { input_clarity: result.clarity, clarity_reason: result.reason || '', clarity_model: result.modelId });
+            }
+          } catch (e) { console.error('[brief.stream.clarity] 异常:', e.message); }
+        });
+
+        yield { type: 'done', brief };
+        return;
+      } else if (event.type === 'error') { yield event; return; }
+    }
+  } catch (e) {
+    console.error(`[brief.stream] ${requirementId} 异常:`, e.message);
+    yield { type: 'error', message: e.message };
+  }
+}
+
+/**
  * 读取缓存（前端 GET 用）
  */
 function getBrief(requirementId) {
@@ -345,4 +537,4 @@ function getBrief(requirementId) {
   }
 }
 
-module.exports = { generateBrief, runBriefJob, getBrief };
+module.exports = { generateBrief, runBriefJob, getBrief, runBriefJobStream };

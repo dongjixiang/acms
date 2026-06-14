@@ -35,10 +35,21 @@ const store = {
 
   // 更新生成器
   update(id, updates) {
-    if (updates.config) {
-      const cfg = { ...updates.config };
-      if (cfg.apiKey) cfg.apiKey = encrypt(cfg.apiKey);
-      updates.config = JSON.stringify(cfg);
+    if (updates.config && typeof updates.config === 'object') {
+      // v0.3.6：合并现有 config，避免覆盖已有加密字段
+      const existing = collection('generators').findOne(g => g.id === id);
+      let existingConfig = {};
+      try { existingConfig = JSON.parse(existing?.config || '{}'); } catch {}
+      // 保留已有的 apiKey（如果本次没传新 key）和 _fromModelRef 标记
+      const merged = { ...existingConfig, ...updates.config };
+      if (updates.config.apiKey) {
+        merged.apiKey = encrypt(updates.config.apiKey);
+      } else {
+        // 没传新 key，保留已有的（可能已加密）
+        merged.apiKey = existingConfig.apiKey || '';
+      }
+      delete merged._fromModelRef;
+      updates.config = JSON.stringify(merged);
     }
     const now = new Date().toISOString();
     return collection('generators').update(g => g.id === id, { ...updates, updated_at: now });

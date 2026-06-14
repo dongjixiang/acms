@@ -24,6 +24,10 @@
       <div class="assist-section-title">🌳 决策树 · 3 个互斥方向</div>
       <div class="brief-tree">${treeHtml}</div>
       ${data.used ? `<div class="assist-used-tag">✅ 你选了 ${String.fromCharCode(65 + (data.used_branch_idx ?? 0))} 方向</div>` : ''}
+      <!-- v0.3.6：「都不符合，再换一批」按钮（仅未选时显示，避免重复消耗 token） -->
+      ${!data.used ? `<div class="assist-regen-row">
+        <button class="btn-small btn-secondary" onclick="ACMSAssistDispatcher.regenerateBatch('${reqId}', 'decision_tree')" title="让 AI 再生成 3 个明显不同的方向">🔄 都不符合，再换一批</button>
+      </div>` : ''}
     `;
   }
 

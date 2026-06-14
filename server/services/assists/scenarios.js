@@ -42,6 +42,17 @@ async function runAssistJob(requirementId, opts = {}) {
   const req = reqStore.getById(requirementId);
   if (!req) return;
 
+  // v0.3.6：forceRegenerate 时把已换过的旧选择喂给 LLM，让它避免重复
+  let previousScenarios = [];
+  if (opts.forceRegenerate) {
+    try {
+      const existing = JSON.parse(req.assist_scenarios || 'null');
+      if (existing && Array.isArray(existing.scenarios)) {
+        previousScenarios = existing.scenarios;
+      }
+    } catch { /* 静默降级 */ }
+  }
+
   reqStore.update(requirementId, {
     assist_scenarios: JSON.stringify({
       status: 'generating',
@@ -52,25 +63,32 @@ async function runAssistJob(requirementId, opts = {}) {
       error: null,
       model: null,
       used: false,
+      regenerate_count: opts.forceRegenerate ? ((JSON.parse(req.assist_scenarios || '{}').regenerate_count || 0) + 1) : 0,
     }),
   });
-  console.log(`[assist:scenarios] ${requirementId} 开始生成`);
+  console.log(`[assist:scenarios] ${requirementId} 开始生成${opts.forceRegenerate ? '（换一批）' : ''}`);
 
   try {
     const model = opts.modelId ? modelStore.getById(opts.modelId) : pickDefaultLlm();
     if (!model) throw new Error('NO_LLM_AVAILABLE');
 
+    const userParts = [
+      `需求标题: ${req.title || '(空)'}`,
+      `需求描述: ${req.description || '(空)'}`,
+      opts.role ? `用户角色: ${opts.role}` : '',
+      opts.followupQuestion ? `当前对话焦点: ${opts.followupQuestion}` : '',
+    ];
+    if (previousScenarios.length > 0) {
+      userParts.push('---');
+      userParts.push('【已换过的场景】（用户觉得都不符合，请给出明显不同的）：');
+      previousScenarios.forEach((s, i) => {
+        userParts.push(`#${i + 1}: ${s.title || ''}（persona: ${s.persona || ''}）`);
+      });
+      userParts.push('请确保新场景在 persona / context / pain / goal 上与已换过的有明显差异。');
+    }
     const messages = [
       { role: 'system', content: SCENARIOS_PROMPT },
-      {
-        role: 'user',
-        content: [
-          `需求标题: ${req.title || '(空)'}`,
-          `需求描述: ${req.description || '(空)'}`,
-          opts.role ? `用户角色: ${opts.role}` : '',
-          opts.followupQuestion ? `当前对话焦点: ${opts.followupQuestion}` : '',
-        ].filter(Boolean).join('\n'),
-      },
+      { role: 'user', content: userParts.filter(Boolean).join('\n') },
     ];
 
     // v0.3.3 B++ 补丁：用 callLLMWithRetry（公共重试工具）替代直接 callLLM

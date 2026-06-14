@@ -217,4 +217,95 @@ async function callAnthropic(model, messages, opts, apiKey) {
   }
 }
 
-module.exports = { callLLM };
+// ════════════════════════════════════════════════════════════════
+// v0.3.6 流式调用（SSE）— 用于对话式想法澄清的实时输出
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * 流式调用 LLM，通过 async generator 逐 token 产出
+ * @param {string} modelId
+ * @param {Array}  messages - [{role, content}]
+ * @param {object} options - { temperature, maxTokens }
+ * @yields {type: 'token', text: string} — 每个 token 片段
+ * @yields {type: 'done', content: string, usage: object} — 完成
+ * @yields {type: 'error', message: string} — 错误
+ */
+async function* callLLMStream(modelId, messages, options = {}) {
+  const model = modelStore.getById(modelId);
+  if (!model) throw Object.assign(new Error('模型不存在'), { status: 404 });
+
+  const apiKey = modelStore.getDecryptedKey(modelId);
+  if (!apiKey) throw Object.assign(new Error('模型未配置 API Key'), { status: 400 });
+
+  const api = model.api || 'openai-chat';
+  if (api !== 'openai-chat') {
+    // 非 OpenAI 兼容 API 降级为非流式
+    const result = await callLLM(modelId, messages, options);
+    yield { type: 'done', content: result.content, usage: result.usage };
+    return;
+  }
+
+  const baseUrl = model.baseUrl || 'https://api.deepseek.com/v1';
+  const body = {
+    model: model.model,
+    messages,
+    temperature: options.temperature ?? 0.7,
+    max_tokens: options.maxTokens ?? 2000,
+    stream: true,
+  };
+
+  const resp = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+    body: JSON.stringify(body),
+  });
+
+  if (!resp.ok) {
+    const err = await resp.text();
+    yield { type: 'error', message: `LLM 流式调用失败: ${resp.status} ${err}` };
+    return;
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let fullContent = '';
+  let buffer = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      // 解析 SSE 行
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || ''; // 未完成的行留在 buffer
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith('data: ')) continue;
+        const data = trimmed.slice(6);
+        if (data === '[DONE]') continue;
+
+        try {
+          const parsed = JSON.parse(data);
+          const choice = parsed.choices?.[0];
+          if (!choice) continue;
+
+          // delta.content 可能是 undefined（如 reasoning 段）
+          const delta = choice.delta?.content || '';
+          if (delta) {
+            fullContent += delta;
+            yield { type: 'token', text: delta };
+          }
+        } catch { /* 跳过无法解析的行 */ }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  yield { type: 'done', content: fullContent, usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } };
+}
+
+module.exports = { callLLM, callLLMStream };

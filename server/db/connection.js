@@ -14,7 +14,7 @@ const KNOWN_COLLECTIONS = [
   'projects', 'project_members', 'project_environments', 'project_repos',
   'project_configs', 'requirements', 'clarification_threads', 'tasks',
   'agents', 'events', 'llm_models', 'skills', 'webhooks', 'knowledge_files',
-  'requirement_knowledge',
+  'requirement_knowledge', 'generators', 'system_configs',
 ];
 
 // === 初始化 ===

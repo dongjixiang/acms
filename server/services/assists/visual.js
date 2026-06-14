@@ -10,29 +10,47 @@ async function runAssistJob(reqId, opts = {}) {
   if (!req) throw new Error('REQ_NOT_FOUND');
 
   // 如果已经生成过且 status==='done'，不再重跑（节省 token）
-  // 用户可通过"重新生成"按钮强制重跑（前端调 triggerInsightPreviews）
+  // 例外：opts.forceRegenerate=true（用户点"都不符合，再换一批"按钮）
+  //   用户可通过"重新生成"按钮强制重跑（前端调 triggerInsightPreviews）
   let existing = null;
   try { existing = JSON.parse(req.insight_previews || '{}'); } catch {}
-  if (existing && existing.status === 'done') {
+  if (existing && existing.status === 'done' && !opts.forceRegenerate) {
     return { ok: true, skipped: 'already_done' };
   }
 
   // v0.3.3 B+++：写 generated_at_round 到 insight_previews JSON（dispatcher 过滤用）
   // 写一个 status=pending 的"开始标记"，让 dispatcher 立即显示"生成中"
   const chatRound = typeof opts.chatRound === 'number' ? opts.chatRound : (req.chat_round || 1);
+  // v0.3.6：forceRegenerate 时把已换过的旧变体喂给 LLM，让它避免重复
+  let previousVariants = [];
+  if (opts.forceRegenerate) {
+    try {
+      const existing = JSON.parse(req.insight_previews || 'null');
+      if (existing && Array.isArray(existing.variants)) {
+        previousVariants = existing.variants;
+      }
+    } catch { /* 静默降级 */ }
+  }
+
   reqStore.update(reqId, {
     insight_previews: JSON.stringify({
       ...(existing || {}),
       status: 'pending',
       generated_at_round: chatRound,
       generated_at: new Date().toISOString(),
+      regenerate_count: opts.forceRegenerate ? ((existing?.regenerate_count || 0) + 1) : (existing?.regenerate_count || 0),
     }),
   });
 
   // 异步执行（不阻塞路由响应）
   setImmediate(async () => {
     try {
-      await insightPreviews.runPreviewJob(reqId, { modelId: opts.modelId, role: opts.role });
+      // 把已换过的旧变体作为 hint 传给 runPreviewJob（避免重复）
+      await insightPreviews.runPreviewJob(reqId, {
+        modelId: opts.modelId,
+        role: opts.role,
+        previousVariants: opts.forceRegenerate ? previousVariants : [],
+      });
     } catch (e) {
       console.error(`[assist:visual] ${reqId} 异步生成失败:`, e.message);
     }

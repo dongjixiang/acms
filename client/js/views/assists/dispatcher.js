@@ -171,6 +171,22 @@
     }
   }
 
+  // v0.3.6：「都不符合，再换一批」按钮
+  //   跟 triggerManual 的区别：调 /assist/:method/regenerate 路由（强制重跑 + 喂旧选择给 LLM）
+  async function regenerateBatch(reqId, method) {
+    try {
+      const resp = await api('POST', `/requirements/${reqId}/assist/${method}/regenerate`, {});
+      if (resp.error) {
+        toast('换一批失败: ' + resp.error, 'error');
+        return;
+      }
+      toast('🔄 正在换一批...', 'info', 1500);
+      loadAll(reqId);
+    } catch (e) {
+      toast('换一批失败: ' + e.message, 'error');
+    }
+  }
+
   async function useAssist(reqId, method, payload) {
     try {
       await api('POST', `/requirements/${reqId}/assist/${method}/use`, payload || {});
@@ -180,5 +196,5 @@
     }
   }
 
-  window.ACMSAssistDispatcher = { loadAll, poll, render, triggerAuto, triggerManual, useAssist };
+  window.ACMSAssistDispatcher = { loadAll, poll, render, triggerAuto, triggerManual, regenerateBatch, useAssist };
 })();

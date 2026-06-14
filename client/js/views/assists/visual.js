@@ -62,6 +62,10 @@
       <div class="assist-section-title">🎨 视觉预览 · ${variants.length} 个方向</div>
       <div class="assist-intro">看下哪个方向最像你想要的。选中的方向会作为视觉参考进入下一步。</div>
       <div class="assist-grid">${cards}</div>
+      <!-- v0.3.6：「都不符合，再换一批」按钮（仅未选时显示） -->
+      ${!picked ? `<div class="assist-regen-row">
+        <button class="btn-small btn-secondary" onclick="ACMSAssistDispatcher.regenerateBatch('${reqId}', 'visual')" title="让 AI 再生成 3 张明显不同风格的图">🔄 都不符合，再换一批</button>
+      </div>` : ''}
     `;
   }
 

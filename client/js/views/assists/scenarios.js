@@ -29,6 +29,10 @@
       <div class="assist-section-title">🎬 场景剧本 · 3 个典型用户场景</div>
       <div class="assist-intro">挑一个和你最像的场景——我们就按这个场景往下走。</div>
       <div class="assist-grid">${cards}</div>
+      <!-- v0.3.6：「都不符合，再换一批」按钮 -->
+      <div class="assist-regen-row">
+        <button class="btn-small btn-secondary" onclick="ACMSAssistDispatcher.regenerateBatch('${reqId}', 'scenarios')" title="让 AI 再生成 3 个明显不同的场景">🔄 都不符合，再换一批</button>
+      </div>
     `;
   }
 

@@ -1,0 +1,612 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>对话式想法澄清 · 原型</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    background: #111;
+    color: #ddd;
+    line-height: 1.5;
+    height: 100vh;
+    display: flex;
+    justify-content: center;
+  }
+
+  .app {
+    width: 480px;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    border-left: 1px solid #2a2a2a;
+    border-right: 1px solid #2a2a2a;
+    background: #18181a;
+  }
+
+  /* ── Header ── */
+  .header {
+    padding: 14px 16px 10px;
+    border-bottom: 1px solid #2a2a2a;
+    flex-shrink: 0;
+  }
+  .header-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: #eee;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .header-title .status-badge {
+    font-size: 10px;
+    background: rgba(255,217,61,0.12);
+    color: #ffd93d;
+    padding: 1px 7px;
+    border-radius: 4px;
+  }
+  .header-desc {
+    margin-top: 6px;
+    font-size: 13px;
+    color: #999;
+    line-height: 1.4;
+    padding: 8px 10px;
+    background: #1e1e20;
+    border-radius: 6px;
+    border: 1px solid #2a2a2a;
+  }
+
+  /* ── Chat stream ── */
+  .chat-stream {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    scroll-behavior: smooth;
+  }
+
+  /* ── Bubbles ── */
+  .bubble {
+    max-width: 88%;
+    padding: 10px 12px;
+    border-radius: 10px;
+    font-size: 13px;
+    line-height: 1.6;
+    animation: fadeIn 0.2s ease;
+  }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+  .bubble-ai {
+    align-self: flex-start;
+    background: rgba(78,205,196,0.08);
+    border: 1px solid rgba(78,205,196,0.18);
+    color: #ccc;
+  }
+  .bubble-user {
+    align-self: flex-end;
+    background: rgba(100,149,237,0.10);
+    border: 1px solid rgba(100,149,237,0.18);
+    color: #ddd;
+  }
+
+  .bubble-meta {
+    font-size: 10px;
+    color: #666;
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .bubble-meta .label {
+    font-weight: 600;
+    color: #4ecdc4;
+  }
+  .bubble-user .bubble-meta .label { color: #7a9ef5; }
+  .bubble-meta .time {
+    font-family: monospace;
+    color: #555;
+  }
+
+  /* AI structured labels */
+  .part { margin-top: 4px; }
+  .part:first-child { margin-top: 0; }
+  .part-tag {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 600;
+    color: #4ecdc4;
+    background: rgba(78,205,196,0.15);
+    padding: 1px 6px;
+    border-radius: 3px;
+    margin-right: 6px;
+    line-height: 1.6;
+  }
+
+  .typing {
+    align-self: flex-start;
+    display: flex;
+    gap: 4px;
+    padding: 12px 16px;
+    opacity: 0.6;
+  }
+  .typing span {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: #4ecdc4;
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+  .typing span:nth-child(2) { animation-delay: .2s; }
+  .typing span:nth-child(3) { animation-delay: .4s; }
+  @keyframes pulse {
+    0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+    40% { opacity: 1; transform: scale(1.1); }
+  }
+
+  /* ── Assistant card (layer) ── */
+  .assist-layer {
+    align-self: flex-start;
+    max-width: 92%;
+    width: 100%;
+    animation: fadeIn 0.25s ease;
+  }
+  .assist-card {
+    background: #1e1e22;
+    border: 1px solid #333;
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .assist-card-header {
+    padding: 8px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #ffd93d;
+    background: rgba(255,217,61,0.06);
+    border-bottom: 1px solid #2a2a2a;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .assist-card-body {
+    padding: 8px 12px 10px;
+  }
+  .assist-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 7px 8px;
+    margin: 3px 0;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+    border: 1px solid transparent;
+  }
+  .assist-option:hover {
+    background: rgba(255,255,255,0.04);
+    border-color: #333;
+  }
+  .assist-option.selected {
+    background: rgba(78,205,196,0.08);
+    border-color: rgba(78,205,196,0.3);
+  }
+  .assist-option .checkbox {
+    flex-shrink: 0;
+    width: 16px; height: 16px;
+    border: 1.5px solid #555;
+    border-radius: 3px;
+    margin-top: 2px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    color: transparent;
+    transition: all 0.15s;
+  }
+  .assist-option.selected .checkbox {
+    background: #4ecdc4;
+    border-color: #4ecdc4;
+    color: #111;
+  }
+  .assist-option .option-text {
+    flex: 1;
+    font-size: 12.5px;
+    color: #ccc;
+  }
+  .assist-option .option-desc {
+    font-size: 11px;
+    color: #777;
+    margin-top: 1px;
+  }
+  .assist-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid #2a2a2a;
+  }
+
+  /* ── Buttons ── */
+  .btn {
+    padding: 5px 12px;
+    border: 1px solid #444;
+    border-radius: 6px;
+    background: #2a2a2e;
+    color: #ccc;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+    font-family: inherit;
+  }
+  .btn:hover { background: #333; border-color: #555; color: #fff; }
+  .btn-primary {
+    background: rgba(78,205,196,0.15);
+    border-color: rgba(78,205,196,0.3);
+    color: #4ecdc4;
+  }
+  .btn-primary:hover { background: rgba(78,205,196,0.25); }
+  .btn-accept {
+    background: rgba(100,149,237,0.15);
+    border-color: rgba(100,149,237,0.3);
+    color: #7a9ef5;
+  }
+  .btn-accept:hover { background: rgba(100,149,237,0.25); }
+  .btn-ghost {
+    background: transparent;
+    border-color: transparent;
+    color: #666;
+  }
+  .btn-ghost:hover { color: #999; background: rgba(255,255,255,0.03); }
+  .btn-sm { padding: 3px 9px; font-size: 11px; }
+
+  /* ── Input bar ── */
+  .input-bar {
+    flex-shrink: 0;
+    padding: 10px 16px 14px;
+    border-top: 1px solid #2a2a2a;
+    background: #18181a;
+  }
+  .input-row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+  }
+  .input-row textarea {
+    flex: 1;
+    background: #222;
+    border: 1px solid #333;
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 13px;
+    color: #ddd;
+    font-family: inherit;
+    resize: none;
+    min-height: 36px;
+    max-height: 120px;
+    line-height: 1.5;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .input-row textarea:focus {
+    border-color: #4ecdc4;
+  }
+  .input-row textarea::placeholder { color: #555; }
+  .input-actions {
+    display: flex;
+    gap: 4px;
+  }
+  .input-extras {
+    display: flex;
+    gap: 4px;
+    margin-top: 6px;
+    font-size: 11px;
+    color: #555;
+  }
+  .input-extras button {
+    background: transparent;
+    border: 1px dashed #333;
+    border-radius: 4px;
+    padding: 2px 8px;
+    color: #666;
+    font-size: 11px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 0.15s;
+  }
+  .input-extras button:hover {
+    border-color: #555;
+    color: #999;
+  }
+
+  /* ── Scrollbar ── */
+  .chat-stream::-webkit-scrollbar { width: 4px; }
+  .chat-stream::-webkit-scrollbar-track { background: transparent; }
+  .chat-stream::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+
+  /* ── Simulate ── */
+  .sim-badge {
+    font-size: 10px;
+    color: #666;
+    text-align: center;
+    padding: 4px 0 2px;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Header -->
+  <div class="header">
+    <div class="header-title">
+      📋 会员系统 <span class="status-badge">idea</span>
+      <span style="margin-left:auto;font-size:11px;font-weight:400;color:#555">
+        <button class="btn btn-sm btn-ghost" onclick="scrollToBottom()" title="滚动到底部">⬇ 最新</button>
+      </span>
+    </div>
+    <div class="header-desc">建立一个会员积分和等级体系，提高用户忠诚度和复购率。包含积分获取、兑换、等级升级路径。</div>
+  </div>
+
+  <!-- Chat stream -->
+  <div class="chat-stream" id="stream">
+
+    <!-- AI opening -->
+    <div class="bubble bubble-ai">
+      <div class="bubble-meta"><span class="label">🤖 AI · 开场</span><span class="time">14:20</span></div>
+      <div>你好！我来帮你梳理「会员系统」这个需求。我们先明确一下核心目标，然后逐步细化。</div>
+    </div>
+
+    <!-- AI understanding + question -->
+    <div class="bubble bubble-ai">
+      <div class="bubble-meta"><span class="label">🤖 AI · 理解</span><span class="time">14:20</span></div>
+      <div>你的核心是：通过积分和等级体系提升用户忠诚度，包括积分获取、积分兑换、等级升级。</div>
+    </div>
+
+    <div class="bubble bubble-ai">
+      <div class="bubble-meta"><span class="label">🤖 AI · 追问</span><span class="time">14:20</span></div>
+      <div>你更倾向于哪种运营模式？</div>
+    </div>
+
+    <!-- User response -->
+    <div class="bubble bubble-user">
+      <div class="bubble-meta"><span class="label">💬 你</span><span class="time">14:21</span></div>
+      <div>两种都要，积分兑换和等级体系一起做。积分靠消费和每日签到获取，等级决定积分加速比例。</div>
+    </div>
+
+    <!-- AI follow-up -->
+    <div class="bubble bubble-ai">
+      <div class="bubble-meta"><span class="label">🤖 AI · 理解</span><span class="time">14:21</span></div>
+      <div>明白：积分来源（消费+签到），等级影响积分倍率。需要进一步明确消费金额和积分之间的换算比例。</div>
+    </div>
+    <div class="bubble bubble-ai">
+      <div class="bubble-meta"><span class="label">🤖 AI · 追问</span><span class="time">14:21</span></div>
+      <div>关于积分兑换，你倾向于哪种方向？</div>
+    </div>
+
+    <!-- ↓↓↓ Assistant card layer ↓↓↓ -->
+    <div class="assist-layer" id="layer-decision-tree">
+      <div class="assist-card">
+        <div class="assist-card-header">🌳 决策树分析 · 积分兑换方向</div>
+        <div class="assist-card-body">
+          <div class="assist-option" onclick="toggleOpt(this)">
+            <span class="checkbox">✓</span>
+            <div>
+              <div class="option-text">🎁 实物/虚拟商品兑换</div>
+              <div class="option-desc">用户用积分兑换商品（如优惠券、周边、数字内容），适合电商场景</div>
+            </div>
+          </div>
+          <div class="assist-option" onclick="toggleOpt(this)">
+            <span class="checkbox">✓</span>
+            <div>
+              <div class="option-text">🔁 积分抵现</div>
+              <div class="option-desc">消费时直接用积分抵扣金额，类似支付宝积分，体验流畅</div>
+            </div>
+          </div>
+          <div class="assist-option" onclick="toggleOpt(this)">
+            <span class="checkbox">✓</span>
+            <div>
+              <div class="option-text">🏆 会员专属权益兑换</div>
+              <div class="option-desc">积分兑换限时权益/高级功能/免邮券/生日礼，强绑定</div>
+            </div>
+          </div>
+          <div class="assist-actions">
+            <button class="btn btn-accept btn-sm" onclick="sendAssistPick()">✅ 发送选择</button>
+            <button class="btn btn-sm" onclick="showToast('换一批新选项…')">↻ 换一批</button>
+            <button class="btn btn-sm" onclick="skipAssist(this)">跳过</button>
+          </div>
+        </div>
+      </div>
+      <div class="sim-badge">点击选项 → 勾选 → 「发送选择」写入对话</div>
+    </div>
+
+    <!-- Typing indicator (simulated) -->
+    <div class="typing" id="typing-indicator" style="display:none">
+      <span></span><span></span><span></span>
+    </div>
+  </div>
+
+  <!-- Input bar -->
+  <div class="input-bar">
+    <div class="input-row">
+      <textarea id="chat-input" rows="1" placeholder="输入你的想法…" oninput="autoGrow(this)"></textarea>
+      <div class="input-actions">
+        <button class="btn btn-primary" onclick="sendMessage()">📤 发送</button>
+        <button class="btn btn-sm" onclick="regenerate()" title="换个问法">↻</button>
+      </div>
+    </div>
+    <div class="input-extras">
+      <button onclick="addAssistLayer()">🌳 决策树</button>
+      <button onclick="addAssistLayerScenarios()">👥 场景</button>
+      <button onclick="rewriteDesc()">✨ 整理需求</button>
+      <button onclick="doneClarify()" style="color:#f44;border-color:rgba(255,68,68,0.2)">✅ 够了</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let messageCount = 7; // for demo purposes
+
+function autoGrow(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+}
+
+function scrollToBottom() {
+  const s = document.getElementById('stream');
+  s.scrollTop = s.scrollHeight;
+}
+
+function addBubble(role, label, content, time) {
+  const s = document.getElementById('stream');
+  const t = time || new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  const isAI = role === 'ai';
+  const cls = isAI ? 'bubble-ai' : 'bubble-user';
+  const roleLabel = isAI ? '🤖 AI · ' + label : '💬 你';
+  const labelCls = isAI ? 'label' : 'label';
+  const div = document.createElement('div');
+  div.className = `bubble ${cls}`;
+  div.innerHTML = `
+    <div class="bubble-meta"><span class="${labelCls}">${roleLabel}</span><span class="time">${t}</span></div>
+    <div>${content}</div>
+  `;
+  s.insertBefore(div, document.getElementById('typing-indicator'));
+  scrollToBottom();
+}
+
+function addAssistCard(title, optionsHtml, layerId) {
+  const s = document.getElementById('stream');
+  const id = layerId || 'layer-' + Date.now();
+  const div = document.createElement('div');
+  div.className = 'assist-layer';
+  div.id = id;
+  div.innerHTML = `
+    <div class="assist-card">
+      <div class="assist-card-header">${title}</div>
+      <div class="assist-card-body">
+        ${optionsHtml}
+        <div class="assist-actions">
+          <button class="btn btn-accept btn-sm" onclick="sendAssistPick(this)">✅ 发送选择</button>
+          <button class="btn btn-sm" onclick="showToast('换一批新选项…')">↻ 换一批</button>
+          <button class="btn btn-sm" onclick="skipAssist(this)">跳过</button>
+        </div>
+      </div>
+    </div>
+    <div class="sim-badge">点击选项 → 勾选 → 「发送选择」写入对话</div>
+  `;
+  s.insertBefore(div, document.getElementById('typing-indicator'));
+  scrollToBottom();
+}
+
+function toggleOpt(el) {
+  el.classList.toggle('selected');
+}
+
+function sendAssistPick(btn) {
+  const card = btn ? btn.closest('.assist-card') : document.querySelector('.assist-card:last-of-type');
+  const selected = card.querySelectorAll('.assist-option.selected');
+  if (selected.length === 0) { showToast('请先选择选项'); return; }
+  const labels = Array.from(selected).map(el => el.querySelector('.option-text')?.textContent?.trim() || '(选项)');
+  addBubble('ai', '决策树', `已分析出 ${labels.length} 个方向：<br>• ${labels.join('<br>• ')}`, '14:22');
+  addBubble('user', '', `我倾向：${labels.join('、')}`, '14:22');
+  card.closest('.assist-layer').remove();
+  messageCount += 2;
+  // Simulate AI response
+  setTimeout(() => {
+    addBubble('ai', '理解', '好的，结合你选择的兑换方向，需求可以进一步细化。接下来需要确定等级体系的层数和升级条件。');
+    addBubble('ai', '追问', '你希望设置几个等级？每个等级的升级条件是怎样的？');
+    messageCount += 2;
+  }, 800);
+}
+
+function skipAssist(btn) {
+  const layer = btn.closest('.assist-layer');
+  layer.querySelector('.sim-badge').textContent = '⏭ 已跳过，可重新召唤';
+  layer.querySelector('.assist-actions').innerHTML = '<span style="font-size:11px;color:#555;padding:4px 0">已跳过 · <button class="btn btn-sm" onclick="this.closest(\'.assist-layer\').remove();addAssistLayer()">重新召唤</button></span>';
+}
+
+function sendMessage() {
+  const input = document.getElementById('chat-input');
+  const text = input.value.trim();
+  if (!text) return;
+  addBubble('user', '', text);
+  input.value = '';
+  input.style.height = 'auto';
+  messageCount++;
+  // Simulate AI thinking + response
+  const typing = document.getElementById('typing-indicator');
+  typing.style.display = 'flex';
+  scrollToBottom();
+  setTimeout(() => {
+    typing.style.display = 'none';
+    addBubble('ai', '理解', '收到，我更新了对需求的理解。基于你的补充，需求更加明确了。');
+    addBubble('ai', '追问', '还有什么想补充的吗？或者需要我帮你做一轮决策树分析？');
+    messageCount += 2;
+  }, 1200);
+}
+
+function regenerate() {
+  const typing = document.getElementById('typing-indicator');
+  typing.style.display = 'flex';
+  scrollToBottom();
+  setTimeout(() => {
+    typing.style.display = 'none';
+    addBubble('ai', '开场', '好的，换个角度来理解这个需求。');
+    addBubble('ai', '理解', '从用户运营的角度看，会员体系的核心是：提升留存 × 提高客单价。');
+    addBubble('ai', '追问', '你觉得目前最急需解决的问题是「用户留不住」还是「客单价太低」？');
+    messageCount += 3;
+  }, 1000);
+}
+
+function addAssistLayer() {
+  addAssistCard('🌳 决策树分析 · 等级体系设计', `
+    <div class="assist-option" onclick="toggleOpt(this)"><span class="checkbox">✓</span><div><div class="option-text">📊 3-5 级阶梯</div><div class="option-desc">青铜/白银/黄金/铂金/钻石，标准 RPG 式升级路径</div></div></div>
+    <div class="assist-option" onclick="toggleOpt(this)"><span class="checkbox">✓</span><div><div class="option-text">⚡ 2 级精简</div><div class="option-desc">普通会员 + 高级会员，简单粗暴，降低理解成本</div></div></div>
+    <div class="assist-option" onclick="toggleOpt(this)"><span class="checkbox">✓</span><div><div class="option-text">🎯 自定义等级</div><div class="option-desc">根据品牌调性自定义等级名称和权益，灵活性最高</div></div></div>
+  `);
+}
+
+function addAssistLayerScenarios() {
+  addAssistCard('👥 场景分析 · 会员使用流程', `
+    <div class="assist-option" onclick="toggleOpt(this)"><span class="checkbox">✓</span><div><div class="option-text">🛒 购物积分场景</div><div class="option-desc">用户下单 → 获得积分 → 等级提升 → 下次抵现</div></div></div>
+    <div class="assist-option" onclick="toggleOpt(this)"><span class="checkbox">✓</span><div><div class="option-text">📱 签到打卡场景</div><div class="option-desc">每日签到 → 连续签到奖励 → 积分累积促活</div></div></div>
+    <div class="assist-option" onclick="toggleOpt(this)"><span class="checkbox">✓</span><div><div class="option-text">🎂 生日营销场景</div><div class="option-desc">会员生日触发 → 专属权益 → 积分翻倍 → 转化</div></div></div>
+  `);
+}
+
+function rewriteDesc() {
+  addBubble('ai', '总结', '根据全部对话，正在重新整理需求描述…');
+  setTimeout(() => {
+    addBubble('ai', '总结', '✅ 已更新需求描述（历史版本已存档）');
+    // Update header desc
+    document.querySelector('.header-desc').textContent =
+      '建立一个会员积分和等级体系（3-5级阶梯），积分通过消费和签到获取，可兑换商品或抵现。等级影响积分加速比例，含生日营销场景。';
+  }, 800);
+}
+
+function doneClarify() {
+  addBubble('ai', '系统', '✅ 想法已明确，进入澄清阶段。将生成正式的需求文档供评审。');
+  document.querySelector('.status-badge').textContent = 'clarifying';
+  document.querySelector('.status-badge').style.background = 'rgba(78,205,196,0.12)';
+  document.querySelector('.status-badge').style.color = '#4ecdc4';
+}
+
+function showToast(msg) {
+  const existing = document.querySelector('.toast-msg');
+  if (existing) existing.remove();
+  const div = document.createElement('div');
+  div.className = 'toast-msg';
+  div.textContent = msg;
+  Object.assign(div.style, {
+    position: 'fixed', bottom: '100px', left: '50%', transform: 'translateX(-50%)',
+    background: '#2a2a2e', color: '#ccc', padding: '6px 16px', borderRadius: '6px',
+    fontSize: '12px', border: '1px solid #444', zIndex: 999,
+    animation: 'fadeIn 0.2s ease',
+  });
+  document.body.appendChild(div);
+  setTimeout(() => div.remove(), 2000);
+}
+</script>
+</body>
+</html>

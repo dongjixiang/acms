@@ -43,6 +43,17 @@ async function runAssistJob(requirementId, opts = {}) {
   const req = reqStore.getById(requirementId);
   if (!req) return;
 
+  // v0.3.6：forceRegenerate 时把已换过的旧分支喂给 LLM，让它避免重复
+  let previousTree = [];
+  if (opts.forceRegenerate) {
+    try {
+      const existing = JSON.parse(req.assist_decision_tree || 'null');
+      if (existing && Array.isArray(existing.tree)) {
+        previousTree = existing.tree;
+      }
+    } catch { /* 静默降级 */ }
+  }
+
   // 标记 generating
   reqStore.update(requirementId, {
     assist_decision_tree: JSON.stringify({
@@ -53,25 +64,32 @@ async function runAssistJob(requirementId, opts = {}) {
       error: null,
       model: null,
       used: false,
+      regenerate_count: opts.forceRegenerate ? ((JSON.parse(req.assist_decision_tree || '{}').regenerate_count || 0) + 1) : 0,
     }),
   });
-  console.log(`[assist:decision_tree] ${requirementId} 开始生成`);
+  console.log(`[assist:decision_tree] ${requirementId} 开始生成${opts.forceRegenerate ? '（换一批）' : ''}`);
 
   try {
     const model = opts.modelId ? modelStore.getById(opts.modelId) : pickDefaultLlm();
     if (!model) throw new Error('NO_LLM_AVAILABLE');
 
+    const userParts = [
+      `需求标题: ${req.title || '(空)'}`,
+      `需求描述: ${req.description || '(空)'}`,
+      opts.role ? `用户角色: ${opts.role}` : '',
+      opts.followupQuestion ? `当前对话焦点: ${opts.followupQuestion}` : '',
+    ];
+    if (previousTree.length > 0) {
+      userParts.push('---');
+      userParts.push('【已换过的决策树分支】（用户觉得都不符合，请给出明显不同的）：');
+      previousTree.forEach((t, i) => {
+        userParts.push(`#${i + 1}: ${t.label || ''}（${t.desc || ''}）`);
+      });
+      userParts.push('请确保新分支在 label / desc / 实现路径上与已换过的有明显差异。');
+    }
     const messages = [
       { role: 'system', content: DECISION_TREE_PROMPT },
-      {
-        role: 'user',
-        content: [
-          `需求标题: ${req.title || '(空)'}`,
-          `需求描述: ${req.description || '(空)'}`,
-          opts.role ? `用户角色: ${opts.role}` : '',
-          opts.followupQuestion ? `当前对话焦点: ${opts.followupQuestion}` : '',
-        ].filter(Boolean).join('\n'),
-      },
+      { role: 'user', content: userParts.filter(Boolean).join('\n') },
     ];
 
     // v0.3.3 B++ 补丁：用 callLLMWithRetry（公共重试工具）替代直接 callLLM

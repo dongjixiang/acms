@@ -59,8 +59,11 @@ const VARIANTS_SYSTEM_PROMPT = `你是 ACMS 系统的「需求可视化助手」
 ]}
 不要任何额外文字、markdown 代码块、解释。`;
 
-// 默认模型选择：找第一个启用的 chat/text 模型
+// 默认模型选择：先查系统配置的「默认思路模型」，再找第一个启用的 chat/text 模型
 function pickDefaultLlm() {
+  // v0.3.6：优先使用系统配置的默认模型
+  const defaultGen = modelStore.getDefaultGenModel();
+  if (defaultGen) return defaultGen;
   const all = modelStore.list();
   // 优先 text → chat
   return all.find(m => m.capabilities?.includes('text') || m.type === 'chat' || m.type === 'text')
@@ -101,13 +104,24 @@ async function assessClarity(title, description, modelId, supplementHistory = []
   ];
   if (Array.isArray(supplementHistory) && supplementHistory.length > 0) {
     userParts.push('---');
-    userParts.push('【用户已补充的内容】（按时间顺序，已包含本次）:');
+    userParts.push('【需求对话历史】（按时间顺序，包含 AI 提问和用户回答）:');
     supplementHistory.forEach((h, i) => {
-      const sourceTag = h.source ? ` [来源: ${h.source}]` : '';
-      userParts.push(`#${i + 1}${sourceTag}: ${h.text || ''}`);
+      const sourceTag = h.source ? ` [${h.source}]` : '';
+      const atTag = h.at ? ` @${h.at.substring(11, 16)}` : '';
+      if (h.role === 'assistant') {
+        const lines = [];
+        if (h.opening) lines.push(`  开场: ${h.opening}`);
+        if (h.understanding) lines.push(`  理解: ${h.understanding}`);
+        if (h.followup_question) lines.push(`  追问: ${h.followup_question}`);
+        // 旧格式降级
+        if (lines.length === 0 && h.text) lines.push(`  ${h.text}`);
+        userParts.push(`#${i + 1} 🤖 AI${sourceTag}${atTag}:\n${lines.join('\n')}`);
+      } else {
+        userParts.push(`#${i + 1} ➡️ 用户${sourceTag}${atTag}: ${h.text || ''}`);
+      }
     });
     userParts.push('---');
-    userParts.push('请把「原始需求描述 + 用户历次补充」视为完整输入，重新评估明确度。用户补充应该让需求变清晰 —— 别忽略这些补充。');
+    userParts.push('请把「原始需求描述 + 以上全部对话历史」视为完整输入，重新评估明确度。对话中的用户回答应该让需求变清晰 —— 别忽略这些内容。');
   }
   const messages = [
     { role: 'system', content: CLARITY_SYSTEM_PROMPT },
@@ -139,7 +153,7 @@ async function assessClarity(title, description, modelId, supplementHistory = []
  * @param {string} [modelId]
  * @returns {Promise<{variants, modelId}>}
  */
-async function generateVariants(title, description, clarity, role, modelId) {
+async function generateVariants(title, description, clarity, role, modelId, previousVariants = []) {
   const model = modelId ? modelStore.getById(modelId) : pickDefaultLlm();
   if (!model) throw new Error('NO_LLM_AVAILABLE');
   const messages = [
@@ -151,6 +165,15 @@ async function generateVariants(title, description, clarity, role, modelId) {
       role ? `用户角色: ${role}` : '',
     ].filter(Boolean).join('\n') },
   ];
+  // v0.3.6：如果有 previousVariants（用户点"换一批"），追加提示让 LLM 出明显不同的
+  if (Array.isArray(previousVariants) && previousVariants.length > 0) {
+    messages.push({
+      role: 'system',
+      content: '【已换过的变体】（用户觉得都不符合，请给出明显不同的视觉风格/交互模式）：\n' +
+        previousVariants.map((v, i) => `#${i + 1} ${v.label || ''}：${(v.prompt || '').substring(0, 150)}`).join('\n') +
+        '\n请确保新变体在视觉风格/交互模式上与已换过的有明显差异。',
+    });
+  }
   const result = await callLLM(model.id, messages, {
     temperature: 0.9,
     maxTokens: 800,
@@ -241,7 +264,8 @@ async function runPreviewJob(requirementId, opts = {}) {
   try {
     // 2. 生成 3 变体 prompt
     const { variants } = await generateVariants(
-      req.title, req.description, req.input_clarity, opts.role, opts.modelId
+      req.title, req.description, req.input_clarity, opts.role, opts.modelId,
+      opts.previousVariants || []  // v0.3.6：把已换过的旧变体喂给 LLM 避免重复
     );
     if (!variants || variants.length === 0) throw new Error('LLM 未返回有效变体');
 

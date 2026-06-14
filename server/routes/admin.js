@@ -80,4 +80,22 @@ router.get('/token-logs', (req, res) => {
   res.json(tracker.getLogs(projectId, limit));
 });
 
+// v0.3.6：默认思路模型配置
+router.get('/default-gen-model', (req, res) => {
+  const modelStore = require('../stores/model-store');
+  const m = modelStore.getDefaultGenModel();
+  res.json({ id: m?.id || null, name: m?.name || null });
+});
+
+router.post('/default-gen-model', (req, res) => {
+  const { modelId } = req.body;
+  const modelStore = require('../stores/model-store');
+  if (modelId) {
+    const m = modelStore.getById(modelId);
+    if (!m) return res.status(404).json({ error: 'MODEL_NOT_FOUND' });
+  }
+  modelStore.setDefaultGenModel(modelId || '');
+  res.json({ success: true, modelId: modelId || null });
+});
+
 module.exports = router;

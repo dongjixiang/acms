@@ -139,14 +139,12 @@ async function openRequirement(id) {
     setTimeout(() => loadExistingMdEditor(id), 200);
     if (req.status !== 'idea') setTimeout(() => loadRequirementKnowledge(id), 250);
     if (req.status !== 'idea') setTimeout(() => generateDataModelPreview(id), 300);
-    // v0.3「思路先于画面」: idea 状态自动加载思路简报，视觉预览由路由器或 assist dispatcher 拉
-    setTimeout(() => ACMSThinkingBrief.load(id), 350);
+    // v0.3.6 对话式想法澄清：替换旧 brief/assist 加载
     if (req.status === 'idea') {
-      // Phase 2: brief 加载后顺便拉 assist 数据（路由器可能已自动跑了某种）
-      // v0.3.3 B+++：visual 也由 dispatcher 拉（包含在 ASSIST_METHODS 里），不再单独调 maybeLoadInsightPreviews
-      setTimeout(() => ACMSAssistDispatcher.loadAll(id), 500);
-      // v0.3.5 新增：加载补充历史展示
-      setTimeout(() => loadSupplementHistory(id), 600);
+      setTimeout(() => loadChatStream(id), 350);
+    } else {
+      // 非 idea 状态仍然加载旧的 brief（只读展示）
+      setTimeout(() => ACMSThinkingBrief.load(id), 350);
     }
     // 页面加载后，如果存在 SRS，按需展示预览按钮
     setTimeout(() => updateMediaPreviewButtons(id), 350);
@@ -2962,34 +2960,30 @@ function renderIdeaPanel(req) {
   return `
     <div id="idea-panel-${req.id}" class="idea-panel">
       <div class="insight-header">
-        <span class="insight-title">💡 AI 思路</span>
+        <span class="insight-title">💬 对话式想法澄清</span>
         <span class="insight-clarity-badge insight-clarity-${clarity || 'unknown'}">${clarityBadge}</span>
         ${reasonText}
       </div>
-
-      <!-- 思路区：默认展开 -->
-      <div class="idea-section idea-section-thinking">
-        <div class="idea-section-title">💭 AI 正在和你聊这个想法</div>
-        <div id="thinking-brief-content-${req.id}" class="thinking-brief-content">
-          <div class="insight-loading">⏳ AI 正在解读需求、构建思路…</div>
+      <!-- v0.3.6 对话流：聊天式想法澄清 -->
+      <div id="chat-stream-container-${req.id}" class="chat-stream-container">
+        <div class="chat-stream" id="chat-stream-msgs-${req.id}">
+          <div class="chat-typing"><span></span><span></span><span></span></div>
         </div>
-        <div class="idea-section-thinking-input">
-          <textarea id="idea-supplement-input-${req.id}" class="idea-supplement-textarea"
-            placeholder="💬 回答 AI 的问题，或补充你的想法…"
-            rows="2"></textarea>
-          <div class="idea-supplement-actions">
-            <!-- v0.3.4 Phase 3.7：按钮文字改"发送"（聊天化，行为不变） -->
-            <button class="btn-small btn-primary" onclick="submitIdeaSupplement('${req.id}')">
-              📤 发送
-            </button>
-            <!-- v0.3.5 新增：用户显式召唤 AI 重整描述（不动 description 的反向操作） -->
-            <button class="btn-small" onclick="aiRewriteDescription('${req.id}')" title="根据你的全部补充重新组织需求描述，旧版本会进历史记录">✨ AI 重整</button>
-            <button class="btn-small" onclick="regenerateThinkingBrief('${req.id}')">↻ 换个问法</button>
-            <button class="btn-small btn-reject" onclick="skipThinkingBrief('${req.id}')">✅ 够了，进澄清</button>
+        <div class="chat-stream-input">
+          <div class="chat-input-row">
+            <textarea id="chat-input-${req.id}" rows="1"
+              placeholder="回答 AI 的问题，或补充你的想法…"
+              oninput="chatAutoGrow(this)"></textarea>
+            <div class="chat-input-actions">
+              <button class="btn btn-primary" onclick="chatSend('${req.id}')">📤 发送</button>
+              <button class="btn" onclick="chatRegen('${req.id}')" title="换个问法">↻</button>
+            </div>
           </div>
-          <!-- v0.3.5 新增：📋 补充历史展示（强化用户创作主权 —— 看到自己一路补充了什么） -->
-          <div id="supplement-history-${req.id}" class="supplement-history-panel">
-            <div class="supplement-history-loading">⏳ 加载补充历史…</div>
+          <div class="chat-extras">
+            <button onclick="chatAssist('${req.id}', 'decision_tree')">🌳 决策树</button>
+            <button onclick="chatAssist('${req.id}', 'scenarios')">👥 场景</button>
+            <button onclick="chatRewrite('${req.id}')">✨ 整理</button>
+            <button onclick="chatDone('${req.id}')" style="border-color:rgba(255,68,68,0.2);color:#f55">✅ 够了</button>
           </div>
         </div>
       </div>
@@ -3536,3 +3530,320 @@ async function triggerInsightPreviews(reqId) {
     toast('启动失败: ' + e.message, 'error');
   }
 }
+
+// ════════════════════════════════════════════════════════════════
+// v0.3.6 对话式想法澄清 — 聊天流 + 辅助卡片层
+// ════════════════════════════════════════════════════════════════
+
+const _chatPollers = {};
+const _chatState = {}; // reqId → { histCount, briefRound }
+
+function chatAutoGrow(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 90) + 'px';
+}
+
+async function loadChatStream(reqId) {
+  const container = document.getElementById(`chat-stream-msgs-${reqId}`);
+  if (!container) return;
+  container.innerHTML = '<div class="chat-typing"><span></span><span></span><span></span></div>';
+  _chatState[reqId] = { histCount: 0, briefRound: 0 };
+
+  try {
+    const [histResp, briefResp] = await Promise.all([
+      api('GET', `/requirements/${reqId}/supplement-history`),
+      api('GET', `/requirements/${reqId}/thinking-brief`),
+    ]);
+    container.innerHTML = '';
+    const history = histResp.history || [];
+    for (const entry of history) renderChatBubble(container, entry);
+    _chatState[reqId].histCount = history.length;
+
+    const brief = briefResp.thinkingBrief;
+    if (brief && brief.status === 'done') {
+      if (String(brief.chat_round) !== (container.lastElementChild?.dataset?.chatRound || '')) renderBriefBubble(container, brief);
+      _chatState[reqId].briefRound = brief.chat_round || 0;
+    } else if (brief && brief.status === 'generating') {
+      container.insertAdjacentHTML('beforeend', '<div class="chat-typing"><span></span><span></span><span></span></div>');
+    }
+    try { const r = await api('GET', `/requirements/${reqId}/assist`); renderAssistLayer(container, reqId, r.assists || {}); } catch {}
+    chatScrollToBottom(container);
+    startChatPolling(reqId);
+  } catch (e) {
+    container.innerHTML = `<div class="chat-bubble chat-bubble-ai"><div class="chat-bubble-meta"><span class="chat-label">⚠️</span></div>对话流加载失败：${escHtml(e.message)}</div>`;
+  }
+}
+
+function startChatPolling(reqId) {
+  if (_chatPollers[reqId]) clearInterval(_chatPollers[reqId]);
+  let c = 0;
+  _chatPollers[reqId] = setInterval(async () => {
+    if (++c > 40) { clearInterval(_chatPollers[reqId]); delete _chatPollers[reqId]; return; }
+    try {
+      const container = document.getElementById(`chat-stream-msgs-${reqId}`);
+      if (!container) { clearInterval(_chatPollers[reqId]); delete _chatPollers[reqId]; return; }
+      const state = _chatState[reqId];
+      if (!state) return;
+
+      // 增量：只拉新增的 supplement_history
+      const histResp = await api('GET', `/requirements/${reqId}/supplement-history`);
+      const history = histResp.history || [];
+      if (history.length > state.histCount) {
+        for (let i = state.histCount; i < history.length; i++) renderChatBubble(container, history[i]);
+        state.histCount = history.length;
+        chatScrollToBottom(container);
+      }
+
+      // 增量：检查 brief 更新（SSE 完成或轮询到 done）
+      const briefResp = await api('GET', `/requirements/${reqId}/thinking-brief`);
+      const brief = briefResp.thinkingBrief;
+      const typing = container.querySelector('.chat-typing');
+      const streamingBubble = container.querySelector('.chat-streaming-bubble');
+      if (brief && brief.status === 'done' && !streamingBubble) {
+        const briefRound = brief.chat_round || 0;
+        if (briefRound > state.briefRound) {
+          if (typing) typing.remove();
+          renderBriefBubble(container, brief);
+          state.briefRound = briefRound;
+          chatScrollToBottom(container);
+        }
+      }
+
+      // assist 层（移除旧层 + 加新层，始终只显示最新一张）
+      const r = await api('GET', `/requirements/${reqId}/assist`);
+      renderAssistLayer(container, reqId, r.assists || {});
+    } catch {}
+  }, 3000);
+}
+
+function renderChatBubble(container, entry) {
+  const isAI = entry.role === 'assistant';
+  const parts = [];
+  if (isAI) {
+    if (entry.opening) parts.push(`<div>${escHtml(entry.opening)}</div>`);
+    if (entry.followup_question) parts.push(`<div class="chat-response-q">${escHtml(entry.followup_question)}</div>`);
+  }
+  const bodyHtml = parts.length
+    ? parts.join('') + (entry.understanding
+        ? `<div class="chat-thinking" style="display:none"><div class="chat-thinking-inner">${escHtml(entry.understanding)}</div></div>`
+        : '')
+    : `<div>${escHtml(entry.text || '')}</div>`;
+
+  const hasThinking = isAI && entry.understanding;
+  const div = document.createElement('div');
+  div.className = `chat-bubble ${isAI ? 'chat-bubble-ai' : 'chat-bubble-user'}`;
+  div.dataset.chatRound = entry.chat_round || '';
+  div.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">${isAI ? '🤖 AI' : '💬 你'}</span><span class="chat-time">${(entry.at||'').substring(11,16)}</span>${hasThinking ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}</div>${bodyHtml}`;
+  container.appendChild(div);
+}
+
+function renderBriefBubble(container, brief) {
+  if (!brief || brief.status !== 'done') return;
+  const hasResponse = brief.opening || brief.followup_question;
+  const hasThinking = brief.ai_understanding;
+  if (!hasResponse && !hasThinking) return;
+
+  let respHtml = '';
+  if (brief.opening) respHtml += `<div>${escHtml(brief.opening)}</div>`;
+  if (brief.followup_question) respHtml += `<div class="chat-response-q">${escHtml(brief.followup_question)}</div>`;
+
+  const thinkingHtml = hasThinking
+    ? `<div class="chat-thinking" style="display:none"><div class="chat-thinking-inner">${escHtml(brief.ai_understanding)}</div></div>`
+    : '';
+
+  const toggleAttr = hasThinking ? ` data-has-thinking="1"` : '';
+  const div = document.createElement('div');
+  div.className = 'chat-bubble chat-bubble-ai';
+  div.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">🤖 AI</span><span class="chat-time">第${brief.chat_round||1}轮</span>${hasThinking ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}</div><div class="chat-response"${toggleAttr}>${respHtml}</div>${thinkingHtml}`;
+  container.appendChild(div);
+}
+
+function toggleChatThinking(btn) {
+  const bubble = btn.closest('.chat-bubble');
+  const think = bubble?.querySelector('.chat-thinking');
+  if (think) {
+    const isHidden = think.style.display === 'none';
+    think.style.display = isHidden ? 'block' : 'none';
+    btn.style.opacity = isHidden ? '1' : '0.5';
+  }
+}
+
+function renderAssistLayer(container, reqId, assists) {
+  if (!assists) return;
+  container.querySelectorAll('.chat-assist-layer').forEach(el => el.remove());
+  for (const method of ['diagnosis', 'scenarios', 'tradeoff', 'arch', 'decision_tree', 'visual']) {
+    const d = assists[method];
+    if (!d || d.status !== 'done' || d.used) continue;
+    const cr = (window.ACMSThinkingBrief?.getBrief?.(reqId)?.chat_round) || 1;
+    if (d.generated_at_round !== cr) continue;
+    const title = { decision_tree:'🌳 决策树', scenarios:'👥 场景', tradeoff:'⚖️ 取舍', arch:'🏗️ 架构', diagnosis:'🩺 体检', visual:'🎨 视觉' }[method]||method;
+    let opts = '';
+    if (method === 'decision_tree') opts = (d.tree||[]).map(t => `<div class="chat-assist-option" onclick="chatToggleOpt(this)"><span class="chat-opt-cb">✓</span><div><div class="chat-opt-title">${escHtml(t.label||'')}</div></div></div>`).join('');
+    else if (method === 'scenarios') opts = (d.scenarios||[]).map(s => `<div class="chat-assist-option" onclick="chatToggleOpt(this)"><span class="chat-opt-cb">✓</span><div><div class="chat-opt-title">${escHtml(s.name||'')}</div>${s.desc?`<div class="chat-opt-desc">${escHtml(s.desc)}</div>`:''}</div></div>`).join('');
+    else if (method === 'tradeoff') opts = (d.dimensions||[]).map(dm => `<div class="chat-assist-option" onclick="chatToggleOpt(this)"><span class="chat-opt-cb">✓</span><div><div class="chat-opt-title">${escHtml(dm.dimension||'')}</div>${dm.options?`<div class="chat-opt-desc">${escHtml(dm.options.join(' / '))}</div>`:''}</div></div>`).join('');
+    else if (method === 'arch') opts = (d.modules||[]).map(m => `<div class="chat-assist-option" onclick="chatToggleOpt(this)"><span class="chat-opt-cb">✓</span><div><div class="chat-opt-title">${escHtml(m.name||'')}</div></div></div>`).join('');
+    if (!opts) continue;
+    const el = document.createElement('div');
+    el.className = 'chat-assist-layer'; el.dataset.assistMethod = method;
+    el.innerHTML = `<div class="chat-assist-card"><div class="chat-assist-header">${title}</div><div class="chat-assist-body">${opts}<div class="chat-assist-actions"><button class="btn btn-accept btn-sm" onclick="chatSendAssistPick('${reqId}','${method}')">✅ 发送选择</button><button class="btn btn-sm" onclick="chatAssistRegen('${reqId}','${method}')">↻ 换一批</button><button class="btn btn-sm" onclick="chatSkipAssist(this)">跳过</button></div></div></div>`;
+    container.appendChild(el);
+    break;
+  }
+}
+
+function chatToggleOpt(el) { el.classList.toggle('selected'); }
+
+async function chatSend(reqId) {
+  const input = document.getElementById(`chat-input-${reqId}`);
+  const text = input?.value?.trim();
+  if (!text) { toast('先写点想法', 'warning'); return; }
+  const c = document.getElementById(`chat-stream-msgs-${reqId}`);
+  if (c) {
+    renderChatBubble(c, { role:'user', text, at:new Date().toISOString() });
+    chatScrollToBottom(c);
+  }
+  input.value = ''; input.style.height = 'auto';
+  try {
+    // 只存 supplement，不触发后端 brief 生成（由 SSE 接管）
+    const r = await api('POST', `/requirements/${reqId}/supplement`, { supplement:text, supplementSource:'idea_supplement', autoRegenBrief:false });
+    if (r.error) { toast('补充失败: '+r.error, 'error'); return; }
+    toast('✅ 已记录', 'success', 1500);
+    c?.querySelectorAll('.chat-assist-layer').forEach(el=>el.remove());
+
+    // 同步 supplement_history 计数，避免轮询重复渲染用户气泡
+    if (r.supplementHistoryCount) {
+      const state = _chatState[reqId];
+      if (state) state.histCount = r.supplementHistoryCount;
+    }
+
+    // 打开 SSE 流式连接，实时输出 AI 思路
+    connectStreamingBrief(reqId, c);
+  } catch(e) { toast('补充失败: '+e.message, 'error'); }
+}
+
+/** 连接 SSE 流式思路简报 */
+function connectStreamingBrief(reqId, container) {
+  // 创建或复用 streaming 气泡
+  let streamingBubble = container?.querySelector('.chat-streaming-bubble');
+  if (!streamingBubble && container) {
+    streamingBubble = document.createElement('div');
+    streamingBubble.className = 'chat-bubble chat-bubble-ai chat-streaming-bubble';
+    streamingBubble.innerHTML = '<div class="chat-bubble-meta"><span class="chat-label">🤖 AI</span></div><div class="chat-streaming-content"></div>';
+    container.appendChild(streamingBubble);
+    chatScrollToBottom(container);
+  }
+  const contentEl = streamingBubble?.querySelector('.chat-streaming-content');
+  if (!contentEl) return;
+
+  const es = new EventSource(`/api/requirements/${reqId}/thinking-brief/stream?api_key=dev-key-001`);
+
+  es.addEventListener('message', (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.type === 'token') {
+        // 追加 token，并尝试解析 JSON 来显示中间结果
+        const currentText = contentEl.textContent + data.text;
+        contentEl.textContent = currentText;
+        chatScrollToBottom(container);
+      } else if (data.type === 'done' && data.brief) {
+        es.close();
+        // 同步 briefRound，避免轮询重复渲染
+        // 流完成 → 把 raw JSON 替换为自然回复 + 可折叠思考
+        const state = _chatState[reqId];
+        if (state) state.briefRound = data.brief.chat_round || 0;
+        let respHtml = '';
+        if (data.brief.opening) respHtml += `<div>${escHtml(data.brief.opening)}</div>`;
+        if (data.brief.followup_question) respHtml += `<div class="chat-response-q">${escHtml(data.brief.followup_question)}</div>`;
+        const thinkingHtml = data.brief.ai_understanding
+          ? `<div class="chat-thinking" style="display:none"><div class="chat-thinking-inner">${escHtml(data.brief.ai_understanding)}</div></div>`
+          : '';
+        streamingBubble.className = 'chat-bubble chat-bubble-ai';
+        streamingBubble.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">🤖 AI</span><span class="chat-time">第${data.brief.chat_round||1}轮</span>${data.brief.ai_understanding ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}</div><div class="chat-response">${respHtml}</div>${thinkingHtml}`;
+        delete streamingBubble.dataset.streaming;
+        chatScrollToBottom(container);
+        // 尝试加载 assist
+        loadStreamAssist(reqId, container);
+      } else if (data.type === 'error') {
+        es.close();
+        contentEl.textContent = '⚠️ ' + (data.message || '生成失败');
+        delete streamingBubble.dataset.streaming;
+      }
+    } catch (e) { /* JSON parse error */ }
+  });
+
+  es.addEventListener('error', () => {
+    es.close();
+    if (streamingBubble?.dataset?.streaming !== 'done') {
+      contentEl.textContent += '\n⚠️ 连接中断';
+    }
+  });
+}
+
+/** 流完成后再拉一笔 assist */
+async function loadStreamAssist(reqId, container) {
+  try {
+    const r = await api('GET', `/requirements/${reqId}/assist`);
+    renderAssistLayer(container, reqId, r.assists || {});
+  } catch {}
+}
+
+async function chatRegen(reqId) {
+  if (!await showConfirm('重新生成思路会消耗 token，确认？', {type:'info'})) return;
+  try {
+    // 清理旧的 streaming 气泡和 assist 层
+    const c = document.getElementById(`chat-stream-msgs-${reqId}`);
+    if (c) {
+      c.querySelectorAll('.chat-assist-layer').forEach(el=>el.remove());
+      c.querySelectorAll('.chat-streaming-bubble').forEach(el=>el.remove());
+    }
+    // 开 SSE 流式重新生成
+    connectStreamingBrief(reqId, c);
+  } catch(e) { toast('失败: '+e.message, 'error'); }
+}
+
+async function chatAssist(reqId, method) {
+  try { await api('POST', `/requirements/${reqId}/assist/${method}`, {}); toast(`🔄 ${method} 正在生成…`, 'info', 2000); }
+  catch(e) { toast('失败: '+e.message, 'error'); }
+}
+
+async function chatSendAssistPick(reqId, method) {
+  const layer = document.querySelector(`#chat-stream-msgs-${reqId} .chat-assist-layer[data-assist-method="${method}"]`);
+  if (!layer) return;
+  const sel = layer.querySelectorAll('.chat-assist-option.selected');
+  if (!sel.length) { toast('请先选择选项', 'warning'); return; }
+  const labels = Array.from(sel).map(el=>el.querySelector('.chat-opt-title')?.textContent?.trim()||'');
+  const supplement = `[${method}] ${labels.join('；')}`;
+  const c = document.getElementById(`chat-stream-msgs-${reqId}`);
+  if (c) { renderChatBubble(c, {role:'user', text:supplement, at:new Date().toISOString()}); layer.remove(); c.insertAdjacentHTML('beforeend','<div class="chat-typing"><span></span><span></span><span></span></div>'); chatScrollToBottom(c); }
+  try { await api('POST', `/requirements/${reqId}/rewrite-description`, {supplement, supplementSource:`${method}_pick`, autoRegenBrief:true}); toast('✅ 已记录', 'success', 1500); }
+  catch(e) { toast('失败: '+e.message, 'error'); }
+}
+
+async function chatAssistRegen(reqId, method) {
+  try { await api('POST', `/requirements/${reqId}/assist/${method}/regenerate`, {}); toast(`🔄 新${method}正在生成…`, 'info', 1500); }
+  catch(e) { toast('失败: '+e.message, 'error'); }
+}
+function chatSkipAssist(btn) { btn.closest('.chat-assist-layer')?.remove(); }
+
+async function chatRewrite(reqId) {
+  if (!await showConfirm('AI 会根据全部对话重新整理需求描述，确认？', {type:'info'})) return;
+  try {
+    await api('POST', `/requirements/${reqId}/rewrite-description`, {supplement:'', supplementSource:'idea_supplement'});
+    toast('✅ 需求描述已更新', 'success');
+    openRequirement(reqId);
+  } catch(e) { toast('整理失败: '+e.message, 'error'); }
+}
+
+async function chatDone(reqId) {
+  if (!await showConfirm('确认想法已明确？AI 会整理全部对话更新需求描述，然后进入澄清阶段。', {type:'info'})) return;
+  try {
+    await api('POST', `/requirements/${reqId}/rewrite-description`, {supplement:'', supplementSource:'idea_supplement'});
+    const r = await api('POST', `/requirements/${reqId}/transition`, {targetStatus:'clarifying'});
+    if (r.error) { toast('进入澄清失败: '+r.error, 'error'); return; }
+    toast('✅ 进入澄清阶段', 'success', 2000);
+    openRequirement(reqId);
+    setTimeout(()=>{const p=document.getElementById('ai-clarify-panel'); if(p) p.scrollIntoView({behavior:'smooth',block:'start'});}, 300);
+  } catch(e) { toast('操作失败: '+e.message, 'error'); }
+}
+
+function chatScrollToBottom(container) { if (container) container.scrollTop = container.scrollHeight; }
