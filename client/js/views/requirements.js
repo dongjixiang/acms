@@ -3477,7 +3477,7 @@ function startChatPolling(reqId) {
   if (_chatPollers[reqId]) clearInterval(_chatPollers[reqId]);
   let c = 0;
   _chatPollers[reqId] = setInterval(async () => {
-    if (++c > 40) { clearInterval(_chatPollers[reqId]); delete _chatPollers[reqId]; return; }
+    if (++c > 80) { clearInterval(_chatPollers[reqId]); delete _chatPollers[reqId]; return; }
     try {
       const container = document.getElementById(`chat-stream-msgs-${reqId}`);
       if (!container) { clearInterval(_chatPollers[reqId]); delete _chatPollers[reqId]; return; }
@@ -3767,7 +3767,7 @@ async function chatAssist(reqId, method) {
 
 /** 主动轮询直到 assist 完成或超时 */
 function pollAssistUntilDone(reqId, method, attempt) {
-  if (attempt >= 10) return; // 最多等 ~15s
+  if (attempt >= 30) return; // 最多等 ~60s
   setTimeout(async () => {
     try {
       const r = await api('GET', `/requirements/${reqId}/assist`);
@@ -3775,11 +3775,13 @@ function pollAssistUntilDone(reqId, method, attempt) {
       if (d && d.status === 'done') {
         const container = document.getElementById(`chat-stream-msgs-${reqId}`);
         if (container) renderAssistLayer(container, reqId, r.assists || {});
+        console.log(`[chatAssist] ${method} done, rendering`);
       } else {
+        if (attempt % 5 === 0) console.log(`[chatAssist] ${method} still ${d?.status || 'waiting'} (attempt ${attempt})`);
         pollAssistUntilDone(reqId, method, attempt + 1);
       }
     } catch {}
-  }, 1500);
+  }, 2000);
 }
 
 async function chatSendAssistPick(reqId, method) {
