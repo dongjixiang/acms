@@ -3585,7 +3585,7 @@ function renderAssistLayer(container, reqId, assists) {
     // 检查数据指纹：没变化就不重建（避免用户选中态丢失）
     const fingerprint = JSON.stringify({ status: d.status, scenarios: d.scenarios, tree: d.tree, dimensions: d.dimensions, modules: d.modules, used: d.used });
     const cacheKey = `${reqId}_${method}`;
-    if (window._assistRenderCache[cacheKey] === fingerprint) return; // 没变化，不重建
+    if (window._assistRenderCache[cacheKey] === fingerprint) continue; // 没变化，跳过该方法
     window._assistRenderCache[cacheKey] = fingerprint;
 
     // 移除旧层（确定要重建时才删）
