@@ -1149,7 +1149,7 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 }
 
 /* ── 对话流内 assist 卡片（覆盖原样式）── */
-.chat-assist-layer { align-self: flex-start; width: 100%; animation: chatFadeIn .25s ease; }
+.chat-assist-layer { align-self: flex-start; max-width: 88%; width: 100%; animation: chatFadeIn .25s ease; }
 .chat-assist-layer .assist-section-title { font-size: 13px; }
 .chat-assist-layer .assist-intro { font-size: 12px; color: var(--text3); }
 .chat-assist-layer .assist-grid { gap: 8px; }
