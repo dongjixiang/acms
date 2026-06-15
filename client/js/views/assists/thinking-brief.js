@@ -84,15 +84,15 @@
     const openingBlock = (understanding || opening) ? `
       <div class="brief-opening">
         ${round > 1 ? `<div class="brief-round-tag">第 ${round} 轮对话</div>` : ''}
-        ${understanding ? `<div class="brief-understanding"><strong>我的理解：</strong>${escHtml(understanding)}</div>` : ''}
-        ${opening ? `<div class="brief-opening-text">${escHtml(opening)}</div>` : ''}
+        ${understanding ? `<div class="brief-understanding"><strong>我的理解：</strong>${renderMarkdown(understanding)}</div>` : ''}
+        ${opening ? `<div class="brief-opening-text">${renderMarkdown(opening)}</div>` : ''}
       </div>
     ` : '';
 
     const followupBlock = followup ? `
       <div class="brief-followup">
         <span class="brief-followup-label">💬 当前最想知道的：</span>
-        <span class="brief-followup-text">${escHtml(followup)}</span>
+        <span class="brief-followup-text">${renderMarkdown(followup)}</span>
       </div>
     ` : '';
 

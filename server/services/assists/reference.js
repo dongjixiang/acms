@@ -115,6 +115,19 @@ async function runAssistJob(requirementId, opts = {}) {
   const context = contextParts.filter(Boolean).join('\n');
   // 让 LLM 从上下文推断产品名，也可从竞品点击传入
   const productName = opts.productName || '';
+  // 缓存命中：同产品已完成且不是主动换一批 → 更新轮次后直接返回
+  if (productName && !opts.forceRegenerate) {
+    const existing = getExistingAssist(req);
+    if (existing && existing.status === 'done' && existing.target_product === productName) {
+      // 更新 generated_at_round 到当前轮次，避免 renderAssistLayer 的轮次检查跳过
+      if (typeof opts.chatRound === 'number' && existing.generated_at_round !== opts.chatRound) {
+        existing.generated_at_round = opts.chatRound;
+        existing.generated_at = new Date().toISOString();
+        reqStore.update(requirementId, { assist_reference: JSON.stringify(existing) });
+      }
+      return; // 已有缓存，无需重新生成
+    }
+  }
   // 如果传入了 productName，注入到 context 头部
   const productHint = productName ? `【用户指定了产品: ${productName}】\n` : '';
 

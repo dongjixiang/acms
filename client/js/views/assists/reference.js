@@ -132,8 +132,16 @@ function referenceApplyInsight(reqId, btn) {
   btn.textContent = isSelected ? '✅ 已选' : '+ 应用到需求';
 }
 
-/** 全部引用到对话：把选中的理念发送到对话流 */
+/** 全部引用到对话：检测是否在 chat layer → 走统一路径，否则塞输入框 */
 function referenceApplyAll(reqId) {
+  // 如果在 chat assist layer 内，走 chatSendAssistPick 统一路径
+  const btn = document.querySelector(`button[onclick*="referenceApplyAll('${reqId}')"]`);
+  const inChatLayer = btn && btn.closest('.chat-assist-layer');
+  if (inChatLayer) {
+    chatSendAssistPick(reqId, 'reference');
+    return;
+  }
+  // 以下为原有逻辑（独立面板模式）
   const layer = document.querySelector(`#chat-stream-msgs-${reqId} .chat-assist-layer[data-assist-method="reference"]`);
   if (!layer) return;
   const brief = layer.querySelector('.ref-brief');
