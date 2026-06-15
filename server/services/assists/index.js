@@ -9,6 +9,7 @@
 //   assist_tradeoff:       { generated_at, dimensions, picks, status }
 //   assist_arch:           { generated_at, modules, status }
 //   assist_visual:         复用 insight_previews（status/variants 写到 insight_previews 字段）
+//   assist_risks:          { generated_at, items, summary, status }
 //
 // 每个 service 必须暴露：name / runAssistJob(reqId, opts) / getAssist(reqId)
 
@@ -20,6 +21,10 @@ const arch = require('./arch');
 const visual = require('./visual');
 const competitive = require('./competitive');
 const reference = require('./reference');
+const pains = require('./pains');
+const stakeholders = require('./stakeholders');
+const risks = require('./risks');
+const assumptions = require('./assumptions');
 
 const ASSISTS = {
   decision_tree: decisionTree,
@@ -30,6 +35,10 @@ const ASSISTS = {
   visual: visual,  // v0.3.3 B+++：作为第 6 种辅助手段接入路由器
   competitive: competitive, // v0.3.6：竞品分析
   reference: reference, // v0.3.6：借鉴卡片 — 参考产品/服务，选灵感方向
+  pains: pains, // v0.4：痛点溯源 — 挖掘需求描述中的隐藏痛点
+  stakeholders: stakeholders, // v0.4：干系人地图 — 识别需求涉及的相关干系人
+  risks: risks, // v0.4：风险预警 — 扫描需求描述中的潜在风险
+  assumptions: assumptions, // v0.4：假设清单 — 提取需求描述中的隐藏假设
 };
 
 const ASSIST_METHODS = Object.keys(ASSISTS);
