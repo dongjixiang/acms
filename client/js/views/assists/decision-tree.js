@@ -18,7 +18,15 @@
           <span class="dt-picked-badge">✅ 你选的</span>
         </div>
         <div class="dt-branch-desc">${escHtml(t.desc || '')}</div>
-        ${t.examples ? `<div class="dt-branch-analogy">💡 ${escHtml(t.examples)}</div>` : ''}
+        ${t.examples ? (() => {
+          // 拆产品名 (按 , 分，trim) — 每个变链接，点开走 loading 卡片模式
+          const products = (t.examples || '').split(/[,，]/).map(s => s.trim()).filter(Boolean);
+          const links = products.map((p, i, arr) => {
+            const safeP = String(p).replace(/'/g, '&#39;');
+            return `<a class="dt-analogy-link" data-product="${escHtml(p)}" onclick="dtOpenReference('${reqId}', '${safeP}', this)">${escHtml(p)}</a>${i < arr.length - 1 ? ', ' : ''}`;
+          }).join('');
+          return `<div class="dt-branch-analogy">💡 ${links}</div>`;
+        })() : ''}
         <div class="dt-proscons">
           ${t.pros ? `<div class="dt-pc dt-pc-pro"><span class="dt-pc-mark">+</span>${escHtml(t.pros)}</div>` : ''}
           ${t.cons ? `<div class="dt-pc dt-pc-con"><span class="dt-pc-mark">−</span>${escHtml(t.cons)}</div>` : ''}
@@ -103,4 +111,127 @@ function dtSubmit(reqId) {
   }
   // 调后端标记 + 触发轮询
   ACMSAssistDispatcher.useAssist(reqId, 'decision_tree', { used_branch_idx: idx });
+}
+
+/** v0.6.4 关联产品链接：点产品名 → 触发 reference assist → loading 卡片在 .dt-block 下方
+ *  流程: 1) showAssistLoading 插卡片  2) POST 触发  3) 轮询 GET 看 status  4) replaceAssistLoading
+ *  等待时间: 45-75s (3 步串行 LLM)；轮询 2s 一次，最多 60 次 (120s 超时)
+ *  不阻塞: 加载过程中用户可继续操作其他卡片/输入框
+ */
+async function dtOpenReference(reqId, productName, linkEl) {
+  // 找触发点的 .dt-block 父级（决策树卡片容器）
+  const dtBlock = linkEl.closest('.dt-block');
+  if (!dtBlock) return;
+  // 防重复点击
+  if (linkEl.classList.contains('loading')) return;
+  linkEl.classList.add('loading');
+
+  // 1. 创建 loading 卡片，插在 .dt-block 之后
+  const loading = showAssistLoading({
+    method: 'reference',
+    title: `正在生成「${productName}」参考简报`,
+    hint: '预计 45-75s · 加载中不影响你做其他操作',
+  });
+  dtBlock.after(loading);
+  // 焦点跳转
+  loading.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+  try {
+    // 2. 触发 reference assist
+    const r1 = await api('POST', `/requirements/${reqId}/assist/reference`, { productName });
+    if (r1 && r1.error) {
+      failAssistLoading(loading, '触发失败: ' + r1.error);
+      linkEl.classList.remove('loading');
+      return;
+    }
+
+    // 3. 轮询直到 status === 'done'（每 2s 一次，最多 60 次 = 120s）
+    const stepHints = ['分析产品定位...', '生成可视化图表...', '提炼核心理念...'];
+    const maxAttempts = 60;
+    for (let i = 0; i < maxAttempts; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      const r2 = await api('GET', `/requirements/${reqId}`);
+      if (r2 && r2.error) {
+        failAssistLoading(loading, '读取失败: ' + r2.error);
+        linkEl.classList.remove('loading');
+        return;
+      }
+      let ref = null;
+      try { ref = r2.assist_reference ? JSON.parse(r2.assist_reference) : null; } catch {}
+      if (ref && ref.status === 'done' && ref.target_product === productName) {
+        // 4. 渲染 reference-brief 替换 loading
+        const html = window.ACMSAssists.get('reference').render(reqId, ref);
+        replaceAssistLoading(loading, html);
+        linkEl.classList.remove('loading');
+        linkEl.classList.add('loaded');
+        return;
+      }
+      if (ref && ref.status === 'failed') {
+        failAssistLoading(loading, '生成失败: ' + (ref.error || '未知错误'));
+        linkEl.classList.remove('loading');
+        return;
+      }
+      // 更新进度（3 阶段）
+      const stepIdx = Math.min(Math.floor(i / 10), 2);
+      const sec = (i + 1) * 2;
+      updateAssistLoadingProgress(loading, stepHints[stepIdx], sec);
+    }
+    // 超时
+    failAssistLoading(loading, '生成超时（>120s），请刷新页面重试');
+    linkEl.classList.remove('loading');
+  } catch (e) {
+    failAssistLoading(loading, '网络错误: ' + (e.message || String(e)));
+    linkEl.classList.remove('loading');
+  }
+}
+
+/** v0.6.4 通用 loading 卡片 — 链接触发打开辅助卡片时使用
+ *  3 个配套函数:
+ *    showAssistLoading({method, title, hint}) → 创建 loading 卡片 DOM
+ *    updateAssistLoadingProgress(card, step, sec) → 更新进度
+ *    replaceAssistLoading(loading, html) → 替换为结果（焦点跳转）
+ *    failAssistLoading(loading, error) → 替换为错误态
+ *  位置: 插在触发点的"紧邻下方"（同 container，dtBlock.after()）
+ */
+function showAssistLoading({ method, title, hint } = {}) {
+  const card = document.createElement('div');
+  card.className = `assist-loading-card method-${method || 'default'}`;
+  card.dataset.method = method || 'default';  // v0.6.8 fix: 必设 data-method，renderAssistLayer 才能 querySelector 找到
+  card.innerHTML = `
+    <div class="assist-loading-head">
+      <span class="assist-loading-spinner">⏳</span>
+      <span class="assist-loading-title">${escHtml(title || '加载中...')}</span>
+    </div>
+    ${hint ? `<div class="assist-loading-hint">${escHtml(hint)}</div>` : ''}
+    <div class="assist-loading-progress">0s</div>
+  `;
+  return card;
+}
+
+function updateAssistLoadingProgress(loadingCard, stepHint, seconds) {
+  if (!loadingCard) return;
+  const titleEl = loadingCard.querySelector('.assist-loading-title');
+  const progressEl = loadingCard.querySelector('.assist-loading-progress');
+  if (titleEl && stepHint) titleEl.textContent = stepHint;
+  if (progressEl) progressEl.textContent = `${seconds}s`;
+}
+
+function replaceAssistLoading(loadingCard, html) {
+  if (!loadingCard || !loadingCard.parentNode) return;
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  const newCard = tmp.firstElementChild;
+  if (newCard) {
+    loadingCard.replaceWith(newCard);
+    // 焦点跳转到新卡片
+    newCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  } else {
+    loadingCard.remove();
+  }
+}
+
+function failAssistLoading(loadingCard, errorMsg) {
+  if (!loadingCard || !loadingCard.parentNode) return;
+  loadingCard.classList.add('assist-loading-error');
+  loadingCard.innerHTML = `<div class="assist-loading-error-text">❌ ${escHtml(errorMsg || '生成失败')}</div>`;
 }

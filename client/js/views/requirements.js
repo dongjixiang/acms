@@ -2896,6 +2896,10 @@ function renderIdeaPanel(req) {
             <button onclick="chatAssist('${req.id}', 'scenarios')">👥 场景</button>
             <button onclick="chatAssist('${req.id}', 'competitive')">🏢 竞品</button>
             <button onclick="chatAssist('${req.id}', 'reference')">🏛 借鉴</button>
+            <button onclick="chatAssist('${req.id}', 'pains')">🔥 痛点</button>
+            <button onclick="chatAssist('${req.id}', 'stakeholders')">👥 干系人</button>
+            <button onclick="chatAssist('${req.id}', 'risks')">⚠️ 风险</button>
+            <button onclick="chatAssist('${req.id}', 'assumptions')">📌 假设</button>
             <button onclick="chatRewrite('${req.id}')">✨ 整理</button>
             <button onclick="chatDone('${req.id}')" style="border-color:rgba(255,68,68,0.2);color:#f55">✅ 够了</button>
           </div>
@@ -3485,14 +3489,14 @@ function renderChatBubble(container, entry) {
   const isAI = entry.role === 'assistant';
   const parts = [];
   if (isAI) {
-    if (entry.opening) parts.push(`<div>${escHtml(entry.opening)}</div>`);
-    if (entry.followup_question) parts.push(`<div class="chat-response-q">${escHtml(entry.followup_question)}</div>`);
+    if (entry.opening) parts.push(renderMarkdown(entry.opening));
+    if (entry.followup_question) parts.push(`<div class="chat-response-q">${renderMarkdown(entry.followup_question)}</div>`);
   }
   const bodyHtml = parts.length
     ? parts.join('') + (entry.understanding
-        ? `<div class="chat-thinking" style="display:none"><div class="chat-thinking-inner">${escHtml(entry.understanding)}</div></div>`
+        ? `<div class="chat-thinking" style="display:none"><div class="chat-thinking-inner">${renderMarkdown(entry.understanding)}</div></div>`
         : '')
-    : `<div>${escHtml(entry.text || '')}</div>`;
+    : `<div>${isAI ? renderMarkdown(entry.text || '') : escHtml(entry.text || '')}</div>`;
 
   const hasThinking = isAI && entry.understanding;
   const div = document.createElement('div');
@@ -3510,11 +3514,11 @@ function renderBriefBubble(container, brief) {
   if (!hasResponse && !hasThinking && !hasSuggest) return;
 
   let respHtml = '';
-  if (brief.opening) respHtml += `<div>${escHtml(brief.opening)}</div>`;
-  if (brief.followup_question) respHtml += `<div class="chat-response-q">${escHtml(brief.followup_question)}</div>`;
+  if (brief.opening) respHtml += renderMarkdown(brief.opening);
+  if (brief.followup_question) respHtml += `<div class="chat-response-q">${renderMarkdown(brief.followup_question)}</div>`;
 
   const thinkingHtml = hasThinking
-    ? `<div class="chat-thinking" style="display:none"><div class="chat-thinking-inner">${escHtml(brief.ai_understanding)}</div></div>`
+    ? `<div class="chat-thinking" style="display:none"><div class="chat-thinking-inner">${renderMarkdown(brief.ai_understanding)}</div></div>`
     : '';
 
   const suggestHtml = hasSuggest
@@ -3544,12 +3548,11 @@ function renderAssistLayer(container, reqId, assists) {
   // 跟踪已渲染的 assist 数据指纹，避免不必要重建（v0.3.6）
   if (!window._assistRenderCache) window._assistRenderCache = {};
 
-  for (const method of ['diagnosis', 'reference', 'scenarios', 'tradeoff', 'arch', 'decision_tree', 'visual', 'competitive']) {
+  for (const method of ['diagnosis', 'reference', 'scenarios', 'tradeoff', 'arch', 'decision_tree', 'visual', 'competitive', 'pains', 'stakeholders', 'risks', 'assumptions']) {
     const d = assists[method];
     if (!d || d.status !== 'done' || d.used) continue;
-    // 用户显式选了某个 assist → 只显示那个，其他跳过
-    const explicit = window._explicitAssist?.[reqId];
-    if (explicit && explicit !== method) continue;
+    // v0.6.7 累积模式：不再 restrict 到 _explicitAssist method
+    //   所有 method 的 done 卡片都渲染（用户点过的会累积显示，未点的也显示）
     const cr = (_chatState[reqId]?.briefRound) || 1;
     if (d.generated_at_round !== cr) {
       if (method === 'decision_tree') console.log(`[assist.render] decision_tree SKIP round: generated=${d.generated_at_round} chatState=${cr}`);
@@ -3595,9 +3598,10 @@ function renderAssistLayer(container, reqId, assists) {
             .replace(/<button class="(?:assist-pick-btn|btn-small btn-primary assist-pick-btn)[\s\S]*?<\/button>/g, '');
           if (method === 'decision_tree') {
             // v0.4 决策树用 .dt-branch；老 brief-branch 兼容（任何残留老卡片）
+            // 注意：必须后跟 \s 或 "，避免误匹配 dt-branch-head/letter/label/desc/analogy
             stripped = stripped
-              .replace(/class="dt-branch/g, 'class="dt-branch chat-assist-clickable"')
-              .replace(/class="brief-branch/g, 'class="brief-branch chat-assist-clickable"');
+              .replace(/class="dt-branch(\s|")/g, 'class="dt-branch chat-assist-clickable$1')
+              .replace(/class="brief-branch(\s|")/g, 'class="brief-branch chat-assist-clickable$1');
           } else if (method === 'tradeoff') {
             stripped = stripped.replace(/<button class="assist-tradeoff-opt/g, '<span class="assist-tradeoff-opt chat-assist-opt-clickable"');
             stripped = stripped.replace(/<\/button>/g, '</span>');
@@ -3607,7 +3611,7 @@ function renderAssistLayer(container, reqId, assists) {
       } catch (e) { innerHtml = `<div class="insight-error">❌ 渲染失败: ${e.message}</div>`; }
     } else {
       // 降级：简易标题
-      const titles = { decision_tree:'🌳 决策树', scenarios:'👥 场景', tradeoff:'⚖️ 取舍', arch:'🏗️ 架构', diagnosis:'🩺 体检', visual:'🎨 视觉' };
+      const titles = { decision_tree:'🌳 决策树', scenarios:'👥 场景', tradeoff:'⚖️ 取舍', arch:'🏗️ 架构', diagnosis:'🩺 体检', visual:'🎨 视觉', competitive:'🏢 竞品', reference:'🏛 借鉴', pains:'🔥 痛点', stakeholders:'👥 干系人', risks:'⚠️ 风险', assumptions:'📌 假设' };
       innerHtml = `<div class="assist-section-title">${titles[method]||method}</div>`;
     }
 
@@ -3617,8 +3621,17 @@ function renderAssistLayer(container, reqId, assists) {
     el.className = 'chat-assist-layer';
     el.dataset.assistMethod = method;
     el.innerHTML = `${innerHtml}<div class="chat-assist-actions" style="margin-top:10px"><button class="btn-small btn-accept" onclick="chatSendAssistPick('${reqId}','${method}')">✅ 发送选择</button><button class="btn-small" onclick="chatAssistRegen('${reqId}','${method}')">↻ 换一批</button><button class="btn-small" onclick="chatSkipAssist(this)">跳过</button></div>`;
-    container.appendChild(el);
-    break; // 同一时间只显示一张卡片
+    // v0.6.6：优先就地替换 .assist-loading-card（chatAssist 插的），否则 append 到末尾
+    const loadingEl = container.querySelector(`.assist-loading-card[data-method="${method}"]`);
+    if (loadingEl) {
+      // 就地替换 — 用户视觉上看到 loading 卡片"变成"正式卡片（焦点跳到新卡片）
+      loadingEl.replaceWith(el);
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } else {
+      container.appendChild(el);
+    }
+    // v0.6.7 累积模式：不 break，继续遍历下一个 method，每张都渲染
+    //   （v0.3.6 "同一时间只显示一张卡片"已被累积模式替代）
   }
 }
 
@@ -3707,10 +3720,10 @@ function connectStreamingBrief(reqId, container) {
         const state = _chatState[reqId];
         if (state) state.briefRound = data.brief.chat_round || 0;
         let respHtml = '';
-        if (data.brief.opening) respHtml += `<div>${escHtml(data.brief.opening)}</div>`;
-        if (data.brief.followup_question) respHtml += `<div class="chat-response-q">${escHtml(data.brief.followup_question)}</div>`;
+        if (data.brief.opening) respHtml += renderMarkdown(data.brief.opening);
+        if (data.brief.followup_question) respHtml += `<div class="chat-response-q">${renderMarkdown(data.brief.followup_question)}</div>`;
         const thinkingHtml = data.brief.ai_understanding
-          ? `<div class="chat-thinking" style="display:none"><div class="chat-thinking-inner">${escHtml(data.brief.ai_understanding)}</div></div>`
+          ? `<div class="chat-thinking" style="display:none"><div class="chat-thinking-inner">${renderMarkdown(data.brief.ai_understanding)}</div></div>`
           : '';
         const suggestHtml = data.brief.suggested_assist?.method
           ? `<div class="chat-assist-suggest" onclick="chatAssist('${reqId}','${data.brief.suggested_assist.method}')">💡 ${escHtml(data.brief.suggested_assist.reason || '试试' + data.brief.suggested_assist.method)} →</div>`
@@ -3762,25 +3775,48 @@ async function chatRegen(reqId) {
 }
 
 async function chatAssist(reqId, method, extraBody) {
-  // 手动触发前，先把当前显示的其他 assist 卡片从 DOM 移除
+  // v0.6.7：累积模式 — 只清**同 method** 的旧卡片，保留其他 method 的卡片
+  //   用户多次点不同按钮（决策树/场景/竞品/借鉴/痛点）→ 多张卡片共存
+  //   用户重复点同 method → 替换为新卡片（防止累积多张同 method 卡片）
   const c = document.getElementById(`chat-stream-msgs-${reqId}`);
-  if (c) c.querySelectorAll('.chat-assist-layer').forEach(el => el.remove());
+  if (c) {
+    c.querySelectorAll(`.chat-assist-layer[data-assist-method="${method}"]`).forEach(el => el.remove());
+    c.querySelectorAll(`.assist-loading-card[data-method="${method}"]`).forEach(el => el.remove());
+  }
   // 清除缓存指纹，确保新卡片可以渲染
   if (window._assistRenderCache) {
     Object.keys(window._assistRenderCache).forEach(k => {
       if (k.startsWith(reqId + '_')) delete window._assistRenderCache[k];
     });
   }
-  // 标记用户显式选择了哪个 assist，renderAssistLayer 只显示这个
+  // 标记用户显式选择了哪个 assist（polling 用 — 监听该 method 是否完成）
+  //   v0.6.7 累积模式：不再限制 renderAssistLayer 只渲染这一个 method
   if (!window._explicitAssist) window._explicitAssist = {};
   window._explicitAssist[reqId] = method;
+  // v0.6.6：先插 loading 卡片到 chat-stream-msgs 末尾（最后一条聊天记录下方）
+  //   标题用 method 中文名（用 methodTitles 跟 renderAssistLayer 保持一致）
+  const methodTitles = { decision_tree:'🌳 决策树', scenarios:'👥 场景', tradeoff:'⚖️ 取舍', arch:'🏗️ 架构', diagnosis:'🩺 体检', visual:'🎨 视觉', competitive:'🏢 竞品', reference:'🏛 借鉴', pains:'🔥 痛点', stakeholders:'👥 干系人', risks:'⚠️ 风险', assumptions:'📌 假设' };
+  if (c) {
+    const loading = showAssistLoading({
+      method,
+      title: `正在生成${methodTitles[method] || method}…`,
+      hint: '预计 10-30s · 加载中不影响你做其他操作',
+    });
+    c.appendChild(loading);
+    loading.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
   try {
     const body = extraBody || {};
     await api('POST', `/requirements/${reqId}/assist/${method}`, body);
     toast(`🔄 ${method} 正在生成…`, 'info', 2000);
     startChatPolling(reqId);  // 统一轮询，pollAssistUntilDone 已合并到 startChatPolling 内部
   }
-  catch(e) { toast('失败: '+e.message, 'error'); }
+  catch(e) {
+    // 触发失败 → loading 卡片就地变为错误态
+    const loadingEl = c?.querySelector(`.assist-loading-card[data-method="${method}"]`);
+    if (loadingEl) failAssistLoading(loadingEl, '触发失败: ' + e.message);
+    toast('失败: '+e.message, 'error');
+  }
 }
 
 /** pollAssistUntilDone 已合并到 startChatPolling（2026-06-14） */
@@ -3788,31 +3824,125 @@ async function chatAssist(reqId, method, extraBody) {
 async function chatSendAssistPick(reqId, method) {
   const layer = document.querySelector(`#chat-stream-msgs-${reqId} .chat-assist-layer[data-assist-method="${method}"]`);
   if (!layer) return;
-  // 支持两种选择模式：勾选列表项 或 卡片选择
   // 支持多种选择模式
   const selOpts = layer.querySelectorAll('.chat-assist-option.selected');
   const selCards = layer.querySelectorAll('.chat-assist-clickable.selected');
   const selTradeoff = layer.querySelectorAll('.chat-assist-opt-clickable.selected');
-  // v0.3.6 C：场景/架构卡片（chatPickCard 切换 .selected 在 .assist-card 上）
   const selAssistCards = layer.querySelectorAll('.assist-card.selected');
-  if (selOpts.length === 0 && selCards.length === 0 && selTradeoff.length === 0 && selAssistCards.length === 0) { toast('请先选择选项', 'warning'); return; }
-  const labels = [];
-  selOpts.forEach(el => labels.push(el.querySelector('.chat-opt-title')?.textContent?.trim()||''));
-  selCards.forEach(el => {
-    const t = el.querySelector('strong')?.textContent?.trim() || el.querySelector('.assist-card-letter')?.textContent?.trim() || '';
-    if (t) labels.push(t);
-  });
-  // v0.3.6 B：取舍选项文本（选项文本直接是元素内容）
-  selTradeoff.forEach(el => {
-    const t = el.textContent?.trim();
-    if (t) labels.push(t);
-  });
-  // v0.3.6 C：场景/架构卡片文本提取
-  selAssistCards.forEach(el => {
-    const t = el.querySelector('strong')?.textContent?.trim() || el.querySelector('.assist-card-letter')?.textContent?.trim() || '';
-    if (t) labels.push(t);
-  });
-  const supplement = `[${method}] ${labels.join('；')}`;
+  const selRefInsights = layer.querySelectorAll('.insight-block.selected');
+  if (selOpts.length === 0 && selCards.length === 0 && selTradeoff.length === 0 && selAssistCards.length === 0 && selRefInsights.length === 0) { toast('请先选择选项', 'warning'); return; }
+
+  let supplement = '';
+  switch (method) {
+    case 'decision_tree': {
+      // 选中 1 个分支：label + desc + pros + cons
+      const branch = selCards[0] || selAssistCards[0];
+      if (branch && branch.classList.contains('dt-branch')) {
+        const label = branch.querySelector('.dt-branch-label')?.textContent?.trim() || '';
+        const desc = branch.querySelector('.dt-branch-desc')?.textContent?.trim() || '';
+        const pros = branch.querySelector('.dt-pc-pro')?.textContent?.replace(/^\+/,'').trim() || '';
+        const cons = branch.querySelector('.dt-pc-con')?.textContent?.replace(/^−/,'').trim() || '';
+        const letter = branch.querySelector('.dt-branch-letter')?.textContent?.trim() || '';
+        const examples = Array.from(branch.querySelectorAll('.dt-analogy-link')).map(a => a.textContent).join('、');
+        let text = `我倾向于方向「${letter} ${label}」—— ${desc}`;
+        if (pros) text += `。优势：${pros}`;
+        if (cons) text += `；顾虑：${cons}`;
+        if (examples) text += `。参考：${examples}`;
+        supplement = text;
+      }
+      break;
+    }
+    case 'scenarios': {
+      // 选中 1+ 场景卡片：title + persona + context + pain + goal + quote
+      const parts = [];
+      selAssistCards.forEach(card => {
+        const title = card.querySelector('strong')?.textContent?.trim() || '';
+        const persona = card.querySelector('.assist-card-meta')?.textContent?.replace(/^👤\s*/,'').trim() || '';
+        const rows = card.querySelectorAll('.assist-card-row');
+        const context = rows[0]?.textContent?.replace(/^背景：/,'').trim() || '';
+        const pain = rows[1]?.textContent?.replace(/^痛点：/,'').trim() || '';
+        const goal = rows[2]?.textContent?.replace(/^目标：/,'').trim() || '';
+        const quote = card.querySelector('.assist-card-quote')?.textContent?.trim() || '';
+        let t = `场景「${title}」：${persona}。背景：${context}。痛点：${pain}。目标：${goal}`;
+        if (quote) t += `。用户原话：${quote}`;
+        parts.push(t);
+      });
+      supplement = parts.join('\n');
+      break;
+    }
+    case 'arch': {
+      // 选中 1+ 模块：name + purpose + entry + elements
+      const parts = [];
+      selAssistCards.forEach(card => {
+        const name = card.querySelector('strong')?.textContent?.trim() || '';
+        const rows = card.querySelectorAll('.assist-card-row');
+        const purpose = rows[0]?.textContent?.replace(/^用途：/,'').trim() || '';
+        const entry = rows[1]?.textContent?.replace(/^入口：/,'').trim() || '';
+        const elements = Array.from(card.querySelectorAll('.assist-arch-element')).map(e => e.textContent).join('、');
+        let t = `需要模块「${name}」：${purpose}，入口${entry}`;
+        if (elements) t += `，包含${elements}`;
+        parts.push(t);
+      });
+      supplement = parts.join('\n');
+      break;
+    }
+    case 'tradeoff': {
+      // 每个维度选 1 边：axis + 选中option + context
+      const parts = [];
+      // 每个 .chat-assist-opt-clickable.selected 属于一个 .assist-card（一个维度）
+      const optGroups = {};
+      selTradeoff.forEach(opt => {
+        const card = opt.closest('.assist-card');
+        if (!card) return;
+        const axis = card.querySelector('strong')?.textContent?.trim() || '';
+        const option = opt.textContent?.replace(/^✅\s*/,'').trim() || '';
+        if (!optGroups[axis]) optGroups[axis] = [];
+        optGroups[axis].push(option);
+      });
+      for (const [axis, options] of Object.entries(optGroups)) {
+        parts.push(`在「${axis}」上选择「${options.join('」/「')}」`);
+      }
+      supplement = parts.join('\n');
+      break;
+    }
+    case 'reference': {
+      // 借鉴卡片：选中理念 + 产品名
+      const productEl = layer.querySelector('.brief-top h2');
+      const productName = productEl?.textContent?.replace(/^🏛\s*/,'').replace(/\s*·\s*产品简报$/,'').trim() || '';
+      const selected = layer.querySelectorAll('.insight-block.selected');
+      const blocks = selected.length > 0 ? selected : layer.querySelectorAll('.insight-block');
+      if (blocks.length > 0) {
+        const parts = [`参考了${productName}的设计：`];
+        blocks.forEach(b => {
+          const title = b.querySelector('.label')?.textContent?.trim() || '';
+          const desc = b.querySelector('.desc')?.textContent?.trim() || '';
+          if (title) parts.push(`💡 ${title}：${desc}`);
+        });
+        supplement = parts.join('\n');
+      }
+      break;
+    }
+    default: {
+      // 兜底：保持原有逻辑
+      const labels = [];
+      selOpts.forEach(el => labels.push(el.querySelector('.chat-opt-title')?.textContent?.trim()||''));
+      selCards.forEach(el => {
+        const t = el.querySelector('strong')?.textContent?.trim() || el.querySelector('.assist-card-letter')?.textContent?.trim() || '';
+        if (t) labels.push(t);
+      });
+      selTradeoff.forEach(el => {
+        const t = el.textContent?.trim();
+        if (t) labels.push(t);
+      });
+      selAssistCards.forEach(el => {
+        const t = el.querySelector('strong')?.textContent?.trim() || el.querySelector('.assist-card-letter')?.textContent?.trim() || '';
+        if (t) labels.push(t);
+      });
+      supplement = `[${method}] ${labels.join('；')}`;
+    }
+  }
+
+  if (!supplement) { toast('请先选择选项', 'warning'); return; }
   const c = document.getElementById(`chat-stream-msgs-${reqId}`);
   if (c) { renderChatBubble(c, {role:'user', text:supplement, at:new Date().toISOString()}); layer.remove(); c.insertAdjacentHTML('beforeend','<div class="chat-typing"><span></span><span></span><span></span></div>'); chatScrollToBottom(c); }
   chatSendSupplement(reqId, supplement, `${method}_pick`);
@@ -3822,7 +3952,18 @@ async function chatAssistRegen(reqId, method) {
   try { await api('POST', `/requirements/${reqId}/assist/${method}/regenerate`, {}); toast(`🔄 新${method}正在生成…`, 'info', 1500); }
   catch(e) { toast('失败: '+e.message, 'error'); }
 }
-function chatSkipAssist(btn) { btn.closest('.chat-assist-layer')?.remove(); }
+// v0.6.8 fix: skip 也调 useAssist 标记后端 used=true，避免下次轮询 renderAssistLayer 重新渲染
+//   之前只删 DOM 不调后端，累积模式下点过其他 method 就会把跳过的卡片又带回来
+async function chatSkipAssist(btn) {
+  const layer = btn.closest('.chat-assist-layer');
+  if (!layer) return;
+  const reqId = (layer.closest('[id^="chat-stream-msgs-"]') || {}).id?.replace('chat-stream-msgs-', '') || (window._chatState && Object.keys(window._chatState)[0]);
+  const method = layer.dataset.assistMethod;
+  layer.remove();
+  if (reqId && method && window.ACMSAssistDispatcher?.useAssist) {
+    try { await ACMSAssistDispatcher.useAssist(reqId, method, { action: 'skipped' }); } catch(e) { console.warn('[chatSkipAssist] useAssist failed:', e.message); }
+  }
+}
 
 async function chatRewrite(reqId) {
   if (!await showConfirm('AI 会根据全部对话重新整理需求描述，确认？', {type:'info'})) return;
