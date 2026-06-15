@@ -8,21 +8,53 @@
 //   - 任一 prompt 缺失 → 降级为 disabled，console.warn 提示
 
 const skillStore = require('../stores/skill-store');
+const { collection } = require('../db/connection');
 
 const ELICITOR_SKILL_ID = 'skill-requirement-elicitor';
 // SKILL id 跟磁盘目录名不同（id 走 API 命名空间，目录名走文件系统命名空间）
 const ELICITOR_DIR = 'elicitor';
 const REQUIRED_STEPS = ['diagnose', 'toolbox-vague', 'toolbox-conflicted', 'toolbox-blank', 'solidify'];
+const SYSTEM_CONFIG_KEY = 'elicitor_enabled';
 
 /**
- * 软开关读取（Phase 0.1）
- * 优先级：环境变量 > 默认 false
- * 后续 Phase 1+ 可以从 db / 项目配置覆盖
+ * 软开关读取
+ * 优先级：DB system_configs > 环境变量 ELICITOR_ENABLED > 默认 false
+ * DB 值在 admin UI 切换；环境变量作为部署期默认值（start.bat / start.sh 里 set 的）
  */
 function isElicitorEnabled() {
+  const dbVal = readFromDb();
+  if (dbVal !== null) return dbVal;
   const env = process.env.ELICITOR_ENABLED;
   if (env === undefined || env === null) return false;
   return String(env).toLowerCase() === 'true' || env === '1';
+}
+
+function readFromDb() {
+  try {
+    const cfg = collection('system_configs').findOne(c => c.key === SYSTEM_CONFIG_KEY);
+    if (!cfg) return null;
+    const v = cfg.value;
+    return v === true || v === 'true' || v === 1 || v === '1';
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * 设置 DB 中的 elicitor 软开关（被 admin UI 路由调用）
+ * 写后立即生效：下一次 canRun() 读到新值
+ */
+function setElicitorEnabled(enabled) {
+  const sysConfigs = collection('system_configs');
+  const now = new Date().toISOString();
+  const boolVal = !!enabled;
+  const existing = sysConfigs.findOne(c => c.key === SYSTEM_CONFIG_KEY);
+  if (existing) {
+    sysConfigs.update(c => c.key === SYSTEM_CONFIG_KEY, { ...existing, value: boolVal, updated_at: now });
+  } else {
+    sysConfigs.insert({ key: SYSTEM_CONFIG_KEY, value: boolVal, created_at: now, updated_at: now });
+  }
+  return boolVal;
 }
 
 /**
@@ -67,7 +99,7 @@ function loadStepPrompt(stepName) {
  */
 function startupHealthCheck() {
   if (!isElicitorEnabled()) {
-    console.log('[elicitor] 软开关关闭（ELICITOR_ENABLED!=true），走 fallback');
+    console.log('[elicitor] 软开关关闭（DB 未配置 + 环境变量 !=true），走 fallback');
     return;
   }
   const health = checkHealth();
@@ -82,6 +114,8 @@ module.exports = {
   ELICITOR_SKILL_ID,
   REQUIRED_STEPS,
   isElicitorEnabled,
+  setElicitorEnabled,
+  readFromDb,
   checkHealth,
   canRun,
   loadStepPrompt,

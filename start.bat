@@ -42,6 +42,9 @@ echo [信息] 访问地址: http://localhost:3300/client/index.html
 echo [信息] 按 Ctrl+C 停止服务
 echo.
 
+REM 启用 elicitor skill（v0.4 收官后默认开启；想关掉就注释此行）
+set ELICITOR_ENABLED=true
+
 node server/index.js
 
 pause

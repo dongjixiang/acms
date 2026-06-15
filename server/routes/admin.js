@@ -98,4 +98,18 @@ router.post('/default-gen-model', (req, res) => {
   res.json({ success: true, modelId: modelId || null });
 });
 
+// v0.4 收官后：elicitor 软开关走 admin UI 实时切换
+// 优先级：DB system_configs > 环境变量 ELICITOR_ENABLED > false
+router.get('/elicitor-enabled', (req, res) => {
+  const elicitor = require('../services/elicitor-adapter');
+  res.json({ enabled: elicitor.isElicitorEnabled() });
+});
+
+router.post('/elicitor-enabled', (req, res) => {
+  const { enabled } = req.body;
+  const elicitor = require('../services/elicitor-adapter');
+  const newVal = elicitor.setElicitorEnabled(!!enabled);
+  res.json({ success: true, enabled: newVal });
+});
+
 module.exports = router;

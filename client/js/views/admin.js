@@ -6,6 +6,7 @@ async function loadAdminPage() {
     const models = await api('GET', '/models');
     const generators = await api('GET', '/generate');
     const defaultGen = await api('GET', '/admin/default-gen-model');
+    const elicitorState = await api('GET', '/admin/elicitor-enabled');
 
     document.getElementById('admin-content').innerHTML = `
       <h3>📊 系统状态</h3>
@@ -137,6 +138,25 @@ async function loadAdminPage() {
         <div class="form-actions">
           <button class="btn-primary" onclick="saveGenerator()">💾 保存</button>
           <button class="btn-back" onclick="resetGenForm()">取消</button>
+        </div>
+      </div>
+
+      <h3 style="margin-top:24px">⚙️ 高级设置</h3>
+      <p style="color:var(--text2);font-size:13px;margin:4px 0 8px">实验性 / 阶段性功能开关。DB 未配置时回退到环境变量 <code>ELICITOR_ENABLED</code></p>
+      <div class="config-row">
+        <div>
+          <strong>🎯 需求启发师 (Elicitor)</strong>
+          <div style="font-size:11px;margin-top:3px;color:var(--text2)">
+            启用后，clarify 阶段会走 elicit 路径（诊断 + 工具箱）；未启用走 fallback（旧行为）。
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <span id="elicitor-enabled-label" style="font-size:13px;color:${elicitorState.enabled ? 'var(--green)' : 'var(--text2)'}">${elicitorState.enabled ? '已启用' : '已禁用'}</span>
+          <label style="position:relative;display:inline-block;width:42px;height:22px;cursor:pointer">
+            <input type="checkbox" id="elicitor-enabled-toggle" ${elicitorState.enabled ? 'checked' : ''} onchange="setElicitorEnabled(this)" style="opacity:0;width:0;height:0">
+            <span style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:${elicitorState.enabled ? 'var(--green)' : 'var(--border)'};border-radius:22px;transition:0.2s"></span>
+            <span style="position:absolute;cursor:pointer;height:18px;width:18px;left:${elicitorState.enabled ? '22px' : '2px'};top:2px;background:#fff;border-radius:50%;transition:0.2s"></span>
+          </label>
         </div>
       </div>
 
@@ -373,4 +393,30 @@ async function setDefaultGenModel(modelId) {
     toast('默认思路模型已更新', 'success');
     loadAdminPage();
   } catch(e) { toast('设置失败: '+e.message, 'error'); }
+}
+
+// v0.4 收官后：实时切换 elicitor 软开关（无需重启）
+async function setElicitorEnabled(checkbox) {
+  const wantChecked = checkbox.checked;
+  const original = !wantChecked;
+  // 先视觉反馈（POST 成功后再定）
+  const label = document.getElementById('elicitor-enabled-label');
+  const track = checkbox.parentElement.querySelector('span');
+  const knob = checkbox.parentElement.querySelectorAll('span')[1];
+  if (label) label.textContent = wantChecked ? '已启用' : '已禁用';
+  if (label) label.style.color = wantChecked ? 'var(--green)' : 'var(--text2)';
+  if (track) track.style.background = wantChecked ? 'var(--green)' : 'var(--border)';
+  if (knob) knob.style.left = wantChecked ? '22px' : '2px';
+
+  try {
+    await api('POST', '/admin/elicitor-enabled', { enabled: wantChecked });
+    toast(wantChecked ? '需求启发师已启用' : '需求启发师已禁用', 'success');
+  } catch(e) {
+    // 失败回滚视觉
+    checkbox.checked = original;
+    if (label) { label.textContent = original ? '已启用' : '已禁用'; label.style.color = original ? 'var(--green)' : 'var(--text2)'; }
+    if (track) track.style.background = original ? 'var(--green)' : 'var(--border)';
+    if (knob) knob.style.left = original ? '22px' : '2px';
+    toast('设置失败: '+e.message, 'error');
+  }
 }
