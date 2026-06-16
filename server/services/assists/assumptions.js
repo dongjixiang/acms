@@ -97,6 +97,18 @@ async function runAssistJob(requirementId, opts = {}) {
   }
 }
 
+function markUsed(requirementId) {
+  const req = reqStore.getById(requirementId);
+  if (!req) return null;
+  let assist;
+  try { assist = JSON.parse(req.assist_assumptions || 'null'); } catch { assist = null; }
+  if (!assist) return null;
+  assist.used = true;
+  assist.used_at = new Date().toISOString();
+  reqStore.update(requirementId, { assist_assumptions: JSON.stringify(assist) });
+  return assist;
+}
+
 function getAssist(requirementId) {
   const req = reqStore.getById(requirementId);
   if (!req) return null;
@@ -107,5 +119,6 @@ module.exports = {
   name: '假设清单（提取隐藏假设）',
   field: 'assist_assumptions',
   runAssistJob,
+  markUsed,
   getAssist,
 };

@@ -17,3 +17,14 @@ server_err.txt
 
 # 探索性原型/草图 (不入仓库，保留本地工作)
 sketches/
+
+# 本地调试测试残留（不入仓库）
+start_gbk.bat
+test-chcp.bat
+test-set.bat
+test-set-in-utf8.bat
+test-start-clean.bat
+test_export_result.docx
+test_md2docx.js
+tmp_brief.json
+export_示例.docx

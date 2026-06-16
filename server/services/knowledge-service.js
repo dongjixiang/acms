@@ -335,6 +335,7 @@ function getStats(projectId, wikiVaultPath) {
 }
 
 module.exports = {
+  ensureKnowledgeBase,  // v0.9 新导出：外部模块也可复用（之前漏导）
   initKnowledgeBase,
   getKnowledgePath,
   readPage,

@@ -826,6 +826,10 @@ router.post('/:id/assist/:method/use', async (req, res, next) => {
       // v0.3.6：借鉴卡片 → 切换选中
       result = svc.togglePick(req.params.id, body.idx);
     }
+    else if (method === 'pains' || method === 'stakeholders' || method === 'risks' || method === 'assumptions') {
+      // v0.4：4 个新辅助手段 → 标记已阅/跳过
+      result = svc.markUsed(req.params.id);
+    }
     else return res.status(400).json({ error: 'METHOD_HAS_NO_USE_HANDLER' });
 
     res.json({ method, result });
@@ -1062,6 +1066,36 @@ router.get('/:id/description-history', (req, res, next) => {
       currentDescription: reqRec.description || '',
     });
   } catch (e) { next(e); }
+});
+
+// ============================================================
+// 导出 AI 回复为 Word 文档（v0.8）
+//   提取当前 AI brief 内容 → LLM 优化格式 → 生成 .docx 下载
+// ============================================================
+router.post('/:id/export-word', async (req, res, next) => {
+  try {
+    const wordExport = require('../services/word-export');
+    const { filePath, fileName } = await wordExport.exportBriefToWord(req.params.id, {
+      chatRound: req.body?.chatRound,
+      modelId: req.body?.modelId,
+    });
+    const fs = require('fs');
+    const stat = fs.statSync(filePath);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+    res.setHeader('Content-Length', stat.size);
+    const stream = fs.createReadStream(filePath);
+    stream.pipe(res);
+    stream.on('end', () => {
+      // 发送完后清理临时文件
+      try { fs.unlinkSync(filePath); } catch {}
+    });
+  } catch (e) {
+    if (e.message === 'BRIEF_NOT_READY') return res.status(400).json({ error: 'BRIEF_NOT_READY', message: 'AI 回复尚未就绪，请稍后再试' });
+    if (e.message === 'BRIEF_EMPTY') return res.status(400).json({ error: 'BRIEF_EMPTY', message: 'AI 回复内容为空，无法导出' });
+    if (e.message === 'REQ_NOT_FOUND') return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    next(e);
+  }
 });
 
 module.exports = router;

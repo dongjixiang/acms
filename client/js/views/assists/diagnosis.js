@@ -10,6 +10,8 @@
 
   function render(reqId, data) {
     if (!data || !data.issues) return '';
+    if (data.status === 'generating' || data.status === 'pending') return '<div class="insight-loading">⏳ 正在体检需求…</div>';
+    if (data.status === 'failed') return '<div class="insight-error">❌ 体检失败：' + escHtml(data.error || '') + '</div>';
     const issues = data.issues;
     if (issues.length === 0) {
       return `

@@ -1,0 +1,125 @@
+// ACMS · 聊天附件上传路由（v0.9）
+//   - POST /api/chat/upload                  （multer 接收，返回附件元数据 + 解析文本）
+//   - GET  /api/chat/upload/:id/raw          （返回文件原始内容，给前端 <img> 预览用）
+//   - POST /api/chat/upload/:id/promote      （把聊天附件沉淀到项目知识库，body 带 reqId）
+const express = require('express');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+const router = express.Router();
+const svc = require('../services/chat-upload');
+const knowledgeService = require('../services/knowledge-service');
+const projectStore = require('../stores/project-store');
+const reqStore = require('../stores/requirement-store');
+
+// 内存存储（不写临时目录，文件直接进我们的 saveAndParse）
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 },  // 20MB 上限
+});
+
+const ALLOWED_CATEGORIES = new Set(['image', 'pdf', 'docx', 'text', 'code', 'unknown']);
+
+// ── 上传 ──
+router.post('/upload', upload.single('file'), async (req, res, next) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'NO_FILE' });
+
+    // 大小校验（multer 已经限制，再二次确认）
+    if (req.file.size > 20 * 1024 * 1024) {
+      return res.status(413).json({ error: 'FILE_TOO_LARGE', maxMB: 20 });
+    }
+
+    const result = await svc.saveAndParse(req.file);
+    if (!ALLOWED_CATEGORIES.has(result.category)) {
+      return res.status(415).json({ error: 'UNSUPPORTED_TYPE', mime: result.mime });
+    }
+
+    // 不要把整段 extractedText 写进 console
+    console.log(`[chat-upload] ✅ ${result.id} | ${result.category} | ${result.name} (${(result.size/1024).toFixed(1)}KB)${result.extractedText ? ' | text=' + result.extractedText.length + 'ch' : ''}`);
+    res.json(result);
+  } catch (e) {
+    next(e);
+  }
+});
+
+// ── 静态文件读取（用于图片预览 <img src>） ──
+router.get('/upload/:id/raw', (req, res) => {
+  const found = svc.getFilePath(req.params.id);
+  if (!found) return res.status(404).json({ error: 'NOT_FOUND' });
+  res.setHeader('Content-Type', found.meta.mime || 'application/octet-stream');
+  res.setHeader('Cache-Control', 'private, max-age=3600');
+  res.sendFile(path.resolve(found.filePath));
+});
+
+// ── 沉淀聊天附件到知识库（v0.9） ──
+//   默认不入库；用户在附件卡上点 "📥 存入知识库" 按钮触发
+//   不移动文件，复制一份到项目知识库 raw/user-uploads/
+//   源标记写入 notes：[chat-attach] xxx，方便后续追溯
+router.post('/upload/:id/promote', async (req, res, next) => {
+  try {
+    const { reqId, notes } = req.body || {};
+    if (!reqId) return res.status(400).json({ error: 'REQ_ID_REQUIRED' });
+
+    // 1. 找附件
+    const found = svc.getFilePath(req.params.id);
+    if (!found) return res.status(404).json({ error: 'ATTACHMENT_NOT_FOUND' });
+    const meta = found.meta;
+
+    // 2. 找项目（req 记录里字段名是 project_id，兼容 projectId 旧字段）
+    const reqRec = reqStore.getById(reqId);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    const projectId = reqRec.project_id || reqRec.projectId;
+    if (!projectId) return res.status(400).json({ error: 'REQ_HAS_NO_PROJECT' });
+    const project = projectStore.getById(projectId);
+    if (!project) return res.status(404).json({ error: 'PROJECT_NOT_FOUND' });
+
+    // 3. 复制到知识库 raw/user-uploads/<timestamp>_<safe-name>
+    //    路径规则：<wiki_vault_path>/projects/<projectId>/raw/user-uploads/
+    //    复用 knowledgeService.ensureKnowledgeBase 拿到正确 kbPath（自动 init 目录）
+    const kbPath = knowledgeService.ensureKnowledgeBase(projectId, project.wiki_vault_path);
+    const uploadDir = path.join(kbPath, 'raw', 'user-uploads');
+    fs.mkdirSync(uploadDir, { recursive: true });
+
+    const timestamp = new Date().toISOString().split('T')[0];
+    const safeName = meta.name.replace(/[^a-zA-Z0-9._\-\u4e00-\u9fa5]/g, '_');
+    const kbFilename = `${timestamp}_${safeName}`;
+    const destPath = path.join(uploadDir, kbFilename);
+    fs.copyFileSync(found.filePath, destPath);
+
+    // 4. 写 file_records（addFileRecord 签名只接 projectId/filename/originalName/size/mimeType/notes）
+    const notesWithSource = `[chat-attach] ${notes || '来自聊天附件'} (req: ${reqId})`;
+    const record = knowledgeService.addFileRecord({
+      projectId,
+      filename: kbFilename,
+      originalName: meta.name,
+      size: meta.size,
+      mimeType: meta.mime,
+      notes: notesWithSource,
+    });
+
+    // 5. 异步触发扫描（fire-and-forget，不阻塞响应）
+    try {
+      const knowledgeScanner = require('../services/knowledge-scanner');
+      if (typeof knowledgeScanner.scanFile === 'function') {
+        knowledgeScanner.scanFile(projectId, project.wiki_vault_path, record.id).catch(err => {
+          console.warn(`[chat-upload.promote] 扫描失败（非阻塞）: ${err.message}`);
+        });
+      }
+    } catch (e) {
+      console.warn('[chat-upload.promote] 触发扫描失败（非阻塞）:', e.message);
+    }
+
+    console.log(`[chat-upload.promote] ✅ ${meta.id} → 知识库 ${projectId}/${kbFilename}`);
+    res.json({
+      ok: true,
+      fileRecordId: record.id,
+      kbFilename,
+      projectId,
+    });
+  } catch (e) {
+    next(e);
+  }
+});
+
+module.exports = router;

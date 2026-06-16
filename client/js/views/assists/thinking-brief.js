@@ -175,6 +175,18 @@
         <div id="assist-area-${reqId}" class="assist-area"></div>
       </div>
     `;
+    // v0.8：为每轮 AI 回复追加导出按钮（在 brief-block 底部）
+    if (opening || understanding || followup) {
+      const exportBtn = container.querySelector(`.brief-block .chat-export-btn[data-round="${round}"]`);
+      if (!exportBtn) {
+        const block = container.querySelector('.brief-block');
+        if (block) {
+          block.insertAdjacentHTML('beforeend',
+            `<div style="margin-top:12px;text-align:right"><button class="chat-export-btn" data-req-id="${escHtml(reqId)}" data-round="${round}" onclick="chatExportWord(this.dataset.reqId)" title="导出当前 AI 回复为 Word 文档">📄 导出 Word</button></div>`
+          );
+        }
+      }
+    }
   }
 
   // 暴露给全局

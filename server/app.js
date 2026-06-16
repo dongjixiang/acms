@@ -139,6 +139,7 @@ app.use('/api/clarify-improve', require('./routes/clarify-improve'));
 app.use('/api/improvements', require('./routes/improvements'));
 app.use('/api/knowledge', require('./routes/knowledge'));
 app.use('/api/generate', require('./routes/gen'));
+app.use('/api/chat', require('./routes/chat-upload'));  // v0.9 聊天附件上传
 
 // 404
 app.use((req, res) => res.status(404).json({ error: 'NOT_FOUND' }));

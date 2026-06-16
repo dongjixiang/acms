@@ -2882,13 +2882,25 @@ function renderIdeaPanel(req) {
           <div class="chat-typing"><span></span><span></span><span></span></div>
         </div>
         <div class="chat-stream-input">
-          <div class="chat-input-row">
-            <textarea id="chat-input-${req.id}" rows="1"
-              placeholder="回答 AI 的问题，或补充你的想法…"
-              oninput="chatAutoGrow(this)"></textarea>
-            <div class="chat-input-actions">
-              <button class="btn-small btn-primary" onclick="chatSend('${req.id}')">📤 发送</button>
-              <button class="btn-small" onclick="chatRegen('${req.id}')" title="换个问法">↻</button>
+          <div class="chat-attach-preview" id="chat-attach-preview-${req.id}" style="display:none"></div>
+          <div class="chat-input-area">
+            <div class="chat-input-popover" id="chat-input-popover-${req.id}" style="display:none">
+              <div class="popover-item" onclick="chatUploadTrigger('${req.id}','image')"><span class="pop-icon">🖼</span><span>图片</span><span class="pop-hint">PNG · JPG · WEBP</span></div>
+              <div class="popover-item" onclick="chatUploadTrigger('${req.id}','pdf')"><span class="pop-icon">📕</span><span>PDF</span><span class="pop-hint">.pdf</span></div>
+              <div class="popover-item" onclick="chatUploadTrigger('${req.id}','docx')"><span class="pop-icon">📘</span><span>Word</span><span class="pop-hint">.docx</span></div>
+              <div class="popover-item" onclick="chatUploadTrigger('${req.id}','text')"><span class="pop-icon">📄</span><span>文本 / 代码</span><span class="pop-hint">.md .txt .json</span></div>
+            </div>
+            <input type="file" id="chat-file-${req.id}" class="hidden" style="display:none"
+              onchange="chatUploadFile('${req.id}', this)">
+            <div class="chat-input-row">
+              <button class="btn-attach" id="chat-attach-btn-${req.id}" onclick="chatToggleAttachPopover('${req.id}')" title="添加附件">📎</button>
+              <textarea id="chat-input-${req.id}" rows="1"
+                placeholder="回答 AI 的问题，或补充你的想法…"
+                oninput="chatAutoGrow(this)"></textarea>
+              <div class="chat-input-actions">
+                <button class="btn-small btn-primary" onclick="chatSend('${req.id}')">📤 发送</button>
+                <button class="btn-small" onclick="chatRegen('${req.id}')" title="换个问法">↻</button>
+              </div>
             </div>
           </div>
           <div class="chat-extras">
@@ -3498,11 +3510,16 @@ function renderChatBubble(container, entry) {
         : '')
     : `<div>${isAI ? renderMarkdown(entry.text || '') : escHtml(entry.text || '')}</div>`;
 
+  // 用户气泡支持附件小芯片（v0.9）
+  const userAttachHtml = (!isAI && entry.attachmentsHtml)
+    ? `<div class="bubble-attachments">${entry.attachmentsHtml}</div>`
+    : '';
+
   const hasThinking = isAI && entry.understanding;
   const div = document.createElement('div');
   div.className = `chat-bubble ${isAI ? 'chat-bubble-ai' : 'chat-bubble-user'}`;
   div.dataset.chatRound = entry.chat_round || '';
-  div.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">${isAI ? '🤖 AI' : '💬 你'}</span><span class="chat-time">${(entry.at||'').substring(11,16)}</span>${hasThinking ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}</div>${bodyHtml}`;
+  div.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">${isAI ? '🤖 AI' : '💬 你'}</span><span class="chat-time">${(entry.at||'').substring(11,16)}</span>${hasThinking ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}${isAI ? '<span class="chat-export-btn" onclick="chatExportWord(this)" title="导出为 Word 文档">📄</span>' : ''}</div>${bodyHtml}${userAttachHtml}`;
   container.appendChild(div);
 }
 
@@ -3528,7 +3545,7 @@ function renderBriefBubble(container, brief) {
   const toggleAttr = hasThinking ? ` data-has-thinking="1"` : '';
   const div = document.createElement('div');
   div.className = 'chat-bubble chat-bubble-ai';
-  div.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">🤖 AI</span><span class="chat-time">第${brief.chat_round||1}轮</span>${hasThinking ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}</div><div class="chat-response"${toggleAttr}>${respHtml}</div>${thinkingHtml}${suggestHtml}`;
+  div.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">🤖 AI</span><span class="chat-time">第${brief.chat_round||1}轮</span>${hasThinking ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}<span class="chat-export-btn" onclick="chatExportWord(this)" data-req-id="${escHtml(container.id?.replace('chat-stream-msgs-', '') || '')}" title="导出为 Word 文档">📄</span></div><div class="chat-response"${toggleAttr}>${respHtml}</div>${thinkingHtml}${suggestHtml}`;
   container.appendChild(div);
 }
 
@@ -3675,18 +3692,220 @@ document.addEventListener('click', function(e) {
   }
 });
 
+// ── 聊天附件（v0.9） ──
+//   每个 reqId 一份待发附件队列；发送时清空
+window._chatAttachments = window._chatAttachments || {};
+
+const CHAT_UPLOAD_ACCEPT = {
+  image: 'image/png,image/jpeg,image/jpg,image/gif,image/webp',
+  pdf:   'application/pdf,.pdf',
+  docx:  'application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx',
+  text:  '.md,.txt,.log,.json,.yaml,.yml,.toml,.ini,.env,.js,.ts,.jsx,.tsx,.py,.java,.go,.rs,.rb,.php,.cs,.cpp,.c,.h,.hpp,.sh,.bash,.zsh,.ps1,.html,.css,.scss,.xml,.sql,.graphql,text/plain,text/markdown,application/json',
+};
+
+function chatToggleAttachPopover(reqId) {
+  const pop = document.getElementById(`chat-input-popover-${reqId}`);
+  if (!pop) return;
+  const willOpen = pop.style.display === 'none';
+  // 关闭其他打开的
+  document.querySelectorAll('.chat-input-popover').forEach(el => { if (el !== pop) el.style.display = 'none'; });
+  pop.style.display = willOpen ? 'block' : 'none';
+}
+
+function chatUploadTrigger(reqId, category) {
+  const inp = document.getElementById(`chat-file-${reqId}`);
+  if (!inp) return;
+  inp.setAttribute('accept', CHAT_UPLOAD_ACCEPT[category] || '*/*');
+  inp.dataset.category = category;
+  inp.click();
+}
+
+async function chatUploadFile(reqId, input) {
+  const file = input.files?.[0];
+  if (!file) return;
+  const category = input.dataset.category || 'unknown';
+
+  // 客户端大小兜底（与服务端一致）
+  if (file.size > 20 * 1024 * 1024) {
+    toast(`文件过大（${(file.size/1024/1024).toFixed(1)}MB），上限 20MB`, 'error');
+    input.value = '';
+    return;
+  }
+
+  // 显示"上传中"
+  const tmpId = '_uploading_' + Date.now();
+  const isVision = category === 'image';
+  const waitLabel = isVision ? '🔍 AI 识别中...' : '⏳ 上传中...';
+  chatRenderAttachPreview(reqId, [{ id: tmpId, name: file.name, size: file.size, mime: file.type, category, icon: '⏳', uploading: true, waitLabel }]);
+
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('category', category);
+    // 图片/PDF 解析可能较慢，给足超时（vision 最坏 30s，PDF 几秒）
+    const ctrl = new AbortController();
+    const timeoutMs = isVision ? 40000 : 20000;
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+
+    const r = await fetch('/api/chat/upload', {
+      method: 'POST',
+      headers: { 'X-API-Key': 'dev-key-001' },
+      body: fd,
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    const data = await r.json();
+    if (!r.ok) {
+      toast('上传失败: ' + (data.error || r.statusText), 'error');
+      chatRemoveAttachment(reqId, tmpId);
+      return;
+    }
+    // 替换占位
+    const arr = (window._chatAttachments[reqId] || []).filter(a => a.id !== tmpId);
+    arr.push(data);
+    window._chatAttachments[reqId] = arr;
+    chatRenderAttachPreview(reqId, arr);
+    // 关闭 popover
+    const pop = document.getElementById(`chat-input-popover-${reqId}`);
+    if (pop) pop.style.display = 'none';
+    // 解析失败的友好提示
+    if (data.parseNote) {
+      toast('⚠️ ' + data.parseNote, 'warning');
+    } else if (data.extractedText) {
+      // 解析成功的提示（轻量，避免刷屏）
+      const summary = data.extractedText.slice(0, 30).replace(/\n/g, ' ');
+      console.log(`[chat-upload] ✅ ${data.name} 解析: ${data.extractedText.length} 字`);
+    }
+  } catch (e) {
+    const msg = e.name === 'AbortError' ? '请求超时（解析太慢）' : '上传异常: ' + e.message;
+    toast(msg, 'error');
+    chatRemoveAttachment(reqId, tmpId);
+  } finally {
+    input.value = '';
+  }
+}
+
+function chatRemoveAttachment(reqId, attachId) {
+  const arr = (window._chatAttachments[reqId] || []).filter(a => a.id !== attachId);
+  window._chatAttachments[reqId] = arr;
+  chatRenderAttachPreview(reqId, arr);
+}
+
+// 把聊天附件沉淀到项目知识库（v0.9）
+//   默认不入库；用户主动点 📥 触发
+//   成功后按钮变 ✓ 并禁用
+async function chatPromoteAttachment(reqId, uploadId, btn) {
+  const arr = window._chatAttachments[reqId] || [];
+  const att = arr.find(a => a.id === uploadId);
+  if (!att || att.promoted) return;
+  // 防双击
+  if (btn) { btn.style.pointerEvents = 'none'; btn.textContent = '⏳'; }
+  try {
+    const r = await fetch(`/api/chat/upload/${uploadId}/promote`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+      body: JSON.stringify({ reqId }),
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      toast('存入失败: ' + (data.error || r.statusText), 'error');
+      if (btn) { btn.style.pointerEvents = ''; btn.textContent = '📥'; }
+      return;
+    }
+    // 标记已沉淀
+    att.promoted = true;
+    if (btn) { btn.textContent = '✓'; btn.title = '已存入知识库'; btn.classList.add('done'); }
+    toast('✓ 已存入知识库', 'success');
+  } catch (e) {
+    toast('存入异常: ' + e.message, 'error');
+    if (btn) { btn.style.pointerEvents = ''; btn.textContent = '📥'; }
+  }
+}
+
+function chatRenderAttachPreview(reqId, arr) {
+  const box = document.getElementById(`chat-attach-preview-${reqId}`);
+  if (!box) return;
+  if (!arr || !arr.length) {
+    box.style.display = 'none';
+    box.innerHTML = '';
+    return;
+  }
+  box.style.display = 'flex';
+  box.innerHTML = arr.map(a => {
+    const sizeStr = a.size < 1024 ? `${a.size}B` : a.size < 1024*1024 ? `${(a.size/1024).toFixed(1)}KB` : `${(a.size/1024/1024).toFixed(2)}MB`;
+    const thumb = a.category === 'image' && a.url
+      ? `<img src="${a.url}" alt="">`
+      : a.icon;
+    const cls = a.uploading ? 'attach-card uploading' : 'attach-card';
+    return `
+      <div class="${cls}" data-id="${a.id}">
+        <div class="attach-thumb">${thumb}</div>
+        <div class="attach-info">
+          <div class="attach-name" title="${escHtml(a.name)}">${escHtml(a.name)}</div>
+          <div class="attach-meta">${a.uploading ? (a.waitLabel || '⏳ 上传中...') : sizeStr + (a.extractedText ? ' · ' + a.extractedText.length + '字' : (a.parseNote ? ' · ⚠️ ' + a.parseNote : ''))}</div>
+        </div>
+        ${a.uploading ? '' : `<span class="attach-promote${a.promoted ? ' done' : ''}" onclick="chatPromoteAttachment('${reqId}','${a.id}', this)" title="${a.promoted ? '已存入知识库' : '存入知识库'}">${a.promoted ? '✓' : '📥'}</span>`}
+        <span class="attach-x" onclick="chatRemoveAttachment('${reqId}','${a.id}')" title="移除">✕</span>
+      </div>
+    `;
+  }).join('');
+  // 高亮 📎 按钮
+  const btn = document.getElementById(`chat-attach-btn-${reqId}`);
+  if (btn) btn.classList.toggle('has-attach', arr.length > 0);
+}
+
+// 构造把附件内容拼到消息的文本（v1 简化：直接拼正文，不做引用块）
+function chatBuildSupplementText(reqId, userText) {
+  const arr = window._chatAttachments[reqId] || [];
+  const parts = [];
+  if (userText) parts.push(userText);
+  if (arr.length) {
+    parts.push('\n\n---\n📎 附件内容：\n');
+    for (const a of arr) {
+      if (a.extractedText) {
+        parts.push(`\n[${a.name}]\n${a.extractedText}\n`);
+      } else if (a.category === 'image') {
+        parts.push(`\n[图片：${a.name}，${a.size}B]\n`);
+      } else if (a.category === 'pdf') {
+        parts.push(`\n[PDF：${a.name}，${a.size}B — v1 未解析正文]\n`);
+      } else {
+        parts.push(`\n[附件：${a.name}]\n`);
+      }
+    }
+  }
+  return parts.join('');
+}
+
 async function chatSend(reqId) {
   const input = document.getElementById(`chat-input-${reqId}`);
   const text = input?.value?.trim();
-  if (!text) { toast('先写点想法', 'warning'); return; }
+  const attachments = window._chatAttachments[reqId] || [];
+  if (!text && !attachments.length) { toast('先写点想法或添加附件', 'warning'); return; }
+  const finalText = chatBuildSupplementText(reqId, text);
+
   const c = document.getElementById(`chat-stream-msgs-${reqId}`);
   if (c) {
-    renderChatBubble(c, { role:'user', text, at:new Date().toISOString() });
-    c?.querySelectorAll('.chat-assist-layer').forEach(el=>el.remove());
+    // 用户气泡显示原文 + 附件小芯片
+    const userBubbleAttachments = attachments.map(a => {
+      const icon = a.icon || '📎';
+      return `<span class="attach-chip">${icon} ${escHtml(a.name)}</span>`;
+    }).join('');
+    const userBubbleText = text || (attachments.length ? '📎 ' + attachments.length + ' 个附件' : '');
+    renderChatBubble(c, {
+      role: 'user',
+      text: userBubbleText,
+      attachmentsHtml: userBubbleAttachments,
+      at: new Date().toISOString(),
+    });
+    c?.querySelectorAll('.chat-assist-layer').forEach(el => el.remove());
     chatScrollToBottom(c);
   }
-  input.value = ''; input.style.height = 'auto';
-  chatSendSupplement(reqId, text, 'idea_supplement');
+  if (input) { input.value = ''; input.style.height = 'auto'; }
+  // 清空附件
+  window._chatAttachments[reqId] = [];
+  chatRenderAttachPreview(reqId, []);
+
+  chatSendSupplement(reqId, finalText, 'idea_supplement');
 }
 
 /** 连接 SSE 流式思路简报 */
@@ -3729,7 +3948,7 @@ function connectStreamingBrief(reqId, container) {
           ? `<div class="chat-assist-suggest" onclick="chatAssist('${reqId}','${data.brief.suggested_assist.method}')">💡 ${escHtml(data.brief.suggested_assist.reason || '试试' + data.brief.suggested_assist.method)} →</div>`
           : '';
         streamingBubble.className = 'chat-bubble chat-bubble-ai';
-        streamingBubble.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">🤖 AI</span><span class="chat-time">第${data.brief.chat_round||1}轮</span>${data.brief.ai_understanding ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}</div><div class="chat-response">${respHtml}</div>${thinkingHtml}${suggestHtml}`;
+        streamingBubble.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">🤖 AI</span><span class="chat-time">第${data.brief.chat_round||1}轮</span>${data.brief.ai_understanding ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}<span class="chat-export-btn" onclick="chatExportWord(this)" data-req-id="${escHtml(reqId)}" title="导出为 Word 文档">📄</span></div><div class="chat-response">${respHtml}</div>${thinkingHtml}${suggestHtml}`;
         delete streamingBubble.dataset.streaming;
         chatScrollToBottom(container);
         // 只保留 suggested_assist（气泡底部的 💡 链接），不自动触发
@@ -4004,7 +4223,8 @@ function chatScrollToBottom(container) { if (container) container.scrollTop = co
 /** 发送 supplement + 触发 SSE 流式（被 chatPickCard / chatSend 共用） */
 async function chatSendSupplement(reqId, supplement, source) {
   try {
-    const r = await api('POST', `/requirements/${reqId}/supplement`, { supplement, supplementSource: source, autoRegenBrief: false });
+    // v0.9 上传附件后自动重生 brief，让用户看到 brief 跟着附件更新
+    const r = await api('POST', `/requirements/${reqId}/supplement`, { supplement, supplementSource: source, autoRegenBrief: true });
     if (r.error) { toast('补充失败: '+r.error, 'error'); return; }
     if (r.supplementHistoryCount) {
       const state = _chatState[reqId];
@@ -4013,6 +4233,60 @@ async function chatSendSupplement(reqId, supplement, source) {
     const c = document.getElementById(`chat-stream-msgs-${reqId}`);
     connectStreamingBrief(reqId, c);
   } catch(e) { toast('补充失败: '+e.message, 'error'); }
+}
+
+/** 导出当前 AI 回复为 Word 文档（v0.8） */
+async function chatExportWord(el) {
+  let reqId;
+  if (typeof el === 'string') {
+    reqId = el;
+  } else if (el?.dataset?.reqId) {
+    reqId = el.dataset.reqId;
+  } else {
+    // 兜底：从最近的 chat-stream-msgs 容器取
+    const container = el?.closest('[id^="chat-stream-msgs-"]');
+    reqId = container?.id?.replace('chat-stream-msgs-', '') || '';
+  }
+  if (!reqId) { toast('无法确定需求 ID', 'error'); return; }
+
+  const btn = el?.tagName === 'BUTTON' || el?.tagName === 'SPAN' ? el : null;
+  if (btn) { btn.textContent = '⏳'; btn.style.pointerEvents = 'none'; }
+
+  try {
+    const API_KEY = 'dev-key-001';
+    const resp = await fetch(`/api/requirements/${reqId}/export-word`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
+      body: '{}',
+    });
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      toast('导出失败: ' + (errData.message || errData.error || resp.statusText), 'error');
+      return;
+    }
+
+    // 触发下载
+    const disposition = resp.headers.get('content-disposition') || '';
+    const match = disposition.match(/filename\*?=(?:UTF-8'')?([^;\s]+)/i);
+    let fileName = match ? decodeURIComponent(match[1]) : `AI回复_${reqId}.docx`;
+    if (!fileName.endsWith('.docx')) fileName += '.docx';
+
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast('✅ Word 文档已导出', 'success');
+  } catch(e) {
+    toast('导出失败: '+e.message, 'error');
+    console.warn('[chatExportWord] error:', e);
+  } finally {
+    if (btn) { btn.textContent = '📄'; btn.style.pointerEvents = ''; }
+  }
 }
 
 /** 切换澄清面板的对话追溯（v0.3.6） */

@@ -482,6 +482,7 @@ for await (const event of callLLMStream(model.id, messages, { temperature: 0.7, 
         }
         const brief = {
           status: 'done', opening: typeof parsed.opening === 'string' ? parsed.opening : '',
+          ai_understanding: typeof parsed.ai_understanding === 'string' ? parsed.ai_understanding : '',
           followup_question: typeof parsed.followup_question === 'string' ? parsed.followup_question : '',
           diagnosis, dialog: null, chat_round: newRound,
           generated_at: new Date().toISOString(), model: model.id, error: null,
