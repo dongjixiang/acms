@@ -2895,8 +2895,9 @@ function renderIdeaPanel(req) {
             <div class="chat-input-row">
               <button class="btn-attach" id="chat-attach-btn-${req.id}" onclick="chatToggleAttachPopover('${req.id}')" title="添加附件">📎</button>
               <textarea id="chat-input-${req.id}" rows="1"
-                placeholder="回答 AI 的问题，或补充你的想法…"
-                oninput="chatAutoGrow(this)"></textarea>
+                placeholder="回答 AI 的问题，或补充你的想法…（可直接 Ctrl+V 粘贴截图）"
+                oninput="chatAutoGrow(this)"
+                onpaste="chatHandlePaste('${req.id}', event)"></textarea>
               <div class="chat-input-actions">
                 <button class="btn-small btn-primary" onclick="chatSend('${req.id}')">📤 发送</button>
                 <button class="btn-small" onclick="chatRegen('${req.id}')" title="换个问法">↻</button>
@@ -3720,15 +3721,14 @@ function chatUploadTrigger(reqId, category) {
   inp.click();
 }
 
-async function chatUploadFile(reqId, input) {
-  const file = input.files?.[0];
+// 共享内部函数：上传单个 File 对象（v0.10 文件选择 + 剪贴板粘贴都走这里）
+//   抽出来后，chatUploadFile 只负责从 input 取文件并清空，chatHandlePaste 只负责从剪贴板取文件
+async function chatUploadRawFile(reqId, file, category = 'unknown') {
   if (!file) return;
-  const category = input.dataset.category || 'unknown';
 
   // 客户端大小兜底（与服务端一致）
   if (file.size > 20 * 1024 * 1024) {
     toast(`文件过大（${(file.size/1024/1024).toFixed(1)}MB），上限 20MB`, 'error');
-    input.value = '';
     return;
   }
 
@@ -3780,8 +3780,53 @@ async function chatUploadFile(reqId, input) {
     const msg = e.name === 'AbortError' ? '请求超时（解析太慢）' : '上传异常: ' + e.message;
     toast(msg, 'error');
     chatRemoveAttachment(reqId, tmpId);
-  } finally {
-    input.value = '';
+  }
+}
+
+// 从文件 input 选择上传（v0.9 📎 → popover → 选文件走这里）
+async function chatUploadFile(reqId, input) {
+  const file = input.files?.[0];
+  if (!file) return;
+  const category = input.dataset.category || 'unknown';
+  await chatUploadRawFile(reqId, file, category);
+  input.value = '';  // 重置 input，允许重复选同一文件
+}
+
+// 剪贴板粘贴上传（v0.10 截图直接 Ctrl+V 走这里）
+//   只在 textarea 上挂监听，避免污染全局；只拦截 image 类型，纯文本粘贴照常工作
+function chatHandlePaste(reqId, ev) {
+  if (!ev.clipboardData) return;
+  const items = ev.clipboardData.items;
+  if (!items || items.length === 0) return;
+
+  // 收集所有 image 类型文件（一次粘贴可能含多张）
+  const files = [];
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    if (it.kind === 'file' && it.type && it.type.startsWith('image/')) {
+      const f = it.getAsFile();
+      if (f) files.push(f);
+    }
+  }
+  if (files.length === 0) return;  // 没有图片 → 让浏览器按默认行为处理（粘贴文本）
+
+  // 阻止图片二进制 / 文件名塞进 textarea
+  ev.preventDefault();
+
+  // 剪贴板文件没 name，给一个时间戳命名方便追溯
+  const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+  files.forEach((f, idx) => {
+    if (!f.name || f.name === 'image.png') {
+      const ext = (f.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+      f.name = files.length > 1
+        ? `screenshot-${ts}-${idx + 1}.${ext}`
+        : `screenshot-${ts}.${ext}`;
+    }
+    chatUploadRawFile(reqId, f, 'image');
+  });
+
+  if (files.length > 1) {
+    toast(`✓ 已粘贴 ${files.length} 张图片`, 'success');
   }
 }
 
