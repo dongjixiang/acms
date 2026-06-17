@@ -19,8 +19,8 @@
         </div>
         <div class="dt-branch-desc">${escHtml(t.desc || '')}</div>
         ${t.examples ? (() => {
-          // 拆产品名 (按 , 分，trim) — 每个变链接，点开走 loading 卡片模式
-          const products = (t.examples || '').split(/[,，]/).map(s => s.trim()).filter(Boolean);
+          // 拆产品名 (按 ,，、 分，trim) — 每个变链接，点开走 loading 卡片模式
+          const products = (t.examples || '').split(/[,，、]/).map(s => s.trim()).filter(Boolean);
           const links = products.map((p, i, arr) => {
             const safeP = String(p).replace(/'/g, '&#39;');
             return `<a class="dt-analogy-link" data-product="${escHtml(p)}" onclick="dtOpenReference('${reqId}', '${safeP}', this)">${escHtml(p)}</a>${i < arr.length - 1 ? ', ' : ''}`;
