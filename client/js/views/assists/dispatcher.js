@@ -97,7 +97,9 @@
   //     - 其他轮的（不管 used 没用过）→ 一律隐藏
     const brief = window.ACMSThinkingBrief?.getBrief?.(reqId);
     const currentRound = brief?.chat_round || 1;
-    const order = ['diagnosis', 'reference', 'scenarios', 'tradeoff', 'arch', 'decision_tree', 'visual', 'competitive', 'pains', 'stakeholders', 'risks', 'assumptions'];
+    // v0.13 修复：动态从 ACMSAssists registry 读所有 method（避免硬编码漏注册）
+    //   加新 method 不用再改 dispatcher.js — 只要 register('new_method', ...) 就自动接入
+    const order = (window.ACMSAssists && window.ACMSAssists.list) ? window.ACMSAssists.list() : [];
     const html = order
       .filter(m => {
         const d = data[m];

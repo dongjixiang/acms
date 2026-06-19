@@ -24,6 +24,9 @@ class RequirementStore {
       coverage_report: '{}',
       aggregate_coverage_report: '{}',
       change_log: changeLog || '[]',
+      // v0.13：方法论驱动的"整理"功能 — 存储 5 要素结构化数据
+      structured_requirements: 'null',
+      structured_requirements_history: '[]',
       // 30 文档「角色感知」：提交需求时的用户角色（PM/技术/设计/...），影响澄清 prompt + 列表展示
       user_role: userRole || '',
       created_at: now, updated_at: now, completed_at: '',

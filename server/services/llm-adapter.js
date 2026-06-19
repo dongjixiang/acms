@@ -100,8 +100,8 @@ async function callOpenAI(model, messages, opts, apiKey) {
   };
 
   // jsonMode: 只对明确支持的 provider 发送 API 级 response_format
-  // OpenAI、Groq、Together 等支持；DeepSeek、MiniMax 等不支持或表现不稳定
-  const supportsJsonResponseFormat = !isMiniMax && !isDeepSeek;
+  // OpenAI、DeepSeek、Together 等支持；MiniMax 不支持或表现不稳定
+  const supportsJsonResponseFormat = !isMiniMax;
   if (opts.jsonMode && supportsJsonResponseFormat) {
     body.response_format = { type: 'json_object' };
   }

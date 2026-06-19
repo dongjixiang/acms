@@ -162,7 +162,7 @@ async function loadAdminPage() {
 
       <h3 style="margin-top:24px">📋 最近事件</h3>
       <div style="max-height:200px;overflow-y:auto;font-size:12px;background:var(--bg2);border-radius:8px;padding:12px">
-        ${events.map(e => `<div class="log-entry"><strong>${e.type}</strong> ${e.actor_name||''} → ${e.target_type||''}/${e.target_id||''} <span style="color:var(--text2)">${new Date(e.timestamp).toLocaleString('zh-CN')}</span></div>`).join('')}
+        ${events.map(e => `<div class="log-entry"><strong>${e.type}</strong> ${e.actor_name||''} → ${e.target_type||''}/${e.target_id||''} <span style="color:var(--text2)">${new Date(e.timestamp).toLocaleString('zh-CN', {hour12:false})}</span></div>`).join('')}
       </div>
 
       <h3 style="margin-top:24px">🛠 数据管理</h3>

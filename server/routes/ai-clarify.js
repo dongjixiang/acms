@@ -2,6 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const aiClarify = require('../services/ai-clarify-service');
+const aiReplyDraft = require('../services/ai-reply-draft-service');
 const domainDetect = require('../services/domain-detect');
 const sketchGenerator = require('../services/prototype-sketch-generator');
 
@@ -18,6 +19,16 @@ router.post('/requirements/:id/clarify-ai', async (req, res, next) => {
       effectiveRole = r?.user_role || '';
     }
     const result = await aiClarify.clarify(req.params.id, modelId, message, history, effectiveRole);
+    res.json(result);
+  } catch (e) { next(e); }
+});
+
+// AI 代答草稿（v0.13 B5）— 基于上下文让 AI 模拟用户角度起草回复
+// modelId 可选，缺省时 server 自动选 admin 设置的默认大模型（v0.13 B5 fix）
+router.post('/requirements/:id/auto-draft', async (req, res, next) => {
+  try {
+    const { modelId, history } = req.body || {};
+    const result = await aiReplyDraft.generateDraft(req.params.id, modelId || '', history || []);
     res.json(result);
   } catch (e) { next(e); }
 });

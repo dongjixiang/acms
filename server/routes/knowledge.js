@@ -13,6 +13,8 @@ const knowledgeMatcher = require('../services/knowledge-matcher');
 const upload = multer({
   dest: path.join(__dirname, '..', '..', 'data', 'upload-tmp'),
   limits: { fileSize: 100 * 1024 * 1024 }, // 100MB max
+  // v0.11 修复：中文文件名乱码（multer 2.x 默认 latin1 解码 filename）
+  defParamCharset: 'utf8',
 });
 
 // 确保临时目录存在

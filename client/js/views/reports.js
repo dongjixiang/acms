@@ -119,7 +119,7 @@ function typeLabel(type) {
 
 function escHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function escAttr(s) { return (s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-function fmtDate(d) { if(!d) return ''; return new Date(d).toLocaleDateString('zh-CN'); }
+function fmtDate(d) { if(!d) return ''; return new Date(d).toLocaleDateString('zh-CN'); }  // zh-CN OK; date 本身无时区歧义
 
 function wrapForIframe(html) {
   return '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>' +

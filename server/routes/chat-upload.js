@@ -13,31 +13,43 @@ const projectStore = require('../stores/project-store');
 const reqStore = require('../stores/requirement-store');
 
 // 内存存储（不写临时目录，文件直接进我们的 saveAndParse）
+// v0.12：支持多文件同时上传（maxCount=10），单文件仍 20MB 上限
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 20 * 1024 * 1024 },  // 20MB 上限
+  limits: {
+    fileSize: 20 * 1024 * 1024,  // 单文件 20MB 上限
+    files: 10,                     // 最多 10 个文件（multer.array 的二次保护）
+  },
+  // v0.11 修复：中文文件名乱码（multer 2.x 默认 latin1，会把 UTF-8 字节当 latin1 解码）
+  defParamCharset: 'utf8',
 });
 
 const ALLOWED_CATEGORIES = new Set(['image', 'pdf', 'docx', 'text', 'code', 'unknown']);
 
 // ── 上传 ──
-router.post('/upload', upload.single('file'), async (req, res, next) => {
+router.post('/upload', upload.array('file', 10), async (req, res, next) => {
   try {
-    if (!req.file) return res.status(400).json({ error: 'NO_FILE' });
+    // v0.12 多文件上传：req.files 是数组（multer.array），每个元素是单文件
+    const files = req.files || [];
+    if (files.length === 0) return res.status(400).json({ error: 'NO_FILE' });
 
-    // 大小校验（multer 已经限制，再二次确认）
-    if (req.file.size > 20 * 1024 * 1024) {
-      return res.status(413).json({ error: 'FILE_TOO_LARGE', maxMB: 20 });
+    // 串行处理每个文件（避免服务器瞬时压力，vision 解析慢）
+    const results = [];
+    for (const file of files) {
+      // 大小校验（multer 已经限制，再二次确认）
+      if (file.size > 20 * 1024 * 1024) {
+        return res.status(413).json({ error: 'FILE_TOO_LARGE', maxMB: 20, name: file.originalname });
+      }
+      const result = await svc.saveAndParse(file);
+      if (!ALLOWED_CATEGORIES.has(result.category)) {
+        return res.status(415).json({ error: 'UNSUPPORTED_TYPE', mime: result.mime, name: file.originalname });
+      }
+      results.push(result);
+      console.log(`[chat-upload] ✅ ${result.id} | ${result.category} | ${result.name} (${(result.size/1024).toFixed(1)}KB)${result.extractedText ? ' | text=' + result.extractedText.length + 'ch' : ''}`);
     }
 
-    const result = await svc.saveAndParse(req.file);
-    if (!ALLOWED_CATEGORIES.has(result.category)) {
-      return res.status(415).json({ error: 'UNSUPPORTED_TYPE', mime: result.mime });
-    }
-
-    // 不要把整段 extractedText 写进 console
-    console.log(`[chat-upload] ✅ ${result.id} | ${result.category} | ${result.name} (${(result.size/1024).toFixed(1)}KB)${result.extractedText ? ' | text=' + result.extractedText.length + 'ch' : ''}`);
-    res.json(result);
+    // 单文件保持返回单对象（向后兼容），多文件返回数组
+    res.json(files.length === 1 ? results[0] : { files: results, count: results.length });
   } catch (e) {
     next(e);
   }

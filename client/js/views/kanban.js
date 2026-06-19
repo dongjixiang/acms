@@ -144,7 +144,7 @@ async function openTask(taskId) {
       '<h3>📝 任务描述</h3>' +
       '<div class="md-content">' + renderMarkdown(t.description || '无详细描述') + '</div>' +
       (Object.keys(skills).length ? '<h3>🎯 技能</h3><div class="skills">' + Object.entries(skills).map(function(e) { return '<span class="skill-tag">' + e[0] + ':' + e[1] + '</span>'; }).join('') + '</div>' : '') +
-      '<h3>📝 日志</h3><div>' + (log.length ? log.map(function(l) { return '<div class="log-entry">' + new Date(l.time).toLocaleString('zh-CN') + ' — ' + l.action + ': ' + escHtml(l.note || '') + '</div>'; }).join('') : '<div class="empty">暂无</div>') + '</div>' +
+      '<h3>📝 日志</h3><div>' + (log.length ? log.map(function(l) { return '<div class="log-entry">' + new Date(l.time).toLocaleString('zh-CN', {hour12:false}) + ' — ' + l.action + ': ' + escHtml(l.note || '') + '</div>'; }).join('') : '<div class="empty">暂无</div>') + '</div>' +
       (subs.length ? '<h3>📦 提交</h3>' + subs.map(function(s) { return '<div class="log-entry">' + fmtDate(s.submittedAt) + ' — ' + (s.submittedBy || '') + ': ' + escHtml(s.notes || '') + '</div>'; }).join('') : '') +
       // 生成任务展示媒体预览
       ((t.type === 'image-gen' || t.type === 'audio-gen') && t.status === 'done' ? renderGenPreview(t) : '') +

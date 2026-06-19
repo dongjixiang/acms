@@ -2898,9 +2898,33 @@ function renderIdeaPanel(req) {
                 placeholder="回答 AI 的问题，或补充你的想法…（可直接 Ctrl+V 粘贴截图）"
                 oninput="chatAutoGrow(this)"
                 onpaste="chatHandlePaste('${req.id}', event)"></textarea>
-              <div class="chat-input-actions">
+<div class="chat-input-actions">
                 <button class="btn-small btn-primary" onclick="chatSend('${req.id}')">📤 发送</button>
-                <button class="btn-small" onclick="chatRegen('${req.id}')" title="换个问法">↻</button>
+                <button class="btn-ai-mode btn-ai-off" id="ai-mode-btn-${req.id}" onclick="showAiPopover(event,'${req.id}')" title="AI 代回">↻<span class="btn-ai-state-dot"></span></button>
+                <div class="ai-reply-popover" id="ai-popover-${req.id}" data-req-id="${req.id}">
+                  <div class="ai-reply-popover-title">AI 回复模式</div>
+                  <div class="ai-reply-popover-option" data-mode="off" onclick="selectAiMode('off','${req.id}')">
+                    <div class="ai-reply-popover-icon ai-reply-popover-icon-off">↻</div>
+                    <div class="ai-reply-popover-content">
+                      <div class="ai-reply-popover-label">关闭</div>
+                      <div class="ai-reply-popover-desc">让 AI 重新问下一轮（原 ↻ 行为）</div>
+                    </div>
+                  </div>
+                  <div class="ai-reply-popover-option" data-mode="draft" onclick="selectAiMode('draft','${req.id}')">
+                    <div class="ai-reply-popover-icon ai-reply-popover-icon-draft">✏️</div>
+                    <div class="ai-reply-popover-content">
+                      <div class="ai-reply-popover-label">AI 草稿</div>
+                      <div class="ai-reply-popover-desc">AI 帮你起草回复填到输入框，可修改后再发</div>
+                    </div>
+                  </div>
+                  <div class="ai-reply-popover-option" data-mode="auto" onclick="selectAiMode('auto','${req.id}')">
+                    <div class="ai-reply-popover-icon ai-reply-popover-icon-auto">🚀</div>
+                    <div class="ai-reply-popover-content">
+                      <div class="ai-reply-popover-label">AI 自动</div>
+                      <div class="ai-reply-popover-desc">AI 替你直接回复并发送（需二次确认）</div>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -2909,11 +2933,8 @@ function renderIdeaPanel(req) {
             <button onclick="chatAssist('${req.id}', 'scenarios')">👥 场景</button>
             <button onclick="chatAssist('${req.id}', 'competitive')">🏢 竞品</button>
             <button onclick="chatAssist('${req.id}', 'reference')">🏛 借鉴</button>
-            <button onclick="chatAssist('${req.id}', 'pains')">🔥 痛点</button>
-            <button onclick="chatAssist('${req.id}', 'stakeholders')">👥 干系人</button>
-            <button onclick="chatAssist('${req.id}', 'risks')">⚠️ 风险</button>
-            <button onclick="chatAssist('${req.id}', 'assumptions')">📌 假设</button>
             <button onclick="chatRewrite('${req.id}')">✨ 整理</button>
+            <button onclick="chatAssist('${req.id}', 'health_check')" style="border-color:var(--accent);color:var(--accent)">🏥 体检</button>
             <button onclick="chatDone('${req.id}')" style="border-color:rgba(255,68,68,0.2);color:#f55">✅ 够了</button>
           </div>
         </div>
@@ -3454,13 +3475,29 @@ function startChatPolling(reqId) {
         chatScrollToBottom(container);
       }
 
-      // 增量：检查 brief 更新（SSE 完成或轮询到 done）
+// 增量：检查 brief 更新（SSE 完成或轮询到 done）
       const briefResp = await api('GET', `/requirements/${reqId}/thinking-brief`);
       const brief = briefResp.thinkingBrief;
       const typing = container.querySelector('.chat-typing');
       const streamingBubble = container.querySelector('.chat-streaming-bubble');
       if (brief && brief.status === 'done' && !streamingBubble) {
         const briefRound = brief.chat_round || 0;
+
+        // v0.13 B5 fix: auto 态检查放在 state.briefRound 更新之前
+        //   否则 SSE done 已先更新 state.briefRound，polling 条件 `briefRound > state.briefRound` 会被跳过
+        if (_aiGetState(reqId) === 'auto'
+            && briefRound > (window._aiAutoLastRound[reqId] || 0)
+            && !_aiAutoCountdowns[reqId]) {
+          const input = document.getElementById(`chat-input-${reqId}`);
+          const isInputEmpty = !input?.value?.trim();
+          if (isInputEmpty) {
+            console.log(`[ai-auto] ${reqId} polling 触发倒计时（briefRound=${briefRound}）`);
+            _aiStartAutoCountdown(reqId, briefRound);
+          } else {
+            _aiUpdateAutoIndicator(reqId, -1, window._aiAutoSentCount[reqId] || 0);
+          }
+        }
+
         if (briefRound > state.briefRound) {
           if (typing) typing.remove();
           renderBriefBubble(container, brief);
@@ -3566,14 +3603,14 @@ function renderAssistLayer(container, reqId, assists) {
   // 跟踪已渲染的 assist 数据指纹，避免不必要重建（v0.3.6）
   if (!window._assistRenderCache) window._assistRenderCache = {};
 
-  for (const method of ['diagnosis', 'reference', 'scenarios', 'tradeoff', 'arch', 'decision_tree', 'visual', 'competitive', 'pains', 'stakeholders', 'risks', 'assumptions']) {
+  for (const method of ['diagnosis', 'reference', 'scenarios', 'tradeoff', 'arch', 'decision_tree', 'visual', 'competitive', 'pains', 'stakeholders', 'risks', 'assumptions', 'use_case', 'health_check']) {
     const d = assists[method];
     if (!d || d.status !== 'done' || d.used) continue;
     // v0.6.7 累积模式：不再 restrict 到 _explicitAssist method
     //   所有 method 的 done 卡片都渲染（用户点过的会累积显示，未点的也显示）
-    const cr = (_chatState[reqId]?.briefRound) || 1;
-    if (d.generated_at_round !== cr) {
-      if (method === 'decision_tree') console.log(`[assist.render] decision_tree SKIP round: generated=${d.generated_at_round} chatState=${cr}`);
+    const chatStateRound = _chatState[reqId]?.briefRound;
+    if (typeof chatStateRound === 'number' && typeof d.generated_at_round === 'number' && d.generated_at_round !== chatStateRound) {
+      if (method === 'decision_tree') console.log(`[assist.render] decision_tree SKIP round: generated=${d.generated_at_round} chatState=${chatStateRound}`);
       continue;
     }
 
@@ -3629,7 +3666,7 @@ function renderAssistLayer(container, reqId, assists) {
       } catch (e) { innerHtml = `<div class="insight-error">❌ 渲染失败: ${e.message}</div>`; }
     } else {
       // 降级：简易标题
-      const titles = { decision_tree:'🌳 决策树', scenarios:'👥 场景', tradeoff:'⚖️ 取舍', arch:'🏗️ 架构', diagnosis:'🩺 体检', visual:'🎨 视觉', competitive:'🏢 竞品', reference:'🏛 借鉴', pains:'🔥 痛点', stakeholders:'👥 干系人', risks:'⚠️ 风险', assumptions:'📌 假设' };
+      const titles = { decision_tree:'🌳 决策树', scenarios:'👥 场景', tradeoff:'⚖️ 取舍', arch:'🏗️ 架构', diagnosis:'🩺 体检', visual:'🎨 视觉', competitive:'🏢 竞品', reference:'🏛 借鉴', pains:'🔥 痛点', stakeholders:'👥 干系人', risks:'⚠️ 风险', assumptions:'📌 假设', health_check:'🏥 需求体检', health_check:'🏥 需求体检' };
       innerHtml = `<div class="assist-section-title">${titles[method]||method}</div>`;
     }
 
@@ -4037,6 +4074,407 @@ async function chatRegen(reqId) {
     connectStreamingBrief(reqId, c);
   } catch(e) { toast('失败: '+e.message, 'error'); }
 }
+
+// ── v0.13 B5：AI 回复模式按钮（3 态）+ popover ──
+// 全局状态：按 reqId 存当前态 + 草稿原文（用于撤销）
+window._aiReplyState = window._aiReplyState || {};
+window._aiDraftBeforeAI = window._aiDraftBeforeAI || {};
+// v0.13 B5：自动态持续生效 — 倒计时 + 计数 + 最后轮次
+window._aiAutoCountdowns = window._aiAutoCountdowns || {}; // reqId → { timerId, deadlineMs, chatRound }
+window._aiAutoSentCount = window._aiAutoSentCount || {};   // reqId → 已自动发送次数
+window._aiAutoLastRound = window._aiAutoLastRound || {};   // reqId → 上次自动触发的 brief chat_round
+
+function _aiGetState(reqId) {
+  return window._aiReplyState[reqId] || 'off';
+}
+function _aiSetState(reqId, state) {
+  window._aiReplyState[reqId] = state;
+  _aiRenderBtn(reqId);
+}
+function _aiRenderBtn(reqId) {
+  const btn = document.getElementById(`ai-mode-btn-${reqId}`);
+  if (!btn) return;
+  const state = _aiGetState(reqId);
+  btn.classList.remove('btn-ai-off', 'btn-ai-draft', 'btn-ai-auto');
+  btn.classList.add('btn-ai-' + state);
+  // 同步 popover 高亮
+  const popover = document.getElementById(`ai-popover-${reqId}`);
+  if (popover) {
+    popover.querySelectorAll('.ai-reply-popover-option').forEach(opt => {
+      opt.classList.toggle('active', opt.dataset.mode === state);
+    });
+  }
+}
+
+// 点 AI 模式按钮 → 弹 popover
+// 名字避开浏览器原生 HTMLElement.togglePopover() 冲突（v0.13 B5 mockup bugfix）
+async function showAiPopover(e, reqId) {
+  if (e) e.stopPropagation();
+
+  // 自动态下再点 ↻ = 直接发送（不经确认）
+  if (_aiGetState(reqId) === 'auto') {
+    await triggerAiAutoSend(reqId);
+    return;
+  }
+
+  // 关闭其他 req 的 popover
+  document.querySelectorAll('.ai-reply-popover.show').forEach(p => {
+    if (p.id !== `ai-popover-${reqId}`) p.classList.remove('show');
+  });
+
+  const popover = document.getElementById(`ai-popover-${reqId}`);
+  if (!popover) return;
+  const wasOpen = popover.classList.contains('show');
+  popover.classList.toggle('show');
+  if (!wasOpen) _aiRenderBtn(reqId); // 同步高亮
+}
+
+function closeAiPopover(reqId) {
+  const popover = document.getElementById(`ai-popover-${reqId}`);
+  if (popover) popover.classList.remove('show');
+}
+
+// 用户选某个态
+async function selectAiMode(mode, reqId) {
+  closeAiPopover(reqId);
+
+  if (mode === _aiGetState(reqId)) return; // 没变化
+
+  if (mode === 'off') {
+    // 关闭态：调原 chatRegen 逻辑（让 AI 重问下一轮）
+    _aiCancelAutoCountdown(reqId, 'user selected close');
+    _aiHideAutoIndicator(reqId);
+    _aiSetState(reqId, 'off');
+    await chatRegen(reqId);
+    return;
+  }
+
+  if (mode === 'draft') {
+    // AI 草稿：调后端生成草稿，追加到输入框
+    await applyAiDraft(reqId);
+    return;
+  }
+
+  if (mode === 'auto') {
+    // AI 自动：弹二次确认
+    _showAiAutoConfirmModal(reqId);
+    return;
+  }
+}
+
+// 调后端生成 AI 草稿并填充输入框（追加模式）
+async function applyAiDraft(reqId) {
+  const input = document.getElementById(`chat-input-${reqId}`);
+  if (!input) return;
+
+  // 备份用户原文（用于撤销）
+  window._aiDraftBeforeAI[reqId] = input.value;
+
+  // v0.13 B5 fix: req 选择器没选也允许，server 自动选默认大模型（与 chatSendSupplement 一致）
+  const modelId = document.getElementById(`ai-model-select-${reqId}`)?.value?.trim()
+    || ''; // 缺省时 server 端 fallback 到 admin 设置的默认模型
+  // 不再拦截「未选模型」——交给 server 兜底
+
+  // 收集 chat 流最近 6 条上下文
+  const c = document.getElementById(`chat-stream-msgs-${reqId}`);
+  const bubbles = c ? Array.from(c.querySelectorAll('.chat-bubble')).slice(-6) : [];
+  const history = bubbles.map(b => ({
+    role: b.classList.contains('chat-bubble-user') ? 'user' : 'assistant',
+    content: (b.textContent || '').slice(0, 500),
+  })).filter(h => h.content);
+
+  toast('✏️ 正在生成 AI 草稿…', 'info', 1500);
+
+  try {
+    const r = await api('POST', `/ai/requirements/${reqId}/auto-draft`, { modelId, history });
+    if (!r || !r.ok || !r.draft) {
+      const msg = r?.error === 'NO_MODEL_AVAILABLE'
+        ? '管理界面尚未设置默认大模型，请去 Admin → 大模型配置 设置'
+        : (r?.message || r?.error || 'unknown');
+      toast('AI 草稿生成失败：' + msg, 'error', 4000);
+      return;
+    }
+    const existing = input.value.trim();
+    if (existing) {
+      input.value = existing + '\n\n' + r.draft;
+    } else {
+      input.value = r.draft;
+    }
+    chatAutoGrow(input);
+    _aiSetState(reqId, 'draft');
+    toast('✏️ 已生成 AI 草稿 · 可直接修改后发送', 'success', 2000);
+  } catch (e) {
+    toast('AI 草稿失败：' + (e?.message || 'unknown'), 'error', 3000);
+  }
+}
+
+// 撤销 AI 草稿，保留用户原文
+function restoreAiDraft(reqId) {
+  const input = document.getElementById(`chat-input-${reqId}`);
+  if (!input) return;
+  input.value = window._aiDraftBeforeAI[reqId] || '';
+  chatAutoGrow(input);
+  _aiSetState(reqId, 'off');
+  toast('↺ 已撤销 AI 草稿 · 保留你的原文', 'info', 1500);
+}
+
+// 自动态：再点 ↻ = 直接发送（v0.13 B5 fix: 持续生效，不再二次确认，不再重置 off）
+async function triggerAiAutoSend(reqId) {
+  // 注意：用户已在 selectAiMode('auto') 弹窗里确认过启用自动态，此处不再弹确认
+  const input = document.getElementById(`chat-input-${reqId}`);
+  if (!input) return;
+  // 输入框为空 → 先快速生成 AI 草稿
+  if (!input.value.trim()) {
+    await applyAiDraft(reqId);
+    if (!input.value.trim()) {
+      toast('⚠️ 输入框仍为空 · 已取消', 'warning', 2000);
+      return;
+    }
+  }
+  // v0.13 B5：记录当前 brief 轮次，避免重复触发同轮的倒计时
+  const state = window._chatState?.[reqId];
+  if (state) window._aiAutoLastRound[reqId] = state.briefRound || 0;
+
+  await chatSend(reqId);
+
+  // v0.13 B5：递增自动发送计数 + 检查方向 checkpoint
+  window._aiAutoSentCount[reqId] = (window._aiAutoSentCount[reqId] || 0) + 1;
+  const sentCount = window._aiAutoSentCount[reqId];
+  console.log(`[ai-auto] ${reqId} 已自动发送第 ${sentCount} 轮`);
+  _aiCheckDirectionCheckpoint(reqId);
+
+  // 保持 'auto' 态（持续生效，用户主动选「关闭」才退出）
+}
+
+// 弹「AI 自动模式」二次确认（v0.13 B5 fix: 用专属 class 确保 fixed 定位 + 高 z-index）
+function _showAiAutoConfirmModal(reqId) {
+  const existing = document.getElementById('ai-auto-confirm-modal');
+  if (existing) existing.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'ai-auto-confirm-modal';
+  modal.className = 'ai-auto-confirm-bg';  // 专属 class，强制 fixed + z-index 9999
+  modal.innerHTML = `
+    <div class="modal" onclick="event.stopPropagation()">
+      <div class="modal-title">🚀 启用 AI 自动回复？</div>
+      <div class="modal-body">
+        启用后，<strong>点 ↻ 按钮 AI 将直接发送回复，不再经过你确认</strong>。<br>
+        模式会<strong>持续生效</strong>，直到你点 ↻ 选「关闭」。
+      </div>
+      <div class="modal-buttons">
+        <button class="btn" onclick="closeAiAutoConfirm()">取消</button>
+        <button class="btn btn-primary" onclick="confirmAiAuto('${reqId}')">启用</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+function closeAiAutoConfirm() {
+  const m = document.getElementById('ai-auto-confirm-modal');
+  if (m) m.remove();
+}
+
+function confirmAiAuto(reqId) {
+  closeAiAutoConfirm();
+  _aiSetState(reqId, 'auto');
+  // v0.13 B5：自动态启用时重置计数 + 挂 input 监听
+  window._aiAutoSentCount[reqId] = 0;
+  // _aiAutoLastRound 保持 0（语义：还没自动过任何轮次）
+  //   当前等待用户回复的轮次如果存在，_aiCheckAndStartAuto 会检测到并立即启动倒计时
+  window._aiAutoLastRound[reqId] = 0;
+  _aiSetupInputListener(reqId);
+  _aiShowAutoIndicator(reqId, '⏸ 已就绪 · 等待 AI 提问完成后自动回复');
+  toast('🚀 AI 自动回复已启用 · 持续生效，点 ↻ 选「关闭」停用', 'success', 2500);
+  // v0.13 B5 fix: 启用后立即检测当前轮次是否就该启动倒计时（不等下次 polling）
+  setTimeout(() => _aiCheckAndStartAuto(reqId), 200);
+  console.log(`[ai-auto] ${reqId} 已启用 auto 态`);
+}
+
+// v0.13 B5 fix: 启用 auto 后立即检测当前 brief 状态，看是否该立即启动倒计时
+async function _aiCheckAndStartAuto(reqId) {
+  if (_aiGetState(reqId) !== 'auto') return;
+  let brief;
+  try {
+    const r = await api('GET', `/requirements/${reqId}/thinking-brief`);
+    brief = r?.thinkingBrief;
+  } catch (e) {
+    console.warn('[ai-auto] 检测当前 brief 失败:', e.message);
+    return;
+  }
+  if (!brief || brief.status !== 'done') {
+    console.log(`[ai-auto] ${reqId} 当前 brief 未就绪 (status=${brief?.status})`);
+    return;
+  }
+  const briefRound = brief.chat_round || 0;
+  console.log(`[ai-auto] ${reqId} 检测：briefRound=${briefRound}, _aiAutoLastRound=${window._aiAutoLastRound[reqId] || 0}`);
+  // 条件：当前轮次 > 上次自动过（首次 _aiAutoLastRound=0，任何 done 轮次都满足）
+  if (briefRound > (window._aiAutoLastRound[reqId] || 0)) {
+    const input = document.getElementById(`chat-input-${reqId}`);
+    const isInputEmpty = !input?.value?.trim();
+    if (isInputEmpty && !_aiAutoCountdowns[reqId]) {
+      console.log(`[ai-auto] ${reqId} 立即启动倒计时（briefRound=${briefRound}）`);
+      _aiStartAutoCountdown(reqId, briefRound);
+    } else {
+      console.log(`[ai-auto] ${reqId} 跳过：输入框非空或有倒计时`);
+    }
+  }
+}
+
+// ── v0.13 B5：自动态持续生效 — 倒计时 + 指示条 + 方向 checkpoint ──
+const AI_AUTO_COUNTDOWN_MS = 5000;       // 5 秒倒计时
+const AI_AUTO_CHECKPOINT_EVERY = 3;      // 每 3 轮弹方向确认
+
+// 自动态指示条（固定在 chat 输入区上方）
+function _aiShowAutoIndicator(reqId, text) {
+  let bar = document.getElementById(`ai-auto-indicator-${reqId}`);
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = `ai-auto-indicator-${reqId}`;
+    bar.className = 'ai-auto-indicator';
+    // 插到 chat-input-area 上方（chat-stream-input 是输入区父元素）
+    const inputArea = document.querySelector(`#chat-stream-container-${reqId} .chat-stream-input`)
+      || document.querySelector(`#chat-stream-msgs-${reqId}`)?.parentElement;
+    if (inputArea) inputArea.insertBefore(bar, inputArea.firstChild);
+  }
+  bar.innerHTML = `<span class="ai-auto-indicator-text">🚀 ${escHtml(text)}</span>
+    <span class="ai-auto-indicator-actions">
+      <button class="btn-small ai-auto-pause-btn" onclick="_aiPauseAuto('${reqId}')">⏸ 暂停</button>
+      <button class="btn-small ai-auto-skip-btn" onclick="_aiSkipCountdown('${reqId}')">↻ 立即</button>
+    </span>`;
+}
+function _aiHideAutoIndicator(reqId) {
+  const bar = document.getElementById(`ai-auto-indicator-${reqId}`);
+  if (bar) bar.remove();
+}
+function _aiUpdateAutoIndicator(reqId, secondsLeft, sentCount) {
+  const bar = document.getElementById(`ai-auto-indicator-${reqId}`);
+  if (!bar) return;
+  const textEl = bar.querySelector('.ai-auto-indicator-text');
+  if (!textEl) return;
+  if (secondsLeft < 0) {
+    // 用户编辑态
+    textEl.textContent = `⏸ 用户正在编辑 · 编辑完按 ↻ 恢复自动`;
+  } else {
+    textEl.textContent = `🚀 AI 自动回复 · ${secondsLeft} 秒后发送 · 第 ${sentCount + 1} 轮`;
+  }
+}
+
+// 用户暂停自动态（保留「关闭态」语义，退出 auto）
+function _aiPauseAuto(reqId) {
+  _aiCancelAutoCountdown(reqId, 'user paused');
+  _aiSetState(reqId, 'off');
+  _aiHideAutoIndicator(reqId);
+  toast('⏸ 已暂停 AI 自动回复', 'info', 1500);
+}
+
+// 用户跳过倒计时，立即触发
+function _aiSkipCountdown(reqId) {
+  _aiCancelAutoCountdown(reqId, 'user skipped');
+  triggerAiAutoSend(reqId);
+}
+
+// 启动倒计时（5 秒），倒计时到 0 → triggerAiAutoSend
+function _aiStartAutoCountdown(reqId, chatRound) {
+  if (_aiAutoCountdowns[reqId]) return; // 已有倒计时，不重复启动
+  const sentCount = window._aiAutoSentCount[reqId] || 0;
+  const deadlineMs = Date.now() + AI_AUTO_COUNTDOWN_MS;
+  const tick = () => {
+    const left = Math.max(0, Math.ceil((deadlineMs - Date.now()) / 1000));
+    _aiUpdateAutoIndicator(reqId, left, sentCount);
+    if (left <= 0) {
+      _aiCancelAutoCountdown(reqId, 'countdown finished');
+      triggerAiAutoSend(reqId);
+      return;
+    }
+  };
+  tick(); // 立即渲染一次
+  const timerId = setInterval(tick, 250);
+  window._aiAutoCountdowns[reqId] = { timerId, deadlineMs, chatRound };
+}
+
+function _aiCancelAutoCountdown(reqId, reason) {
+  const cd = window._aiAutoCountdowns[reqId];
+  if (!cd) return;
+  clearInterval(cd.timerId);
+  delete window._aiAutoCountdowns[reqId];
+}
+
+// 输入框 input 监听 — 用户打字自动取消倒计时（保留用户工作）
+function _aiSetupInputListener(reqId) {
+  const input = document.getElementById(`chat-input-${reqId}`);
+  if (!input) return;
+  if (input._aiAutoListenerAttached) return;
+  input._aiAutoListenerAttached = true;
+  input.addEventListener('input', () => {
+    if (_aiGetState(reqId) === 'auto' && _aiAutoCountdowns[reqId]) {
+      // 用户开始打字 → 取消自动倒计时（让用户编辑），但不退出自动态
+      _aiCancelAutoCountdown(reqId, 'user started typing');
+      _aiUpdateAutoIndicator(reqId, -1, window._aiAutoSentCount[reqId] || 0);
+    }
+  });
+}
+
+// 每 N 轮强制方向确认
+function _aiCheckDirectionCheckpoint(reqId) {
+  const sentCount = window._aiAutoSentCount[reqId] || 0;
+  if (sentCount > 0 && sentCount % AI_AUTO_CHECKPOINT_EVERY === 0) {
+    _aiCancelAutoCountdown(reqId, 'direction checkpoint');
+    _showDirectionCheckpointModal(reqId, sentCount);
+  }
+}
+
+function _showDirectionCheckpointModal(reqId, sentCount) {
+  const existing = document.getElementById('ai-direction-checkpoint-modal');
+  if (existing) existing.remove();
+  const modal = document.createElement('div');
+  modal.id = 'ai-direction-checkpoint-modal';
+  modal.className = 'ai-auto-confirm-bg';  // 复用 fixed + 高 z-index
+  modal.innerHTML = `
+    <div class="modal" onclick="event.stopPropagation()">
+      <div class="modal-title">🧭 方向确认</div>
+      <div class="modal-body">
+        已自动回复 <strong>${sentCount}</strong> 轮。<br>
+        对话方向是否还在你想要的轨道上？<br>
+        <span style="font-size:12px;color:var(--text3)">查看 chat 流判断 · 继续则继续自动，退出则恢复手动</span>
+      </div>
+      <div class="modal-buttons">
+        <button class="btn" onclick="_aiExitAfterCheckpoint('${reqId}')">退出自动（恢复手动）</button>
+        <button class="btn btn-primary" onclick="_aiContinueAfterCheckpoint('${reqId}')">继续自动</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+function _aiExitAfterCheckpoint(reqId) {
+  const m = document.getElementById('ai-direction-checkpoint-modal');
+  if (m) m.remove();
+  _aiSetState(reqId, 'off');
+  _aiHideAutoIndicator(reqId);
+  toast('⏸ 已退出自动回复 · 恢复手动', 'info', 2000);
+}
+
+function _aiContinueAfterCheckpoint(reqId) {
+  const m = document.getElementById('ai-direction-checkpoint-modal');
+  if (m) m.remove();
+  toast('✅ 继续自动回复', 'info', 1500);
+}
+
+// 点 popover 外面关闭（不切换态）
+document.addEventListener('click', (e) => {
+  document.querySelectorAll('.ai-reply-popover.show').forEach(p => {
+    const btnId = `ai-mode-btn-${p.dataset.reqId}`;
+    const btn = document.getElementById(btnId);
+    if (!p.contains(e.target) && (!btn || !btn.contains(e.target))) {
+      p.classList.remove('show');
+    }
+  });
+});
+// Esc 关闭所有 AI popover
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    document.querySelectorAll('.ai-reply-popover.show').forEach(p => p.classList.remove('show'));
+  }
+});
 
 async function chatAssist(reqId, method, extraBody) {
   // v0.6.7：累积模式 — 只清**同 method** 的旧卡片，保留其他 method 的卡片

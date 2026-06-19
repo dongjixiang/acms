@@ -80,7 +80,7 @@ async function loadAgentContext(agentId) {
     html += `<div style="font-size:12px;color:var(--text2);margin:8px 0">角色: ${resp.roles.join(', ')}</div>`;
     html += `<div style="font-size:12px;margin:8px 0">订阅: ${resp.subscriptions.map(s => `<span class="skill-tag">${s}</span>`).join(' ')}</div>`;
     html += `<h4 style="margin-top:12px">📬 通知 (${notifications.length})</h4>`;
-    html += notifications.length ? notifications.slice(0, 5).map(n => `<div class="dash-item" style="font-size:11px">📨 ${n.type} @ ${new Date(n.timestamp).toLocaleTimeString('zh-CN')}</div>`).join('') : '<div class="empty">暂无</div>';
+    html += notifications.length ? notifications.slice(0, 5).map(n => `<div class="dash-item" style="font-size:11px">📨 ${n.type} @ ${new Date(n.timestamp).toLocaleTimeString('zh-CN', {hour12:false})}</div>`).join('') : '<div class="empty">暂无</div>';
     const panel = document.querySelector('#view-agents .dash-panel:last-child');
     if (panel) panel.innerHTML = html;
   } catch (e) { toast('加载失败: ' + e.message, 'error'); }

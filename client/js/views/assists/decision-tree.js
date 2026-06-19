@@ -197,6 +197,8 @@ function showAssistLoading({ method, title, hint } = {}) {
   const card = document.createElement('div');
   card.className = `assist-loading-card method-${method || 'default'}`;
   card.dataset.method = method || 'default';  // v0.6.8 fix: 必设 data-method，renderAssistLayer 才能 querySelector 找到
+  // v0.11 fix: 记录开始时间，让 startChatPolling 能计算 elapsed 更新进度（解决一直显示 0s 的 bug）
+  card.dataset.startedAt = String(Date.now());
   card.innerHTML = `
     <div class="assist-loading-head">
       <span class="assist-loading-spinner">⏳</span>

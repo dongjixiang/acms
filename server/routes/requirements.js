@@ -643,6 +643,14 @@ router.get('/:id/assist', (req, res, next) => {
       if (svc && svc.getAssist) {
         const data = svc.getAssist(req.params.id);
         if (data) result[method] = data;
+        // v0.13 调试：每 5 次 GET 才 log 一次 use_case（避免刷屏）
+        if (method === 'use_case' && (!global._ucGetLogCount)) global._ucGetLogCount = 0;
+        if (method === 'use_case') {
+          global._ucGetLogCount = (global._ucGetLogCount || 0) + 1;
+          if (global._ucGetLogCount % 5 === 0) {
+            console.log(`[GET /assist] use_case 诊断 #${global._ucGetLogCount}: status=${data?.status}, business=${data?.businessCases?.length}, system=${data?.systemCases?.length}, rawLen=${reqRec.structured_requirements?.length || 0}B`);
+          }
+        }
       }
     }
 
@@ -737,7 +745,7 @@ router.post('/:id/assist/:method', async (req, res, next) => {
     const { modelId, role, productName } = req.body || {};
     const reqRec = reqStore.getById(req.params.id);
     if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
-    if (reqRec.status !== 'idea') {
+    if (reqRec.status !== 'idea' && method !== 'health_check') {
       return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
     }
 
@@ -797,6 +805,9 @@ router.post('/:id/assist/:method/regenerate', async (req, res, next) => {
 });
 
 // 标记用户"使用"了某个辅助手段（勾选/表态）
+//   v0.13 fix: 之前整个 use_case/apply 端点被错误嵌套进这个 try 块（缺 }); 闭合），
+//              导致 :id/assist/use_case/apply 路由从未注册到 router.stack。
+//              现在 use 端点补完整（else 分支 + res.json + catch），apply 端点独立。
 router.post('/:id/assist/:method/use', async (req, res, next) => {
   try {
     const { method } = req.params;
@@ -826,7 +837,7 @@ router.post('/:id/assist/:method/use', async (req, res, next) => {
       // v0.3.6：借鉴卡片 → 切换选中
       result = svc.togglePick(req.params.id, body.idx);
     }
-    else if (method === 'pains' || method === 'stakeholders' || method === 'risks' || method === 'assumptions') {
+    else if (method === 'pains' || method === 'stakeholders' || method === 'risks' || method === 'assumptions' || method === 'health_check') {
       // v0.4：4 个新辅助手段 → 标记已阅/跳过
       result = svc.markUsed(req.params.id);
     }
@@ -835,6 +846,77 @@ router.post('/:id/assist/:method/use', async (req, res, next) => {
     res.json({ method, result });
   } catch (e) { next(e); }
 });
+
+// v0.13：方法论整理 — apply 端点（deprecated，B1 起请用 /apply/preview + /apply/confirm）
+//   旧行为: 直接调 applyUseCaseResult 走 buildDescriptionFromAccepted 拼 4 段式 bullet 写库
+//   保留: 旧客户端 / 测试 / 兜底场景
+router.post('/:id/assist/use_case/apply', async (req, res, next) => {
+  try {
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    const { acceptedItems, confirmedAssumptions, structuredData, discardedItems } = req.body || {};
+    const useCaseSvc = require('../services/assists/use-case');
+    const result = useCaseSvc.applyUseCaseResult(req.params.id, {
+      acceptedItems: Array.isArray(acceptedItems) ? acceptedItems : [],
+      confirmedAssumptions: Array.isArray(confirmedAssumptions) ? confirmedAssumptions : [],
+      structuredData: structuredData || null,
+      discardedItems: Array.isArray(discardedItems) ? discardedItems : [],
+      // description 不传 → 走 buildDescriptionFromAccepted 兜底
+    });
+    if (result.error) return res.status(400).json(result);
+    return res.json(result);
+  } catch (e) { next(e); }
+});
+
+// v0.13 B1：方法论整理 — preview 端点（生成 5 段式 description 预览，不写库）
+//   输入: acceptedItems / confirmedAssumptions / discardedItems (前端从 5 要素 checklist 卡片勾选)
+//   处理: 读 req (title/description/supplement_history) + 调 LLM (PREVIEW_SYSTEM_PROMPT)
+//   输出: { description: 5段式文本, modelId } 给前端做 inline 编辑
+//   不写库！用户编辑后必须调 /apply/confirm 才写
+router.post('/:id/assist/use_case/apply/preview', async (req, res, next) => {
+  try {
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    const { acceptedItems, confirmedAssumptions, discardedItems } = req.body || {};
+    const useCaseSvc = require('../services/assists/use-case');
+    const result = await useCaseSvc.previewUseCaseResult(req.params.id, {
+      acceptedItems: Array.isArray(acceptedItems) ? acceptedItems : [],
+      confirmedAssumptions: Array.isArray(confirmedAssumptions) ? confirmedAssumptions : [],
+      discardedItems: Array.isArray(discardedItems) ? discardedItems : [],
+    });
+    if (result.error) {
+      const code = result.error === 'REQ_NOT_FOUND' ? 404 : 500;
+      return res.status(code).json(result);
+    }
+    return res.json(result);
+  } catch (e) { next(e); }
+});
+
+// v0.13 B1：方法论整理 — confirm 端点（写库：用户编辑后的 5 段式 description）
+//   输入: { description: 用户在 preview 弹层里改后的 5 段式文本, acceptedItems, confirmedAssumptions, structuredData }
+//   写库: description = 用户改后文本; structured_requirements = status:'applied' + 完整结构
+//   旧 description 进 description_history (最近 5 份, 永久可回滚)
+router.post('/:id/assist/use_case/apply/confirm', async (req, res, next) => {
+  try {
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    const { description, acceptedItems, confirmedAssumptions, structuredData, discardedItems } = req.body || {};
+    if (typeof description !== 'string' || description.trim().length < 50) {
+      return res.status(400).json({ error: 'DESCRIPTION_TOO_SHORT', minLength: 50, currentLength: description?.length || 0 });
+    }
+    const useCaseSvc = require('../services/assists/use-case');
+    const result = useCaseSvc.applyUseCaseResult(req.params.id, {
+      acceptedItems: Array.isArray(acceptedItems) ? acceptedItems : [],
+      confirmedAssumptions: Array.isArray(confirmedAssumptions) ? confirmedAssumptions : [],
+      structuredData: structuredData || null,
+      discardedItems: Array.isArray(discardedItems) ? discardedItems : [],
+      description: description.trim(),  // B1: 传用户改后的 5 段式 description
+    });
+    if (result.error) return res.status(400).json(result);
+    return res.json(result);
+  } catch (e) { next(e); }
+});
+
 
 // ============================================================
 // 决策树分支详情（v0.3.2 极简思路区 增量）
@@ -1096,6 +1178,32 @@ router.post('/:id/export-word', async (req, res, next) => {
     if (e.message === 'REQ_NOT_FOUND') return res.status(404).json({ error: 'REQ_NOT_FOUND' });
     next(e);
   }
+});
+
+// ── v0.13 B4：需求体检 — 驳回 / 撤销端点 ──
+const healthCheckSvc = () => require('../services/assists/health-check');
+
+router.post('/:id/assist/health_check/dismiss', async (req, res, next) => {
+  try {
+    const result = healthCheckSvc().dismissFinding(req.params.id, req.body);
+    if (result.error) return res.status(result.error === 'REQ_NOT_FOUND' ? 404 : 400).json(result);
+    res.json(result);
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/assist/health_check/restore', async (req, res, next) => {
+  try {
+    const result = healthCheckSvc().restoreFinding(req.params.id, req.body);
+    if (result.error) return res.status(result.error === 'REQ_NOT_FOUND' ? 404 : 400).json(result);
+    res.json(result);
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/assist/health_check/dismissed', async (req, res, next) => {
+  try {
+    const result = healthCheckSvc().getDismissed(req.params.id);
+    res.json({ dismissed: result });
+  } catch (e) { next(e); }
 });
 
 module.exports = router;
