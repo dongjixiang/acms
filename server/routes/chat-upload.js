@@ -33,20 +33,41 @@ router.post('/upload', upload.array('file', 10), async (req, res, next) => {
     const files = req.files || [];
     if (files.length === 0) return res.status(400).json({ error: 'NO_FILE' });
 
-    // 串行处理每个文件（避免服务器瞬时压力，vision 解析慢）
-    const results = [];
-    for (const file of files) {
-      // 大小校验（multer 已经限制，再二次确认）
-      if (file.size > 20 * 1024 * 1024) {
-        return res.status(413).json({ error: 'FILE_TOO_LARGE', maxMB: 20, name: file.originalname });
+// 串行处理每个文件（避免服务器瞬时压力，vision 解析慢）
+      const results = [];
+      for (const file of files) {
+        // 大小校验（multer 已经限制，再二次确认）
+        if (file.size > 20 * 1024 * 1024) {
+          return res.status(413).json({ error: 'FILE_TOO_LARGE', maxMB: 20, name: file.originalname });
+        }
+        // v0.13 B5 fix: 中文文件名兜底（multer defParamCharset 偶尔失效或不兼容）
+        //   策略：总是尝试 latin1→utf8 重新解码，对比哪个版本更像中文
+        //   启发式：原 string 的 UTF-8 bytes 如果包含 invalid sequence，说明已被错误解码
+        const origName = file.originalname;
+        if (origName) {
+          const origBuf = Buffer.from(origName, 'utf8');
+          // 检查是否含 UTF-8 replacement char (0xEF 0xBF 0xBD)
+          const hasReplacementChar = origBuf.includes(Buffer.from([0xEF, 0xBF, 0xBD]));
+          // 检查是否含典型 latin1 误解码的高位字符 (Â/Ã/Ä/Å)
+          const hasLatin1Artifacts = /[\u00C2\u00C3\u00C4\u00C5]/.test(origName);
+          if (hasReplacementChar || hasLatin1Artifacts) {
+            try {
+              const buf = Buffer.from(origName, 'latin1');
+              const decoded = buf.toString('utf8');
+              if (!/\uFFFD/.test(decoded) && decoded.length > 0) {
+                file.originalname = decoded;
+                console.log(`[chat-upload] 🔧 中文文件名兜底修复成功: ${decoded}`);
+              }
+            } catch (e) { /* 静默 */ }
+          }
+        }
+        const result = await svc.saveAndParse(file);
+        if (!ALLOWED_CATEGORIES.has(result.category)) {
+          return res.status(415).json({ error: 'UNSUPPORTED_TYPE', mime: result.mime, name: file.originalname });
+        }
+        results.push(result);
+        console.log(`[chat-upload] ✅ ${result.id} | ${result.category} | ${result.name} (${(result.size/1024).toFixed(1)}KB)${result.extractedText ? ' | text=' + result.extractedText.length + 'ch' : ''}`);
       }
-      const result = await svc.saveAndParse(file);
-      if (!ALLOWED_CATEGORIES.has(result.category)) {
-        return res.status(415).json({ error: 'UNSUPPORTED_TYPE', mime: result.mime, name: file.originalname });
-      }
-      results.push(result);
-      console.log(`[chat-upload] ✅ ${result.id} | ${result.category} | ${result.name} (${(result.size/1024).toFixed(1)}KB)${result.extractedText ? ' | text=' + result.extractedText.length + 'ch' : ''}`);
-    }
 
     // 单文件保持返回单对象（向后兼容），多文件返回数组
     res.json(files.length === 1 ? results[0] : { files: results, count: results.length });

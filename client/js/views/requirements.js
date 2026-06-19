@@ -2890,13 +2890,15 @@ function renderIdeaPanel(req) {
               <div class="popover-item" onclick="chatUploadTrigger('${req.id}','docx')"><span class="pop-icon">📘</span><span>Word</span><span class="pop-hint">.docx</span></div>
               <div class="popover-item" onclick="chatUploadTrigger('${req.id}','text')"><span class="pop-icon">📄</span><span>文本 / 代码</span><span class="pop-hint">.md .txt .json</span></div>
             </div>
-            <input type="file" id="chat-file-${req.id}" class="hidden" style="display:none"
+<input type="file" id="chat-file-${req.id}" class="hidden" style="display:none"
+              multiple
               onchange="chatUploadFile('${req.id}', this)">
             <div class="chat-input-row">
               <button class="btn-attach" id="chat-attach-btn-${req.id}" onclick="chatToggleAttachPopover('${req.id}')" title="添加附件">📎</button>
               <textarea id="chat-input-${req.id}" rows="1"
                 placeholder="回答 AI 的问题，或补充你的想法…（可直接 Ctrl+V 粘贴截图）"
                 oninput="chatAutoGrow(this)"
+                onkeydown="if(event.key==='Enter' && !event.ctrlKey && !event.shiftKey && !event.altKey){event.preventDefault();chatSend('${req.id}')}"
                 onpaste="chatHandlePaste('${req.id}', event)"></textarea>
 <div class="chat-input-actions">
                 <button class="btn-small btn-primary" onclick="chatSend('${req.id}')">📤 发送</button>
@@ -2932,8 +2934,8 @@ function renderIdeaPanel(req) {
             <button onclick="chatAssist('${req.id}', 'decision_tree')">🌳 决策树</button>
             <button onclick="chatAssist('${req.id}', 'scenarios')">👥 场景</button>
             <button onclick="chatAssist('${req.id}', 'competitive')">🏢 竞品</button>
-            <button onclick="chatAssist('${req.id}', 'reference')">🏛 借鉴</button>
-            <button onclick="chatRewrite('${req.id}')">✨ 整理</button>
+<button onclick="chatAssist('${req.id}', 'reference')">🏛 借鉴</button>
+            <button onclick="chatAssist('${req.id}', 'use_case')">✨ 整理</button>
             <button onclick="chatAssist('${req.id}', 'health_check')" style="border-color:var(--accent);color:var(--accent)">🏥 体检</button>
             <button onclick="chatDone('${req.id}')" style="border-color:rgba(255,68,68,0.2);color:#f55">✅ 够了</button>
           </div>
@@ -3535,6 +3537,14 @@ function startChatPolling(reqId) {
   }, 3000);
 }
 
+// v0.13 B5：本地时区格式化时间戳（之前 (entry.at).substring(11,16) 拿的是 UTC）
+function fmtLocalTime(iso) {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+  } catch (e) { return ''; }
+}
+
 function renderChatBubble(container, entry) {
   const isAI = entry.role === 'assistant';
   const parts = [];
@@ -3557,7 +3567,7 @@ function renderChatBubble(container, entry) {
   const div = document.createElement('div');
   div.className = `chat-bubble ${isAI ? 'chat-bubble-ai' : 'chat-bubble-user'}`;
   div.dataset.chatRound = entry.chat_round || '';
-  div.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">${isAI ? '🤖 AI' : '💬 你'}</span><span class="chat-time">${(entry.at||'').substring(11,16)}</span>${hasThinking ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}${isAI ? '<span class="chat-export-btn" onclick="chatExportWord(this)" title="导出为 Word 文档">📄</span>' : ''}</div>${bodyHtml}${userAttachHtml}`;
+  div.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">${isAI ? '🤖 AI' : '💬 你'}</span><span class="chat-time">${fmtLocalTime(entry.at)}</span>${hasThinking ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}${isAI ? '<span class="chat-export-btn" onclick="chatExportWord(this)" title="导出为 Word 文档">📄</span>' : ''}</div>${bodyHtml}${userAttachHtml}`;
   container.appendChild(div);
 }
 
@@ -3670,12 +3680,15 @@ function renderAssistLayer(container, reqId, assists) {
       innerHtml = `<div class="assist-section-title">${titles[method]||method}</div>`;
     }
 
-    if (!innerHtml.trim()) continue;
+if (!innerHtml.trim()) continue;
 
     const el = document.createElement('div');
     el.className = 'chat-assist-layer';
     el.dataset.assistMethod = method;
-    el.innerHTML = `${innerHtml}<div class="chat-assist-actions" style="margin-top:10px"><button class="btn-small btn-accept" onclick="chatSendAssistPick('${reqId}','${method}')">✅ 发送选择</button><button class="btn-small" onclick="chatAssistRegen('${reqId}','${method}')">↻ 换一批</button><button class="btn-small" onclick="chatSkipAssist(this)">跳过</button></div>`;
+    // v0.13 fix: use_case 自带 apply/regen/discard 按钮，不附加 chat-assist-actions 重复按钮
+    const chatActions = (method === 'use_case') ? '' :
+      `<div class="chat-assist-actions" style="margin-top:10px"><button class="btn-small btn-accept" onclick="chatSendAssistPick('${reqId}','${method}')">✅ 发送选择</button><button class="btn-small" onclick="chatAssistRegen('${reqId}','${method}')">↻ 换一批</button><button class="btn-small" onclick="chatSkipAssist(this)">跳过</button></div>`;
+    el.innerHTML = `${innerHtml}${chatActions}`;
     // v0.6.6：优先就地替换 .assist-loading-card（chatAssist 插的），否则 append 到末尾
     const loadingEl = container.querySelector(`.assist-loading-card[data-method="${method}"]`);
     if (loadingEl) {
@@ -3755,6 +3768,9 @@ function chatUploadTrigger(reqId, category) {
   if (!inp) return;
   inp.setAttribute('accept', CHAT_UPLOAD_ACCEPT[category] || '*/*');
   inp.dataset.category = category;
+  // v0.13 B5 fix: 立即关掉 popover（用户取消文件选择后 popover 不会自动隐藏）
+  const pop = document.getElementById(`chat-input-popover-${reqId}`);
+  if (pop) pop.style.display = 'none';
   inp.click();
 }
 
@@ -3821,11 +3837,14 @@ async function chatUploadRawFile(reqId, file, category = 'unknown') {
 }
 
 // 从文件 input 选择上传（v0.9 📎 → popover → 选文件走这里）
+//   v0.13 B5: 支持多文件上传（input multiple），循环处理每个文件
 async function chatUploadFile(reqId, input) {
-  const file = input.files?.[0];
-  if (!file) return;
+  const files = Array.from(input.files || []);
+  if (files.length === 0) return;
   const category = input.dataset.category || 'unknown';
-  await chatUploadRawFile(reqId, file, category);
+  for (const file of files) {
+    await chatUploadRawFile(reqId, file, category);
+  }
   input.value = '';  // 重置 input，允许重复选同一文件
 }
 
@@ -3912,18 +3931,23 @@ function chatRenderAttachPreview(reqId, arr) {
     box.innerHTML = '';
     return;
   }
-  box.style.display = 'flex';
+box.style.display = 'flex';
   box.innerHTML = arr.map(a => {
     const sizeStr = a.size < 1024 ? `${a.size}B` : a.size < 1024*1024 ? `${(a.size/1024).toFixed(1)}KB` : `${(a.size/1024/1024).toFixed(2)}MB`;
     const thumb = a.category === 'image' && a.url
       ? `<img src="${a.url}" alt="">`
       : a.icon;
     const cls = a.uploading ? 'attach-card uploading' : 'attach-card';
+    // v0.13 B5 fix: 文件名加 <a> 链接，点击打开新窗口预览/下载
+    const fileUrl = a.id ? `/api/chat/upload/${encodeURIComponent(a.id)}/raw` : '#';
+    const nameHtml = a.uploading
+      ? `<div class="attach-name" title="${escHtml(a.name)}">${escHtml(a.name)}</div>`
+      : `<div class="attach-name" title="${escHtml(a.name)}"><a href="${fileUrl}" target="_blank" rel="noopener">${escHtml(a.name)}</a></div>`;
     return `
       <div class="${cls}" data-id="${a.id}">
         <div class="attach-thumb">${thumb}</div>
         <div class="attach-info">
-          <div class="attach-name" title="${escHtml(a.name)}">${escHtml(a.name)}</div>
+          ${nameHtml}
           <div class="attach-meta">${a.uploading ? (a.waitLabel || '⏳ 上传中...') : sizeStr + (a.extractedText ? ' · ' + a.extractedText.length + '字' : (a.parseNote ? ' · ⚠️ ' + a.parseNote : ''))}</div>
         </div>
         ${a.uploading ? '' : `<span class="attach-promote${a.promoted ? ' done' : ''}" onclick="chatPromoteAttachment('${reqId}','${a.id}', this)" title="${a.promoted ? '已存入知识库' : '存入知识库'}">${a.promoted ? '✓' : '📥'}</span>`}
@@ -4014,7 +4038,7 @@ function connectStreamingBrief(reqId, container) {
         const currentText = contentEl.textContent + data.text;
         contentEl.textContent = currentText;
         chatScrollToBottom(container);
-      } else if (data.type === 'done' && data.brief) {
+} else if (data.type === 'done' && data.brief) {
         es.close();
         // 同步 briefRound，避免轮询重复渲染
         // 流完成 → 把 raw JSON 替换为自然回复 + 可折叠思考
@@ -4030,8 +4054,10 @@ function connectStreamingBrief(reqId, container) {
           ? `<div class="chat-assist-suggest" onclick="chatAssist('${reqId}','${data.brief.suggested_assist.method}')">💡 ${escHtml(data.brief.suggested_assist.reason || '试试' + data.brief.suggested_assist.method)} →</div>`
           : '';
         streamingBubble.className = 'chat-bubble chat-bubble-ai';
-        streamingBubble.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">🤖 AI</span><span class="chat-time">第${data.brief.chat_round||1}轮</span>${data.brief.ai_understanding ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}<span class="chat-export-btn" onclick="chatExportWord(this)" data-req-id="${escHtml(reqId)}" title="导出为 Word 文档">📄</span></div><div class="chat-response">${respHtml}</div>${thinkingHtml}${suggestHtml}`;
+        streamingBubble.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">🤖 AI</span><span class="chat-time">第${data.brief.chat_round||1}轮</span>${data.brief.ai_understanding ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}<span class="chat-export-btn" onclick="chatExportWord(this)" data-req-id="${escHtml(container.id?.replace('chat-stream-msgs-', '') || '')}" title="导出为 Word 文档">📄</span></div><div class="chat-response">${respHtml}</div>${thinkingHtml}${suggestHtml}`;
         delete streamingBubble.dataset.streaming;
+        // v0.13 B5 fix: 同步 dataset.chatRound，避免 polling 误判为新轮次重复渲染
+        streamingBubble.dataset.chatRound = String(data.brief.chat_round || 0);
         chatScrollToBottom(container);
         // 只保留 suggested_assist（气泡底部的 💡 链接），不自动触发
         // auto_assist 逻辑已移除（2026-06-14：用户自主点击更可靠）
