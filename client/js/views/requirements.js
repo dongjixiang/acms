@@ -4011,7 +4011,11 @@ async function chatSend(reqId) {
   window._chatAttachments[reqId] = [];
   chatRenderAttachPreview(reqId, []);
 
-  chatSendSupplement(reqId, finalText, 'idea_supplement');
+  // v0.13 B5 fix: 加 await 让 chatSend 等 POST 真正完成
+  //   之前 fire-and-forget → triggerAiAutoSend 内的 await chatSend 立即 resolve
+  //   → _aiAutoSentCount++ / "已自动发送 N 轮" 日志与"消息真正发出去"不同步
+  //   → 与重入保护配合，确保一轮 send 真正结束再开始下一轮
+  await chatSendSupplement(reqId, finalText, 'idea_supplement');
 }
 
 /** 连接 SSE 流式思路简报 */
@@ -4245,31 +4249,42 @@ function restoreAiDraft(reqId) {
 }
 
 // 自动态：再点 ↻ = 直接发送（v0.13 B5 fix: 持续生效，不再二次确认，不再重置 off）
+//   v0.13 B5 fix: 防并发重入（tick / polling / 用户快速点 ↻ 都会并发触发，导致连续发 2 条）
 async function triggerAiAutoSend(reqId) {
-  // 注意：用户已在 selectAiMode('auto') 弹窗里确认过启用自动态，此处不再弹确认
-  const input = document.getElementById(`chat-input-${reqId}`);
-  if (!input) return;
-  // 输入框为空 → 先快速生成 AI 草稿
-  if (!input.value.trim()) {
-    await applyAiDraft(reqId);
-    if (!input.value.trim()) {
-      toast('⚠️ 输入框仍为空 · 已取消', 'warning', 2000);
-      return;
-    }
+  if (window._aiAutoRunning?.[reqId]) {
+    console.log(`[ai-auto] ${reqId} triggerAiAutoSend 已在跑，跳过重复触发`);
+    return;
   }
-  // v0.13 B5：记录当前 brief 轮次，避免重复触发同轮的倒计时
-  const state = window._chatState?.[reqId];
-  if (state) window._aiAutoLastRound[reqId] = state.briefRound || 0;
+  window._aiAutoRunning = window._aiAutoRunning || {};
+  window._aiAutoRunning[reqId] = true;
+  try {
+    // 注意：用户已在 selectAiMode('auto') 弹窗里确认过启用自动态，此处不再弹确认
+    const input = document.getElementById(`chat-input-${reqId}`);
+    if (!input) return;
+    // 输入框为空 → 先快速生成 AI 草稿
+    if (!input.value.trim()) {
+      await applyAiDraft(reqId);
+      if (!input.value.trim()) {
+        toast('⚠️ 输入框仍为空 · 已取消', 'warning', 2000);
+        return;
+      }
+    }
+    // v0.13 B5：记录当前 brief 轮次，避免重复触发同轮的倒计时
+    const state = window._chatState?.[reqId];
+    if (state) window._aiAutoLastRound[reqId] = state.briefRound || 0;
 
-  await chatSend(reqId);
+    await chatSend(reqId);
 
-  // v0.13 B5：递增自动发送计数 + 检查方向 checkpoint
-  window._aiAutoSentCount[reqId] = (window._aiAutoSentCount[reqId] || 0) + 1;
-  const sentCount = window._aiAutoSentCount[reqId];
-  console.log(`[ai-auto] ${reqId} 已自动发送第 ${sentCount} 轮`);
-  _aiCheckDirectionCheckpoint(reqId);
+    // v0.13 B5：递增自动发送计数 + 检查方向 checkpoint
+    window._aiAutoSentCount[reqId] = (window._aiAutoSentCount[reqId] || 0) + 1;
+    const sentCount = window._aiAutoSentCount[reqId];
+    console.log(`[ai-auto] ${reqId} 已自动发送第 ${sentCount} 轮`);
+    _aiCheckDirectionCheckpoint(reqId);
 
-  // 保持 'auto' 态（持续生效，用户主动选「关闭」才退出）
+    // 保持 'auto' 态（持续生效，用户主动选「关闭」才退出）
+  } finally {
+    window._aiAutoRunning[reqId] = false;
+  }
 }
 
 // 弹「AI 自动模式」二次确认（v0.13 B5 fix: 用专属 class 确保 fixed 定位 + 高 z-index）
@@ -4407,7 +4422,11 @@ function _aiStartAutoCountdown(reqId, chatRound) {
   const tick = () => {
     const left = Math.max(0, Math.ceil((deadlineMs - Date.now()) / 1000));
     _aiUpdateAutoIndicator(reqId, left, sentCount);
-    if (left <= 0) {
+    // v0.13 B5 fix: 防 tick 在 left<=0 区间多次进入触发（V8/Chrome setInterval
+    //   对 pending 回调的清理行为不一致；Math.ceil(-0.25)=0 让 left<=0 持续 ~1s）
+    const cd = window._aiAutoCountdowns[reqId];
+    if (left <= 0 && cd && !cd.fired) {
+      cd.fired = true;
       _aiCancelAutoCountdown(reqId, 'countdown finished');
       triggerAiAutoSend(reqId);
       return;
@@ -4415,7 +4434,7 @@ function _aiStartAutoCountdown(reqId, chatRound) {
   };
   tick(); // 立即渲染一次
   const timerId = setInterval(tick, 250);
-  window._aiAutoCountdowns[reqId] = { timerId, deadlineMs, chatRound };
+  window._aiAutoCountdowns[reqId] = { timerId, deadlineMs, chatRound, fired: false };
 }
 
 function _aiCancelAutoCountdown(reqId, reason) {
