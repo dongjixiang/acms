@@ -216,12 +216,13 @@ async function runBriefJob(requirementId, opts = {}) {
   //   → L475 读 req.thinking_brief 读到 status='generating' chat_round=0
   //   → oldRound = 0 → newRound = 1 永不变
   //   → SSE 端点 chat_round 永远=1，与 supplement 端点不一致 → AI 轮次错乱
-  //   新：读 storeBrief 跳过 generating 状态，取上次 done 的 chat_round
+  //   新：读 storeBrief.chat_round（不依赖 status，generating 状态也保留）
+  //   → 老 L253 oldRound 直接读这个值 → 正确
   let prevChatRound = 0;
   try {
     const storeReq = reqStore.getById(requirementId);
     const storeBrief = JSON.parse(storeReq?.thinking_brief || 'null');
-    if (storeBrief && storeBrief.status === 'done' && typeof storeBrief.chat_round === 'number') {
+    if (storeBrief && typeof storeBrief.chat_round === 'number') {
       prevChatRound = storeBrief.chat_round;
     }
   } catch {}
@@ -264,7 +265,10 @@ async function runBriefJob(requirementId, opts = {}) {
       supplementHistory  // v0.3.5 新增
     );
     // 计算对话轮次：旧 chat_round + 1（如无则 =1）
-    // v0.13 B5 fix: 从 reqStore 读最新值（不读 req 引用，避免被另一个入口覆盖）
+    // v0.13 B5 fix: 直接读 storeBrief.chat_round（不依赖 status）
+    //   旧：status === 'generating' 时 prevChatRound=0 → newRound=1 永不变
+    //   新：之前 L213 保留的 prevChatRound 写到 brief.chat_round（即使 status='generating'）
+    //   → 直接读 brief.chat_round（不依赖 status）→ 正确
     const oldRound = (() => { try { return JSON.parse(reqStore.getById(requirementId)?.thinking_brief || 'null')?.chat_round || 0; } catch { return 0; } })();
     const newRound = oldRound + 1;
 
@@ -398,11 +402,12 @@ async function* runBriefJobStream(requirementId, opts = {}) {
   if (!req) { yield { type: 'error', message: 'REQ_NOT_FOUND' }; return; }
 
   // v0.13 B5 fix: 保留之前的 chat_round（不重置为 0，与 runBriefJob 保持一致）
+  //   不依赖 status（generating 状态也保留）→ L497 oldRound 直接读这个值
   let prevChatRound = 0;
   try {
     const storeReq = reqStore.getById(requirementId);
     const storeBrief = JSON.parse(storeReq?.thinking_brief || 'null');
-    if (storeBrief && storeBrief.status === 'done' && typeof storeBrief.chat_round === 'number') {
+    if (storeBrief && typeof storeBrief.chat_round === 'number') {
       prevChatRound = storeBrief.chat_round;
     }
   } catch {}
