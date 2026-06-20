@@ -3661,7 +3661,12 @@ function renderAssistLayer(container, reqId, assists) {
 
     // 检查数据指纹：没变化就不重建（避免用户选中态丢失）
     // v0.3.6：+aspects+picked 确保借鉴卡片选中态变化能被检测到
-    const fingerprint = JSON.stringify({ status: d.status, scenarios: d.scenarios, tree: d.tree, dimensions: d.dimensions, modules: d.modules, aspects: d.aspects, profile: d.profile, insights: d.insights, picked: d.picked, used: d.used });
+    // v0.13 B10：+variants 让 visual regenerate 后能正确重新渲染
+    //   bug：visual 数据变化只体现在 variants 上，但 fingerprint 不含 variants
+    //   → regenerate 后 status/picked/used 全不变 → fingerprint 命中缓存 → 跳过渲染
+    //   → 旧卡片留在 DOM，新生成的图永远看不到
+    //   例：REQ-MQFAYK2A 重生成 3 张图（status=picked=used 不变）→ UI 不更新
+    const fingerprint = JSON.stringify({ status: d.status, scenarios: d.scenarios, tree: d.tree, dimensions: d.dimensions, modules: d.modules, aspects: d.aspects, profile: d.profile, insights: d.insights, variants: d.variants, picked: d.picked, used: d.used });
     const cacheKey = `${reqId}_${method}`;
     if (window._assistRenderCache[cacheKey] === fingerprint) continue; // 没变化，跳过该方法
     window._assistRenderCache[cacheKey] = fingerprint;
