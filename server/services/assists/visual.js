@@ -78,6 +78,10 @@ function getAssist(reqId) {
     // v0.3.3 B+++：generated_at_round 给 dispatcher 过滤用
     generated_at_round: previews.generated_at_round || 1,
     generated_at: previews.generated_at || previews.started_at,
+    // v0.13 B7：前端 visual 卡片需要知道 req 属于哪个项目才能正确拼图片 URL
+    //   旧：前端用 App.currentProjectId（当前激活项目），跨项目查看时永远 404
+    //   新：返回 req.project_id，前端用它拼 URL
+    project_id: req.project_id,
   };
 }
 

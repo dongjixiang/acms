@@ -36,7 +36,11 @@
       const isPicked = picked === v.id;
       const hasImg = v.asset_path && !v.error;
       const imgBlock = hasImg
-        ? `<img src="/api/generate/assets/${App.currentProjectId}/${v.asset_path}" class="assist-visual-img" alt="${escHtml(v.label)}" loading="lazy" />`
+        // v0.13 B7 fix: 用 req 所属 project_id 拼图片 URL，不用 App.currentProjectId
+        //   旧：跨项目查看时永远 404（req 100016 在 sanguo，但用户在 duogame → URL 拼成 proj_duogame → 404）
+        //   新：data.project_id 来自 server getAssist → req.project_id，跨项目正常显示
+        //   fallback：data.project_id 缺失时用 App.currentProjectId（向后兼容）
+        ? `<img src="/api/generate/assets/${data.project_id || App.currentProjectId}/${v.asset_path}" class="assist-visual-img" alt="${escHtml(v.label)}" loading="lazy" />`
         : (v.error
             ? `<div class="assist-visual-img-failed">🖼 生成失败：${escHtml(v.error)}</div>`
             : `<div class="assist-visual-img-loading">⏳ 生成中…</div>`);
