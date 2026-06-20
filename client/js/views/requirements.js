@@ -3443,9 +3443,13 @@ async function loadChatStream(reqId) {
     _chatState[reqId].histCount = history.length;
 
     const brief = briefResp.thinkingBrief;
+    // v0.13 B5 fix: 强制设 state.briefRound（无论 status，避免 undefined）
+    //   旧 bug：L3448 条件 brief.status === 'done' 才设；如果 loadChatStream 时 brief 在 generating
+    //   → state.briefRound 永远是 undefined → triggerAiAutoSend L4278 fallback 到 0
+    //   → polling 看到 briefRound > 0 总是满足 → 永远启动新倒计时
+    _chatState[reqId].briefRound = brief?.chat_round || 0;
     if (brief && brief.status === 'done') {
       if (String(brief.chat_round) !== (container.lastElementChild?.dataset?.chatRound || '')) renderBriefBubble(container, brief);
-      _chatState[reqId].briefRound = brief.chat_round || 0;
     } else if (brief && brief.status === 'generating') {
       container.insertAdjacentHTML('beforeend', '<div class="chat-typing"><span></span><span></span><span></span></div>');
     }
@@ -4300,7 +4304,17 @@ async function triggerAiAutoSend(reqId) {
     }
     // v0.13 B5：记录当前 brief 轮次，避免重复触发同轮的倒计时
     const state = window._chatState?.[reqId];
-    if (state) window._aiAutoLastRound[reqId] = state.briefRound || 0;
+    // v0.13 B5 fix: fallback 用 state.briefRound（不是 0）
+    //   旧：state.briefRound || 0 → state.briefRound 是 undefined 时 fallback 0
+    //   → polling 看到 briefRound > 0 总是满足 → 无限循环启动新倒计时
+    //   新：state.briefRound ?? -1 → state.briefRound 是 undefined 时 fallback -1
+    //   → polling 看到 briefRound > -1 满足（任何轮次）但只启动 1 次
+    //   → 启动后 polling 会更新 state.briefRound → 下次判断正确
+    if (state && typeof state.briefRound === 'number') {
+      window._aiAutoLastRound[reqId] = state.briefRound;
+    } else {
+      window._aiAutoLastRound[reqId] = -1;
+    }
 
     await chatSend(reqId);
 
@@ -4349,6 +4363,18 @@ function confirmAiAuto(reqId) {
   _aiSetState(reqId, 'auto');
   // v0.13 B5：自动态启用时重置计数 + 挂 input 监听
   window._aiAutoSentCount[reqId] = 0;
+  // v0.13 B5 fix: 显式拉一次 briefResp 同步 state.briefRound
+  //   旧 bug：state.briefRound 可能是 undefined（loadChatStream 时 brief.status='generating'，
+  //   L3448 没设 state.briefRound），导致 triggerAiAutoSend 跑时 L4278 fallback 到 0
+  //   → polling 看到 briefRound > 0 总是满足 → 永远启动新倒计时（applyAiDraft 失败也启动）
+  //   新行为：enable auto 时显式同步一次 state.briefRound
+  api('GET', `/requirements/${reqId}/thinking-brief`).then(r => {
+    const b = r?.thinkingBrief;
+    if (b && b.chat_round != null) {
+      _chatState[reqId] = _chatState[reqId] || { histCount: 0, briefRound: 0 };
+      _chatState[reqId].briefRound = b.chat_round || 0;
+    }
+  }).catch(e => console.warn('[ai-auto] 同步 state.briefRound 失败:', e.message));
   // _aiAutoLastRound 保持 0（语义：还没自动过任何轮次）
   //   当前等待用户回复的轮次如果存在，_aiCheckAndStartAuto 会检测到并立即启动倒计时
   window._aiAutoLastRound[reqId] = 0;
