@@ -4304,17 +4304,21 @@ async function triggerAiAutoSend(reqId) {
       return;
     }
     // v0.13 B5：记录当前 brief 轮次，避免重复触发同轮的倒计时
-    const state = window._chatState?.[reqId];
-    // v0.13 B5 fix: fallback 用 state.briefRound（不是 0）
-    //   旧：state.briefRound || 0 → state.briefRound 是 undefined 时 fallback 0
-    //   → polling 看到 briefRound > 0 总是满足 → 无限循环启动新倒计时
-    //   新：state.briefRound ?? -1 → state.briefRound 是 undefined 时 fallback -1
-    //   → polling 看到 briefRound > -1 满足（任何轮次）但只启动 1 次
-    //   → 启动后 polling 会更新 state.briefRound → 下次判断正确
-    if (state && typeof state.briefRound === 'number') {
-      window._aiAutoLastRound[reqId] = state.briefRound;
-    } else {
-      window._aiAutoLastRound[reqId] = -1;
+    // v0.13 B5 fix: 显式拉一次 briefResp 拿最新 briefRound
+    //   旧：state.briefRound 可能滞后（L3506 只在 !streamingBubble 时更新 / L3448 强制设 0）
+    //   → _aiAutoLastRound 设错值 → polling 看到 briefRound > 错值 满足 → 循环
+    //   新：直接拉一次 briefResp 拿真值，绕过 state 同步问题
+    try {
+      const r = await api('GET', `/requirements/${reqId}/thinking-brief`);
+      const realBriefRound = r?.thinkingBrief?.chat_round || 0;
+      window._aiAutoLastRound[reqId] = realBriefRound;
+      // 顺便把 state 同步好（后续轮次 L4314 仍读 state）
+      _chatState[reqId] = _chatState[reqId] || { histCount: 0, briefRound: 0 };
+      _chatState[reqId].briefRound = realBriefRound;
+    } catch (e) {
+      // 拉失败时 fallback state.briefRound（数字 0 排除）
+      const fallback = (window._chatState?.[reqId]?.briefRound > 0) ? window._chatState[reqId].briefRound : -1;
+      window._aiAutoLastRound[reqId] = fallback;
     }
 
     await chatSend(reqId);
