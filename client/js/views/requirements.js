@@ -4222,6 +4222,17 @@ async function applyAiDraft(reqId) {
   //   → LLM 拿不到完整 AI 1 轮 → 草稿不基于完整 AI 上一轮
   //   新：AI bubble 只读 .chat-response，长度 500 → 1500（够覆盖长 brief）
   const c = document.getElementById(`chat-stream-msgs-${reqId}`);  // v0.13 B5 fix: 之前 patch 误删，导致 ReferenceError
+  // v0.13 B5 fix: 等待所有 streaming bubble 完成（避免读到正在 streaming 的半成品）
+  //   旧：applyAiDraft 5s 期间 AI 上一轮 streaming 还没完成 → .chat-response 不存在
+  //   → contentEl 回退到 b（bubble 整体）→ b.textContent 是 token 文本（不完整）
+  //   → 草稿基于不完整 AI 上一轮 → "没等 AI 完成就发"
+  //   新：等待 streaming 完成（className 不再含 chat-streaming-bubble）再读
+  if (c) {
+    const start = Date.now();
+    while (c.querySelector('.chat-streaming-bubble') && Date.now() - start < 8000) {
+      await new Promise(r => setTimeout(r, 200));
+    }
+  }
   const bubbles = c ? Array.from(c.querySelectorAll('.chat-bubble')).slice(-6) : [];
   const history = bubbles.map(b => {
     const role = b.classList.contains('chat-bubble-user') ? 'user' : 'assistant';
@@ -4308,17 +4319,22 @@ async function triggerAiAutoSend(reqId) {
     //   旧：state.briefRound 可能滞后（L3506 只在 !streamingBubble 时更新 / L3448 强制设 0）
     //   → _aiAutoLastRound 设错值 → polling 看到 briefRound > 错值 满足 → 循环
     //   新：直接拉一次 briefResp 拿真值，绕过 state 同步问题
+    let realBriefRound = 0;
     try {
       const r = await api('GET', `/requirements/${reqId}/thinking-brief`);
-      const realBriefRound = r?.thinkingBrief?.chat_round || 0;
+      realBriefRound = r?.thinkingBrief?.chat_round || 0;
       window._aiAutoLastRound[reqId] = realBriefRound;
       // 顺便把 state 同步好（后续轮次 L4314 仍读 state）
       _chatState[reqId] = _chatState[reqId] || { histCount: 0, briefRound: 0 };
       _chatState[reqId].briefRound = realBriefRound;
     } catch (e) {
-      // 拉失败时 fallback state.briefRound（数字 0 排除）
-      const fallback = (window._chatState?.[reqId]?.briefRound > 0) ? window._chatState[reqId].briefRound : -1;
-      window._aiAutoLastRound[reqId] = fallback;
+      // v0.13 B5 fix: 拉失败时直接中断 triggerAiAutoSend（不设 _aiAutoLastRound，避免循环）
+      //   旧：fallback -1 → polling 看到 briefRound > -1 满足 → 循环
+      //   旧：fallback state.briefRound（如果 0）→ polling 看到 briefRound > 0 满足 → 循环
+      //   新：fetch 失败就 return → chatSend 不跑 → "已自动发送" log 不打 → 不会循环
+      console.warn(`[ai-auto] ${reqId} fetch /thinking-brief 失败，本轮取消:`, e.message);
+      toast('⚠️ AI 轮次信息获取失败，本轮自动回复已取消', 'warning', 3000);
+      return;
     }
 
     await chatSend(reqId);
