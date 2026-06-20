@@ -2969,7 +2969,8 @@ async function maybeLoadInsightPreviews(reqId) {
       renderInsightPreviewContent(reqId, previews);
     } else {
       // done / failed / skipped
-      renderInsightPreviewContent(reqId, previews);
+      // v0.13 B8：传入 projectId，让 render 用 req 所属项目拼图片 URL（治跨项目 404）
+      renderInsightPreviewContent(reqId, previews, resp.projectId);
       if (previews.status === 'generating' || previews.status === 'pending') {
         _insightPollers[reqId] = setInterval(() => pollInsightPreviews(reqId), 3000);
       }
@@ -2984,7 +2985,8 @@ async function pollInsightPreviews(reqId) {
     const resp = await api('GET', `/requirements/${reqId}/insight-previews`);
     const previews = resp.insightPreviews;
     if (!previews) return;
-    renderInsightPreviewContent(reqId, previews);
+    // v0.13 B8：传入 projectId（治跨项目图片 404）
+    renderInsightPreviewContent(reqId, previews, resp.projectId);
     if (previews.status !== 'generating' && previews.status !== 'pending') {
       clearInterval(_insightPollers[reqId]);
       delete _insightPollers[reqId];
@@ -2994,10 +2996,13 @@ async function pollInsightPreviews(reqId) {
   }
 }
 
-function renderInsightPreviewContent(reqId, previews) {
+function renderInsightPreviewContent(reqId, previews, projectId) {
   const container = document.getElementById(`insight-preview-content-${reqId}`);
   if (!container) return;
   const footer = document.getElementById(`insight-footer-${reqId}`);
+  // v0.13 B8：拼图片 URL 用 req 所属 projectId，避免跨项目查看时 404
+  //   fallback：projectId 缺失时用 App.currentProjectId（向后兼容老调用）
+  const assetProjectId = projectId || App.currentProjectId;
 
   if (previews.status === 'pending') {
     container.innerHTML = '<div class="insight-loading">⏳ 等待启动…</div>';
@@ -3017,7 +3022,7 @@ function renderInsightPreviewContent(reqId, previews) {
           ${variant.rationale ? `<div class="insight-card-rationale">💭 ${escHtml(variant.rationale)}</div>` : ''}
           <div class="insight-card-image">
             ${variant.asset_path
-              ? `<img src="/api/generate/assets/${App.currentProjectId}/${variant.asset_path}" alt="${escHtml(variant.label)}" />`
+              ? `<img src="/api/generate/assets/${assetProjectId}/${variant.asset_path}" alt="${escHtml(variant.label)}" />`
               : `<div class="insight-card-loading">⏳ 生成中…</div>`}
           </div>
         </div>
@@ -3043,7 +3048,7 @@ function renderInsightPreviewContent(reqId, previews) {
       ${variant.rationale ? `<div class="insight-card-rationale">💭 ${escHtml(variant.rationale)}</div>` : ''}
       <div class="insight-card-image">
         ${variant.asset_path
-          ? `<img src="/api/generate/assets/${App.currentProjectId}/${variant.asset_path}" alt="${escHtml(variant.label)}" />`
+          ? `<img src="/api/generate/assets/${assetProjectId}/${variant.asset_path}" alt="${escHtml(variant.label)}" />`
           : `<div class="insight-card-failed">✗ ${escHtml(variant.error || '生成失败')}</div>`}
       </div>
       ${variant.prompt ? `<details class="insight-card-prompt"><summary>查看生成 prompt</summary><code>${escHtml(variant.prompt)}</code></details>` : ''}

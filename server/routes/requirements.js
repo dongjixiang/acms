@@ -516,6 +516,10 @@ router.get('/:id/insight-previews', (req, res, next) => {
     const previews = JSON.parse(reqRec.insight_previews || 'null');
     res.json({
       requirementId: req.params.id,
+      // v0.13 B8：前端 renderInsightPreviewContent 拼图片 URL 需要 req 所属 projectId
+      //   旧：默认 fallback 到 App.currentProjectId（当前激活项目）→ 跨项目查看 404
+      //   新：返回 req.project_id，前端用它拼 URL
+      projectId: reqRec.project_id,
       status: reqRec.status,
       inputClarity: reqRec.input_clarity || null,
       insightPreviews: previews,
