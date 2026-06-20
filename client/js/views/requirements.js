@@ -4090,10 +4090,31 @@ function connectStreamingBrief(reqId, container) {
         // auto_assist 逻辑已移除（2026-06-14：用户自主点击更可靠）
         // 尝试加载 assist
         loadStreamAssist(reqId, container);
+        // v0.13 B5 fix: SSE done 是「AI 这一轮回复真正结束」的唯一可靠信号
+        //   取代 polling 的 brief.status==='done' && !streamingBubble 竞态检测
+        //   bug：polling 在后端 brief 完成到 SSE 首个 token 之间窗口误判 → 倒计时提前
+        //   新：SSE done handler 内直接触发倒计时，倒计时输入空 + auto 态才启动
+        window._aiSseDone = window._aiSseDone || {};
+        const sseDoneRound = data.brief.chat_round || 0;
+        window._aiSseDone[reqId] = sseDoneRound;
+        if (_aiGetState(reqId) === 'auto'
+            && sseDoneRound > (window._aiAutoLastRound[reqId] || 0)
+            && !_aiAutoCountdowns[reqId]) {
+          const input = document.getElementById(`chat-input-${reqId}`);
+          if (input && !input.value.trim()) {
+            console.log(`[ai-auto] ${reqId} SSE done 触发倒计时（round=${sseDoneRound}）`);
+            toast('🤖 AI 提问完成 · 10 秒后自动回复 · 点 ↻ 跳过 / 选「关闭」停止', 'info', 4000);
+            _aiStartAutoCountdown(reqId, sseDoneRound);
+          }
+        }
       } else if (data.type === 'error') {
         es.close();
         contentEl.textContent = '⚠️ ' + (data.message || '生成失败');
+        // v0.13 B5 fix: 与 SSE error 同处理 — 拆掉 .chat-streaming-bubble class
+        //   不然 polling 永远查到 streamingBubble → 永远不启动倒计时
+        streamingBubble.className = 'chat-bubble chat-bubble-ai chat-bubble-error';
         delete streamingBubble.dataset.streaming;
+        streamingBubble.dataset.streaming = 'done';
       }
     } catch (e) { /* JSON parse error */ }
   });
@@ -4102,6 +4123,15 @@ function connectStreamingBrief(reqId, container) {
     es.close();
     if (streamingBubble?.dataset?.streaming !== 'done') {
       contentEl.textContent += '\n⚠️ 连接中断';
+      // v0.13 B5 fix: SSE 错误也算「AI 这一轮结束」（虽然失败）
+      //   不然 streamingBubble 永远卡在 DOM（带 .chat-streaming-bubble class）
+      //   → polling 每次都查到 streamingBubble → !streamingBubble 永远 false
+      //   → 永远不启动倒计时 → 自动回复卡死
+      streamingBubble.className = 'chat-bubble chat-bubble-ai chat-bubble-error';
+      streamingBubble.dataset.streaming = 'done';
+      // 兜底信号：让 polling 知道这一轮已结束（即便失败）
+      window._aiSseDone = window._aiSseDone || {};
+      window._aiSseDone[reqId] = _chatState[reqId]?.briefRound || 0;
     }
   });
 }
