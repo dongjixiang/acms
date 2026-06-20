@@ -646,14 +646,10 @@ router.get('/:id/assist', (req, res, next) => {
       if (svc && svc.getAssist) {
         const data = svc.getAssist(req.params.id);
         if (data) result[method] = data;
-        // v0.13 调试：每 5 次 GET 才 log 一次 use_case（避免刷屏）
-        if (method === 'use_case' && (!global._ucGetLogCount)) global._ucGetLogCount = 0;
-        if (method === 'use_case') {
-          global._ucGetLogCount = (global._ucGetLogCount || 0) + 1;
-          if (global._ucGetLogCount % 5 === 0) {
-            console.log(`[GET /assist] use_case 诊断 #${global._ucGetLogCount}: status=${data?.status}, business=${data?.businessCases?.length}, system=${data?.systemCases?.length}, rawLen=${reqRec.structured_requirements?.length || 0}B`);
-          }
-        }
+        // v0.13 B6 fix: 删 use_case 调试 log
+        //   旧：每 5 次 GET 输出诊断（前端 3s polling × 多个 req → 持续刷屏）
+        //   新：use_case 状态已在 GET 返回的 `assists.use_case` 里，前端自行渲染
+        //   诊断需要时用 `node -e "..."` 临时打开，不要再长期挂 console.log
       }
     }
 
