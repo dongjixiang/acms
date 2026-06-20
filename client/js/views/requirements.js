@@ -4183,11 +4183,18 @@ function connectAssistStream(reqId, method, extraBody) {
       try {
         const data = JSON.parse(e.data);
         if (data.type === 'progress') {
-          // 更新 loading 卡片的 hint
+          // 更新 loading 卡片的提示和计时
           const loadingEl = container?.querySelector(`.assist-loading-card[data-method="${method}"]`);
           if (loadingEl) {
             const hintEl = loadingEl.querySelector('.assist-loading-hint');
             if (hintEl) hintEl.textContent = data.text;
+            // 更新计时
+            const progressEl = loadingEl.querySelector('.assist-loading-progress');
+            if (progressEl) {
+              const startedAt = parseInt(loadingEl.dataset.startedAt || '0', 10);
+              const elapsed = startedAt ? Math.floor((Date.now() - startedAt) / 1000) : 0;
+              progressEl.textContent = elapsed + 's';
+            }
           }
         } else if (data.type === 'done') {
           es.close();
