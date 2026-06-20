@@ -341,13 +341,11 @@ async function runBriefJob(requirementId, opts = {}) {
           diagnosis: brief.diagnosis,  // v0.4 Phase 2a：传 diagnosis 让路由器感知
         }, opts.modelId);
         if (pick.method) {
-          const svc = assists.getAssist(pick.method);
-          if (svc && svc.runAssistJob) {
-            // fire-and-forget：不阻塞 brief job；透传焦点让生成内容围绕它
-            setImmediate(() => svc.runAssistJob(requirementId, { modelId: opts.modelId, role: opts.role, chatRound: newRound, followupQuestion })
-              .catch(e => console.error(`[brief.assist] ${requirementId} ${pick.method} 异常:`, e.message)));
-            console.log(`[brief.assist] ${requirementId} 自动选了 ${pick.method}（round=${newRound}, focus="${followupQuestion.slice(0, 30)}"）`);
-          }
+          // v0.13 B5 fix: 不再自动 fire-and-forget runAssistJob
+          //   旧行为：brief 完成后路由器自动选 + 自动跑 1 种 assist（pains/visual/...）
+          //   → 用户没主动点，assists 也在后台跑
+          //   新行为：只"建议"（suggested_assist 已在 brief 里），等用户点 ↻ 按钮/assist 卡片才跑
+          console.log(`[brief.assist] ${requirementId} 建议 ${pick.method}（round=${newRound}），等用户主动触发（不再自动跑）`);
         } else if (newRound <= 2) {
           // v0.3.3 B 方案补丁：首轮/第二轮豁免（让用户先自己思考）
           console.log(`[brief.assist] ${requirementId} chat_round=${newRound} 触发首轮豁免，暂不推辅助手段`);

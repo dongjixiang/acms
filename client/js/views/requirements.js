@@ -4265,6 +4265,10 @@ async function triggerAiAutoSend(reqId) {
     // 注意：用户已在 selectAiMode('auto') 弹窗里确认过启用自动态，此处不再弹确认
     const input = document.getElementById(`chat-input-${reqId}`);
     if (!input) return;
+    // v0.13 B5 fix: 立即 hide 指示条（applyAiDraft 5s 期间不应该显示 "5 秒后发送"）
+    //   旧行为：指示条一直显示 "5 秒后发送" 直到下一轮倒计时启动才更新
+    //   新行为：进入 triggerAiAutoSend 立即 hide，下一轮 _aiStartAutoCountdown 启动时再 show
+    _aiHideAutoIndicator(reqId);
     // 输入框为空 → 先快速生成 AI 草稿
     if (!input.value.trim()) {
       await applyAiDraft(reqId);
@@ -4423,6 +4427,10 @@ function _aiStartAutoCountdown(reqId, chatRound) {
   if (_aiAutoCountdowns[reqId]) return; // 已有倒计时，不重复启动
   const sentCount = window._aiAutoSentCount[reqId] || 0;
   const deadlineMs = Date.now() + AI_AUTO_COUNTDOWN_MS;
+  // v0.13 B5 fix: 新一轮倒计时启动时重建/显示指示条
+  //   旧行为：tick 内部 _aiUpdateAutoIndicator 在 bar 不存在时直接 return → bar 不会出现
+  //   新行为：_aiStartAutoCountdown 入口 _aiShowAutoIndicator 重建 bar，tick 立即跑更新文本
+  _aiShowAutoIndicator(reqId, `⏸ 等待 AI 下一轮完成后 5 秒倒计时发送 · 第 ${sentCount + 1} 轮`);
   const tick = () => {
     const left = Math.max(0, Math.ceil((deadlineMs - Date.now()) / 1000));
     _aiUpdateAutoIndicator(reqId, left, sentCount);
@@ -4446,6 +4454,12 @@ function _aiCancelAutoCountdown(reqId, reason) {
   if (!cd) return;
   clearInterval(cd.timerId);
   delete window._aiAutoCountdowns[reqId];
+  // v0.13 B5 fix: cancel 时立即 hide 指示条
+  //   旧行为：cancel 只 clearInterval + delete 对象，bar 还在 DOM
+  //   → applyAiDraft / chatSend 期间 bar 一直显示 "5 秒后发送" 文本
+  //   → 视觉上"几乎不消失就又开始数 5 秒"
+  //   新行为：cancel 立即 hide bar，下一轮倒计时启动时再 show
+  _aiHideAutoIndicator(reqId);
 }
 
 // 输入框 input 监听 — 用户打字自动取消倒计时（保留用户工作）
