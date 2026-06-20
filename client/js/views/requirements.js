@@ -3541,7 +3541,22 @@ function startChatPolling(reqId) {
           if (c % 3 === 0) console.log(`[chatAssist] ${explicit} waiting for data (tick #${c})`);
         }
       }
-    } catch(e) { console.warn('[chatPoll] polling error:', e.message); }
+    } catch(e) {
+      // v0.13 B5 fix: REQ_NOT_FOUND 时清理状态（req 已删除，避免持续报错 + 污染 state）
+      if (e.message?.includes('REQ_NOT_FOUND')) {
+        console.log(`[chatPoll] ${reqId} 已删除，清理状态`);
+        clearInterval(_chatPollers[reqId]);
+        delete _chatPollers[reqId];
+        delete _chatState[reqId];
+        delete window._aiAutoLastRound?.[reqId];
+        delete window._aiAutoSentCount?.[reqId];
+        delete window._aiAutoCountdowns?.[reqId];
+        delete window._aiReplyState?.[reqId];
+        delete window._aiAutoRunning?.[reqId];
+        return;
+      }
+      console.warn('[chatPoll] polling error:', e.message);
+    }
   }, 3000);
 }
 
