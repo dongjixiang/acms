@@ -605,6 +605,9 @@ router.get('/:id/thinking-brief/stream', async (req, res, next) => {
     for await (const event of briefService.runBriefJobStream(req.params.id, { modelId })) {
       if (event.type === 'token') {
         send('token', { text: event.text });
+      } else if (event.type === 'opening' || event.type === 'thinking' || event.type === 'followup') {
+        // v2.0: 流式按字段分发事件
+        send(event.type, { text: event.text });
       } else if (event.type === 'done') {
         send('done', { brief: event.brief });
         break;

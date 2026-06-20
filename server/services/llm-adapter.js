@@ -1,15 +1,12 @@
-// LLM 适配器 — 统一多 API 格式调用层
+// LLM 适配器 — 统一多 API 格式调用层（v2.0 + tool_calls + Anthropic 流式）
 // 支持: openai-chat, anthropic-messages
 const modelStore = require('../stores/model-store');
+const toolRegistry = require('./tool-registry');
 
 // 默认请求超时（毫秒）
 const DEFAULT_TIMEOUT = 120000; // 120s
 
 // ── v0.3.3 B+++ 补丁（2026-06-13）：DEBUG 模式开关 ──
-// 配合 index.js 启动时的 ACMS_LLM_DEBUG 环境变量
-// 开启后把 LLM request/response/parse 全 dump 到 data/acms-llm-debug.log
-// 配合文件 logger（data/acms.log）可以诊断 5 轮没辅助手段 / tradeoff 解析失败 等问题
-// 自动 rotate（5MB → .old）
 const LLM_DEBUG = process.env.ACMS_LLM_DEBUG === '1';
 const DEBUG_LOG_FILE = require('path').join(__dirname, '..', 'data', 'acms-llm-debug.log');
 const DEBUG_LOG_MAX_BYTES = 5 * 1024 * 1024;
@@ -30,8 +27,8 @@ function _debugDump(tag, payload) {
  * 调用 LLM，自动根据 model.api 选择协议
  * @param {string} modelId
  * @param {Array}  messages - [{role, content}, ...]
- * @param {object} options - { temperature, maxTokens, jsonMode, projectId }
- * @returns {object} { content, modelUsed, usage: { promptTokens, completionTokens, totalTokens } }
+ * @param {object} options - { temperature, maxTokens, jsonMode, projectId, tools }
+ * @returns {object} { content, modelUsed, usage, toolCalls?, finishReason? }
  */
 async function callLLM(modelId, messages, options = {}) {
   const model = modelStore.getById(modelId);
@@ -46,14 +43,12 @@ async function callLLM(modelId, messages, options = {}) {
     temperature: options.temperature ?? 0.7,
     maxTokens: options.maxTokens ?? 2000,
     jsonMode: options.jsonMode ?? false,
+    tools: options.tools || null,
   };
 
-  // ── DEBUG 模式：dump 完整入参 ──
   _debugDump('LLM_REQUEST', {
-    modelId,
-    model: { name: model.name, model: model.model, api, baseUrl: model.baseUrl, isMiniMax: (model.baseUrl || '').includes('minimax'), isDeepSeek: (model.baseUrl || '').includes('deepseek') },
-    opts,
-    messagesCount: messages.length,
+    modelId, model: { name: model.name, model: model.model, api, baseUrl: model.baseUrl },
+    opts, messagesCount: messages.length,
     messagesTotalChars: messages.reduce((s, m) => s + (m.content?.length || 0), 0),
     messages: messages.map(m => ({ role: m.role, contentLen: m.content?.length || 0, content: m.content })),
     caller: options.caller || '(none)',
@@ -61,21 +56,16 @@ async function callLLM(modelId, messages, options = {}) {
 
   let result;
   if (api === 'anthropic-messages') {
-    result = await callAnthropic(model, messages, opts, apiKey);
+    result = await callAnthropic(model, messages, opts, apiKey, opts.tools);
   } else {
-    result = await callOpenAI(model, messages, opts, apiKey);
+    result = await callOpenAI(model, messages, opts, apiKey, opts.tools);
   }
 
-  // ── DEBUG 模式：dump 完整返回 ──
   _debugDump('LLM_RESPONSE', {
-    modelId,
-    contentLen: result.content?.length || 0,
-    content: result.content,
-    usage: result.usage,
-    finishReason: result.finishReason || '(n/a)',
+    modelId, contentLen: result.content?.length || 0, content: result.content,
+    usage: result.usage, finishReason: result.finishReason || '(n/a)',
   });
 
-  // 记录 Token 用量（如果有 projectId）
   if (options.projectId && result.usage) {
     try {
       const tracker = require('./token-tracker');
@@ -87,10 +77,9 @@ async function callLLM(modelId, messages, options = {}) {
 }
 
 // ===== OpenAI Chat Completions =====
-async function callOpenAI(model, messages, opts, apiKey) {
+async function callOpenAI(model, messages, opts, apiKey, tools) {
   const baseUrl = model.baseUrl || 'https://api.deepseek.com/v1';
   const isMiniMax = baseUrl.includes('minimax');
-  const isDeepSeek = baseUrl.includes('deepseek');
 
   const body = {
     model: model.model,
@@ -99,18 +88,21 @@ async function callOpenAI(model, messages, opts, apiKey) {
     max_tokens: opts.maxTokens,
   };
 
-  // jsonMode: 只对明确支持的 provider 发送 API 级 response_format
-  // OpenAI、DeepSeek、Together 等支持；MiniMax 不支持或表现不稳定
+  // v2.0: 工具调用
+  if (tools && tools.length > 0) {
+    body.tools = tools;
+    body.tool_choice = 'auto';
+  }
+
   const supportsJsonResponseFormat = !isMiniMax;
   if (opts.jsonMode && supportsJsonResponseFormat) {
     body.response_format = { type: 'json_object' };
   }
 
-  // 对于不支持 API 级 json 约束的 provider，通过 prompt 提示强化
   if (opts.jsonMode && !supportsJsonResponseFormat) {
     const jsonReminder = {
       role: 'system',
-      content: '【格式强制】你必须严格输出纯 JSON 对象，不要用 ```json 代码块包裹，不要添加任何额外文字、注释或说明。JSON 必须合法（无尾逗号、无截断），所有字符串字段使用双引号。',
+      content: '【格式强制】你必须严格输出纯 JSON 对象，不要用 ```json 代码块包裹，不要添加任何额外文字、注释或说明。',
     };
     messages.push(jsonReminder);
   }
@@ -132,16 +124,21 @@ async function callOpenAI(model, messages, opts, apiKey) {
     }
 
     const data = await resp.json();
+    const msg = data.choices?.[0]?.message || {};
     const u = data.usage || {};
-    return {
-      content: data.choices?.[0]?.message?.content || '',
+
+    const result = {
+      content: msg.content || '',
       modelUsed: `${model.name} (${model.model})`,
-      usage: {
-        promptTokens: u.prompt_tokens || 0,
-        completionTokens: u.completion_tokens || 0,
-        totalTokens: u.total_tokens || 0,
-      },
+      usage: { promptTokens: u.prompt_tokens || 0, completionTokens: u.completion_tokens || 0, totalTokens: u.total_tokens || 0 },
     };
+
+    if (tools && tools.length > 0 && msg.tool_calls?.length > 0) {
+      result.toolCalls = toolRegistry.extractToolCalls('openai-chat', data);
+      result.finishReason = data.choices?.[0]?.finish_reason || 'tool_calls';
+    }
+
+    return result;
   } catch (e) {
     clearTimeout(timeoutId);
     if (e.name === 'AbortError') {
@@ -152,7 +149,7 @@ async function callOpenAI(model, messages, opts, apiKey) {
 }
 
 // ===== Anthropic Messages =====
-async function callAnthropic(model, messages, opts, apiKey) {
+async function callAnthropic(model, messages, opts, apiKey, tools) {
   const baseUrl = model.baseUrl || 'https://api.anthropic.com';
 
   const systemParts = [];
@@ -172,6 +169,11 @@ async function callAnthropic(model, messages, opts, apiKey) {
     messages: chatMessages,
   };
 
+  if (tools && tools.length > 0) {
+    body.tools = tools;
+    body.tool_choice = { type: 'auto' };
+  }
+
   if (systemParts.length > 0) {
     body.system = systemParts.join('\n\n');
   }
@@ -181,11 +183,7 @@ async function callAnthropic(model, messages, opts, apiKey) {
   try {
     const resp = await fetch(`${baseUrl}/v1/messages`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify(body),
       signal: controller.signal,
     });
@@ -199,15 +197,19 @@ async function callAnthropic(model, messages, opts, apiKey) {
     const data = await resp.json();
     const textContent = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('');
     const u = data.usage || {};
-    return {
+
+    const result = {
       content: textContent || '',
       modelUsed: `${model.name} (${model.model})`,
-      usage: {
-        promptTokens: u.input_tokens || 0,
-        completionTokens: u.output_tokens || 0,
-        totalTokens: (u.input_tokens || 0) + (u.output_tokens || 0),
-      },
+      usage: { promptTokens: u.input_tokens || 0, completionTokens: u.output_tokens || 0, totalTokens: (u.input_tokens || 0) + (u.output_tokens || 0) },
     };
+
+    if (tools && tools.length > 0 && data.content?.some(c => c.type === 'tool_use')) {
+      result.toolCalls = toolRegistry.extractToolCalls('anthropic-messages', data);
+      result.finishReason = data.stop_reason || 'tool_use';
+    }
+
+    return result;
   } catch (e) {
     clearTimeout(timeoutId);
     if (e.name === 'AbortError') {
@@ -218,17 +220,11 @@ async function callAnthropic(model, messages, opts, apiKey) {
 }
 
 // ════════════════════════════════════════════════════════════════
-// v0.3.6 流式调用（SSE）— 用于对话式想法澄清的实时输出
+// 流式调用（SSE）
 // ════════════════════════════════════════════════════════════════
 
 /**
- * 流式调用 LLM，通过 async generator 逐 token 产出
- * @param {string} modelId
- * @param {Array}  messages - [{role, content}]
- * @param {object} options - { temperature, maxTokens }
- * @yields {type: 'token', text: string} — 每个 token 片段
- * @yields {type: 'done', content: string, usage: object} — 完成
- * @yields {type: 'error', message: string} — 错误
+ * 流式调用 LLM，根据 model.api 自动分流
  */
 async function* callLLMStream(modelId, messages, options = {}) {
   const model = modelStore.getById(modelId);
@@ -238,74 +234,150 @@ async function* callLLMStream(modelId, messages, options = {}) {
   if (!apiKey) throw Object.assign(new Error('模型未配置 API Key'), { status: 400 });
 
   const api = model.api || 'openai-chat';
-  if (api !== 'openai-chat') {
-    // 非 OpenAI 兼容 API 降级为非流式
-    const result = await callLLM(modelId, messages, options);
-    yield { type: 'done', content: result.content, usage: result.usage };
+
+  if (api === 'anthropic-messages') {
+    yield* callAnthropicStream(model, messages, options, apiKey);
     return;
   }
+  yield* callOpenAIStream(model, messages, options, apiKey);
+}
 
+/** OpenAI Chat SSE 流式 */
+async function* callOpenAIStream(model, messages, opts, apiKey) {
   const baseUrl = model.baseUrl || 'https://api.deepseek.com/v1';
-  const body = {
-    model: model.model,
-    messages,
-    temperature: options.temperature ?? 0.7,
-    max_tokens: options.maxTokens ?? 2000,
-    stream: true,
-  };
-
+  const body = { model: model.model, messages, temperature: opts.temperature ?? 0.7, max_tokens: opts.maxTokens ?? 2000, stream: true };
   const resp = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-    body: JSON.stringify(body),
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` }, body: JSON.stringify(body),
   });
-
-  if (!resp.ok) {
-    const err = await resp.text();
-    yield { type: 'error', message: `LLM 流式调用失败: ${resp.status} ${err}` };
-    return;
-  }
+  if (!resp.ok) { const err = await resp.text(); yield { type: 'error', message: `LLM 流式调用失败: ${resp.status} ${err}` }; return; }
 
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
-  let fullContent = '';
-  let buffer = '';
-
+  let fullContent = '', buffer = '';
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-
       buffer += decoder.decode(value, { stream: true });
-      // 解析 SSE 行
       const lines = buffer.split('\n');
-      buffer = lines.pop() || ''; // 未完成的行留在 buffer
-
+      buffer = lines.pop() || '';
       for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed || !trimmed.startsWith('data: ')) continue;
         const data = trimmed.slice(6);
         if (data === '[DONE]') continue;
-
         try {
           const parsed = JSON.parse(data);
-          const choice = parsed.choices?.[0];
-          if (!choice) continue;
-
-          // delta.content 可能是 undefined（如 reasoning 段）
-          const delta = choice.delta?.content || '';
-          if (delta) {
-            fullContent += delta;
-            yield { type: 'token', text: delta };
-          }
-        } catch { /* 跳过无法解析的行 */ }
+          const delta = parsed.choices?.[0]?.delta?.content || '';
+          if (delta) { fullContent += delta; yield { type: 'token', text: delta }; }
+        } catch {}
       }
     }
-  } finally {
-    reader.releaseLock();
-  }
-
+  } finally { reader.releaseLock(); }
   yield { type: 'done', content: fullContent, usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } };
 }
 
-module.exports = { callLLM, callLLMStream };
+/** Anthropic Messages SSE 流式 */
+async function* callAnthropicStream(model, messages, opts, apiKey) {
+  const baseUrl = model.baseUrl || 'https://api.anthropic.com';
+
+  const systemParts = [];
+  const chatMessages = [];
+  for (const m of messages) {
+    if (m.role === 'system') systemParts.push(m.content);
+    else chatMessages.push({ role: m.role, content: m.content });
+  }
+
+  const body = { model: model.model, max_tokens: opts.maxTokens ?? 2000, temperature: opts.temperature ?? 0.7, stream: true, messages: chatMessages };
+  if (systemParts.length > 0) body.system = systemParts.join('\n\n');
+
+  const resp = await fetch(`${baseUrl}/v1/messages`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }, body: JSON.stringify(body),
+  });
+  if (!resp.ok) { const err = await resp.text(); yield { type: 'error', message: `LLM 流式调用失败: ${resp.status} ${err}` }; return; }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let fullContent = '', buffer = '', currentEvent = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) { currentEvent = ''; continue; }
+        if (trimmed.startsWith('event:')) { currentEvent = trimmed.slice(6).trim(); }
+        else if (trimmed.startsWith('data:')) {
+          const data = trimmed.slice(5).trim();
+          if (!data) continue;
+          try {
+            const parsed = JSON.parse(data);
+            if (currentEvent === 'content_block_delta' && parsed.delta?.type === 'text_delta') {
+              const text = parsed.delta.text || '';
+              if (text) { fullContent += text; yield { type: 'token', text }; }
+            } else if (currentEvent === 'content_block_delta' && parsed.delta?.type === 'thinking_delta') {
+              const text = parsed.delta.thinking || '';
+              if (text) yield { type: 'thinking', text };
+            } else if (currentEvent === 'message_stop') {
+              yield { type: 'done', content: fullContent, usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } };
+              reader.releaseLock(); return;
+            } else if (currentEvent === 'error') {
+              yield { type: 'error', message: parsed.error?.message || 'Anthropic 流式错误' };
+              reader.releaseLock(); return;
+            }
+          } catch {}
+        }
+      }
+    }
+  } finally { reader.releaseLock(); }
+  yield { type: 'done', content: fullContent, usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } };
+}
+
+// ════════════════════════════════════════════════════════════════
+// v2.0: 带工具调用的 LLM 调用 + Tool Call Loop 编排
+// ════════════════════════════════════════════════════════════════
+
+async function callLLMWithTools(modelId, messages, options = {}) {
+  const toolNames = options.toolNames;
+  const tools = toolNames ? toolRegistry.toProviderFormat(null, toolNames) : null;
+  return callLLM(modelId, messages, { ...options, tools });
+}
+
+async function runToolLoop(modelId, messages, options = {}) {
+  const maxRounds = options.maxRounds ?? 10;
+  const toolNames = options.toolNames;
+  const model = modelStore.getById(modelId);
+  if (!model) throw Object.assign(new Error('模型不存在'), { status: 404 });
+  const api = model.api || 'openai-chat';
+
+  for (let round = 0; round < maxRounds; round++) {
+    const result = await callLLMWithTools(modelId, messages, { ...options, toolNames });
+    if (!result.toolCalls?.length) return result.content || '';
+
+    const asstMsg = { role: 'assistant', content: result.content || null };
+    if (api === 'anthropic-messages') {
+      const blocks = [];
+      if (result.content) blocks.push({ type: 'text', text: result.content });
+      for (const tc of result.toolCalls) blocks.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.args });
+      asstMsg.content = blocks;
+    } else {
+      asstMsg.tool_calls = result.toolCalls.map(tc => ({ id: tc.id, type: 'function', function: { name: tc.name, arguments: JSON.stringify(tc.args) } }));
+    }
+    messages.push(asstMsg);
+
+    for (const tc of result.toolCalls) {
+      const tool = toolRegistry.getTool(tc.name);
+      if (!tool) { messages.push(toolRegistry.makeToolResult(api, tc.id, { error: `未知工具: ${tc.name}` })); continue; }
+      try {
+        const toolResult = await tool.handler(tc.args);
+        messages.push(toolRegistry.makeToolResult(api, tc.id, toolResult));
+      } catch (e) { messages.push(toolRegistry.makeToolResult(api, tc.id, { error: e.message })); }
+    }
+  }
+  throw new Error(`Tool loop exceeded max rounds (${maxRounds})`);
+}
+
+module.exports = { callLLM, callLLMStream, callLLMWithTools, runToolLoop };

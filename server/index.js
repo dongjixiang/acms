@@ -98,4 +98,13 @@ setInterval(() => {
   try { require('./services/auto-archive-service').autoArchive(); } catch (e) { /* */ }
 }, 24 * 60 * 60 * 1000);
 
+// v2.0: 启动时注册内建工具
+try {
+  require('./tools/index');
+  const tr = require('./services/tool-registry');
+  console.log(`[tools] 工具注册完成: ${tr.listTools().map(t => t.name).join(', ')}`);
+} catch (e) {
+  console.error('[tools] 工具注册失败:', e.message);
+}
+
 console.log('[ACMS] 启动完成 ✅');

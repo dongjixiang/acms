@@ -478,13 +478,22 @@ async function* runBriefJobStream(requirementId, opts = {}) {
   }
 
   const { callLLMStream } = require('./llm-adapter');
+  const { StreamingBriefParser } = require('./streaming-json-parser');
   let fullContent = '';
+  const _streamParser = new StreamingBriefParser();
   try {
     // v0.3.6：去掉字数硬约束后，maxTokens 从 1200 增至 2500 给足空间
 for await (const event of callLLMStream(model.id, messages, { temperature: 0.7, maxTokens: 2500 })) {
       if (event.type === 'token') {
         fullContent += event.text;
-        yield { type: 'token', text: event.text };
+        // v2.0: 流式按字段分发事件
+        const parsedEvents = _streamParser.feed(event.text);
+        for (const pe of parsedEvents) {
+          const sseType = pe.type === 'ai_understanding' ? 'thinking'
+            : pe.type === 'followup_question' ? 'followup'
+            : pe.type;
+          yield { type: sseType, text: pe.text };
+        }
       } else if (event.type === 'done') {
         let parsed = safeParseJSON(fullContent);
         // v0.3.6：流式解析失败时降级为非流式重试

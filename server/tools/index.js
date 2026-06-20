@@ -1,0 +1,61 @@
+// ACMS 内建工具注册
+const { registerTool } = require('../services/tool-registry');
+
+registerTool({
+  name: 'get_current_time',
+  description: '获取指定时区的当前日期和时间',
+  parameters: {
+    type: 'object',
+    properties: {
+      timezone: {
+        type: 'string',
+        description: '时区名称（如 Asia/Shanghai, America/New_York）',
+        enum: ['Asia/Shanghai', 'America/New_York', 'Europe/London', 'Asia/Tokyo', 'UTC'],
+      },
+    },
+    required: ['timezone'],
+  },
+  async handler(args) {
+    const now = new Date();
+    const tz = args.timezone || 'Asia/Shanghai';
+    return { timezone: tz, local_time: now.toLocaleString('zh-CN', { timeZone: tz }), utc_time: now.toISOString(), timestamp: now.getTime() };
+  },
+});
+
+registerTool({
+  name: 'search_knowledge',
+  description: '搜索内部知识库和已沉淀的需求文档，查找与关键词相关的历史信息',
+  parameters: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: '搜索关键词或自然语言问题' },
+      max_results: { type: 'number', description: '最大返回结果数（1-20）', default: 5 },
+    },
+    required: ['query'],
+  },
+  async handler(args) {
+    const query = args.query || '';
+    return { query, results: [{ title: `[Mock] 关于"${query}"的文档`, score: 0.95, snippet: '模拟知识库搜索结果', source: 'knowledge_base' }], total: 1, note: '当前为模拟数据，后续接入真实搜索引擎' };
+  },
+});
+
+registerTool({
+  name: 'get_requirement_detail',
+  description: '获取需求的详细信息，包括当前状态、AI理解、用户反馈历史和已有辅助分析结果',
+  parameters: {
+    type: 'object',
+    properties: { requirement_id: { type: 'string', description: '需求 ID（如 req_xxx）' } },
+    required: ['requirement_id'],
+  },
+  async handler(args) {
+    try {
+      const reqStore = require('../stores/requirement-store');
+      const req = reqStore.getById(args.requirement_id);
+      if (!req) return { error: '需求不存在' };
+      return { id: req.id, title: req.title, description: req.description, status: req.status, ai_understanding: req.ai_understanding };
+    } catch (e) { return { error: e.message }; }
+  },
+});
+
+console.log('[tools] 内建工具注册完成:', listBuiltinTools().join(', '));
+function listBuiltinTools() { return require('../services/tool-registry').listTools().map(t => t.name); }

@@ -100,6 +100,19 @@ async function runAssistJob(requirementId, opts = {}) {
       },
     ];
 
+    // v2.0: 预搜索知识库，注入竞品参考信息
+    try {
+      const toolRegistry = require('../services/tool-registry');
+      const searchTool = toolRegistry.getTool('search_knowledge');
+      if (searchTool) {
+        const searchResult = await searchTool.handler({ query: `${req.title || ''} ${(req.description || '').slice(0, 100)} 竞品`, max_results: 5 });
+        if (searchResult?.results?.length > 0) {
+          const knowledgeContext = searchResult.results.slice(0, 5).map(r => `【参考】${r.title}: ${r.snippet}`).join('\n');
+          messages.push({ role: 'system', content: `以下是与该产品相关的市场/竞品参考资料：\n${knowledgeContext}\n（注意：这些是内部知识库的参考信息，不保证完全准确，请结合你的判断进行分析）` });
+        }
+      }
+    } catch (e) { console.warn(`[assist:competitive] 知识搜索失败（非关键）:`, e.message); }
+
     const parsed = await callLLMWithRetry(model, messages, {
       temperature: 0.5, maxTokens: 2500, jsonMode: true, serviceName: 'assist:competitive',
     });

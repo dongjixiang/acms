@@ -4048,24 +4048,42 @@ function connectStreamingBrief(reqId, container) {
   if (!streamingBubble && container) {
     streamingBubble = document.createElement('div');
     streamingBubble.className = 'chat-bubble chat-bubble-ai chat-streaming-bubble';
-    streamingBubble.innerHTML = '<div class="chat-bubble-meta"><span class="chat-label">🤖 AI</span></div><div class="chat-streaming-content"></div>';
+    // v2.0: 流式渐进渲染结构
+    streamingBubble.innerHTML = '<div class="chat-bubble-meta"><span class="chat-label">🤖 AI</span></div>'
+      + '<div class="chat-streaming-opening"></div>'
+      + '<div class="chat-streaming-thinking" style="display:none"><div class="chat-thinking-inner"></div></div>'
+      + '<div class="chat-streaming-followup" style="display:none"></div>';
     container.appendChild(streamingBubble);
     chatScrollToBottom(container);
   }
-  const contentEl = streamingBubble?.querySelector('.chat-streaming-content');
-  if (!contentEl) return;
+  const openingEl = streamingBubble?.querySelector('.chat-streaming-opening');
+  const thinkingInnerEl = streamingBubble?.querySelector('.chat-streaming-thinking .chat-thinking-inner');
+  const followupEl = streamingBubble?.querySelector('.chat-streaming-followup');
+  if (!openingEl) return;
 
   const es = new EventSource(`/api/requirements/${reqId}/thinking-brief/stream?api_key=dev-key-001`);
 
   es.addEventListener('message', (e) => {
     try {
       const data = JSON.parse(e.data);
-      if (data.type === 'token') {
-        // 追加 token，并尝试解析 JSON 来显示中间结果
-        const currentText = contentEl.textContent + data.text;
-        contentEl.textContent = currentText;
+      if (data.type === 'opening') {
+        openingEl.innerHTML = renderMarkdown(openingEl.textContent + data.text);
         chatScrollToBottom(container);
-} else if (data.type === 'done' && data.brief) {
+      } else if (data.type === 'thinking') {
+        if (!thinkingInnerEl) return;
+        const thinkingBubble = streamingBubble?.querySelector('.chat-streaming-thinking');
+        if (thinkingBubble) thinkingBubble.style.display = '';
+        thinkingInnerEl.innerHTML = renderMarkdown(thinkingInnerEl.textContent + data.text);
+      } else if (data.type === 'followup') {
+        if (!followupEl) return;
+        followupEl.style.display = '';
+        followupEl.innerHTML = '<i>' + escHtml(followupEl.textContent + data.text) + '</i>';
+        chatScrollToBottom(container);
+      } else if (data.type === 'token') {
+        // 兼容旧事件类型
+        openingEl.textContent += data.text;
+        chatScrollToBottom(container);
+      } else if (data.type === 'done' && data.brief) {
         es.close();
         // 同步 briefRound，避免轮询重复渲染
         // 流完成 → 把 raw JSON 替换为自然回复 + 可折叠思考
@@ -4109,7 +4127,7 @@ function connectStreamingBrief(reqId, container) {
         }
       } else if (data.type === 'error') {
         es.close();
-        contentEl.textContent = '⚠️ ' + (data.message || '生成失败');
+        openingEl.textContent = '⚠️ ' + (data.message || '生成失败');
         // v0.13 B5 fix: 与 SSE error 同处理 — 拆掉 .chat-streaming-bubble class
         //   不然 polling 永远查到 streamingBubble → 永远不启动倒计时
         streamingBubble.className = 'chat-bubble chat-bubble-ai chat-bubble-error';
@@ -4122,7 +4140,7 @@ function connectStreamingBrief(reqId, container) {
   es.addEventListener('error', () => {
     es.close();
     if (streamingBubble?.dataset?.streaming !== 'done') {
-      contentEl.textContent += '\n⚠️ 连接中断';
+      openingEl.textContent += '\n⚠️ 连接中断';
       // v0.13 B5 fix: SSE 错误也算「AI 这一轮结束」（虽然失败）
       //   不然 streamingBubble 永远卡在 DOM（带 .chat-streaming-bubble class）
       //   → polling 每次都查到 streamingBubble → !streamingBubble 永远 false
