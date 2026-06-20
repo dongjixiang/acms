@@ -3494,6 +3494,10 @@ function startChatPolling(reqId) {
           const isInputEmpty = !input?.value?.trim();
           if (isInputEmpty) {
             console.log(`[ai-auto] ${reqId} polling 触发倒计时（briefRound=${briefRound}）`);
+            // v0.13 B5 fix: AI 完成时显式 toast 告知"10 秒后自动回复"
+            //   之前 5s 倒计时太短，用户来不及反应 → 体验"立即又 5 秒"
+            //   现在 10s + 显式 toast 提示 → 用户有时间消化 + 可选 ↻ 跳过 / 选关闭停止
+            toast(`🤖 AI 提问完成 · 10 秒后自动回复 · 点 ↻ 跳过 / 选「关闭」停止`, 'info', 4000);
             _aiStartAutoCountdown(reqId, briefRound);
           } else {
             _aiUpdateAutoIndicator(reqId, -1, window._aiAutoSentCount[reqId] || 0);
@@ -4370,7 +4374,11 @@ async function _aiCheckAndStartAuto(reqId) {
 }
 
 // ── v0.13 B5：自动态持续生效 — 倒计时 + 指示条 + 方向 checkpoint ──
-const AI_AUTO_COUNTDOWN_MS = 5000;       // 5 秒倒计时
+// v0.13 B5 fix: 5s → 10s 倒计时
+//   旧：5s 倒计时让用户来不及消化 AI 提问就自动发，体验上"立即又 5 秒"
+//   新：10s 倒计时 + AI 完成时显式 toast 提示（"AI 提问完成 · 10 秒后自动回复"）
+//   → 给用户消化时间 + 显式告知 + 可选 ↻ 跳过 / 选关闭停止
+const AI_AUTO_COUNTDOWN_MS = 10000;      // 10 秒倒计时（之前 5s 太短）
 const AI_AUTO_CHECKPOINT_EVERY = 3;      // 每 3 轮弹方向确认
 
 // 自动态指示条（固定在 chat 输入区上方）
