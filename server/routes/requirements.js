@@ -803,16 +803,15 @@ router.post('/:id/assist/:method/regenerate', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// v2.0: 辅助手段流式 SSE — 触发 + 实时进度
+// v2.0: 辅助手段流式 SSE — 监控进度（不触发 job，由 POST 触发）
 router.get('/:id/assist/:method/stream', async (req, res, next) => {
   try {
     const { method } = req.params;
-    const { modelId } = req.query;
     const reqRec = reqStore.getById(req.params.id);
     if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
 
     const svc = assists.getAssist(method);
-    if (!svc || !svc.runAssistJob) return res.status(400).json({ error: 'UNKNOWN_METHOD' });
+    if (!svc) return res.status(400).json({ error: 'UNKNOWN_METHOD' });
 
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -824,44 +823,42 @@ router.get('/:id/assist/:method/stream', async (req, res, next) => {
       try { res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`); } catch {}
     };
 
+    const methodField = svc.field || `assist_${method}`;
     const methodName = svc.name || method;
+    let prevStatus = '';
 
-    send('progress', { text: `正在准备${methodName}…` });
+    // 轮询 DB 等状态变化（最长等 60s）
+    for (let i = 0; i < 30; i++) {
+      const fresh = reqStore.getById(req.params.id);
+      if (!fresh) { send('error', { message: '需求已删除' }); break; }
 
-    // 异步启动 assist job，同时持续发进度
-    const jobPromise = svc.runAssistJob(req.params.id, {
-      modelId: modelId || undefined,
-      chatRound: (() => { try { return JSON.parse(reqRec.thinking_brief || 'null')?.chat_round || 1; } catch { return 1; } })(),
-      followupQuestion: (() => { try { return JSON.parse(reqRec.thinking_brief || 'null')?.followup_question || ''; } catch { return ''; } })(),
-    });
+      let assistData = null;
+      try { assistData = JSON.parse(fresh[methodField] || 'null'); } catch {}
 
-    // 发进度直到 job 完成
-    let finished = false;
-    jobPromise.then(() => { finished = true; }).catch(() => { finished = true; });
+      const status = assistData?.status || 'pending';
+      if (status !== prevStatus) {
+        prevStatus = status;
+        if (status === 'generating') {
+          send('progress', { text: `正在调用 AI 分析…` });
+        } else if (status === 'done') {
+          send('progress', { text: `✅ ${methodName} 完成` });
+          send('done', { method });
+          break;
+        } else if (status === 'failed') {
+          send('error', { message: assistData?.error || '生成失败' });
+          break;
+        }
+      } else if (i === 1) {
+        send('progress', { text: `正在准备${methodName}…` });
+      } else if (i === 5) {
+        send('progress', { text: `正在整理${methodName}结果…` });
+      } else if (i === 12) {
+        send('progress', { text: `即将完成…` });
+      }
 
-    const progressMessages = [
-      { delay: 2000, text: `正在调用 AI 分析…` },
-      { delay: 6000, text: `正在整理${methodName}结果…` },
-      { delay: 12000, text: `即将完成…` },
-    ];
-
-    for (const msg of progressMessages) {
-      if (finished) break;
-      await new Promise(r => setTimeout(r, msg.delay));
-      if (finished) break;
-      send('progress', { text: msg.text });
+      await new Promise(r => setTimeout(r, 2000));
     }
 
-    // 等 job 真正完成
-    try {
-      await jobPromise;
-    } catch (e) {
-      send('error', { message: e.message });
-      res.end();
-      return;
-    }
-
-    send('done', { method });
     res.end();
   } catch (e) { next(e); }
 });
