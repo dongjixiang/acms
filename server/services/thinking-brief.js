@@ -211,6 +211,20 @@ async function runBriefJob(requirementId, opts = {}) {
   const skipDiagRegen = opts.skipDiagnosisRegen === true;
 
   // 标记 generating
+  // v0.13 B5 fix: 保留之前的 chat_round（不重置为 0）
+  //   旧：chat_round: 0 → 覆盖之前的 done brief chat_round
+  //   → L475 读 req.thinking_brief 读到 status='generating' chat_round=0
+  //   → oldRound = 0 → newRound = 1 永不变
+  //   → SSE 端点 chat_round 永远=1，与 supplement 端点不一致 → AI 轮次错乱
+  //   新：读 storeBrief 跳过 generating 状态，取上次 done 的 chat_round
+  let prevChatRound = 0;
+  try {
+    const storeReq = reqStore.getById(requirementId);
+    const storeBrief = JSON.parse(storeReq?.thinking_brief || 'null');
+    if (storeBrief && storeBrief.status === 'done' && typeof storeBrief.chat_round === 'number') {
+      prevChatRound = storeBrief.chat_round;
+    }
+  } catch {}
   reqStore.update(requirementId, {
     thinking_brief: JSON.stringify({
       status: 'generating',
@@ -219,7 +233,7 @@ async function runBriefJob(requirementId, opts = {}) {
       followup_question: '',
       diagnosis: skipDiagRegen && opts.preserveDiagnosisType ? { type: opts.preserveDiagnosisType } : null,
       dialog: null,
-      chat_round: 0,
+      chat_round: prevChatRound,  // v0.13 B5 fix: 保留
       started_at: new Date().toISOString(),
       generated_at: null,
       error: null,
@@ -250,7 +264,8 @@ async function runBriefJob(requirementId, opts = {}) {
       supplementHistory  // v0.3.5 新增
     );
     // 计算对话轮次：旧 chat_round + 1（如无则 =1）
-    const oldRound = (() => { try { return JSON.parse(req.thinking_brief || 'null')?.chat_round || 0; } catch { return 0; } })();
+    // v0.13 B5 fix: 从 reqStore 读最新值（不读 req 引用，避免被另一个入口覆盖）
+    const oldRound = (() => { try { return JSON.parse(reqStore.getById(requirementId)?.thinking_brief || 'null')?.chat_round || 0; } catch { return 0; } })();
     const newRound = oldRound + 1;
 
     // v0.4 Phase 2c：纠偏触发的重生 → 保留 diagnosis.type，只重生 label/guide
@@ -382,11 +397,21 @@ async function* runBriefJobStream(requirementId, opts = {}) {
   const req = reqStore.getById(requirementId);
   if (!req) { yield { type: 'error', message: 'REQ_NOT_FOUND' }; return; }
 
+  // v0.13 B5 fix: 保留之前的 chat_round（不重置为 0，与 runBriefJob 保持一致）
+  let prevChatRound = 0;
+  try {
+    const storeReq = reqStore.getById(requirementId);
+    const storeBrief = JSON.parse(storeReq?.thinking_brief || 'null');
+    if (storeBrief && storeBrief.status === 'done' && typeof storeBrief.chat_round === 'number') {
+      prevChatRound = storeBrief.chat_round;
+    }
+  } catch {}
   reqStore.update(requirementId, {
     thinking_brief: JSON.stringify({
       status: 'generating', opening: '', ai_understanding: '',
       followup_question: '', diagnosis: null, dialog: null,
-      chat_round: 0, started_at: new Date().toISOString(),
+      chat_round: prevChatRound,  // v0.13 B5 fix: 保留
+      started_at: new Date().toISOString(),
       generated_at: null, error: null, model: null,
     }),
   });
@@ -470,7 +495,8 @@ for await (const event of callLLMStream(model.id, messages, { temperature: 0.7, 
         }
         if (!parsed) { yield { type: 'error', message: 'LLM 返回无法解析为 JSON' }; return; }
 
-        const oldRound = (() => { try { return JSON.parse(req.thinking_brief || 'null')?.chat_round || 0; } catch { return 0; } })();
+        // v0.13 B5 fix: 从 reqStore 读最新 thinking_brief（不读 req 引用，避免被 L387 覆盖）
+        const oldRound = (() => { try { return JSON.parse(reqStore.getById(requirementId)?.thinking_brief || 'null')?.chat_round || 0; } catch { return 0; } })();
         const newRound = oldRound + 1;
         const VALID_TYPES = ['vague', 'conflicted', 'blank', null];
         let diagnosis = null;
