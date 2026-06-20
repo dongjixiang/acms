@@ -4221,6 +4221,7 @@ async function applyAiDraft(reqId) {
   //   旧：b.textContent.slice(0, 500) → 500 字符截断，thinking 折叠内容占满 500 时 response 完全丢失
   //   → LLM 拿不到完整 AI 1 轮 → 草稿不基于完整 AI 上一轮
   //   新：AI bubble 只读 .chat-response，长度 500 → 1500（够覆盖长 brief）
+  const c = document.getElementById(`chat-stream-msgs-${reqId}`);  // v0.13 B5 fix: 之前 patch 误删，导致 ReferenceError
   const bubbles = c ? Array.from(c.querySelectorAll('.chat-bubble')).slice(-6) : [];
   const history = bubbles.map(b => {
     const role = b.classList.contains('chat-bubble-user') ? 'user' : 'assistant';
