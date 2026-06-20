@@ -3646,8 +3646,15 @@ function renderAssistLayer(container, reqId, assists) {
     if (!d || d.status !== 'done' || d.used) continue;
     // v0.6.7 累积模式：不再 restrict 到 _explicitAssist method
     //   所有 method 的 done 卡片都渲染（用户点过的会累积显示，未点的也显示）
+    // v0.13 B9：visual 跳过 round filter
+    //   bug：REQ-MQFAYK2A 的 visual.generated_at_round=6，但 briefRound=0（req 在孵化阶段没产生过 brief）
+    //   → 6 !== 0 → filter skip → 视觉卡片根本不渲染
+    //   修：visual 是「方向图快照」，不是 chat 流相关辅助，应该一直可见直到用户 pick
     const chatStateRound = _chatState[reqId]?.briefRound;
-    if (typeof chatStateRound === 'number' && typeof d.generated_at_round === 'number' && d.generated_at_round !== chatStateRound) {
+    if (method !== 'visual'
+        && typeof chatStateRound === 'number'
+        && typeof d.generated_at_round === 'number'
+        && d.generated_at_round !== chatStateRound) {
       if (method === 'decision_tree') console.log(`[assist.render] decision_tree SKIP round: generated=${d.generated_at_round} chatState=${chatStateRound}`);
       continue;
     }
