@@ -4162,6 +4162,56 @@ async function loadStreamAssist(reqId, container) {
   } catch(e) { console.warn('[loadStreamAssist] error:', e.message); }
 }
 
+/**
+ * v2.0: 辅助手段 SSE 流式 — 实时进度 + 完成通知
+ * 调用后由 polling 负责实际渲染结果卡片
+ */
+function connectAssistStream(reqId, method, extraBody) {
+  const container = document.getElementById(`chat-stream-msgs-${reqId}`);
+  
+  // 先通过 POST 触发后端 job（setImmediate 异步跑）
+  api('POST', `/requirements/${reqId}/assist/${method}`, extraBody || {}).then(() => {
+    // POST 成功，开 SSE 看进度
+    const es = new EventSource(`/api/requirements/${reqId}/assist/${method}/stream?api_key=dev-key-001`);
+    
+    es.addEventListener('message', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.type === 'progress') {
+          // 更新 loading 卡片的 hint
+          const loadingEl = container?.querySelector(`.assist-loading-card[data-method="${method}"]`);
+          if (loadingEl) {
+            const hintEl = loadingEl.querySelector('.assist-loading-hint');
+            if (hintEl) hintEl.textContent = data.text;
+          }
+        } else if (data.type === 'done') {
+          es.close();
+          // 移除 loading 卡片（polling 会渲染真实结果）
+          const loadingEl = container?.querySelector(`.assist-loading-card[data-method="${method}"]`);
+          if (loadingEl) loadingEl.remove();
+          toast(`✅ ${method} 完成`, 'success', 1500);
+          startChatPolling(reqId);
+        } else if (data.type === 'error') {
+          es.close();
+          const loadingEl = container?.querySelector(`.assist-loading-card[data-method="${method}"]`);
+          if (loadingEl) failAssistLoading(loadingEl, data.message || '生成失败');
+        }
+      } catch {}
+    });
+
+    es.addEventListener('error', () => {
+      es.close();
+      // SSE 断连，回退到 polling
+      startChatPolling(reqId);
+    });
+  }).catch(e => {
+    // POST 失败
+    const loadingEl = container?.querySelector(`.assist-loading-card[data-method="${method}"]`);
+    if (loadingEl) failAssistLoading(loadingEl, '触发失败: ' + e.message);
+    toast('失败: '+e.message, 'error');
+  });
+}
+
 async function chatRegen(reqId) {
   if (!await showConfirm('重新生成思路会消耗 token，确认？', {type:'info'})) return;
   try {
@@ -4707,9 +4757,8 @@ async function chatAssist(reqId, method, extraBody) {
   }
   try {
     const body = extraBody || {};
-    await api('POST', `/requirements/${reqId}/assist/${method}`, body);
-    toast(`🔄 ${method} 正在生成…`, 'info', 2000);
-    startChatPolling(reqId);  // 统一轮询，pollAssistUntilDone 已合并到 startChatPolling 内部
+    // v2.0: 用 SSE 替代 POST 触发，实现实时进度
+    connectAssistStream(reqId, method, body);
   }
   catch(e) {
     // 触发失败 → loading 卡片就地变为错误态

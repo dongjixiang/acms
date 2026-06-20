@@ -803,6 +803,69 @@ router.post('/:id/assist/:method/regenerate', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// v2.0: 辅助手段流式 SSE — 触发 + 实时进度
+router.get('/:id/assist/:method/stream', async (req, res, next) => {
+  try {
+    const { method } = req.params;
+    const { modelId } = req.query;
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+
+    const svc = assists.getAssist(method);
+    if (!svc || !svc.runAssistJob) return res.status(400).json({ error: 'UNKNOWN_METHOD' });
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    const send = (type, data) => {
+      try { res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`); } catch {}
+    };
+
+    const methodName = svc.name || method;
+
+    send('progress', { text: `正在准备${methodName}…` });
+
+    // 异步启动 assist job，同时持续发进度
+    const jobPromise = svc.runAssistJob(req.params.id, {
+      modelId: modelId || undefined,
+      chatRound: (() => { try { return JSON.parse(reqRec.thinking_brief || 'null')?.chat_round || 1; } catch { return 1; } })(),
+      followupQuestion: (() => { try { return JSON.parse(reqRec.thinking_brief || 'null')?.followup_question || ''; } catch { return ''; } })(),
+    });
+
+    // 发进度直到 job 完成
+    let finished = false;
+    jobPromise.then(() => { finished = true; }).catch(() => { finished = true; });
+
+    const progressMessages = [
+      { delay: 2000, text: `正在调用 AI 分析…` },
+      { delay: 6000, text: `正在整理${methodName}结果…` },
+      { delay: 12000, text: `即将完成…` },
+    ];
+
+    for (const msg of progressMessages) {
+      if (finished) break;
+      await new Promise(r => setTimeout(r, msg.delay));
+      if (finished) break;
+      send('progress', { text: msg.text });
+    }
+
+    // 等 job 真正完成
+    try {
+      await jobPromise;
+    } catch (e) {
+      send('error', { message: e.message });
+      res.end();
+      return;
+    }
+
+    send('done', { method });
+    res.end();
+  } catch (e) { next(e); }
+});
+
 // 标记用户"使用"了某个辅助手段（勾选/表态）
 //   v0.13 fix: 之前整个 use_case/apply 端点被错误嵌套进这个 try 块（缺 }); 闭合），
 //              导致 :id/assist/use_case/apply 路由从未注册到 router.stack。
