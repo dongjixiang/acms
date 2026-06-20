@@ -4171,11 +4171,15 @@ async function selectAiMode(mode, reqId) {
   if (mode === _aiGetState(reqId)) return; // 没变化
 
   if (mode === 'off') {
-    // 关闭态：调原 chatRegen 逻辑（让 AI 重问下一轮）
+    // v0.13 B5 fix: 关闭态不再调 chatRegen
+    //   旧行为：用户点「关闭」→ 自动跑 chatRegen → 触发后端 briefServiceRegen.runBriefJob
+    //   → brief 完成 → 路由器 pickNext 自动选 1 种 assist → 后台跑
+    //   用户体验：「刷新/选关闭后辅助功能自动跑」+「我明明选了关闭为什么 AI 还在工作」
+    //   新行为：仅关闭 auto 态（取消倒计时 + 隐藏指示条），AI 立即停手
     _aiCancelAutoCountdown(reqId, 'user selected close');
     _aiHideAutoIndicator(reqId);
     _aiSetState(reqId, 'off');
-    await chatRegen(reqId);
+    toast('⏸ 已退出自动回复', 'info', 1500);
     return;
   }
 

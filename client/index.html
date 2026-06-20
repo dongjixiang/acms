@@ -3,8 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- v0.13 B5 fix: 客户端缓存导致修复后的 JS 不生效；加 no-cache 三件套强制每次校验 -->
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>ACMS — 智能体协同管理系统</title>
-<link rel="stylesheet" href="/client/css/style.css?v=0.8.0">
+<link rel="stylesheet" href="/client/css/style.css?v=0.9.0">
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js" defer></script>
 <script>
 // Mermaid 配置（跟随主题，脚本加载后初始化）
@@ -405,7 +409,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/core/router.js"></script>
 <script src="/client/js/views/projects.js"></script>
 <script src="/client/js/views/dashboard.js"></script>
-<script src="/client/js/views/requirements.js?v=0.8.0"></script>
+<script src="/client/js/views/requirements.js?v=0.9.0"></script>
 <script src="/client/js/views/assists/index.js"></script>
 <script src="/client/js/views/assists/decision-tree.js?v=0.6.9"></script>
 <script src="/client/js/views/assists/use-case.js?v=0.13.0"></script>  <!-- v0.13 方法论驱动的"整理" -->
@@ -420,7 +424,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/assists/stakeholders.js"></script>
 <script src="/client/js/views/assists/assumptions.js"></script>
 <script src="/client/js/views/assists/health-check.js"></script>
-<script src="/client/js/views/assists/thinking-brief.js?v=0.8.0"></script>
+<script src="/client/js/views/assists/thinking-brief.js?v=0.9.0"></script>
 <script src="/client/js/views/assists/dispatcher.js"></script>
 <script src="/client/js/views/kanban.js"></script>
 <script src="/client/js/views/bugs.js"></script>
