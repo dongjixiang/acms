@@ -102,7 +102,7 @@ async function runAssistJob(requirementId, opts = {}) {
 
     // v2.0: 预搜索知识库，注入竞品参考信息
     try {
-      const toolRegistry = require('../services/tool-registry');
+      const toolRegistry = require('../tool-registry');
       const searchTool = toolRegistry.getTool('search_knowledge');
       if (searchTool) {
         const searchResult = await searchTool.handler({ query: `${req.title || ''} ${(req.description || '').slice(0, 100)} 竞品`, max_results: 5 });
