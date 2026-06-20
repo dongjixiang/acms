@@ -4213,13 +4213,17 @@ async function applyAiDraft(reqId) {
     || ''; // 缺省时 server 端 fallback 到 admin 设置的默认模型
   // 不再拦截「未选模型」——交给 server 兜底
 
-  // 收集 chat 流最近 6 条上下文
-  const c = document.getElementById(`chat-stream-msgs-${reqId}`);
+  // v0.13 B5 fix: 改用 .chat-response 选择器（只读 AI 实际回复，不含 thinking 折叠 + suggest 建议 + meta 时间戳）
+  //   旧：b.textContent.slice(0, 500) → 500 字符截断，thinking 折叠内容占满 500 时 response 完全丢失
+  //   → LLM 拿不到完整 AI 1 轮 → 草稿不基于完整 AI 上一轮
+  //   新：AI bubble 只读 .chat-response，长度 500 → 1500（够覆盖长 brief）
   const bubbles = c ? Array.from(c.querySelectorAll('.chat-bubble')).slice(-6) : [];
-  const history = bubbles.map(b => ({
-    role: b.classList.contains('chat-bubble-user') ? 'user' : 'assistant',
-    content: (b.textContent || '').slice(0, 500),
-  })).filter(h => h.content);
+  const history = bubbles.map(b => {
+    const role = b.classList.contains('chat-bubble-user') ? 'user' : 'assistant';
+    // AI bubble 优先读 .chat-response（实际回复），user bubble 读 textContent（无 .chat-response）
+    const contentEl = b.querySelector('.chat-response') || b;
+    return { role, content: (contentEl.textContent || '').slice(0, 1500) };
+  }).filter(h => h.content);
 
   toast('✏️ 正在生成 AI 草稿…', 'info', 1500);
 
@@ -4277,9 +4281,22 @@ async function triggerAiAutoSend(reqId) {
     if (!input.value.trim()) {
       await applyAiDraft(reqId);
       if (!input.value.trim()) {
-        toast('⚠️ 输入框仍为空 · 已取消', 'warning', 2000);
+        // v0.13 B5 fix: applyAiDraft 失败时 input 仍空，必须中断 triggerAiAutoSend
+        //   旧行为：return 只跳出 if 块，triggerAiAutoSend 继续 → L4280 await chatSend(reqId)
+        //   → chatSend 内部 L3989 防御 return（input 空）→ L4280 await 立即完成
+        //   → L4283 _aiAutoSentCount++ 仍增 → L4285 "已自动发送 N 轮" 打 log
+        //   → 但消息没发！→ 后端不启动新 brief → polling 不启动新倒计时 → auto 停止
+        //   新行为：明确 return 中断整个 triggerAiAutoSend（不再增 sentCount / 不打 log / 不跑 checkpoint）
+        toast('⚠️ AI 草稿生成失败，本轮自动回复已取消', 'warning', 3000);
         return;
       }
+    }
+    // v0.13 B5 fix: 二次防御 — applyAiDraft 成功后 input 非空，但 chatSend 内部可能因 race 仍防御 return
+    //   这种情况不常见（applyAiDraft 成功后 input 应该非空），但加防御保护 auto 状态
+    const canSend = input.value.trim() || (window._chatAttachments?.[reqId]?.length || 0) > 0;
+    if (!canSend) {
+      console.log(`[ai-auto] ${reqId} 无法发送（input 空且无附件），本轮终止`);
+      return;
     }
     // v0.13 B5：记录当前 brief 轮次，避免重复触发同轮的倒计时
     const state = window._chatState?.[reqId];
