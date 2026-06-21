@@ -177,6 +177,8 @@ async function fetchUrlCore({ url, max_length = MAX_LENGTH_DEFAULT }) {
       const browserResp = await tryBrowserFallback(url);
       if (browserResp && browserResp.ok) {
         html = browserResp.text;
+        // v0.14：browser fallback 的额外字段（截图 + 原始 HTML）传给外层
+        resp = { ok: true, browserFallback: browserResp };
       } else {
         return { error: `HTTP ${resp.status} ${resp.statusText}` };
       }
@@ -207,14 +209,21 @@ async function fetchUrlCore({ url, max_length = MAX_LENGTH_DEFAULT }) {
   const truncated = fullContent.length > max_length;
   const content = truncated ? fullContent.slice(0, max_length) + '\n\n...[已截断，原文 ' + fullContent.length + ' 字符]' : fullContent;
 
+  // v0.14：browser fallback 返回的额外字段（截图 + 原始 HTML）
+  //   从 tryBrowserFallback 传递（仅当走了 browser 路径时才有）
+  const extraScreenshot = resp?.browserFallback?.screenshot || null;
+  const extraRawHtml = resp?.browserFallback?.rawHtml || null;
+
   const result = {
     url,
-    finalUrl: resp.url || url,
+    finalUrl: resp?.url || url,
     title: title.slice(0, 200),
     content,
     length: fullContent.length,
     truncated,
     fetchedAt: new Date().toISOString(),
+    screenshot: extraScreenshot,
+    rawHtml: extraRawHtml,
   };
 
   // v0.14：写入 24h 缓存
@@ -251,7 +260,7 @@ async function tryBrowserFallback(url) {
     const result = await bf.browserFetch(url);
     if (result.error) return null;
     if (!result.text || result.text.length < 50) return null;
-    return { text: result.text, status: 200, ok: true, title: result.title, finalUrl: result.finalUrl };
+    return { text: result.text, status: 200, ok: true, title: result.title, finalUrl: result.finalUrl, screenshot: result.screenshot, rawHtml: result.html, screenshotFormat: 'base64' };
   } catch (e) {
     return null;
   }

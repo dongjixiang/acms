@@ -54,6 +54,31 @@ router.post('/url-promote', async (req, res, next) => {
     const mdContent = buildMarkdown(url, result);
     fs.writeFileSync(destPath, mdContent, 'utf-8');
 
+    // v0.14：如果有原始 HTML，存 .html 文件（用户可在知识库查看原始页面格式）
+    let htmlPath = null;
+    if (result.rawHtml) {
+      const htmlFileName = `${urlHash}_${safeTitle}.html`;
+      htmlPath = path.join(urlFetchDir, htmlFileName);
+      // 移除噪声后存 .html（复用 markdown 级别的噪声过滤）
+      const cheerio = require('cheerio');
+      const $ = cheerio.load(result.rawHtml);
+      $('script, style, nav, header, footer, aside, iframe, noscript, ' +
+        '.ad, .ads, .advertisement, .sidebar, .menu, .navigation, ' +
+        '.comment, .social, .share, .banner, .promo, .recommend, .search, ' +
+        '.copyright, .footer-bar, .breadcrumb, .pagination')
+        .remove();
+      const cleanHtml = $.html();
+      fs.writeFileSync(htmlPath, cleanHtml, 'utf-8');
+    }
+
+    // v0.14：如果有截图（base64），存 .png 文件
+    let pngPath = null;
+    if (result.screenshot) {
+      const pngFileName = `${urlHash}_${safeTitle}.png`;
+      pngPath = path.join(urlFetchDir, pngFileName);
+      fs.writeFileSync(pngPath, Buffer.from(result.screenshot, 'base64'));
+    }
+
     // 6. 走 knowledge pipeline（ensureKnowledgeBase 已 init 目录；addFileRecord 写 DB）
     const relativePath = path.relative(wikiVaultPath, destPath);
     const record = knowledgeService.addFileRecord({
@@ -62,7 +87,7 @@ router.post('/url-promote', async (req, res, next) => {
       originalName: fileName,
       size: Buffer.byteLength(mdContent, 'utf-8'),
       mimeType: 'text/markdown',
-      notes: `[url-fetch] ${url} (req: ${reqId})`.slice(0, 200),
+      notes: `[url-fetch] ${url} (req: ${reqId})${htmlPath ? ' +html' : ''}${pngPath ? ' +png' : ''}`.slice(0, 200),
     });
 
     // 7. 异步触发扫描（fire-and-forget，不阻塞响应）
@@ -81,6 +106,8 @@ router.post('/url-promote', async (req, res, next) => {
       size: record.size,
       cached: !!result.cached,
       scanned: false,  // 异步中
+      hasHtml: !!htmlPath,
+      hasPng: !!pngPath,
     });
   } catch (e) {
     next(e);

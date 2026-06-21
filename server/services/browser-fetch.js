@@ -121,22 +121,49 @@ async function browserFetch(url) {
     // 额外等几秒让 JS 执行 + 反爬验证完成
     await new Promise(resolve => setTimeout(resolve, 5000));
 
-    // 提取 title + 纯文本
-    const result = await page.evaluate(() => {
-      const title = document.title || '';
-      // 移除 noise 元素
-      document.querySelectorAll('script, style, nav, header, footer, aside, iframe, noscript, .ad, .ads, .advertisement, .sidebar, .menu, .navigation, .comment, .social, .share')
+    // 移除噪声元素（更完整的 CSS selector，覆盖百度百科/rss 等常见网站）
+    await page.evaluate(() => {
+      document.querySelectorAll('script, style, iframe, noscript, ' +
+        'nav, header, footer, aside, ' +
+        '.ad, .ads, .advertisement, .banner, .promo, .promotion, ' +
+        '.sidebar, .aside, .menu, .navigation, .navbar, .nav, .top-nav, .bottom-nav, ' +
+        '.comment, .comment-area, .comment-list, .social, .share, .share-box, .share-bar, ' +
+        '.search, .search-box, .search-bar, .search-form, ' +
+        '.recommend, .recommend-list, .related, .related-article, ' +
+        '.breadcrumb, .pagination, .toolbar, .tool-box, ' +
+        '.footer-bar, .copyright, .copyright-bar, .copyright-footer, ' +
+        '.login, .login-box, .register, .register-box, .user-info, .user-panel, ' +
+        '.tips, .notice, .alert, .hot, .hot-topic, .hot-article, ' +
+        '#header, #footer, #nav, #menu, ' +
+        '[class*=ad-], [class*=banner], [class*=promo], [class*=recommend], ' +
+        '[class*=sidebar], [class*=toolbar], [class*=copyright], ' +
+        '[id*=ad], [id*=banner], [id*=sidebar], [id*=toolbar]')
         .forEach(el => el.remove());
-      // 取 body 纯文本（压缩空白）
-      const bodyText = document.body?.textContent?.replace(/\s+/g, ' ').trim() || '';
-      return { title, text: bodyText };
     });
 
+    // 提取 title + 纯文本
+    const title = await page.title();
+    const bodyText = await page.evaluate(() => document.body?.textContent?.replace(/\s+/g, ' ').trim() || '');
+
+    // v0.14：取原始 HTML（保存到知识库用）
+    const rawHtml = await page.content();
+
+    // v0.14：全页截图（base64 PNG，保存到知识库用）
+    let screenshot = null;
+    try {
+      screenshot = await page.screenshot({ fullPage: true, encoding: 'base64', type: 'png' });
+    } catch (e) {
+      console.warn('[browser-fetch] screenshot failed:', e.message);
+    }
+
     return {
-      title: result.title.slice(0, 200),
-      text: result.text,
+      title: title.slice(0, 200),
+      text: bodyText,
+      html: rawHtml,
+      screenshot: screenshot,
+      screenshotFormat: 'base64',
       finalUrl: url,
-      htmlLength: result.text.length,
+      htmlLength: bodyText.length,
     };
   } catch (e) {
     // 超时 / 重定向 / 其它异常
