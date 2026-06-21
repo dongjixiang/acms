@@ -31,7 +31,8 @@ async function launchBrowser() {
 
   _launching = (async () => {
     try {
-      _browser = await puppeteer.launch({
+      // 尝试 puppeteer 默认路径找 chrome.exe，如果缺文件则试 chrome-headless-shell
+      const launchOpts = {
         headless: true,
         args: [
           '--no-sandbox',
@@ -43,7 +44,38 @@ async function launchBrowser() {
           '--disable-sync',
         ],
         timeout: 30000,
-      });
+      };
+
+      // 自动检测 chrome-headless-shell（当 chrome.exe 缺失时用）
+      let exePath;
+      try {
+        exePath = await puppeteer.executablePath();
+        // 验证文件存在
+        try { require('fs').accessSync(exePath); } catch (e) { exePath = null; }
+      } catch (e) { exePath = null; }
+
+      if (!exePath) {
+        // 找到 chrome-headless-shell 路径
+        const baseDir = require('path').join(
+          require('os').homedir(),
+          '.cache', 'puppeteer', 'chrome-headless-shell'
+        );
+        const { readdirSync } = require('fs');
+        const entries = readdirSync(baseDir, { withFileTypes: true });
+        const verDir = entries.find(d => d.isDirectory() && d.name.startsWith('win64-'));
+        if (verDir) {
+          exePath = require('path').join(baseDir, verDir.name, 'chrome-headless-shell-win64', 'chrome-headless-shell.exe');
+        }
+      }
+
+      if (exePath) {
+        launchOpts.executablePath = exePath;
+        console.log(`[browser-fetch] 使用浏览器: ${exePath}`);
+      } else {
+        console.warn('[browser-fetch] 未找到浏览器可执行文件');
+      }
+
+      _browser = await puppeteer.launch(launchOpts);
       return _browser;
     } finally {
       _launching = null;
@@ -79,14 +111,15 @@ async function browserFetch(url) {
       'Referer': 'https://baike.baidu.com/',
     });
 
-    // 导航 + 等待 JS 执行完成
-    const response = await page.goto(url, {
-      waitUntil: 'networkidle0',  // 等网络空闲（JS challenge 完成后）
+    // 导航（使用 domcontentloaded，不等全部资源加载）
+    //   networkidle0 在百度百科等带持续轮询/广告的页面会超时
+    await page.goto(url, {
+      waitUntil: 'domcontentloaded',
       timeout: BROWSER_TIMEOUT_MS,
     });
 
-    // 额外等几秒（部分反爬验证需要额外时间）
-    await new Promise(resolve => setTimeout(resolve, PAGE_WAIT_SECONDS * 1000));
+    // 额外等几秒让 JS 执行 + 反爬验证完成
+    await new Promise(resolve => setTimeout(resolve, 5000));
 
     // 提取 title + 纯文本
     const result = await page.evaluate(() => {
@@ -99,14 +132,11 @@ async function browserFetch(url) {
       return { title, text: bodyText };
     });
 
-    const finalRespUrl = response?.url() || url;
-    const htmlSize = response?.headers()['content-length'] || 0;
-
     return {
       title: result.title.slice(0, 200),
       text: result.text,
-      finalUrl: finalRespUrl,
-      htmlLength: parseInt(htmlSize) || 0,
+      finalUrl: url,
+      htmlLength: result.text.length,
     };
   } catch (e) {
     // 超时 / 重定向 / 其它异常
