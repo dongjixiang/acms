@@ -2739,6 +2739,12 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 .chat-fetch-url-row { font-weight: bold; color: var(--text, #eee); margin-bottom: 2px; word-break: break-all; }
 .chat-fetch-title { color: var(--text, #eee); }
 .chat-fetch-meta { font-size: 11px; color: var(--text2, #aaa); margin: 2px 0 6px; }
-.chat-fetch-summary { font-size: 12px; color: var(--text2, #ccc); line-height: 1.5; margin: 4px 0 8px; padding: 6px 8px; background: rgba(255,255,255,0.03); border-radius: 3px; }
+.chat-fetch-summary { font-size: 12px; color: var(--text2, #ccc); line-height: 1.6; margin: 4px 0 8px; padding: 6px 8px; background: rgba(255,255,255,0.03); border-radius: 3px; }
+.chat-fetch-summary h3 { font-size: 13px; margin: 6px 0 3px; color: var(--text, #eee); }
+.chat-fetch-summary h4 { font-size: 12px; margin: 4px 0 2px; color: var(--text, #ddd); }
+.chat-fetch-summary ul, .chat-fetch-summary ol { margin: 2px 0; padding-left: 16px; }
+.chat-fetch-summary li { margin: 1px 0; }
+.chat-fetch-summary strong { color: var(--text, #eee); }
+.chat-fetch-summary p { margin: 3px 0; }
 .chat-fetch-actions { display: flex; gap: 6px; }
 .chat-fetch-promote.done { opacity: 0.6; cursor: not-allowed; background: var(--green, #4ecdc4); color: white; }

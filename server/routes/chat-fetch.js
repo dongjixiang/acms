@@ -16,7 +16,7 @@ const { callLLM } = require('../services/llm-adapter');
 const { runBriefJob } = require('../services/thinking-brief');
 
 const MAX_URLS_PER_MESSAGE = 5;  // 1 条消息最多抓 5 个 URL（防刷）
-const SUMMARY_MAX_CHARS = 1000;   // AI 摘要最大字数（用户反馈 300 太精炼丢细节）
+const SUMMARY_MAX_CHARS = 2000;   // AI 摘要最大字数（用户反馈 1000 仍丢细节，改 2000）
 
 router.post('/send-with-fetch', async (req, res, next) => {
   try {
@@ -115,10 +115,11 @@ async function summarizeContent(model, url, title, content) {
   const prompt = `你是一个信息整理助手。用户从以下网页抓取了内容，请提炼为不超过 ${SUMMARY_MAX_CHARS} 字的摘要。
 
 要求：
+- 用 Markdown 格式输出（### 分节标题、**粗体**关键词、- 列表、\`代码\`）
 - 保留关键事实、数据、时间线、人物关系、具体结论
-- 按逻辑组织：先概述核心内容，再展开关键细节
-- 不要遗漏重要信息节点
-- 不要添加评价或开头语（"以下是摘要"等），直接输出摘要内容
+- 按逻辑组织：先概览（### 概述），再逐主题展开（### 主题名）
+- 不要遗漏重要信息节点，每个自然段至少包含一个具体信息
+- 不要添加"以下是摘要"等开头语，直接输出 Markdown 内容
 
 网页标题：${title || '(无标题)'}
 网页 URL：${url}
@@ -134,7 +135,7 @@ ${content.slice(0, 5000)}
       { role: 'user', content: prompt },
     ], {
       temperature: 0.3,
-      maxTokens: 2000,
+      maxTokens: 4000,
       caller: 'url-summarize',
     });
 
