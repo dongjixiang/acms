@@ -110,7 +110,19 @@ function htmlToMarkdown($, container) {
     }
   });
 
-  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  const result = lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+
+  // v0.14：结构化提取远小于纯文本时，fallback 到纯文本
+  //   条件：结构化结果 < 500 字 且 纯文本是结构化结果的 3 倍以上
+  //   兼容百度百科等非标准 HTML 结构（正文在 .content_btGmf / .text_FfyV6 内，
+  //   不是标准 <p> / <li> 标签，但目录用 <li> 提取出 28 行 317 字）
+  if (result.length < 500) {
+    const plainText = $c.text().replace(/\s+/g, ' ').trim();
+    if (plainText.length > result.length * 3) {
+      return plainText;
+    }
+  }
+  return result;
 }
 
 async function fetchUrlCore({ url, max_length = MAX_LENGTH_DEFAULT }) {
