@@ -25,7 +25,7 @@ const { checkUrlSafety } = require('../services/url-safety');
 const FETCH_TIMEOUT_MS = 30000;
 const MAX_LENGTH_DEFAULT = 5000;
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;  // 24h
-const USER_AGENT = 'ACMS-Bot/1.0 (+https://github.com/dongjixiang/acms)';
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 
 // v0.14：24h 内存缓存（key: url，value: {result, expiresAt}）
 // 重复 URL 不重新抓（省 LLM token + 提速）
@@ -136,7 +136,14 @@ async function fetchUrlCore({ url, max_length = MAX_LENGTH_DEFAULT }) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     resp = await fetch(url, {
-      headers: { 'User-Agent': USER_AGENT, 'Accept': 'text/html,application/xhtml+xml' },
+      headers: {
+        'User-Agent': USER_AGENT,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Referer': 'https://baike.baidu.com/',
+        'Cache-Control': 'no-cache',
+      },
       redirect: 'follow',
       signal: controller.signal,
     });
