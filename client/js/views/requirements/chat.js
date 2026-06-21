@@ -749,6 +749,10 @@ async function chatSendWithFetch(reqId, text, urls) {
     }
 
     toast(`✅ 已抓取 ${data.fetchResults.filter(r => r.ok).length}/${data.fetchResults.length} 个链接`, 'success', 2000);
+
+    // v0.14 fix: 启动轮询，让用户看到 AI 正在回复的流式气泡
+    //   之前缺这段 → 用户看不到反馈 → 以为没发成功又点了一次 → 消息被发 2 次
+    setTimeout(() => startChatPolling(reqId), 500);
   } catch (e) {
     // 3. 失败：状态卡变错误提示，toast 提示，但**不抛错**（AI 仍可回答）
     if (statusCard) {
