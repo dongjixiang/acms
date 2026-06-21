@@ -44,6 +44,9 @@ function renderMarkdown(md) {
   html = html.replace(/\n\n/g, '</p><p>');
   html = html.replace(/\n/g, '<br>');
 
+  // 自动链接 URL（http/https 开头，排除已包裹在 <a> 内的）
+  html = html.replace(/(https?:\/\/[^\s<>"']+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+
   // 包裹为段落
   html = '<p>' + html + '</p>';
   // 清理空段落和空行导致的嵌套问题

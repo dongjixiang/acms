@@ -183,6 +183,7 @@ function fmtLocalTime(iso) {
 
 function renderChatBubble(container, entry) {
   const isAI = entry.role === 'assistant';
+  const isSystem = entry.role === 'system';
   const parts = [];
   if (isAI) {
     if (entry.opening) parts.push(renderMarkdown(entry.opening));
@@ -192,7 +193,9 @@ function renderChatBubble(container, entry) {
     ? parts.join('') + (entry.understanding
         ? `<div class="chat-thinking" style="display:none"><div class="chat-thinking-inner">${renderMarkdown(entry.understanding)}</div></div>`
         : '')
-    : `<div>${isAI ? renderMarkdown(entry.text || '') : escHtml(entry.text || '')}</div>`;
+    : isSystem
+      ? `<div class="chat-system-msg">${renderMarkdown(entry.text || '')}</div>`
+      : `<div>${isAI ? renderMarkdown(entry.text || '') : escHtml(entry.text || '')}</div>`;
 
   // 用户气泡支持附件小芯片（v0.9）
   const userAttachHtml = (!isAI && entry.attachmentsHtml)
@@ -201,9 +204,9 @@ function renderChatBubble(container, entry) {
 
   const hasThinking = isAI && entry.understanding;
   const div = document.createElement('div');
-  div.className = `chat-bubble ${isAI ? 'chat-bubble-ai' : 'chat-bubble-user'}`;
+  div.className = `chat-bubble ${isAI ? 'chat-bubble-ai' : isSystem ? 'chat-bubble-system' : 'chat-bubble-user'}`;
   div.dataset.chatRound = entry.chat_round || '';
-  div.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">${isAI ? '🤖 AI' : '💬 你'}</span><span class="chat-time">${fmtLocalTime(entry.at)}</span>${hasThinking ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}${isAI ? '<span class="chat-export-btn" onclick="chatExportWord(this)" title="导出为 Word 文档">📄</span>' : ''}</div>${bodyHtml}${userAttachHtml}`;
+  div.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">${isAI ? '🤖 AI' : isSystem ? '📎 参考' : '💬 你'}</span><span class="chat-time">${fmtLocalTime(entry.at)}</span>${hasThinking ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}${isAI ? '<span class="chat-export-btn" onclick="chatExportWord(this)" title="导出为 Word 文档">📄</span>' : ''}</div>${bodyHtml}${userAttachHtml}`;
   container.appendChild(div);
 }
 
