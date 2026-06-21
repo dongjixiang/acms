@@ -751,6 +751,15 @@ async function chatSendWithFetch(reqId, text, urls) {
 
     toast(`✅ 已抓取 ${data.fetchResults.filter(r => r.ok).length}/${data.fetchResults.length} 个链接`, 'success', 2000);
 
+    // v0.14 fix: 提前把已渲染的 server 条目计入 histCount，
+    //   避免 startChatPolling 后拉 supplement_history 又把 user/system 条目渲染成气泡
+    const state = _chatState[reqId];
+    if (state) {
+      // 写入数 = 1（user）+ N（system，每 URL 一条）+ 1（assistant，如果 0.5 步存了旧 brief）
+      const assistantExtra = (state.briefRound > 0) ? 1 : 0;
+      state.histCount += 1 + assistantExtra + data.fetchResults.length;
+    }
+
     // v0.14 fix: 启动轮询，让用户看到 AI 正在回复的流式气泡
     //   之前缺这段 → 用户看不到反馈 → 以为没发成功又点了一次 → 消息被发 2 次
     setTimeout(() => startChatPolling(reqId), 500);
