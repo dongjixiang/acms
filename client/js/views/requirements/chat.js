@@ -739,6 +739,7 @@ async function chatSendWithFetch(reqId, text, urls) {
         return `<div class="chat-fetch-item ok" data-url="${escHtml(r.url)}" data-title="${escHtml(r.title || '')}" data-idx="${i}">
           <div class="chat-fetch-url-row">📎 <span class="chat-fetch-title">${escHtml(r.title || r.url)}</span></div>
           <div class="chat-fetch-meta">字数：${r.length}${r.truncated ? '（已截断）' : ''} · ${escHtml(r.url)}</div>
+          <div class="chat-fetch-summary">${escHtml(r.summary || '')}</div>
           <div class="chat-fetch-actions">
             <button class="btn-small chat-fetch-promote" onclick="chatPromoteFetchedUrl('${reqId}', this)">📚 加入项目知识库</button>
             <button class="btn-small" onclick="this.closest('.chat-fetch-item').remove()">× 关闭</button>
