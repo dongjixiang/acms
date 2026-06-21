@@ -1,0 +1,11 @@
+fix(chat-fetch): 发URL消息前把当前AI回答存进supplement_history
+
+根因: chat-fetch.js 的 send-with-fetch 端点直接写 user + system
+条目到 supplement_history，没有先保存当前 thinking_brief 中的
+AI 回答（role: assistant）→ runBriefJob 覆盖 brief 后旧 AI
+回答永久丢失，只剩最后一轮 → 重新打开项目只看到最后一条 AI 反馈
+
+修复: 写 user 条目之前，读取当前 thinking_brief 的 done brief，
+将 opening/understanding/followup_question 存为 assistant 条目
+
+影响: 已有数据不可恢复（前3轮已丢失），后续不会再丢

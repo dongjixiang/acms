@@ -34,6 +34,23 @@ router.post('/send-with-fetch', async (req, res, next) => {
     // 0. 拿默认模型做摘要
     const summaryModel = modelStore.getDefaultGenModel();
 
+    // 0.5 先把当前 AI brief 存为 assistant 条目（否则每次走 send-with-fetch 会覆盖历史）
+    const req0 = reqStore.getById(reqId);
+    if (req0) {
+      try {
+        const oldBrief = JSON.parse(req0.thinking_brief || 'null');
+        if (oldBrief && oldBrief.status === 'done') {
+          const parts = {};
+          if (oldBrief.opening && typeof oldBrief.opening === 'string' && oldBrief.opening.trim()) parts.opening = oldBrief.opening.trim();
+          if (oldBrief.ai_understanding && typeof oldBrief.ai_understanding === 'string' && oldBrief.ai_understanding.trim()) parts.understanding = oldBrief.ai_understanding.trim();
+          if (oldBrief.followup_question && typeof oldBrief.followup_question === 'string' && oldBrief.followup_question.trim()) parts.followup_question = oldBrief.followup_question.trim();
+          if (Object.keys(parts).length > 0) {
+            appendChatEntry(reqId, { role: 'assistant', ...parts, source: 'assistant_round', at: new Date().toISOString() });
+          }
+        }
+      } catch (e) { /* 静默降级：没有 brief 或解析失败都不阻塞 */ }
+    }
+
     // 1. 写 user message
     const userEntry = { role: 'user', text, at: new Date().toISOString() };
     appendChatEntry(reqId, userEntry);
