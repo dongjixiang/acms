@@ -177,10 +177,11 @@ async function fetchUrlCore({ url, max_length = MAX_LENGTH_DEFAULT }) {
       const browserResp = await tryBrowserFallback(url);
       if (browserResp && browserResp.ok) {
         html = browserResp.text;
-        // v0.14：browser fallback 的额外字段（截图 + 原始 HTML）传给外层
         resp = { ok: true, browserFallback: browserResp };
       } else {
-        return { error: `HTTP ${resp.status} ${resp.statusText}` };
+        const curlErr = curlResp?.error ? `curl: ${curlResp.error}` : 'curl: 无内容';
+        const browserErr = browserResp?.error ? `浏览器: ${browserResp.error}` : '浏览器: 无内容';
+        return { error: `抓取失败（HTTP ${resp.status}）— ${curlErr} | ${browserErr}` };
       }
     }
   } else {

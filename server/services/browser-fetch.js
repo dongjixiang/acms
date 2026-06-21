@@ -19,8 +19,8 @@
 
 const puppeteer = require('puppeteer');
 
-const BROWSER_TIMEOUT_MS = 30000;
-const PAGE_WAIT_SECONDS = 3;  // 等 JS 执行 + 反爬验证完成
+const BROWSER_TIMEOUT_MS = 45000;  // 45s（百度百科 JS 渲染慢 + 冷启动 3-5s）
+const PAGE_WAIT_SECONDS = 5;  // 等 JS 执行 + 反爬验证完成
 
 let _browser = null;
 let _launching = null;  // Promise，防并发启动
