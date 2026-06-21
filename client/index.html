@@ -409,7 +409,12 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/core/router.js"></script>
 <script src="/client/js/views/projects.js"></script>
 <script src="/client/js/views/dashboard.js"></script>
-<script src="/client/js/views/requirements.js?v=0.9.0"></script>
+<!-- v0.13 拆分：4 个子模块在 requirements.js 之前加载（HTML onclick 跨文件，按名查找） -->
+<script src="/client/js/views/requirements/idea-panel.js?v=0.13.0"></script>
+<script src="/client/js/views/requirements/prototype.js?v=0.13.0"></script>
+<script src="/client/js/views/requirements/change-history.js?v=0.13.0"></script>
+<script src="/client/js/views/requirements/description-history.js?v=0.13.0"></script>
+<script src="/client/js/views/requirements.js?v=0.13.0"></script>
 <script src="/client/js/views/assists/index.js"></script>
 <script src="/client/js/views/assists/decision-tree.js?v=0.6.9"></script>
 <script src="/client/js/views/assists/use-case.js?v=0.13.0"></script>  <!-- v0.13 方法论驱动的"整理" -->
