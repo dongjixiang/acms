@@ -24,7 +24,37 @@ const { checkUrlSafety } = require('../services/url-safety');
 
 const FETCH_TIMEOUT_MS = 30000;
 const MAX_LENGTH_DEFAULT = 5000;
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000;  // 24h
 const USER_AGENT = 'ACMS-Bot/1.0 (+https://github.com/dongjixiang/acms)';
+
+// v0.14：24h 内存缓存（key: url，value: {result, expiresAt}）
+// 重复 URL 不重新抓（省 LLM token + 提速）
+const fetchCache = new Map();
+
+function getCached(url) {
+  const entry = fetchCache.get(url);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    fetchCache.delete(url);
+    return null;
+  }
+  return entry.result;
+}
+
+function setCached(url, result) {
+  fetchCache.set(url, { result, expiresAt: Date.now() + CACHE_TTL_MS });
+  // 简单 LRU 清理：>500 条时清最旧一半
+  if (fetchCache.size > 500) {
+    const entries = Array.from(fetchCache.entries());
+    entries.sort((a, b) => a[1].expiresAt - b[1].expiresAt);
+    for (let i = 0; i < 250; i++) fetchCache.delete(entries[i][0]);
+  }
+  return result;
+}
+
+// 导出供测试 + url-promote 端点复用
+function clearCache() { fetchCache.clear(); }
+function cacheSize() { return fetchCache.size; };
 
 // Readability 简化版启发式 — 找正文容器
 function findMainContent($) {
@@ -88,6 +118,12 @@ async function fetchUrlCore({ url, max_length = MAX_LENGTH_DEFAULT }) {
     return { error: 'url 参数必填' };
   }
 
+  // v0.14：先查 24h 缓存（命中秒返，省 LLM token + 提速）
+  const cached = getCached(url);
+  if (cached) {
+    return { ...cached, cached: true };
+  }
+
   // 1. SSRF check
   const safety = await checkUrlSafety(url);
   if (!safety.safe) {
@@ -140,7 +176,7 @@ async function fetchUrlCore({ url, max_length = MAX_LENGTH_DEFAULT }) {
   const truncated = fullContent.length > max_length;
   const content = truncated ? fullContent.slice(0, max_length) + '\n\n...[已截断，原文 ' + fullContent.length + ' 字符]' : fullContent;
 
-  return {
+  const result = {
     url,
     finalUrl: resp.url || url,
     title: title.slice(0, 200),
@@ -149,6 +185,10 @@ async function fetchUrlCore({ url, max_length = MAX_LENGTH_DEFAULT }) {
     truncated,
     fetchedAt: new Date().toISOString(),
   };
+
+  // v0.14：写入 24h 缓存
+  setCached(url, result);
+  return { ...result, cached: false };
 }
 
-module.exports = { fetchUrlCore };
+module.exports = { fetchUrlCore, getCached, setCached, clearCache, cacheSize };

@@ -2712,3 +2712,32 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 .ref-aspect-row .btn-small { padding: 2px 6px; min-width: 28px; }
 .ref-aspect-row { cursor: default; transition: background .1s; }
 .ref-aspect-row:hover { background: var(--bg2); }
+
+
+/* ===== v0.14：URL 抓取状态卡（chat-fetch-status / chat-fetch-results） ===== */
+.chat-fetch-status, .chat-fetch-results {
+  margin: 8px 0;
+  padding: 10px 12px;
+  background: var(--bg2, rgba(255,255,255,0.04));
+  border-left: 3px solid var(--accent, #4ecdc4);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text2, #aaa);
+}
+.chat-fetch-status.error { border-left-color: var(--red, #f55); }
+.chat-fetch-header { font-weight: bold; color: var(--text, #eee); margin-bottom: 6px; }
+.chat-fetch-list { list-style: none; margin: 0; padding: 0; }
+.chat-fetch-list li { padding: 2px 0; font-family: monospace; font-size: 11px; word-break: break-all; }
+.chat-fetch-url { color: var(--text2, #aaa); }
+.chat-fetch-spinner { display: inline-block; animation: chat-fetch-spin 1s linear infinite; margin-left: 4px; }
+@keyframes chat-fetch-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.chat-fetch-note { color: var(--text3, #888); font-size: 11px; margin-top: 6px; }
+.chat-fetch-err { color: var(--red, #f55); margin-top: 4px; }
+.chat-fetch-item { margin: 6px 0; padding: 8px; background: var(--bg, #222); border-radius: 4px; }
+.chat-fetch-item.ok { border-left: 2px solid var(--green, #4ecdc4); }
+.chat-fetch-item.error { border-left: 2px solid var(--yellow, #ffd93d); }
+.chat-fetch-url-row { font-weight: bold; color: var(--text, #eee); margin-bottom: 2px; word-break: break-all; }
+.chat-fetch-title { color: var(--text, #eee); }
+.chat-fetch-meta { font-size: 11px; color: var(--text2, #aaa); margin: 2px 0 6px; }
+.chat-fetch-actions { display: flex; gap: 6px; }
+.chat-fetch-promote.done { opacity: 0.6; cursor: not-allowed; background: var(--green, #4ecdc4); color: white; }

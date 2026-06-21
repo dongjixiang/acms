@@ -663,7 +663,138 @@ async function chatSend(reqId) {
   //   之前 fire-and-forget → triggerAiAutoSend 内的 await chatSend 立即 resolve
   //   → _aiAutoSentCount++ / "已自动发送 N 轮" 日志与"消息真正发出去"不同步
   //   → 与重入保护配合，确保一轮 send 真正结束再开始下一轮
-  await chatSendSupplement(reqId, finalText, 'idea_supplement');
+  // v0.14：检测 URL → 走 send-with-fetch 路径（server 抓取 + 预搜注入）
+  const urls = extractUrls(text);
+  if (urls.length > 0) {
+    await chatSendWithFetch(reqId, finalText, urls);
+  } else {
+    await chatSendSupplement(reqId, finalText, 'idea_supplement');
+  }
+}
+
+/**
+ * v0.14：检测文本中的 URL（http/https 开头）
+ * 返回去重后的 URL 数组
+ */
+function extractUrls(text) {
+  if (!text) return [];
+  const matches = text.match(/https?:\/\/[^\s<>"'，。、；！？)\]]+/g) || [];
+  // 去重
+  return Array.from(new Set(matches));
+}
+
+/**
+ * v0.14：发送带 URL 抓取的聊天消息
+ * 流程：
+ *   1. 插入「🌐 抓取中」状态卡到 chat 流
+ *   2. 调 POST /api/chat/send-with-fetch
+ *   3. 成功后：状态卡变「📎 参考资料」卡（带「📚 加入知识库」按钮）
+ *   4. 失败：状态卡变错误提示 + toast，AI 仍正常回答
+ */
+async function chatSendWithFetch(reqId, text, urls) {
+  const c = document.getElementById(`chat-stream-msgs-${reqId}`);
+
+  // 1. 插入「🌐 抓取中」状态卡
+  let statusCard = null;
+  if (c) {
+    statusCard = document.createElement('div');
+    statusCard.id = `chat-fetch-status-${reqId}`;
+    statusCard.className = 'chat-fetch-status';
+    statusCard.innerHTML = `
+      <div class="chat-fetch-header">🌐 正在抓取 ${urls.length} 个外部链接…</div>
+      <ul class="chat-fetch-list">
+        ${urls.map(u => `<li><span class="chat-fetch-url">${escHtml(u)}</span> <span class="chat-fetch-spinner">⏳</span></li>`).join('')}
+      </ul>
+      <div class="chat-fetch-note">预计 10-30s · 抓取中不影响你做其他操作</div>
+    `;
+    c.appendChild(statusCard);
+    chatScrollToBottom(c);
+  }
+
+  try {
+    const resp = await fetch('/api/chat/send-with-fetch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+      body: JSON.stringify({ reqId, text, urls }),
+    });
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      throw new Error(errData.error || `HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+
+    // 2. 状态卡就地变「📎 参考资料」卡
+    if (statusCard && c) {
+      statusCard.id = `chat-fetch-results-${reqId}`;
+      statusCard.className = 'chat-fetch-results';
+      const itemsHtml = (data.fetchResults || []).map((r, i) => {
+        if (!r.ok) {
+          return `<div class="chat-fetch-item error">
+            <div class="chat-fetch-url-row"><span class="chat-fetch-url-icon">⚠️</span> <span class="chat-fetch-url">${escHtml(r.url)}</span></div>
+            <div class="chat-fetch-err">抓取失败：${escHtml(r.error || '未知错误')}</div>
+            <div class="chat-fetch-note">AI 仍会基于你的消息回答</div>
+          </div>`;
+        }
+        // 注意：onclick 参数里嵌 URL 可能有引号问题，用 dataset 存 URL
+        return `<div class="chat-fetch-item ok" data-url="${escHtml(r.url)}" data-title="${escHtml(r.title || '')}" data-idx="${i}">
+          <div class="chat-fetch-url-row">📎 <span class="chat-fetch-title">${escHtml(r.title || r.url)}</span></div>
+          <div class="chat-fetch-meta">字数：${r.length}${r.truncated ? '（已截断）' : ''} · ${escHtml(r.url)}</div>
+          <div class="chat-fetch-actions">
+            <button class="btn-small chat-fetch-promote" onclick="chatPromoteFetchedUrl('${reqId}', this)">📚 加入项目知识库</button>
+            <button class="btn-small" onclick="this.closest('.chat-fetch-item').remove()">× 关闭</button>
+          </div>
+        </div>`;
+      }).join('');
+      statusCard.innerHTML = itemsHtml;
+    }
+
+    toast(`✅ 已抓取 ${data.fetchResults.filter(r => r.ok).length}/${data.fetchResults.length} 个链接`, 'success', 2000);
+  } catch (e) {
+    // 3. 失败：状态卡变错误提示，toast 提示，但**不抛错**（AI 仍可回答）
+    if (statusCard) {
+      statusCard.className = 'chat-fetch-status error';
+      statusCard.innerHTML = `<div class="chat-fetch-err">❌ 抓取请求失败：${escHtml(e.message)}</div>
+        <div class="chat-fetch-note">AI 仍会基于你的消息回答（不包含链接内容）</div>`;
+    }
+    toast('URL 抓取失败，AI 将基于你的消息回答', 'warning', 2000);
+  }
+}
+
+/**
+ * v0.14：「📚 加入项目知识库」按钮回调
+ * 调 POST /api/knowledge/url-promote 把抓取结果沉淀到 knowledge_files
+ */
+async function chatPromoteFetchedUrl(reqId, btn) {
+  const item = btn.closest('.chat-fetch-item');
+  if (!item) return;
+  const url = item.dataset.url;
+  const title = item.dataset.title || '';
+  if (!url) return;
+
+  // 防双击
+  if (btn.disabled) return;
+  btn.disabled = true;
+  const origText = btn.textContent;
+  btn.textContent = '⏳ 存入中…';
+
+  try {
+    const resp = await fetch('/api/knowledge/url-promote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+      body: JSON.stringify({ reqId, url, title }),
+    });
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      throw new Error(errData.error || `HTTP ${resp.status}`);
+    }
+    btn.textContent = '✓ 已加入';
+    btn.classList.add('done');
+    toast('✅ 已存入项目知识库', 'success', 2000);
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = origText;
+    toast('存入失败: ' + e.message, 'error');
+  }
 }
 
 /** 连接 SSE 流式思路简报 */
