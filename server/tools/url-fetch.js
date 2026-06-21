@@ -153,18 +153,23 @@ async function fetchUrlCore({ url, max_length = MAX_LENGTH_DEFAULT }) {
     return { error: `fetch 失败: ${e.message}` };
   }
 
+  // 3. 获取 HTML 内容（fetch 成功 → 直接读；403 等失败 → fallback 到 curl）
+  let html;
   if (!resp.ok) {
-    return { error: `HTTP ${resp.status} ${resp.statusText}` };
+    const curlResp = await tryCurlFallback(url);
+    if (curlResp && curlResp.ok) {
+      html = curlResp.text;
+    } else {
+      return { error: `HTTP ${resp.status} ${resp.statusText}` };
+    }
+  } else {
+    // 内容类型检查
+    const ct = resp.headers.get('content-type') || '';
+    if (!ct.includes('text/html') && !ct.includes('application/xhtml')) {
+      return { error: `不支持的内容类型: ${ct}` };
+    }
+    html = await resp.text();
   }
-
-  // 3. 内容类型检查
-  const ct = resp.headers.get('content-type') || '';
-  if (!ct.includes('text/html') && !ct.includes('application/xhtml')) {
-    return { error: `不支持的内容类型: ${ct}` };
-  }
-
-  // 4. 解析 HTML
-  const html = await resp.text();
   const $ = cheerio.load(html, { decodeEntities: true });
 
   // 5. 提取 title
@@ -196,6 +201,43 @@ async function fetchUrlCore({ url, max_length = MAX_LENGTH_DEFAULT }) {
   // v0.14：写入 24h 缓存
   setCached(url, result);
   return { ...result, cached: false };
+}
+
+
+// v0.14：当 Node.js fetch 被 WAF/反爬拦截时（403/40x），fallback 到 curl
+// curl 用不同 TLS 指纹和 HTTP/2 帧设置，能绕过百度云安全验证等反爬
+// 比 puppeteer 轻 1000 倍（3MB vs 100MB），curl 在 Windows/Linux/Mac 均内置
+const { exec } = require('child_process');
+const util = require('util');
+const execPromise = util.promisify(exec);
+
+async function tryCurlFallback(urlStr) {
+  const timeout = FETCH_TIMEOUT_MS;
+  const cmd = [
+    'curl', '-s', '-L',
+    '-H', 'User-Agent: ' + USER_AGENT,
+    '-H', 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    '-H', 'Accept-Language: zh-CN,zh;q=0.9,en;q=0.8',
+    '-H', 'Referer: https://baike.baidu.com/',
+    '-m', Math.floor(timeout / 1000).toString(),
+    escapeShellArg(urlStr),
+  ].join(' ');
+  try {
+    const { stdout } = await execPromise(cmd, {
+      maxBuffer: 10 * 1024 * 1024,
+      timeout: timeout + 5000,
+    });
+    if (!stdout || stdout.length < 50) return null;
+    return { text: stdout, status: 200, ok: true };
+  } catch (e) {
+    return null;
+  }
+}
+
+function escapeShellArg(s) {
+  // Windows MSYS/cmd：用双引号 + 内部转义（双引号本身、反斜杠后缀）
+  // JSON.stringify 生成 "..." 格式，内部特殊字符自动转义
+  return JSON.stringify(s);
 }
 
 module.exports = { fetchUrlCore, getCached, setCached, clearCache, cacheSize };
