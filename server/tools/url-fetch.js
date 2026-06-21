@@ -168,11 +168,18 @@ async function fetchUrlCore({ url, max_length = MAX_LENGTH_DEFAULT }) {
   // 3. 获取 HTML 内容（fetch 成功 → 直接读；403 等失败 → fallback 到 curl）
   let html;
   if (!resp.ok) {
+    // v0.14：失败 → fallback 到 curl（TLS 指纹绕过简单 WAF）
     const curlResp = await tryCurlFallback(url);
     if (curlResp && curlResp.ok) {
       html = curlResp.text;
     } else {
-      return { error: `HTTP ${resp.status} ${resp.statusText}` };
+      // v0.14：curl 也失败（或被反爬验证拦截）→ fallback 到 puppeteer 浏览器
+      const browserResp = await tryBrowserFallback(url);
+      if (browserResp && browserResp.ok) {
+        html = browserResp.text;
+      } else {
+        return { error: `HTTP ${resp.status} ${resp.statusText}` };
+      }
     }
   } else {
     // 内容类型检查
@@ -217,11 +224,44 @@ async function fetchUrlCore({ url, max_length = MAX_LENGTH_DEFAULT }) {
 
 
 // v0.14：当 Node.js fetch 被 WAF/反爬拦截时（403/40x），fallback 到 curl
-// curl 用不同 TLS 指纹和 HTTP/2 帧设置，能绕过百度云安全验证等反爬
+// curl 用不同 TLS 指纹和 HTTP/2 帧设置，能绕过部分 WAF
 // 比 puppeteer 轻 1000 倍（3MB vs 100MB），curl 在 Windows/Linux/Mac 均内置
 const { exec } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
+
+// v0.14：当 curl fallback 也遇到反爬验证时（百度安全验证等需 JS 执行），fallback 到 puppeteer
+let _browserFetchModule = null;
+
+async function getBrowserFetch() {
+  if (!_browserFetchModule) {
+    try {
+      _browserFetchModule = require('../services/browser-fetch');
+    } catch (e) {
+      return null;
+    }
+  }
+  return _browserFetchModule;
+}
+
+async function tryBrowserFallback(url) {
+  const bf = await getBrowserFetch();
+  if (!bf) return null;
+  try {
+    const result = await bf.browserFetch(url);
+    if (result.error) return null;
+    if (!result.text || result.text.length < 50) return null;
+    return { text: result.text, status: 200, ok: true, title: result.title, finalUrl: result.finalUrl };
+  } catch (e) {
+    return null;
+  }
+}
+
+// 反爬页面关键词检测
+const ANTI_CRAWL_KEYWORDS = [
+  '安全验证', '百度安全验证', '请通过安全验证', '验证页面',
+  'js', 'challenge', 'captcha', '人机验证',
+];
 
 async function tryCurlFallback(urlStr) {
   const timeout = FETCH_TIMEOUT_MS;
@@ -240,6 +280,9 @@ async function tryCurlFallback(urlStr) {
       timeout: timeout + 5000,
     });
     if (!stdout || stdout.length < 50) return null;
+    // v0.14：检测 curl 返回是否含反爬验证关键词（如百度安全验证）
+    //   如是 → 返回 null，上层走 browser fallback（puppeteer 能执行 JS 通过验证）
+    if (ANTI_CRAWL_KEYWORDS.some(kw => stdout.includes(kw))) return null;
     return { text: stdout, status: 200, ok: true };
   } catch (e) {
     return null;
