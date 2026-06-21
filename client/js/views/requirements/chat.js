@@ -662,16 +662,92 @@ async function chatSend(reqId) {
   window._chatAttachments[reqId] = [];
   chatRenderAttachPreview(reqId, []);
 
-  // v0.13 B5 fix: 加 await 让 chatSend 等 POST 真正完成
-  //   之前 fire-and-forget → triggerAiAutoSend 内的 await chatSend 立即 resolve
-  //   → _aiAutoSentCount++ / "已自动发送 N 轮" 日志与"消息真正发出去"不同步
-  //   → 与重入保护配合，确保一轮 send 真正结束再开始下一轮
-  // v0.14：检测 URL → 走 send-with-fetch 路径（server 抓取 + 预搜注入）
+  // v0.15：统一智能端点 detect-and-respond 处理所有情况
+  //   - 含 URL → 走 fetch_url + AI 摘要
+  //   - 含疑问词 → 走 web_search
+  //   - 其他 → 普通补充（brief 重生）
+  await chatSendDetect(reqId, finalText);
+}
+
+async function chatSendDetect(reqId, text) {
+  // 检测 URL（用于客户端展示关联状态卡）
   const urls = extractUrls(text);
-  if (urls.length > 0) {
-    await chatSendWithFetch(reqId, finalText, urls);
-  } else {
-    await chatSendSupplement(reqId, finalText, 'idea_supplement');
+  const c = document.getElementById(`chat-stream-msgs-${reqId}`);
+
+  // 如果有 URL，插入「🌐 抓取中」状态卡
+  let statusCard = null;
+  if (urls.length > 0 && c) {
+    statusCard = document.createElement('div');
+    statusCard.id = `chat-fetch-status-${reqId}`;
+    statusCard.className = 'chat-fetch-status';
+    statusCard.innerHTML = `
+      <div class="chat-fetch-header">🌐 正在抓取 ${urls.length} 个外部链接…</div>
+      <ul class="chat-fetch-list">
+        ${urls.map(u => `<li><span class="chat-fetch-url">${escHtml(u)}</span> <span class="chat-fetch-spinner">⏳</span></li>`).join('')}
+      </ul>
+      <div class="chat-fetch-note">预计 10-30s · 不影响你做其他操作</div>`;
+    c.appendChild(statusCard);
+    chatScrollToBottom(c);
+  }
+
+  try {
+    const resp = await fetch('/api/chat/detect-and-respond', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+      body: JSON.stringify({ reqId, text }),
+    });
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      throw new Error(errData.error || `HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+
+    // 如果成功且含 fetchResults，状态卡变参考资料卡
+    if (data.fetchResults?.length > 0 && statusCard && c) {
+      statusCard.id = `chat-fetch-results-${reqId}`;
+      statusCard.className = 'chat-fetch-results';
+      const itemsHtml = data.fetchResults.map((r, i) => {
+        if (!r.ok) {
+          return `<div class="chat-fetch-item error">
+            <div class="chat-fetch-url-row"><span class="chat-fetch-url-icon">⚠️</span> <span class="chat-fetch-url">${escHtml(r.url)}</span></div>
+            <div class="chat-fetch-err">抓取失败：${escHtml(r.error || '未知错误')}</div>
+            <div class="chat-fetch-note">AI 仍会基于你的消息回答</div>
+          </div>`;
+        }
+        return `<div class="chat-fetch-item ok" data-url="${escHtml(r.url)}" data-title="${escHtml(r.title || '')}" data-summary="${escHtml(r.summary || '')}" data-idx="${i}">
+          <div class="chat-fetch-url-row">📎 <span class="chat-fetch-title">${escHtml(r.title || r.url)}</span></div>
+          <div class="chat-fetch-meta">字数：${r.length}${r.truncated ? '（已截断）' : ''} · ${escHtml(r.url)}</div>
+          <div class="chat-fetch-summary">${renderMarkdown(r.summary || '')}</div>
+          <div class="chat-fetch-actions">
+            <button class="btn-small chat-fetch-promote" onclick="chatPromoteFetchedUrl('${reqId}', this)">📚 加入项目知识库</button>
+            <button class="btn-small" onclick="this.closest('.chat-fetch-item').remove()">× 关闭</button>
+          </div>
+        </div>`;
+      }).join('');
+      statusCard.innerHTML = itemsHtml;
+    }
+
+    // 如果自动搜索了，toast 提示
+    if (data.searched) {
+      toast('🔍 已自动搜索最新信息', 'info', 2000);
+    }
+
+    // 提前计入 histCount，避免 polling 重复渲染
+    const state = _chatState[reqId];
+    if (state) {
+      const assistantExtra = (state.briefRound > 0) ? 1 : 0;
+      state.histCount += 1 + assistantExtra + (data.fetchResults?.length || 0);
+    }
+
+    // 启动轮询，让用户看到 AI 流式回复
+    setTimeout(() => startChatPolling(reqId), 500);
+  } catch (e) {
+    if (statusCard && c) {
+      statusCard.className = 'chat-fetch-status error';
+      statusCard.innerHTML = `<div class="chat-fetch-err">❌ 请求失败：${escHtml(e.message)}</div>
+        <div class="chat-fetch-note">AI 仍会基于你的消息回答</div>`;
+    }
+    toast('请求失败，AI 将基于你的消息回答', 'warning', 2000);
   }
 }
 

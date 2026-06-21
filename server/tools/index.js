@@ -76,5 +76,23 @@ registerTool({
   },
 });
 
+const { search: webSearch } = require('./web-search');
+registerTool({
+  name: 'web_search',
+  description: '搜索互联网最新信息。当用户询问最新事件、实时数据、当前资讯时使用。'
+            + '免费搜索引擎，无需 API Key，返回标题 + 摘要 + URL。',
+  parameters: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: '搜索关键词（越精确越好）' },
+      max_results: { type: 'number', description: '最大返回结果数（1-8）', default: 8 },
+    },
+    required: ['query'],
+  },
+  async handler(args) {
+    return await webSearch(args);
+  },
+});
+
 console.log('[tools] 内建工具注册完成:', listBuiltinTools().join(', '));
 function listBuiltinTools() { return require('../services/tool-registry').listTools().map(t => t.name); }
