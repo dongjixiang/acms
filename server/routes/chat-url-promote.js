@@ -42,7 +42,9 @@ router.post('/url-promote', async (req, res, next) => {
 
     // 4. 复用 v0.9 ensureKnowledgeBase 拿正确 kbPath
     const kbPath = knowledgeService.ensureKnowledgeBase(projectId, wikiVaultPath);
-    const urlFetchDir = path.join(kbPath, 'raw', 'url-fetch');
+    // 注意：文件存到 raw/user-uploads/ 才能被 scanFile 找到
+    //   scanFile 硬编码了 raw/user-uploads/ 路径（knowledge-scanner.js:1446）
+    const urlFetchDir = path.join(kbPath, 'raw', 'user-uploads');
     fs.mkdirSync(urlFetchDir, { recursive: true });
 
     // 5. 写 markdown 文件（文件名用 url hash，避免重复 + 特殊字符）
