@@ -87,11 +87,13 @@ for (const f of routeFiles) {
   }
 }
 
-// 4c. DUP_MOUNT
+// 4c. DUP_MOUNT — Express 允许同 path 多次 mount（多个 router 拆模块后常用），
+//     但应避免——意味着 mount 设计不清晰。降级为 warning 而非 error。
+//     例：/api/chat 同时被 chat-upload + chat-fetch mount 是合法且推荐的设计。
 const seenMounts = new Map();
 for (const m of requireMounts) {
   if (seenMounts.has(m.mount)) {
-    errors.push(`DUP_MOUNT     ${m.mount}  (app.js:${seenMounts.get(m.mount)} and app.js:${m.line})`);
+    warnings.push(`DUP_MOUNT     ${m.mount}  (app.js:${seenMounts.get(m.mount)} and app.js:${m.line})  [Express 允许但应避免]  [manual check required]`);
   } else {
     seenMounts.set(m.mount, m.line);
   }

@@ -12,6 +12,7 @@
     "adm-zip": "^0.5.17",
     "archiver": "^6.0.2",
     "better-sqlite3": "^12.10.0",
+    "cheerio": "^1.2.0",
     "docx": "^9.7.1",
     "express": "^4.21.0",
     "mime-types": "^3.0.2",

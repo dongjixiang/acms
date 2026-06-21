@@ -57,5 +57,24 @@ registerTool({
   },
 });
 
+const { fetchUrlCore } = require('./url-fetch');
+registerTool({
+  name: 'fetch_url',
+  description: '抓取外部 URL 网页内容，提取正文转 markdown。'
+            + '当用户消息含 http(s):// 链接时使用，返回标题 + 正文摘要（5000 字以内）。'
+            + '已做 SSRF 防护（拒绝内网 URL），超时 30s。',
+  parameters: {
+    type: 'object',
+    properties: {
+      url: { type: 'string', description: '完整 URL（含 http:// 或 https://）' },
+      max_length: { type: 'number', description: '最大字符数（默认 5000）', default: 5000 },
+    },
+    required: ['url'],
+  },
+  async handler(args) {
+    return await fetchUrlCore(args);
+  },
+});
+
 console.log('[tools] 内建工具注册完成:', listBuiltinTools().join(', '));
 function listBuiltinTools() { return require('../services/tool-registry').listTools().map(t => t.name); }
