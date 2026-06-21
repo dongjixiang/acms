@@ -760,42 +760,42 @@ async function chatSendWithFetch(reqId, text, urls) {
   }
 }
 
-/**
- * v0.14：「📚 加入项目知识库」按钮回调
- * 调 POST /api/knowledge/url-promote 把抓取结果沉淀到 knowledge_files
- */
-async function chatPromoteFetchedUrl(reqId, btn) {
-  const item = btn.closest('.chat-fetch-item');
-  if (!item) return;
-  const url = item.dataset.url;
-  const title = item.dataset.title || '';
-  if (!url) return;
+  /**
+   * v0.14：「📚 加入项目知识库」按钮回调
+   * 调 POST /api/chat/url-promote 把抓取结果沉淀到 knowledge_files
+   */
+  async function chatPromoteFetchedUrl(reqId, btn) {
+    const item = btn.closest('.chat-fetch-item');
+    if (!item) return;
+    const url = item.dataset.url;
+    const title = item.dataset.title || '';
+    if (!url) return;
 
-  // 防双击
-  if (btn.disabled) return;
-  btn.disabled = true;
-  const origText = btn.textContent;
-  btn.textContent = '⏳ 存入中…';
+    // 防双击
+    if (btn.disabled) return;
+    btn.disabled = true;
+    const origText = btn.textContent;
+    btn.textContent = '⏳ 存入中…';
 
-  try {
-    const resp = await fetch('/api/knowledge/url-promote', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
-      body: JSON.stringify({ reqId, url, title }),
-    });
-    if (!resp.ok) {
-      const errData = await resp.json().catch(() => ({}));
-      throw new Error(errData.error || `HTTP ${resp.status}`);
+    try {
+      const resp = await fetch('/api/chat/url-promote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+        body: JSON.stringify({ reqId, url, title }),
+      });
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        throw new Error(errData.error || `HTTP ${resp.status}`);
+      }
+      btn.textContent = '✓ 已加入';
+      btn.classList.add('done');
+      toast('✅ 已存入项目知识库', 'success', 2000);
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = origText;
+      toast('存入失败: ' + e.message, 'error');
     }
-    btn.textContent = '✓ 已加入';
-    btn.classList.add('done');
-    toast('✅ 已存入项目知识库', 'success', 2000);
-  } catch (e) {
-    btn.disabled = false;
-    btn.textContent = origText;
-    toast('存入失败: ' + e.message, 'error');
   }
-}
 
 /** 连接 SSE 流式思路简报 */
 function connectStreamingBrief(reqId, container) {
