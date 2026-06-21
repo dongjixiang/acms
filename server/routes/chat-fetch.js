@@ -16,7 +16,7 @@ const { callLLM } = require('../services/llm-adapter');
 const { runBriefJob } = require('../services/thinking-brief');
 
 const MAX_URLS_PER_MESSAGE = 5;  // 1 条消息最多抓 5 个 URL（防刷）
-const SUMMARY_MAX_CHARS = 300;   // AI 摘要最大字数
+const SUMMARY_MAX_CHARS = 1000;   // AI 摘要最大字数（用户反馈 300 太精炼丢细节）
 
 router.post('/send-with-fetch', async (req, res, next) => {
   try {
@@ -112,15 +112,21 @@ async function summarizeContent(model, url, title, content) {
     return content.slice(0, SUMMARY_MAX_CHARS);
   }
 
-  const prompt = `你是一个信息整理助手。用户从以下网页抓取了内容，请提炼为不超过 ${SUMMARY_MAX_CHARS} 字的摘要，突出重点信息。
+  const prompt = `你是一个信息整理助手。用户从以下网页抓取了内容，请提炼为不超过 ${SUMMARY_MAX_CHARS} 字的摘要。
+
+要求：
+- 保留关键事实、数据、时间线、人物关系、具体结论
+- 按逻辑组织：先概述核心内容，再展开关键细节
+- 不要遗漏重要信息节点
+- 不要添加评价或开头语（"以下是摘要"等），直接输出摘要内容
 
 网页标题：${title || '(无标题)'}
 网页 URL：${url}
 
 网页内容：
-${content.slice(0, 4000)}
+${content.slice(0, 5000)}
 
-请用简洁的中文输出摘要，不要添加开头语（"以下是摘要"等），直接写摘要内容。`;
+摘要：`;
 
   try {
     const resp = await callLLM(model.id, [
@@ -128,7 +134,7 @@ ${content.slice(0, 4000)}
       { role: 'user', content: prompt },
     ], {
       temperature: 0.3,
-      maxTokens: 600,
+      maxTokens: 2000,
       caller: 'url-summarize',
     });
 
