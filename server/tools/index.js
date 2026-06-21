@@ -94,5 +94,27 @@ registerTool({
   },
 });
 
+// v0.15：综合网络调研（搜索 + 抓取 + LLM 综合分析 一站式）
+const { research: webResearch } = require('./web-research');
+registerTool({
+  name: 'web_research',
+  description: '综合网络调研：搜索互联网 + 自动抓取 Top N 链接正文 + LLM 综合分析，返回结构化答案（含引用来源）。'
+            + '适用场景：用户问"目前XXX怎么样"、"分析一下YYY"、"对比一下AAA和BBB"等需要多源信息的复杂问题。'
+            + '比 web_search 更深入（自动读全文），比手动 search+fetch 更省事。',
+  parameters: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: '调研问题或主题' },
+      max_results: { type: 'number', description: '搜索返回条数（默认 6，1-10）', default: 6 },
+      deep_fetch: { type: 'number', description: '自动抓取的 URL 数（默认 3，0=不抓取只返回搜索结果）', default: 3 },
+      model_id: { type: 'string', description: '综合分析用的 LLM（可选，默认用系统默认模型）' },
+    },
+    required: ['query'],
+  },
+  async handler(args) {
+    return await webResearch(args);
+  },
+});
+
 console.log('[tools] 内建工具注册完成:', listBuiltinTools().join(', '));
 function listBuiltinTools() { return require('../services/tool-registry').listTools().map(t => t.name); }

@@ -71,11 +71,18 @@ confidence < 0.6 时默认走 vague（宁松勿严）。
 - 反例：补充里说"FAE 痛点是 XX，销售痛点是 YY"，但 followup 问"销售和 FAE 第一屏看什么"——这是错的，因为"第一屏"在补充里还没提，可以问；"FAE 痛点"已经提了，不能问
 
 ## 知识/竞品类问题处理（v0.3.6）
-如果用户最新一条补充是问**某个产品或竞品的介绍/功能/评价**（如"介绍一下ModelN"、"XX怎么样"、"有没有类似产品"）：
+如果用户最新一条补充是**问某个产品或竞品的介绍/功能/评价**（如"介绍一下ModelN"、"XX怎么样"、"有没有类似产品"）：
 - **不要直接当作需求假设**——用户只是在搜集信息
 - **opening** 用 1-2 句话简要回答（字数放宽到 ≤200 字），语气像同事科普
 - **followup_question** 改成引导："了解了这些信息后，你的需求方向是什么？"
 - **auto_assist** 设为 \`{"method":"competitive","reason":"用户想了解竞品信息，是否要展开竞品分析？"}\`
+
+## 实时信息查询处理（v0.15）
+如果用户输入的是一条**问实时信息的问题**（如"最近世界杯排名"、"今天股市"、"2026年有什么新政策"等客观事实类问题），并且对话历史中包含「🔍 搜索结果」或「🌐 抓取中」等 system 角色的搜索反馈：
+- **opening** 直接基于搜索结果回答用户问题（语气像同事科普，展开到 300-500 字，包含关键数据和来源）
+- **ai_understanding** 简述用户问的是什么类信息
+- **followup_question** 改为引导用户回到需求主线："了解了这些信息后，这些跟我们现在讨论的需求方向有关系吗？"
+- **diagnosis** 设为 null（不需要诊断）
 
 ## 借鉴/参考类问题处理（v0.3.6）
 如果用户最新一条补充是**说要参考/借鉴某个产品**（如"可参考XX"、"像XX一样"、"借鉴XX的做法"）：
@@ -128,7 +135,7 @@ async function generateBrief(title, description, clarity, oldDecisionTree, role,
   if (Array.isArray(supplementHistory) && supplementHistory.length > 0) {
     userParts.push('---');
     userParts.push('【需求对话历史】（按时间顺序，包含 AI 提问和用户回答）:');
-    supplementHistory.forEach((h, i) => {
+supplementHistory.forEach((h, i) => {
       const sourceTag = h.source ? ` [${h.source}]` : '';
       const atTag = h.at ? ` @${h.at.substring(11, 16)}` : '';
       if (h.role === 'assistant') {
@@ -139,6 +146,9 @@ async function generateBrief(title, description, clarity, oldDecisionTree, role,
         // 旧格式降级
         if (lines.length === 0 && h.text) lines.push(`  ${h.text}`);
         userParts.push(`#${i + 1} 🤖 AI${sourceTag}${atTag}:\n${lines.join('\n')}`);
+      } else if (h.role === 'system') {
+        // v0.15: 系统消息（搜索结果、抓取内容）单独标注，避免 AI 误判为用户输入
+        userParts.push(`#${i + 1} 🔎 [系统参考 - 工具返回结果]${sourceTag}${atTag}:\n${h.text || ''}`);
       } else {
         userParts.push(`#${i + 1} ➡️ 用户${sourceTag}${atTag}: ${h.text || ''}`);
       }

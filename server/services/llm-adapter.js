@@ -40,12 +40,31 @@ async function callLLM(modelId, messages, options = {}) {
     caller: options.caller || '(none)',
   });
 
+  // v0.15: 429/529 等瞬时错误自动重试（指数退避），最多 3 次
+  const RETRY_STATUSES = [429, 529, 502, 503, 504];
+  const MAX_RETRIES = 3;
   let result;
-  if (api === 'anthropic-messages') {
-    result = await callAnthropic(model, messages, opts, apiKey, opts.tools);
-  } else {
-    result = await callOpenAI(model, messages, opts, apiKey, opts.tools);
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      if (api === 'anthropic-messages') {
+        result = await callAnthropic(model, messages, opts, apiKey, opts.tools);
+      } else {
+        result = await callOpenAI(model, messages, opts, apiKey, opts.tools);
+      }
+      break;  // 成功，退出重试
+    } catch (e) {
+      lastErr = e;
+      const status = e.status || e.response?.status;
+      if (!RETRY_STATUSES.includes(status) || attempt === MAX_RETRIES) {
+        throw e;
+      }
+      const delayMs = 500 * Math.pow(2, attempt - 1);  // 500ms, 1s, 2s
+      console.warn(`[llm-adapter] ${model.name} 临时错误 ${status}（${attempt}/${MAX_RETRIES}），${delayMs}ms 后重试...`);
+      await new Promise(r => setTimeout(r, delayMs));
+    }
   }
+  if (!result) throw lastErr;
 
   _debugDump('LLM_RESPONSE', {
     modelId, contentLen: result.content?.length || 0, content: result.content,

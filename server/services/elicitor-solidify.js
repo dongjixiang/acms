@@ -44,6 +44,9 @@ const SOLIDIFY_SYSTEM_PROMPT = `你是 ACMS 系统的「需求固化助手」。
 - 不要任何额外文字、markdown 代码块、解释`;
 
 function pickDefaultLlm() {
+  // v0.3.6：优先使用系统配置的「默认思路模型」
+  const defaultGen = modelStore.getDefaultGenModel();
+  if (defaultGen) return defaultGen;
   const all = modelStore.list();
   return all.find(m => m.capabilities?.includes('text') || m.type === 'chat' || m.type === 'text')
       || all[0]

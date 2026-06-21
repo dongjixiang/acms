@@ -26,6 +26,15 @@ const LOCAL_ONLY_WORDS = [
   '这个功能', '这个设计', '这个需求', '这个项目',
 ];
 
+// v0.15：动作意图关键词（用户想从外部获取内容/资源 → 需要搜索）
+const ACTION_INTENT_WORDS = [
+  '我想听', '想听', '要听', '播放', '试听', '下载',
+  '我想看', '想看', '要看', '找视频', '下载视频',
+  '我想找', '想找', '帮我找', '帮我搜', '帮我查',
+  '推荐', '推荐一个', '推荐一下', '有什么好',
+  '搜索', '百度', '谷歌', '搜一下', '查一下',
+];
+
 /**
  * 判断消息是否需要搜索互联网
  */
@@ -33,16 +42,19 @@ function needsWebSearch(text) {
   if (!text || typeof text !== 'string') return false;
 
   // 含 URL 的不搜索（走 fetch_url）
-  if (/https?:\/\/[^\s]+/.test(text)) return false;
+  if (/https?:\/\/[^\\s]+/.test(text)) return false;
 
   // 含本地性关键词 → 本地处理，不搜索
   if (LOCAL_ONLY_WORDS.some(w => text.includes(w))) return false;
 
   // 检查是否含疑问词 + 实时性关键词
   const hasTrigger = SEARCH_TRIGGER_WORDS.some(w => text.includes(w));
-  const isQuestion = /[\?？]/.test(text) || /^(什么|如何|为什么|怎么|有没有|是不是|能否|是否)/.test(text.trim());
+  const isQuestion = /[\\?？]/.test(text) || /^(什么|如何|为什么|怎么|有没有|是不是|能否|是否)/.test(text.trim());
 
-  return hasTrigger || isQuestion;
+  // v0.15：动作意图检测（想听/想看/找/搜/推荐...）
+  const hasActionIntent = ACTION_INTENT_WORDS.some(w => text.includes(w));
+
+  return hasTrigger || isQuestion || hasActionIntent;
 }
 
 /**
@@ -51,12 +63,15 @@ function needsWebSearch(text) {
 function extractSearchQuery(text) {
   // 去掉疑问词和标点
   let query = text
-    .replace(/[\?？。，！、；：""''【】《》（）\s]+/g, ' ')
-    .replace(/\b(请|帮我|帮我查|帮我查一下|查询|搜索|查找|我想知道|告诉我|请问|能不能|可否|麻烦)\b/g, '')
+    .replace(/[?？。，！、；：""''【】《》（）\s]+/g, ' ')
+    .replace(/(请帮我|帮我查一下|我想知道|请问|能不能|可否|麻烦|我需要|我要|我想)/g, '')
+    .replace(/(想听|想看|想找|想下载|想搜|想学|想玩|想了解|帮忙找|帮忙搜|帮忙查|帮忙推荐|帮我推荐)/g, '')
+    .replace(/(请帮忙|请帮我|请找|请搜|请查|请推荐)/g, '')
+    .replace(/(帮我|帮我查|请|查询|搜索|查找|告诉我)/g, '')
     .trim();
 
   // 如果太短就没意义
-  if (query.length < 4) return text.replace(/[\?？。，！、；：""''【】《》（）]/g, ' ').trim();
+  if (query.length < 4) return text.replace(/[?？。，！、；：""''【】《》（）]/g, ' ').trim();
 
   return query;
 }
@@ -82,18 +97,41 @@ router.post('/detect-and-respond', async (req, res, next) => {
 
     // 3. 检测是否需要搜索
     let searched = false;
+    let deepResearch = false;
     if (needsWebSearch(text)) {
       const query = extractSearchQuery(text);
-      console.log(`[detect-and-respond] ${reqId} 自动搜索: ${query}`);
-      const searchResult = await toolRegistry.execute('web_search', { query, max_results: 5 });
+      // v0.15：动作意图（想听/想看/找/搜）→ 用 web_research（自动抓正文+综合分析）
+      // 普通搜索查询（最新/最近/是什么）→ 用 web_search（快速）
+      const isActionIntent = ACTION_INTENT_WORDS.some(w => text.includes(w));
+      const toolName = isActionIntent ? 'web_research' : 'web_search';
+      const toolArgs = isActionIntent
+        ? { query: text, max_results: 6, deep_fetch: 3 }   // 用原句让 LLM 自己提取
+        : { query, max_results: 5 };
+      const actualQuery = isActionIntent ? text : query;
+      console.log(`[detect-and-respond] ${reqId} 自动搜索(${toolName}): ${actualQuery}`);
+      const searchResult = await toolRegistry.execute(toolName, toolArgs);
+      console.log(`[detect-and-respond] ${reqId} 搜索结果:`, searchResult.error ? `失败: ${searchResult.error}` : `${searchResult.results?.length || 0} 条`);
 
-      if (!searchResult.error && searchResult.results?.length > 0) {
+      if (!searchResult.error && (searchResult.results?.length > 0 || searchResult.answer)) {
         searched = true;
+        deepResearch = isActionIntent;
 
-        // 写搜索结果到 supplement_history
+        // 构造搜索结果条目（web_research 返回 answer + sources，web_search 返回 results）
+        let entryText;
+        if (isActionIntent && searchResult.answer) {
+          // web_research：把综合答案作为主要内容，附加来源列表
+          const sourcesList = (searchResult.sources || []).slice(0, 5).map(s =>
+            `[${s.index}] ${s.title}\n   ${s.url}`
+          ).join('\n\n');
+          entryText = `🔍 **网络调研结果**\n\n${searchResult.answer}\n\n## 参考来源\n${sourcesList}`;
+        } else {
+          // web_search：原始搜索结果列表
+          entryText = `🔍 搜索结果：${query}\n\n${searchResult.formatted || searchResult.results.map((r, i) => `${i + 1}. **${r.title}**\n   ${r.url}\n   ${(r.snippet || '').slice(0, 200)}`).join('\n\n')}`;
+        }
+
         const searchEntry = {
           role: 'system',
-          text: `🔍 搜索结果：${query}\n\n${searchResult.formatted || searchResult.results.map((r, i) => `${i + 1}. [${r.title}](${r.url})\n   ${(r.snippet || '').slice(0, 200)}`).join('\n\n')}`,
+          text: entryText,
           at: new Date().toISOString(),
         };
         appendChatEntry(reqId, searchEntry);

@@ -16,9 +16,12 @@ async function search(args) {
   const result = await searchWeb(query, { maxResults: args?.maxResults || 8 });
   if (result.error) return { error: result.error };
 
-  // 格式化返回（简洁版用于 LLM prompt）
+  // 格式化返回（简洁版用于 LLM prompt + UI 显示）
+  // v0.15 fix: 不再用 [title](URL) 格式（自研 markdown 渲染器不支持，会显示成 raw text 加尾巴的 )
+  // 改成 title + URL 分行显示：URL 在自己一行，渲染器自动包成 <a> 标签
   const formatted = result.results.map((r, i) => {
-    return `${i + 1}. [${r.title}](${r.url})\n   ${(r.snippet || '').slice(0, 200)}`;
+    const snip = (r.snippet || '').slice(0, 200);
+    return `${i + 1}. **${r.title}**\n   ${r.url}${snip ? '\n   ' + snip : ''}`;
   }).join('\n\n');
 
   return {

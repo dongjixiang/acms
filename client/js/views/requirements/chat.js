@@ -674,6 +674,12 @@ async function chatSendDetect(reqId, text) {
   const urls = extractUrls(text);
   const c = document.getElementById(`chat-stream-msgs-${reqId}`);
 
+  // v0.15 fix: 发请求前先清掉旧轮询器，避免响应回来前旧轮询器触发渲染重复
+  if (_chatPollers[reqId]) {
+    clearInterval(_chatPollers[reqId]);
+    delete _chatPollers[reqId];
+  }
+
   // 如果有 URL，插入「🌐 抓取中」状态卡
   let statusCard = null;
   if (urls.length > 0 && c) {
@@ -735,8 +741,26 @@ async function chatSendDetect(reqId, text) {
     // 提前计入 histCount，避免 polling 重复渲染
     const state = _chatState[reqId];
     if (state) {
-      const assistantExtra = (state.briefRound > 0) ? 1 : 0;
-      state.histCount += 1 + assistantExtra + (data.fetchResults?.length || 0);
+      // 直接拉真实 supplement_history 同步 histCount（比手动计算更可靠）
+      try {
+        const syncResp = await api('GET', `/requirements/${reqId}/supplement-history`);
+        if (syncResp?.history) {
+          const history = syncResp.history;
+          // v0.15 fix: 渲染本轮新写入的 system 条目（搜索结果等），跳过已本地渲染的 user 条目
+          for (let i = state.histCount; i < history.length; i++) {
+            const entry = history[i];
+            if (entry.role === 'system' && entry.text) {
+              // 渲染为「📎 参考」气泡
+              renderChatBubble(c, entry);
+            }
+          }
+          state.histCount = history.length;
+        }
+      } catch (e) {
+        // 拉失败时回退到增量估算
+        const assistantExtra = (state.briefRound > 0) ? 1 : 0;
+        state.histCount += 1 + assistantExtra + (data.fetchResults?.length || 0);
+      }
     }
 
     // 启动轮询，让用户看到 AI 流式回复
@@ -834,9 +858,17 @@ async function chatSendWithFetch(reqId, text, urls) {
     //   避免 startChatPolling 后拉 supplement_history 又把 user/system 条目渲染成气泡
     const state = _chatState[reqId];
     if (state) {
-      // 写入数 = 1（user）+ N（system，每 URL 一条）+ 1（assistant，如果 0.5 步存了旧 brief）
-      const assistantExtra = (state.briefRound > 0) ? 1 : 0;
-      state.histCount += 1 + assistantExtra + data.fetchResults.length;
+      // 直接拉真实 supplement_history 同步 histCount
+      try {
+        const syncResp = await api('GET', `/requirements/${reqId}/supplement-history`);
+        if (syncResp?.history) {
+          state.histCount = syncResp.history.length;
+        }
+      } catch (e) {
+        // 回退到估算：1（user）+ N（system，每 URL 一条）+ 1（assistant，如果存了旧 brief）
+        const assistantExtra = (state.briefRound > 0) ? 1 : 0;
+        state.histCount += 1 + assistantExtra + data.fetchResults.length;
+      }
     }
 
     // v0.14 fix: 启动轮询，让用户看到 AI 正在回复的流式气泡
