@@ -409,8 +409,12 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/core/router.js"></script>
 <script src="/client/js/views/projects.js"></script>
 <script src="/client/js/views/dashboard.js"></script>
-<!-- v0.13 拆分：4 个子模块在 requirements.js 之前加载（HTML onclick 跨文件，按名查找） -->
+<!-- v0.13 拆分：8 个子模块在 requirements.js 之前加载（HTML onclick 跨文件按名查找） -->
 <script src="/client/js/views/requirements/idea-panel.js?v=0.13.0"></script>
+<script src="/client/js/views/requirements/brief-controls.js?v=0.13.0"></script>
+<script src="/client/js/views/requirements/decision-tree.js?v=0.13.0"></script>
+<script src="/client/js/views/requirements/data-model.js?v=0.13.0"></script>
+<script src="/client/js/views/requirements/arch.js?v=0.13.0"></script>
 <script src="/client/js/views/requirements/prototype.js?v=0.13.0"></script>
 <script src="/client/js/views/requirements/change-history.js?v=0.13.0"></script>
 <script src="/client/js/views/requirements/description-history.js?v=0.13.0"></script>
