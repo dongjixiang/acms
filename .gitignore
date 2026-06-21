@@ -7,6 +7,10 @@ tmp_*.js
 tmp_append.txt
 config.json
 
+# v0.13 修复：3 处 debug-logger 原代码漏一层 ..，把 acms-llm-debug.log 写到 server/data/，已修
+# 此目录是历史错误产物，不入仓库
+server/data/
+
 # Local test output
 server_out*.txt
 tmp/

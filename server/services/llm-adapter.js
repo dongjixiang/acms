@@ -6,22 +6,8 @@ const toolRegistry = require('./tool-registry');
 // 默认请求超时（毫秒）
 const DEFAULT_TIMEOUT = 120000; // 120s
 
-// ── v0.3.3 B+++ 补丁（2026-06-13）：DEBUG 模式开关 ──
-const LLM_DEBUG = process.env.ACMS_LLM_DEBUG === '1';
-const DEBUG_LOG_FILE = require('path').join(__dirname, '..', 'data', 'acms-llm-debug.log');
-const DEBUG_LOG_MAX_BYTES = 5 * 1024 * 1024;
-function _debugDump(tag, payload) {
-  if (!LLM_DEBUG) return;
-  try {
-    require('fs').mkdirSync(require('path').dirname(DEBUG_LOG_FILE), { recursive: true });
-    if (require('fs').existsSync(DEBUG_LOG_FILE) && require('fs').statSync(DEBUG_LOG_FILE).size > DEBUG_LOG_MAX_BYTES) {
-      require('fs').renameSync(DEBUG_LOG_FILE, DEBUG_LOG_FILE + '.old');
-      require('fs').writeFileSync(DEBUG_LOG_FILE, `[rotated at ${new Date().toISOString()}]\n`);
-    }
-    const line = `\n=== [${new Date().toISOString()}] ${tag} ===\n` + JSON.stringify(payload, null, 2) + '\n';
-    require('fs').appendFileSync(DEBUG_LOG_FILE, line);
-  } catch {}
-}
+// ── v0.3.3 B+++ 补丁（2026-06-13，v0.13 抽公共到 services/debug-logger.js）──
+const { dump: _debugDump } = require('./debug-logger');
 
 /**
  * 调用 LLM，自动根据 model.api 选择协议

@@ -145,22 +145,9 @@ function extractJSON(content) {
  * @param {string} content
  * @returns {object|null}
  */
-// 同步 index.js 的 DEBUG 配置（避免 require 循环）
-const LLM_DEBUG = process.env.ACMS_LLM_DEBUG === '1';
-const DEBUG_LOG_FILE = require('path').join(__dirname, '..', 'data', 'acms-llm-debug.log');
-const DEBUG_LOG_MAX_BYTES = 5 * 1024 * 1024;
-function _debugDump(tag, payload) {
-  if (!LLM_DEBUG) return;
-  try {
-    require('fs').mkdirSync(require('path').dirname(DEBUG_LOG_FILE), { recursive: true });
-    if (require('fs').existsSync(DEBUG_LOG_FILE) && require('fs').statSync(DEBUG_LOG_FILE).size > DEBUG_LOG_MAX_BYTES) {
-      require('fs').renameSync(DEBUG_LOG_FILE, DEBUG_LOG_FILE + '.old');
-      require('fs').writeFileSync(DEBUG_LOG_FILE, `[rotated at ${new Date().toISOString()}]\n`);
-    }
-    const line = `\n=== [${new Date().toISOString()}] ${tag} ===\n` + JSON.stringify(payload, null, 2) + '\n';
-    require('fs').appendFileSync(DEBUG_LOG_FILE, line);
-  } catch {}
-}
+// 同步 services/debug-logger.js 的公共 dump（v0.13 抽公共，避免 3 处重复）
+// 注：debug-logger.js 不依赖任何 service，可安全 require（0 循环）
+const { dump: _debugDump } = require('./debug-logger');
 
 function safeParseJSON(content) {
   const jsonStr = extractJSON(content);
