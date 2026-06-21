@@ -739,7 +739,7 @@ async function chatSendWithFetch(reqId, text, urls) {
           </div>`;
         }
         // 注意：onclick 参数里嵌 URL 可能有引号问题，用 dataset 存 URL
-        return `<div class="chat-fetch-item ok" data-url="${escHtml(r.url)}" data-title="${escHtml(r.title || '')}" data-idx="${i}">
+        return `<div class="chat-fetch-item ok" data-url="${escHtml(r.url)}" data-title="${escHtml(r.title || '')}" data-summary="${escHtml(r.summary || '')}" data-idx="${i}">
           <div class="chat-fetch-url-row">📎 <span class="chat-fetch-title">${escHtml(r.title || r.url)}</span></div>
           <div class="chat-fetch-meta">字数：${r.length}${r.truncated ? '（已截断）' : ''} · ${escHtml(r.url)}</div>
           <div class="chat-fetch-summary">${renderMarkdown(r.summary || '')}</div>
@@ -786,6 +786,7 @@ async function chatSendWithFetch(reqId, text, urls) {
     if (!item) return;
     const url = item.dataset.url;
     const title = item.dataset.title || '';
+    const summary = item.dataset.summary || '';
     if (!url) return;
 
     // 防双击
@@ -798,7 +799,7 @@ async function chatSendWithFetch(reqId, text, urls) {
       const resp = await fetch('/api/chat/url-promote', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
-        body: JSON.stringify({ reqId, url, title }),
+        body: JSON.stringify({ reqId, url, title, summary }),
       });
       if (!resp.ok) {
         const errData = await resp.json().catch(() => ({}));

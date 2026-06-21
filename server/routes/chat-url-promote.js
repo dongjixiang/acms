@@ -1,7 +1,11 @@
 // 聊天 URL 抓取结果沉淀到知识库（v0.14，2026-06-21）
 // POST /api/chat/url-promote
-// body { reqId, url, title }
-// 复用 fetch_url tool 缓存（24h）+ v0.9 promote 模式（ensureKnowledgeBase + 扫描）
+// body { reqId, url, title, summary? }
+//
+// 目录分配（按用户要求 2026-06-21）：
+//   - MD 摘要 → concepts/（提炼后的知识，非 raw）
+//   - 原始 HTML → raw/user-uploads/（原始素材）
+//   - PNG 截图 → 不存
 
 const express = require('express');
 const router = express.Router();
@@ -12,12 +16,11 @@ const reqStore = require('../stores/requirement-store');
 const projectStore = require('../stores/project-store');
 const toolRegistry = require('../services/tool-registry');
 const knowledgeService = require('../services/knowledge-service');
-const knowledgeScanner = require('../services/knowledge-scanner');
 const { fetchUrlCore } = require('../tools/url-fetch');
 
 router.post('/url-promote', async (req, res, next) => {
   try {
-    const { reqId, url, title } = req.body;
+    const { reqId, url, title, summary } = req.body;
     if (!reqId || !url) {
       return res.status(400).json({ error: 'MISSING_FIELDS' });
     }
@@ -40,28 +43,28 @@ router.post('/url-promote', async (req, res, next) => {
       return res.status(400).json({ error: 'FETCH_FAILED', detail: result.error });
     }
 
-    // 4. 复用 v0.9 ensureKnowledgeBase 拿正确 kbPath
+    // 4. 准备路径
     const kbPath = knowledgeService.ensureKnowledgeBase(projectId, wikiVaultPath);
-    // 注意：文件存到 raw/user-uploads/ 才能被 scanFile 找到
-    //   scanFile 硬编码了 raw/user-uploads/ 路径（knowledge-scanner.js:1446）
-    const urlFetchDir = path.join(kbPath, 'raw', 'user-uploads');
-    fs.mkdirSync(urlFetchDir, { recursive: true });
-
-    // 5. 写 markdown 文件（文件名用 url hash，避免重复 + 特殊字符）
     const urlHash = crypto.createHash('sha256').update(url).digest('hex').slice(0, 16);
-    const safeTitle = (result.title || title || 'untitled').replace(/[\\/:*?"<>|\n\r\t]/g, '_').slice(0, 80);
-    const fileName = `${urlHash}_${safeTitle}.md`;
-    const destPath = path.join(urlFetchDir, fileName);
+    const safeTitle = (title || result.title || 'untitled').replace(/[\\/:*?"<>|\n\r\t]/g, '_').slice(0, 80);
+    const fileNameBase = `${urlHash}_${safeTitle}`;
 
-    const mdContent = buildMarkdown(url, result);
-    fs.writeFileSync(destPath, mdContent, 'utf-8');
+    // 5. MD 摘要 → concepts/（非 raw，作为知识沉淀）
+    const conceptDir = path.join(kbPath, 'concepts');
+    fs.mkdirSync(conceptDir, { recursive: true });
+    const mdFileName = `${fileNameBase}.md`;
+    const mdPath = path.join(conceptDir, mdFileName);
+    const mdContent = buildMarkdown(result, summary);
+    fs.writeFileSync(mdPath, mdContent, 'utf-8');
 
-    // v0.14：如果有原始 HTML，存 .html 文件（用户可在知识库查看原始页面格式）
+    // 6. 原始 HTML → raw/user-uploads/
     let htmlPath = null;
     if (result.rawHtml) {
-      const htmlFileName = `${urlHash}_${safeTitle}.html`;
-      htmlPath = path.join(urlFetchDir, htmlFileName);
-      // 移除噪声后存 .html（复用 markdown 级别的噪声过滤）
+      const rawDir = path.join(kbPath, 'raw', 'user-uploads');
+      fs.mkdirSync(rawDir, { recursive: true });
+      const htmlFileName = `${fileNameBase}.html`;
+      htmlPath = path.join(rawDir, htmlFileName);
+      // 移除噪声后存 .html
       const cheerio = require('cheerio');
       const $ = cheerio.load(result.rawHtml);
       $('script, style, nav, header, footer, aside, iframe, noscript, ' +
@@ -73,62 +76,55 @@ router.post('/url-promote', async (req, res, next) => {
       fs.writeFileSync(htmlPath, cleanHtml, 'utf-8');
     }
 
-    // v0.14：如果有截图（base64），存 .png 文件
-    let pngPath = null;
-    if (result.screenshot) {
-      const pngFileName = `${urlHash}_${safeTitle}.png`;
-      pngPath = path.join(urlFetchDir, pngFileName);
-      fs.writeFileSync(pngPath, Buffer.from(result.screenshot, 'base64'));
-    }
+    // 7. PNG 截图 → 不存（用户要求只存提炼的MD + 原始HTML）
 
-    // 6. 走 knowledge pipeline（ensureKnowledgeBase 已 init 目录；addFileRecord 写 DB）
-    const relativePath = path.relative(wikiVaultPath, destPath);
+    // 8. 注册到 knowledge_files（MD 文件）
+    //    注意：不用 scanFile 扫描，concepts/ 下的文件通过 index.md 重建自动纳入
+    const relativePath = path.relative(wikiVaultPath, mdPath);
     const record = knowledgeService.addFileRecord({
       projectId,
-      filename: fileName,
-      originalName: fileName,
+      filename: mdFileName,
+      originalName: mdFileName,
       size: Buffer.byteLength(mdContent, 'utf-8'),
       mimeType: 'text/markdown',
-      notes: `[url-fetch] ${url} (req: ${reqId})${htmlPath ? ' +html' : ''}${pngPath ? ' +png' : ''}`.slice(0, 200),
-    });
-
-    // 7. 异步触发扫描（fire-and-forget，不阻塞响应）
-    setImmediate(() => {
-      knowledgeScanner.scanFile(projectId, wikiVaultPath, record.id)
-        .catch(e => console.error(`[url-promote] scan failed:`, e.message));
+      notes: `[url-fetch] ${url} (req: ${reqId})${htmlPath ? ' +html' : ''}`.slice(0, 200),
     });
 
     res.json({
       ok: true,
       fileId: record.id,
-      fileName,
+      fileName: mdFileName,
       relativePath,
       url,
       title: result.title,
       size: record.size,
       cached: !!result.cached,
-      scanned: false,  // 异步中
       hasHtml: !!htmlPath,
-      hasPng: !!pngPath,
     });
   } catch (e) {
     next(e);
   }
 });
 
-// 拼 markdown 文件内容
-function buildMarkdown(url, result) {
+// 拼 markdown 文件内容（前端传入的 AI 摘要 + 原始元数据）
+function buildMarkdown(result, summary) {
   const lines = [];
+  lines.push('---');
+  lines.push(`title: ${result.title || 'Untitled'}`);
+  lines.push('type: reference');
+  lines.push(`source: ${result.finalUrl || result.url || ''}`);
+  lines.push(`fetched: ${result.fetchedAt || new Date().toISOString()}`);
+  lines.push('tags: [url-fetch, reference]');
+  lines.push('---');
+  lines.push('');
   lines.push(`# ${result.title || 'Untitled'}`);
   lines.push('');
-  lines.push(`> 来源：[${url}](${url})`);
+  lines.push(`> 来源：[${result.finalUrl || result.url || ''}](${result.finalUrl || result.url || ''})`);
   lines.push(`> 抓取时间：${result.fetchedAt || new Date().toISOString()}`);
   lines.push(`> 字数：${result.length}${result.truncated ? '（已截断）' : ''}`);
   if (result.cached) lines.push('> 来自缓存');
   lines.push('');
-  lines.push('---');
-  lines.push('');
-  lines.push(result.content || '');
+  lines.push(summary || result.content || '(无内容)');
   return lines.join('\n');
 }
 

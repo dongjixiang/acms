@@ -157,6 +157,50 @@ router.get('/:projectId/stats', (req, res) => {
   }
 });
 
+// 提供知识库 raw 文件访问（防路径穿越）
+router.get('/raw/:projectId/*', (req, res) => {
+  try {
+    const projectId = req.params.projectId;
+    const fileRelPath = req.params[0]; // * 捕获的路径
+    if (!fileRelPath) return res.status(400).json({ error: 'NO_PATH' });
+
+    // 防路径穿越
+    const normalized = path.normalize(fileRelPath).replace(/\\/g, '/');
+    if (normalized.includes('..') || normalized.startsWith('/')) {
+      return res.status(403).json({ error: 'FORBIDDEN_PATH' });
+    }
+
+    const project = projectStore.getById(projectId);
+    if (!project) return res.status(404).json({ error: 'PROJECT_NOT_FOUND' });
+    const wikiVaultPath = project.wiki_vault_path;
+    if (!wikiVaultPath) return res.status(400).json({ error: 'NO_WIKI_VAULT' });
+
+    const kbPath = knowledgeService.ensureKnowledgeBase(projectId, wikiVaultPath);
+    const fullPath = path.join(kbPath, fileRelPath);
+
+    // 确保在 kbPath 下
+    if (!fullPath.startsWith(kbPath)) return res.status(403).json({ error: 'PATH_ESCAPE' });
+    if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'FILE_NOT_FOUND' });
+
+    const ext = path.extname(fullPath).toLowerCase();
+    const mimeTypes = {
+      '.html': 'text/html; charset=utf-8',
+      '.htm': 'text/html; charset=utf-8',
+      '.md': 'text/markdown; charset=utf-8',
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif',
+      '.pdf': 'application/pdf',
+    };
+    const contentType = mimeTypes[ext] || 'application/octet-stream';
+    res.setHeader('Content-Type', contentType);
+    res.sendFile(fullPath);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── 重新扫描文件 ──
 
 router.post('/:projectId/rescan/:fileId', async (req, res) => {

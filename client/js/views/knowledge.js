@@ -82,6 +82,14 @@ function renderTree(tree) {
           📄 ${escHtml(item.name.replace('.md', ''))}</a>
         ${isProtected ? '' : `<button class="btn-small" style="font-size:9px;padding:0 4px;margin-left:4px;opacity:0.4" onclick="deleteKnowledgePage('${escHtml(item.path)}','${escHtml(item.name)}')" title="删除页面">🗑</button>`}
       </div>`;
+    } else if (item.type === 'html') {
+      const depth = item.path.split(/[/\\]/).length;
+      const padding = depth * 16;
+      html += `<div style="padding-left:${padding}px;margin:2px 0;display:flex;align-items:center">
+        <a href="/api/knowledge/raw/${escHtml(item.path)}" target="_blank"
+           style="text-decoration:none;color:var(--text2);font-size:12px">
+          🌐 ${escHtml(item.name)}</a>
+      </div>`;
     }
   }
 

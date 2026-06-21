@@ -186,8 +186,8 @@ function listKnowledgeTree(projectId, wikiVaultPath) {
         if (entry.name.startsWith('.')) continue;
         result.push({ type: 'directory', name: entry.name, path: relPath });
         walk(fullPath, relPath);
-      } else if (entry.isFile() && entry.name.endsWith('.md')) {
-        result.push({ type: 'file', name: entry.name, path: relPath });
+      } else if (entry.isFile() && (entry.name.endsWith('.md') || entry.name.endsWith('.html'))) {
+        result.push({ type: entry.name.endsWith('.html') ? 'html' : 'file', name: entry.name, path: relPath });
       }
     }
   }
