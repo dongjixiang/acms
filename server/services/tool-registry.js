@@ -69,10 +69,27 @@ function makeToolResult(api, toolCallId, result) {
   }
   return { role: 'tool', tool_call_id: toolCallId, content };
 }
-
 function safeParseJSON(str, fallback) {
   if (!str || typeof str !== 'string') return fallback;
   try { return JSON.parse(str); } catch { return fallback; }
 }
 
-module.exports = { registerTool, getTool, listTools, toProviderFormat, extractToolCalls, makeToolResult };
+/**
+ * v0.14：执行工具 handler（便利 wrapper）
+ * @param {string} name - 工具名
+ * @param {object} args - 工具参数
+ * @returns {Promise<object>} 工具返回结果
+ * @throws {Error} 工具不存在时
+ */
+async function execute(name, args) {
+  const tool = getTool(name);
+  if (!tool) {
+    throw new Error(`未知工具: ${name}`);
+  }
+  if (typeof tool.handler !== 'function') {
+    throw new Error(`工具 ${name} 没有 handler`);
+  }
+  return await tool.handler(args || {});
+}
+
+module.exports = { registerTool, getTool, listTools, toProviderFormat, extractToolCalls, makeToolResult, execute };
