@@ -6,6 +6,7 @@
 const { callLLMWithRetry } = require('../json-extractor');
 const modelStore = require('../../stores/model-store');
 const reqStore = require('../../stores/requirement-store');
+const toolRegistry = require('../../services/tool-registry');
 const fs = require('fs');
 const path = require('path');
 
@@ -26,13 +27,16 @@ function loadPrompt(name) {
 }
 
 // Step 1: 生成产品全景
-async function stepProfile(model, context) {
+async function stepProfile(model, context, referenceContext = '') {
   const prompt = loadPrompt('profile');
   if (!prompt) throw new Error('PROMPT_PROFILE_NOT_FOUND');
 
+  const userContent = referenceContext
+    ? `${context}\n\n---\n## 联网调研参考${referenceContext}`
+    : context;
   const messages = [
     { role: 'system', content: prompt },
-    { role: 'user', content: context },
+    { role: 'user', content: userContent },
   ];
   const parsed = await callLLMWithRetry(model, messages, {
     temperature: 0.5, maxTokens: 4000, jsonMode: true, serviceName: 'reference:profile',
@@ -56,13 +60,16 @@ function extractProductFromContext(ctx) {
 }
 
 // Step 2: 生成可视化图表
-async function stepDiagrams(model, context, profile) {
+async function stepDiagrams(model, context, profile, referenceContext = '') {
   const prompt = loadPrompt('diagrams');
   if (!prompt) throw new Error('PROMPT_DIAGRAMS_NOT_FOUND');
 
+  const userContent = referenceContext
+    ? `${context}\n## 产品全景\n${JSON.stringify(profile, null, 2)}\n\n---\n## 联网调研参考${referenceContext}`
+    : `${context}\n## 产品全景\n${JSON.stringify(profile, null, 2)}`;
   const messages = [
     { role: 'system', content: prompt },
-    { role: 'user', content: `${context}\n## 产品全景\n${JSON.stringify(profile, null, 2)}` },
+    { role: 'user', content: userContent },
   ];
   const result = await callLLMWithRetry(model, messages, {
     temperature: 0.6, maxTokens: 4000, jsonMode: true, serviceName: 'reference:diagrams',
@@ -174,11 +181,33 @@ async function runAssistJob(requirementId, opts = {}) {
     }),
   });
 
+  // v0.16 (2026-06-26)：从互联网调研参考产品/对标产品最新信息
+  //   - 用 web_research tool：搜 + 抓正文 + LLM 综合分析
+  //   - 失败时静默降级（不影响主流程）
+  let referenceContext = '';
   try {
-    const profileResult = await stepProfile(model, productHint + context);
+    const researchTool = toolRegistry.getTool('web_research');
+    if (researchTool) {
+      const refHint = (productName || req.title || '').slice(0, 30) || (req.description || '').slice(0, 30);
+      const researchQuery = refHint
+        ? `${refHint} 商业模式 核心功能 目标用户 2026`
+        : `2026 行业 主流产品 商业模式 核心功能`;
+      console.log(`[assist:reference] ${requirementId} 联网调研: ${researchQuery}`);
+      const researchResult = await researchTool.handler({ query: researchQuery, max_results: 5, deep_fetch: 2 });
+      if (researchResult?.answer && !researchResult.error) {
+        referenceContext = `\n\n## 联网调研参考（最新市场信息）\n${researchResult.answer}\n\n来源：${(researchResult.sources || []).slice(0, 3).map(s => `[${s.index}] ${s.title} (${s.url})`).join('; ')}`;
+        console.log(`[assist:reference] ${requirementId} 调研完成: ${researchResult.sources?.length || 0} 条来源`);
+      } else {
+        console.warn(`[assist:reference] ${requirementId} 联网调研失败，跳过: ${researchResult?.error || 'no answer'}`);
+      }
+    }
+  } catch (e) { console.warn(`[assist:reference] 调研失败（非关键）:`, e.message); }
+
+  try {
+    const profileResult = await stepProfile(model, productHint + context, referenceContext);
     const profile = profileResult.profile;
     const resolvedProductName = productName || profileResult.productName || (productName ? '' : extractProductFromContext(context));
-    const diagrams = await stepDiagrams(model, productHint + context, profile);
+    const diagrams = await stepDiagrams(model, productHint + context, profile, referenceContext);
     const insights = await stepInsights(model, productHint + context, profile, diagrams);
 
     reqStore.update(requirementId, {

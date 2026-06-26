@@ -100,23 +100,44 @@ async function runAssistJob(requirementId, opts = {}) {
       },
     ];
 
-    // v2.0: 预搜索知识库，注入竞品参考信息
+    // v2.0: 从互联网调研竞品/市场最新信息（替代 search_knowledge mock）
+    //   - 用 web_research tool：搜 + 抓正文 + LLM 综合分析
+    //   - 失败时降级到 search_knowledge（mock 兜底）
+    let marketContext = '';
     try {
       const toolRegistry = require('../tool-registry');
-      const searchTool = toolRegistry.getTool('search_knowledge');
-      if (searchTool) {
-        const searchResult = await searchTool.handler({ query: `${req.title || ''} ${(req.description || '').slice(0, 100)} 竞品`, max_results: 5 });
-        if (searchResult?.results?.length > 0) {
-          const knowledgeContext = searchResult.results.slice(0, 5).map(r => `【参考】${r.title}: ${r.snippet}`).join('\n');
-          messages.push({ role: 'system', content: `以下是与该产品相关的市场/竞品参考资料：\n${knowledgeContext}\n（注意：这些是内部知识库的参考信息，不保证完全准确，请结合你的判断进行分析）` });
+      const researchTool = toolRegistry.getTool('web_research');
+      if (researchTool) {
+        const productHint = (req.title || '').slice(0, 30) || (req.description || '').slice(0, 30);
+        const researchQuery = productHint
+          ? `${productHint} 行业头部厂商 竞品分析 2026`
+          : `2026 行业竞品分析 头部厂商`;
+        console.log(`[assist:competitive] ${requirementId} 联网调研: ${researchQuery}`);
+        const researchResult = await researchTool.handler({ query: researchQuery, max_results: 5, deep_fetch: 2 });
+        if (researchResult?.answer && !researchResult.error) {
+          marketContext = `\n\n## 联网调研参考（最新市场信息）\n${researchResult.answer}\n\n来源：${(researchResult.sources || []).slice(0, 3).map(s => `[${s.index}] ${s.title} (${s.url})`).join('; ')}`;
+          console.log(`[assist:competitive] ${requirementId} 调研完成: ${researchResult.sources?.length || 0} 条来源`);
+        } else {
+          console.warn(`[assist:competitive] ${requirementId} 联网调研失败，降级到 search_knowledge: ${researchResult?.error || 'no answer'}`);
+          // 降级：search_knowledge mock
+          const searchTool = toolRegistry.getTool('search_knowledge');
+          if (searchTool) {
+            const searchResult = await searchTool.handler({ query: `${req.title || ''} ${(req.description || '').slice(0, 100)} 竞品`, max_results: 5 });
+            if (searchResult?.results?.length > 0) {
+              const knowledgeContext = searchResult.results.slice(0, 5).map(r => `【参考】${r.title}: ${r.snippet}`).join('\n');
+              marketContext = `\n\n## 知识库参考（mock 兜底）\n${knowledgeContext}\n（注意：这些是内部知识库的参考信息，不保证完全准确，请结合你的判断进行分析）`;
+            }
+          }
         }
       }
-    } catch (e) { console.warn(`[assist:competitive] 知识搜索失败（非关键）:`, e.message); }
+    } catch (e) { console.warn(`[assist:competitive] 调研失败（非关键）:`, e.message); }
+
+    // 把 marketContext 拼到 system prompt
+    messages[0].content = messages[0].content + marketContext;
 
     const parsed = await callLLMWithRetry(model, messages, {
       temperature: 0.5, maxTokens: 2500, jsonMode: true, serviceName: 'assist:competitive',
     });
-    if (!Array.isArray(parsed.competitors)) throw new Error('LLM 返回缺少 competitors 字段');
 
     reqStore.update(requirementId, {
       assist_competitive: JSON.stringify({

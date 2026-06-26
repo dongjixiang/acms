@@ -1,79 +1,61 @@
-// 聊天智能响应端点（v0.15，2026-06-21）
+// 聊天智能响应端点（v0.16，2026-06-26）
 // POST /api/chat/detect-and-respond
-// 自动判断用户消息需要：普通补充、URL 抓取、还是互联网搜索
+// v0.16：LLM tool-loop 自主判断工具调用，替代 v0.15 关键词硬匹配
 //
-// 检测规则：
-//   含 URL → 走 fetch_url（现有逻辑）
-//   含疑问词 + 实时性关键词 → 走 web_search + 摘要
-//   其他 → 走普通 supplement（无需搜索）
+// 流程：
+//   含 URL → 走 fetch_url（现有 handleFetchUrl）
+//   无 URL → 调 runToolLoop，LLM 看着 4 个外部 tool descriptions 自主决定
+//           - 不调 tool → LLM 直接回复
+//           - 调 tool → tool result 写 system → LLM 整理回复
 
 const express = require('express');
 const router = express.Router();
 const reqStore = require('../stores/requirement-store');
 const toolRegistry = require('../services/tool-registry');
+const { runToolLoop } = require('../services/llm-adapter');
+const modelStore = require('../stores/model-store');
 
-// 需要搜索的实时性关键词
-const SEARCH_TRIGGER_WORDS = [
-  '最新', '现在', '今天', '当前', '近期', '最近', '近期有',
-  '2026', '2025', '这个月', '今年', '本月',
-  '发生了什么', '怎么回事', '是什么', '有什么',
-  '有没有', '是不是', '为什么', '如何', '怎么',
-];
+// v0.16：本场景给 LLM 看的 4 个外部 tool（边界清晰：仅外部信息类，不含内部知识库）
+const INTENT_TOOL_NAMES = ['web_search', 'web_research', 'fetch_url', 'get_current_time'];
 
-// 不需要搜索的本地性关键词（只跟当前项目/需求相关）
-const LOCAL_ONLY_WORDS = [
-  '需求', '项目', '任务', '看板', '知识库',
-  '这个功能', '这个设计', '这个需求', '这个项目',
-];
+// v0.16：chat-intent 阶段 LLM 看到的 system prompt
+// 核心：「一放一收」—— 默认不调 tool，只有显式外部信息需求才调
+function buildIntentSystemPrompt(req) {
+  return `你是 ACMS 需求澄清对话助手。当前用户正在讨论需求：
 
-// v0.15：动作意图关键词（用户想从外部获取内容/资源 → 需要搜索）
-const ACTION_INTENT_WORDS = [
-  '我想听', '想听', '要听', '播放', '试听', '下载',
-  '我想看', '想看', '要看', '找视频', '下载视频',
-  '我想找', '想找', '帮我找', '帮我搜', '帮我查',
-  '推荐', '推荐一个', '推荐一下', '有什么好',
-  '搜索', '百度', '谷歌', '搜一下', '查一下',
-];
+# 需求上下文
+- 标题：${req.title || '(空)'}
+- 描述：${(req.description || '').slice(0, 500) || '(空)'}
+- 状态：${req.status || 'idea'} / 阶段：${req.phase || '孵化'}
 
-/**
- * 判断消息是否需要搜索互联网
- */
-function needsWebSearch(text) {
-  if (!text || typeof text !== 'string') return false;
+# 任务
+用户在需求澄清场景中跟你对话。你需要根据他的消息和当前需求上下文，给出简洁（200-500 字）Markdown 格式的回复。
 
-  // 含 URL 的不搜索（走 fetch_url）
-  if (/https?:\/\/[^\\s]+/.test(text)) return false;
+# 工具使用规则（严格遵守）
+你**仅**在以下情况才调用工具；其他情况**直接回复**，不调用任何工具：
 
-  // 含本地性关键词 → 本地处理，不搜索
-  if (LOCAL_ONLY_WORDS.some(w => text.includes(w))) return false;
+1. **web_research / web_search**（联网调研）：
+   - 用户**显式**询问最新/实时/2026 事件、趋势、市场数据（如"最近 2026 世界杯排名"、"现在 AI 行业怎么样"）
+   - 用户**显式**要求对比/调研多个产品或方案（如"对比钉钉和企业微信"、"调研 SaaS 行业头部厂商"）
+   - **严禁**因为用户提到日常词（想听/想看/想找/推荐/帮我/搜索等）就触发
+   - **严禁**用户描述产品功能/场景/用户故事时触发
 
-  // 检查是否含疑问词 + 实时性关键词
-  const hasTrigger = SEARCH_TRIGGER_WORDS.some(w => text.includes(w));
-  const isQuestion = /[\\?？]/.test(text) || /^(什么|如何|为什么|怎么|有没有|是不是|能否|是否)/.test(text.trim());
+2. **fetch_url**（抓 URL）：
+   - 仅当用户消息包含完整 http:// 或 https:// 链接时使用
 
-  // v0.15：动作意图检测（想听/想看/找/搜/推荐...）
-  const hasActionIntent = ACTION_INTENT_WORDS.some(w => text.includes(w));
+3. **get_current_time**（当前时间）：
+   - 仅当用户**显式**询问"现在几点/今天日期"时使用
 
-  return hasTrigger || isQuestion || hasActionIntent;
-}
+# 默认行为
+- 用户大概率是描述产品功能/场景/用户故事（90%+ 情况）
+- 用户也可能在回答 AI 之前的追问、确认理解、补充细节
+- 这些情况**都不需要外部信息**，直接基于需求上下文和对话历史回复
 
-/**
- * 从文本中提取搜索关键词
- */
-function extractSearchQuery(text) {
-  // 去掉疑问词和标点
-  let query = text
-    .replace(/[?？。，！、；：""''【】《》（）\s]+/g, ' ')
-    .replace(/(请帮我|帮我查一下|我想知道|请问|能不能|可否|麻烦|我需要|我要|我想)/g, '')
-    .replace(/(想听|想看|想找|想下载|想搜|想学|想玩|想了解|帮忙找|帮忙搜|帮忙查|帮忙推荐|帮我推荐)/g, '')
-    .replace(/(请帮忙|请帮我|请找|请搜|请查|请推荐)/g, '')
-    .replace(/(帮我|帮我查|请|查询|搜索|查找|告诉我)/g, '')
-    .trim();
-
-  // 如果太短就没意义
-  if (query.length < 4) return text.replace(/[?？。，！、；：""''【】《》（）]/g, ' ').trim();
-
-  return query;
+# 回复要求
+- 用 Markdown（### 标题、**粗体**、- 列表）
+- 简洁 200-500 字，直接回应用户
+- 不要重复读需求标题/描述（用户已经知道）
+- 如果信息不足就反问`;
 }
 
 router.post('/detect-and-respond', async (req, res, next) => {
@@ -95,50 +77,77 @@ router.post('/detect-and-respond', async (req, res, next) => {
       return await handleFetchUrl(req, res, reqId, text, urls);
     }
 
-    // 3. 检测是否需要搜索
+    // 3. v0.16：LLM tool-loop 自主判断（替代 v0.15 关键词硬匹配）
+    //    LLM 看着 4 个外部 tool descriptions 自主决定要不要调
     let searched = false;
     let deepResearch = false;
-    if (needsWebSearch(text)) {
-      const query = extractSearchQuery(text);
-      // v0.15：动作意图（想听/想看/找/搜）→ 用 web_research（自动抓正文+综合分析）
-      // 普通搜索查询（最新/最近/是什么）→ 用 web_search（快速）
-      const isActionIntent = ACTION_INTENT_WORDS.some(w => text.includes(w));
-      const toolName = isActionIntent ? 'web_research' : 'web_search';
-      const toolArgs = isActionIntent
-        ? { query: text, max_results: 6, deep_fetch: 3 }   // 用原句让 LLM 自己提取
-        : { query, max_results: 5 };
-      const actualQuery = isActionIntent ? text : query;
-      console.log(`[detect-and-respond] ${reqId} 自动搜索(${toolName}): ${actualQuery}`);
-      const searchResult = await toolRegistry.execute(toolName, toolArgs);
-      console.log(`[detect-and-respond] ${reqId} 搜索结果:`, searchResult.error ? `失败: ${searchResult.error}` : `${searchResult.results?.length || 0} 条`);
+    let toolCalls = [];
+    let aiReply = '';
+    try {
+      const req = reqStore.getById(reqId);
+      if (!req) throw new Error(`需求不存在: ${reqId}`);
 
-      if (!searchResult.error && (searchResult.results?.length > 0 || searchResult.answer)) {
-        searched = true;
-        deepResearch = isActionIntent;
+      const model = pickIntentModel();
+      if (!model) {
+        console.warn(`[detect-and-respond] ${reqId} 无可用 LLM，跳过 tool-loop`);
+      } else {
+        const messages = [
+          { role: 'system', content: buildIntentSystemPrompt(req) },
+          { role: 'user', content: text },
+        ];
+        console.log(`[detect-and-respond] ${reqId} LLM tool-loop (${model.name}, ${INTENT_TOOL_NAMES.length} tools)`);
+        const result = await runToolLoop(model.id, messages, {
+          toolNames: INTENT_TOOL_NAMES,
+          maxRounds: 3,  // 限 3 轮：1 调 + 2 重试，防止 LLM 死循环
+        });
+        aiReply = (result && typeof result === 'string') ? result : (result?.content || '');
 
-        // 构造搜索结果条目（web_research 返回 answer + sources，web_search 返回 results）
-        let entryText;
-        if (isActionIntent && searchResult.answer) {
-          // web_research：把综合答案作为主要内容，附加来源列表
-          const sourcesList = (searchResult.sources || []).slice(0, 5).map(s =>
-            `[${s.index}] ${s.title}\n   ${s.url}`
-          ).join('\n\n');
-          entryText = `🔍 **网络调研结果**\n\n${searchResult.answer}\n\n## 参考来源\n${sourcesList}`;
-        } else {
-          // web_search：原始搜索结果列表
-          entryText = `🔍 搜索结果：${query}\n\n${searchResult.formatted || searchResult.results.map((r, i) => `${i + 1}. **${r.title}**\n   ${r.url}\n   ${(r.snippet || '').slice(0, 200)}`).join('\n\n')}`;
+        // 从 messages 历史提取实际调用的 tool（runToolLoop 内部已写回 messages）
+        // 兼容两种格式：
+        //   openai-chat:    m.tool_calls = [{function: {name, ...}}]
+        //   anthropic:      m.content = [{type: 'tool_use', name, ...}]
+        for (let i = messages.length - 1; i >= 0; i--) {
+          const m = messages[i];
+          if (m.role !== 'assistant') continue;
+          // openai-chat 格式
+          if (Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+            toolCalls = m.tool_calls.map(tc => tc.function?.name || tc.name).filter(Boolean);
+            break;
+          }
+          // anthropic 格式
+          if (Array.isArray(m.content)) {
+            const tuse = m.content.find(b => b.type === 'tool_use');
+            if (tuse) { toolCalls = [tuse.name]; break; }
+          }
         }
+        searched = toolCalls.some(n => n === 'web_search' || n === 'web_research');
+        deepResearch = toolCalls.includes('web_research');
 
-        const searchEntry = {
-          role: 'system',
-          text: entryText,
-          at: new Date().toISOString(),
-        };
-        appendChatEntry(reqId, searchEntry);
+        console.log(`[detect-and-respond] ${reqId} tool-loop 结果: tools=${toolCalls.join(',') || '(无)'}, reply=${aiReply.length}字`);
       }
+    } catch (e) {
+      console.error(`[detect-and-respond] ${reqId} tool-loop 失败:`, e.message);
+      aiReply = `⚠️ AI 暂时无响应（${e.message.slice(0, 100)}），请稍后再试。`;
     }
 
-    // 4. 触发 brief 重生（让 AI 看到搜索结果）
+    // 4. 写 tool-loop 触发的 tool 结果（如果 LLM 调了 web_research/web_search，
+    //    整段已经在 runToolLoop 里被 LLM 整理成最终 aiReply 了——
+    //    这里不再额外写 search entry，避免重复展示）
+    //    fetch_url / get_current_time 调用的结果已融入 aiReply
+
+    // 5. 写 AI 回复作为 assistant 角色（这是 v0.16 新增的：把 LLM 最终回复存档）
+    if (aiReply) {
+      const assistantEntry = {
+        role: 'assistant',
+        text: aiReply,
+        source: 'intent_loop',
+        at: new Date().toISOString(),
+        tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+      };
+      appendChatEntry(reqId, assistantEntry);
+    }
+
+    // 6. 触发 brief 重生（让 AI 看到 AI 回复 + 工具结果）
     const { runBriefJob } = require('../services/thinking-brief');
     setImmediate(() => {
       runBriefJob(reqId, { modelId: null })
@@ -149,12 +158,24 @@ router.post('/detect-and-respond', async (req, res, next) => {
       ok: true,
       reqId,
       searched,
+      deepResearch,
+      toolCalls,        // v0.16 新增：LLM 实际调用的 tool 列表（前端可显示「🤖 AI 调用了 web_research」）
       briefRegen: true,
     });
   } catch (e) {
     next(e);
   }
 });
+
+// v0.16：选 chat-intent 用的 LLM（优先默认 gen 模型，capability 兜底）
+function pickIntentModel() {
+  const defaultGen = modelStore.getDefaultGenModel();
+  if (defaultGen) return defaultGen;
+  const all = modelStore.list();
+  return all.find(m => m.capabilities?.includes('text') || m.type === 'chat' || m.type === 'text')
+    || all[0]
+    || null;
+}
 
 // 写 supplement_history
 function appendChatEntry(reqId, entry) {

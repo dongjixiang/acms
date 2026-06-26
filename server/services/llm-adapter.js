@@ -347,7 +347,15 @@ async function* callAnthropicStream(model, messages, opts, apiKey) {
 
 async function callLLMWithTools(modelId, messages, options = {}) {
   const toolNames = options.toolNames;
-  const tools = toolNames ? toolRegistry.toProviderFormat(null, toolNames) : null;
+  // v0.16 fix: 按 model.api 转换 tool 格式（避免 MiniMax anthropic 端点收到 openai 格式 → 400 invalid params）
+  //   openai-chat → {type:'function', function:{name, description, parameters}}
+  //   anthropic-messages → {name, description, input_schema}
+  let tools = null;
+  if (toolNames) {
+    const model = modelStore.getById(modelId);
+    const api = model?.api || 'openai-chat';
+    tools = toolRegistry.toProviderFormat(api, toolNames);
+  }
   return callLLM(modelId, messages, { ...options, tools });
 }
 
