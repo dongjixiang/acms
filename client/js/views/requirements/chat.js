@@ -717,6 +717,19 @@ async function chatSendDetect(reqId, text) {
     chatScrollToBottom(c);
   }
 
+  // v0.18 bugfix：fetch 前插入「AI 思考中」typing dots
+  //   旧 bug：clarify 模式靠 brief SSE streaming bubble 显示思考中；free 模式我让 brief 不重生 → 没 streaming → 用户看不到思考图标
+  //   修：fetch 前显式塞 typing dots，fetch 回来后移除 + 渲染 AI 气泡
+  let typingEl = null;
+  if (c) {
+    typingEl = document.createElement('div');
+    typingEl.className = 'chat-typing';
+    typingEl.id = `chat-typing-detect-${reqId}`;
+    typingEl.innerHTML = '<span></span><span></span><span></span>';
+    c.appendChild(typingEl);
+    chatScrollToBottom(c);
+  }
+
   try {
     const resp = await fetch('/api/chat/detect-and-respond', {
       method: 'POST',
@@ -767,15 +780,20 @@ async function chatSendDetect(reqId, text) {
         const syncResp = await api('GET', `/requirements/${reqId}/supplement-history`);
         if (syncResp?.history) {
           const history = syncResp.history;
-          // v0.15 fix: 渲染本轮新写入的 system 条目（搜索结果等），跳过已本地渲染的 user 条目
+          // v0.18 bugfix：移除 typing dots（AI 回复回来了）
+          const typingNow = document.getElementById(`chat-typing-detect-${reqId}`);
+          if (typingNow) typingNow.remove();
+          typingEl = null;
+
+          // v0.18 bugfix：渲染本轮新写入的所有 entries（除 user，user 已在本地 chatSend 渲染）
+          //   旧 bug：只渲染 system 跳过 user 和 assistant，assistant 是后端写的却被跳过 → 用户看不到 AI 回复
           for (let i = state.histCount; i < history.length; i++) {
             const entry = history[i];
-            if (entry.role === 'system' && entry.text) {
-              // 渲染为「📎 参考」气泡
-              renderChatBubble(c, entry);
-            }
+            if (entry.role === 'user') continue;  // user 已在 chatSend 时本地渲染
+            renderChatBubble(c, entry);
           }
           state.histCount = history.length;
+          chatScrollToBottom(c);
         }
       } catch (e) {
         // 拉失败时回退到增量估算
@@ -784,9 +802,12 @@ async function chatSendDetect(reqId, text) {
       }
     }
 
-    // 启动轮询，让用户看到 AI 流式回复
+    // 启动轮询，让用户看到后续 AI 流式回复（如果有）
     setTimeout(() => startChatPolling(reqId), 500);
   } catch (e) {
+    // v0.18 bugfix：fetch 失败时也移除 typing dots
+    const typingErr = document.getElementById(`chat-typing-detect-${reqId}`);
+    if (typingErr) typingErr.remove();
     if (statusCard && c) {
       statusCard.className = 'chat-fetch-status error';
       statusCard.innerHTML = `<div class="chat-fetch-err">❌ 请求失败：${escHtml(e.message)}</div>

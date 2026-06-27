@@ -104,6 +104,21 @@ router.post('/detect-and-respond', async (req, res, next) => {
       return res.status(400).json({ error: 'MISSING_FIELDS' });
     }
 
+    // 0. v0.18 bugfix：读历史（在写 user message 之前注入 LLM 上下文，避免重复）
+    //   旧 bug：messages 只有 system + 当前 user，free 模式没 brief 兜底 → LLM 完全失忆
+    const req0 = reqStore.getById(reqId);
+    let historyForLLM = [];
+    if (req0) {
+      try {
+        const raw = JSON.parse(req0.supplement_history || '[]');
+        if (Array.isArray(raw)) {
+          historyForLLM = raw
+            .filter(e => e && (e.role === 'user' || e.role === 'assistant') && (e.text || e.opening))
+            .slice(-10); // 最近 10 条（5 轮对话，省 token）
+        }
+      } catch (e) { /* 静默降级 */ }
+    }
+
     // 1. 写 user message
     appendChatEntry(reqId, {
       role: 'user', text, at: new Date().toISOString(),
@@ -130,11 +145,20 @@ router.post('/detect-and-respond', async (req, res, next) => {
       if (!model) {
         console.warn(`[detect-and-respond] ${reqId} 无可用 LLM，跳过 tool-loop`);
       } else {
+        // v0.18 bugfix：注入历史上下文（之前 messages 只有 system + 当前 user，LLM 失忆）
+        const historyMessages = historyForLLM.map(e => ({
+          role: e.role,
+          content: e.role === 'assistant'
+            ? (e.text || e.opening || e.followup_question || '')
+            : (e.text || ''),
+        })).filter(m => m.content);
+
         const messages = [
           { role: 'system', content: pickIntentSystemPrompt(req) },
+          ...historyMessages,
           { role: 'user', content: text },
         ];
-        console.log(`[detect-and-respond] ${reqId} LLM tool-loop (${model.name}, ${INTENT_TOOL_NAMES.length} tools)`);
+        console.log(`[detect-and-respond] ${reqId} LLM tool-loop (${model.name}, ${INTENT_TOOL_NAMES.length} tools, history=${historyMessages.length})`);
         const result = await runToolLoop(model.id, messages, {
           toolNames: INTENT_TOOL_NAMES,
           maxRounds: 3,  // 限 3 轮：1 调 + 2 重试，防止 LLM 死循环
