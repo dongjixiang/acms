@@ -1116,17 +1116,23 @@ router.get('/:id/supplement-history', (req, res, next) => {
     if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
     let history = [];
     try { history = JSON.parse(reqRec.supplement_history || '[]'); } catch { history = []; }
+    // v0.19a：兜底剥离旧 user entry 的附件内容（修复前写入的旧数据）
+    const { stripAttachmentContext } = require('./chat-intent');
     res.json({
-      history: history.map((h, i) => ({
-        index: i,
-        role: h.role || 'user',
-        text: h.text || '',
-        opening: h.opening || '',
-        understanding: h.understanding || '',
-        followup_question: h.followup_question || '',
-        source: h.source || 'idea_supplement',
-        at: h.at || null,
-      })),
+      history: history.map((h, i) => {
+        const out = {
+          index: i,
+          role: h.role || 'user',
+          text: h.text || '',
+          opening: h.opening || '',
+          understanding: h.understanding || '',
+          followup_question: h.followup_question || '',
+          source: h.source || 'idea_supplement',
+          at: h.at || null,
+        };
+        if (h.role === 'user') out.text = stripAttachmentContext(out.text);
+        return out;
+      }),
       totalCount: history.length,
     });
   } catch (e) { next(e); }

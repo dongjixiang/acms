@@ -663,10 +663,14 @@ async function chatSend(reqId) {
 
   const c = document.getElementById(`chat-stream-msgs-${reqId}`);
   if (c) {
-    // 用户气泡显示原文 + 附件小芯片
+    // 用户气泡显示原文 + 附件 chip（可点击下载/预览原文件，v0.19a）
     const userBubbleAttachments = attachments.map(a => {
       const icon = a.icon || '📎';
-      return `<span class="attach-chip">${icon} ${escHtml(a.name)}</span>`;
+      // 文件下载/预览 URL（后端 /api/chat/upload/:id/raw）
+      const fileUrl = a.id ? `/api/chat/upload/${encodeURIComponent(a.id)}/raw` : '#';
+      return `<a href="${escHtml(fileUrl)}" target="_blank" rel="noopener noreferrer"
+                class="attach-chip" title="${escHtml(a.name)}（点击下载/预览原文件）"
+                onclick="event.stopPropagation()">${icon} ${escHtml(a.name)}</a>`;
     }).join('');
     const userBubbleText = text || (attachments.length ? '📎 ' + attachments.length + ' 个附件' : '');
     renderChatBubble(c, {

@@ -284,6 +284,17 @@ function pickIntentModel() {
     || null;
 }
 
+// v0.19a：从 user text 剥离附件内容（保留 LLM 上下文，但展示难看）
+//   chatBuildSupplementText 拼附件时用 marker '\n\n---\n📎 附件内容：' 开头
+//   supplement-history 持久化时剥掉这段，渲染 user bubble 不显示附件原文
+//   LLM 调用仍用原始 text（含附件），行为不变
+function stripAttachmentContext(text) {
+  if (!text || typeof text !== 'string') return text;
+  const marker = '\n\n---\n📎 附件内容：';
+  const idx = text.indexOf(marker);
+  return idx >= 0 ? text.slice(0, idx).replace(/\s+$/, '') : text;
+}
+
 // 写 supplement_history
 function appendChatEntry(reqId, entry) {
   const req = reqStore.getById(reqId);
@@ -291,6 +302,10 @@ function appendChatEntry(reqId, entry) {
   let history = [];
   try { history = JSON.parse(req.supplement_history || '[]'); } catch (e) { /* 静默降级 */ }
   if (!Array.isArray(history)) history = [];
+  // v0.19a：user entry 写入前剥附件内容（assistant / system 不动）
+  if (entry.role === 'user' && typeof entry.text === 'string') {
+    entry = { ...entry, text: stripAttachmentContext(entry.text) };
+  }
   history.push(entry);
   reqStore.update(reqId, { supplement_history: JSON.stringify(history) });
 }
@@ -399,3 +414,4 @@ ${content.slice(0, 5000)}
 }
 
 module.exports = router;
+module.exports.stripAttachmentContext = stripAttachmentContext;

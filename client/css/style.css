@@ -2267,6 +2267,13 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
   border-radius: 5px;
   font-size: 11px;
   color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 0.12s, transform 0.1s;
+}
+.bubble-attachments .attach-chip:hover {
+  background: rgba(255,255,255,.32);
+  transform: translateY(-1px);
 }
 .chat-extras button {
   background: transparent; border: 1px dashed var(--border); border-radius: 4px;
