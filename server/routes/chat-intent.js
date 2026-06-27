@@ -60,11 +60,11 @@ function buildIntentSystemPrompt(req) {
    - 创建任务是异步的，返回 video_id。告诉用户任务已提交，他们会追问进度
 
 5. **play_music**（音乐播放 — v0.20）：
-   - 当用户**显式**表达想听某首歌时使用（如"想听 X""播放 X""找一首 X""搜 X 歌""放 X 歌"）
-   - 必须从用户消息中提取 song（必填），artist（可选，从对话历史推断）
-   - **常见触发**："想听 程响 的 可能" → song="程响 的 可能"（注意"可能"是语气词，要去掉）
+   - 【优先级最高】用户消息**以"想听/播放/放/听"开头或紧接歌手+歌名**（如"想听 程响 的 可能"、"播放 海阔天空"、"放一首 十年"、"听 周杰伦 的 稻香"）→ **必须调用 play_music**，不需要判断是否在澄清需求
+   - 必须从用户消息中提取 song（必填，歌名），artist（可选，歌手名，从用户消息中提取）
+   - **常见触发**："想听 程响 的 可能" → song="可能", artist="程响"（"的"字前后分别是歌手和歌名）
    - 触发后用户 10-30 秒内看到播放卡片（系统后台异步执行）
-   - **严禁**：用户描述"功能里有音乐元素"或"我想做一个音乐 APP"时调用（这是需求澄清，不是想听歌）
+   - **不触发的情况**：用户说"我想在功能里加个音乐播放器"、"这个需求要支持听歌"等纯产品功能描述时**不调用**
 
 6. **play_video**（视频生成 — v0.20，触发 video assist）：
    - 当用户**显式**想生成视频但**未指定精确参数**时使用（如"帮我生成一个 X 视频""做一个 X 演示"）
@@ -109,7 +109,7 @@ function buildFreeChatSystemPrompt(req) {
 2. **fetch_url**：仅当用户消息包含完整 http:// 或 https:// 链接
 3. **get_current_time**：仅当用户**显式**询问"现在几点/今天日期"
 4. **agnes_generate_video**：用户**显式**要求生成视频且希望精确控制参数（num_frames/frame_rate/seed）时使用，约 2 秒用 num_frames=49
-5. **play_music**（v0.20）：用户**显式**想听某首歌时调用（如"想听 X""播放 X""找一首 X"），从消息提取 song（必填）+ artist（可选）
+5. **play_music**（v0.20）：用户以"想听 X""播放 X""放 X""听 X"表达想听歌时**必须调用**，从消息提取 song（必填，歌名）+ artist（可选，歌手名）
 6. **play_video**（v0.20）：用户**显式**想生成视频但未指定精确参数时调用，提取 prompt
 7. **generate_image**（v0.20）：用户**显式**想生成图片时调用（"画一张 X""生成 X 图片"），提取 prompt
 
@@ -233,9 +233,11 @@ router.post('/detect-and-respond', async (req, res, next) => {
         if (!toolCalls.includes('agnes_generate_video') &&
             /播放|听[一这]?首|放[一这]?首|想听|找歌|音乐/.test(text)) {
           console.log(`[detect-and-respond] ${reqId} 隐式触发 music assist`);
+          // 从 text 提取歌名（复用 music.js 的提取逻辑）
+          const musicOpts = extractMusicIntent(text);
           const musicSvc = require('../services/assists/music');
           setImmediate(() => {
-            musicSvc.runAssistJob(reqId, {}).catch(e =>
+            musicSvc.runAssistJob(reqId, musicOpts).catch(e =>
               console.error(`[detect-and-respond] ${reqId} music 隐式调用失败:`, e.message));
           });
         }
@@ -339,8 +341,24 @@ function appendChatEntry(reqId, entry) {
 // 提取 URL
 function extractUrls(text) {
   if (!text) return [];
-  const matches = text.match(/https?:\/\/[^\s<>"'，。、；！？)\]]+/g) || [];
+  const matches = text.match(/https?:\/\/[^\s<>"'，。、；！？)\\]]+/g) || [];
   return Array.from(new Set(matches));
+}
+
+// 从用户消息提取音乐意图（歌手+歌名）
+function extractMusicIntent(text) {
+  if (!text) return {};
+  // 模式1："想听/播放/放/听 [歌手] 的 [歌名]"
+  let m = text.match(/(?:想听|播放|放|听)\s*(.+?)?\s*的\s*(.+?)(?:[，。！？\n]|$)/);
+  if (m) {
+    const artist = (m[1] || '').trim();
+    const song = (m[2] || '').trim();
+    if (song) return { song, artist: artist || undefined };
+  }
+  // 模式2："想听/播放/放/听 [歌名]"
+  m = text.match(/(?:想听|播放|放一首?|听一首?|听)\s+([^，。！？\n]{1,30})/);
+  if (m && m[1]) return { song: m[1].trim() };
+  return {};
 }
 
 // 处理 fetch_url（复用 chat-fetch.js 逻辑的简化版）
