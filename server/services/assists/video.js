@@ -115,7 +115,7 @@ async function runAssistJob(requirementId, opts = {}) {
         prompt,
         duration,
         image_url: imageUrl || null,
-        num_frames,
+        num_frames: numFrames,
         frame_rate: frameRate,
         video_id: null,
         task_id: null,
