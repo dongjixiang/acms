@@ -427,6 +427,10 @@ function applyUseCaseResult(requirementId, payload) {
   reqStore.update(requirementId, {
     description: newDescription,
     description_history: JSON.stringify(descHistory),
+    // v0.17e：use_case apply 同时写入 structured_description
+    //   之前只有 generate-doc 端点会写 → 整理/采纳流程后编辑器看不到、状态机推进卡 30 字符门槛
+    //   现在 apply 也写：让 inline Markdown 编辑器、状态机推进、wiki 文档都能看到新内容
+    structured_description: newDescription || req.structured_description,
     structured_requirements: structuredData ? JSON.stringify({
       ...structuredData,
       status: 'applied',

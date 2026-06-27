@@ -1137,11 +1137,14 @@ function parseMdBlocks(mdContent) {
 }
 
 function loadExistingMdEditor(reqId) {
-  var mdContentDiv = document.querySelector('.md-content');
+  // v0.17e：用 reqId 锁定 md-content（之前 querySelector('.md-content') 拿 DOM 里第一个，
+  //   切 REQ 后旧节点残留会错位渲染）
+  var mdContentDiv = document.getElementById(`description-content-${reqId}`);
   if (!mdContentDiv) return;
   _editMode[reqId] = false;
   Requirements.get(reqId).then(function(req) {
-    var mdContent = req.structured_description || '';
+    // v0.17e：fallback 到 req.description（之前只查 structured_description，整理流程永远空 → 编辑器不显示）
+    var mdContent = req.structured_description || req.description || '';
     if (!mdContent || mdContent.length < 50) return;
     _mdSections[reqId] = parseMdBlocks(mdContent);
 
