@@ -51,7 +51,7 @@ async function loadChatStream(reqId) {
       api('GET', `/requirements/${reqId}/thinking-brief`),
     ]);
     container.innerHTML = '';
-    const history = histResp.history || [];
+    const history = backfillChatRounds(histResp.history || []);
     for (const entry of history) renderChatBubble(container, entry);
     _chatState[reqId].histCount = history.length;
 
@@ -91,7 +91,7 @@ function startChatPolling(reqId) {
 
       // 增量：只拉新增的 supplement_history
       const histResp = await api('GET', `/requirements/${reqId}/supplement-history`);
-      const history = histResp.history || [];
+      const history = backfillChatRounds(histResp.history || []);
       if (history.length > state.histCount) {
         for (let i = state.histCount; i < history.length; i++) renderChatBubble(container, history[i]);
         state.histCount = history.length;
@@ -185,6 +185,21 @@ function fmtLocalTime(iso) {
   } catch (e) { return ''; }
 }
 
+// v0.17：补算历史 assistant 条目缺的 chat_round（按出现顺序 1-indexed）
+//   旧数据（v0.17 之前）写 assistant entry 时没存 chat_round → 历史气泡没轮次
+//   用此函数后端无需回填数据，前端渲染时自动算 → 旧 REQ 也能显示「第3轮 · 21:34」
+//   注意：mutate in-place（局部 history 引用，无副作用）
+function backfillChatRounds(history) {
+  if (!Array.isArray(history)) return history;
+  let aiRound = 0;
+  for (const e of history) {
+    if (!e || e.role !== 'assistant') continue;
+    if (e.chat_round) aiRound = Math.max(aiRound, e.chat_round); // 已有 → 同步计数器
+    else e.chat_round = ++aiRound;                                // 缺 → 按顺序补
+  }
+  return history;
+}
+
 function renderChatBubble(container, entry) {
   const isAI = entry.role === 'assistant';
   const isSystem = entry.role === 'system';
@@ -207,10 +222,12 @@ function renderChatBubble(container, entry) {
     : '';
 
   const hasThinking = isAI && entry.understanding;
+  // v0.17：AI 历史气泡显示「第N轮 · 时间」前缀（让旧数据也能看到轮次 — backfillChatRounds 已补算）
+  const roundPrefix = (isAI && entry.chat_round) ? `第${entry.chat_round}轮 · ` : '';
   const div = document.createElement('div');
   div.className = `chat-bubble ${isAI ? 'chat-bubble-ai' : isSystem ? 'chat-bubble-system' : 'chat-bubble-user'}`;
   div.dataset.chatRound = entry.chat_round || '';
-  div.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">${isAI ? '🤖 AI' : isSystem ? '📎 参考' : '💬 你'}</span><span class="chat-time">${fmtLocalTime(entry.at)}</span>${hasThinking ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}${isAI ? '<span class="chat-export-btn" onclick="chatExportWord(this)" title="导出为 Word 文档">📄</span>' : ''}</div>${bodyHtml}${userAttachHtml}`;
+  div.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">${isAI ? '🤖 AI' : isSystem ? '📎 参考' : '💬 你'}</span><span class="chat-time">${roundPrefix}${fmtLocalTime(entry.at)}</span>${hasThinking ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}${isAI ? '<span class="chat-export-btn" onclick="chatExportWord(this)" title="导出为 Word 文档">📄</span>' : ''}</div>${bodyHtml}${userAttachHtml}`;
   container.appendChild(div);
 }
 

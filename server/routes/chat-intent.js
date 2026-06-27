@@ -141,6 +141,7 @@ router.post('/detect-and-respond', async (req, res, next) => {
         role: 'assistant',
         text: aiReply,
         source: 'intent_loop',
+        chat_round: req.chat_round || 0, // v0.17：记当前 round（brief 重生前），前端历史显示「第N轮」用
         at: new Date().toISOString(),
         tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
       };
@@ -215,7 +216,7 @@ async function handleFetchUrl(req, res, reqId, text, urls) {
         if (oldBrief.ai_understanding && typeof oldBrief.ai_understanding === 'string' && oldBrief.ai_understanding.trim()) parts.understanding = oldBrief.ai_understanding.trim();
         if (oldBrief.followup_question && typeof oldBrief.followup_question === 'string' && oldBrief.followup_question.trim()) parts.followup_question = oldBrief.followup_question.trim();
         if (Object.keys(parts).length > 0) {
-          appendChatEntry(reqId, { role: 'assistant', ...parts, source: 'assistant_round', at: new Date().toISOString() });
+          appendChatEntry(reqId, { role: 'assistant', ...parts, source: 'assistant_round', chat_round: oldBrief.chat_round || 0, at: new Date().toISOString() });
         }
       }
     } catch (e) { /* 静默降级 */ }

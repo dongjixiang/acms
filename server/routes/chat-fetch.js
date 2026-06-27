@@ -45,7 +45,7 @@ router.post('/send-with-fetch', async (req, res, next) => {
           if (oldBrief.ai_understanding && typeof oldBrief.ai_understanding === 'string' && oldBrief.ai_understanding.trim()) parts.understanding = oldBrief.ai_understanding.trim();
           if (oldBrief.followup_question && typeof oldBrief.followup_question === 'string' && oldBrief.followup_question.trim()) parts.followup_question = oldBrief.followup_question.trim();
           if (Object.keys(parts).length > 0) {
-            appendChatEntry(reqId, { role: 'assistant', ...parts, source: 'assistant_round', at: new Date().toISOString() });
+            appendChatEntry(reqId, { role: 'assistant', ...parts, source: 'assistant_round', chat_round: oldBrief.chat_round || 0, at: new Date().toISOString() });
           }
         }
       } catch (e) { /* 静默降级：没有 brief 或解析失败都不阻塞 */ }
