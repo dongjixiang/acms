@@ -99,10 +99,16 @@ router.post('/send-with-fetch', async (req, res, next) => {
 
     // 3. 触发 brief 重生（fire-and-forget，不阻塞响应）
     //    让 AI 看到最新的 chat 流（含 AI 摘要）后生成新 brief
-    setImmediate(() => {
-      runBriefJob(reqId, { modelId: null })
-        .catch(e => console.error(`[send-with-fetch] brief 重生失败:`, e.message));
-    });
+    // v0.18：free 模式跳过 brief 重生（避免澄清问题污染自由对话流）
+    const reqAfter = reqStore.getById(reqId);
+    if (reqAfter && reqAfter.chat_mode !== 'free') {
+      setImmediate(() => {
+        runBriefJob(reqId, { modelId: null })
+          .catch(e => console.error(`[send-with-fetch] brief 重生失败:`, e.message));
+      });
+    } else {
+      console.log(`[send-with-fetch] ${reqId} chat_mode=free, 跳过 brief 重生`);
+    }
 
     res.json({
       ok: true,

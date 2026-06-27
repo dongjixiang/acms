@@ -1054,6 +1054,7 @@ router.post('/:id/supplement', async (req, res, next) => {
 
     // 触发 brief 重生 + 重评 clarity（v0.3.5 修复：让 AI 看到补充后重新评估）
     //   跟原 /rewrite-description 一致，让 brief + clarity 跟 supplement_history 同步
+    // v0.18：free 模式跳过 brief 重生（避免澄清问题污染自由对话流）
     let briefRegen = null;
     if (autoRegenBrief !== false) {
       setImmediate(async () => {
@@ -1066,28 +1067,33 @@ router.post('/:id/supplement', async (req, res, next) => {
             if (!Array.isArray(supplementHistory)) supplementHistory = [];
           } catch (e) { /* 静默降级 */ }
 
-          await briefServiceRegen.runBriefJob(req.params.id, {});
-          console.log(`[supplement.assist] ${req.params.id} brief 已重生（路由器在 brief 内部触发）`);
+          // v0.18：chat_mode=free 跳过 brief 重生 + clarity 重评
+          if (fresh?.chat_mode === 'free') {
+            console.log(`[supplement] ${req.params.id} chat_mode=free, 跳过 brief 重生 + clarity 重评`);
+          } else {
+            await briefServiceRegen.runBriefJob(req.params.id, {});
+            console.log(`[supplement.assist] ${req.params.id} brief 已重生（路由器在 brief 内部触发）`);
 
-          // v0.3.5 修复：brief 重生后同步重评 clarity，让用户看到"补充让需求变清晰"的反馈
-          try {
-            const { assessClarity } = require('../services/insight-previews');
-            const afterFresh = reqStore.getById(req.params.id);
-            if (afterFresh) {
-              const clarityResult = await assessClarity(
-                afterFresh.title, afterFresh.description, null,
-                supplementHistory  // 把 supplement_history 喂给 clarity 评估
-              );
-              if (clarityResult?.clarity) {
-                reqStore.update(req.params.id, {
-                  input_clarity: clarityResult.clarity,
-                  clarity_reason: clarityResult.reason || '',
-                  clarity_model: clarityResult.modelId,
-                });
-                console.log(`[supplement.clarity] ${req.params.id} 重新评估明确度: ${clarityResult.clarity}`);
+            // v0.3.5 修复：brief 重生后同步重评 clarity，让用户看到"补充让需求变清晰"的反馈
+            try {
+              const { assessClarity } = require('../services/insight-previews');
+              const afterFresh = reqStore.getById(req.params.id);
+              if (afterFresh) {
+                const clarityResult = await assessClarity(
+                  afterFresh.title, afterFresh.description, null,
+                  supplementHistory  // 把 supplement_history 喂给 clarity 评估
+                );
+                if (clarityResult?.clarity) {
+                  reqStore.update(req.params.id, {
+                    input_clarity: clarityResult.clarity,
+                    clarity_reason: clarityResult.reason || '',
+                    clarity_model: clarityResult.modelId,
+                  });
+                  console.log(`[supplement.clarity] ${req.params.id} 重新评估明确度: ${clarityResult.clarity}`);
+                }
               }
-            }
-          } catch (e) { console.error('[supplement] 重评明确度失败（非阻塞）:', e.message); }
+            } catch (e) { console.error('[supplement] 重评明确度失败（非阻塞）:', e.message); }
+          }
         } catch (e) {
           console.error('[supplement] 自动重新生成思路异常:', e.message);
         }
@@ -1123,6 +1129,36 @@ router.get('/:id/supplement-history', (req, res, next) => {
       })),
       totalCount: history.length,
     });
+  } catch (e) { next(e); }
+});
+
+// v0.18 切换聊天模式（clarify ↔ free）
+//   - clarify：默认，原行为（AI 引导澄清需求）
+//   - free：自由对话（基于附件/参考资料回答，不追问澄清）
+//   - 切到 free 时清空旧 thinking_brief（避免旧澄清问题污染自由对话流）
+router.post('/:id/chat-mode', (req, res, next) => {
+  try {
+    const { mode } = req.body || {};
+    if (!['clarify', 'free'].includes(mode)) {
+      return res.status(400).json({ error: 'INVALID_MODE', validModes: ['clarify', 'free'] });
+    }
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    if (reqRec.status !== 'idea') {
+      return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
+    }
+
+    const updates = { chat_mode: mode };
+    // 切到 free 时清空旧 brief（避免旧澄清问题污染自由对话流）
+    // 切回 clarify 时不自动重生 brief —— 等用户下次发消息时由 chatSendSupplement 触发
+    let clearedBrief = false;
+    if (mode === 'free' && reqRec.thinking_brief) {
+      updates.thinking_brief = null;
+      clearedBrief = true;
+    }
+    reqStore.update(req.params.id, updates);
+    console.log(`[chat-mode] ${req.params.id} → ${mode} (clearedBrief=${clearedBrief})`);
+    res.json({ ok: true, mode, clearedBrief });
   } catch (e) { next(e); }
 });
 

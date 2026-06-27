@@ -18,7 +18,7 @@ const modelStore = require('../stores/model-store');
 // v0.16：本场景给 LLM 看的 4 个外部 tool（边界清晰：仅外部信息类，不含内部知识库）
 const INTENT_TOOL_NAMES = ['web_search', 'web_research', 'fetch_url', 'get_current_time'];
 
-// v0.16：chat-intent 阶段 LLM 看到的 system prompt
+// v0.16：chat-intent 阶段 LLM 看到的 system prompt（clarify 模式）
 // 核心：「一放一收」—— 默认不调 tool，只有显式外部信息需求才调
 function buildIntentSystemPrompt(req) {
   return `你是 ACMS 需求澄清对话助手。当前用户正在讨论需求：
@@ -58,6 +58,45 @@ function buildIntentSystemPrompt(req) {
 - 如果信息不足就反问`;
 }
 
+// v0.18：chat-mode=free 时的 LLM prompt — 通用对话 + 附件总结（用户场景：上传文件让 LLM 总结）
+// 区别于 clarify：基于附件/参考资料直接回答，不追问澄清需求
+function buildFreeChatSystemPrompt(req) {
+  return `你是 ACMS 通用对话助手。当前用户正在与你自由对话，可能基于附件/参考资料提问、让你总结内容、解读资料、对比方案。
+
+# 需求上下文（仅作背景，不要当成对话主线）
+- 标题：${req.title || '(空)'}
+- 描述：${(req.description || '').slice(0, 200) || '(空)'}
+- 状态：${req.status || 'idea'} / 阶段：${req.phase || '孵化'}
+
+# 任务
+用户正在「自由对话」模式下与你交流——**不是澄清需求**，而是希望你帮他处理具体信息。优先基于附件/参考资料/对话历史回答。
+
+# 工具使用规则（与 clarify 模式一致）
+你**仅**在以下情况才调用工具；其他情况**直接回复**：
+
+1. **web_research / web_search**（联网调研）：用户**显式**询问最新/实时信息或要求对比/调研多个产品
+2. **fetch_url**：仅当用户消息包含完整 http:// 或 https:// 链接
+3. **get_current_time**：仅当用户**显式**询问"现在几点/今天日期"
+
+# 默认行为
+- 用户大概率是想让你总结附件、解读资料、对比方案、或回答具体问题
+- 看到附件（用户消息里以 [文件名] 或 📎 开头的部分）→ **直接基于附件内容回答**
+- 不要追问"你想要什么功能"——这是澄清场景的逻辑，不适用于自由对话
+- 不要建议"我们换个方式讨论"——除非用户明确表示想整理需求
+
+# 回复要求
+- Markdown 格式（### 标题、**粗体**、- 列表）
+- 长度 200-800 字（比澄清 prompt 略长，方便总结）
+- 信息不足直接说"附件里没看到 X 信息"或"还需要补充 Y"，不要反问澄清需求
+- 不要重复读需求标题/描述（用户已经知道，那只是背景）`;
+}
+
+// v0.18：按 req.chat_mode 选 system prompt（外部调用入口）
+function pickIntentSystemPrompt(req) {
+  if (req.chat_mode === 'free') return buildFreeChatSystemPrompt(req);
+  return buildIntentSystemPrompt(req);
+}
+
 router.post('/detect-and-respond', async (req, res, next) => {
   try {
     const { reqId, text } = req.body;
@@ -92,7 +131,7 @@ router.post('/detect-and-respond', async (req, res, next) => {
         console.warn(`[detect-and-respond] ${reqId} 无可用 LLM，跳过 tool-loop`);
       } else {
         const messages = [
-          { role: 'system', content: buildIntentSystemPrompt(req) },
+          { role: 'system', content: pickIntentSystemPrompt(req) },
           { role: 'user', content: text },
         ];
         console.log(`[detect-and-respond] ${reqId} LLM tool-loop (${model.name}, ${INTENT_TOOL_NAMES.length} tools)`);
@@ -149,11 +188,17 @@ router.post('/detect-and-respond', async (req, res, next) => {
     }
 
     // 6. 触发 brief 重生（让 AI 看到 AI 回复 + 工具结果）
-    const { runBriefJob } = require('../services/thinking-brief');
-    setImmediate(() => {
-      runBriefJob(reqId, { modelId: null })
-        .catch(e => console.error(`[detect-and-respond] brief 重生失败:`, e.message));
-    });
+    // v0.18：free 模式跳过 brief 重生（避免澄清问题污染自由对话流）
+    const reqAfter = reqStore.getById(reqId);
+    if (reqAfter && reqAfter.chat_mode !== 'free') {
+      const { runBriefJob } = require('../services/thinking-brief');
+      setImmediate(() => {
+        runBriefJob(reqId, { modelId: null })
+          .catch(e => console.error(`[detect-and-respond] brief 重生失败:`, e.message));
+      });
+    } else {
+      console.log(`[detect-and-respond] ${reqId} chat_mode=free, 跳过 brief 重生`);
+    }
 
     res.json({
       ok: true,

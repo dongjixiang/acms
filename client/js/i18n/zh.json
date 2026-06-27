@@ -85,6 +85,15 @@
       "simAsk": "模拟智能体提问",
       "submitReview": "提交审核"
     },
+    "chatMode": {
+      "clarify": "想法澄清",
+      "free": "自由对话",
+      "clarifyHint": "AI 引导你理清需求 · 问澄清问题",
+      "freeHint": "通用问答 · 附件总结 · 不整理需求",
+      "toggle": "切换聊天模式",
+      "switchedFree": "已切换到 💬 自由对话 · LLM 将基于附件/参考资料回答",
+      "switchedClarify": "已切换到 🎯 想法澄清 · LLM 会问澄清问题"
+    },
     "review": {
       "title": "需求审核",
       "scope": "范围",

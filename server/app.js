@@ -144,8 +144,11 @@ app.use('/api/chat', require('./routes/chat-fetch'));   // v0.14 聊天 URL 抓�
 app.use('/api/chat', require('./routes/chat-url-promote'));  // v0.14 抓取结果入知识库
 app.use('/api/chat', require('./routes/chat-intent'));  // v0.15 聊天智能响应（自动搜索）
 
-// 404
-app.use((req, res) => res.status(404).json({ error: 'NOT_FOUND' }));
+// 404 — v0.18 加 unmatched 路径 log（调试用：旧 server 没新路由时会命中此 fallback）
+app.use((req, res, next) => {
+  console.warn(`[404] ${req.method} ${req.originalUrl} (no route matched — 检查 server 是否重启 / 路由是否注册)`);
+  res.status(404).json({ error: 'NOT_FOUND', method: req.method, path: req.originalUrl });
+});
 
 // 统一错误处理
 app.use(require('./middleware/error-handler'));

@@ -412,6 +412,8 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- v0.13 拆分：12 个子模块在 requirements.js 之前加载（HTML onclick 跨文件按名查找） -->
 <script src="/client/js/views/requirements/chat.js?v=0.13.0"></script>
 <script src="/client/js/views/requirements/idea-panel.js?v=0.13.0"></script>
+<!-- v0.18 chat 模式切换器（clarify ↔ free）—— idea-panel.js 之后加载，引用 toggleChatMode -->
+<script src="/client/js/views/requirements/chat-mode.js?v=0.18.0"></script>
 <script src="/client/js/views/requirements/ai-state.js?v=0.13.0"></script>
 <script src="/client/js/views/requirements/chat-assist.js?v=0.13.0"></script>
 <script src="/client/js/views/requirements/chat-ui.js?v=0.13.0"></script>

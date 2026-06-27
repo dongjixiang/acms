@@ -85,6 +85,15 @@
       "simAsk": "Simulate Agent Question",
       "submitReview": "Submit for Review"
     },
+    "chatMode": {
+      "clarify": "Idea Clarify",
+      "free": "Free Chat",
+      "clarifyHint": "AI guides you to clarify the requirement",
+      "freeHint": "General Q&A · File summary · No need organization",
+      "toggle": "Toggle Chat Mode",
+      "switchedFree": "Switched to 💬 Free Chat · LLM will answer based on attachments/refs",
+      "switchedClarify": "Switched to 🎯 Idea Clarify · LLM will ask clarifying questions"
+    },
     "review": {
       "title": "Requirement Review",
       "scope": "Scope",

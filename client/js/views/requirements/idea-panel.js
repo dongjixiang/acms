@@ -22,12 +22,27 @@ function renderIdeaPanel(req) {
     ? { high: '🟢 明确', medium: '🟡 一般', low: '🔴 模糊' }[clarity] || clarity
     : '⏳ 评估中…';
   const reasonText = req.clarity_reason ? `<div class="insight-reason">${escHtml(req.clarity_reason)}</div>` : '';
+  const chatMode = req.chat_mode || 'clarify'; // v0.18 chat 模式（clarify=默认 / free=通用对话）
+  const modeLabel = chatMode === 'free' ? '💬 自由对话' : '🎯 想法澄清';
+  const modeTitle = chatMode === 'free'
+    ? '当前：自由对话 · 点切回想法澄清'
+    : '当前：想法澄清 · 点切到自由对话';
+  const titleText = chatMode === 'free' ? '💬 自由对话' : '💬 对话式想法澄清';
+  // v0.18：free 模式隐藏 chat-extras 按钮行（澄清专用 7 个工具）+ clarity 徽章
+  const extrasDisplay = chatMode === 'free' ? 'none' : 'flex';
+  const clarityDisplay = chatMode === 'free' ? 'none' : '';
   return `
     <div id="idea-panel-${req.id}" class="idea-panel">
       <div class="insight-header">
-        <span class="insight-title">💬 对话式想法澄清</span>
+        <span class="insight-title" id="chat-mode-title-${req.id}">${titleText}</span>
         <button class="chat-maximize-btn" onclick="toggleChatMaximize('${req.id}')" title="全屏">⛶</button>
-        <span class="insight-clarity-badge insight-clarity-${clarity || 'unknown'}">${clarityBadge}</span>
+        <!-- v0.18 chat 模式切换器（clarify ↔ free）-->
+        <span id="chat-mode-chip-${req.id}" class="chat-mode-chip chat-mode-${chatMode}"
+              onclick="toggleChatMode('${req.id}')" title="${modeTitle}">
+          <span class="chat-mode-label">${modeLabel}</span>
+          <span class="chat-mode-icon">⇄</span>
+        </span>
+        <span class="insight-clarity-badge insight-clarity-${clarity || 'unknown'}" style="display:${clarityDisplay}">${clarityBadge}</span>
         ${reasonText}
       </div>
       <!-- v0.3.6 对话流：聊天式想法澄清 -->
@@ -87,11 +102,11 @@ function renderIdeaPanel(req) {
               </div>
             </div>
           </div>
-          <div class="chat-extras">
+          <div class="chat-extras" style="display:${extrasDisplay}">
             <button onclick="chatAssist('${req.id}', 'decision_tree')">🌳 决策树</button>
             <button onclick="chatAssist('${req.id}', 'scenarios')">👥 场景</button>
             <button onclick="chatAssist('${req.id}', 'competitive')">🏢 竞品</button>
-<button onclick="chatAssist('${req.id}', 'reference')">🏛 借鉴</button>
+            <button onclick="chatAssist('${req.id}', 'reference')">🏛 借鉴</button>
             <button onclick="chatAssist('${req.id}', 'use_case')">✨ 整理</button>
             <button onclick="chatAssist('${req.id}', 'health_check')" style="border-color:var(--accent);color:var(--accent)">🏥 体检</button>
             <button onclick="chatDone('${req.id}')" style="border-color:rgba(255,68,68,0.2);color:#f55">✅ 够了</button>
