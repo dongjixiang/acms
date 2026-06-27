@@ -93,6 +93,20 @@ function pickVerifiedLinks(results, song, fallbackLinks) {
   return verified.slice(0, 5);
 }
 
+// v0.20c: Windows 兼容的 fetch 超时（AbortSignal.timeout 在 Windows Node 下不可靠）
+async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(timeoutId);
+    return resp;
+  } catch (e) {
+    clearTimeout(timeoutId);
+    throw e;
+  }
+}
+
 async function runAssistJob(requirementId, opts = {}) {
   const req = reqStore.getById(requirementId);
   if (!req) return;
@@ -120,8 +134,12 @@ async function runAssistJob(requirementId, opts = {}) {
         generated_at: new Date().toISOString(),
       }),
     });
+    // 写失败到聊天流（替换 loading）
+    writeMusicChatEntry(requirementId, '', '', [], [], true);
     return;
   }
+
+  const artist = opts.artist || '';
 
   try {
     // 1. 永远构造平台搜索链接（兜底）
@@ -155,10 +173,9 @@ async function runAssistJob(requirementId, opts = {}) {
     let playableSources = [];  // v0.19：多个可播放源
     try {
       // 3a. 搜 Bilibili 可播放视频（国内可用，几乎每首歌都有）
-      const biliResp = await fetch(`https://api.bilibili.com/x/web-interface/search/all/v2?keyword=${encodeURIComponent(song)}`, {
-        signal: AbortSignal.timeout(10000),
+      const biliResp = await fetchWithTimeout(`https://api.bilibili.com/x/web-interface/search/all/v2?keyword=${encodeURIComponent(song)}`, {
         headers: { 'User-Agent': 'Mozilla/5.0' },
-      });
+      }, 10000);
       if (biliResp.ok) {
         const biliData = await biliResp.json();
         const videos = biliData?.data?.result || [];
@@ -192,10 +209,9 @@ async function runAssistJob(requirementId, opts = {}) {
 
     // 3b. 搜网易云音乐可播放源
     try {
-      const neteaseResp = await fetch(`https://music.163.com/api/search/get/web?csrf_token=&type=1&s=${encodeURIComponent(song)}&offset=0&limit=5`, {
-        signal: AbortSignal.timeout(10000),
+      const neteaseResp = await fetchWithTimeout(`https://music.163.com/api/search/get/web?csrf_token=&type=1&s=${encodeURIComponent(song)}&offset=0&limit=5`, {
         headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://music.163.com/' },
-      });
+      }, 10000);
       if (neteaseResp.ok) {
         const neteaseData = await neteaseResp.json();
         const songs = neteaseData?.result?.songs || [];
@@ -257,18 +273,18 @@ async function runAssistJob(requirementId, opts = {}) {
         song,
         sources,
         verified,
-        playable_url: playableUrl,  // v0.19 可播放音频链接
-        playable_sources: playableSources,  // v0.19 多个可播放源列表
+        playable_url: playableUrl,
+        playable_sources: playableSources,
         generated_at: new Date().toISOString(),
         generated_at_round: typeof opts.chatRound === 'number' ? opts.chatRound : null,
         model: null,
         used: false,
       }),
     });
-
-    // v0.20b：把音乐结果写进聊天流（system 气泡）
-    writeMusicChatEntry(requirementId, song, playableSources, sources, false);
     console.log(`[assist:music] ${requirementId} 完成, song="${song}", ${sources.length} 个来源`);
+
+    // v0.20d fix：把音乐结果写进聊天流（chat.js renderMusicBubble 渲染）
+    writeMusicChatEntry(requirementId, song, artist, playableSources, sources, false);
   } catch (e) {
     console.error(`[assist:music] ${requirementId} 失败:`, e.message);
     reqStore.update(requirementId, {
@@ -280,7 +296,9 @@ async function runAssistJob(requirementId, opts = {}) {
         generated_at: new Date().toISOString(),
       }),
     });
-    writeMusicChatEntry(requirementId, song, [], buildPlatformSearchLinks(song), true);
+
+    // v0.20d fix：失败也写聊天流，用户能看到平台搜索链接
+    writeMusicChatEntry(requirementId, song, artist, [], buildPlatformSearchLinks(song), true);
   }
 }
 
@@ -302,29 +320,49 @@ function getAssist(requirementId) {
   try { return JSON.parse(req.assist_music || 'null'); } catch { return null; }
 }
 
-// v0.20b：把音乐结果写进聊天流（system 气泡 — 前端 renderChatBubble 支持 isSystem 分支）
-function writeMusicChatEntry(reqId, song, playableSources, platformSources, isError) {
+// v0.20c：把音乐结果写进聊天流（system 气泡 — 含可播放的 Bilibili/网易云 iframe）
+function writeMusicChatEntry(reqId, song, artist, playableSources, platformSources, isError) {
   const req = reqStore.getById(reqId);
   if (!req) return;
-  
-  let text;
-  if (isError) {
-    text = `🎵 **${song || '音乐'}** — ❌ 搜索播放源失败，可直接在以下平台搜索：\n${platformSources.map(s => `- ${s.icon || '🔗'} [${s.platform}](${s.url})`).join('\n')}`;
-  } else if (playableSources && playableSources.length > 0) {
-    const sourcesMd = playableSources.map((s, i) => {
-      const label = s.label || `源 #${i + 1}`;
-      if (s.type === 'bilibili') return `  - 📺 [${label} — 点击播放](${s.url})`;
-      if (s.type === 'netease') return `  - 🎵 [${label} — 点击播放](${s.url})`;
-      return `  - 🔊 [${label} — 点击收听](${s.url})`;
-    }).join('\n');
-    text = `🎵 **${song || '音乐'}** — ✅ 已找到播放源\n\n${sourcesMd}`;
-  } else {
-    text = `🎵 **${song || '音乐'}** — 可在以下平台搜索：\n${platformSources.map(s => `- ${s.icon || '🔗'} [${s.platform}](${s.url})`).join('\n')}`;
-  }
+
+  // 构造结构化数据给前端渲染（前端 renderMusicBubble 解析 JSON）
+  const card = {
+    type: 'music_card',
+    song: song || '',
+    artist: artist || null,
+    error: isError ? (playableSources.length === 0 ? '搜索失败' : null) : null,
+    playable: (playableSources || []).filter(s => s.url).map(s => ({
+      type: s.type || 'audio',
+      label: s.label || '源',
+      url: s.url,
+    })),
+    platforms: (platformSources || []).map(s => ({
+      name: s.platform || '',
+      icon: s.icon || '🔗',
+      url: s.url || '',
+    })),
+  };
+
+  const text = JSON.stringify(card);
 
   let history = [];
   try { history = JSON.parse(req.supplement_history || '[]'); } catch { history = []; }
   if (!Array.isArray(history)) history = [];
+  // v0.21 fix：去重要按 (song, artist) 判断，允许多首歌同时存在
+  //   旧逻辑只看 source === 'music_result' 就跳过，导致第 2 首歌永远写不进去（用户报告 REQ-MQVQ38FY）
+  const sameSong = history.some(e => {
+    if (e.source !== 'music_result') return false;
+    try {
+      const old = JSON.parse(e.text || '{}');
+      return old.song === (song || '') && (old.artist || null) === (artist || null);
+    } catch { return false; }
+  });
+  if (sameSong) {
+    console.log(`[assist:music] ${reqId} 跳过重复 music_result: ${song} - ${artist || ''}`);
+    return;
+  }
+  // v0.20d fix：移除之前的 loading 条目（source: music_precheck），避免同时显示 loading + 结果
+  history = history.filter(e => e.source !== 'music_precheck');
   history.push({
     role: 'system',
     text,
