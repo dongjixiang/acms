@@ -1121,6 +1121,10 @@ function connectAssistStream(reqId, method, extraBody) {
           const loadingEl = container?.querySelector(`.assist-loading-card[data-method="${method}"]`);
           if (loadingEl) loadingEl.remove();
           toast(`✅ ${method} 完成`, 'success', 1500);
+          // 刷新 assist 面板（v0.19：music/video/image 通过 dispatcher 渲染）
+          if (typeof ACMSAssistDispatcher !== 'undefined' && ACMSAssistDispatcher.loadAll) {
+            ACMSAssistDispatcher.loadAll(reqId);
+          }
           startChatPolling(reqId);
         } else if (data.type === 'error') {
           es.close();
