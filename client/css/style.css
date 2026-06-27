@@ -1353,7 +1353,31 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
   background: var(--bg);
   overflow: hidden;
   margin-top: 10px;
+  position: relative; /* v0.17 浮动滚动按钮定位锚点 */
 }
+/* v0.17 浮动滚动按钮 — 旧 REQ 打开看不到历史 AI 回复修复 */
+.chat-scroll-top-btn {
+  position: absolute;
+  top: 8px; /* container 顶部，不与 input 重叠 */
+  right: 12px;
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  z-index: 5;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.18);
+  transition: opacity .15s, transform .15s, background .15s;
+  opacity: .85;
+  padding: 0;
+  line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+}
+.chat-scroll-top-btn:hover { opacity: 1; transform: scale(1.06); background: var(--accent); color: var(--bg); border-color: var(--accent); }
+/* 容器内 chat-stream 加顶部 padding-right 给按钮留空间 — 防止气泡被按钮遮 */
+.chat-stream-container > .chat-stream { padding-right: 44px; }
 .chat-stream {
   flex: 1;
   overflow-y: auto;

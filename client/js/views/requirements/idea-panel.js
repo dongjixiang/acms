@@ -32,9 +32,12 @@ function renderIdeaPanel(req) {
       </div>
       <!-- v0.3.6 对话流：聊天式想法澄清 -->
       <div id="chat-stream-container-${req.id}" class="chat-stream-container">
-        <div class="chat-stream" id="chat-stream-msgs-${req.id}">
+        <div class="chat-stream" id="chat-stream-msgs-${req.id}" onscroll="chatScrollUpdateBtn('${req.id}')">
           <div class="chat-typing"><span></span><span></span><span></span></div>
         </div>
+        <!-- v0.17 浮动滚动按钮：底部 ↔ 顶部切换（解决旧 REQ 打开看不到历史 AI 回复） -->
+        <button class="chat-scroll-top-btn" id="chat-scroll-top-btn-${req.id}"
+          onclick="chatScrollToggle('${req.id}')" title="滚到顶部">📜</button>
         <div class="chat-stream-input">
           <div class="chat-attach-preview" id="chat-attach-preview-${req.id}" style="display:none"></div>
           <div class="chat-input-area">

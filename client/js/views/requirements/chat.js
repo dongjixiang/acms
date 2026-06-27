@@ -67,7 +67,11 @@ async function loadChatStream(reqId) {
       container.insertAdjacentHTML('beforeend', '<div class="chat-typing"><span></span><span></span><span></span></div>');
     }
     try { const r = await api('GET', `/requirements/${reqId}/assist`); renderAssistLayer(container, reqId, r.assists || {}); } catch(e) { console.warn('[loadChatStream] assist load error:', e.message); }
-    chatScrollToBottom(container);
+    // v0.17 fix: 旧 REQ 打开时滚到顶部，让用户看到所有历史 AI 回复
+    //   之前 chatScrollToBottom(container) 把视口固定在底部 5-7 个气泡
+    //   → 25+ 条历史 AI 回复被滚动条遮住，用户感受"只有最近一条 AI 回复"
+    container.scrollTop = 0;
+    chatScrollUpdateBtn(reqId);
     startChatPolling(reqId);
   } catch (e) {
     container.innerHTML = `<div class="chat-bubble chat-bubble-ai"><div class="chat-bubble-meta"><span class="chat-label">⚠️</span></div>对话流加载失败：${escHtml(e.message)}</div>`;
@@ -1113,6 +1117,48 @@ async function chatRegen(reqId) {
     // 开 SSE 流式重新生成
     connectStreamingBrief(reqId, c);
   } catch(e) { toast('失败: '+e.message, 'error'); }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// v0.17 浮动滚动按钮 — 解决旧 REQ 打开看不到历史 AI 回复
+// ═══════════════════════════════════════════════════════════════════
+//
+// 行为：
+// - 加载历史时 scrollTop=0（看到所有 history）→ 按钮显示「↓ 跳到最新」
+// - 用户在底部（看最新 AI 回复）→ 按钮隐藏
+// - 用户向上滚动看到历史 → 按钮显示「📜 滚到顶部」
+// - 点按钮 → 在顶部 ↔ 底部平滑切换
+//
+function chatScrollToggle(reqId) {
+  const s = document.getElementById(`chat-stream-msgs-${reqId}`);
+  if (!s) return;
+  const distFromBottom = s.scrollHeight - s.scrollTop - s.clientHeight;
+  // 在底部 → 滚到顶；否则 → 滚到底
+  const target = distFromBottom < 50 ? 0 : s.scrollHeight;
+  s.scrollTo({ top: target, behavior: 'smooth' });
+}
+
+function chatScrollUpdateBtn(reqId) {
+  const s = document.getElementById(`chat-stream-msgs-${reqId}`);
+  const btn = document.getElementById(`chat-scroll-top-btn-${reqId}`);
+  if (!s || !btn) return;
+  const distFromTop = s.scrollTop;
+  const distFromBottom = s.scrollHeight - s.scrollTop - s.clientHeight;
+  // 内容不溢出 OR 在底部（最新）→ 按钮隐藏
+  //   scrollHeight === clientHeight → 没历史可看；distFromBottom < 50 → 已在底部
+  if (s.scrollHeight <= s.clientHeight + 5 || distFromBottom < 50) {
+    btn.style.display = 'none';
+    return;
+  }
+  btn.style.display = '';
+  // 在顶部 → 显示「↓ 跳到最新」；在中段或接近顶部 → 显示「📜 滚到顶部」
+  if (distFromTop < 50) {
+    btn.textContent = '↓';
+    btn.title = '跳到最新';
+  } else {
+    btn.textContent = '📜';
+    btn.title = '滚到顶部';
+  }
 }
 
 
