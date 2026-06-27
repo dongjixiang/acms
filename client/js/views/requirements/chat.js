@@ -200,6 +200,122 @@ function backfillChatRounds(history) {
   return history;
 }
 
+/** 渲染音乐播放卡片（内嵌 iframe/audio 播放器，从 JSON 数据解析）
+ *  v0.21：播放器/源切换/放大缩小/进度条全部走 music-core.js，与 assists 侧栏共用
+ */
+function renderMusicBubble(jsonText) {
+  const Core = window.ACMSMusicCard;
+  if (!Core) return '<div class="chat-system-msg">⚠️ music-core 未加载</div>';
+  if (!jsonText) return '<div class="chat-system-msg">🎵 音乐搜索结果（数据为空）</div>';
+  let card;
+  try { card = JSON.parse(jsonText); } catch { return `<div class="chat-system-msg">${Core.escHtml(jsonText.slice(0, 100))}</div>`; }
+  if (card.type !== 'music_card' && card.type !== 'music_loading') return `<div class="chat-system-msg">${Core.escHtml(jsonText.slice(0, 100))}</div>`;
+  if (card.type === 'music_loading') {
+    const song = Core.escHtml(card.song || '');
+    const artist = card.artist ? Core.escHtml(card.artist) : '';
+    const title = artist ? `${artist} - ${song}` : song;
+    return `<div class="music-card-in-chat" style="padding:8px;border-radius:8px;background:rgba(255,217,61,0.04);border:1px solid rgba(255,217,61,0.1)">
+      <div style="font-weight:bold;margin-bottom:4px">${title}</div>
+      <div style="color:var(--text3);font-size:13px">⏳ 正在搜索播放源（10-30 秒）...</div>
+    </div>`;
+  }
+
+  const song = Core.escHtml(card.song || '');
+  const artist = card.artist ? Core.escHtml(card.artist) : '';
+  const title = artist ? `${artist} - ${song}` : song;
+  const playable = (card.playable || []).filter(s => s && s.url);
+  const hasPlayer = playable.length > 0;
+
+  // 默认第一个源 + 收起状态（聊天流卡片每次都重渲染，不持久化 expand 状态）
+  const currentIdx = 0;
+  const currentSource = playable[currentIdx];
+  const isExpanded = false;
+
+  const playerHtml = currentSource ? Core.playerHTML(currentSource, { expanded: isExpanded }) : '';
+  const sourceNav = Core.sourceNavHTML(playable, currentIdx, (i) => `switchChatMusicSource(this, ${i})`);
+  const expandBtn = playable.length > 0
+    ? Core.expandBtnHTML(isExpanded, 'toggleChatMusicExpand(this)')
+    : '';
+  const playableJson = Core.escHtml(JSON.stringify(playable));
+
+  if (hasPlayer) {
+    return `<div class="music-card-in-chat" data-playable='${playableJson}' data-music-card="1" style="padding:8px;border-radius:8px;background:rgba(255,217,61,0.04);border:1px solid rgba(255,217,61,0.1)">
+      <div style="font-weight:bold;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center">
+        <span>🎵 ${title}</span>
+        <span style="display:flex;gap:2px">${expandBtn}</span>
+      </div>
+      <div class="music-chat-player" data-current-idx="0">${playerHtml}</div>
+      ${sourceNav}
+      <div style="font-size:11px;color:var(--text3);margin-top:2px">✅ 已找到播放源，点击 ▶ 播放</div>
+    </div>`;
+  }
+
+  // 无播放源时显示平台链接
+  const platforms = card.platforms || [];
+  const links = platforms.map(p =>
+    `<a href="${Core.escHtml(p.url)}" target="_blank" rel="noopener" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 8px;border-radius:4px;background:rgba(255,217,61,0.06);border:1px solid rgba(255,217,61,0.12);text-decoration:none">${p.icon || '🔗'} ${Core.escHtml(p.name)}</a>`
+  ).join('');
+  return `<div class="music-card-in-chat" style="padding:8px">
+    <div style="font-weight:bold;margin-bottom:4px">🎵 ${title}</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:4px">在以下平台搜索：</div>
+    <div>${links || '暂无可用平台'}</div>
+  </div>`;
+}
+
+/** 切换音乐播放源（聊天流卡片 — 只替换 player 元素，保留其他状态） */
+function switchChatMusicSource(btn, idx) {
+  const Core = window.ACMSMusicCard;
+  if (!Core) return;
+  const card = btn.closest('.music-card-in-chat');
+  if (!card) return;
+  const player = card.querySelector('.music-chat-player');
+  if (!player) return;
+  const raw = card.dataset.playable;
+  if (!raw) return;
+  let sources;
+  try { sources = JSON.parse(raw); } catch { return; }
+  const src = sources[idx];
+  if (!src) return;
+
+  // 用 core 渲染新播放器（保持现有展开状态？聊天流卡片不持久化，简化为收起）
+  player.innerHTML = Core.playerHTML(src, { expanded: false });
+  player.dataset.currentIdx = idx;
+
+  // 更新按钮高亮
+  card.querySelectorAll('.music-source-btn').forEach((b, i) => {
+    b.style.background = i === idx ? 'var(--accent)' : '';
+    b.style.color = i === idx ? 'var(--bg)' : '';
+    b.style.borderColor = i === idx ? 'var(--accent)' : '';
+  });
+
+  // 重挂进度条（新插入的 audio 元素）
+  Core.attachProgress(card);
+}
+
+/** 放大/缩小当前音乐卡片（聊天流）— 重渲染整个 player 元素 */
+function toggleChatMusicExpand(btn) {
+  const Core = window.ACMSMusicCard;
+  if (!Core) return;
+  const card = btn.closest('.music-card-in-chat');
+  if (!card) return;
+  const player = card.querySelector('.music-chat-player');
+  if (!player) return;
+  const idx = parseInt(player.dataset.currentIdx || '0', 10);
+  const raw = card.dataset.playable;
+  if (!raw) return;
+  let sources;
+  try { sources = JSON.parse(raw); } catch { return; }
+  const src = sources[idx];
+  if (!src) return;
+
+  const isExpanded = btn.textContent.includes('缩小') ? false : true;
+  player.innerHTML = Core.playerHTML(src, { expanded: isExpanded });
+  btn.textContent = isExpanded ? '🔽 缩小' : '⛶ 放大';
+
+  // 重挂进度条
+  Core.attachProgress(card);
+}
+
 function renderChatBubble(container, entry) {
   const isAI = entry.role === 'assistant';
   const isSystem = entry.role === 'system';
@@ -212,9 +328,11 @@ function renderChatBubble(container, entry) {
     ? parts.join('') + (entry.understanding
         ? `<div class="chat-thinking" style="display:none"><div class="chat-thinking-inner">${renderMarkdown(entry.understanding)}</div></div>`
         : '')
-    : isSystem
-      ? `<div class="chat-system-msg">${renderMarkdown(entry.text || '')}</div>`
-      : `<div>${isAI ? renderMarkdown(entry.text || '') : escHtml(entry.text || '')}</div>`;
+    : isSystem && (entry.source === 'music_result' || entry.source === 'music_precheck')
+      ? renderMusicBubble(entry.text || '')
+      : isSystem
+        ? `<div class="chat-system-msg">${renderMarkdown(entry.text || '')}</div>`
+        : `<div>${isAI ? renderMarkdown(entry.text || '') : escHtml(entry.text || '')}</div>`;
 
   // 用户气泡支持附件小芯片（v0.9）
   const userAttachHtml = (!isAI && entry.attachmentsHtml)
@@ -229,6 +347,10 @@ function renderChatBubble(container, entry) {
   div.dataset.chatRound = entry.chat_round || '';
   div.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">${isAI ? '🤖 AI' : isSystem ? '📎 参考' : '💬 你'}</span><span class="chat-time">${roundPrefix}${fmtLocalTime(entry.at)}</span>${hasThinking ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}${isAI ? '<span class="chat-export-btn" onclick="chatExportWord(this)" title="导出为 Word 文档">📄</span>' : ''}</div>${bodyHtml}${userAttachHtml}`;
   container.appendChild(div);
+  // v0.21：音乐卡片首次插入 DOM 后挂进度条事件
+  if (isSystem && div.querySelector('[data-music-card="1"]') && window.ACMSMusicCard) {
+    window.ACMSMusicCard.attachProgress(div);
+  }
 }
 
 function renderBriefBubble(container, brief) {
