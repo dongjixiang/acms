@@ -30,6 +30,7 @@ const healthCheck = require('./health-check'); // v0.13 B4：需求体检 — 6 
 const music = require('./music'); // v0.19：音乐播放辅助 — 找免费播放源链接
 const video = require('./video'); // v0.19：AI 视频生成 — 调用 Agnes Video API
 const imageGen = require('./image-gen'); // v0.19：AI 图片生成 — 调用 Agnes Image API
+const clean = require('./clean'); // v0.19：对话清理 — 按角色清理 supplement_history
 
 const ASSISTS = {
   decision_tree: decisionTree,
@@ -49,6 +50,7 @@ const ASSISTS = {
   music: music, // v0.19：音乐播放 — 找免费播放源链接
   video: video, // v0.19：AI 视频生成 — 调用 Agnes Video API
   image_gen: imageGen, // v0.19：AI 图片生成 — 调用 Agnes Image API
+  clean: clean, // v0.19：对话清理 — 按角色清理 supplement_history
 };
 
 const ASSIST_METHODS = Object.keys(ASSISTS);

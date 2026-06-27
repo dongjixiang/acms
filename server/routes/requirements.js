@@ -748,7 +748,7 @@ router.post('/:id/assist/:method', async (req, res, next) => {
     const { modelId, role, productName } = req.body || {};
     const reqRec = reqStore.getById(req.params.id);
     if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
-    if (reqRec.status !== 'idea' && method !== 'health_check') {
+    if (reqRec.status !== 'idea' && method !== 'health_check' && method !== 'clean') {
       return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
     }
 
@@ -1318,6 +1318,17 @@ router.post('/:id/assist/video/query', async (req, res, next) => {
       video_id: result.video_id,
       error: result.error,
     });
+  } catch (e) { next(e); }
+});
+
+// v0.19：对话清理 — 统计当前对话条目数
+router.get('/:id/assist/clean/stats', async (req, res, next) => {
+  try {
+    const cleanSvc = require('../services/assists/clean');
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    const info = cleanSvc.getBriefInfo(req.params.id);
+    res.json(info);
   } catch (e) { next(e); }
 });
 
