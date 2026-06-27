@@ -50,7 +50,7 @@ class WebhookService {
 
       for (const sub of subs) {
         if (!sub.active) continue;
-        this._post(sub.url, body, sub.secret).catch(e => {
+        this._post(sub.url, body, sub.secret, eventType).catch(e => {
           console.error(`[Webhook] Failed to deliver ${eventType} → ${sub.url}: ${e.message}`);
         });
       }
@@ -60,7 +60,7 @@ class WebhookService {
   }
 
   /** POST 到 webhook URL */
-  _post(url, body, secret) {
+  _post(url, body, secret, eventType) {
     return new Promise((resolve, reject) => {
       const parsed = new URL(url);
       const mod = parsed.protocol === 'https:' ? https : http;
@@ -69,6 +69,10 @@ class WebhookService {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(body),
         'X-ACMS-Event': 'true',
+        // v0.17g：Hermes webhook 适配器按 GitHub 兼容读 X-GitHub-Event header
+        //   之前只 body 里放 'event' 字段 → Hermes 找不到 event_type 也不知道 header → 全被标 'unknown' ignore
+        //   现在两个 header 都发：兼容 Hermes + 兼容 GitHub-style webhook 接收方
+        ...(eventType ? { 'X-GitHub-Event': eventType, 'X-Event-Type': eventType } : {}),
       };
 
       if (secret) {
