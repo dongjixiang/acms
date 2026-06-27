@@ -172,6 +172,22 @@ router.post('/detect-and-respond', async (req, res, next) => {
     let deepResearch = false;
     let toolCalls = [];
     let aiReply = '';
+
+    // v0.20b：LLM 前先检测「想听/播放」等确定无疑的音乐意图 → 直接触发（不依赖 LLM 调 tool）
+    const musicPreCheck = extractMusicIntent(text);
+    if (musicPreCheck.song && !toolCalls.includes('agnes_generate_video') &&
+        /播放|听[一这]?首|放[一这]?首|想听|找歌|音乐/.test(text)) {
+      console.log(`[detect-and-respond] ${reqId} 预检音乐意图: song=${musicPreCheck.song}, artist=${musicPreCheck.artist}`);
+      try {
+        const musicSvc = require('../services/assists/music');
+        // 同步触发（非 setImmediate，确保尽快出卡）
+        musicSvc.runAssistJob(reqId, musicPreCheck).catch(e =>
+          console.error(`[detect-and-respond] ${reqId} music 预触发失败:`, e.message));
+      } catch (e) {
+        console.error(`[detect-and-respond] ${reqId} music 预触发异常:`, e.message);
+      }
+    }
+
     try {
       const req = reqStore.getById(reqId);
       if (!req) throw new Error(`需求不存在: ${reqId}`);
@@ -190,6 +206,8 @@ router.post('/detect-and-respond', async (req, res, next) => {
 
         const messages = [
           { role: 'system', content: pickIntentSystemPrompt(req) },
+          // v0.20b：如果音乐已预触发，告诉 LLM 不要自己调 tool，直接简短回复
+          ...(musicPreCheck.song ? [{ role: 'system', content: '（音乐搜索已自动触发，10-30 秒后显示播放卡片。请简短回复用户"正在找"即可，不要复制歌词或推荐平台，不要调用任何工具。）' }] : []),
           ...historyMessages,
           { role: 'user', content: text },
         ];
@@ -225,22 +243,8 @@ router.post('/detect-and-respond', async (req, res, next) => {
         console.log(`[detect-and-respond] ${reqId} tool-loop 结果: tools=${toolCalls.join(',') || '(无)'}, reply=${aiReply.length}字`);
       }
 
-      // v0.19：clarify 模式隐式触发休闲 assist（音乐/图片）
-      // 当 LLM tool-loop 没调相关工具，但用户消息明显表达了娱乐/创作意图时触发
+      // v0.19：图片预检（保留，音乐预检已提前到 try 之前）
       if (req && req.chat_mode !== 'free') {
-        const lowerText = text.toLowerCase();
-        // 音乐检测：含"播放/听/放/歌/音乐"等词且没有实际调用视频工具
-        if (!toolCalls.includes('agnes_generate_video') &&
-            /播放|听[一这]?首|放[一这]?首|想听|找歌|音乐/.test(text)) {
-          console.log(`[detect-and-respond] ${reqId} 隐式触发 music assist`);
-          // 从 text 提取歌名（复用 music.js 的提取逻辑）
-          const musicOpts = extractMusicIntent(text);
-          const musicSvc = require('../services/assists/music');
-          setImmediate(() => {
-            musicSvc.runAssistJob(reqId, musicOpts).catch(e =>
-              console.error(`[detect-and-respond] ${reqId} music 隐式调用失败:`, e.message));
-          });
-        }
         // 图片检测：含"生成图片/图/插图/海报/画"等词
         if (!toolCalls.includes('agnes_generate_video') &&
             /生成.*(?:图片|图像|图|插图|海报|壁纸|画)|画[一这]?[张幅]|做.*(?:海报|封面|配图|logo)|图生图/.test(text)) {
