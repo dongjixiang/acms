@@ -29,6 +29,7 @@ async function runAssistJob(requirementId, opts = {}) {
   const prompt = (opts.prompt || '').trim();
   const duration = parseFloat(opts.duration) || 5; // 默认 5 秒
   const imageUrl = (opts.image_url || '').trim();
+  const imageData = (opts.image_data || '').trim(); // v0.19：本地上传 Base64 Data URI
   const frameRate = parseInt(opts.frame_rate) || 24;
 
   if (!prompt) {
@@ -67,8 +68,9 @@ async function runAssistJob(requirementId, opts = {}) {
     const videoTool = toolRegistry.getTool('agnes_generate_video');
     if (!videoTool) throw new Error('视频生成工具未注册');
 
+    const finalImage = imageData || imageUrl;
     const params = { prompt, num_frames: numFrames, frame_rate: frameRate };
-    if (imageUrl) params.image = imageUrl;
+    if (finalImage) params.image = finalImage;
 
     const result = await videoTool.handler(params);
 
@@ -81,7 +83,7 @@ async function runAssistJob(requirementId, opts = {}) {
         status: 'done',  // v0.19 fix: 设 done 让 SSE 能正常结束（视频是异步的，用户手动查进度）
         prompt,
         duration,
-        image_url: imageUrl || null,
+        image_url: finalImage || null,
         num_frames: numFrames,
         frame_rate: frameRate,
         video_id: result.video_id || null,

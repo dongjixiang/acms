@@ -831,8 +831,8 @@ router.get('/:id/assist/:method/stream', async (req, res, next) => {
     const methodName = svc.name || method;
     let prevStatus = '';
 
-    // 轮询 DB 等状态变化（最长等 60s）
-    for (let i = 0; i < 30; i++) {
+    // 轮询 DB 等状态变化（最长等 90s）
+    for (let i = 0; i < 45; i++) {
       const fresh = reqStore.getById(req.params.id);
       if (!fresh) { send('error', { message: '需求已删除' }); break; }
 

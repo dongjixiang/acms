@@ -55,7 +55,7 @@ async function generateVideo(args) {
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60000);
+    const timeoutId = setTimeout(() => controller.abort(), 45000);
 
     const resp = await fetch(`${API_BASE}/v1/videos`, {
       method: 'POST',

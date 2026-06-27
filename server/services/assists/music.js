@@ -160,13 +160,17 @@ async function runAssistJob(requirementId, opts = {}) {
       });
       if (biliResp.ok) {
         const biliData = await biliResp.json();
-        const videos = biliData?.data?.result?.[0]?.data || [];
-        if (videos.length > 0) {
-          const bvid = videos[0].bvid || '';
-          if (bvid) {
-            playableUrl = `https://player.bilibili.com/player.html?bvid=${bvid}&autoplay=0`;
-            console.log(`[assist:music] ${requirementId} 找到 Bilibili 播放源: ${bvid}`);
+        const videos = biliData?.data?.result || [];
+        let foundBvid = '';
+        for (const res of videos) {
+          if (res.result_type === 'video' && Array.isArray(res.data) && res.data.length > 0) {
+            foundBvid = res.data[0].bvid || '';
+            break;
           }
+        }
+        if (foundBvid) {
+          playableUrl = `https://player.bilibili.com/player.html?bvid=${foundBvid}&autoplay=0`;
+          console.log(`[assist:music] ${requirementId} 找到 Bilibili 播放源: ${foundBvid}`);
         }
       }
     } catch (e) {

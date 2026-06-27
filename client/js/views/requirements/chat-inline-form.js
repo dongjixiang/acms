@@ -27,6 +27,16 @@ function renderInlineForm(reqId, config) {
         <select id="${cardId}-${f.id}" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px">${opts}</select>
       </div>`;
     }
+    if (f.type === 'file') {
+      return `<div class="form-group" style="margin-bottom:8px">
+        <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:2px">${escHtml(f.label)}</label>
+        <input type="file" id="${cardId}-${f.id}" accept="${f.accept || '*'}" onchange="previewUploadFile('${cardId}','${f.id}')"
+          style="font-size:12px;color:var(--text);width:100%">
+        <div id="${cardId}-${f.id}-preview" style="display:none;margin-top:4px;max-width:100px;border-radius:4px;overflow:hidden">
+          <img style="width:100%;display:block">
+        </div>
+      </div>`;
+    }
     return `<div class="form-group" style="margin-bottom:8px">
       <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:2px">${escHtml(f.label)}</label>
       <input type="${f.type || 'text'}" id="${cardId}-${f.id}"
@@ -62,6 +72,39 @@ function renderInlineForm(reqId, config) {
 }
 
 /**
+ * 文件选择预览
+ */
+function previewUploadFile(cardId, fieldId) {
+  const input = document.getElementById(`${cardId}-${fieldId}`);
+  const preview = document.getElementById(`${cardId}-${fieldId}-preview`);
+  if (!input || !preview) return;
+  const file = input.files?.[0];
+  if (file && file.type.startsWith('image/')) {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = preview.querySelector('img');
+      if (img) img.src = e.target.result;
+      preview.style.display = 'block';
+    };
+    reader.readAsDataURL(file);
+  } else {
+    preview.style.display = 'none';
+  }
+}
+
+/**
+ * 将文件读取为 Data URI Base64
+ */
+function readFileAsDataURI(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('文件读取失败'));
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
  * 提交内联表单
  */
 async function submitInlineForm(cardId, reqId) {
@@ -88,6 +131,17 @@ async function submitInlineForm(cardId, reqId) {
   submitBtn.disabled = true;
 
   try {
+    // 检查是否有上传文件（file 类型字段）
+    let imageData = '';
+    const fileInputs = card.querySelectorAll('input[type="file"]');
+    for (const fi of fileInputs) {
+      const file = fi.files?.[0];
+      if (file && file.type.startsWith('image/')) {
+        imageData = await readFileAsDataURI(file);
+        break;
+      }
+    }
+
     // 根据 card 的 data-method 属性判断调哪个方法
     const method = card.dataset.method || '';
     if (method === 'video') {
@@ -95,12 +149,14 @@ async function submitInlineForm(cardId, reqId) {
         prompt: values.prompt,
         duration: parseFloat(values.duration) || 5,
         image_url: values.image_url || '',
+        image_data: imageData,  // base64 data URI
       });
     } else if (method === 'image_gen') {
       await chatAssist(reqId, 'image_gen', {
         prompt: values.prompt,
         size: values.size || '1024x1024',
         image_url: values.image_url || '',
+        image_data: imageData,
       });
     } else if (method === 'music') {
       await chatAssist(reqId, 'music', {
@@ -135,7 +191,8 @@ function renderVideoForm(reqId) {
     fields: [
       { id: 'prompt', label: '视频描述 *', placeholder: '例如：美女在海滩散步，夕阳暖光，电影质感', type: 'text' },
       { id: 'duration', label: '时长（秒）', placeholder: '默认 5 秒', type: 'number', default: '5' },
-      { id: 'image_url', label: '参考图片 URL（可选，图生视频）', placeholder: '留空则文生视频', type: 'url' },
+      { id: 'image_url', label: '参考图片 URL（可选）', placeholder: '粘贴图片 URL，或上传文件', type: 'url' },
+      { id: 'image_file', label: '或上传参考图片', type: 'file', accept: 'image/*' },
     ],
   });
 }
@@ -149,7 +206,8 @@ function renderImageForm(reqId) {
     fields: [
       { id: 'prompt', label: '图片描述 *', placeholder: '例如：一只猫在海滩，数码插画风格', type: 'text' },
       { id: 'size', label: '尺寸', type: 'select', options: ['1024x1024', '1024x768', '768x1024', '1280x720', '720x1280'], default: '1024x1024' },
-      { id: 'image_url', label: '参考图片 URL（可选，图生图）', placeholder: '留空则文生图', type: 'url' },
+      { id: 'image_url', label: '参考图片 URL（可选）', placeholder: '粘贴图片 URL，或上传文件', type: 'url' },
+      { id: 'image_file', label: '或上传参考图片', type: 'file', accept: 'image/*' },
     ],
   });
 }

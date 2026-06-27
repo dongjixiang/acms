@@ -49,6 +49,7 @@ async function runAssistJob(requirementId, opts = {}) {
 
   const prompt = (opts.prompt || '').trim();
   const imageUrl = (opts.image_url || '').trim();
+  const imageData = (opts.image_data || '').trim();  // v0.19：本地上传 Base64 Data URI
   const size = opts.size || '1024x1024';
 
   if (!prompt) {
@@ -61,9 +62,11 @@ async function runAssistJob(requirementId, opts = {}) {
     return;
   }
 
+  const finalImage = imageData || imageUrl;  // 优先用上传文件，其次 URL
+
   reqStore.update(requirementId, {
     assist_image: JSON.stringify({
-      status: 'generating', prompt, image_url: imageUrl || null, size,
+      status: 'generating', prompt, image_url: finalImage || null, size,
       image_url_output: null, asset_path: null, error: null,
       started_at: new Date().toISOString(),
     }),
@@ -80,8 +83,9 @@ async function runAssistJob(requirementId, opts = {}) {
       extra_body: { response_format: 'url' },
     };
 
-    if (imageUrl) {
-      body.extra_body.image = [imageUrl];
+    const finalImage = imageData || imageUrl;
+    if (finalImage) {
+      body.extra_body.image = [finalImage];
     }
 
     const resp = await fetch('https://apihub.agnes-ai.com/v1/images/generations', {
