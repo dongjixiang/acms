@@ -27,4 +27,5 @@ module.exports = {
   static: {
     maxAge: '2min',
   },
+  agnesApiKey: process.env.AGNES_API_KEY || fileConfig.agnesApiKey || '',
 };
