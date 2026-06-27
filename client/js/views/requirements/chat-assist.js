@@ -39,7 +39,7 @@ async function chatAssist(reqId, method, extraBody) {
   window._explicitAssist[reqId] = method;
   // v0.6.6：先插 loading 卡片到 chat-stream-msgs 末尾（最后一条聊天记录下方）
   //   标题用 method 中文名（用 methodTitles 跟 renderAssistLayer 保持一致）
-  const methodTitles = { decision_tree:'🌳 决策树', scenarios:'👥 场景', tradeoff:'⚖️ 取舍', arch:'🏗️ 架构', diagnosis:'🩺 体检', visual:'🎨 视觉', competitive:'🏢 竞品', reference:'🏛 借鉴', pains:'🔥 痛点', stakeholders:'👥 干系人', risks:'⚠️ 风险', assumptions:'📌 假设' };
+  const methodTitles = { decision_tree:'🌳 决策树', scenarios:'👥 场景', tradeoff:'⚖️ 取舍', arch:'🏗️ 架构', diagnosis:'🩺 体检', visual:'🎨 视觉', competitive:'🏢 竞品', reference:'🏛 借鉴', pains:'🔥 痛点', stakeholders:'👥 干系人', risks:'⚠️ 风险', assumptions:'📌 假设', music:'🎵 音乐', video:'🎬 视频', image_gen:'🖼️ 图片', clean:'🧹 清理' };
   if (c) {
     const loading = showAssistLoading({
       method,

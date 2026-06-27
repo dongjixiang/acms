@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>卧龙传地图 v8 (古地图羊皮纸风)</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: "SimSun", "宋体", serif; background: #1a1a1a; overflow: hidden; }
+  #game { position: relative; width: 100vw; height: 100vh; background: #e8d4a8; }
+  canvas { display: block; image-rendering: pixelated; image-rendering: crisp-edges; }
+  #hud {
+    position: absolute; top: 0; left: 0; right: 0; height: 36px;
+    background: #2b1d10; border-bottom: 2px solid #d4a017;
+    display: flex; align-items: center; padding: 0 8px;
+    color: #f4e4bc; font-size: 13px; z-index: 10; user-select: none;
+  }
+  #hud .lord { font-weight: 700; color: #ffd700; margin-right: 12px; }
+  #hud .date { margin-right: 12px; }
+  #hud .res { display: flex; gap: 10px; margin-left: auto; }
+  #hud .r { display: flex; align-items: center; gap: 3px; }
+  #hud .ri { width: 16px; height: 16px; background: #d4a017; color: #2b1d10;
+    display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 700; }
+  #legend {
+    position: absolute; bottom: 8px; left: 8px;
+    background: rgba(43, 29, 16, 0.85); color: #f4e4bc;
+    padding: 6px 10px; border: 1px solid #d4a017;
+    font-size: 11px; line-height: 1.4; z-index: 10;
+  }
+  #legend strong { color: #ffd700; }
+  #tooltip {
+    position: absolute; background: rgba(43, 29, 16, 0.95); color: #f4e4bc;
+    border: 1px solid #d4a017; padding: 4px 8px; font-size: 11px;
+    pointer-events: none; z-index: 20; display: none;
+  }
+</style>
+</head>
+<body>
+<div id="game">
+  <div id="hud">
+    <div class="lord">刘玄德</div>
+    <div class="date">196年 4月 1日</div>
+    <div class="res">
+      <div class="r"><div class="ri">兵</div>12,800</div>
+      <div class="r"><div class="ri">粮</div>48,000</div>
+      <div class="r"><div class="ri">金</div>15,200</div>
+      <div class="r"><div class="ri">将</div>8</div>
+      <div class="r"><div class="ri">城</div>3</div>
+    </div>
+  </div>
+  <canvas id="map"></canvas>
+  <div id="legend">
+    <strong>v8</strong>：古地图羊皮纸风 + 等高线 + 国名大字<br>
+    滚轮缩放 | 拖拽平移 | 悬停看详情
+  </div>
+  <div id="tooltip"></div>
+</div>
+
+<script>
+const TILE = 8, COLS = 200, ROWS = 130;
+// 三国城市区域: 经度 100-122°E (22°), 纬度 26-42°N (16°)
+const LON_MIN = 100, LON_MAX = 122, LAT_MIN = 26, LAT_MAX = 42;
+const lon2x = (lon) => Math.floor((lon - LON_MIN) / (LON_MAX - LON_MIN) * COLS);
+const lat2y = (lat) => Math.floor((LAT_MAX - lat) / (LAT_MAX - LAT_MIN) * ROWS);
+
+// 古地图色板 (绿色系 — 回退到 v1 风格)
+const T = { DEEP_WATER:0, WATER:1, GRASS:2, FOREST:3, MOUNTAIN_BASE:4, MOUNTAIN_TOP:5, ROAD:6, CITY:7 };
+const T_COLOR = {
+  [T.DEEP_WATER]:    '#3a6a9a',
+  [T.WATER]:         '#5a90d0',
+  [T.GRASS]:         '#7ea85a',     // 绿色草原
+  [T.FOREST]:        '#4a7a3a',     // 深绿森林
+  [T.MOUNTAIN_BASE]: '#3a5a2a',     // 暗绿山脚
+  [T.MOUNTAIN_TOP]:  '#5a8a3a',     // 亮绿山顶
+  [T.ROAD]:          '#6a4a2a',
+  [T.CITY]:          '#7ea85a',
+};
+
+const rng = (s => () => { s = (s*9301+49297) % 233280; return s/233280; })(42);
+
+// ─── 真实三国山系 (加宽, 山占多数) ─────────────
+const mountainRanges = [
+  // 西部
+  { name:'天山', path:[[lon2x(100),lat2y(41)],[lon2x(103),lat2y(41)],[lon2x(106),lat2y(41)],[lon2x(109),lat2y(41)]], width:8, h:0.78 },
+  { name:'阿尔泰山', path:[[lon2x(100),lat2y(42)],[lon2x(103),lat2y(41.5)]], width:5, h:0.78 },
+  { name:'阴山', path:[[lon2x(105),lat2y(40)],[lon2x(110),lat2y(40)],[lon2x(115),lat2y(40)],[lon2x(119),lat2y(40)]], width:7, h:0.75 },
+  { name:'燕山', path:[[lon2x(115),lat2y(40)],[lon2x(118),lat2y(40)],[lon2x(120),lat2y(40)]], width:5, h:0.72 },
+  { name:'大兴安岭', path:[[lon2x(120),lat2y(42)],[lon2x(121),lat2y(40)],[lon2x(122),lat2y(38)]], width:7, h:0.75 },
+  { name:'长白山', path:[[lon2x(121),lat2y(41)],[lon2x(122),lat2y(40)]], width:5, h:0.72 },
+  // 中央
+  { name:'太行山', path:[[lon2x(113),lat2y(40)],[lon2x(113.5),lat2y(38)],[lon2x(114),lat2y(36)],[lon2x(114),lat2y(34)]], width:7, h:0.80 },
+  { name:'秦岭', path:[[lon2x(105),lat2y(34)],[lon2x(108),lat2y(33.5)],[lon2x(111),lat2y(33.5)],[lon2x(113),lat2y(33.5)]], width:8, h:0.82 },
+  { name:'大巴山', path:[[lon2x(106),lat2y(32)],[lon2x(108),lat2y(31.5)],[lon2x(110),lat2y(31)]], width:6, h:0.78 },
+  { name:'巫山', path:[[lon2x(109),lat2y(31)],[lon2x(110),lat2y(30.5)],[lon2x(111),lat2y(30)]], width:5, h:0.75 },
+  { name:'大别山', path:[[lon2x(113),lat2y(31)],[lon2x(115),lat2y(30.5)],[lon2x(117),lat2y(31)]], width:5, h:0.72 },
+  // 南方丘陵 (加宽)
+  { name:'武夷山', path:[[lon2x(116),lat2y(28)],[lon2x(118),lat2y(27)],[lon2x(120),lat2y(26.5)]], width:6, h:0.74 },
+  { name:'南岭', path:[[lon2x(108),lat2y(26)],[lon2x(111),lat2y(25.5)],[lon2x(114),lat2y(25.5)],[lon2x(117),lat2y(26)]], width:7, h:0.74 },
+  { name:'罗霄山', path:[[lon2x(112),lat2y(27)],[lon2x(114),lat2y(27)],[lon2x(115),lat2y(27.5)]], width:5, h:0.72 },
+  { name:'雪峰山', path:[[lon2x(108),lat2y(28)],[lon2x(110),lat2y(27.5)],[lon2x(112),lat2y(28)]], width:5, h:0.72 },
+  { name:'苗岭', path:[[lon2x(106),lat2y(27)],[lon2x(108),lat2y(26.5)],[lon2x(110),lat2y(27)]], width:5, h:0.72 },
+  // 西南
+  { name:'横断山', path:[[lon2x(100),lat2y(29)],[lon2x(101),lat2y(28)],[lon2x(102),lat2y(27)],[lon2x(103),lat2y(26.5)]], width:7, h:0.82 },
+  { name:'哀牢山', path:[[lon2x(100),lat2y(27)],[lon2x(102),lat2y(26.5)]], width:5, h:0.75 },
+];
+
+// 平原缩小 (让山区占多数)
+const plains = [
+  { cx:lon2x(104), cy:lat2y(30.5), r:4, h:0.20 },
+  { cx:lon2x(109), cy:lat2y(34.2), r:3, h:0.25 },
+  { cx:lon2x(116), cy:lat2y(36), r:4, h:0.22 },
+  { cx:lon2x(118), cy:lat2y(31.5), r:3, h:0.20 },
+  { cx:lon2x(112), cy:lat2y(30.5), r:3, h:0.22 },
+  { cx:lon2x(121), cy:lat2y(41), r:3, h:0.25 },
+];
+
+// 沙漠带
+const deserts = [
+  { cx:lon2x(85), cy:lat2y(39), r:8 },
+  { cx:lon2x(85), cy:lat2y(45), r:5 },
+  { cx:lon2x(100), cy:lat2y(39.5), r:4 },
+];
+
+// ─── 生成 heightmap ────────────────────────────
+const baseNoise = (() => {
+  const size = 8, scale = COLS / 8;
+  const grid = Array.from({length: size+1}, () => Array(size+1).fill(0).map(() => rng()));
+  return (px, py) => {
+    const gx = px / scale, gy = py / scale;
+    const x0 = Math.floor(gx), y0 = Math.floor(gy);
+    const fx = gx - x0, fy = gy - y0;
+    const sx = fx*fx*(3-2*fx), sy = fy*fy*(3-2*fy);
+    return grid[y0][x0]*(1-sx)*(1-sy) + grid[y0][x0+1]*sx*(1-sy)
+         + grid[y0+1][x0]*(1-sx)*sy + grid[y0+1][x0+1]*sx*sy;
+  };
+})();
+const detailNoise = (() => {
+  const size = 16, scale = COLS / 16;
+  const grid = Array.from({length: size+1}, () => Array(size+1).fill(0).map(() => rng()));
+  return (px, py) => {
+    const gx = px / scale, gy = py / scale;
+    const x0 = Math.floor(gx), y0 = Math.floor(gy);
+    const fx = gx - x0, fy = gy - y0;
+    const sx = fx*fx*(3-2*fx), sy = fy*fy*(3-2*fy);
+    return grid[y0][x0]*(1-sx)*(1-sy) + grid[y0][x0+1]*sx*(1-sy)
+         + grid[y0+1][x0]*(1-sx)*sy + grid[y0+1][x0+1]*sx*sy;
+  };
+})();
+
+const height = Array.from({length: ROWS}, () => Array(COLS).fill(0));
+for (let y = 0; y < ROWS; y++) {
+  for (let x = 0; x < COLS; x++) {
+    let h = baseNoise(x, y) * 0.4 + detailNoise(x, y) * 0.2 + rng() * 0.05;
+    if (x < 80) h += 0.20;
+    else if (x > 150) h -= 0.10;
+    plains.forEach(p => {
+      const d = Math.sqrt((x-p.cx)**2 + (y-p.cy)**2);
+      if (d < p.r) h = Math.min(h, p.h + (h - p.h) * (d / p.r));
+    });
+    mountainRanges.forEach(mtn => {
+      for (let i = 0; i < mtn.path.length - 1; i++) {
+        const [x1,y1] = mtn.path[i], [x2,y2] = mtn.path[i+1];
+        const dx = x2-x1, dy = y2-y1;
+        const t = Math.max(0, Math.min(1, ((x-x1)*dx + (y-y1)*dy) / (dx*dx+dy*dy+0.01)));
+        const projX = x1 + t*dx, projY = y1 + t*dy;
+        const dist = Math.sqrt((x-projX)**2 + (y-projY)**2);
+        if (dist < mtn.width) h = Math.max(h, mtn.h * (1 - dist/mtn.width));
+      }
+    });
+    height[y][x] = Math.max(0, Math.min(1, h));
+  }
+}
+
+const map = Array.from({length: ROWS}, () => Array(COLS).fill(T.GRASS));
+for (let y = 0; y < ROWS; y++) {
+  for (let x = 0; x < COLS; x++) {
+    const h = height[y][x];
+    if (h > 0.62) map[y][x] = T.MOUNTAIN_TOP;
+    else if (h > 0.50) map[y][x] = T.MOUNTAIN_BASE;
+    else if (h > 0.40) map[y][x] = T.FOREST;
+    else map[y][x] = T.GRASS;
+  }
+}
+// 沙漠
+deserts.forEach(d => {
+  for (let dy = -d.r; dy <= d.r; dy++) {
+    for (let dx = -d.r; dx <= d.r; dx++) {
+      const x = d.cx + dx, y = d.cy + dy;
+      if (x<0||x>=COLS||y<0||y>=ROWS) continue;
+      if (Math.sqrt(dx*dx+dy*dy) < d.r && map[y][x] !== T.MOUNTAIN_TOP && map[y][x] !== T.MOUNTAIN_BASE) {
+        map[y][x] = T.GRASS;  // 沙漠也是米黄 (但更亮)
+      }
+    }
+  }
+});
+
+// ─── 河流 ─────────────────────────────────────
+const riverDefs = [
+  { name:'长江', width:3, path:[
+    [lon2x(91),lat2y(30)],[lon2x(100),lat2y(30.5)],[lon2x(108),lat2y(31)],[lon2x(112),lat2y(30.5)],
+    [lon2x(115),lat2y(30.5)],[lon2x(118),lat2y(32)],[lon2x(121),lat2y(32)],[lon2x(122),lat2y(31)]
+  ]},
+  { name:'黄河', width:3, path:[
+    [lon2x(95),lat2y(35)],[lon2x(100),lat2y(35)],[lon2x(103),lat2y(35.5)],[lon2x(106),lat2y(35)],
+    [lon2x(108),lat2y(37)],[lon2x(110),lat2y(38)],[lon2x(112),lat2y(36)],[lon2x(115),lat2y(35)],
+    [lon2x(118),lat2y(36)],[lon2x(119),lat2y(38)]
+  ]},
+  { name:'淮河', width:1, path:[[lon2x(112),lat2y(33)],[lon2x(115),lat2y(33)],[lon2x(118),lat2y(33)],[lon2x(120),lat2y(33)]] },
+  { name:'渭水', width:1, path:[[lon2x(106),lat2y(34)],[lon2x(108),lat2y(34.3)],[lon2x(110),lat2y(35)]] },
+  { name:'汉水', width:1, path:[[lon2x(107),lat2y(33)],[lon2x(110),lat2y(32)],[lon2x(112),lat2y(30.5)]] },
+  { name:'珠江', width:1, path:[[lon2x(110),lat2y(25)],[lon2x(113),lat2y(24)],[lon2x(115),lat2y(23)],[lon2x(117),lat2y(22.5)]] },
+  { name:'辽河', width:1, path:[[lon2x(122),lat2y(42)],[lon2x(124),lat2y(41.5)]] },
+  { name:'嘉陵江', width:1, path:[[lon2x(106),lat2y(30)],[lon2x(108),lat2y(30)]] },
+  { name:'湘江', width:1, path:[[lon2x(111),lat2y(26)],[lon2x(113),lat2y(29)]] },
+  { name:'赣江', width:1, path:[[lon2x(115),lat2y(26)],[lon2x(116),lat2y(29)]] },
+];
+
+// 城池
+const cities = [
+  { x:lon2x(104.1), y:lat2y(30.7), name:'成都', faction:'蜀' },
+  { x:lon2x(107.0), y:lat2y(33.0), name:'汉中', faction:'蜀' },
+  { x:lon2x(106.5), y:lat2y(29.9), name:'永安', faction:'蜀' },
+  { x:lon2x(103.0), y:lat2y(29.9), name:'汉嘉', faction:'蜀' },
+  { x:lon2x(104.6), y:lat2y(35.0), name:'陇西', faction:'??' },
+  { x:lon2x(103.8), y:lat2y(36.0), name:'金城', faction:'??' },
+  { x:lon2x(108.9), y:lat2y(34.3), name:'长安', faction:'魏' },
+  { x:lon2x(112.4), y:lat2y(34.6), name:'洛阳', faction:'魏' },
+  { x:lon2x(113.8), y:lat2y(34.0), name:'许昌', faction:'魏' },
+  { x:lon2x(114.4), y:lat2y(36.3), name:'邺',   faction:'魏' },
+  { x:lon2x(117.2), y:lat2y(34.2), name:'彭城', faction:'魏' },
+  { x:lon2x(112.1), y:lat2y(32.0), name:'襄阳', faction:'蜀' },
+  { x:lon2x(112.2), y:lat2y(30.0), name:'江陵', faction:'蜀' },
+  { x:lon2x(118.8), y:lat2y(32.0), name:'建业', faction:'吴' },
+  { x:lon2x(120.6), y:lat2y(30.0), name:'会稽', faction:'吴' },
+  { x:lon2x(116.8), y:lat2y(32.6), name:'寿春', faction:'吴' },
+  { x:lon2x(112.9), y:lat2y(28.2), name:'长沙', faction:'吴' },
+  { x:lon2x(116.4), y:lat2y(39.9), name:'幽州', faction:'??' },
+];
+const FACTION_COLOR = { '蜀':'#c41e1e', '魏':'#1e4a8a', '吴':'#2a7a3a', '??':'#6a6a6a' };
+
+function nearCity(x, y) {
+  return cities.find(c => Math.abs(c.x - x) < 2 && Math.abs(c.y - y) < 2);
+}
+function drawLine(path, width) {
+  for (let i = 0; i < path.length - 1; i++) {
+    const [x0, y0] = path[i], [x1, y1] = path[i+1];
+    const dx = Math.abs(x1-x0), sx = x0<x1?1:-1;
+    const dy = -Math.abs(y1-y0), sy = y0<y1?1:-1;
+    let err = dx + dy, x = x0, y = y0;
+    let safety = 0;
+    while (safety++ < 500) {
+      if (x===x1 && y===y1) break;
+      if (x>=0 && x<COLS && y>=0 && y<ROWS) {
+        if (map[y][x] !== T.MOUNTAIN_TOP && map[y][x] !== T.MOUNTAIN_BASE && map[y][x] !== T.CITY) {
+          for (let w = 0; w < width; w++) {
+            for (let dy2 = -Math.floor(w/2); dy2 <= Math.floor(w/2); dy2++) {
+              const ny = y+dy2;
+              if (ny<0||ny>=ROWS) continue;
+              if (map[ny][x] === T.MOUNTAIN_TOP || map[ny][x] === T.MOUNTAIN_BASE || map[ny][x] === T.CITY) continue;
+              if (nearCity(x, ny)) continue;
+              if (map[ny][x] === T.WATER) continue;
+              map[ny][x] = T.WATER;
+            }
+          }
+        }
+      }
+      const e2 = 2*err;
+      if (e2 >= dy) { err += dy; x += sx; }
+      if (e2 <= dx) { err += dx; y += sy; }
+    }
+  }
+}
+riverDefs.forEach(r => drawLine(r.path, r.width));
+
+// 海
+function drawSea() {
+  for (let y = 0; y < ROWS; y++) {
+    const noiseVal = (Math.sin(y * 0.13) + Math.sin(y * 0.07 + 1.3)) * 3;
+    const coastX = Math.floor(170 + noiseVal);
+    for (let x = coastX; x < COLS; x++) {
+      if (x >= 0 && x < COLS) map[y][x] = T.WATER;
+    }
+    for (let x = coastX + 6; x < COLS; x++) {
+      if (x >= 0 && x < COLS) map[y][x] = T.DEEP_WATER;
+    }
+  }
+  for (let y = 115; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      if (y > 120) map[y][x] = T.DEEP_WATER;
+      else if (y === 118) map[y][x] = T.WATER;
+    }
+  }
+}
+drawSea();
+
+cities.forEach(c => {
+  for (let dy = -2; dy <= 2; dy++) {
+    for (let dx = -2; dx <= 2; dx++) {
+      const x = c.x + dx, y = c.y + dy;
+      if (x<0||x>=COLS||y<0||y>=ROWS) continue;
+      if (map[y][x] === T.WATER || map[y][x] === T.DEEP_WATER) map[y][x] = T.GRASS;
+    }
+  }
+  map[c.y][c.x] = T.CITY;
+});
+
+// 道路 (棕色曲线, 贪心避山)
+const bridges = [];
+function isWalkable(x, y) {
+  if (x<0||x>=COLS||y<0||y>=ROWS) return false;
+  const t = map[y][x];
+  return t !== T.MOUNTAIN_TOP && t !== T.MOUNTAIN_BASE && t !== T.WATER && t !== T.DEEP_WATER;
+}
+function drawRoadAvoidMountains(x0, y0, x1, y1) {
+  let x = x0, y = y0;
+  const path = [[x, y]];
+  const maxSteps = 1200;
+  for (let i = 0; i < maxSteps; i++) {
+    if (Math.abs(x-x1) < 1 && Math.abs(y-y1) < 1) break;
+    const dx = Math.sign(x1-x), dy = Math.sign(y1-y);
+    const candidates = [[dx,dy],[dx,0],[0,dy],[dx,-dy],[-dx,dy],[1,0],[-1,0],[0,1],[0,-1]];
+    let best = null, bestScore = -Infinity;
+    for (const [cdx, cdy] of candidates) {
+      const nx = x+cdx, ny = y+cdy;
+      if (!isWalkable(nx, ny)) continue;
+      const distToGoal = Math.abs(nx-x1) + Math.abs(ny-y1);
+      const h = height[ny][nx];
+      const score = -distToGoal - h * 4 + (Math.abs(cdx-dx) + Math.abs(cdy-dy) < 0.5 ? 1.5 : 0);
+      if (score > bestScore) { bestScore = score; best = [nx, ny]; }
+    }
+    if (!best) break;
+    [x, y] = best;
+    path.push([x, y]);
+  }
+  path.forEach(([px, py]) => {
+    if (map[py][px] === T.WATER) {
+      if (rng() > 0.5) bridges.push({ x: px, y: py });
+    } else if (isWalkable(px, py) && map[py][px] !== T.WATER) {
+      map[py][px] = T.ROAD;
+    }
+  });
+}
+const mustConnect = [
+  ['成都','汉中'], ['汉中','长安'], ['长安','洛阳'], ['洛阳','许昌'],
+  ['许昌','邺'], ['许昌','襄阳'], ['襄阳','江陵'], ['江陵','建业'],
+  ['建业','寿春'], ['建业','会稽'], ['江陵','长沙'], ['许昌','彭城'],
+  ['汉中','永安'], ['陇西','长安'], ['成都','永安'], ['成都','汉嘉'],
+  ['邺','幽州'], ['金城','长安'],
+];
+mustConnect.forEach(([a, b]) => {
+  const ca = cities.find(c => c.name === a);
+  const cb = cities.find(c => c.name === b);
+  if (ca && cb) drawRoadAvoidMountains(ca.x, ca.y, cb.x, cb.y);
+});
+
+// ─── 渲染 (古地图羊皮纸风) ────────────────────
+let canvas, ctx;
+let zoom = 2.0, panX = 0, panY = 36;
+let isDragging = false, dragStartX, dragStartY, panStartX, panStartY;
+let decoRng = (s => () => { s = (s*9301+49297) % 233280; return s/233280; })(123);
+
+function init() {
+  canvas = document.getElementById('map');
+  ctx = canvas.getContext('2d');
+  resize();
+  window.addEventListener('resize', resize);
+  setupEvents();
+}
+
+function resize() {
+  try {
+    const dpr = window.devicePixelRatio || 1;
+    const w = window.innerWidth, h = window.innerHeight - 36;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    draw();
+  } catch (e) { console.error('resize error:', e); }
+}
+
+function drawTile(x, y) {
+  const t = map[y][x];
+  const px = x*TILE, py = y*TILE;
+  const h = height[y][x];
+
+  if (t === T.MOUNTAIN_TOP) {
+    // 山顶: 亮绿 + 3D 立体 (东/北亮, 西/南暗)
+    ctx.fillStyle = '#5a8a3a'; ctx.fillRect(px, py, TILE, TILE);
+    ctx.fillStyle = '#3a5a2a';
+    ctx.fillRect(px, py, 2, TILE);
+    ctx.fillRect(px, py, TILE, 2);
+    ctx.fillStyle = '#7aaa4a';
+    ctx.fillRect(px+TILE-1, py+2, 1, TILE-2);
+    ctx.fillRect(px+2, py+TILE-1, TILE-2, 1);
+    if (h > 0.70) {
+      ctx.fillStyle = '#9aca5a';
+      ctx.fillRect(px+TILE/2-1, py+TILE/2-1, 2, 2);
+    }
+  } else if (t === T.MOUNTAIN_BASE) {
+    // 山脚: 暗绿 + 3D
+    ctx.fillStyle = '#3a5a2a'; ctx.fillRect(px, py, TILE, TILE);
+    ctx.fillStyle = '#2a4a1a';
+    ctx.fillRect(px, py, 1, TILE);
+    ctx.fillRect(px, py, TILE, 1);
+    ctx.fillStyle = '#5a8a3a';
+    ctx.fillRect(px+TILE-1, py+1, 1, TILE-1);
+    ctx.fillRect(px+1, py+TILE-1, TILE-1, 1);
+    // 顶部高光
+    if ((x+y) % 2 === 0) {
+      ctx.fillStyle = '#4a7a2a';
+      ctx.fillRect(px+3, py+3, 2, 1);
+    }
+  } else if (t === T.FOREST) {
+    // 森林: 深绿
+    ctx.fillStyle = '#4a7a3a'; ctx.fillRect(px, py, TILE, TILE);
+    if (decoRng() > 0.5) {
+      ctx.fillStyle = '#2a5a1a';
+      ctx.fillRect(px+1, py+1, 2, 2);
+      ctx.fillStyle = '#6a9a4a';
+      ctx.fillRect(px+1, py+1, 1, 1);
+    }
+  } else if (t === T.GRASS) {
+    // 草原: 亮绿 (基础色)
+    ctx.fillStyle = '#7ea85a'; ctx.fillRect(px, py, TILE, TILE);
+    if (decoRng() > 0.7) { ctx.fillStyle = '#8ebc6a'; ctx.fillRect(px+1, py+1, 1, 1); }
+    if (decoRng() > 0.85) { ctx.fillStyle = '#5a8a3a'; ctx.fillRect(px+5, py+3, 1, 1); }
+  } else if (t === T.WATER) {
+    ctx.fillStyle = '#5a90d0'; ctx.fillRect(px, py, TILE, TILE);
+    if ((x+y)%2===0) {
+      ctx.fillStyle = '#7aa0e0';
+      ctx.fillRect(px+1, py+2, 2, 1);
+    }
+  } else if (t === T.DEEP_WATER) {
+    ctx.fillStyle = '#3a6a9a'; ctx.fillRect(px, py, TILE, TILE);
+  } else if (t === T.ROAD) {
+    ctx.fillStyle = '#6a4a2a'; ctx.fillRect(px+3, py+3, 2, 2);
+  }
+}
+
+// 城池: 大黑点 + 黑色大字
+function drawCity(c) {
+  const px = c.x*TILE, py = c.y*TILE;
+  // 大黑点 (直径 ~ 6 px)
+  ctx.fillStyle = '#1a1a1a';
+  ctx.beginPath();
+  ctx.arc(px+TILE/2, py+TILE/2, 3, 0, Math.PI*2);
+  ctx.fill();
+  // 阵营色外圈
+  ctx.strokeStyle = FACTION_COLOR[c.faction];
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(px+TILE/2, py+TILE/2, 4, 0, Math.PI*2);
+  ctx.stroke();
+  // 大字名字
+  ctx.font = 'bold 10px "SimSun", "KaiTi", serif';
+  ctx.textAlign = 'center';
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = '#fff'; ctx.strokeText(c.name, px+TILE/2, py-4);
+  ctx.fillStyle = '#1a1a1a'; ctx.fillText(c.name, px+TILE/2, py-4);
+}
+
+// 桥
+function drawBridge(b) {
+  const px = b.x*TILE, py = b.y*TILE;
+  ctx.fillStyle = '#5a4a3a'; ctx.fillRect(px,py,TILE,TILE);
+}
+
+// 棕色波浪边框
+function drawBorder() {
+  const w = window.innerWidth, h = window.innerHeight - 36;
+  ctx.save();
+  ctx.translate(panX, panY);
+  ctx.scale(zoom, zoom);
+  // 上下边框波浪
+  ctx.strokeStyle = '#6a4a2a';
+  ctx.lineWidth = 2;
+  // 上边
+  ctx.beginPath();
+  for (let x = 0; x < COLS*TILE; x += 4) {
+    const yy = (x % 8 === 0) ? 2 : 0;
+    if (x === 0) ctx.moveTo(x, yy);
+    else ctx.lineTo(x, yy);
+  }
+  ctx.stroke();
+  // 下边
+  ctx.beginPath();
+  for (let x = 0; x < COLS*TILE; x += 4) {
+    const yy = ROWS*TILE - ((x % 8 === 0) ? 2 : 0);
+    if (x === 0) ctx.moveTo(x, yy);
+    else ctx.lineTo(x, yy);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+// 棕色波浪边框
+function drawBorder() {
+  const w = window.innerWidth, h = window.innerHeight - 36;
+  ctx.save();
+  ctx.translate(panX, panY);
+  ctx.scale(zoom, zoom);
+  // 上下边框波浪
+  ctx.strokeStyle = '#6a4a2a';
+  ctx.lineWidth = 2;
+  // 上边
+  ctx.beginPath();
+  for (let x = 0; x < COLS*TILE; x += 4) {
+    const yy = (x % 8 === 0) ? 2 : 0;
+    if (x === 0) ctx.moveTo(x, yy);
+    else ctx.lineTo(x, yy);
+  }
+  ctx.stroke();
+  // 下边
+  ctx.beginPath();
+  for (let x = 0; x < COLS*TILE; x += 4) {
+    const yy = ROWS*TILE - ((x % 8 === 0) ? 2 : 0);
+    if (x === 0) ctx.moveTo(x, yy);
+    else ctx.lineTo(x, yy);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+// (国名大字已删除 — 不再标注魏蜀吴)
+function draw() {
+  if (!ctx) return;
+  const w = window.innerWidth, h = window.innerHeight - 36;
+  ctx.fillStyle = '#000'; ctx.fillRect(0,0,w,h);
+  // 米黄底
+  ctx.fillStyle = '#e8d4a8';
+  ctx.fillRect(0, 36, w, h-36);
+  // 地图 (含平移缩放)
+  ctx.save();
+  ctx.translate(panX, panY);
+  ctx.scale(zoom, zoom);
+  for (let y=0; y<ROWS; y++) for (let x=0; x<COLS; x++) drawTile(x, y);
+  bridges.forEach(drawBridge);
+  cities.forEach(drawCity);
+  ctx.restore();
+  // 国名大字 (已删除)
+  // 边框 (不缩放)
+  drawBorder();
+}
+
+function setupEvents() {
+  canvas.addEventListener('mousedown', e => {
+    isDragging = true;
+    dragStartX = e.clientX; dragStartY = e.clientY;
+    panStartX = panX; panStartY = panY;
+  });
+  window.addEventListener('mouseup', () => isDragging = false);
+  window.addEventListener('mousemove', e => {
+    if (isDragging) {
+      panX = panStartX + (e.clientX - dragStartX);
+      panY = panStartY + (e.clientY - dragStartY);
+      draw();
+    }
+    const rect = canvas.getBoundingClientRect();
+    const wx = (e.clientX - rect.left - panX) / zoom;
+    const wy = (e.clientY - rect.top - panY) / zoom;
+    const gx = Math.floor(wx/TILE), gy = Math.floor(wy/TILE);
+    const tooltip = document.getElementById('tooltip');
+    const city = cities.find(c => c.x === gx && c.y === gy);
+    if (city) {
+      tooltip.style.display = 'block';
+      tooltip.style.left = (e.clientX+12)+'px'; tooltip.style.top = (e.clientY+12)+'px';
+      tooltip.innerHTML = `<b>${city.name}</b> (${city.faction})`;
+    } else {
+      tooltip.style.display = 'none';
+    }
+  });
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    const oldZoom = zoom;
+    zoom = Math.max(0.5, Math.min(6, zoom * (e.deltaY > 0 ? 0.9 : 1.1)));
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    panX = mx - (mx - panX) * (zoom / oldZoom);
+    panY = my - (my - panY) * (zoom / oldZoom);
+    draw();
+  }, { passive: false });
+}
+
+try { init(); } catch (e) { console.error('init error:', e); }
+</script>
+</body>
+</html>

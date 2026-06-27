@@ -1117,11 +1117,19 @@ function connectAssistStream(reqId, method, extraBody) {
           }
         } else if (data.type === 'done') {
           es.close();
-          // 移除 loading 卡片（polling 会渲染真实结果）
           const loadingEl = container?.querySelector(`.assist-loading-card[data-method="${method}"]`);
-          if (loadingEl) loadingEl.remove();
+          // v0.19：休闲辅助（music/video/image/clean）直接在聊天流渲染结果卡片
+          const leisureMethods = ['music', 'video', 'image_gen', 'clean'];
+          if (loadingEl && leisureMethods.includes(method)) {
+            // 替换 loading 卡片为"加载中..."
+            loadingEl.innerHTML = '<div class="assist-loading-head"><span class="assist-loading-spinner">⏳</span><span class="assist-loading-title">加载结果中…</span></div>';
+            // 获取结果数据并直接渲染
+            renderLeisureResult(reqId, method, loadingEl);
+          } else if (loadingEl) {
+            loadingEl.remove();
+          }
           toast(`✅ ${method} 完成`, 'success', 1500);
-          // 刷新 assist 面板（v0.19：music/video/image 通过 dispatcher 渲染）
+          // 刷新 assist 面板
           if (typeof ACMSAssistDispatcher !== 'undefined' && ACMSAssistDispatcher.loadAll) {
             ACMSAssistDispatcher.loadAll(reqId);
           }
@@ -1148,6 +1156,73 @@ function connectAssistStream(reqId, method, extraBody) {
     if (loadingEl) failAssistLoading(loadingEl, '触发失败: ' + e.message);
     toast('失败: '+e.message, 'error');
   });
+}
+
+/**
+ * v0.19：渲染休闲辅助结果到聊天流中（替代 assist-area 渲染）
+ * 在 SSE done 时调用，直接在 loading 卡片位置展示结果
+ */
+async function renderLeisureResult(reqId, method, loadingEl) {
+  try {
+    const resp = await api('GET', `/requirements/${reqId}/assist`);
+    const data = resp.assists?.[method];
+    if (!data || data.status !== 'done') {
+      loadingEl.innerHTML = '<div class="assist-loading-error">结果加载失败</div>';
+      return;
+    }
+
+    if (method === 'music') {
+      const sources = data.sources || [];
+      const playableUrl = data.playable_url || '';
+      const isBili = playableUrl.includes('bilibili.com');
+      const playerHtml = playableUrl
+        ? isBili
+          ? `<iframe src="${escHtml(playableUrl)}" style="width:100%;max-width:360px;height:160px;border:none;border-radius:6px;margin:4px 0" allow="autoplay" loading="lazy"></iframe>`
+          : `<audio controls style="width:100%;max-width:360px;height:36px;margin:4px 0" src="${escHtml(playableUrl)}"></audio>`
+        : '';
+      const cards = sources.map(s =>
+        `<a href="${escHtml(s.url)}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:4px 10px;margin:2px;background:var(--bg);border:1px solid var(--border);border-radius:6px;text-decoration:none;color:var(--text);font-size:12px">
+          ${s.icon || '🔗'} ${escHtml(s.platform)}
+        </a>`
+      ).join('');
+      loadingEl.innerHTML = `
+        <div class="assist-loading-head" style="border:none"><span style="font-size:16px">🎵</span><span class="assist-loading-title">${escHtml(data.song || '')}</span></div>
+        ${playerHtml}
+        <div style="padding:4px 0 0 0;display:flex;flex-wrap:wrap;gap:2px">${cards}</div>
+      `;
+      loadingEl.style.borderTopColor = 'var(--green)';
+      loadingEl.style.animation = 'none';
+    } else if (method === 'video') {
+      const vid = data.video_id || '';
+      const isAsync = data.async_task && !data.video_url;
+      loadingEl.innerHTML = `
+        <div class="assist-loading-head" style="border:none"><span style="font-size:16px">🎬</span><span class="assist-loading-title">${isAsync ? '视频任务已提交' : '视频已生成'}</span></div>
+        <div style="padding:4px 0;font-size:12px;color:var(--text2)">
+          ${data.video_url ? `<a href="${escHtml(data.video_url)}" target="_blank">▶️ 查看视频</a>` : 'ID: ' + escHtml(vid.slice(0,30)) + (isAsync ? ' · 点下方「刷新进度」查看完成状态' : '…')}
+        </div>
+      `;
+      loadingEl.style.borderTopColor = 'var(--green)';
+      loadingEl.style.animation = 'none';
+    } else if (method === 'image_gen') {
+      const imgSrc = data.image_url_output || '';
+      loadingEl.innerHTML = `
+        <div class="assist-loading-head" style="border:none"><span style="font-size:16px">🖼️</span><span class="assist-loading-title">图片已生成</span></div>
+        ${imgSrc ? `<div style="padding:4px 0"><img src="${escHtml(imgSrc)}" style="max-width:200px;border-radius:6px;border:1px solid var(--border)"></div>
+        <div style="padding:2px 0"><a href="${escHtml(imgSrc)}" target="_blank" class="btn-small">🔗 查看原图</a></div>` : '<div style="padding:4px 0;font-size:12px;color:var(--text2)">图片 URL 不可用</div>'}
+      `;
+      loadingEl.style.borderTopColor = 'var(--green)';
+      loadingEl.style.animation = 'none';
+    } else if (method === 'clean') {
+      loadingEl.innerHTML = `
+        <div class="assist-loading-head" style="border:none"><span style="font-size:16px">🧹</span><span class="assist-loading-title">${escHtml(data.note || '清理完成')}</span></div>
+        <div style="padding:4px 0;font-size:12px;color:var(--text2)">已清理 ${data.entries_removed || 0} 条 · brief 已重置</div>
+      `;
+      loadingEl.style.borderTopColor = 'var(--green)';
+      loadingEl.style.animation = 'none';
+    }
+  } catch (e) {
+    loadingEl.innerHTML = `<div class="assist-loading-error">加载失败: ${escHtml(e.message)}</div>`;
+  }
 }
 
 async function chatRegen(reqId) {

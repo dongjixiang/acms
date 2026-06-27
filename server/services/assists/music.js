@@ -150,12 +150,65 @@ async function runAssistJob(requirementId, opts = {}) {
       console.warn(`[assist:music] ${requirementId} web_search 验证失败（降级到平台链接）:`, e.message);
     }
 
+    // 3. v0.19：搜索可播放音频源（Bilibili 视频 + 直接音频链接）
+    let playableUrl = null;
+    try {
+      // 3a. 搜 Bilibili 可播放视频（国内可用，几乎每首歌都有）
+      const biliResp = await fetch(`https://api.bilibili.com/x/web-interface/search/all/v2?keyword=${encodeURIComponent(song)}`, {
+        signal: AbortSignal.timeout(10000),
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+      });
+      if (biliResp.ok) {
+        const biliData = await biliResp.json();
+        const videos = biliData?.data?.result?.[0]?.data || [];
+        if (videos.length > 0) {
+          const bvid = videos[0].bvid || '';
+          if (bvid) {
+            playableUrl = `https://player.bilibili.com/player.html?bvid=${bvid}&autoplay=0`;
+            console.log(`[assist:music] ${requirementId} 找到 Bilibili 播放源: ${bvid}`);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn(`[assist:music] ${requirementId} Bilibili 搜索失败（可忽略）:`, e.message);
+    }
+
+    // 3b. 如果 Bilibili 没找到，再用 web_search 找其他音频链接
+    if (!playableUrl) {
+      try {
+      const toolRegistry = require('../tool-registry');
+      const searchTool = toolRegistry.getTool('web_search');
+      if (searchTool) {
+        const audioResult = await searchTool.handler({
+          query: `${song} site:soundcloud.com OR site:audiomack.com OR site:piponazip.com audio`,
+          max_results: 5,
+        });
+        if (Array.isArray(audioResult?.results)) {
+          for (const r of audioResult.results) {
+            const url = r.url || '';
+            // 优先用 SoundCloud 链接（可 iframe 嵌入）
+            if (url.includes('soundcloud.com') && !playableUrl) {
+              playableUrl = url;
+            }
+            // 其次直接音频文件
+            if (/\.(mp3|wav|ogg|m4a|flac)(\?|$)/i.test(url) && !playableUrl) {
+              playableUrl = url;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn(`[assist:music] ${requirementId} 播放源搜索失败（可忽略）:`, e.message);
+    }
+    }  // end if(!playableUrl)
+
     reqStore.update(requirementId, {
       assist_music: JSON.stringify({
         status: 'done',
         song,
         sources,
         verified,
+        playable_url: playableUrl,  // v0.19 可播放音频链接
         generated_at: new Date().toISOString(),
         generated_at_round: typeof opts.chatRound === 'number' ? opts.chatRound : null,
         model: null,

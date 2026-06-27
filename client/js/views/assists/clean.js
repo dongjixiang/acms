@@ -6,15 +6,20 @@
   function render(reqId, data) {
     if (!data) return '';
     if (data.status === 'done') {
+      const icon = data.action === 'all' ? '🧹' : '🗑';
+      const removed = data.entries_removed || 0;
       return `
-        <div class="assist-section-title">🧹 对话清理 ✅</div>
-        <div style="margin:8px 0;font-size:13px;color:var(--text2)">${escHtml(data.note || '清理完成')}</div>
+        <div class="assist-section-title" style="margin-bottom:6px">${icon} 对话清理 ✅</div>
+        <div style="font-size:13px;color:var(--text);padding:4px 0">${escHtml(data.note || '清理完成')}</div>
+        <div style="font-size:12px;color:var(--text2);padding:2px 0 6px">清理了 ${removed} 条记录 · brief 已重置</div>
+        <div style="margin-top:4px"><button class="btn-small" onclick="chatCleanPrompt('${reqId}')">🔄 再次清理</button></div>
       `;
     }
     if (data.status === 'failed') {
       return `<div class="insight-error">❌ 清理失败：${escHtml(data.error || '未知错误')}</div>`;
     }
-    return '';
+    // 没有有效状态 → 不渲染任何内容（避免空 assist-block 显示为一条线）
+    return '<div style="display:none"></div>';
   }
 
   window.ACMSAssists.register('clean', { name: '对话清理', render });
@@ -65,19 +70,19 @@ async function chatCleanPrompt(reqId) {
   }).join('');
 
   const html = `
-    <div id="${cardId}" class="chat-inline-form" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;margin:6px 0;max-height:320px;overflow-y:auto">
+    <div id="${cardId}" class="chat-inline-form" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;margin:6px 0">
       <div style="font-weight:600;font-size:14px;margin-bottom:4px">🧹 对话清理</div>
       <div style="font-size:11px;color:var(--text2);margin-bottom:8px">
         共 ${history.length} 条记录 · 显示最近 ${displayList.length} 条 · 勾选要清理的条目
       </div>
-      <div style="margin:4px 0 8px;display:flex;gap:6px">
+      <div style="margin:4px 0 8px;display:flex;gap:6px;flex-wrap:wrap">
         <button class="btn-small" onclick="document.querySelectorAll('#${cardId} .clean-item-cb').forEach(c=>c.checked=true)">☑️ 全选</button>
         <button class="btn-small" onclick="document.querySelectorAll('#${cardId} .clean-item-cb').forEach(c=>c.checked=false)">↩️ 取消</button>
         <button class="btn-small btn-primary" onclick="submitCleanSelected('${cardId}','${reqId}')">🗑 清理选中</button>
         <button class="btn-small btn-reject" onclick="submitCleanAll('${cardId}','${reqId}')">⚠️ 全部清理</button>
         <button class="btn-small" onclick="dismissInlineForm('${cardId}')">取消</button>
       </div>
-      <div style="max-height:220px;overflow-y:auto">${itemsHtml}</div>
+      <div style="max-height:280px;overflow-y:auto;min-height:60px">${itemsHtml}</div>
     </div>
   `;
 

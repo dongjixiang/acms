@@ -120,10 +120,10 @@
         const mod = window.ACMSAssists.get(m);
         if (!mod || !mod.render) return '';
         try {
+          const rendered = mod.render(reqId, data[m]);
+          // v0.19：跳过空渲染（避免显示空 assist-block 线条）
+          if (!rendered || rendered.trim() === '' || rendered.trim() === '<div style="display:none"></div>') return '';
           // v0.4 Phase 3.10：assist 卡片来源说明（"为什么看到这个"）
-          //   单一数据源 = diagnosis.type + method → 硬编码映射表
-          //   规则：用户改了 diagnosis.type 时 explanation 自动跟着变
-          const diagnosisType = brief?.diagnosis?.type || null;
           const SOURCE_EXPLAIN = buildSourceExplanation(m, diagnosisType);
           const sourceNote = SOURCE_EXPLAIN
             ? `<div class="assist-source-note">💡 ${escHtml(SOURCE_EXPLAIN)}</div>`

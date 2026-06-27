@@ -1869,6 +1869,22 @@ async function aiDecompose(reqId) {
   const modelId = document.getElementById(`ai-decompose-model-${reqId}`)?.value;
   if (!modelId) return toast('请先选择大模型', 'error');
 
+  // ★ Guard: 检查是否已有任务，防止重复分解
+  try {
+    const req = await api('GET', '/requirements/' + reqId);
+    const existingTasks = JSON.parse(req.task_ids || '[]');
+    if (existingTasks.length > 0) {
+      if (!confirm(`⚠ 该需求已有 ${existingTasks.length} 个任务。\n\nAI 分解会尝试「增量补充」而非重新创建整套，但仍可能生成少量重叠任务。\n\n确认继续分解吗？`)) {
+        // 用户取消，恢复按钮UI
+        const btn = document.querySelector(`[onclick="aiDecompose('${reqId}')"]`);
+        if (btn) btn.disabled = false;
+        const resultDiv = document.getElementById(`ai-decompose-result-${reqId}`);
+        if (resultDiv) resultDiv.innerHTML = '<div style="color:var(--text2);padding:8px">已取消</div>';
+        return;
+      }
+    }
+  } catch(e) { /* 查询失败不阻塞，继续分解 */ }
+
   const resultDiv = document.getElementById(`ai-decompose-result-${reqId}`);
   resultDiv.innerHTML = '<div style="color:var(--text2);padding:12px">⏳ AI 正在分析需求并分解任务...</div>';
 

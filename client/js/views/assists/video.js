@@ -39,14 +39,21 @@
       `;
     }
     if (data.status === 'done') {
+      const isAsync = data.async_task && !data.video_url;
       return `
-        <div class="assist-section-title">🎬 AI 视频生成 ✅</div>
+        <div class="assist-section-title">🎬 AI 视频生成</div>
         <div style="margin:8px 0">
           <div style="font-size:13px;margin-bottom:4px">描述：${escHtml(data.prompt || '')}</div>
           <div style="font-size:12px;color:var(--text2);margin-bottom:8px">
-            时长：${data.duration || '?'}s · 分辨率：${data.size || '?'}
+            时长：${data.duration || '?'}s · 帧率：${data.frame_rate || 24}fps
+            ${data.size ? `· 分辨率：${data.size}` : ''}
           </div>
-          ${data.video_url ? `
+          ${isAsync ? `
+            <div style="font-size:12px;color:var(--text2);margin-bottom:6px">
+              ⏳ 视频生成中（异步任务）· ID: ${escHtml((data.video_id || '').slice(0,24))}…
+            </div>
+            <button class="btn-small btn-primary" onclick="chatVideoQuery('${reqId}')">🔄 刷新进度</button>
+          ` : data.video_url ? `
             <a href="${escHtml(data.video_url)}" target="_blank" rel="noopener noreferrer" class="btn-small btn-primary" style="text-decoration:none;display:inline-flex;align-items:center;gap:4px">
               ▶️ 下载/查看视频
             </a>

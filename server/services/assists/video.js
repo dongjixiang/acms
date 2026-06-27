@@ -78,7 +78,7 @@ async function runAssistJob(requirementId, opts = {}) {
 
     reqStore.update(requirementId, {
       assist_video: JSON.stringify({
-        status: 'pending',  // 任务创建成功，等待完成
+        status: 'done',  // v0.19 fix: 设 done 让 SSE 能正常结束（视频是异步的，用户手动查进度）
         prompt,
         duration,
         image_url: imageUrl || null,
@@ -91,6 +91,8 @@ async function runAssistJob(requirementId, opts = {}) {
         error: null,
         created_at: new Date().toISOString(),
         raw_response: result,
+        // v0.19: 标记是异步任务，前端显示刷新按钮
+        async_task: true,
       }),
     });
 

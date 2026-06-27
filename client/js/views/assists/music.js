@@ -24,6 +24,20 @@
     if (sources.length === 0) return '';
 
     const songTitle = escHtml(data.song || '');
+    const playableUrl = data.playable_url || '';
+    // v0.19：有可播放源时加播放器（Bilibili 用 iframe，其他用 audio）
+    const isBilibili = playableUrl.includes('bilibili.com');
+    const playerHtml = playableUrl
+      ? isBilibili
+        ? `<div style="margin:8px 0;max-width:360px">
+            <iframe src="${escHtml(playableUrl)}" style="width:100%;height:200px;border:none;border-radius:8px" allow="autoplay" loading="lazy"></iframe>
+            <div style="font-size:11px;color:var(--text3);margin-top:2px">📺 哔哩哔哩 · 点击播放</div>
+           </div>`
+        : `<div style="margin:8px 0">
+            <audio controls style="width:100%;max-width:360px;height:40px" src="${escHtml(playableUrl)}">您的浏览器不支持音频播放</audio>
+            <div style="font-size:11px;color:var(--text3);margin-top:2px">🔊 在线播放 · 来源：${escHtml(new URL(playableUrl).hostname)}</div>
+           </div>`
+      : '';
     const intro = data.verified
       ? '已为你找到播放源，点击跳转播放：'
       : '在以下平台搜索该歌曲（点击跳转）：';
@@ -39,6 +53,7 @@
 
     return `
       <div class="assist-section-title">🎵 ${songTitle || '音乐'}</div>
+      ${playerHtml}
       <div class="music-assist-intro">${escHtml(intro)}</div>
       <div class="music-assist-list">${cards}</div>
       <div class="music-assist-note">
