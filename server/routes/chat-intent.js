@@ -15,8 +15,15 @@ const toolRegistry = require('../services/tool-registry');
 const { runToolLoop } = require('../services/llm-adapter');
 const modelStore = require('../stores/model-store');
 
-// v0.16：本场景给 LLM 看的 5 个外部 tool（边界清晰：仅外部信息 + 视频生成）
-const INTENT_TOOL_NAMES = ['web_search', 'web_research', 'fetch_url', 'get_current_time', 'agnes_generate_video'];
+// v0.20：本场景给 LLM 看的 8 个外部 tool
+//   4 个信息类（v0.16）+ 1 个视频生成（v0.18）+ 3 个休闲娱乐（v0.20：play_music / play_video / generate_image）
+const INTENT_TOOL_NAMES = [
+  'web_search', 'web_research', 'fetch_url', 'get_current_time',  // 信息类
+  'agnes_generate_video',  // 视频生成（v0.18 直接调 Agnes API）
+  'play_music',           // 音乐播放（v0.20 触发 music assist）
+  'play_video',           // 视频生成（v0.20 触发 video assist，自动从用户消息提取 prompt）
+  'generate_image',       // 图片生成（v0.20 触发 image-gen assist，自动从用户消息提取 prompt）
+];
 
 // v0.16：chat-intent 阶段 LLM 看到的 system prompt（clarify 模式）
 // 核心：「一放一收」—— 默认不调 tool，只有显式外部信息需求才调
@@ -46,19 +53,34 @@ function buildIntentSystemPrompt(req) {
 3. **get_current_time**（当前时间）：
    - 仅当用户**显式**询问"现在几点/今天日期"时使用
 
-4. **agnes_generate_video**（AI 视频生成）：
-   - 当用户**显式**要求生成视频时使用（如"帮我生成一段 X 视频"、"做个 Y 的演示视频"）
+4. **agnes_generate_video**（AI 视频生成 — Agnes V2.0 直调 API）：
+   - 当用户**显式**要求生成视频且希望**精确控制参数**时使用（如 num_frames/frame_rate/seed）
    - 参数：prompt（描述画面）、num_frames（帧数，默认121 ≈ 5s@24fps）、frame_rate（帧率）
    - 约 2 秒视频：num_frames=49, frame_rate=24；约 3 秒：num_frames=81, frame_rate=24
    - 创建任务是异步的，返回 video_id。告诉用户任务已提交，他们会追问进度
 
-5. **休闲辅助（隐式）**：当用户说"我想听X"、"放首歌"、"帮我生成图片"等休闲娱乐需求时，系统会自动触发对应的辅助功能。
-   - 直接回复用户，不要调任何 tool（系统后台自动触发）
+5. **play_music**（音乐播放 — v0.20）：
+   - 当用户**显式**表达想听某首歌时使用（如"想听 X""播放 X""找一首 X""搜 X 歌""放 X 歌"）
+   - 必须从用户消息中提取 song（必填），artist（可选，从对话历史推断）
+   - **常见触发**："想听 程响 的 可能" → song="程响 的 可能"（注意"可能"是语气词，要去掉）
+   - 触发后用户 10-30 秒内看到播放卡片（系统后台异步执行）
+   - **严禁**：用户描述"功能里有音乐元素"或"我想做一个音乐 APP"时调用（这是需求澄清，不是想听歌）
+
+6. **play_video**（视频生成 — v0.20，触发 video assist）：
+   - 当用户**显式**想生成视频但**未指定精确参数**时使用（如"帮我生成一个 X 视频""做一个 X 演示"）
+   - 必须从用户消息中提取 prompt（视频描述，必填）
+   - 与 agnes_generate_video 的区别：本工具走 video assist 流程（更友好 UI）；agnes_generate_video 走直 API（精确控制）
+   - 触发后 60-300 秒内看到视频卡片
+
+7. **generate_image**（图片生成 — v0.20，触发 image-gen assist）：
+   - 当用户**显式**想生成图片时使用（如"生成图片 X""画一张 X""画一个 X"）
+   - 必须从用户消息中提取 prompt（图片描述，必填）
+   - 触发后 10-60 秒内看到图片卡片
 
 # 默认行为
 - 用户大概率是描述产品功能/场景/用户故事（90%+ 情况）
 - 用户也可能在回答 AI 之前的追问、确认理解、补充细节
-- 这些情况**都不需要外部信息**，直接基于需求上下文和对话历史回复
+- 这些情况**都不需要外部信息或休闲娱乐**，直接基于需求上下文和对话历史回复
 
 # 回复要求
 - 用 Markdown（### 标题、**粗体**、- 列表）
@@ -86,7 +108,10 @@ function buildFreeChatSystemPrompt(req) {
 1. **web_research / web_search**（联网调研）：用户**显式**询问最新/实时信息或要求对比/调研多个产品
 2. **fetch_url**：仅当用户消息包含完整 http:// 或 https:// 链接
 3. **get_current_time**：仅当用户**显式**询问"现在几点/今天日期"
-4. **agnes_generate_video**：用户**显式**要求生成视频时使用（如"帮我生成一段 X 视频"），约 2 秒用 num_frames=49
+4. **agnes_generate_video**：用户**显式**要求生成视频且希望精确控制参数（num_frames/frame_rate/seed）时使用，约 2 秒用 num_frames=49
+5. **play_music**（v0.20）：用户**显式**想听某首歌时调用（如"想听 X""播放 X""找一首 X"），从消息提取 song（必填）+ artist（可选）
+6. **play_video**（v0.20）：用户**显式**想生成视频但未指定精确参数时调用，提取 prompt
+7. **generate_image**（v0.20）：用户**显式**想生成图片时调用（"画一张 X""生成 X 图片"），提取 prompt
 
 # 默认行为
 - 用户大概率是想让你总结附件、解读资料、对比方案、或回答具体问题
@@ -172,6 +197,7 @@ router.post('/detect-and-respond', async (req, res, next) => {
         const result = await runToolLoop(model.id, messages, {
           toolNames: INTENT_TOOL_NAMES,
           maxRounds: 3,  // 限 3 轮：1 调 + 2 重试，防止 LLM 死循环
+          context: { reqId },  // v0.20：透传 reqId 给 tool handler（play_music/play_video/generate_image 需要）
         });
         aiReply = (result && typeof result === 'string') ? result : (result?.content || '');
 

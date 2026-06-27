@@ -362,6 +362,7 @@ async function callLLMWithTools(modelId, messages, options = {}) {
 async function runToolLoop(modelId, messages, options = {}) {
   const maxRounds = options.maxRounds ?? 10;
   const toolNames = options.toolNames;
+  const context = options.context || {};  // v0.20：透传给 tool handler（music/video/image_gen 需要 reqId）
   const model = modelStore.getById(modelId);
   if (!model) throw Object.assign(new Error('模型不存在'), { status: 404 });
   const api = model.api || 'openai-chat';
@@ -385,7 +386,8 @@ async function runToolLoop(modelId, messages, options = {}) {
       const tool = toolRegistry.getTool(tc.name);
       if (!tool) { messages.push(toolRegistry.makeToolResult(api, tc.id, { error: `未知工具: ${tc.name}` })); continue; }
       try {
-        const toolResult = await tool.handler(tc.args);
+        // v0.20：handler 接 (args, context) — context 用于传 reqId 等
+        const toolResult = await tool.handler(tc.args, context);
         messages.push(toolRegistry.makeToolResult(api, tc.id, toolResult));
       } catch (e) { messages.push(toolRegistry.makeToolResult(api, tc.id, { error: e.message })); }
     }
