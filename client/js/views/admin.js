@@ -7,6 +7,7 @@ async function loadAdminPage() {
     const generators = await api('GET', '/generate');
     const defaultGen = await api('GET', '/admin/default-gen-model');
     const elicitorState = await api('GET', '/admin/elicitor-enabled');
+    const webhooks = await api('GET', '/webhooks');  // v0.17f：事件 webhook 订阅列表
 
     // v0.17d 状态卡片配色阈值（uptime / memory %）
     const uptimeH = status.uptime / 3600;
@@ -24,6 +25,7 @@ async function loadAdminPage() {
         <button class="tab-btn" data-tab="admin-tab-advanced">⚙️ 高级</button>
         <button class="tab-btn" data-tab="admin-tab-data">🛠 数据</button>
         <button class="tab-btn" data-tab="admin-tab-events">📋 事件</button>
+        <button class="tab-btn" data-tab="admin-tab-webhooks">🔔 Webhooks</button>
       </div>
 
       <!-- Tab 1 · 概览 — 系统状态卡片（uptime / memory 超阈值变色警示） -->
@@ -220,6 +222,85 @@ async function loadAdminPage() {
           ${events.map(e => `<div class="log-entry"><strong>${e.type}</strong> ${e.actor_name||''} → ${e.target_type||''}/${e.target_id||''} <span style="color:var(--text2)">${new Date(e.timestamp).toLocaleString('zh-CN', {hour12:false})}</span></div>`).join('')}
         </div>
       </div>
+
+      <!-- Tab 7 · Webhooks — 事件订阅管理（v0.17f：复用 /api/webhooks 已有 CRUD） -->
+      <div class="tab-content" id="admin-tab-webhooks">
+        <h3>🔔 Webhook 订阅 <span style="font-size:11px;font-weight:400;color:var(--text3)">（${webhooks.length} 个）</span></h3>
+        <p style="color:var(--text2);font-size:13px;margin:4px 0 12px">
+          ACMS 事件触发时 POST 到订阅 URL，HMAC-SHA256 签名 (<code>X-Hub-Signature-256</code>)。
+          <br>典型用法：<strong>分配任务到 Hermes agent</strong> → 任务.claimed 事件 → 推送到 <code>hermes webhook subscribe</code> 拿到的 URL → Hermes 自动调 acms-kanban 跑全生命周期。
+        </p>
+
+        <!-- 创建订阅表单 -->
+        <details open style="margin-bottom:16px">
+          <summary class="admin-form-toggle">➕ 创建新订阅</summary>
+          <div class="panel-form" style="margin-top:12px">
+            <div class="form-two-col">
+              <div class="form-group">
+                <label>名称 *</label>
+                <input type="text" id="wh-name" placeholder="hermes-acms-tasks">
+              </div>
+              <div class="form-group">
+                <label>接收 URL *</label>
+                <input type="text" id="wh-url" placeholder="https://hermes.local:8644/hook/...">
+              </div>
+            </div>
+            <div class="form-group">
+              <label>事件类型（多选）</label>
+              <div id="wh-events" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px">
+                ${['task.created', 'task.claimed', 'task.submitted', 'task.completed', 'task.review_rejected',
+                   'requirement.decomposed', 'requirement.approved', 'requirement.review_submitted', 'requirement.changed',
+                   'agent.registered'].map(ev => `
+                  <label class="cap-check"><input type="checkbox" value="${ev}"> ${ev}</label>
+                `).join('')}
+              </div>
+            </div>
+            <div class="form-two-col">
+              <div class="form-group">
+                <label>Secret（留空则自动生成 32 位 hex）</label>
+                <input type="text" id="wh-secret" placeholder="可选 — 跟 Hermes webhook 订阅的 secret 保持一致">
+              </div>
+              <div class="form-group">
+                <label>说明（备注这个订阅的用途）</label>
+                <input type="text" id="wh-description" placeholder="例如：推送到 Hermes 触发 acms-kanban 自动执行">
+              </div>
+            </div>
+            <div class="form-actions">
+              <button class="btn-primary" onclick="createWebhook()">💾 创建订阅</button>
+              <button class="btn-back" onclick="document.getElementById('wh-name').value='';document.getElementById('wh-url').value='';document.getElementById('wh-secret').value='';document.getElementById('wh-description').value='';document.querySelectorAll('#wh-events input').forEach(c=>c.checked=false);">取消</button>
+            </div>
+          </div>
+        </details>
+
+        <!-- 订阅列表 -->
+        <div id="webhooks-list">
+          ${webhooks.length === 0 ? '<div class="empty" style="padding:20px;text-align:center;color:var(--text2)">📭 暂无订阅 — 在上方表单创建第一个</div>' :
+            webhooks.map(w => `
+              <div class="config-row" style="padding:10px 12px;margin-bottom:6px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;flex-direction:column;align-items:stretch">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                  <div>
+                    <strong>${w.active ? '🟢' : '⚫'} ${escHtml(w.name)}</strong>
+                    <span style="color:var(--text3);font-size:11px;margin-left:6px">${escHtml(w.id)}</span>
+                    ${w.error_count > 0 ? `<span style="color:#f55;font-size:11px;margin-left:6px">⚠️ 失败 ${w.error_count} 次</span>` : ''}
+                  </div>
+                  <div style="display:flex;gap:6px">
+                    <button class="btn-small" onclick="testWebhook('${w.id}')" title="发送测试 payload">🧪 测试</button>
+                    <button class="btn-small" onclick="toggleWebhook('${w.id}', ${!w.active})" title="${w.active ? '暂停' : '启用'}">${w.active ? '⏸️' : '▶️'}</button>
+                    <button class="btn-small btn-reject" onclick="deleteWebhook('${w.id}')">🗑</button>
+                  </div>
+                </div>
+                <div style="font-size:11px;color:var(--text2);word-break:break-all;margin-bottom:4px">🔗 ${escHtml(w.url)}</div>
+                <div style="font-size:11px;color:var(--text3);margin-bottom:4px">📨 ${w.events.join(', ')}</div>
+                <div style="font-size:11px;color:var(--text3);display:flex;gap:12px;flex-wrap:wrap">
+                  ${w.secret ? `<span>🔐 secret: <code style="background:var(--bg3);padding:1px 4px;border-radius:3px">${w.secret.slice(0,8)}…${w.secret.slice(-4)}</code></span>` : '<span>🔐 无 secret</span>'}
+                  <span>📅 ${new Date(w.created_at).toLocaleString('zh-CN', {hour12:false})}</span>
+                  ${w.last_triggered ? `<span>🕐 最近触发: ${new Date(w.last_triggered).toLocaleString('zh-CN', {hour12:false})}</span>` : '<span>🕐 尚未触发</span>'}
+                  ${w.description ? `<span>💬 ${escHtml(w.description)}</span>` : ''}
+                </div>
+              </div>
+            `).join('')}
+        </div>
+      </div>
     `;
     setupAdminTabs();
   } catch (e) { document.getElementById('admin-content').innerHTML = `<div class="empty">加载失败: ${e.message}</div>`; }
@@ -248,6 +329,53 @@ function filterAdminEvents(query) {
   document.querySelectorAll('#admin-events-list .log-entry').forEach(el => {
     el.style.display = !q || el.textContent.toLowerCase().includes(q) ? '' : 'none';
   });
+}
+
+// v0.17f：Webhook 订阅 CRUD（复用 server/routes/webhooks.js 已有 REST API）
+async function createWebhook() {
+  const name = document.getElementById('wh-name').value.trim();
+  const url = document.getElementById('wh-url').value.trim();
+  const secret = document.getElementById('wh-secret').value.trim();
+  const description = document.getElementById('wh-description').value.trim();
+  const events = Array.from(document.querySelectorAll('#wh-events input[type=checkbox]:checked')).map(c => c.value);
+  if (!name || !url) return toast('名称和 URL 是必填项', 'error');
+  if (events.length === 0) return toast('至少选一个事件类型', 'error');
+  try {
+    const body = { name, url, events, description };
+    if (secret) body.secret = secret;
+    const r = await api('POST', '/webhooks', body);
+    if (r.error) return toast('创建失败: ' + (r.message || r.error), 'error');
+    toast(`✅ 订阅已创建：${r.subscription.id}\n${r.message || ''}`, 'success', 4000);
+    loadAdminPage();
+  } catch (e) { toast('创建失败: ' + e.message, 'error'); }
+}
+
+async function testWebhook(id) {
+  try {
+    toast('发送测试 payload…', 'info', 1500);
+    const r = await api('POST', `/webhooks/${id}/test`);
+    if (r.error) return toast('测试失败: ' + (r.message || r.error), 'error');
+    toast('✅ 测试成功 — 目标 URL 已收到', 'success', 2000);
+  } catch (e) { toast('测试失败: ' + e.message, 'error'); }
+}
+
+async function toggleWebhook(id, newActive) {
+  try {
+    const r = await api('PATCH', `/webhooks/${id}`, { active: newActive });
+    if (r.error) return toast('更新失败: ' + (r.message || r.error), 'error');
+    toast(`订阅已${newActive ? '启用' : '暂停'}`, 'success', 1500);
+    loadAdminPage();
+  } catch (e) { toast('更新失败: ' + e.message, 'error'); }
+}
+
+async function deleteWebhook(id) {
+  if (!(await showConfirm('确认删除此 webhook 订阅？'))) return;
+  try {
+    const r = await api('DELETE', `/webhooks/${id}`);
+    if (r.error) return toast('删除失败: ' + (r.message || r.error), 'error');
+    toast('订阅已删除', 'success', 1500);
+    loadAdminPage();
+  } catch (e) { toast('删除失败: ' + e.message, 'error'); }
 }
 
 function renderModelRow(m, defaultGenId) {
