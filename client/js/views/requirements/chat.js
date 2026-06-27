@@ -1332,8 +1332,9 @@ async function renderLeisureResult(reqId, method, loadingEl) {
       loadingEl.innerHTML = `
         <div class="assist-loading-head" style="border:none"><span style="font-size:16px">🎬</span><span class="assist-loading-title">${isAsync ? '视频任务已提交' : '视频已生成'}</span></div>
         <div style="padding:4px 0;font-size:12px;color:var(--text2)">
-          ${data.video_url ? `<a href="${escHtml(data.video_url)}" target="_blank">▶️ 查看视频</a>` : 'ID: ' + escHtml(vid.slice(0,30)) + (isAsync ? ' · 点下方「刷新进度」查看完成状态' : '…')}
+          ${data.video_url ? `<a href="${escHtml(data.video_url)}" target="_blank">▶️ 查看视频</a>` : 'ID: ' + escHtml(vid.slice(0,30)) + (isAsync ? ' · 视频生成中（异步）' : '…')}
         </div>
+        ${isAsync ? `<div style="padding:4px 0"><button class="btn-small btn-primary" onclick="chatVideoQuery('${reqId}')">🔄 刷新进度</button></div>` : ''}
       `;
       loadingEl.style.borderTopColor = 'var(--green)';
       loadingEl.style.animation = 'none';
