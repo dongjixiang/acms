@@ -9,8 +9,8 @@
  * @param {object} config - 表单配置
  * @param {string} config.icon - 图标，如 '🎵', '🎬', '🖼️'
  * @param {string} config.title - 卡片标题
- * @param {Array} config.fields - 表单字段 [{ id, label, placeholder, type: 'text'|'url'|'number'|'select', options?: [], default?: '' }]
- * @param {Function} config.onSubmit - 提交回调 (values) → 返回或 Promise
+ * @param {string} config.method - 辅助方法名（'music'|'video'|'image_gen'）
+ * @param {Array} config.fields - 表单字段 [{ id, label, placeholder, type, options?, default? }]
  */
 function renderInlineForm(reqId, config) {
   const stream = document.getElementById(`chat-stream-msgs-${reqId}`);
@@ -36,7 +36,7 @@ function renderInlineForm(reqId, config) {
   }).join('');
 
   const html = `
-    <div id="${cardId}" class="chat-inline-form" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;margin:6px 0">
+    <div id="${cardId}" class="chat-inline-form" data-method="${config.method || ''}" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;margin:6px 0">
       <div style="font-weight:600;font-size:14px;margin-bottom:10px">${config.icon} ${escHtml(config.title)}</div>
       ${fieldsHtml}
       <div style="display:flex;gap:6px;margin-top:4px">
@@ -108,16 +108,8 @@ async function submitInlineForm(cardId, reqId) {
       });
     }
 
-    // 替换卡片为加载中
-    card.innerHTML = `<div class="chat-inline-form loading" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;margin:6px 0">
-      <div style="text-align:center;padding:8px;color:var(--text2)">⏳ 正在生成，请稍候…</div>
-    </div>`;
-
-    // 触发 assist 面板刷新（现有 polling 机制）
-    if (typeof loadAssistPanel === 'function') {
-      // 延迟一下让后端处理
-      setTimeout(() => loadAssistPanel(reqId), 1500);
-    }
+    // 表单提交成功 → 移除表单卡片（chatAssist 已自动插 loading 卡片 + SSE 流式结果）
+    card.remove();
   } catch (e) {
     card.innerHTML = `<div class="chat-inline-form error" style="background:var(--bg2);border:1px solid #f55;border-radius:8px;padding:12px;margin:6px 0">
       <div style="text-align:center;padding:8px;color:#f55">❌ 失败：${escHtml(e.message || '未知错误')}</div>
@@ -139,17 +131,13 @@ function dismissInlineForm(cardId) {
  */
 function renderVideoForm(reqId) {
   renderInlineForm(reqId, {
-    icon: '🎬',
-    title: 'AI 视频生成',
+    icon: '🎬', title: 'AI 视频生成', method: 'video',
     fields: [
       { id: 'prompt', label: '视频描述 *', placeholder: '例如：美女在海滩散步，夕阳暖光，电影质感', type: 'text' },
       { id: 'duration', label: '时长（秒）', placeholder: '默认 5 秒', type: 'number', default: '5' },
       { id: 'image_url', label: '参考图片 URL（可选，图生视频）', placeholder: '留空则文生视频', type: 'url' },
     ],
   });
-  // 标记 method
-  const card = document.querySelector(`#idea-panel-${reqId} + .chat-inline-form, #chat-stream-msgs-${reqId} .chat-inline-form:last-child`);
-  if (card) card.dataset.method = 'video';
 }
 
 /**
@@ -157,16 +145,13 @@ function renderVideoForm(reqId) {
  */
 function renderImageForm(reqId) {
   renderInlineForm(reqId, {
-    icon: '🖼️',
-    title: 'AI 图片生成',
+    icon: '🖼️', title: 'AI 图片生成', method: 'image_gen',
     fields: [
       { id: 'prompt', label: '图片描述 *', placeholder: '例如：一只猫在海滩，数码插画风格', type: 'text' },
       { id: 'size', label: '尺寸', type: 'select', options: ['1024x1024', '1024x768', '768x1024', '1280x720', '720x1280'], default: '1024x1024' },
       { id: 'image_url', label: '参考图片 URL（可选，图生图）', placeholder: '留空则文生图', type: 'url' },
     ],
   });
-  const card = document.querySelector(`#idea-panel-${reqId} + .chat-inline-form, #chat-stream-msgs-${reqId} .chat-inline-form:last-child`);
-  if (card) card.dataset.method = 'image_gen';
 }
 
 /**
@@ -174,12 +159,9 @@ function renderImageForm(reqId) {
  */
 function renderMusicForm(reqId) {
   renderInlineForm(reqId, {
-    icon: '🎵',
-    title: '音乐播放',
+    icon: '🎵', title: '音乐播放', method: 'music',
     fields: [
       { id: 'song', label: '歌曲名 *', placeholder: '输入你想听的歌名（中英文均可）', type: 'text' },
     ],
   });
-  const card = document.querySelector(`#idea-panel-${reqId} + .chat-inline-form, #chat-stream-msgs-${reqId} .chat-inline-form:last-child`);
-  if (card) card.dataset.method = 'music';
 }

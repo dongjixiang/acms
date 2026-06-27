@@ -760,7 +760,7 @@ router.post('/:id/assist/:method', async (req, res, next) => {
     const manualBrief = (() => { try { return JSON.parse(reqRec.thinking_brief || 'null'); } catch { return null; } })();
     const manualRound = manualBrief?.chat_round || 1;
     const manualFocus = manualBrief?.followup_question || '';
-    setImmediate(() => svc.runAssistJob(req.params.id, { modelId, role, chatRound: manualRound, followupQuestion: manualFocus, deepDiveOf, productName })
+    setImmediate(() => svc.runAssistJob(req.params.id, { ...req.body, modelId, role, chatRound: manualRound, followupQuestion: manualFocus, deepDiveOf, productName })
       .catch(e => console.error(`[assist.${method}] 任务异常:`, e.message)));
 
     res.status(202).json({ method, status: 'generating' });
