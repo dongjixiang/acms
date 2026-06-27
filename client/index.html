@@ -410,8 +410,8 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/projects.js"></script>
 <script src="/client/js/views/dashboard.js"></script>
 <!-- v0.13 拆分：12 个子模块在 requirements.js 之前加载（HTML onclick 跨文件按名查找） -->
-<!-- v0.21.3 fix: bump → 0.21.4，history 长度不变导致 polling 不渲染 + 前端加载卡清理 + server 重启 -->
-<script src="/client/js/views/requirements/chat.js?v=0.22.0"></script>
+<!-- v0.21.4 fix: 双卡清理范围扩大到 assist-loading-card.method-music（旧 v0.21.3 漏了真正的旧卡所在位置） -->
+<script src="/client/js/views/requirements/chat.js?v=0.22.1"></script>
 <script src="/client/js/views/requirements/idea-panel.js?v=0.13.0"></script>
 <!-- v0.18 chat 模式切换器（clarify ↔ free）—— idea-panel.js 之后加载，引用 toggleChatMode -->
 <script src="/client/js/views/requirements/chat-mode.js?v=0.18.0"></script>

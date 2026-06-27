@@ -71,6 +71,36 @@ async function loadChatStream(reqId) {
     //   之前 chatScrollToBottom(container) 把视口固定在底部 5-7 个气泡
     //   → 25+ 条历史 AI 回复被滚动条遮住，用户感受"只有最近一条 AI 回复"
     container.scrollTop = 0;
+
+    // v0.21c fix: 如果 chat 流里最后一个 music/video 等大体积卡片在视口外，
+    //   改用 chatScrollToElement 滚到该卡片 → 卡片进视口 → iframe loading="lazy" 才会真正开始加载
+    //   复现：用户输入"想听 X" → music_result 写入 → 退出重进 REQ → scrollTop=0 让卡片在视口外
+    //   → iframe 在 window 视口外不加载 → 用户感受"音乐加载不出来"
+    //   退出再进来"碰巧能看到"是因为浏览器缓存/视口变化/用户碰巧滚动了一次
+    //   之前 v0.21b 修的是 polling 路径（新 entry），没修 loadChatStream 路径（历史已有卡片）
+    //   ⚠️ 不能用 lastElementChild 检测！thinking_brief bubble（chat-bubble-ai）经常在最后
+    //      渲染（renderBriefBubble 末尾追加），它包不包 music 卡片都不影响 music 卡片的位置
+    //   ✅ 改用 querySelectorAll('.music-card-in-chat') 拿整个流里**最后一个** music 卡片
+    const _musicCards = container.querySelectorAll('.music-card-in-chat');
+    const _lastMusicCard = _musicCards.length ? _musicCards[_musicCards.length - 1] : null;
+    if (_lastMusicCard && typeof chatScrollToElement === 'function') {
+      // 拿到 music 卡片所属的 bubble（可能外层是 chat-bubble-system）
+      const _musicBubble = _lastMusicCard.closest('.chat-bubble') || _lastMusicCard;
+      chatScrollToElement(container, _musicBubble);
+    }
+
+    // v0.21.4 fix: SSE done 渲染的第一份 music 卡在 assist-loading-card.method-music 里（不是 chat-bubble-system）
+    //   旧 v0.21.3 只清 chat-bubble-system，漏了真正的旧卡所在位置 → 双卡并存
+    //   清理范围扩大：assist-loading-card.method-music + 任何含 ⏳+music-card-in-chat 的 chat-bubble-system
+    if (container.querySelector('.music-card-in-chat[data-music-card="1"]')) {
+      // SSE done 留下的「伪卡」（class 仍是 assist-loading-card method-music，innerHTML 已被替换为 music card HTML）
+      container.querySelectorAll('.assist-loading-card.method-music').forEach(_b => _b.remove());
+      // 兼容：旧式 chat-bubble-system 里的 ⏳ music 卡（precheck 等场景）
+      container.querySelectorAll('.chat-bubble-system').forEach(function(_b) {
+        if (_b.textContent.includes('⏳') && _b.querySelector('.music-card-in-chat')) _b.remove();
+      });
+    }
+
     chatScrollUpdateBtn(reqId);
     startChatPolling(reqId);
   } catch (e) {
@@ -95,13 +125,31 @@ function startChatPolling(reqId) {
       if (history.length > state.histCount) {
         for (let i = state.histCount; i < history.length; i++) renderChatBubble(container, history[i]);
         state.histCount = history.length;
-        // v0.21 fix：音乐/视频类卡片体积大 + iframe 加载慢，必须滚到该卡片让它进视口才会真的开始加载
-        //   之前 chatScrollToBottom 只保证最新元素在容器底部可见，但容器底部可能不是卡片而是输入框或大段文字
-        const lastBubble = container.lastElementChild;
-        const lastIsMusic = lastBubble?.querySelector?.('.music-card-in-chat');
-        if (lastIsMusic && typeof chatScrollToElement === 'function') {
-          chatScrollToElement(container, lastBubble);
-        } else {
+        // v0.21.4 fix: SSE done 留下的第一份 music 卡在 assist-loading-card.method-music 里
+        //   旧 v0.21.3 只清 chat-bubble-system，漏了真正的旧卡所在位置 → 双卡并存
+        //   同一 tick 里 polling 渲染新卡后立刻清旧卡 → 用户感知不到 flicker
+        const _anyDone = container.querySelector('.music-card-in-chat[data-music-card="1"]');
+        if (_anyDone) {
+          // 第一份卡（SSE done 路径的 renderLeisureResult 产物）→ 在 assist-loading-card.method-music 里
+          container.querySelectorAll('.assist-loading-card.method-music').forEach(_b => _b.remove());
+          // 兼容：旧式 chat-bubble-system 里的 ⏳ music 卡
+          container.querySelectorAll('.chat-bubble-system').forEach(function(_b) {
+            if (_b.textContent.includes('⏳') && _b.querySelector('.music-card-in-chat')) _b.remove();
+          });
+        }
+      // v0.21 fix：音乐/视频类卡片体积大 + iframe 加载慢，必须滚到该卡片让它进视口才会真的开始加载
+      //   之前 chatScrollToBottom 只保证最新元素在容器底部可见，但容器底部可能不是卡片而是输入框或大段文字
+      // ⚠️ v0.21.2 fix: 不能用 lastElementChild 检测！intent_loop assistant bubble（chat-bubble-ai）
+      //   经常在 music_result 写入后才写入，如果用 lastElementChild 检测 → 查的是 intent_loop bubble →
+      //   lastIsMusic=false → 触发 chatScrollToBottom → 把视口滚到底部 → music 卡片反而被滚出视口
+      // ✅ 改用 querySelectorAll('.music-card-in-chat') 拿整个流里**最后一个** music 卡片
+      //   不论它后面的 bubble（intent_loop / brief）最后写了什么
+      const _mc = container.querySelectorAll('.music-card-in-chat');
+      const _lmc = _mc.length ? _mc[_mc.length - 1] : null;
+      if (_lmc && typeof chatScrollToElement === 'function') {
+        const _mb = _lmc.closest('.chat-bubble') || _lmc;
+        chatScrollToElement(container, _mb);
+      } else {
           chatScrollToBottom(container);
         }
       }
