@@ -186,7 +186,8 @@ registerTool({
   description: '为用户找歌曲的免费播放源（网易云/QQ/B站/YouTube 等）。'
     + '当用户表达"想听 X""播放 X""找一首 X""搜 X 歌""放 X 歌"等音乐意图时使用。'
     + 'song 必填，artist 可选（帮助 LLM 推断更准的搜索）。'
-    + '返回 ok=true 表示已触发异步搜索，用户会在 10-30 秒内看到播放卡片。',
+    + '返回 ok=true 表示已触发异步搜索，用户会在 10-30 秒内看到播放卡片。'
+    + '【重要】这是 fire-and-forget 异步任务，**调用一次即可，不要重复调用**。LLM 看到 ok 后应直接生成回复告诉用户"正在帮你找"，不要再次调用本工具确认。',
   parameters: {
     type: 'object',
     properties: {
@@ -222,10 +223,11 @@ registerTool({
 
 registerTool({
   name: 'play_video',
-  description: '用 Agnes AI Video V2.0 生成视频。'
+  description: '用视频生成辅助工具创建视频任务。'
     + '当用户表达"生成视频 X""做一个视频""给我生成一段视频""画一个视频"等视频生成意图时使用。'
     + '需要从用户消息中提取视频主题/描述作为 prompt。'
-    + '返回 video_id 和 task_id，异步生成（通常 60-300 秒），完成后用户看到视频卡片。',
+    + '返回 ok=true 表示已触发异步生成（通常 60-300 秒），完成后用户看到视频卡片。'
+    + '【重要】这是 fire-and-forget 异步任务，**调用一次即可，不要重复调用**。LLM 看到 ok 后应直接生成回复告诉用户"正在生成"，不要再次调用本工具确认。',
   parameters: {
     type: 'object',
     properties: {
@@ -260,10 +262,11 @@ registerTool({
 
 registerTool({
   name: 'generate_image',
-  description: '用 Agnes AI Image 生成图片。'
+  description: '用图片生成辅助工具创建图片。'
     + '当用户表达"生成图片 X""画一张 X""画一个 X""给我生成一张图"等图片生成意图时使用。'
     + '需要从用户消息中提取图片描述作为 prompt。'
-    + '返回图片生成任务，异步生成（通常 10-60 秒），完成后用户看到图片卡片。',
+    + '返回 ok=true 表示已触发异步生成（通常 10-60 秒），完成后用户看到图片卡片。'
+    + '【重要】这是 fire-and-forget 异步任务，**调用一次即可，不要重复调用**。LLM 看到 ok 后应直接生成回复告诉用户"正在生成"，不要再次调用本工具确认。',
   parameters: {
     type: 'object',
     properties: {

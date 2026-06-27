@@ -196,7 +196,7 @@ router.post('/detect-and-respond', async (req, res, next) => {
         console.log(`[detect-and-respond] ${reqId} LLM tool-loop (${model.name}, ${INTENT_TOOL_NAMES.length} tools, history=${historyMessages.length})`);
         const result = await runToolLoop(model.id, messages, {
           toolNames: INTENT_TOOL_NAMES,
-          maxRounds: 3,  // 限 3 轮：1 调 + 2 重试，防止 LLM 死循环
+          maxRounds: 5,  // v0.20 bugfix：3 → 5（兜底，runToolLoop 内部重复检测已避免真循环）
           context: { reqId },  // v0.20：透传 reqId 给 tool handler（play_music/play_video/generate_image 需要）
         });
         aiReply = (result && typeof result === 'string') ? result : (result?.content || '');

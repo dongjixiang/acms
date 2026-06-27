@@ -367,6 +367,11 @@ async function runToolLoop(modelId, messages, options = {}) {
   if (!model) throw Object.assign(new Error('模型不存在'), { status: 404 });
   const api = model.api || 'openai-chat';
 
+  // v0.20 bugfix：检测 LLM 连续两轮调同一 tool + 相同 args → 强制退出（避免无限循环）
+  //   旧 bug：LLM 调 play_music(song="X") → handler 返回 ok → LLM 再调确认 → 再返回 ok → 死循环
+  //   修复：连续两轮同 tool+args 直接返回最后一次 content（不抛错），避免 LLM 死循环
+  let lastToolCallKey = null;
+
   for (let round = 0; round < maxRounds; round++) {
     const result = await callLLMWithTools(modelId, messages, { ...options, toolNames });
     if (!result.toolCalls?.length) return result.content || '';
@@ -385,6 +390,15 @@ async function runToolLoop(modelId, messages, options = {}) {
     for (const tc of result.toolCalls) {
       const tool = toolRegistry.getTool(tc.name);
       if (!tool) { messages.push(toolRegistry.makeToolResult(api, tc.id, { error: `未知工具: ${tc.name}` })); continue; }
+
+      // v0.20 bugfix：连续两轮同 tool+args 强制退出
+      const callKey = `${tc.name}:${JSON.stringify(tc.args)}`;
+      if (callKey === lastToolCallKey) {
+        console.warn(`[runToolLoop] 连续两轮同 tool 调用 (${callKey}) → 强制退出，返回最后一次 content`);
+        return result.content || `（已停止重复调用 ${tc.name}，任务已异步触发）`;
+      }
+      lastToolCallKey = callKey;
+
       try {
         // v0.20：handler 接 (args, context) — context 用于传 reqId 等
         const toolResult = await tool.handler(tc.args, context);
