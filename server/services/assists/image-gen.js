@@ -49,7 +49,7 @@ async function runAssistJob(requirementId, opts = {}) {
 
   const prompt = (opts.prompt || '').trim();
   const imageUrl = (opts.image_url || '').trim();
-  const imageData = (opts.image_data || '').trim();  // v0.19：本地上传 Base64 Data URI
+  const imageFileId = (opts.image_file_id || '').trim();  // v0.19：上传文件 ID
   const size = opts.size || '1024x1024';
 
   if (!prompt) {
@@ -62,7 +62,16 @@ async function runAssistJob(requirementId, opts = {}) {
     return;
   }
 
-  const finalImage = imageData || imageUrl;  // 优先用上传文件，其次 URL
+  // 从上传文件、URL、或无图中选参考图
+  let finalImage = imageUrl || null;
+  if (imageFileId) {
+    try {
+      const chatUpload = require('../../services/chat-upload');
+      finalImage = chatUpload.readImageAsDataURI(imageFileId);
+    } catch (e) {
+      console.warn(`[assist:image] ${requirementId} 读取上传文件失败:`, e.message);
+    }
+  }
 
   reqStore.update(requirementId, {
     assist_image: JSON.stringify({

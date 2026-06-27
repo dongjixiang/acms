@@ -199,4 +199,15 @@ function getFilePath(id) {
   }
 }
 
-module.exports = { saveAndParse, getFilePath, UPLOAD_DIR };
+/**
+ * 读取上传的图片文件为 Base64 Data URI
+ */
+function readImageAsDataURI(id) {
+  const info = getFilePath(id);
+  if (!info || !info.meta.mime?.startsWith('image/')) return null;
+  const buf = fs.readFileSync(info.filePath);
+  const b64 = buf.toString('base64');
+  return `data:${info.meta.mime};base64,${b64}`;
+}
+
+module.exports = { saveAndParse, getFilePath, readImageAsDataURI, UPLOAD_DIR };

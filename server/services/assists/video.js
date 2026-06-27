@@ -29,7 +29,7 @@ async function runAssistJob(requirementId, opts = {}) {
   const prompt = (opts.prompt || '').trim();
   const duration = parseFloat(opts.duration) || 5; // 默认 5 秒
   const imageUrl = (opts.image_url || '').trim();
-  const imageData = (opts.image_data || '').trim(); // v0.19：本地上传 Base64 Data URI
+  const imageFileId = (opts.image_file_id || '').trim(); // v0.19：上传文件 ID
   const frameRate = parseInt(opts.frame_rate) || 24;
 
   if (!prompt) {
@@ -68,7 +68,15 @@ async function runAssistJob(requirementId, opts = {}) {
     const videoTool = toolRegistry.getTool('agnes_generate_video');
     if (!videoTool) throw new Error('视频生成工具未注册');
 
-    const finalImage = imageData || imageUrl;
+    let finalImage = imageUrl || null;
+    if (imageFileId) {
+      try {
+        const chatUpload = require('../../services/chat-upload');
+        finalImage = chatUpload.readImageAsDataURI(imageFileId) || finalImage;
+      } catch (e) {
+        console.warn(`[assist:video] ${requirementId} 读取上传文件失败:`, e.message);
+      }
+    }
     const params = { prompt, num_frames: numFrames, frame_rate: frameRate };
     if (finalImage) params.image = finalImage;
 

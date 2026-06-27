@@ -131,13 +131,31 @@ async function submitInlineForm(cardId, reqId) {
   submitBtn.disabled = true;
 
   try {
-    // 检查是否有上传文件（file 类型字段）
+    // 检查是否有上传文件（file 类型字段）→ 先上传获取 file ID
     let imageData = '';
+    let imageFileId = '';
     const fileInputs = card.querySelectorAll('input[type="file"]');
     for (const fi of fileInputs) {
       const file = fi.files?.[0];
       if (file && file.type.startsWith('image/')) {
-        imageData = await readFileAsDataURI(file);
+        // 先用 chat upload API 上传
+        const formData = new FormData();
+        formData.append('file', file);
+        const uploadResp = await fetch('/api/chat/upload', {
+          method: 'POST',
+          headers: { 'X-API-Key': 'dev-key-001' },
+          body: formData,
+        });
+        if (!uploadResp.ok) {
+          const err = await uploadResp.json().catch(() => ({}));
+          throw new Error(err.error || '上传失败');
+        }
+        const uploadResult = await uploadResp.json();
+        if (Array.isArray(uploadResult) && uploadResult.length > 0) {
+          imageFileId = uploadResult[0].id || '';
+        } else if (uploadResult.id) {
+          imageFileId = uploadResult.id;
+        }
         break;
       }
     }
@@ -149,14 +167,14 @@ async function submitInlineForm(cardId, reqId) {
         prompt: values.prompt,
         duration: parseFloat(values.duration) || 5,
         image_url: values.image_url || '',
-        image_data: imageData,  // base64 data URI
+        image_file_id: imageFileId,
       });
     } else if (method === 'image_gen') {
       await chatAssist(reqId, 'image_gen', {
         prompt: values.prompt,
         size: values.size || '1024x1024',
         image_url: values.image_url || '',
-        image_data: imageData,
+        image_file_id: imageFileId,
       });
     } else if (method === 'music') {
       await chatAssist(reqId, 'music', {
