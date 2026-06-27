@@ -748,7 +748,7 @@ router.post('/:id/assist/:method', async (req, res, next) => {
     const { modelId, role, productName } = req.body || {};
     const reqRec = reqStore.getById(req.params.id);
     if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
-    if (reqRec.status !== 'idea' && method !== 'health_check' && method !== 'clean') {
+    if (reqRec.status !== 'idea' && method !== 'health_check' && method !== 'clean' && method !== 'music' && method !== 'video' && method !== 'image_gen') {
       return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
     }
 

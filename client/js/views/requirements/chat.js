@@ -1136,7 +1136,10 @@ function connectAssistStream(reqId, method, extraBody) {
 
     es.addEventListener('error', () => {
       es.close();
-      // SSE 断连，回退到 polling
+      // SSE 断连，回退到 polling + assist 面板刷新
+      if (typeof ACMSAssistDispatcher !== 'undefined' && ACMSAssistDispatcher.loadAll) {
+        ACMSAssistDispatcher.loadAll(reqId);
+      }
       startChatPolling(reqId);
     });
   }).catch(e => {

@@ -111,6 +111,8 @@
         if (d.status === 'generating' || d.status === 'pending') return true;
         // 当前轮生成 → 整体显示（用户表态了也保留，没表态也保留）
         if (typeof d.generated_at_round === 'number' && d.generated_at_round === currentRound) return true;
+        // v0.19：显式调用的 assist（如 music/video/image/clean）已完成 → 显示（可能没有 generated_at_round）
+        if (d.status === 'done' && window._explicitAssist?.[reqId] === m) return true;
         // 其他轮 → 一律隐藏（v0.3.3 B+++：不再按 used===true 保留）
         return false;
       })
