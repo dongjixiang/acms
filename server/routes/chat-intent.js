@@ -178,9 +178,16 @@ router.post('/detect-and-respond', async (req, res, next) => {
     if (musicPreCheck.song && !toolCalls.includes('agnes_generate_video') &&
         /播放|听[一这]?首|放[一这]?首|想听|找歌|音乐/.test(text)) {
       console.log(`[detect-and-respond] ${reqId} 预检音乐意图: song=${musicPreCheck.song}, artist=${musicPreCheck.artist}`);
+      // v0.20b: 立即写 loading 条目到聊天流
+      appendChatEntry(reqId, {
+        role: 'system',
+        text: `🎵 **${musicPreCheck.artist ? musicPreCheck.artist + ' - ' : ''}${musicPreCheck.song}** — ⏳ 正在搜索播放源（10-30 秒）...`,
+        at: new Date().toISOString(),
+        source: 'music_precheck',
+      });
       try {
         const musicSvc = require('../services/assists/music');
-        // 同步触发（非 setImmediate，确保尽快出卡）
+        // 后台异步跑音乐搜索
         musicSvc.runAssistJob(reqId, musicPreCheck).catch(e =>
           console.error(`[detect-and-respond] ${reqId} music 预触发失败:`, e.message));
       } catch (e) {

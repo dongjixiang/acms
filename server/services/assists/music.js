@@ -265,6 +265,9 @@ async function runAssistJob(requirementId, opts = {}) {
         used: false,
       }),
     });
+
+    // v0.20b：把音乐结果写进聊天流（system 气泡）
+    writeMusicChatEntry(requirementId, song, playableSources, sources, false);
     console.log(`[assist:music] ${requirementId} 完成, song="${song}", ${sources.length} 个来源`);
   } catch (e) {
     console.error(`[assist:music] ${requirementId} 失败:`, e.message);
@@ -277,6 +280,7 @@ async function runAssistJob(requirementId, opts = {}) {
         generated_at: new Date().toISOString(),
       }),
     });
+    writeMusicChatEntry(requirementId, song, [], buildPlatformSearchLinks(song), true);
   }
 }
 
@@ -296,6 +300,38 @@ function getAssist(requirementId) {
   const req = reqStore.getById(requirementId);
   if (!req) return null;
   try { return JSON.parse(req.assist_music || 'null'); } catch { return null; }
+}
+
+// v0.20b：把音乐结果写进聊天流（system 气泡 — 前端 renderChatBubble 支持 isSystem 分支）
+function writeMusicChatEntry(reqId, song, playableSources, platformSources, isError) {
+  const req = reqStore.getById(reqId);
+  if (!req) return;
+  
+  let text;
+  if (isError) {
+    text = `🎵 **${song || '音乐'}** — ❌ 搜索播放源失败，可直接在以下平台搜索：\n${platformSources.map(s => `- ${s.icon || '🔗'} [${s.platform}](${s.url})`).join('\n')}`;
+  } else if (playableSources && playableSources.length > 0) {
+    const sourcesMd = playableSources.map((s, i) => {
+      const label = s.label || `源 #${i + 1}`;
+      if (s.type === 'bilibili') return `  - 📺 [${label} — 点击播放](${s.url})`;
+      if (s.type === 'netease') return `  - 🎵 [${label} — 点击播放](${s.url})`;
+      return `  - 🔊 [${label} — 点击收听](${s.url})`;
+    }).join('\n');
+    text = `🎵 **${song || '音乐'}** — ✅ 已找到播放源\n\n${sourcesMd}`;
+  } else {
+    text = `🎵 **${song || '音乐'}** — 可在以下平台搜索：\n${platformSources.map(s => `- ${s.icon || '🔗'} [${s.platform}](${s.url})`).join('\n')}`;
+  }
+
+  let history = [];
+  try { history = JSON.parse(req.supplement_history || '[]'); } catch { history = []; }
+  if (!Array.isArray(history)) history = [];
+  history.push({
+    role: 'system',
+    text,
+    at: new Date().toISOString(),
+    source: 'music_result',
+  });
+  reqStore.update(reqId, { supplement_history: JSON.stringify(history) });
 }
 
 module.exports = {
