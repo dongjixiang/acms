@@ -310,6 +310,36 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 .stat-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; text-align: center; }
 .stat-card .num { font-size: 28px; font-weight: bold; color: var(--accent); }
 .stat-card .label { font-size: 12px; color: var(--text2); margin-top: 4px; }
+/* v0.17d：状态卡片超阈值警示色（uptime > 24h 黄 / > 72h 红；memory > 60% 黄 / > 80% 红） */
+.stat-card-warning { border-color: var(--accent3); background: rgba(255,217,61,0.08); }
+.stat-card-warning .num { color: var(--accent3); }
+.stat-card-danger { border-color: #f55; background: rgba(255,85,85,0.10); }
+.stat-card-danger .num { color: #f55; }
+/* v0.17d：admin 折叠表单 summary 样式（点 ➕ 展开/收起） */
+.admin-form-toggle {
+  cursor: pointer;
+  padding: 8px 12px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--accent);
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  transition: background 0.15s;
+}
+.admin-form-toggle::-webkit-details-marker { display: none; }
+.admin-form-toggle::before {
+  content: '▸';
+  margin-right: 8px;
+  font-size: 11px;
+  color: var(--text2);
+  transition: transform 0.15s;
+}
+.admin-form-toggle:hover { background: var(--bg3); }
+details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
 .dash-panels { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .dash-panel { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
 .dash-panel h3 { font-size: 14px; margin-bottom: 12px; color: var(--accent); }
