@@ -22,6 +22,20 @@ function toggleChatMaximize(reqId) {
 
 function chatScrollToBottom(container) { if (container) container.scrollTop = container.scrollHeight; }
 
+/** v0.21 fix：滚到指定 entry 元素（不是容器底部），让音乐卡片等大体积内容完整进入视口
+ *  之前 chatScrollToBottom 滚到底部，但容器底部 273px 看不到顶部 3000px 处的音乐卡片
+ *  → iframe 加载慢 + 在视口外 → 用户感受「加载不出来」
+ */
+function chatScrollToElement(container, el) {
+  if (!container || !el) return;
+  // 计算元素相对容器的位置，滚到元素顶部 + 容器一半高度（居中显示）
+  const elTop = el.offsetTop;
+  const elHeight = el.offsetHeight;
+  const containerH = container.clientHeight;
+  const target = Math.max(0, elTop - Math.max(0, (containerH - elHeight) / 2));
+  container.scrollTo({ top: target, behavior: 'smooth' });
+}
+
 /** 发送 supplement + 触发 SSE 流式（被 chatPickCard / chatSend 共用） */
 async function chatSendSupplement(reqId, supplement, source) {
   try {

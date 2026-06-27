@@ -1376,8 +1376,9 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
 .chat-stream-container {
   display: flex;
   flex-direction: column;
-  height: 480px;
-  max-height: 60vh;
+  min-height: 540px;        /* v0.21 fix：原来只有 480px，加几条音乐卡就溢出视口外看不到 */
+  height: 540px;
+  max-height: 75vh;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg);

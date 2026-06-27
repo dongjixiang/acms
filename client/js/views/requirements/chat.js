@@ -95,7 +95,15 @@ function startChatPolling(reqId) {
       if (history.length > state.histCount) {
         for (let i = state.histCount; i < history.length; i++) renderChatBubble(container, history[i]);
         state.histCount = history.length;
-        chatScrollToBottom(container);
+        // v0.21 fix：音乐/视频类卡片体积大 + iframe 加载慢，必须滚到该卡片让它进视口才会真的开始加载
+        //   之前 chatScrollToBottom 只保证最新元素在容器底部可见，但容器底部可能不是卡片而是输入框或大段文字
+        const lastBubble = container.lastElementChild;
+        const lastIsMusic = lastBubble?.querySelector?.('.music-card-in-chat');
+        if (lastIsMusic && typeof chatScrollToElement === 'function') {
+          chatScrollToElement(container, lastBubble);
+        } else {
+          chatScrollToBottom(container);
+        }
       }
 
 // 增量：检查 brief 更新（SSE 完成或轮询到 done）
