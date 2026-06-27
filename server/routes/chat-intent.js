@@ -52,6 +52,9 @@ function buildIntentSystemPrompt(req) {
    - 约 2 秒视频：num_frames=49, frame_rate=24；约 3 秒：num_frames=81, frame_rate=24
    - 创建任务是异步的，返回 video_id。告诉用户任务已提交，他们会追问进度
 
+5. **休闲辅助（隐式）**：当用户说"我想听X"、"放首歌"、"帮我生成图片"等休闲娱乐需求时，系统会自动触发对应的辅助功能。
+   - 直接回复用户，不要调任何 tool（系统后台自动触发）
+
 # 默认行为
 - 用户大概率是描述产品功能/场景/用户故事（90%+ 情况）
 - 用户也可能在回答 AI 之前的追问、确认理解、补充细节
@@ -194,6 +197,33 @@ router.post('/detect-and-respond', async (req, res, next) => {
         deepResearch = toolCalls.includes('web_research');
 
         console.log(`[detect-and-respond] ${reqId} tool-loop 结果: tools=${toolCalls.join(',') || '(无)'}, reply=${aiReply.length}字`);
+      }
+
+      // v0.19：clarify 模式隐式触发休闲 assist（音乐/图片）
+      // 当 LLM tool-loop 没调相关工具，但用户消息明显表达了娱乐/创作意图时触发
+      if (req && req.chat_mode !== 'free') {
+        const lowerText = text.toLowerCase();
+        // 音乐检测：含"播放/听/放/歌/音乐"等词且没有实际调用视频工具
+        if (!toolCalls.includes('agnes_generate_video') &&
+            /播放|听[一这]?首|放[一这]?首|想听|找歌|音乐/.test(text)) {
+          console.log(`[detect-and-respond] ${reqId} 隐式触发 music assist`);
+          const musicSvc = require('../services/assists/music');
+          setImmediate(() => {
+            musicSvc.runAssistJob(reqId, {}).catch(e =>
+              console.error(`[detect-and-respond] ${reqId} music 隐式调用失败:`, e.message));
+          });
+        }
+        // 图片检测：含"生成图片/图/插图/海报/画"等词
+        if (!toolCalls.includes('agnes_generate_video') &&
+            /生成.*(?:图片|图像|图|插图|海报|壁纸|画)|画[一这]?[张幅]|做.*(?:海报|封面|配图|logo)|图生图/.test(text)) {
+          console.log(`[detect-and-respond] ${reqId} 隐式触发 image_gen assist`);
+          const imgSvc = require('../services/assists/image-gen');
+          setImmediate(() => {
+            imgSvc.runAssistJob(reqId, {
+              prompt: text.replace(/^(帮我|请|麻烦|可以)\s*(生成|画|做|设计|制作)/i, '').trim() || text,
+            }).catch(e => console.error(`[detect-and-respond] ${reqId} image 隐式调用失败:`, e.message));
+          });
+        }
       }
     } catch (e) {
       console.error(`[detect-and-respond] ${reqId} tool-loop 失败:`, e.message);

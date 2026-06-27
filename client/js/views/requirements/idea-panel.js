@@ -30,6 +30,8 @@ function renderIdeaPanel(req) {
   const titleText = chatMode === 'free' ? '💬 自由对话' : '💬 对话式想法澄清';
   // v0.18：free 模式隐藏 chat-extras 按钮行（澄清专用 7 个工具）+ clarity 徽章
   const extrasDisplay = chatMode === 'free' ? 'none' : 'flex';
+  // v0.19：休闲工具（🎵音乐/🎬视频/🖼️图片）仅在 free 模式显示，clarify 模式隐藏（走隐式调用）
+  const leisureDisplay = chatMode === 'free' ? 'flex' : 'none';
   const clarityDisplay = chatMode === 'free' ? 'none' : '';
   return `
     <div id="idea-panel-${req.id}" class="idea-panel">
@@ -107,12 +109,14 @@ function renderIdeaPanel(req) {
             <button onclick="chatAssist('${req.id}', 'scenarios')">👥 场景</button>
             <button onclick="chatAssist('${req.id}', 'competitive')">🏢 竞品</button>
             <button onclick="chatAssist('${req.id}', 'reference')">🏛 借鉴</button>
-            <button onclick="chatMusicPrompt('${req.id}')">🎵 音乐</button>
-            <button onclick="chatVideoPrompt('${req.id}')">🎬 视频</button>
-            <button onclick="chatImagePrompt('${req.id}')">🖼️ 图片</button>
             <button onclick="chatAssist('${req.id}', 'use_case')">✨ 整理</button>
             <button onclick="chatAssist('${req.id}', 'health_check')" style="border-color:var(--accent);color:var(--accent)">🏥 体检</button>
             <button onclick="chatDone('${req.id}')" style="border-color:rgba(255,68,68,0.2);color:#f55">✅ 够了</button>
+          </div>
+          <div class="chat-extras chat-leisure" style="display:${leisureDisplay}">
+            <button onclick="chatMusicPrompt('${req.id}')">🎵 音乐</button>
+            <button onclick="chatVideoPrompt('${req.id}')">🎬 视频</button>
+            <button onclick="chatImagePrompt('${req.id}')">🖼️ 图片</button>
           </div>
         </div>
       </div>
