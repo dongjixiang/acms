@@ -2,15 +2,23 @@
 // API 文档: https://agnes-ai.com/zh-Hans/docs/agnes-video-v20
 // 异步任务模式：create → query 轮询直到 completed
 const config = require('../config');
+const { collection } = require('../db/connection');
 
 const API_BASE = 'https://apihub.agnes-ai.com';
 
 /**
- * 读取 Agnes API Key（优先 config.agnesApiKey，其次环境变量）
+ * 读取 Agnes API Key
+ * 优先级：环境变量/配置文件 > DB system_configs
  */
 function getApiKey() {
+  // 1. 环境变量或 config.json（本地开发 / 部署时设置）
   if (config.agnesApiKey) return config.agnesApiKey;
   if (process.env.AGNES_API_KEY) return process.env.AGNES_API_KEY;
+  // 2. DB system_configs（管理界面配置）
+  try {
+    const cfg = collection('system_configs').findOne(c => c.key === 'agnes_api_key');
+    if (cfg && cfg.value) return cfg.value;
+  } catch (e) { /* DB 未就绪时不报错 */ }
   return '';
 }
 
@@ -21,7 +29,7 @@ function getApiKey() {
 async function generateVideo(args) {
   const apiKey = getApiKey();
   if (!apiKey) {
-    return { error: 'Agnes API Key 未配置。请在 config.json 中设置 agnesApiKey 或设置环境变量 AGNES_API_KEY' };
+    return { error: 'Agnes API Key 未配置。请在管理后台「高级设置」中配置 Agnes API Key，或在 config.json 中设置 agnesApiKey，或设置环境变量 AGNES_API_KEY' };
   }
 
   const body = {
@@ -96,7 +104,7 @@ async function generateVideo(args) {
 async function queryVideo(args) {
   const apiKey = getApiKey();
   if (!apiKey) {
-    return { error: 'Agnes API Key 未配置。请在 config.json 中设置 agnesApiKey 或设置环境变量 AGNES_API_KEY' };
+    return { error: 'Agnes API Key 未配置。请在管理后台「高级设置」中配置 Agnes API Key，或在 config.json 中设置 agnesApiKey，或设置环境变量 AGNES_API_KEY' };
   }
 
   const videoId = args.video_id;

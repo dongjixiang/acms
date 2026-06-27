@@ -112,4 +112,34 @@ router.post('/elicitor-enabled', (req, res) => {
   res.json({ success: true, enabled: newVal });
 });
 
+// Agnes AI API Key 配置（管理界面读写）
+const AGNES_CONFIG_KEY = 'agnes_api_key';
+router.get('/agnes-key', (req, res) => {
+  try {
+    const cfg = collection('system_configs').findOne(c => c.key === AGNES_CONFIG_KEY);
+    // 只返回是否有配置，不返回明文 key（安全）
+    res.json({ configured: !!cfg, key_set: !!cfg?.value });
+  } catch (e) {
+    res.json({ configured: false, key_set: false });
+  }
+});
+
+router.post('/agnes-key', (req, res) => {
+  const { apiKey } = req.body;
+  const sysConfigs = collection('system_configs');
+  const now = new Date().toISOString();
+  if (!apiKey || typeof apiKey !== 'string' || !apiKey.trim()) {
+    // 清除已有配置
+    sysConfigs.remove(c => c.key === AGNES_CONFIG_KEY);
+    return res.json({ success: true, message: 'Agnes API Key 已清除' });
+  }
+  const existing = sysConfigs.findOne(c => c.key === AGNES_CONFIG_KEY);
+  if (existing) {
+    sysConfigs.update(c => c.key === AGNES_CONFIG_KEY, { ...existing, value: apiKey, updated_at: now });
+  } else {
+    sysConfigs.insert({ key: AGNES_CONFIG_KEY, value: apiKey, created_at: now, updated_at: now });
+  }
+  res.json({ success: true, message: 'Agnes API Key 已保存' });
+});
+
 module.exports = router;

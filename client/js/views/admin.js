@@ -8,6 +8,7 @@ async function loadAdminPage() {
     const defaultGen = await api('GET', '/admin/default-gen-model');
     const elicitorState = await api('GET', '/admin/elicitor-enabled');
     const webhooks = await api('GET', '/webhooks');  // v0.17f：事件 webhook 订阅列表
+    const agnesKeyState = await api('GET', '/admin/agnes-key');  // v0.19：Agnes AI Video Key 状态
 
     // v0.17d 状态卡片配色阈值（uptime / memory %）
     const uptimeH = status.uptime / 3600;
@@ -199,6 +200,24 @@ async function loadAdminPage() {
               <span style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:${elicitorState.enabled ? 'var(--green)' : 'var(--border)'};border-radius:22px;transition:0.2s"></span>
               <span style="position:absolute;cursor:pointer;height:18px;width:18px;left:${elicitorState.enabled ? '22px' : '2px'};top:2px;background:#fff;border-radius:50%;transition:0.2s"></span>
             </label>
+          </div>
+        </div>
+        <!-- v0.19：Agnes AI Video API Key 配置 -->
+        <div class="config-row" style="margin-top:16px;border-top:1px solid var(--border);padding-top:16px">
+          <div>
+            <strong>🎬 Agnes AI Video API Key</strong>
+            <div style="font-size:11px;margin-top:3px;color:var(--text2)">
+              用于视频生成工具 <code>agnes_generate_video</code> / <code>agnes_query_video</code>。<br>
+              保存后立即生效，无需重启服务。
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+            <span id="agnes-key-status" style="font-size:12px;color:var(--text2)">
+              ${agnesKeyState.key_set ? '✅ 已配置' : '❌ 未配置'}
+            </span>
+            <input type="password" id="agnes-key-input" placeholder="sk-..." style="width:200px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px">
+            <button class="btn-small btn-primary" onclick="saveAgnesKey()">💾 保存</button>
+            <button class="btn-small btn-reject" onclick="clearAgnesKey()">🗑 清除</button>
           </div>
         </div>
       </div>
@@ -634,5 +653,35 @@ async function setElicitorEnabled(checkbox) {
     if (track) track.style.background = original ? 'var(--green)' : 'var(--border)';
     if (knob) knob.style.left = original ? '22px' : '2px';
     toast('设置失败: '+e.message, 'error');
+  }
+}
+
+// v0.19：Agnes AI Video API Key 配置
+async function saveAgnesKey() {
+  const input = document.getElementById('agnes-key-input');
+  const key = input ? input.value.trim() : '';
+  if (!key) return toast('请粘贴 Agnes AI API Key', 'error');
+  try {
+    const r = await api('POST', '/admin/agnes-key', { apiKey: key });
+    if (r.error) return toast('保存失败: ' + (r.message || r.error), 'error');
+    input.value = '';
+    const statusEl = document.getElementById('agnes-key-status');
+    if (statusEl) statusEl.textContent = '✅ 已配置';
+    toast('🎬 Agnes API Key 已保存，立即生效', 'success');
+  } catch (e) {
+    toast('保存失败: ' + e.message, 'error');
+  }
+}
+
+async function clearAgnesKey() {
+  if (!(await showConfirm('确认清除 Agnes API Key？工具将无法生成视频。'))) return;
+  try {
+    await api('POST', '/admin/agnes-key', { apiKey: '' });
+    const statusEl = document.getElementById('agnes-key-status');
+    if (statusEl) statusEl.textContent = '❌ 未配置';
+    toast('Agnes API Key 已清除', 'success');
+    loadAdminPage();
+  } catch (e) {
+    toast('清除失败: ' + e.message, 'error');
   }
 }
