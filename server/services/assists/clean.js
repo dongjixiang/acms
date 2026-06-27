@@ -28,7 +28,7 @@ async function runAssistJob(requirementId, opts = {}) {
   const req = reqStore.getById(requirementId);
   if (!req) return { error: 'REQ_NOT_FOUND' };
 
-  const mode = opts.mode || 'all'; // all | user | assistant | system | ai
+  const mode = opts.mode || 'all'; // all | user | assistant | system | ai | selected
   let removed = 0;
 
   try {
@@ -44,15 +44,24 @@ async function runAssistJob(requirementId, opts = {}) {
       ai: ['assistant', 'system'],   // AI 相关（助理+系统参考）
     };
 
-    const targets = rolesToRemove[mode];
-    if (!targets) return { error: `未知清理模式: ${mode}`, entries_removed: 0 };
+    let filtered;
+    let label;
 
-    const filtered = history.filter(e => {
-      if (targets.includes(e.role)) { removed++; return false; }
-      return true;
-    });
-
-    const label = { all: '全部', user: '用户', assistant: 'AI 回答', system: '系统参考', ai: 'AI 回答+系统参考' };
+    if (mode === 'selected' && Array.isArray(opts.indices) && opts.indices.length > 0) {
+      // 精确索引删除：opts.indices 是 supplement_history 中的实际数组下标
+      const idxSet = new Set(opts.indices.map(Number).filter(i => i >= 0 && i < history.length));
+      filtered = history.filter((_, i) => !idxSet.has(i));
+      removed = history.length - filtered.length;
+      label = `选中条目 ${opts.indices.length} 条`;
+    } else {
+      const targets = rolesToRemove[mode];
+      if (!targets) return { error: `未知清理模式: ${mode}`, entries_removed: 0 };
+      filtered = history.filter(e => {
+        if (targets.includes(e.role)) { removed++; return false; }
+        return true;
+      });
+      label = { all: '全部', user: '用户', assistant: 'AI 回答', system: '系统参考', ai: 'AI 回答+系统参考' }[mode] || mode;
+    }
 
     reqStore.update(requirementId, {
       supplement_history: JSON.stringify(filtered),

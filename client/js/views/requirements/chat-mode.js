@@ -111,12 +111,10 @@ function renderChatModeUI(reqId, mode) {
   }
 
   // free 模式隐藏 chat-extras 按钮行（澄清专用工具）
-  // v0.19 区分：.chat-leisure 特殊处理（free 才显示），.chat-clean 始终显示
+  // v0.19 区分：.chat-leisure 特殊处理（free 才显示）
   extras.forEach(el => {
     if (el.classList.contains('chat-leisure')) {
       el.style.display = mode === 'free' ? 'flex' : 'none';
-    } else if (el.classList.contains('chat-clean')) {
-      el.style.display = 'flex';
     } else {
       el.style.display = mode === 'free' ? 'none' : 'flex';
     }

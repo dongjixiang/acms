@@ -1,18 +1,14 @@
 // ACMS · 对话清理辅助（v0.19，2026-06-27）
 //   Method: clean | Name: 对话清理
-//
-// 显示当前对话统计 + 清理按钮
-// 清理后重置 brief（AI 重新理解上下文）
+//   内联表单：展示最近对话条目→勾选→提交
 
 (function () {
   function render(reqId, data) {
-    if (!data) return '<div class="insight-loading">⏳ 加载对话统计…</div>';
+    if (!data) return '';
     if (data.status === 'done') {
-      const note = data.note || '清理完成';
       return `
         <div class="assist-section-title">🧹 对话清理 ✅</div>
-        <div style="margin:8px 0;font-size:13px;color:var(--text2)">${escHtml(note)}</div>
-        <button class="btn-small" onclick="loadCleanStats('${reqId}');chatCleanPrompt('${reqId}')" style="margin-top:4px">🔄 查看当前统计</button>
+        <div style="margin:8px 0;font-size:13px;color:var(--text2)">${escHtml(data.note || '清理完成')}</div>
       `;
     }
     if (data.status === 'failed') {
@@ -25,75 +21,112 @@
 })();
 
 /**
- * 加载对话统计并弹出清理选项
- */
-async function loadCleanStats(reqId) {
-  try {
-    const stats = await api('GET', '/requirements/' + reqId + '/assist/clean/stats');
-    return stats;
-  } catch (e) {
-    toast('加载统计失败: ' + e.message, 'error');
-    return null;
-  }
-}
-
-/**
- * 显示清理确认对话框
+ * 渲染清理表单（内联）
  */
 async function chatCleanPrompt(reqId) {
   if (!reqId) return;
-  const stats = await loadCleanStats(reqId);
-  if (!stats) return;
+  const stream = document.getElementById(`chat-stream-msgs-${reqId}`);
+  if (!stream) return;
 
-  const total = stats.total_entries || 0;
-  const user = stats.user_entries || 0;
-  const assistant = stats.assistant_entries || 0;
-  const system = stats.system_entries || 0;
+  // 加载历史
+  let history;
+  try {
+    const resp = await api('GET', `/requirements/${reqId}/supplement-history`);
+    history = resp.history || [];
+  } catch (e) {
+    toast('加载对话历史失败: ' + e.message, 'error');
+    return;
+  }
 
-  if (total === 0) {
+  if (history.length === 0) {
     toast('当前对话没有记录可清理', 'info');
     return;
   }
 
-  // 用 confirm + prompt 模拟简单选择（不引入复杂 UI）
-  const msg = `🧹 当前对话统计：
-  ─────────────────
-  用户消息：${user} 条
-  AI 回答：${assistant} 条
-  系统参考：${system} 条
-  ─────────────────
-  总计：${total} 条
+  const cardId = `inline-clean-${reqId}-${Date.now()}`;
+  const roleIcons = { user: '💬', assistant: '🤖', system: '📎' };
 
-请选择清理模式：
-  1 = 清理全部
-  2 = 仅清理用户消息
-  3 = 仅清理 AI 回答
-  4 = 清理系统参考
-  5 = 清理所有 AI 相关内容（回答+系统参考）
-  0 = 取消`;
+  // 展示最近 30 条
+  const displayList = history.slice(-30);
+  const offset = history.length - displayList.length; // 真实索引偏移
 
-  const choice = window.prompt(msg, '1');
-  if (!choice) return;
+  const itemsHtml = displayList.map((e, i) => {
+    const realIdx = offset + i;
+    const icon = roleIcons[e.role] || '❓';
+    const text = (e.text || e.opening || '(空)').replace(/\n/g, ' ').slice(0, 25);
+    const label = text.length > 22 ? text.slice(0, 20) + '...' : text;
+    const time = e.at ? new Date(e.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '';
+    return `<label style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:12px;cursor:pointer;border-bottom:1px solid var(--border)">
+      <input type="checkbox" class="clean-item-cb" value="${realIdx}" style="flex-shrink:0">
+      <span style="flex-shrink:0">${icon}</span>
+      <span style="color:var(--text2);flex-shrink:0;width:36px;font-size:11px">${time}</span>
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">${escHtml(label)}</span>
+    </label>`;
+  }).join('');
 
-  const modeMap = { '1': 'all', '2': 'user', '3': 'assistant', '4': 'system', '5': 'ai' };
-  const mode = modeMap[choice.trim()];
-  if (!mode) return toast('已取消', 'info');
+  const html = `
+    <div id="${cardId}" class="chat-inline-form" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;margin:6px 0;max-height:320px;overflow-y:auto">
+      <div style="font-weight:600;font-size:14px;margin-bottom:4px">🧹 对话清理</div>
+      <div style="font-size:11px;color:var(--text2);margin-bottom:8px">
+        共 ${history.length} 条记录 · 显示最近 ${displayList.length} 条 · 勾选要清理的条目
+      </div>
+      <div style="margin:4px 0 8px;display:flex;gap:6px">
+        <button class="btn-small" onclick="document.querySelectorAll('#${cardId} .clean-item-cb').forEach(c=>c.checked=true)">☑️ 全选</button>
+        <button class="btn-small" onclick="document.querySelectorAll('#${cardId} .clean-item-cb').forEach(c=>c.checked=false)">↩️ 取消</button>
+        <button class="btn-small btn-primary" onclick="submitCleanSelected('${cardId}','${reqId}')">🗑 清理选中</button>
+        <button class="btn-small btn-reject" onclick="submitCleanAll('${cardId}','${reqId}')">⚠️ 全部清理</button>
+        <button class="btn-small" onclick="dismissInlineForm('${cardId}')">取消</button>
+      </div>
+      <div style="max-height:220px;overflow-y:auto">${itemsHtml}</div>
+    </div>
+  `;
 
-  const labelMap = { all: '全部', user: '用户消息', assistant: 'AI 回答', system: '系统参考', ai: 'AI 回答+系统参考' };
-  if (!window.confirm(`确认清理「${labelMap[mode]}」？此操作不可撤销。`)) return;
+  const typing = stream.querySelector('.chat-typing');
+  const temp = document.createElement('div');
+  temp.innerHTML = html;
+  const card = temp.firstElementChild;
+  if (typing) stream.insertBefore(card, typing);
+  else stream.appendChild(card);
+  stream.scrollTop = stream.scrollHeight;
+}
+
+/**
+ * 提交选中条目清理
+ */
+async function submitCleanSelected(cardId, reqId) {
+  const card = document.getElementById(cardId);
+  if (!card) return;
+
+  const checked = card.querySelectorAll('.clean-item-cb:checked');
+  if (checked.length === 0) return toast('请先勾选要清理的条目', 'warning');
+
+  const indices = Array.from(checked).map(cb => parseInt(cb.value, 10)).filter(i => !isNaN(i));
+  if (indices.length === 0) return toast('无有效选中', 'warning');
 
   try {
-    await chatAssist(reqId, 'clean', { mode });
-    toast('🧹 清理中…', 'info', 2000);
-    // 延迟刷新 chat 流（让后端完成清理 + brief 重置）
+    await chatAssist(reqId, 'clean', { mode: 'selected', indices });
+    card.remove();
     setTimeout(() => {
-      // 重置本地 state，强制全量刷新
-      if (window._chatState && window._chatState[reqId]) {
-        window._chatState[reqId].histCount = 0;
-      }
-      if (typeof loadChatStream === 'function') {
-        loadChatStream(reqId);
-      }
+      if (window._chatState && window._chatState[reqId]) window._chatState[reqId].histCount = 0;
+      if (typeof loadChatStream === 'function') loadChatStream(reqId);
+    }, 1000);
+  } catch (e) {
+    toast('清理失败: ' + e.message, 'error');
+  }
+}
+
+/**
+ * 提交全部清理
+ */
+async function submitCleanAll(cardId, reqId) {
+  if (!window.confirm('确认清理全部对话记录？此操作不可撤销。')) return;
+  const card = document.getElementById(cardId);
+  try {
+    await chatAssist(reqId, 'clean', { mode: 'all' });
+    if (card) card.remove();
+    setTimeout(() => {
+      if (window._chatState && window._chatState[reqId]) window._chatState[reqId].histCount = 0;
+      if (typeof loadChatStream === 'function') loadChatStream(reqId);
     }, 1000);
   } catch (e) {
     toast('清理失败: ' + e.message, 'error');
