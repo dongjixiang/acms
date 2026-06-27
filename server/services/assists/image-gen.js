@@ -92,7 +92,7 @@ async function runAssistJob(requirementId, opts = {}) {
       extra_body: { response_format: 'url' },
     };
 
-    const finalImage = imageData || imageUrl;
+    // finalImage 已在上方定义（来自 imageFileId 或 imageUrl）
     if (finalImage) {
       body.extra_body.image = [finalImage];
     }

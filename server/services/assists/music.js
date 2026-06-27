@@ -150,8 +150,9 @@ async function runAssistJob(requirementId, opts = {}) {
       console.warn(`[assist:music] ${requirementId} web_search 验证失败（降级到平台链接）:`, e.message);
     }
 
-    // 3. v0.19：搜索可播放音频源（Bilibili 视频 + 直接音频链接）
+    // 3. v0.19：搜索可播放音频源
     let playableUrl = null;
+    let playableSources = [];  // v0.19：多个可播放源
     try {
       // 3a. 搜 Bilibili 可播放视频（国内可用，几乎每首歌都有）
       const biliResp = await fetch(`https://api.bilibili.com/x/web-interface/search/all/v2?keyword=${encodeURIComponent(song)}`, {
@@ -161,23 +162,67 @@ async function runAssistJob(requirementId, opts = {}) {
       if (biliResp.ok) {
         const biliData = await biliResp.json();
         const videos = biliData?.data?.result || [];
-        let foundBvid = '';
+        const bvidList = [];
         for (const res of videos) {
-          if (res.result_type === 'video' && Array.isArray(res.data) && res.data.length > 0) {
-            foundBvid = res.data[0].bvid || '';
+          if (res.result_type === 'video' && Array.isArray(res.data)) {
+            for (const v of res.data.slice(0, 5)) { // 取前 5 个
+              if (v.bvid) bvidList.push(v.bvid);
+            }
             break;
           }
         }
-        if (foundBvid) {
-          playableUrl = `https://player.bilibili.com/player.html?bvid=${foundBvid}&autoplay=0`;
-          console.log(`[assist:music] ${requirementId} 找到 Bilibili 播放源: ${foundBvid}`);
+        // 构建可播放源列表
+        playableSources = [];
+        for (const bvid of bvidList) {
+          playableSources.push({
+            type: 'bilibili',
+            label: `B站 #${playableSources.length + 1}`,
+            url: `https://player.bilibili.com/player.html?bvid=${bvid}&autoplay=0`,
+            title: '哔哩哔哩',
+          });
+        }
+        if (playableSources.length > 0) {
+          playableUrl = playableSources[0].url;
+          console.log(`[assist:music] ${requirementId} 找到 ${playableSources.length} 个 Bilibili 源`);
         }
       }
     } catch (e) {
       console.warn(`[assist:music] ${requirementId} Bilibili 搜索失败（可忽略）:`, e.message);
     }
 
-    // 3b. 如果 Bilibili 没找到，再用 web_search 找其他音频链接
+    // 3b. 搜网易云音乐可播放源
+    try {
+      const neteaseResp = await fetch(`https://music.163.com/api/search/get/web?csrf_token=&type=1&s=${encodeURIComponent(song)}&offset=0&limit=5`, {
+        signal: AbortSignal.timeout(10000),
+        headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://music.163.com/' },
+      });
+      if (neteaseResp.ok) {
+        const neteaseData = await neteaseResp.json();
+        const songs = neteaseData?.result?.songs || [];
+        for (const s of songs.slice(0, 3)) {
+          if (s.id) {
+            const existingLabels = new Set(playableSources.map(p => p.title));
+            const label = `网易云 #${s.id}`;
+            if (!existingLabels.has('网易云音乐')) {
+              playableSources.push({
+                type: 'audio',
+                label: `网易云`,
+                url: `https://music.163.com/song/media/outer/url?id=${s.id}.mp3`,
+                title: '网易云音乐',
+              });
+              if (!playableUrl) playableUrl = playableSources[playableSources.length - 1].url;
+            }
+          }
+        }
+        if (playableSources.length > 0) {
+          console.log(`[assist:music] ${requirementId} 网易云搜索完成`);
+        }
+      }
+    } catch (e) {
+      console.warn(`[assist:music] ${requirementId} 网易云搜索失败（可忽略）:`, e.message);
+    }
+
+    // 3c. 如果还没找到源，用 web_search 搜其他音频链接
     if (!playableUrl) {
       try {
       const toolRegistry = require('../tool-registry');
@@ -213,6 +258,7 @@ async function runAssistJob(requirementId, opts = {}) {
         sources,
         verified,
         playable_url: playableUrl,  // v0.19 可播放音频链接
+        playable_sources: playableSources,  // v0.19 多个可播放源列表
         generated_at: new Date().toISOString(),
         generated_at_round: typeof opts.chatRound === 'number' ? opts.chatRound : null,
         model: null,

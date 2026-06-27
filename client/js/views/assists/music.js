@@ -9,6 +9,12 @@
 //   - chatMusicPrompt(reqId)：弹输入框 → 调 chatAssist('music', {song})
 
 (function () {
+  /**
+   * 渲染音乐卡片（支持源切换 + 放大）
+   * 全局状态：_musicSourceIdx[reqId] 记录当前选中的源索引
+   */
+  if (!window._musicSourceIdx) window._musicSourceIdx = {};
+
   function render(reqId, data) {
     if (!data) return '';
     if (data.status === 'generating' || data.status === 'pending') {
@@ -24,25 +30,58 @@
     if (sources.length === 0) return '';
 
     const songTitle = escHtml(data.song || '');
-    const playableUrl = data.playable_url || '';
-    // v0.19：有可播放源时加播放器（Bilibili 用 iframe，其他用 audio）
-    const isBilibili = playableUrl.includes('bilibili.com');
-    const playerHtml = playableUrl
-      ? isBilibili
-        ? `<div style="margin:8px 0;max-width:360px">
-            <iframe src="${escHtml(playableUrl)}" style="width:100%;height:200px;border:none;border-radius:8px" allow="autoplay" loading="lazy"></iframe>
-            <div style="font-size:11px;color:var(--text3);margin-top:2px">📺 哔哩哔哩 · 点击播放</div>
-           </div>`
-        : `<div style="margin:8px 0">
-            <audio controls style="width:100%;max-width:360px;height:40px" src="${escHtml(playableUrl)}">您的浏览器不支持音频播放</audio>
-            <div style="font-size:11px;color:var(--text3);margin-top:2px">🔊 在线播放 · 来源：${escHtml(new URL(playableUrl).hostname)}</div>
-           </div>`
-      : '';
-    const intro = data.verified
-      ? '已为你找到播放源，点击跳转播放：'
-      : '在以下平台搜索该歌曲（点击跳转）：';
+    // 可播放源列表
+    const playableSources = (data.playable_sources || []).filter(s => s.url);
+    // 如果没有 playable_sources 但有 playable_url，构造一个
+    if (playableSources.length === 0 && data.playable_url) {
+      playableSources.push({
+        type: data.playable_url.includes('bilibili.com') ? 'bilibili' : 'audio',
+        label: '源 #1',
+        url: data.playable_url,
+        title: data.playable_url.includes('bilibili.com') ? '哔哩哔哩' : '音频',
+      });
+    }
 
-    const cards = sources.map(s => `
+    const currentIdx = Math.min(window._musicSourceIdx[reqId] || 0, playableSources.length - 1);
+    const currentSource = playableSources[currentIdx];
+    const isExpanded = window._musicExpanded?.[reqId];
+
+    // 构建播放器
+    let playerHtml = '';
+    if (currentSource) {
+      if (currentSource.type === 'bilibili') {
+        const h = isExpanded ? 360 : 200;
+        playerHtml = `<div style="margin:8px 0${isExpanded ? '' : ';max-width:360px'}">
+          <iframe src="${escHtml(currentSource.url)}" style="width:100%;height:${h}px;border:none;border-radius:8px" allow="autoplay" loading="lazy"></iframe>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px">📺 ${escHtml(currentSource.title || '哔哩哔哩')}</div>
+        </div>`;
+      } else {
+        playerHtml = `<div style="margin:8px 0">
+          <audio controls style="width:100%;max-width:${isExpanded ? 100 : 360}%;height:40px" src="${escHtml(currentSource.url)}">您的浏览器不支持音频播放</audio>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px">🔊 ${escHtml(currentSource.title || '音频')}</div>
+        </div>`;
+      }
+    }
+
+    // 源切换按钮（仅当有多个源时显示）
+    const sourceNav = playableSources.length > 1 ? `
+      <div style="display:flex;gap:4px;flex-wrap:wrap;margin:4px 0">
+        ${playableSources.map((s, i) => `
+          <button class="btn-small" style="${i === currentIdx ? 'background:var(--accent);color:var(--bg);border-color:var(--accent)' : ''}" 
+            onclick="switchMusicSource('${reqId}', ${i})">${escHtml(s.label)}</button>
+        `).join('')}
+      </div>
+    ` : '';
+
+    // 放大/缩小按钮
+    const expandBtn = playableSources.length > 0 ? `
+      <button class="btn-small" onclick="toggleMusicExpand('${reqId}')" style="font-size:11px;float:right">
+        ${isExpanded ? '🔽 缩小' : '⛶ 放大'}
+      </button>
+    ` : '';
+
+    // 平台链接
+    const platformCards = sources.map(s => `
       <a href="${escHtml(s.url)}" target="_blank" rel="noopener noreferrer"
          class="music-assist-card ${s.verified ? 'verified' : 'search'}">
         <span class="music-assist-icon">${s.icon || '🔗'}</span>
@@ -52,22 +91,44 @@
     `).join('');
 
     return `
-      <div class="assist-section-title">🎵 ${songTitle || '音乐'}</div>
-      ${playerHtml}
-      <div class="music-assist-intro">${escHtml(intro)}</div>
-      <div class="music-assist-list">${cards}</div>
-      <div class="music-assist-note">
-        💡 点击跳转对应平台播放。ACMS 不存储音频文件，仅提供搜索跳转链接。
+      <div class="assist-section-title">
+        🎵 ${songTitle || '音乐'}
+        ${expandBtn}
       </div>
+      ${playerHtml}
+      ${sourceNav}
+      <div class="music-assist-intro" style="clear:both">在以下平台搜索该歌曲：</div>
+      <div class="music-assist-list">${platformCards}</div>
     `;
   }
 
   window.ACMSAssists.register('music', { name: '音乐播放（找免费播放源）', render });
 })();
 
-/**
- * 全局函数：渲染内联表单 → 调 chatAssist 触发 music assist
- */
+/** 切换音乐源 */
+function switchMusicSource(reqId, idx) {
+  if (!window._musicSourceIdx) window._musicSourceIdx = {};
+  window._musicSourceIdx[reqId] = idx;
+  // 刷新 assist 面板
+  if (typeof ACMSAssistDispatcher !== 'undefined' && ACMSAssistDispatcher.poll) {
+    ACMSAssistDispatcher.poll(reqId);
+  } else if (typeof loadAssistPanel === 'function') {
+    loadAssistPanel(reqId);
+  }
+}
+
+/** 放大/缩小 */
+function toggleMusicExpand(reqId) {
+  if (!window._musicExpanded) window._musicExpanded = {};
+  window._musicExpanded[reqId] = !window._musicExpanded[reqId];
+  if (typeof ACMSAssistDispatcher !== 'undefined' && ACMSAssistDispatcher.poll) {
+    ACMSAssistDispatcher.poll(reqId);
+  } else if (typeof loadAssistPanel === 'function') {
+    loadAssistPanel(reqId);
+  }
+}
+
+/** 全局函数：渲染内联表单 → 调 chatAssist 触发 music assist */
 async function chatMusicPrompt(reqId) {
   if (!reqId) return;
   renderMusicForm(reqId);
