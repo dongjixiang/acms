@@ -136,6 +136,7 @@ async function loadAdminPage() {
                 <select id="gen-provider">
                   <optgroup label="图片">
                     <option value="minimax-image">MiniMax Image</option>
+                    <option value="agnes-image">Agnes Image 2.0 Flash</option>
                     <option value="openai-dalle">OpenAI DALL-E</option>
                     <option value="comfyui">ComfyUI</option>
                   </optgroup>
@@ -520,6 +521,7 @@ function renderGenList(generators) {
   const typeIcons = { image: '🖼️', audio: '🎵', video: '🎬' };
   const providerLabels = {
     'minimax-image': 'MiniMax', 'openai-dalle': 'DALL-E', 'comfyui': 'ComfyUI',
+    'agnes-image': 'Agnes Image',
     'elevenlabs': 'ElevenLabs', 'suno': 'Suno', 'minimax-audio': 'MiniMax',
     'minimax-video': 'MiniMax', 'animatediff': 'AnimateDiff',
   };

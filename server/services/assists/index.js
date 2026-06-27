@@ -29,6 +29,7 @@ const useCase = require('./use-case'); // v0.13：方法论驱动的"整理"（U
 const healthCheck = require('./health-check'); // v0.13 B4：需求体检 — 6 维度评分 + 可驳回
 const music = require('./music'); // v0.19：音乐播放辅助 — 找免费播放源链接
 const video = require('./video'); // v0.19：AI 视频生成 — 调用 Agnes Video API
+const imageGen = require('./image-gen'); // v0.19：AI 图片生成 — 调用 Agnes Image API
 
 const ASSISTS = {
   decision_tree: decisionTree,
@@ -47,6 +48,7 @@ const ASSISTS = {
   health_check: healthCheck, // v0.13 B4：需求体检 — 6 维度评分
   music: music, // v0.19：音乐播放 — 找免费播放源链接
   video: video, // v0.19：AI 视频生成 — 调用 Agnes Video API
+  image_gen: imageGen, // v0.19：AI 图片生成 — 调用 Agnes Image API
 };
 
 const ASSIST_METHODS = Object.keys(ASSISTS);

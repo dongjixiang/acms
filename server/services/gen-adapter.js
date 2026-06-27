@@ -35,6 +35,8 @@ async function generateImage(projectSlug, providerId, prompt, params = {}) {
       return await generateDalle(projectSlug, provider, prompt, params);
     case 'minimax-image':
       return await generateMinimaxImage(projectSlug, provider, prompt, params);
+    case 'agnes-image':
+      return await generateAgnesImage(projectSlug, provider, prompt, params);
     case 'comfyui':
       return await generateComfyUI(projectSlug, provider, prompt, params);
     default:
@@ -219,6 +221,96 @@ async function generateMinimaxImage(projectSlug, provider, prompt, params) {
     model: `minimax-${model}`,
     size,
     aspectRatio,
+  });
+}
+
+// ===== Agnes Image (agnes-image-2.0-flash) Provider =====
+// API: POST https://apihub.agnes-ai.com/v1/images/generations
+// 支持文生图 + 图生图（多图输入）
+// 使用共享的 Agnes API Key（同视频工具）
+function getAgnesApiKey() {
+  // 1. 环境变量 / config.json
+  const config = require('../config');
+  if (config.agnesApiKey) return config.agnesApiKey;
+  if (process.env.AGNES_API_KEY) return process.env.AGNES_API_KEY;
+  // 2. DB system_configs（管理后台配置）
+  try {
+    const { collection } = require('../db/connection');
+    const cfg = collection('system_configs').findOne(c => c.key === 'agnes_api_key');
+    if (cfg && cfg.value) return cfg.value;
+  } catch (e) { /* ignore */ }
+  return '';
+}
+
+async function generateAgnesImage(projectSlug, provider, prompt, params) {
+  // 优先用生成器自己的 Key，其次共享 Key
+  const apiKey = provider.config?.apiKey || getAgnesApiKey();
+  if (!apiKey) {
+    throw Object.assign(new Error('Agnes API Key 未配置。请在管理后台「高级设置」中配置，或在生成器配置中填入 apiKey'), { status: 400 });
+  }
+
+  const size = params.size || provider.config?.defaultParams?.size || '1024x1024';
+  const body = {
+    model: 'agnes-image-2.0-flash',
+    prompt,
+    size,
+    extra_body: { response_format: 'url' },
+  };
+
+  // 图生图：params.inputImage 或 params.images[]
+  const inputImages = params.images || (params.inputImage ? [params.inputImage] : []);
+  if (inputImages.length > 0) {
+    body.extra_body.image = inputImages;
+  }
+
+  const resp = await fetch('https://apihub.agnes-ai.com/v1/images/generations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+    body: JSON.stringify(body),
+  });
+
+  if (!resp.ok) {
+    const errBody = await resp.text().catch(() => '');
+    let parsed;
+    try { parsed = JSON.parse(errBody); } catch {}
+    const detail = parsed?.error?.message || parsed?.error || errBody;
+    throw Object.assign(new Error(`Agnes 图片生成失败: ${detail}`), { status: 502, providerError: detail });
+  }
+
+  const data = await resp.json();
+  const imageUrl = data.data?.[0]?.url || data.data?.[0]?.b64_json;
+  if (!imageUrl) throw new Error('Agnes 返回无图片数据');
+
+  // URL 输出 → 下载图片
+  if (imageUrl.startsWith('http')) {
+    const imgResp = await fetch(imageUrl);
+    const buffer = Buffer.from(await imgResp.arrayBuffer());
+    const contentType = imgResp.headers.get('content-type') || '';
+    let ext, mime;
+    if (contentType.includes('jpeg') || contentType.includes('jpg')) {
+      ext = '.jpg'; mime = 'image/jpeg';
+    } else if (contentType.includes('webp')) {
+      ext = '.webp'; mime = 'image/webp';
+    } else if (contentType.includes('gif')) {
+      ext = '.gif'; mime = 'image/gif';
+    } else {
+      ext = '.png'; mime = 'image/png';
+    }
+    return saveAsset(projectSlug, buffer, ext, mime, {
+      prompt,
+      model: 'agnes-image-2.0-flash',
+      size,
+      img2img: inputImages.length > 0,
+    });
+  }
+
+  // Base64 输出
+  const buffer = Buffer.from(imageUrl, 'base64');
+  return saveAsset(projectSlug, buffer, '.png', 'image/png', {
+    prompt,
+    model: 'agnes-image-2.0-flash',
+    size,
+    img2img: inputImages.length > 0,
   });
 }
 
