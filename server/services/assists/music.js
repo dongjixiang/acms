@@ -205,9 +205,9 @@ async function runAssistJob(requirementId, opts = {}) {
             const label = `网易云 #${s.id}`;
             if (!existingLabels.has('网易云音乐')) {
               playableSources.push({
-                type: 'audio',
+                type: 'netease',
                 label: `网易云`,
-                url: `https://music.163.com/song/media/outer/url?id=${s.id}.mp3`,
+                url: `https://music.163.com/outchain/player?type=2&id=${s.id}&auto=0`,
                 title: '网易云音乐',
               });
               if (!playableUrl) playableUrl = playableSources[playableSources.length - 1].url;

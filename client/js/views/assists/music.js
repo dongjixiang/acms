@@ -55,6 +55,12 @@
           <iframe src="${escHtml(currentSource.url)}" style="width:100%;height:${h}px;border:none;border-radius:8px" allow="autoplay" loading="lazy"></iframe>
           <div style="font-size:11px;color:var(--text3);margin-top:2px">📺 ${escHtml(currentSource.title || '哔哩哔哩')}</div>
         </div>`;
+      } else if (currentSource.type === 'netease') {
+        const h = isExpanded ? 120 : 80;
+        playerHtml = `<div style="margin:8px 0${isExpanded ? '' : ';max-width:360px'}">
+          <iframe src="${escHtml(currentSource.url)}" style="width:100%;height:${h}px;border:none;border-radius:8px" allow="autoplay" loading="lazy"></iframe>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px">🎵 ${escHtml(currentSource.title || '网易云音乐')}</div>
+        </div>`;
       } else {
         playerHtml = `<div style="margin:8px 0">
           <audio controls style="width:100%;max-width:${isExpanded ? 100 : 360}%;height:40px" src="${escHtml(currentSource.url)}">您的浏览器不支持音频播放</audio>
