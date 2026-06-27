@@ -50,21 +50,9 @@
 })();
 
 /**
- * 全局函数：弹输入框 → 调 chatAssist 触发 image assist
+ * 全局函数：渲染内联表单 → 调 chatAssist 触发 image assist
  */
 async function chatImagePrompt(reqId) {
   if (!reqId) return;
-  const prompt = (window.prompt('🖼️ 描述图片内容（支持中文/英文）：', '') || '').trim();
-  if (!prompt) return;
-  const size = (window.prompt('📐 图片尺寸（推荐 1024x768, 1024x1024, 768x1024）：', '1024x1024') || '1024x1024').trim();
-  const useImage = window.confirm('是否使用参考图片（图生图）？\n确定 = 输入图片 URL\n取消 = 文生图');
-  let imageUrl = '';
-  if (useImage) {
-    imageUrl = (window.prompt('🖼️ 参考图片 URL（公网可访问）：', '') || '').trim();
-  }
-  try {
-    await chatAssist(reqId, 'image_gen', { prompt, size, image_url: imageUrl });
-  } catch (e) {
-    toast('图片生成失败：' + (e?.message || 'unknown'), 'error');
-  }
+  renderImageForm(reqId);
 }

@@ -70,24 +70,11 @@
 })();
 
 /**
- * 全局函数：弹输入框 → 调 chatAssist 触发 video assist
+ * 全局函数：渲染内联表单 → 调 chatAssist 触发 video assist
  */
 async function chatVideoPrompt(reqId) {
   if (!reqId) return;
-  const prompt = (window.prompt('🎬 描述视频内容（支持中文/英文）：', '') || '').trim();
-  if (!prompt) return;
-  const duration = (window.prompt('⏱️ 视频时长（秒，默认 5）：', '5') || '5').trim();
-  const dur = parseFloat(duration) || 5;
-  const useImage = window.confirm('是否使用参考图片？（取消 = 文生视频，确定 = 输入图片 URL）');
-  let imageUrl = '';
-  if (useImage) {
-    imageUrl = (window.prompt('🖼️ 输入图片 URL：', '') || '').trim();
-  }
-  try {
-    await chatAssist(reqId, 'video', { prompt, duration: dur, image_url: imageUrl });
-  } catch (e) {
-    toast('视频辅助失败：' + (e?.message || 'unknown'), 'error');
-  }
+  renderVideoForm(reqId);
 }
 
 /**

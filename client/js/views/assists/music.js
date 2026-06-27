@@ -51,17 +51,9 @@
 })();
 
 /**
- * 全局函数：弹输入框 → 调 chatAssist 触发 music assist
- * 挂在 window 上以便 onclick 引用
+ * 全局函数：渲染内联表单 → 调 chatAssist 触发 music assist
  */
 async function chatMusicPrompt(reqId) {
   if (!reqId) return;
-  // 简单 prompt（避免引第三方 UI 库）
-  const song = (window.prompt('🎵 输入想听的歌曲名（支持中文/英文）：', '') || '').trim();
-  if (!song) return;
-  try {
-    await chatAssist(reqId, 'music', { song });
-  } catch (e) {
-    toast('音乐辅助失败：' + (e?.message || 'unknown'), 'error');
-  }
+  renderMusicForm(reqId);
 }
