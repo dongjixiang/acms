@@ -2057,6 +2057,66 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
   display: flex; gap: 3px; margin-top: 5px; flex-wrap: wrap;
 }
 
+/* ── v0.19 音乐播放辅助卡片 ── */
+.music-assist-intro {
+  font-size: 13px;
+  color: var(--text2);
+  margin: 6px 0 8px;
+}
+.music-assist-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.music-assist-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  text-decoration: none;
+  color: var(--text);
+  transition: background 0.15s, transform 0.1s, border-color 0.15s;
+}
+.music-assist-card:hover {
+  background: var(--bg3);
+  border-color: var(--accent);
+  transform: translateX(2px);
+}
+.music-assist-card.verified {
+  border-left: 3px solid rgba(91, 184, 92, 0.6);
+}
+.music-assist-card.search {
+  border-left: 3px solid var(--border);
+}
+.music-assist-icon {
+  font-size: 18px;
+}
+.music-assist-platform {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 500;
+}
+.music-assist-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--bg3);
+  color: var(--text3);
+}
+.music-assist-card.verified .music-assist-badge {
+  background: rgba(91, 184, 92, 0.15);
+  color: rgb(91, 184, 92);
+}
+.music-assist-note {
+  font-size: 12px;
+  color: var(--text3);
+  margin-top: 8px;
+  font-style: italic;
+}
+
 /* ── v0.18 chat 模式切换器（clarify ↔ free） ── */
 .chat-mode-chip {
   display: inline-flex; align-items: center; gap: 4px;

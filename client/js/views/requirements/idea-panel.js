@@ -107,6 +107,7 @@ function renderIdeaPanel(req) {
             <button onclick="chatAssist('${req.id}', 'scenarios')">👥 场景</button>
             <button onclick="chatAssist('${req.id}', 'competitive')">🏢 竞品</button>
             <button onclick="chatAssist('${req.id}', 'reference')">🏛 借鉴</button>
+            <button onclick="chatMusicPrompt('${req.id}')">🎵 音乐</button>
             <button onclick="chatAssist('${req.id}', 'use_case')">✨ 整理</button>
             <button onclick="chatAssist('${req.id}', 'health_check')" style="border-color:var(--accent);color:var(--accent)">🏥 体检</button>
             <button onclick="chatDone('${req.id}')" style="border-color:rgba(255,68,68,0.2);color:#f55">✅ 够了</button>

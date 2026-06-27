@@ -94,6 +94,18 @@
       "switchedFree": "已切换到 💬 自由对话 · LLM 将基于附件/参考资料回答",
       "switchedClarify": "已切换到 🎯 想法澄清 · LLM 会问澄清问题"
     },
+    "music": {
+      "chip": "🎵 音乐",
+      "prompt": "🎵 输入想听的歌曲名：",
+      "introVerified": "已为你找到播放源，点击跳转播放：",
+      "introSearch": "在以下平台搜索该歌曲（点击跳转）：",
+      "badgeVerified": "✓ 找到",
+      "badgeSearch": "搜",
+      "note": "💡 点击跳转对应平台播放。ACMS 不存储音频文件，仅提供搜索跳转链接。",
+      "noSong": "❌ 未识别到歌曲名。请在 chat 里说\"播放 X\"再点此按钮。",
+      "generating": "⏳ 正在找播放源…",
+      "failed": "❌ 音乐辅助失败"
+    },
     "review": {
       "title": "需求审核",
       "scope": "范围",

@@ -27,6 +27,7 @@ const risks = require('./risks');
 const assumptions = require('./assumptions');
 const useCase = require('./use-case'); // v0.13：方法论驱动的"整理"（Use Case 工具）
 const healthCheck = require('./health-check'); // v0.13 B4：需求体检 — 6 维度评分 + 可驳回
+const music = require('./music'); // v0.19：音乐播放辅助 — 找免费播放源链接
 
 const ASSISTS = {
   decision_tree: decisionTree,
@@ -43,6 +44,7 @@ const ASSISTS = {
   assumptions: assumptions, // v0.4：假设清单 — 提取需求描述中的隐藏假设
   use_case: useCase, // v0.13：方法论驱动整理（ECSR + 5 要素 + 假设清单）
   health_check: healthCheck, // v0.13 B4：需求体检 — 6 维度评分
+  music: music, // v0.19：音乐播放 — 找免费播放源链接
 };
 
 const ASSIST_METHODS = Object.keys(ASSISTS);

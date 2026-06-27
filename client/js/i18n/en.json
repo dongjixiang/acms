@@ -94,6 +94,18 @@
       "switchedFree": "Switched to 💬 Free Chat · LLM will answer based on attachments/refs",
       "switchedClarify": "Switched to 🎯 Idea Clarify · LLM will ask clarifying questions"
     },
+    "music": {
+      "chip": "🎵 Music",
+      "prompt": "🎵 Enter song name:",
+      "introVerified": "Found sources — click to play:",
+      "introSearch": "Search this song on:",
+      "badgeVerified": "✓ Found",
+      "badgeSearch": "Search",
+      "note": "💡 Click to jump to platform player. ACMS doesn't store audio files, only provides search redirect links.",
+      "noSong": "❌ No song name detected. Say \"play X\" in chat then click this button.",
+      "generating": "⏳ Finding sources…",
+      "failed": "❌ Music assist failed"
+    },
     "review": {
       "title": "Requirement Review",
       "scope": "Scope",

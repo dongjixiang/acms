@@ -15,8 +15,8 @@ const toolRegistry = require('../services/tool-registry');
 const { runToolLoop } = require('../services/llm-adapter');
 const modelStore = require('../stores/model-store');
 
-// v0.16：本场景给 LLM 看的 4 个外部 tool（边界清晰：仅外部信息类，不含内部知识库）
-const INTENT_TOOL_NAMES = ['web_search', 'web_research', 'fetch_url', 'get_current_time'];
+// v0.16：本场景给 LLM 看的 5 个外部 tool（边界清晰：仅外部信息 + 视频生成）
+const INTENT_TOOL_NAMES = ['web_search', 'web_research', 'fetch_url', 'get_current_time', 'agnes_generate_video'];
 
 // v0.16：chat-intent 阶段 LLM 看到的 system prompt（clarify 模式）
 // 核心：「一放一收」—— 默认不调 tool，只有显式外部信息需求才调
@@ -45,6 +45,12 @@ function buildIntentSystemPrompt(req) {
 
 3. **get_current_time**（当前时间）：
    - 仅当用户**显式**询问"现在几点/今天日期"时使用
+
+4. **agnes_generate_video**（AI 视频生成）：
+   - 当用户**显式**要求生成视频时使用（如"帮我生成一段 X 视频"、"做个 Y 的演示视频"）
+   - 参数：prompt（描述画面）、num_frames（帧数，默认121 ≈ 5s@24fps）、frame_rate（帧率）
+   - 约 2 秒视频：num_frames=49, frame_rate=24；约 3 秒：num_frames=81, frame_rate=24
+   - 创建任务是异步的，返回 video_id。告诉用户任务已提交，他们会追问进度
 
 # 默认行为
 - 用户大概率是描述产品功能/场景/用户故事（90%+ 情况）
@@ -77,6 +83,7 @@ function buildFreeChatSystemPrompt(req) {
 1. **web_research / web_search**（联网调研）：用户**显式**询问最新/实时信息或要求对比/调研多个产品
 2. **fetch_url**：仅当用户消息包含完整 http:// 或 https:// 链接
 3. **get_current_time**：仅当用户**显式**询问"现在几点/今天日期"
+4. **agnes_generate_video**：用户**显式**要求生成视频时使用（如"帮我生成一段 X 视频"），约 2 秒用 num_frames=49
 
 # 默认行为
 - 用户大概率是想让你总结附件、解读资料、对比方案、或回答具体问题
