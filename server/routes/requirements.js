@@ -1305,4 +1305,20 @@ router.get('/:id/assist/health_check/dismissed', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// v0.19：视频生成进度查询
+router.post('/:id/assist/video/query', async (req, res, next) => {
+  try {
+    const videoSvc = require('../services/assists/video');
+    const result = await videoSvc.queryAssistJob(req.params.id);
+    if (!result) return res.status(404).json({ error: 'NO_VIDEO_TASK' });
+    res.json({
+      status: result.status,
+      progress: result.progress,
+      video_url: result.video_url,
+      video_id: result.video_id,
+      error: result.error,
+    });
+  } catch (e) { next(e); }
+});
+
 module.exports = router;
