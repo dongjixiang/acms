@@ -931,6 +931,19 @@ router.post('/:id/assist/:method/use', async (req, res, next) => {
     else if (method === 'image_gen') {
       // v0.22.8: 选中第 idx 张候选
       result = svc.pickOption(req.params.id, body.idx);
+      // v0.22.15: 如果来自 screenplay 的图片生成（body 带 _attachTo），联动写回 screenplay assets
+      if (body._attachTo) {
+        const spSvc = assists.getAssist('screenplay');
+        if (spSvc && spSvc.setAsset) {
+          const attach = body._attachTo;
+          spSvc.setAsset(req.params.id, {
+            asset_type: attach.assetType,
+            asset_key: attach.assetKey,
+            options: result?.options || [],
+            picked_idx: body.idx,
+          });
+        }
+      }
     }
     else if (method === 'screenplay' && body.action === 'set_asset') {
       // v0.22.8: 写入角色/场景图

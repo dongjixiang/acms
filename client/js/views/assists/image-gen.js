@@ -105,8 +105,19 @@ async function chatImagePrompt(reqId) {
  */
 async function chatImagePick(reqId, idx) {
   try {
-    await ACMSAssistDispatcher.useAssist(reqId, 'image_gen', { idx });
+    // v0.22.15: 如果来自 screenplay 的图片生成，附带 _attachTo 让后端联动写回
+    const attachTo = window._attachTo?.[reqId];
+    const payload = { idx };
+    if (attachTo) {
+      payload._attachTo = {
+        assetType: attachTo.assetType,
+        assetKey: attachTo.assetKey,
+      };
+    }
+    await ACMSAssistDispatcher.useAssist(reqId, 'image_gen', payload);
     toast('✅ 已选中第 ' + (idx + 1) + ' 张', 'success', 1500);
+    // 立即刷新卡片高亮（poll 可能还在等间隔）
+    refreshImageCard(reqId);
   } catch (e) {
     toast('选中失败: ' + e.message, 'error');
   }
@@ -127,6 +138,10 @@ async function refreshImageCard(reqId) {
           container.innerHTML = '<div class="assist-block assist-image_gen">' + rendered + '</div>';
         }
       }
+    }
+    // v0.22.15: 如果来自 screenplay，同时刷新 screenplay 卡片（用 poll 统一刷新所有 assist 卡片）
+    if (window.ACMSAssistDispatcher?.poll) {
+      window.ACMSAssistDispatcher.poll(reqId);
     }
   } catch (e) { /* 静默失败 */ }
 }

@@ -204,106 +204,38 @@ async function screenplayPickOption(reqId, assetType, assetKey, pickedIdx) {
 }
 
 /**
- * v0.22.14: 为角色/场景生成图（内联表单版，不再用 window.prompt）
- *   1. 渲染内联表单卡片（弹到 body 顶部居中，不依赖 chat-stream 存在）
- *   2. 用户提交 → 调 image_gen
- *   3. 完成后调 screenplay.use 写回 assets
- *   v0.22.14 fix: 之前 if (!stream) return 静默挂掉，从侧栏点按钮没反应；现在总是 appendBody
+ * v0.22.15: 为角色/场景生成图（v0.22.14 设计调整）
+ *   - v0.22.14: 弹内联表单让用户改 prompt → 提交
+ *   - v0.22.15: 不弹窗口！直接触发 image_gen 卡片（用户改 prompt + 选图全在 image_gen 卡片里）
+ *   - 通过 _attachTo metadata 告诉 image_gen：选完图后要写回 screenplay.assets
  */
-function screenplayGenImageForm(reqId, assetType, assetKey, defaultPrompt) {
-  const cardId = `inline-spg-img-${reqId}-${Date.now()}`;
-  const safeKey = String(assetKey || '').replace(/[<>&"']/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]));
-  const safePrompt = String(defaultPrompt || '').replace(/[<>&"']/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]));
-  const html = `
-    <div id="${cardId}" class="chat-inline-form screenplay-gen-image-form" data-method="image_gen" style="position:fixed;top:60px;left:50%;transform:translateX(-50%);width:90%;max-width:520px;z-index:10000;background:var(--bg2);border:1px solid var(--accent);border-radius:8px;padding:12px;margin:0;box-shadow:0 4px 20px rgba(0,0,0,0.15)">
-      <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
-        <span style="font-size:18px">🎨</span>
-        <strong style="flex:1;font-size:14px">为「${safeKey}」生成 3 张候选图</strong>
-        <button class="btn-small" onclick="dismissInlineForm('${cardId}')" style="font-size:14px;padding:2px 8px">✕</button>
-      </div>
-      <div style="font-size:11px;color:var(--text2);margin-bottom:8px">
-        ${assetType === 'character' ? '角色' : '场景'}图描述词（已预填，可改）
-      </div>
-      <div style="margin:6px 0">
-        <textarea id="${cardId}-prompt" rows="3" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px;font-size:13px;resize:vertical;font-family:inherit">${safePrompt}</textarea>
-      </div>
-      <div style="margin:8px 0 0;display:flex;gap:6px;flex-wrap:wrap">
-        <button class="btn-small btn-primary" onclick="submitScreenplayGenImage('${cardId}','${reqId}','${assetType}','${encodeURIComponent(assetKey)}')">🎨 生成 3 张候选</button>
-        <button class="btn-small" onclick="dismissInlineForm('${cardId}')">取消</button>
-      </div>
-    </div>
-  `;
-  const temp = document.createElement('div');
-  temp.innerHTML = html;
-  const card = temp.firstElementChild;
-  // v0.22.14: 弹到 body（fixed 顶部居中），不依赖 chat-stream 存在
-  document.body.appendChild(card);
-  setTimeout(() => {
-    const ta = document.getElementById(`${cardId}-prompt`);
-    if (ta) { ta.focus(); ta.select(); }
-  }, 100);
+async function screenplayGenImage(reqId, assetType, assetKey, defaultPrompt) {
+  try {
+    if (!window._attachTo) window._attachTo = {};
+    window._attachTo[reqId] = { type: 'screenplay', assetType, assetKey, ts: Date.now() };
+    // 触发 image_gen（用 description 当 prompt pre-fill）
+    if (!window._explicitAssist) window._explicitAssist = {};
+    window._explicitAssist[reqId] = 'image_gen';
+    await chatAssist(reqId, 'image_gen', {
+      prompt: defaultPrompt || '',
+      n: 3,
+    });
+    toast('🎨 已在聊天流打开图片生成卡片，可修改 prompt + 生成 3 张候选', 'info', 3000);
+  } catch (e) {
+    toast('启动失败: ' + e.message, 'error');
+  } finally {
+    // v0.22.15: 清理 _attachTo（避免污染下次请求）
+    if (window._attachTo?.[reqId]) delete window._attachTo[reqId];
+    if (window._explicitAssist?.[reqId]) delete window._explicitAssist[reqId];
+  }
 }
 
 /**
- * 提交表单：调 image_gen（3 张候选）→ 完成后写回 screenplay.assets
+ * v0.22.15: 改 screenplayGenImageForm 为兼容旧调用（不弹窗口，直接走 screenplayGenImage）
+ *   保留旧名字避免破坏 screenplay-core.js 的 onclick 字符串引用
  */
-async function submitScreenplayGenImage(cardId, reqId, assetType, encodedAssetKey) {
-  const card = document.getElementById(cardId);
-  if (!card) return;
-  const prompt = (card.querySelector(`#${cardId}-prompt`)?.value || '').trim();
-  const assetKey = decodeURIComponent(encodedAssetKey);
-  if (!prompt) return toast('请输入描述词', 'warning');
-
-  card.remove();
-
-  // v0.22.14: 临时 loading 卡片（弹到 body，跟生成图表单一致位置）
-  const tempCard = document.createElement('div');
-  tempCard.className = 'assist-loading-card screenplay-gen-image-loading';
-  tempCard.dataset.method = 'image_gen';
-  tempCard.dataset.tempFor = `${assetType}_${assetKey}`;
-  tempCard.style.cssText = 'position:fixed;top:60px;left:50%;transform:translateX(-50%);width:90%;max-width:520px;z-index:10000;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;box-shadow:0 4px 20px rgba(0,0,0,0.15)';
-  tempCard.innerHTML = `<div style="display:flex;align-items:center;gap:6px"><span style="font-size:18px">🎨</span><strong style="flex:1;font-size:13px">正在为「${escHtml(assetKey)}」生成 3 张候选图…</strong></div>`;
-  document.body.appendChild(tempCard);
-  setTimeout(() => { tempCard.scrollIntoView?.({ block: 'center' }); }, 50);
-
-  try {
-    // 1. 触发 image_gen
-    if (!window._explicitAssist) window._explicitAssist = {};
-    window._explicitAssist[reqId] = 'image_gen';
-    await chatAssist(reqId, 'image_gen', { prompt, n: 3 });
-
-    // 2. 轮询直到 done
-    let imgData = null;
-    for (let i = 0; i < 30; i++) {
-      await new Promise(r => setTimeout(r, 2000));
-      const r = await api('GET', `/requirements/${reqId}/assist`);
-      imgData = r.assists?.image_gen;
-      if (imgData?.status === 'done' || imgData?.status === 'failed') break;
-    }
-    tempCard.remove();
-    if (!imgData || imgData.status !== 'done') {
-      toast('❌ 图片生成失败', 'error');
-      return;
-    }
-
-    // 3. 默认选第 0 张，写回 screenplay.assets
-    await api('POST', `/requirements/${reqId}/assist/screenplay/use`, {
-      action: 'set_asset',
-      asset_type: assetType,
-      asset_key: assetKey,
-      options: imgData.options || [],
-      picked_idx: 0,
-    });
-
-    // 4. 刷新聊天流
-    if (typeof startChatPolling === 'function') startChatPolling(reqId);
-    if (window._explicitAssist) delete window._explicitAssist[reqId];
-    toast('✅ 已为「' + assetKey + '」生成 ' + (imgData.options?.length || 0) + ' 张候选（默认选第 1 张）', 'success', 2500);
-  } catch (e) {
-    tempCard.remove();
-    if (window._explicitAssist) delete window._explicitAssist[reqId];
-    toast('生成失败: ' + e.message, 'error');
-  }
+function screenplayGenImageForm(reqId, assetType, assetKey, defaultPrompt) {
+  return screenplayGenImage(reqId, assetType, assetKey, defaultPrompt);
 }
 
 /**
