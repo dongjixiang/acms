@@ -259,6 +259,61 @@ function backfillChatRounds(history) {
 /** 渲染音乐播放卡片（内嵌 iframe/audio 播放器，从 JSON 数据解析）
  *  v0.21：播放器/源切换/放大缩小/进度条全部走 music-core.js，与 assists 侧栏共用
  */
+/**
+ * v0.22：剧本辅助结果专属 renderer
+ * 解析 screenplay_result 卡片 JSON → 渲染剧本摘要到聊天流
+ *  - P11 教训：写 supplement_history 必须配专属 renderer，否则 JSON 走 renderMarkdown 挂掉
+ *  - 完整选剧本交互在 assist 卡片（侧栏 + 聊天流 loading 卡）完成
+ *  - 这里的 system 卡片只是「已选中剧本」的存档展示
+ */
+function renderScreenplayBubble(jsonText) {
+  if (!jsonText) return '<div class="chat-system-msg">📖 剧本结果（数据为空）</div>';
+  let card;
+  try { card = JSON.parse(jsonText); } catch { return `<div class="chat-system-msg">${escHtml((jsonText || '').slice(0, 100))}</div>`; }
+  if (card.type !== 'screenplay_card' || !card.screenplay) {
+    return `<div class="chat-system-msg">${escHtml((jsonText || '').slice(0, 100))}</div>`;
+  }
+
+  const sp = card.screenplay;
+  const idea = escHtml(card.idea || '');
+  const target = card.target_seconds || 30;
+  const idx = card.picked_idx || 0;
+  const total = card.total || 1;
+  const scenes = Array.isArray(sp.scenes) ? sp.scenes : [];
+
+  const charactersHtml = (sp.characters || []).map(c =>
+    `<span style="display:inline-block;padding:2px 6px;margin:2px;background:var(--bg);border:1px solid var(--border);border-radius:4px;font-size:11px">${escHtml(c.name || '')}${c.desc ? '（' + escHtml(c.desc) + '）' : ''}</span>`
+  ).join('');
+
+  const scenesHtml = scenes.map((sc, i) => `
+    <div style="margin:4px 0;padding:6px;border-left:2px solid var(--accent);background:var(--bg)">
+      <div style="color:var(--accent);font-weight:600;font-size:12px">⏱ ${escHtml(sc.time || '?')} · 场 ${i + 1}</div>
+      ${sc.shot ? `<div style="font-size:12px;margin-top:2px">📷 ${escHtml(sc.shot)}</div>` : ''}
+      ${sc.dialogue && sc.dialogue !== '——' ? `<div style="font-size:12px;margin-top:2px">💬 ${escHtml(sc.dialogue)}</div>` : ''}
+      ${sc.action ? `<div style="font-size:12px;margin-top:2px">🎬 ${escHtml(sc.action)}</div>` : ''}
+    </div>
+  `).join('');
+
+  return `
+    <div class="screenplay-card-in-chat" style="padding:10px;border-radius:8px;background:rgba(167,139,250,0.04);border:1px solid rgba(167,139,250,0.15)">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+        <span style="font-size:18px">📖</span>
+        <strong style="flex:1">${escHtml(sp.title || '(无标题)')}</strong>
+        <span style="font-size:10px;color:var(--text2)">已选 #${idx + 1}/${total} · ${target}s · ${scenes.length} 场</span>
+      </div>
+      ${sp.logline ? `<div style="font-style:italic;color:var(--text2);font-size:12px;margin-bottom:6px">${escHtml(sp.logline)}</div>` : ''}
+      ${charactersHtml ? `<div style="margin-bottom:6px">${charactersHtml}</div>` : ''}
+      ${sp.setting ? `<div style="font-size:12px;margin-bottom:6px"><span style="color:var(--text2)">场景：</span>${escHtml(sp.setting)}</div>` : ''}
+      <div style="font-size:12px;color:var(--text2);margin-bottom:4px">基于创意：${idea}</div>
+      <details style="margin-top:4px">
+        <summary style="font-size:11px;color:var(--text2);cursor:pointer">📖 展开 ${scenes.length} 场分镜</summary>
+        <div style="padding:6px 0">${scenesHtml}</div>
+        ${sp.shot_tips ? `<div style="margin-top:4px;padding:6px;background:var(--bg2);border-radius:4px;font-size:11px;color:var(--text2)">💡 拍摄建议：${escHtml(sp.shot_tips)}</div>` : ''}
+      </details>
+    </div>
+  `;
+}
+
 function renderMusicBubble(jsonText) {
   const Core = window.ACMSMusicCard;
   if (!Core) return '<div class="chat-system-msg">⚠️ music-core 未加载</div>';
@@ -386,9 +441,12 @@ function renderChatBubble(container, entry) {
         : '')
     : isSystem && (entry.source === 'music_result' || entry.source === 'music_precheck')
       ? renderMusicBubble(entry.text || '')
-      : isSystem
-        ? `<div class="chat-system-msg">${renderMarkdown(entry.text || '')}</div>`
-        : `<div>${isAI ? renderMarkdown(entry.text || '') : escHtml(entry.text || '')}</div>`;
+      : isSystem && entry.source === 'screenplay_result'
+        // v0.22 fix: 剧本辅助结果必须配专属 renderer，否则 JSON 走 renderMarkdown 触发 "(s || \"\").replace is not a function"
+        ? renderScreenplayBubble(entry.text || '')
+        : isSystem
+          ? `<div class="chat-system-msg">${renderMarkdown(entry.text || '')}</div>`
+          : `<div>${isAI ? renderMarkdown(entry.text || '') : escHtml(entry.text || '')}</div>`;
 
   // 用户气泡支持附件小芯片（v0.9）
   const userAttachHtml = (!isAI && entry.attachmentsHtml)

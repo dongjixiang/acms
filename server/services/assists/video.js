@@ -73,6 +73,12 @@ async function runAssistJob(requirementId, opts = {}) {
       try {
         const chatUpload = require('../../services/chat-upload');
         finalImage = chatUpload.readImageAsDataURI(imageFileId) || finalImage;
+        // 视频 API 的 image 参数接受图片 URL 或原始 base64
+        // data: URI 格式不被接受，去掉前缀只传 base64 数据
+        if (finalImage && finalImage.includes('base64,')) {
+          finalImage = finalImage.split('base64,')[1] || finalImage;
+          console.log(`[assist:video] ${requirementId} 图片已转为 base64 数据`);
+        }
       } catch (e) {
         console.warn(`[assist:video] ${requirementId} 读取上传文件失败:`, e.message);
       }
