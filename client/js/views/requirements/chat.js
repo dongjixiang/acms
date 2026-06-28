@@ -1515,19 +1515,23 @@ function startVideoAutoPoll(reqId, loadingEl) {
       if (r && r.video_url) {
         clearInterval(window._autoPollTimers[reqId]);
         delete window._autoPollTimers[reqId];
+        // v0.22.7: 优先用本地 URL（已下载到 workspace）—— 避免 Agnes CDN 过期失效
+        const localUrl = (r.asset_path && r.project_id)
+          ? `/api/generate/assets/${encodeURIComponent(r.project_id)}/${r.asset_path}`
+          : r.video_url;
         // 更新卡片：替换为视频播放器
         const panel = document.querySelector(`#chat-stream-msgs-${reqId} .assist-loading-card[data-method="video"]`);
         if (panel) {
           panel.innerHTML = `
             <div class="assist-loading-head" style="border:none"><span style="font-size:16px">🎬</span><span class="assist-loading-title">视频已生成</span></div>
             <div style="padding:4px 0">
-              <video controls style="width:100%;max-width:360px;border-radius:6px" src="${escHtml(r.video_url)}"></video>
+              <video controls style="width:100%;max-width:360px;border-radius:6px" src="${escHtml(localUrl)}"></video>
             </div>
             <div style="padding:2px 0;font-size:11px;color:var(--text2)">✅ 生成完成 · <span onclick="chatVideoQuery('${reqId}')" style="cursor:pointer;text-decoration:underline">刷新</span></div>
           `;
           panel.style.borderTopColor = 'var(--green)';
           panel.style.animation = 'none';
-          toast('🎬 视频已生成！', 'success', 3000);
+          toast('🎬 视频已生成！' + (r.asset_path ? '（已保存到本地）' : ''), 'success', 3000);
         }
       } else if (r && r.status === 'failed') {
         clearInterval(window._autoPollTimers[reqId]);

@@ -1331,6 +1331,8 @@ router.get('/:id/assist/health_check/dismissed', async (req, res, next) => {
 router.post('/:id/assist/video/query', async (req, res, next) => {
   try {
     const videoSvc = require('../services/assists/video');
+    const reqRec = reqStore.getById(req.params.id);
+    const projectId = reqRec?.project_id || null;
     const result = await videoSvc.queryAssistJob(req.params.id);
     if (!result) return res.status(404).json({ error: 'NO_VIDEO_TASK' });
     res.json({
@@ -1338,6 +1340,8 @@ router.post('/:id/assist/video/query', async (req, res, next) => {
       progress: result.progress,
       video_url: result.video_url,
       video_id: result.video_id,
+      asset_path: result.asset_path || null,  // v0.22.7: 本地 workspace 路径
+      project_id: projectId,                  // v0.22.7: 前端拼本地 URL 用
       error: result.error,
     });
   } catch (e) { next(e); }

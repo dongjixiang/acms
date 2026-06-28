@@ -3,9 +3,70 @@
 //   支持：文生视频 / 图生视频
 //   异步任务：创建 → 前端轮询查进度 → 完成展示视频 URL
 //
-// 字段：requirement.assist_video（status / video_id / task_id / prompt / progress / video_url / error）
+// 字段：requirement.assist_video（status / video_id / task_id / prompt / progress / video_url / asset_path / error）
 
 const reqStore = require('../../stores/requirement-store');
+const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
+
+const WORKSPACE_ROOT = path.join(__dirname, '..', '..', 'workspaces');
+
+/**
+ * v0.22.7: 保存视频到 workspace assets（与 image_gen 一致）
+ *   避免 Agnes CDN expires_at 过期后 ACMS 永远拿不到
+ *   路径：workspaces/{projectSlug}/assets/{date}/{safeName}_{hash}.mp4
+ */
+function saveVideoAsset(projectSlug, buffer, ext, metadata) {
+  const dateStr = new Date().toISOString().split('T')[0];
+  const hash = crypto.createHash('md5').update(buffer).digest('hex').substring(0, 8);
+  const assetsDir = path.join(WORKSPACE_ROOT, projectSlug, 'assets', dateStr);
+  if (!fs.existsSync(assetsDir)) fs.mkdirSync(assetsDir, { recursive: true });
+  const safePrompt = (metadata.prompt || 'video').replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_').substring(0, 40);
+  const fileName = `${safePrompt}_${hash}${ext}`;
+  const filePath = path.join(assetsDir, fileName);
+  fs.writeFileSync(filePath, buffer);
+  const assetPath = `assets/${dateStr}/${fileName}`;
+  return { assetPath, size: buffer.length };
+}
+
+/**
+ * 找 project slug（与 image_gen 一样）
+ */
+function getProjectSlugForReq(requirementId) {
+  try {
+    const projectStore = require('../../stores/project-store');
+    const proj = projectStore.getByReqId(requirementId);
+    if (proj?.slug) return proj.slug;
+    if (proj?.id) return proj.id;
+  } catch (e) { /* 静默降级 */ }
+  return 'default';
+}
+
+/**
+ * v0.22.7: 下载远程视频到 workspace（供 queryAssistJob + 迁移脚本用）
+ *   返回 { assetPath, size } 或 null（失败）
+ */
+async function downloadVideoToWorkspace(requirementId, videoUrl, metadata) {
+  try {
+    const c = new AbortController();
+    const tid = setTimeout(() => c.abort(), 60000);  // 60s
+    const r = await fetch(videoUrl, { signal: c.signal });
+    clearTimeout(tid);
+    if (!r.ok) {
+      console.warn(`[assist:video] ${requirementId} 下载视频失败: HTTP ${r.status}`);
+      return null;
+    }
+    const buffer = Buffer.from(await r.arrayBuffer());
+    const slug = getProjectSlugForReq(requirementId);
+    const saved = saveVideoAsset(slug, buffer, '.mp4', metadata);
+    console.log(`[assist:video] ${requirementId} 已保存视频到 ${saved.assetPath} (${(saved.size/1024).toFixed(1)}KB)`);
+    return saved;
+  } catch (e) {
+    console.warn(`[assist:video] ${requirementId} 下载视频异常: ${e.message}`);
+    return null;
+  }
+}
 
 /**
  * 根据目标时长(秒)和帧率计算 num_frames (8n+1 规则)
@@ -175,6 +236,20 @@ async function queryAssistJob(requirementId) {
       error: result.error || assist.error,
       last_queried_at: new Date().toISOString(),
     };
+
+    // v0.22.7: Agnes 端完成 + 拿到 video_url + 本地还没保存 → 下载到 workspace
+    //   避免 CDN expires_at 过期后 ACMS 永远拿不到这个视频
+    if (result.status === 'completed' && result.video_url && !assist.asset_path) {
+      const saved = await downloadVideoToWorkspace(requirementId, result.video_url, {
+        prompt: assist.prompt || '',
+        video_id: videoId,
+      });
+      if (saved) {
+        updated.asset_path = saved.assetPath;
+        updated.local_size = saved.size;
+        updated.saved_at = new Date().toISOString();
+      }
+    }
 
     if (result.raw) updated.last_raw_response = result.raw;
 
