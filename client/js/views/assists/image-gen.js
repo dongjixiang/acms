@@ -53,7 +53,7 @@
             ${isPicked ? 'box-shadow:0 0 0 2px var(--accent)' : ''}
           " onclick="chatImagePick('${reqId}', ${i})">
             ${isPicked ? '<div style="position:absolute;top:4px;right:4px;background:var(--accent);color:white;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:12px">✓</div>' : ''}
-            <img src="${escHtml(assetUrl || cdnUrl)}" alt="候选 ${i+1}" style="display:block;width:140px;height:140px;object-fit:cover;border-radius:4px;cursor:zoom-in" onclick="event.stopPropagation();previewImage('${escHtml(assetUrl || cdnUrl)}')" onerror="this.src='${escHtml(cdnUrl)}';this.onerror=null;" />
+            <img src="${escHtml(assetUrl || cdnUrl)}" alt="候选 ${i+1}" style="display:block;width:140px;height:140px;object-fit:cover;border-radius:4px;cursor:zoom-in" data-preview-url="${escHtml(assetUrl || cdnUrl)}" onclick="event.stopPropagation();var u=this.getAttribute('data-preview-url');if(u&&window.previewImage)previewImage(u)" onerror="this.src='${escHtml(cdnUrl)}';this.onerror=null;" />
             <div style="text-align:center;font-size:11px;color:var(--text2);margin-top:2px">${i+1}${isPicked ? ' · 已选' : ' · 点选'}</div>
           </div>
         `;
@@ -180,14 +180,18 @@ async function refreshImageCard(reqId) {
       if (mod && mod.render) {
         const rendered = mod.render(reqId, resp.assists.image_gen);
         if (rendered) {
-          container.innerHTML = '<div class="assist-block assist-image_gen">' + rendered + '</div>';
+          // v0.22.17: 只替换 image_gen 卡片，不 wipe 掉其他 assist 卡片
+          let imgBlock = container.querySelector('.assist-image_gen');
+          const html = '<div class="assist-block assist-image_gen">' + rendered + '</div>';
+          if (imgBlock) {
+            imgBlock.outerHTML = html;
+          } else {
+            container.innerHTML += html;
+          }
         }
       }
     }
-    // v0.22.15: 如果来自 screenplay，同时刷新 screenplay 卡片（用 poll 统一刷新所有 assist 卡片）
-    if (window.ACMSAssistDispatcher?.poll) {
-      window.ACMSAssistDispatcher.poll(reqId);
-    }
+    // 不调 poll()——useAssist 内部已经 poll 过了，避免竞态
   } catch (e) { /* 静默失败 */ }
 }
 
