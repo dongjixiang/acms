@@ -77,6 +77,15 @@
       </div>`;
     }
 
+    // v0.22 酷我音乐（player.kuwo.cn/song/{MUSICRID} — 实测可达，含 audio 标签）
+    if (source.type === 'kuwo') {
+      const h = expanded ? 120 : 80;
+      return `<div class="music-player-wrap" data-type="kuwo" style="margin:8px 0${expanded ? '' : ';max-width:360px'}">
+        <iframe src="${escHtml(source.url)}" style="width:100%;height:${h}px;border:none;border-radius:8px" allow="autoplay" loading="lazy"></iframe>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px">🎼 ${escHtml(source.title || source.label || '酷我音乐')}</div>
+      </div>`;
+    }
+
     // audio 类型：自定义进度条（隐藏原生 controls，体验更可控）
     const id = uid();
     return `<div class="music-player-wrap" data-type="audio" data-audio-id="${id}" style="margin:8px 0">

@@ -10,13 +10,14 @@
 
 const reqStore = require('../../stores/requirement-store');
 
-// 5 个免费平台搜索 URL 构造（无版权风险，纯跳转）
+// 6 个免费平台搜索 URL 构造（无版权风险，纯跳转）
 const PLATFORM_TEMPLATES = [
   { platform: '网易云音乐', icon: '🎵', search: (q) => `https://music.163.com/#/search/m/?s=${q}&type=1` },
   { platform: 'QQ音乐',     icon: '🎶', search: (q) => `https://y.qq.com/n/ryqq/search?w=${q}` },
   { platform: '酷狗音乐',   icon: '🎤', search: (q) => `https://www.kugou.com/yy/html/search.html?searchKeyword=${q}` },
+  { platform: '酷我音乐',   icon: '🎼', search: (q) => `https://search.kuwo.cn/search_result?key=${q}` },
+  { platform: '咪咕音乐',   icon: '🪕', search: (q) => `https://music.migu.cn/v3/search?keyword=${q}&type=song` },
   { platform: 'Bilibili',   icon: '📺', search: (q) => `https://search.bilibili.com/all?keyword=${q}` },
-  { platform: 'YouTube',    icon: '▶️', search: (q) => `https://www.youtube.com/results?search_query=${q}` },
 ];
 
 function buildPlatformSearchLinks(song) {
@@ -67,6 +68,8 @@ function pickVerifiedLinks(results, song, fallbackLinks) {
     if (url.includes('music.163.com')) platform = '网易云音乐';
     else if (url.includes('y.qq.com') || url.includes('qq.com')) platform = 'QQ音乐';
     else if (url.includes('kugou.com')) platform = '酷狗音乐';
+    else if (url.includes('kuwo.cn')) platform = '酷我音乐';
+    else if (url.includes('migu.cn')) platform = '咪咕音乐';
     else if (url.includes('bilibili.com')) platform = 'Bilibili';
     else if (url.includes('youtube.com') || url.includes('youtu.be')) platform = 'YouTube';
     if (platform && !seenPlatforms.has(platform)) {
@@ -238,24 +241,64 @@ async function runAssistJob(requirementId, opts = {}) {
       console.warn(`[assist:music] ${requirementId} 网易云搜索失败（可忽略）:`, e.message);
     }
 
-    // 3c. 如果还没找到源，用 web_search 搜其他音频链接
+    // 3d. 酷我音乐（API 公开 + iframe 嵌入可达，2026-06-28 实测）
+    //   国内老牌，覆盖 B站/网易云缺版权的部分独立音乐
+    try {
+      const kw = encodeURIComponent(song);
+      const kuwoResp = await fetchWithTimeout(
+        `https://search.kuwo.cn/r.s?all=${kw}&ft=music&itemset=web_2013&client=kt&pn=0&rn=5&rformat=json&encoding=utf8&vipver=MUSIC_9.0.5.0_W7&newver=1&uid=0&ver=1810&plat=pc&devid=0&mid=0&fmac=0&resmerge=1&issubtitle=0&showtype=14`,
+        { headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.kuwo.cn/' } },
+        10000
+      );
+      if (kuwoResp.ok) {
+        const body = await kuwoResp.text();
+        // 酷我返 JSONP 风格（单引号），用 ast.literal_eval 解析
+        let kuwoData;
+        try {
+          // 直接试 JSON
+          kuwoData = JSON.parse(body);
+        } catch {
+          // 兜底：替换单引号为双引号
+          try { kuwoData = JSON.parse(body.replace(/'/g, '"')); } catch {}
+        }
+        const songs = kuwoData?.abslist || [];
+        let added = 0;
+        for (const s of songs) {
+          if (added >= 2) break;  // 酷我最多加 2 个源（避免挤占其他平台）
+          const rid = s.MUSICRID || s.MP3RID;
+          if (!rid) continue;
+          playableSources.push({
+            type: 'kuwo',
+            label: `酷我 ${s.NAME || ''}`.trim(),
+            url: `https://player.kuwo.cn/song/${rid}`,
+            title: '酷我音乐',
+          });
+          if (!playableUrl) playableUrl = playableSources[playableSources.length - 1].url;
+          added++;
+        }
+        if (added > 0) {
+          console.log(`[assist:music] ${requirementId} 酷我搜索完成: ${added} 个源`);
+        }
+      }
+    } catch (e) {
+      console.warn(`[assist:music] ${requirementId} 酷我搜索失败（可忽略）:`, e.message);
+    }
+
+    // 3e. 如果还没找到源，用 web_search 搜国内其他音频链接（SoundCloud/Audiomack 国内被墙移除）
     if (!playableUrl) {
       try {
       const toolRegistry = require('../tool-registry');
       const searchTool = toolRegistry.getTool('web_search');
       if (searchTool) {
         const audioResult = await searchTool.handler({
-          query: `${song} site:soundcloud.com OR site:audiomack.com OR site:piponazip.com audio`,
+          query: `${song} site:kuwo.cn OR site:piponazip.com audio 音频 试听`,
           max_results: 5,
         });
         if (Array.isArray(audioResult?.results)) {
           for (const r of audioResult.results) {
             const url = r.url || '';
-            // 优先用 SoundCloud 链接（可 iframe 嵌入）
-            if (url.includes('soundcloud.com') && !playableUrl) {
-              playableUrl = url;
-            }
-            // 其次直接音频文件
+            // 酷我已通过专门 API 搜过，这里跳过避免重复
+            // 直接音频文件
             if (/\.(mp3|wav|ogg|m4a|flac)(\?|$)/i.test(url) && !playableUrl) {
               playableUrl = url;
             }
@@ -362,7 +405,10 @@ function writeMusicChatEntry(reqId, song, artist, playableSources, platformSourc
     return;
   }
   // v0.20d fix：移除之前的 loading 条目（source: music_precheck），避免同时显示 loading + 结果
-  history = history.filter(e => e.source !== 'music_precheck');
+  // ⚠️ v0.21.3 FIX: 不能真的从 history 中移除！前端 polling 检测 history.length > state.histCount
+  //   如果移除 loading + 追加 result 总条数不变 → polling 认为无新数据 → music_result 永不 DOM 渲染
+  //   代替方案：保留 loading，前端在渲染时自动移除旧 loading 卡片
+  // history = history.filter(e => e.source !== 'music_precheck');
   history.push({
     role: 'system',
     text,
