@@ -13,6 +13,8 @@ const reqStore = require('../../stores/requirement-store');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+// v0.22.16: HTTP/1.1 fetch 替代
+const { http1Fetch } = require('../../tools/http1-fetch');
 
 const WORKSPACE_ROOT = path.join(__dirname, '..', '..', 'workspaces');
 
@@ -68,22 +70,23 @@ async function callAgnesImageOnce(apiKey, body) {
   let lastErr = '';
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      const c = new AbortController();
-      const tid = setTimeout(() => c.abort(), 120000);
-      const r = await fetch('https://apihub.agnes-ai.com/v1/images/generations', {
+      const resp = await http1Fetch('https://apihub.agnes-ai.com/v1/images/generations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
         body: JSON.stringify(body),
-        signal: c.signal,
+        timeout: 120000,
       });
-      clearTimeout(tid);
-      if (!r.ok) {
-        const errBody = await r.text().catch(() => '');
-        lastErr = `HTTP ${r.status}: ${errBody.slice(0, 100)}`;
-        continue;  // HTTP 错误不重试（避免浪费 token）
+      if (!resp.ok) {
+        lastErr = resp.error || 'fetch_failed';
+        continue;
       }
-      const data = await r.json();
-      const url = data.data?.[0]?.url;
+      if (resp.status < 200 || resp.status >= 300) {
+        lastErr = `HTTP ${resp.status}: ${(resp.body || '').slice(0, 100)}`;
+        continue;
+      }
+      let data;
+      try { data = JSON.parse(resp.body); } catch { data = null; }
+      const url = data?.data?.[0]?.url;
       if (!url) {
         lastErr = 'no url in response';
         continue;
@@ -92,7 +95,7 @@ async function callAgnesImageOnce(apiKey, body) {
     } catch (e) {
       lastErr = e.message;
       // 连接错误重试 1 次
-      const isConnError = e.cause?.code && /UND_ERR|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN/.test(e.cause.code);
+      const isConnError = /ECONNRESET|UND_ERR|ETIMEDOUT|ENOTFOUND|EAI_AGAIN/.test(e.message || '');
       if (attempt === 1 && isConnError) {
         await new Promise(r => setTimeout(r, 2000));
         continue;

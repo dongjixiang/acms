@@ -1,8 +1,9 @@
 // Agnes AI Video V2.0 视频生成工具
 // API 文档: https://agnes-ai.com/zh-Hans/docs/agnes-video-v20
 // 异步任务模式：create → query 轮询直到 completed
+// v0.22.16: 改用 http1Fetch（HTTP/1.1）修复 Cloudflare HTTP/2 挂死
+const { http1Fetch } = require('./http1-fetch');
 const config = require('../config');
-const { collection } = require('../db/connection');
 
 const API_BASE = 'https://apihub.agnes-ai.com';
 
@@ -16,6 +17,7 @@ function getApiKey() {
   if (process.env.AGNES_API_KEY) return process.env.AGNES_API_KEY;
   // 2. DB system_configs（管理界面配置）
   try {
+    const { collection } = require('../db/connection');
     const cfg = collection('system_configs').findOne(c => c.key === 'agnes_api_key');
     if (cfg && cfg.value) return cfg.value;
   } catch (e) { /* DB 未就绪时不报错 */ }
@@ -54,33 +56,36 @@ async function generateVideo(args) {
   }
 
   try {
-    // v0.22.5 P0-2 fix: POST 超时从 180s 缩到 60s（按 skill 建议：创建任务类 API 应 30-60s 超时）
-    //   理由：Agnes 服务端会收下请求但不返回 HTTP 响应（之前已诊断为服务端问题）
-    //   旧 180s 让用户傻等 3 分钟没反馈；改 60s 后失败立即能看到"Agnes 服务端无响应"+ 重试按钮
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60000);
-
-    const resp = await fetch(`${API_BASE}/v1/videos`, {
+    const resp = await http1Fetch(`${API_BASE}/v1/videos`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
-      signal: controller.signal,
+      timeout: 60000,
     });
 
-    clearTimeout(timeoutId);
-
     if (!resp.ok) {
-      const errText = await resp.text().catch(() => '');
       return {
-        error: `Agnes API 创建任务失败 (${resp.status}): ${errText || resp.statusText}`,
+        error: `Agnes API 请求失败: ${resp.error}`,
+        status_code: resp.status_code || 0,
+      };
+    }
+
+    if (resp.status < 200 || resp.status >= 300) {
+      return {
+        error: `Agnes API 创建任务失败 (${resp.status}): ${resp.body ? resp.body.slice(0, 200) : resp.status_code}`,
         status_code: resp.status,
       };
     }
 
-    const data = await resp.json();
+    let data;
+    try { data = JSON.parse(resp.body); } catch { data = null; }
+    if (!data) {
+      return { error: 'Agnes API 返回非 JSON', status_code: 0 };
+    }
+
     return {
       video_id: data.video_id || null,
       task_id: data.task_id || data.id || null,
@@ -93,48 +98,6 @@ async function generateVideo(args) {
       raw: data,
     };
   } catch (e) {
-    // Windows TLS 连接池问题：ECONNRESET / UND_ERR / 超时都可自动重试一次
-    const isTransient = /ECONNRESET|UND_ERR|ETIMEDOUT|ENOTFOUND|aborted/.test(e.message || e.cause?.message || '');
-    if (isTransient) {
-      console.warn(`[agnes-video] 临时网络错误，重试一次: ${e.message}`);
-      try {
-        // v0.22.5: 重试间隔 2s → 5s（避免对挂死服务端持续施压）
-        await new Promise(r => setTimeout(r, 5000));
-        const controller2 = new AbortController();
-        const timeoutId2 = setTimeout(() => controller2.abort(), 60000);
-        const resp2 = await fetch(`${API_BASE}/v1/videos`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(body),
-          signal: controller2.signal,
-        });
-        clearTimeout(timeoutId2);
-        if (!resp2.ok) {
-          const errText2 = await resp2.text().catch(() => '');
-          return { error: `Agnes API 创建任务失败 (${resp2.status}): ${errText2 || resp2.statusText}`, status_code: resp2.status };
-        }
-        const data2 = await resp2.json();
-        return {
-          video_id: data2.video_id || null,
-          task_id: data2.task_id || data2.id || null,
-          status: data2.status || 'unknown',
-          progress: data2.progress ?? 0,
-          seconds: data2.seconds || null,
-          size: data2.size || null,
-          model: data2.model || 'agnes-video-v2.0',
-          created_at: data2.created_at || null,
-          raw: data2,
-        };
-      } catch (e2) {
-        return {
-          error: `Agnes API 请求失败 (重试): ${e2.message}`,
-          status_code: e2.name === 'TimeoutError' ? 408 : 0,
-        };
-      }
-    }
     return {
       error: `Agnes API 请求失败: ${e.message}`,
       status_code: e.name === 'TimeoutError' ? 408 : 0,
@@ -162,36 +125,31 @@ async function queryVideo(args) {
   try {
     let url;
     if (videoId) {
-      // 推荐方式：video_id 查询
       url = `${API_BASE}/agnesapi?video_id=${encodeURIComponent(videoId)}`;
       if (args.model_name) url += `&model_name=${encodeURIComponent(args.model_name)}`;
     } else {
-      // 兼容旧版：task_id 查询
       url = `${API_BASE}/v1/videos/${encodeURIComponent(taskId)}`;
     }
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000);
-
-    const resp = await fetch(url, {
+    const resp = await http1Fetch(url, {
       method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      signal: controller.signal,
+      headers: { 'Authorization': `Bearer ${apiKey}` },
+      timeout: 30000,
     });
 
-    clearTimeout(timeoutId);
-
     if (!resp.ok) {
-      const errText = await resp.text().catch(() => '');
-      return {
-        error: `Agnes API 查询失败 (${resp.status}): ${errText || resp.statusText}`,
-        status_code: resp.status,
-      };
+      return { error: `Agnes API 查询失败: ${resp.error}`, status_code: resp.status_code || 0 };
     }
 
-    const data = await resp.json();
+    if (resp.status < 200 || resp.status >= 300) {
+      const errText = resp.body ? resp.body.slice(0, 200) : '';
+      return { error: `Agnes API 查询失败 (${resp.status}): ${errText}`, status_code: resp.status };
+    }
+
+    let data;
+    try { data = JSON.parse(resp.body); } catch { data = null; }
+    if (!data) return { error: 'Agnes API 返回非 JSON', status_code: 0 };
+
     const result = {
       video_id: data.video_id || null,
       task_id: data.task_id || data.id || null,
