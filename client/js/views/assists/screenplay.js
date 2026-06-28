@@ -204,29 +204,27 @@ async function screenplayPickOption(reqId, assetType, assetKey, pickedIdx) {
 }
 
 /**
- * v0.22.15: 为角色/场景生成图（v0.22.14 设计调整）
+ * v0.22.16: 为角色/场景生成图（v0.22.15 设计调整）
  *   - v0.22.14: 弹内联表单让用户改 prompt → 提交
- *   - v0.22.15: 不弹窗口！直接触发 image_gen 卡片（用户改 prompt + 选图全在 image_gen 卡片里）
+ *   - v0.22.15: 弹窗口 → 不弹窗口！直接触发 image_gen 卡片
+ *   - v0.22.16: image_gen 卡片进入 pending_input 状态（不立即生成，用户改完 prompt 后点"生成"才跑）
  *   - 通过 _attachTo metadata 告诉 image_gen：选完图后要写回 screenplay.assets
  */
 async function screenplayGenImage(reqId, assetType, assetKey, defaultPrompt) {
   try {
     if (!window._attachTo) window._attachTo = {};
     window._attachTo[reqId] = { type: 'screenplay', assetType, assetKey, ts: Date.now() };
-    // 触发 image_gen（用 description 当 prompt pre-fill）
+    // 触发 image_gen（用 description 当 prompt pre-fill，加 pending:true 不立即生成）
     if (!window._explicitAssist) window._explicitAssist = {};
     window._explicitAssist[reqId] = 'image_gen';
     await chatAssist(reqId, 'image_gen', {
       prompt: defaultPrompt || '',
       n: 3,
+      pending: true,
     });
-    toast('🎨 已在聊天流打开图片生成卡片，可修改 prompt + 生成 3 张候选', 'info', 3000);
+    toast('🎨 已打开图片生成卡片，可修改 prompt 后点击"生成"', 'info', 3000);
   } catch (e) {
     toast('启动失败: ' + e.message, 'error');
-  } finally {
-    // v0.22.15: 清理 _attachTo（避免污染下次请求）
-    if (window._attachTo?.[reqId]) delete window._attachTo[reqId];
-    if (window._explicitAssist?.[reqId]) delete window._explicitAssist[reqId];
   }
 }
 
@@ -239,13 +237,14 @@ function screenplayGenImageForm(reqId, assetType, assetKey, defaultPrompt) {
 }
 
 /**
- * v0.22.12: 为分镜头生成视频（完成后自动继续下一个可生成的分镜头）
+ * v0.22.16: 为分镜头生成视频（完成后自动继续下一个可生成的分镜头）
+ *   传入 promptOverride 则用户手工修改了 prompt
  *   1. 调 video assist（pre-fill scene prompt + character/scene asset）
  *   2. 轮询直到拿到 video_url
  *   3. 写回 scene_videos[sceneIdx]
  *   4. v0.22.12+: 自动找下一个"可生成"的分镜头（角色图+场景图都齐了 + 还没生成视频）→ 调自己
  */
-async function screenplayGenVideo(reqId, sceneIdx) {
+async function screenplayGenVideo(reqId, sceneIdx, promptOverride) {
   try {
     // 读当前 screenplay 数据拿 scene 内容
     const r = await api('GET', `/requirements/${reqId}/assist`);
@@ -261,8 +260,8 @@ async function screenplayGenVideo(reqId, sceneIdx) {
       return;
     }
 
-    // 构造 prompt（角色 + 场景 + 分镜）
-    const prompt = [
+    // 构造 prompt（角色 + 场景 + 分镜，v0.22.16: 支持 promptOverride 手工修改）
+    const prompt = promptOverride || [
       scene.shot || '',
       scene.action || '',
       scene.dialogue && scene.dialogue !== '——' ? `Says: "${scene.dialogue}"` : '',

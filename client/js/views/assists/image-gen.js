@@ -3,6 +3,7 @@
 //   v0.22.8: 支持 N 候选（一次生 3 张图，用户选 1 张）
 //
 // 渲染：
+//   - pending_input：待提交表单（可编辑 prompt + 提交按钮）
 //   - generating：⏳ 生成中（N 张）
 //   - done：3 缩略图 + 选中按钮（高亮 picked）
 //   - failed：错误提示
@@ -10,10 +11,15 @@
 // 全局函数：
 //   - chatImagePrompt(reqId)：弹输入框 → 调 chatAssist('image_gen', {...})
 //   - chatImagePick(reqId, idx)：选中第 idx 张（调 use 路由）
+//   - submitPendingImageGen(reqId)：提交 pending 状态的表单 → 开始真正生成
 
 (function () {
   function render(reqId, data) {
     if (!data) return '';
+    // v0.22.16: pending_input 状态 — 显示可编辑表单
+    if (data.status === 'pending_input') {
+      return renderPendingInput(reqId, data);
+    }
     if (data.status === 'generating') {
       return `<div class="insight-loading">⏳ 正在生成 ${data.n || 3} 张候选图…</div>`;
     }
@@ -66,6 +72,21 @@
     return '';
   }
 
+  // v0.22.16: pending_input 渲染 — 可编辑 prompt 表单 + 提交按钮
+  function renderPendingInput(reqId, data) {
+    return `
+      <div class="assist-section-title">🖼️ AI 图片生成</div>
+      <div style="margin:8px 0">
+        <div style="font-size:12px;color:var(--text2);margin-bottom:4px">图片描述（可修改后提交）：</div>
+        <textarea id="image-gen-prompt-${reqId}" rows="3" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px;font-size:13px;resize:vertical;font-family:inherit">${escHtml(data.prompt || '')}</textarea>
+        <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <button class="btn-small btn-primary" onclick="submitPendingImageGen('${reqId}')">🎨 生成 3 张候选</button>
+          <span style="font-size:11px;color:var(--text3)">点击后开始生成图片</span>
+        </div>
+      </div>
+    `;
+  }
+
   // 兼容老数据（v0.22.8 之前的：没 options 字段，只有 image_url_output）
   function renderSingleFromLegacy(reqId, data) {
     const assetUrl = data.asset_path ? '/api/generate/assets/' + (data.project_id || 'default') + '/' + data.asset_path : '';
@@ -101,6 +122,24 @@ async function chatImagePrompt(reqId) {
 }
 
 /**
+ * v0.22.16: 提交 pending 状态的表单 → 真正调用后端生成
+ */
+async function submitPendingImageGen(reqId) {
+  const ta = document.getElementById('image-gen-prompt-' + reqId);
+  const prompt = ta?.value?.trim() || '';
+  if (!prompt) {
+    toast('请输入图片描述词', 'warning');
+    return;
+  }
+  try {
+    toast('🎨 开始生成 3 张候选…', 'info', 2000);
+    await chatAssist(reqId, 'image_gen', { prompt, n: 3 });
+  } catch (e) {
+    toast('生成失败: ' + e.message, 'error');
+  }
+}
+
+/**
  * 选中第 idx 张候选
  */
 async function chatImagePick(reqId, idx) {
@@ -118,6 +157,8 @@ async function chatImagePick(reqId, idx) {
     toast('✅ 已选中第 ' + (idx + 1) + ' 张', 'success', 1500);
     // 立即刷新卡片高亮（poll 可能还在等间隔）
     refreshImageCard(reqId);
+    // v0.22.16: 选图完成后清理 _attachTo
+    if (window._attachTo?.[reqId]) delete window._attachTo[reqId];
   } catch (e) {
     toast('选中失败: ' + e.message, 'error');
   }

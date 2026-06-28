@@ -244,6 +244,10 @@ function writeScreenplayChatEntry(reqId, screenplay, meta = {}) {
   try { history = JSON.parse(req.supplement_history || '[]'); } catch { history = []; }
   if (!Array.isArray(history)) history = [];
 
+  // v0.22.15: 读当前 assist_screenplay 拿 assets/scene_videos（之前有 scope 泄漏 bug）
+  let currentAssist = null;
+  try { currentAssist = JSON.parse(req.assist_screenplay || 'null'); } catch { currentAssist = null; }
+
   // 移除同 idea 的旧 screenplay_result 卡片（避免换剧本后多卡并存）
   history = history.filter(e => {
     if (e.source !== 'screenplay_result') return true;
@@ -270,8 +274,8 @@ function writeScreenplayChatEntry(reqId, screenplay, meta = {}) {
     total: meta.total || 1,
     screenplay,
     // v0.22.13: 把当前资源状态也写进 card（前端聊天流卡片可读完整状态 + 交互）
-    assets: assist.assets || { characters: {}, scenes: {} },
-    scene_videos: assist.scene_videos || {},
+    assets: (currentAssist?.assets) || { characters: {}, scenes: {} },
+    scene_videos: (currentAssist?.scene_videos) || {},
     saved_at: new Date().toISOString(),
   };
 

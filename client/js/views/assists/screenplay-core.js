@@ -154,15 +154,16 @@
           <div style="display:flex;align-items:center;gap:8px">
             <div style="flex:1">
               <div style="font-weight:600;font-size:13px">👤 ${escHtml(name)} ${isReady ? '<span style="color:var(--green)">✅</span>' : '<span style="color:var(--text3)">⏳</span>'}</div>
-              <div style="font-size:11px;color:var(--text2);margin-top:2px">${escHtml(desc)}</div>
+              <!-- v0.22.16: 可编辑 prompt（提醒词可手工修改） -->
+              <textarea id="sppc-${reqId}-${escHtml(name).replace(/[^\\w]/g, '_')}" rows="2" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit;margin-top:2px" placeholder="修改图片生成的提示词…">${escHtml(desc)}</textarea>
+              <div style="font-size:10px;color:var(--text3);margin-top:1px">✏️ 可修改提示词后点下方按钮重新生成</div>
             </div>
             ${imgSrc ? `<img src="${escHtml(imgSrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px" alt="角色图" />` : ''}
             <div style="display:flex;flex-direction:column;gap:3px">
-              ${isReady ? `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'character', '${escHtml(name).replace(/'/g, "\\'")}', '${escHtml(desc).replace(/'/g, "\\'")}')" style="font-size:10px">🎨 重新生成</button>` : `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'character', '${escHtml(name).replace(/'/g, "\\'")}', '${escHtml(desc).replace(/'/g, "\\'")}')">🎨 生成图</button>`}
+              ${isReady ? `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'character', '${escHtml(name)}', document.getElementById('sppc-${reqId}-${escHtml(name).replace(/[^\\w]/g, '_')}').value)" style="font-size:10px">🎨 重新生成</button>` : `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'character', '${escHtml(name)}', document.getElementById('sppc-${reqId}-${escHtml(name).replace(/[^\\w]/g, '_')}').value)">🎨 生成图</button>`}
             </div>
           </div>
           ${optionsHtml}
-          ${hasMultipleOptions ? '' : ''}
         </div>
       `;
     }).join('');
@@ -206,11 +207,13 @@
         <div style="display:flex;align-items:center;gap:8px">
           <div style="flex:1">
             <div style="font-weight:600;font-size:13px">🎬 场景设定 ${sceneIsReady ? '<span style="color:var(--green)">✅</span>' : '<span style="color:var(--text3)">⏳</span>'}</div>
-            <div style="font-size:11px;color:var(--text2);margin-top:2px">${escHtml(sp.setting || '（未填）')}</div>
+            <!-- v0.22.16: 可编辑场景 prompt -->
+            <textarea id="spsc-${reqId}-scene_0" rows="2" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit;margin-top:2px" placeholder="修改场景图的提示词…">${escHtml(sp.setting || '')}</textarea>
+            <div style="font-size:10px;color:var(--text3);margin-top:1px">✏️ 可修改提示词后点下方按钮</div>
           </div>
           ${sceneImgSrc ? `<img src="${escHtml(sceneImgSrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px" alt="场景图" />` : ''}
           <div style="display:flex;flex-direction:column;gap:3px">
-            ${sceneIsReady ? `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'scene', '0', '${escHtml(sp.setting || '').replace(/'/g, "\\'")}')" style="font-size:10px">🎨 重新生成</button>` : `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'scene', '0', '${escHtml(sp.setting || '').replace(/'/g, "\\'")}')">🎨 生成图</button>`}
+            ${sceneIsReady ? `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'scene', '0', document.getElementById('spsc-${reqId}-scene_0').value)" style="font-size:10px">🎨 重新生成</button>` : `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'scene', '0', document.getElementById('spsc-${reqId}-scene_0').value)">🎨 生成图</button>`}
           </div>
         </div>
         ${sceneOptionsHtml}
@@ -244,6 +247,11 @@
             ${sc.dialogue && sc.dialogue !== '——' ? `<div>💬 <strong>对白：</strong>${escHtml(sc.dialogue)}</div>` : ''}
             ${sc.action ? `<div>🎬 <strong>动作：</strong>${escHtml(sc.action)}</div>` : ''}
           </div>
+          <!-- v0.22.16: 可编辑视频 prompt -->
+          <div style="margin-top:4px">
+            <textarea id="spvid-${reqId}-${idx}" rows="2" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit" placeholder="修改视频生成的提示词…">${escHtml([sc.shot, sc.action, sc.dialogue && sc.dialogue !== '——' ? `Says: "${sc.dialogue}"` : ''].filter(Boolean).join('. '))}</textarea>
+            <div style="font-size:10px;color:var(--text3);margin-top:1px">✏️ 可修改提示词后点下方按钮</div>
+          </div>
           ${hasVideo ? `
             <div style="margin-top:6px">
               <video controls style="width:100%;max-width:320px;border-radius:4px" src="${escHtml(videoSrc)}"></video>
@@ -251,7 +259,7 @@
             </div>
           ` : `
             <div style="margin-top:6px">
-              <button class="btn-small" ${hasAllAssets ? '' : 'disabled'} onclick="screenplayGenVideo('${reqId}', ${idx})" style="font-size:11px">
+              <button class="btn-small" ${hasAllAssets ? '' : 'disabled'} onclick="screenplayGenVideo('${reqId}', ${idx}, document.getElementById('spvid-${reqId}-${idx}').value)" style="font-size:11px">
                 🎥 生成视频${disabledHint}
               </button>
             </div>

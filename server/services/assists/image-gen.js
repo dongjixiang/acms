@@ -145,6 +145,21 @@ async function runAssistJob(requirementId, opts = {}) {
     return;
   }
 
+  // v0.22.16: pending 模式 → 只存 prompt，不触发生成，等用户确认
+  if (opts.pending) {
+    reqStore.update(requirementId, {
+      assist_image: JSON.stringify({
+        status: 'pending_input',
+        prompt,
+        n,
+        size: opts.size || '1024x1024',
+        pending: true,
+        started_at: new Date().toISOString(),
+      }),
+    });
+    return;
+  }
+
   // 从上传文件、URL、或无图中选参考图
   let finalImage = imageUrl || null;
   if (imageFileId) {
