@@ -42,7 +42,7 @@
             <div class="assist-card-row"><span class="assist-label">角色：</span>${sp.characters.map(c => escHtml(c.name || '') + (c.desc ? '（' + escHtml(c.desc) + '）' : '')).join('、')}</div>
           ` : ''}
           ${sp.setting ? `<div class="assist-card-row"><span class="assist-label">场景：</span>${escHtml(sp.setting)}</div>` : ''}
-          <div class="assist-card-row"><span class="assist-label">分镜：</span>${(sp.scenes || []).length} 场 · ${escHtml(data.target_seconds || 30)}s</div>
+          <div class="assist-card-row"><span class="assist-label">分镜：</span>${(sp.scenes || []).length} 场 · ${data.target_seconds || 30}s</div>
           <details style="margin-top:4px">
             <summary style="font-size:11px;color:var(--text2);cursor:pointer">📖 查看完整分镜</summary>
             <div style="padding:6px 0;font-size:11px;color:var(--text)">
@@ -67,7 +67,7 @@
       return `
         <div class="assist-section-title">🎬 短视频剧本 · 3 个方向</div>
         <div class="assist-intro">挑一个最合心意的剧本——选中后会自动填到下方输入框，你可以修改后再发给 AI 继续打磨。</div>
-        <div style="font-size:11px;color:var(--text2);margin-bottom:6px">基于：${escHtml(data.idea || '')} · ${escHtml(data.target_seconds || 30)}s</div>
+        <div style="font-size:11px;color:var(--text2);margin-bottom:6px">基于：${escHtml(data.idea || '')} · ${data.target_seconds || 30}s</div>
         <div class="assist-grid">${cards}</div>
         <!-- v0.22：「都不满意，再换一批」按钮（dispatcher.regenerateBatch）-->
         <div class="assist-regen-row">

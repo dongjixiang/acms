@@ -117,8 +117,11 @@ function typeLabel(type) {
   return map[type] || type;
 }
 
-function escHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-function escAttr(s) { return (s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+// v0.22.4 fix: 用 utils.js 的安全 escHtml/escAttr（DOM API，对所有类型都安全）
+// 之前的 (s||'').replace(...) 模式：s 是数字/对象/数组时会触发 "(s || '').replace is not a function"
+// 因为数字/对象/数组都是 truthy，(s||'') 不会变成 ''，然后 .replace 报 not a function
+function escHtml(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = String(s); return d.innerHTML; }
+function escAttr(s) { if (!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function fmtDate(d) { if(!d) return ''; return new Date(d).toLocaleDateString('zh-CN'); }  // zh-CN OK; date 本身无时区歧义
 
 function wrapForIframe(html) {
