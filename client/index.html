@@ -441,8 +441,8 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/assists/stakeholders.js"></script>
 <script src="/client/js/views/assists/assumptions.js"></script>
 <script src="/client/js/views/assists/health-check.js"></script>
-<!-- v0.22 fix: 加酷我 player.kuwo.cn 类型分支（iframe 嵌入） + 咪咕作为搜索链接 -->
-<script src="/client/js/views/assists/music-core.js?v=0.22.0"></script>  <!-- v0.21 音乐卡片公共渲染核心 + v0.22 kuwo 类型分支 -->
+<!-- v0.22 fix: 加 Audius api.audius.co 类型分支（mp3 直链 + audio 标签）+ normalizePlayable 兜底识别酷我/Audius -->
+<script src="/client/js/views/assists/music-core.js?v=0.22.1"></script>  <!-- v0.21 音乐卡片公共渲染核心 + v0.22 kuwo/audius 分支 -->
 <script src="/client/js/views/assists/music.js?v=0.21.0"></script>  <!-- v0.21 音乐播放 — 多数据源切换（assist 侧栏；聊天流走 chat.js renderMusicBubble） -->
 <script src="/client/js/views/assists/video.js?v=0.19.0"></script>  <!-- v0.19 AI 视频生成 → Agnes Video -->
 <script src="/client/js/views/assists/image-gen.js?v=0.19.0"></script>  <!-- v0.19 AI 图片生成 → Agnes Image -->

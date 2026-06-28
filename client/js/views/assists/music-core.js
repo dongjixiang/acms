@@ -41,11 +41,17 @@
     const out = (data && data.playable_sources ? data.playable_sources : []).filter(s => s && s.url);
     if (out.length === 0 && data && data.playable_url) {
       const u = data.playable_url;
+      // v0.22 fix: 识别酷我/Audius 链接类型
+      let type = 'audio';
+      let title = '音频';
+      if (u.includes('bilibili.com')) { type = 'bilibili'; title = '哔哩哔哩'; }
+      else if (u.includes('kuwo.cn')) { type = 'kuwo'; title = '酷我音乐'; }
+      else if (u.includes('audius.co')) { type = 'audius'; title = 'Audius'; }
       out.push({
-        type: u.includes('bilibili.com') ? 'bilibili' : 'audio',
+        type,
         label: '源 #1',
         url: u,
-        title: u.includes('bilibili.com') ? '哔哩哔哩' : '音频',
+        title,
       });
     }
     return out;
@@ -84,6 +90,12 @@
         <iframe src="${escHtml(source.url)}" style="width:100%;height:${h}px;border:none;border-radius:8px" allow="autoplay" loading="lazy"></iframe>
         <div style="font-size:11px;color:var(--text3);margin-top:2px">🎼 ${escHtml(source.title || source.label || '酷我音乐')}</div>
       </div>`;
+    }
+
+    // v0.22 Audius（api.audius.co/v1/tracks/{id}/stream — mp3 直链，无跨域）
+    //   走 audio 分支：<audio> 标签 + 自定义进度条 + 跨域友好
+    if (source.type === 'audius') {
+      // 不 return，落到下面通用 audio 渲染
     }
 
     // audio 类型：自定义进度条（隐藏原生 controls，体验更可控）

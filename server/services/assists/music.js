@@ -284,6 +284,47 @@ async function runAssistJob(requirementId, opts = {}) {
       console.warn(`[assist:music] ${requirementId} 酷我搜索失败（可忽略）:`, e.message);
     }
 
+    // 3f. Audius — 开放 API + mp3 stream 直链（2026-06-28 实测可达）
+    //   覆盖：电子/DJ/混音/小众独立音乐（中文流行覆盖弱，作为差异化补充）
+    //   关键优势：api.audius.co/v1/tracks/{id}/stream 直接返 audio/mpeg mp3
+    //   → 前端用 <audio> 标签原生播放，秒开 + 自定义进度条 + 无跨域限制
+    try {
+      const audiusKw = encodeURIComponent(song);
+      const audiusResp = await fetchWithTimeout(
+        `https://api.audius.co/v1/tracks/search?query=${audiusKw}&limit=3`,
+        { headers: { 'User-Agent': 'Mozilla/5.0' } },
+        10000
+      );
+      if (audiusResp.ok) {
+        const audiusData = await audiusResp.json();
+        const tracks = audiusData?.data || [];
+        let added = 0;
+        for (const t of tracks) {
+          if (added >= 2) break;  // 最多 2 个 Audius 源
+          // 必须 streamable 才有 stream URL
+          if (!t.is_streamable || !t.id) continue;
+          const artist = t.user?.name || 'Unknown';
+          const permalink = t.permalink || '';
+          playableSources.push({
+            type: 'audius',
+            label: `Audius ${t.title || ''}`.trim(),
+            url: `https://api.audius.co/v1/tracks/${t.id}/stream`,
+            title: `Audius · ${artist}`,
+            // 附加数据：前端可用于显示时长/作者
+            duration: t.duration,
+            permalink: permalink ? `https://audius.co${permalink}` : '',
+          });
+          if (!playableUrl) playableUrl = playableSources[playableSources.length - 1].url;
+          added++;
+        }
+        if (added > 0) {
+          console.log(`[assist:music] ${requirementId} Audius 搜索完成: ${added} 个源`);
+        }
+      }
+    } catch (e) {
+      console.warn(`[assist:music] ${requirementId} Audius 搜索失败（可忽略）:`, e.message);
+    }
+
     // 3e. 如果还没找到源，用 web_search 搜国内其他音频链接（SoundCloud/Audiomack 国内被墙移除）
     if (!playableUrl) {
       try {
@@ -378,6 +419,7 @@ function writeMusicChatEntry(reqId, song, artist, playableSources, platformSourc
       type: s.type || 'audio',
       label: s.label || '源',
       url: s.url,
+      title: s.title || s.label || s.type || '源',  // v0.22 fix: 用源标题（不是 type）作为显示名
     })),
     platforms: (platformSources || []).map(s => ({
       name: s.platform || '',
