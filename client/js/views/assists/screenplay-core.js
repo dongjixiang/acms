@@ -82,6 +82,7 @@
 
   /**
    * 已选剧本 → 渲染角色/场景/分镜头 3 大块 + 内嵌按钮
+   *   v0.22.9+: 顶部加状态条（角色/场景/视频 进度）
    */
   function renderSelectedScreenplay(reqId, data) {
     const sp = data.screenplays[data.picked];
@@ -93,20 +94,37 @@
     const sceneVideos = data.scene_videos || {};
     const target = data.target_seconds || 30;
 
+    // 统计资源就绪情况
+    const charAssets = assets.characters || {};
+    const sceneAssets = assets.scenes || {};
+    const charsReady = characters.filter(c => charAssets[c.name]?.asset_path).length;
+    const sceneReady = (sceneAssets['0']?.asset_path) ? 1 : 0;
+    const videoReady = scenes.filter((_, i) => sceneVideos[String(i)]?.video_url).length;
+    const charsTotal = characters.length;
+    const sceneTotal = 1;
+    const videoTotal = scenes.length;
+    const allReady = charsReady === charsTotal && sceneReady === sceneTotal && charsTotal > 0;
+
+    // 顶部状态条
+    const statusBar = renderStatusBar({
+      charsReady, charsTotal, sceneReady, sceneTotal, videoReady, videoTotal, allReady,
+    });
+
     // 角色区块
     const charactersHtml = characters.map((c, idx) => {
       const name = c.name || `角色${idx + 1}`;
       const desc = c.desc || '';
-      const asset = assets.characters?.[name];
+      const asset = charAssets[name];
       const imgAsset = asset?.asset_path;
       const imgSrc = imgAsset
         ? `/api/generate/assets/${encodeURIComponent(data.project_id || 'default')}/${imgAsset}`
         : asset?.image_url_output;
+      const isReady = !!imgAsset;
       return `
-        <div class="screenplay-asset-block" style="margin:8px 0;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px">
+        <div class="screenplay-asset-block" style="margin:8px 0;padding:8px;background:var(--bg);border:1px solid ${isReady ? 'var(--green)' : 'var(--border)'};border-radius:6px">
           <div style="display:flex;align-items:center;gap:8px">
             <div style="flex:1">
-              <div style="font-weight:600;font-size:13px">👤 ${escHtml(name)}</div>
+              <div style="font-weight:600;font-size:13px">👤 ${escHtml(name)} ${isReady ? '<span style="color:var(--green)">✅</span>' : '<span style="color:var(--text3)">⏳</span>'}</div>
               <div style="font-size:11px;color:var(--text2);margin-top:2px">${escHtml(desc)}</div>
             </div>
             ${imgSrc ? `<img src="${escHtml(imgSrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px" alt="角色图" />` : ''}
@@ -119,18 +137,19 @@
       `;
     }).join('');
 
-    // 场景区块（每个分镜 = 一个场景图？目前简化：1 个场景图，对应 setting）
+    // 场景区块
     const sceneKey = '0';
-    const sceneAsset = assets.scenes?.[sceneKey];
+    const sceneAsset = sceneAssets[sceneKey];
     const sceneImgAsset = sceneAsset?.asset_path;
     const sceneImgSrc = sceneImgAsset
       ? `/api/generate/assets/${encodeURIComponent(data.project_id || 'default')}/${sceneImgAsset}`
       : sceneAsset?.image_url_output;
+    const sceneIsReady = !!sceneImgAsset;
     const sceneBlock = `
-      <div class="screenplay-asset-block" style="margin:8px 0;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px">
+      <div class="screenplay-asset-block" style="margin:8px 0;padding:8px;background:var(--bg);border:1px solid ${sceneIsReady ? 'var(--green)' : 'var(--border)'};border-radius:6px">
         <div style="display:flex;align-items:center;gap:8px">
           <div style="flex:1">
-            <div style="font-weight:600;font-size:13px">🎬 场景设定</div>
+            <div style="font-weight:600;font-size:13px">🎬 场景设定 ${sceneIsReady ? '<span style="color:var(--green)">✅</span>' : '<span style="color:var(--text3)">⏳</span>'}</div>
             <div style="font-size:11px;color:var(--text2);margin-top:2px">${escHtml(sp.setting || '（未填）')}</div>
           </div>
           ${sceneImgSrc ? `<img src="${escHtml(sceneImgSrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px" alt="场景图" />` : ''}
@@ -148,14 +167,20 @@
         ? `/api/generate/assets/${encodeURIComponent(data.project_id || 'default')}/${video.asset_path}`
         : video?.video_url;
       const hasVideo = !!videoSrc;
-      const characterAsset = characters.length > 0 ? assets.characters?.[characters[0].name] : null;
+      const characterAsset = characters.length > 0 ? charAssets[characters[0].name] : null;
       const hasAllAssets = characterAsset?.asset_path && sceneImgAsset;
       const disabledHint = hasAllAssets ? '' : '（需先生成角色图 + 场景图）';
+      const statusBadge = hasVideo
+        ? '<span style="color:var(--green)">✅</span>'
+        : hasAllAssets
+          ? '<span style="color:var(--accent)">🔓 可生成</span>'
+          : '<span style="color:var(--text3)">⏳ 等待</span>';
 
       return `
-        <div class="screenplay-scene-block" style="margin:6px 0;padding:8px;background:var(--bg2);border:1px solid var(--border);border-radius:6px">
+        <div class="screenplay-scene-block" style="margin:6px 0;padding:8px;background:var(--bg2);border:1px solid ${hasVideo ? 'var(--green)' : 'var(--border)'};border-radius:6px">
           <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
             <span style="font-size:12px;color:var(--accent);font-weight:600">⏱ ${escHtml(sc.time || '?')} · 场 ${idx + 1}</span>
+            ${statusBadge}
           </div>
           <div style="font-size:12px;line-height:1.6">
             ${sc.shot ? `<div>📷 <strong>镜头：</strong>${escHtml(sc.shot)}</div>` : ''}
@@ -183,25 +208,60 @@
       <div style="font-size:11px;color:var(--text2);margin-bottom:4px">基于：${escHtml(data.idea || '')} · ${target}s · ${scenes.length} 场</div>
       <div style="font-style:italic;color:var(--text2);font-size:12px;margin-bottom:8px">${escHtml(sp.logline || '')}</div>
 
+      ${statusBar}
+
       ${characters.length > 0 ? `
         <div class="screenplay-section-block">
-          <div class="screenplay-section-title">👤 角色（${characters.length}）</div>
+          <div class="screenplay-section-title">👤 角色（${charsReady}/${charsTotal}）</div>
           ${charactersHtml}
         </div>
       ` : ''}
 
       <div class="screenplay-section-block">
-        <div class="screenplay-section-title">🎬 场景</div>
+        <div class="screenplay-section-title">🎬 场景（${sceneReady}/${sceneTotal}）</div>
         ${sceneBlock}
       </div>
 
       <div class="screenplay-section-block">
-        <div class="screenplay-section-title">🎞 分镜头（${scenes.length} 场）</div>
+        <div class="screenplay-section-title">🎞 分镜头（${videoReady}/${videoTotal} 场已生成）</div>
         ${scenesHtml}
       </div>
 
       <div style="margin-top:8px;padding-top:6px;border-top:1px solid var(--border)">
         <button class="btn-small btn-secondary" onclick="ACMSAssistDispatcher.regenerateBatch('${reqId}', 'screenplay')" title="换一批剧本">🔄 换一批剧本</button>
+      </div>
+    `;
+  }
+
+  /**
+   * v0.22.9+: 资源就绪状态条
+   *   显示"角色 X/Y · 场景 X/Y · 视频 X/Y"
+   *   全齐时高亮绿色"✅ 可开始生成视频"
+   */
+  function renderStatusBar(stats) {
+    const { charsReady, charsTotal, sceneReady, sceneTotal, videoReady, videoTotal, allReady } = stats;
+    const progress = (charsReady + sceneReady + videoReady) / Math.max(1, charsTotal + sceneTotal + videoTotal);
+    const pct = Math.round(progress * 100);
+
+    if (allReady) {
+      return `
+        <div style="margin:8px 0;padding:8px 10px;background:rgba(34,197,94,0.08);border:1px solid var(--green);border-radius:6px">
+          <div style="font-weight:600;font-size:12px;color:var(--green)">✅ 全部资源就绪（${pct}%）</div>
+          <div style="font-size:10px;color:var(--text2);margin-top:2px">角色 ${charsReady}/${charsTotal} · 场景 ${sceneReady}/${sceneTotal} · 视频 ${videoReady}/${videoTotal}</div>
+        </div>
+      `;
+    }
+    return `
+      <div style="margin:8px 0;padding:6px 10px;background:var(--bg2);border:1px solid var(--border);border-radius:6px">
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="font-size:11px;color:var(--text2)">📊 资源进度</span>
+          <span style="font-size:11px;font-weight:600;color:${progress > 0 ? 'var(--accent)' : 'var(--text3)'}">${pct}%</span>
+          <span style="font-size:10px;color:var(--text3);flex:1">·</span>
+          <span style="font-size:10px;color:var(--text2)">角色 ${charsReady}/${charsTotal} · 场景 ${sceneReady}/${sceneTotal} · 视频 ${videoReady}/${videoTotal}</span>
+        </div>
+        <div style="height:3px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden">
+          <div style="width:${pct}%;height:100%;background:var(--accent);transition:width .3s"></div>
+        </div>
       </div>
     `;
   }
