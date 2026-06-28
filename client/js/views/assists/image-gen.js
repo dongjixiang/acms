@@ -12,7 +12,8 @@
 //   - chatImagePrompt(reqId)：弹输入框 → 调 chatAssist('image_gen', {...})
 //   - chatImagePick(reqId, idx)：选中第 idx 张（调 use 路由）
 //   - submitPendingImageGen(reqId)：提交 pending 状态的表单 → 开始真正生成
-
+//   - previewImage(url)：全屏放大预览图片
+//
 (function () {
   function render(reqId, data) {
     if (!data) return '';
@@ -52,8 +53,8 @@
             ${isPicked ? 'box-shadow:0 0 0 2px var(--accent)' : ''}
           " onclick="chatImagePick('${reqId}', ${i})">
             ${isPicked ? '<div style="position:absolute;top:4px;right:4px;background:var(--accent);color:white;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:12px">✓</div>' : ''}
-            <img src="${escHtml(assetUrl || cdnUrl)}" alt="候选 ${i+1}" style="display:block;width:140px;height:140px;object-fit:cover;border-radius:4px" onerror="this.src='${escHtml(cdnUrl)}';this.onerror=null;" />
-            <div style="text-align:center;font-size:11px;color:var(--text2);margin-top:2px">${i+1}${isPicked ? ' · 已选' : ''}</div>
+            <img src="${escHtml(assetUrl || cdnUrl)}" alt="候选 ${i+1}" style="display:block;width:140px;height:140px;object-fit:cover;border-radius:4px;cursor:zoom-in" onclick="event.stopPropagation();previewImage('${escHtml(assetUrl || cdnUrl)}')" onerror="this.src='${escHtml(cdnUrl)}';this.onerror=null;" />
+            <div style="text-align:center;font-size:11px;color:var(--text2);margin-top:2px">${i+1}${isPicked ? ' · 已选' : ' · 点选'}</div>
           </div>
         `;
       }).join('');
@@ -100,11 +101,14 @@
         <div style="font-size:11px;color:var(--text2);margin-bottom:8px">尺寸：${escHtml(data.size || '1024x1024')}</div>
         ${imgSrc ? `
           <div style="margin:8px 0">
-            <img src="${escHtml(imgSrc)}" alt="生成的图片" style="max-width:100%;border-radius:8px;border:1px solid var(--border)" onerror="this.src='${escHtml(cdnUrl)}';this.onerror=null;" />
+            <img src="${escHtml(imgSrc)}" alt="生成的图片" style="max-width:100%;border-radius:8px;border:1px solid var(--border);cursor:zoom-in" onclick="previewImage('${escHtml(imgSrc)}')" onerror="this.src='${escHtml(cdnUrl)}';this.onerror=null;" />
           </div>
-          <a href="${escHtml(cdnUrl || assetUrl)}" target="_blank" rel="noopener noreferrer" class="btn-small btn-primary" style="text-decoration:none;display:inline-flex;align-items:center;gap:4px">
-            🔗 查看原图
-          </a>
+          <div style="display:flex;gap:4px;margin-top:4px">
+            <button class="btn-small" onclick="previewImage('${escHtml(imgSrc)}')" style="font-size:11px">🔍 放大预览</button>
+            <a href="${escHtml(cdnUrl || imgSrc)}" target="_blank" rel="noopener noreferrer" class="btn-small btn-primary" style="text-decoration:none;display:inline-flex;align-items:center;gap:4px;font-size:11px">
+              🔗 查看原图
+            </a>
+          </div>
         ` : '<div style="color:var(--warn);font-size:12px">图片 URL 不可用</div>'}
       </div>
     `;
@@ -185,4 +189,37 @@ async function refreshImageCard(reqId) {
       window.ACMSAssistDispatcher.poll(reqId);
     }
   } catch (e) { /* 静默失败 */ }
+}
+
+/**
+ * v0.22.16: 全屏放大预览图片（图片卡片点击 + 剧本卡片共用）
+ *   创建固定遮罩层，点击遮罩或按 ESC 关闭
+ */
+function previewImage(url) {
+  if (!url) return;
+  // 避免重复创建
+  if (document.getElementById('preview-overlay')) return;
+
+  const overlay = document.createElement('div');
+  overlay.id = 'preview-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;cursor:zoom-out';
+
+  const img = document.createElement('img');
+  img.src = url;
+  img.style.cssText = 'max-width:92vw;max-height:92vh;border-radius:8px;box-shadow:0 4px 30px rgba(0,0,0,0.5);object-fit:contain';
+  img.alt = '预览';
+
+  overlay.appendChild(img);
+
+  const close = () => {
+    if (document.getElementById('preview-overlay')) {
+      document.getElementById('preview-overlay').remove();
+      document.removeEventListener('keydown', onEsc);
+    }
+  };
+  const onEsc = (e) => { if (e.key === 'Escape') close(); };
+
+  overlay.onclick = close;
+  document.addEventListener('keydown', onEsc);
+  document.body.appendChild(overlay);
 }

@@ -158,7 +158,7 @@
               <textarea id="sppc-${reqId}-${escHtml(name).replace(/[^\\w]/g, '_')}" rows="2" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit;margin-top:2px" placeholder="修改图片生成的提示词…">${escHtml(desc)}</textarea>
               <div style="font-size:10px;color:var(--text3);margin-top:1px">✏️ 可修改提示词后点下方按钮重新生成</div>
             </div>
-            ${imgSrc ? `<img src="${escHtml(imgSrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px" alt="角色图" />` : ''}
+            ${imgSrc ? `<img src="${escHtml(imgSrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px;cursor:zoom-in" onclick="event.stopPropagation();previewImage('${escHtml(imgSrc)}')" alt="角色图" />` : ''}
             <div style="display:flex;flex-direction:column;gap:3px">
               ${isReady ? `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'character', '${escHtml(name)}', document.getElementById('sppc-${reqId}-${escHtml(name).replace(/[^\\w]/g, '_')}').value)" style="font-size:10px">🎨 重新生成</button>` : `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'character', '${escHtml(name)}', document.getElementById('sppc-${reqId}-${escHtml(name).replace(/[^\\w]/g, '_')}').value)">🎨 生成图</button>`}
             </div>
@@ -211,7 +211,7 @@
             <textarea id="spsc-${reqId}-scene_0" rows="2" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit;margin-top:2px" placeholder="修改场景图的提示词…">${escHtml(sp.setting || '')}</textarea>
             <div style="font-size:10px;color:var(--text3);margin-top:1px">✏️ 可修改提示词后点下方按钮</div>
           </div>
-          ${sceneImgSrc ? `<img src="${escHtml(sceneImgSrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px" alt="场景图" />` : ''}
+          ${sceneImgSrc ? `<img src="${escHtml(sceneImgSrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px;cursor:zoom-in" onclick="event.stopPropagation();previewImage('${escHtml(sceneImgSrc)}')" alt="场景图" />` : ''}
           <div style="display:flex;flex-direction:column;gap:3px">
             ${sceneIsReady ? `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'scene', '0', document.getElementById('spsc-${reqId}-scene_0').value)" style="font-size:10px">🎨 重新生成</button>` : `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'scene', '0', document.getElementById('spsc-${reqId}-scene_0').value)">🎨 生成图</button>`}
           </div>
