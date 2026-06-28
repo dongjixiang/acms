@@ -1504,7 +1504,9 @@ function startVideoAutoPoll(reqId, loadingEl) {
     if (attempts > maxAttempts) {
       clearInterval(window._autoPollTimers[reqId]);
       delete window._autoPollTimers[reqId];
-      if (statusEl) statusEl.textContent = '⏹️ 停止自动检测，可手动点刷新';
+      // v0.22.5: 不再静默"停止"——明确告知 + 重试按钮
+      if (statusEl) statusEl.innerHTML = '⏹️ Agnes 服务端长时间无响应 · <span style="cursor:pointer;color:var(--accent);text-decoration:underline" onclick="chatVideoQuery(\'' + reqId + '\')">手动重试</span>';
+      toast('⏹️ 视频生成超时，可手动点重试（Agnes 服务端可能暂时不可用）', 'warning', 4000);
       return;
     }
 
@@ -1530,7 +1532,9 @@ function startVideoAutoPoll(reqId, loadingEl) {
       } else if (r && r.status === 'failed') {
         clearInterval(window._autoPollTimers[reqId]);
         delete window._autoPollTimers[reqId];
-        if (statusEl) statusEl.textContent = '❌ 生成失败';
+        // v0.22.5: failed 状态立即 toast + 显示重试按钮（不只改 statusEl 文字）
+        if (statusEl) statusEl.innerHTML = '❌ 生成失败：<span style="cursor:pointer;color:var(--accent);text-decoration:underline" onclick="chatVideoQuery(\'' + reqId + '\')">重试</span>';
+        toast('❌ 视频生成失败，可手动点重试', 'error', 4000);
       } else if (statusEl) {
         const pct = r?.progress != null ? Math.min(r.progress, 100) : '?';
         statusEl.textContent = `⏳ 生成中 ${pct}% (${attempts * 5}s)`;

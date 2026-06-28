@@ -54,8 +54,11 @@ async function generateVideo(args) {
   }
 
   try {
+    // v0.22.5 P0-2 fix: POST 超时从 180s 缩到 60s（按 skill 建议：创建任务类 API 应 30-60s 超时）
+    //   理由：Agnes 服务端会收下请求但不返回 HTTP 响应（之前已诊断为服务端问题）
+    //   旧 180s 让用户傻等 3 分钟没反馈；改 60s 后失败立即能看到"Agnes 服务端无响应"+ 重试按钮
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 180000);
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
 
     const resp = await fetch(`${API_BASE}/v1/videos`, {
       method: 'POST',
@@ -95,9 +98,10 @@ async function generateVideo(args) {
     if (isTransient) {
       console.warn(`[agnes-video] 临时网络错误，重试一次: ${e.message}`);
       try {
-        await new Promise(r => setTimeout(r, 2000));
+        // v0.22.5: 重试间隔 2s → 5s（避免对挂死服务端持续施压）
+        await new Promise(r => setTimeout(r, 5000));
         const controller2 = new AbortController();
-        const timeoutId2 = setTimeout(() => controller2.abort(), 180000);
+        const timeoutId2 = setTimeout(() => controller2.abort(), 60000);
         const resp2 = await fetch(`${API_BASE}/v1/videos`, {
           method: 'POST',
           headers: {
