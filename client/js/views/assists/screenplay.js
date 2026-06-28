@@ -3,28 +3,32 @@
 //
 // 渲染：3 个剧本选项卡 + 选中 + 换一批
 // 全局函数：
+// ACMS · 剧本辅助（v0.22，2026-06-28）
+//   Method: screenplay | Name: 短视频剧本
+//
+// 渲染（v0.22.8 用 screenplay-core.js 单一来源）：
+//   - 调 ACMSScreenplayCard.renderDetail() 渲染
+//   - 同一份 render 也在 chat.js 聊天流卡片用
+//
+// 全局函数：
 //   - chatScreenplayPrompt(reqId)：内联表单（创意+时长）→ 调 chatAssist
 //   - selectScreenplay(reqId, idx)：选中后写聊天流+填入输入框
-//
-// 流程（按 P11 教训）：
-//   1. 用户点 🎬 剧本 → 内联表单 → 提交
-//   2. chatAssist('screenplay', {idea, target_seconds}) → 后端生成 3 剧本
-//   3. SSE done → 聊天流里 renderLeisureResult 渲染 3 选项卡
-//   4. 用户点某个剧本 → 调 markPicked → 后端写 supplement_history
-//   5. 前端读最新 data → 把剧本 markdown 填入输入框（用户可编辑后再发）
-//   6. 用户点「换一批」→ regenerateBatch → 重新生成 3 个明显不同的
+//   - screenplayGenImage(reqId, assetType, assetKey, prompt)：为角色/场景生成图
+//   - screenplayGenVideo(reqId, sceneIdx)：为分镜头生成视频
 
 (function () {
   function render(reqId, data) {
+    // v0.22.8: 单一来源 — 全调 screenplay-core
+    if (window.ACMSScreenplayCard) {
+      return window.ACMSScreenplayCard.renderDetail(reqId, data);
+    }
+    // 兜底（core 未加载时）
     if (!data) return '';
     if (data.status === 'generating') {
-      return `<div class="insight-loading">⏳ 正在生成 3 个剧本方案（${data.target_seconds || 30}s）…</div>`;
+      return '<div class="insight-loading">⏳ 正在生成 3 个剧本方案…</div>';
     }
     if (data.status === 'failed') {
-      const errMsg = data.error === 'NO_IDEA'
-        ? '❌ 请输入创意描述。点击 🎬 剧本 按钮重新尝试。'
-        : `❌ 生成失败：${escHtml(data.error || '未知错误')}`;
-      return `<div class="insight-error">${errMsg}</div>`;
+      return `<div class="insight-error">❌ 生成失败：${escHtml(data.error || '未知错误')}</div>`;
     }
     if (data.status === 'done' && Array.isArray(data.screenplays)) {
       const screenplays = data.screenplays;
@@ -69,7 +73,6 @@
         <div class="assist-intro">挑一个最合心意的剧本——选中后会自动填到下方输入框，你可以修改后再发给 AI 继续打磨。</div>
         <div style="font-size:11px;color:var(--text2);margin-bottom:6px">基于：${escHtml(data.idea || '')} · ${data.target_seconds || 30}s</div>
         <div class="assist-grid">${cards}</div>
-        <!-- v0.22：「都不满意，再换一批」按钮（dispatcher.regenerateBatch）-->
         <div class="assist-regen-row">
           <button class="btn-small btn-secondary" onclick="ACMSAssistDispatcher.regenerateBatch('${reqId}', 'screenplay')" title="让 AI 再生成 3 个明显不同的剧本">🔄 都不满意，再换一批</button>
         </div>
@@ -78,7 +81,7 @@
     return '';
   }
 
-  window.ACMSAssists.register('screenplay', { name: '短视频剧本（3 个剧本选项）', render });
+  window.ACMSAssists.register('screenplay', { name: '短视频剧本（角色/场景/分镜头联动）', render });
 })();
 
 /**
@@ -124,7 +127,6 @@ async function chatScreenplayPrompt(reqId) {
   else stream.appendChild(card);
   stream.scrollTop = stream.scrollHeight;
 
-  // 自动 focus 到输入框
   setTimeout(() => {
     const ta = document.getElementById(`${cardId}-idea`);
     if (ta) { ta.focus(); ta.select(); }
@@ -142,7 +144,6 @@ async function submitScreenplayForm(cardId, reqId) {
   if (!idea) return toast('请输入创意描述', 'warning');
 
   try {
-    // 标记为显式调用 → dispatcher 持续显示（即使生成完毕）
     if (!window._explicitAssist) window._explicitAssist = {};
     window._explicitAssist[reqId] = 'screenplay';
     await chatAssist(reqId, 'screenplay', { idea, target_seconds: targetSeconds });
@@ -153,16 +154,11 @@ async function submitScreenplayForm(cardId, reqId) {
 }
 
 /**
- * 选中某个剧本：
- *  1. 调后端 markPicked（写 supplement_history + 标记 picked）
- *  2. 把剧本 markdown 填入输入框（让用户编辑后再发）
- *  3. 触发聊天流刷新（poller 检测到新 entry 自动渲染）
+ * 选中剧本 → 写聊天流 + 填输入框
  */
 async function selectScreenplay(reqId, idx) {
   try {
-    // 1. 调后端 use 路由（dispatcher.useAssist 已封一层）
     await ACMSAssistDispatcher.useAssist(reqId, 'screenplay', { idx });
-    // 2. 读最新 data，构造 markdown 填入输入框
     const resp = await api('GET', `/requirements/${reqId}/assist`);
     const data = resp.assists?.screenplay;
     if (!data || !data.screenplays?.[idx]) {
@@ -177,7 +173,6 @@ async function selectScreenplay(reqId, idx) {
       input.focus();
       if (typeof chatAutoGrow === 'function') chatAutoGrow(input);
     }
-    // 3. 触发聊天流刷新（poller 已起，会自动捡到 supplement_history 新条目）
     if (typeof startChatPolling === 'function') startChatPolling(reqId);
     toast('🎬 剧本已填入输入框，可编辑后再发给 AI', 'success', 2500);
   } catch (e) {
@@ -186,7 +181,7 @@ async function selectScreenplay(reqId, idx) {
 }
 
 /**
- * 构造剧本的 markdown（填入输入框 + 写入聊天流）
+ * 构造剧本 markdown（填入输入框 + 写入聊天流）
  */
 function buildScreenplayMarkdown(sp, data, idx) {
   const lines = [];
@@ -215,4 +210,134 @@ function buildScreenplayMarkdown(sp, data, idx) {
   lines.push('---');
   lines.push('（请基于这个剧本告诉我你的修改意见，或者直接说「按这个生成视频」）');
   return lines.join('\n');
+}
+
+/**
+ * v0.22.8: 为角色/场景生成图
+ *   1. 弹内联表单（pre-fill prompt=assetType/assetKey 对应描述）
+ *   2. 调 image_gen
+ *   3. 完成后调 screenplay.use 写回 assets
+ */
+async function screenplayGenImage(reqId, assetType, assetKey, defaultPrompt) {
+  // 用 window.prompt 拿 prompt（最简实现，先不做完整内联表单）
+  const prompt = (window.prompt(`🎨 为「${assetKey}」生成图，描述词：`, defaultPrompt) || '').trim();
+  if (!prompt) return;
+
+  // 显示一个临时 loading 卡片在聊天流
+  const stream = document.getElementById(`chat-stream-msgs-${reqId}`);
+  const tempCard = document.createElement('div');
+  tempCard.className = 'assist-loading-card';
+  tempCard.dataset.method = 'image_gen';
+  tempCard.dataset.tempFor = `${assetType}_${assetKey}`;
+  tempCard.innerHTML = `<div class="assist-loading-head"><span class="assist-loading-spinner">⏳</span><span class="assist-loading-title">🎨 正在为「${assetKey}」生成 3 张候选图…</span></div>`;
+  stream.appendChild(tempCard);
+  stream.scrollTop = stream.scrollHeight;
+
+  try {
+    // 1. 触发 image_gen
+    await chatAssist(reqId, 'image_gen', { prompt, n: 3, _attach_to: { type: 'screenplay', assetType, assetKey } });
+
+    // 2. 轮询直到 done
+    let imgData = null;
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      const r = await api('GET', `/requirements/${reqId}/assist`);
+      imgData = r.assists?.image_gen;
+      if (imgData?.status === 'done' || imgData?.status === 'failed') break;
+    }
+    tempCard.remove();
+    if (!imgData || imgData.status !== 'done') {
+      toast('❌ 图片生成失败', 'error');
+      return;
+    }
+
+    // 3. 默认选第 0 张，写回 screenplay
+    await api('POST', `/requirements/${reqId}/assist/screenplay/use`, {
+      action: 'set_asset',
+      asset_type: assetType,
+      asset_key: assetKey,
+      options: imgData.options || [],
+      picked_idx: 0,
+    });
+
+    // 4. 刷新聊天流
+    if (typeof startChatPolling === 'function') startChatPolling(reqId);
+    toast('✅ 已为「' + assetKey + '」生成 3 张候选（默认选第 1 张）', 'success', 2500);
+  } catch (e) {
+    tempCard.remove();
+    toast('生成失败: ' + e.message, 'error');
+  }
+}
+
+/**
+ * v0.22.8: 为分镜头生成视频
+ *   1. 调 video assist（pre-fill scene prompt + character/scene asset）
+ *   2. 轮询直到 done
+ *   3. 写回 scene_videos[sceneIdx]
+ */
+async function screenplayGenVideo(reqId, sceneIdx) {
+  try {
+    // 读当前 screenplay 数据拿 scene 内容
+    const r = await api('GET', `/requirements/${reqId}/assist`);
+    const sp = r.assists?.screenplay;
+    if (!sp || sp.picked === null || sp.picked === undefined) {
+      toast('请先选一个剧本', 'warning');
+      return;
+    }
+    const screenplay = sp.screenplays[sp.picked];
+    const scene = screenplay.scenes?.[sceneIdx];
+    if (!scene) {
+      toast('分镜头数据缺失', 'error');
+      return;
+    }
+
+    // 构造 prompt（角色 + 场景 + 分镜）
+    const characterName = (screenplay.characters || [])[0]?.name || 'character';
+    const prompt = [
+      scene.shot || '',
+      scene.action || '',
+      scene.dialogue && scene.dialogue !== '——' ? `Says: "${scene.dialogue}"` : '',
+    ].filter(Boolean).join('. ');
+
+    // 显示 loading
+    const stream = document.getElementById(`chat-stream-msgs-${reqId}`);
+    const tempCard = document.createElement('div');
+    tempCard.className = 'assist-loading-card';
+    tempCard.dataset.method = 'video';
+    tempCard.dataset.tempFor = `scene_${sceneIdx}`;
+    tempCard.innerHTML = `<div class="assist-loading-head"><span class="assist-loading-spinner">⏳</span><span class="assist-loading-title">🎥 正在为分镜头 ${sceneIdx + 1} 生成视频（最长 5 分钟）…</span></div>`;
+    stream.appendChild(tempCard);
+    stream.scrollTop = stream.scrollHeight;
+
+    // 触发 video
+    await chatAssist(reqId, 'video', { prompt, duration: sp.target_seconds || 30, _attach_to: { type: 'screenplay', sceneIdx } });
+
+    // 轮询直到拿到 video_url（video 是异步任务）
+    let videoData = null;
+    for (let i = 0; i < 60; i++) {  // 5 分钟
+      await new Promise(r => setTimeout(r, 5000));
+      const r2 = await api('POST', `/requirements/${reqId}/assist/video/query`);
+      if (r2 && r2.video_url) { videoData = r2; break; }
+      if (r2 && r2.status === 'failed') break;
+    }
+    tempCard.remove();
+    if (!videoData || !videoData.video_url) {
+      toast('❌ 视频生成失败', 'error');
+      return;
+    }
+
+    // 写回 scene_videos
+    await api('POST', `/requirements/${reqId}/assist/screenplay/use`, {
+      action: 'set_scene_video',
+      scene_idx: sceneIdx,
+      video_id: videoData.video_id,
+      video_url: videoData.video_url,
+      asset_path: videoData.asset_path,
+      status: 'done',
+    });
+    if (typeof startChatPolling === 'function') startChatPolling(reqId);
+    toast('🎥 分镜头 ' + (sceneIdx + 1) + ' 视频已生成', 'success', 2500);
+  } catch (e) {
+    toast('生成失败: ' + e.message, 'error');
+  }
 }

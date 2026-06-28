@@ -32,9 +32,10 @@
       // v0.22.8: N 候选渲染
       const pickedIdx = data.picked_idx || 0;
       const optionsHtml = options.map((opt, i) => {
-        const src = opt.asset_path
+        const assetUrl = opt.asset_path
           ? `/api/generate/assets/${encodeURIComponent(data.project_id || 'default')}/${opt.asset_path}`
-          : opt.image_url_output;
+          : null;
+        const cdnUrl = opt.image_url_output || '';
         const isPicked = i === pickedIdx;
         return `
           <div class="image-option" data-image-option-idx="${i}" style="
@@ -45,7 +46,7 @@
             ${isPicked ? 'box-shadow:0 0 0 2px var(--accent)' : ''}
           " onclick="chatImagePick('${reqId}', ${i})">
             ${isPicked ? '<div style="position:absolute;top:4px;right:4px;background:var(--accent);color:white;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:12px">✓</div>' : ''}
-            <img src="${escHtml(src)}" alt="候选 ${i+1}" style="display:block;width:140px;height:140px;object-fit:cover;border-radius:4px" />
+            <img src="${escHtml(assetUrl || cdnUrl)}" alt="候选 ${i+1}" style="display:block;width:140px;height:140px;object-fit:cover;border-radius:4px" onerror="this.src='${escHtml(cdnUrl)}';this.onerror=null;" />
             <div style="text-align:center;font-size:11px;color:var(--text2);margin-top:2px">${i+1}${isPicked ? ' · 已选' : ''}</div>
           </div>
         `;
@@ -67,7 +68,9 @@
 
   // 兼容老数据（v0.22.8 之前的：没 options 字段，只有 image_url_output）
   function renderSingleFromLegacy(reqId, data) {
-    const imgSrc = data.image_url_output || (data.asset_path ? '/api/generate/assets/' + (data.project_id || 'default') + '/' + data.asset_path : '');
+    const assetUrl = data.asset_path ? '/api/generate/assets/' + (data.project_id || 'default') + '/' + data.asset_path : '';
+    const cdnUrl = data.image_url_output || '';
+    const imgSrc = assetUrl || cdnUrl;
     return `
       <div class="assist-section-title">🖼️ AI 图片生成 ✅</div>
       <div style="margin:8px 0">
@@ -76,9 +79,9 @@
         <div style="font-size:11px;color:var(--text2);margin-bottom:8px">尺寸：${escHtml(data.size || '1024x1024')}</div>
         ${imgSrc ? `
           <div style="margin:8px 0">
-            <img src="${escHtml(imgSrc)}" alt="生成的图片" style="max-width:100%;border-radius:8px;border:1px solid var(--border)">
+            <img src="${escHtml(imgSrc)}" alt="生成的图片" style="max-width:100%;border-radius:8px;border:1px solid var(--border)" onerror="this.src='${escHtml(cdnUrl)}';this.onerror=null;" />
           </div>
-          <a href="${escHtml(imgSrc)}" target="_blank" rel="noopener noreferrer" class="btn-small btn-primary" style="text-decoration:none;display:inline-flex;align-items:center;gap:4px">
+          <a href="${escHtml(cdnUrl || assetUrl)}" target="_blank" rel="noopener noreferrer" class="btn-small btn-primary" style="text-decoration:none;display:inline-flex;align-items:center;gap:4px">
             🔗 查看原图
           </a>
         ` : '<div style="color:var(--warn);font-size:12px">图片 URL 不可用</div>'}

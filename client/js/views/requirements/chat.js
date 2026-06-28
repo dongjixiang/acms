@@ -260,13 +260,17 @@ function backfillChatRounds(history) {
  *  v0.21：播放器/源切换/放大缩小/进度条全部走 music-core.js，与 assists 侧栏共用
  */
 /**
- * v0.22：剧本辅助结果专属 renderer
- * 解析 screenplay_result 卡片 JSON → 渲染剧本摘要到聊天流
- *  - P11 教训：写 supplement_history 必须配专属 renderer，否则 JSON 走 renderMarkdown 挂掉
- *  - 完整选剧本交互在 assist 卡片（侧栏 + 聊天流 loading 卡）完成
- *  - 这里的 system 卡片只是「已选中剧本」的存档展示
+ * v0.22.8：剧本辅助结果专属 renderer — 调 screenplay-core 单一来源
+ *   解析 screenplay_result 卡片 JSON → 渲染剧本详情（角色/场景/分镜头区块 + 内嵌按钮）
+ *   - P11 教训：写 supplement_history 必须配专属 renderer
+ *   - 完整选剧本/生成图/视频交互在 assist 卡片（侧栏 + 聊天流 loading 卡）完成
+ *   - 这里的 system 卡片是「已选中剧本」的存档展示
  */
 function renderScreenplayBubble(jsonText) {
+  if (window.ACMSScreenplayCard) {
+    return window.ACMSScreenplayCard.renderFromChatEntry(null, jsonText);
+  }
+  // 兜底（core 未加载时）
   if (!jsonText) return '<div class="chat-system-msg">📖 剧本结果（数据为空）</div>';
   let card;
   try { card = JSON.parse(jsonText); } catch { return `<div class="chat-system-msg">${escHtml((jsonText || '').slice(0, 100))}</div>`; }
@@ -1459,11 +1463,13 @@ async function renderLeisureResult(reqId, method, loadingEl) {
         loadingEl.innerHTML = renderFn(reqId, data);
       } else {
         // fallback：单图
-        const imgSrc = data.image_url_output || (data.asset_path ? '/api/generate/assets/' + (data.project_id || 'default') + '/' + data.asset_path : '');
+        const assetUrl = data.asset_path ? '/api/generate/assets/' + (data.project_id || 'default') + '/' + data.asset_path : '';
+        const cdnUrl = data.image_url_output || '';
+        const imgSrc = assetUrl || cdnUrl;
         loadingEl.innerHTML = `
           <div class="assist-loading-head" style="border:none"><span style="font-size:16px">🖼️</span><span class="assist-loading-title">图片已生成</span></div>
-          ${imgSrc ? `<div style="padding:4px 0"><img src="${escHtml(imgSrc)}" style="max-width:200px;border-radius:6px;border:1px solid var(--border)"></div>
-          <div style="padding:2px 0"><a href="${escHtml(imgSrc)}" target="_blank" class="btn-small">🔗 查看原图</a></div>` : '<div style="padding:4px 0;font-size:12px;color:var(--text2)">图片 URL 不可用</div>'}
+          ${imgSrc ? `<div style="padding:4px 0"><img src="${escHtml(imgSrc)}" style="max-width:200px;border-radius:6px;border:1px solid var(--border)" onerror="this.src='${escHtml(cdnUrl)}';this.onerror=null;"></div>
+          <div style="padding:2px 0"><a href="${escHtml(cdnUrl || assetUrl)}" target="_blank" class="btn-small">🔗 查看原图</a></div>` : '<div style="padding:4px 0;font-size:12px;color:var(--text2)">图片 URL 不可用</div>'}
         `;
       }
       loadingEl.style.borderTopColor = 'var(--green)';
@@ -1525,14 +1531,16 @@ function startVideoAutoPoll(reqId, loadingEl) {
         // v0.22.7: 优先用本地 URL（已下载到 workspace）—— 避免 Agnes CDN 过期失效
         const localUrl = (r.asset_path && r.project_id)
           ? `/api/generate/assets/${encodeURIComponent(r.project_id)}/${r.asset_path}`
-          : r.video_url;
+          : null;
+        const cdnUrl = r.video_url || '';
+        const finalUrl = localUrl || cdnUrl;
         // 更新卡片：替换为视频播放器
         const panel = document.querySelector(`#chat-stream-msgs-${reqId} .assist-loading-card[data-method="video"]`);
         if (panel) {
           panel.innerHTML = `
             <div class="assist-loading-head" style="border:none"><span style="font-size:16px">🎬</span><span class="assist-loading-title">视频已生成</span></div>
             <div style="padding:4px 0">
-              <video controls style="width:100%;max-width:360px;border-radius:6px" src="${escHtml(localUrl)}"></video>
+              <video controls style="width:100%;max-width:360px;border-radius:6px" src="${escHtml(finalUrl)}" onerror="this.src='${escHtml(cdnUrl)}'"></video>
             </div>
             <div style="padding:2px 0;font-size:11px;color:var(--text2)">✅ 生成完成 · <span onclick="chatVideoQuery('${reqId}')" style="cursor:pointer;text-decoration:underline">刷新</span></div>
           `;

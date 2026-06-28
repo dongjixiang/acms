@@ -106,6 +106,9 @@ async function runAssistJob(requirementId, opts = {}) {
       scene_count: sceneCount,
       screenplays: [],
       picked: null,
+      // v0.22.8: 资源存储 — 角色图/场景图/分镜头视频
+      assets: { characters: {}, scenes: {} },
+      scene_videos: {},
       started_at: new Date().toISOString(),
       generated_at: null,
       error: null,
@@ -172,6 +175,8 @@ async function runAssistJob(requirementId, opts = {}) {
         scene_count: sceneCount,
         screenplays,
         picked: null,
+        assets: { characters: {}, scenes: {} },
+        scene_videos: {},
         generated_at: new Date().toISOString(),
         generated_at_round: typeof opts.chatRound === 'number' ? opts.chatRound : null,
         model: model.id,
@@ -190,6 +195,8 @@ async function runAssistJob(requirementId, opts = {}) {
         scene_count: sceneCount,
         screenplays: [],
         picked: null,
+        assets: { characters: {}, scenes: {} },
+        scene_videos: {},
         error: e.message,
         generated_at: new Date().toISOString(),
         used: false,
@@ -274,6 +281,74 @@ function writeScreenplayChatEntry(reqId, screenplay, meta = {}) {
   reqStore.update(reqId, { supplement_history: JSON.stringify(history) });
 }
 
+/**
+ * v0.22.8: 设置角色图或场景图（image_gen 完成后调用）
+ *   payload: { asset_type: 'character' | 'scene', asset_key, options: [3 张], picked_idx: 0 }
+ *   options[i] = { image_url_output, asset_path, mime, size }
+ */
+function setAsset(requirementId, payload) {
+  const req = reqStore.getById(requirementId);
+  if (!req) return null;
+  let assist;
+  try { assist = JSON.parse(req.assist_screenplay || 'null'); } catch { assist = null; }
+  if (!assist) return null;
+  if (!assist.assets) assist.assets = { characters: {}, scenes: {} };
+
+  const { asset_type, asset_key, options, picked_idx } = payload;
+  const idx = picked_idx || 0;
+  if (asset_type === 'character') {
+    if (!assist.assets.characters) assist.assets.characters = {};
+    assist.assets.characters[asset_key] = {
+      options: options || [],
+      picked_idx: idx,
+      image_url_output: options?.[idx]?.image_url_output || null,
+      asset_path: options?.[idx]?.asset_path || null,
+      mime: options?.[idx]?.mime || null,
+      saved_at: new Date().toISOString(),
+    };
+  } else if (asset_type === 'scene') {
+    if (!assist.assets.scenes) assist.assets.scenes = {};
+    const k = String(asset_key);
+    assist.assets.scenes[k] = {
+      options: options || [],
+      picked_idx: idx,
+      image_url_output: options?.[idx]?.image_url_output || null,
+      asset_path: options?.[idx]?.asset_path || null,
+      mime: options?.[idx]?.mime || null,
+      saved_at: new Date().toISOString(),
+    };
+  } else {
+    return null;
+  }
+
+  reqStore.update(requirementId, { assist_screenplay: JSON.stringify(assist) });
+  return assist;
+}
+
+/**
+ * v0.22.8: 设置分镜头视频（video assist 完成后调用）
+ *   payload: { scene_idx, video_id, video_url, asset_path, status, raw }
+ */
+function setSceneVideo(requirementId, sceneIdx, payload) {
+  const req = reqStore.getById(requirementId);
+  if (!req) return null;
+  let assist;
+  try { assist = JSON.parse(req.assist_screenplay || 'null'); } catch { assist = null; }
+  if (!assist) return null;
+  if (!assist.scene_videos) assist.scene_videos = {};
+
+  assist.scene_videos[String(sceneIdx)] = {
+    video_id: payload.video_id || null,
+    video_url: payload.video_url || null,
+    asset_path: payload.asset_path || null,
+    status: payload.status || 'pending',
+    created_at: new Date().toISOString(),
+  };
+
+  reqStore.update(requirementId, { assist_screenplay: JSON.stringify(assist) });
+  return assist;
+}
+
 function getAssist(requirementId) {
   const req = reqStore.getById(requirementId);
   if (!req) return null;
@@ -281,10 +356,12 @@ function getAssist(requirementId) {
 }
 
 module.exports = {
-  name: '短视频剧本（3 个剧本选项，挑一个继续）',
+  name: '短视频剧本（3 个剧本选项 + 角色/场景/分镜头资源联动）',
   field: 'assist_screenplay',
   runAssistJob,
   markPicked,
+  setAsset,        // v0.22.8: 角色/场景图写入
+  setSceneVideo,   // v0.22.8: 分镜头视频写入
   getAssist,
   writeScreenplayChatEntry,
 };

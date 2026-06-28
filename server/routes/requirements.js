@@ -916,6 +916,14 @@ router.post('/:id/assist/:method/use', async (req, res, next) => {
       // v0.4：4 个新辅助手段 → 标记已阅/跳过
       result = svc.markUsed(req.params.id);
     }
+    else if (method === 'screenplay' && body.action === 'set_asset') {
+      // v0.22.8: 写入角色/场景图（必须在 markPicked 之前，否则会被 markPicked 截胡）
+      result = svc.setAsset(req.params.id, body);
+    }
+    else if (method === 'screenplay' && body.action === 'set_scene_video') {
+      // v0.22.8: 写入分镜头视频
+      result = svc.setSceneVideo(req.params.id, body.scene_idx, body);
+    }
     else if (method === 'screenplay') {
       // v0.22：剧本辅助 → 标记选中并写聊天流（按 P11 教训）
       result = svc.markPicked(req.params.id, body.idx);
@@ -923,6 +931,14 @@ router.post('/:id/assist/:method/use', async (req, res, next) => {
     else if (method === 'image_gen') {
       // v0.22.8: 选中第 idx 张候选
       result = svc.pickOption(req.params.id, body.idx);
+    }
+    else if (method === 'screenplay' && body.action === 'set_asset') {
+      // v0.22.8: 写入角色/场景图
+      result = svc.setAsset(req.params.id, body);
+    }
+    else if (method === 'screenplay' && body.action === 'set_scene_video') {
+      // v0.22.8: 写入分镜头视频
+      result = svc.setSceneVideo(req.params.id, body.scene_idx, body);
     }
     else return res.status(400).json({ error: 'METHOD_HAS_NO_USE_HANDLER' });
 
