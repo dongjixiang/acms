@@ -159,8 +159,13 @@ async function chatImagePick(reqId, idx) {
     }
     await ACMSAssistDispatcher.useAssist(reqId, 'image_gen', payload);
     toast('✅ 已选中第 ' + (idx + 1) + ' 张', 'success', 1500);
-    // 立即刷新卡片高亮（poll 可能还在等间隔）
-    refreshImageCard(reqId);
+    // 刷新卡片高亮 + 确保 screenplay 卡片同步更新
+    await refreshImageCard(reqId);
+    // 额外 poll 一次确保 screenplay 资源回显
+    if (attachTo && window.ACMSAssistDispatcher?.poll) {
+      await new Promise(r => setTimeout(r, 500));
+      window.ACMSAssistDispatcher.poll(reqId);
+    }
     // v0.22.16: 选图完成后清理 _attachTo
     if (window._attachTo?.[reqId]) delete window._attachTo[reqId];
   } catch (e) {
