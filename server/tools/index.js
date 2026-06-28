@@ -201,6 +201,17 @@ registerTool({
     if (!reqId) return { ok: false, error: 'NO_REQ_ID', message: '工具调用上下文缺少 reqId' };
     if (!args?.song) return { ok: false, error: 'NO_SONG', message: '必须提供 song 参数' };
     try {
+      // v0.20c：检测是否已被预检触发（避免重复搜索）
+      const reqStore = require('../stores/requirement-store');
+      const req = reqStore.getById(reqId);
+      if (req && req.assist_music) {
+        let existing;
+        try { existing = JSON.parse(req.assist_music); } catch {}
+        if (existing && existing.status === 'done') {
+          console.log(`[tool:play_music] ${reqId} 音乐已由预检触发，跳过重复`);
+          return { ok: true, skipped: true, message: `已找到「${args.song}」的播放源，等待卡片出现即可。` };
+        }
+      }
       const musicSvc = require('../services/assists/music');
       console.log(`[tool:play_music] ${reqId} song="${args.song}" artist="${args.artist || ''}"`);
       // fire-and-forget：异步跑 assist job，不阻塞 LLM

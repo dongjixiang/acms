@@ -40,6 +40,9 @@
     }
     if (data.status === 'done') {
       const isAsync = data.async_task && !data.video_url;
+      const videoTag = data.video_url
+        ? `<video controls style="width:100%;max-width:360px;border-radius:6px;margin:4px 0;background:#000" src="${escHtml(data.video_url)}"></video>`
+        : '';
       return `
         <div class="assist-section-title">🎬 AI 视频生成</div>
         <div style="margin:8px 0">
@@ -48,19 +51,18 @@
             时长：${data.duration || '?'}s · 帧率：${data.frame_rate || 24}fps
             ${data.size ? `· 分辨率：${data.size}` : ''}
           </div>
+          ${videoTag}
           ${isAsync ? `
-            <div style="font-size:12px;color:var(--text2);margin-bottom:6px">
-              ⏳ 视频生成中（异步任务）· ID: ${escHtml((data.video_id || '').slice(0,24))}…
+            <div style="margin-top:4px;display:flex;gap:6px;align-items:center">
+              <button class="btn-small btn-primary" onclick="chatVideoQuery('${reqId}')">🔄 刷新进度</button>
+              <span class="video-auto-poll-status" style="font-size:11px;color:var(--text2)">⏳ 自动检测进度…</span>
             </div>
-            <button class="btn-small btn-primary" onclick="chatVideoQuery('${reqId}')">🔄 刷新进度</button>
-          ` : data.video_url ? `
-            <a href="${escHtml(data.video_url)}" target="_blank" rel="noopener noreferrer" class="btn-small btn-primary" style="text-decoration:none;display:inline-flex;align-items:center;gap:4px">
-              ▶️ 下载/查看视频
-            </a>
           ` : `
-            <div style="color:var(--warn);font-size:12px">视频已生成但 URL 不可用</div>
+            <div style="margin-top:4px;font-size:11px;color:var(--text2)">✅ 生成完成 · <span onclick="chatVideoQuery('${reqId}')" style="cursor:pointer;text-decoration:underline">刷新</span></div>
           `}
-          ${data.progress ? `<div style="font-size:11px;color:var(--text2);margin-top:4px">✅ ${Math.min(data.progress, 100)}%</div>` : ''}
+          ${!isAsync && data.video_url ? `
+            <div style="margin-top:4px"><a href="${escHtml(data.video_url)}" target="_blank" rel="noopener noreferrer" class="btn-small" style="text-decoration:none">🔗 打开原视频</a></div>
+          ` : ''}
         </div>
       `;
     }
@@ -98,9 +100,40 @@ async function chatVideoQuery(reqId) {
       loadAssistPanel(reqId);
     }
     const status = r.status;
-    if (status === 'done') toast('🎬 视频已生成！', 'success', 4000);
-    else if (status === 'failed') toast('❌ 视频生成失败', 'error', 4000);
-    else toast('🔄 进度：' + (r.progress ?? '?') + '%', 'info', 2000);
+    if (status === 'done') {
+      // 有 video_url 时直接更新聊天流里的卡片
+      if (r.video_url) {
+        const card = document.querySelector(`#chat-stream-msgs-${reqId} .assist-loading-card[data-method="video"]`);
+        if (card) {
+          card.innerHTML = `
+            <div class="assist-loading-head" style="border:none"><span style="font-size:16px">🎬</span><span class="assist-loading-title">视频已生成</span></div>
+            <div style="padding:4px 0">
+              <video controls style="width:100%;max-width:360px;border-radius:6px" src="${escHtml(r.video_url)}"></video>
+            </div>
+            <div style="padding:2px 0;font-size:11px;color:var(--text2)">✅ 生成完成</div>
+          `;
+          card.style.borderTopColor = 'var(--green)';
+          card.style.animation = 'none';
+        }
+        // 清除自动轮询
+        if (typeof window._autoPollTimers !== 'undefined' && window._autoPollTimers[reqId]) {
+          clearInterval(window._autoPollTimers[reqId]);
+          delete window._autoPollTimers[reqId];
+        }
+      }
+      toast('🎬 视频已生成！', 'success', 4000);
+    } else if (status === 'failed') {
+      toast('❌ 视频生成失败', 'error', 4000);
+    } else {
+      // 点刷新后如果还 pending，检查是否已有自动轮询，没有则启动
+      const card = document.querySelector(`#chat-stream-msgs-${reqId} .assist-loading-card[data-method="video"]`);
+      if (card && typeof startVideoAutoPoll === 'function') {
+        const statusEl = card.querySelector('.video-auto-poll-status');
+        if (statusEl) statusEl.textContent = '⏳ 自动检测进度…';
+        startVideoAutoPoll(reqId, card);
+      }
+      toast('🔄 进度：' + (r.progress ?? '?') + '%', 'info', 2000);
+    }
   } catch (e) {
     toast('查询失败：' + e.message, 'error');
   }

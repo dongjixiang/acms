@@ -90,6 +90,47 @@ async function generateVideo(args) {
       raw: data,
     };
   } catch (e) {
+    // Windows TLS 连接池问题：ECONNRESET / UND_ERR / 超时都可自动重试一次
+    const isTransient = /ECONNRESET|UND_ERR|ETIMEDOUT|ENOTFOUND|aborted/.test(e.message || e.cause?.message || '');
+    if (isTransient) {
+      console.warn(`[agnes-video] 临时网络错误，重试一次: ${e.message}`);
+      try {
+        await new Promise(r => setTimeout(r, 2000));
+        const controller2 = new AbortController();
+        const timeoutId2 = setTimeout(() => controller2.abort(), 180000);
+        const resp2 = await fetch(`${API_BASE}/v1/videos`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+          signal: controller2.signal,
+        });
+        clearTimeout(timeoutId2);
+        if (!resp2.ok) {
+          const errText2 = await resp2.text().catch(() => '');
+          return { error: `Agnes API 创建任务失败 (${resp2.status}): ${errText2 || resp2.statusText}`, status_code: resp2.status };
+        }
+        const data2 = await resp2.json();
+        return {
+          video_id: data2.video_id || null,
+          task_id: data2.task_id || data2.id || null,
+          status: data2.status || 'unknown',
+          progress: data2.progress ?? 0,
+          seconds: data2.seconds || null,
+          size: data2.size || null,
+          model: data2.model || 'agnes-video-v2.0',
+          created_at: data2.created_at || null,
+          raw: data2,
+        };
+      } catch (e2) {
+        return {
+          error: `Agnes API 请求失败 (重试): ${e2.message}`,
+          status_code: e2.name === 'TimeoutError' ? 408 : 0,
+        };
+      }
+    }
     return {
       error: `Agnes API 请求失败: ${e.message}`,
       status_code: e.name === 'TimeoutError' ? 408 : 0,

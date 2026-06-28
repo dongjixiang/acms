@@ -97,12 +97,31 @@ async function runAssistJob(requirementId, opts = {}) {
       body.extra_body.image = [finalImage];
     }
 
-    const resp = await fetch('https://apihub.agnes-ai.com/v1/images/generations', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(120000),
-    });
+    // v0.22 fix: 长时间运行的 Node 进程偶发 fetch 连接池异常（Windows 网络栈状态卡住）
+    //   现象：第一次 fetch 抛 "fetch failed"（e.cause.code='UND_ERR_SOCKET'/'ECONNRESET'）
+    //   解决：1 次自动重试（间隔 2s），覆盖瞬时网络抖动而不掩盖真实错误
+    let resp;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      console.log(`[assist:image] ${requirementId} fetch attempt ${attempt}/2`);
+      try {
+        resp = await fetch('https://apihub.agnes-ai.com/v1/images/generations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(120000),
+        });
+        break;  // 成功就跳出重试循环
+      } catch (e) {
+        const isConnError = e.cause?.code && /UND_ERR|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN/.test(e.cause.code);
+        console.log(`[assist:image] ${requirementId} fetch attempt ${attempt} failed: code=${e.cause?.code} isConn=${isConnError}`);
+        if (attempt === 1 && isConnError) {
+          console.warn(`[assist:image] ${requirementId} 第 1 次 fetch 失败 (${e.cause.code})，2s 后重试...`);
+          await new Promise(r => setTimeout(r, 2000));
+          continue;
+        }
+        throw e;  // 第 2 次仍失败 / 非连接错误 → 抛出
+      }
+    }
 
     if (!resp.ok) {
       const errBody = await resp.text().catch(() => '');
@@ -146,7 +165,7 @@ async function runAssistJob(requirementId, opts = {}) {
     });
     console.log(`[assist:image] ${requirementId} 完成, path=${saved.assetPath}`);
   } catch (e) {
-    console.error(`[assist:image] ${requirementId} 失败:`, e.message);
+    console.error(`[assist:image] ${requirementId} 失败:`, e.message, '| cause:', e.cause?.message || e.cause || 'none', '| code:', e.cause?.code || 'none');
     reqStore.update(requirementId, {
       assist_image: JSON.stringify({
         status: 'failed', prompt, image_url: imageUrl || null, size,
