@@ -144,7 +144,11 @@ async function queryAssistJob(requirementId) {
   let assist;
   try { assist = JSON.parse(req.assist_video || 'null'); } catch { assist = null; }
   if (!assist) return { error: '没有视频生成记录' };
-  if (assist.status === 'done' || assist.status === 'failed') return assist;
+  if (assist.status === 'failed') return assist;
+  // v0.22.6 fix: async_task 模式（v0.19 把 status 一直设 'done' 让 SSE 正常结束），
+  //   只有 video_url 拿到才算真完成；否则必须去查 Agnes API
+  if (assist.async_task && assist.video_url) return assist;
+  if (assist.status === 'done' && !assist.async_task) return assist;
 
   const videoId = assist.video_id || assist.raw_response?.video_id;
   const taskId = assist.task_id || assist.raw_response?.task_id;
