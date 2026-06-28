@@ -241,48 +241,13 @@ async function runAssistJob(requirementId, opts = {}) {
       console.warn(`[assist:music] ${requirementId} 网易云搜索失败（可忽略）:`, e.message);
     }
 
-    // 3d. 酷我音乐（API 公开 + iframe 嵌入可达，2026-06-28 实测）
-    //   国内老牌，覆盖 B站/网易云缺版权的部分独立音乐
-    try {
-      const kw = encodeURIComponent(song);
-      const kuwoResp = await fetchWithTimeout(
-        `https://search.kuwo.cn/r.s?all=${kw}&ft=music&itemset=web_2013&client=kt&pn=0&rn=5&rformat=json&encoding=utf8&vipver=MUSIC_9.0.5.0_W7&newver=1&uid=0&ver=1810&plat=pc&devid=0&mid=0&fmac=0&resmerge=1&issubtitle=0&showtype=14`,
-        { headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.kuwo.cn/' } },
-        10000
-      );
-      if (kuwoResp.ok) {
-        const body = await kuwoResp.text();
-        // 酷我返 JSONP 风格（单引号），用 ast.literal_eval 解析
-        let kuwoData;
-        try {
-          // 直接试 JSON
-          kuwoData = JSON.parse(body);
-        } catch {
-          // 兜底：替换单引号为双引号
-          try { kuwoData = JSON.parse(body.replace(/'/g, '"')); } catch {}
-        }
-        const songs = kuwoData?.abslist || [];
-        let added = 0;
-        for (const s of songs) {
-          if (added >= 2) break;  // 酷我最多加 2 个源（避免挤占其他平台）
-          const rid = s.MUSICRID || s.MP3RID;
-          if (!rid) continue;
-          playableSources.push({
-            type: 'kuwo',
-            label: `酷我 ${s.NAME || ''}`.trim(),
-            url: `https://player.kuwo.cn/song/${rid}`,
-            title: '酷我音乐',
-          });
-          if (!playableUrl) playableUrl = playableSources[playableSources.length - 1].url;
-          added++;
-        }
-        if (added > 0) {
-          console.log(`[assist:music] ${requirementId} 酷我搜索完成: ${added} 个源`);
-        }
-      }
-    } catch (e) {
-      console.warn(`[assist:music] ${requirementId} 酷我搜索失败（可忽略）:`, e.message);
-    }
+    // 3d. (v0.22 移除) 酷我音乐 → 之前尝试 player.kuwo.cn/song/{ID} iframe 嵌入
+    //   2026-06-28 实测：所有公开 URL 都不可嵌入：
+    //     - player.kuwo.cn/song/{ID} → 302 → http://www.kuwo.cn 主页
+    //     - www.kuwo.cn/yinyue/{ID} → 301 → /play_detail/ → 430 反爬
+    //     - m.kuwo.cn/h5/musicDetail → 200 SPA 兜底（无 audio/iframe）
+    //   改成纯搜索链接（PLATFORM_TEMPLATES 里保留），web_search 验证也能识别
+    //   多多实测报告："点酷我源打开是酷我网站，不是播放源"
 
     // 3f. Audius — 开放 API + mp3 stream 直链（2026-06-28 实测可达）
     //   覆盖：电子/DJ/混音/小众独立音乐（中文流行覆盖弱，作为差异化补充）
