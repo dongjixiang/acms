@@ -748,7 +748,7 @@ router.post('/:id/assist/:method', async (req, res, next) => {
     const { modelId, role, productName } = req.body || {};
     const reqRec = reqStore.getById(req.params.id);
     if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
-    if (reqRec.status !== 'idea' && method !== 'health_check' && method !== 'clean' && method !== 'music' && method !== 'video' && method !== 'image_gen') {
+    if (reqRec.status !== 'idea' && method !== 'health_check' && method !== 'clean' && method !== 'music' && method !== 'video' && method !== 'image_gen' && method !== 'screenplay') {
       return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
     }
 
@@ -780,8 +780,8 @@ router.post('/:id/assist/:method/regenerate', async (req, res, next) => {
       return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
     }
 
-    // 只有 3 种适合换（scenarios / decision_tree / visual）
-    const REGENERATABLE = ['scenarios', 'decision_tree', 'visual', 'reference'];
+    // 只有 3 种适合换（scenarios / decision_tree / visual / screenplay）
+    const REGENERATABLE = ['scenarios', 'decision_tree', 'visual', 'reference', 'screenplay'];
     if (!REGENERATABLE.includes(method)) {
       return res.status(400).json({ error: 'METHOD_NOT_REGENERATABLE', method });
     }
@@ -795,7 +795,9 @@ router.post('/:id/assist/:method/regenerate', async (req, res, next) => {
     const chatRound = regenBrief?.chat_round || 1;
     const regenFocus = regenBrief?.followup_question || '';
 
+    // v0.22 P5 fix: 透传 req.body 让 service 拿到 idea/target_seconds 等用户输入
     setImmediate(() => svc.runAssistJob(req.params.id, {
+      ...req.body,
       modelId,
       role,
       chatRound,
@@ -831,8 +833,10 @@ router.get('/:id/assist/:method/stream', async (req, res, next) => {
     const methodName = svc.name || method;
     let prevStatus = '';
 
-    // 轮询 DB 等状态变化（最长等 90s）
-    for (let i = 0; i < 45; i++) {
+    // 轮询 DB 等状态变化
+    //   视频任务需要更长等待（POST /v1/videos 可能数分钟才返回）
+    const maxIter = method === 'video' ? 120 : 45;  // 视频等 240s，其他等 90s
+    for (let i = 0; i < maxIter; i++) {
       const fresh = reqStore.getById(req.params.id);
       if (!fresh) { send('error', { message: '需求已删除' }); break; }
 
@@ -843,7 +847,11 @@ router.get('/:id/assist/:method/stream', async (req, res, next) => {
       if (status !== prevStatus) {
         prevStatus = status;
         if (status === 'generating') {
-          send('progress', { text: `正在调用 AI 分析…` });
+          if (method === 'video') {
+            send('progress', { text: `正在提交视频生成任务…` });
+          } else {
+            send('progress', { text: `正在调用 AI 分析…` });
+          }
         } else if (status === 'done') {
           send('progress', { text: `✅ ${methodName} 完成` });
           send('done', { method });
@@ -852,6 +860,10 @@ router.get('/:id/assist/:method/stream', async (req, res, next) => {
           send('error', { message: assistData?.error || '生成失败' });
           break;
         }
+      } else if (i === 1 && method === 'video') {
+        send('progress', { text: `正在提交视频生成任务…` });
+      } else if (i === 5 && method === 'video') {
+        send('progress', { text: `等待 Agnes 云端处理中…` });
       } else if (i === 1) {
         send('progress', { text: `正在准备${methodName}…` });
       } else if (i === 5) {
@@ -903,6 +915,10 @@ router.post('/:id/assist/:method/use', async (req, res, next) => {
     else if (method === 'pains' || method === 'stakeholders' || method === 'risks' || method === 'assumptions' || method === 'health_check') {
       // v0.4：4 个新辅助手段 → 标记已阅/跳过
       result = svc.markUsed(req.params.id);
+    }
+    else if (method === 'screenplay') {
+      // v0.22：剧本辅助 → 标记选中并写聊天流（按 P11 教训）
+      result = svc.markPicked(req.params.id, body.idx);
     }
     else return res.status(400).json({ error: 'METHOD_HAS_NO_USE_HANDLER' });
 

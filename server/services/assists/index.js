@@ -31,6 +31,7 @@ const music = require('./music'); // v0.19：音乐播放辅助 — 找免费播
 const video = require('./video'); // v0.19：AI 视频生成 — 调用 Agnes Video API
 const imageGen = require('./image-gen'); // v0.19：AI 图片生成 — 调用 Agnes Image API
 const clean = require('./clean'); // v0.19：对话清理 — 按角色清理 supplement_history
+const screenplay = require('./screenplay'); // v0.22：剧本辅助 — 一句话生成 3 个短视频剧本
 
 const ASSISTS = {
   decision_tree: decisionTree,
@@ -51,6 +52,7 @@ const ASSISTS = {
   video: video, // v0.19：AI 视频生成 — 调用 Agnes Video API
   image_gen: imageGen, // v0.19：AI 图片生成 — 调用 Agnes Image API
   clean: clean, // v0.19：对话清理 — 按角色清理 supplement_history
+  screenplay: screenplay, // v0.22：剧本辅助 — 一句话生成 3 个短视频剧本
 };
 
 const ASSIST_METHODS = Object.keys(ASSISTS);

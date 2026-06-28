@@ -118,6 +118,7 @@ function renderIdeaPanel(req) {
             <button onclick="chatMusicPrompt('${req.id}')">🎵 音乐</button>
             <button onclick="chatVideoPrompt('${req.id}')">🎬 视频</button>
             <button onclick="chatImagePrompt('${req.id}')">🖼️ 图片</button>
+            <button onclick="chatScreenplayPrompt('${req.id}')">📖 剧本</button>
             <button onclick="chatCleanPrompt('${req.id}')" style="font-size:11px;color:var(--text3)">🧹 清理</button>
           </div>
         </div>

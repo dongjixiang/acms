@@ -1301,7 +1301,7 @@ function connectAssistStream(reqId, method, extraBody) {
           es.close();
           const loadingEl = container?.querySelector(`.assist-loading-card[data-method="${method}"]`);
           // v0.19：休闲辅助（music/video/image/clean）直接在聊天流渲染结果卡片
-          const leisureMethods = ['music', 'video', 'image_gen', 'clean'];
+          const leisureMethods = ['music', 'video', 'image_gen', 'clean', 'screenplay'];
           if (loadingEl && leisureMethods.includes(method)) {
             // 替换 loading 卡片为"加载中..."
             loadingEl.innerHTML = '<div class="assist-loading-head"><span class="assist-loading-spinner">⏳</span><span class="assist-loading-title">加载结果中…</span></div>';
@@ -1380,12 +1380,20 @@ async function renderLeisureResult(reqId, method, loadingEl) {
       loadingEl.innerHTML = `
         <div class="assist-loading-head" style="border:none"><span style="font-size:16px">🎬</span><span class="assist-loading-title">${isAsync ? '视频任务已提交' : '视频已生成'}</span></div>
         <div style="padding:4px 0;font-size:12px;color:var(--text2)">
-          ${data.video_url ? `<a href="${escHtml(data.video_url)}" target="_blank">▶️ 查看视频</a>` : 'ID: ' + escHtml(vid.slice(0,30)) + (isAsync ? ' · 视频生成中（异步）' : '…')}
+          ${data.video_url ? `<video controls style="width:100%;max-width:360px;border-radius:6px;margin:4px 0" src="${escHtml(data.video_url)}"></video>` : '视频 ID: ' + escHtml(vid.slice(0,24)) + (isAsync ? ' · ⏳ 生成中' : '…')}
         </div>
-        ${isAsync ? `<div style="padding:4px 0"><button class="btn-small btn-primary" onclick="chatVideoQuery('${reqId}')">🔄 刷新进度</button></div>` : ''}
+        ${isAsync ? `<div style="padding:4px 0;display:flex;gap:6px;align-items:center">
+          <button class="btn-small btn-primary" onclick="chatVideoQuery('${reqId}')">🔄 刷新进度</button>
+          <span class="video-auto-poll-status" style="font-size:11px;color:var(--text2)">⏳ 自动检测进度…</span>
+        </div>` : ''}
       `;
       loadingEl.style.borderTopColor = 'var(--green)';
       loadingEl.style.animation = 'none';
+
+      // 如果异步任务且无 video_url，启动自动轮询
+      if (isAsync) {
+        startVideoAutoPoll(reqId, loadingEl);
+      }
     } else if (method === 'image_gen') {
       const imgSrc = data.image_url_output || '';
       loadingEl.innerHTML = `
@@ -1402,10 +1410,77 @@ async function renderLeisureResult(reqId, method, loadingEl) {
       `;
       loadingEl.style.borderTopColor = 'var(--green)';
       loadingEl.style.animation = 'none';
+    } else if (method === 'screenplay') {
+      // 复用 assists/screenplay.js 的 render 函数（Single Source of Truth）
+      const renderFn = window.ACMSAssists?.get?.('screenplay')?.render;
+      if (renderFn) {
+        loadingEl.innerHTML = renderFn(reqId, data);
+        loadingEl.style.borderTopColor = 'var(--green)';
+        loadingEl.style.animation = 'none';
+      } else {
+        loadingEl.innerHTML = `<div class="assist-loading-head" style="border:none"><span style="font-size:16px">📖</span><span class="assist-loading-title">剧本方案</span></div>
+          <div style="padding:4px 0;font-size:12px;color:var(--text2)">${(data.screenplays || []).length} 个剧本 · 点选填入输入框</div>`;
+        loadingEl.style.borderTopColor = 'var(--green)';
+        loadingEl.style.animation = 'none';
+      }
     }
   } catch (e) {
     loadingEl.innerHTML = `<div class="assist-loading-error">加载失败: ${escHtml(e.message)}</div>`;
   }
+}
+
+/**
+ * v0.21.3: 视频生成异步自动轮询
+ * 在 SSE done 后启动，每 5s 查一次 /query 直到 video_url 出现
+ */
+window._autoPollTimers = window._autoPollTimers || {};
+function startVideoAutoPoll(reqId, loadingEl) {
+  if (window._autoPollTimers[reqId]) return; // 防重复
+
+  let attempts = 0;
+  const maxAttempts = 60; // 最多轮询 5 分钟
+  const statusEl = loadingEl?.querySelector('.video-auto-poll-status');
+
+  window._autoPollTimers[reqId] = setInterval(async () => {
+    attempts++;
+    if (attempts > maxAttempts) {
+      clearInterval(window._autoPollTimers[reqId]);
+      delete window._autoPollTimers[reqId];
+      if (statusEl) statusEl.textContent = '⏹️ 停止自动检测，可手动点刷新';
+      return;
+    }
+
+    try {
+      const r = await api('POST', `/requirements/${reqId}/assist/video/query`);
+      if (r && r.video_url) {
+        clearInterval(window._autoPollTimers[reqId]);
+        delete window._autoPollTimers[reqId];
+        // 更新卡片：替换为视频播放器
+        const panel = document.querySelector(`#chat-stream-msgs-${reqId} .assist-loading-card[data-method="video"]`);
+        if (panel) {
+          panel.innerHTML = `
+            <div class="assist-loading-head" style="border:none"><span style="font-size:16px">🎬</span><span class="assist-loading-title">视频已生成</span></div>
+            <div style="padding:4px 0">
+              <video controls style="width:100%;max-width:360px;border-radius:6px" src="${escHtml(r.video_url)}"></video>
+            </div>
+            <div style="padding:2px 0;font-size:11px;color:var(--text2)">✅ 生成完成 · <span onclick="chatVideoQuery('${reqId}')" style="cursor:pointer;text-decoration:underline">刷新</span></div>
+          `;
+          panel.style.borderTopColor = 'var(--green)';
+          panel.style.animation = 'none';
+          toast('🎬 视频已生成！', 'success', 3000);
+        }
+      } else if (r && r.status === 'failed') {
+        clearInterval(window._autoPollTimers[reqId]);
+        delete window._autoPollTimers[reqId];
+        if (statusEl) statusEl.textContent = '❌ 生成失败';
+      } else if (statusEl) {
+        const pct = r?.progress != null ? Math.min(r.progress, 100) : '?';
+        statusEl.textContent = `⏳ 生成中 ${pct}% (${attempts * 5}s)`;
+      }
+    } catch {
+      // 单次查询失败不中断轮询
+    }
+  }, 5000);
 }
 
 async function chatRegen(reqId) {
