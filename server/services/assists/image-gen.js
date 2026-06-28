@@ -130,8 +130,8 @@ async function runAssistJob(requirementId, opts = {}) {
   const imageUrl = (opts.image_url || '').trim();
   const imageFileId = (opts.image_file_id || '').trim();
   const size = opts.size || '1024x1024';
-  // v0.22.8: N 候选（默认 3，范围 1-6）
-  const n = Math.max(1, Math.min(6, parseInt(opts.n) || 3));
+  // v0.22.9: N 候选（默认 1，范围 1-6）
+  const n = Math.max(1, Math.min(6, parseInt(opts.n) || 1));
 
   if (!prompt) {
     reqStore.update(requirementId, {

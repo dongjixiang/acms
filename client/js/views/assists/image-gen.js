@@ -107,8 +107,26 @@ async function chatImagePick(reqId, idx) {
   try {
     await ACMSAssistDispatcher.useAssist(reqId, 'image_gen', { idx });
     toast('✅ 已选中第 ' + (idx + 1) + ' 张', 'success', 1500);
-    // ACMSAssistDispatcher.useAssist 内部已调 poll，刷新会更新卡片高亮
   } catch (e) {
     toast('选中失败: ' + e.message, 'error');
   }
+}
+
+/**
+ * 强制刷新图片卡片（用于选中后 UI 即时更新）
+ */
+async function refreshImageCard(reqId) {
+  try {
+    const resp = await api('GET', '/requirements/' + reqId + '/assist');
+    const container = document.getElementById('assist-area-' + reqId);
+    if (container && resp.assists && resp.assists.image_gen) {
+      const mod = window.ACMSAssists.get('image_gen');
+      if (mod && mod.render) {
+        const rendered = mod.render(reqId, resp.assists.image_gen);
+        if (rendered) {
+          container.innerHTML = '<div class="assist-block assist-image_gen">' + rendered + '</div>';
+        }
+      }
+    }
+  } catch (e) { /* 静默失败 */ }
 }

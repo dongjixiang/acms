@@ -110,7 +110,7 @@
               <div style="font-size:11px;color:var(--text2);margin-top:2px">${escHtml(desc)}</div>
             </div>
             ${imgSrc ? `<img src="${escHtml(imgSrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px" alt="角色图" />` : ''}
-            <button class="btn-small" onclick="screenplayGenImage('${reqId}', 'character', '${escHtml(name).replace(/'/g, "\\'")}', '${escHtml(desc).replace(/'/g, "\\'")}')">
+            <button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'character', '${escHtml(name).replace(/'/g, "\\'")}', '${escHtml(desc).replace(/'/g, "\\'")}')">
               ${imgSrc ? '🔄 重生成' : '🎨 生成图'}
             </button>
           </div>
@@ -134,7 +134,7 @@
             <div style="font-size:11px;color:var(--text2);margin-top:2px">${escHtml(sp.setting || '（未填）')}</div>
           </div>
           ${sceneImgSrc ? `<img src="${escHtml(sceneImgSrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px" alt="场景图" />` : ''}
-          <button class="btn-small" onclick="screenplayGenImage('${reqId}', 'scene', '0', '${escHtml(sp.setting || '').replace(/'/g, "\\'")}')">
+          <button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'scene', '0', '${escHtml(sp.setting || '').replace(/'/g, "\\'")}')">
             ${sceneImgSrc ? '🔄 重生成' : '🎨 生成图'}
           </button>
         </div>

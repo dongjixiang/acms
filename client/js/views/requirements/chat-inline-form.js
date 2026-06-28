@@ -224,6 +224,7 @@ function renderImageForm(reqId) {
     fields: [
       { id: 'prompt', label: '图片描述 *', placeholder: '例如：一只猫在海滩，数码插画风格', type: 'text' },
       { id: 'size', label: '尺寸', type: 'select', options: ['1024x1024', '1024x768', '768x1024', '1280x720', '720x1280'], default: '1024x1024' },
+      { id: 'n', label: '候选数量', type: 'select', options: [1, 2, 3, 4, 5, 6], default: 1 },
       { id: 'image_url', label: '参考图片 URL（可选）', placeholder: '粘贴图片 URL，或上传文件', type: 'url' },
       { id: 'image_file', label: '或上传参考图片', type: 'file', accept: 'image/*' },
     ],

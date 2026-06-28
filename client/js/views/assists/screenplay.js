@@ -213,29 +213,72 @@ function buildScreenplayMarkdown(sp, data, idx) {
 }
 
 /**
- * v0.22.8: 为角色/场景生成图
- *   1. 弹内联表单（pre-fill prompt=assetType/assetKey 对应描述）
- *   2. 调 image_gen
+ * v0.22.9: 为角色/场景生成图（内联表单版，不再用 window.prompt）
+ *   1. 渲染内联表单卡片到聊天流（pre-fill prompt）
+ *   2. 用户提交 → 调 image_gen
  *   3. 完成后调 screenplay.use 写回 assets
  */
-async function screenplayGenImage(reqId, assetType, assetKey, defaultPrompt) {
-  // 用 window.prompt 拿 prompt（最简实现，先不做完整内联表单）
-  const prompt = (window.prompt(`🎨 为「${assetKey}」生成图，描述词：`, defaultPrompt) || '').trim();
-  if (!prompt) return;
+function screenplayGenImageForm(reqId, assetType, assetKey, defaultPrompt) {
+  const stream = document.getElementById(`chat-stream-msgs-${reqId}`);
+  if (!stream) return;
+  const cardId = `inline-spg-img-${reqId}-${Date.now()}`;
+  const safeKey = String(assetKey || '').replace(/[<>&"']/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]));
+  const safePrompt = String(defaultPrompt || '').replace(/[<>&"']/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]));
+  const html = `
+    <div id="${cardId}" class="chat-inline-form" data-method="image_gen" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;margin:6px 0">
+      <div style="font-weight:600;font-size:14px;margin-bottom:4px">🎨 为「${safeKey}」生成 3 张候选图</div>
+      <div style="font-size:11px;color:var(--text2);margin-bottom:8px">
+        ${assetType === 'character' ? '角色' : '场景'}图描述词（已预填，可改）
+      </div>
+      <div style="margin:6px 0">
+        <textarea id="${cardId}-prompt" rows="3" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px;font-size:13px;resize:vertical;font-family:inherit">${safePrompt}</textarea>
+      </div>
+      <div style="margin:8px 0 0;display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn-small btn-primary" onclick="submitScreenplayGenImage('${cardId}','${reqId}','${assetType}','${encodeURIComponent(assetKey)}')">🎨 生成 3 张候选</button>
+        <button class="btn-small" onclick="dismissInlineForm('${cardId}')">取消</button>
+      </div>
+    </div>
+  `;
+  const typing = stream.querySelector('.chat-typing');
+  const temp = document.createElement('div');
+  temp.innerHTML = html;
+  const card = temp.firstElementChild;
+  if (typing) stream.insertBefore(card, typing);
+  else stream.appendChild(card);
+  stream.scrollTop = stream.scrollHeight;
+  setTimeout(() => {
+    const ta = document.getElementById(`${cardId}-prompt`);
+    if (ta) { ta.focus(); ta.select(); }
+  }, 100);
+}
 
-  // 显示一个临时 loading 卡片在聊天流
+/**
+ * 提交表单：调 image_gen（3 张候选）→ 完成后写回 screenplay.assets
+ */
+async function submitScreenplayGenImage(cardId, reqId, assetType, encodedAssetKey) {
+  const card = document.getElementById(cardId);
+  if (!card) return;
+  const prompt = (card.querySelector(`#${cardId}-prompt`)?.value || '').trim();
+  const assetKey = decodeURIComponent(encodedAssetKey);
+  if (!prompt) return toast('请输入描述词', 'warning');
+
+  card.remove();
+
+  // 临时 loading 卡片
   const stream = document.getElementById(`chat-stream-msgs-${reqId}`);
   const tempCard = document.createElement('div');
   tempCard.className = 'assist-loading-card';
   tempCard.dataset.method = 'image_gen';
   tempCard.dataset.tempFor = `${assetType}_${assetKey}`;
-  tempCard.innerHTML = `<div class="assist-loading-head"><span class="assist-loading-spinner">⏳</span><span class="assist-loading-title">🎨 正在为「${assetKey}」生成 3 张候选图…</span></div>`;
+  tempCard.innerHTML = `<div class="assist-loading-head"><span class="assist-loading-spinner">⏳</span><span class="assist-loading-title">🎨 正在为「${escHtml(assetKey)}」生成 3 张候选图…</span></div>`;
   stream.appendChild(tempCard);
   stream.scrollTop = stream.scrollHeight;
 
   try {
     // 1. 触发 image_gen
-    await chatAssist(reqId, 'image_gen', { prompt, n: 3, _attach_to: { type: 'screenplay', assetType, assetKey } });
+    if (!window._explicitAssist) window._explicitAssist = {};
+    window._explicitAssist[reqId] = 'image_gen';
+    await chatAssist(reqId, 'image_gen', { prompt, n: 3 });
 
     // 2. 轮询直到 done
     let imgData = null;
@@ -251,7 +294,7 @@ async function screenplayGenImage(reqId, assetType, assetKey, defaultPrompt) {
       return;
     }
 
-    // 3. 默认选第 0 张，写回 screenplay
+    // 3. 默认选第 0 张，写回 screenplay.assets
     await api('POST', `/requirements/${reqId}/assist/screenplay/use`, {
       action: 'set_asset',
       asset_type: assetType,
@@ -262,9 +305,11 @@ async function screenplayGenImage(reqId, assetType, assetKey, defaultPrompt) {
 
     // 4. 刷新聊天流
     if (typeof startChatPolling === 'function') startChatPolling(reqId);
-    toast('✅ 已为「' + assetKey + '」生成 3 张候选（默认选第 1 张）', 'success', 2500);
+    if (window._explicitAssist) delete window._explicitAssist[reqId];
+    toast('✅ 已为「' + assetKey + '」生成 ' + (imgData.options?.length || 0) + ' 张候选（默认选第 1 张）', 'success', 2500);
   } catch (e) {
     tempCard.remove();
+    if (window._explicitAssist) delete window._explicitAssist[reqId];
     toast('生成失败: ' + e.message, 'error');
   }
 }
