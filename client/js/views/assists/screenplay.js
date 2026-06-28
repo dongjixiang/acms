@@ -351,10 +351,11 @@ async function submitScreenplayGenImage(cardId, reqId, assetType, encodedAssetKe
 }
 
 /**
- * v0.22.8: 为分镜头生成视频
+ * v0.22.12: 为分镜头生成视频（完成后自动继续下一个可生成的分镜头）
  *   1. 调 video assist（pre-fill scene prompt + character/scene asset）
- *   2. 轮询直到 done
+ *   2. 轮询直到拿到 video_url
  *   3. 写回 scene_videos[sceneIdx]
+ *   4. v0.22.12+: 自动找下一个"可生成"的分镜头（角色图+场景图都齐了 + 还没生成视频）→ 调自己
  */
 async function screenplayGenVideo(reqId, sceneIdx) {
   try {
@@ -373,7 +374,6 @@ async function screenplayGenVideo(reqId, sceneIdx) {
     }
 
     // 构造 prompt（角色 + 场景 + 分镜）
-    const characterName = (screenplay.characters || [])[0]?.name || 'character';
     const prompt = [
       scene.shot || '',
       scene.action || '',
@@ -393,7 +393,7 @@ async function screenplayGenVideo(reqId, sceneIdx) {
     // 触发 video
     await chatAssist(reqId, 'video', { prompt, duration: sp.target_seconds || 30, _attach_to: { type: 'screenplay', sceneIdx } });
 
-    // 轮询直到拿到 video_url（video 是异步任务）
+    // 轮询直到拿到 video_url
     let videoData = null;
     for (let i = 0; i < 60; i++) {  // 5 分钟
       await new Promise(r => setTimeout(r, 5000));
@@ -417,7 +417,29 @@ async function screenplayGenVideo(reqId, sceneIdx) {
       status: 'done',
     });
     if (typeof startChatPolling === 'function') startChatPolling(reqId);
-    toast('🎥 分镜头 ' + (sceneIdx + 1) + ' 视频已生成', 'success', 2500);
+    toast('🎥 分镜头 ' + (sceneIdx + 1) + ' 视频已生成', 'success', 2000);
+
+    // v0.22.12: 自动继续下一个可生成的分镜头
+    const allScenes = screenplay.scenes || [];
+    const sceneVideos = (await api('GET', `/requirements/${reqId}/assist`)).assists?.screenplay?.scene_videos || {};
+    const assets = (await api('GET', `/requirements/${reqId}/assist`)).assists?.screenplay?.assets || {};
+    const characters = screenplay.characters || [];
+    const firstCharAsset = characters.length > 0 ? assets.characters?.[characters[0].name] : null;
+    const sceneAsset = assets.scenes?.['0'];
+    const hasAllBaseAssets = firstCharAsset?.asset_path && sceneAsset?.asset_path;
+    if (hasAllBaseAssets) {
+      // 找下一个未生成的分镜头
+      for (let i = 0; i < allScenes.length; i++) {
+        if (i === sceneIdx) continue;  // 跳过刚生成的
+        if (sceneVideos[String(i)]?.video_url) continue;  // 跳已生成的
+        // 找到！自动继续
+        toast('🔄 自动开始下一个分镜头 ' + (i + 1) + '...', 'info', 2000);
+        await new Promise(r => setTimeout(r, 1000));  // 1s 延迟让用户看清
+        return screenplayGenVideo(reqId, i);
+      }
+      // 全部完成
+      toast('✅ 所有分镜头视频已生成完成！', 'success', 3000);
+    }
   } catch (e) {
     toast('生成失败: ' + e.message, 'error');
   }
