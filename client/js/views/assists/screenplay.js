@@ -154,62 +154,17 @@ async function submitScreenplayForm(cardId, reqId) {
 }
 
 /**
- * 选中剧本 → 写聊天流 + 填输入框
+ * v0.22.14: 选中剧本 → 写聊天流 + toast 提示
+ *   v0.22.14: 不再自动填输入框（后续工作全部在聊天流卡片里完成）
  */
 async function selectScreenplay(reqId, idx) {
   try {
     await ACMSAssistDispatcher.useAssist(reqId, 'screenplay', { idx });
-    const resp = await api('GET', `/requirements/${reqId}/assist`);
-    const data = resp.assists?.screenplay;
-    if (!data || !data.screenplays?.[idx]) {
-      toast('⚠️ 剧本数据丢失，请刷新页面', 'error');
-      return;
-    }
-    const sp = data.screenplays[idx];
-    const md = buildScreenplayMarkdown(sp, data, idx);
-    const input = document.getElementById(`chat-input-${reqId}`);
-    if (input) {
-      input.value = md;
-      input.focus();
-      if (typeof chatAutoGrow === 'function') chatAutoGrow(input);
-    }
     if (typeof startChatPolling === 'function') startChatPolling(reqId);
-    toast('🎬 剧本已填入输入框，可编辑后再发给 AI', 'success', 2500);
+    toast('✅ 剧本已选中 — 资源联动在聊天流卡片里完成', 'success', 2500);
   } catch (e) {
     toast('选择失败: ' + e.message, 'error');
   }
-}
-
-/**
- * 构造剧本 markdown（填入输入框 + 写入聊天流）
- */
-function buildScreenplayMarkdown(sp, data, idx) {
-  const lines = [];
-  lines.push(`# 选中的剧本：${sp.title || ''}`);
-  if (sp.logline) lines.push(`> ${sp.logline}`);
-  lines.push('');
-  if (sp.characters && sp.characters.length) {
-    lines.push(`**角色**：${sp.characters.map(c => `${c.name}${c.desc ? '（' + c.desc + '）' : ''}`).join('、')}`);
-  }
-  if (sp.setting) lines.push(`**场景**：${sp.setting}`);
-  if (data.target_seconds) lines.push(`**时长**：${data.target_seconds}s（${(sp.scenes || []).length} 场分镜）`);
-  lines.push('');
-  lines.push('## 分镜');
-  (sp.scenes || []).forEach((sc, i) => {
-    lines.push(`### ${i + 1}. ${sc.time || ''}`);
-    if (sc.shot) lines.push(`- 📷 **镜头**：${sc.shot}`);
-    if (sc.dialogue && sc.dialogue !== '——') lines.push(`- 💬 **对白**：${sc.dialogue}`);
-    if (sc.action) lines.push(`- 🎬 **动作**：${sc.action}`);
-    lines.push('');
-  });
-  if (sp.shot_tips) {
-    lines.push('## 拍摄建议');
-    lines.push(sp.shot_tips);
-    lines.push('');
-  }
-  lines.push('---');
-  lines.push('（请基于这个剧本告诉我你的修改意见，或者直接说「按这个生成视频」）');
-  return lines.join('\n');
 }
 
 /**
@@ -249,20 +204,23 @@ async function screenplayPickOption(reqId, assetType, assetKey, pickedIdx) {
 }
 
 /**
- * v0.22.9: 为角色/场景生成图（内联表单版，不再用 window.prompt）
- *   1. 渲染内联表单卡片到聊天流（pre-fill prompt）
+ * v0.22.14: 为角色/场景生成图（内联表单版，不再用 window.prompt）
+ *   1. 渲染内联表单卡片（弹到 body 顶部居中，不依赖 chat-stream 存在）
  *   2. 用户提交 → 调 image_gen
  *   3. 完成后调 screenplay.use 写回 assets
+ *   v0.22.14 fix: 之前 if (!stream) return 静默挂掉，从侧栏点按钮没反应；现在总是 appendBody
  */
 function screenplayGenImageForm(reqId, assetType, assetKey, defaultPrompt) {
-  const stream = document.getElementById(`chat-stream-msgs-${reqId}`);
-  if (!stream) return;
   const cardId = `inline-spg-img-${reqId}-${Date.now()}`;
   const safeKey = String(assetKey || '').replace(/[<>&"']/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]));
   const safePrompt = String(defaultPrompt || '').replace(/[<>&"']/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]));
   const html = `
-    <div id="${cardId}" class="chat-inline-form" data-method="image_gen" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;margin:6px 0">
-      <div style="font-weight:600;font-size:14px;margin-bottom:4px">🎨 为「${safeKey}」生成 3 张候选图</div>
+    <div id="${cardId}" class="chat-inline-form screenplay-gen-image-form" data-method="image_gen" style="position:fixed;top:60px;left:50%;transform:translateX(-50%);width:90%;max-width:520px;z-index:10000;background:var(--bg2);border:1px solid var(--accent);border-radius:8px;padding:12px;margin:0;box-shadow:0 4px 20px rgba(0,0,0,0.15)">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+        <span style="font-size:18px">🎨</span>
+        <strong style="flex:1;font-size:14px">为「${safeKey}」生成 3 张候选图</strong>
+        <button class="btn-small" onclick="dismissInlineForm('${cardId}')" style="font-size:14px;padding:2px 8px">✕</button>
+      </div>
       <div style="font-size:11px;color:var(--text2);margin-bottom:8px">
         ${assetType === 'character' ? '角色' : '场景'}图描述词（已预填，可改）
       </div>
@@ -275,13 +233,11 @@ function screenplayGenImageForm(reqId, assetType, assetKey, defaultPrompt) {
       </div>
     </div>
   `;
-  const typing = stream.querySelector('.chat-typing');
   const temp = document.createElement('div');
   temp.innerHTML = html;
   const card = temp.firstElementChild;
-  if (typing) stream.insertBefore(card, typing);
-  else stream.appendChild(card);
-  stream.scrollTop = stream.scrollHeight;
+  // v0.22.14: 弹到 body（fixed 顶部居中），不依赖 chat-stream 存在
+  document.body.appendChild(card);
   setTimeout(() => {
     const ta = document.getElementById(`${cardId}-prompt`);
     if (ta) { ta.focus(); ta.select(); }
@@ -300,15 +256,15 @@ async function submitScreenplayGenImage(cardId, reqId, assetType, encodedAssetKe
 
   card.remove();
 
-  // 临时 loading 卡片
-  const stream = document.getElementById(`chat-stream-msgs-${reqId}`);
+  // v0.22.14: 临时 loading 卡片（弹到 body，跟生成图表单一致位置）
   const tempCard = document.createElement('div');
-  tempCard.className = 'assist-loading-card';
+  tempCard.className = 'assist-loading-card screenplay-gen-image-loading';
   tempCard.dataset.method = 'image_gen';
   tempCard.dataset.tempFor = `${assetType}_${assetKey}`;
-  tempCard.innerHTML = `<div class="assist-loading-head"><span class="assist-loading-spinner">⏳</span><span class="assist-loading-title">🎨 正在为「${escHtml(assetKey)}」生成 3 张候选图…</span></div>`;
-  stream.appendChild(tempCard);
-  stream.scrollTop = stream.scrollHeight;
+  tempCard.style.cssText = 'position:fixed;top:60px;left:50%;transform:translateX(-50%);width:90%;max-width:520px;z-index:10000;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;box-shadow:0 4px 20px rgba(0,0,0,0.15)';
+  tempCard.innerHTML = `<div style="display:flex;align-items:center;gap:6px"><span style="font-size:18px">🎨</span><strong style="flex:1;font-size:13px">正在为「${escHtml(assetKey)}」生成 3 张候选图…</strong></div>`;
+  document.body.appendChild(tempCard);
+  setTimeout(() => { tempCard.scrollIntoView?.({ block: 'center' }); }, 50);
 
   try {
     // 1. 触发 image_gen
@@ -380,15 +336,15 @@ async function screenplayGenVideo(reqId, sceneIdx) {
       scene.dialogue && scene.dialogue !== '——' ? `Says: "${scene.dialogue}"` : '',
     ].filter(Boolean).join('. ');
 
-    // 显示 loading
-    const stream = document.getElementById(`chat-stream-msgs-${reqId}`);
+    // v0.22.14: 显示 loading（弹到 body，跟剧本其他生成器一致位置）
     const tempCard = document.createElement('div');
-    tempCard.className = 'assist-loading-card';
+    tempCard.className = 'assist-loading-card screenplay-gen-video-loading';
     tempCard.dataset.method = 'video';
     tempCard.dataset.tempFor = `scene_${sceneIdx}`;
-    tempCard.innerHTML = `<div class="assist-loading-head"><span class="assist-loading-spinner">⏳</span><span class="assist-loading-title">🎥 正在为分镜头 ${sceneIdx + 1} 生成视频（最长 5 分钟）…</span></div>`;
-    stream.appendChild(tempCard);
-    stream.scrollTop = stream.scrollHeight;
+    tempCard.style.cssText = 'position:fixed;top:60px;left:50%;transform:translateX(-50%);width:90%;max-width:520px;z-index:10000;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;box-shadow:0 4px 20px rgba(0,0,0,0.15)';
+    tempCard.innerHTML = `<div style="display:flex;align-items:center;gap:6px"><span style="font-size:18px">🎥</span><strong style="flex:1;font-size:13px">正在为分镜头 ${sceneIdx + 1} 生成视频（最长 5 分钟）…</strong></div>`;
+    document.body.appendChild(tempCard);
+    setTimeout(() => { tempCard.scrollIntoView?.({ block: 'center' }); }, 50);
 
     // 触发 video
     await chatAssist(reqId, 'video', { prompt, duration: sp.target_seconds || 30, _attach_to: { type: 'screenplay', sceneIdx } });
