@@ -31,16 +31,19 @@ function saveVideoAsset(projectSlug, buffer, ext, metadata) {
 }
 
 /**
- * 找 project slug（与 image_gen 一样）
+ * v0.22.7: 找项目目录名（与 /api/generate/assets/:projectId/* 路由一致用 slug）
+ *   路由用 project.slug 拼路径（workspaces/{slug}/{filePath}）
+ *   所以本地保存也必须用 slug，否则 URL 找不到文件
+ *   project store 只有 getById（没 getByReqId），用 req.project_id 查
  */
-function getProjectSlugForReq(requirementId) {
+function getProjectDirForReq(reqRec) {
+  if (!reqRec?.project_id) return 'default';
   try {
     const projectStore = require('../../stores/project-store');
-    const proj = projectStore.getByReqId(requirementId);
+    const proj = projectStore.getById(reqRec.project_id);
     if (proj?.slug) return proj.slug;
-    if (proj?.id) return proj.id;
-  } catch (e) { /* 静默降级 */ }
-  return 'default';
+    return reqRec.project_id;  // fallback: project 不存在或没 slug
+  } catch (e) { return reqRec.project_id || 'default'; }
 }
 
 /**
@@ -58,7 +61,7 @@ async function downloadVideoToWorkspace(requirementId, videoUrl, metadata) {
       return null;
     }
     const buffer = Buffer.from(await r.arrayBuffer());
-    const slug = getProjectSlugForReq(requirementId);
+    const slug = getProjectDirForReq(req);
     const saved = saveVideoAsset(slug, buffer, '.mp4', metadata);
     console.log(`[assist:video] ${requirementId} 已保存视频到 ${saved.assetPath} (${(saved.size/1024).toFixed(1)}KB)`);
     return saved;

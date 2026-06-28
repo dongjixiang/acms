@@ -22,14 +22,14 @@ const limit = limitIdx >= 0 ? parseInt(process.argv[limitIdx + 1]) : Infinity;
 console.log(dryRun ? '=== DRY RUN 模式 ===' : '=== 实际下载 ===');
 if (limit !== Infinity) console.log(`限制: 最多 ${limit} 个`);
 
-function getProjectSlugForReq(reqRec) {
+function getProjectDirForReq(reqRec) {
+  if (!reqRec?.project_id) return 'default';
   try {
     const projectStore = require('../server/stores/project-store');
-    const proj = projectStore.getByReqId(reqRec.id);
+    const proj = projectStore.getById(reqRec.project_id);
     if (proj?.slug) return proj.slug;
-    if (proj?.id) return proj.id;
-  } catch (e) { /* fallback to default */ }
-  return 'default';
+    return reqRec.project_id;
+  } catch (e) { return reqRec.project_id || 'default'; }
 }
 
 function saveVideoAsset(projectSlug, buffer, prompt) {
@@ -78,7 +78,7 @@ async function downloadOne(url) {
     const url = video.video_url;
     if (!url || !url.startsWith('http')) { skipped++; continue; }
 
-    const slug = getProjectSlugForReq(d);
+    const slug = getProjectDirForReq(d);
     console.log(`[${processed + skipped + failed + 1}/${rows.length}] ${r.id} | ${video.status} | slug=${slug} | ${url.slice(0, 50)}...`);
 
     if (dryRun) { processed++; continue; }
