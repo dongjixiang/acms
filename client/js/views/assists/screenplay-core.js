@@ -325,7 +325,8 @@
 
   /**
    * 解析聊天流 screenplay_result 卡片 → 调 renderDetail
-   *   entry.text 是 JSON 字符串（含 screenplay + meta）
+   *   entry.text 是 JSON 字符串（含 screenplay + meta + assets + scene_videos）
+   *   v0.22.13+: 把 assets + scene_videos 传给 renderDetail，让聊天流卡片也能交互
    */
   function renderFromChatEntry(reqId, jsonText) {
     if (!jsonText) return '<div class="chat-system-msg">📖 剧本结果（数据为空）</div>';
@@ -334,14 +335,19 @@
     if (card.type !== 'screenplay_card' || !card.screenplay) {
       return `<div class="chat-system-msg">${escHtml((jsonText || '').slice(0, 100))}</div>`;
     }
-    // 转成 renderDetail 期望的 data 结构
+    // 转成 renderDetail 期望的 data 结构（含完整 assets + scene_videos + project_id）
     return renderDetail(reqId, {
       status: 'done',
       idea: card.idea || '',
       target_seconds: card.target_seconds || 30,
       screenplays: [card.screenplay],
       picked: card.picked_idx || 0,
-      picked_at: new Date().toISOString(),
+      picked_at: card.saved_at || new Date().toISOString(),
+      // v0.22.13: 把 resources 也带过来（让聊天流卡片也能用按钮交互）
+      assets: card.assets || { characters: {}, scenes: {} },
+      scene_videos: card.scene_videos || {},
+      // project_id 从 assist 数据里拿（需要时 renderDetail 会用）
+      // 注意：card 里没存 project_id，renderDetail 渲染本地 URL 时用 'default' 兜底
     });
   }
 

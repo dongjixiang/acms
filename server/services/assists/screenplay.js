@@ -269,6 +269,10 @@ function writeScreenplayChatEntry(reqId, screenplay, meta = {}) {
     picked_idx: meta.idx ?? 0,
     total: meta.total || 1,
     screenplay,
+    // v0.22.13: 把当前资源状态也写进 card（前端聊天流卡片可读完整状态 + 交互）
+    assets: assist.assets || { characters: {}, scenes: {} },
+    scene_videos: assist.scene_videos || {},
+    saved_at: new Date().toISOString(),
   };
 
   history.push({

@@ -260,15 +260,14 @@ function backfillChatRounds(history) {
  *  v0.21：播放器/源切换/放大缩小/进度条全部走 music-core.js，与 assists 侧栏共用
  */
 /**
- * v0.22.8：剧本辅助结果专属 renderer — 调 screenplay-core 单一来源
- *   解析 screenplay_result 卡片 JSON → 渲染剧本详情（角色/场景/分镜头区块 + 内嵌按钮）
+ * v0.22.13: 剧本聊天流卡片 — 调 core 单一来源 + 传 reqId（让按钮可交互）
  *   - P11 教训：写 supplement_history 必须配专属 renderer
  *   - 完整选剧本/生成图/视频交互在 assist 卡片（侧栏 + 聊天流 loading 卡）完成
- *   - 这里的 system 卡片是「已选中剧本」的存档展示
+ *   - 聊天流 system 卡片 = 「已选中剧本 + 资源状态」的存档展示（按钮可点）
  */
-function renderScreenplayBubble(jsonText) {
+function renderScreenplayBubble(reqId, jsonText) {
   if (window.ACMSScreenplayCard) {
-    return window.ACMSScreenplayCard.renderFromChatEntry(null, jsonText);
+    return window.ACMSScreenplayCard.renderFromChatEntry(reqId, jsonText);
   }
   // 兜底（core 未加载时）
   if (!jsonText) return '<div class="chat-system-msg">📖 剧本结果（数据为空）</div>';
@@ -447,7 +446,8 @@ function renderChatBubble(container, entry) {
       ? renderMusicBubble(entry.text || '')
       : isSystem && entry.source === 'screenplay_result'
         // v0.22 fix: 剧本辅助结果必须配专属 renderer，否则 JSON 走 renderMarkdown 触发 "(s || \"\").replace is not a function"
-        ? renderScreenplayBubble(entry.text || '')
+        // v0.22.13: 传 reqId 让聊天流卡片能交互（生成图/视频按钮）
+        ? renderScreenplayBubble(container.id?.replace('chat-stream-msgs-', '') || '', entry.text || '')
         : isSystem
           ? `<div class="chat-system-msg">${renderMarkdown(entry.text || '')}</div>`
           : `<div>${isAI ? renderMarkdown(entry.text || '') : escHtml(entry.text || '')}</div>`;
