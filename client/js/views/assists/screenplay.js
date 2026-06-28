@@ -217,11 +217,16 @@ async function screenplayGenImage(reqId, assetType, assetKey, defaultPrompt) {
     // 触发 image_gen（用 description 当 prompt pre-fill，加 pending:true 不立即生成）
     if (!window._explicitAssist) window._explicitAssist = {};
     window._explicitAssist[reqId] = 'image_gen';
-    await chatAssist(reqId, 'image_gen', {
+    // v0.22.16: 直接调 API 设 pending_input（不走 chatAssist+SSE，避免 loading 卡 + 提前 done 干扰）
+    await api('POST', `/requirements/${reqId}/assist/image_gen`, {
       prompt: defaultPrompt || '',
       n: 3,
       pending: true,
     });
+    // 启动 assist 轮询渲染 pending_input 卡片
+    if (window.ACMSAssistDispatcher?.loadAll) {
+      window.ACMSAssistDispatcher.loadAll(reqId);
+    }
     toast('🎨 已打开图片生成卡片，可修改 prompt 后点击"生成"', 'info', 3000);
   } catch (e) {
     toast('启动失败: ' + e.message, 'error');

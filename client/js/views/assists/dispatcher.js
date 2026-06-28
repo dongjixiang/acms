@@ -106,9 +106,9 @@
         if (!d) return false;
         // 用户显式选了某个 assist → 只显示那个和正在生成中的
         const explicit = window._explicitAssist?.[reqId];
-        if (explicit && explicit !== m && d.status !== 'generating' && d.status !== 'pending') return false;
+        if (explicit && explicit !== m && d.status !== 'generating' && d.status !== 'pending' && d.status !== 'pending_input') return false;
         // 正在生成（status 字段已写但 generated_at_round 可能还没写）→ 显示
-        if (d.status === 'generating' || d.status === 'pending') return true;
+        if (d.status === 'generating' || d.status === 'pending' || d.status === 'pending_input') return true;
         // 当前轮生成 → 整体显示（用户表态了也保留，没表态也保留）
         if (typeof d.generated_at_round === 'number' && d.generated_at_round === currentRound) return true;
         // v0.19：显式调用的 assist（如 music/video/image/clean）已完成 → 显示（可能没有 generated_at_round）
@@ -141,7 +141,7 @@
       .filter(m => {
         const d = data[m];
         if (!d) return false;
-        if (d.status === 'generating' || d.status === 'pending') return true;
+        if (d.status === 'generating' || d.status === 'pending' || d.status === 'pending_input') return true;
         if (typeof d.generated_at_round === 'number' && d.generated_at_round === currentRound) return true;
         return false;
       })
