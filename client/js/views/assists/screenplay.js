@@ -213,6 +213,42 @@ function buildScreenplayMarkdown(sp, data, idx) {
 }
 
 /**
+ * v0.22.11: 在已生成的 3 张候选里切换（不重新生成）
+ *   1. 调 screenplay.use set_asset 改 picked_idx
+ *   2. 刷新聊天流
+ */
+async function screenplayPickOption(reqId, assetType, assetKey, pickedIdx) {
+  try {
+    // 1. 读最新 data 拿 options
+    const r = await api('GET', `/requirements/${reqId}/assist`);
+    const sp = r.assists?.screenplay;
+    if (!sp) { toast('剧本数据丢失', 'error'); return; }
+    const assets = sp.assets || {};
+    const target = assetType === 'character' ? assets.characters?.[assetKey] : assets.scenes?.[String(assetKey)];
+    if (!target || !Array.isArray(target.options) || target.options.length <= 1) {
+      toast('没有可选的候选', 'warning');
+      return;
+    }
+
+    // 2. 调 use 路由 set_asset 改 picked_idx
+    await api('POST', `/requirements/${reqId}/assist/screenplay/use`, {
+      action: 'set_asset',
+      asset_type: assetType,
+      asset_key: assetKey,
+      options: target.options,
+      picked_idx: pickedIdx,
+    });
+
+    // 3. 刷新聊天流 + 侧栏
+    if (typeof startChatPolling === 'function') startChatPolling(reqId);
+    if (window.ACMSAssistDispatcher?.poll) window.ACMSAssistDispatcher.poll(reqId);
+    toast('🔀 已切换到第 ' + (pickedIdx + 1) + ' 张', 'success', 1500);
+  } catch (e) {
+    toast('切换失败: ' + e.message, 'error');
+  }
+}
+
+/**
  * v0.22.9: 为角色/场景生成图（内联表单版，不再用 window.prompt）
  *   1. 渲染内联表单卡片到聊天流（pre-fill prompt）
  *   2. 用户提交 → 调 image_gen

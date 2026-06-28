@@ -120,6 +120,35 @@
         ? `/api/generate/assets/${encodeURIComponent(data.project_id || 'default')}/${imgAsset}`
         : asset?.image_url_output;
       const isReady = !!imgAsset;
+      const options = asset?.options || [];
+      const hasMultipleOptions = options.length > 1;
+
+      // 3 张候选缩略图（v0.22.11 换图功能）
+      const optionsHtml = hasMultipleOptions ? `
+        <details style="margin-top:6px" data-screenplay-options="${escHtml(name).replace(/"/g, '&quot;')}">
+          <summary style="font-size:11px;color:var(--accent);cursor:pointer;user-select:none">🔀 候选 ${options.length} 张（已选第 ${(asset.picked_idx || 0) + 1} 张 · 点切换）</summary>
+          <div style="display:flex;flex-wrap:wrap;gap:4px;padding:6px 0">
+            ${options.map((opt, i) => {
+              const optSrc = opt.asset_path
+                ? `/api/generate/assets/${encodeURIComponent(data.project_id || 'default')}/${opt.asset_path}`
+                : opt.image_url_output;
+              const isSelected = (asset.picked_idx || 0) === i;
+              return `
+                <div onclick="screenplayPickOption('${reqId}', 'character', '${escHtml(name).replace(/'/g, "\\'")}', ${i})" style="
+                  width:60px;height:60px;border-radius:4px;cursor:pointer;position:relative;
+                  border:2px solid ${isSelected ? 'var(--accent)' : 'var(--border)'};
+                  background:${isSelected ? 'rgba(99,102,241,0.1)' : 'transparent'};
+                  display:flex;align-items:center;justify-content:center;
+                " title="候选 ${i + 1}">
+                  <img src="${escHtml(optSrc)}" style="width:100%;height:100%;object-fit:cover;border-radius:2px" alt="候选 ${i + 1}" />
+                  ${isSelected ? '<div style="position:absolute;top:2px;right:2px;background:var(--accent);color:white;border-radius:50%;width:14px;height:14px;display:flex;align-items:center;justify-content:center;font-size:9px">✓</div>' : ''}
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </details>
+      ` : '';
+
       return `
         <div class="screenplay-asset-block" style="margin:8px 0;padding:8px;background:var(--bg);border:1px solid ${isReady ? 'var(--green)' : 'var(--border)'};border-radius:6px">
           <div style="display:flex;align-items:center;gap:8px">
@@ -128,11 +157,12 @@
               <div style="font-size:11px;color:var(--text2);margin-top:2px">${escHtml(desc)}</div>
             </div>
             ${imgSrc ? `<img src="${escHtml(imgSrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px" alt="角色图" />` : ''}
-            <button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'character', '${escHtml(name).replace(/'/g, "\\'")}', '${escHtml(desc).replace(/'/g, "\\'")}')">
-              ${imgSrc ? '🔄 重生成' : '🎨 生成图'}
-            </button>
+            <div style="display:flex;flex-direction:column;gap:3px">
+              ${isReady ? `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'character', '${escHtml(name).replace(/'/g, "\\'")}', '${escHtml(desc).replace(/'/g, "\\'")}')" style="font-size:10px">🎨 重新生成</button>` : `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'character', '${escHtml(name).replace(/'/g, "\\'")}', '${escHtml(desc).replace(/'/g, "\\'")}')">🎨 生成图</button>`}
+            </div>
           </div>
-          ${asset?.options?.length > 1 ? `<div style="font-size:10px;color:var(--text3);margin-top:4px">已选第 ${(asset.picked_idx || 0) + 1} 张 · 共 ${asset.options.length} 张候选</div>` : ''}
+          ${optionsHtml}
+          ${hasMultipleOptions ? '' : ''}
         </div>
       `;
     }).join('');
@@ -145,6 +175,32 @@
       ? `/api/generate/assets/${encodeURIComponent(data.project_id || 'default')}/${sceneImgAsset}`
       : sceneAsset?.image_url_output;
     const sceneIsReady = !!sceneImgAsset;
+    const sceneOptions = sceneAsset?.options || [];
+    const sceneHasMultipleOptions = sceneOptions.length > 1;
+    const sceneOptionsHtml = sceneHasMultipleOptions ? `
+      <details style="margin-top:6px" data-screenplay-options="scene_0">
+        <summary style="font-size:11px;color:var(--accent);cursor:pointer;user-select:none">🔀 候选 ${sceneOptions.length} 张（已选第 ${(sceneAsset.picked_idx || 0) + 1} 张 · 点切换）</summary>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;padding:6px 0">
+          ${sceneOptions.map((opt, i) => {
+            const optSrc = opt.asset_path
+              ? `/api/generate/assets/${encodeURIComponent(data.project_id || 'default')}/${opt.asset_path}`
+              : opt.image_url_output;
+            const isSelected = (sceneAsset.picked_idx || 0) === i;
+            return `
+              <div onclick="screenplayPickOption('${reqId}', 'scene', '0', ${i})" style="
+                width:60px;height:60px;border-radius:4px;cursor:pointer;position:relative;
+                border:2px solid ${isSelected ? 'var(--accent)' : 'var(--border)'};
+                background:${isSelected ? 'rgba(99,102,241,0.1)' : 'transparent'};
+                display:flex;align-items:center;justify-content:center;
+              " title="候选 ${i + 1}">
+                <img src="${escHtml(optSrc)}" style="width:100%;height:100%;object-fit:cover;border-radius:2px" alt="候选 ${i + 1}" />
+                ${isSelected ? '<div style="position:absolute;top:2px;right:2px;background:var(--accent);color:white;border-radius:50%;width:14px;height:14px;display:flex;align-items:center;justify-content:center;font-size:9px">✓</div>' : ''}
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </details>
+    ` : '';
     const sceneBlock = `
       <div class="screenplay-asset-block" style="margin:8px 0;padding:8px;background:var(--bg);border:1px solid ${sceneIsReady ? 'var(--green)' : 'var(--border)'};border-radius:6px">
         <div style="display:flex;align-items:center;gap:8px">
@@ -153,10 +209,11 @@
             <div style="font-size:11px;color:var(--text2);margin-top:2px">${escHtml(sp.setting || '（未填）')}</div>
           </div>
           ${sceneImgSrc ? `<img src="${escHtml(sceneImgSrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px" alt="场景图" />` : ''}
-          <button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'scene', '0', '${escHtml(sp.setting || '').replace(/'/g, "\\'")}')">
-            ${sceneImgSrc ? '🔄 重生成' : '🎨 生成图'}
-          </button>
+          <div style="display:flex;flex-direction:column;gap:3px">
+            ${sceneIsReady ? `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'scene', '0', '${escHtml(sp.setting || '').replace(/'/g, "\\'")}')" style="font-size:10px">🎨 重新生成</button>` : `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'scene', '0', '${escHtml(sp.setting || '').replace(/'/g, "\\'")}')">🎨 生成图</button>`}
+          </div>
         </div>
+        ${sceneOptionsHtml}
       </div>
     `;
 
