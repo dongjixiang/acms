@@ -1453,12 +1453,19 @@ async function renderLeisureResult(reqId, method, loadingEl) {
         startVideoAutoPoll(reqId, loadingEl);
       }
     } else if (method === 'image_gen') {
-      const imgSrc = data.image_url_output || '';
-      loadingEl.innerHTML = `
-        <div class="assist-loading-head" style="border:none"><span style="font-size:16px">🖼️</span><span class="assist-loading-title">图片已生成</span></div>
-        ${imgSrc ? `<div style="padding:4px 0"><img src="${escHtml(imgSrc)}" style="max-width:200px;border-radius:6px;border:1px solid var(--border)"></div>
-        <div style="padding:2px 0"><a href="${escHtml(imgSrc)}" target="_blank" class="btn-small">🔗 查看原图</a></div>` : '<div style="padding:4px 0;font-size:12px;color:var(--text2)">图片 URL 不可用</div>'}
-      `;
+      // v0.22.8: 复用 assists/image-gen.js 的 render 函数（N 候选 + 选中按钮）
+      const renderFn = window.ACMSAssists?.get?.('image_gen')?.render;
+      if (renderFn) {
+        loadingEl.innerHTML = renderFn(reqId, data);
+      } else {
+        // fallback：单图
+        const imgSrc = data.image_url_output || (data.asset_path ? '/api/generate/assets/' + (data.project_id || 'default') + '/' + data.asset_path : '');
+        loadingEl.innerHTML = `
+          <div class="assist-loading-head" style="border:none"><span style="font-size:16px">🖼️</span><span class="assist-loading-title">图片已生成</span></div>
+          ${imgSrc ? `<div style="padding:4px 0"><img src="${escHtml(imgSrc)}" style="max-width:200px;border-radius:6px;border:1px solid var(--border)"></div>
+          <div style="padding:2px 0"><a href="${escHtml(imgSrc)}" target="_blank" class="btn-small">🔗 查看原图</a></div>` : '<div style="padding:4px 0;font-size:12px;color:var(--text2)">图片 URL 不可用</div>'}
+        `;
+      }
       loadingEl.style.borderTopColor = 'var(--green)';
       loadingEl.style.animation = 'none';
     } else if (method === 'clean') {

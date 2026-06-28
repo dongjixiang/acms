@@ -920,6 +920,10 @@ router.post('/:id/assist/:method/use', async (req, res, next) => {
       // v0.22：剧本辅助 → 标记选中并写聊天流（按 P11 教训）
       result = svc.markPicked(req.params.id, body.idx);
     }
+    else if (method === 'image_gen') {
+      // v0.22.8: 选中第 idx 张候选
+      result = svc.pickOption(req.params.id, body.idx);
+    }
     else return res.status(400).json({ error: 'METHOD_HAS_NO_USE_HANDLER' });
 
     res.json({ method, result });

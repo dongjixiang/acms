@@ -1,16 +1,20 @@
-// ACMS · 图片生成辅助（v0.19，2026-06-27）
+// ACMS · 图片生成辅助（v0.22.8，2026-06-28）
 //   用户输入 prompt + 可选参考图 → 调用 Agnes Image 2.0 Flash
+//   v0.22.8: 支持 N 候选（并行调 N 次 API，因为 agnes-image-2.0-flash 不支持 n>1）
 //   支持：文生图 / 图生图（多图输入）
 //   直接调 API（不依赖 gen-adapter 生成器注册）
 //
-// 字段：requirement.assist_image（status / prompt / image_url / asset_path / error）
+// 字段：requirement.assist_image
+//   status / prompt / image_url / asset_path / options[N] / picked_idx / size / error
+//   options[i] = { image_url_output, asset_path, mime, size }
+//   picked_idx = 用户选中的索引（默认 0）
 
 const reqStore = require('../../stores/requirement-store');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 
-const WORKSPACE_ROOT = path.join(__dirname, '..', '..', '..', 'workspaces');
+const WORKSPACE_ROOT = path.join(__dirname, '..', '..', 'workspaces');
 
 /**
  * 读取 Agnes API Key
@@ -25,6 +29,19 @@ function getAgnesApiKey() {
     if (cfg && cfg.value) return cfg.value;
   } catch (e) { /* ignore */ }
   return '';
+}
+
+/**
+ * 找项目目录名（与 video.js 一致，用 project.slug 拼路径）
+ */
+function getProjectDirForReq(reqRec) {
+  if (!reqRec?.project_id) return 'default';
+  try {
+    const projectStore = require('../../stores/project-store');
+    const proj = projectStore.getById(reqRec.project_id);
+    if (proj?.slug) return proj.slug;
+    return reqRec.project_id;
+  } catch (e) { return reqRec.project_id || 'default'; }
 }
 
 /**
@@ -43,19 +60,85 @@ function saveImageAsset(projectSlug, buffer, ext, mime, metadata) {
   return { assetPath, mime, size: buffer.length };
 }
 
+/**
+ * v0.22.8: 单次调 Agnes Image API（带 1 次重试）
+ *   返回 { ok: true, url, mime } 或 { ok: false, error }
+ */
+async function callAgnesImageOnce(apiKey, body) {
+  let lastErr = '';
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const c = new AbortController();
+      const tid = setTimeout(() => c.abort(), 120000);
+      const r = await fetch('https://apihub.agnes-ai.com/v1/images/generations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: JSON.stringify(body),
+        signal: c.signal,
+      });
+      clearTimeout(tid);
+      if (!r.ok) {
+        const errBody = await r.text().catch(() => '');
+        lastErr = `HTTP ${r.status}: ${errBody.slice(0, 100)}`;
+        continue;  // HTTP 错误不重试（避免浪费 token）
+      }
+      const data = await r.json();
+      const url = data.data?.[0]?.url;
+      if (!url) {
+        lastErr = 'no url in response';
+        continue;
+      }
+      return { ok: true, url };
+    } catch (e) {
+      lastErr = e.message;
+      // 连接错误重试 1 次
+      const isConnError = e.cause?.code && /UND_ERR|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN/.test(e.cause.code);
+      if (attempt === 1 && isConnError) {
+        await new Promise(r => setTimeout(r, 2000));
+        continue;
+      }
+    }
+  }
+  return { ok: false, error: lastErr };
+}
+
+/**
+ * v0.22.8: 下载单张图到 workspace
+ */
+async function downloadAndSaveOne(apiKey, projectSlug, url, metadata) {
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return { ok: false, error: `download HTTP ${r.status}` };
+    const buffer = Buffer.from(await r.arrayBuffer());
+    const contentType = r.headers.get('content-type') || '';
+    let ext, mime;
+    if (contentType.includes('jpeg') || contentType.includes('jpg')) { ext = '.jpg'; mime = 'image/jpeg'; }
+    else if (contentType.includes('webp')) { ext = '.webp'; mime = 'image/webp'; }
+    else { ext = '.png'; mime = 'image/png'; }
+    const saved = saveImageAsset(projectSlug, buffer, ext, mime, metadata);
+    return { ok: true, url, asset_path: saved.assetPath, mime: saved.mime, size: saved.size };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
 async function runAssistJob(requirementId, opts = {}) {
   const req = reqStore.getById(requirementId);
   if (!req) return;
 
   const prompt = (opts.prompt || '').trim();
   const imageUrl = (opts.image_url || '').trim();
-  const imageFileId = (opts.image_file_id || '').trim();  // v0.19：上传文件 ID
+  const imageFileId = (opts.image_file_id || '').trim();
   const size = opts.size || '1024x1024';
+  // v0.22.8: N 候选（默认 3，范围 1-6）
+  const n = Math.max(1, Math.min(6, parseInt(opts.n) || 3));
 
   if (!prompt) {
     reqStore.update(requirementId, {
       assist_image: JSON.stringify({
-        status: 'failed', error: 'NO_PROMPT', prompt: '',
+        status: 'failed',
+        error: 'NO_PROMPT',
+        prompt: '',
         generated_at: new Date().toISOString(),
       }),
     });
@@ -75,15 +158,20 @@ async function runAssistJob(requirementId, opts = {}) {
 
   reqStore.update(requirementId, {
     assist_image: JSON.stringify({
-      status: 'generating', prompt, image_url: finalImage || null, size,
-      image_url_output: null, asset_path: null, error: null,
+      status: 'generating',
+      prompt,
+      image_url: finalImage || null,
+      size,
+      n,
+      options: [],
+      picked_idx: 0,
       started_at: new Date().toISOString(),
     }),
   });
 
   try {
     const apiKey = getAgnesApiKey();
-    if (!apiKey) throw new Error('Agnes API Key 未配置，请在管理后台「高级设置」中配置');
+    if (!apiKey) throw new Error('Agnes API Key 未配置');
 
     const body = {
       model: 'agnes-image-2.0-flash',
@@ -91,90 +179,99 @@ async function runAssistJob(requirementId, opts = {}) {
       size,
       extra_body: { response_format: 'url' },
     };
+    if (finalImage) body.extra_body.image = [finalImage];
 
-    // finalImage 已在上方定义（来自 imageFileId 或 imageUrl）
-    if (finalImage) {
-      body.extra_body.image = [finalImage];
+    // v0.22.8: 并行调 N 次 API（agnes-image-2.0-flash 不支持 n>1，只能 N 次单张）
+    console.log(`[assist:image] ${requirementId} 开始生成 ${n} 张候选`);
+    const callResults = await Promise.all(
+      Array.from({ length: n }, () => callAgnesImageOnce(apiKey, body))
+    );
+    const successUrls = callResults.filter(r => r.ok).map(r => r.url);
+    if (successUrls.length === 0) {
+      const err = callResults.map(r => r.error).join('; ');
+      throw new Error(`所有 ${n} 次 API 调用都失败: ${err.slice(0, 200)}`);
+    }
+    console.log(`[assist:image] ${requirementId} ${successUrls.length}/${n} 张成功，开始下载保存`);
+
+    // 并行下载 + 保存
+    const projectSlug = getProjectDirForReq(req);
+    const downloadResults = await Promise.all(
+      successUrls.map(url => downloadAndSaveOne(apiKey, projectSlug, url, {
+        prompt, size, img2img: !!imageUrl,
+      }))
+    );
+    const options = downloadResults
+      .filter(r => r.ok)
+      .map(r => ({
+        image_url_output: r.url,
+        asset_path: r.asset_path,
+        mime: r.mime,
+        size: r.size,
+      }));
+
+    if (options.length === 0) {
+      const err = downloadResults.map(r => r.error).join('; ');
+      throw new Error(`下载全部失败: ${err.slice(0, 200)}`);
     }
 
-    // v0.22 fix: 长时间运行的 Node 进程偶发 fetch 连接池异常（Windows 网络栈状态卡住）
-    //   现象：第一次 fetch 抛 "fetch failed"（e.cause.code='UND_ERR_SOCKET'/'ECONNRESET'）
-    //   解决：1 次自动重试（间隔 2s），覆盖瞬时网络抖动而不掩盖真实错误
-    let resp;
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      console.log(`[assist:image] ${requirementId} fetch attempt ${attempt}/2`);
-      try {
-        resp = await fetch('https://apihub.agnes-ai.com/v1/images/generations', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(120000),
-        });
-        break;  // 成功就跳出重试循环
-      } catch (e) {
-        const isConnError = e.cause?.code && /UND_ERR|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN/.test(e.cause.code);
-        console.log(`[assist:image] ${requirementId} fetch attempt ${attempt} failed: code=${e.cause?.code} isConn=${isConnError}`);
-        if (attempt === 1 && isConnError) {
-          console.warn(`[assist:image] ${requirementId} 第 1 次 fetch 失败 (${e.cause.code})，2s 后重试...`);
-          await new Promise(r => setTimeout(r, 2000));
-          continue;
-        }
-        throw e;  // 第 2 次仍失败 / 非连接错误 → 抛出
-      }
-    }
-
-    if (!resp.ok) {
-      const errBody = await resp.text().catch(() => '');
-      throw new Error(`Agnes API 返回 ${resp.status}: ${errBody.slice(0, 200)}`);
-    }
-
-    const data = await resp.json();
-    const imageUrlOutput = data.data?.[0]?.url;
-
-    if (!imageUrlOutput) throw new Error('Agnes 返回无图片 URL');
-
-    // 下载并保存
-    const imgResp = await fetch(imageUrlOutput);
-    if (!imgResp.ok) throw new Error(`图片下载失败: ${imgResp.status}`);
-    const buffer = Buffer.from(await imgResp.arrayBuffer());
-    const contentType = imgResp.headers.get('content-type') || '';
-    let ext, mime;
-    if (contentType.includes('jpeg') || contentType.includes('jpg')) { ext = '.jpg'; mime = 'image/jpeg'; }
-    else if (contentType.includes('webp')) { ext = '.webp'; mime = 'image/webp'; }
-    else { ext = '.png'; mime = 'image/png'; }
-
-    // 找 project slug
-    let projectSlug = 'default';
-    try {
-      const projectStore = require('../../stores/project-store');
-      const proj = projectStore.getByReqId(requirementId);
-      if (proj?.slug) projectSlug = proj.slug;
-      else if (proj?.id) projectSlug = proj.id;
-    } catch (e) { /* 用默认值 */ }
-
-    const saved = saveImageAsset(projectSlug, buffer, ext, mime, { prompt, size, img2img: !!imageUrl });
+    // 默认选第 0 张
+    const picked = options[0];
 
     reqStore.update(requirementId, {
       assist_image: JSON.stringify({
-        status: 'done', prompt, image_url: imageUrl || null, size,
-        image_url_output: imageUrlOutput,
-        asset_path: saved.assetPath,
-        mime: saved.mime,
+        status: 'done',
+        prompt,
+        image_url: finalImage || null,
+        size,
+        n,
+        options,
+        picked_idx: 0,
+        // 兼容旧字段（image_url_output / asset_path = picked 的）
+        image_url_output: picked.image_url_output,
+        asset_path: picked.asset_path,
+        mime: picked.mime,
         generated_at: new Date().toISOString(),
       }),
     });
-    console.log(`[assist:image] ${requirementId} 完成, path=${saved.assetPath}`);
+    console.log(`[assist:image] ${requirementId} 完成, ${options.length} 张候选`);
   } catch (e) {
-    console.error(`[assist:image] ${requirementId} 失败:`, e.message, '| cause:', e.cause?.message || e.cause || 'none', '| code:', e.cause?.code || 'none');
+    console.error(`[assist:image] ${requirementId} 失败:`, e.message);
     reqStore.update(requirementId, {
       assist_image: JSON.stringify({
-        status: 'failed', prompt, image_url: imageUrl || null, size,
-        image_url_output: null, asset_path: null,
-        error: e.message || '未知错误',
+        status: 'failed',
+        prompt,
+        image_url: finalImage || null,
+        size,
+        n,
+        options: [],
+        picked_idx: 0,
+        error: e.message,
         generated_at: new Date().toISOString(),
       }),
     });
   }
+}
+
+/**
+ * v0.22.8: 用户选中第 idx 张候选
+ *   调 use 路由时传 { idx: N }
+ */
+function pickOption(requirementId, idx) {
+  const req = reqStore.getById(requirementId);
+  if (!req) return null;
+  let assist;
+  try { assist = JSON.parse(req.assist_image || 'null'); } catch { assist = null; }
+  if (!assist || !Array.isArray(assist.options) || idx < 0 || idx >= assist.options.length) return null;
+  const picked = assist.options[idx];
+  assist.picked_idx = idx;
+  assist.used = true;
+  assist.picked_at = new Date().toISOString();
+  // 同步旧字段（向后兼容）
+  assist.image_url_output = picked.image_url_output;
+  assist.asset_path = picked.asset_path;
+  assist.mime = picked.mime;
+  reqStore.update(requirementId, { assist_image: JSON.stringify(assist) });
+  return assist;
 }
 
 function getAssist(requirementId) {
@@ -184,8 +281,9 @@ function getAssist(requirementId) {
 }
 
 module.exports = {
-  name: 'AI 图片生成（Agnes Image）',
+  name: 'AI 图片生成（Agnes Image，N 候选）',
   field: 'assist_image',
   runAssistJob,
+  pickOption,
   getAssist,
 };

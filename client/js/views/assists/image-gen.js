@@ -1,41 +1,21 @@
-// ACMS · AI 图片生成辅助（v0.19，2026-06-27）
-//   Method: image_gen | Name: AI 图片生成（Agnes Image）
+// ACMS · AI 图片生成辅助（v0.22.8，2026-06-28）
+//   Method: image_gen | Name: AI 图片生成（N 候选）
+//   v0.22.8: 支持 N 候选（一次生 3 张图，用户选 1 张）
 //
-// 卡片渲染：
-//   - generating：⏳ 生成中
-//   - done：显示图片 + 下载链接
+// 渲染：
+//   - generating：⏳ 生成中（N 张）
+//   - done：3 缩略图 + 选中按钮（高亮 picked）
 //   - failed：错误提示
 //
 // 全局函数：
 //   - chatImagePrompt(reqId)：弹输入框 → 调 chatAssist('image_gen', {...})
+//   - chatImagePick(reqId, idx)：选中第 idx 张（调 use 路由）
 
 (function () {
   function render(reqId, data) {
     if (!data) return '';
     if (data.status === 'generating') {
-      return '<div class="insight-loading">⏳ 正在生成图片…</div>';
-    }
-    if (data.status === 'done') {
-      const isImg2Img = data.image_url ? true : false;
-      // 尝试构造图片 URL：asset_path 是 workspace 内路径
-      const imgSrc = data.image_url_output
-        || (data.asset_path ? '/api/workspace/serve/' + data.asset_path : '');
-      return `
-        <div class="assist-section-title">🖼️ AI 图片生成 ✅</div>
-        <div style="margin:8px 0">
-          <div style="font-size:13px;margin-bottom:4px">描述：${escHtml(data.prompt || '')}</div>
-          ${isImg2Img ? `<div style="font-size:11px;color:var(--text2);margin-bottom:4px">🔄 图生图（有参考图）</div>` : ''}
-          <div style="font-size:11px;color:var(--text2);margin-bottom:8px">尺寸：${escHtml(data.size || '1024x1024')}</div>
-          ${imgSrc ? `
-            <div style="margin:8px 0">
-              <img src="${escHtml(imgSrc)}" alt="生成的图片" style="max-width:100%;border-radius:8px;border:1px solid var(--border)">
-            </div>
-            <a href="${escHtml(imgSrc)}" target="_blank" rel="noopener noreferrer" class="btn-small btn-primary" style="text-decoration:none;display:inline-flex;align-items:center;gap:4px">
-              🔗 查看原图
-            </a>
-          ` : '<div style="color:var(--warn);font-size:12px">图片 URL 不可用</div>'}
-        </div>
-      `;
+      return `<div class="insight-loading">⏳ 正在生成 ${data.n || 3} 张候选图…</div>`;
     }
     if (data.status === 'failed') {
       const errMsg = data.error === 'NO_PROMPT'
@@ -43,10 +23,70 @@
         : `❌ 生成失败：${escHtml(data.error || '未知错误')}`;
       return `<div class="insight-error">${errMsg}</div>`;
     }
+    if (data.status === 'done') {
+      const options = Array.isArray(data.options) ? data.options : [];
+      if (options.length === 0) {
+        // 兼容老数据（没 options 字段）：用 image_url_output
+        return renderSingleFromLegacy(reqId, data);
+      }
+      // v0.22.8: N 候选渲染
+      const pickedIdx = data.picked_idx || 0;
+      const optionsHtml = options.map((opt, i) => {
+        const src = opt.asset_path
+          ? `/api/generate/assets/${encodeURIComponent(data.project_id || 'default')}/${opt.asset_path}`
+          : opt.image_url_output;
+        const isPicked = i === pickedIdx;
+        return `
+          <div class="image-option" data-image-option-idx="${i}" style="
+            display:inline-block;margin:4px;padding:4px;
+            border:2px solid ${isPicked ? 'var(--accent)' : 'var(--border)'};
+            border-radius:8px;background:${isPicked ? 'rgba(99,102,241,0.08)' : 'transparent'};
+            cursor:pointer;position:relative;
+            ${isPicked ? 'box-shadow:0 0 0 2px var(--accent)' : ''}
+          " onclick="chatImagePick('${reqId}', ${i})">
+            ${isPicked ? '<div style="position:absolute;top:4px;right:4px;background:var(--accent);color:white;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:12px">✓</div>' : ''}
+            <img src="${escHtml(src)}" alt="候选 ${i+1}" style="display:block;width:140px;height:140px;object-fit:cover;border-radius:4px" />
+            <div style="text-align:center;font-size:11px;color:var(--text2);margin-top:2px">${i+1}${isPicked ? ' · 已选' : ''}</div>
+          </div>
+        `;
+      }).join('');
+
+      return `
+        <div class="assist-section-title">🖼️ AI 图片生成 ✅</div>
+        <div style="margin:8px 0">
+          <div style="font-size:13px;margin-bottom:4px">描述：${escHtml(data.prompt || '')}</div>
+          ${data.image_url ? `<div style="font-size:11px;color:var(--text2);margin-bottom:4px">🔄 图生图（有参考图）</div>` : ''}
+          <div style="font-size:11px;color:var(--text2);margin-bottom:8px">尺寸：${escHtml(data.size || '1024x1024')} · ${options.length} 张候选</div>
+          <div style="font-size:11px;color:var(--text2);margin-bottom:4px">👆 点选你最喜欢的那张（已选 ${pickedIdx + 1}）</div>
+          <div style="display:flex;flex-wrap:wrap;margin:6px 0">${optionsHtml}</div>
+        </div>
+      `;
+    }
     return '';
   }
 
-  window.ACMSAssists.register('image_gen', { name: 'AI 图片生成（Agnes Image）', render });
+  // 兼容老数据（v0.22.8 之前的：没 options 字段，只有 image_url_output）
+  function renderSingleFromLegacy(reqId, data) {
+    const imgSrc = data.image_url_output || (data.asset_path ? '/api/generate/assets/' + (data.project_id || 'default') + '/' + data.asset_path : '');
+    return `
+      <div class="assist-section-title">🖼️ AI 图片生成 ✅</div>
+      <div style="margin:8px 0">
+        <div style="font-size:13px;margin-bottom:4px">描述：${escHtml(data.prompt || '')}</div>
+        ${data.image_url ? `<div style="font-size:11px;color:var(--text2);margin-bottom:4px">🔄 图生图（有参考图）</div>` : ''}
+        <div style="font-size:11px;color:var(--text2);margin-bottom:8px">尺寸：${escHtml(data.size || '1024x1024')}</div>
+        ${imgSrc ? `
+          <div style="margin:8px 0">
+            <img src="${escHtml(imgSrc)}" alt="生成的图片" style="max-width:100%;border-radius:8px;border:1px solid var(--border)">
+          </div>
+          <a href="${escHtml(imgSrc)}" target="_blank" rel="noopener noreferrer" class="btn-small btn-primary" style="text-decoration:none;display:inline-flex;align-items:center;gap:4px">
+            🔗 查看原图
+          </a>
+        ` : '<div style="color:var(--warn);font-size:12px">图片 URL 不可用</div>'}
+      </div>
+    `;
+  }
+
+  window.ACMSAssists.register('image_gen', { name: 'AI 图片生成（N 候选）', render });
 })();
 
 /**
@@ -55,4 +95,17 @@
 async function chatImagePrompt(reqId) {
   if (!reqId) return;
   renderImageForm(reqId);
+}
+
+/**
+ * 选中第 idx 张候选
+ */
+async function chatImagePick(reqId, idx) {
+  try {
+    await ACMSAssistDispatcher.useAssist(reqId, 'image_gen', { idx });
+    toast('✅ 已选中第 ' + (idx + 1) + ' 张', 'success', 1500);
+    // ACMSAssistDispatcher.useAssist 内部已调 poll，刷新会更新卡片高亮
+  } catch (e) {
+    toast('选中失败: ' + e.message, 'error');
+  }
 }
