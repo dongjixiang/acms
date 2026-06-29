@@ -118,7 +118,9 @@
       const imgAsset = asset?.asset_path;
       const imgSrc = imgAsset
         ? `/api/generate/assets/${encodeURIComponent(data.project_id || 'default')}/${imgAsset}`
-        : asset?.image_url_output;
+        : null;
+      const cdnFallback = asset?.image_url_output || null;
+      const displaySrc = imgSrc || cdnFallback;
       const isReady = !!imgAsset;
       const options = asset?.options || [];
       const hasMultipleOptions = options.length > 1;
@@ -132,6 +134,8 @@
               const optSrc = opt.asset_path
                 ? `/api/generate/assets/${encodeURIComponent(data.project_id || 'default')}/${opt.asset_path}`
                 : opt.image_url_output;
+              const optCdn = opt.image_url_output || null;
+              const displayOptSrc = optSrc || optCdn;
               const isSelected = (asset.picked_idx || 0) === i;
               return `
                 <div onclick="screenplayPickOption('${reqId}', 'character', '${escHtml(name).replace(/'/g, "\\'")}', ${i})" style="
@@ -140,7 +144,7 @@
                   background:${isSelected ? 'rgba(99,102,241,0.1)' : 'transparent'};
                   display:flex;align-items:center;justify-content:center;
                 " title="候选 ${i + 1}">
-                  <img src="${escHtml(optSrc)}" style="width:100%;height:100%;object-fit:cover;border-radius:2px" alt="候选 ${i + 1}" />
+                  ${displayOptSrc ? `<img src="${escHtml(displayOptSrc)}" style="width:100%;height:100%;object-fit:cover;border-radius:2px" alt="候选 ${i + 1}" onerror="this.onerror=null;this.src='${escHtml(optCdn || '')}';" />` : '<span style="color:var(--text3);font-size:10px">无图</span>'}
                   ${isSelected ? '<div style="position:absolute;top:2px;right:2px;background:var(--accent);color:white;border-radius:50%;width:14px;height:14px;display:flex;align-items:center;justify-content:center;font-size:9px">✓</div>' : ''}
                 </div>
               `;
@@ -158,7 +162,7 @@
               <textarea id="sppc-${reqId}-${escHtml(name).replace(/[^\\w]/g, '_')}" rows="2" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit;margin-top:2px" placeholder="修改图片生成的提示词…">${escHtml(desc)}</textarea>
               <div style="font-size:10px;color:var(--text3);margin-top:1px">✏️ 可修改提示词后点下方按钮重新生成</div>
             </div>
-            ${imgSrc ? `<img src="${escHtml(imgSrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px;cursor:zoom-in" onclick="event.stopPropagation();previewImage('${escHtml(imgSrc)}')" alt="角色图" />` : ''}
+            ${displaySrc ? `<img src="${escHtml(displaySrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px;cursor:zoom-in" onclick="event.stopPropagation();previewImage('${escHtml(displaySrc)}','${escHtml(cdnFallback || '')}')" alt="角色图" onerror="this.onerror=null;this.src='${escHtml(cdnFallback || '')}';" />` : ''}
             <div style="display:flex;flex-direction:column;gap:3px">
               ${isReady ? `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'character', '${escHtml(name)}', document.getElementById('sppc-${reqId}-${escHtml(name).replace(/[^\\w]/g, '_')}').value)" style="font-size:10px">🎨 重新生成</button>` : `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'character', '${escHtml(name)}', document.getElementById('sppc-${reqId}-${escHtml(name).replace(/[^\\w]/g, '_')}').value)">🎨 生成图</button>`}
             </div>
@@ -174,7 +178,9 @@
     const sceneImgAsset = sceneAsset?.asset_path;
     const sceneImgSrc = sceneImgAsset
       ? `/api/generate/assets/${encodeURIComponent(data.project_id || 'default')}/${sceneImgAsset}`
-      : sceneAsset?.image_url_output;
+      : null;
+    const sceneCdnFallback = sceneAsset?.image_url_output || null;
+    const sceneDisplaySrc = sceneImgSrc || sceneCdnFallback;
     const sceneIsReady = !!sceneImgAsset;
     const sceneOptions = sceneAsset?.options || [];
     const sceneHasMultipleOptions = sceneOptions.length > 1;
@@ -186,6 +192,8 @@
             const optSrc = opt.asset_path
               ? `/api/generate/assets/${encodeURIComponent(data.project_id || 'default')}/${opt.asset_path}`
               : opt.image_url_output;
+            const optCdn = opt.image_url_output || null;
+            const displayOptSrc = optSrc || optCdn;
             const isSelected = (sceneAsset.picked_idx || 0) === i;
             return `
               <div onclick="screenplayPickOption('${reqId}', 'scene', '0', ${i})" style="
@@ -194,7 +202,7 @@
                 background:${isSelected ? 'rgba(99,102,241,0.1)' : 'transparent'};
                 display:flex;align-items:center;justify-content:center;
               " title="候选 ${i + 1}">
-                <img src="${escHtml(optSrc)}" style="width:100%;height:100%;object-fit:cover;border-radius:2px" alt="候选 ${i + 1}" />
+                ${displayOptSrc ? `<img src="${escHtml(displayOptSrc)}" style="width:100%;height:100%;object-fit:cover;border-radius:2px" alt="候选 ${i + 1}" onerror="this.onerror=null;this.src='${escHtml(optCdn || '')}';" />` : '<span style="color:var(--text3);font-size:10px">无图</span>'}
                 ${isSelected ? '<div style="position:absolute;top:2px;right:2px;background:var(--accent);color:white;border-radius:50%;width:14px;height:14px;display:flex;align-items:center;justify-content:center;font-size:9px">✓</div>' : ''}
               </div>
             `;
@@ -211,7 +219,7 @@
             <textarea id="spsc-${reqId}-scene_0" rows="2" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit;margin-top:2px" placeholder="修改场景图的提示词…">${escHtml(sp.setting || '')}</textarea>
             <div style="font-size:10px;color:var(--text3);margin-top:1px">✏️ 可修改提示词后点下方按钮</div>
           </div>
-          ${sceneImgSrc ? `<img src="${escHtml(sceneImgSrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px;cursor:zoom-in" onclick="event.stopPropagation();previewImage('${escHtml(sceneImgSrc)}')" alt="场景图" />` : ''}
+          ${sceneDisplaySrc ? `<img src="${escHtml(sceneDisplaySrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px;cursor:zoom-in" onclick="event.stopPropagation();previewImage('${escHtml(sceneDisplaySrc)}','${escHtml(sceneCdnFallback || '')}')" alt="场景图" onerror="this.onerror=null;this.src='${escHtml(sceneCdnFallback || '')}';" />` : ''}
           <div style="display:flex;flex-direction:column;gap:3px">
             ${sceneIsReady ? `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'scene', '0', document.getElementById('spsc-${reqId}-scene_0').value)" style="font-size:10px">🎨 重新生成</button>` : `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'scene', '0', document.getElementById('spsc-${reqId}-scene_0').value)">🎨 生成图</button>`}
           </div>
@@ -354,8 +362,9 @@
       // v0.22.13: 把 resources 也带过来（让聊天流卡片也能用按钮交互）
       assets: card.assets || { characters: {}, scenes: {} },
       scene_videos: card.scene_videos || {},
-      // project_id 从 assist 数据里拿（需要时 renderDetail 会用）
-      // 注意：card 里没存 project_id，renderDetail 渲染本地 URL 时用 'default' 兜底
+      // v0.22.20: server 端 setAsset/writeScreenplayChatEntry 已把 project_id 写进 card
+      //   之前这里没传 → 拼本地 URL fallback 到 'default' → 404（因为没有 default 项目）
+      project_id: card.project_id || null,
     });
   }
 

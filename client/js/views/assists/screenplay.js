@@ -197,6 +197,11 @@ async function screenplayPickOption(reqId, assetType, assetKey, pickedIdx) {
     // 3. 刷新聊天流 + 侧栏
     if (typeof startChatPolling === 'function') startChatPolling(reqId);
     if (window.ACMSAssistDispatcher?.poll) window.ACMSAssistDispatcher.poll(reqId);
+    // v0.22.20: server 端 setAsset 已重写 chat history，聊天流那张 card 是 frozen 的旧 HTML
+    //   主动重渲染才能让用户看到「切换图后」剧本角色块显示新图
+    if (typeof refreshScreenplayChatCard === 'function') {
+      await refreshScreenplayChatCard(reqId);
+    }
     toast('🔀 已切换到第 ' + (pickedIdx + 1) + ' 张', 'success', 1500);
   } catch (e) {
     toast('切换失败: ' + e.message, 'error');

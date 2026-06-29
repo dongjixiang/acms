@@ -28,4 +28,7 @@ module.exports = {
     maxAge: '2min',
   },
   agnesApiKey: process.env.AGNES_API_KEY || fileConfig.agnesApiKey || '',
+  // v0.22.20: 统一 workspace 根目录（之前 image-gen.js / video.js 用了 2 层 `..` 错位到 server/workspaces/）
+  // 任何地方要读写项目文件都走这个常量，避免再出现「写一个目录读另一个目录」的 bug
+  workspaceRoot: path.join(__dirname, '..', 'workspaces'),
 };

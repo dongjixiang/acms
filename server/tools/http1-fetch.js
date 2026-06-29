@@ -41,8 +41,12 @@ function http1Fetch(urlStr, opts = {}) {
         const chunks = [];
         res.on('data', (chunk) => chunks.push(chunk));
         res.on('end', () => {
-          const body = Buffer.concat(chunks).toString('utf-8');
-          resolve({ ok: true, status: res.statusCode, headers: res.headers, body });
+          const raw = Buffer.concat(chunks);
+          if (opts.binary) {
+            resolve({ ok: true, status: res.statusCode, headers: res.headers, body: raw.toString('base64'), _binary: true });
+          } else {
+            resolve({ ok: true, status: res.statusCode, headers: res.headers, body: raw.toString('utf-8') });
+          }
         });
       });
 

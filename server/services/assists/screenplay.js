@@ -276,6 +276,8 @@ function writeScreenplayChatEntry(reqId, screenplay, meta = {}) {
     // v0.22.13: 把当前资源状态也写进 card（前端聊天流卡片可读完整状态 + 交互）
     assets: (currentAssist?.assets) || { characters: {}, scenes: {} },
     scene_videos: (currentAssist?.scene_videos) || {},
+    // v0.22.20: 把 project_id 写进 card（之前漏了，聊天流卡片拼本地 URL 时 fallback 到 'default' → 404）
+    project_id: req.project_id || null,
     saved_at: new Date().toISOString(),
   };
 
@@ -330,6 +332,23 @@ function setAsset(requirementId, payload) {
   }
 
   reqStore.update(requirementId, { assist_screenplay: JSON.stringify(assist) });
+
+  // v0.22.20: 同步重写聊天流 screenplay_result 卡片
+  //   之前 setAsset 只更新了 assist_screenplay.assets，但聊天流那张卡片是 markPicked 时写一次的
+  //   → 聊天流卡片永远显示空 assets（0/1）。现在 setAsset 之后立即重写聊天流卡片
+  if (assist.used && assist.picked !== null && assist.picked !== undefined) {
+    try {
+      writeScreenplayChatEntry(requirementId, assist.screenplays[assist.picked], {
+        idea: assist.idea,
+        target_seconds: assist.target_seconds,
+        idx: assist.picked,
+        total: assist.screenplays.length,
+      });
+    } catch (e) {
+      console.warn(`[assist:screenplay] ${requirementId} setAsset 后重写聊天流卡片失败:`, e.message);
+    }
+  }
+
   return assist;
 }
 
@@ -354,6 +373,21 @@ function setSceneVideo(requirementId, sceneIdx, payload) {
   };
 
   reqStore.update(requirementId, { assist_screenplay: JSON.stringify(assist) });
+
+  // v0.22.20: 同步重写聊天流 screenplay_result 卡片（让分镜头视频也及时回显）
+  if (assist.used && assist.picked !== null && assist.picked !== undefined) {
+    try {
+      writeScreenplayChatEntry(requirementId, assist.screenplays[assist.picked], {
+        idea: assist.idea,
+        target_seconds: assist.target_seconds,
+        idx: assist.picked,
+        total: assist.screenplays.length,
+      });
+    } catch (e) {
+      console.warn(`[assist:screenplay] ${requirementId} setSceneVideo 后重写聊天流卡片失败:`, e.message);
+    }
+  }
+
   return assist;
 }
 

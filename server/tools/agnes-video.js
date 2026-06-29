@@ -107,7 +107,9 @@ async function generateVideo(args) {
 
 /**
  * 查询视频生成任务状态/结果
- * 优先用 video_id（推荐方式），其次 task_id（兼容旧版）
+ * 优先用 task_id 调 /v1/videos/{task_id}（litellm proxy 标准端点，agnes-video-v2.0 走这个）
+ *   之前用 /agnesapi?video_id=... 对 v2.0 永远 404 "task not found"（2026-06-28 多多实测）
+ * 旧版 /agnesapi 作为兜底
  */
 async function queryVideo(args) {
   const apiKey = getApiKey();
@@ -119,62 +121,78 @@ async function queryVideo(args) {
   const taskId = args.task_id;
 
   if (!videoId && !taskId) {
-    return { error: '请提供 video_id（推荐）或 task_id' };
+    return { error: '请提供 video_id 或 task_id' };
   }
 
-  try {
-    let url;
-    if (videoId) {
-      url = `${API_BASE}/agnesapi?video_id=${encodeURIComponent(videoId)}`;
-      if (args.model_name) url += `&model_name=${encodeURIComponent(args.model_name)}`;
-    } else {
-      url = `${API_BASE}/v1/videos/${encodeURIComponent(taskId)}`;
+  // 候选端点（按优先级）
+  //   1) /v1/videos/{task_id} — agnes-video-v2.0 litellm proxy 标准端点，返回 200 + 状态
+  //   2) /agnesapi?video_id=... — 旧版（兜底，未来版本可能移除）
+  const candidates = [];
+  if (taskId) candidates.push({ url: `${API_BASE}/v1/videos/${encodeURIComponent(taskId)}`, kind: 'v1' });
+  if (videoId) candidates.push({ url: `${API_BASE}/agnesapi?video_id=${encodeURIComponent(videoId)}` + (args.model_name ? `&model_name=${encodeURIComponent(args.model_name)}` : ''), kind: 'agnesapi' });
+
+  let lastErr = null;
+  for (const { url, kind } of candidates) {
+    try {
+      const resp = await http1Fetch(url, {
+        method: 'GET',
+        headers: { 'Authorization': `Bearer ${apiKey}` },
+        timeout: 30000,
+      });
+
+      if (!resp.ok) {
+        lastErr = `Agnes API 查询失败: ${resp.error}`;
+        continue;  // 试下一个候选
+      }
+
+      if (resp.status < 200 || resp.status >= 300) {
+        const errText = resp.body ? resp.body.slice(0, 200) : '';
+        // 404 走兜底
+        if (resp.status === 404) {
+          lastErr = `Agnes API 查询失败 (404): ${errText}`;
+          continue;
+        }
+        return { error: `Agnes API 查询失败 (${resp.status}): ${errText}`, status_code: resp.status };
+      }
+
+      let data;
+      try { data = JSON.parse(resp.body); } catch { data = null; }
+      if (!data) {
+        lastErr = 'Agnes API 返回非 JSON';
+        continue;
+      }
+
+      // 命中！按端点格式解析
+      const result = {
+        video_id: data.video_id || (data.id && data.id.startsWith('video_') ? data.id : null) || null,
+        task_id: data.task_id || data.id || null,
+        status: data.status || 'unknown',
+        progress: data.progress ?? null,
+      };
+
+      if (data.status === 'completed') {
+        // agnes-video-v2.0 用 remixed_from_video_id 存视频 URL/ID
+        result.video_url = data.remixed_from_video_id || data.video_url || null;
+        result.seconds = data.seconds || null;
+        result.size = data.size || null;
+      }
+
+      if (data.status === 'failed') {
+        result.error = data.error || '未知错误';
+      }
+
+      result.raw = data;
+      result._query_kind = kind;  // 调试用
+      return result;
+    } catch (e) {
+      lastErr = `Agnes API 查询失败: ${e.message}`;
+      // 网络/超时错误不试下一个
+      return { error: lastErr, status_code: e.name === 'TimeoutError' ? 408 : 0 };
     }
-
-    const resp = await http1Fetch(url, {
-      method: 'GET',
-      headers: { 'Authorization': `Bearer ${apiKey}` },
-      timeout: 30000,
-    });
-
-    if (!resp.ok) {
-      return { error: `Agnes API 查询失败: ${resp.error}`, status_code: resp.status_code || 0 };
-    }
-
-    if (resp.status < 200 || resp.status >= 300) {
-      const errText = resp.body ? resp.body.slice(0, 200) : '';
-      return { error: `Agnes API 查询失败 (${resp.status}): ${errText}`, status_code: resp.status };
-    }
-
-    let data;
-    try { data = JSON.parse(resp.body); } catch { data = null; }
-    if (!data) return { error: 'Agnes API 返回非 JSON', status_code: 0 };
-
-    const result = {
-      video_id: data.video_id || null,
-      task_id: data.task_id || data.id || null,
-      status: data.status || 'unknown',
-      progress: data.progress ?? null,
-    };
-
-    if (data.status === 'completed') {
-      result.video_url = data.remixed_from_video_id || data.video_url || null;
-      result.seconds = data.seconds || null;
-      result.size = data.size || null;
-    }
-
-    if (data.status === 'failed') {
-      result.error = data.error || '未知错误';
-    }
-
-    result.raw = data;
-    return result;
-  } catch (e) {
-    return {
-      error: `Agnes API 查询失败: ${e.message}`,
-      status_code: e.name === 'TimeoutError' ? 408 : 0,
-    };
   }
+
+  // 所有候选都失败
+  return { error: lastErr || 'Agnes API 查询失败（所有候选端点都失败）' };
 }
 
 module.exports = { generateVideo, queryVideo };

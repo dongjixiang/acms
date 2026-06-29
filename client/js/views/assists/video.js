@@ -93,7 +93,8 @@ async function chatVideoQuery(reqId) {
   if (!reqId) return;
   try {
     const r = await api('POST', '/requirements/' + reqId + '/assist/video/query');
-    if (r.error) return toast('查询失败：' + r.message, 'error');
+    // v0.22.20: server 用 error 字段（不是 message）— 之前 '查询失败：undefined' 就是这俩对不上
+    if (r.error) return toast('查询失败：' + r.error, 'error');
     // 刷新 assist 卡片
     const assistPanel = document.getElementById('assist-panel-' + reqId);
     if (assistPanel && typeof loadAssistPanel === 'function') {

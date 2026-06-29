@@ -13,10 +13,12 @@ const reqStore = require('../../stores/requirement-store');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const config = require('../../config');
 // v0.22.16: HTTP/1.1 fetch 替代
 const { http1Fetch } = require('../../tools/http1-fetch');
 
-const WORKSPACE_ROOT = path.join(__dirname, '..', '..', 'workspaces');
+// v0.22.20: 改用 config.workspaceRoot（之前 2 层 `..` 错位到 server/workspaces/，与 gen.js 读取路径不一致 → 404）
+const WORKSPACE_ROOT = config.workspaceRoot;
 
 /**
  * 读取 Agnes API Key

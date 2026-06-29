@@ -9,8 +9,10 @@ const reqStore = require('../../stores/requirement-store');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const config = require('../../config');
 
-const WORKSPACE_ROOT = path.join(__dirname, '..', '..', 'workspaces');
+// v0.22.20: 改用 config.workspaceRoot（之前 2 层 `..` 错位到 server/workspaces/，与 gen.js 读取路径不一致 → 404）
+const WORKSPACE_ROOT = config.workspaceRoot;
 
 /**
  * v0.22.7: 保存视频到 workspace assets（与 image_gen 一致）
@@ -227,6 +229,12 @@ async function queryAssistJob(requirementId) {
     if (!queryTool) throw new Error('视频查询工具未注册');
 
     const result = await queryTool.handler({ video_id: videoId, task_id: taskId });
+    console.log(`[assist:video] ${requirementId} query result: status=${result.status} progress=${result.progress} kind=${result._query_kind || '?'} error=${result.error || '(none)'}`);
+
+    // v0.22.20: error 字段用新查询结果，不要保留旧 error
+    //   之前用 result.error || assist.error → 之前 query 失败留的旧 error 一直显示
+    //   现在: result 里有 error 就用 result 的（说明这次 query 失败了），否则置 null
+    const finalError = (result.status === 'failed') ? (result.error || '未知错误') : (result.error || null);
 
     const updated = {
       ...assist,
@@ -236,7 +244,7 @@ async function queryAssistJob(requirementId) {
             : result.status || assist.status,
       progress: result.progress ?? assist.progress ?? 0,
       video_url: result.video_url || assist.video_url,
-      error: result.error || assist.error,
+      error: finalError,
       last_queried_at: new Date().toISOString(),
     };
 
@@ -260,7 +268,8 @@ async function queryAssistJob(requirementId) {
     return updated;
   } catch (e) {
     console.error(`[assist:video] ${requirementId} 查询失败:`, e.message);
-    return { ...assist, error: e.message };
+    // v0.22.20: 只返 error，不 spread 整个 assist（避免带其他陈旧字段）
+    return { error: `查询工具异常: ${e.message}` };
   }
 }
 
