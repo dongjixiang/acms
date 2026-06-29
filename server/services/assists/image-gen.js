@@ -109,22 +109,49 @@ async function callAgnesImageOnce(apiKey, body) {
 
 /**
  * v0.22.8: 下载单张图到 workspace
+ *   v0.22.22 fix: 用 curl 子进程替代 Node fetch。
+ *     Node fetch / undici / https.request 跟 platform-outputs.agnes-ai.space 的 CDN TLS 握手不兼容
+ *     （本地 Windows ECONNRESET，120 阿里云 HTTP/2 挂死），但 curl（Windows Schannel）能通。
+ *     跟 120 阿里云 GitHub 不可达 → pscp 子进程的思路一致：换工具链路。
  */
 async function downloadAndSaveOne(apiKey, projectSlug, url, metadata) {
-  try {
-    const r = await fetch(url);
-    if (!r.ok) return { ok: false, error: `download HTTP ${r.status}` };
-    const buffer = Buffer.from(await r.arrayBuffer());
-    const contentType = r.headers.get('content-type') || '';
-    let ext, mime;
-    if (contentType.includes('jpeg') || contentType.includes('jpg')) { ext = '.jpg'; mime = 'image/jpeg'; }
-    else if (contentType.includes('webp')) { ext = '.webp'; mime = 'image/webp'; }
-    else { ext = '.png'; mime = 'image/png'; }
-    const saved = saveImageAsset(projectSlug, buffer, ext, mime, metadata);
-    return { ok: true, url, asset_path: saved.assetPath, mime: saved.mime, size: saved.size };
-  } catch (e) {
-    return { ok: false, error: e.message };
-  }
+  const { execFile } = require('child_process');
+  const fs = require('fs');
+  return new Promise((resolve) => {
+    const tmpFile = path.join(require('os').tmpdir(), `acms-dl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+    // curl: --http1.1 强制 HTTP/1.1，-s 静默，--connect-timeout 10s, --max-time 60s
+    execFile('curl', [
+      '-sk',           // silent + 不校验证书
+      '--http1.1',     // 强制 HTTP/1.1（避免 HTTP/2 握手挂死）
+      '--connect-timeout', '10',
+      '--max-time', '60',
+      '-o', tmpFile,
+      url,
+    ], async (err, stdout, stderr) => {
+      if (err) {
+        try { fs.unlinkSync(tmpFile); } catch {}
+        return resolve({ ok: false, error: `curl failed: ${err.message} | stderr: ${(stderr || '').slice(0, 200)}` });
+      }
+      try {
+        const buffer = fs.readFileSync(tmpFile);
+        fs.unlinkSync(tmpFile);
+        if (buffer.length === 0) {
+          return resolve({ ok: false, error: 'curl returned empty body' });
+        }
+        // 根据文件 magic bytes 推测 mime（避免依赖服务端 content-type header）
+        let ext, mime;
+        if (buffer[0] === 0xff && buffer[1] === 0xd8) { ext = '.jpg'; mime = 'image/jpeg'; }
+        else if (buffer[0] === 0x89 && buffer[1] === 0x50) { ext = '.png'; mime = 'image/png'; }
+        else if (buffer.slice(0, 4).toString() === 'RIFF' && buffer.slice(8, 12).toString() === 'WEBP') { ext = '.webp'; mime = 'image/webp'; }
+        else { ext = '.png'; mime = 'image/png'; }
+        const saved = saveImageAsset(projectSlug, buffer, ext, mime, metadata);
+        return resolve({ ok: true, url, asset_path: saved.assetPath, mime: saved.mime, size: saved.size });
+      } catch (e) {
+        try { fs.unlinkSync(tmpFile); } catch {}
+        return resolve({ ok: false, error: e.message });
+      }
+    });
+  });
 }
 
 async function runAssistJob(requirementId, opts = {}) {

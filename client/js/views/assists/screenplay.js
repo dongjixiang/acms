@@ -265,11 +265,37 @@ async function screenplayGenVideo(reqId, sceneIdx, promptOverride) {
     }
 
     // 构造 prompt（角色 + 场景 + 分镜，v0.22.16: 支持 promptOverride 手工修改）
-    const prompt = promptOverride || [
-      scene.shot || '',
-      scene.action || '',
-      scene.dialogue && scene.dialogue !== '——' ? `Says: "${scene.dialogue}"` : '',
-    ].filter(Boolean).join('. ');
+    // v0.22.23: 默认 prompt 用结构化 buildSceneVideoPrompt（Setting+Camera+Action+Dialogue+Style+Quality）
+    const prompt = promptOverride || (window.ACMSScreenplayCard?.buildSceneVideoPrompt
+      ? window.ACMSScreenplayCard.buildSceneVideoPrompt(scene, sp)
+      : [scene.shot || '', scene.action || '', scene.dialogue && scene.dialogue !== '——' ? `Says: "${scene.dialogue}"` : ''].filter(Boolean).join('. '));
+
+    // v0.22.23: 收集角色图 + 场景图 URL，传给 video assist 做多图视频
+    const assets = sp.assets || {};
+    const projectSlug = sp.project_id || 'default';
+    const imageUrls = [];
+    // 收集角色图 URL（所有角色）
+    const characters = screenplay.characters || [];
+    for (const c of characters) {
+      const asset = assets.characters?.[c.name];
+      if (!asset) continue;
+      if (asset.image_url_output) {
+        imageUrls.push(asset.image_url_output);
+      } else if (asset.asset_path) {
+        imageUrls.push(`/api/generate/assets/${encodeURIComponent(projectSlug)}/${asset.asset_path}`);
+      }
+    }
+    // 收集场景图 URL（scene 0）
+    const sceneAsset = assets.scenes?.['0'];
+    if (sceneAsset) {
+      if (sceneAsset.image_url_output) {
+        imageUrls.push(sceneAsset.image_url_output);
+      } else if (sceneAsset.asset_path) {
+        imageUrls.push(`/api/generate/assets/${encodeURIComponent(projectSlug)}/${sceneAsset.asset_path}`);
+      }
+    }
+    // 去重（保持顺序）
+    const uniqueUrls = [...new Set(imageUrls)];
 
     // v0.22.14: 显示 loading（弹到 body，跟剧本其他生成器一致位置）
     const tempCard = document.createElement('div');
@@ -281,8 +307,12 @@ async function screenplayGenVideo(reqId, sceneIdx, promptOverride) {
     document.body.appendChild(tempCard);
     setTimeout(() => { tempCard.scrollIntoView?.({ block: 'center' }); }, 50);
 
-    // 触发 video
-    await chatAssist(reqId, 'video', { prompt, duration: sp.target_seconds || 30, _attach_to: { type: 'screenplay', sceneIdx } });
+    // 触发 video（v0.22.23: 附带 image_urls）
+    const videoOpts = { prompt, duration: sp.target_seconds || 30, _attach_to: { type: 'screenplay', sceneIdx } };
+    if (uniqueUrls.length > 0) {
+      videoOpts.image_urls = uniqueUrls;
+    }
+    await chatAssist(reqId, 'video', videoOpts);
 
     // 轮询直到拿到 video_url
     let videoData = null;
@@ -313,11 +343,10 @@ async function screenplayGenVideo(reqId, sceneIdx, promptOverride) {
     // v0.22.12: 自动继续下一个可生成的分镜头
     const allScenes = screenplay.scenes || [];
     const sceneVideos = (await api('GET', `/requirements/${reqId}/assist`)).assists?.screenplay?.scene_videos || {};
-    const assets = (await api('GET', `/requirements/${reqId}/assist`)).assists?.screenplay?.assets || {};
-    const characters = screenplay.characters || [];
-    const firstCharAsset = characters.length > 0 ? assets.characters?.[characters[0].name] : null;
-    const sceneAsset = assets.scenes?.['0'];
-    const hasAllBaseAssets = firstCharAsset?.asset_path && sceneAsset?.asset_path;
+    // v0.22.23: nextAssets 已在上面声明过（第 274 行），这里复用
+    const firstCharAsset = characters.length > 0 ? nextAssets.characters?.[characters[0].name] : null;
+    const sceneAsset2 = nextAssets.scenes?.['0'];
+    const hasAllBaseAssets = firstCharAsset?.asset_path && sceneAsset2?.asset_path;
     if (hasAllBaseAssets) {
       // 找下一个未生成的分镜头
       for (let i = 0; i < allScenes.length; i++) {

@@ -64,7 +64,7 @@
     _assistPollers[reqId] = setInterval(() => poll(reqId), 2500);
   }
 
-  async function poll(reqId) {
+async function poll(reqId) {
     try {
       const resp = await api('GET', `/requirements/${reqId}/assist`);
       render(reqId, resp.assists || {});
@@ -74,6 +74,12 @@
       //   brief + 路由器 + assist 一共要 20-40s，所以强制跑够 30s
       const all = resp.assists || {};
       const generating = Object.values(all).some(v => v && (v.status === 'generating' || v.status === 'pending'));
+      // v0.22.22 fix: regenerate 触发的 explicit assist 完成 → 清掉标记（避免永远占着）
+      //   跟 chat.js line 202/207 同样的清理模式，但 dispatcher.loadAll 触发的轮询需要自己清
+      const explicit = window._explicitAssist?.[reqId];
+      if (explicit && all[explicit] && all[explicit].status === 'done') {
+        delete window._explicitAssist[reqId];
+      }
       const elapsed = Date.now() - (_pollStartedAt[reqId] || 0);
       if (!generating && elapsed >= MIN_POLL_MS && _assistPollers[reqId]) {
         clearInterval(_assistPollers[reqId]);
@@ -178,10 +184,14 @@
     }
   }
 
-  // v0.3.6：「都不符合，再换一批」按钮
+// v0.3.6：「都不符合，再换一批」按钮
   //   跟 triggerManual 的区别：调 /assist/:method/regenerate 路由（强制重跑 + 喂旧选择给 LLM）
+  //   v0.22.22 fix: 跟 chatAssist 一样标记 _explicitAssist，否则 regenerate 完成后 dispatcher filter
+  //   把新生成的剧本给隐藏掉（filter 第 115 行：`status==='done' && explicit===m` 才显示）
   async function regenerateBatch(reqId, method) {
     try {
+      if (!window._explicitAssist) window._explicitAssist = {};
+      window._explicitAssist[reqId] = method;
       const resp = await api('POST', `/requirements/${reqId}/assist/${method}/regenerate`, {});
       if (resp.error) {
         toast('换一批失败: ' + resp.error, 'error');

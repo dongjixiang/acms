@@ -1,4 +1,4 @@
-// ACMS · 剧本辅助核心渲染（v0.22.8，2026-06-28）
+// ACMS · 剧本辅助核心渲染（v0.22.23，2026-06-29）
 //   v0.22 单一来源：assist 侧栏 + 聊天流卡片都用这份 render
 //   渲染：角色 / 场景 / 分镜头 3 大块 + 内嵌"生成图/视频"按钮
 //
@@ -6,9 +6,95 @@
 //   - assists/screenplay.js 侧栏 render(reqId, data) → 调 ACMSScreenplayCard.renderDetail()
 //   - chat.js renderScreenplayBubble(jsonText) → 同上
 //
-// 全局对象：window.ACMSScreenplayCard = { renderDetail, getProjectIdForReq, ... }
+// v0.22.22 修复：
+//   - textarea id 用 idx（不用 name 算 — JS \w 不匹配中文，会撞 id → 点第 2 角色按钮读第 1 个 desc）
+//   - 默认 prompt 用结构化生成函数 buildCharacterPrompt/buildScenePrompt
+//     （带 name + desc + logline + setting + 时长 + 风格关键词 + 负面提示，Agnes 模型对英文 prompt 更准）
+//
+// v0.22.23 修复（按 SDXL/Flux 角色立绘公认结构重写 prompt）：
+//   - 角色 prompt：去掉 Scene mood / Story tone（类别错误 — 角色立绘 = reference sheet，不是 narrative illustration）
+//     加 Subject/Appearance/Pose/View/Expression/Background（简洁 studio 背景）+ 加 'multiple characters/busy background' 防加戏
+//   - 场景 prompt：去掉基于 logline 的 Mood（剧情元素不是场景属性）
+//     加 Scene/Environment/Atmosphere/Composition/Lighting（强调 no characters in frame）
+//   - 视频 prompt（分镜头）：新增 buildSceneVideoPrompt 函数
+//     结构：Setting + Camera + Action + Dialogue + Style + Quality（视频模型完整输入）
+//
+// 全局对象：window.ACMSScreenplayCard = { renderDetail, renderFromChatEntry, buildCharacterPrompt, buildScenePrompt, buildSceneVideoPrompt }
 
 (function () {
+  /**
+   * v0.22.22: 结构化图片 prompt（默认填入 textarea，用户可改）
+   *   v0.22.23: 按 SDXL/Flux 角色立绘公认结构重写 — 去掉 Scene mood / Story tone（与人物无关）
+   *     角色立绘 = reference sheet，核心是人物外貌/服装/姿态，背景必须简洁（避免 AI 把场景当主角）
+   *     Agnes image-2.0-flash 对英文 prompt 更准
+   */
+  function buildCharacterPrompt(c, sp, targetSeconds) {
+    const name = (c.name || '').trim();
+    const desc = (c.desc || '').trim();
+    const ts = targetSeconds || 30;
+    // v0.22.23: 角色立绘只关注人物本身 — 不带 Scene mood / Story tone（类别错误）
+    const lines = [
+      `Subject: ${name || 'a person'}.`,
+      desc ? `Appearance: ${desc}.` : 'Appearance: distinctive character design, expressive face.',
+      'Pose: natural standing pose, facing camera with subtle 3/4 angle, full figure visible from head to below chest, confident posture.',
+      'View: medium close-up, eye-level camera, character-centered composition.',
+      'Expression: in-character facial expression matching personality.',
+      // 关键：背景必须简洁（角色立绘 ≠ narrative illustration）
+      'Background: clean neutral studio backdrop with soft gradient, no environment scenery, character-focused composition.',
+      `Style: cinematic character portrait, ${ts}s short film character reference, soft studio key lighting with subtle rim light, sharp focus on face and outfit details, shallow depth of field, professional photography.`,
+      'Quality: high detail, 4K, photorealistic, masterwork, clean composition.',
+      // v0.22.23: negative 加 'busy background / multiple characters' 防止 AI 加戏
+      'Negative: multiple characters, busy background, environment scenery, extra limbs, deformed hands, blurry face, extra fingers, disfigured, text, watermark, low quality, anime, cartoon, illustration.',
+    ];
+    return lines.join(' ');
+  }
+
+  function buildScenePrompt(sp, targetSeconds) {
+    const setting = (sp.setting || '').trim();
+    const ts = targetSeconds || 30;
+    // v0.22.23: 场景 prompt 强调"环境本身" — 不带 logline（剧情元素，不是场景属性）
+    const lines = [
+      'Scene: environment establishing shot, no characters in frame.',
+      setting ? `Environment: ${setting}.` : 'Environment: cinematic short film location, atmospheric.',
+      setting ? `Atmosphere: matching the environment (weather, time, mood of the place).` : 'Atmosphere: cinematic ambient mood.',
+      'Composition: wide establishing shot, slight low angle or eye level, clear foreground-mid-background depth, environment-focused framing.',
+      'Lighting: natural ambient lighting consistent with environment and time of day, soft atmospheric haze, depth of field.',
+      `Style: cinematic establishing shot, ${ts}s short film aesthetic, photorealistic, atmospheric lighting, professional cinematography.`,
+      'Quality: high detail, 4K, photorealistic, masterwork, wide composition.',
+      // v0.22.23: 加 animals 防止宠物/野生动物出现干扰场景
+      'Negative: people, characters, humans, animals, pets, text, watermark, blurry, low quality.',
+    ];
+    return lines.join(' ');
+  }
+
+  /**
+   * v0.22.23: 视频 prompt（分镜头）
+   *   视频模型需要的结构 = 视觉描述 + 镜头感 + 动作 + 对白 + 风格一致性 + 质量
+   *   Agnes Video API（参考 video.js 实现）对结构化 prompt 响应更好
+   */
+  function buildSceneVideoPrompt(scene, sp) {
+    const shot = (scene.shot || '').trim();
+    const action = (scene.action || '').trim();
+    const dialogue = scene.dialogue && scene.dialogue !== '——' ? scene.dialogue.trim() : '';
+    const setting = (sp.setting || '').trim();
+    const ts = sp.target_seconds || 30;
+    const parts = [
+      // 场景环境（上下文锚定 — 跟当前剧本 setting 一致）
+      setting ? `Setting: ${setting}.` : '',
+      // 镜头与构图
+      shot ? `Camera: ${shot}.` : 'Camera: cinematic medium shot, eye level, slight depth of field.',
+      // 动作（核心）
+      action ? `Action: ${action}.` : '',
+      // 对白（如有）
+      dialogue ? `Dialogue: Character says: "${dialogue}".` : '',
+      // 风格一致性
+      `Style: cinematic ${ts}s short film aesthetic, photorealistic, professional cinematography, smooth natural motion.`,
+      // 质量
+      'Quality: high detail, 4K, sharp focus, coherent motion.',
+    ].filter(Boolean);
+    return parts.join(' ');
+  }
+
   /**
    * 主渲染函数
    *   data = 完整 assist_screenplay JSON
@@ -153,18 +239,23 @@
         </details>
       ` : '';
 
+      // v0.22.22: textarea id 用 idx（不用 name 算 — JS \w 不匹配中文，会撞 id）
+      const taId = `sppc-${reqId}-char-${idx}`;
+      // v0.22.22: 默认 prompt 用结构化生成函数（带 name + desc + setting + logline + 风格 + 负面）
+      const defaultPrompt = buildCharacterPrompt(c, sp, target);
+
       return `
         <div class="screenplay-asset-block" style="margin:8px 0;padding:8px;background:var(--bg);border:1px solid ${isReady ? 'var(--green)' : 'var(--border)'};border-radius:6px">
           <div style="display:flex;align-items:center;gap:8px">
             <div style="flex:1">
               <div style="font-weight:600;font-size:13px">👤 ${escHtml(name)} ${isReady ? '<span style="color:var(--green)">✅</span>' : '<span style="color:var(--text3)">⏳</span>'}</div>
-              <!-- v0.22.16: 可编辑 prompt（提醒词可手工修改） -->
-              <textarea id="sppc-${reqId}-${escHtml(name).replace(/[^\\w]/g, '_')}" rows="2" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit;margin-top:2px" placeholder="修改图片生成的提示词…">${escHtml(desc)}</textarea>
-              <div style="font-size:10px;color:var(--text3);margin-top:1px">✏️ 可修改提示词后点下方按钮重新生成</div>
+              <!-- v0.22.22: 默认填入结构化 prompt（带名字/风格/负面提示），用户可改 -->
+              <textarea id="${taId}" rows="3" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit;margin-top:2px" placeholder="修改图片生成的提示词…">${escHtml(defaultPrompt)}</textarea>
+              <div style="font-size:10px;color:var(--text3);margin-top:1px">✏️ 默认已带角色名+描述+场景+风格，可自由修改后点下方按钮</div>
             </div>
             ${displaySrc ? `<img src="${escHtml(displaySrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px;cursor:zoom-in" onclick="event.stopPropagation();previewImage('${escHtml(displaySrc)}','${escHtml(cdnFallback || '')}')" alt="角色图" onerror="this.onerror=null;this.src='${escHtml(cdnFallback || '')}';" />` : ''}
             <div style="display:flex;flex-direction:column;gap:3px">
-              ${isReady ? `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'character', '${escHtml(name)}', document.getElementById('sppc-${reqId}-${escHtml(name).replace(/[^\\w]/g, '_')}').value)" style="font-size:10px">🎨 重新生成</button>` : `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'character', '${escHtml(name)}', document.getElementById('sppc-${reqId}-${escHtml(name).replace(/[^\\w]/g, '_')}').value)">🎨 生成图</button>`}
+              ${isReady ? `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'character', '${escHtml(name)}', document.getElementById('${taId}').value)" style="font-size:10px">🎨 重新生成</button>` : `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'character', '${escHtml(name)}', document.getElementById('${taId}').value)">🎨 生成图</button>`}
             </div>
           </div>
           ${optionsHtml}
@@ -210,18 +301,21 @@
         </div>
       </details>
     ` : '';
+    // v0.22.22: 默认 prompt 用结构化生成函数（带 setting + logline + 时长 + 风格 + 负面）
+    const sceneDefaultPrompt = buildScenePrompt(sp, target);
+    const sceneTaId = `spsc-${reqId}-scene-0`;
     const sceneBlock = `
       <div class="screenplay-asset-block" style="margin:8px 0;padding:8px;background:var(--bg);border:1px solid ${sceneIsReady ? 'var(--green)' : 'var(--border)'};border-radius:6px">
         <div style="display:flex;align-items:center;gap:8px">
           <div style="flex:1">
             <div style="font-weight:600;font-size:13px">🎬 场景设定 ${sceneIsReady ? '<span style="color:var(--green)">✅</span>' : '<span style="color:var(--text3)">⏳</span>'}</div>
-            <!-- v0.22.16: 可编辑场景 prompt -->
-            <textarea id="spsc-${reqId}-scene_0" rows="2" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit;margin-top:2px" placeholder="修改场景图的提示词…">${escHtml(sp.setting || '')}</textarea>
-            <div style="font-size:10px;color:var(--text3);margin-top:1px">✏️ 可修改提示词后点下方按钮</div>
+            <!-- v0.22.22: 默认填入结构化场景 prompt（带环境+氛围+风格+负面），用户可改 -->
+            <textarea id="${sceneTaId}" rows="3" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit;margin-top:2px" placeholder="修改场景图的提示词…">${escHtml(sceneDefaultPrompt)}</textarea>
+            <div style="font-size:10px;color:var(--text3);margin-top:1px">✏️ 默认已带环境+氛围+风格，可自由修改后点下方按钮</div>
           </div>
           ${sceneDisplaySrc ? `<img src="${escHtml(sceneDisplaySrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px;cursor:zoom-in" onclick="event.stopPropagation();previewImage('${escHtml(sceneDisplaySrc)}','${escHtml(sceneCdnFallback || '')}')" alt="场景图" onerror="this.onerror=null;this.src='${escHtml(sceneCdnFallback || '')}';" />` : ''}
           <div style="display:flex;flex-direction:column;gap:3px">
-            ${sceneIsReady ? `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'scene', '0', document.getElementById('spsc-${reqId}-scene_0').value)" style="font-size:10px">🎨 重新生成</button>` : `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'scene', '0', document.getElementById('spsc-${reqId}-scene_0').value)">🎨 生成图</button>`}
+            ${sceneIsReady ? `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'scene', '0', document.getElementById('${sceneTaId}').value)" style="font-size:10px">🎨 重新生成</button>` : `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'scene', '0', document.getElementById('${sceneTaId}').value)">🎨 生成图</button>`}
           </div>
         </div>
         ${sceneOptionsHtml}
@@ -255,9 +349,8 @@
             ${sc.dialogue && sc.dialogue !== '——' ? `<div>💬 <strong>对白：</strong>${escHtml(sc.dialogue)}</div>` : ''}
             ${sc.action ? `<div>🎬 <strong>动作：</strong>${escHtml(sc.action)}</div>` : ''}
           </div>
-          <!-- v0.22.16: 可编辑视频 prompt -->
-          <div style="margin-top:4px">
-            <textarea id="spvid-${reqId}-${idx}" rows="2" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit" placeholder="修改视频生成的提示词…">${escHtml([sc.shot, sc.action, sc.dialogue && sc.dialogue !== '——' ? `Says: "${sc.dialogue}"` : ''].filter(Boolean).join('. '))}</textarea>
+                      <!-- v0.22.23: 默认填入结构化视频 prompt（Setting+Camera+Action+Dialogue+Style+Quality），用户可改 -->
+            <textarea id="spvid-${reqId}-${idx}" rows="3" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit" placeholder="修改视频生成的提示词…">${escHtml(buildSceneVideoPrompt(sc, sp))}</textarea>
             <div style="font-size:10px;color:var(--text3);margin-top:1px">✏️ 可修改提示词后点下方按钮</div>
           </div>
           ${hasVideo ? `
@@ -368,5 +461,5 @@
     });
   }
 
-  window.ACMSScreenplayCard = { renderDetail, renderFromChatEntry };
+  window.ACMSScreenplayCard = { renderDetail, renderFromChatEntry, buildCharacterPrompt, buildScenePrompt, buildSceneVideoPrompt };
 })();
