@@ -1,4 +1,4 @@
-// ACMS · 剧本辅助核心渲染（v0.22.23，2026-06-29）
+// ACMS · 剧本辅助核心渲染（v0.22.31，2026-06-30）
 //   v0.22 单一来源：assist 侧栏 + 聊天流卡片都用这份 render
 //   渲染：角色 / 场景 / 分镜头 3 大块 + 内嵌"生成图/视频"按钮
 //
@@ -19,76 +19,150 @@
 //   - 视频 prompt（分镜头）：新增 buildSceneVideoPrompt 函数
 //     结构：Setting + Camera + Action + Dialogue + Style + Quality（视频模型完整输入）
 //
+// v0.22.31 修复（IP 锚定 + 风格锁定）：
+//   - 新增 IP 词典（ip-dict.js）：用户输入"擎天柱"→ 锁定到 Transformers G1 Optimus Prime
+//   - buildCharacterPrompt 接收 art_style 参数（剧本级共享），强制硬约束写入 Style + Negative
+//   - 同一剧本所有角色必须 art_style 一致（解决"角色 1 写实 + 角色 2 卡通"的不一致问题）
+//   - 引入 STYLE_TEMPLATES：每种风格有专属 stylePrefix / negativePrefix
+//
 // 全局对象：window.ACMSScreenplayCard = { renderDetail, renderFromChatEntry, buildCharacterPrompt, buildScenePrompt, buildSceneVideoPrompt }
 
 (function () {
-  /**
+/**
    * v0.22.22: 结构化图片 prompt（默认填入 textarea，用户可改）
    *   v0.22.23: 按 SDXL/Flux 角色立绘公认结构重写 — 去掉 Scene mood / Story tone（与人物无关）
    *     角色立绘 = reference sheet，核心是人物外貌/服装/姿态，背景必须简洁（避免 AI 把场景当主角）
    *     Agnes image-2.0-flash 对英文 prompt 更准
+   *   v0.22.31: 加 IP 锚定 + 风格硬约束（解决"擎天柱→机甲人"+"角色风格不一致"问题）
+   *     - 第 4 个参数 artStyle（默认 'photorealistic'，从 sp.art_style 取）
+   *     - 检测 c.name + c.desc 是否含知名 IP → 注入 IP.visualKeywords
+   *     - STYLE_TEMPLATES 的 stylePrefix / negativePrefix 强制锁死风格
+   *     - 同一剧本所有角色共享同一 artStyle（剧本级一致性）
    */
-  function buildCharacterPrompt(c, sp, targetSeconds) {
+  function buildCharacterPrompt(c, sp, targetSeconds, artStyle) {
     const name = (c.name || '').trim();
     const desc = (c.desc || '').trim();
     const ts = targetSeconds || 30;
+    // v0.22.31: artStyle 默认值（从 sp.art_style 读，不传则 photorealistic）
+    const style = artStyle || sp?.art_style || 'photorealistic';
+
+    // v0.22.31: IP 锚定检测 — name + desc 拼起来查 IP 词典
+    const ipDict = window.ACMSScreenplayIPDict;
+    const styleTpl = ipDict?.getStyleTemplate(style) || { stylePrefix: '', styleSuffix: '', negativePrefix: '' };
+    let ipAnchor = null;
+    if (ipDict) {
+      // 同时查 name 和 desc（防止 LLM 把 IP 名写进 desc 而不是 name）
+      const searchText = `${name} ${desc}`;
+      ipAnchor = ipDict.lookup(searchText);
+    }
+
+    // v0.22.31: Subject 字段 — 如果有 IP 锚定，用 IP.nameEn；否则用 name
+    const subjectLine = ipAnchor
+      ? `Subject: ${ipAnchor.nameEn}.`
+      : `Subject: ${name || 'a person'}.`;
+
+    // v0.22.31: Appearance 字段 — 如果有 IP 锚定，用 IP.visualKeywords；否则用 desc
+    const appearanceLine = ipAnchor
+      ? `Appearance: ${ipAnchor.visualKeywords}.`
+      : (desc ? `Appearance: ${desc}.` : 'Appearance: distinctive character design, expressive face.');
+
     // v0.22.23: 角色立绘只关注人物本身 — 不带 Scene mood / Story tone（类别错误）
     const lines = [
-      `Subject: ${name || 'a person'}.`,
-      desc ? `Appearance: ${desc}.` : 'Appearance: distinctive character design, expressive face.',
+      subjectLine,
+      appearanceLine,
       'Pose: natural standing pose, facing camera with subtle 3/4 angle, full figure visible from head to below chest, confident posture.',
       'View: medium close-up, eye-level camera, character-centered composition.',
       'Expression: in-character facial expression matching personality.',
       // 关键：背景必须简洁（角色立绘 ≠ narrative illustration）
       'Background: clean neutral studio backdrop with soft gradient, no environment scenery, character-focused composition.',
-      `Style: cinematic character portrait, ${ts}s short film character reference, soft studio key lighting with subtle rim light, sharp focus on face and outfit details, shallow depth of field, professional photography.`,
+      // v0.22.31: Style 字段前置硬约束（stylePrefix 强制锁死风格）+ 原有摄影描述 + styleSuffix 强化
+      `Style: ${styleTpl.stylePrefix} ${styleTpl.styleSuffix} Cinematic character portrait, ${ts}s short film character reference, soft studio key lighting with subtle rim light, sharp focus on face and outfit details, shallow depth of field.`,
       'Quality: high detail, 4K, photorealistic, masterwork, clean composition.',
-      // v0.22.23: negative 加 'busy background / multiple characters' 防止 AI 加戏
-      'Negative: multiple characters, busy background, environment scenery, extra limbs, deformed hands, blurry face, extra fingers, disfigured, text, watermark, low quality, anime, cartoon, illustration.',
+      // v0.22.31: negative 前置硬约束（negativePrefix 列出严禁项）+ 原有负面 + 防加戏
+      `Negative: ${styleTpl.negativePrefix} multiple characters, busy background, environment scenery, extra limbs, deformed hands, blurry face, extra fingers, disfigured, text, watermark, low quality.`,
     ];
     return lines.join(' ');
   }
 
-  function buildScenePrompt(sp, targetSeconds) {
+/**
+   * 场景图 prompt（环境本身，不带 logline 剧情元素）
+   *   v0.22.31: 加 art_style 风格硬约束 + IP 锚定（如果 setting 提到 IP 场景名）
+   */
+  function buildScenePrompt(sp, targetSeconds, artStyle) {
     const setting = (sp.setting || '').trim();
     const ts = targetSeconds || 30;
-    // v0.22.23: 场景 prompt 强调"环境本身" — 不带 logline（剧情元素，不是场景属性）
+    // v0.22.31: artStyle 默认值
+    const style = artStyle || sp?.art_style || 'photorealistic';
+
+    // v0.22.31: IP 锚定（场景里也可能有 IP，比如"霍格沃茨"）
+    const ipDict = window.ACMSScreenplayIPDict;
+    const styleTpl = ipDict?.getStyleTemplate(style) || { stylePrefix: '', styleSuffix: '', negativePrefix: '' };
+    let ipAnchor = null;
+    if (ipDict && setting) {
+      ipAnchor = ipDict.lookup(setting);
+    }
+
+    // v0.22.31: Environment 字段 — IP 锚定时用 IP.visualKeywords + setting
+    const envLine = ipAnchor
+      ? `Environment: ${setting || ''} (${ipAnchor.nameEn}). ${ipAnchor.visualKeywords}.`
+      : (setting ? `Environment: ${setting}.` : 'Environment: cinematic short film location, atmospheric.');
+
+    const atmosphereLine = setting ? `Atmosphere: matching the environment (weather, time, mood of the place).` : 'Atmosphere: cinematic ambient mood.';
+
     const lines = [
       'Scene: environment establishing shot, no characters in frame.',
-      setting ? `Environment: ${setting}.` : 'Environment: cinematic short film location, atmospheric.',
-      setting ? `Atmosphere: matching the environment (weather, time, mood of the place).` : 'Atmosphere: cinematic ambient mood.',
+      envLine,
+      atmosphereLine,
       'Composition: wide establishing shot, slight low angle or eye level, clear foreground-mid-background depth, environment-focused framing.',
       'Lighting: natural ambient lighting consistent with environment and time of day, soft atmospheric haze, depth of field.',
-      `Style: cinematic establishing shot, ${ts}s short film aesthetic, photorealistic, atmospheric lighting, professional cinematography.`,
+      // v0.22.31: Style 字段前置硬约束
+      `Style: ${styleTpl.stylePrefix} ${styleTpl.styleSuffix} Cinematic establishing shot, ${ts}s short film aesthetic, photorealistic, atmospheric lighting, professional cinematography.`,
       'Quality: high detail, 4K, photorealistic, masterwork, wide composition.',
-      // v0.22.23: 加 animals 防止宠物/野生动物出现干扰场景
-      'Negative: people, characters, humans, animals, pets, text, watermark, blurry, low quality.',
+      // v0.22.31: negative 前置硬约束 + 防角色/动物干扰
+      `Negative: ${styleTpl.negativePrefix} people, characters, humans, animals, pets, text, watermark, blurry, low quality.`,
     ];
     return lines.join(' ');
   }
 
-  /**
+/**
    * v0.22.23: 视频 prompt（分镜头）
    *   视频模型需要的结构 = 视觉描述 + 镜头感 + 动作 + 对白 + 风格一致性 + 质量
    *   Agnes Video API（参考 video.js 实现）对结构化 prompt 响应更好
+   *   v0.22.31: 加 art_style 风格硬约束 + IP 锚定（如果 scene.sp 含 IP）
    */
-  function buildSceneVideoPrompt(scene, sp) {
+  function buildSceneVideoPrompt(scene, sp, artStyle) {
     const shot = (scene.shot || '').trim();
     const action = (scene.action || '').trim();
     const dialogue = scene.dialogue && scene.dialogue !== '——' ? scene.dialogue.trim() : '';
     const setting = (sp.setting || '').trim();
     const ts = sp.target_seconds || 30;
+    // v0.22.31: artStyle 默认值
+    const style = artStyle || sp?.art_style || 'photorealistic';
+
+    // v0.22.31: IP 锚定（视频场景里也可能有 IP，比如"霍格沃茨大厅"）
+    const ipDict = window.ACMSScreenplayIPDict;
+    const styleTpl = ipDict?.getStyleTemplate(style) || { stylePrefix: '', styleSuffix: '', negativePrefix: '' };
+    let ipAnchor = null;
+    if (ipDict) {
+      const searchText = `${setting} ${shot} ${action}`;
+      ipAnchor = ipDict.lookup(searchText);
+    }
+
+    const settingLine = ipAnchor
+      ? `Setting: ${setting} (${ipAnchor.nameEn}). ${ipAnchor.visualKeywords}.`
+      : (setting ? `Setting: ${setting}.` : '');
+
     const parts = [
-      // 场景环境（上下文锚定 — 跟当前剧本 setting 一致）
-      setting ? `Setting: ${setting}.` : '',
+      // v0.22.31: 场景环境（上下文锚定 — 跟当前剧本 setting 一致 + IP 视觉锚定）
+      settingLine,
       // 镜头与构图
       shot ? `Camera: ${shot}.` : 'Camera: cinematic medium shot, eye level, slight depth of field.',
       // 动作（核心）
       action ? `Action: ${action}.` : '',
       // 对白（如有）
       dialogue ? `Dialogue: Character says: "${dialogue}".` : '',
-      // 风格一致性
-      `Style: cinematic ${ts}s short film aesthetic, photorealistic, professional cinematography, smooth natural motion.`,
+      // v0.22.31: 风格一致性（前置硬约束 + 原有描述）
+      `Style: ${styleTpl.stylePrefix} ${styleTpl.styleSuffix} Cinematic ${ts}s short film aesthetic, photorealistic, professional cinematography, smooth natural motion.`,
       // 质量
       'Quality: high detail, 4K, sharp focus, coherent motion.',
     ].filter(Boolean);

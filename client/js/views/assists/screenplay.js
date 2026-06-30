@@ -112,6 +112,13 @@ async function chatScreenplayPrompt(reqId) {
           <option value="60">60 秒（YouTube Shorts/西瓜，约 7 场）</option>
         </select>
       </div>
+      <!-- v0.22.31: 艺术风格下拉（关键！同一剧本所有角色共享一个风格，避免"角色 1 写实 + 角色 2 卡通"） -->
+      <div style="margin:6px 0">
+        <label style="display:block;font-size:12px;margin-bottom:3px;color:var(--text2)">🎨 艺术风格 <span style="color:var(--text3);font-size:11px">（所有角色 + 场景 + 视频都用这个风格）</span></label>
+        <select id="${cardId}-artstyle" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px;font-size:13px">
+          ${(window.ACMSScreenplayIPDict?.listArtStyles() || [{ value: 'photorealistic', label: '📸 写实摄影（默认）' }]).map(o => `<option value="${o.value}"${o.value === 'photorealistic' ? ' selected' : ''}>${o.label}</option>`).join('')}
+        </select>
+      </div>
       <div style="margin:8px 0 0;display:flex;gap:6px;flex-wrap:wrap">
         <button class="btn-small btn-primary" onclick="submitScreenplayForm('${cardId}','${reqId}')">🎬 生成 3 个剧本</button>
         <button class="btn-small" onclick="dismissInlineForm('${cardId}')">取消</button>
@@ -141,12 +148,14 @@ async function submitScreenplayForm(cardId, reqId) {
   if (!card) return;
   const idea = (card.querySelector(`#${cardId}-idea`)?.value || '').trim();
   const targetSeconds = parseInt(card.querySelector(`#${cardId}-duration`)?.value || '30');
+  // v0.22.31: 读 art_style（剧本级共享风格）
+  const artStyle = card.querySelector(`#${cardId}-artstyle`)?.value || 'photorealistic';
   if (!idea) return toast('请输入创意描述', 'warning');
 
   try {
     if (!window._explicitAssist) window._explicitAssist = {};
     window._explicitAssist[reqId] = 'screenplay';
-    await chatAssist(reqId, 'screenplay', { idea, target_seconds: targetSeconds });
+    await chatAssist(reqId, 'screenplay', { idea, target_seconds: targetSeconds, art_style: artStyle });
     card.remove();
   } catch (e) {
     toast('生成失败: ' + e.message, 'error');
