@@ -307,18 +307,24 @@ async function screenplayGenVideo(reqId, sceneIdx, promptOverride) {
     document.body.appendChild(tempCard);
     setTimeout(() => { tempCard.scrollIntoView?.({ block: 'center' }); }, 50);
 
+    // v0.22.30: per-scene 时长（之前用 sp.target_seconds 总时长 → 15s 剧本 3 场被生成为 15s/场）
+    const totalScenes = (screenplay.scenes || []).length;
+    const sceneDuration = totalScenes > 0
+      ? Math.max(5, Math.round((sp.target_seconds || 30) / totalScenes))
+      : (sp.target_seconds || 30);
+
     // 触发 video（v0.22.23: 附带 image_urls）
-    const videoOpts = { prompt, duration: sp.target_seconds || 30, _attach_to: { type: 'screenplay', sceneIdx } };
+    const videoOpts = { prompt, duration: sceneDuration, _attach_to: { type: 'screenplay', sceneIdx } };
     if (uniqueUrls.length > 0) {
       videoOpts.image_urls = uniqueUrls;
     }
     await chatAssist(reqId, 'video', videoOpts);
 
-    // 轮询直到拿到 video_url
+    // 轮询直到拿到 video_url（v0.22.30: 带 scene_idx 让后端按分桶字段读，避免被别的分镜头覆盖）
     let videoData = null;
     for (let i = 0; i < 60; i++) {  // 5 分钟
       await new Promise(r => setTimeout(r, 5000));
-      const r2 = await api('POST', `/requirements/${reqId}/assist/video/query`);
+      const r2 = await api('POST', `/requirements/${reqId}/assist/video/query`, { scene_idx: sceneIdx });
       if (r2 && r2.video_url) { videoData = r2; break; }
       if (r2 && r2.status === 'failed') break;
     }

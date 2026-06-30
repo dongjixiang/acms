@@ -1361,12 +1361,19 @@ router.get('/:id/assist/health_check/dismissed', async (req, res, next) => {
 });
 
 // v0.19：视频生成进度查询
+//   v0.22.30: 接受 body.scene_idx 参数 → 按分桶字段读（剧本多镜头互不覆盖）
 router.post('/:id/assist/video/query', async (req, res, next) => {
   try {
     const videoSvc = require('../services/assists/video');
     const reqRec = reqStore.getById(req.params.id);
     const projectId = reqRec?.project_id || null;
-    const result = await videoSvc.queryAssistJob(req.params.id);
+    // v0.22.30: scene_idx 透传给 queryAssistJob（无则保持原行为，向后兼容）
+    const sceneIdxRaw = req.body?.scene_idx;
+    const sceneIdx = (typeof sceneIdxRaw === 'number') ? sceneIdxRaw
+      : (typeof sceneIdxRaw === 'string' && sceneIdxRaw !== '' && !isNaN(parseInt(sceneIdxRaw, 10)))
+        ? parseInt(sceneIdxRaw, 10)
+        : null;
+    const result = await videoSvc.queryAssistJob(req.params.id, sceneIdx);
     if (!result) return res.status(404).json({ error: 'NO_VIDEO_TASK' });
     res.json({
       status: result.status,
@@ -1375,6 +1382,7 @@ router.post('/:id/assist/video/query', async (req, res, next) => {
       video_id: result.video_id,
       asset_path: result.asset_path || null,  // v0.22.7: 本地 workspace 路径
       project_id: projectId,                  // v0.22.7: 前端拼本地 URL 用
+      scene_idx: sceneIdx,                    // v0.22.30: 回传 scene_idx 方便前端日志核对
       error: result.error,
     });
   } catch (e) { next(e); }

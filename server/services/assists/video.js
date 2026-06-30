@@ -1,4 +1,4 @@
-// ACMS · 视频生成辅助（v0.22.24，2026-06-29）
+// ACMS · 视频生成辅助（v0.22.30，2026-06-30）
 //   用户输入 prompt + 时长 → 调用 Agnes AI Video V2.0 创建任务
 //   支持：文生视频 / 图生视频 / 多图视频 / 关键帧动画
 //   异步任务：创建 → 前端轮询查进度 → 完成展示视频 URL
@@ -13,7 +13,14 @@
 //     3. http(s):// → curl 下载转 base64（绕开 Node TLS 对 platform-outputs.agnes-ai.space 的 ECONNRESET）
 //     4. 纯 base64 字符串 → 直接用
 //
-// 字段：requirement.assist_video（status / video_id / task_id / prompt / progress / video_url / asset_path / error）
+// v0.22.30 fix: 剧本多镜头按 sceneIdx 分桶存储（彻底解决 race condition）
+//   之前所有分镜头共用 assist_video 字段 → 后启动的覆盖前面的 → 提示词跟展示错位
+//   现在按 sceneIdx 写入 assist_video_scene_${idx}，互不覆盖
+//   老任务（无 sceneIdx）仍写 assist_video 字段（向后兼容）
+//
+// 字段：
+//   - 剧本多镜头：requirement.assist_video_scene_${idx}（status / video_id / task_id / ...）
+//   - 单视频/老任务：requirement.assist_video
 
 const reqStore = require('../../stores/requirement-store');
 const path = require('path');
@@ -23,6 +30,29 @@ const config = require('../../config');
 
 // v0.22.20: 改用 config.workspaceRoot（之前 2 层 `..` 错位到 server/workspaces/，与 gen.js 读取路径不一致 → 404）
 const WORKSPACE_ROOT = config.workspaceRoot;
+
+/**
+ * v0.22.30: 根据 sceneIdx 返回对应 DB 字段名
+ *   - 有 sceneIdx → 'assist_video_scene_${idx}'（剧本多镜头分桶）
+ *   - 无 sceneIdx → 'assist_video'（单视频/向后兼容）
+ *   导出给 routes/requirements.js 和 screenplay.js 复用
+ */
+function getVideoField(sceneIdx) {
+  return (sceneIdx !== null && sceneIdx !== undefined)
+    ? 'assist_video_scene_' + sceneIdx
+    : 'assist_video';
+}
+
+/**
+ * v0.22.30: 根据 sceneIdx 返回对应防抖 key（前后端用同一份）
+ *   避免 scene 0 和 scene 1 的轮询/polling 互相影响
+ */
+function getVideoDebounceKey(requirementId, sceneIdx) {
+  return requirementId + '_scene_' + (sceneIdx !== null && sceneIdx !== undefined ? sceneIdx : '_main');
+}
+
+module.exports.getVideoField = getVideoField;
+module.exports.getVideoDebounceKey = getVideoDebounceKey;
 
 /**
  * v0.22.24: 把任意图片引用解析成纯 base64 字符串（Agnes Video API 实际接受纯 base64 — 实测确认）
@@ -142,6 +172,8 @@ async function downloadVideoToWorkspace(requirementId, videoUrl, metadata) {
       return null;
     }
     const buffer = Buffer.from(await r.arrayBuffer());
+    // v0.22.30 fix: 补 req 变量定义（之前用未定义的 req 会抛 ReferenceError → 下载永远失败）
+    const req = reqStore.getById(requirementId);
     const slug = getProjectDirForReq(req);
     const saved = saveVideoAsset(slug, buffer, '.mp4', metadata);
     console.log(`[assist:video] ${requirementId} 已保存视频到 ${saved.assetPath} (${(saved.size/1024).toFixed(1)}KB)`);
@@ -166,10 +198,18 @@ function calcNumFrames(targetSeconds, frameRate = 24) {
 
 /**
  * 运行视频生成任务
+ *   v0.22.30: 支持 _attach_to.sceneIdx → 按分桶字段存储（剧本多镜头互不覆盖）
  */
 async function runAssistJob(requirementId, opts = {}) {
   const req = reqStore.getById(requirementId);
   if (!req) return;
+
+  // v0.22.30: 按 sceneIdx 决定写到哪个 DB 字段（剧本多镜头分桶）
+  const sceneIdx = (opts && opts._attach_to && typeof opts._attach_to.sceneIdx === 'number')
+    ? opts._attach_to.sceneIdx : null;
+  const VIDEO_FIELD = getVideoField(sceneIdx);
+  const debounceKey = getVideoDebounceKey(requirementId, sceneIdx);
+  console.log(`[assist:video] ${requirementId} runAssistJob sceneIdx=${sceneIdx} field=${VIDEO_FIELD} debounceKey=${debounceKey}`);
 
   const prompt = (opts.prompt || '').trim();
   const duration = parseFloat(opts.duration) || 5; // 默认 5 秒
@@ -180,7 +220,7 @@ async function runAssistJob(requirementId, opts = {}) {
 
   if (!prompt) {
     reqStore.update(requirementId, {
-      assist_video: JSON.stringify({
+      [VIDEO_FIELD]: JSON.stringify({
         status: 'failed',
         error: 'NO_PROMPT',
         prompt: '',
@@ -193,7 +233,7 @@ async function runAssistJob(requirementId, opts = {}) {
   // 写 pending 状态
   const numFrames = calcNumFrames(duration, frameRate);
   reqStore.update(requirementId, {
-    assist_video: JSON.stringify({
+    [VIDEO_FIELD]: JSON.stringify({
       status: 'generating',
       prompt,
       duration,
@@ -271,7 +311,7 @@ let finalImage = imageUrl || null;
     }
 
     reqStore.update(requirementId, {
-      assist_video: JSON.stringify({
+      [VIDEO_FIELD]: JSON.stringify({
         status: 'done',  // v0.19 fix: 设 done 让 SSE 能正常结束（视频是异步的，用户手动查进度）
         prompt,
         duration,
@@ -295,7 +335,7 @@ let finalImage = imageUrl || null;
   } catch (e) {
     console.error(`[assist:video] ${requirementId} 创建失败:`, e.message);
     reqStore.update(requirementId, {
-      assist_video: JSON.stringify({
+      [VIDEO_FIELD]: JSON.stringify({
         status: 'failed',
         prompt,
         duration,
@@ -316,13 +356,15 @@ let finalImage = imageUrl || null;
 
 /**
  * 查询视频生成进度（用户点「刷新进度」时调用）
+ *   v0.22.30: 接受 sceneIdx 参数 → 按分桶字段读
  */
-async function queryAssistJob(requirementId) {
+async function queryAssistJob(requirementId, sceneIdx = null) {
   const req = reqStore.getById(requirementId);
   if (!req) return { error: '需求不存在' };
 
+  const VIDEO_FIELD = getVideoField(sceneIdx);
   let assist;
-  try { assist = JSON.parse(req.assist_video || 'null'); } catch { assist = null; }
+  try { assist = JSON.parse(req[VIDEO_FIELD] || 'null'); } catch { assist = null; }
   if (!assist) return { error: '没有视频生成记录' };
   if (assist.status === 'failed') return assist;
   // v0.22.6 fix: async_task 模式（v0.19 把 status 一直设 'done' 让 SSE 正常结束），
@@ -378,7 +420,7 @@ async function queryAssistJob(requirementId) {
 
     if (result.raw) updated.last_raw_response = result.raw;
 
-    reqStore.update(requirementId, { assist_video: JSON.stringify(updated) });
+    reqStore.update(requirementId, { [VIDEO_FIELD]: JSON.stringify(updated) });
     return updated;
   } catch (e) {
     console.error(`[assist:video] ${requirementId} 查询失败:`, e.message);
@@ -387,16 +429,20 @@ async function queryAssistJob(requirementId) {
   }
 }
 
-function getAssist(requirementId) {
+function getAssist(requirementId, sceneIdx = null) {
   const req = reqStore.getById(requirementId);
   if (!req) return null;
-  try { return JSON.parse(req.assist_video || 'null'); } catch { return null; }
+  const VIDEO_FIELD = getVideoField(sceneIdx);
+  try { return JSON.parse(req[VIDEO_FIELD] || 'null'); } catch { return null; }
 }
 
 module.exports = {
   name: 'AI 视频生成（Agnes Video）',
-  field: 'assist_video',
+  field: 'assist_video',  // 单视频/老任务用（旧任务向后兼容）；新剧本任务用 getVideoField(sceneIdx)
   runAssistJob,
   queryAssistJob,
   getAssist,
+  // v0.22.30: 导出 helper 给 routes/requirements.js 用
+  getVideoField,
+  getVideoDebounceKey,
 };
