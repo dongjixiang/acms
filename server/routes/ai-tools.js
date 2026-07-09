@@ -287,6 +287,8 @@ router.post('/agent-execute', async (req, res, next) => {
       analysisLength: (result.analysis || '').length,
       submitted: !submitResult?.error,
       submitError: submitResult?.error || null,
+      // v0.23: happy path 也返回 audit 详情 — 让 review 调试有完整证据
+      audit: audit.missingCount === 0 ? audit : null,
     });
   } catch (e) { next(e); }
 });
