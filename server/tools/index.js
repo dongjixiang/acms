@@ -442,5 +442,43 @@ registerTool({
   },
 });
 
+// v0.23 Phase 2: 写文件工具 — 让 LLM 能创建/修改工作区文件
+registerTool({
+  name: 'agent_write_file',
+  description: 'Write or overwrite a file in the project workspace. Creates parent directories if needed. '
+    + 'Use this to create new files (docs, configs, code) or modify existing ones. '
+    + 'Content must be valid UTF-8 text. For code files, ensure syntax is correct before writing.',
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Relative file path in the project workspace (e.g. "README.md", "code/server.js", "docs/design.md")' },
+      content: { type: 'string', description: 'Full file content to write (will overwrite existing file)' },
+    },
+    required: ['path', 'content'],
+  },
+  async handler(args, ctx = {}) {
+    const { projectId } = ctx;
+    if (!projectId) return { error: 'NO_PROJECT_ID', message: 'Tool context missing projectId' };
+    if (!args.path) return { error: 'NO_PATH' };
+    if (args.content === undefined || args.content === null) return { error: 'NO_CONTENT' };
+    const projectStore = require('../stores/project-store');
+    const project = projectStore.getById(projectId);
+    if (!project) return { error: 'PROJECT_NOT_FOUND' };
+    const slug = project.slug || project.name;
+    const workspace = require('../services/workspace-service');
+    try {
+      const result = workspace.writeFile(slug, args.path, args.content);
+      return {
+        ok: true,
+        path: result.path,
+        size: result.size,
+        message: `File written: ${args.path} (${result.size} bytes)`,
+      };
+    } catch (e) {
+      return { error: 'WRITE_FAILED', message: e.message };
+    }
+  },
+});
+
 console.log('[tools] 内建工具注册完成:', listBuiltinTools().join(', '));
 function listBuiltinTools() { return require('../services/tool-registry').listTools().map(t => t.name); }
