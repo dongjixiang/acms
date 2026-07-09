@@ -626,7 +626,7 @@ Your goal:
 5. Produce a summary of what you did: which files were created/modified, what changes were made, and any verification results
 
 Rules:
-- Always explore first (list_files, read_file) before writing.
+- Explore briefly (1-2 tool calls), then act. Do not over-explore.
 - After writing a file, read it back to verify the content was written correctly.
 - For code files, run "node --check <path>" or equivalent to verify syntax.
 - Never delete files. If you need to modify, read first, then write the full updated content.
@@ -672,7 +672,7 @@ async function executeTaskAgent(taskId, options = {}) {
     analysis = await runToolLoop(model.id, messages, {
       toolNames,
       context: { projectId, taskId },
-      maxRounds: 10,
+      maxRounds: 20,
     });
   } catch (e) {
     console.error(`[agent-execute] runToolLoop failed: ${e.message}`);
