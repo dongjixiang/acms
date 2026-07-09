@@ -82,4 +82,24 @@ try {
   console.error('[tools] 工具注册失败:', e.message);
 }
 
+// v0.24: 注册 ACMS-Self 系统 agent（注册表层面 + dispatcher 订阅）
+try {
+  const agentStore = require('./stores/agent-store');
+  const sysAgent = agentStore.register({
+    id: 'agent-acms-self',
+    name: 'ACMS-Self (系统)',
+    type: 'system',
+    roles: ['executor'],
+    skills: { coding: 10, testing: 8, design: 8, writing: 8 },  // 全能
+    endpoint: 'internal',
+    authToken: 'dev-key-001',
+  });
+  console.log(`[ACMS-Self] 已注册: ${sysAgent.name} (id=${sysAgent.id})`);
+
+  // 启动 dispatcher（监听 task.claimed 事件 → 自动 trigger agent-execute）
+  require('./services/auto-execute-dispatcher').init();
+} catch (e) {
+  console.error('[ACMS-Self] 注册失败:', e.message);
+}
+
 console.log('[ACMS] 启动完成 ✅');
