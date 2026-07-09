@@ -2,7 +2,7 @@
 const modelStore = require('../stores/model-store');
 const reqStore = require('../stores/requirement-store');
 const taskStore = require('../stores/task-store');
-const { callLLM } = require('./llm-adapter');
+const { callLLM, runToolLoop } = require('./llm-adapter');
 
 // ===== 工具函数 =====
 function safeArr(val) {
@@ -348,6 +348,70 @@ function assessGranularity(requirement) {
   return { techDomains, warnings };
 }
 
+// ── 体验型产品 decompose 规则 ──
+// 当 classifyProductType 判定需求为体验型时，注入这段规则到 LLM prompt
+const EXPERIENCE_DECOMPOSE_RULES = `## ⚠ 当前需求判定为【体验型产品】（游戏/创意工具/视觉导向的交互界面）
+
+体验型产品与功能型产品有根本区别：功能型可以"每个模块跑通后拼起来就对了"，但体验型必须"每步都看方向有没有偏"。
+
+### 🔴 强制规则
+
+**1. 模块上限：≤ 4 个核心子需求。** 禁止拆到 5+ 个——拆得越细，每个模块独立验收时看不到全局，拼起来必然不像一个整体。
+
+**2. 强制 MVP 集成体验任务。** 必须创建一个任务，标题含「MVP 集成与体验性验收」，内容：
+- 串联所有核心模块的主流程（从入口到首次核心交互结束，约 5-10 分钟体验）
+- 验收标准写成「打开后完整走一遍流程，判断：整体感觉对吗？方向需要调整吗？」
+- 类型标记为 testing（人工体验验收）
+- 必须在所有模块完成后、最终交付前执行
+
+**3. 阶段人工 gate。** 每 2 个模块完成后，下一个验收任务里加上一行「📌 人工检视点 — 确认当前中间状态的方向和质感是否正确」
+- 这不是"求用户测试"——这是"给 PM 一个 checkpoint 让产品不会跑飞"
+
+**4. 任务粒度上限。** 单个任务 estimated_hours ≤ 16h（优先 8-12h）。游戏/创意需求的任务如果超过这个粒度，AI 会陷入局部最优看不到全局。
+
+**5. 禁止纯机械验收。** 每个模块的战斗/体验核心任务，验收标准里不能只有命令行自动化测试。必须包含至少一个"人工体验"类验收：如「打开游戏，只玩第 1 个剧本 10 分钟，看能不能坚持玩完」`;
+
+// ── 产品类型分类 ──
+// 在 decompose 前自动判断需求是功能型还是体验型
+// 体验型需求走不同的 decompose 策略（控制模块数、强制 MVP 集成、阶段人工 gate）
+function classifyProductType(description, title, srs) {
+  const text = ((title || '') + ' ' + (description || '') + ' ' + JSON.stringify(srs || {})).toLowerCase();
+
+  // 体验型关键词
+  const experienceSignals = [
+    /像素级还原/i, /复刻.*游戏/i, /游戏体验/i, /手感/i, /沉浸/i, /画风/i, /美术风格/i,
+    /像素风格/i, /氛围感/i, /原汁原味/i, /好玩/i, /画质/i, /视觉风格/i, /色彩搭配/i,
+    /色调/i, /游戏节奏/i, /难度曲线/i, /新手引导.*体验/i, /操作手感/i, /战斗手感/i,
+    /游戏性/i, /趣味性/i, /可玩性/i, /看起来像/i, /感觉像/i, /风格一致/i, /复古风格/i,
+    /单机游戏/i, /网页游戏/i, /HTML5.*游戏/i, /Canvas.*游戏/i, /战棋/i, /策略游戏/i,
+  ];
+
+  let score = 0;
+  for (const re of experienceSignals) {
+    if (re.test(text)) score += 1;
+  }
+
+  // 功能型反信号（明确是工具/API/后台类）
+  const functionSignals = [
+    /api\s*接口/i, /数据导入/i, /数据导出/i, /webhook/i, /路由/i, /中间件/i,
+    /数据库/i, /crud/i, /查询.*筛选/i, /后台管理/i, /配置管理/i, /管理系统/i,
+    /agent/i, /命令行/i, /cli/i, /自动化/i, /工作流/i, /监控/i, /审计/i,
+  ];
+
+  let antiScore = 0;
+  for (const re of functionSignals) {
+    if (re.test(text)) antiScore += 1;
+  }
+
+  const net = score - antiScore;
+  const type = net >= 3 ? 'experience' : 'function';
+  const reason = type === 'experience'
+    ? `检测到 ${score} 个体验/感官类关键词（如"${experienceSignals.filter(r => r.test(text)).slice(0, 3).map(r => r.source).join('"、"')}")，净分 ${net}`
+    : `功能型需求（体验关键词 ${score} 个 vs 功能关键词 ${antiScore} 个，净分 ${net}）`;
+
+  return { type, score, antiScore, net, reason };
+}
+
 async function decomposeRequirement(reqId, modelId) {
   const requirement = reqStore.getById(reqId);
   if (!requirement) throw Object.assign(new Error('需求不存在'), { status: 404 });
@@ -370,9 +434,23 @@ async function decomposeRequirement(reqId, modelId) {
 
   const srs = JSON.parse(requirement.srs || '{}');
 
+  // ── 产品类型识别 ──
+  const productType = classifyProductType(
+    requirement.description || requirement.structured_description || '',
+    requirement.title || '',
+    srs
+  );
+  console.log(`[decompose] 产品类型: ${productType.type} (${productType.reason})`);
+
   const messages = [
     { role: 'system', content: decomposePrompt || DECOMPOSE_SYSTEM_PROMPT },
   ];
+
+  // ── 体验型注入专用 decompose 规则 ──
+  if (productType.type === 'experience') {
+    messages.push({ role: 'system', content: EXPERIENCE_DECOMPOSE_RULES });
+    console.log(`[decompose] ⚡ 注入体验型分解规则（模块上限 4、强制 MVP 集成、阶段人工 gate）`);
+  }
 
   // 注入可用的 Skill 列表
   try {
@@ -529,7 +607,86 @@ function salvageTasks(text) {
 }
 }
 
-module.exports = { generateDoc, decomposeRequirement, refineSection, checkConsistency };
+// ===== Agent 自主执行（v0.23 MVP — LLM 探索工作区 + 分析 + 提交） =====
+
+const AGENT_SYSTEM_PROMPT = `You are an ACMS autonomous agent. You have been assigned a task in a project workspace.
+
+Your capabilities (MVP — read-only exploration):
+1. agent_list_files — List all files in the workspace
+2. agent_read_file — Read a specific file's content (max 8000 chars)
+3. agent_search_files — Search for text patterns across all files
+4. agent_exec_command — Execute a sandboxed command (node, npm, git, ls, cat, etc.)
+
+Your goal:
+1. Use the tools to explore the project workspace and understand the current state
+2. Analyze what the task requires based on the code and files you find
+3. Produce a detailed execution plan:
+   - Current state of relevant files (what exists, what's missing)
+   - What changes are needed (specific file paths and modifications)
+   - Implementation steps (ordered, actionable)
+   - Risks or dependencies
+
+Rules:
+- This is ANALYSIS ONLY. You can read and explore, but cannot write files yet.
+- Be specific: reference actual file paths, line numbers, and code snippets you've read.
+- If the workspace is empty or has no relevant files, say so clearly.
+- Respond in the same language as the task description (Chinese if task is in Chinese).
+- Keep your final analysis concise but actionable. Maximum 2000 words.`;
+
+async function executeTaskAgent(taskId, options = {}) {
+  const task = taskStore.getById(taskId);
+  if (!task) throw Object.assign(new Error('Task not found'), { status: 404 });
+
+  const projectId = task.project_id;
+  const modelId = options.modelId || (modelStore.getDefaultGenModel() || {}).id;
+  if (!modelId) throw Object.assign(new Error('No active model available'), { status: 500 });
+
+  const model = modelStore.getById(modelId);
+  if (!model) throw Object.assign(new Error('Model not found: ' + modelId), { status: 404 });
+
+  // Build task context
+  const taskContext = [
+    `Task ID: ${task.id}`,
+    `Title: ${task.title}`,
+    `Description: ${task.description || '(none)'}`,
+    `Type: ${task.type || 'general'}`,
+    `Estimated Hours: ${task.estimated_hours || 'N/A'}`,
+    `Acceptance Criteria: ${task.acceptance_criteria || task.acceptanceCriteria || '(not specified)'}`,
+    `Required Skills: ${task.required_skills || '{}'}`,
+  ].join('\n');
+
+  const messages = [
+    { role: 'system', content: AGENT_SYSTEM_PROMPT },
+    { role: 'user', content: `Please analyze the following task and provide an execution plan.\n\n${taskContext}\n\nStart by listing the workspace files to understand the project structure, then read relevant files and produce your analysis.` },
+  ];
+
+  console.log(`[agent-execute] Task ${taskId} | model=${model.id} | project=${projectId}`);
+
+  const toolNames = ['agent_read_file', 'agent_list_files', 'agent_search_files', 'agent_exec_command'];
+
+  let analysis;
+  try {
+    analysis = await runToolLoop(model.id, messages, {
+      toolNames,
+      context: { projectId, taskId },
+      maxRounds: 10,
+    });
+  } catch (e) {
+    console.error(`[agent-execute] runToolLoop failed: ${e.message}`);
+    analysis = `[Agent execution failed: ${e.message}]\n\nTask context:\n${taskContext}`;
+  }
+
+  console.log(`[agent-execute] Task ${taskId} completed. Analysis length: ${(analysis || '').length} chars`);
+
+  return {
+    taskId,
+    modelUsed: model.id,
+    analysis: analysis || '(empty response)',
+    completedAt: new Date().toISOString(),
+  };
+}
+
+module.exports = { generateDoc, decomposeRequirement, refineSection, checkConsistency, executeTaskAgent };
 
 // ===== 逐段润色 =====
 const REFINE_SECTION_PROMPT = `你是一个专业的需求文档润色专家。用户会给你一个需求文档中的**特定段落**，以及**修改指示**。

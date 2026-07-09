@@ -344,6 +344,34 @@ async function handleExecuteSkill(event, skill) {
   const steps = exec.steps || [];
   const execMode = exec.mode;  // "api" | "handler" | undefined (legacy)
 
+  // === Path 0: 无预定义步骤 → LLM Agent 自主执行 ===
+  if (steps.length === 0) {
+    console.log(`[Skill:任务执行] 无预定义步骤，启动 LLM Agent 自主执行...`);
+    try {
+      const agentResult = await call('POST', '/ai-tools/agent-execute', {
+        taskId,
+        agentId: AGENT_ID,
+      });
+      if (agentResult && agentResult.success) {
+        console.log(`[Skill:任务执行] ✅ Agent 执行完成 (model=${agentResult.modelUsed}, ${agentResult.analysisLength} chars, submitted=${agentResult.submitted})`);
+      } else {
+        console.log(`[Skill:任务执行] ⚠️ Agent 执行返回: ${JSON.stringify(agentResult)}`);
+        // 兜底：如果 agent-execute 失败，用旧方式提交
+        await call('POST', `/tasks/${taskId}/submit`, {
+          agentId: AGENT_ID,
+          notes: `⚠️ Agent 自主执行失败: ${(agentResult || {}).error || 'unknown'}\n\nFallback: 任务已认领但未完成分析。`,
+        });
+      }
+    } catch (e) {
+      console.error(`[Skill:任务执行] Agent 执行异常: ${e.message}`);
+      await call('POST', `/tasks/${taskId}/submit`, {
+        agentId: AGENT_ID,
+        notes: `⚠️ Agent 自主执行异常: ${e.message}`,
+      });
+    }
+    return;
+  }
+
   // 判断步骤格式：object-style 有 action 字段，string-style 是纯字符串
   const isObjectStyle = steps.length > 0 && typeof steps[0] === 'object' && !!steps[0].action;
 

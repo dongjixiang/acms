@@ -229,4 +229,39 @@ router.post('/requirements/:id/check-consistency', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Agent 自主执行 — LLM 探索工作区 + 分析 + 自动提交
+router.post('/agent-execute', async (req, res, next) => {
+  try {
+    const { taskId, modelId, agentId } = req.body;
+    if (!taskId) return res.status(400).json({ error: 'MISSING_TASK_ID' });
+
+    const result = await aiTools.executeTaskAgent(taskId, { modelId });
+
+    // 自动提交任务（analysis 作为 notes）
+    const submitResult = taskStore.submit(taskId, {
+      agentId: agentId || 'agent-xiaoji',
+      notes: result.analysis,
+    });
+
+    // 发出 task.submitted 事件（触发 reviewer 审核等后续流程）
+    if (submitResult && !submitResult.error) {
+      eventBus.emit('task.submitted', {
+        projectId: submitResult.project_id,
+        actor: { id: agentId || 'agent-xiaoji', type: 'agent' },
+        target: { type: 'task', id: submitResult.id },
+        payload: { task: submitResult },
+      });
+    }
+
+    res.json({
+      success: true,
+      taskId,
+      modelUsed: result.modelUsed,
+      analysisLength: (result.analysis || '').length,
+      submitted: !submitResult?.error,
+      submitError: submitResult?.error || null,
+    });
+  } catch (e) { next(e); }
+});
+
 module.exports = router;

@@ -308,5 +308,139 @@ registerTool({
   },
 });
 
+// ════════════════════════════════════════════════════════════════
+// v0.23：Agent 自主执行工具（只读 MVP）— 让 LLM 能自主探索项目工作区
+//   context 由 agent-execute 端点注入（含 projectId）
+//   MVP 阶段注册只读 + exec 工具，workspace exec 已有沙箱安全
+// ════════════════════════════════════════════════════════════════
+
+registerTool({
+  name: 'agent_read_file',
+  description: 'Read a file from the project workspace. Returns file content as text (truncated to 8000 chars for large files). Use this to understand existing code, configs, or documentation in the project.',
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Relative file path in the project workspace (e.g. "README.md", "code/server.js", "requirements/req-001.md")' },
+    },
+    required: ['path'],
+  },
+  async handler(args, ctx = {}) {
+    const { projectId } = ctx;
+    if (!projectId) return { error: 'NO_PROJECT_ID', message: 'Tool context missing projectId' };
+    const projectStore = require('../stores/project-store');
+    const project = projectStore.getById(projectId);
+    if (!project) return { error: 'PROJECT_NOT_FOUND' };
+    const slug = project.slug || project.name;
+    const workspace = require('../services/workspace-service');
+    const content = workspace.readFile(slug, args.path);
+    if (content === null) return { error: 'FILE_NOT_FOUND', path: args.path };
+    const maxLen = 8000;
+    return {
+      path: args.path,
+      content: content.length > maxLen ? content.substring(0, maxLen) + '\n... [truncated]' : content,
+      totalLength: content.length,
+      truncated: content.length > maxLen,
+    };
+  },
+});
+
+registerTool({
+  name: 'agent_list_files',
+  description: 'List all files in the project workspace (recursive tree). Returns file name, relative path, size, and type for each file. Use this to understand project structure before reading specific files.',
+  parameters: {
+    type: 'object',
+    properties: {
+      showAll: { type: 'boolean', description: 'If true, include hidden/build files (node_modules, .git, etc.)', default: false },
+    },
+  },
+  async handler(args, ctx = {}) {
+    const { projectId } = ctx;
+    if (!projectId) return { error: 'NO_PROJECT_ID' };
+    const projectStore = require('../stores/project-store');
+    const project = projectStore.getById(projectId);
+    if (!project) return { error: 'PROJECT_NOT_FOUND' };
+    const slug = project.slug || project.name;
+    const workspace = require('../services/workspace-service');
+    const files = workspace.listFiles(slug, { showAll: args.showAll || false });
+    return { totalFiles: files.length, files: files.slice(0, 100) };
+  },
+});
+
+registerTool({
+  name: 'agent_search_files',
+  description: 'Search for a text pattern across all files in the project workspace. Returns matching file paths, line numbers, and line content. Use this to find where specific functions, variables, or keywords are used.',
+  parameters: {
+    type: 'object',
+    properties: {
+      pattern: { type: 'string', description: 'Text or regex pattern to search for (case-insensitive)' },
+      maxResults: { type: 'number', description: 'Maximum number of matches to return (default 20)', default: 20 },
+    },
+    required: ['pattern'],
+  },
+  async handler(args, ctx = {}) {
+    const { projectId } = ctx;
+    if (!projectId) return { error: 'NO_PROJECT_ID' };
+    const projectStore = require('../stores/project-store');
+    const project = projectStore.getById(projectId);
+    if (!project) return { error: 'PROJECT_NOT_FOUND' };
+    const slug = project.slug || project.name;
+    const workspace = require('../services/workspace-service');
+    const files = workspace.listFiles(slug, {});
+    const results = [];
+    const maxResults = args.maxResults || 20;
+    let regex;
+    try {
+      regex = new RegExp(args.pattern, 'i');
+    } catch {
+      regex = new RegExp(args.pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    }
+    for (const file of files) {
+      if (results.length >= maxResults) break;
+      const content = workspace.readFile(slug, file.path);
+      if (!content) continue;
+      const lines = content.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        if (results.length >= maxResults) break;
+        if (regex.test(lines[i])) {
+          results.push({ file: file.path, line: i + 1, content: lines[i].trim().substring(0, 200) });
+        }
+      }
+    }
+    return { pattern: args.pattern, totalMatches: results.length, results };
+  },
+});
+
+registerTool({
+  name: 'agent_exec_command',
+  description: 'Execute a shell command in the project workspace (sandboxed). Allowed commands: node, npm, npx, python, git, ls, cat, echo, etc. Returns stdout, stderr, and exit code. Use for running tests, checking syntax (node --check), viewing git log, listing directories, etc.',
+  parameters: {
+    type: 'object',
+    properties: {
+      cmd: { type: 'string', description: 'Command to execute (e.g. "node --check code/server.js", "git log --oneline -5", "ls -la")' },
+      cwd: { type: 'string', description: 'Working directory relative to workspace root (optional)' },
+    },
+    required: ['cmd'],
+  },
+  async handler(args, ctx = {}) {
+    const { projectId } = ctx;
+    if (!projectId) return { error: 'NO_PROJECT_ID' };
+    const projectStore = require('../stores/project-store');
+    const project = projectStore.getById(projectId);
+    if (!project) return { error: 'PROJECT_NOT_FOUND' };
+    const slug = project.slug || project.name;
+    const workspace = require('../services/workspace-service');
+    const result = await workspace.exec(slug, {
+      cmd: args.cmd,
+      cwd: args.cwd || '',
+      timeout: 30000,
+    });
+    return {
+      exitCode: result.exitCode,
+      stdout: (result.stdout || '').substring(0, 5000),
+      stderr: (result.stderr || '').substring(0, 2000),
+    };
+  },
+});
+
 console.log('[tools] 内建工具注册完成:', listBuiltinTools().join(', '));
 function listBuiltinTools() { return require('../services/tool-registry').listTools().map(t => t.name); }
