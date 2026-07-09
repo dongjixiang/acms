@@ -15,7 +15,7 @@
 const { generateDoc } = require('./doc-generator');
 const { decomposeRequirement } = require('./requirement-decomposer');
 const { refineSection, checkConsistency } = require('./consistency-checker');
-const { executeTaskAgent } = require('./task-agent');
+const { executeTaskAgent, extractClaimedFiles, verifyClaimsExist, auditAgentClaims } = require('./task-agent');
 
 module.exports = {
   generateDoc,
@@ -23,4 +23,8 @@ module.exports = {
   refineSection,
   checkConsistency,
   executeTaskAgent,
+  // v0.23: agent claim verification (防 agent 撒谎说成功)
+  extractClaimedFiles,
+  verifyClaimsExist,
+  auditAgentClaims,
 };

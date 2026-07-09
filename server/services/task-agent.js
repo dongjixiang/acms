@@ -1,5 +1,4 @@
 // ACMS AI 工具层 — Agent 自主执行（v0.23 核心，LLM 探索工作区 + 修改文件 + 自动提交）
-// 原 ai-tools-service.js L610-689 提取
 const modelStore = require('../stores/model-store');
 const taskStore = require('../stores/task-store');
 const { runToolLoop } = require('./llm-adapter');
@@ -83,4 +82,87 @@ async function executeTaskAgent(taskId, options = {}) {
   };
 }
 
-module.exports = { executeTaskAgent };
+// ===== Agent Claims 验证（v0.23 防「agent 撒谎说成功」核心防御）=====
+// Agent 完成 LLM loop 后，可能在 summary 中声称"wrote README.md"但实际未真写
+// 此函数提取声称路径 → 对每个 file 在 workspace 里 readFile 验证
+// 任何缺失 → 由 route 调用方强制任务进 failed
+
+function extractClaimedFiles(analysis) {
+  if (!analysis || typeof analysis !== 'string') return [];
+  const claimed = new Set();
+
+  // Pattern 1: backtick-wrapped paths（最可靠，agent 通常这样标记文件）
+  const backtickRe = /`([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)`/g;
+  let m;
+  while ((m = backtickRe.exec(analysis)) !== null) {
+    const p = m[1];
+    if (!/^(https?:|\/|[.~])/.test(p) && p.length >= 4 && p.length <= 200) {
+      claimed.add(p);
+    }
+  }
+
+  // Pattern 2: 动词 + 路径
+  const verbRe = /\b(?:wrote|created|added|saved|modified|updated|generated|implemented|built)\s+[`"\']?([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)[`"\']?/gi;
+  while ((m = verbRe.exec(analysis)) !== null) {
+    const p = m[1];
+    if (!/^(https?:|\/)/.test(p) && p.length >= 4) {
+      claimed.add(p);
+    }
+  }
+
+  // Pattern 3: markdown 列表项里的路径 (- `file` / * file)
+  const listRe = /^\s*[-*]\s+[`"\']?([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)[`"\']?/gm;
+  while ((m = listRe.exec(analysis)) !== null) {
+    const p = m[1];
+    if (!/^(https?:|\/)/.test(p) && p.length >= 4) {
+      claimed.add(p);
+    }
+  }
+
+  return [...claimed];
+}
+
+function verifyClaimsExist(projectId, claimedPaths) {
+  const out = { verified: [], missing: [] };
+  if (!Array.isArray(claimedPaths) || claimedPaths.length === 0) return out;
+  const projectStore = require('../stores/project-store');
+  const project = projectStore.getById(projectId);
+  if (!project) {
+    return { verified: [], missing: claimedPaths.map(p => ({ path: p, reason: 'PROJECT_NOT_FOUND' })) };
+  }
+  const slug = project.slug || project.name;
+  const workspace = require('./workspace-service');
+  for (const p of claimedPaths) {
+    try {
+      const content = workspace.readFile(slug, p);
+      if (content !== null && content !== undefined) {
+        out.verified.push(p);
+      } else {
+        out.missing.push({ path: p, reason: 'FILE_NOT_FOUND' });
+      }
+    } catch (e) {
+      out.missing.push({ path: p, reason: e.message || 'READ_ERROR' });
+    }
+  }
+  return out;
+}
+
+function auditAgentClaims(projectId, analysis) {
+  const claimed = extractClaimedFiles(analysis);
+  const result = verifyClaimsExist(projectId, claimed);
+  return {
+    claimedCount: claimed.length,
+    verifiedCount: result.verified.length,
+    missingCount: result.missing.length,
+    claimedFiles: claimed,
+    missingFiles: result.missing,
+    verifiedFiles: result.verified,
+  };
+}
+
+module.exports = {
+  executeTaskAgent,
+  extractClaimedFiles,
+  verifyClaimsExist,
+  auditAgentClaims,
+};

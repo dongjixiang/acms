@@ -237,7 +237,34 @@ router.post('/agent-execute', async (req, res, next) => {
 
     const result = await aiTools.executeTaskAgent(taskId, { modelId });
 
-    // 自动提交任务（analysis 作为 notes）
+    // v0.23 防「agent 撒谎」核心防御：从 LLM summary 提取声称写的文件 → 实际 readFile 验证
+    //   缺失文件 → 不进 review，进 failed，避免 reviewer 被虚假 success 误导
+    const taskDoc = taskStore.getById(taskId);
+    const audit = taskDoc ? aiTools.auditAgentClaims(taskDoc.project_id, result.analysis) : { claimedCount: 0, verifiedCount: 0, missingCount: 0, missingFiles: [], claimedFiles: [], verifiedFiles: [] };
+    if (audit.missingCount > 0) {
+      const missingList = audit.missingFiles.map(m => `${m.path} (${m.reason})`).join(', ');
+      console.error(`[agent-execute] ⚠ Task ${taskId} 声称 ${audit.claimedCount} 文件，但 ${audit.missingCount} 缺失: ${missingList}`);
+      const failNotes = `[Agent 声称文件验证失败]\n\n缺失文件：\n${audit.missingFiles.map(m => `- \`${m.path}\` (原因: ${m.reason})`).join('\\n')}\n\n声称但已写入(${audit.verifiedCount}):\n${audit.verifiedFiles.map(f => `- \`${f}\``).join('\\n') || '(无)'}\n\n原始 agent summary:\n${result.analysis || '(empty)'}`;
+      // 标记任务为 failed 而非 submit 让它进 review
+      const task = taskStore.getById(taskId);
+      const failSubmit = taskStore.submit(taskId, {
+        agentId: agentId || 'agent-xiaoji',
+        notes: failNotes,
+      });
+      // 然后强制改状态为 failed (submit 通常是 todo→review；这里我们要 failed)
+      try { taskStore.update(taskId, { status: 'failed' }); } catch (e) {}
+      return res.status(409).json({
+        success: false,
+        taskId,
+        modelUsed: result.modelUsed,
+        audit,
+        error: 'CLAIM_MISMATCH',
+        message: `Agent claimed ${audit.claimedCount} file(s), but ${audit.missingCount} missing. Task marked failed.`,
+        notes: failNotes,
+      });
+    }
+
+    // 所有声称文件都验证存在 → 正常 submit 进 review
     const submitResult = taskStore.submit(taskId, {
       agentId: agentId || 'agent-xiaoji',
       notes: result.analysis,
