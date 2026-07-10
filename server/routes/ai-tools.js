@@ -293,4 +293,28 @@ router.post('/agent-execute', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// v0.30 fix: 手动 steer endpoint — Hermes /steer slash command 的 ACMS 等价物
+//   PM 可以注入额外指令到 agent-execute，类似 Hermes user-driven steer
+//   用法：POST /api/ai-tools/agent-steer/:taskId { message: "...", modelId?: "..." }
+//   效果：重新跑 agent-execute，messages[1] 注入 user steerMessage（紧跟 system prompt 后）
+router.post('/agent-steer/:taskId', async (req, res, next) => {
+  try {
+    const { taskId } = req.params;
+    const { message, modelId } = req.body;
+    if (!message) return res.status(400).json({ error: 'MISSING_MESSAGE', message: 'steer message 是必填项' });
+    const result = await aiTools.executeTaskAgent(taskId, { modelId, steerMessage: message });
+    // v0.23: 同样跑 claim verification
+    const taskDoc = taskStore.getById(taskId);
+    const audit = taskDoc ? aiTools.auditAgentClaims(taskDoc.project_id, result.analysis) : { claimedCount: 0, verifiedCount: 0, missingCount: 0, missingFiles: [], claimedFiles: [], verifiedFiles: [] };
+    res.json({
+      success: true,
+      taskId,
+      steered: true,
+      modelUsed: result.modelUsed,
+      analysisLength: (result.analysis || '').length,
+      audit,
+    });
+  } catch (e) { next(e); }
+});
+
 module.exports = router;

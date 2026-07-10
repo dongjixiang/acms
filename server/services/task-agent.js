@@ -60,6 +60,16 @@ async function executeTaskAgent(taskId, options = {}) {
   const model = modelStore.getById(modelId);
   if (!model) throw Object.assign(new Error('Model not found: ' + modelId), { status: 404 });
 
+  // v0.30 fix: 接受 options.steerMessage — 多多可以手动 steer（等价 Hermes /steer slash command）
+  //   当 PM 通过 POST /api/agents/steer/:taskId 注入消息，把它作为额外 user message prepend 到 messages
+  const steerMessages = [];
+  if (options.steerMessage) {
+    steerMessages.push({
+      role: 'user',
+      content: `# Manual Steer from PM\n\n${options.steerMessage}\n\nPlease incorporate this direction into your current work. Continue executing the goal in your system prompt above.`,
+    });
+  }
+
 // v0.28 fix: task context 改 markdown 段落（Hermes-style），LLM 在 markdown 段落下表现明显优于 key-value 标签
   //   根因：ACMS 之前用 "Task ID: X\nTitle: Y\nDescription: Z..." 格式，LLM 把它当"标签数据"理解而非任务目标；
   //   改成 markdown 段落后 LLM 把整段当 goal，理解深度提升（Hermes 同模型 7 轮收敛 vs ACMS 20 轮装睡）
@@ -77,6 +87,8 @@ ${task.description || '(no description)'}
     //   Hermes 的 delegate_task subagent 把 goal 放 system prompt，每轮 LLM 调用都在 attention
     //   这就是为啥 MiniMax-M3 在 Hermes 不装睡但在 ACMS 装睡
     { role: 'system', content: AGENT_SYSTEM_PROMPT + '\n\n# YOUR SPECIFIC GOAL FOR THIS TASK\n\n' + taskContext + '\n\n# DO NOT STOP UNTIL:\n1. Called `agent_write_file` for every file mentioned in the task description (and any tests required by acceptance criteria)\n2. Verified each file via `agent_read_file` (response.ok === true) or by listing it back\n3. Run `node --check` for any `.js` files you wrote\n\nReturning a summary without writing the files = task failure. The system will detect this and force you to retry.' },
+    // v0.30 fix: 如果多多手动 steer，把 user steerMessage 放在 messages[1]（紧跟 system prompt 后）
+    ...steerMessages,
     { role: 'user', content: 'Start by listing the workspace files to understand the project structure, then read relevant files and complete the task.' },
   ];
 

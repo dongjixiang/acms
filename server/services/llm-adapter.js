@@ -409,21 +409,34 @@ async function runToolLoop(modelId, messages, options = {}) {
     console.log(`[runToolLoop] round=${round + 1}/${maxRounds} | messages=${messages.length} | taskId=${context.taskId || '?'}`);
     const result = await callLLMWithTools(modelId, messages, { ...options, toolNames });
     if (!result.toolCalls?.length) {
-      // v0.29 fix: 增强 "说但不写" 检测 — Hermes-style steer 机制
-      //   不只警告，还重新注入 goal 让 LLM 重新看到目标（避免装睡循环）
-      //   根因：v0.27 fix 检测到装睡后只塞 warning，但 LLM 多轮后丢失 goal 上下文 → 装睡循环
-      //   Hermes 的 /steer 命令在 tool call 后注入方向消息，效果类似
+      // v0.30 fix: 装睡检测 — user 语气 + 二选一选项（Hermes-style user-driven steer）
+      //   根因：v0.29 STEER 注入 goal 段但 LLM 当 system warning 看，4 轮装睡都不醒悟
+      //   改成 user 主动观察语气 + 强制 A/B 选择 + 现实威胁（user 接手）
+      //   Hermes 的 /steer 命令等价物 — LLM 把 user message 当 "用户的意图"，优先级高于 system warning
       const requiresWrite = Array.isArray(toolNames) && toolNames.includes('agent_write_file');
       const writeFileCalls = toolCallHistory.filter(h => h.tool === 'agent_write_file' && !h.error);
       if (requiresWrite && writeFileCalls.length === 0) {
-        // v0.29: 从 system prompt 提取 goal 段，注入到 steer message
         const systemPrompt = messages[0]?.content || '';
         const goalMatch = systemPrompt.match(/# YOUR SPECIFIC GOAL FOR THIS TASK\s*([\s\S]+?)(?=# DO NOT STOP|$)/);
         const goalReminder = goalMatch ? goalMatch[1].trim() : 'Complete the task by writing all required files.';
-        console.warn(`[runToolLoop] STEER round=${round + 1}: LLM 装睡，重新注入 goal (${goalReminder.length} chars)`);
+        console.warn(`[runToolLoop] USER-STEER round=${round + 1}: LLM 装睡，user 主动 steer 注入`);
         messages.push({
           role: 'user',
-          content: `⚠️ STEER ${round + 1}/${maxRounds}: You returned a summary but did NOT call agent_write_file. Goal reminder:\n\n${goalReminder}\n\nYou MUST call agent_write_file NOW with full content. Returning summaries without writing files = task failure.`,
+          content: `我看到你刚才 return summary 但没真写文件。
+
+请**二选一**（必须选一个，不要再返回 summary）：
+
+**A. 立即调用 agent_write_file**：用完整 content 写当前任务要求的文件（任务要求在你 system prompt 里）。
+
+**B. 用一句话解释**：为什么你不能写（例如 "我没找到 GameState.js 的接口定义"）。
+
+如果 A：你写完调用 agent_write_file，response 会告诉你 "wrote N bytes | syntax: OK"。
+如果 B：说明具体卡点，我会考虑是否调整 task 或让你换个角度。
+如果你再返回 summary 或忽略这个 steer，这个 task 立即被标记 failed，我会自己接手写。
+
+Round ${round + 1}/${maxRounds}。
+
+【Goal 摘要】${goalReminder.slice(0, 400)}`,
         });
         continue;
       }
