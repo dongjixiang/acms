@@ -98,10 +98,15 @@ ${task.description || '(no description)'}
 
   let analysis;
   try {
-    analysis = await runToolLoop(model.id, messages, {
+analysis = await runToolLoop(model.id, messages, {
       toolNames,
       context: { projectId, taskId },
       maxRounds: 20,
+      // v0.32 fix: 默认 maxTokens=8000 — agent 一次需要 emit 完整文件 + tool_call header
+      //   之前 default 2000 太低，agent 写 GameState.js 时撞上限被截断
+      //   根因（v0.31 diagnostic 发现）：LLM_RESP#6 finish_reason=max_tokens, completionTokens=2000
+      //   撞上限后 agent 装睡 "let me write X" 但不真调 tool — 根因是 maxTokens 不够
+      maxTokens: options.maxTokens ?? 8000,
     });
   } catch (e) {
     console.error(`[agent-execute] runToolLoop failed: ${e.message}`);
