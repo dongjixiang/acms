@@ -388,23 +388,44 @@ async function runToolLoop(modelId, messages, options = {}) {
   // v0.25 debug: 记录每轮 LLM 调了啥 + tool 结果，方便 PM 查 tool loop 卡死根因
   const toolCallHistory = [];
 
+  // v0.29 fix: Context 压缩 — Hermes-style 防止 LLM 长对话失忆 goal
+  //   当 messages 超过阈值（默认 30），summarize 旧 messages，保留 system + 最近 12 条
+  //   根因：T-MRDO0ECU 重跑 Round 12 时 messages 已 37 条，goal 在 messages[1] 已被推到 attention 边缘
+  const COMPRESS_THRESHOLD = 30;
+  const KEEP_RECENT = 12;
+  if (messages.length > COMPRESS_THRESHOLD) {
+    const systemMsg = messages[0];
+    const recentMsgs = messages.slice(-KEEP_RECENT);
+    const droppedCount = messages.length - 1 - KEEP_RECENT;
+    const droppedToolSummary = toolCallHistory.slice(0, toolCallHistory.length - KEEP_RECENT / 2).map(h => `${h.tool}(${(h.args||'').slice(0, 60)})`).join(', ');
+    const summaryText = `[Earlier ${droppedCount} messages compressed: agent explored workspace and made tool calls: ${droppedToolSummary || 'exploration + verification'}. Goal context remains in system prompt above.]`;
+    const compressed = [systemMsg, { role: 'user', content: summaryText }, ...recentMsgs];
+    console.log(`[runToolLoop] v0.29 context compression: ${messages.length} → ${compressed.length} messages (kept system + last ${KEEP_RECENT})`);
+    messages.length = 0;
+    messages.push(...compressed);
+  }
+
   for (let round = 0; round < maxRounds; round++) {
     console.log(`[runToolLoop] round=${round + 1}/${maxRounds} | messages=${messages.length} | taskId=${context.taskId || '?'}`);
     const result = await callLLMWithTools(modelId, messages, { ...options, toolNames });
     if (!result.toolCalls?.length) {
-      // v0.27 fix: 检测 LLM "说但不写" — 当任务工具集含 agent_write_file 但 LLM 0 调用就返回 final answer 时，
-      //   强制塞回警告让 LLM 必须真调 write_file 才允许结束。
-      //   根因：T-MRDO0ECU 重跑，agent Round 3 verify require() → "OK loads" 就 return content 说"我要写 GameState.js"
-      //   但从未调 agent_write_file，导致 audit 抓到声称文件不存在。
+      // v0.29 fix: 增强 "说但不写" 检测 — Hermes-style steer 机制
+      //   不只警告，还重新注入 goal 让 LLM 重新看到目标（避免装睡循环）
+      //   根因：v0.27 fix 检测到装睡后只塞 warning，但 LLM 多轮后丢失 goal 上下文 → 装睡循环
+      //   Hermes 的 /steer 命令在 tool call 后注入方向消息，效果类似
       const requiresWrite = Array.isArray(toolNames) && toolNames.includes('agent_write_file');
       const writeFileCalls = toolCallHistory.filter(h => h.tool === 'agent_write_file' && !h.error);
       if (requiresWrite && writeFileCalls.length === 0) {
-        console.warn(`[runToolLoop] round=${round + 1} LLM returned final answer but NEVER called agent_write_file — forcing continue (round ${round + 1}/${maxRounds})`);
+        // v0.29: 从 system prompt 提取 goal 段，注入到 steer message
+        const systemPrompt = messages[0]?.content || '';
+        const goalMatch = systemPrompt.match(/# YOUR SPECIFIC GOAL FOR THIS TASK\s*([\s\S]+?)(?=# DO NOT STOP|$)/);
+        const goalReminder = goalMatch ? goalMatch[1].trim() : 'Complete the task by writing all required files.';
+        console.warn(`[runToolLoop] STEER round=${round + 1}: LLM 装睡，重新注入 goal (${goalReminder.length} chars)`);
         messages.push({
           role: 'user',
-          content: `⚠️ You returned a final summary but you did NOT actually call agent_write_file in any of the previous ${round} rounds. Descriptions do NOT create files on disk. You MUST now call agent_write_file with the full content (path + complete file body) to actually create/modify the files. Calling agent_write_file is the ONLY way to write a file — your summary text does not count. Round ${round + 1}/${maxRounds} — please retry by calling agent_write_file now.`,
+          content: `⚠️ STEER ${round + 1}/${maxRounds}: You returned a summary but did NOT call agent_write_file. Goal reminder:\n\n${goalReminder}\n\nYou MUST call agent_write_file NOW with full content. Returning summaries without writing files = task failure.`,
         });
-        continue;  // 不 return — 强制 LLM 下轮真调 write_file
+        continue;
       }
       console.log(`[runToolLoop] round=${round + 1} LLM 返回最终答案 (no tool calls), content=${(result.content || '').length} chars`);
       if (toolCallHistory.length > 0) console.log(`[runToolLoop] 完整 tool call history:\n${toolCallHistory.map(h => `  r${h.round} ${h.tool}(${(h.args||'').slice(0, 100)})`).join('\n')}`);

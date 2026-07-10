@@ -85,19 +85,9 @@ registerTool({
 
     try {
       const result = workspace.writeFile(slug, args.path, args.content);
-      const response = {
-        ok: true,
-        path: result.path,
-        size: result.size,
-        previousSize,
-      };
-
-      // v0.28 fix: 把 syntax check 结果 inline 到 message 字段 — LLM 在 result preview (300 chars)
-      //   里直接看到 ok=true + 文件大小 + 语法状态，不用深挖嵌套字段
-      let msg = `File written: ${args.path} (${result.size} bytes${previousSize ? `, was ${previousSize}b` : ''})`;
-      const msgs = [msg];
-
-      // v0.26 fix (#6): 写完 .js 自动跑 node --check，把结果塞进 response 让 LLM 立即看到
+      // v0.29 fix: 简洁 feedback — Hermes-style status / bytes / syntax check
+      //   LLM 看一眼就懂成功状态，不用深挖嵌套对象
+      let syntaxStatus = null;
       if (args.path.endsWith('.js') || args.path.endsWith('.mjs') || args.path.endsWith('.cjs')) {
         try {
           const syntaxCheck = await workspace.exec(slug, {
@@ -105,29 +95,25 @@ registerTool({
             cwd: '',
             timeout: 10000,
           });
-          if (syntaxCheck.exitCode !== 0) {
-            const scErr = `node --check FAILED for ${args.path} (exit ${syntaxCheck.exitCode}): ${(syntaxCheck.stderr || '').substring(0, 500)}`;
-            msgs.push(scErr);
-            response.syntaxCheckError = scErr;
-          } else {
-            msgs.push(`node --check OK`);
-          }
-          response.syntaxCheck = {
-            exitCode: syntaxCheck.exitCode,
-            stderr: (syntaxCheck.stderr || '').substring(0, 1000),
-            stdout: (syntaxCheck.stdout || '').substring(0, 500),
-          };
+          syntaxStatus = syntaxCheck.exitCode === 0 ? 'OK' : `FAILED (exit ${syntaxCheck.exitCode}, ${(syntaxCheck.stderr || '').substring(0, 200)})`;
         } catch (e) {
-          const scErr = `node --check exec failed: ${e.message}`;
-          msgs.push(scErr);
-          response.syntaxCheckError = scErr;
+          syntaxStatus = `EXEC_ERROR: ${e.message}`;
         }
       }
-
-      response.message = msgs.join(' | ');
-      return response;
+      const feedbackParts = [`wrote ${result.size} bytes to ${args.path}`];
+      if (previousSize !== null) feedbackParts.push(`(was ${previousSize}b)`);
+      if (syntaxStatus) feedbackParts.push(`syntax: ${syntaxStatus}`);
+      return {
+        ok: true,
+        written: feedbackParts.join(' | '),
+        path: result.path,
+        size: result.size,
+        previousSize,
+        syntaxStatus,
+        syntaxCheckError: syntaxStatus && syntaxStatus !== 'OK' ? syntaxStatus : undefined,
+      };
     } catch (e) {
-      return { error: 'WRITE_FAILED', message: e.message };
+      return { ok: false, error: 'WRITE_FAILED', message: e.message };
     }
   },
 });

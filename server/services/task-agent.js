@@ -72,24 +72,12 @@ ${task.description || '(no description)'}
 **Required Skills**: ${task.required_skills || '{}'}`;
 
   const messages = [
-    { role: 'system', content: AGENT_SYSTEM_PROMPT },
-    // v0.28 fix: user message 加 goal 段 + Do not stop until 强调（避免 v0.27 检测到的"装睡"）
-    { role: 'user', content: `# Your Goal
-
-Complete task ${task.id}: **${task.title}** — including all files mentioned in the description, with verification on disk (file exists + syntax check + tests if applicable).
-
-**Do not return a final summary until you have:**
-1. Called \`agent_write_file\` for every file mentioned in the task description (and any tests required by the acceptance criteria)
-2. Verified each file via \`agent_read_file\` (response.ok === true) or by listing it back
-3. Run \`node --check\` for any \`.js\` files you wrote
-
-Returning a summary without writing the files = task failure. The system will detect zero write_file calls and force you to retry.
-
-# Task Details
-
-${taskContext}
-
-Start by listing the workspace files to understand the project structure, then read relevant files and complete the task.` },
+    // v0.29 fix: 把 taskContext + goal 移到 system prompt（持久在 attention 里）
+    //   根因：ACMS 之前 goal 在 user message，多轮后 messages 累积，goal 被推到 attention 边缘
+    //   Hermes 的 delegate_task subagent 把 goal 放 system prompt，每轮 LLM 调用都在 attention
+    //   这就是为啥 MiniMax-M3 在 Hermes 不装睡但在 ACMS 装睡
+    { role: 'system', content: AGENT_SYSTEM_PROMPT + '\n\n# YOUR SPECIFIC GOAL FOR THIS TASK\n\n' + taskContext + '\n\n# DO NOT STOP UNTIL:\n1. Called `agent_write_file` for every file mentioned in the task description (and any tests required by acceptance criteria)\n2. Verified each file via `agent_read_file` (response.ok === true) or by listing it back\n3. Run `node --check` for any `.js` files you wrote\n\nReturning a summary without writing the files = task failure. The system will detect this and force you to retry.' },
+    { role: 'user', content: 'Start by listing the workspace files to understand the project structure, then read relevant files and complete the task.' },
   ];
 
   console.log(`[agent-execute] Task ${taskId} | model=${model.id} | project=${projectId}`);
