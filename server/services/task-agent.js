@@ -60,19 +60,36 @@ async function executeTaskAgent(taskId, options = {}) {
   const model = modelStore.getById(modelId);
   if (!model) throw Object.assign(new Error('Model not found: ' + modelId), { status: 404 });
 
-  const taskContext = [
-    `Task ID: ${task.id}`,
-    `Title: ${task.title}`,
-    `Description: ${task.description || '(none)'}`,
-    `Type: ${task.type || 'general'}`,
-    `Estimated Hours: ${task.estimated_hours || 'N/A'}`,
-    `Acceptance Criteria: ${task.acceptance_criteria || task.acceptanceCriteria || '(not specified)'}`,
-    `Required Skills: ${task.required_skills || '{}'}`,
-  ].join('\n');
+// v0.28 fix: task context 改 markdown 段落（Hermes-style），LLM 在 markdown 段落下表现明显优于 key-value 标签
+  //   根因：ACMS 之前用 "Task ID: X\nTitle: Y\nDescription: Z..." 格式，LLM 把它当"标签数据"理解而非任务目标；
+  //   改成 markdown 段落后 LLM 把整段当 goal，理解深度提升（Hermes 同模型 7 轮收敛 vs ACMS 20 轮装睡）
+  const taskContext = `# Task ${task.id}: ${task.title}
+
+${task.description || '(no description)'}
+
+**Type**: ${task.type || 'general'} | **Estimated**: ${task.estimated_hours || 'N/A'}h
+**Acceptance Criteria**: ${task.acceptance_criteria || task.acceptanceCriteria || '(not specified — derive from the task description above)'}
+**Required Skills**: ${task.required_skills || '{}'}`;
 
   const messages = [
     { role: 'system', content: AGENT_SYSTEM_PROMPT },
-    { role: 'user', content: `Please execute the following task. Explore the workspace first, then create or modify files as needed, and verify your work.\n\n${taskContext}\n\nStart by listing the workspace files to understand the project structure, then read relevant files and complete the task.` },
+    // v0.28 fix: user message 加 goal 段 + Do not stop until 强调（避免 v0.27 检测到的"装睡"）
+    { role: 'user', content: `# Your Goal
+
+Complete task ${task.id}: **${task.title}** — including all files mentioned in the description, with verification on disk (file exists + syntax check + tests if applicable).
+
+**Do not return a final summary until you have:**
+1. Called \`agent_write_file\` for every file mentioned in the task description (and any tests required by the acceptance criteria)
+2. Verified each file via \`agent_read_file\` (response.ok === true) or by listing it back
+3. Run \`node --check\` for any \`.js\` files you wrote
+
+Returning a summary without writing the files = task failure. The system will detect zero write_file calls and force you to retry.
+
+# Task Details
+
+${taskContext}
+
+Start by listing the workspace files to understand the project structure, then read relevant files and complete the task.` },
   ];
 
   console.log(`[agent-execute] Task ${taskId} | model=${model.id} | project=${projectId}`);

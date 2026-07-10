@@ -90,8 +90,12 @@ registerTool({
         path: result.path,
         size: result.size,
         previousSize,
-        message: `File written: ${args.path} (${result.size} bytes${previousSize ? `, was ${previousSize}b` : ''})`,
       };
+
+      // v0.28 fix: 把 syntax check 结果 inline 到 message 字段 — LLM 在 result preview (300 chars)
+      //   里直接看到 ok=true + 文件大小 + 语法状态，不用深挖嵌套字段
+      let msg = `File written: ${args.path} (${result.size} bytes${previousSize ? `, was ${previousSize}b` : ''})`;
+      const msgs = [msg];
 
       // v0.26 fix (#6): 写完 .js 自动跑 node --check，把结果塞进 response 让 LLM 立即看到
       if (args.path.endsWith('.js') || args.path.endsWith('.mjs') || args.path.endsWith('.cjs')) {
@@ -101,19 +105,26 @@ registerTool({
             cwd: '',
             timeout: 10000,
           });
+          if (syntaxCheck.exitCode !== 0) {
+            const scErr = `node --check FAILED for ${args.path} (exit ${syntaxCheck.exitCode}): ${(syntaxCheck.stderr || '').substring(0, 500)}`;
+            msgs.push(scErr);
+            response.syntaxCheckError = scErr;
+          } else {
+            msgs.push(`node --check OK`);
+          }
           response.syntaxCheck = {
             exitCode: syntaxCheck.exitCode,
             stderr: (syntaxCheck.stderr || '').substring(0, 1000),
             stdout: (syntaxCheck.stdout || '').substring(0, 500),
           };
-          if (syntaxCheck.exitCode !== 0) {
-            response.syntaxCheckError = `node --check failed for ${args.path} (exit ${syntaxCheck.exitCode}): ${(syntaxCheck.stderr || '').substring(0, 500)}`;
-          }
         } catch (e) {
-          response.syntaxCheckError = `node --check exec failed: ${e.message}`;
+          const scErr = `node --check exec failed: ${e.message}`;
+          msgs.push(scErr);
+          response.syntaxCheckError = scErr;
         }
       }
 
+      response.message = msgs.join(' | ');
       return response;
     } catch (e) {
       return { error: 'WRITE_FAILED', message: e.message };
