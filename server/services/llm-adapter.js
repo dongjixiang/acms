@@ -413,14 +413,17 @@ async function runToolLoop(modelId, messages, options = {}) {
     console.log(`[runToolLoop] LLM_CALL#${round + 1} system_prompt_len=${sysContent.length} system_preview="${sysContent.slice(0, 300).replace(/\n/g, ' ')}..."`);
     if (sysContent.length > 300) console.log(`[runToolLoop] LLM_CALL#${round + 1} system_tail="${sysContent.slice(-300).replace(/\n/g, ' ')}"`);
     console.log(`[runToolLoop] LLM_CALL#${round + 1} messages_count=${messages.length}`);
-    // dump 最近 5 条 messages（每条前 250 字符）
+    // dump 最近 5 条 messages（每条前 250 字符）— v0.31.1 容错 content 为 null/undefined
     messages.slice(-5).forEach((m, idx) => {
-      const preview = m.content ? m.content.slice(0, 250).replace(/\n/g, ' | ') : (m.tool_calls ? `[tool_calls: ${m.tool_calls.map(tc => tc.function?.name || tc.name).join(',')}]` : '(empty)');
+      const safeContent = typeof m.content === 'string' ? m.content : '';
+      const preview = safeContent
+        ? safeContent.slice(0, 250).replace(/\n/g, ' | ')
+        : (m.tool_calls ? `[tool_calls: ${m.tool_calls.map(tc => tc.function?.name || tc.name).join(',')}]` : '(empty)');
       console.log(`[runToolLoop] LLM_CALL#${round + 1} msg[${messages.length - 5 + idx}] role=${m.role} preview="${preview}"`);
     });
     const result = await callLLMWithTools(modelId, messages, { ...options, toolNames });
     // v0.31 fix: dump LLM 完整 response
-    const content = result.content || '';
+    const content = typeof result.content === 'string' ? result.content : '';
     console.log(`[runToolLoop] LLM_RESP#${round + 1} content_len=${content.length} finish_reason=${result.finishReason || 'n/a'} tool_calls=${result.toolCalls?.length || 0}`);
     console.log(`[runToolLoop] LLM_RESP#${round + 1} content="${content.slice(0, 600).replace(/\n/g, ' | ')}"`);
     if (content.length > 600) console.log(`[runToolLoop] LLM_RESP#${round + 1} content_tail="${content.slice(-300).replace(/\n/g, ' | ')}"`);
