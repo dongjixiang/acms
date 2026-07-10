@@ -28,7 +28,20 @@ Rules:
 - If the task is analysis-only (e.g. documentation review), do not modify files unless asked.
 - Be specific in your summary: reference actual file paths, line numbers, and code snippets.
 - Respond in the same language as the task description (Chinese if task is in Chinese).
-- Keep your final summary concise but actionable. Maximum 2000 words.`;
+- Keep your final summary concise but actionable. Maximum 2000 words.
+
+Workspace Environment Hints (v0.26):
+- Platform: detect via OS — \`ls\` is NOT available on Windows; use \`node -e "require('fs').readdirSync(...).join('\\\\n')"\` or \`agent_list_files\` instead.
+- Shell sandbox: \`cmd.exe\`, \`cd\`, \`powershell\` are blocked for security. Use \`node\` /\`npm\` /\`git\` directly with absolute or relative paths from workspace root.
+- \`agent_list_files\` already filters out \`_*\` / \`.git\` / \`node_modules\` by default — these are NOT relevant task files, ignore their content if you find them.
+- For \`agent_exec_command\`: \`cmd\` runs in the workspace root; you don't need to \`cd\` into subdirectories.
+
+Workflow Discipline (v0.26):
+- Round 1-2: explore workspace structure (one \`agent_list_files\` + targeted \`agent_read_file\`).
+- Round ≥ 3: start writing files. Do NOT keep exploring after you have enough context.
+- After each \`agent_write_file\`: if it's a \`.js\` file, the tool auto-runs \`node --check\` for you — read the result.
+- When writing/overwriting an existing file: read it first to preserve existing methods/imports; do NOT clear and rewrite smaller versions.
+- After writing all claimed files: produce final summary and end the loop. Do NOT keep verifying endlessly.`;
 
 async function executeTaskAgent(taskId, options = {}) {
   const task = taskStore.getById(taskId);

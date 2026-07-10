@@ -42,7 +42,9 @@ registerTool({
   name: 'agent_write_file',
   description: 'Write or overwrite a file in the project workspace. Creates parent directories if needed. '
     + 'Use this to create new files (docs, configs, code) or modify existing ones. '
-    + 'Content must be valid UTF-8 text. For code files, ensure syntax is correct before writing.',
+    + 'Content must be valid UTF-8 text. For code files, ensure syntax is correct before writing. '
+    + 'IMPORTANT: always pass `path` (relative path from workspace root) AND `content` (full file body). '
+    + 'When overwriting an existing file, the new content must preserve existing methods/imports unless explicitly rewriting the whole module.',
   parameters: {
     type: 'object',
     properties: {
@@ -54,21 +56,65 @@ registerTool({
   async handler(args, ctx = {}) {
     const { projectId } = ctx;
     if (!projectId) return { error: 'NO_PROJECT_ID', message: 'Tool context missing projectId' };
-    if (!args.path) return { error: 'NO_PATH' };
-    if (args.content === undefined || args.content === null) return { error: 'NO_CONTENT' };
+    // v0.26 fix (#2): NO_PATH 时给 LLM 明确提示，避免连续 NO_PATH 浪费轮次
+    if (!args.path) return {
+      error: 'NO_PATH',
+      message: 'Missing required arg `path`. You must explicitly pass the relative file path every time you call this tool — the tool does not auto-remember the previous path. If you want to write to the same path as your last successful call, pass that path again.',
+      hint: 'Example: agent_write_file({path: "src/core/GameState.js", content: "..."})',
+    };
+    if (args.content === undefined || args.content === null) return { error: 'NO_CONTENT', message: 'Missing required arg `content`.' };
     const projectStore = require('../../stores/project-store');
     const project = projectStore.getById(projectId);
     if (!project) return { error: 'PROJECT_NOT_FOUND' };
     const slug = project.slug || project.name;
     const workspace = require('../../services/workspace-service');
+
+    // v0.26 fix (#5): size 守卫 — 如果 overwrite 时新内容 < 当前文件 30%，警告 LLM 不要砍掉已有方法
+    let previousSize = null;
+    try {
+      const existing = workspace.readFile(slug, args.path);
+      if (existing !== null && existing !== undefined && existing.length > 0) {
+        previousSize = existing.length;
+        const newSize = (args.content || '').length;
+        if (newSize < previousSize * 0.3 && previousSize > 200) {
+          // v0.26: 不阻止写入，但注入 warning 让 LLM 自己决定是否继续
+          console.warn(`[agent_write_file] ⚠️ ${args.path}: new content ${newSize}b is <30% of existing ${previousSize}b — possible content loss`);
+        }
+      }
+    } catch {}
+
     try {
       const result = workspace.writeFile(slug, args.path, args.content);
-      return {
+      const response = {
         ok: true,
         path: result.path,
         size: result.size,
-        message: `File written: ${args.path} (${result.size} bytes)`,
+        previousSize,
+        message: `File written: ${args.path} (${result.size} bytes${previousSize ? `, was ${previousSize}b` : ''})`,
       };
+
+      // v0.26 fix (#6): 写完 .js 自动跑 node --check，把结果塞进 response 让 LLM 立即看到
+      if (args.path.endsWith('.js') || args.path.endsWith('.mjs') || args.path.endsWith('.cjs')) {
+        try {
+          const syntaxCheck = await workspace.exec(slug, {
+            cmd: `node --check "${args.path}"`,
+            cwd: '',
+            timeout: 10000,
+          });
+          response.syntaxCheck = {
+            exitCode: syntaxCheck.exitCode,
+            stderr: (syntaxCheck.stderr || '').substring(0, 1000),
+            stdout: (syntaxCheck.stdout || '').substring(0, 500),
+          };
+          if (syntaxCheck.exitCode !== 0) {
+            response.syntaxCheckError = `node --check failed for ${args.path} (exit ${syntaxCheck.exitCode}): ${(syntaxCheck.stderr || '').substring(0, 500)}`;
+          }
+        } catch (e) {
+          response.syntaxCheckError = `node --check exec failed: ${e.message}`;
+        }
+      }
+
+      return response;
     } catch (e) {
       return { error: 'WRITE_FAILED', message: e.message };
     }

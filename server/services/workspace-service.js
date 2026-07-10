@@ -96,6 +96,9 @@ class WorkspaceService {
           if (!showAll && SKIP_DIRS.has(e.name)) continue;
           walk(path.join(dir, e.name), relPath);
         } else {
+          // v0.26 fix (#3): 默认跳过 _* 临时文件（agent 任务不应把 _tmp_*.js 当参考代码）
+          //   根因：T-MRDO0ECU agent 一直搜 GameState 命中 _tmp_part2.js，浪费 3 轮追无关代码
+          if (!showAll && e.name.startsWith('_')) continue;
           const stat = fs.statSync(path.join(dir, e.name));
           result.push({
             name: e.name,
