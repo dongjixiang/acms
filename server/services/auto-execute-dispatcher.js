@@ -52,18 +52,30 @@ class AutoExecuteDispatcher {
   removeAutoAgent(agentId) { this.autoAgents.delete(agentId); }
 
   async handleTaskClaimed(event) {
-    const taskId = event.target?.id || event.target_id;
-    const assignee = event.actor?.id;
-    if (!taskId || !assignee) return;
+    // v0.24 fix: eventBus.emit() 会把 actor/target 拆成平铺字段 (actor_id / target_id)
+    // 不保留嵌套对象。读 event.actor?.id 永远 undefined — handler 静默 return。
+    const taskId = event.target_id || event.target?.id;
+    const assignee = event.actor_id || event.actor?.id;
+
+    // v0.24 diagnostic: 进入即打日志，避免再来一次「看着没反应」找根因
+    console.log(`[AutoExecuteDispatcher] 📬 收到 task.claimed event: task=${taskId} assignee=${assignee}`);
+
+    if (!taskId || !assignee) {
+      console.warn(`[AutoExecuteDispatcher] ⚠️ 跳过：taskId 或 assignee 缺失`);
+      this.stats.skipped++;
+      return;
+    }
 
     // 跳过已处理的（避免 race + 防双触发）
     if (this.processedClaims.has(taskId)) {
+      console.log(`[AutoExecuteDispatcher] ⏭️ 跳过 ${taskId}: 已处理过`);
       this.stats.skipped++;
       return;
     }
 
     // 跳过非自动执行 agents
     if (!this.autoAgents.has(assignee)) {
+      console.log(`[AutoExecuteDispatcher] ⏭️ 跳过 ${taskId}: ${assignee} 不在白名单 ${[...this.autoAgents]}`);
       this.stats.skipped++;
       return;
     }
@@ -71,6 +83,7 @@ class AutoExecuteDispatcher {
     // 任务必须还在 in_progress（避免重复触发 review/done 状态）
     const task = taskStore.getById(taskId);
     if (!task || task.status !== 'in_progress') {
+      console.log(`[AutoExecuteDispatcher] ⏭️ 跳过 ${taskId}: task 不存在或 status=${task?.status}`);
       this.stats.skipped++;
       return;
     }
@@ -102,7 +115,7 @@ class AutoExecuteDispatcher {
       const httpReq = await fetch(`http://127.0.0.1:${process.env.PORT || 3300}/api/ai-tools/agent-execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-API-Key': process.env.ACMS_API_KEY || 'dev-key-001' },
-        body: JSON.stringify({ taskId, agentId: assignee, modelId: (taskStore.getDefaultModelId && taskStore.getDefaultModelId()) || undefined }),
+        body: JSON.stringify({ taskId, agentId: assignee }),
       }).catch(err => ({ error: err.message }));
 
       const result = httpReq && typeof httpReq.json === 'function' ? await httpReq.json() : httpReq;
@@ -110,7 +123,8 @@ class AutoExecuteDispatcher {
         console.log(`[AutoExecuteDispatcher] ✅ ${taskId} 完成 (analysis=${result.analysisLength || '?'} chars, submitted=${result.submitted})`);
         this.stats.triggered++;
       } else {
-        console.warn(`[AutoExecuteDispatcher] ⚠️ ${taskId} 失败: ${(result && result.error) || 'unknown'}`);
+        console.warn(`[AutoExecuteDispatcher] ⚠️ ${taskId} 失败: ${(result && result.error) || (result && result.message) || 'unknown'}`);
+        if (result && result.missingCount) console.warn(`[AutoExecuteDispatcher]   缺失文件: ${JSON.stringify(result.missingFiles)}`);
         this.stats.errors++;
       }
     } catch (e) {
