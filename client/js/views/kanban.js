@@ -79,7 +79,8 @@ async function refreshKanban(parentId) {
   if (!_kanbanFilterLoaded) { await loadKanbanReqFilter(); _kanbanFilterLoaded = true; }
   try {
     const board = await Tasks.board(App.currentProjectId, filterVal || undefined);
-    for (const col of ['backlog', 'in_progress', 'review', 'done', 'archived']) {
+    // v0.X fix: 加 failed 列 — 之前失败任务被静默丢失，现在后端返回 failed 桶
+    for (const col of ['backlog', 'in_progress', 'review', 'done', 'archived', 'failed']) {
       const tasks = board[col] || [];
       document.getElementById('count-' + col).textContent = tasks.length;
       document.getElementById('col-' + col).innerHTML = tasks.map(t => {
@@ -99,6 +100,7 @@ async function refreshKanban(parentId) {
           ${!blocked && t.status === 'backlog' ? '<div class="task-actions" style="display:flex;gap:6px;align-items:center"><select value="' + (t.assigned_to||'') + '" onclick="event.stopPropagation()" onchange="event.stopPropagation();assignTaskCard(\'' + t.id + '\',this.value)" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:3px;max-width:130px">' + agentOpts + '</select><button class="btn-small btn-accept" onclick="event.stopPropagation();claimTask(\'' + t.id + '\')">认领</button></div>' : ''}
           ${t.status === 'in_progress' ? '<div class="task-actions"><button class="btn-small btn-accept" onclick="event.stopPropagation();submitTask(\'' + t.id + '\')">提交</button></div>' : ''}
           ${t.status === 'review' ? '<div class="task-actions"><button class="btn-small btn-accept" onclick="event.stopPropagation();reviewTask(\'' + t.id + '\',\'approved\')">通过</button><button class="btn-small btn-reject" onclick="event.stopPropagation();reviewTask(\'' + t.id + '\',\'rejected\')">驳回</button></div>' : ''}
+          ${t.status === 'failed' ? '<div class="task-actions" style="display:flex;gap:6px"><button class="btn-small btn-accept" onclick="event.stopPropagation();reactivateTask(\'' + t.id + '\')" title="把失败任务拉回 backlog 重跑">↻ 重激活</button><button class="btn-small btn-reject" onclick="event.stopPropagation();archiveTask(\'' + t.id + '\')" title="放弃这个失败任务">归档</button></div>' : ''}
         </div>`;
       }).join('') || '<div class="empty" style="padding:12px">-</div>';
     }
@@ -156,6 +158,8 @@ async function openTask(taskId) {
         (t.status === 'backlog' ? '<button class="btn-accept" onclick="claimTask(\'' + t.id + '\')">认领</button>' : '') +
         (t.status === 'in_progress' ? '<button class="btn-primary" onclick="updateTaskProgress(\'' + t.id + '\')">更新进度</button><button class="btn-accept" onclick="submitTask(\'' + t.id + '\', ' + (t.auto_review ? 'true' : 'false') + ')">提交审核</button>' : '') +
         (t.status === 'review' ? '<button class="btn-accept" onclick="reviewTask(\'' + t.id + '\',\'approved\')">通过</button><button class="btn-reject" onclick="reviewTask(\'' + t.id + '\',\'rejected\')">驳回</button>' : '') +
+        // v0.X fix: failed 任务详情也提供操作按钮
+        (t.status === 'failed' ? '<button class="btn-accept" onclick="reactivateTask(\'' + t.id + '\')">↻ 重激活（拉回 backlog）</button><button class="btn-reject" onclick="archiveTask(\'' + t.id + '\')">📦 归档放弃</button>' : '') +
         '<button class="btn-small btn-reject" style="margin-left:auto" onclick="deleteTask(\'' + t.id + '\')">🗑 删除</button>' +
       '</div>';
   } catch (e) { toast('加载失败: ' + e.message, 'error'); }
@@ -197,6 +201,9 @@ async function assignTaskCard(taskId, agentId) {
 async function claimTask(tid) { var a = prompt('智能体ID:', 'agent-scholar-001'); if (!a) return; try { await Tasks.claim(tid, a); toast('已认领 ✅', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
 async function submitTask(tid) { var n = prompt('提交说明:') || '完成'; try { await Tasks.submit(tid, 'agent-scholar-001', [], n); toast('已提交', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
 async function reviewTask(tid, verdict) { try { await Tasks.review(tid, verdict); toast(verdict === 'approved' ? '已通过 ✅' : '已驳回', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
+// v0.X fix: failed 任务操作 — 重激活（failed → backlog 重跑）/ 归档（failed → archived）
+async function reactivateTask(tid) { if (!(await showConfirm('确认把此失败任务拉回 backlog 重跑？依赖它的任务会自动解锁。'))) return; try { await api('POST', '/tasks/' + tid + '/transition', { targetStatus: 'backlog' }); toast('已重新激活 ✅', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
+async function archiveTask(tid) { if (!(await showConfirm('确认归档此失败任务？将不再出现在看板上。'))) return; try { await api('POST', '/tasks/' + tid + '/transition', { targetStatus: 'archived' }); toast('已归档', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
 async function toggleAutoReview(tid, enabled) { try { await api('PATCH', '/tasks/' + tid + '/auto-review', { enabled: enabled }); toast(enabled ? '🤖 自动审核已开启' : '自动审核已关闭', 'success'); } catch (e) { toast('切换失败: ' + e.message, 'error'); } }
 async function updateTaskProgress(tid) { var p = prompt('进度 (0-100):', '50'); if (!p) return; try { await api('POST', '/tasks/' + tid + '/progress', { progress: parseInt(p), note: '手动更新' }); toast('进度已更新', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
 async function deleteTask(tid) { if (!(await showConfirm('确认删除此任务？'))) return; try { await api('DELETE', '/tasks/' + tid); toast('已删除', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }

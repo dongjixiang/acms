@@ -235,6 +235,15 @@ function extractAcceptanceCommands(description) {
   return commands.slice(0, 5); // 最多5条，防炸
 }
 
+// 通用状态转移路由（v0.X 新增，支持 failed → backlog 重激活 / failed → archived 归档等任意合法转移）
+router.post('/:id/transition', (req, res) => {
+  const { targetStatus, actor = {} } = req.body;
+  if (!targetStatus) return res.status(400).json({ error: 'MISSING_TARGET_STATUS' });
+  const result = taskStore.transition(req.params.id, targetStatus, actor);
+  if (result.error) return res.status(400).json(result);
+  res.json(result);
+});
+
 // 释放任务
 router.post('/:id/release', (req, res) => {
   const result = taskStore.transition(req.params.id, 'backlog');

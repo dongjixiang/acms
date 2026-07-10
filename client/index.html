@@ -227,6 +227,8 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="kanban-col" data-col="review"><div class="col-header">👀 <span data-i18n="kanban.cols.review">待审核</span> <span class="count" id="count-review">0</span></div><div class="col-body" id="col-review"></div></div>
             <div class="kanban-col" data-col="done"><div class="col-header">✅ <span data-i18n="kanban.cols.done">已完成</span> <span class="count" id="count-done">0</span></div><div class="col-body" id="col-done"></div></div>
             <div class="kanban-col" data-col="archived"><div class="col-header">📦 <span data-i18n="kanban.cols.archived">已归档</span> <span class="count" id="count-archived">0</span></div><div class="col-body" id="col-archived"></div></div>
+            <!-- v0.X fix: failed 列 — Agent Claims 验证失败的兜底展示 -->
+            <div class="kanban-col failed-col" data-col="failed"><div class="col-header">❌ <span data-i18n="kanban.cols.failed">已失败</span> <span class="count" id="count-failed">0</span></div><div class="col-body" id="col-failed"></div></div>
           </div>
         </div>
 

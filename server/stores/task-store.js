@@ -70,9 +70,12 @@ class TaskStore {
 
   getBoard(projectId, parentId) {
     const tasks = this.list({ projectId, parentId, limit: 500 });
-    const board = { backlog: [], in_progress: [], review: [], done: [], archived: [], frozen: [] };
+    // v0.X fix: 加入 failed 桶 — 之前 failed 任务被静默丢弃，看板/面板都看不到
+    // 也加 unknown 桶兜底，防止未来再加新状态时再次出现"静默丢失"
+    const board = { backlog: [], in_progress: [], review: [], done: [], archived: [], frozen: [], failed: [], unknown: [] };
     for (const t of tasks) {
-      if (board[t.status]) board[t.status].push(t);
+      const bucket = board[t.status] !== undefined ? t.status : 'unknown';
+      board[bucket].push(t);
     }
     return board;
   }
@@ -84,6 +87,8 @@ class TaskStore {
       backlog: ['in_progress', 'archived'], in_progress: ['review', 'backlog', 'archived', 'frozen'],
       review: ['done', 'in_progress', 'archived', 'frozen'], done: ['archived'], archived: ['backlog'],
       frozen: ['backlog', 'in_progress'],
+      // v0.X fix: failed 任务 PM 可以拉回 backlog 重跑，或归档放弃
+      failed: ['backlog', 'archived'],
     };
     if (!VALID[task.status]?.includes(targetStatus)) {
       return { error: 'INVALID_TRANSITION', from: task.status, to: targetStatus };
@@ -97,6 +102,12 @@ class TaskStore {
 
     // 任务完成 → 自动解阻塞依赖它的任务
     if (targetStatus === 'done') {
+      this._autoUnblockDependents(id);
+    }
+    // v0.X fix: failed → backlog（PM 重新激活失败任务）→ 也触发解阻塞检查
+    // 场景：T-MRDO0ECU failed 阻塞了 268/269/270 三个 backlog 任务
+    // PM 把 failed 拉回 backlog 重跑后，依赖它的任务才能继续推进
+    if (task.status === 'failed' && targetStatus === 'backlog') {
       this._autoUnblockDependents(id);
     }
 
