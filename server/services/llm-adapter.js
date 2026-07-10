@@ -82,6 +82,15 @@ async function callLLM(modelId, messages, options = {}) {
 }
 
 // ===== OpenAI Chat Completions =====
+// v0.25 fix: fetch 错误信息增强 — Node fetch 抛 'fetch failed' 时丢失根因
+// 必须读 e.cause 才能看到 DNS / TLS / ECONNRESET 等具体错误
+function buildFetchErrorDetail(e, model, baseUrl, endpoint) {
+  const causeInfo = e.cause
+    ? `${e.cause.name || ''} ${e.cause.code || ''} ${e.cause.message || ''}`.trim()
+    : '';
+  return `${model.name} (${model.model}) @ ${baseUrl}${endpoint} — ${e.message}${causeInfo ? ` [cause: ${causeInfo}]` : ''}`;
+}
+
 async function callOpenAI(model, messages, opts, apiKey, tools) {
   const baseUrl = model.baseUrl || 'https://api.deepseek.com/v1';
   const isMiniMax = baseUrl.includes('minimax');
@@ -149,7 +158,9 @@ async function callOpenAI(model, messages, opts, apiKey, tools) {
     if (e.name === 'AbortError') {
       throw Object.assign(new Error(`LLM 请求超时 (${DEFAULT_TIMEOUT/1000}s): ${model.name} (${model.model})`), { status: 504, timeout: true });
     }
-    throw e;
+    const detail = buildFetchErrorDetail(e, model, baseUrl, '/chat/completions');
+    console.error(`[llm-adapter] LLM 调用异常: ${detail}`);
+    throw Object.assign(new Error(`LLM 调用失败: ${detail}`), { status: 502, cause: e.cause });
   }
 }
 
@@ -220,7 +231,9 @@ async function callAnthropic(model, messages, opts, apiKey, tools) {
     if (e.name === 'AbortError') {
       throw Object.assign(new Error(`LLM 请求超时 (${DEFAULT_TIMEOUT/1000}s): ${model.name} (${model.model})`), { status: 504, timeout: true });
     }
-    throw e;
+    const detail = buildFetchErrorDetail(e, model, baseUrl, '/v1/messages');
+    console.error(`[llm-adapter] LLM 调用异常: ${detail}`);
+    throw Object.assign(new Error(`LLM 调用失败: ${detail}`), { status: 502, cause: e.cause });
   }
 }
 
@@ -372,9 +385,17 @@ async function runToolLoop(modelId, messages, options = {}) {
   //   修复：连续两轮同 tool+args 直接返回最后一次 content（不抛错），避免 LLM 死循环
   let lastToolCallKey = null;
 
+  // v0.25 debug: 记录每轮 LLM 调了啥 + tool 结果，方便 PM 查 tool loop 卡死根因
+  const toolCallHistory = [];
+
   for (let round = 0; round < maxRounds; round++) {
+    console.log(`[runToolLoop] round=${round + 1}/${maxRounds} | messages=${messages.length} | taskId=${context.taskId || '?'}`);
     const result = await callLLMWithTools(modelId, messages, { ...options, toolNames });
-    if (!result.toolCalls?.length) return result.content || '';
+    if (!result.toolCalls?.length) {
+      console.log(`[runToolLoop] round=${round + 1} LLM 返回最终答案 (no tool calls), content=${(result.content || '').length} chars`);
+      if (toolCallHistory.length > 0) console.log(`[runToolLoop] 完整 tool call history:\n${toolCallHistory.map(h => `  r${h.round} ${h.tool}(${(h.args||'').slice(0, 100)})`).join('\n')}`);
+      return result.content || '';
+    }
 
     const asstMsg = { role: 'assistant', content: result.content || null };
     if (api === 'anthropic-messages') {
@@ -389,23 +410,48 @@ async function runToolLoop(modelId, messages, options = {}) {
 
     for (const tc of result.toolCalls) {
       const tool = toolRegistry.getTool(tc.name);
-      if (!tool) { messages.push(toolRegistry.makeToolResult(api, tc.id, { error: `未知工具: ${tc.name}` })); continue; }
+      const argsPreview = JSON.stringify(tc.args || {}).slice(0, 200);
+      console.log(`[runToolLoop]   call: ${tc.name}(${argsPreview})`);
 
-      // v0.20 bugfix：连续两轮同 tool+args 强制退出
+      if (!tool) {
+        console.log(`[runToolLoop]   -> 未知工具: ${tc.name}`);
+        toolCallHistory.push({ round: round + 1, tool: tc.name, args: argsPreview, result: 'UNKNOWN_TOOL' });
+        messages.push(toolRegistry.makeToolResult(api, tc.id, { error: `未知工具: ${tc.name}` }));
+        continue;
+      }
+
+      // v0.25 fix: 放宽 v0.20 强制退出 — 重复 tool 调用不再 return，而是把「你刚调了同一 tool」塞回 messages
+      //   让 LLM 自己决定下一步。真死循环由 maxRounds 兜底。
+      //   根因（T-MRDO0ECU 案例）：agent 在 round 6 已看到 GameState.js 不存在，但 round 7 重复调 walker
+      //   时被强制截断，失去了调 agent_write_file 的机会。LLM 收到 warning 后会自主收敛。
       const callKey = `${tc.name}:${JSON.stringify(tc.args)}`;
       if (callKey === lastToolCallKey) {
-        console.warn(`[runToolLoop] 连续两轮同 tool 调用 (${callKey}) → 强制退出，返回最后一次 content`);
-        return result.content || `（已停止重复调用 ${tc.name}，任务已异步触发）`;
+        console.warn(`[runToolLoop]   -> 检测到连续两轮同 tool+args — 警告 LLM，不强制退出 (round ${round + 1}/${maxRounds})`);
+        toolCallHistory.push({ round: round + 1, tool: tc.name, args: argsPreview, result: 'WARN_REPEAT' });
+        messages.push(toolRegistry.makeToolResult(api, tc.id, {
+          warning: `You just called ${tc.name} with the same arguments in the previous round. This is a repeated call. If you have enough information, write the files or finish. If you need different info, try a different tool or different arguments. Do NOT call the same tool with the same arguments again — you have limited rounds left (${maxRounds - round - 1} rounds remaining).`,
+          _duplicateCall: true,
+        }));
+        lastToolCallKey = callKey;
+        continue;
       }
       lastToolCallKey = callKey;
 
       try {
         // v0.20：handler 接 (args, context) — context 用于传 reqId 等
         const toolResult = await tool.handler(tc.args, context);
+        const resultPreview = JSON.stringify(toolResult).slice(0, 300);
+        console.log(`[runToolLoop]   -> result (${resultPreview.length} chars): ${resultPreview}`);
+        toolCallHistory.push({ round: round + 1, tool: tc.name, args: argsPreview, resultPreview });
         messages.push(toolRegistry.makeToolResult(api, tc.id, toolResult));
-      } catch (e) { messages.push(toolRegistry.makeToolResult(api, tc.id, { error: e.message })); }
+      } catch (e) {
+        console.log(`[runToolLoop]   -> ERROR: ${e.message}`);
+        toolCallHistory.push({ round: round + 1, tool: tc.name, args: argsPreview, error: e.message });
+        messages.push(toolRegistry.makeToolResult(api, tc.id, { error: e.message }));
+      }
     }
   }
+  console.error(`[runToolLoop] Tool loop exceeded max rounds (${maxRounds}). 完整 tool call history (${toolCallHistory.length} 条):\n${toolCallHistory.map(h => `  r${h.round} ${h.tool}(${(h.args||'').slice(0, 80)}) → ${h.resultPreview ? h.resultPreview.slice(0, 80) : (h.result || h.error || '?')}`).join('\n')}`);
   throw new Error(`Tool loop exceeded max rounds (${maxRounds})`);
 }
 
