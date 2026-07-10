@@ -104,11 +104,21 @@ class TaskStore {
     if (targetStatus === 'done') {
       this._autoUnblockDependents(id);
     }
-    // v0.X fix: failed → backlog（PM 重新激活失败任务）→ 也触发解阻塞检查
+    // v0.X fix: failed → backlog（PM 重新激活失败任务）→ 解阻塞所有依赖
     // 场景：T-MRDO0ECU failed 阻塞了 268/269/270 三个 backlog 任务
-    // PM 把 failed 拉回 backlog 重跑后，依赖它的任务才能继续推进
+    // PM 把 failed 拉回 backlog 重跑后，依赖任务应该能继续推进
+    // 注意：这里直接清 blocked 标志，不调 _autoUnblockDependents（那个会要求依赖任务真 done 才解锁）
+    // PM 明确"重激活"是意图信号，应该让依赖任务从 blocked UI 中解放出来
     if (task.status === 'failed' && targetStatus === 'backlog') {
-      this._autoUnblockDependents(id);
+      const reactivated = this.getById(id);
+      const dependedBy = JSON.parse(reactivated?.depended_by || '[]');
+      for (const depId of dependedBy) {
+        const dep = this.getById(depId);
+        if (dep && dep.blocked === 1) {
+          this.update(depId, { blocked: 0, block_reason: '' });
+          console.log(`[TaskStore] PM 重激活失败任务 ${id} → 解阻塞依赖 ${depId}`);
+        }
+      }
     }
 
     return result;

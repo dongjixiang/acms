@@ -41,7 +41,13 @@ Workflow Discipline (v0.26):
 - Round ≥ 3: start writing files. Do NOT keep exploring after you have enough context.
 - After each \`agent_write_file\`: if it's a \`.js\` file, the tool auto-runs \`node --check\` for you — read the result.
 - When writing/overwriting an existing file: read it first to preserve existing methods/imports; do NOT clear and rewrite smaller versions.
-- After writing all claimed files: produce final summary and end the loop. Do NOT keep verifying endlessly.`;
+- After writing all claimed files: produce final summary and end the loop. Do NOT keep verifying endlessly.
+
+Critical: You MUST actually call tools (v0.27):
+- "I will write GameState.js" in your final summary does NOT create the file. Only an actual agent_write_file tool call counts as writing.
+- The system will reject your final answer if you never called agent_write_file but the task requires writing files.
+- If you intend to write a file, you MUST call agent_write_file — describing intent is not enough.
+- After every write_file call, verify by reading the result (response.ok === true means the file was written to disk).`;
 
 async function executeTaskAgent(taskId, options = {}) {
   const task = taskStore.getById(taskId);

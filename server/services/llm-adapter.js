@@ -392,6 +392,20 @@ async function runToolLoop(modelId, messages, options = {}) {
     console.log(`[runToolLoop] round=${round + 1}/${maxRounds} | messages=${messages.length} | taskId=${context.taskId || '?'}`);
     const result = await callLLMWithTools(modelId, messages, { ...options, toolNames });
     if (!result.toolCalls?.length) {
+      // v0.27 fix: 检测 LLM "说但不写" — 当任务工具集含 agent_write_file 但 LLM 0 调用就返回 final answer 时，
+      //   强制塞回警告让 LLM 必须真调 write_file 才允许结束。
+      //   根因：T-MRDO0ECU 重跑，agent Round 3 verify require() → "OK loads" 就 return content 说"我要写 GameState.js"
+      //   但从未调 agent_write_file，导致 audit 抓到声称文件不存在。
+      const requiresWrite = Array.isArray(toolNames) && toolNames.includes('agent_write_file');
+      const writeFileCalls = toolCallHistory.filter(h => h.tool === 'agent_write_file' && !h.error);
+      if (requiresWrite && writeFileCalls.length === 0) {
+        console.warn(`[runToolLoop] round=${round + 1} LLM returned final answer but NEVER called agent_write_file — forcing continue (round ${round + 1}/${maxRounds})`);
+        messages.push({
+          role: 'user',
+          content: `⚠️ You returned a final summary but you did NOT actually call agent_write_file in any of the previous ${round} rounds. Descriptions do NOT create files on disk. You MUST now call agent_write_file with the full content (path + complete file body) to actually create/modify the files. Calling agent_write_file is the ONLY way to write a file — your summary text does not count. Round ${round + 1}/${maxRounds} — please retry by calling agent_write_file now.`,
+        });
+        continue;  // 不 return — 强制 LLM 下轮真调 write_file
+      }
       console.log(`[runToolLoop] round=${round + 1} LLM 返回最终答案 (no tool calls), content=${(result.content || '').length} chars`);
       if (toolCallHistory.length > 0) console.log(`[runToolLoop] 完整 tool call history:\n${toolCallHistory.map(h => `  r${h.round} ${h.tool}(${(h.args||'').slice(0, 100)})`).join('\n')}`);
       return result.content || '';
