@@ -279,6 +279,7 @@ router.get('/:id/progress/stream', (req, res) => {
   let prevProgress = -1;
   let prevLogLen = 0;
   let prevStatus = '';
+  let prevLatestLogTime = '';  // v0.39: 用最新 entry 的 time 检测新日志（executionLog.length 会卡在 50 不变）
   
   // 最多监听 15 分钟
   const maxDuration = 15 * 60 * 1000;
@@ -334,16 +335,20 @@ router.get('/:id/progress/stream', (req, res) => {
         });
       }
       
-      // 有新日志条目
-      if (executionLog.length > prevLogLen) {
-        prevLogLen = executionLog.length;
-        const newEntries = executionLog.slice(prevLogLen - executionLog.length + executionLog.length - prevLogLen);
-        const latestEntry = executionLog[executionLog.length - 1];
+      // 有新日志条目（v0.39: 用 latest entry.time 检测，不用 length）
+      //   之前用 executionLog.length > prevLogLen，但 task-agent.js saveProgress 限制 log ≤ 50
+      //   一旦满了 length 永远 50，SSE 永远不推 log event → hover tooltip 看不到新 round
+      //   现在用 latest entry.time 检测，每次 agent 新 round time 必变
+      const latestEntry = executionLog[executionLog.length - 1];
+      const latestLogTime = latestEntry?.time || '';
+      if (latestLogTime && latestLogTime !== prevLatestLogTime) {
+        prevLatestLogTime = latestLogTime;
         send('log', {
           entry: latestEntry,
           totalLogs: executionLog.length,
         });
       }
+      prevLogLen = executionLog.length;
     } catch (e) {
       // 静默忽略 DB 读取错误
     }
