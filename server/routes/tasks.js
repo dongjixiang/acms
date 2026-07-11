@@ -143,7 +143,12 @@ router.post('/:id/review', async (req, res, next) => {
           autoVerdict = 'rejected';
         }
       } else {
-        // ── 旧版：仅执行验收命令 ──
+        // ── 旧版：仅执行验收命令（PM 手动 review 路径）──
+        // v0.38 fix: 不再覆盖 PM 选择的 verdict
+        //   之前这里会把 exit≠0 时 autoVerdict 改成 rejected，导致 PM 点"通过"被自动改"驳回"，
+        //   任务循环跑回 in_progress（AutoExecuteDispatcher 监听 review_rejected 触发重跑）
+        //   现在 acceptance 只 append 到 testLog 作为参考信息，verdict 尊重 PM 在 UI 上明确的选择
+        //   如果 PM 看到 testLog 有 FAILED，可以自行点"驳回"——自动覆盖违背 PM 意图
         const commands = extractAcceptanceCommands(task.description);
         if (commands.length > 0) {
           try {
@@ -152,13 +157,11 @@ router.post('/:id/review', async (req, res, next) => {
                 const result = await workspace.exec(slug, { cwd: '.', cmd, timeout: 120000 });
                 testLog += `[${cmd}] exit=${result.exitCode}\n${(result.stdout || '').substring(0, 300)}\n`;
                 if (result.exitCode !== 0) {
-                  autoVerdict = 'rejected';
                   testLog += `FAILED: ${cmd} returned exit code ${result.exitCode}\n`;
                   break;
                 }
               } catch (e) {
                 testLog += `[${cmd}] ERROR: ${e.message}\n`;
-                autoVerdict = 'rejected';
                 break;
               }
             }
@@ -212,8 +215,9 @@ router.post('/:id/review', async (req, res, next) => {
 function extractAcceptanceCommands(description) {
   const commands = [];
   // 匹配常见命令模式: npm test, npm run xxx, node --check file.js, npx vitest run
+  // v0.36: npm test 后面带文件路径时必须加 -- 分隔符，否则 npm 把路径当自己的参数传给 script
   const patterns = [
-    /npm\s+test\s*(\S*)/g,
+    /npm\s+test\s+(--\s*)?(\S+)/g,
     /npm\s+run\s+(\S+)/g,
     /node\s+--check\s+(\S+\.js)/g,
     /npx\s+vitest\s+run\s*(\S*)/g,
@@ -224,7 +228,11 @@ function extractAcceptanceCommands(description) {
   for (const pattern of patterns) {
     let m;
     while ((m = pattern.exec(description)) !== null) {
-      const cmd = m[0].trim();
+      let cmd = m[0].trim();
+      // v0.36: npm test 后面没 -- 的，自动补上
+      if (/^npm\s+test\s+\S+$/.test(cmd)) {
+        cmd = cmd.replace(/^npm\s+test\s+(\S+)/, 'npm test -- $1');
+      }
       if (!matched.has(cmd)) {
         matched.add(cmd);
         commands.push(cmd);
@@ -242,6 +250,122 @@ router.post('/:id/transition', (req, res) => {
   const result = taskStore.transition(req.params.id, targetStatus, actor);
   if (result.error) return res.status(400).json(result);
   res.json(result);
+});
+
+// 拖拽状态变更（v0.35 新增，Kanban 泳道拖拽专用）
+router.post('/:id/drag-drop', (req, res) => {
+  const { targetStatus } = req.body;
+  if (!targetStatus) return res.status(400).json({ error: 'MISSING_TARGET_STATUS' });
+  const result = taskStore.transition(req.params.id, targetStatus, { type: 'drag-drop' });
+  if (result.error) return res.status(400).json(result);
+  res.json(result);
+});
+
+// v0.35: SSE 进度流式 — 客户端连接后持续推送任务执行进度
+router.get('/:id/progress/stream', (req, res) => {
+  const taskId = req.params.id;
+  
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+  
+  const send = (type, data) => {
+    try { res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`); } catch {}
+  };
+  
+  const taskStore = require('../stores/task-store');
+  let prevProgress = -1;
+  let prevLogLen = 0;
+  let prevStatus = '';
+  
+  // 最多监听 15 分钟
+  const maxDuration = 15 * 60 * 1000;
+  const startTime = Date.now();
+  
+  const interval = setInterval(() => {
+    // 超时断开
+    if (Date.now() - startTime > maxDuration) {
+      clearInterval(interval);
+      send('timeout', {});
+      res.end();
+      return;
+    }
+    
+    try {
+      const task = taskStore.getById(taskId);
+      if (!task) {
+        send('error', { message: '任务不存在' });
+        clearInterval(interval);
+        res.end();
+        return;
+      }
+      
+      const currentStatus = task.status;
+      const currentProgress = task.progress || 0;
+      const executionLog = JSON.parse(task.execution_log || '[]');
+      const progressNote = task.progress_note || '';
+      
+      // 状态变化
+      if (currentStatus !== prevStatus) {
+        prevStatus = currentStatus;
+        if (currentStatus === 'done') {
+          send('done', { progress: 100, status: 'done' });
+          clearInterval(interval);
+          res.end();
+          return;
+        } else if (currentStatus === 'failed') {
+          send('failed', { status: 'failed', notes: task.progress_note || '执行失败' });
+          clearInterval(interval);
+          res.end();
+          return;
+        }
+      }
+      
+      // 进度变化
+      if (currentProgress !== prevProgress && currentProgress > 0) {
+        prevProgress = currentProgress;
+        send('progress', {
+          progress: currentProgress,
+          status: currentStatus,
+          note: progressNote,
+          logLength: executionLog.length,
+        });
+      }
+      
+      // 有新日志条目
+      if (executionLog.length > prevLogLen) {
+        prevLogLen = executionLog.length;
+        const newEntries = executionLog.slice(prevLogLen - executionLog.length + executionLog.length - prevLogLen);
+        const latestEntry = executionLog[executionLog.length - 1];
+        send('log', {
+          entry: latestEntry,
+          totalLogs: executionLog.length,
+        });
+      }
+    } catch (e) {
+      // 静默忽略 DB 读取错误
+    }
+  }, 2000);
+  
+  // 客户端断开连接时清理
+  req.on('close', () => {
+    clearInterval(interval);
+  });
+  
+  // 发送初始状态
+  try {
+    const task = taskStore.getById(taskId);
+    if (task) {
+      send('connected', {
+        taskId,
+        status: task.status,
+        progress: task.progress || 0,
+        note: task.progress_note || (task.status === 'in_progress' ? '任务已启动，正在执行...' : ''),
+      });
+    }
+  } catch {}
 });
 
 // 释放任务
