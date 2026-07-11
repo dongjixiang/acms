@@ -149,7 +149,8 @@ async function openTask(taskId) {
       '<h3>📝 任务描述</h3>' +
       '<div class="md-content">' + renderMarkdown(t.description || '无详细描述') + '</div>' +
       (Object.keys(skills).length ? '<h3>🎯 技能</h3><div class="skills">' + Object.entries(skills).map(function(e) { return '<span class="skill-tag">' + e[0] + ':' + e[1] + '</span>'; }).join('') + '</div>' : '') +
-      '<h3>📝 日志</h3><div>' + (log.length ? log.map(function(l) { return '<div class="log-entry">' + new Date(l.time).toLocaleString('zh-CN', {hour12:false}) + ' — ' + l.action + ': ' + escHtml(l.note || '') + '</div>'; }).join('') : '<div class="empty">暂无</div>') + '</div>' +
+      // v0.42: in_progress 状态下隐藏这个"📝 日志"section — 进度窗口下边已经实时展示
+      (t.status === 'in_progress' ? '' : '<h3>📝 日志</h3><div>' + (log.length ? log.map(function(l) { return '<div class="log-entry">' + new Date(l.time).toLocaleString('zh-CN', {hour12:false}) + ' — ' + l.action + ': ' + escHtml(l.note || '') + '</div>'; }).join('') : '<div class="empty">暂无</div>') + '</div>') +
       (subs.length ? '<h3>📦 提交</h3>' + subs.map(function(s) { return '<div class="log-entry">' + fmtDate(s.submittedAt) + ' — ' + (s.submittedBy || '') + ': ' + escHtml(s.notes || '') + '</div>'; }).join('') : '') +
       // 生成任务展示媒体预览
       ((t.type === 'image-gen' || t.type === 'audio-gen') && t.status === 'done' ? renderGenPreview(t) : '') +
@@ -300,10 +301,8 @@ function showProgressTooltip(taskId, cardEl) {
     _progressTooltipSSE.addEventListener('log', (e) => {
       const data = JSON.parse(e.data);
       if (data.entry) {
-        const time = new Date(data.entry.time).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        const icon = data.entry.action.startsWith('round_') ? '🔄' : '🔧';
-        const prefix = data.entry.action.startsWith('round_') ? '[轮次]' : '[工具]';
-        _appendLog(logArea, `${time} ${prefix} ${icon} ${escHtml(data.entry.note)}`, '#ccc');
+        // v0.42: 复用 formatLogEntry helper，跟详情页一致的小图标分类
+        _appendLog(logArea, formatLogEntry(data.entry), '#ccc');
       }
     });
     
@@ -454,8 +453,25 @@ function initKanbanDragDrop() {
   });
 }
 
+// v0.42: 共享的日志条目格式化 — 从 note 提取工具名给图标
+//   之前详情页 log 区域只显示 "[时间] round_5/90: note"，没有图标区分
+//   现在根据 note 里的 [agent_xxx] tag 给对应小图标，hover tooltip 和详情页共用
+function formatLogEntry(entry) {
+  const time = new Date(entry.time).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const note = entry.note || '';
+  let icon = '🔄', prefix = '[轮次]';
+  if (note.includes('[agent_read_file]'))    { icon = '📖'; prefix = '[读]'; }
+  else if (note.includes('[agent_write_file]'))   { icon = '✏️'; prefix = '[写]'; }
+  else if (note.includes('[agent_exec_command]')) { icon = '⚙️'; prefix = '[执行]'; }
+  else if (note.includes('[agent_list_files]'))   { icon = '🔍'; prefix = '[列表]'; }
+  else if (note.includes('[agent_search_files]')) { icon = '🔎'; prefix = '[搜索]'; }
+  else if (entry.action && entry.action.startsWith('round_')) { icon = '🔄'; prefix = '[轮次]'; }
+  return `${time} ${prefix} ${icon} ${escHtml(note)}`;
+}
+
 // v0.35: SSE 进度查看器 — 在任务详情面板中显示实时执行进度
 // v0.37: startedAt 参数 — 详情页用 task.last_progress_update 作起点，不是开页面瞬间
+// v0.42: 进度窗口下边增加执行操作详情（按图标分类 + 倒序追加 + auto-scroll）
 let _sseProgressTimer = null;
 let _sseProgressConnected = false;
 
@@ -479,7 +495,8 @@ function startProgressViewer(taskId, startedAt) {
       </div>
       <div class="progress-bar" style="margin-bottom:8px"><div class="progress-fill progress-fill-animate" style="width:0%;transition:width 0.5s"></div></div>
       <div class="progress-note" style="font-size:11px;color:var(--text2)">等待任务开始...</div>
-      <div class="progress-log" style="margin-top:8px;max-height:120px;overflow-y:auto;font-size:10px;color:var(--text2)"></div>
+      <div style="font-size:10px;color:var(--text2);margin-top:8px;margin-bottom:4px">📋 执行操作详情</div>
+      <div class="progress-log" style="max-height:280px;overflow-y:auto;font-size:10px;color:var(--text2);padding:6px 8px;background:rgba(0,0,0,0.2);border-radius:4px;font-family:'Courier New',monospace;line-height:1.5"><div class="progress-log-empty" style="color:#666;font-style:italic">等待 agent 输出...</div></div>
     </div>
   `;
   
@@ -524,8 +541,21 @@ function startProgressViewer(taskId, startedAt) {
     es.addEventListener('log', (e) => {
       const data = JSON.parse(e.data);
       if (data.entry) {
-        const time = new Date(data.entry.time).toLocaleTimeString('zh-CN', { hour12: false });
-        logEl.innerHTML = `<div>[${time}] ${escHtml(data.entry.action)}: ${escHtml(data.entry.note)}</div>` + logEl.innerHTML;
+        // v0.42: 倒序追加（最新在最下） + auto-scroll to bottom + 图标分类
+        //   之前是 prepend（最新在最上），用户看 280px 区域容易看不到新内容
+        //   现在倒序追加 + 滚到底，符合"根据进度滚动输出"的预期
+        const empty = logEl.querySelector('.progress-log-empty');
+        if (empty) empty.remove();
+        const line = document.createElement('div');
+        line.style.cssText = 'padding:1px 0;border-bottom:1px solid rgba(255,255,255,0.03)';
+        line.textContent = formatLogEntry(data.entry);
+        logEl.appendChild(line);
+        // 自动滚动到底部（最新内容可见）
+        logEl.scrollTop = logEl.scrollHeight;
+        // 最多保留 200 条
+        while (logEl.children.length > 200) {
+          logEl.removeChild(logEl.firstChild);
+        }
       }
     });
     
