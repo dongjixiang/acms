@@ -2,6 +2,8 @@
 // 支持: openai-chat, anthropic-messages
 const modelStore = require('../stores/model-store');
 const toolRegistry = require('./tool-registry');
+// v0.46: Hook 系统集成（PreToolUse / PostToolUse）— 让用户在不改 tool handler 的情况下注入自动化
+const { runPreHooks, runPostHooks } = require('./hook-registry');
 
 // 默认请求超时（毫秒）
 const DEFAULT_TIMEOUT = 120000; // 120s
@@ -813,12 +815,22 @@ Round ${round + 1}/${maxRounds}。
       lastToolCallKey = callKey;
 
       try {
+        // v0.46 Hook 系统: PreToolUse 链（可修改 args / abort=true 跳过 tool 执行）
+        const pre = await runPreHooks(tc.name, tc.args, context);
+        if (pre.abort) {
+          toolCallHistory.push({ round: round + 1, tool: tc.name, args: argsPreview, result: 'PRE_HOOK_ABORT', error: pre.abortReason });
+          messages.push(toolRegistry.makeToolResult(api, tc.id, { ok: false, aborted: true, reason: pre.abortReason }));
+          continue;
+        }
+        const finalArgs = pre.args || tc.args;
         // v0.20：handler 接 (args, context) — context 用于传 reqId 等
-        const toolResult = await tool.handler(tc.args, context);
+        const toolResult = await tool.handler(finalArgs, context);
         const resultPreview = JSON.stringify(toolResult).slice(0, 300);
+        // v0.46 Hook 系统: PostToolUse 链（可修改/包装 result）
+        const postResult = await runPostHooks(tc.name, finalArgs, toolResult, context);
         // v0.33 C 方案: 截断超长 tool result（参考 Hermes enforce_turn_budget:181）
         //   防止 LLM 调一次 read_file 拿到 50KB 文件把 context 撑爆
-        const truncated = truncateToolResult(tc.name, toolResult);
+        const truncated = truncateToolResult(tc.name, postResult);
         if (truncated.truncated) {
           console.log(`[runToolLoop] v0.33 truncated ${tc.name} result: ${truncated.origSize} → ${TOOL_RESULT_TRUNCATE_BYTES} bytes`);
         }

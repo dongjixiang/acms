@@ -145,9 +145,11 @@ async function openTask(taskId) {
         '<div><span class="label">进度:</span> ' + (t.progress || 0) + '%</div>' +
         '<div><span class="label">父需求:</span> ' + (t.parent_id || '无') + '</div>' +
       '</div>' +
-      (t.status === 'in_progress' ? '<div class="progress-bar" style="margin-top:8px"><div class="progress-fill" style="width:' + (t.progress || 0) + '%"></div></div>' : '') +
+(t.status === 'in_progress' ? '<div class="progress-bar" style="margin-top:8px"><div class="progress-fill" style="width:' + (t.progress || 0) + '%"></div></div>' : '') +
       '<h3>📝 任务描述</h3>' +
       '<div class="md-content">' + renderMarkdown(t.description || '无详细描述') + '</div>' +
+      // v0.46 Plan mode: 显示 plan 区块（如果存在）
+      renderPlanSection(t) +
       (Object.keys(skills).length ? '<h3>🎯 技能</h3><div class="skills">' + Object.entries(skills).map(function(e) { return '<span class="skill-tag">' + e[0] + ':' + e[1] + '</span>'; }).join('') + '</div>' : '') +
       // v0.42: in_progress 状态下隐藏这个"📝 日志"section — 进度窗口下边已经实时展示
       (t.status === 'in_progress' ? '' : '<h3>📝 日志</h3><div>' + (log.length ? log.map(function(l) { return '<div class="log-entry">' + new Date(l.time).toLocaleString('zh-CN', {hour12:false}) + ' — ' + l.action + ': ' + escHtml(l.note || '') + '</div>'; }).join('') : '<div class="empty">暂无</div>') + '</div>') +
@@ -466,6 +468,132 @@ const TOOL_META = {
   agent_list_files:   { icon: '🔍', label: '列表' },
   agent_search_files: { icon: '🔎', label: '搜索' },
 };
+
+// v0.46 Plan mode: 渲染 plan section（task detail 页面）
+function renderPlanSection(task) {
+  const plan = task.plan;
+  const planStatus = task.plan_status;
+
+  // 1. 有 plan → 显示完整 plan + 状态徽章 + Approve/Reject
+  if (plan) {
+    const statusBadge = planStatus === 'pending'
+      ? '<span style="background:#f59e0b;color:#000;padding:2px 8px;border-radius:3px;font-size:11px">⏳ 待审核</span>'
+      : planStatus === 'approved'
+        ? '<span style="background:#10b981;color:#fff;padding:2px 8px;border-radius:3px;font-size:11px">✅ 已批准</span>'
+        : '<span style="background:#ef4444;color:#fff;padding:2px 8px;border-radius:3px;font-size:11px">❌ 已拒绝</span>';
+
+    const actionButtons = planStatus === 'pending'
+      ? '<div style="display:flex;gap:8px;margin-top:12px">' +
+          '<button class="btn-accept" onclick="approvePlan(\'' + task.id + '\')" style="background:#10b981">✅ 批准并执行</button>' +
+          '<button class="btn-small" onclick="rejectPlan(\'' + task.id + '\')" style="background:rgba(239,68,68,0.15);color:#ef4444;border-color:rgba(239,68,68,0.3)">❌ 拒绝</button>' +
+        '</div>'
+      : planStatus === 'rejected' && task.status === 'backlog'
+        ? '<div style="margin-top:8px;color:#ef4444;font-size:11px">拒绝原因：' + escHtml(plan.rejectedReason || '(未填)') + '</div>' +
+          '<div style="margin-top:8px"><button class="btn-small" onclick="generatePlan(\'' + task.id + '\')">🔄 重新生成 Plan</button></div>'
+        : '';
+
+    const filesHtml = (plan.files && plan.files.length)
+      ? '<ul style="margin:6px 0;padding-left:20px">' + plan.files.map(function(f) {
+          return '<li><code>' + escHtml(f.path || '?') + '</code> — ' + escHtml(f.purpose || '') +
+            (f.estimatedLines ? ' <span style="color:#888;font-size:11px">(~' + f.estimatedLines + ' 行)</span>' : '') + '</li>';
+        }).join('') + '</ul>'
+      : '<div style="color:#888;font-size:11px">无文件清单</div>';
+
+    const stepsHtml = (plan.steps && plan.steps.length)
+      ? '<ol style="margin:6px 0;padding-left:20px">' + plan.steps.map(function(s) { return '<li>' + escHtml(s) + '</li>'; }).join('') + '</ol>'
+      : '<div style="color:#888;font-size:11px">无步骤</div>';
+
+    const risksHtml = (plan.risks && plan.risks.length)
+      ? '<ul style="margin:6px 0;padding-left:20px;color:#f59e0b">' + plan.risks.map(function(r) { return '<li>' + escHtml(r) + '</li>'; }).join('') + '</ul>'
+      : '<div style="color:#888;font-size:11px">无风险评估</div>';
+
+    return '<h3>📋 实施计划 ' + statusBadge + '</h3>' +
+      '<div style="background:rgba(139,92,246,0.06);padding:12px;border-radius:6px;border:1px solid rgba(139,92,246,0.2);margin-bottom:12px">' +
+        '<div style="font-weight:bold;margin-bottom:8px">' + escHtml(plan.summary || '') + '</div>' +
+        '<div style="font-size:11px;color:#888;margin-bottom:8px">由模型 <code>' + escHtml(plan.model || '?') + '</code> 生成 · ' + new Date(plan.createdAt).toLocaleString('zh-CN', { hour12: false }) + '</div>' +
+        '<div style="margin-top:10px"><strong>📁 文件清单 (' + (plan.files || []).length + '):</strong>' + filesHtml + '</div>' +
+        '<div style="margin-top:10px"><strong>🪜 执行步骤 (' + (plan.steps || []).length + '):</strong>' + stepsHtml + '</div>' +
+        '<div style="margin-top:10px"><strong>⚠️ 风险 (' + (plan.risks || []).length + '):</strong>' + risksHtml + '</div>' +
+        actionButtons +
+      '</div>';
+  }
+
+  // 2. 无 plan 但 task 在 backlog → 显示 Generate Plan 按钮
+  if (task.status === 'backlog') {
+    return '<h3>📋 实施计划</h3>' +
+      '<div style="background:rgba(139,92,246,0.04);padding:12px;border-radius:6px;border:1px dashed rgba(139,92,246,0.25);margin-bottom:12px">' +
+        '<div style="color:#888;font-size:12px;margin-bottom:8px">还没生成 plan，先生成一个看 agent 的实施思路，再决定是否执行。</div>' +
+        '<button class="btn-small" onclick="generatePlan(\'' + task.id + '\')" style="background:rgba(139,92,246,0.15);color:#8b5cf6;border-color:rgba(139,92,246,0.3)">📋 生成 Plan</button>' +
+      '</div>';
+  }
+
+  return '';
+}
+
+// v0.46 Plan mode: Plan API 调用 helpers
+async function generatePlan(taskId) {
+  if (!confirm('确定要生成 Plan 吗？会调一次 LLM（约 10-15 秒）。')) return;
+  try {
+    toast('正在生成 Plan...', 'info', 3000);
+    const resp = await fetch('/api/ai-tools/agent-plan/' + taskId, {
+      method: 'POST',
+      headers: { 'X-API-Key': 'dev-key-001', 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const data = await resp.json();
+    if (data.success) {
+      toast('Plan 生成成功 ✅', 'success');
+      openTask(taskId); // 刷新详情页
+    } else {
+      toast('Plan 生成失败: ' + (data.message || data.error || '未知错误'), 'error', 5000);
+    }
+  } catch (e) {
+    toast('请求失败: ' + e.message, 'error', 5000);
+  }
+}
+
+async function approvePlan(taskId) {
+  if (!confirm('批准 Plan？批准后会立即开始执行 agent（agent 会按 plan 创建/修改文件）。')) return;
+  try {
+    toast('正在批准并启动 agent...', 'info');
+    const resp = await fetch('/api/ai-tools/agent-plan/' + taskId + '/approve', {
+      method: 'POST',
+      headers: { 'X-API-Key': 'dev-key-001', 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const data = await resp.json();
+    if (data.success) {
+      toast('Plan 已批准，agent 开始执行 ⚙️', 'success');
+      refreshKanban();
+      openTask(taskId); // 刷新详情页（会触发 SSE 进度监听）
+    } else {
+      toast('批准失败: ' + (data.message || data.error || '未知错误'), 'error', 5000);
+    }
+  } catch (e) {
+    toast('请求失败: ' + e.message, 'error', 5000);
+  }
+}
+
+async function rejectPlan(taskId) {
+  const reason = prompt('拒绝 Plan 的原因（可选）：', '');
+  try {
+    const resp = await fetch('/api/ai-tools/agent-plan/' + taskId + '/reject', {
+      method: 'POST',
+      headers: { 'X-API-Key': 'dev-key-001', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: reason || '' }),
+    });
+    const data = await resp.json();
+    if (data.success) {
+      toast('Plan 已拒绝，任务退回 backlog', 'info');
+      refreshKanban();
+      openTask(taskId);
+    } else {
+      toast('拒绝失败: ' + (data.message || data.error || '未知错误'), 'error', 5000);
+    }
+  } catch (e) {
+    toast('请求失败: ' + e.message, 'error', 5000);
+  }
+}
 function formatLogEntry(entry) {
   const time = new Date(entry.time).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const action = entry.action || '';
@@ -530,6 +658,13 @@ function startProgressViewer(taskId, startedAt) {
       </div>
       <div class="progress-bar" style="margin-bottom:8px"><div class="progress-fill progress-fill-animate" style="width:0%;transition:width 0.5s"></div></div>
       <div class="progress-note" style="font-size:11px;color:var(--text2)">等待任务开始...</div>
+      <div class="phase-bar" style="display:flex;gap:4px;margin:8px 0 4px 0;font-size:10px">
+        <span class="phase-seg" data-phase="explore" style="flex:1;text-align:center;padding:4px;border-radius:3px;background:rgba(148,163,184,0.15);color:#94a3b8">🔍 探索</span>
+        <span class="phase-seg" data-phase="design" style="flex:1;text-align:center;padding:4px;border-radius:3px;background:rgba(139,92,246,0.15);color:#8b5cf6">📝 设计</span>
+        <span class="phase-seg" data-phase="write" style="flex:1;text-align:center;padding:4px;border-radius:3px;background:rgba(59,130,246,0.15);color:#3b82f6">✏️ 写</span>
+        <span class="phase-seg" data-phase="test" style="flex:1;text-align:center;padding:4px;border-radius:3px;background:rgba(16,185,129,0.15);color:#10b981">🧪 测试</span>
+        <span class="phase-seg" data-phase="fix" style="flex:1;text-align:center;padding:4px;border-radius:3px;background:rgba(245,158,11,0.15);color:#f59e0b">🔧 修复</span>
+      </div>
       <div style="font-size:10px;color:var(--text2);margin-top:8px;margin-bottom:4px">📋 执行操作详情</div>
       <div class="progress-log" style="max-height:280px;overflow-y:auto;font-size:10px;color:var(--text2);padding:6px 8px;background:rgba(0,0,0,0.2);border-radius:4px;font-family:'Courier New',monospace;line-height:1.5"><div class="progress-log-empty" style="color:#666;font-style:italic">等待 agent 输出...</div></div>
     </div>
@@ -540,6 +675,31 @@ function startProgressViewer(taskId, startedAt) {
   const progressFill = container.querySelector('.progress-fill');
   const noteEl = container.querySelector('.progress-note');
   const logEl = container.querySelector('.progress-log');
+  // v0.46 TodoWrite: phase bar 更新函数
+  const phaseSegs = container.querySelectorAll('.phase-seg');
+  const PHASE_ORDER = ['explore', 'design', 'write', 'test', 'fix'];
+  function updatePhaseBar(currentPhase) {
+    if (!currentPhase) return;
+    const idx = PHASE_ORDER.indexOf(currentPhase);
+    phaseSegs.forEach((seg, i) => {
+      const phase = seg.getAttribute('data-phase');
+      if (i < idx) {
+        // 已完成阶段 — 实色背景
+        seg.style.opacity = '0.55';
+        seg.style.fontWeight = 'normal';
+      } else if (i === idx) {
+        // 当前阶段 — 高亮 + 加粗 + 加阴影
+        seg.style.opacity = '1';
+        seg.style.fontWeight = 'bold';
+        seg.style.boxShadow = `0 0 0 2px ${seg.style.color}`;
+      } else {
+        // 未开始 — 透明
+        seg.style.opacity = '0.4';
+        seg.style.fontWeight = 'normal';
+        seg.style.boxShadow = 'none';
+      }
+    });
+  }
   
   // 计时器更新
   const timerInterval = setInterval(() => {
@@ -571,6 +731,8 @@ function startProgressViewer(taskId, startedAt) {
       const data = JSON.parse(e.data);
       noteEl.textContent = data.note || ('Round ' + Math.round(data.progress) + '/90');
       progressFill.style.width = data.progress + '%';
+      // v0.46 TodoWrite: 更新 phase bar
+      if (data.phase) updatePhaseBar(data.phase);
     });
     
     es.addEventListener('log', (e) => {

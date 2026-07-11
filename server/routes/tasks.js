@@ -261,6 +261,45 @@ router.post('/:id/drag-drop', (req, res) => {
   res.json(result);
 });
 
+// v0.45: 执行中途 steer — PM 可以向 in_progress 任务注入指令
+//   用法：POST /api/tasks/:id/steer { message: "..." }
+//   效果：steer message 写入 task.progress_note，agent 下一轮 loop 会读到
+//   这与 agent-steer（重启整个 agent）不同——这里是"软 steer"，不中断当前执行
+router.post('/:id/steer', (req, res) => {
+  try {
+    const { taskId } = req.params;
+    const { message } = req.body;
+    if (!message) return res.status(400).json({ error: 'MISSING_MESSAGE' });
+
+    const task = taskStore.getById(taskId);
+    if (!task) return res.status(404).json({ error: 'TASK_NOT_FOUND' });
+    if (task.status !== 'in_progress') {
+      return res.status(400).json({ error: 'TASK_NOT_IN_PROGRESS', message: '只能对 in_progress 任务 steer' });
+    }
+
+    // 把 steer message 追加到 progress_note（agent 下一轮会读到）
+    const existingNote = task.progress_note || '';
+    const newNote = existingNote
+      ? `${existingNote}\n\n--- PM Steer ---\n${message}`
+      : `--- PM Steer ---\n${message}`;
+
+    const { collection } = require('../db/connection');
+    collection('tasks').update(t => t.id === taskId, {
+      progress_note: newNote,
+      last_progress_update: new Date().toISOString(),
+    });
+
+    res.json({
+      success: true,
+      taskId,
+      steered: true,
+      note: newNote.slice(0, 200),
+    });
+  } catch (e) {
+    res.status(500).json({ error: 'STEER_FAILED', message: e.message });
+  }
+});
+
 // v0.35: SSE 进度流式 — 客户端连接后持续推送任务执行进度
 router.get('/:id/progress/stream', (req, res) => {
   const taskId = req.params.id;
@@ -331,26 +370,26 @@ router.get('/:id/progress/stream', (req, res) => {
       // 进度变化
       if (currentProgress !== prevProgress && currentProgress > 0) {
         prevProgress = currentProgress;
+        // v0.46 TodoWrite: 推送 phase + phase_history 让前端 5 段进度条实时更新
+        const phaseHistory = JSON.parse(task.phase_history || '[]');
         send('progress', {
           progress: currentProgress,
           status: currentStatus,
           note: progressNote,
           logLength: executionLog.length,
+          phase: task.phase || null,
+          phase_history: phaseHistory,
         });
       }
-      
-      // 有新日志条目（v0.39: 用 latest entry.time 检测，不用 length）
+      // v0.44 fix: 用 latest entry.time 检测新日志（executionLog.length 会卡在 50 不变）
       //   之前用 executionLog.length > prevLogLen，但 task-agent.js saveProgress 限制 log ≤ 50
       //   一旦满了 length 永远 50，SSE 永远不推 log event → hover tooltip 看不到新 round
       //   现在用 latest entry.time 检测，每次 agent 新 round time 必变
-      const latestEntry = executionLog[executionLog.length - 1];
-      const latestLogTime = latestEntry?.time || '';
-      if (latestLogTime && latestLogTime !== prevLatestLogTime) {
-        prevLatestLogTime = latestLogTime;
-        send('log', {
-          entry: latestEntry,
-          totalLogs: executionLog.length,
-        });
+      const lastEntry = executionLog[executionLog.length - 1];
+      const lastTime = lastEntry?.time || '';
+      if (lastTime && lastTime !== prevLatestLogTime) {
+        prevLatestLogTime = lastTime;
+        send('log', { entry: lastEntry, totalLogs: executionLog.length });
       }
       prevLogLen = executionLog.length;
     } catch (e) {

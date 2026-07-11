@@ -6,6 +6,7 @@ const reqStore = require('../stores/requirement-store');
 const taskStore = require('../stores/task-store');
 const eventBus = require('../services/event-bus');
 const { validateChildCoverage, detectIntegrationGaps, validateParentAggregateCoverage } = require('../services/coverage-validator');
+const decomposer = require('../services/decomposer');
 
 // 生成 MD 需求文档
 router.post('/requirements/:id/generate-doc', async (req, res, next) => {
@@ -237,34 +238,69 @@ router.post('/agent-execute', async (req, res, next) => {
 
     const result = await aiTools.executeTaskAgent(taskId, { modelId });
 
-    // v0.23 防「agent 撒谎」核心防御：从 LLM summary 提取声称写的文件 → 实际 readFile 验证
-    //   缺失文件 → 不进 review，进 failed，避免 reviewer 被虚假 success 误导
+    // v0.35 改版：基于任务需求验证文件，不 parse LLM summary
+    //   从任务描述/acceptance criteria 提取文件路径 → 验证是否存在
+    //   缺失 → 退回 in_progress 重做（不是直接 FAIL）
     const taskDoc = taskStore.getById(taskId);
-    const audit = taskDoc ? aiTools.auditAgentClaims(taskDoc.project_id, result.analysis) : { claimedCount: 0, verifiedCount: 0, missingCount: 0, missingFiles: [], claimedFiles: [], verifiedFiles: [] };
+    const audit = taskDoc ? aiTools.auditTaskRequirements(taskDoc.project_id, taskDoc) : { requiredCount: 0, verifiedCount: 0, missingCount: 0, missingFiles: [], requiredFiles: [], verifiedFiles: [] };
     if (audit.missingCount > 0) {
       const missingList = audit.missingFiles.map(m => `${m.path} (${m.reason})`).join(', ');
-      console.error(`[agent-execute] ⚠ Task ${taskId} 声称 ${audit.claimedCount} 文件，但 ${audit.missingCount} 缺失: ${missingList}`);
-      const failNotes = `[Agent 声称文件验证失败]\n\n缺失文件：\n${audit.missingFiles.map(m => `- \`${m.path}\` (原因: ${m.reason})`).join('\\n')}\n\n声称但已写入(${audit.verifiedCount}):\n${audit.verifiedFiles.map(f => `- \`${f}\``).join('\\n') || '(无)'}\n\n原始 agent summary:\n${result.analysis || '(empty)'}`;
-      // 标记任务为 failed 而非 submit 让它进 review
-      const task = taskStore.getById(taskId);
-      const failSubmit = taskStore.submit(taskId, {
-        agentId: agentId || 'agent-xiaoji',
-        notes: failNotes,
-      });
-      // 然后强制改状态为 failed (submit 通常是 todo→review；这里我们要 failed)
-      try { taskStore.update(taskId, { status: 'failed' }); } catch (e) {}
+      console.warn(`[agent-execute] ⚠ Task ${taskId} 需求文件 ${audit.missingCount} 缺失: ${missingList}`);
+      const missingFiles = audit.missingFiles.map(m => m.path).join(', ');
+      const feedbackNotes = `[需求文件验证未通过 — 请创建缺失文件]
+
+你的任务描述中要求创建以下文件，但它们不存在：
+${audit.missingFiles.map(m => `- \`${m.path}\` (原因: ${m.reason})`).join('\n')}
+
+需求中提到的文件(${audit.requiredCount}): ${audit.requiredFiles.join(', ') || '(无)'}`;
+      // 退回 in_progress，附 feedback 让 LLM 重做
+      taskStore.update(taskId, { status: 'in_progress', progress_note: feedbackNotes });
+      // v0.44.5: 自动 steer agent — 把 feedback 注入到 agent 的 messages 里，让它知道要去补文件
+      //   之前 agent 拿到反馈后可能不知道要创建文件，或者继续装睡
+      //   修法：直接 steer agent，明确告诉它"创建缺失文件"
+      try {
+        const { executeTaskAgent } = require('./task-agent');
+        // 异步 steer，不阻塞响应
+        (async () => {
+          try {
+            await executeTaskAgent(taskId, {
+              steerMessage: `### 自动 steer: 创建缺失文件\n\n你的提交被拒绝了，因为以下文件不存在：\n${missingFiles}\n\n请创建这些文件。对于每个文件，根据任务描述中的需求，用合理的内容创建它。如果你不知道该放什么内容，创建一个合理的空骨架（比如空类/空函数/空模块）。\n\n创建后重新提交。`,
+            });
+          } catch (e) {
+            console.error(`[agent-execute] steer failed for task ${taskId}: ${e.message}`);
+          }
+        })();
+      } catch (e) { /* executeTaskAgent not available */ }
       return res.status(409).json({
         success: false,
         taskId,
         modelUsed: result.modelUsed,
         audit,
-        error: 'CLAIM_MISMATCH',
-        message: `Agent claimed ${audit.claimedCount} file(s), but ${audit.missingCount} missing. Task marked failed.`,
-        notes: failNotes,
+        error: 'FILES_MISSING',
+        message: `Task requires ${audit.missingCount} file(s) that are missing. Task returned to in_progress for rework.`,
+        notes: feedbackNotes,
       });
     }
 
     // 所有声称文件都验证存在 → 正常 submit 进 review
+    // v0.45: 装睡检测 — 检查 execution_log 是否有真实的 tool calls
+    const execLog = JSON.parse(taskDoc.execution_log || '[]');
+    const toolCallEntries = execLog.filter(e => e.note && (e.note.includes('调用工具') || e.note.includes('Tool call')));
+    const fileWriteEntries = execLog.filter(e => e.note && (e.note.includes('agent_write_file') || e.note.includes('agent_patch_file')));
+    if (toolCallEntries.length === 0) {
+      // 装睡检测：execution_log 0 tool calls → 强制重做
+      const installWarning = `⚠️ 装睡检测失败: execution_log 中没有任何 tool call 记录。你必须使用 agent_read_file/agent_search_files/agent_write_file 等工具实际执行任务，不能嘴上说完成就提交。\n\n当前日志: ${execLog.length} 条 entry，0 条 tool call。\n\n请重新执行任务：先 explore 工作区 → 修改/创建文件 → 用 node --check 验证 → 再提交。`;
+      taskStore.update(taskId, { status: 'in_progress', progress_note: installWarning });
+      console.warn(`[agent-execute] ⚠️ 装睡检测: Task ${taskId} - 0 tool_calls in execution_log, returning to in_progress for rework`);
+      return res.status(409).json({
+        success: false,
+        taskId,
+        error: 'STALL_DETECTED',
+        message: `Stall detected: execution_log has ${execLog.length} entries but 0 tool calls. Task returned to in_progress for rework.`,
+        notes: installWarning,
+      });
+    }
+
     const submitResult = taskStore.submit(taskId, {
       agentId: agentId || 'agent-xiaoji',
       notes: result.analysis,
@@ -303,9 +339,9 @@ router.post('/agent-steer/:taskId', async (req, res, next) => {
     const { message, modelId } = req.body;
     if (!message) return res.status(400).json({ error: 'MISSING_MESSAGE', message: 'steer message 是必填项' });
     const result = await aiTools.executeTaskAgent(taskId, { modelId, steerMessage: message });
-    // v0.23: 同样跑 claim verification
+    // v0.35: 同样跑需求文件验证
     const taskDoc = taskStore.getById(taskId);
-    const audit = taskDoc ? aiTools.auditAgentClaims(taskDoc.project_id, result.analysis) : { claimedCount: 0, verifiedCount: 0, missingCount: 0, missingFiles: [], claimedFiles: [], verifiedFiles: [] };
+    const audit = taskDoc ? aiTools.auditTaskRequirements(taskDoc.project_id, taskDoc) : { requiredCount: 0, verifiedCount: 0, missingCount: 0, missingFiles: [], requiredFiles: [], verifiedFiles: [] };
     res.json({
       success: true,
       taskId,
@@ -315,6 +351,126 @@ router.post('/agent-steer/:taskId', async (req, res, next) => {
       audit,
     });
   } catch (e) { next(e); }
+});
+
+// v0.46: Plan mode endpoints — Hermes /plan + Claude Code ExitPlanMode 的 ACMS 等价物
+//   POST /agent-plan/:taskId              — 生成 plan（不执行）
+//   POST /agent-plan/:taskId/approve      — 批准 plan → 自动调 agent-execute
+//   POST /agent-plan/:taskId/reject       — 拒绝 plan → 任务留在 backlog
+
+router.post('/agent-plan/:taskId', async (req, res, next) => {
+  try {
+    const { taskId } = req.params;
+    const { modelId } = req.body;
+    const result = await aiTools.generatePlan(taskId, { modelId });
+    res.json({
+      success: true,
+      taskId,
+      plan: result.plan,
+    });
+  } catch (e) { next(e); }
+});
+
+router.post('/agent-plan/:taskId/approve', async (req, res, next) => {
+  try {
+    const { taskId } = req.params;
+    const task = taskStore.getById(taskId);
+    if (!task) return res.status(404).json({ error: 'TASK_NOT_FOUND' });
+    if (!task.plan) return res.status(400).json({ error: 'NO_PLAN', message: '任务还没生成 plan，先调 /agent-plan' });
+
+    // 标记 plan 为 approved
+    const approvedPlan = { ...task.plan, approved: true, approvedAt: new Date().toISOString() };
+    taskStore.update(taskId, { plan: approvedPlan, plan_status: 'approved' });
+
+    // 异步触发 agent-execute（不等执行完，PM 可以看 SSE 进度）
+    (async () => {
+      try {
+        await aiTools.executeTaskAgent(taskId, { modelId: task.plan.model });
+      } catch (e) {
+        console.error(`[agent-plan-approve] executeTaskAgent failed for ${taskId}: ${e.message}`);
+      }
+    })();
+
+    res.json({
+      success: true,
+      taskId,
+      plan: approvedPlan,
+      message: 'Plan approved, agent-execute started in background.',
+    });
+  } catch (e) { next(e); }
+});
+
+router.post('/agent-plan/:taskId/reject', async (req, res, next) => {
+  try {
+    const { taskId } = req.params;
+    const { reason } = req.body;
+    const task = taskStore.getById(taskId);
+    if (!task) return res.status(404).json({ error: 'TASK_NOT_FOUND' });
+    if (!task.plan) return res.status(400).json({ error: 'NO_PLAN', message: '任务还没生成 plan' });
+
+    const rejectedPlan = { ...task.plan, rejectedReason: reason || '', rejectedAt: new Date().toISOString() };
+    taskStore.update(taskId, {
+      plan: rejectedPlan,
+      plan_status: 'rejected',
+      status: 'backlog',  // 退回 backlog，PM 可以手动改 plan 或重新调 /agent-plan
+    });
+
+    res.json({
+      success: true,
+      taskId,
+      plan: rejectedPlan,
+      message: 'Plan rejected. Task returned to backlog.',
+    });
+  } catch (e) { next(e); }
+});
+
+// v0.45: Decomposer API — 编排者只拆不执行
+//   POST /api/ai-tools/decompose { requirementText, projectId, parentId, modelId? }
+//   效果：LLM 分解需求 → 创建任务 → 链接依赖 → 返回任务图
+router.post('/decompose', async (req, res, next) => {
+  try {
+    const { requirementText, projectId, parentId, modelId } = req.body;
+    if (!requirementText || !projectId) {
+      return res.status(400).json({ error: 'MISSING_FIELDS', message: 'requirementText 和 projectId 是必填项' });
+    }
+
+    // 第一步：LLM 分解
+    const { tasks, taskGraph } = await decomposer.decomposeRequirement(requirementText, projectId, parentId, { modelId });
+
+    // 第二步：创建任务（decomposer 不执行，只创建）
+    const createdTasks = [];
+    for (const t of tasks) {
+      const task = taskStore.create({
+        title: t.title,
+        description: t.description,
+        type: t.type,
+        project_id: projectId,
+        parent_id: parentId,
+        estimated_hours: t.estimated_hours,
+        required_skills: JSON.stringify(t.required_skills),
+        depends_on: t.depends_on || [],
+        status: 'backlog',
+      });
+      createdTasks.push(task);
+    }
+
+    // 第三步：发出事件（触发下游流程）
+    eventBus.emit('tasks.decomposed', {
+      projectId,
+      parentId,
+      createdTasks: createdTasks.map(t => t.id),
+    });
+
+    res.json({
+      success: true,
+      decomposed: true,
+      taskCount: createdTasks.length,
+      tasks: createdTasks,
+      taskGraph,
+    });
+  } catch (e) {
+    next(e);
+  }
 });
 
 module.exports = router;

@@ -15,7 +15,7 @@
 const { generateDoc } = require('./doc-generator');
 const { decomposeRequirement } = require('./requirement-decomposer');
 const { refineSection, checkConsistency } = require('./consistency-checker');
-const { executeTaskAgent, extractClaimedFiles, verifyClaimsExist, auditAgentClaims } = require('./task-agent');
+const { executeTaskAgent, extractRequiredFiles, verifyFilesExist, auditTaskRequirements, generatePlan, PHASES, PHASE_META } = require('./task-agent');
 
 module.exports = {
   generateDoc,
@@ -24,7 +24,11 @@ module.exports = {
   checkConsistency,
   executeTaskAgent,
   // v0.23: agent claim verification (防 agent 撒谎说成功)
-  extractClaimedFiles,
-  verifyClaimsExist,
-  auditAgentClaims,
+  extractRequiredFiles,
+  verifyFilesExist,
+  auditTaskRequirements,
+  // v0.46: plan mode (PM 先看 plan 再决定执行)
+  generatePlan,
+  PHASES,
+  PHASE_META,
 };

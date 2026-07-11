@@ -102,4 +102,11 @@ try {
   console.error('[ACMS-Self] 注册失败:', e.message);
 }
 
+// v0.46: 注册内置 hooks（PostToolUse: auto-typescheck-on-write + track-tool-stats）
+try {
+  require('./hooks');
+} catch (e) {
+  console.error('[ACMS] hooks 注册失败:', e.message);
+}
+
 console.log('[ACMS] 启动完成 ✅');
