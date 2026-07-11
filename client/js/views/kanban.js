@@ -99,7 +99,7 @@ async function refreshKanban(parentId) {
           ${blocked && t.status === 'backlog' ? '<div class="task-actions"><span style="font-size:11px;color:var(--accent3)">⏳ ' + escHtml(t.block_reason || '等待依赖') + '</span></div>' : ''}
           ${!blocked && t.status === 'backlog' ? '<div class="task-actions" style="display:flex;gap:6px;align-items:center"><select value="' + (t.assigned_to||'') + '" onclick="event.stopPropagation()" onchange="event.stopPropagation();assignTaskCard(\'' + t.id + '\',this.value)" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:3px;max-width:130px">' + agentOpts + '</select><button class="btn-small btn-accept" onclick="event.stopPropagation();claimTask(\'' + t.id + '\')">认领</button></div>' : ''}
           ${t.status === 'in_progress' ? '<div class="task-actions"><button class="btn-small btn-accept" onclick="event.stopPropagation();submitTask(\'' + t.id + '\')">提交</button></div>' : ''}
-          ${t.status === 'in_progress' ? '<div class="task-progress-mini" style="margin-top:4px;font-size:10px;color:var(--accent);cursor:pointer" onmouseenter="showProgressTooltip(\'' + t.id + '\', this.closest(\'.task-card\'))" onmouseleave="hideProgressTooltip()">' + (t.progress_note ? escHtml(t.progress_note).slice(0, 40) : '') + ' ' + (t.progress || 0) + '%</div>' : ''}
+          ${t.status === 'in_progress' ? '<div class="task-progress-mini" style="margin-top:4px;font-size:10px;color:var(--accent);cursor:pointer" onmouseenter="showProgressTooltip(\'' + t.id + '\', this.closest(\'.task-card\'))" onmouseleave="window._kanbanTipCardLeaveTimer = setTimeout(hideProgressTooltip, 300)">' + (t.progress_note ? escHtml(t.progress_note).slice(0, 40) : '') + ' ' + (t.progress || 0) + '%</div>' : ''}
           ${t.status === 'review' ? '<div class="task-actions"><button class="btn-small btn-accept" onclick="event.stopPropagation();reviewTask(\'' + t.id + '\',\'approved\')">通过</button><button class="btn-small btn-reject" onclick="event.stopPropagation();reviewTask(\'' + t.id + '\',\'rejected\')">驳回</button></div>' : ''}
           ${t.status === 'failed' ? '<div class="task-actions" style="display:flex;gap:6px"><button class="btn-small btn-accept" onclick="event.stopPropagation();reactivateTask(\'' + t.id + '\')" title="把失败任务拉回 backlog 重跑">↻ 重激活</button><button class="btn-small btn-reject" onclick="event.stopPropagation();archiveTask(\'' + t.id + '\')" title="放弃这个失败任务">归档</button></div>' : ''}
         </div>`;
@@ -366,6 +366,10 @@ function showProgressTooltip(taskId, cardEl) {
   });
   _progressTooltip.addEventListener('mouseenter', () => {
     if (leaveTimeout) { clearTimeout(leaveTimeout); leaveTimeout = null; }
+    // v0.40 fix: 鼠标进入 tooltip 时同时 clear progress-mini 的延迟 hide timer
+    //   之前 progress-mini 的 onmouseleave 立即触发 hideProgressTooltip，鼠标快速移到 tooltip 时 tooltip 立即被销毁
+    //   现在 progress-mini 的 leave 加 300ms delay，进入 tooltip 时 clear 这个 timer 让 tooltip 持续显示
+    if (window._kanbanTipCardLeaveTimer) { clearTimeout(window._kanbanTipCardLeaveTimer); window._kanbanTipCardLeaveTimer = null; }
   });
 }
 

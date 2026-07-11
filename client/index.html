@@ -413,7 +413,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/dashboard.js"></script>
 <!-- v0.13 拆分：12 个子模块在 requirements.js 之前加载（HTML onclick 跨文件按名查找） -->
 <!-- v0.21.4 fix: 双卡清理范围扩大到 assist-loading-card.method-music（旧 v0.21.3 漏了真正的旧卡所在位置） -->
-<script src="/client/js/views/requirements/chat.js?v=0.22.6"></script>
+<script src="/client/js/views/requirements/chat.js?v=0.22.23"></script>
 <script src="/client/js/views/requirements/idea-panel.js?v=0.13.0"></script>
 <!-- v0.18 chat 模式切换器（clarify ↔ free）—— idea-panel.js 之后加载，引用 toggleChatMode -->
 <script src="/client/js/views/requirements/chat-mode.js?v=0.18.0"></script>
@@ -455,7 +455,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/assists/thinking-brief.js?v=0.9.0"></script>
 <script src="/client/js/views/assists/dispatcher.js?v=0.22.22"></script>  <!-- v0.22.22 dispatcher: regenerateBatch 标记 _explicitAssist + poll 完成时清理（修"换一批剧本不显示"bug） -->
 <script src="/client/js/views/requirements/chat-inline-form.js?v=0.19.0"></script>  <!-- v0.19 内联表单 → 替代 window.prompt -->
-<script src="/client/js/views/kanban.js"></script>
+<script src="/client/js/views/kanban.js?v=0.40"></script>
 <script src="/client/js/views/bugs.js"></script>
 <script src="/client/js/views/knowledge.js"></script>
 <script src="/client/js/views/delivery.js"></script>
