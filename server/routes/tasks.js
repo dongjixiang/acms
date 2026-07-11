@@ -272,7 +272,11 @@ router.get('/:id/progress/stream', (req, res) => {
   res.flushHeaders();
   
   const send = (type, data) => {
-    try { res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`); } catch {}
+    // v0.43 fix: SSE 协议必须有 event: <type>\n 字段，浏览器 EventSource 才会按 type 分发事件
+    //   之前只发 data: {...}，浏览器收到后只触发 'message' 事件，前端 addEventListener('connected'/'progress'/'log') 永远不会被调用
+    //   这是 v0.35 引入 SSE 时的根本 bug，v0.37/v0.40/v0.42 都没发现，因为 server 端 curl 看 events 正常
+    //   真正要看到 bug 必须用浏览器 puppeteer 拦截 EventSource 看实际事件分发
+    try { res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`); } catch {}
   };
   
   const taskStore = require('../stores/task-store');
