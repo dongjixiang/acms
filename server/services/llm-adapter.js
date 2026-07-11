@@ -9,6 +9,18 @@ const DEFAULT_TIMEOUT = 120000; // 120s
 // ── v0.3.3 B+++ 补丁（2026-06-13，v0.13 抽公共到 services/debug-logger.js）──
 const { dump: _debugDump } = require('./debug-logger');
 
+// v0.35: 工具名称 → 人类可读描述
+function getToolDisplayName(toolName) {
+  const names = {
+    'agent_read_file': '读取文件',
+    'agent_list_files': '列出文件',
+    'agent_search_files': '搜索文件',
+    'agent_exec_command': '执行命令',
+    'agent_write_file': '写入文件',
+  };
+  return names[toolName] || toolName;
+}
+
 /**
  * 调用 LLM，自动根据 model.api 选择协议
  * @param {string} modelId
@@ -372,10 +384,161 @@ async function callLLMWithTools(modelId, messages, options = {}) {
   return callLLM(modelId, messages, { ...options, tools });
 }
 
+// === Hermes-style agent loop helpers (v0.33 C 方案) ===
+// 参考 Hermes run_agent.py:283-330 IterationBudget + tools/tool_result_storage.py
+// 目标：让 ACMS 20 轮装睡 → 90 轮内收敛
+
+// v0.33: IterationBudget — 线程安全的迭代预算
+//   Hermes: max_iterations=90 + refund() 让 execute_code 工具不占预算
+//   ACMS: maxRounds=90 + 跨 turn 去重 + 同 turn 静默 dedup + tool result 截断
+class IterationBudget {
+  constructor(maxTotal) {
+    this.maxTotal = maxTotal;
+    this._used = 0;
+  }
+  // 返回 true 表示还允许，false 表示用光
+  consume() {
+    if (this._used >= this.maxTotal) return false;
+    this._used += 1;
+    return true;
+  }
+  // 退一轮（Hermes 用法：execute_code 工具的迭代不占预算；ACMS 留接口，后续接 execute_code 工具时用）
+  refund() {
+    if (this._used > 0) this._used -= 1;
+  }
+  get used() { return this._used; }
+  get remaining() { return Math.max(0, this.maxTotal - this._used); }
+}
+
+// v0.33: 同 turn 静默去重（参考 Hermes _deduplicate_tool_calls:6078）
+//   LLM 经常同一 turn 调多次 read_file(path) — Hermes 静默去重，ACMS 之前跨轮警告治标
+//   这里去重"完全相同 (tool_name, args) JSON 字符串"的 call，只保留第一次
+function deduplicateToolCalls(toolCalls) {
+  if (!Array.isArray(toolCalls) || toolCalls.length < 2) return toolCalls;
+  const seen = new Set();
+  const unique = [];
+  let dropped = 0;
+  for (const tc of toolCalls) {
+    const name = tc.name || tc.function?.name || '';
+    const args = tc.args || (tc.function?.arguments ? safeParseJSON(tc.function.arguments) : null) || {};
+    const key = `${name}::${JSON.stringify(args)}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      unique.push(tc);
+    } else {
+      dropped += 1;
+    }
+  }
+  if (dropped > 0) console.warn(`[runToolLoop] v0.33 同 turn 去重: 删了 ${dropped} 个重复 tool_call`);
+  return unique;
+}
+
+function safeParseJSON(s) { try { return JSON.parse(s); } catch { return null; } }
+
+// v0.33: tool name 容错（参考 Hermes _repair_tool_call:6098）
+//   模型常拼错 `TodoTool_tool` / `Patch_tool` / `ReadFile` 这种 — 5 步自动修
+function repairToolName(name, validNames) {
+  if (!name || validNames.has(name)) return name;
+  // Step 1: lowercase 直接匹配
+  const lower = name.toLowerCase();
+  if (validNames.has(lower)) return lower;
+  // Step 2: 标准化分隔符
+  const norm = lower.replace(/[-\s]/g, '_');
+  if (validNames.has(norm)) return norm;
+  // Step 3: camelCase -> snake_case
+  const snake = name.replace(/(?<!^)(?=[A-Z])/g, '_').toLowerCase();
+  if (validNames.has(snake)) return snake;
+  // Step 4: 去 _tool / -tool / tool 后缀（最多 2 次，处理 TodoTool_tool）
+  let stripped = name;
+  for (let i = 0; i < 2; i++) {
+    const lc = stripped.toLowerCase();
+    let next = null;
+    for (const suffix of ['_tool', '-tool', 'tool']) {
+      if (lc.endsWith(suffix)) {
+        next = stripped.slice(0, -suffix.length).replace(/[_-]+$/, '');
+        break;
+      }
+    }
+    if (!next || next === stripped) break;
+    if (validNames.has(next)) return next;
+    if (validNames.has(next.toLowerCase())) return next.toLowerCase();
+    stripped = next;
+  }
+  // Step 5: 模糊匹配 — 阈值更宽松（Hermes difflib cutoff=0.7 ≈ 距离 ≤ 30%）
+  //   但短名（如 TodoTool 长度 8）容易误判，加 min 4 绝对阈值防止瞎配
+  let best = null;
+  let bestScore = Infinity;
+  for (const v of validNames) {
+    const score = levenshtein(lower, v.toLowerCase());
+    if (score < bestScore) { bestScore = score; best = v; }
+  }
+  // 阈值规则：score <= max(3, floor(name.length * 0.4))
+  //   TodoTool_tool(13 chars) -> todo_tool score 4: 4 <= max(3, 5) ✓ 修复
+  //   xyz_unknown(11) -> 任何 valid name score >= 7: 不修（不瞎配）
+  const threshold = Math.max(3, Math.floor(name.length * 0.4));
+  if (best !== null && bestScore <= threshold) return best;
+  return name; // 修不了，原样返回
+}
+
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  if (Math.abs(m - n) > 4) return 99;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
+    }
+  }
+  return dp[m][n];
+}
+
+// v0.33: tool result 截断（参考 Hermes enforce_turn_budget:181）
+//   防止 LLM 调一次 read_file 拿到 50KB 文件把 context 撑爆
+//   ACMS 没 sandbox fs 持久化机制，改成"超阈值截断 + 在 message 里标注"，后续轮 LLM 自己判断要不要 read 一次小窗口
+const TOOL_RESULT_TRUNCATE_BYTES = 12 * 1024; // 单条 tool result 12KB 阈值（Hermes 默认 4MB turn，ACMS agent 单 tool 12KB 够用）
+
+function truncateToolResult(name, result) {
+  const json = JSON.stringify(result);
+  if (json.length <= TOOL_RESULT_TRUNCATE_BYTES) return { result, truncated: false, origSize: json.length };
+  // 截断策略：保留前 8KB + 后 2KB + 标注
+  const head = json.slice(0, 8 * 1024);
+  const tail = json.slice(-2 * 1024);
+  const truncated = {
+    _truncated: true,
+    _origSize: json.length,
+    _truncatedAt: TOOL_RESULT_TRUNCATE_BYTES,
+    _hint: 'Output exceeded 12KB and was truncated. If you need a specific section, use read_file with a smaller window (offset/length) or grep for the exact pattern.',
+    head,
+    tail,
+  };
+  return { result: truncated, truncated: true, origSize: json.length };
+}
+
+// v0.33: stream stall detection（参考 Hermes run_agent.py:8330）
+//   模型 stream 中途中断时，partial_tool_names 列表里记录了"LLM 想调但没真跑"的 tool
+//   我们没法直接检测 partial_tool_names（那是 OpenAI stream 协议层），但可以检测 "LLM 返回 content 但没 tool_calls + content 里提了 'I will write'"
+function detectStreamStall(result, messages) {
+  if (!result || result.toolCalls?.length > 0) return null;
+  const content = (result.content || '').toLowerCase();
+  const stallPhrases = [
+    'i will write', 'i\'ll write', 'let me write', 'i will create', 'i will modify', 'i will update',
+    'now i will', 'next i will', 'will create', 'will write', 'will implement',
+  ];
+  const matched = stallPhrases.filter(p => content.includes(p));
+  if (matched.length > 0) {
+    return { phrases: matched, contentPreview: (result.content || '').slice(0, 200) };
+  }
+  return null;
+}
+
 async function runToolLoop(modelId, messages, options = {}) {
   const maxRounds = options.maxRounds ?? 10;
   const toolNames = options.toolNames;
   const context = options.context || {};  // v0.20：透传给 tool handler（music/video/image_gen 需要 reqId）
+  const progressCallback = options.onProgress;  // v0.35：每轮进度回调
   const model = modelStore.getById(modelId);
   if (!model) throw Object.assign(new Error('模型不存在'), { status: 404 });
   const api = model.api || 'openai-chat';
@@ -391,26 +554,102 @@ async function runToolLoop(modelId, messages, options = {}) {
   // v0.29 fix: Context 压缩 — Hermes-style 防止 LLM 长对话失忆 goal
   //   当 messages 超过阈值（默认 30），summarize 旧 messages，保留 system + 最近 12 条
   //   根因：T-MRDO0ECU 重跑 Round 12 时 messages 已 37 条，goal 在 messages[1] 已被推到 attention 边缘
+  // v0.45: 改用 LLM 摘要（保留语义信息）而非纯规则截断
   const COMPRESS_THRESHOLD = 30;
   const KEEP_RECENT = 12;
-  if (messages.length > COMPRESS_THRESHOLD) {
+  let _compressed = false;
+
+  // v0.45: LLM-based context compression
+  async function compressMessages(messages, maxRounds, round) {
+    if (_compressed) return;
+    _compressed = true;
+
     const systemMsg = messages[0];
+    const msgsToCompress = messages.slice(1, -KEEP_RECENT);
     const recentMsgs = messages.slice(-KEEP_RECENT);
-    const droppedCount = messages.length - 1 - KEEP_RECENT;
-    const droppedToolSummary = toolCallHistory.slice(0, toolCallHistory.length - KEEP_RECENT / 2).map(h => `${h.tool}(${(h.args||'').slice(0, 60)})`).join(', ');
-    const summaryText = `[Earlier ${droppedCount} messages compressed: agent explored workspace and made tool calls: ${droppedToolSummary || 'exploration + verification'}. Goal context remains in system prompt above.]`;
-    const compressed = [systemMsg, { role: 'user', content: summaryText }, ...recentMsgs];
-    console.log(`[runToolLoop] v0.29 context compression: ${messages.length} → ${compressed.length} messages (kept system + last ${KEEP_RECENT})`);
-    messages.length = 0;
-    messages.push(...compressed);
+    const droppedCount = msgsToCompress.length;
+
+    if (droppedCount === 0) return;
+
+    // 构建压缩提示：让 LLM 总结被丢弃的 messages
+    const compressPrompt = [
+      { role: 'system', content: 'You are a context summarizer. Summarize the following conversation messages in 3-5 sentences. Focus on: what the agent did, what files were created/modified, what decisions were made. Do NOT include tool call details — only the outcomes.' },
+      { role: 'user', content: msgsToCompress.map(m => {
+        if (m.role === 'tool_result') return `Tool result for ${m.name || m.tool_call_id}: ${typeof m.content === 'string' ? m.content.slice(0, 500) : JSON.stringify(m.content).slice(0, 500)}`;
+        return `${m.role}: ${typeof m.content === 'string' ? m.content.slice(0, 500) : JSON.stringify(m.content).slice(0, 500)}`;
+      }).join('\n---\n') },
+    ];
+
+    try {
+      // 用同一个 model 做摘要调用（不占 tool loop）
+      const summaryResult = await callLLMWithTools(modelId, compressPrompt, {
+        toolNames: [],
+        maxTokens: 500,
+      });
+      const summaryText = summaryResult.content || `[Earlier ${droppedCount} messages compressed: agent explored workspace and made tool calls. Goal context remains in system prompt above.]`;
+      const compressed = [systemMsg, { role: 'user', content: summaryText }, ...recentMsgs];
+      messages.length = 0;
+      messages.push(...compressed);
+      console.log(`[runToolLoop] v0.45 context compression: ${messages.length + droppedCount} → ${compressed.length} messages (kept system + last ${KEEP_RECENT} + LLM summary)`);
+    } catch (e) {
+      // 摘要失败则降级为规则压缩
+      const droppedToolSummary = toolCallHistory.slice(0, toolCallHistory.length - KEEP_RECENT / 2).map(h => `${h.tool}(${(h.args||'').slice(0, 60)})`).join(', ');
+      const summaryText = `[Earlier ${droppedCount} messages compressed: agent explored workspace and made tool calls: ${droppedToolSummary || 'exploration + verification'}. Goal context remains in system prompt above.]`;
+      const compressed = [systemMsg, { role: 'user', content: summaryText }, ...recentMsgs];
+      messages.length = 0;
+      messages.push(...compressed);
+      console.log(`[runToolLoop] v0.45 context compression (fallback): ${messages.length + droppedCount} → ${compressed.length} messages`);
+    }
   }
 
   for (let round = 0; round < maxRounds; round++) {
     console.log(`[runToolLoop] round=${round + 1}/${maxRounds} | messages=${messages.length} | taskId=${context.taskId || '?'}`);
-    // v0.31 fix: Diagnostic mode — 每个 LLM 调用前 dump 完整 messages + 调用后 dump response
+
+    // v0.45: 执行中途 steer 检查 — 如果 progress_note 中有新的 steer message，注入到 messages
+    if (context.taskId && progressCallback) {
+      try {
+        const { collection } = require('../../db/connection');
+        const task = collection('tasks').findOne(t => t.id === context.taskId);
+        if (task && task.progress_note) {
+          const steerMatch = task.progress_note.match(/--- PM Steer ---\n([\s\S]*?)(?:\n--- PM Steer ---|$)/);
+          if (steerMatch && steerMatch[1] && steerMatch[1].trim()) {
+            const steerMsg = steerMatch[1].trim();
+            // 检查是否已经注入过（避免重复注入）
+            const alreadyInjected = messages.some(m => m.content && m.content.includes(steerMsg.slice(0, 50)));
+            if (!alreadyInjected) {
+              messages.push({
+                role: 'user',
+                content: `# PM Direction\n\n${steerMsg}\n\nPlease incorporate this direction into your current work.`,
+              });
+              console.log(`[runToolLoop] v0.45 PM steer injected for task ${context.taskId}: ${steerMsg.slice(0, 100)}...`);
+            }
+          }
+        }
+      } catch (e) { /* steer check failed, continue */ }
+    }
+
+    // v0.45: 上下文压缩 — 超过阈值时 LLM 摘要旧 messages
+    if (messages.length > COMPRESS_THRESHOLD && !_compressed) {
+      await compressMessages(messages, maxRounds, round);
+    }
+
+    // v0.44.4: 去掉 L576 的"模型思考中..."推送——它总是在每轮最后覆盖 tool call entry
+    //   因为下一轮 L576 push 的时间戳 > 上一轮 L616 push 的时间戳
+    //   SSE 推 lastEntry，永远看到"模型思考中..."而不是 tool call
+    //   修法：不推了，只保留 tool call 的 log entry
+// v0.31 fix: Diagnostic mode — 每个 LLM 调用前 dump 完整 messages + 调用后 dump response
     //   让多多能看到"发给 LLM 啥 + LLM 返回啥"，找到装睡根因
     const sysContent = messages[0]?.content || '';
-    console.log(`[runToolLoop] LLM_CALL#${round + 1} system_prompt_len=${sysContent.length} system_preview="${sysContent.slice(0, 300).replace(/\n/g, ' ')}..."`);
+    const remainingRounds = maxRounds - round;
+    // v0.45: 把剩余轮次注入到 messages，让 LLM 知道紧迫感（避免到第 80 轮还在试探）
+    if (round >= 3 && round % 5 === 0) {
+      // 每 5 轮注入一次预算提醒
+      messages.push({
+        role: 'user',
+        content: `[Budget Alert] ${remainingRounds} rounds remaining of ${maxRounds}. If you're stuck in a loop (e.g. repeatedly reading the same file or executing similar commands), break the loop NOW: switch to agent_write_file or agent_patch_file with a complete solution. Do not over-explore.`
+      });
+    }
+    console.log(`[runToolLoop] LLM_CALL#${round + 1}/${maxRounds} (剩余 ${remainingRounds}) system_prompt_len=${sysContent.length} system_preview="${sysContent.slice(0, 300).replace(/\n/g, ' ')}..."`);
     if (sysContent.length > 300) console.log(`[runToolLoop] LLM_CALL#${round + 1} system_tail="${sysContent.slice(-300).replace(/\n/g, ' ')}"`);
     console.log(`[runToolLoop] LLM_CALL#${round + 1} messages_count=${messages.length}`);
     // dump 最近 5 条 messages（每条前 250 字符）— v0.31.1 容错 content 为 null/undefined
@@ -428,13 +667,44 @@ async function runToolLoop(modelId, messages, options = {}) {
     console.log(`[runToolLoop] LLM_RESP#${round + 1} content="${content.slice(0, 600).replace(/\n/g, ' | ')}"`);
     if (content.length > 600) console.log(`[runToolLoop] LLM_RESP#${round + 1} content_tail="${content.slice(-300).replace(/\n/g, ' | ')}"`);
     if (result.toolCalls) {
+      // v0.33 C 方案: 同 turn 静默去重（治根因 — LLM 经常同 turn 调多次 read_file 浪费预算）
+      //   参考 Hermes _deduplicate_tool_calls:6078
+      const beforeDedup = result.toolCalls.length;
+      result.toolCalls = deduplicateToolCalls(result.toolCalls);
+      if (result.toolCalls.length < beforeDedup) {
+        console.log(`[runToolLoop] v0.33 dedup: ${beforeDedup} → ${result.toolCalls.length} tool_calls`);
+      }
       for (const tc of result.toolCalls) {
         const argsStr = JSON.stringify(tc.args || {}).slice(0, 400);
         console.log(`[runToolLoop] LLM_RESP#${round + 1} tool_call name=${tc.name} id=${tc.id} args="${argsStr}"`);
+        // v0.44.3: 在 LLM 返回 tool_calls 后立即写一条 log（在 tool handler 执行前）
+        //   因为 saveProgress L576 推的"模型思考中..."总是排在 tool call entry 后面
+        //   但 SSE 只推 lastEntry，导致前端永远看不到 tool call
+        //   修法：先推 tool call entry，再推"模型思考中..."，确保 tool call 在数组末尾
+        if (progressCallback && toolRegistry) {
+          const toolDesc = getToolDisplayName(tc.name);
+          const toolArgsPreview = argsStr.slice(0, 200);
+          // v0.46: 把 LLM 的分析思考也写进 log，让 PM 能看到 agent 的思路
+          const thought = (result.content || '').trim();
+          const thoughtPreview = thought ? '💡 ' + thought.slice(0, 300).replace(/\n/g, ' ') + '\n' : '';
+          progressCallback(round + 1, maxRounds, thoughtPreview + `调用工具: ${toolDesc} (${toolArgsPreview})`, [tc.name]);
+        }
       }
     }
     if (result.usage) console.log(`[runToolLoop] LLM_RESP#${round + 1} usage=${JSON.stringify(result.usage)}`);
     if (!result.toolCalls?.length) {
+      // v0.33 C 方案: stream stall detection（参考 Hermes run_agent.py:8330）
+      //   LLM 返回 content 但没 tool_calls + content 提到"i will write" → 装睡信号
+      //   比装睡检测更前置：装睡检测需要 LLM 调 tool，stall detection 是"连 tool 都不调但嘴上说会调"
+      const stall = detectStreamStall(result, messages);
+      if (stall) {
+        console.warn(`[runToolLoop] v0.33 STALL detected round=${round + 1}: phrases=${stall.phrases.join(',')} preview="${stall.contentPreview}"`);
+        messages.push({
+          role: 'user',
+          content: `[系统检测到你嘴上说 "${stall.phrases[0]}" 但没真调 tool。请立即调对应 tool 实际执行（不要继续描述意图）。如果还剩 ${maxRounds - round - 1} 轮，请专注。]`,
+        });
+        continue;
+      }
       // v0.30 fix: 装睡检测 — user 语气 + 二选一选项（Hermes-style user-driven steer）
       //   根因：v0.29 STEER 注入 goal 段但 LLM 当 system warning 看，4 轮装睡都不醒悟
       //   改成 user 主动观察语气 + 强制 A/B 选择 + 现实威胁（user 接手）
@@ -468,6 +738,10 @@ Round ${round + 1}/${maxRounds}。
       }
       console.log(`[runToolLoop] round=${round + 1} LLM 返回最终答案 (no tool calls), content=${(result.content || '').length} chars`);
       if (toolCallHistory.length > 0) console.log(`[runToolLoop] 完整 tool call history:\n${toolCallHistory.map(h => `  r${h.round} ${h.tool}(${(h.args||'').slice(0, 100)})`).join('\n')}`);
+      // v0.35: 最终答案回调
+      if (progressCallback) {
+        progressCallback(round + 1, maxRounds, '正在生成任务总结...', toolCallHistory.map(h => h.tool).slice(-3));
+      }
       return result.content || '';
     }
 
@@ -488,6 +762,33 @@ Round ${round + 1}/${maxRounds}。
       console.log(`[runToolLoop]   call: ${tc.name}(${argsPreview})`);
 
       if (!tool) {
+        // v0.33 C 方案: tool name 容错（参考 Hermes _repair_tool_call:6098）
+        //   模型拼写错误（TodoTool_tool / Patch_tool / ReadFile）→ 5 步自动修
+        const allTools = toolRegistry.listTools ? toolRegistry.listTools() : [];
+        const validNames = new Set(allTools);
+        const repaired = repairToolName(tc.name, validNames);
+        if (repaired !== tc.name && validNames.has(repaired)) {
+          const repairedTool = toolRegistry.getTool(repaired);
+          if (repairedTool) {
+            console.log(`[runToolLoop] v0.33 tool name repair: "${tc.name}" → "${repaired}"`);
+            toolCallHistory.push({ round: round + 1, tool: repaired, args: argsPreview, result: 'REPAIRED_NAME' });
+            // 修复成功，按正常 tool 处理
+            try {
+              // 递归调用逻辑：但简单起见直接在这里执行一次
+              const toolResult = await repairedTool.handler(tc.args, context);
+              const truncatedResult = truncateToolResult(repaired, toolResult);
+              if (truncatedResult.truncated) {
+                console.log(`[runToolLoop] v0.33 truncated ${repaired} result: ${truncatedResult.origSize} → ${TOOL_RESULT_TRUNCATE_BYTES} bytes`);
+              }
+              toolCallHistory[toolCallHistory.length - 1].resultPreview = JSON.stringify(truncatedResult.result).slice(0, 300);
+              messages.push(toolRegistry.makeToolResult(api, tc.id, truncatedResult.result));
+            } catch (e) {
+              toolCallHistory[toolCallHistory.length - 1].error = e.message;
+              messages.push(toolRegistry.makeToolResult(api, tc.id, { error: e.message }));
+            }
+            continue;
+          }
+        }
         console.log(`[runToolLoop]   -> 未知工具: ${tc.name}`);
         toolCallHistory.push({ round: round + 1, tool: tc.name, args: argsPreview, result: 'UNKNOWN_TOOL' });
         messages.push(toolRegistry.makeToolResult(api, tc.id, { error: `未知工具: ${tc.name}` }));
@@ -515,9 +816,15 @@ Round ${round + 1}/${maxRounds}。
         // v0.20：handler 接 (args, context) — context 用于传 reqId 等
         const toolResult = await tool.handler(tc.args, context);
         const resultPreview = JSON.stringify(toolResult).slice(0, 300);
+        // v0.33 C 方案: 截断超长 tool result（参考 Hermes enforce_turn_budget:181）
+        //   防止 LLM 调一次 read_file 拿到 50KB 文件把 context 撑爆
+        const truncated = truncateToolResult(tc.name, toolResult);
+        if (truncated.truncated) {
+          console.log(`[runToolLoop] v0.33 truncated ${tc.name} result: ${truncated.origSize} → ${TOOL_RESULT_TRUNCATE_BYTES} bytes`);
+        }
         console.log(`[runToolLoop]   -> result (${resultPreview.length} chars): ${resultPreview}`);
         toolCallHistory.push({ round: round + 1, tool: tc.name, args: argsPreview, resultPreview });
-        messages.push(toolRegistry.makeToolResult(api, tc.id, toolResult));
+        messages.push(toolRegistry.makeToolResult(api, tc.id, truncated.result));
       } catch (e) {
         console.log(`[runToolLoop]   -> ERROR: ${e.message}`);
         toolCallHistory.push({ round: round + 1, tool: tc.name, args: argsPreview, error: e.message });

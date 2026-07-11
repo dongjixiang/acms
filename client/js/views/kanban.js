@@ -453,20 +453,55 @@ function initKanbanDragDrop() {
   });
 }
 
-// v0.42: 共享的日志条目格式化 — 从 note 提取工具名给图标
-//   之前详情页 log 区域只显示 "[时间] round_5/90: note"，没有图标区分
-//   现在根据 note 里的 [agent_xxx] tag 给对应小图标，hover tooltip 和详情页共用
+// v0.44: 共享的日志条目格式化 — 从 action 提 round，从 note 提 tool 名 + 参数
+//   v0.42 版只显示 [轮次]/[读] 等 prefix + emoji，round 数字和具体参数都丢了
+//   新格式：17:50:56 R20/90 📖 读: {"path":"src/core/GameState.js"}
+//   - 从 action "round_20/90" 提 "R20/90"
+//   - 从 note "调用工具: 读取文件 (args)" 提 desc + args
+//   - 去掉末尾冗余的 [agent_xxx] tag（prefix 已经用 emoji 表达了）
+const TOOL_META = {
+  agent_read_file:    { icon: '📖', label: '读' },
+  agent_write_file:   { icon: '✏️', label: '写' },
+  agent_exec_command: { icon: '⚙️', label: '执行' },
+  agent_list_files:   { icon: '🔍', label: '列表' },
+  agent_search_files: { icon: '🔎', label: '搜索' },
+};
 function formatLogEntry(entry) {
   const time = new Date(entry.time).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const action = entry.action || '';
   const note = entry.note || '';
-  let icon = '🔄', prefix = '[轮次]';
-  if (note.includes('[agent_read_file]'))    { icon = '📖'; prefix = '[读]'; }
-  else if (note.includes('[agent_write_file]'))   { icon = '✏️'; prefix = '[写]'; }
-  else if (note.includes('[agent_exec_command]')) { icon = '⚙️'; prefix = '[执行]'; }
-  else if (note.includes('[agent_list_files]'))   { icon = '🔍'; prefix = '[列表]'; }
-  else if (note.includes('[agent_search_files]')) { icon = '🔎'; prefix = '[搜索]'; }
-  else if (entry.action && entry.action.startsWith('round_')) { icon = '🔄'; prefix = '[轮次]'; }
-  return `${time} ${prefix} ${icon} ${escHtml(note)}`;
+  // 提取 round 数字：round_20/90 → R20/90
+  const roundMatch = action.match(/^round_(\d+)\/(\d+)$/);
+  const round = roundMatch ? `R${roundMatch[1]}/${roundMatch[2]}` : '';
+  // v0.46: 检测 LLM 分析思考（💡 开头）
+  const thoughtMatch = note.match(/^💡 (.+)/);
+  if (thoughtMatch) {
+    const thought = thoughtMatch[1];
+    // 如果还有工具调用信息，换行显示
+    const toolLine = note.match(/\n调用工具:.+/);
+    if (toolLine) {
+      return `${time}  ${round.padEnd(7)} 💭 ${thought.slice(0, 200)}\n${time}  ${round.padEnd(7)} ${toolLine[0].replace('调用工具:', '⚙️ 调用:')}`;
+    }
+    return `${time}  ${round.padEnd(7)} 💭 ${thought.slice(0, 200)}`;
+  }
+  // 提取 [agent_xxx] tag（取最后一个，最新调用的 tool）
+  const toolTags = note.match(/\[agent_\w+\]/g) || [];
+  const lastTool = toolTags.length > 0 ? toolTags[toolTags.length - 1].slice(1, -1) : null;
+  // 清理 note：去掉末尾 [agent_xxx, agent_yyy] tag 块（任意内容直到末尾 ]）
+  const cleanNote = note.replace(/\s*\[[^\]]*\]$/g, '').trim();
+  // 决定显示
+  if (lastTool && TOOL_META[lastTool]) {
+    // 工具调用行：提取 (args) 部分
+    const argsMatch = cleanNote.match(/调用工具: [^(]+\((.+)\)$/);
+    const argsStr = argsMatch ? argsMatch[1].slice(0, 100) : '';
+    return `${time}  ${round.padEnd(7)} ${TOOL_META[lastTool].icon} ${TOOL_META[lastTool].label}: ${argsStr}`;
+  } else if (lastTool) {
+    // 未知 tool 名（fallback）
+    return `${time}  ${round.padEnd(7)} 🔧 ${lastTool}: ${cleanNote}`;
+  } else {
+    // 轮次开始/总结（无 tool 调用）
+    return `${time}  ${round.padEnd(7)} 🔄 ${cleanNote}`;
+  }
 }
 
 // v0.35: SSE 进度查看器 — 在任务详情面板中显示实时执行进度

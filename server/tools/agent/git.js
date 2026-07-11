@@ -1,0 +1,187 @@
+// ACMS 内建工具 — Agent Git 工具
+// 让 agent 能在 workspace 里执行 git 操作：commit、diff、status、log、branch
+const { registerTool } = require('../../services/tool-registry');
+
+registerTool({
+  name: 'agent_git_status',
+  description: 'Show the working tree status — which files are modified, staged, or untracked. Returns git status output.',
+  parameters: {
+    type: 'object',
+    properties: {
+      cwd: { type: 'string', description: 'Working directory relative to workspace root (optional, defaults to workspace root)' },
+    },
+    required: [],
+  },
+  async handler(args, ctx = {}) {
+    const { projectId } = ctx;
+    if (!projectId) return { error: 'NO_PROJECT_ID' };
+    const projectStore = require('../../stores/project-store');
+    const project = projectStore.getById(projectId);
+    if (!project) return { error: 'PROJECT_NOT_FOUND' };
+    const slug = project.slug || project.name;
+    const workspace = require('../../services/workspace-service');
+    const result = await workspace.exec(slug, {
+      cmd: 'git status --porcelain',
+      cwd: args.cwd || '',
+      timeout: 10000,
+    });
+    return {
+      ok: result.exitCode === 0,
+      output: (result.stdout || '').slice(0, 5000),
+      error: (result.stderr || '').slice(0, 1000),
+    };
+  },
+});
+
+registerTool({
+  name: 'agent_git_diff',
+  description: 'Show changes between working tree and last commit, or between commits. Use to review what was modified before committing.',
+  parameters: {
+    type: 'object',
+    properties: {
+      staged: { type: 'boolean', description: 'If true, show staged changes (git diff --cached). If false (default), show unstaged changes.', default: false },
+      file: { type: 'string', description: 'Optional: show diff for a specific file path (relative to workspace root).' },
+    },
+    required: [],
+  },
+  async handler(args, ctx = {}) {
+    const { projectId } = ctx;
+    if (!projectId) return { error: 'NO_PROJECT_ID' };
+    const projectStore = require('../../stores/project-store');
+    const project = projectStore.getById(projectId);
+    if (!project) return { error: 'PROJECT_NOT_FOUND' };
+    const slug = project.slug || project.name;
+    const workspace = require('../../services/workspace-service');
+    let cmd = 'git diff';
+    if (args.staged) cmd = 'git diff --cached';
+    if (args.file) cmd += ' -- ' + args.file;
+    const result = await workspace.exec(slug, {
+      cmd,
+      cwd: args.cwd || '',
+      timeout: 10000,
+    });
+    return {
+      ok: result.exitCode === 0,
+      output: (result.stdout || '').slice(0, 10000),
+      error: (result.stderr || '').slice(0, 1000),
+    };
+  },
+});
+
+registerTool({
+  name: 'agent_git_commit',
+  description: 'Stage all modified files and create a commit with the given message. Returns commit hash and summary.',
+  parameters: {
+    type: 'object',
+    properties: {
+      message: { type: 'string', description: 'Commit message (required). Use descriptive messages like "Fix: add renderGrid call in game.js".' },
+      files: { type: 'array', items: { type: 'string' }, description: 'Optional: specific files to stage. If empty, stages all modified files.' },
+    },
+    required: ['message'],
+  },
+  async handler(args, ctx = {}) {
+    const { projectId } = ctx;
+    if (!projectId) return { error: 'NO_PROJECT_ID' };
+    const projectStore = require('../../stores/project-store');
+    const project = projectStore.getById(projectId);
+    if (!project) return { error: 'PROJECT_NOT_FOUND' };
+    const slug = project.slug || project.name;
+    const workspace = require('../../services/workspace-service');
+    const lines = [];
+    if (args.files && args.files.length > 0) {
+      for (const f of args.files) {
+        const r = await workspace.exec(slug, { cmd: 'git add ' + f, timeout: 5000 });
+        lines.push('git add: exit=' + r.exitCode);
+      }
+    } else {
+      const r = await workspace.exec(slug, { cmd: 'git add -A', timeout: 5000 });
+      lines.push('git add -A: exit=' + r.exitCode);
+    }
+    const msg = (args.message || '').replace(/'/g, "\\'");
+    const commitResult = await workspace.exec(slug, {
+      cmd: 'git commit -m \'' + msg + '\'',
+      timeout: 10000,
+    });
+    lines.push('git commit: exit=' + commitResult.exitCode);
+    lines.push('output: ' + (commitResult.stdout || '').slice(0, 500));
+    if (commitResult.stderr) lines.push('stderr: ' + commitResult.stderr.slice(0, 500));
+    return {
+      ok: commitResult.exitCode === 0,
+      steps: lines.join('\n'),
+    };
+  },
+});
+
+registerTool({
+  name: 'agent_git_log',
+  description: 'Show commit log. Use to understand recent changes and find commit hashes.',
+  parameters: {
+    type: 'object',
+    properties: {
+      limit: { type: 'integer', description: 'Number of commits to show (default: 10).', default: 10 },
+      file: { type: 'string', description: 'Optional: show log for a specific file.' },
+    },
+    required: [],
+  },
+  async handler(args, ctx = {}) {
+    const { projectId } = ctx;
+    if (!projectId) return { error: 'NO_PROJECT_ID' };
+    const projectStore = require('../../stores/project-store');
+    const project = projectStore.getById(projectId);
+    if (!project) return { error: 'PROJECT_NOT_FOUND' };
+    const slug = project.slug || project.name;
+    const workspace = require('../../services/workspace-service');
+    let cmd = 'git log --oneline -' + (args.limit || 10);
+    if (args.file) cmd += ' -- ' + args.file;
+    const result = await workspace.exec(slug, {
+      cmd,
+      timeout: 10000,
+    });
+    return {
+      ok: result.exitCode === 0,
+      output: (result.stdout || '').slice(0, 5000),
+    };
+  },
+});
+
+registerTool({
+  name: 'agent_git_branch',
+  description: 'List branches or create a new branch. Use before making changes to isolate your work.',
+  parameters: {
+    type: 'object',
+    properties: {
+      action: { type: 'string', enum: ['list', 'create'], description: 'Action to perform.', default: 'list' },
+      name: { type: 'string', description: 'Branch name (required when action=create). Format: feature/xxx or fix/xxx.' },
+    },
+    required: [],
+  },
+  async handler(args, ctx = {}) {
+    const { projectId } = ctx;
+    if (!projectId) return { error: 'NO_PROJECT_ID' };
+    const projectStore = require('../../stores/project-store');
+    const project = projectStore.getById(projectId);
+    if (!project) return { error: 'PROJECT_NOT_FOUND' };
+    const slug = project.slug || project.name;
+    const workspace = require('../../services/workspace-service');
+    if (args.action === 'create') {
+      const result = await workspace.exec(slug, {
+        cmd: 'git checkout -b ' + args.name,
+        timeout: 10000,
+      });
+      return {
+        ok: result.exitCode === 0,
+        output: (result.stdout || result.stderr || '').slice(0, 500),
+      };
+    }
+    const result = await workspace.exec(slug, {
+      cmd: 'git branch',
+      timeout: 10000,
+    });
+    return {
+      ok: result.exitCode === 0,
+      output: (result.stdout || '').slice(0, 5000),
+    };
+  },
+});
+
+console.log('[tools] Git 工具注册完成: agent_git_status, agent_git_diff, agent_git_commit, agent_git_log, agent_git_branch');
