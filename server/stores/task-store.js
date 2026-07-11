@@ -98,6 +98,16 @@ class TaskStore {
     if (targetStatus === 'in_progress' && actor.id) { updates.assigned_to = actor.id; updates.assigned_at = now; }
     if (targetStatus === 'done') updates.completed_at = now;
     if (targetStatus === 'backlog') { updates.assigned_to = ''; updates.assigned_at = ''; }
+    // v0.37 fix: 离开 in_progress 时清零 progress/progress_note/execution_log
+    //   之前 in_progress → review / backlog / failed / frozen 都残留 progress=8%，前端 tooltip 看着像"还在跑"
+    //   review → in_progress (驳回重做) 不触发此分支，因为 task.status 此时是 review
+    //   claim() backlog → in_progress 也走另一条路且 progress 本就 0（transition 已清）
+    if (task.status === 'in_progress' && targetStatus !== 'in_progress') {
+      updates.progress = 0;
+      updates.progress_note = '';
+      updates.execution_log = '[]';
+      updates.last_progress_update = '';
+    }
     const result = collection('tasks').update(t => t.id === id, updates);
 
     // 任务完成 → 自动解阻塞依赖它的任务
