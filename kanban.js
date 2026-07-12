@@ -666,7 +666,7 @@ function startProgressViewer(taskId, startedAt) {
         <span class="phase-seg" data-phase="fix" style="flex:1;text-align:center;padding:4px;border-radius:3px;background:rgba(245,158,11,0.15);color:#f59e0b">🔧 修复</span>
       </div>
       <div style="font-size:10px;color:var(--text2);margin-top:8px;margin-bottom:4px">📋 执行操作详情</div>
-      <div class="progress-log" style="max-height:280px;overflow-y:auto;font-size:11px;color:#e0e0e0;background:rgba(0,0,0,0.55);padding:8px 10px;border-radius:4px;font-family:'Courier New',monospace;line-height:1.6;border:1px solid rgba(255,255,255,0.08)"><div class="progress-log-empty" style="color:#888;font-style:italic">等待 agent 输出...</div></div>
+      <div class="progress-log" style="max-height:280px;overflow-y:auto;font-size:10px;color:var(--text2);padding:6px 8px;background:rgba(0,0,0,0.2);border-radius:4px;font-family:'Courier New',monospace;line-height:1.5"><div class="progress-log-empty" style="color:#666;font-style:italic">等待 agent 输出...</div></div>
     </div>
   `;
   

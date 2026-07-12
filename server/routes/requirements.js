@@ -297,16 +297,7 @@ router.post('/:id/approve', async (req, res, next) => {
 });
 
 router.post('/:id/reject', async (req, res, next) => {
-  // P0 v0.X: 驳回必填理由（min 10 字）— 对齐 task review 的策略，避免空 reason 进 DB
-  const reason = (req.body.reason || '').trim();
-  if (reason.length < 10) {
-    return res.status(400).json({
-      error: 'REJECT_REASON_REQUIRED',
-      message: '驳回理由至少 10 字，给 AI 明确方向',
-      minLength: 10,
-    });
-  }
-  try { res.json(await reqService.reject(req.params.id, reason)); } catch (e) { next(e); }
+  try { res.json(await reqService.reject(req.params.id, req.body.reason)); } catch (e) { next(e); }
 });
 
 // 分解（使用 service）
