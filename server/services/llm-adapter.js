@@ -471,6 +471,7 @@ function repairToolName(name, validNames) {
   let best = null;
   let bestScore = Infinity;
   for (const v of validNames) {
+    if (typeof v !== 'string') continue;  // 防非字符串 crash
     const score = levenshtein(lower, v.toLowerCase());
     if (score < bestScore) { bestScore = score; best = v; }
   }
@@ -581,12 +582,14 @@ async function runToolLoop(modelId, messages, options = {}) {
         writeTrace(traceFile, 'init', 0, { modelId, maxRounds, toolNames, taskId: context.taskId });
       }
     } catch (e) { /* trace init failed */ }
+  }
 
   // v0.20 bugfix：检测 LLM 连续两轮调同一 tool + 相同 args → 强制退出（避免无限循环）
   // v0.20 bugfix：检测 LLM 连续两轮调同一 tool + 相同 args → 强制退出（避免无限循环）
   //   旧 bug：LLM 调 play_music(song="X") → handler 返回 ok → LLM 再调确认 → 再返回 ok → 死循环
   //   修复：连续两轮同 tool+args 直接返回最后一次 content（不抛错），避免 LLM 死循环
   let lastToolCallKey = null;
+  let lastWriteRound = -1;  // v0.X: 写后空转检测 — 上次成功 write_file/patch_file 的轮次
 
   // v0.25 debug: 记录每轮 LLM 调了啥 + tool 结果，方便 PM 查 tool loop 卡死根因
   const toolCallHistory = [];
@@ -644,6 +647,37 @@ async function runToolLoop(modelId, messages, options = {}) {
 
   for (let round = 0; round < maxRounds; round++) {
     console.log(`[runToolLoop] round=${round + 1}/${maxRounds} | messages=${messages.length} | taskId=${context.taskId || '?'}`);
+
+    // v0.X: 写后空转检测 — 检测 patch_file/write_file 成功后连续 ≥3 轮无新写操作
+    //   治 T-MRH7H9GA 现象：agent 在 R20 写完 3 个补丁，R21-47 全在 verify/空转
+    //   inject user message 比 system prompt 规则有效（LLM 更听 user role 消息）
+    if (typeof lastWriteRound === 'number' && lastWriteRound >= 0 && round - lastWriteRound >= 3 && round >= 6) {
+      const idleRounds = round - lastWriteRound;
+      const hasRecentWrite = toolCallHistory.slice(-3).some(h => 
+        h.tool === 'agent_write_file' || h.tool === 'agent_patch_file' || h.tool === 'agent_multi_patch'
+      );
+      if (!hasRecentWrite) {
+        const fixSummary = toolCallHistory
+          .filter(h => h.tool === 'agent_patch_file' || h.tool === 'agent_write_file')
+          .map(h => `  r${h.round} ${h.tool}(${(h.args||'').slice(0, 60)}) → ${(h.resultPreview||'').slice(0, 60)}`)
+          .join('\n');
+        console.warn(`[runToolLoop] ⛔ 写后空转检测: 上次写操作在 R${lastWriteRound + 1}, 已空转 ${idleRounds} 轮. 注入 user steer.`);
+        messages.push({
+          role: 'user',
+          content: `### ⚠️ 系统检测到你在空转\n\n你已经连续 ${idleRounds} 轮（R${lastWriteRound + 1} → R${round + 1}）没有写任何新文件或补丁。你之前的补丁都已经成功（syntax OK）。\n\n**立即结束任务并提交**，不要再验证/重读/检查 git 状态。\n\n之前完成的补丁：\n${fixSummary}\n\n回复 "DONE" 并产生最终总结。如果再空转 2 轮，系统将自动提交当前改动。`,
+        });
+      }
+    }
+
+    // v0.X: 只读超时 — 前 N 轮没写过任何文件时强制 steer（治 T-MRGDBST1 33 次读 0 次写的纯探索死循环）
+    if (lastWriteRound < 0 && round >= 6 && round % 3 === 0) {
+      console.warn(`[runToolLoop] ⛔ 只读超时检测: 已 ${round + 1} 轮未写任何文件. 注入 user steer.`);
+      const readTools = toolCallHistory.filter(h => h.tool.startsWith('agent_read_') || h.tool === 'agent_list_files' || h.tool === 'agent_search_files');
+      messages.push({
+        role: 'user',
+        content: `### ⚠️ 系统检测到你只读不写\n\n你已经读了 ${readTools.length} 个文件/目录，但还没写任何代码。\n\n**立即停止探索，开始写代码。**\n\n你现在应该已经充分理解了项目结构。接下来必须调用 \`agent_write_file\` 或 \`agent_patch_file\` 来实际完成任务。\n\n如果再读 3 轮还不写，这个 task 将被标记为 failed。`,
+      });
+    }
 
     // v0.45: 执行中途 steer 检查 — 如果 progress_note 中有新的 steer message，注入到 messages
     if (context.taskId && progressCallback) {
@@ -897,6 +931,10 @@ Round ${round + 1}/${maxRounds}。
           console.log(`[runToolLoop] v0.33 truncated ${tc.name} result: ${truncated.origSize} → ${TOOL_RESULT_TRUNCATE_BYTES} bytes`);
         }
         console.log(`[runToolLoop]   -> result (${resultPreview.length} chars): ${resultPreview}`);
+        // v0.X: 写后空转检测 — 记录最后成功 write_file/patch_file 的轮次
+        if (['agent_write_file', 'agent_patch_file', 'agent_multi_patch'].includes(tc.name) && toolResult && toolResult.ok) {
+          lastWriteRound = round;
+        }
         // v0.X: Trace — 记录工具的完整 args + result
         writeTrace(traceFile, 'tool_result', round + 1, {
           name: tc.name,

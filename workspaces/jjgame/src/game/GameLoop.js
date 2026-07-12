@@ -112,6 +112,8 @@
       // 交换操作的 grid:changed 由 GameLoop 手动控制重绘时机，
       // 避免与交换动画冲突。
       this._subscribe('grid:changed', (gridData) => {
+        // 如果 grid 变化被禁用（例如在连锁消除流程中手动控制），跳过自动重绘
+        if (this._gridChangeDisabled) return;
         // 如果是交换操作触发的（isSwap 标记），跳过自动重绘
         // 让 _executeSwapAndEliminate 在动画完成后手动控制渲染
         if (gridData && gridData._isSwapChange) return;
@@ -202,7 +204,7 @@
     }
 
     /**
-     * 运行连锁消除流程
+     * 运行连锁消除流程（含完整动画）
      * @private
      */
     async _runChainElimination() {
@@ -227,63 +229,153 @@
         // 提取被消除的格子
         const matchedCells = this._extractMatchedCells(matches);
 
-        // 高亮匹配格子
-        for (const cell of matchedCells) {
-          const el = this.getCellElement ? this.getCellElement(cell) : null;
-          if (el) {
-            el.classList.add('match-highlight');
-          }
-        }
-
-        // 等待高亮动画
-        await this._wait(300);
-
-        // 执行消除动画
-        for (const cell of matchedCells) {
-          const el = this.getCellElement ? this.getCellElement(cell) : null;
-          if (el) {
-            el.classList.remove('match-highlight');
-            el.classList.add('eliminating');
-          }
-        }
-
-        // 等待消除动画完成
-        await this._wait(300);
-
-        // 在 GameState 中标记消除
-        this.gameState.flagCellsForRemoval(Array.from(matchedCells).map(k => {
+        // ========== 1. 消除动画 ==========
+        // 使用 AnimationController 的 animateEliminate
+        const eliminatedCoords = Array.from(matchedCells).map(k => {
           const [y, x] = k.split(',').map(Number);
           return { y, x };
-        }));
+        });
+
+        await this._animationController.animateEliminate(eliminatedCoords);
+
+        // ========== 2. 数据层面消除 ==========
+        this.gameState.flagCellsForRemoval(eliminatedCoords);
 
         // 计算得分
         const score = this._calculateMatchScore(matches, chainCount);
         this.gameState.addScore(score);
 
-        // 清理消除动画类
-        for (const cell of matchedCells) {
-          const el = this.getCellElement ? this.getCellElement(cell) : null;
-          if (el) {
-            el.classList.remove('eliminating');
-          }
+        // 显示得分弹出动画
+        if (this._animationController && this.scoreDisplay) {
+          await this._animationController.animateScorePop(this.scoreDisplay, score);
         }
 
-        // 应用重力（在 grid 数据层面）
-        engine.applyGravityToGameState(this.gameState);
+        // ========== 3. 应用重力 + 生成新块（不触发 grid:changed）==========
+        // 先暂停 grid:changed 事件触发，等我们手动处理完动画后再触发
+        this._disableGridChange();
 
-        // 生成新元素
-        engine.generateNewBlocks(this.gameState);
+        // 应用重力（禁止自动触发 grid:changed）
+        engine.applyGravityToGameState(this.gameState, false);
 
-        // 等待重力/生成动画
-        await this._wait(400);
+        // 生成新元素（禁止自动触发 grid:changed）
+        engine.generateNewBlocks(this.gameState, false);
+
+        // 恢复 grid:changed 事件
+        this._enableGridChange();
+
+        // ========== 4. 重新渲染网格（此时消除已完成，新DOM无残留动画类）==========
+        this._renderGrid();
+
+        // ========== 5. 执行下落动画 ==========
+        const gravityCells = this._detectGravityMoves(grid, this.gameState.grid);
+        if (gravityCells.length > 0) {
+          await this._animationController.animateFallSequence(gravityCells, this.gameState.grid);
+        }
+
+        // ========== 6. 执行新生成方块动画 ==========
+        const newCells = this._detectNewBlocks(grid, this.gameState.grid);
+        if (newCells.length > 0) {
+          await this._animationController.animateSpawnSequence(newCells);
+        }
+
+        // 短暂等待确保所有动画完成
+        await this._wait(100);
+      }
+    }
+
+    /**
+     * 禁用 grid:changed 事件触发
+     * @private
+     */
+    _disableGridChange() {
+      this._gridChangeDisabled = true;
+    }
+
+    /**
+     * 启用 grid:changed 事件触发
+     * @private
+     */
+    _enableGridChange() {
+      this._gridChangeDisabled = false;
+    }
+
+    /**
+     * 检测重力移动（已有方块的新位置）
+     * @private
+     */
+    _detectGravityMoves(oldGrid, newGrid) {
+      const cells = [];
+      const size = this.gameState.gridSize;
+
+      for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+          const oldVal = oldGrid[y] && oldGrid[y][x] != null ? oldGrid[y][x] : -1;
+          const newVal = newGrid[y] && newGrid[y][x] != null ? newGrid[y][x] : -1;
+
+          // 如果当前位置有方块，且该方块在旧网格中位于上方（说明发生了下落）
+          if (newVal >= 0 && oldVal === -1) {
+            // 这是一个新生成的方块
+            continue;
+          }
+
+          // 查找该列中哪些方块发生了下落
+          if (newVal >= 0 && oldVal >= 0 && newVal === oldVal) {
+            // 相同类型的方块，检查是否在该列下方出现了（说明上面的方块下落了）
+            // 简化处理：标记该位置需要动画
+            cells.push({ y, x, distance: 0 });
+          }
+        }
       }
 
-      // 检查是否没有可消除的方块了（死局）
-      const finalGrid = this.gameState.grid;
-      const finalMatches = MatchDetector.detectMatches(finalGrid);
-      if (finalMatches.length === 0 && chainCount > 0) {
-        // 连锁结束，检查是否还有可消除的
+      // 更精确地计算每列的下落距离
+      for (let x = 0; x < size; x++) {
+        let oldEmpty = 0;
+        let newEmpty = 0;
+
+        for (let y = size - 1; y >= 0; y--) {
+          const oldVal = oldGrid[y] && oldGrid[y][x] != null ? oldGrid[y][x] : -1;
+          const newVal = newGrid[y] && newGrid[y][x] != null ? newGrid[y][x] : -1;
+
+          if (oldVal === -1) oldEmpty++;
+          if (newVal === -1) newEmpty++;
+
+          // 如果新网格此处有方块，但旧网格此处是空的，说明有方块下落到这里
+          if (newVal >= 0 && oldVal === -1) {
+            const idx = cells.findIndex(c => c.y === y && c.x === x);
+            if (idx >= 0) {
+              cells[idx].distance = oldEmpty;
+            } else {
+              cells.push({ y, x, distance: oldEmpty });
+            }
+          }
+        }
       }
+
+      // 过滤出真正发生下落的方块（距离 > 0）
+      return cells.filter(c => c.distance > 0);
+    }
+
+    /**
+     * 检测新生成的方块
+     * @private
+     */
+    _detectNewBlocks(oldGrid, newGrid) {
+      const cells = [];
+      const size = this.gameState.gridSize;
+
+      for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+          const oldVal = oldGrid[y] && oldGrid[y][x] != null ? oldGrid[y][x] : -1;
+          const newVal = newGrid[y] && newGrid[y][x] != null ? newGrid[y][x] : -1;
+
+          // 新位置有方块，旧位置为空 → 新生成
+          if (newVal >= 0 && oldVal === -1) {
+            cells.push({ y, x });
+          }
+        }
+      }
+
+      return cells;
     }
 
     /**

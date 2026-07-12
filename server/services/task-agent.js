@@ -72,126 +72,19 @@ registerTool({
   },
 });
 
-const AGENT_SYSTEM_PROMPT = `You are an ACMS autonomous agent. You have been assigned a task in a project workspace.
+const AGENT_SYSTEM_PROMPT = `You are an ACMS autonomous agent. You complete tasks in a project workspace using tools.
 
-Your capabilities:
-1. agent_list_files — List all files in the workspace (recursive tree)
-2. agent_read_file — Read a specific file's content (up to 100000 chars). Supports offset/limit for large files.
-3. agent_read_files — Read multiple files in one call (up to 20 paths per call). Saves N rounds vs N separate reads.
-4. agent_read_dir_summary — Get directory summary: list files with first N lines of each. Saves many rounds vs list+read.
-5. agent_search_files — Search for text patterns across all files
-6. agent_exec_command — Execute a sandboxed command (node, npm, git, ls, cat, etc.)
-7. agent_write_file — Write or overwrite a file in the workspace (creates parent dirs)
-8. agent_patch_file — Apply a targeted patch to an existing file (find old_string, replace with new_string). Supports indent-aware matching.
-9. agent_multi_patch — Apply multiple patches to one or more files in a single call.
-10. workspace_isolate — Create an isolated scratch workspace for this agent session (copies project workspace).
-11. workspace_merge — Merge changes from scratch workspace back to the main project workspace.
-12. browser_snapshot — Get the accessibility tree of the current page. Returns interactive elements with ref IDs (@e1, @e2) for clicking. Use to understand page structure and verify content.
-13. browser_console — Get browser console output and JS errors. Optionally evaluate JavaScript expressions in the page context. Use to detect silent errors and read page state.
-14. browser_click — Click on an element identified by ref ID from browser_snapshot. Use to interact with buttons and links.
-15. browser_type — Type text into an input field identified by ref ID. Clears field first, then types.
-16. browser_screenshot — Take a screenshot of the current page. Returns base64 PNG or saves to file. Use for visual verification.
-17. agent_git_status — Show working tree status (modified, staged, untracked files).
-18. agent_git_diff — Show changes between working tree and last commit.
-19. agent_git_commit — Stage files and create a commit with message.
-20. agent_git_log — Show commit log (recent changes history).
-21. agent_git_branch — List branches or create a new branch.
-22. agent_db_query — Execute a SQL SELECT query against the ACMS SQLite database. Use to check task status, submissions, reviews, execution logs.
-23. agent_ssh_execute — Execute a command on a remote server via SSH (supports 120, local, custom hosts).
-24. agent_ssh_check — Check SSH connectivity to a configured host.
-25. agent_http_request — Send HTTP requests (GET/POST/PUT/DELETE) to test APIs or fetch external data.
+## Environment
+- Windows sandbox: \`cmd.exe\`, \`cd\`, \`powershell\` are blocked. Use \`node\`/\`npm\`/\`git\` with absolute or relative paths from workspace root.
+- \`agent_list_files\` filters out \`_*\`/\`.git\`/\`node_modules\` by default — ignore those.
 
-Your goal:
-1. Use read tools to explore the project workspace and understand the current state
-2. Analyze what the task requires based on the code and files you find
-3. Execute the task: create new files, modify existing files, or run commands as needed
-4. Verify your work: read back files you wrote, run syntax checks (node --check), run tests
-5. Use browser tools to verify UI changes: snapshot the page, check console for errors, click elements, take screenshots
-6. Use git tools to track changes: status, diff, commit, log
-7. Use database tools to check ACMS task state: submissions, reviews, execution logs
-8. Use HTTP tools to test APIs and external services
-9. Use SSH tools to debug on remote servers
-10. Produce a summary of what you did: which files were created/modified, what changes were made, and any verification results
-
-Rules:
-- Explore briefly (1-2 tool calls), then act. Do not over-explore.
-- Prefer agent_read_files (batch) over multiple agent_read_file calls when you need to see 2+ files.
-- Prefer agent_read_dir_summary for "what's in this directory" questions.
-- After writing a file, read it back to verify the content was written correctly.
-- For code files, run "node --check <path>" or equivalent to verify syntax.
-- Never delete files. If you need to modify, read first, then write the full updated content.
-- Keep file content reasonable: avoid writing files larger than 200KB.
-- If the task is analysis-only (e.g. documentation review), do not modify files unless asked.
-- Be specific in your summary: reference actual file paths, line numbers, and code snippets.
-- Keep your final summary concise but actionable. Maximum 2000 words.
-
-Workspace Environment Hints (v0.26):
-- Platform: detect via OS — \`ls\` is NOT available on Windows; use \`node -e "require('fs').readdirSync(...).join('\\\\n')"\` or \`agent_list_files\` instead.
-- Shell sandbox: \`cmd.exe\`, \`cd\`, \`powershell\` are blocked for security. Use \`node\` /\`npm\` /\`git\` directly with absolute or relative paths from workspace root.
-- \`agent_list_files\` already filters out \`_*\` / \`.git\` / \`node_modules\` by default — these are NOT relevant task files, ignore their content if you find them.
-- For \`agent_exec_command\`: \`cmd\` runs in the workspace root; you don't need to \`cd\` into subdirectories.
-
-Workflow Discipline (v0.26):
-- Round 1-2: explore workspace structure (one \`agent_list_files\` + targeted \`agent_read_file\`).
-- Round ≥ 3: start writing files. Do NOT keep exploring after you have enough context.
-- After each \`agent_write_file\`: if it's a \`.js\` file, the tool auto-runs \`node --check\` for you — read the result.
-- When writing/overwriting an existing file: read it first to preserve existing methods/imports; do NOT clear and rewrite smaller versions.
-- After writing all claimed files: produce final summary and end the loop. Do NOT keep verifying endlessly.
-
-## ⚠️ Anti-Loop Rules (v0.X — Critical, Read Before Each Round)
-
-**A. STOP when work is done — don't "verify" repeatedly.**
-Once ALL of these are true:
-- ✓ Fix written (agent_patch_file / agent_write_file returned ok)
-- ✓ Tests pass (npm test or node --check returned exit 0)
-- ✓ Commit made (agent_git_commit returned a commit hash)
-
-**STOP and produce your final summary IMMEDIATELY.** Do NOT:
-- ❌ Re-read the same file to "verify" (you just wrote it; trust the tool's ok response)
-- ❌ Re-run tests that already passed
-- ❌ Re-check git status/log repeatedly
-- ❌ Switch phase repeatedly between "test" and "fix"
-
-**B. If you call the SAME tool 3+ times in a row, you are in a loop — STOP and synthesize your answer.**
-
-**C. agent_patch_file failure recovery (v0.X):**
-If \`agent_patch_file\` returns "0 lines patched" / "anchor not found":
-1. **DO NOT** retry with the same old_string (anchor is broken)
-2. **DO NOT** use \`node -e "fs.readFileSync..."\` or \`sed -n\` to read files — that's what \`agent_read_file\` is for
-3. **DO** call \`agent_read_file\` on the file (full file, no offset/limit) to see exact current content
-4. **DO** then re-derive the old_string from what you just read (preserve exact whitespace)
-5. Common causes: trailing whitespace differs, line endings differ (CRLF vs LF), you've already patched this region in a previous round
-
-**D. git operations — one shot, trust the response (v0.X):**
-- \`agent_git_commit\` returns \`{ ok, commitHash, message }\` — the commitHash IS your confirmation. Do NOT re-verify with \`agent_git_log\` / \`agent_git_status\`.
-- \`agent_git_status\` returns clean/dirty summary. One call is enough.
-- \`agent_git_diff\` shows the diff. One call is enough.
-- **DO NOT** run the same git operation more than once per round. If the response says "ok", trust it and move on.
-
-Critical: You MUST actually call tools (v0.27):
-- "I will write GameState.js" in your final summary does NOT create the file. Only an actual agent_write_file tool call counts as writing.
-- The system will reject your final answer if you never called agent_write_file but the task requires writing files.
-- If you intend to write a file, you MUST call agent_write_file — describing intent is not enough.
-- After every write_file call, verify by reading the result (response.ok === true means the file was written to disk).
-
-Workflow Phases (v0.46 TodoWrite — PM watches your progress in 5 segments):
-You MUST call agent_set_phase at phase transitions so the PM can see real-time progress. The 5 phases:
-  🔍 explore — Reading workspace structure, understanding existing code
-  📝 design  — Planning the implementation approach
-  ✏️  write   — Creating or modifying files
-  🧪 test    — Running tests, type checks, verification
-  🔧 fix     — Debugging failures, fixing errors
-
-Example workflow:
-  Round 1-2:  call agent_set_phase('explore', 'Listing workspace files')
-  Round 3-4:  call agent_set_phase('design', 'Planning 3 files: A.js, B.js, C.test.js')
-  Round 5-10: call agent_set_phase('write', 'Implementing A.js')
-  Round 11:   call agent_set_phase('test', 'Running npm test')
-  Round 12-15: call agent_set_phase('fix', 'Fixing 2 failing assertions')
-
-Don't skip the phase calls — the PM dashboard segments highlight your current phase. Without phase calls, the PM sees raw tool call log and has to guess what you're doing.
-
-If writing TypeScript files (.ts/.tsx), use agent_typescheck to verify after writing — tsc --noEmit checks types without producing output.`;
+## Rules
+1. **Write code, don't describe it.** Saying "I will write X" is not writing. Only \`agent_write_file\`/\`agent_patch_file\` creates files. If you return a summary without writing, the system rejects it.
+2. **STOP when done.** After all fixes written + verified (syntax OK), produce your final summary and end. Do NOT re-read files you just wrote, re-run tests that passed, or re-check git status.
+3. **read_files > read_file.** Prefer \`agent_read_files\` (batch) and \`agent_read_dir_summary\` over multiple single-file reads.
+4. **Call \`agent_set_phase\`** at phase transitions (explore → design → write → test → fix) so the PM sees progress.
+5. **Patch failure recovery:** If \`agent_patch_file\` returns "0 lines patched", call \`agent_read_file\` to see current content, then derive the correct old_string. Do NOT retry the same anchor.
+6. **Git: one shot, trust the response.** \`agent_git_commit\` returns \`commitHash\` — that IS confirmation. Do NOT re-verify. Do NOT call git tools before making any code changes.`;
 
 async function executeTaskAgent(taskId, options = {}) {
   const task = taskStore.getById(taskId);
@@ -221,7 +114,8 @@ async function executeTaskAgent(taskId, options = {}) {
 // v0.28 fix: task context 改 markdown 段落（Hermes-style），LLM 在 markdown 段落下表现明显优于 key-value 标签
   //   根因：ACMS 之前用 "Task ID: X\nTitle: Y\nDescription: Z..." 格式，LLM 把它当"标签数据"理解而非任务目标；
   //   改成 markdown 段落后 LLM 把整段当 goal，理解深度提升（Hermes 同模型 7 轮收敛 vs ACMS 20 轮装睡）
-  let taskContext = `# Task ${task.id}: ${task.title}
+  // v0.X: 不再拼进 system prompt — 改为独立 user message（LLM 当用户意图理解）
+  const taskContext = `# Task ${task.id}: ${task.title}
 
 ${task.description || '(no description)'}
 
@@ -229,44 +123,51 @@ ${task.description || '(no description)'}
 **Acceptance Criteria**: ${task.acceptance_criteria || task.acceptanceCriteria || '(not specified — derive from the task description above)'}
 **Required Skills**: ${task.required_skills || '{}'}`;
 
-  // P0 v0.X: 注入历史 submissions + reviews 摘要 — 防 agent 重复猜根因
-  //   T-MRGDBST1 教训：5 次提交，4 次错误根因，每次 agent-acms-self 都从零开始
-  //   现在 system prompt 里直接告诉 LLM "上次/上上次怎么错的，别走老路"
+  // P0 v0.X: 收集历史 submissions + reviews 摘要 — 防 agent 重复猜根因
+  //   独立 user message，不拼 taskContext（user role 优先级高于 system role）
   let historySummary;
   try { historySummary = buildHistorySummary(task); } catch (e) { historySummary = null; }
-  if (historySummary) {
-    taskContext += '\n\n---\n\n' + historySummary;
-  }
 
-  // P0 v0.X: 注入跨任务 workspace 记忆 — 让 agent 知道这个 workspace 之前有什么
-  //   T-MRH4256G 问题：每个任务独立 process，前序任务的"读了哪些文件"、"踩过什么坑"完全没传给后续任务
-  //   现在每个 workspace 持久化一个 .acms-meta.json，agent-execute 启动时摘要注入
+  // P0 v0.X: 跨任务 workspace 记忆 — 独立 user message
+  let workspaceMemoryMsg = null;
   try {
     const workspaceMeta = require('./workspace-meta');
     const projectStore = require('../stores/project-store');
     const project = projectStore.getById(projectId);
     if (project) {
       const slug = project.slug || project.name;
-      const memorySummary = workspaceMeta.getSummaryForPrompt(slug, task.id);
-      if (memorySummary) taskContext += '\n\n---\n\n' + memorySummary;
+      workspaceMemoryMsg = workspaceMeta.getSummaryForPrompt(slug, task.id);
     }
   } catch (e) { /* workspace-meta 不可用时不阻塞 */ }
 
+  // v0.X: 精简 messages 结构 — system 只放身份+铁律，任务描述作为 user message
+  const systemPrompt = buildSystemPrompt(task, lang);
+  const userMessages = [];
+  // 背景上下文排在前（workspace 记忆 + 执行历史），任务是最终的"命令"
+  if (workspaceMemoryMsg) userMessages.push({ role: 'user', content: workspaceMemoryMsg });
+  if (historySummary) userMessages.push({ role: 'user', content: historySummary + '\n\n注意：你之前的尝试记录如上。请不要再重走老路，仔细阅读驳回原因再动手。' });
+  userMessages.push({ role: 'user', content: taskContext });
+
   const messages = [
-    // v0.29 fix: 把 taskContext + goal 移到 system prompt（持久在 attention 里）
-    //   根因：ACMS 之前 goal 在 user message，多轮后 messages 累积，goal 被推到 attention 边缘
-    //   Hermes 的 delegate_task subagent 把 goal 放 system prompt，每轮 LLM 调用都在 attention
-    //   这就是为啥 MiniMax-M3 在 Hermes 不装睡但在 ACMS 装睡
-    // v0.45: 加载匹配的 skill 注入 system prompt
-    { role: 'system', content: buildSystemPrompt(task, taskContext, steerMessages, lang) },
-    // v0.30 fix: 如果多多手动 steer，把 user steerMessage 放在 messages[1]（紧跟 system prompt 后）
+    { role: 'system', content: systemPrompt },
+    // steer message 紧跟 system prompt（LLM 第一时间看到 PM 意图）
     ...steerMessages,
-    { role: 'user', content: 'Start by listing the workspace files to understand the project structure, then read relevant files and complete the task.' },
+    // 上下文 + 任务描述作为 user messages
+    ...userMessages,
   ];
 
   console.log(`[agent-execute] Task ${taskId} | model=${model.id} | project=${projectId}`);
 
-  const toolNames = ['agent_read_file', 'agent_read_files', 'agent_read_dir_summary', 'agent_list_files', 'agent_search_files', 'agent_exec_command', 'agent_write_file', 'agent_patch_file', 'agent_multi_patch', 'workspace_isolate', 'workspace_merge', 'browser_snapshot', 'browser_console', 'browser_click', 'browser_type', 'browser_screenshot', 'agent_git_status', 'agent_git_diff', 'agent_git_commit', 'agent_git_log', 'agent_git_branch', 'agent_db_query', 'agent_ssh_execute', 'agent_ssh_check', 'agent_http_request', 'agent_set_phase', 'agent_typescheck', 'agent_plan'];
+  // v0.X: 按任务类型裁剪工具列表 — 治 T-MRGDBST1 多余工具加重空转
+  //   bug 修复任务不需要 browser / db / ssh / http 工具
+  const taskType = (task.type || '').toLowerCase();
+  const EXTRA_TOOLS = ['browser_snapshot', 'browser_console', 'browser_click', 'browser_type', 'browser_screenshot',
+    'agent_db_query', 'agent_ssh_execute', 'agent_ssh_check', 'agent_http_request'];
+  const isSimpleTask = ['bug', 'fix', 'documentation', 'refactor', 'test'].includes(taskType);
+  const ALL_TOOLS = ['agent_read_file', 'agent_read_files', 'agent_read_dir_summary', 'agent_list_files', 'agent_search_files', 'agent_exec_command', 'agent_write_file', 'agent_patch_file', 'agent_multi_patch', 'workspace_isolate', 'workspace_merge', 'browser_snapshot', 'browser_console', 'browser_click', 'browser_type', 'browser_screenshot', 'agent_git_status', 'agent_git_diff', 'agent_git_commit', 'agent_git_log', 'agent_git_branch', 'agent_db_query', 'agent_ssh_execute', 'agent_ssh_check', 'agent_http_request', 'agent_set_phase', 'agent_typescheck', 'agent_plan'];
+  const toolNames = isSimpleTask
+    ? ALL_TOOLS.filter(t => !EXTRA_TOOLS.includes(t))
+    : ALL_TOOLS;
 
   let analysis;
   try {
@@ -486,26 +387,18 @@ function buildHistorySummary(task) {
   return lines.join('\n');
 }
 
-// ===== v0.45: 构建 system prompt（含 skill 注入）=====
-//   P0 v0.X: 加 lang 参数 — 在 system prompt 末尾追加语言指令
-//   AGENT_SYSTEM_PROMPT / 工具描述 / taskContext 都保持英文（LLM 效率最优）
-//   只在末尾追加一段"输出语言"指令，控制 agent 最终回复的语言
-function buildSystemPrompt(task, taskContext, steerMessages, lang = 'zh') {
-  // 基础 agent prompt（英文 — LLM 友好）
-  let prompt = AGENT_SYSTEM_PROMPT + '\n\n# YOUR SPECIFIC GOAL FOR THIS TASK\n\n' + taskContext + '\n\n# DO NOT STOP UNTIL:\n1. Called `agent_write_file` for every file mentioned in the task description (and any tests required by acceptance criteria)\n2. Verified each file via `agent_read_file` (response.ok === true) or by listing it back\n3. Run `node --check` for any `.js` files you wrote\n\nReturning a summary without writing the files = task failure. The system will detect this and force you to retry.';
-
-  // P0 v0.X: 输出语言指令 — 控制 LLM 最终回复（思考、summary、submit notes）
-  //   不影响工具调用、文件路径、代码片段（那些跟任务描述走，是用户输入）
-  //   lang === 'en' → 英文；其他 → 中文（默认多多场景）
+// ===== v0.X: 精简版 system prompt — 只放身份 + 铁律 =====
+//   任务描述移到 user message（LLM 当用户意图理解，优先级高）
+//   AGENT_SYSTEM_PROMPT 保持英文（LLM 效率），langDirective 在最前
+function buildSystemPrompt(task, lang = 'zh') {
   const langDirective = lang === 'en'
-    ? '\n\n## Output Language\n\n**You MUST respond in English.** All your analysis, summaries, explanations, error explanations, submit notes, and any free-form text you produce should be in English. (Code, file paths, and tool arguments stay as-is regardless of language.)\n'
-    : '\n\n## 输出语言\n\n**你必须用中文回复。** 你所有的分析、总结、解释、错误说明、提交说明、任何自然语言输出都必须用中文。（代码、文件路径、工具参数保持原样不受语言切换影响。）\n';
-  prompt += langDirective;
+    ? '## Output Language\n\n**You MUST respond in English.** All your analysis, summaries, explanations, error explanations, submit notes, and any free-form text you produce should be in English. (Code, file paths, and tool arguments stay as-is regardless of language.)\n'
+    : '## 输出语言\n\n**你必须用中文回复。** 你所有的分析、总结、解释、错误说明、提交说明、任何自然语言输出都必须用中文。写代码前的思考、调工具前的推理步骤、分析问题的过程，**所有自然语言输出都必须是中文**。（代码、文件路径、工具参数保持原样不受语言切换影响。）\n';
+  let prompt = langDirective + '\n\n' + AGENT_SYSTEM_PROMPT;
 
-  // 加载匹配的 skill
+  // 加载匹配的 skill（身份级知识，保持在 system prompt 里）
   const matches = skillLoader.matchForTask(task);
   if (matches.length > 0) {
-    // 只加载得分最高的 skill（避免 prompt 过长）
     const topSkill = matches[0].skill;
     const skillPrompt = skillLoader.buildSkillPrompt(topSkill.id);
     if (skillPrompt) {
@@ -513,7 +406,6 @@ function buildSystemPrompt(task, taskContext, steerMessages, lang = 'zh') {
       console.log(`[agent-execute] Loaded skill "${topSkill.name}" (score=${matches[0].score}) for task ${task.id}`);
     }
   }
-
   return prompt;
 }
 

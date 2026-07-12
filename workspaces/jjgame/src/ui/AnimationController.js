@@ -600,6 +600,31 @@
     }
 
     /**
+     * 批量执行下落动画序列
+     * @param {{y:number,x:number,distance:number}[]} cells
+     * @param {number[][]} newGrid — 变化后的 grid 数据（用于计算位置）
+     * @returns {Promise<void>}
+     */
+    async animateFallSequence(cells, newGrid) {
+      const promises = cells.map(cell => {
+        return this.animateFall(cell, cell.distance);
+      });
+      await Promise.all(promises);
+    }
+
+    /**
+     * 批量执行新生成方块动画
+     * @param {{y:number,x:number}[]} cells
+     * @returns {Promise<void>}
+     */
+    async animateSpawnSequence(cells) {
+      const promises = cells.map(cell => {
+        return this.animateSpawn(cell);
+      });
+      await Promise.all(promises);
+    }
+
+    /**
      * 清理所有活跃的动画元素
      * @private
      */

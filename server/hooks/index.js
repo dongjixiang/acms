@@ -8,5 +8,6 @@
 // 用户自定义 hook:
 require('./auto-typescheck-on-write');
 require('./track-tool-stats');
+require('./git-guard');
 
 console.log('[hooks] 内置 hooks 注册完成');
