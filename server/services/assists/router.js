@@ -166,9 +166,22 @@ async function pickNext(ctx, modelId) {
     const parsed = safeParseJSON(result.content);
     if (!parsed) throw new Error('LLM 返回无法解析为 JSON');
     const method = candidates.includes(parsed.method) ? parsed.method : candidates[0];
+    // v0.46 fix：用固定原因映射，不用 LLM 的 reason（LLM 常生成 method 和 reason 不匹配的文本）
+    const methodReasons = {
+      diagnosis: '先体检一下你描述里没说清楚的地方',
+      scenarios: '挑一个最像你的用户场景，我们就能往下走',
+      tradeoff: '把这个需求里关键的取舍摆出来，你表态',
+      arch: '把核心页面/模块列出来，你圈出想要的',
+      decision_tree: '给你 3 条不同的实现方向，你挑一条',
+      visual: '3 张方向图，看下哪个最像你想要的',
+      pains: '挖掘需求里的隐藏痛点，说清楚"为什么要做"',
+      stakeholders: '识别涉及的所有相关角色和他们的关注点',
+      risks: '扫描需求里的潜在风险，提前规避',
+      assumptions: '提取描述中的隐式假设，避免想当然',
+    };
     return {
       method,
-      reason: typeof parsed.reason === 'string' ? parsed.reason.slice(0, 60) : '',
+      reason: methodReasons[method] || (typeof parsed.reason === 'string' ? parsed.reason.slice(0, 60) : ''),
       modelId: model.id,
     };
   } catch (e) {
