@@ -200,7 +200,8 @@ function startChatPolling(reqId) {
           if (ad.status === 'done') {
             console.log(`[chatAssist] ${explicit} done, rendering`);
             if (window._explicitAssist) delete window._explicitAssist[reqId];
-            renderAssistLayer(container, reqId, r.assists || {});
+            // v0.46 fix：只渲染触发的 method，不渲染全体（避免旧 use_case 等卡片乱入）
+            renderAssistLayer(container, reqId, { [explicit]: ad });
           } else if (ad.status === 'failed') {
             console.error(`[chatAssist] ${explicit} failed:`, ad.error || 'unknown');
             toast(`❌ ${explicit} 生成失败: ${ad.error || '未知错误'}`, 'error', 5000);
@@ -1368,6 +1369,20 @@ async function loadStreamAssist(reqId, container) {
 }
 
 /**
+ * v0.46：只渲染单个 method 的辅助结果到聊天流（不触发全体渲染）
+ * 用于 explicit assist SSE done 时，避免旧卡片乱入
+ */
+async function loadStreamAssistSingle(reqId, container, method) {
+  try {
+    const r = await api('GET', `/requirements/${reqId}/assist`);
+    const data = (r.assists || {})[method];
+    if (!data || data.status !== 'done') return;
+    // 构造单 method 的 assists 对象，传给 renderAssistLayer 让它只处理这一个
+    renderAssistLayer(container, reqId, { [method]: data });
+  } catch(e) { console.warn('[loadStreamAssistSingle] error:', e.message); }
+}
+
+/**
  * v2.0: 辅助手段 SSE 流式 — 实时进度 + 完成通知
  * 调用后由 polling 负责实际渲染结果卡片
  */
@@ -1407,10 +1422,9 @@ function connectAssistStream(reqId, method, extraBody) {
             // 获取结果数据并直接渲染
             renderLeisureResult(reqId, method, loadingEl);
           } else if (loadingEl && window.ACMSAssists?.get?.(method)?.render) {
-            // v0.46 fix：非休闲辅助（决策树/场景/竞品/借鉴/整理/体检）也在聊天流渲染结果
-            //   用 loadStreamAssist → renderAssistLayer 统一处理（含 loading 卡替换 + 内容加工 + 操作按钮）
-            //   不用 renderChatAssistResult 避免双重渲染（renderAssistLayer 也会在 brief SSE done 时触发）
-            loadStreamAssist(reqId, container);
+            // v0.46 fix：非休闲辅助也在聊天流渲染结果
+            //   用 loadStreamAssistSingle 只渲染触发的 method，不渲染所有符合条件的（避免旧卡片乱入）
+            loadStreamAssistSingle(reqId, container, method);
           } else if (loadingEl) {
             loadingEl.remove();
           }
