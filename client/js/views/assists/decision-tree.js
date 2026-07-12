@@ -114,7 +114,7 @@ function dtSubmit(reqId) {
     submitBtn.textContent = '✓ 已提交';
   }
   // 调后端标记 + 触发轮询
-  ACMSAssistDispatcher.useAssist(reqId, 'decision_tree', { used_branch_idx: idx });
+  ACMSAssistDispatcher.useAssist(reqId, 'decision_tree', { branchIdx: idx });
 }
 
 /** v0.6.4 关联产品链接：点产品名 → 触发 reference assist → loading 卡片在 .dt-block 下方
