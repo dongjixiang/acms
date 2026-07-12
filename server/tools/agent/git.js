@@ -105,8 +105,24 @@ registerTool({
     lines.push('git commit: exit=' + commitResult.exitCode);
     lines.push('output: ' + (commitResult.stdout || '').slice(0, 500));
     if (commitResult.stderr) lines.push('stderr: ' + commitResult.stderr.slice(0, 500));
+
+    // v0.X: 解析 commit hash — agent 不需要再调 git_log 确认
+    let commitHash = null;
+    if (commitResult.exitCode === 0) {
+      const hashResult = await workspace.exec(slug, { cmd: 'git rev-parse HEAD', timeout: 5000 });
+      if (hashResult.exitCode === 0) {
+        commitHash = (hashResult.stdout || '').trim().split('\n')[0];
+      }
+      // 顺便拿到 commit 摘要（files changed + short stat）
+      const statResult = await workspace.exec(slug, { cmd: 'git show --stat --format="" HEAD', timeout: 5000 });
+      lines.push('files changed:\n' + (statResult.stdout || '').slice(0, 1000));
+    }
+
     return {
       ok: commitResult.exitCode === 0,
+      commitHash,  // ← 关键：agent 拿这个当"commit 真的发生了"的信号
+      shortHash: commitHash ? commitHash.slice(0, 7) : null,
+      message: commitResult.stdout ? commitResult.stdout.split('\n')[0] : (msg || ''),
       steps: lines.join('\n'),
     };
   },

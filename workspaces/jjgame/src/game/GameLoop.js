@@ -106,10 +106,15 @@
         this._triggerGameOver();
       });
 
-      // 4. 监听网格变化事件 —— T-MRGDBST1 修复
+    // 4. 监听网格变化事件 —— T-MRGDBST1 修复
       // 当 grid 数据发生变化时（如消除、重力下落、生成新块），
       // 重新渲染整个 DOM 网格以确保棋子显示正确
-      this._subscribe('grid:changed', () => {
+      // 交换操作的 grid:changed 由 GameLoop 手动控制重绘时机，
+      // 避免与交换动画冲突。
+      this._subscribe('grid:changed', (gridData) => {
+        // 如果是交换操作触发的（isSwap 标记），跳过自动重绘
+        // 让 _executeSwapAndEliminate 在动画完成后手动控制渲染
+        if (gridData && gridData._isSwapChange) return;
         this._renderGrid();
       });
 
@@ -172,12 +177,24 @@
       // 设置动画锁
       this.gameState.setAnimating(true);
 
-      // 1. 执行交换动画（InputHandler 已在 grid 数据层完成交换，此处仅做视觉动画）
+      // T-MRGDBST1 修复：先执行数据交换（带 isSwap 标记阻止自动重绘），
+      // 再播放交换动画，最后执行消除。
+      // 这样避免了 InputHandler 提前触发 grid:changed → _renderGrid 导致的
+      // "先交换再交换回去再交换过来" 的重复动画问题。
+      this.gameState.swapCells(blockA, blockB, { isSwap: true });
+
+      // 1. 执行交换动画（此时数据已交换，但 DOM 未更新，动画正确展示交换过程）
       if (this._animationController) {
         await this._animationController.animateSwap(blockA, blockB);
       }
 
-      // 2. 执行连锁消除（grid 数据已由 InputHandler 交换完毕）
+      // T-MRH7H9GA 修复：交换动画完成后，必须重新渲染网格以同步 DOM 与数据。
+      // 之前的 grid:changed 订阅因 _isSwapChange 标记跳过了重绘，
+      // 但动画结束后如果不重绘，CSS transform 被清除后棋子会视觉上"移回原位"，
+      // 而数据层已经是交换后的状态，导致视觉与数据不一致（幽灵消除）。
+      this._renderGrid();
+
+      // 2. 执行连锁消除
       await this._runChainElimination();
 
       // 3. 动画锁释放

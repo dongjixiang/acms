@@ -41,6 +41,18 @@ registerTool({
     if (!task) return { error: 'TASK_NOT_FOUND', ok: false };
 
     const history = JSON.parse(task.phase_history || '[]');
+
+    // v0.X: phase 防抖 — 同一 phase 连续 ≥3 次切换时警告（治 R83 那种反复切 phase 的循环）
+    const recentSame = history.slice(-3).filter(h => h.phase === phase).length;
+    if (recentSame >= 3) {
+      return {
+        ok: false,
+        phase,
+        warning: `LOOP_DETECTED: 已连续 ${recentSame + 1} 次切到 phase "${phase}"。你可能在循环。应该停止 phase 切换并产生最终总结，而不是反复切 phase。`,
+        hint: 'review Anti-Loop Rules (system prompt §A) and synthesize your final answer now.',
+      };
+    }
+
     history.push({ phase, note: note || '', at: new Date().toISOString() });
     // 只保留最近 20 条切换
     if (history.length > 20) history.splice(0, history.length - 20);
@@ -111,7 +123,6 @@ Rules:
 - Keep file content reasonable: avoid writing files larger than 200KB.
 - If the task is analysis-only (e.g. documentation review), do not modify files unless asked.
 - Be specific in your summary: reference actual file paths, line numbers, and code snippets.
-- Respond in the same language as the task description (Chinese if task is in Chinese).
 - Keep your final summary concise but actionable. Maximum 2000 words.
 
 Workspace Environment Hints (v0.26):
@@ -126,6 +137,36 @@ Workflow Discipline (v0.26):
 - After each \`agent_write_file\`: if it's a \`.js\` file, the tool auto-runs \`node --check\` for you — read the result.
 - When writing/overwriting an existing file: read it first to preserve existing methods/imports; do NOT clear and rewrite smaller versions.
 - After writing all claimed files: produce final summary and end the loop. Do NOT keep verifying endlessly.
+
+## ⚠️ Anti-Loop Rules (v0.X — Critical, Read Before Each Round)
+
+**A. STOP when work is done — don't "verify" repeatedly.**
+Once ALL of these are true:
+- ✓ Fix written (agent_patch_file / agent_write_file returned ok)
+- ✓ Tests pass (npm test or node --check returned exit 0)
+- ✓ Commit made (agent_git_commit returned a commit hash)
+
+**STOP and produce your final summary IMMEDIATELY.** Do NOT:
+- ❌ Re-read the same file to "verify" (you just wrote it; trust the tool's ok response)
+- ❌ Re-run tests that already passed
+- ❌ Re-check git status/log repeatedly
+- ❌ Switch phase repeatedly between "test" and "fix"
+
+**B. If you call the SAME tool 3+ times in a row, you are in a loop — STOP and synthesize your answer.**
+
+**C. agent_patch_file failure recovery (v0.X):**
+If \`agent_patch_file\` returns "0 lines patched" / "anchor not found":
+1. **DO NOT** retry with the same old_string (anchor is broken)
+2. **DO NOT** use \`node -e "fs.readFileSync..."\` or \`sed -n\` to read files — that's what \`agent_read_file\` is for
+3. **DO** call \`agent_read_file\` on the file (full file, no offset/limit) to see exact current content
+4. **DO** then re-derive the old_string from what you just read (preserve exact whitespace)
+5. Common causes: trailing whitespace differs, line endings differ (CRLF vs LF), you've already patched this region in a previous round
+
+**D. git operations — one shot, trust the response (v0.X):**
+- \`agent_git_commit\` returns \`{ ok, commitHash, message }\` — the commitHash IS your confirmation. Do NOT re-verify with \`agent_git_log\` / \`agent_git_status\`.
+- \`agent_git_status\` returns clean/dirty summary. One call is enough.
+- \`agent_git_diff\` shows the diff. One call is enough.
+- **DO NOT** run the same git operation more than once per round. If the response says "ok", trust it and move on.
 
 Critical: You MUST actually call tools (v0.27):
 - "I will write GameState.js" in your final summary does NOT create the file. Only an actual agent_write_file tool call counts as writing.
@@ -163,6 +204,10 @@ async function executeTaskAgent(taskId, options = {}) {
   const model = modelStore.getById(modelId);
   if (!model) throw Object.assign(new Error('Model not found: ' + modelId), { status: 404 });
 
+  // P0 v0.X: lang 控制 agent 输出语言
+  //   优先级：options.lang > task.doc.preferred_lang > 'zh'（多多场景默认）
+  const lang = options.lang || task.preferred_lang || 'zh';
+
   // v0.30 fix: 接受 options.steerMessage — 多多可以手动 steer（等价 Hermes /steer slash command）
   //   当 PM 通过 POST /api/agents/steer/:taskId 注入消息，把它作为额外 user message prepend 到 messages
   const steerMessages = [];
@@ -193,13 +238,27 @@ ${task.description || '(no description)'}
     taskContext += '\n\n---\n\n' + historySummary;
   }
 
+  // P0 v0.X: 注入跨任务 workspace 记忆 — 让 agent 知道这个 workspace 之前有什么
+  //   T-MRH4256G 问题：每个任务独立 process，前序任务的"读了哪些文件"、"踩过什么坑"完全没传给后续任务
+  //   现在每个 workspace 持久化一个 .acms-meta.json，agent-execute 启动时摘要注入
+  try {
+    const workspaceMeta = require('./workspace-meta');
+    const projectStore = require('../stores/project-store');
+    const project = projectStore.getById(projectId);
+    if (project) {
+      const slug = project.slug || project.name;
+      const memorySummary = workspaceMeta.getSummaryForPrompt(slug, task.id);
+      if (memorySummary) taskContext += '\n\n---\n\n' + memorySummary;
+    }
+  } catch (e) { /* workspace-meta 不可用时不阻塞 */ }
+
   const messages = [
     // v0.29 fix: 把 taskContext + goal 移到 system prompt（持久在 attention 里）
     //   根因：ACMS 之前 goal 在 user message，多轮后 messages 累积，goal 被推到 attention 边缘
     //   Hermes 的 delegate_task subagent 把 goal 放 system prompt，每轮 LLM 调用都在 attention
     //   这就是为啥 MiniMax-M3 在 Hermes 不装睡但在 ACMS 装睡
     // v0.45: 加载匹配的 skill 注入 system prompt
-    { role: 'system', content: buildSystemPrompt(task, taskContext, steerMessages) },
+    { role: 'system', content: buildSystemPrompt(task, taskContext, steerMessages, lang) },
     // v0.30 fix: 如果多多手动 steer，把 user steerMessage 放在 messages[1]（紧跟 system prompt 后）
     ...steerMessages,
     { role: 'user', content: 'Start by listing the workspace files to understand the project structure, then read relevant files and complete the task.' },
@@ -258,6 +317,9 @@ ${task.description || '(no description)'}
   }
 
   console.log(`[agent-execute] Task ${taskId} completed. Analysis length: ${(analysis || '').length} chars`);
+
+  // P0 v0.X: flush workspace meta 到磁盘 — agent-execute 结束时避免数据丢失
+  try { require('./workspace-meta').flushAll(); } catch (e) { /* 不阻塞 */ }
 
   return {
     taskId,
@@ -425,9 +487,20 @@ function buildHistorySummary(task) {
 }
 
 // ===== v0.45: 构建 system prompt（含 skill 注入）=====
-function buildSystemPrompt(task, taskContext, steerMessages) {
-  // 基础 agent prompt
+//   P0 v0.X: 加 lang 参数 — 在 system prompt 末尾追加语言指令
+//   AGENT_SYSTEM_PROMPT / 工具描述 / taskContext 都保持英文（LLM 效率最优）
+//   只在末尾追加一段"输出语言"指令，控制 agent 最终回复的语言
+function buildSystemPrompt(task, taskContext, steerMessages, lang = 'zh') {
+  // 基础 agent prompt（英文 — LLM 友好）
   let prompt = AGENT_SYSTEM_PROMPT + '\n\n# YOUR SPECIFIC GOAL FOR THIS TASK\n\n' + taskContext + '\n\n# DO NOT STOP UNTIL:\n1. Called `agent_write_file` for every file mentioned in the task description (and any tests required by acceptance criteria)\n2. Verified each file via `agent_read_file` (response.ok === true) or by listing it back\n3. Run `node --check` for any `.js` files you wrote\n\nReturning a summary without writing the files = task failure. The system will detect this and force you to retry.';
+
+  // P0 v0.X: 输出语言指令 — 控制 LLM 最终回复（思考、summary、submit notes）
+  //   不影响工具调用、文件路径、代码片段（那些跟任务描述走，是用户输入）
+  //   lang === 'en' → 英文；其他 → 中文（默认多多场景）
+  const langDirective = lang === 'en'
+    ? '\n\n## Output Language\n\n**You MUST respond in English.** All your analysis, summaries, explanations, error explanations, submit notes, and any free-form text you produce should be in English. (Code, file paths, and tool arguments stay as-is regardless of language.)\n'
+    : '\n\n## 输出语言\n\n**你必须用中文回复。** 你所有的分析、总结、解释、错误说明、提交说明、任何自然语言输出都必须用中文。（代码、文件路径、工具参数保持原样不受语言切换影响。）\n';
+  prompt += langDirective;
 
   // 加载匹配的 skill
   const matches = skillLoader.matchForTask(task);
@@ -534,6 +607,9 @@ async function generatePlan(taskId, options = {}) {
   const model = modelStore.getById(modelId);
   if (!model) throw Object.assign(new Error('Model not found: ' + modelId), { status: 404 });
 
+  // P0 v0.X: lang 控制 plan summary / steps 字段的语言
+  const lang = options.lang || task.preferred_lang || 'zh';
+
   const { callLLM } = require('./llm-adapter');
 
   // 让 LLM 读 workspace 后输出 JSON plan
@@ -544,6 +620,11 @@ ${task.description || '(no description)'}
 **Type**: ${task.type || 'general'} | **Estimated**: ${task.estimated_hours || 'N/A'}h
 **Acceptance Criteria**: ${task.acceptance_criteria || task.acceptanceCriteria || '(not specified)'}`;
 
+  // P0 v0.X: 语言指令 — 控制 summary / steps / risks 字段文本
+  const langNote = lang === 'en'
+    ? '\n\nIMPORTANT: Write the "summary", "steps", and "risks" fields in English. (JSON keys stay in English, file paths in code stay as-is.)'
+    : '\n\n重要：所有 "summary"、"steps"、"risks" 字段都用中文写。（JSON 的 key 名保持英文，代码里的文件路径保持原样。）';
+
   const planPrompt = `You are planning the implementation of a coding task. Based on the task description below, output a structured JSON plan ONLY (no markdown, no commentary, no tool calls).
 
 The plan must include:
@@ -552,7 +633,7 @@ The plan must include:
 - steps: ordered execution steps as strings
 - risks: array of known risks/assumptions
 
-Use your knowledge of common project structures to infer likely files. Be specific about file paths (e.g. "src/core/GameState.js" not "the main file").
+Use your knowledge of common project structures to infer likely files. Be specific about file paths (e.g. "src/core/GameState.js" not "the main file").${langNote}
 
 Task:
 ${taskContext}

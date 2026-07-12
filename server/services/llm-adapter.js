@@ -536,6 +536,29 @@ function detectStreamStall(result, messages) {
   return null;
 }
 
+// ===== v0.X: Trace Capture — 完整任务执行链路日志 =====
+//   当 options.traceFile 设置时，每轮将完整 messages / LLM 响应 / 工具调用写入 JSONL
+//   生成路径：data/traces/<taskId>-<timestamp>.jsonl
+//   每行一个 JSON 事件：{ type, round, ts, data }
+const fs = require('fs');
+const path = require('path');
+const TRACE_DIR = path.join(__dirname, '..', '..', 'data', 'traces');
+
+function initTrace(taskId) {
+  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const filePath = path.join(TRACE_DIR, `${taskId}-${ts}.jsonl`);
+  try { fs.mkdirSync(TRACE_DIR, { recursive: true }); } catch (e) { /* ignore */ }
+  return filePath;
+}
+
+function writeTrace(filePath, type, round, data) {
+  if (!filePath) return;
+  try {
+    const entry = JSON.stringify({ type, round, ts: new Date().toISOString(), data: data });
+    fs.appendFileSync(filePath, entry + '\n');
+  } catch (e) { /* 不阻塞主流程 */ }
+}
+
 async function runToolLoop(modelId, messages, options = {}) {
   const maxRounds = options.maxRounds ?? 10;
   const toolNames = options.toolNames;
@@ -545,6 +568,21 @@ async function runToolLoop(modelId, messages, options = {}) {
   if (!model) throw Object.assign(new Error('模型不存在'), { status: 404 });
   const api = model.api || 'openai-chat';
 
+  // v0.X: Trace capture — 完整执行链路日志
+  //   当 options.traceFile 或 context.taskId + task.trace_mode 设置时启用
+  let traceFile = options.traceFile || null;
+  if (!traceFile && context.taskId) {
+    // 检查 task 是否启用了 trace_mode
+    try {
+      const { collection } = require('../db/connection');
+      const task = collection('tasks').findOne(t => t.id === context.taskId);
+      if (task && task.trace_mode) {
+        traceFile = initTrace(context.taskId);
+        writeTrace(traceFile, 'init', 0, { modelId, maxRounds, toolNames, taskId: context.taskId });
+      }
+    } catch (e) { /* trace init failed */ }
+
+  // v0.20 bugfix：检测 LLM 连续两轮调同一 tool + 相同 args → 强制退出（避免无限循环）
   // v0.20 bugfix：检测 LLM 连续两轮调同一 tool + 相同 args → 强制退出（避免无限循环）
   //   旧 bug：LLM 调 play_music(song="X") → handler 返回 ok → LLM 再调确认 → 再返回 ok → 死循环
   //   修复：连续两轮同 tool+args 直接返回最后一次 content（不抛错），避免 LLM 死循环
@@ -610,7 +648,7 @@ async function runToolLoop(modelId, messages, options = {}) {
     // v0.45: 执行中途 steer 检查 — 如果 progress_note 中有新的 steer message，注入到 messages
     if (context.taskId && progressCallback) {
       try {
-        const { collection } = require('../../db/connection');
+        const { collection } = require('../db/connection');
         const task = collection('tasks').findOne(t => t.id === context.taskId);
         if (task && task.progress_note) {
           const steerMatch = task.progress_note.match(/--- PM Steer ---\n([\s\S]*?)(?:\n--- PM Steer ---|$)/);
@@ -643,6 +681,17 @@ async function runToolLoop(modelId, messages, options = {}) {
     //   让多多能看到"发给 LLM 啥 + LLM 返回啥"，找到装睡根因
     const sysContent = messages[0]?.content || '';
     const remainingRounds = maxRounds - round;
+    // v0.X: Trace — 本轮发送给模型的完整 messages
+    writeTrace(traceFile, 'round_start', round + 1, {
+      messages: messages.map(m => {
+        // 安全序列化：截断超长 tool result 防 trace 文件膨胀
+        const safe = { role: m.role };
+        if (typeof m.content === 'string') safe.content = m.content.length > 50000 ? m.content.slice(0, 50000) + '...[TRUNCATED]' : m.content;
+        if (m.tool_calls) safe.tool_calls = m.tool_calls;
+        return safe;
+      }),
+      remainingRounds,
+    });
     // v0.45: 把剩余轮次注入到 messages，让 LLM 知道紧迫感（避免到第 80 轮还在试探）
     if (round >= 3 && round % 5 === 0) {
       // 每 5 轮注入一次预算提醒
@@ -663,6 +712,13 @@ async function runToolLoop(modelId, messages, options = {}) {
       console.log(`[runToolLoop] LLM_CALL#${round + 1} msg[${messages.length - 5 + idx}] role=${m.role} preview="${preview}"`);
     });
     const result = await callLLMWithTools(modelId, messages, { ...options, toolNames });
+    // v0.X: Trace — 记录 LLM 返回的完整 content + tool_calls
+    writeTrace(traceFile, 'llm_response', round + 1, {
+      content: result.content || '',
+      toolCalls: (result.toolCalls || []).map(tc => ({ name: tc.name, id: tc.id, args: tc.args })),
+      finishReason: result.finishReason || null,
+      usage: result.usage || null,
+    });
     // v0.31 fix: dump LLM 完整 response
     const content = typeof result.content === 'string' ? result.content : '';
     console.log(`[runToolLoop] LLM_RESP#${round + 1} content_len=${content.length} finish_reason=${result.finishReason || 'n/a'} tool_calls=${result.toolCalls?.length || 0}`);
@@ -740,6 +796,12 @@ Round ${round + 1}/${maxRounds}。
       }
       console.log(`[runToolLoop] round=${round + 1} LLM 返回最终答案 (no tool calls), content=${(result.content || '').length} chars`);
       if (toolCallHistory.length > 0) console.log(`[runToolLoop] 完整 tool call history:\n${toolCallHistory.map(h => `  r${h.round} ${h.tool}(${(h.args||'').slice(0, 100)})`).join('\n')}`);
+      // v0.X: Trace — 最终答案
+      writeTrace(traceFile, 'final_answer', round + 1, {
+        content: result.content || '',
+        toolCallHistory,
+        remainingRounds,
+      });
       // v0.35: 最终答案回调
       if (progressCallback) {
         progressCallback(round + 1, maxRounds, '正在生成任务总结...', toolCallHistory.map(h => h.tool).slice(-3));
@@ -835,6 +897,13 @@ Round ${round + 1}/${maxRounds}。
           console.log(`[runToolLoop] v0.33 truncated ${tc.name} result: ${truncated.origSize} → ${TOOL_RESULT_TRUNCATE_BYTES} bytes`);
         }
         console.log(`[runToolLoop]   -> result (${resultPreview.length} chars): ${resultPreview}`);
+        // v0.X: Trace — 记录工具的完整 args + result
+        writeTrace(traceFile, 'tool_result', round + 1, {
+          name: tc.name,
+          args: tc.args,
+          result: toolResult,
+          truncated: truncated.truncated || false,
+        });
         toolCallHistory.push({ round: round + 1, tool: tc.name, args: argsPreview, resultPreview });
         messages.push(toolRegistry.makeToolResult(api, tc.id, truncated.result));
       } catch (e) {
@@ -845,6 +914,10 @@ Round ${round + 1}/${maxRounds}。
     }
   }
   console.error(`[runToolLoop] Tool loop exceeded max rounds (${maxRounds}). 完整 tool call history (${toolCallHistory.length} 条):\n${toolCallHistory.map(h => `  r${h.round} ${h.tool}(${(h.args||'').slice(0, 80)}) → ${h.resultPreview ? h.resultPreview.slice(0, 80) : (h.result || h.error || '?')}`).join('\n')}`);
+  writeTrace(traceFile, 'tool_loop_exceeded', maxRounds, {
+    toolCallHistory,
+    messagesCount: messages.length,
+  });
   throw new Error(`Tool loop exceeded max rounds (${maxRounds})`);
 }
 

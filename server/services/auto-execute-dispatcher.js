@@ -47,6 +47,19 @@ function setReExecuteCount(taskStore, taskId, count) {
   taskStore.update(taskId, { re_execute_count: count, updated_at: new Date().toISOString() });
 }
 
+// P0 v0.X: 解析任务的首选语言（agent 输出语言）
+//   优先级：task.doc.preferred_lang > 全局 PM 设置 > 'zh'
+//   task.doc.preferred_lang 由前端主动操作（generatePlan/approve 等）时存进去
+function getPreferredLang(task) {
+  if (task && task.preferred_lang) return task.preferred_lang;
+  // 全局 PM 默认语言（如果 settings 表里有的话）
+  try {
+    const settings = require('./settings-store');
+    if (settings && settings.get && settings.get('default_lang')) return settings.get('default_lang');
+  } catch (e) { /* settings-store 不存在也无所谓 */ }
+  return 'zh';
+}
+
 class AutoExecuteDispatcher {
   constructor() {
     this.processedClaims = new Set();  // taskId 去重（短期，restart 会清，符合预期）
@@ -110,6 +123,30 @@ class AutoExecuteDispatcher {
       return;
     }
 
+    // P0 v0.X: execution_mode 控制是否自动执行
+    //   'auto' (默认) = claim 后立即 execute
+    //   'plan_first' = claim 后等 plan approved 才 execute（plan approve 时会主动调 agent-execute）
+    //   'manual' = claim 后永不自动执行，PM 手动点"开始执行"按钮
+    const mode = task.execution_mode || 'auto';
+    if (mode === 'manual') {
+      console.log(`[AutoExecuteDispatcher] ⏭️ 跳过 ${taskId}: execution_mode=manual，需要 PM 手动开始`);
+      this.stats.skipped++;
+      return;
+    }
+    if (mode === 'plan_first') {
+      // plan 不存在 或 plan 未 approved → 跳过自动执行
+      if (!task.plan) {
+        console.log(`[AutoExecuteDispatcher] ⏭️ 跳过 ${taskId}: execution_mode=plan_first 且无 plan`);
+        this.stats.skipped++;
+        return;
+      }
+      if (!task.plan.approved) {
+        console.log(`[AutoExecuteDispatcher] ⏭️ 跳过 ${taskId}: execution_mode=plan_first 但 plan 未 approved`);
+        this.stats.skipped++;
+        return;
+      }
+    }
+
     // 任务依赖必须满足（虽然在 in_progress 但可能被回退到 backlog 检查依赖？）
     // claim() 自身会校验依赖，这里再次安全检查
     if (taskStore.areDependenciesMet && !taskStore.areDependenciesMet(taskId)) {
@@ -137,7 +174,9 @@ class AutoExecuteDispatcher {
       const httpReq = await fetch(`http://127.0.0.1:${process.env.PORT || 3300}/api/ai-tools/agent-execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-API-Key': process.env.ACMS_API_KEY || 'dev-key-001' },
-        body: JSON.stringify({ taskId, agentId: assignee }),
+        // P0 v0.X: 带 lang — 优先用 task.doc.preferred_lang（用户之前主动操作时存的），
+        //   否则读全局 PM 配置，最后 fallback 'zh'
+        body: JSON.stringify({ taskId, agentId: assignee, lang: getPreferredLang(task) }),
       }).catch(err => ({ error: err.message }));
 
       const result = httpReq && typeof httpReq.json === 'function' ? await httpReq.json() : httpReq;
@@ -186,7 +225,8 @@ class AutoExecuteDispatcher {
         const httpReq = await fetch(`http://127.0.0.1:${port}/api/ai-tools/agent-execute`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
-          body: JSON.stringify({ taskId, agentId: task.assigned_to, steerMessage: retryMsg }),
+          // P0 v0.X: 带 lang — 跟初始触发的 lang 一致
+          body: JSON.stringify({ taskId, agentId: task.assigned_to, steerMessage: retryMsg, lang: getPreferredLang(task) }),
         }).catch(err => ({ error: err.message }));
         const result = httpReq && typeof httpReq.json === 'function' ? await httpReq.json() : httpReq;
         if (result && result.success) {

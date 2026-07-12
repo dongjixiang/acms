@@ -233,10 +233,19 @@ router.post('/requirements/:id/check-consistency', async (req, res, next) => {
 // Agent 自主执行 — LLM 探索工作区 + 分析 + 自动提交
 router.post('/agent-execute', async (req, res, next) => {
   try {
-    const { taskId, modelId, agentId } = req.body;
+    // P0 v0.X: 接 lang — agent 输出语言跟前端 UI 一致
+    //   默认 'zh'（多多场景），前端主动调时通过 I18n.getLang() 传入
+    //   同时存到 task.doc.preferred_lang，后续 dispatcher 触发的重跑也能拿到
+    const { taskId, modelId, agentId, lang } = req.body;
     if (!taskId) return res.status(400).json({ error: 'MISSING_TASK_ID' });
 
-    const result = await aiTools.executeTaskAgent(taskId, { modelId });
+    const effectiveLang = lang || 'zh';
+    const task = taskStore.getById(taskId);
+    if (task && lang) {
+      taskStore.update(taskId, { preferred_lang: lang, updated_at: new Date().toISOString() });
+    }
+
+    const result = await aiTools.executeTaskAgent(taskId, { modelId, lang: effectiveLang });
 
     // v0.35 改版：基于任务需求验证文件，不 parse LLM summary
     //   从任务描述/acceptance criteria 提取文件路径 → 验证是否存在
@@ -361,8 +370,15 @@ router.post('/agent-steer/:taskId', async (req, res, next) => {
 router.post('/agent-plan/:taskId', async (req, res, next) => {
   try {
     const { taskId } = req.params;
-    const { modelId } = req.body;
-    const result = await aiTools.generatePlan(taskId, { modelId });
+    // P0 v0.X: 接 lang — plan summary 跟 UI 语言一致
+    //   同时存到 task.doc.preferred_lang，后续 dispatcher 触发的重跑也能拿到
+    const { modelId, lang } = req.body;
+    const effectiveLang = lang || 'zh';
+    if (lang) {
+      const task = taskStore.getById(taskId);
+      if (task) taskStore.update(taskId, { preferred_lang: lang, updated_at: new Date().toISOString() });
+    }
+    const result = await aiTools.generatePlan(taskId, { modelId, lang: effectiveLang });
     res.json({
       success: true,
       taskId,

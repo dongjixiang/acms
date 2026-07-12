@@ -5,6 +5,8 @@
 const { registerTool } = require('../../services/tool-registry');
 // P0 v0.X: 改文件后失效 read_file 缓存
 const readCache = require('./read-cache');
+// P0 v0.X: 跨任务记忆
+const workspaceMeta = require('../../services/workspace-meta');
 
 // ===== 辅助函数 =====
 
@@ -172,6 +174,8 @@ registerTool({
     workspace.writeFile(slug, args.path, result.newContent);
     // P0 v0.X: 改文件后失效缓存
     readCache.invalidate(ctx.taskId, args.path);
+    // P0 v0.X: 跨任务记忆
+    try { workspaceMeta.recordWrite(slug, args.path, { taskId: ctx.taskId }); } catch (e) { /* 不阻塞 */ }
 
     // Syntax check for .js files
     let syntaxStatus = null;
@@ -274,6 +278,8 @@ registerTool({
         workspace.writeFile(slug, patch.path, result.newContent);
         // P0 v0.X: multi_patch 也失效缓存
         readCache.invalidate(ctx.taskId, patch.path);
+        // P0 v0.X: 跨任务记忆
+        try { workspaceMeta.recordWrite(slug, patch.path, { taskId: ctx.taskId }); } catch (e) { /* 不阻塞 */ }
 
         // Syntax check for .js files
         let syntaxStatus = null;

@@ -5,6 +5,8 @@
 //   workspace 已有沙箱安全（path traversal / 越界访问均被拦截）
 const { registerTool } = require('../../services/tool-registry');
 const readCache = require('./read-cache');
+// P0 v0.X: workspace meta — 跨任务记忆（读了哪些文件、被哪些 task 改过）
+const workspaceMeta = require('../../services/workspace-meta');
 
 registerTool({
   name: 'agent_read_file',
@@ -32,6 +34,10 @@ registerTool({
     const project = projectStore.getById(projectId);
     if (!project) return { error: 'PROJECT_NOT_FOUND' };
     const slug = project.slug || project.name;
+
+    // P0 v0.X: 跨任务记忆 — 记录"这个任务读了 X 文件"
+    try { workspaceMeta.recordRead(slug, args.path, { taskId }); } catch (e) { /* 不阻塞 */ }
+
     const workspace = require('../../services/workspace-service');
     const content = workspace.readFile(slug, args.path);
     if (content === null) {

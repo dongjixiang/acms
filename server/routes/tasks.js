@@ -73,12 +73,24 @@ router.post('/:id/progress', (req, res) => {
 });
 
 // 切换自动审核开关
-router.patch('/:id/auto-review', (req, res) => {
+router.patch('/:id/auto-review', async (req, res, next) => {
   const { enabled } = req.body;
   const task = taskStore.getById(req.params.id);
   if (!task) return res.status(404).json({ error: 'TASK_NOT_FOUND' });
   taskStore.update(req.params.id, { auto_review: enabled ? 1 : 0 });
   res.json({ id: req.params.id, auto_review: enabled ? 1 : 0 });
+});
+
+// P0 v0.X: 切换 execution_mode — 'auto' / 'plan_first' / 'manual'
+router.patch('/:id/execution-mode', async (req, res, next) => {
+  const { mode } = req.body;
+  if (!['auto', 'plan_first', 'manual'].includes(mode)) {
+    return res.status(400).json({ error: 'INVALID_MODE', message: 'mode 必须是 auto / plan_first / manual 之一' });
+  }
+  const task = taskStore.getById(req.params.id);
+  if (!task) return res.status(404).json({ error: 'TASK_NOT_FOUND' });
+  taskStore.update(req.params.id, { execution_mode: mode, updated_at: new Date().toISOString() });
+  res.json({ id: req.params.id, execution_mode: mode });
 });
 
 // 提交成果 — 如果 auto_review=1，自动触发 Reviewer Agent 审核

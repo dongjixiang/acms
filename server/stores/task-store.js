@@ -5,7 +5,7 @@ const { v4: uuidv4 } = require('uuid');
 class TaskStore {
   create({ projectId, parentId = '', title, description = '', type = 'coding', priority = 3,
            requiredSkills = {}, estimatedHours = 0, dependsOn = [], dependsContract = [],
-           wikiContext = '', linkedWiki = [], autoReview = false }) {
+           wikiContext = '', linkedWiki = [], autoReview = false, executionMode = 'auto' }) {
     const id = `T-${Date.now().toString(36).toUpperCase()}`;
     const now = new Date().toISOString();
     const task = {
@@ -18,6 +18,10 @@ class TaskStore {
       estimated_hours: estimatedHours, actual_hours: 0, assigned_to: '', assigned_at: '',
       assigned_role: 'executor', progress: 0, progress_note: '', last_progress_update: '',
       auto_review: autoReview ? 1 : 0, review_status: '',
+      // P0 v0.X: execution_mode 控制 claim 后是否自动执行
+      //   'auto' = claim 后立即 execute（默认，向后兼容）
+      //   'plan_first' = claim 后等待 plan approved 才 execute（多多期望的流程）
+      execution_mode: executionMode,
       wiki_context: wikiContext, linked_wiki: JSON.stringify(linkedWiki),
       execution_log: '[]', submissions: '[]', reviews: '[]', artifacts: '{}',
       version: 1, created_at: now, updated_at: now, completed_at: '',
