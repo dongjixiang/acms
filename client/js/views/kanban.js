@@ -3,6 +3,39 @@
 
 let _kanbanFilterLoaded = false;
 
+// 任务看板 — 已归档 + 已失败 默认收起（不显示），点中间按钮展开
+// 状态写 localStorage 跨刷新保持
+const _KANBAN_DIVIDER_STORAGE_KEY = 'acms-kanban-archive-failed-expanded';
+const _KANBAN_DIVIDER_COLS = ['archived', 'failed'];  // 受控列
+
+function _isArchiveFailedExpanded() {
+  return localStorage.getItem(_KANBAN_DIVIDER_STORAGE_KEY) === '1';
+}
+
+// 应用初始收起状态（页面加载时立即调用）
+function applyKanbanDividerState() {
+  const expanded = _isArchiveFailedExpanded();
+  for (const col of _KANBAN_DIVIDER_COLS) {
+    const el = document.querySelector('.kanban-col[data-col="' + col + '"]');
+    if (el) el.style.display = expanded ? '' : 'none';
+  }
+  const btn = document.getElementById('kanban-divider-toggle');
+  if (btn) {
+    btn.classList.toggle('expanded', expanded);
+    btn.title = expanded ? '收起已归档/失败' : '展开已归档/失败';
+  }
+}
+
+// 切换已归档+已失败两列的可见性
+function toggleArchiveFailed() {
+  const willExpand = !_isArchiveFailedExpanded();
+  localStorage.setItem(_KANBAN_DIVIDER_STORAGE_KEY, willExpand ? '1' : '0');
+  applyKanbanDividerState();
+}
+
+// 页面加载时立即应用（DOM 已就绪，因为脚本在 body 末尾）
+applyKanbanDividerState();
+
 async function loadKanbanReqFilter() {
   if (!App.currentProjectId) return;
   try {
@@ -144,6 +177,14 @@ async function openTask(taskId) {
         '</div>' +
         '<div><span class="label">进度:</span> ' + (t.progress || 0) + '%</div>' +
         '<div><span class="label">父需求:</span> ' + (t.parent_id || '无') + '</div>' +
+        // P0 v0.X: execution_mode 切换 — 控制 claim 后是否自动执行
+        '<div><span class="label">执行模式:</span>' +
+          '<select onchange="changeExecutionMode(\'' + t.id + '\', this.value)" style="font-size:12px;padding:2px 4px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:3px" title="auto=claim后立即执行；plan_first=需批准计划才执行；manual=需手动开始">' +
+            '<option value="auto"' + ((t.execution_mode || 'auto') === 'auto' ? ' selected' : '') + '>⚡ auto</option>' +
+            '<option value="plan_first"' + (t.execution_mode === 'plan_first' ? ' selected' : '') + '>📋 plan_first</option>' +
+            '<option value="manual"' + (t.execution_mode === 'manual' ? ' selected' : '') + '>✋ manual</option>' +
+          '</select>' +
+        '</div>' +
       '</div>' +
 (t.status === 'in_progress' ? '<div class="progress-bar" style="margin-top:8px"><div class="progress-fill" style="width:' + (t.progress || 0) + '%"></div></div>' : '') +
       '<h3>📝 任务描述</h3>' +
@@ -164,6 +205,11 @@ async function openTask(taskId) {
         (t.status === 'backlog' ? '<button class="btn-accept" onclick="claimTask(\'' + t.id + '\')">认领</button>' : '') +
         (t.status === 'in_progress' ? '<button class="btn-primary" onclick="updateTaskProgress(\'' + t.id + '\')">更新进度</button><button class="btn-accept" onclick="submitTask(\'' + t.id + '\', ' + (t.auto_review ? 'true' : 'false') + ')">提交审核</button>' : '') +
         (t.status === 'review' ? '<button class="btn-accept" onclick="reviewTask(\'' + t.id + '\',\'approved\')">通过</button><button class="btn-reject" onclick="reviewTask(\'' + t.id + '\',\'rejected\')">驳回</button>' : '') +
+        // P0 v0.X: manual / plan_first 模式 + in_progress 状态 + 还没在跑 → 显示"开始执行"
+        //   还没在跑的判定：progress === 0 且 execution_log 为空
+        ((t.status === 'in_progress') && (t.execution_mode === 'manual' || t.execution_mode === 'plan_first') && (!t.progress || t.progress === 0) && (safeParse(t.execution_log).length === 0)
+          ? '<button class="btn-accept" onclick="startTaskManually(\'' + t.id + '\')" title="手动触发 agent-execute">▶ 开始执行</button>'
+          : '') +
         // v0.X fix: failed 任务详情也提供操作按钮
         (t.status === 'failed' ? '<button class="btn-accept" onclick="reactivateTask(\'' + t.id + '\')">↻ 重激活（拉回 backlog）</button><button class="btn-reject" onclick="archiveTask(\'' + t.id + '\')">📦 归档放弃</button>' : '') +
         '<button class="btn-small btn-reject" style="margin-left:auto" onclick="deleteTask(\'' + t.id + '\')">🗑 删除</button>' +
@@ -214,9 +260,31 @@ async function assignTaskCard(taskId, agentId) {
   } catch(e) { toast('分配失败: ' + e.message, 'error'); }
 }
 
-async function claimTask(tid) { var a = prompt('智能体ID:', 'agent-scholar-001'); if (!a) return; try { await Tasks.claim(tid, a); toast('已认领 ✅', 'success'); refreshKanban(); openTask(tid); } catch (e) { toast('失败: ' + e.message, 'error'); } }
-async function submitTask(tid) { var n = prompt('提交说明:') || '完成'; try { await Tasks.submit(tid, 'agent-scholar-001', [], n); toast('已提交', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
-async function reviewTask(tid, verdict) { try { await Tasks.review(tid, verdict); toast(verdict === 'approved' ? '已通过 ✅' : '已驳回', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
+async function claimTask(tid) { const a = await showPrompt({ title: '认领任务', message: '请输入智能体 ID', defaultValue: 'agent-scholar-001', minLength: 1, multiline: false, confirmText: '认领' }); if (!a) return; try { await Tasks.claim(tid, a); toast('已认领 ✅', 'success'); refreshKanban(); openTask(tid); } catch (e) { toast('失败: ' + e.message, 'error'); } }
+async function submitTask(tid) { const n = await showPrompt({ title: '提交任务', message: '提交说明', placeholder: '例如：实现了 xxx 功能 / 修了 xxx bug', multiline: true, confirmText: '提交' }) || '完成'; try { await Tasks.submit(tid, 'agent-scholar-001', [], n); toast('已提交', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
+// P0 v0.X: 驳回必填理由（min 10 字）— 用 ACMS 标准 showPrompt 弹窗
+//   之前用 window.prompt() 在某些浏览器被拦截 / 用户不知道要点 OK
+//   现在是内嵌 textarea + 实时字数统计 + 按钮 disabled 控制
+async function reviewTask(tid, verdict) {
+  let feedback = '';
+  if (verdict === 'rejected') {
+    feedback = await showPrompt({
+      title: '驳回任务',
+      message: '请说清楚哪里错了 / 期望怎么改。Agent 会把这段反馈作为下一轮执行的重要信号。',
+      placeholder: '例如：CSS 改了但 JS 初始化时序还是错的，先检查 initGame 是否在 GameState 之前调用...',
+      minLength: 10,
+      confirmText: '驳回',
+    });
+    if (feedback === null) return;  // 用户取消
+  }
+  try {
+    await Tasks.review(tid, verdict, feedback);
+    toast(verdict === 'approved' ? '已通过 ✅' : '已驳回（含反馈给 agent）', 'success');
+    refreshKanban();
+  } catch (e) {
+    toast('失败: ' + e.message, 'error');
+  }
+}
 // v0.35: Kanban 悬浮进度提示框 — hover 卡片进度区域显示实时终端风格日志
 let _progressTooltip = null;
 let _progressTooltipSSE = null;
@@ -532,13 +600,14 @@ function renderPlanSection(task) {
 
 // v0.46 Plan mode: Plan API 调用 helpers
 async function generatePlan(taskId) {
-  if (!confirm('确定要生成 Plan 吗？会调一次 LLM（约 10-15 秒）。')) return;
+  if (!(await showConfirm('确定要生成 Plan 吗？会调一次 LLM（约 10-15 秒）。', { type: 'info', confirmText: '生成' }))) return;
   try {
     toast('正在生成 Plan...', 'info', 3000);
     const resp = await fetch('/api/ai-tools/agent-plan/' + taskId, {
       method: 'POST',
       headers: { 'X-API-Key': 'dev-key-001', 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
+      // P0 v0.X: 带 lang — 让 agent 输出语言跟前端 UI 一致
+      body: JSON.stringify({ lang: (window.I18n && I18n.getLang) ? I18n.getLang() : 'zh' }),
     });
     const data = await resp.json();
     if (data.success) {
@@ -553,7 +622,7 @@ async function generatePlan(taskId) {
 }
 
 async function approvePlan(taskId) {
-  if (!confirm('批准 Plan？批准后会立即开始执行 agent（agent 会按 plan 创建/修改文件）。')) return;
+  if (!(await showConfirm('批准 Plan？批准后会立即开始执行 agent（agent 会按 plan 创建/修改文件）。', { type: 'info', confirmText: '批准并执行' }))) return;
   try {
     toast('正在批准并启动 agent...', 'info');
     const resp = await fetch('/api/ai-tools/agent-plan/' + taskId + '/approve', {
@@ -574,13 +643,22 @@ async function approvePlan(taskId) {
   }
 }
 
+// P0 v0.X: Plan 驳回必填理由（min 10 字，对齐 task review / requirement reject）
+//   用 showPrompt 弹窗替代原生 prompt — 用户能看到 textarea + 实时字数
 async function rejectPlan(taskId) {
-  const reason = prompt('拒绝 Plan 的原因（可选）：', '');
+  const reason = await showPrompt({
+    title: '拒绝 Plan',
+    message: '说清楚哪里不对 / 期望怎么改。Agent 会基于此重新生成。',
+    placeholder: '例如：缺少错误处理 / 步骤 2 的文件路径错了，应该是 src/...',
+    minLength: 10,
+    confirmText: '拒绝',
+  });
+  if (reason === null) return;
   try {
     const resp = await fetch('/api/ai-tools/agent-plan/' + taskId + '/reject', {
       method: 'POST',
       headers: { 'X-API-Key': 'dev-key-001', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reason: reason || '' }),
+      body: JSON.stringify({ reason }),
     });
     const data = await resp.json();
     if (data.success) {
@@ -825,7 +903,47 @@ function startProgressViewer(taskId, startedAt) {
 async function reactivateTask(tid) { if (!(await showConfirm('确认把此失败任务拉回 backlog 重跑？依赖它的任务会自动解锁。'))) return; try { await api('POST', '/tasks/' + tid + '/transition', { targetStatus: 'backlog' }); toast('已重新激活 ✅', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
 async function archiveTask(tid) { if (!(await showConfirm('确认归档此失败任务？将不再出现在看板上。'))) return; try { await api('POST', '/tasks/' + tid + '/transition', { targetStatus: 'archived' }); toast('已归档', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
 async function toggleAutoReview(tid, enabled) { try { await api('PATCH', '/tasks/' + tid + '/auto-review', { enabled: enabled }); toast(enabled ? '🤖 自动审核已开启' : '自动审核已关闭', 'success'); } catch (e) { toast('切换失败: ' + e.message, 'error'); } }
-async function updateTaskProgress(tid) { var p = prompt('进度 (0-100):', '50'); if (!p) return; try { await api('POST', '/tasks/' + tid + '/progress', { progress: parseInt(p), note: '手动更新' }); toast('进度已更新', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
+
+// P0 v0.X: 手动开始执行任务（manual / plan_first 模式专用）
+async function startTaskManually(tid) {
+  if (!(await showConfirm('手动开始执行此任务？将触发 agent-execute。', { type: 'info', confirmText: '开始执行' }))) return;
+  try {
+    toast('正在启动 agent...', 'info');
+    const resp = await api('POST', '/ai-tools/agent-execute', {
+      taskId: tid,
+      lang: (window.I18n && I18n.getLang) ? I18n.getLang() : 'zh',
+    });
+    if (resp.success) {
+      toast('Agent 开始执行 ⚙️', 'success');
+      openTask(tid);
+    } else {
+      toast('启动失败: ' + (resp.error || resp.message || '未知'), 'error', 5000);
+    }
+  } catch (e) {
+    toast('启动失败: ' + e.message, 'error', 5000);
+  }
+}
+
+// P0 v0.X: 切换 execution_mode
+//   auto = claim 后立即执行（默认）
+//   plan_first = 需批准计划才执行（多多期望的"先看 plan 再执行"）
+//   manual = 永不自动执行，需手动点"开始执行"
+async function changeExecutionMode(tid, mode) {
+  const labels = { auto: '⚡ auto（claim 后立即执行）', plan_first: '📋 plan_first（需批准计划才执行）', manual: '✋ manual（手动开始）' };
+  if (!(await showConfirm(`切换到 ${labels[mode]}？`, { type: 'info', confirmText: '切换', cancelText: '取消' }))) {
+    // 用户取消 → 刷新页面恢复原值
+    openTask(tid);
+    return;
+  }
+  try {
+    await api('PATCH', '/tasks/' + tid + '/execution-mode', { mode });
+    toast('执行模式已切换 → ' + labels[mode], 'success');
+  } catch (e) {
+    toast('切换失败: ' + e.message, 'error');
+    openTask(tid);  // 失败也恢复
+  }
+}
+async function updateTaskProgress(tid) { const p = await showPrompt({ title: '更新进度', message: '进度（0-100）', defaultValue: '50', minLength: 1, multiline: false, confirmText: '更新' }); if (!p) return; try { await api('POST', '/tasks/' + tid + '/progress', { progress: parseInt(p), note: '手动更新' }); toast('进度已更新', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
 async function deleteTask(tid) { if (!(await showConfirm('确认删除此任务？'))) return; try { await api('DELETE', '/tasks/' + tid); toast('已删除', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
 
 async function exportTask(tid) {

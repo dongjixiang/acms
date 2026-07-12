@@ -16,7 +16,7 @@ function showView(id) {
 function goToProjects() {
   App.currentProjectId = null; App.currentProject = null;
   document.getElementById('current-project').textContent = '';
-  document.getElementById('header-title').innerHTML = '🤖 智能体协同管理系统 <span class="version">v0.3</span>';
+  document.getElementById('header-title').innerHTML = `<img src="/client/img/logo.png" alt="ACMS" class="header-logo"> <span data-i18n="app.title">智能体协同管理系统</span> <span class="version" data-i18n="app.version">v0.3</span>`;
   showView('view-projects');
   App.closeSidebar();
   if (typeof loadProjects === 'function') loadProjects();

@@ -32,7 +32,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <option value="tech">🛠 技术</option>
         <option value="design">🎨 设计</option>
       </select>
-      <button class="btn-small" onclick="showView('view-admin');loadAdminPage();" title="系统管理（点击 → 运营工具 → 想法池 / 自我改进）">⚙️</button>
+      <button class="btn-small" onclick="navigateToAdmin()" title="系统管理（点击 → 运营工具 → 想法池 / 自我改进）">⚙️</button>
       <button id="btn-theme-toggle" class="btn-small" onclick="App.toggleTheme()" title="切换主题">🌙</button>
       <select id="lang-switcher" onchange="I18n.setLang(this.value)">
         <option value="zh">🇨🇳 中文</option>
@@ -91,7 +91,7 @@ document.addEventListener('DOMContentLoaded', () => {
   <main id="view-admin" class="view-main" style="display:none">
     <div class="projects-page">
       <div class="view-header" style="display:flex;align-items:center;gap:12px">
-        <button class="btn-back" onclick="showView('view-projects');loadProjects();">← 返回项目</button>
+        <button class="btn-back" onclick="backFromAdmin()">← 返回</button>
         <h2>⚙️ 系统管理</h2>
       </div>
       <div id="admin-content"></div>
@@ -219,9 +219,12 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="kanban-col" data-col="backlog"><div class="col-header">📥 <span data-i18n="kanban.cols.backlog">待认领</span> <span class="count" id="count-backlog">0</span></div><div class="col-body" id="col-backlog"></div></div>
             <div class="kanban-col" data-col="in_progress"><div class="col-header">🔄 <span data-i18n="kanban.cols.in_progress">进行中</span> <span class="count" id="count-in_progress">0</span></div><div class="col-body" id="col-in_progress"></div></div>
             <div class="kanban-col" data-col="review"><div class="col-header">👀 <span data-i18n="kanban.cols.review">待审核</span> <span class="count" id="count-review">0</span></div><div class="col-body" id="col-review"></div></div>
-            <div class="kanban-col" data-col="done"><div class="col-header">✅ <span data-i18n="kanban.cols.done">已完成</span> <span class="count" id="count-done">0</span></div><div class="col-body" id="col-done"></div></div>
+<div class="kanban-col" data-col="done">
+              <div class="col-header">✅ <span data-i18n="kanban.cols.done">已完成</span> <span class="count" id="count-done">0</span></div>
+              <div class="col-body" id="col-done"></div>
+              <button class="kanban-divider-btn" id="kanban-divider-toggle" onclick="toggleArchiveFailed()" title="展开已归档/失败" aria-label="toggle"></button>
+            </div>
             <div class="kanban-col" data-col="archived"><div class="col-header">📦 <span data-i18n="kanban.cols.archived">已归档</span> <span class="count" id="count-archived">0</span></div><div class="col-body" id="col-archived"></div></div>
-            <!-- v0.X fix: failed 列 — Agent Claims 验证失败的兜底展示 -->
             <div class="kanban-col failed-col" data-col="failed"><div class="col-header">❌ <span data-i18n="kanban.cols.failed">已失败</span> <span class="count" id="count-failed">0</span></div><div class="col-body" id="col-failed"></div></div>
           </div>
         </div>
