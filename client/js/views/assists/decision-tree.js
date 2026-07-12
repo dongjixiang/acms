@@ -44,7 +44,7 @@
     const regenBtn = `<button class="dt-btn" onclick="ACMSAssistDispatcher.regenerateBatch('${reqId}', 'decision_tree')" title="让 AI 再生成 3 个明显不同的方向">🔄 ${isSubmitted ? '↩ 重新选择' : '都不符合，再换一批'}</button>`;
     const submitBtn = isSubmitted
       ? ''
-      : `<button class="dt-btn dt-btn-primary" id="dt-submit-${reqId}" disabled onclick="dtSubmit('${reqId}')">✓ 确认采用这个方向</button>`;
+      : `<button class="dt-btn dt-btn-primary" id="dt-submit-${reqId}" disabled onclick="dtSubmit('${reqId}', this)">✓ 确认采用这个方向</button>`;
 
     return `
       <div class="dt-block">
@@ -62,7 +62,9 @@
   // 渲染后挂事件（dispatcher.afterRender 调用）
   function afterRender(reqId, data) {
     if (!data || data.used) return; // 已提交后不挂事件
-    const layer = document.querySelector(`#assist-area-${reqId} .assist-decision_tree`);
+    // v0.46 fix：优先查#assist-area（旧 sidebar），fallback 到聊天流卡片
+    const layer = document.querySelector(`#assist-area-${reqId} .assist-decision_tree`)
+      || document.querySelector(`.chat-assist-result[data-assist-method="decision_tree"]`);
     if (!layer) return;
     const branches = layer.querySelectorAll('.dt-branch');
     branches.forEach(card => {
@@ -89,9 +91,13 @@
   });
 })();
 
-/** 全局函数：点提交按钮 → 调 useAssist 标记 used_branch_idx + 锁住卡片 */
-function dtSubmit(reqId) {
-  const layer = document.querySelector(`#assist-area-${reqId} .assist-decision_tree`);
+/** 全局函数：点提交按钮 → 调 useAssist 标记 used_branch_idx + 锁住卡片 + 发送到对话框 */
+async function dtSubmit(reqId, el) {
+  // v0.46 fix：从按钮关联的层查找，避免多卡片时总操作第一张
+  const layer = el
+    ? el.closest('.chat-assist-layer, .chat-assist-result, #assist-area')
+    : document.querySelector(`#assist-area-${reqId} .assist-decision_tree`)
+      || document.querySelector(`.chat-assist-layer[data-assist-method="decision_tree"]`);
   if (!layer) return;
   const selected = layer.querySelector('.dt-branch.selected');
   if (!selected) {
@@ -104,13 +110,38 @@ function dtSubmit(reqId) {
     c.classList.remove('selected');
     c.style.cursor = 'default';
   });
-  const submitBtn = document.getElementById(`dt-submit-${reqId}`);
+  const submitBtn = el || layer.querySelector('#dt-submit-' + reqId);
   if (submitBtn) {
     submitBtn.disabled = true;
     submitBtn.textContent = '✓ 已提交';
   }
-  // 调后端标记 + 触发轮询
-  ACMSAssistDispatcher.useAssist(reqId, 'decision_tree', { used_branch_idx: idx });
+  // 调后端标记
+  await ACMSAssistDispatcher.useAssist(reqId, 'decision_tree', { branchIdx: idx });
+
+  // v0.46 fix：如果在聊天流中，把选择内容发送到对话框
+  //   检测：卡片在 chat-stream 容器内
+  const inChatStream = layer.closest('[id^="chat-stream-msgs-"]');
+  if (!inChatStream) return; // 旧 sidebar 模式——只标记，不写聊天流
+
+  const label = selected.querySelector('.dt-branch-label')?.textContent?.trim() || '';
+  const desc = selected.querySelector('.dt-branch-desc')?.textContent?.trim() || '';
+  const pros = selected.querySelector('.dt-pc-pro')?.textContent?.replace(/^\+/,'').trim() || '';
+  const cons = selected.querySelector('.dt-pc-con')?.textContent?.replace(/^−/,'').trim() || '';
+  const letter = selected.querySelector('.dt-branch-letter')?.textContent?.trim() || '';
+  const examples = Array.from(selected.querySelectorAll('.dt-analogy-link')).map(a => a.textContent).join('、');
+  let supplement = `我倾向于方向「${letter} ${label}」—— ${desc}`;
+  if (pros) supplement += `。优势：${pros}`;
+  if (cons) supplement += `；顾虑：${cons}`;
+  if (examples) supplement += `。参考：${examples}`;
+  // 渲染用户气泡 + 发送到后端
+  const c = document.getElementById(`chat-stream-msgs-${reqId}`);
+  if (c) {
+    renderChatBubble(c, {role:'user', text:supplement, at:new Date().toISOString()});
+    layer.remove();
+    c.insertAdjacentHTML('beforeend', '<div class="chat-typing"><span></span><span></span><span></span></div>');
+    chatScrollToBottom(c);
+  }
+  chatSendSupplement(reqId, supplement, 'decision_tree_pick');
 }
 
 /** v0.6.4 关联产品链接：点产品名 → 触发 reference assist → loading 卡片在 .dt-block 下方

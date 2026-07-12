@@ -375,6 +375,10 @@ async function runBriefJob(requirementId, opts = {}) {
           //   → 用户没主动点，assists 也在后台跑
           //   新行为：只"建议"（suggested_assist 已在 brief 里），等用户点 ↻ 按钮/assist 卡片才跑
           console.log(`[brief.assist] ${requirementId} 建议 ${pick.method}（round=${newRound}），等用户主动触发（不再自动跑）`);
+          // v0.46 fix：把 pick 写入 brief.suggested_assist（runBriefJob 之前只打 log 不写，导致 suggested_assist 永远为 null）
+          const updateData = JSON.parse(reqStore.getById(requirementId)?.thinking_brief || 'null') || {};
+          updateData.suggested_assist = { method: pick.method, reason: pick.reason || '' };
+          reqStore.update(requirementId, { thinking_brief: JSON.stringify(updateData) });
         } else if (newRound <= 2) {
           // v0.3.3 B 方案补丁：首轮/第二轮豁免（让用户先自己思考）
           console.log(`[brief.assist] ${requirementId} chat_round=${newRound} 触发首轮豁免，暂不推辅助手段`);

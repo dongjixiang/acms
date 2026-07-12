@@ -110,11 +110,13 @@ async function pickNext(ctx, modelId) {
   }
 
   // 候选列表（去掉 用户用过 + 本轮已生成；visual 保留在候选里，由 LLM 决定是否选）
+  // v0.46 fix：限定路由器只能推荐 prompt 里列出的 method，防止 LLM 乱猜未注册的 method
+  const ROUTER_METHODS = ['scenarios', 'diagnosis', 'tradeoff', 'arch', 'decision_tree', 'visual', 'pains', 'stakeholders', 'risks', 'assumptions'];
   const used = ctx.usedMethods || [];
   const roundUsed = ctx.roundUsedMethods || [];
   const locked = new Set([...used, ...roundUsed]);
   // v0.3.3 B+++：visual 不再硬过滤；保留在候选里，让 LLM 焦点驱动决定
-  const candidates = ASSIST_METHODS.filter(m => !locked.has(m));
+  const candidates = ROUTER_METHODS.filter(m => !locked.has(m));
 
   // v0.3.3 B 方案补丁（2026-06-13）：首轮豁免（让用户先自己思考）
   //   多多原话："第一轮不先要出辅助手段，让用户有机会自我思考。后面等用户思维疲惫了，就可以多出辅助手段"
@@ -164,9 +166,22 @@ async function pickNext(ctx, modelId) {
     const parsed = safeParseJSON(result.content);
     if (!parsed) throw new Error('LLM 返回无法解析为 JSON');
     const method = candidates.includes(parsed.method) ? parsed.method : candidates[0];
+    // v0.46 fix：用固定原因映射，不用 LLM 的 reason（LLM 常生成 method 和 reason 不匹配的文本）
+    const methodReasons = {
+      diagnosis: '先体检一下你描述里没说清楚的地方',
+      scenarios: '挑一个最像你的用户场景，我们就能往下走',
+      tradeoff: '把这个需求里关键的取舍摆出来，你表态',
+      arch: '把核心页面/模块列出来，你圈出想要的',
+      decision_tree: '给你 3 条不同的实现方向，你挑一条',
+      visual: '3 张方向图，看下哪个最像你想要的',
+      pains: '挖掘需求里的隐藏痛点，说清楚"为什么要做"',
+      stakeholders: '识别涉及的所有相关角色和他们的关注点',
+      risks: '扫描需求里的潜在风险，提前规避',
+      assumptions: '提取描述中的隐式假设，避免想当然',
+    };
     return {
       method,
-      reason: typeof parsed.reason === 'string' ? parsed.reason.slice(0, 60) : '',
+      reason: methodReasons[method] || (typeof parsed.reason === 'string' ? parsed.reason.slice(0, 60) : ''),
       modelId: model.id,
     };
   } catch (e) {

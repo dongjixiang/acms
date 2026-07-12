@@ -200,7 +200,8 @@ function startChatPolling(reqId) {
           if (ad.status === 'done') {
             console.log(`[chatAssist] ${explicit} done, rendering`);
             if (window._explicitAssist) delete window._explicitAssist[reqId];
-            renderAssistLayer(container, reqId, r.assists || {});
+            // v0.46 fix：只渲染触发的 method，不渲染全体（避免旧 use_case 等卡片乱入）
+            renderAssistLayer(container, reqId, { [explicit]: ad });
           } else if (ad.status === 'failed') {
             console.error(`[chatAssist] ${explicit} failed:`, ad.error || 'unknown');
             toast(`❌ ${explicit} 生成失败: ${ad.error || '未知错误'}`, 'error', 5000);
@@ -558,7 +559,9 @@ function renderAssistLayer(container, reqId, assists) {
     //   → 6 !== 0 → filter skip → 视觉卡片根本不渲染
     //   修：visual 是「方向图快照」，不是 chat 流相关辅助，应该一直可见直到用户 pick
     const chatStateRound = _chatState[reqId]?.briefRound;
-    if (method !== 'visual'
+    // v0.46 fix：用户显式触发的 assist（window._explicitAssist）跳过 round filter
+    const isExplicit = window._explicitAssist?.[reqId] === method;
+    if (method !== 'visual' && !isExplicit
         && typeof chatStateRound === 'number'
         && typeof d.generated_at_round === 'number'
         && d.generated_at_round !== chatStateRound) {
@@ -634,7 +637,7 @@ if (!innerHtml.trim()) continue;
     el.dataset.assistMethod = method;
     // v0.13 fix: use_case 自带 apply/regen/discard 按钮，不附加 chat-assist-actions 重复按钮
     const chatActions = (method === 'use_case') ? '' :
-      `<div class="chat-assist-actions" style="margin-top:10px"><button class="btn-small btn-accept" onclick="chatSendAssistPick('${reqId}','${method}')">✅ 发送选择</button><button class="btn-small" onclick="chatAssistRegen('${reqId}','${method}')">↻ 换一批</button><button class="btn-small" onclick="chatSkipAssist(this)">跳过</button></div>`;
+      `<div class="chat-assist-actions" style="margin-top:10px"><button class="btn-small btn-accept" onclick="chatSendAssistPick('${reqId}','${method}', this)">✅ 发送选择</button><button class="btn-small" onclick="chatAssistRegen('${reqId}','${method}')">↻ 换一批</button><button class="btn-small" onclick="chatSkipAssist(this)">跳过</button></div>`;
     el.innerHTML = `${innerHtml}${chatActions}`;
     // v0.6.6：优先就地替换 .assist-loading-card（chatAssist 插的），否则 append 到末尾
     const loadingEl = container.querySelector(`.assist-loading-card[data-method="${method}"]`);
@@ -1081,8 +1084,11 @@ async function chatSendDetect(reqId, text) {
       }
     }
 
-    // 启动轮询，让用户看到后续 AI 流式回复（如果有）
+    // 启动轮询 + SSE 流式，让用户看到后续 AI 回复（如果有）
     setTimeout(() => startChatPolling(reqId), 500);
+    // v0.46 fix：打开 SSE 触发 brief 流式生成（替代被删除的 detect-and-respond server-side runBriefJob）
+    //   chatSendDetect 路径没有自动开 SSE，brief 永远不生成
+    setTimeout(() => connectStreamingBrief(reqId, c), 800);
   } catch (e) {
     // v0.18 bugfix：fetch 失败时也移除 typing dots
     const typingErr = document.getElementById(`chat-typing-detect-${reqId}`);
@@ -1366,6 +1372,20 @@ async function loadStreamAssist(reqId, container) {
 }
 
 /**
+ * v0.46：只渲染单个 method 的辅助结果到聊天流（不触发全体渲染）
+ * 用于 explicit assist SSE done 时，避免旧卡片乱入
+ */
+async function loadStreamAssistSingle(reqId, container, method) {
+  try {
+    const r = await api('GET', `/requirements/${reqId}/assist`);
+    const data = (r.assists || {})[method];
+    if (!data || data.status !== 'done') return;
+    // 构造单 method 的 assists 对象，传给 renderAssistLayer 让它只处理这一个
+    renderAssistLayer(container, reqId, { [method]: data });
+  } catch(e) { console.warn('[loadStreamAssistSingle] error:', e.message); }
+}
+
+/**
  * v2.0: 辅助手段 SSE 流式 — 实时进度 + 完成通知
  * 调用后由 polling 负责实际渲染结果卡片
  */
@@ -1404,11 +1424,15 @@ function connectAssistStream(reqId, method, extraBody) {
             loadingEl.innerHTML = '<div class="assist-loading-head"><span class="assist-loading-spinner">⏳</span><span class="assist-loading-title">加载结果中…</span></div>';
             // 获取结果数据并直接渲染
             renderLeisureResult(reqId, method, loadingEl);
+          } else if (loadingEl && window.ACMSAssists?.get?.(method)?.render) {
+            // v0.46 fix：非休闲辅助也在聊天流渲染结果
+            //   用 loadStreamAssistSingle 只渲染触发的 method，不渲染所有符合条件的（避免旧卡片乱入）
+            loadStreamAssistSingle(reqId, container, method);
           } else if (loadingEl) {
             loadingEl.remove();
           }
           toast(`✅ ${method} 完成`, 'success', 1500);
-          // 刷新 assist 面板
+          // 刷新 assist 面板（如果#assist-area存在）
           if (typeof ACMSAssistDispatcher !== 'undefined' && ACMSAssistDispatcher.loadAll) {
             ACMSAssistDispatcher.loadAll(reqId);
           }

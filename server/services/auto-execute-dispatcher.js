@@ -38,6 +38,11 @@ const MAX_RE_EXECUTE = 3;
 
 // v0.X: 执行中任务锁 — 防 dispatcher 重复触发同一任务
 const _executingTasks = new Set();
+// v0.X fix: _unlockTask 函数 — 之前 handleTaskClaimed 调 _unlockTask(taskId) 但函数未定义，
+//   抛 ReferenceError 让 _executingTasks 锁永久持有。修法：补函数定义。
+function _unlockTask(taskId) {
+  _executingTasks.delete(taskId);
+}
 
 // 工具函数：从 task.doc 读 / 写 持久化的 re_execute_count
 //   之前用 this.reExecuteCount Map 计数，server 重启就清零 → 熔断失效

@@ -1,0 +1,1497 @@
+{
+  "countries": [
+    {
+      "id": "ROM",
+      "name": "罗马帝国",
+      "name_en": "Roman Empire",
+      "era": "古代",
+      "region": "欧洲",
+      "first_active": "27",
+      "last_active": "476",
+      "capital": "罗马",
+      "description": "环地中海古典帝国，奠定西方文明基础"
+    },
+    {
+      "id": "BYZ",
+      "name": "拜占庭帝国",
+      "name_en": "Byzantine Empire",
+      "era": "中世纪",
+      "region": "欧洲",
+      "first_active": "395",
+      "last_active": "1453",
+      "capital": "君士坦丁堡",
+      "description": "东罗马帝国延续，守护地中海东部千年"
+    },
+    {
+      "id": "ARA",
+      "name": "阿拉伯帝国",
+      "name_en": "Arab Caliphate",
+      "era": "中世纪",
+      "region": "中东",
+      "first_active": "632",
+      "last_active": "1258",
+      "capital": "麦地那/巴格达",
+      "description": "伊斯兰黄金时代的跨洲帝国"
+    },
+    {
+      "id": "MNG",
+      "name": "蒙古帝国",
+      "name_en": "Mongol Empire",
+      "era": "中世纪",
+      "region": "亚洲",
+      "first_active": "1206",
+      "last_active": "1368",
+      "capital": "哈拉和林",
+      "description": "历史上最大连续陆地帝国"
+    },
+    {
+      "id": "CHN",
+      "name": "明朝",
+      "name_en": "Ming Dynasty",
+      "era": "中世纪",
+      "region": "亚洲",
+      "first_active": "1368",
+      "last_active": "1644",
+      "capital": "北京",
+      "description": "汉人复兴王朝，郑和下西洋后闭关锁国"
+    },
+    {
+      "id": "OTM",
+      "name": "奥斯曼帝国",
+      "name_en": "Ottoman Empire",
+      "era": "中世纪",
+      "region": "中东",
+      "first_active": "1299",
+      "last_active": "1922",
+      "capital": "伊斯坦布尔",
+      "description": "横跨欧亚非的伊斯兰帝国，征服君士坦丁堡"
+    },
+    {
+      "id": "FRA",
+      "name": "法兰西王国",
+      "name_en": "Kingdom of France",
+      "era": "混合",
+      "region": "欧洲",
+      "first_active": "843",
+      "last_active": "1792",
+      "capital": "巴黎",
+      "description": "欧洲大陆传统强国，路易十四时期达巅峰"
+    },
+    {
+      "id": "GBR",
+      "name": "英格兰/英国",
+      "name_en": "England/United Kingdom",
+      "era": "混合",
+      "region": "欧洲",
+      "first_active": "1066",
+      "last_active": "1945",
+      "capital": "伦敦",
+      "description": "海上霸主，日不落帝国缔造者"
+    },
+    {
+      "id": "HRE",
+      "name": "神圣罗马帝国",
+      "name_en": "Holy Roman Empire",
+      "era": "中世纪",
+      "region": "欧洲",
+      "first_active": "800",
+      "last_active": "1806",
+      "capital": "维也纳",
+      "description": "中欧松散邦联，德意志地区主导力量"
+    },
+    {
+      "id": "ESP",
+      "name": "西班牙帝国",
+      "name_en": "Spanish Empire",
+      "era": "中世纪",
+      "region": "欧洲",
+      "first_active": "1469",
+      "last_active": "1898",
+      "capital": "马德里",
+      "description": "地理大发现后首个全球殖民帝国"
+    },
+    {
+      "id": "RUS",
+      "name": "俄罗斯帝国",
+      "name_en": "Russian Empire",
+      "era": "近现代",
+      "region": "欧洲",
+      "first_active": "1547",
+      "last_active": "1917",
+      "capital": "莫斯科/圣彼得堡",
+      "description": "东欧最大帝国，向远东扩张"
+    },
+    {
+      "id": "AUT",
+      "name": "奥地利帝国",
+      "name_en": "Austrian Empire",
+      "era": "近现代",
+      "region": "欧洲",
+      "first_active": "1804",
+      "last_active": "1867",
+      "capital": "维也纳",
+      "description": "哈布斯堡王朝核心，多民族帝国"
+    },
+    {
+      "id": "PRU",
+      "name": "普鲁士王国",
+      "name_en": "Kingdom of Prussia",
+      "era": "近现代",
+      "region": "欧洲",
+      "first_active": "1701",
+      "last_active": "1918",
+      "capital": "柏林",
+      "description": "军事强国，统一德意志的核心力量"
+    },
+    {
+      "id": "JPN",
+      "name": "日本",
+      "name_en": "Japan",
+      "era": "近现代",
+      "region": "亚洲",
+      "first_active": "1868",
+      "last_active": "1945",
+      "capital": "东京",
+      "description": "明治维新后迅速崛起的亚洲强国"
+    },
+    {
+      "id": "USA",
+      "name": "美国",
+      "name_en": "United States",
+      "era": "近现代",
+      "region": "美洲",
+      "first_active": "1776",
+      "last_active": "1945",
+      "capital": "华盛顿",
+      "description": "独立后崛起为全球超级大国"
+    },
+    {
+      "id": "PER",
+      "name": "波斯帝国",
+      "name_en": "Persian Empire",
+      "era": "古代",
+      "region": "中东",
+      "first_active": "-550",
+      "last_active": "651",
+      "capital": "波斯波利斯",
+      "description": "古代近东最大帝国，与希腊争霸"
+    },
+    {
+      "id": "VEN",
+      "name": "威尼斯共和国",
+      "name_en": "Republic of Venice",
+      "era": "中世纪",
+      "region": "欧洲",
+      "first_active": "697",
+      "last_active": "1797",
+      "capital": "威尼斯",
+      "description": "地中海贸易霸主，文艺复兴中心之一"
+    },
+    {
+      "id": "QIN",
+      "name": "秦朝",
+      "name_en": "Qin Dynasty",
+      "era": "古代",
+      "region": "亚洲",
+      "first_active": "-221",
+      "last_active": "-206",
+      "capital": "咸阳",
+      "description": "中国首个大一统中央集权王朝"
+    },
+    {
+      "id": "GER",
+      "name": "德意志帝国",
+      "name_en": "German Empire",
+      "era": "近现代",
+      "region": "欧洲",
+      "first_active": "1871",
+      "last_active": "1945",
+      "capital": "柏林",
+      "description": "普鲁士主导统一的德意志帝国，两次世界大战的发动者"
+    },
+    {
+      "id": "ITA",
+      "name": "意大利王国",
+      "name_en": "Kingdom of Italy",
+      "era": "近现代",
+      "region": "欧洲",
+      "first_active": "1861",
+      "last_active": "1946",
+      "capital": "罗马",
+      "description": "统一后的意大利，法西斯政权参与二战"
+    },
+    {
+      "id": "SER",
+      "name": "塞尔维亚王国",
+      "name_en": "Kingdom of Serbia",
+      "era": "近现代",
+      "region": "欧洲",
+      "first_active": "1882",
+      "last_active": "1918",
+      "capital": "贝尔格莱德",
+      "description": "巴尔干斯拉夫民族主义中心，萨拉热窝事件的受害方"
+    },
+    {
+      "id": "BEL",
+      "name": "比利时王国",
+      "name_en": "Kingdom of Belgium",
+      "era": "近现代",
+      "region": "欧洲",
+      "first_active": "1830",
+      "last_active": "1945",
+      "capital": "布鲁塞尔",
+      "description": "德国入侵比利时触发英国参战"
+    },
+    {
+      "id": "HUN",
+      "name": "匈牙利王国",
+      "name_en": "Kingdom of Hungary",
+      "era": "近现代",
+      "region": "欧洲",
+      "first_active": "1867",
+      "last_active": "1946",
+      "capital": "布达佩斯",
+      "description": "奥匈帝国组成部分，多次抗击奥斯曼入侵"
+    },
+    {
+      "id": "POR",
+      "name": "葡萄牙王国",
+      "name_en": "Kingdom of Portugal",
+      "era": "中世纪",
+      "region": "欧洲",
+      "first_active": "1139",
+      "last_active": "1755",
+      "capital": "里斯本",
+      "description": "地理大发现先驱，与西班牙共同瓜分世界"
+    },
+    {
+      "id": "NLD",
+      "name": "荷兰共和国",
+      "name_en": "Dutch Republic",
+      "era": "近现代",
+      "region": "欧洲",
+      "first_active": "1581",
+      "last_active": "1795",
+      "capital": "阿姆斯特丹",
+      "description": "十七世纪海上马车夫，宗教改革后独立的新教国家"
+    },
+    {
+      "id": "POL",
+      "name": "波兰王国",
+      "name_en": "Kingdom of Poland",
+      "era": "近现代",
+      "region": "欧洲",
+      "first_active": "1918",
+      "last_active": "1945",
+      "capital": "华沙",
+      "description": "二战爆发时被德国和苏联共同入侵"
+    },
+    {
+      "id": "PRC",
+      "name": "中华人民共和国",
+      "name_en": "People's Republic of China",
+      "era": "近现代",
+      "region": "亚洲",
+      "first_active": "1949",
+      "last_active": "1991",
+      "capital": "北京",
+      "description": "冷战期间社会主义阵营重要成员"
+    },
+    {
+      "id": "GEN",
+      "name": "热那亚共和国",
+      "name_en": "Republic of Genoa",
+      "era": "中世纪",
+      "region": "欧洲",
+      "first_active": "1099",
+      "last_active": "1797",
+      "capital": "热那亚",
+      "description": "地中海贸易强国，与威尼斯争夺东方贸易垄断权"
+    }
+  ],
+  "turning_points": [
+    {
+      "id": "TP-SARAJEVO-1914",
+      "title": "Sarajevo Assassination & WWI Outbreak",
+      "title_zh": "萨拉热窝事件与第一次世界大战爆发",
+      "era": "近现代",
+      "year": "1914",
+      "summary": "奥匈帝国皇储斐迪南大公遇刺触发同盟体系连锁反应，欧洲列强在一个月内全面卷入战争，终结百年欧洲协调体系，重塑全球地缘格局。",
+      "before_summary": "欧洲维持'大国协调'均势体系，英德海军竞赛加剧但尚未破裂，巴尔干为'欧洲火药桶'。",
+      "after_summary": "四大帝国崩溃（奥匈、奥斯曼、沙俄、德意志），凡尔赛体系建立，美国登上世界舞台，苏联诞生。",
+      "related_countries": [
+        "HRE",
+        "GBR",
+        "FRA",
+        "RUS",
+        "AUT",
+        "OTM",
+        "ITA",
+        "BEL"
+      ],
+      "causal_chains": [
+        {
+          "id": "CC-SAR-T1",
+          "level": "trigger",
+          "depth": 1,
+          "description": "奥匈帝国皇储斐迪南大公在萨拉热窝被塞尔维亚民族主义者普林西普刺杀",
+          "event": "萨拉热窝事件",
+          "related_factors": [
+            "IF-BALKAN-1912"
+          ],
+          "is_consensus": true,
+          "source_reference": "A.J.P. Taylor, The First World War: An Illustrated History"
+        },
+        {
+          "id": "CC-SAR-T2",
+          "level": "trigger",
+          "depth": 1,
+          "description": "奥匈在德国支持下向塞尔维亚发出最后通牒，塞尔维亚部分接受但仍被拒绝",
+          "event": "七月危机",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-SAR-I1",
+          "level": "intermediate",
+          "depth": 2,
+          "description": "同盟体系刚性：俄法协约与英法协约使局部冲突升级为全面战争——俄国动员后德国被迫执行施里芬计划",
+          "event": "同盟体系连锁反应",
+          "related_factors": [
+            "IF-ALLIANCE-RIGIDITY"
+          ],
+          "is_consensus": true
+        },
+        {
+          "id": "CC-SAR-I2",
+          "level": "intermediate",
+          "depth": 2,
+          "description": "军事动员时间表压倒外交解决：各国总参谋部的精确动员计划形成'行动-反应'死锁",
+          "event": "动员死锁",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-SAR-S1",
+          "level": "structural",
+          "depth": 3,
+          "description": "帝国主义列强对殖民地和市场争夺白热化，英德经济竞争与海军军备竞赛从根本上破坏了均势",
+          "event": "帝国主义矛盾",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-SAR-S2",
+          "level": "structural",
+          "depth": 3,
+          "description": "民族主义在巴尔干的兴起挑战多民族帝国统治合法性，奥匈和奥斯曼帝国面临解体压力",
+          "event": "巴尔干民族主义",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-SAR-O1",
+          "level": "outcome",
+          "depth": 4,
+          "description": "一战爆发并持续四年，四大帝国覆灭，国际秩序彻底重构",
+          "event": "第一次世界大战",
+          "is_consensus": true
+        }
+      ],
+      "source_reference": "Margaret MacMillan, 'The War That Ended Peace'"
+    },
+    {
+      "id": "TP-CONSTANTINOPLE-1453",
+      "title": "Fall of Constantinople",
+      "title_zh": "君士坦丁堡陷落",
+      "era": "中世纪",
+      "year": "1453",
+      "summary": "奥斯曼帝国苏丹穆罕默德二世攻陷拜占庭首都，标志着千年罗马帝国正统终结和中世纪结束，直接推动地理大发现和欧洲文艺复兴加速。",
+      "before_summary": "拜占庭帝国仅剩君士坦丁堡及周边小片领土，奥斯曼已控制安纳托利亚和巴尔干大部。",
+      "after_summary": "奥斯曼成为地中海东部主宰，欧洲商人被迫寻找新航路，希腊学者西迁催化文艺复兴。",
+      "related_countries": [
+        "BYZ",
+        "OTM",
+        "ITA",
+        "GEN"
+      ],
+      "causal_chains": [
+        {
+          "id": "CC-CON-T1",
+          "level": "trigger",
+          "depth": 1,
+          "description": "穆罕默德二世率领5万大军和巨型火炮围攻君士坦丁堡城墙",
+          "event": "君士坦丁堡围城战",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-CON-I1",
+          "level": "intermediate",
+          "depth": 2,
+          "description": "乌尔班大炮等新型攻城武器突破拜占庭千年城墙防御体系",
+          "event": "火炮革命",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-CON-I2",
+          "level": "intermediate",
+          "depth": 2,
+          "description": "热那亚和威尼斯援助不足，拜占庭孤立无援",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-CON-S1",
+          "level": "structural",
+          "depth": 3,
+          "description": "奥斯曼帝国军事-行政体系（蒂玛尔制和德希尔梅制度）具备持续扩张能力",
+          "event": "奥斯曼制度优势",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-CON-S2",
+          "level": "structural",
+          "depth": 3,
+          "description": "拜占庭长期衰败：第四次十字军东劫(1204)后元气大伤，人口和经济持续萎缩",
+          "event": "拜占庭长期衰落",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-CON-O1",
+          "level": "outcome",
+          "depth": 4,
+          "description": "拜占庭帝国灭亡，奥斯曼掌控东西方贸易咽喉，迫使欧洲寻求新航路",
+          "event": "中世纪结束/地理大发现序幕",
+          "is_consensus": true
+        }
+      ],
+      "source_reference": "Roger Crowley, '1453: The Holy War for Constantinople'"
+    },
+    {
+      "id": "TP-GEO-1492",
+      "title": "Age of Discovery Begins",
+      "title_zh": "地理大发现开启",
+      "era": "中世纪",
+      "year": "1492",
+      "summary": "哥伦布抵达美洲标志旧大陆与新大陆首次持续接触，开启全球化进程。西班牙和葡萄牙率先建立跨洋殖民帝国，欧洲经济重心从地中海转向大西洋。",
+      "before_summary": "欧亚非为封闭体系，跨洋贸易几乎为零，欧洲处于中世纪晚期。",
+      "after_summary": "全球贸易网络形成，白银流入欧洲和亚洲，原住民文明遭毁灭，奴隶贸易兴起。",
+      "related_countries": [
+        "ESP",
+        "POR",
+        "GBR",
+        "FRA",
+        "VEN"
+      ],
+      "causal_chains": [
+        {
+          "id": "CC-GEO-T1",
+          "level": "trigger",
+          "depth": 1,
+          "description": "哥伦布在西班牙王室资助下横渡大西洋，抵达加勒比海岛屿",
+          "event": "哥伦布首航(1492)",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-GEO-I1",
+          "level": "intermediate",
+          "depth": 2,
+          "description": "托德西利亚斯条约(1494)划分西葡势力范围，开启殖民瓜分",
+          "event": "西葡殖民分割",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-GEO-S1",
+          "level": "structural",
+          "depth": 3,
+          "description": "奥斯曼征服君士坦丁堡(1453)阻断传统陆路商路，欧洲急需新航路获取东方香料",
+          "event": "贸易路线中断",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-GEO-S2",
+          "level": "structural",
+          "depth": 3,
+          "description": "航海技术进步：卡拉维尔帆船、星盘、波特兰海图的成熟使远洋航行可行",
+          "event": "航海技术积累",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-GEO-S3",
+          "level": "structural",
+          "depth": 3,
+          "description": "意大利城邦垄断东方贸易利润丰厚，刺激伊比利亚半岛寻求替代方案",
+          "event": "经济竞争驱动",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-GEO-O1",
+          "level": "outcome",
+          "depth": 4,
+          "description": "哥伦布大交换：物种、疾病、人口和文化的全球性转移，奠定近代世界经济体系",
+          "event": "全球化开端",
+          "is_consensus": true
+        }
+      ],
+      "source_reference": "Alfred W. Crosby, 'The Columbian Exchange'"
+    },
+    {
+      "id": "TP-RELIGION-1517",
+      "title": "Protestant Reformation",
+      "title_zh": "宗教改革",
+      "era": "中世纪",
+      "year": "1517",
+      "summary": "马丁·路德发表《九十五条论纲》撕裂基督教世界统一体，引发欧洲宗教战争和民族国家崛起，王权取代教权成为政治合法性核心来源。",
+      "before_summary": "罗马天主教会在西欧拥有至高无上权威，教皇可废立君主。",
+      "after_summary": "新教诸派与天主教对峙，三十年战争(1618-48)后威斯特伐利亚体系确立主权国家原则。",
+      "related_countries": [
+        "HRE",
+        "FRA",
+        "GBR",
+        "ESP",
+        "NLD"
+      ],
+      "causal_chains": [
+        {
+          "id": "CC-REL-T1",
+          "level": "trigger",
+          "depth": 1,
+          "description": "马丁·路德在维滕贝格教堂张贴《九十五条论纲》，质疑赎罪券合法性",
+          "event": "路德钉门事件(1517)",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-REL-I1",
+          "level": "intermediate",
+          "depth": 2,
+          "description": "古登堡印刷术使新思想迅速传播，远超教会审查能力",
+          "event": "印刷术革命",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-REL-I2",
+          "level": "intermediate",
+          "depth": 2,
+          "description": "德意志诸侯借宗教改革摆脱皇帝和教皇控制，争取自治权",
+          "event": "诸侯-皇帝博弈",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-REL-S1",
+          "level": "structural",
+          "depth": 3,
+          "description": "民族意识觉醒和世俗王权增长使教廷权威丧失合法性基础",
+          "event": "民族国家兴起",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-REL-S2",
+          "level": "structural",
+          "depth": 3,
+          "description": "天主教会腐败：出售赎罪券、神职人员奢靡生活损害道德权威",
+          "event": "教会腐败",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-REL-O1",
+          "level": "outcome",
+          "depth": 4,
+          "description": "基督教世界分裂，宗教战争频仍，最终催生宗教宽容和政教分离理念",
+          "event": "欧洲宗教分裂",
+          "is_consensus": true
+        }
+      ],
+      "source_reference": "Steven Ozment, 'The Age of Reform'"
+    },
+    {
+      "id": "TP-FRREVOLUTION-1789",
+      "title": "French Revolution",
+      "title_zh": "法国大革命",
+      "era": "近现代",
+      "year": "1789",
+      "summary": "三级会议演变为国民议会，攻占巴士底狱推翻旧制度，启蒙思想转化为政治实践，奠定现代民主、民族主义和世俗化的基石，震撼整个欧洲君主体系。",
+      "before_summary": "绝对君主制和等级社会（教士-贵族-平民），财政危机深重，启蒙思想广泛传播。",
+      "after_summary": "拿破仑崛起并横扫欧洲，梅特涅体系重建均势，自由主义和民族主义成为不可阻挡的力量。",
+      "related_countries": [
+        "FRA",
+        "GBR",
+        "RUS",
+        "AUT",
+        "PRU",
+        "ESP"
+      ],
+      "causal_chains": [
+        {
+          "id": "CC-FR-T1",
+          "level": "trigger",
+          "depth": 1,
+          "description": "国王路易十六召开三级会议解决财政危机，第三等级要求投票权改革遭拒后自行组成国民议会",
+          "event": "三级会议(1789)",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-FR-T2",
+          "level": "trigger",
+          "depth": 1,
+          "description": "巴黎民众攻占巴士底狱，象征专制王权的堡垒被摧毁",
+          "event": "攻占巴士底狱(1789.7.14)",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-FR-I1",
+          "level": "intermediate",
+          "depth": 2,
+          "description": "制宪议会通过《人权宣言》，废除封建特权，确立主权在民原则",
+          "event": "废除封建制度",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-FR-S1",
+          "level": "structural",
+          "depth": 3,
+          "description": "七年战争和美国独立战争援助导致法国国债飙升，税制不公使财政崩溃不可避免",
+          "event": "财政危机",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-FR-S2",
+          "level": "structural",
+          "depth": 3,
+          "description": "启蒙运动传播理性、平等、自由理念，卢梭、伏尔泰、孟德斯鸠的思想动摇了君权神授根基",
+          "event": "启蒙思想传播",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-FR-O1",
+          "level": "outcome",
+          "depth": 4,
+          "description": "波旁王朝覆灭，拿破仑帝国崛起，欧洲封建秩序遭受根本性冲击",
+          "event": "旧制度终结",
+          "is_consensus": true
+        }
+      ],
+      "source_reference": "Simon Schama, 'Citizens: A Chronicle of the French Revolution'"
+    },
+    {
+      "id": "TP-WW2-1939",
+      "title": "World War II Outbreak",
+      "title_zh": "第二次世界大战爆发",
+      "era": "近现代",
+      "year": "1939",
+      "summary": "德国入侵波兰触发全球大战，凡尔赛体系的缺陷、经济大萧条的冲击和极端意识形态的崛起共同造就了二十世纪最惨烈的冲突，最终导致核时代和冷战格局的形成。",
+      "before_summary": "凡尔赛条约遗留问题未解，经济大萧条削弱民主国家，纳粹德国重新武装并吞并奥地利和捷克斯洛伐克。",
+      "after_summary": "欧洲列强衰落，美苏两极格局确立，联合国成立，核武器改变战争本质。",
+      "related_countries": [
+        "GBR",
+        "FRA",
+        "GER",
+        "USA",
+        "RUS",
+        "JPN",
+        "ITA"
+      ],
+      "causal_chains": [
+        {
+          "id": "CC-WW2-T1",
+          "level": "trigger",
+          "depth": 1,
+          "description": "德国闪击波兰，英法对德宣战",
+          "event": "入侵波兰(1939.9.1)",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-WW2-T2",
+          "level": "trigger",
+          "depth": 1,
+          "description": "《苏德互不侵犯条约》签署，为德国解除两线作战后顾之忧",
+          "event": "莫洛托夫-里宾特洛甫条约",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-WW2-I1",
+          "level": "intermediate",
+          "depth": 2,
+          "description": "凡尔赛体系未能有效约束德国：赔款争议、莱茵兰非军事化被违反、慕尼黑绥靖政策失败",
+          "event": "凡尔赛体系崩溃",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-WW2-I2",
+          "level": "intermediate",
+          "depth": 2,
+          "description": "经济大萧条(1929)摧毁魏玛共和国经济基础，为纳粹上台创造条件",
+          "event": "大萧条",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-WW2-S1",
+          "level": "structural",
+          "depth": 3,
+          "description": "极端民族主义和法西斯主义在德意日兴起，社会达尔文主义和种族理论被政治化",
+          "event": "极权主义崛起",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-WW2-S2",
+          "level": "structural",
+          "depth": 3,
+          "description": "国际联盟集体安全机制失效，英法绥靖政策助长侵略野心",
+          "event": "集体安全失败",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-WW2-O1",
+          "level": "outcome",
+          "depth": 4,
+          "description": "二战结束，6000-8000万人死亡，殖民体系瓦解，核时代和冷战开启",
+          "event": "新世界秩序",
+          "is_consensus": true
+        }
+      ],
+      "source_reference": "Richard Overy, 'Why the Allies Won'"
+    },
+    {
+      "id": "TP-COLDWAR-1947",
+      "title": "Cold War Emergence",
+      "title_zh": "冷战格局形成",
+      "era": "近现代",
+      "year": "1947",
+      "summary": "杜鲁门主义和马歇尔计划确立西方阵营战略框架，铁幕落下，美苏两大超级大国在全球范围内展开意识形态、经济和军事对抗，塑造了战后半个多世纪的国际秩序。",
+      "before_summary": "反法西斯同盟暂时维系，但美苏在战后安排上分歧日益加深。",
+      "after_summary": "北约华约对立，朝鲜战争越南战争代理战争频发，核威慑下的恐怖平衡维持'长和平'。",
+      "related_countries": [
+        "USA",
+        "RUS",
+        "GBR",
+        "FRA",
+        "GER",
+        "JPN",
+        "PRC"
+      ],
+      "causal_chains": [
+        {
+          "id": "CC-CW-T1",
+          "level": "trigger",
+          "depth": 1,
+          "description": "杜鲁门主义宣布支持各国抵抗'极权主义'，马歇尔计划启动欧洲重建",
+          "event": "杜鲁门主义(1947)",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-CW-T2",
+          "level": "trigger",
+          "depth": 1,
+          "description": "柏林封锁(1948-49)标志东西方首次直接军事对峙",
+          "event": "柏林封锁",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-CW-I1",
+          "level": "intermediate",
+          "depth": 2,
+          "description": "北约(1949)和华约(1955)军事集团正式对立，欧洲被铁幕一分为二",
+          "event": "军事集团对抗",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-CW-S1",
+          "level": "structural",
+          "depth": 3,
+          "description": "意识形态根本对立：资本主义民主 vs 共产主义集权，双方都认为对方威胁自身生存",
+          "event": "意识形态对抗",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-CW-S2",
+          "level": "structural",
+          "depth": 3,
+          "description": "权力真空：欧洲传统列强（英法德）被战争严重削弱，美苏成为唯二超级大国",
+          "event": "欧洲衰落/美苏崛起",
+          "is_consensus": true
+        },
+        {
+          "id": "CC-CW-O1",
+          "level": "outcome",
+          "depth": 4,
+          "description": "长达四十余年的冷战对峙，代理战争不断，最终苏联解体(1991)标志冷战结束",
+          "event": "两极格局确立",
+          "is_consensus": true
+        }
+      ],
+      "source_reference": "John Lewis Gaddis, 'The Cold War: A New History'"
+    }
+  ],
+  "relations": [
+    {
+      "id": "REL-SAR-001",
+      "from_country": "AUT",
+      "to_country": "SER",
+      "turning_point_id": "TP-SARAJEVO-1914",
+      "type": "hostile",
+      "start_year": "1914",
+      "end_year": "1918",
+      "description": "奥匈帝国向塞尔维亚发出最后通牒并宣战，巴尔干争端直接导火索"
+    },
+    {
+      "id": "REL-SAR-002",
+      "from_country": "AUT",
+      "to_country": "RUS",
+      "turning_point_id": "TP-SARAJEVO-1914",
+      "type": "hostile",
+      "start_year": "1914",
+      "end_year": "1918",
+      "description": "俄国支持塞尔维亚，奥俄关系恶化"
+    },
+    {
+      "id": "REL-SAR-003",
+      "from_country": "GER",
+      "to_country": "AUT",
+      "turning_point_id": "TP-SARAJEVO-1914",
+      "type": "alliance",
+      "start_year": "1914",
+      "end_year": "1918",
+      "description": "德国'空白支票'支持奥匈，同盟国核心"
+    },
+    {
+      "id": "REL-SAR-004",
+      "from_country": "GBR",
+      "to_country": "GER",
+      "turning_point_id": "TP-SARAJEVO-1914",
+      "type": "hostile",
+      "start_year": "1914",
+      "end_year": "1918",
+      "description": "德国入侵比利时触发英国参战"
+    },
+    {
+      "id": "REL-SAR-005",
+      "from_country": "FRA",
+      "to_country": "GER",
+      "turning_point_id": "TP-SARAJEVO-1914",
+      "type": "hostile",
+      "start_year": "1914",
+      "end_year": "1918",
+      "description": "法德世仇，普法战争复仇目标"
+    },
+    {
+      "id": "REL-SAR-006",
+      "from_country": "RUS",
+      "to_country": "FRA",
+      "turning_point_id": "TP-SARAJEVO-1914",
+      "type": "alliance",
+      "start_year": "1894",
+      "end_year": "1917",
+      "description": "法俄协约，共同对抗同盟国"
+    },
+    {
+      "id": "REL-SAR-007",
+      "from_country": "GBR",
+      "to_country": "FRA",
+      "turning_point_id": "TP-SARAJEVO-1914",
+      "type": "alliance",
+      "start_year": "1904",
+      "end_year": "1918",
+      "description": "英法协约，共同对抗德国"
+    },
+    {
+      "id": "REL-SAR-008",
+      "from_country": "GBR",
+      "to_country": "BEL",
+      "turning_point_id": "TP-SARAJEVO-1914",
+      "type": "alliance",
+      "start_year": "1839",
+      "end_year": "1918",
+      "description": "英国保障比利时中立地位"
+    },
+    {
+      "id": "REL-SAR-009",
+      "from_country": "AUT",
+      "to_country": "ITA",
+      "turning_point_id": "TP-SARAJEVO-1914",
+      "type": "hostile",
+      "start_year": "1915",
+      "end_year": "1918",
+      "description": "意大利退出三国同盟，加入协约国对奥宣战"
+    },
+    {
+      "id": "REL-CON-001",
+      "from_country": "BYZ",
+      "to_country": "OTM",
+      "turning_point_id": "TP-CONSTANTINOPLE-1453",
+      "type": "hostile",
+      "start_year": "1453",
+      "end_year": "1453",
+      "description": "奥斯曼围攻并攻陷君士坦丁堡，拜占庭灭亡"
+    },
+    {
+      "id": "REL-CON-002",
+      "from_country": "GEN",
+      "to_country": "OTM",
+      "turning_point_id": "TP-CONSTANTINOPLE-1453",
+      "type": "hostile",
+      "start_year": "1453",
+      "end_year": "1500",
+      "description": "热那亚与奥斯曼在黑海和东地中海利益冲突"
+    },
+    {
+      "id": "REL-CON-003",
+      "from_country": "VEN",
+      "to_country": "OTM",
+      "turning_point_id": "TP-CONSTANTINOPLE-1453",
+      "type": "hostile",
+      "start_year": "1453",
+      "end_year": "1500",
+      "description": "威尼斯失去东地中海贸易主导地位"
+    },
+    {
+      "id": "REL-CON-004",
+      "from_country": "HUN",
+      "to_country": "OTM",
+      "turning_point_id": "TP-CONSTANTINOPLE-1453",
+      "type": "hostile",
+      "start_year": "1440",
+      "end_year": "1526",
+      "description": "匈牙利多次抗击奥斯曼入侵"
+    },
+    {
+      "id": "REL-CON-005",
+      "from_country": "HRE",
+      "to_country": "OTM",
+      "turning_point_id": "TP-CONSTANTINOPLE-1453",
+      "type": "hostile",
+      "start_year": "1456",
+      "end_year": "1526",
+      "description": "神圣罗马帝国组织多次十字军抗击奥斯曼"
+    },
+    {
+      "id": "REL-GEO-001",
+      "from_country": "ESP",
+      "to_country": "POR",
+      "turning_point_id": "TP-GEO-1492",
+      "type": "alliance",
+      "start_year": "1494",
+      "end_year": "1580",
+      "description": "托德西利亚斯条约划分海外势力范围"
+    },
+    {
+      "id": "REL-GEO-002",
+      "from_country": "ESP",
+      "to_country": "GBR",
+      "turning_point_id": "TP-GEO-1492",
+      "type": "hostile",
+      "start_year": "1492",
+      "end_year": "1600",
+      "description": "西班牙无敌舰队(1588)vs英格兰，殖民竞争"
+    },
+    {
+      "id": "REL-GEO-003",
+      "from_country": "FRA",
+      "to_country": "ESP",
+      "turning_point_id": "TP-GEO-1492",
+      "type": "hostile",
+      "start_year": "1494",
+      "end_year": "1559",
+      "description": "意大利战争中西法争夺欧洲霸权"
+    },
+    {
+      "id": "REL-GEO-004",
+      "from_country": "POR",
+      "to_country": "ESP",
+      "turning_point_id": "TP-GEO-1492",
+      "type": "neutral",
+      "start_year": "1494",
+      "end_year": "1580",
+      "description": "葡萄牙专注印度洋航线，与西班牙在美洲利益有重叠但总体妥协"
+    },
+    {
+      "id": "REL-GEO-005",
+      "from_country": "VEN",
+      "to_country": "ESP",
+      "turning_point_id": "TP-GEO-1492",
+      "type": "neutral",
+      "start_year": "1492",
+      "end_year": "1550",
+      "description": "威尼斯与西班牙在对抗奥斯曼上有共同利益但无正式同盟"
+    },
+    {
+      "id": "REL-FR-001",
+      "from_country": "FRA",
+      "to_country": "AUT",
+      "turning_point_id": "TP-FRREVOLUTION-1789",
+      "type": "hostile",
+      "start_year": "1792",
+      "end_year": "1815",
+      "description": "奥地利领导反法同盟干涉法国革命"
+    },
+    {
+      "id": "REL-FR-002",
+      "from_country": "FRA",
+      "to_country": "GBR",
+      "turning_point_id": "TP-FRREVOLUTION-1789",
+      "type": "hostile",
+      "start_year": "1793",
+      "end_year": "1815",
+      "description": "英国领导多次反法同盟对抗法国"
+    },
+    {
+      "id": "REL-FR-003",
+      "from_country": "RUS",
+      "to_country": "FRA",
+      "turning_point_id": "TP-FRREVOLUTION-1789",
+      "type": "hostile",
+      "start_year": "1812",
+      "end_year": "1814",
+      "description": "拿破仑入侵俄罗斯惨败"
+    },
+    {
+      "id": "REL-FR-004",
+      "from_country": "PRU",
+      "to_country": "FRA",
+      "turning_point_id": "TP-FRREVOLUTION-1789",
+      "type": "hostile",
+      "start_year": "1806",
+      "end_year": "1813",
+      "description": "普鲁士在耶拿战役中被拿破仑击溃"
+    },
+    {
+      "id": "REL-FR-005",
+      "from_country": "ESP",
+      "to_country": "FRA",
+      "turning_point_id": "TP-FRREVOLUTION-1789",
+      "type": "hostile",
+      "start_year": "1808",
+      "end_year": "1814",
+      "description": "半岛战争，西班牙起义反抗法国占领"
+    },
+    {
+      "id": "REL-FR-006",
+      "from_country": "NLD",
+      "to_country": "FRA",
+      "turning_point_id": "TP-FRREVOLUTION-1789",
+      "type": "hostile",
+      "start_year": "1793",
+      "end_year": "1815",
+      "description": "法国占领荷兰，建立巴达维亚共和国"
+    },
+    {
+      "id": "REL-WW2-001",
+      "from_country": "GER",
+      "to_country": "POL",
+      "turning_point_id": "TP-WW2-1939",
+      "type": "hostile",
+      "start_year": "1939",
+      "end_year": "1945",
+      "description": "德国入侵波兰，二战欧洲战场爆发"
+    },
+    {
+      "id": "REL-WW2-002",
+      "from_country": "GBR",
+      "to_country": "GER",
+      "turning_point_id": "TP-WW2-1939",
+      "type": "hostile",
+      "start_year": "1939",
+      "end_year": "1945",
+      "description": "英国对德宣战，敦刻尔克撤退至不列颠之战"
+    },
+    {
+      "id": "REL-WW2-003",
+      "from_country": "FRA",
+      "to_country": "GER",
+      "turning_point_id": "TP-WW2-1939",
+      "type": "hostile",
+      "start_year": "1939",
+      "end_year": "1940",
+      "description": "法国迅速沦陷，维希政权成立"
+    },
+    {
+      "id": "REL-WW2-004",
+      "from_country": "USA",
+      "to_country": "JPN",
+      "turning_point_id": "TP-WW2-1939",
+      "type": "hostile",
+      "start_year": "1941",
+      "end_year": "1945",
+      "description": "珍珠港事件后美国对日宣战"
+    },
+    {
+      "id": "REL-WW2-005",
+      "from_country": "RUS",
+      "to_country": "GER",
+      "turning_point_id": "TP-WW2-1939",
+      "type": "hostile",
+      "start_year": "1941",
+      "end_year": "1945",
+      "description": "巴巴罗萨行动后苏德战争，斯大林格勒战役转折点"
+    },
+    {
+      "id": "REL-WW2-006",
+      "from_country": "ITA",
+      "to_country": "GER",
+      "turning_point_id": "TP-WW2-1939",
+      "type": "alliance",
+      "start_year": "1939",
+      "end_year": "1943",
+      "description": "意大利加入轴心国，与德国共同作战"
+    },
+    {
+      "id": "REL-WW2-007",
+      "from_country": "JPN",
+      "to_country": "GER",
+      "turning_point_id": "TP-WW2-1939",
+      "type": "alliance",
+      "start_year": "1940",
+      "end_year": "1945",
+      "description": "德日意三国同盟条约签订"
+    },
+    {
+      "id": "REL-WW2-008",
+      "from_country": "USA",
+      "to_country": "GER",
+      "turning_point_id": "TP-WW2-1939",
+      "type": "hostile",
+      "start_year": "1941",
+      "end_year": "1945",
+      "description": "美国对德宣战，投入欧洲战场"
+    },
+    {
+      "id": "REL-WW2-009",
+      "from_country": "GBR",
+      "to_country": "USA",
+      "turning_point_id": "TP-WW2-1939",
+      "type": "alliance",
+      "start_year": "1941",
+      "end_year": "1945",
+      "description": "英美特殊关系，共同对抗轴心国"
+    },
+    {
+      "id": "REL-WW2-010",
+      "from_country": "RUS",
+      "to_country": "GBR",
+      "turning_point_id": "TP-WW2-1939",
+      "type": "alliance",
+      "start_year": "1941",
+      "end_year": "1945",
+      "description": "苏英结成反法西斯同盟"
+    },
+    {
+      "id": "REL-CC-001",
+      "from_country": "USA",
+      "to_country": "RUS",
+      "turning_point_id": "TP-COLDWAR-1947",
+      "type": "hostile",
+      "start_year": "1947",
+      "end_year": "1991",
+      "description": "美苏两极对抗核心，北约vs华约"
+    },
+    {
+      "id": "REL-CC-002",
+      "from_country": "GER",
+      "to_country": "USA",
+      "turning_point_id": "TP-COLDWAR-1947",
+      "type": "alliance",
+      "start_year": "1949",
+      "end_year": "1990",
+      "description": "西德加入北约，对抗东方集团"
+    },
+    {
+      "id": "REL-CC-003",
+      "from_country": "PRU",
+      "to_country": "RUS",
+      "turning_point_id": "TP-COLDWAR-1947",
+      "type": "hostile",
+      "start_year": "1955",
+      "end_year": "1990",
+      "description": "东德隶属华约，铁幕前沿"
+    },
+    {
+      "id": "REL-CC-004",
+      "from_country": "GBR",
+      "to_country": "USA",
+      "turning_point_id": "TP-COLDWAR-1947",
+      "type": "alliance",
+      "start_year": "1947",
+      "end_year": "1991",
+      "description": "英美特殊关系，共同领导西方阵营"
+    },
+    {
+      "id": "REL-CC-005",
+      "from_country": "JPN",
+      "to_country": "USA",
+      "turning_point_id": "TP-COLDWAR-1947",
+      "type": "alliance",
+      "start_year": "1951",
+      "end_year": "1991",
+      "description": "日美安全保障条约，亚太反共前沿"
+    },
+    {
+      "id": "REL-CC-006",
+      "from_country": "FRA",
+      "to_country": "USA",
+      "turning_point_id": "TP-COLDWAR-1947",
+      "type": "alliance",
+      "start_year": "1949",
+      "end_year": "1991",
+      "description": "法国加入北约，西方阵营核心成员"
+    },
+    {
+      "id": "REL-CC-007",
+      "from_country": "PRC",
+      "to_country": "RUS",
+      "turning_point_id": "TP-COLDWAR-1947",
+      "type": "hostile",
+      "start_year": "1960",
+      "end_year": "1989",
+      "description": "中苏交恶，社会主义阵营分裂"
+    },
+    {
+      "id": "REL-CC-008",
+      "from_country": "PRC",
+      "to_country": "USA",
+      "turning_point_id": "TP-COLDWAR-1947",
+      "type": "hostile",
+      "start_year": "1950",
+      "end_year": "1979",
+      "description": "抗美援朝至中美建交前的敌对状态"
+    },
+    {
+      "id": "REL-REL-001",
+      "from_country": "HRE",
+      "to_country": "FRA",
+      "turning_point_id": "TP-RELIGION-1517",
+      "type": "hostile",
+      "start_year": "1517",
+      "end_year": "1648",
+      "description": "天主教帝国与新教诸侯及法国的冲突"
+    },
+    {
+      "id": "REL-REL-002",
+      "from_country": "HRE",
+      "to_country": "NLD",
+      "turning_point_id": "TP-RELIGION-1517",
+      "type": "hostile",
+      "start_year": "1568",
+      "end_year": "1648",
+      "description": "荷兰独立战争，新教省份脱离天主教西班牙统治"
+    },
+    {
+      "id": "REL-REL-003",
+      "from_country": "ESP",
+      "to_country": "NLD",
+      "turning_point_id": "TP-RELIGION-1517",
+      "type": "hostile",
+      "start_year": "1568",
+      "end_year": "1648",
+      "description": "西班牙镇压荷兰新教起义"
+    },
+    {
+      "id": "REL-REL-004",
+      "from_country": "GBR",
+      "to_country": "ESP",
+      "turning_point_id": "TP-RELIGION-1517",
+      "type": "hostile",
+      "start_year": "1588",
+      "end_year": "1604",
+      "description": "西班牙无敌舰队进攻英格兰失败"
+    },
+    {
+      "id": "REL-REL-005",
+      "from_country": "FRA",
+      "to_country": "HRE",
+      "turning_point_id": "TP-RELIGION-1517",
+      "type": "hostile",
+      "start_year": "1618",
+      "end_year": "1648",
+      "description": "法国作为天主教国家却支持新教阵营对抗哈布斯堡"
+    },
+    {
+      "id": "REL-GEO-006",
+      "from_country": "CHN",
+      "to_country": "MNG",
+      "turning_point_id": "TP-GEO-1492",
+      "type": "hostile",
+      "start_year": "1368",
+      "end_year": "1644",
+      "description": "明朝与蒙古残余势力的长期边境冲突"
+    },
+    {
+      "id": "REL-GEO-007",
+      "from_country": "ARA",
+      "to_country": "OTM",
+      "turning_point_id": "TP-CONSTANTINOPLE-1453",
+      "type": "hostile",
+      "start_year": "1400",
+      "end_year": "1550",
+      "description": "奥斯曼逐步吞并阿拉伯地区，终结阿拔斯哈里发"
+    },
+    {
+      "id": "REL-SAR-010",
+      "from_country": "GER",
+      "to_country": "RUS",
+      "turning_point_id": "TP-SARAJEVO-1914",
+      "type": "hostile",
+      "start_year": "1914",
+      "end_year": "1918",
+      "description": "东线战场，德俄在坦能堡和马祖里湖泊战役交战"
+    },
+    {
+      "id": "REL-FR-007",
+      "from_country": "FRA",
+      "to_country": "GBR",
+      "turning_point_id": "TP-FRREVOLUTION-1789",
+      "type": "neutral",
+      "start_year": "1789",
+      "end_year": "1793",
+      "description": "革命初期英国保持观望态度"
+    },
+    {
+      "id": "REL-CC-009",
+      "from_country": "FRA",
+      "to_country": "RUS",
+      "turning_point_id": "TP-COLDWAR-1947",
+      "type": "hostile",
+      "start_year": "1949",
+      "end_year": "1991",
+      "description": "法国作为北约成员对抗苏联阵营"
+    },
+    {
+      "id": "REL-CC-010",
+      "from_country": "AUT",
+      "to_country": "RUS",
+      "turning_point_id": "TP-COLDWAR-1947",
+      "type": "neutral",
+      "start_year": "1955",
+      "end_year": "1991",
+      "description": "奥地利中立国地位，不被任何一方完全信任"
+    }
+  ],
+  "indirect_factors": [
+    {
+      "id": "IF-BALKAN-1912",
+      "type": "geographical",
+      "description": "巴尔干半岛地处欧亚非交汇处，奥斯曼帝国衰落留下权力真空，斯拉夫民族主义与奥斯曼统治产生不可调和的矛盾",
+      "turning_point_ids": [
+        "TP-SARAJEVO-1914"
+      ],
+      "impact_level": "critical",
+      "is_virtual": false,
+      "source_reference": "Norman Stone, 'The Eastern Front 1914-1917'"
+    },
+    {
+      "id": "IF-ALLIANCE-RIGIDITY",
+      "type": "social",
+      "description": "19世纪末形成的两大军事同盟体系（三国同盟vs三国协约）具有高度刚性，盟约义务使局部冲突难以控制升级",
+      "turning_point_ids": [
+        "TP-SARAJEVO-1914"
+      ],
+      "impact_level": "critical",
+      "is_virtual": false,
+      "source_reference": "Christopher Clark, 'The Sleepwalkers'"
+    },
+    {
+      "id": "IF-TECH-ARTILLERY",
+      "type": "technological",
+      "description": "19世纪末至20世纪初军事技术革命（机枪、重炮、铁甲舰）使战争破坏力剧增，而战略战术滞后导致堑壕战僵局",
+      "turning_point_ids": [
+        "TP-SARAJEVO-1914"
+      ],
+      "impact_level": "high",
+      "is_virtual": true,
+      "source_reference": "Hew Strachan, 'The First World War'"
+    },
+    {
+      "id": "IF-OTTMAN-MILITARY",
+      "type": "technological",
+      "description": "奥斯曼帝国建立常备雇佣军（耶尼切里）和蒂玛尔土地-军事制度，使其具备持续扩张的军事-经济基础",
+      "turning_point_ids": [
+        "TP-CONSTANTINOPLE-1453"
+      ],
+      "impact_level": "critical",
+      "is_virtual": false,
+      "source_reference": "Halil Inalcik, 'The Ottoman Empire: The Classical Age'"
+    },
+    {
+      "id": "IF-PRINT-TECHNOLOGY",
+      "type": "technological",
+      "description": "古登堡活字印刷术(约1440年)使知识传播成本降低90%，宗教改革思想得以跨越国界迅速扩散",
+      "turning_point_ids": [
+        "TP-RELIGION-1517"
+      ],
+      "impact_level": "critical",
+      "is_virtual": false,
+      "source_reference": "Elizabeth Eisenstein, 'The Printing Press as an Agent of Change'"
+    },
+    {
+      "id": "IF-ENLIGHTENMENT",
+      "type": "ideological",
+      "description": "18世纪启蒙运动传播理性主义、社会契约论和分权制衡理念，从根本上动摇了君权神授和封建等级的合法性",
+      "turning_point_ids": [
+        "TP-FRREVOLUTION-1789"
+      ],
+      "impact_level": "critical",
+      "is_virtual": false,
+      "source_reference": "Robert Darnton, 'The Great Cat Massacre'"
+    },
+    {
+      "id": "IF-FRENCH-FINANCE",
+      "type": "economic",
+      "description": "法国旧制度税制极度不公：贵族和教士免税，第三等级承担全部税负。七年战争和美国独立战争援助使国债翻倍",
+      "turning_point_ids": [
+        "TP-FRREVOLUTION-1789"
+      ],
+      "impact_level": "critical",
+      "is_virtual": false,
+      "source_reference": "Albert Mathiez, 'The French Revolution'"
+    },
+    {
+      "id": "IF-VERSAILLES-FLAWS",
+      "type": "ideological",
+      "description": "凡尔赛条约对德国的惩罚性条款（战争罪责、巨额赔款、领土割让）埋下复仇种子，未能建立可持续的和平框架",
+      "turning_point_ids": [
+        "TP-WW2-1939",
+        "TP-COLDWAR-1947"
+      ],
+      "impact_level": "critical",
+      "is_virtual": false,
+      "source_reference": "Niall Ferguson, 'The Pity of War'"
+    },
+    {
+      "id": "IF-GREAT-DEPRESSION",
+      "type": "economic",
+      "description": "1929年华尔街股灾引发全球大萧条，德国失业率达30%，民主制度在经济危机中丧失合法性，为极端主义提供温床",
+      "turning_point_ids": [
+        "TP-WW2-1939"
+      ],
+      "impact_level": "critical",
+      "is_virtual": false,
+      "source_reference": "Adam Tooze, 'The Wages of Destruction'"
+    },
+    {
+      "id": "IF-NUCLEAR-TECH",
+      "type": "technological",
+      "description": "曼哈顿计划成功研制原子弹(1945)，彻底改变战争形态和国际战略，核威慑成为冷战期间避免直接冲突的关键因素",
+      "turning_point_ids": [
+        "TP-WW2-1939",
+        "TP-COLDWAR-1947"
+      ],
+      "impact_level": "critical",
+      "is_virtual": false,
+      "source_reference": "Richard Rhodes, 'The Making of the Atomic Bomb'"
+    },
+    {
+      "id": "IF-COLONIAL-ECONOMY",
+      "type": "economic",
+      "description": "跨大西洋三角贸易（欧洲制成品→非洲奴隶→美洲原材料）为欧洲工业革命积累原始资本，同时造成非洲人口流失和社会破坏",
+      "turning_point_ids": [
+        "TP-GEO-1492"
+      ],
+      "impact_level": "high",
+      "is_virtual": true,
+      "source_reference": "Eric Williams, 'Capitalism and Slavery'"
+    },
+    {
+      "id": "IF-IDEO-CAPITALISM",
+      "type": "ideological",
+      "description": "自由市场经济和民主价值观与计划经济和共产主义意识形态的根本对立，使冷战不仅是地缘政治博弈更是文明之争",
+      "turning_point_ids": [
+        "TP-COLDWAR-1947"
+      ],
+      "impact_level": "critical",
+      "is_virtual": false,
+      "source_reference": "Francis Fukuyama, 'The End of the Cold War'"
+    }
+  ]
+}

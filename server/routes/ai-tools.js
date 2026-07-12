@@ -267,19 +267,19 @@ ${audit.missingFiles.map(m => `- \`${m.path}\` (原因: ${m.reason})`).join('\n'
       // v0.44.5: 自动 steer agent — 把 feedback 注入到 agent 的 messages 里，让它知道要去补文件
       //   之前 agent 拿到反馈后可能不知道要创建文件，或者继续装睡
       //   修法：直接 steer agent，明确告诉它"创建缺失文件"
-      try {
-        const { executeTaskAgent } = require('./task-agent');
-        // 异步 steer，不阻塞响应
-        (async () => {
-          try {
-            await executeTaskAgent(taskId, {
-              steerMessage: `### 自动 steer: 创建缺失文件\n\n你的提交被拒绝了，因为以下文件不存在：\n${missingFiles}\n\n请创建这些文件。对于每个文件，根据任务描述中的需求，用合理的内容创建它。如果你不知道该放什么内容，创建一个合理的空骨架（比如空类/空函数/空模块）。\n\n创建后重新提交。`,
-            });
-          } catch (e) {
-            console.error(`[agent-execute] steer failed for task ${taskId}: ${e.message}`);
-          }
-        })();
-      } catch (e) { /* executeTaskAgent not available */ }
+      //   v0.X fix: 复用顶部已经导入的 aiTools.executeTaskAgent，**不要重新 require './task-agent'**
+      //     （routes/ 下没有 task-agent.js，会抛 MODULE_NOT_FOUND 被外层 catch 静默吞掉，
+      //      导致 audit 失败后永远不触发自动 steer，任务永远卡在 in_progress）
+      // 异步 steer，不阻塞响应
+      (async () => {
+        try {
+          await aiTools.executeTaskAgent(taskId, {
+            steerMessage: `### 自动 steer: 创建缺失文件\n\n你的提交被拒绝了，因为以下文件不存在：\n${missingFiles}\n\n请创建这些文件。对于每个文件，根据任务描述中的需求，用合理的内容创建它。如果你不知道该放什么内容，创建一个合理的空骨架（比如空类/空函数/空模块）。\n\n创建后重新提交。`,
+          });
+        } catch (e) {
+          console.error(`[agent-execute] steer failed for task ${taskId}: ${e.message}`);
+        }
+      })();
       return res.status(409).json({
         success: false,
         taskId,
