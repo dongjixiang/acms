@@ -230,6 +230,9 @@
         const matchedCells = this._extractMatchedCells(matches);
 
         // ========== 1. 消除动画 ==========
+        // 先禁用 grid:changed 事件，防止 flagCellsForRemoval 触发 _renderGrid 中断消除动画
+        this._disableGridChange();
+
         // 使用 AnimationController 的 animateEliminate
         const eliminatedCoords = Array.from(matchedCells).map(k => {
           const [y, x] = k.split(',').map(Number);
@@ -250,20 +253,14 @@
           await this._animationController.animateScorePop(this.scoreDisplay, score);
         }
 
-        // ========== 3. 应用重力 + 生成新块（不触发 grid:changed）==========
-        // 先暂停 grid:changed 事件触发，等我们手动处理完动画后再触发
-        this._disableGridChange();
-
+        // ========== 3. 应用重力 + 生成新块（已禁用 grid:changed）==========
         // 应用重力（禁止自动触发 grid:changed）
         engine.applyGravityToGameState(this.gameState, false);
 
         // 生成新元素（禁止自动触发 grid:changed）
         engine.generateNewBlocks(this.gameState, false);
 
-        // 恢复 grid:changed 事件
-        this._enableGridChange();
-
-        // ========== 4. 重新渲染网格（此时消除已完成，新DOM无残留动画类）==========
+        // ========== 4. 重新渲染网格（一次性渲染消除+重力+新块后的状态）==========
         this._renderGrid();
 
         // ========== 5. 执行下落动画 ==========
@@ -277,6 +274,9 @@
         if (newCells.length > 0) {
           await this._animationController.animateSpawnSequence(newCells);
         }
+
+        // 恢复 grid:changed 事件（在所有动画完成后）
+        this._enableGridChange();
 
         // 短暂等待确保所有动画完成
         await this._wait(100);

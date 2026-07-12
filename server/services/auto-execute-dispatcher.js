@@ -92,6 +92,14 @@ class AutoExecuteDispatcher {
     const taskId = event.target_id || event.target?.id;
     const assignee = event.actor_id || event.actor?.id;
 
+    // v0.X: 执行中任务锁 — 防 dispatcher 重复触发同一任务
+    if (_executingTasks.has(taskId)) {
+      console.log(`[AutoExecuteDispatcher] ⏭️ ${taskId} 已在执行中，跳过重复 claim 触发`);
+      this.stats.skipped++;
+      return;
+    }
+    _executingTasks.add(taskId);
+
     // v0.24 diagnostic: 进入即打日志，避免再来一次「看着没反应」找根因
     console.log(`[AutoExecuteDispatcher] 📬 收到 task.claimed event: task=${taskId} assignee=${assignee}`);
 
@@ -183,16 +191,19 @@ class AutoExecuteDispatcher {
       if (result && result.success) {
         console.log(`[AutoExecuteDispatcher] ✅ ${taskId} 完成 (analysis=${result.analysisLength || '?'} chars, submitted=${result.submitted})`);
         this.stats.triggered++;
+        _unlockTask(taskId);
       } else {
         console.warn(`[AutoExecuteDispatcher] ⚠️ ${taskId} 失败: ${(result && result.error) || (result && result.message) || 'unknown'}`);
         if (result && result.missingCount) console.warn(`[AutoExecuteDispatcher]   缺失文件: ${JSON.stringify(result.missingFiles)}`);
         this.stats.errors++;
+        _unlockTask(taskId);
         // v0.45: 失败任务自动重试一次（避免单次网络/装睡导致任务永远失败）
         await this.scheduleRetry(taskId, task, 'initial-failure');
       }
     } catch (e) {
       console.error(`[AutoExecuteDispatcher] ❌ ${taskId} 异常: ${e.message}`);
       this.stats.errors++;
+      _unlockTask(taskId);
       await this.scheduleRetry(taskId, task, 'exception');
     }
   }
@@ -203,6 +214,22 @@ class AutoExecuteDispatcher {
   async scheduleRetry(taskId, task, reason) {
     if (!task) task = taskStore.getById(taskId);
     if (!task) return;
+
+    // v0.X: 重试前检查是否已有活动中的执行 — 防 fetch 超时后重复触发
+    //   根因：agent-execute HTTP fetch 超时（~5min）但 server 端 runToolLoop 仍在跑，
+    //   scheduleRetry 不检查就启动第二个执行
+    const recentLog = JSON.parse(task.execution_log || '[]');
+    const lastEntry = recentLog[recentLog.length - 1];
+    if (lastEntry && lastEntry.time) {
+      const lastTime = new Date(lastEntry.time).getTime();
+      const now = Date.now();
+      const elapsedSec = (now - lastTime) / 1000;
+      if (elapsedSec < 120) {
+        console.log(`[AutoExecuteDispatcher] ⏭️ ${taskId} 跳过重试: execution_log 在 ${elapsedSec.toFixed(0)} 秒前有更新，agent 仍在运行中`);
+        this.stats.skipped++;
+        return;
+      }
+    }
 
     // P0 v0.X: 计数从持久化字段读（之前 in-memory Map 重启清零）
     const retryCount = getReExecuteCount(taskStore, taskId);
@@ -260,6 +287,14 @@ AutoExecuteDispatcher.prototype.handleTaskRejected = async function (event) {
     this.stats.skipped += 1;
     return;
   }
+
+  // v0.X: 执行中任务锁 — 防驳回场景重复触发
+  if (_executingTasks.has(taskId)) {
+    console.log(`[AutoExecuteDispatcher] ⏭️ ${taskId} 驳回触发但已在执行中，跳过`);
+    this.stats.skipped++;
+    return;
+  }
+  _executingTasks.add(taskId);
   const task = taskStore.getById(taskId);
   if (!task) {
     console.warn(`[AutoExecuteDispatcher] ⚠️ review_rejected: ${taskId} task 不存在`);
@@ -304,9 +339,11 @@ AutoExecuteDispatcher.prototype.handleTaskRejected = async function (event) {
         console.warn(`[AutoExecuteDispatcher] ⚠️ ${taskId} 自动重跑失败: ${(result && result.error) || (result && result.message) || 'unknown'}`);
         this.stats.errors += 1;
       }
+      _executingTasks.delete(taskId);
     } catch (e) {
       console.error(`[AutoExecuteDispatcher] ❌ ${taskId} 自动重跑异常: ${e.message}`);
       this.stats.errors += 1;
+      _executingTasks.delete(taskId);
     }
   });
 };

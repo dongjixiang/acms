@@ -529,6 +529,8 @@ function detectStreamStall(result, messages) {
   const stallPhrases = [
     'i will write', 'i\'ll write', 'let me write', 'i will create', 'i will modify', 'i will update',
     'now i will', 'next i will', 'will create', 'will write', 'will implement',
+    // 中文 stall phrases（v0.X: 加了中文语言指令后 LLM 用中文思考）
+    '需要写', '去写', '来写', '写一个', '创建文件', '要写', '去创建', '来创建', '来修改', '去修改',
   ];
   const matched = stallPhrases.filter(p => content.includes(p));
   if (matched.length > 0) {
@@ -802,7 +804,9 @@ async function runToolLoop(modelId, messages, options = {}) {
       //   改成 user 主动观察语气 + 强制 A/B 选择 + 现实威胁（user 接手）
       //   Hermes 的 /steer 命令等价物 — LLM 把 user message 当 "用户的意图"，优先级高于 system warning
       const requiresWrite = Array.isArray(toolNames) && toolNames.includes('agent_write_file');
-      const writeFileCalls = toolCallHistory.filter(h => h.tool === 'agent_write_file' && !h.error);
+      const writeFileCalls = toolCallHistory.filter(h =>
+        ['agent_write_file', 'agent_patch_file', 'agent_multi_patch'].includes(h.tool) && !h.error
+      );
       if (requiresWrite && writeFileCalls.length === 0) {
         const systemPrompt = messages[0]?.content || '';
         const goalMatch = systemPrompt.match(/# YOUR SPECIFIC GOAL FOR THIS TASK\s*([\s\S]+?)(?=# DO NOT STOP|$)/);
