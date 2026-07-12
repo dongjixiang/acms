@@ -147,10 +147,25 @@ class ImprovementReportStore {
     return collection('improvement_reports').findOne(r => r.id === id) || null;
   }
 
-  list(status) {
+  /**
+   * 删除一条报告（含 idea 类型）— 不可逆，返回被删的记录用于日志
+   */
+  delete(id) {
+    const target = this.getById(id);
+    if (!target) return null;
+    collection('improvement_reports').remove(r => r.id === id);
+    console.log(`[ImprovementReport] 删除 ${id} [${target.source_type}] [${target.status}] ${(target.summary || '').substring(0, 60)}`);
+    return target;
+  }
+
+  list(statusOrOpts, sourceType) {
+    // 向后兼容：list('pending') 或 list({ status, sourceType })
+    const opts = (typeof statusOrOpts === 'object' && statusOrOpts) || (statusOrOpts ? { status: statusOrOpts } : {});
+    if (sourceType) opts.sourceType = sourceType;
     let reports = collection('improvement_reports').all();
     reports.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-    if (status) reports = reports.filter(r => r.status === status);
+    if (opts.status) reports = reports.filter(r => r.status === opts.status);
+    if (opts.sourceType) reports = reports.filter(r => r.source_type === opts.sourceType);
     // 增强：附加来源任务标题
     return reports.map(r => {
       let sourceTaskTitle = '';

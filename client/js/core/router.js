@@ -25,7 +25,7 @@ function goToProjects() {
 function enterProject(proj) {
   App.currentProjectId = proj.id; App.currentProject = proj;
   document.getElementById('current-project').textContent = `📦 ${escHtml(proj.name)}`;
-  document.getElementById('header-title').innerHTML = `🤖 ${escHtml(proj.name)} <span class="version">v0.3</span>`;
+  document.getElementById('header-title').innerHTML = `<img src="/client/img/logo.png" alt="ACMS" class="header-logo"> ${escHtml(proj.name)} <span class="version">v0.3</span>`;
   showView('view-workspace');
   setupWorkspaceNav();
   showWorkspaceView('dashboard');

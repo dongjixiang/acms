@@ -26,10 +26,10 @@ router.get('/project', (req, res) => {
   res.json({ ...proj, taskStats: { total: totalTasks, inProgress, done } });
 });
 
-// 获取改进报告列表
+// 获取改进报告列表（支持 ?status= 和 ?sourceType=idea/bug/postmortem/clarify 过滤）
 router.get('/reports', (req, res) => {
-  const { status } = req.query;
-  const reports = reportStore.list(status || null);
+  const { status, sourceType } = req.query;
+  const reports = reportStore.list({ status: status || null, sourceType: sourceType || null });
   res.json(reports);
 });
 
@@ -54,6 +54,13 @@ router.post('/reports/:id/review', (req, res) => {
   const result = reportStore.review(req.params.id, { verdict, feedback: feedback || '' });
   if (result.error) return res.status(400).json(result);
   res.json(result);
+});
+
+// 删除改进报告（含 idea 类型）— 不可逆
+router.delete('/reports/:id', (req, res) => {
+  const deleted = reportStore.delete(req.params.id);
+  if (!deleted) return res.status(404).json({ error: 'REPORT_NOT_FOUND', message: `报告 ${req.params.id} 不存在` });
+  res.json({ ok: true, id: deleted.id, source_type: deleted.source_type, status: deleted.status });
 });
 
 // 获取自我改进项目的任务看板

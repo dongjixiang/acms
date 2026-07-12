@@ -27,6 +27,7 @@ async function loadAdminPage() {
         <button class="tab-btn" data-tab="admin-tab-data">🛠 数据</button>
         <button class="tab-btn" data-tab="admin-tab-events">📋 事件</button>
         <button class="tab-btn" data-tab="admin-tab-webhooks">🔔 Webhooks</button>
+        <button class="tab-btn" data-tab="admin-tab-ops">🛠 运营工具</button>
       </div>
 
       <!-- Tab 1 · 概览 — 系统状态卡片（uptime / memory 超阈值变色警示） -->
@@ -317,12 +318,61 @@ async function loadAdminPage() {
                   ${w.last_triggered ? `<span>🕐 最近触发: ${new Date(w.last_triggered).toLocaleString('zh-CN', {hour12:false})}</span>` : '<span>🕐 尚未触发</span>'}
                   ${w.description ? `<span>💬 ${escHtml(w.description)}</span>` : ''}
                 </div>
-              </div>
+</div>
             `).join('')}
+        </div>
+      </div>
+
+      <!-- Tab · 运营工具 — 想法池 + 自我改进（之前 header 上的 💡/🔄 入口移到这里） -->
+      <div class="tab-content" id="admin-tab-ops">
+        <h3>🛠 运营工具</h3>
+        <p class="hint" style="color:var(--text2);font-size:12px;margin:4px 0 12px">
+          管理 ACMS 自身的反馈渠道：随手记录想法、跟进自动生成的改进报告。所有按钮都与下面"完整看板"双向同步。
+        </p>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:16px;margin-top:8px">
+          <!-- 想法池 -->
+          <div class="panel-form" style="display:flex;flex-direction:column;gap:10px">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <h4 style="margin:0">💡 想法池</h4>
+              <button class="btn-primary" onclick="showIdeaDialog()" style="font-size:12px">+ 记录想法</button>
+            </div>
+            <div id="ops-idea-stats" style="font-size:11px;color:var(--text2);min-height:48px">
+              <span>⏳ 加载中…</span>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn-secondary" onclick="openOpsTabToImprovements('reports')" style="font-size:12px">📋 打开完整看板</button>
+              <button class="btn-secondary" onclick="openOpsTabToImprovements('reports','idea')" style="font-size:12px">💭 仅看想法</button>
+            </div>
+          </div>
+
+          <!-- 自我改进 -->
+          <div class="panel-form" style="display:flex;flex-direction:column;gap:10px">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <h4 style="margin:0">🔄 自我改进</h4>
+            </div>
+            <div id="ops-improvement-stats" style="font-size:11px;color:var(--text2);min-height:48px">
+              <span>⏳ 加载中…</span>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn-secondary" onclick="openOpsTabToImprovements('board')" style="font-size:12px">📊 任务看板</button>
+              <button class="btn-secondary" onclick="openOpsTabToImprovements('reports')" style="font-size:12px">📋 改进报告</button>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top:16px;padding:10px 12px;background:var(--bg2);border-radius:6px;font-size:11px;color:var(--text2)">
+          💡 快捷键：<kbd style="background:var(--bg3);padding:1px 6px;border-radius:3px;border:1px solid var(--border)">Ctrl</kbd> +
+          <kbd style="background:var(--bg3);padding:1px 6px;border-radius:3px;border:1px solid var(--border)">I</kbd>
+          （Mac: <kbd style="background:var(--bg3);padding:1px 6px;border-radius:3px;border:1px solid var(--border)">⌘</kbd> +
+          <kbd style="background:var(--bg3);padding:1px 6px;border-radius:3px;border:1px solid var(--border)">I</kbd>）
+          在任意页面快速打开"记录想法"对话框
         </div>
       </div>
     `;
     setupAdminTabs();
+    // 加载"运营工具"tab 的统计（异步）
+    loadOpsTabStats();
   } catch (e) { document.getElementById('admin-content').innerHTML = `<div class="empty">加载失败: ${e.message}</div>`; }
 }
 
@@ -686,4 +736,111 @@ async function clearAgnesKey() {
   } catch (e) {
     toast('清除失败: ' + e.message, 'error');
   }
+}
+
+// ═══ 运营工具 Tab 辅助（想法池 + 自我改进快捷入口，从 header 移到此） ═══
+
+// 加载"运营工具"tab 内的统计摘要（独立失败容忍，避免阻塞 admin 主流程）
+async function loadOpsTabStats() {
+  // 想法池：取 /ideas/stats
+  try {
+    const stats = await api('GET', '/improvements/ideas/stats');
+    const el = document.getElementById('ops-idea-stats');
+    if (!el) return;
+    const total = stats.total || 0;
+    const byStatus = stats.byStatus || {};
+    const pending = byStatus.pending || 0;
+    const merged = byStatus.merged || 0;
+    const declined = byStatus.declined || 0;
+    if (total === 0) {
+      el.innerHTML = '<div style="padding:6px 0">📭 还没有想法记录<br><span style="color:var(--text2)">点击右上"+ 记录想法"开始第一条</span></div>';
+    } else {
+      const roleParts = Object.entries(stats.byRole || {})
+        .slice(0, 3)
+        .map(([k, v]) => `${k} · ${v}`)
+        .join(' · ');
+      el.innerHTML =
+        '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
+          `<div><strong>${total}</strong> 总数</div>` +
+          `<div><strong style="color:${pending ? 'var(--accent)' : 'inherit'}">${pending}</strong> 待处理</div>` +
+          `<div><strong>${merged}</strong> 已并入改进</div>` +
+          (declined ? `<div><strong>${declined}</strong> 已忽略</div>` : '') +
+        '</div>' +
+        (roleParts ? `<div style="margin-top:6px;color:var(--text2)">来源角色: ${escHtml(roleParts)}</div>` : '');
+    }
+  } catch (e) {
+    const el = document.getElementById('ops-idea-stats');
+    if (el) el.innerHTML = '<span style="color:var(--accent2)">加载失败: ' + escHtml(e.message) + '</span>';
+  }
+
+  // 自我改进：取 /improvements/project（拿到 taskStats）
+  try {
+    const proj = await api('GET', '/improvements/project');
+    const el = document.getElementById('ops-improvement-stats');
+    if (!el) return;
+    const ts = proj.taskStats || {};
+    const total = ts.total || 0;
+    const inProgress = ts.inProgress || 0;
+    const done = ts.done || 0;
+    if (total === 0) {
+      el.innerHTML = '<div style="padding:6px 0">📭 改进看板为空<br><span style="color:var(--text2)">critical/major 缺陷修复后会自动生成</span></div>';
+    } else {
+      const pct = total ? Math.round(done / total * 100) : 0;
+      el.innerHTML =
+        '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
+          `<div><strong>${total}</strong> 改进任务</div>` +
+          `<div><strong style="color:${inProgress ? 'var(--accent)' : 'inherit'}">${inProgress}</strong> 进行中</div>` +
+          `<div><strong>${done}</strong> 已完成 · ${pct}%</div>` +
+        '</div>' +
+        `<div style="margin-top:6px;color:var(--text2)">完成率 ${pct}%${pct < 30 && inProgress > 0 ? ' · 建议跟进积压' : ''}</div>`;
+    }
+  } catch (e) {
+    const el = document.getElementById('ops-improvement-stats');
+    if (el) el.innerHTML = '<span style="color:var(--accent2)">加载失败: ' + escHtml(e.message) + '</span>';
+  }
+}
+
+// 从"运营工具"卡片跳到完整看板（带可选的 sourceType 过滤）
+function openOpsTabToImprovements(tab, sourceType) {
+  showView('view-improvements');
+  // 切到目标 tab
+  if (typeof switchImprovementTab === 'function') {
+    switchImprovementTab(tab || 'reports');
+  }
+  // 若需要 sourceType 过滤，调用 loadReports 时传参
+  if (tab === 'reports' && sourceType && typeof loadReports === 'function') {
+    loadReports(undefined, sourceType);
+  } else {
+    loadImprovements();
+  }
+}
+
+// ═══ 全局快捷键：Ctrl/Cmd + I 打开"记录想法" ═══
+// 灵感来自 header 的 💡 按钮下移后不能丢失高频动作
+document.addEventListener('keydown', function (e) {
+  // 必须是 Ctrl（Win/Linux）或 Cmd（Mac）+ I，且没有 Shift/Alt 干扰
+  if (!(e.ctrlKey || e.metaKey)) return;
+  if (e.key !== 'i' && e.key !== 'I') return;
+  if (e.shiftKey || e.altKey) return;
+  // 用户正在输入框/可编辑区域里打字 → 不抢快捷键
+  var t = e.target;
+  if (t) {
+    var tag = (t.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || t.isContentEditable) return;
+  }
+  e.preventDefault();
+  if (typeof showIdeaDialog === 'function') {
+    showIdeaDialog();
+  }
+});
+
+// ═══ 从 view-improvements 返回运营工具 tab（替换之前的"返回项目"） ═══
+// 入口迁移后，自我改进页的唯一上游入口就是 admin → 🛠 运营工具
+function backToOpsTab() {
+  showView('view-admin');
+  // loadAdminPage 是 async；等它填充完 admin-tabs，再点运营工具 tab
+  Promise.resolve(loadAdminPage()).then(function () {
+    var opsTabBtn = document.querySelector('#admin-tabs .tab-btn[data-tab="admin-tab-ops"]');
+    if (opsTabBtn) opsTabBtn.click();
+  });
 }

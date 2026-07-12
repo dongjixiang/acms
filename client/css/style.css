@@ -51,7 +51,8 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 
 /* Header */
 #header { display: flex; justify-content: space-between; align-items: center; padding: 12px 24px; background: var(--bg2); border-bottom: 1px solid var(--border); }
-#header h1 { font-size: 20px; color: var(--accent); }
+#header h1 { font-size: 20px; color: var(--accent); display: flex; align-items: center; gap: 8px; }
+#header h1 .header-logo { height: 32px; width: 32px; border-radius: 6px; vertical-align: middle; object-fit: contain; }
 .version { font-size: 12px; color: var(--text2); margin-left: 8px; }
 #header-right { display: flex; gap: 16px; align-items: center; }
 
@@ -764,6 +765,9 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
 .imp-report-card.declined { border-left-color: #8b1a1a; opacity: 0.5; }
 .imp-report-card.merged { border-left-color: #8a7a5a; opacity: 0.45; background: repeating-linear-gradient(45deg, transparent 0 6px, rgba(0,0,0,0.06) 6px 7px); }
 .imp-report-card.selected { background: var(--bg3); border-color: var(--accent); }
+.imp-report-card .imp-card-delete { transition: opacity 0.15s; }
+.imp-report-card:hover .imp-card-delete { opacity: 1 !important; color: var(--accent2) !important; }
+.imp-report-card .imp-card-delete:hover { color: #ff5a5a !important; }
 .imp-report-row1 { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .imp-report-title { font-size: 13px; font-weight: 600; color: var(--text); flex: 1; }
 .imp-report-source { font-size: 10px; padding: 1px 7px; border-radius: 4px; flex-shrink: 0; background: var(--bg3); color: var(--text2); }
