@@ -5,6 +5,7 @@ const aiTools = require('../services/ai-tools-service');
 const reqStore = require('../stores/requirement-store');
 const taskStore = require('../stores/task-store');
 const eventBus = require('../services/event-bus');
+const dispatcher = require('../services/auto-execute-dispatcher');
 const { validateChildCoverage, detectIntegrationGaps, validateParentAggregateCoverage } = require('../services/coverage-validator');
 const decomposer = require('../services/decomposer');
 
@@ -239,13 +240,36 @@ router.post('/agent-execute', async (req, res, next) => {
     const { taskId, modelId, agentId, lang } = req.body;
     if (!taskId) return res.status(400).json({ error: 'MISSING_TASK_ID' });
 
-    const effectiveLang = lang || 'zh';
-    const task = taskStore.getById(taskId);
-    if (task && lang) {
-      taskStore.update(taskId, { preferred_lang: lang, updated_at: new Date().toISOString() });
+    // v0.X: 任务执行锁 — 防并发触发（dispatcher 自动恢复 + curl steer + 重试同时跑同一任务）
+    //   之前 dispatcher 自己管锁，但 /agent-execute 路由层访问不到 dispatcher 的 _executingTasks，
+    //   导致 curl /agent-execute 绕过锁并发触发同一任务（实测 T-MRHSD8OE 13:36 双跑浪费 token）。
+    //   修法：让 /agent-execute 路由统一管锁，dispatcher 不再自己加锁。
+    if (dispatcher.isTaskLocked(taskId)) {
+      return res.status(409).json({
+        success: false,
+        taskId,
+        error: 'TASK_ALREADY_RUNNING',
+        message: `任务 ${taskId} 正在执行中，请等待完成或使用 /agent-steer 注入指令`,
+      });
+    }
+    if (!dispatcher.tryAcquireTaskLock(taskId)) {
+      // 极端 race condition（两个请求同时通过 isTaskLocked 检查）
+      return res.status(409).json({
+        success: false,
+        taskId,
+        error: 'TASK_ALREADY_RUNNING',
+        message: `任务 ${taskId} 正在执行中（race condition）`,
+      });
     }
 
-    const result = await aiTools.executeTaskAgent(taskId, { modelId, lang: effectiveLang });
+    try {
+      const effectiveLang = lang || 'zh';
+      const task = taskStore.getById(taskId);
+      if (task && lang) {
+        taskStore.update(taskId, { preferred_lang: lang, updated_at: new Date().toISOString() });
+      }
+
+      const result = await aiTools.executeTaskAgent(taskId, { modelId, lang: effectiveLang });
 
     // v0.35 改版：基于任务需求验证文件，不 parse LLM summary
     //   从任务描述/acceptance criteria 提取文件路径 → 验证是否存在
@@ -335,6 +359,10 @@ ${audit.missingFiles.map(m => `- \`${m.path}\` (原因: ${m.reason})`).join('\n'
       // v0.23: happy path 也返回 audit 详情 — 让 review 调试有完整证据
       audit: audit.missingCount === 0 ? audit : null,
     });
+    } finally {
+      // v0.X: 释放任务执行锁 — 无论 success/audit-fail/stall 都要释放
+      dispatcher.releaseTaskLock(taskId);
+    }
   } catch (e) { next(e); }
 });
 

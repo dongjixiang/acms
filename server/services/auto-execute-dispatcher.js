@@ -36,11 +36,20 @@ const DEFAULT_AUTO_EXECUTE_AGENTS = new Set(['agent-acms-self', 'agent-xiaoji'])
 //   P0 v0.X: 计数从 in-memory Map 改成 task.doc.re_execute_count（持久化），重启不丢
 const MAX_RE_EXECUTE = 3;
 
-// v0.X: 执行中任务锁 — 防 dispatcher 重复触发同一任务
+// v0.X: 执行中任务锁 — 由 /agent-execute 路由统一管（之前 dispatcher 自己管锁，
+//   但路由层访问不到 dispatcher 的 _executingTasks，导致 curl /agent-execute
+//   绕过锁可以跟 dispatcher 自动恢复并发触发同一任务）
 const _executingTasks = new Set();
-// v0.X fix: _unlockTask 函数 — 之前 handleTaskClaimed 调 _unlockTask(taskId) 但函数未定义，
-//   抛 ReferenceError 让 _executingTasks 锁永久持有。修法：补函数定义。
-function _unlockTask(taskId) {
+// v0.X: 暴露给路由层用的锁 API（替代之前 dispatcher 内部用的 _executingTasks 直接操作）
+function isTaskLocked(taskId) {
+  return _executingTasks.has(taskId);
+}
+function tryAcquireTaskLock(taskId) {
+  if (_executingTasks.has(taskId)) return false;
+  _executingTasks.add(taskId);
+  return true;
+}
+function releaseTaskLock(taskId) {
   _executingTasks.delete(taskId);
 }
 
@@ -120,19 +129,13 @@ class AutoExecuteDispatcher {
 
   removeAutoAgent(agentId) { this.autoAgents.delete(agentId); }
 
-  async handleTaskClaimed(event) {
+ async handleTaskClaimed(event) {
     // v0.24 fix: eventBus.emit() 会把 actor/target 拆成平铺字段 (actor_id / target_id)
-    // 不保留嵌套对象。读 event.actor?.id 永远 undefined — handler 静默 return。
+    //   不保留嵌套对象。读 event.actor?.id 永远 undefined — handler 静默 return。
+    // v0.X: 锁语义改了 — 路由 /agent-execute 自己管锁（tryAcquireTaskLock/releaseTaskLock），
+    //   dispatcher 不再加锁（避免重复 trigger 时锁冲突），重复触发由路由返回 409 + dispatcher 的 scheduleRetry 处理
     const taskId = event.target_id || event.target?.id;
     const assignee = event.actor_id || event.actor?.id;
-
-    // v0.X: 执行中任务锁 — 防 dispatcher 重复触发同一任务
-    if (_executingTasks.has(taskId)) {
-      console.log(`[AutoExecuteDispatcher] ⏭️ ${taskId} 已在执行中，跳过重复 claim 触发`);
-      this.stats.skipped++;
-      return;
-    }
-    _executingTasks.add(taskId);
 
     // v0.24 diagnostic: 进入即打日志，避免再来一次「看着没反应」找根因
     console.log(`[AutoExecuteDispatcher] 📬 收到 task.claimed event: task=${taskId} assignee=${assignee}`);
@@ -225,19 +228,19 @@ class AutoExecuteDispatcher {
       if (result && result.success) {
         console.log(`[AutoExecuteDispatcher] ✅ ${taskId} 完成 (analysis=${result.analysisLength || '?'} chars, submitted=${result.submitted})`);
         this.stats.triggered++;
-        _unlockTask(taskId);
+        // v0.X: 路由 /agent-execute 自己管锁（try/finally releaseTaskLock），dispatcher 不再 unlock
       } else {
         console.warn(`[AutoExecuteDispatcher] ⚠️ ${taskId} 失败: ${(result && result.error) || (result && result.message) || 'unknown'}`);
         if (result && result.missingCount) console.warn(`[AutoExecuteDispatcher]   缺失文件: ${JSON.stringify(result.missingFiles)}`);
         this.stats.errors++;
-        _unlockTask(taskId);
+        // v0.X: 同上，路由管锁
         // v0.45: 失败任务自动重试一次（避免单次网络/装睡导致任务永远失败）
         await this.scheduleRetry(taskId, task, 'initial-failure');
       }
     } catch (e) {
       console.error(`[AutoExecuteDispatcher] ❌ ${taskId} 异常: ${e.message}`);
       this.stats.errors++;
-      _unlockTask(taskId);
+      // v0.X: 同上，路由管锁
       await this.scheduleRetry(taskId, task, 'exception');
     }
   }
@@ -328,13 +331,7 @@ AutoExecuteDispatcher.prototype.handleTaskRejected = async function (event) {
     return;
   }
 
-  // v0.X: 执行中任务锁 — 防驳回场景重复触发
-  if (_executingTasks.has(taskId)) {
-    console.log(`[AutoExecuteDispatcher] ⏭️ ${taskId} 驳回触发但已在执行中，跳过`);
-    this.stats.skipped++;
-    return;
-  }
-  _executingTasks.add(taskId);
+  // v0.X: 锁由路由 /agent-execute 自己管，dispatcher 不再加锁 — 直接调 HTTP 让路由处理并发保护
   const task = taskStore.getById(taskId);
   if (!task) {
     console.warn(`[AutoExecuteDispatcher] ⚠️ review_rejected: ${taskId} task 不存在`);
@@ -379,14 +376,17 @@ AutoExecuteDispatcher.prototype.handleTaskRejected = async function (event) {
         console.warn(`[AutoExecuteDispatcher] ⚠️ ${taskId} 自动重跑失败: ${(result && result.error) || (result && result.message) || 'unknown'}`);
         this.stats.errors += 1;
       }
-      _executingTasks.delete(taskId);
+      // v0.X: 锁由路由管，dispatcher 不再 _executingTasks.delete
     } catch (e) {
       console.error(`[AutoExecuteDispatcher] ❌ ${taskId} 自动重跑异常: ${e.message}`);
       this.stats.errors += 1;
-      _executingTasks.delete(taskId);
     }
   });
 };
 
 const dispatcher = new AutoExecuteDispatcher();
 module.exports = dispatcher;
+// v0.X: 暴露锁 API 给路由 /agent-execute 用 — 让路由统一管并发触发保护
+module.exports.isTaskLocked = isTaskLocked;
+module.exports.tryAcquireTaskLock = tryAcquireTaskLock;
+module.exports.releaseTaskLock = releaseTaskLock;
