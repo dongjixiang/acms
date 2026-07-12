@@ -136,7 +136,10 @@
       "in_progress": "In Progress",
       "review": "Review",
       "done": "Done",
-      "archived": "Archived"
+      "archived": "Archived",
+      "failed": "Failed",
+      "escalated": "Escalated",
+      "unknown": "Unknown"
     },
     "actions": {
       "claim": "Claim",

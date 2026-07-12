@@ -36,6 +36,9 @@ const DEFAULT_AUTO_EXECUTE_AGENTS = new Set(['agent-acms-self', 'agent-xiaoji'])
 //   P0 v0.X: 计数从 in-memory Map 改成 task.doc.re_execute_count（持久化），重启不丢
 const MAX_RE_EXECUTE = 3;
 
+// v0.X: 执行中任务锁 — 防 dispatcher 重复触发同一任务
+const _executingTasks = new Set();
+
 // 工具函数：从 task.doc 读 / 写 持久化的 re_execute_count
 //   之前用 this.reExecuteCount Map 计数，server 重启就清零 → 熔断失效
 //   现在每次读写都走 taskStore，DB 持久，重启后计数还在
@@ -71,11 +74,37 @@ class AutoExecuteDispatcher {
   init() {
     // 监听现有 task.claimed 事件，无需新增事件类型
     eventBus.on('task.claimed', (event) => this.handleTaskClaimed(event));
-    // v0.34: 驳回也自动重跑 — routes/tasks.js:186 在 verdict=rejected 时 emit task.review_rejected
-    //   之前只监听 claim 事件，驳回后 dispatcher 不会重新 trigger，PM 只能手工 curl /agent-execute
-    //   现在 PM 驳回 → dispatcher 收到 task.review_rejected → 重新触发 agent-execute
+    // v0.34: 驳回也自动重跑
     eventBus.on('task.review_rejected', (event) => this.handleTaskRejected(event));
+
+    // v0.X: 启动时扫描已有 in_progress 任务 — 防重启后 pending 任务不被触发
+    //   根因：claim 在重启前发生，重启后 dispatcher 全新启动，不会自动触发已分配的任务
+    setImmediate(() => this._resumeStaleTasks());
+
     console.log(`[AutoExecuteDispatcher] 启动完成 · 自动执行 agents: ${[...this.autoAgents].join(', ')}`);
+  }
+
+  /** v0.X: 扫描已有 in_progress 任务并重新触发 */
+  async _resumeStaleTasks() {
+    try {
+      const { collection } = require('../db/connection');
+      const all = collection('tasks').all().filter(t =>
+        t.status === 'in_progress' && this.autoAgents.has(t.assigned_to)
+      );
+      for (const task of all) {
+        if (task.progress === 0 && (!task.execution_log || task.execution_log === '[]')) {
+          console.log(`[AutoExecuteDispatcher] 🔄 启动恢复: ${task.id} (assigned=${task.assigned_to}, status=${task.status}, progress=${task.progress})`);
+          // 走 handleTaskClaimed 逻辑（复用锁 + fetch）
+          await this.handleTaskClaimed({
+            target_id: task.id,
+            actor_id: task.assigned_to,
+          });
+        }
+      }
+      if (all.length > 0) console.log(`[AutoExecuteDispatcher] ✅ 启动恢复完成: 处理 ${all.length} 个遗留任务`);
+    } catch (e) {
+      console.error(`[AutoExecuteDispatcher] ❌ 启动恢复失败: ${e.message}`);
+    }
   }
 
   reload(agents) {

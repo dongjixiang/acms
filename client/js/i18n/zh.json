@@ -136,7 +136,10 @@
       "in_progress": "进行中",
       "review": "待审核",
       "done": "已完成",
-      "archived": "已归档"
+      "archived": "已归档",
+      "failed": "已失败",
+      "escalated": "已升级",
+      "unknown": "未知"
     },
     "actions": {
       "claim": "认领",
