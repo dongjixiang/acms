@@ -271,14 +271,14 @@ router.post('/detect-and-respond', async (req, res, next) => {
     }
 
     // 6. 触发 brief 重生（让 AI 看到 AI 回复 + 工具结果）
-    // v0.18：free 模式跳过 brief 重生（避免澄清问题污染自由对话流）
+    // v0.46 fix：去掉 setImmediate runBriefJob——前端 SSE /thinking-brief/stream
+    //   已经会触发 runBriefJobStream，两个路径同时跑造成 race condition
+    //   （后写完的覆盖前一个的 suggested_assist 等字段）
+    //   去掉后统一走 SSE 路径，避免双重生成 + 覆盖 bug
+    //   保留 chat_mode=free 的跳过（free 模式本来就不跑 brief）
     const reqAfter = reqStore.getById(reqId);
     if (reqAfter && reqAfter.chat_mode !== 'free') {
-      const { runBriefJob } = require('../services/thinking-brief');
-      setImmediate(() => {
-        runBriefJob(reqId, { modelId: null })
-          .catch(e => console.error(`[detect-and-respond] brief 重生失败:`, e.message));
-      });
+      console.log(`[detect-and-respond] ${reqId} chat_mode=clarify, 等待前端 SSE 触发 brief 生成（不再后端主动跑）`);
     } else {
       console.log(`[detect-and-respond] ${reqId} chat_mode=free, 跳过 brief 重生`);
     }

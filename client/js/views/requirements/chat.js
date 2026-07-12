@@ -1084,8 +1084,11 @@ async function chatSendDetect(reqId, text) {
       }
     }
 
-    // 启动轮询，让用户看到后续 AI 流式回复（如果有）
+    // 启动轮询 + SSE 流式，让用户看到后续 AI 回复（如果有）
     setTimeout(() => startChatPolling(reqId), 500);
+    // v0.46 fix：打开 SSE 触发 brief 流式生成（替代被删除的 detect-and-respond server-side runBriefJob）
+    //   chatSendDetect 路径没有自动开 SSE，brief 永远不生成
+    setTimeout(() => connectStreamingBrief(reqId, c), 800);
   } catch (e) {
     // v0.18 bugfix：fetch 失败时也移除 typing dots
     const typingErr = document.getElementById(`chat-typing-detect-${reqId}`);
