@@ -206,8 +206,36 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 /* Kanban Board */
 .kanban-container { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 16px; min-height: 60vh; }
 .kanban-col { flex: 1; min-width: 220px; max-width: 320px; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); display: flex; flex-direction: column; }
-.kanban-col .col-header { padding: 10px 14px; font-weight: bold; font-size: 13px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; }
+.kanban-col .col-header { padding: 10px 14px; font-weight: bold; font-size: 13px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
 .kanban-col .col-body { flex: 1; padding: 8px; overflow-y: auto; min-height: 100px; }
+/* 中间分隔按钮 — 绝对定位贴在 已完成 列右边，探入到列间隙（12px gap）的中上部。
+   不占 flex 槽位（容器行布局不变）；只用一个箭头，无文字 */
+.kanban-col[data-col="done"] { position: relative; }
+.kanban-divider-btn {
+  position: absolute;
+  top: 10px;          /* 中上部 */
+  right: -6px;        /* 12px gap 的中心 = done 右边缘 + 6；用 right:-6 + translateX(+12) 让圆心落此 */
+  transform: translateX(50%);
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  margin: 0;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--text2);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  z-index: 10;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+  transition: all 0.15s;
+}
+.kanban-divider-btn:hover { background: var(--accent); color: white; border-color: var(--accent); transform: translateX(50%) scale(1.1); }
+.kanban-divider-btn::before { content: '▶'; }
+/* 展开时显示下箭头 */
+.kanban-divider-btn.expanded::before { content: '▼'; }
 .count { background: var(--bg3); padding: 1px 8px; border-radius: 10px; font-size: 11px; }
 
 /* Task Cards */

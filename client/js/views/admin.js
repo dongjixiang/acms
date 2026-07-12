@@ -844,3 +844,71 @@ function backToOpsTab() {
     if (opsTabBtn) opsTabBtn.click();
   });
 }
+
+// ═══ 智能返回：admin 记录来路，返回时还原 ═══
+// 来源包括：projects 列表、project workspace（含子 tab）、self-improvements
+let _adminEntryContext = null;
+
+function _captureAdminEntryContext() {
+  const pages = ['view-projects', 'view-workspace', 'view-admin', 'view-improvements'];
+  let visibleView = null;
+  for (const p of pages) {
+    const el = document.getElementById(p);
+    if (el && getComputedStyle(el).display !== 'none') {
+      visibleView = p;
+      break;
+    }
+  }
+  if (!visibleView || visibleView === 'view-admin') return null;
+  const ctx = { view: visibleView };
+  if (visibleView === 'view-workspace') {
+    ctx.projectId = window.App && App.currentProjectId;
+    ctx.projectName = window.App && App.currentProject && App.currentProject.name;
+    const activeSub = document.querySelector('#content .view.active');
+    if (activeSub) ctx.workspaceActiveTab = activeSub.id.replace(/^view-/, '');
+  }
+  return ctx;
+}
+
+// 从 header ⚙️ 进入 admin — 替换之前的直接 showView+loadAdminPage 调用
+function navigateToAdmin() {
+  _adminEntryContext = _captureAdminEntryContext();
+  showView('view-admin');
+  loadAdminPage();
+}
+
+// admin 页面"返回"按钮 — 按入口上下文还原
+function backFromAdmin() {
+  const ctx = _adminEntryContext;
+  _adminEntryContext = null;
+  if (!ctx || !ctx.view) {
+    // 没记录到上下文（直接刷新页面等情况）— 兜底回项目列表
+    showView('view-projects');
+    if (typeof loadProjects === 'function') loadProjects();
+    return;
+  }
+  switch (ctx.view) {
+    case 'view-projects':
+      showView('view-projects');
+      if (typeof loadProjects === 'function') loadProjects();
+      break;
+    case 'view-workspace':
+      // 重新进入项目 → enterProject 会默认切到 dashboard，再用 setTimeout 还原原 tab
+      if (ctx.projectId && typeof enterProject === 'function') {
+        enterProject({ id: ctx.projectId, name: ctx.projectName || '' });
+        if (ctx.workspaceActiveTab && ctx.workspaceActiveTab !== 'dashboard' && typeof showWorkspaceView === 'function') {
+          setTimeout(function () { showWorkspaceView(ctx.workspaceActiveTab); }, 30);
+        }
+      } else {
+        showView('view-workspace');
+      }
+      break;
+    case 'view-improvements':
+      showView('view-improvements');
+      if (typeof loadImprovements === 'function') loadImprovements();
+      break;
+    default:
+      showView('view-projects');
+      if (typeof loadProjects === 'function') loadProjects();
+  }
+}

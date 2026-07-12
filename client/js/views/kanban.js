@@ -3,6 +3,39 @@
 
 let _kanbanFilterLoaded = false;
 
+// 任务看板 — 已归档 + 已失败 默认收起（不显示），点中间按钮展开
+// 状态写 localStorage 跨刷新保持
+const _KANBAN_DIVIDER_STORAGE_KEY = 'acms-kanban-archive-failed-expanded';
+const _KANBAN_DIVIDER_COLS = ['archived', 'failed'];  // 受控列
+
+function _isArchiveFailedExpanded() {
+  return localStorage.getItem(_KANBAN_DIVIDER_STORAGE_KEY) === '1';
+}
+
+// 应用初始收起状态（页面加载时立即调用）
+function applyKanbanDividerState() {
+  const expanded = _isArchiveFailedExpanded();
+  for (const col of _KANBAN_DIVIDER_COLS) {
+    const el = document.querySelector('.kanban-col[data-col="' + col + '"]');
+    if (el) el.style.display = expanded ? '' : 'none';
+  }
+  const btn = document.getElementById('kanban-divider-toggle');
+  if (btn) {
+    btn.classList.toggle('expanded', expanded);
+    btn.title = expanded ? '收起已归档/失败' : '展开已归档/失败';
+  }
+}
+
+// 切换已归档+已失败两列的可见性
+function toggleArchiveFailed() {
+  const willExpand = !_isArchiveFailedExpanded();
+  localStorage.setItem(_KANBAN_DIVIDER_STORAGE_KEY, willExpand ? '1' : '0');
+  applyKanbanDividerState();
+}
+
+// 页面加载时立即应用（DOM 已就绪，因为脚本在 body 末尾）
+applyKanbanDividerState();
+
 async function loadKanbanReqFilter() {
   if (!App.currentProjectId) return;
   try {
