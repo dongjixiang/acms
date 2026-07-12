@@ -110,11 +110,13 @@ async function pickNext(ctx, modelId) {
   }
 
   // 候选列表（去掉 用户用过 + 本轮已生成；visual 保留在候选里，由 LLM 决定是否选）
+  // v0.46 fix：限定路由器只能推荐 prompt 里列出的 method，防止 LLM 乱猜未注册的 method
+  const ROUTER_METHODS = ['scenarios', 'diagnosis', 'tradeoff', 'arch', 'decision_tree', 'visual', 'pains', 'stakeholders', 'risks', 'assumptions'];
   const used = ctx.usedMethods || [];
   const roundUsed = ctx.roundUsedMethods || [];
   const locked = new Set([...used, ...roundUsed]);
   // v0.3.3 B+++：visual 不再硬过滤；保留在候选里，让 LLM 焦点驱动决定
-  const candidates = ASSIST_METHODS.filter(m => !locked.has(m));
+  const candidates = ROUTER_METHODS.filter(m => !locked.has(m));
 
   // v0.3.3 B 方案补丁（2026-06-13）：首轮豁免（让用户先自己思考）
   //   多多原话："第一轮不先要出辅助手段，让用户有机会自我思考。后面等用户思维疲惫了，就可以多出辅助手段"
