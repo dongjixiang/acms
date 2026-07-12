@@ -1,10 +1,15 @@
 // i18n 国际化 — 运行时语言切换
+// P0 v0.X: 持久化到 localStorage（刷新不丢）+ 暴露 getLang() 让 api.js 自动带 lang 给 server
+const LANG_STORAGE_KEY = 'acms.lang';
+
 const I18n = {
   _lang: 'zh',
   _data: null,
 
   async init(lang) {
-    this._lang = lang || (navigator.language.startsWith('zh') ? 'zh' : 'en');
+    // 优先级：传入参数 > localStorage > navigator.language
+    this._lang = lang || localStorage.getItem(LANG_STORAGE_KEY) || (navigator.language.startsWith('zh') ? 'zh' : 'en');
+    localStorage.setItem(LANG_STORAGE_KEY, this._lang);
     try {
       const resp = await fetch(`/api/i18n/${this._lang}`);
       this._data = await resp.json();
@@ -28,7 +33,15 @@ const I18n = {
 
   setLang(lang) {
     this._lang = lang;
+    localStorage.setItem(LANG_STORAGE_KEY, lang);  // 持久化
     this.init(lang);
+  },
+
+  // P0 v0.X: 暴露当前语言，让 api.js 在调 agent API 时带上
+  //   默认 'zh'（多多场景）；fallback 逻辑跟 init 一致
+  getLang() {
+    if (this._lang) return this._lang;
+    return localStorage.getItem(LANG_STORAGE_KEY) || 'zh';
   },
 
   apply() {

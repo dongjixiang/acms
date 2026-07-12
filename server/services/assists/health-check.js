@@ -113,7 +113,7 @@ async function runAssistJob(requirementId, opts = {}) {
 
     const parsed = await callLLMWithRetry(model, messages, {
       temperature: 0.3,
-      maxTokens: 8000,
+      maxTokens: 32000,
       jsonMode: true,
       serviceName: 'assist:health_check',
     });

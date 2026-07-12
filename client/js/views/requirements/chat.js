@@ -376,6 +376,39 @@ function renderMusicBubble(jsonText) {
   </div>`;
 }
 
+function renderImageBubble(reqId, jsonText) {
+  if (!jsonText) return '<div class="chat-system-msg">🖼️ 图片生成结果（数据为空）</div>';
+  let card;
+  try { card = JSON.parse(jsonText); } catch { return `<div class="chat-system-msg">${escHtml(jsonText.slice(0, 100))}</div>`; }
+  if (card.type !== 'image_card') return `<div class="chat-system-msg">${escHtml(jsonText.slice(0, 100))}</div>`;
+
+  const renderFn = window.ACMSAssists?.get?.('image_gen')?.render;
+  if (renderFn) {
+    const rendered = renderFn(reqId, card);
+    if (rendered && rendered.trim()) {
+      return `<div class="image-card-in-chat" data-image-card="1">${rendered}</div>`;
+    }
+  }
+
+  if (card.status === 'failed') {
+    return `<div class="image-card-in-chat" data-image-card="1" style="padding:8px;border-radius:8px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.16)">
+      <div style="font-weight:bold;margin-bottom:4px">🖼️ 图片生成失败</div>
+      <div style="font-size:12px;color:var(--danger,#ef4444)">${escHtml(card.error || '未知错误')}</div>
+    </div>`;
+  }
+
+  const projectId = encodeURIComponent(card.project_id || 'default');
+  const assetUrl = card.asset_path ? `/api/generate/assets/${projectId}/${card.asset_path}` : '';
+  const cdnUrl = card.image_url_output || '';
+  const imgSrc = assetUrl || cdnUrl;
+  return `<div class="image-card-in-chat" data-image-card="1" style="padding:8px;border-radius:8px;background:rgba(99,102,241,0.04);border:1px solid rgba(99,102,241,0.12)">
+    <div style="font-weight:bold;margin-bottom:4px">🖼️ 图片已生成</div>
+    ${card.prompt ? `<div style="font-size:12px;color:var(--text2);margin-bottom:6px">${escHtml(card.prompt)}</div>` : ''}
+    ${imgSrc ? `<img src="${escHtml(imgSrc)}" alt="生成的图片" style="max-width:220px;border-radius:8px;border:1px solid var(--border);display:block" onerror="this.src='${escHtml(cdnUrl)}';this.onerror=null;">` : '<div style="font-size:12px;color:var(--text2)">图片 URL 不可用</div>'}
+    ${cdnUrl || imgSrc ? `<div style="margin-top:6px"><a href="${escHtml(cdnUrl || imgSrc)}" target="_blank" rel="noopener noreferrer" class="btn-small">🔗 查看原图</a></div>` : ''}
+  </div>`;
+}
+
 /** 切换音乐播放源（聊天流卡片 — 只替换 player 元素，保留其他状态） */
 function switchChatMusicSource(btn, idx) {
   const Core = window.ACMSMusicCard;
@@ -444,7 +477,9 @@ function renderChatBubble(container, entry) {
         : '')
     : isSystem && (entry.source === 'music_result' || entry.source === 'music_precheck')
       ? renderMusicBubble(entry.text || '')
-      : isSystem && entry.source === 'screenplay_result'
+      : isSystem && entry.source === 'image_result'
+        ? renderImageBubble(container.id?.replace('chat-stream-msgs-', '') || '', entry.text || '')
+        : isSystem && entry.source === 'screenplay_result'
         // v0.22 fix: 剧本辅助结果必须配专属 renderer，否则 JSON 走 renderMarkdown 触发 "(s || \"\").replace is not a function"
         // v0.22.13: 传 reqId 让聊天流卡片能交互（生成图/视频按钮）
         ? renderScreenplayBubble(container.id?.replace('chat-stream-msgs-', '') || '', entry.text || '')

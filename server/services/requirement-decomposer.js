@@ -201,7 +201,7 @@ Wiki 参考: ${requirement.wiki_path || '无'}
 请生成任务列表。` }
   );
 
-  const result = await callLLM(modelId, messages, { temperature: 0.5, maxTokens: 8000, jsonMode: true, projectId: requirement.project_id, caller: 'decompose' });
+  const result = await callLLM(modelId, messages, { temperature: 0.5, maxTokens: 32000, jsonMode: true, projectId: requirement.project_id, caller: 'decompose' });
   const content = result.content;
 
   const extracted = extractJSON(content);

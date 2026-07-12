@@ -83,8 +83,10 @@ function buildIntentSystemPrompt(req) {
 
 // v0.18：chat-mode=free 时的 LLM prompt — 通用对话 + 附件总结（用户场景：上传文件让 LLM 总结）
 // 区别于 clarify：基于附件/参考资料直接回答，不追问澄清需求
+// v0.22.23b：精简 system prompt，删掉复用的 clarify 模式限制（"仅在...才调"）+ 暗示 LLM 直接回复的措辞
+//   多多诉求：free 模式更开放，LLM 自主决定调不调 tool。工具 description 自带触发条件，不需要在 system prompt 重复
 function buildFreeChatSystemPrompt(req) {
-  return `你是 ACMS 通用对话助手。当前用户正在与你自由对话，可能基于附件/参考资料提问、让你总结内容、解读资料、对比方案。
+  return `你是 ACMS 自由对话助手。当前用户正在与你自由对话，可能让你总结附件、解读资料、对比方案、画图、生成视频、搜索信息等。
 
 # 需求上下文（仅作背景，不要当成对话主线）
 - 标题：${req.title || '(空)'}
@@ -92,23 +94,12 @@ function buildFreeChatSystemPrompt(req) {
 - 状态：${req.status || 'idea'} / 阶段：${req.phase || '孵化'}
 
 # 任务
-用户正在「自由对话」模式下与你交流——**不是澄清需求**，而是希望你帮他处理具体信息。优先基于附件/参考资料/对话历史回答。
-
-# 工具使用规则（与 clarify 模式一致）
-你**仅**在以下情况才调用工具；其他情况**直接回复**：
-
-1. **web_research / web_search**（联网调研）：用户**显式**询问最新/实时信息或要求对比/调研多个产品
-2. **fetch_url**：仅当用户消息包含完整 http:// 或 https:// 链接
-3. **get_current_time**：仅当用户**显式**询问"现在几点/今天日期"
-4. **agnes_generate_video**：用户**显式**要求生成视频且希望精确控制参数（num_frames/frame_rate/seed）时使用，约 2 秒用 num_frames=49
-5. **play_video**（v0.20）：用户**显式**想生成视频但未指定精确参数时调用，提取 prompt
-6. **generate_image**（v0.20）：用户**显式**想生成图片时调用（"画一张 X""生成 X 图片"），提取 prompt
-
-# 默认行为
-- 用户大概率是想让你总结附件、解读资料、对比方案、或回答具体问题
-- 看到附件（用户消息里以 [文件名] 或 📎 开头的部分）→ **直接基于附件内容回答**
-- 不要追问"你想要什么功能"——这是澄清场景的逻辑，不适用于自由对话
-- 不要建议"我们换个方式讨论"——除非用户明确表示想整理需求
+- 用户没在整理需求，**直接帮用户处理具体请求**。
+- 你可以调用工具（generate_image、play_video、agnes_generate_video、web_search、web_research、fetch_url、get_current_time）来满足用户的具体请求；工具的 description 告诉你何时该调。
+- 也可以直接基于对话历史和已有知识回答。
+- 看到附件（用户消息里以 [文件名] 或 📎 开头的部分）→ **直接基于附件内容回答**。
+- 不要追问"你想要什么功能"——这是澄清场景的逻辑，不适用于自由对话。
+- 不要建议"我们换个方式讨论"——除非用户明确表示想整理需求。
 
 # 回复要求
 - Markdown 格式（### 标题、**粗体**、- 列表）
@@ -213,6 +204,7 @@ router.post('/detect-and-respond', async (req, res, next) => {
           { role: 'system', content: pickIntentSystemPrompt(req) },
           // v0.20b：如果音乐已预触发，告诉 LLM 不要自己调 tool，直接简短回复
           ...(musicPreCheck.song ? [{ role: 'system', content: '（音乐搜索已自动触发，10-30 秒后显示播放卡片。请简短回复用户"正在找"即可，不要复制歌词或推荐平台，不要调用任何工具。）' }] : []),
+          // v0.22.23b：删除图片生成意图的 system 提示注入。多多诉求：LLM 自己看 context 决定调不调 tool。
           ...historyMessages,
           { role: 'user', content: text },
         ];
@@ -248,20 +240,10 @@ router.post('/detect-and-respond', async (req, res, next) => {
         console.log(`[detect-and-respond] ${reqId} tool-loop 结果: tools=${toolCalls.join(',') || '(无)'}, reply=${aiReply.length}字`);
       }
 
-      // v0.19：图片预检（保留，音乐预检已提前到 try 之前）
-      if (req && req.chat_mode !== 'free') {
-        // 图片检测：含"生成图片/图/插图/海报/画"等词
-        if (!toolCalls.includes('agnes_generate_video') &&
-            /生成.*(?:图片|图像|图|插图|海报|壁纸|画)|画[一这]?[张幅]|做.*(?:海报|封面|配图|logo)|图生图/.test(text)) {
-          console.log(`[detect-and-respond] ${reqId} 隐式触发 image_gen assist`);
-          const imgSvc = require('../services/assists/image-gen');
-          setImmediate(() => {
-            imgSvc.runAssistJob(reqId, {
-              prompt: text.replace(/^(帮我|请|麻烦|可以)\s*(生成|画|做|设计|制作)/i, '').trim() || text,
-            }).catch(e => console.error(`[detect-and-respond] ${reqId} image 隐式调用失败:`, e.message));
-          });
-        }
-      }
+      // v0.22.23b：删除 LLM 偷懒兜底。多多诉求：LLM 自己看 context 决定调不调 tool。
+      // 之前 v0.22.23 / v0.22.23a 都在服务端替 LLM 抢跑或兜底，等于 LLM 决策被绕过。
+      // 现在完全由 LLM 决定：调 generate_image → 走 tool 路径；不调 → 走纯文字回复。
+      // 治"toast 骗人"在 model 层（换 model 或加 model tool-call 训练），不在服务端。
     } catch (e) {
       console.error(`[detect-and-respond] ${reqId} tool-loop 失败:`, e.message);
       aiReply = `⚠️ AI 暂时无响应（${e.message.slice(0, 100)}），请稍后再试。`;
@@ -368,6 +350,19 @@ function extractMusicIntent(text) {
   m = text.match(/(?:想听|播放|放一首?|听一首?|听)\s+([^，。！？\n]{1,30})/);
   if (m && m[1]) return { song: m[1].trim() };
   return {};
+}
+
+function isDirectImageGenerationRequest(text) {
+  // v0.22.23b：删除 LLM 偷懒兜底 + 关键词直生成逻辑。
+  // 多多明确诉求：用户发请求 → LLM 理解 → LLM 决定调不调 tool。服务端不预判、不抢跑、不兜底。
+  // 偷懒 LLM（MiniMax-M3.0）会自编"任务已提交"骗人——治 root cause 在 model 层（换 model / model 训练 tool-call），
+  // 不在服务端。保留这个空 stub 仅防止外部 module 引用。
+  return false;
+}
+
+function extractImagePrompt(text) {
+  // v0.22.23b：保留 stub 防止外部 module 引用，但不再被使用。
+  return (text || '').trim();
 }
 
 // 处理 fetch_url（复用 chat-fetch.js 逻辑的简化版）

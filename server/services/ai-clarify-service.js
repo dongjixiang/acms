@@ -380,7 +380,7 @@ async function clarify(reqId, modelId, userMessage, conversationHistory, userRol
   }
 
   // 调用 LLM（适配器自动根据 model.api 选择格式）
-  const result = await callLLM(modelId, messages, { temperature: 0.7, maxTokens: 12000, jsonMode: true, projectId: requirement.project_id, caller: 'clarify' });
+  const result = await callLLM(modelId, messages, { temperature: 0.7, maxTokens: 32000, jsonMode: true, projectId: requirement.project_id, caller: 'clarify' });
   const content = result.content;
 
   // 提取 JSON — 多层容错 + 自动重试
@@ -404,7 +404,7 @@ async function clarify(reqId, modelId, userMessage, conversationHistory, userRol
       content: '⚠️ 系统提示：你刚才的回复不是 JSON 格式。请严格按照以下 JSON 格式重新输出，不要添加任何额外文字：\n{\n  "message": "你的回复",\n  "choices": [{"id":"A","question":"问题","options":["选项1","选项2"]}],\n  "srs": {},\n  "readyForReview": false,\n  "splitSuggestion": null,\n  "vaguenessWarnings": []\n}',
     };
     try {
-      const retryResult = await callLLM(modelId, [...messages, retryMsg], { temperature: 0.3, maxTokens: 12000, jsonMode: true, projectId: requirement.project_id, caller: 'clarify-retry' });
+      const retryResult = await callLLM(modelId, [...messages, retryMsg], { temperature: 0.3, maxTokens: 32000, jsonMode: true, projectId: requirement.project_id, caller: 'clarify-retry' });
       const retryExtracted = extractJSON(retryResult.content);
       if (retryExtracted) {
         try { parsed = JSON.parse(repairJSON(retryExtracted)); } catch {}

@@ -4,6 +4,8 @@
 // ⚠️ 安全提示：write.js 内的工具会修改工作区文件或执行 shell 命令
 //   所有安全约束依赖 services/workspace-service.js 的沙箱实现
 const { registerTool } = require('../../services/tool-registry');
+// P0 v0.X: 写文件后失效 read_file 缓存
+const readCache = require('./read-cache');
 
 registerTool({
   name: 'agent_exec_command',
@@ -85,6 +87,8 @@ registerTool({
 
     try {
       const result = workspace.writeFile(slug, args.path, args.content);
+      // P0 v0.X: 写文件后失效缓存 — 否则下次 read_file 拿旧内容
+      readCache.invalidate(ctx.taskId, args.path);
       // v0.29 fix: 简洁 feedback — Hermes-style status / bytes / syntax check
       //   LLM 看一眼就懂成功状态，不用深挖嵌套对象
       let syntaxStatus = null;

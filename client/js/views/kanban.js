@@ -216,7 +216,25 @@ async function assignTaskCard(taskId, agentId) {
 
 async function claimTask(tid) { var a = prompt('智能体ID:', 'agent-scholar-001'); if (!a) return; try { await Tasks.claim(tid, a); toast('已认领 ✅', 'success'); refreshKanban(); openTask(tid); } catch (e) { toast('失败: ' + e.message, 'error'); } }
 async function submitTask(tid) { var n = prompt('提交说明:') || '完成'; try { await Tasks.submit(tid, 'agent-scholar-001', [], n); toast('已提交', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
-async function reviewTask(tid, verdict) { try { await Tasks.review(tid, verdict); toast(verdict === 'approved' ? '已通过 ✅' : '已驳回', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
+// P0 v0.X: 驳回必填理由（min 10 字，对齐 requirements.js rejectReq 的体验）
+//   通过不弹（PM 点通过就是想通过），驳回必填——给 agent 明确的信号
+async function reviewTask(tid, verdict) {
+  let feedback = '';
+  if (verdict === 'rejected') {
+    feedback = (prompt('驳回原因（至少 10 字，写清楚哪里错了 / 期望怎么改）：') || '').trim();
+    if (feedback.length < 10) {
+      toast('驳回原因至少 10 字，请说清楚问题再驳回', 'error', 4000);
+      return;
+    }
+  }
+  try {
+    await Tasks.review(tid, verdict, feedback);
+    toast(verdict === 'approved' ? '已通过 ✅' : '已驳回（含反馈给 agent）', 'success');
+    refreshKanban();
+  } catch (e) {
+    toast('失败: ' + e.message, 'error');
+  }
+}
 // v0.35: Kanban 悬浮进度提示框 — hover 卡片进度区域显示实时终端风格日志
 let _progressTooltip = null;
 let _progressTooltipSSE = null;
@@ -574,13 +592,15 @@ async function approvePlan(taskId) {
   }
 }
 
+// P0 v0.X: Plan 驳回必填理由（min 10 字，对齐 task review / requirement reject）
 async function rejectPlan(taskId) {
-  const reason = prompt('拒绝 Plan 的原因（可选）：', '');
+  const reason = (prompt('拒绝 Plan 的原因（至少 10 字，写清楚哪里不对 / 期望怎么改）：') || '').trim();
+  if (reason.length < 10) { toast('拒绝原因至少 10 字', 'error', 4000); return; }
   try {
     const resp = await fetch('/api/ai-tools/agent-plan/' + taskId + '/reject', {
       method: 'POST',
       headers: { 'X-API-Key': 'dev-key-001', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reason: reason || '' }),
+      body: JSON.stringify({ reason }),
     });
     const data = await resp.json();
     if (data.success) {

@@ -72,7 +72,7 @@ class TaskStore {
     const tasks = this.list({ projectId, parentId, limit: 500 });
     // v0.X fix: 加入 failed 桶 — 之前 failed 任务被静默丢弃，看板/面板都看不到
     // 也加 unknown 桶兜底，防止未来再加新状态时再次出现"静默丢失"
-    const board = { backlog: [], in_progress: [], review: [], done: [], archived: [], frozen: [], failed: [], unknown: [] };
+    const board = { backlog: [], in_progress: [], review: [], done: [], archived: [], frozen: [], failed: [], unknown: [], escalated: [] };
     for (const t of tasks) {
       const bucket = board[t.status] !== undefined ? t.status : 'unknown';
       board[bucket].push(t);
@@ -85,8 +85,11 @@ class TaskStore {
     if (!task) return { error: 'TASK_NOT_FOUND' };
     const VALID = {
       backlog: ['in_progress', 'archived'], in_progress: ['review', 'backlog', 'archived', 'frozen'],
-      review: ['done', 'in_progress', 'archived', 'frozen'], done: ['archived'], archived: ['backlog'],
-      frozen: ['backlog', 'in_progress'],
+      review: ['done', 'in_progress', 'archived', 'frozen'],
+      // P0 v0.X: escalated 状态 — 连续 3 次 reject 后自动转入，需 PM 手工解锁
+      //   PM 可以从 escalated 拉回 backlog 重新分配，或直接归档放弃
+      escalated: ['backlog', 'archived'],
+      done: ['archived'], archived: ['backlog'], frozen: ['backlog', 'in_progress'],
       // v0.X fix: failed 任务 PM 可以拉回 backlog 重跑，或归档放弃
       failed: ['backlog', 'archived'],
     };
@@ -183,7 +186,29 @@ class TaskStore {
     const task = this.getById(id);
     const reviews = JSON.parse(task.reviews || '[]');
     reviews.push({ reviewedAt: now, reviewedBy, verdict, feedback });
-    collection('tasks').update(t => t.id === id, { reviews: JSON.stringify(reviews), updated_at: now });
+
+    // P0 v0.X: 连续 reject 熔断 — 计数已达 3 次 → 自动 escalate，PM 需手工解锁
+    //   治"agent-acms-self 反复认领-提交-驳回 死循环"
+    //   计数规则：只数 user/reviewer 手动驳回，不数 auto-review（auto 已通过 reviewReport 自己处理）
+    const ESCALATE_THRESHOLD = 3;
+    let updateExtra = {};
+    if (verdict === 'rejected' && reviewedBy !== 'agent-reviewer-001') {
+      const manualRejects = reviews.filter(r => r.verdict === 'rejected' && r.reviewedBy !== 'agent-reviewer-001').length;
+      updateExtra.rejected_count = manualRejects;
+      if (manualRejects >= ESCALATE_THRESHOLD) {
+        updateExtra.status = 'escalated';
+        updateExtra.escalated_at = now;
+        updateExtra.escalate_reason = `连续 ${manualRejects} 次手动驳回，需要 PM 介入`;
+      }
+    }
+
+    collection('tasks').update(t => t.id === id, { reviews: JSON.stringify(reviews), updated_at: now, ...updateExtra });
+
+    // P0 v0.X: escalated 状态走 transition 之外的直写路径（status 已被 updateExtra 改了）
+    //   其它情况走原来的 transition 状态机
+    if (updateExtra.status === 'escalated') {
+      return this.getById(id);
+    }
     if (verdict === 'approved') return this.transition(id, 'done');
     if (verdict === 'rejected') return this.transition(id, 'in_progress');
     return task;

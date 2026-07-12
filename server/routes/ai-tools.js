@@ -404,11 +404,20 @@ router.post('/agent-plan/:taskId/reject', async (req, res, next) => {
   try {
     const { taskId } = req.params;
     const { reason } = req.body;
+    // P0 v0.X: plan 驳回必填理由（min 10 字）— 对齐 task review / requirement reject
+    const trimmedReason = (reason || '').trim();
+    if (trimmedReason.length < 10) {
+      return res.status(400).json({
+        error: 'REJECT_REASON_REQUIRED',
+        message: 'Plan 驳回理由至少 10 字，给 AI 明确方向',
+        minLength: 10,
+      });
+    }
     const task = taskStore.getById(taskId);
     if (!task) return res.status(404).json({ error: 'TASK_NOT_FOUND' });
     if (!task.plan) return res.status(400).json({ error: 'NO_PLAN', message: '任务还没生成 plan' });
 
-    const rejectedPlan = { ...task.plan, rejectedReason: reason || '', rejectedAt: new Date().toISOString() };
+    const rejectedPlan = { ...task.plan, rejectedReason: trimmedReason, rejectedAt: new Date().toISOString() };
     taskStore.update(taskId, {
       plan: rejectedPlan,
       plan_status: 'rejected',

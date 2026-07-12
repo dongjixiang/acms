@@ -176,13 +176,22 @@ async function executeTaskAgent(taskId, options = {}) {
 // v0.28 fix: task context 改 markdown 段落（Hermes-style），LLM 在 markdown 段落下表现明显优于 key-value 标签
   //   根因：ACMS 之前用 "Task ID: X\nTitle: Y\nDescription: Z..." 格式，LLM 把它当"标签数据"理解而非任务目标；
   //   改成 markdown 段落后 LLM 把整段当 goal，理解深度提升（Hermes 同模型 7 轮收敛 vs ACMS 20 轮装睡）
-  const taskContext = `# Task ${task.id}: ${task.title}
+  let taskContext = `# Task ${task.id}: ${task.title}
 
 ${task.description || '(no description)'}
 
 **Type**: ${task.type || 'general'} | **Estimated**: ${task.estimated_hours || 'N/A'}h
 **Acceptance Criteria**: ${task.acceptance_criteria || task.acceptanceCriteria || '(not specified — derive from the task description above)'}
 **Required Skills**: ${task.required_skills || '{}'}`;
+
+  // P0 v0.X: 注入历史 submissions + reviews 摘要 — 防 agent 重复猜根因
+  //   T-MRGDBST1 教训：5 次提交，4 次错误根因，每次 agent-acms-self 都从零开始
+  //   现在 system prompt 里直接告诉 LLM "上次/上上次怎么错的，别走老路"
+  let historySummary;
+  try { historySummary = buildHistorySummary(task); } catch (e) { historySummary = null; }
+  if (historySummary) {
+    taskContext += '\n\n---\n\n' + historySummary;
+  }
 
   const messages = [
     // v0.29 fix: 把 taskContext + goal 移到 system prompt（持久在 attention 里）
@@ -367,6 +376,53 @@ module.exports = {
   PHASES,
   PHASE_META,
 };
+
+// ===== P0 v0.X: 构建任务历史摘要 — 注入 system prompt 防 agent 重复猜根因 =====
+//   取最近 5 次 submission 的 notes（截 200 字）+ 配对的 review feedback
+//   输出格式：markdown 段落，LLM 直接当上下文读
+//   返回 null 表示没有历史（首次执行）→ 不污染 prompt
+function buildHistorySummary(task) {
+  const submissions = JSON.parse(task.submissions || '[]');
+  const reviews = JSON.parse(task.reviews || '[]');
+  if (submissions.length === 0 && reviews.length === 0) return null;
+
+  const MAX_ENTRIES = 5;
+  const NOTE_LIMIT = 200;
+  const recentSubs = submissions.slice(-MAX_ENTRIES);
+
+  const lines = [];
+  lines.push('# 📜 Previous Attempts (DO NOT REPEAT THE SAME HYPOTHESIS)');
+  lines.push('');
+  if (recentSubs.length === 0) {
+    lines.push('_No submissions yet — this is the first attempt._');
+  } else {
+    lines.push('| # | When | By | What was tried | Why it was rejected |');
+    lines.push('|---|------|----|----|----|');
+    // 按时间正序展示（最早在最上）
+    recentSubs.forEach((s, i) => {
+      const when = (s.submittedAt || '').slice(0, 19).replace('T', ' ');
+      const by = (s.submittedBy || '').replace('agent-', '');
+      const note = (s.notes || '(no notes)').replace(/\n/g, ' ').slice(0, NOTE_LIMIT);
+      // 找这次 submit 之后的第一条 review（配对）
+      const submitTime = new Date(s.submittedAt).getTime();
+      const pairedReview = reviews.find(r => r.reviewedAt && new Date(r.reviewedAt).getTime() > submitTime);
+      const verdict = pairedReview ? (pairedReview.verdict === 'approved' ? '✅' : '❌') : '⏳';
+      const fb = pairedReview ? (pairedReview.feedback || '').replace(/\n/g, ' ').slice(0, NOTE_LIMIT) : '_pending review_';
+      lines.push(`| ${i + 1} | ${when} | ${by} | ${note} | ${verdict} ${fb} |`);
+    });
+  }
+  lines.push('');
+  // 显式指引：禁止重蹈覆辙
+  const rejectCount = reviews.filter(r => r.verdict === 'rejected').length;
+  if (rejectCount > 0) {
+    lines.push(`**This task has been rejected ${rejectCount} time(s).** Before writing code, re-read the rejection reasons above and verify your new hypothesis is actually different from what was already tried.`);
+    if (task.rejected_count >= 3 || rejectCount >= 3) {
+      lines.push('');
+      lines.push('⚠️ **This task has been auto-escalated to `escalated` status** — repeated rejected attempts triggered the 3-strike rule. A human PM must manually unblock it before you can proceed further.');
+    }
+  }
+  return lines.join('\n');
+}
 
 // ===== v0.45: 构建 system prompt（含 skill 注入）=====
 function buildSystemPrompt(task, taskContext, steerMessages) {

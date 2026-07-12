@@ -154,6 +154,41 @@ async function downloadAndSaveOne(apiKey, projectSlug, url, metadata) {
   });
 }
 
+/**
+ * v0.22.23: 隐式图片生成完成后，把结果写进聊天流。
+ *
+ * 显式点击 🖼️ / 内联表单的路径已有 loading 卡 + SSE done → renderLeisureResult，
+ * 不能重复写 history；只有 tool-loop / 关键词预检这种“后端 fire-and-forget”路径
+ * 传 opts.writeChatResult=true 时才写。
+ */
+function writeImageChatEntry(requirementId, card) {
+  const req = reqStore.getById(requirementId);
+  if (!req) return;
+
+  let history = [];
+  try { history = JSON.parse(req.supplement_history || '[]'); } catch { history = []; }
+  if (!Array.isArray(history)) history = [];
+
+  const sameImage = history.some(e => {
+    if (e.source !== 'image_result') return false;
+    try {
+      const old = JSON.parse(e.text || '{}');
+      return (old.asset_path && old.asset_path === card.asset_path)
+        || (old.image_url_output && old.image_url_output === card.image_url_output)
+        || (old.generated_at && old.generated_at === card.generated_at);
+    } catch { return false; }
+  });
+  if (sameImage) return;
+
+  history.push({
+    role: 'system',
+    text: JSON.stringify({ type: 'image_card', ...card }),
+    at: new Date().toISOString(),
+    source: 'image_result',
+  });
+  reqStore.update(requirementId, { supplement_history: JSON.stringify(history) });
+}
+
 async function runAssistJob(requirementId, opts = {}) {
   const req = reqStore.getById(requirementId);
   if (!req) return;
@@ -171,6 +206,8 @@ async function runAssistJob(requirementId, opts = {}) {
         status: 'failed',
         error: 'NO_PROMPT',
         prompt: '',
+        project_id: req.project_id || null,
+        generated_at_round: typeof opts.chatRound === 'number' ? opts.chatRound : null,
         generated_at: new Date().toISOString(),
       }),
     });
@@ -183,6 +220,8 @@ async function runAssistJob(requirementId, opts = {}) {
       assist_image: JSON.stringify({
         status: 'pending_input',
         prompt,
+        project_id: req.project_id || null,
+        generated_at_round: typeof opts.chatRound === 'number' ? opts.chatRound : null,
         n,
         size: opts.size || '1024x1024',
         pending: true,
@@ -207,6 +246,8 @@ async function runAssistJob(requirementId, opts = {}) {
     assist_image: JSON.stringify({
       status: 'generating',
       prompt,
+      project_id: req.project_id || null,
+      generated_at_round: typeof opts.chatRound === 'number' ? opts.chatRound : null,
       image_url: finalImage || null,
       size,
       n,
@@ -263,39 +304,48 @@ async function runAssistJob(requirementId, opts = {}) {
 
     // 默认选第 0 张
     const picked = options[0];
+    const generatedAt = new Date().toISOString();
+    const doneAssist = {
+      status: 'done',
+      prompt,
+      project_id: req.project_id || null,
+      generated_at_round: typeof opts.chatRound === 'number' ? opts.chatRound : null,
+      image_url: finalImage || null,
+      size,
+      n,
+      options,
+      picked_idx: 0,
+      // 兼容旧字段（image_url_output / asset_path = picked 的）
+      image_url_output: picked.image_url_output,
+      asset_path: picked.asset_path,
+      mime: picked.mime,
+      generated_at: generatedAt,
+    };
 
     reqStore.update(requirementId, {
-      assist_image: JSON.stringify({
-        status: 'done',
-        prompt,
-        image_url: finalImage || null,
-        size,
-        n,
-        options,
-        picked_idx: 0,
-        // 兼容旧字段（image_url_output / asset_path = picked 的）
-        image_url_output: picked.image_url_output,
-        asset_path: picked.asset_path,
-        mime: picked.mime,
-        generated_at: new Date().toISOString(),
-      }),
+      assist_image: JSON.stringify(doneAssist),
     });
+    if (opts.writeChatResult) writeImageChatEntry(requirementId, doneAssist);
     console.log(`[assist:image] ${requirementId} 完成, ${options.length} 张候选`);
   } catch (e) {
     console.error(`[assist:image] ${requirementId} 失败:`, e.message);
+    const failedAssist = {
+      status: 'failed',
+      prompt,
+      project_id: req.project_id || null,
+      generated_at_round: typeof opts.chatRound === 'number' ? opts.chatRound : null,
+      image_url: finalImage || null,
+      size,
+      n,
+      options: [],
+      picked_idx: 0,
+      error: e.message,
+      generated_at: new Date().toISOString(),
+    };
     reqStore.update(requirementId, {
-      assist_image: JSON.stringify({
-        status: 'failed',
-        prompt,
-        image_url: finalImage || null,
-        size,
-        n,
-        options: [],
-        picked_idx: 0,
-        error: e.message,
-        generated_at: new Date().toISOString(),
-      }),
+      assist_image: JSON.stringify(failedAssist),
     });
+    if (opts.writeChatResult) writeImageChatEntry(requirementId, failedAssist);
   }
 }
 

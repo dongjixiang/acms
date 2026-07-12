@@ -163,7 +163,12 @@ function renderReviewPanel(req) {
 
 // ===== 审核操作 =====
 async function approveReq(id) { try { await Requirements.approve(id); toast('已确认 ✅', 'success'); openRequirement(id); loadRequirements(); loadDashboard(); if (typeof loadKanbanReqFilter === 'function') loadKanbanReqFilter(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
-async function rejectReq(id) { const r = prompt('驳回原因:'); try { await Requirements.reject(id, r || '需完善'); toast('已驳回', 'success'); openRequirement(id); loadRequirements(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
+// P0 v0.X: 驳回必填理由（min 10 字，对齐 task review 的体验）
+async function rejectReq(id) {
+  const r = (prompt('驳回原因（至少 10 字，写清楚哪里不对 / 期望怎么改）：') || '').trim();
+  if (r.length < 10) { toast('驳回原因至少 10 字', 'error', 4000); return; }
+  try { await Requirements.reject(id, r); toast('已驳回', 'success'); openRequirement(id); loadRequirements(); } catch (e) { toast('失败: ' + e.message, 'error'); }
+}
 
 
 async function deleteRequirement(id) {

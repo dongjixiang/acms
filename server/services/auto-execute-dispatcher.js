@@ -30,9 +30,27 @@ const taskStore = require('../stores/task-store');
 // 可后续扩展为 agent.auto_execute 字段默认从配置读
 const DEFAULT_AUTO_EXECUTE_AGENTS = new Set(['agent-acms-self', 'agent-xiaoji']);
 
+// v0.34: 驳回后自动重跑的最大次数（防无限循环）
+//   多多驳回 → 自动重跑 → 仍 fail → 再驳回 → 再重跑 → ... 没限制会死循环
+//   3 次后停自动重跑，留给 PM 手工 steer 或重新分配
+//   P0 v0.X: 计数从 in-memory Map 改成 task.doc.re_execute_count（持久化），重启不丢
+const MAX_RE_EXECUTE = 3;
+
+// 工具函数：从 task.doc 读 / 写 持久化的 re_execute_count
+//   之前用 this.reExecuteCount Map 计数，server 重启就清零 → 熔断失效
+//   现在每次读写都走 taskStore，DB 持久，重启后计数还在
+function getReExecuteCount(taskStore, taskId) {
+  const task = taskStore.getById(taskId);
+  return (task && task.re_execute_count) ? parseInt(task.re_execute_count, 10) : 0;
+}
+function setReExecuteCount(taskStore, taskId, count) {
+  taskStore.update(taskId, { re_execute_count: count, updated_at: new Date().toISOString() });
+}
+
 class AutoExecuteDispatcher {
   constructor() {
-    this.processedClaims = new Set();  // taskId 去重
+    this.processedClaims = new Set();  // taskId 去重（短期，restart 会清，符合预期）
+    // P0 v0.X: 删掉 this.reExecuteCount Map — 改用 task.doc.re_execute_count 持久化
     this.autoAgents = new Set(DEFAULT_AUTO_EXECUTE_AGENTS);
     this.stats = { triggered: 0, skipped: 0, errors: 0, lastTriggeredAt: null };
   }
@@ -40,6 +58,10 @@ class AutoExecuteDispatcher {
   init() {
     // 监听现有 task.claimed 事件，无需新增事件类型
     eventBus.on('task.claimed', (event) => this.handleTaskClaimed(event));
+    // v0.34: 驳回也自动重跑 — routes/tasks.js:186 在 verdict=rejected 时 emit task.review_rejected
+    //   之前只监听 claim 事件，驳回后 dispatcher 不会重新 trigger，PM 只能手工 curl /agent-execute
+    //   现在 PM 驳回 → dispatcher 收到 task.review_rejected → 重新触发 agent-execute
+    eventBus.on('task.review_rejected', (event) => this.handleTaskRejected(event));
     console.log(`[AutoExecuteDispatcher] 启动完成 · 自动执行 agents: ${[...this.autoAgents].join(', ')}`);
   }
 
@@ -126,17 +148,128 @@ class AutoExecuteDispatcher {
         console.warn(`[AutoExecuteDispatcher] ⚠️ ${taskId} 失败: ${(result && result.error) || (result && result.message) || 'unknown'}`);
         if (result && result.missingCount) console.warn(`[AutoExecuteDispatcher]   缺失文件: ${JSON.stringify(result.missingFiles)}`);
         this.stats.errors++;
+        // v0.45: 失败任务自动重试一次（避免单次网络/装睡导致任务永远失败）
+        await this.scheduleRetry(taskId, task, 'initial-failure');
       }
     } catch (e) {
       console.error(`[AutoExecuteDispatcher] ❌ ${taskId} 异常: ${e.message}`);
       this.stats.errors++;
+      await this.scheduleRetry(taskId, task, 'exception');
     }
   }
 
+  /**
+   * v0.45: 失败任务自动重试 — 用 steerMessage 让 agent 知道上一次失败原因
+   */
+  async scheduleRetry(taskId, task, reason) {
+    if (!task) task = taskStore.getById(taskId);
+    if (!task) return;
+
+    // P0 v0.X: 计数从持久化字段读（之前 in-memory Map 重启清零）
+    const retryCount = getReExecuteCount(taskStore, taskId);
+    if (retryCount >= MAX_RE_EXECUTE) {
+      console.warn(`[AutoExecuteDispatcher] ⛔ ${taskId} 已自动重试 ${retryCount} 次，停止重试`);
+      return;
+    }
+    setReExecuteCount(taskStore, taskId, retryCount + 1);
+
+    // 等 5 秒后重试（让网络/服务恢复）
+    setTimeout(async () => {
+      console.log(`[AutoExecuteDispatcher] 🔁 ${taskId} 第 ${retryCount + 1}/${MAX_RE_EXECUTE} 次自动重试 (reason=${reason})`);
+      try {
+        const port = process.env.PORT || 3300;
+        const apiKey = process.env.ACMS_API_KEY || 'dev-key-001';
+        const retryMsg = `Auto-retry attempt ${retryCount + 1}: previous attempt failed (reason=${reason}). ` +
+          `Strategies: (1) Use agent_read_files (batch) to read multiple files in one call. ` +
+          `(2) Use agent_patch_file with anchor instead of node -e sed. ` +
+          `(3) Do not loop on the same exploration — act decisively with agent_write_file.`;
+        const httpReq = await fetch(`http://127.0.0.1:${port}/api/ai-tools/agent-execute`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+          body: JSON.stringify({ taskId, agentId: task.assigned_to, steerMessage: retryMsg }),
+        }).catch(err => ({ error: err.message }));
+        const result = httpReq && typeof httpReq.json === 'function' ? await httpReq.json() : httpReq;
+        if (result && result.success) {
+          console.log(`[AutoExecuteDispatcher] ✅ ${taskId} 自动重试成功`);
+        } else {
+          console.warn(`[AutoExecuteDispatcher] ⚠️ ${taskId} 自动重试仍失败: ${(result && result.error) || 'unknown'}`);
+        }
+      } catch (e) {
+        console.error(`[AutoExecuteDispatcher] ❌ ${taskId} 自动重试异常: ${e.message}`);
+      }
+    }, 5000);
+  }
+
   getStats() {
-    return { ...this.stats, autoAgents: [...this.autoAgents] };
+    // P0 v0.X: reExecuteCount 不再来自 this.reExecuteCount Map（已删）
+    return {
+      ...this.stats,
+      autoAgents: [...this.autoAgents],
+    };
   }
 }
+
+// v0.34: 驳回后自动重跑（防 PM 手工 curl 痛点）
+//   review 路由在 verdict=rejected 时 emit task.review_rejected（routes/tasks.js:186）
+//   这里从 task.assigned_to 读出 assignee（不是 event.actor，actor 是 reviewer）
+//   然后清掉 processedClaims → 重新触发 /agent-execute（HTTP 调用而不是直接调函数，避免重复 audit/submit）
+//   限 MAX_RE_EXECUTE=3 次（防无限循环）
+AutoExecuteDispatcher.prototype.handleTaskRejected = async function (event) {
+  const taskId = event.target_id || event.target?.id;
+  if (!taskId) {
+    this.stats.skipped += 1;
+    return;
+  }
+  const task = taskStore.getById(taskId);
+  if (!task) {
+    console.warn(`[AutoExecuteDispatcher] ⚠️ review_rejected: ${taskId} task 不存在`);
+    this.stats.skipped += 1;
+    return;
+  }
+  // 只对 auto-execute agents 生效
+  if (!this.autoAgents.has(task.assigned_to)) {
+    console.log(`[AutoExecuteDispatcher] ⏭️ review_rejected: ${taskId} assigned_to=${task.assigned_to || '(空)'} 不在白名单`);
+    this.stats.skipped += 1;
+    return;
+  }
+  // 防无限循环：每个 task 最多自动重跑 MAX_RE_EXECUTE 次
+  // P0 v0.X: 计数从持久化字段读（之前 in-memory Map 重启清零 → 熔断失效）
+  const currentCount = getReExecuteCount(taskStore, taskId);
+  if (currentCount >= MAX_RE_EXECUTE) {
+    console.warn(`[AutoExecuteDispatcher] ⛔ review_rejected: ${taskId} 已自动重跑 ${currentCount} 次，停止自动重跑（避免无限循环）。PM 需手工处理：curl /agent-execute 或 re-assign`);
+    this.stats.skipped += 1;
+    return;
+  }
+  setReExecuteCount(taskStore, taskId, currentCount + 1);
+  // 清掉 processedClaims 让重新执行生效
+  this.processedClaims.delete(taskId);
+  this.stats.lastTriggeredAt = new Date().toISOString();
+  console.log(`[AutoExecuteDispatcher] 🔄 review_rejected: ${taskId} 第 ${currentCount + 1}/${MAX_RE_EXECUTE} 次自动重跑 (assigned=${task.assigned_to})`);
+
+  setImmediate(async () => {
+    try {
+      // 跟 handleTaskClaimed 一致：调 /agent-execute HTTP 端点（不直接调 executeTaskAgent，避免双重 audit/submit）
+      const port = process.env.PORT || 3300;
+      const apiKey = process.env.ACMS_API_KEY || 'dev-key-001';
+      const httpReq = await fetch(`http://127.0.0.1:${port}/api/ai-tools/agent-execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+        body: JSON.stringify({ taskId, agentId: task.assigned_to }),
+      }).catch(err => ({ error: err.message }));
+      const result = httpReq && typeof httpReq.json === 'function' ? await httpReq.json() : httpReq;
+      if (result && result.success) {
+        console.log(`[AutoExecuteDispatcher] ✅ ${taskId} 自动重跑完成 (analysis=${result.analysisLength || '?'} chars)`);
+        this.stats.triggered += 1;
+      } else {
+        console.warn(`[AutoExecuteDispatcher] ⚠️ ${taskId} 自动重跑失败: ${(result && result.error) || (result && result.message) || 'unknown'}`);
+        this.stats.errors += 1;
+      }
+    } catch (e) {
+      console.error(`[AutoExecuteDispatcher] ❌ ${taskId} 自动重跑异常: ${e.message}`);
+      this.stats.errors += 1;
+    }
+  });
+};
 
 const dispatcher = new AutoExecuteDispatcher();
 module.exports = dispatcher;

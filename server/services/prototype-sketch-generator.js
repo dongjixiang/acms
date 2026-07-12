@@ -127,7 +127,7 @@ ${clariText}`;
   try {
     const result = await callLLM(model.id, [
       { role: 'user', content: prompt }
-    ], { temperature: 0.6, maxTokens: 8000, jsonMode: true });
+    ], { temperature: 0.6, maxTokens: 32000, jsonMode: true });
 
     const content = result.content || '';
     let parsed = extractJSON(content);
@@ -135,7 +135,7 @@ ${clariText}`;
       // 降级重试：去 jsonMode
       const retryResult = await callLLM(model.id, [
         { role: 'user', content: prompt + '\n\n【重要】请严格输出 JSON，不要任何额外文字。' }
-      ], { temperature: 0.6, maxTokens: 8000, jsonMode: false });
+      ], { temperature: 0.6, maxTokens: 32000, jsonMode: false });
       const retryContent = retryResult.content || '';
       parsed = extractJSON(retryContent);
     }

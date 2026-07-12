@@ -4,6 +4,59 @@ const path = require('path');
 
 const WORKSPACE_ROOT = path.join(__dirname, '..', '..', 'workspaces');
 
+// v0.45: 隔离工作区根目录（scratch 目录）
+const SCRATCH_ROOT = path.join(__dirname, '..', '..', 'scratch');
+
+/**
+ * 创建 agent 的隔离 scratch 工作区
+ * 返回 { workspacePath, cleanup } — cleanup 函数用于执行完后合并结果
+ */
+function createScratchWorkspace(agentId, projectId) {
+  const agentDir = path.join(SCRATCH_ROOT, `${projectId}_${agentId}_${Date.now()}`);
+  fs.mkdirSync(agentDir, { recursive: true });
+
+  // 复制项目 workspace 到 scratch（agent 从这里开始工作）
+  const projectSlug = projectId;
+  const srcWs = path.join(WORKSPACE_ROOT, projectSlug);
+  if (fs.existsSync(srcWs)) {
+    copyRecursive(srcWs, agentDir);
+  }
+
+  return {
+    workspacePath: agentDir,
+    agentId,
+    projectId,
+    cleanup: function() {
+      // 清理 scratch 目录
+      try {
+        const { execSync } = require('child_process');
+        execSync(`rm -rf "${agentDir}"`, { stdio: 'pipe' });
+      } catch (e) {
+        // Windows cleanup
+        try { require('fs').rmSync(agentDir, { recursive: true, force: true }); } catch (_) {}
+      }
+    },
+  };
+}
+
+/**
+ * 递归复制目录
+ */
+function copyRecursive(src, dest) {
+  const entries = require('fs').readdirSync(src);
+  for (const entry of entries) {
+    const srcPath = path.join(src, entry);
+    const destPath = path.join(dest, entry);
+    const stat = require('fs').statSync(srcPath);
+    if (stat.isDirectory()) {
+      require('fs').mkdirSync(destPath, { recursive: true });
+      copyRecursive(srcPath, destPath);
+    } else {
+      require('fs').copyFileSync(srcPath, destPath);
+    }
+  }
+}
+
 // 默认跳过的目录（构建产物 / 依赖 / 版本控制）
 const SKIP_DIRS = new Set([
   'node_modules', '.git', '.svn',
@@ -194,7 +247,7 @@ class WorkspaceService {
 
       child.on('close', (code) => {
         clearTimeout(timer);
-        resolve({ stdout: stdout.substring(0, 50000), stderr: stderr.substring(0, 50000), exitCode: code });
+        resolve({ stdout: stdout.substring(0, 200000), stderr: stderr.substring(0, 200000), exitCode: code });
       });
 
       child.on('error', (e) => {
@@ -206,3 +259,7 @@ class WorkspaceService {
 }
 
 module.exports = new WorkspaceService();
+
+// v0.45: 隔离工作区工具（导出到 module.exports 之外）
+module.exports.createScratchWorkspace = createScratchWorkspace;
+module.exports.copyRecursive = copyRecursive;

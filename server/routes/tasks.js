@@ -100,6 +100,18 @@ router.post('/:id/review', async (req, res, next) => {
   const { verdict, feedback, reviewedBy } = req.body;
   if (!verdict || !['approved', 'rejected'].includes(verdict)) return res.status(400).json({ error: 'INVALID_VERDICT' });
 
+  // P0 v0.X: 驳回必填理由（min 10 字）— 给 agent 明确信号，防"空 feedback 死循环"
+  //   通过不要求 feedback；驳回强制最少 10 字，后端兜底防前端绕过
+  //   MCP agent 调 review tool 也走这条路由，agent 失败时会被拦在 server 层
+  //   例外：system 内部自动审核（autoReview=true 走 reviewService 流水线）这条不卡，因为 autoVerdict 会被 reviewReport 覆盖
+  if (verdict === 'rejected' && (!feedback || String(feedback).trim().length < 10)) {
+    return res.status(400).json({
+      error: 'REJECT_FEEDBACK_REQUIRED',
+      message: '驳回时必须填写反馈理由（至少 10 字），给 agent 明确方向',
+      minLength: 10,
+    });
+  }
+
   // 禁止执行者审核自己提交的任务
   const task = taskStore.getById(req.params.id);
   if (task && task.assigned_to && task.assigned_to === (reviewedBy || 'user')) {
