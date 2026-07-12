@@ -255,7 +255,10 @@ router.post('/detect-and-respond', async (req, res, next) => {
     //    fetch_url / get_current_time 调用的结果已融入 aiReply
 
     // 5. 写 AI 回复作为 assistant 角色（这是 v0.16 新增的：把 LLM 最终回复存档）
-    if (aiReply) {
+    // v0.46 fix：如果后续会跑 brief 重生，跳过写 assistant entry，避免前端的 polling + SSE 双气泡
+    const reqAfterCheck = reqStore.getById(reqId);
+    const willBriefRegen = reqAfterCheck && reqAfterCheck.chat_mode !== 'free';
+    if (aiReply && !willBriefRegen) {
       const assistantEntry = {
         role: 'assistant',
         text: aiReply,
