@@ -24,21 +24,15 @@ document.addEventListener('DOMContentLoaded', () => {
 <div id="app">
   <header id="header">
     <button id="btn-hamburger" onclick="App.toggleSidebar()" title="菜单">☰</button>
-    <h1 id="header-title">🤖 <span data-i18n="app.title">智能体协同管理系统</span> <span class="version" data-i18n="app.version">v0.3</span></h1>
+    <h1 id="header-title"><img src="/client/img/logo.png" alt="ACMS" class="header-logo"> <span data-i18n="app.title">智能体协同管理系统</span> <span class="version" data-i18n="app.version">v0.3</span></h1>
     <div id="header-right">
       <span id="current-project"></span>
-      <button class="btn-small" onclick="showIdeaDialog()" title="记录想法">💡</button>
       <select id="role-switcher" class="role-switcher" onchange="App.setCurrentRole(this.value)" title="你的角色（影响澄清提问方向）">
         <option value="pm">👤 PM</option>
         <option value="tech">🛠 技术</option>
         <option value="design">🎨 设计</option>
-        <option value="test">🧪 测试</option>
-        <option value="agent:小吉">🤖 Agent</option>
-        <option value="system">⚙️ 系统</option>
-        <option value="anonymous">匿名</option>
       </select>
-      <button class="btn-small" onclick="showView('view-improvements');loadImprovements();" title="自我改进">🔄</button>
-      <button class="btn-small" onclick="showView('view-admin');loadAdminPage();">⚙️</button>
+      <button class="btn-small" onclick="showView('view-admin');loadAdminPage();" title="系统管理（点击 → 运营工具 → 想法池 / 自我改进）">⚙️</button>
       <button id="btn-theme-toggle" class="btn-small" onclick="App.toggleTheme()" title="切换主题">🌙</button>
       <select id="lang-switcher" onchange="I18n.setLang(this.value)">
         <option value="zh">🇨🇳 中文</option>
@@ -104,11 +98,11 @@ document.addEventListener('DOMContentLoaded', () => {
     </div>
   </main>
 
-  <!-- ====== 自我改进（独立页面） ====== -->
+  <!-- ====== 自我改进（独立页面；入口在 admin → 🛠 运营工具） ====== -->
   <main id="view-improvements" class="view-main" style="display:none">
     <div class="projects-page" style="display:flex;flex-direction:column;height:100%">
       <div class="view-header" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;flex-shrink:0">
-        <button class="btn-back" onclick="showView('view-projects');loadProjects();">← 返回项目</button>
+        <button class="btn-back" onclick="backToOpsTab()">← 返回运营工具</button>
         <h2>🔄 自我改进</h2>
         <span id="imp-project-info" style="font-size:11px;color:var(--text2)"></span>
       </div>

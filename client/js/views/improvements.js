@@ -49,10 +49,11 @@ function switchImprovementTab(tab) {
 
 // ═══ 报告列表 ═══
 
-async function loadReports(statusFilter) {
+async function loadReports(statusFilter, sourceTypeFilter) {
   try {
     var url = '/api/improvements/reports?limit=100';
-    if (statusFilter) url += '&status=' + statusFilter;
+    if (statusFilter) url += '&status=' + encodeURIComponent(statusFilter);
+    if (sourceTypeFilter) url += '&sourceType=' + encodeURIComponent(sourceTypeFilter);
     var resp = await fetch(url, { headers: { 'X-API-Key': 'dev-key-001' } });
     var reports = await resp.json();
     var container = document.getElementById('imp-reports-list');
@@ -87,10 +88,13 @@ async function loadReports(statusFilter) {
       var mergedHint = isMerged && r.merged_into
         ? '<span class="imp-merged-hint">→ 已并入 ' + escHtml(r.merged_into) + '</span>'
         : '';
+      // 卡片右上角快捷删除按钮（hover 显示，避免误点 — 用 stopPropagation 不触发选中）
+      var cardDeleteBtn = '<button class="imp-card-delete" onclick="event.stopPropagation();deleteImprovement(\'' + r.id + '\')" title="删除此报告" style="float:right;background:none;border:none;color:var(--text2);cursor:pointer;font-size:14px;padding:0 4px;opacity:0.4">🗑</button>';
       return '<div class="imp-report-card ' + statusClass + '" data-id="' + r.id + '" onclick="selectImprovementReport(\'' + r.id + '\')">' +
         '<div class="imp-report-row1">' +
           mergeCheck +
           '<span class="imp-report-title">' + escHtml(r.summary || r.id) + '</span>' +
+          cardDeleteBtn +
           '<span class="imp-report-source">' + sourceIcon + ' ' + r.source_type + (statusLabel ? ' ' + statusLabel : '') + '</span>' +
         '</div>' +
         (userTag ? '<div class="imp-report-row-user">' + userTag + '</div>' : '') +
@@ -177,20 +181,32 @@ async function selectImprovementReport(id) {
         '</div>';
     }
 
-    var actionsHtml = '';
+var actionsHtml = '';
+    // 删除按钮：所有状态都可删除（不可逆），放最右
+    var deleteBtnHtml = '<button class="btn btn-secondary" style="color:var(--accent2);margin-left:auto" onclick="deleteImprovement(\'' + r.id + '\')" title="删除此报告（不可逆）">🗑 删除</button>';
     if (r.status === 'pending') {
-      actionsHtml = '<div class="imp-actions">' +
+      actionsHtml = '<div class="imp-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
         '<button class="btn btn-accept" onclick="approveImprovement(\'' + r.id + '\')">✅ 审核通过 → 提交任务</button>' +
         '<button class="btn btn-secondary" onclick="declineImprovement(\'' + r.id + '\')">✕ 忽略</button>' +
+        deleteBtnHtml +
       '</div>';
     } else if (r.status === 'approved') {
-      actionsHtml = '<div class="imp-actions"><span style="font-size:11px;color:#4ecdc4">✅ 已审核通过' +
-        (r.task_id ? ' · 任务: ' + r.task_id : '') + '</span></div>';
+      actionsHtml = '<div class="imp-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+        '<span style="font-size:11px;color:#4ecdc4">✅ 已审核通过' +
+        (r.task_id ? ' · 任务: ' + r.task_id : '') + '</span>' +
+        deleteBtnHtml +
+      '</div>';
     } else if (r.status === 'merged') {
-      actionsHtml = '<div class="imp-actions"><span style="font-size:11px;color:#a09070">🔗 已合并到 ' +
-        escHtml(r.merged_into || '?') + '</span></div>';
+      actionsHtml = '<div class="imp-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+        '<span style="font-size:11px;color:#a09070">🔗 已合并到 ' +
+        escHtml(r.merged_into || '?') + '</span>' +
+        deleteBtnHtml +
+      '</div>';
     } else {
-      actionsHtml = '<div class="imp-actions"><span style="font-size:11px;color:#605040">✕ 已忽略</span></div>';
+      actionsHtml = '<div class="imp-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+        '<span style="font-size:11px;color:#605040">✕ 已忽略</span>' +
+        deleteBtnHtml +
+      '</div>';
     }
 
     // 来源信息：合并展示「类型 + 用户/角色 + 来源场景」
@@ -268,6 +284,25 @@ async function declineImprovement(id) {
     if (_selectedReportId === id) selectImprovementReport(id);
     loadReports();
   } catch (e) { toast('失败: ' + e.message, 'error'); }
+}
+
+// 删除改进报告（不可逆）。来源类型不限，删除前确认。
+async function deleteImprovement(id) {
+  if (!(await showConfirm('确认删除报告 ' + id + '？\n\n此操作不可逆，对应的改进任务（如有）不会被一起删除。'))) return;
+  try {
+    var resp = await fetch('/api/improvements/reports/' + id, {
+      method: 'DELETE',
+      headers: { 'X-API-Key': 'dev-key-001' },
+    });
+    var data = await resp.json();
+    if (!resp.ok || data.error) return toast('删除失败: ' + (data.error || resp.status), 'error');
+    toast('🗑 已删除 ' + id + ' (' + data.source_type + ')', 'success');
+    // 清掉详情面板选中状态
+    _selectedReportId = null;
+    var panel = document.getElementById('imp-detail-panel');
+    if (panel) panel.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text2)">已删除 — 在左侧选择其他报告</div>';
+    loadReports();
+  } catch (e) { toast('删除失败: ' + e.message, 'error'); }
 }
 
 // ═══ 任务看板 ═══
