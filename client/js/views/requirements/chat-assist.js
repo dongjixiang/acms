@@ -65,7 +65,9 @@ async function chatAssist(reqId, method, extraBody) {
 /** pollAssistUntilDone 已合并到 startChatPolling（2026-06-14） */
 
 async function chatSendAssistPick(reqId, method) {
-  const layer = document.querySelector(`#chat-stream-msgs-${reqId} .chat-assist-layer[data-assist-method="${method}"]`);
+  // v0.46 fix：优先查.chat-assist-layer（旧模式），fallback 到.chat-assist-result（聊天流内联渲染）
+  const layer = document.querySelector(`#chat-stream-msgs-${reqId} .chat-assist-layer[data-assist-method="${method}"]`)
+    || document.querySelector(`.chat-assist-result[data-assist-method="${method}"]`);
   if (!layer) return;
   // 支持多种选择模式
   const selOpts = layer.querySelectorAll('.chat-assist-option.selected');
@@ -198,7 +200,7 @@ async function chatAssistRegen(reqId, method) {
 // v0.6.8 fix: skip 也调 useAssist 标记后端 used=true，避免下次轮询 renderAssistLayer 重新渲染
 //   之前只删 DOM 不调后端，累积模式下点过其他 method 就会把跳过的卡片又带回来
 async function chatSkipAssist(btn) {
-  const layer = btn.closest('.chat-assist-layer');
+  const layer = btn.closest('.chat-assist-layer') || btn.closest('.chat-assist-result');
   if (!layer) return;
   const reqId = (layer.closest('[id^="chat-stream-msgs-"]') || {}).id?.replace('chat-stream-msgs-', '') || (window._chatState && Object.keys(window._chatState)[0]);
   const method = layer.dataset.assistMethod;

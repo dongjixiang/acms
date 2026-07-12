@@ -62,7 +62,9 @@
   // 渲染后挂事件（dispatcher.afterRender 调用）
   function afterRender(reqId, data) {
     if (!data || data.used) return; // 已提交后不挂事件
-    const layer = document.querySelector(`#assist-area-${reqId} .assist-decision_tree`);
+    // v0.46 fix：优先查#assist-area（旧 sidebar），fallback 到聊天流卡片
+    const layer = document.querySelector(`#assist-area-${reqId} .assist-decision_tree`)
+      || document.querySelector(`.chat-assist-result[data-assist-method="decision_tree"]`);
     if (!layer) return;
     const branches = layer.querySelectorAll('.dt-branch');
     branches.forEach(card => {
@@ -91,7 +93,9 @@
 
 /** 全局函数：点提交按钮 → 调 useAssist 标记 used_branch_idx + 锁住卡片 */
 function dtSubmit(reqId) {
-  const layer = document.querySelector(`#assist-area-${reqId} .assist-decision_tree`);
+  // v0.46 fix：优先查#assist-area，fallback 到聊天流卡片
+  const layer = document.querySelector(`#assist-area-${reqId} .assist-decision_tree`)
+    || document.querySelector(`.chat-assist-result[data-assist-method="decision_tree"]`);
   if (!layer) return;
   const selected = layer.querySelector('.dt-branch.selected');
   if (!selected) {

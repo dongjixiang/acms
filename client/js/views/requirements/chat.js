@@ -1404,11 +1404,18 @@ function connectAssistStream(reqId, method, extraBody) {
             loadingEl.innerHTML = '<div class="assist-loading-head"><span class="assist-loading-spinner">⏳</span><span class="assist-loading-title">加载结果中…</span></div>';
             // 获取结果数据并直接渲染
             renderLeisureResult(reqId, method, loadingEl);
+          } else if (loadingEl && window.ACMSAssists?.get?.(method)?.render) {
+            // v0.46 fix：非休闲辅助（决策树/场景/竞品/借鉴/整理/体检）也在聊天流渲染结果
+            //   旧代码只 loadingEl.remove() + 调 dispatcher.loadAll 往#assist-area渲染，
+            //   但 idea 阶段需求没有 #assist-area DOM，结果直接丢了。
+            //   新逻辑：直接复用 ACMSAssists 注册的 render() 渲染到 loading 卡片位置。
+            loadingEl.innerHTML = '<div class="assist-loading-head"><span class="assist-loading-spinner">⏳</span><span class="assist-loading-title">加载结果展示中…</span></div>';
+            renderChatAssistResult(reqId, method, loadingEl);
           } else if (loadingEl) {
             loadingEl.remove();
           }
           toast(`✅ ${method} 完成`, 'success', 1500);
-          // 刷新 assist 面板
+          // 刷新 assist 面板（如果#assist-area存在）
           if (typeof ACMSAssistDispatcher !== 'undefined' && ACMSAssistDispatcher.loadAll) {
             ACMSAssistDispatcher.loadAll(reqId);
           }
@@ -1532,6 +1539,53 @@ async function renderLeisureResult(reqId, method, loadingEl) {
     }
   } catch (e) {
     loadingEl.innerHTML = `<div class="assist-loading-error">加载失败: ${escHtml(e.message)}</div>`;
+  }
+}
+
+/**
+ * v0.46：渲染非休闲辅助结果到聊天流中（替代#assist-area渲染）
+ * 在 SSE done 时调用，复用 ACMSAssists.register() 的 render() 函数
+ */
+async function renderChatAssistResult(reqId, method, loadingEl) {
+  try {
+    const resp = await api('GET', `/requirements/${reqId}/assist`);
+    const data = resp.assists?.[method];
+    if (!data || data.status !== 'done') {
+      loadingEl.innerHTML = '<div class="assist-loading-error">结果加载失败</div>';
+      loadingEl.style.animation = 'none';
+      return;
+    }
+    const renderFn = window.ACMSAssists?.get?.(method)?.render;
+    if (!renderFn) {
+      loadingEl.innerHTML = `<div class="assist-loading-error">${method} 无 render 函数</div>`;
+      loadingEl.style.animation = 'none';
+      return;
+    }
+    const html = renderFn(reqId, data);
+    if (!html || html.trim() === '') {
+      loadingEl.innerHTML = '<div class="assist-loading-error">结果为空</div>';
+      loadingEl.style.animation = 'none';
+      return;
+    }
+    // 替换 loading 卡片为实际内容
+    // 保留卡片容器但替换内部内容，并停止动画
+    loadingEl.innerHTML = html;
+    loadingEl.style.borderTopColor = 'var(--green)';
+    loadingEl.style.animation = 'none';
+    // 移除 loading-specific class，加完成标记
+    loadingEl.classList.remove('assist-loading-card');
+    loadingEl.classList.add('chat-assist-result');
+    loadingEl.dataset.assistMethod = method;
+    // 触发 afterRender 钩子（如果有）
+    const after = window.ACMSAssists?.get?.(method)?.afterRender;
+    if (after) {
+      try { after(reqId, data); } catch (e) { console.warn(`[chatAssistResult:${method}] afterRender:`, e); }
+    }
+    // 滚到新卡片
+    loadingEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  } catch (e) {
+    loadingEl.innerHTML = `<div class="assist-loading-error">加载失败: ${escHtml(e.message)}</div>`;
+    loadingEl.style.animation = 'none';
   }
 }
 
