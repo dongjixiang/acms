@@ -33,6 +33,21 @@ console.log(`[ACMS] 日志输出: ${LOG_FILE}`);
 
 // HTTP API
 const httpServer = http.createServer(app);
+// v0.46 fix: 端口重用（Windows TIME_WAIT 导致重启失败时用）
+httpServer.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`[ACMS] ⚠️ 端口 ${config.port} 被占用，等待 10 秒后重试...`);
+    setTimeout(() => {
+      httpServer.close();
+      httpServer.listen(config.port, () => {
+        console.log(`[ACMS] HTTP API: http://localhost:${config.port}`);
+        console.log(`[ACMS] Web UI:  http://localhost:${config.port}/client/index.html`);
+      });
+    }, 10000);
+  } else {
+    throw err;
+  }
+});
 httpServer.listen(config.port, () => {
   console.log(`[ACMS] HTTP API: http://localhost:${config.port}`);
   console.log(`[ACMS] Web UI:  http://localhost:${config.port}/client/index.html`);
