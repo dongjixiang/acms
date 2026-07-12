@@ -244,9 +244,15 @@ class AutoExecuteDispatcher {
 
   /**
    * v0.45: 失败任务自动重试 — 用 steerMessage 让 agent 知道上一次失败原因
+   * v0.X fix: 强制从 DB 重新读最新 task — 之前用 caller 传入的 stale snapshot，
+   *   task.execution_log 停留在 5+ 分钟前，导致 elapsedSec 检查（line 261）算出
+   *   巨大值，错误地跳过了"agent 仍在跑"的拦截，每次 fetch failed 都会无谓重跑。
+   *   根因（fetch failed 罕见边界）：dispatcher 的 await fetch 没有 timeout，
+   *   长跑 agent-execute（5 分钟）的 HTTP connection 偶尔被 server keep-alive 主动 close。
    */
   async scheduleRetry(taskId, task, reason) {
-    if (!task) task = taskStore.getById(taskId);
+    // v0.X fix: 强制刷最新 task snapshot，不要用 caller 传入的 stale 对象
+    task = taskStore.getById(taskId);
     if (!task) return;
 
     // v0.X: 重试前检查是否已有活动中的执行 — 防 fetch 超时后重复触发
