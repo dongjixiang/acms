@@ -558,7 +558,9 @@ function renderAssistLayer(container, reqId, assists) {
     //   → 6 !== 0 → filter skip → 视觉卡片根本不渲染
     //   修：visual 是「方向图快照」，不是 chat 流相关辅助，应该一直可见直到用户 pick
     const chatStateRound = _chatState[reqId]?.briefRound;
-    if (method !== 'visual'
+    // v0.46 fix：用户显式触发的 assist（window._explicitAssist）跳过 round filter
+    const isExplicit = window._explicitAssist?.[reqId] === method;
+    if (method !== 'visual' && !isExplicit
         && typeof chatStateRound === 'number'
         && typeof d.generated_at_round === 'number'
         && d.generated_at_round !== chatStateRound) {
