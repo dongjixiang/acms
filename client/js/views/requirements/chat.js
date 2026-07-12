@@ -634,7 +634,7 @@ if (!innerHtml.trim()) continue;
     el.dataset.assistMethod = method;
     // v0.13 fix: use_case 自带 apply/regen/discard 按钮，不附加 chat-assist-actions 重复按钮
     const chatActions = (method === 'use_case') ? '' :
-      `<div class="chat-assist-actions" style="margin-top:10px"><button class="btn-small btn-accept" onclick="chatSendAssistPick('${reqId}','${method}')">✅ 发送选择</button><button class="btn-small" onclick="chatAssistRegen('${reqId}','${method}')">↻ 换一批</button><button class="btn-small" onclick="chatSkipAssist(this)">跳过</button></div>`;
+      `<div class="chat-assist-actions" style="margin-top:10px"><button class="btn-small btn-accept" onclick="chatSendAssistPick('${reqId}','${method}', this)">✅ 发送选择</button><button class="btn-small" onclick="chatAssistRegen('${reqId}','${method}')">↻ 换一批</button><button class="btn-small" onclick="chatSkipAssist(this)">跳过</button></div>`;
     el.innerHTML = `${innerHtml}${chatActions}`;
     // v0.6.6：优先就地替换 .assist-loading-card（chatAssist 插的），否则 append 到末尾
     const loadingEl = container.querySelector(`.assist-loading-card[data-method="${method}"]`);

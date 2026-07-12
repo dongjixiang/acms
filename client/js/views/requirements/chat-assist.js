@@ -64,10 +64,12 @@ async function chatAssist(reqId, method, extraBody) {
 
 /** pollAssistUntilDone 已合并到 startChatPolling（2026-06-14） */
 
-async function chatSendAssistPick(reqId, method) {
-  // v0.46 fix：优先查.chat-assist-layer（旧模式），fallback 到.chat-assist-result（聊天流内联渲染）
-  const layer = document.querySelector(`#chat-stream-msgs-${reqId} .chat-assist-layer[data-assist-method="${method}"]`)
-    || document.querySelector(`.chat-assist-result[data-assist-method="${method}"]`);
+async function chatSendAssistPick(reqId, method, el) {
+  // v0.46 fix：优先从按钮上下文找层（多卡片共存时精确匹配），fallback 到全局查找
+  const layer = el
+    ? el.closest('.chat-assist-layer, .chat-assist-result')
+    : document.querySelector(`#chat-stream-msgs-${reqId} .chat-assist-layer[data-assist-method="${method}"]`)
+      || document.querySelector(`.chat-assist-result[data-assist-method="${method}"]`);
   if (!layer) return;
   // 支持多种选择模式
   const selOpts = layer.querySelectorAll('.chat-assist-option.selected');

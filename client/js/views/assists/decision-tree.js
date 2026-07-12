@@ -44,7 +44,7 @@
     const regenBtn = `<button class="dt-btn" onclick="ACMSAssistDispatcher.regenerateBatch('${reqId}', 'decision_tree')" title="让 AI 再生成 3 个明显不同的方向">🔄 ${isSubmitted ? '↩ 重新选择' : '都不符合，再换一批'}</button>`;
     const submitBtn = isSubmitted
       ? ''
-      : `<button class="dt-btn dt-btn-primary" id="dt-submit-${reqId}" disabled onclick="dtSubmit('${reqId}')">✓ 确认采用这个方向</button>`;
+      : `<button class="dt-btn dt-btn-primary" id="dt-submit-${reqId}" disabled onclick="dtSubmit('${reqId}', this)">✓ 确认采用这个方向</button>`;
 
     return `
       <div class="dt-block">
@@ -92,10 +92,12 @@
 })();
 
 /** 全局函数：点提交按钮 → 调 useAssist 标记 used_branch_idx + 锁住卡片 + 发送到对话框 */
-async function dtSubmit(reqId) {
-  // v0.46 fix：优先查#assist-area，fallback 到聊天流卡片
-  const layer = document.querySelector(`#assist-area-${reqId} .assist-decision_tree`)
-    || document.querySelector(`.chat-assist-result[data-assist-method="decision_tree"]`);
+async function dtSubmit(reqId, el) {
+  // v0.46 fix：从按钮关联的层查找，避免多卡片时总操作第一张
+  const layer = el
+    ? el.closest('.chat-assist-layer, .chat-assist-result, #assist-area')
+    : document.querySelector(`#assist-area-${reqId} .assist-decision_tree`)
+      || document.querySelector(`.chat-assist-layer[data-assist-method="decision_tree"]`);
   if (!layer) return;
   const selected = layer.querySelector('.dt-branch.selected');
   if (!selected) {
@@ -108,7 +110,7 @@ async function dtSubmit(reqId) {
     c.classList.remove('selected');
     c.style.cursor = 'default';
   });
-  const submitBtn = document.getElementById(`dt-submit-${reqId}`);
+  const submitBtn = el || layer.querySelector('#dt-submit-' + reqId);
   if (submitBtn) {
     submitBtn.disabled = true;
     submitBtn.textContent = '✓ 已提交';
