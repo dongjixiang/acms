@@ -1,123 +1,67 @@
-// 借鉴卡片 v2 — 产品简报模式（2026-06-14）
 // 渲染：产品全景 + 可视化图表 + 核心理念 + "应用到需求"按钮
-// 替代旧版表格选择器模式
+// v0.13: 注入 sourceNote（来源说明）— 仅用于 dispatcher.render() 自动注入，render 函数不需要自己拼
+//   因 render() 结果被 dispatcher.render 包了一层：<div class="assist-block assist-${m}">${sourceNote}${mod.render(...)}</div>
+//   所以 render 函数只输出纯卡片内容，不拼 sourceNote
 (function () {
   function render(reqId, data) {
-    if (!data || data.mode !== 'brief' || data.status !== 'done') return '';
-    const product = escHtml(data.target_product || '');
-    const profile = data.profile || {};
-    const diagrams = data.diagrams || [];
+    if (!data || data.status === 'pending' || data.status === 'generating') return '';
+    if (data.status === 'failed') return `<div class="insight-error">❌ 产品情报加载失败：${escHtml(data.error || '未知错误')}</div>`;
+
+    // data 结构
+    const productName = data.product_name || '';
+    const summary = data.summary;
     const insights = data.insights || [];
+    const dimensions = data.dimensions || [];
 
-    // ── 产品全景 ──
-    const profileHtml = Object.keys(profile).length > 0 ? `
-      <div class="brief-top">
-        <h2><span>🏛</span> ${product} · 产品简报</h2>
-        <div class="profile-grid">
-          ${['定位','核心功能','工作流程','典型用户'].filter(k => profile[k]).map(k => `
-            <div class="profile-row">
-              <span class="key">${k}</span>
-              <span class="val">${escHtml(profile[k])}</span>
-            </div>
-          `).join('')}
-        </div>
-      </div>` : '';
+    // 折叠类来组织布局
+    const overviewHtml = summary ? `
+      <div class="ref-summary">
+        ${summary.one_liner ? `<div class="ref-oneliner" style="font-size:14px;font-weight:600;margin:6px 0;padding:6px 10px;background:var(--bg2);border-radius:6px;border-left:3px solid var(--accent)">${escHtml(summary.one_liner)}</div>` : ''}
+        ${summary.brief ? `<div style="font-size:12px;color:var(--text2);margin:4px 0 8px 0">${escHtml(summary.brief)}</div>` : ''}
+        ${summary.metrics ? `<div style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0">${summary.metrics.map(m => `<span style="font-size:11px;background:var(--bg2);padding:2px 8px;border-radius:10px;border:1px solid var(--border)">${escHtml(m.label || '')}: <strong>${escHtml(m.value || '')}</strong></span>`).join('')}</div>` : ''}
+      </div>
+    ` : '';
 
-    // ── 图表 ──
-    const diagramHtml = diagrams.map(d => renderDiagram(d)).join('');
+    // 核心理念（insights — 做成可点选块）
+    const insightsHtml = insights.length > 0 ? `
+      <div class="ref-insights">
+        <div style="font-size:11px;font-weight:600;color:var(--text2);margin:6px 0 4px 0">💡 核心理念（点选后「全部引用到对话」）</div>
+        ${insights.map((ins, i) => `
+          <div class="insight-block" data-idx="${i}" style="cursor:pointer;margin:3px 0;padding:5px 8px;background:var(--bg2);border-radius:5px;border:1px solid var(--border);font-size:12px;transition:all 0.15s">
+            <div class="label" style="font-weight:600;color:var(--text)">${escHtml(ins.label || '')}</div>
+            <div class="desc" style="color:var(--text2);margin-top:2px">${escHtml(ins.desc || '')}</div>
+            ${ins.source ? `<div style="font-size:10px;color:var(--text3);margin-top:2px">📎 ${escHtml(ins.source)}</div>` : ''}
+            <div class="insight-apply-btn" onclick="referenceApplyInsight('${reqId}', this)" style="display:inline-block;margin-top:4px;padding:2px 8px;font-size:10px;border:1px solid var(--accent3);border-radius:4px;color:var(--accent3);cursor:pointer;background:transparent">+ 应用到需求</div>
+          </div>
+        `).join('')}
+      </div>
+    ` : '';
 
-    // ── 核心理念 ──
-    const insightHtml = insights.map((ins, i) => {
-      const colors = ['n1','n2','n3'];
-      return `
-      <div class="insight-block">
-        <div class="head">
-          <span class="num ${colors[i] || 'n1'}">${i + 1}</span>
-          <span class="label">${escHtml(ins.title || '')}</span>
-        </div>
-        <div class="desc">${escHtml(ins.desc || '')}</div>
-        <div class="insight-apply-btn" onclick="referenceApplyInsight('${reqId}', this)">+ 应用到需求</div>
-      </div>`;
-    }).join('');
+    // 多维度对比（dimensions — 可选）
+    const dimensionsHtml = dimensions.length > 0 ? `
+      <div class="ref-dimensions" style="margin-top:8px">
+        <div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:4px">📊 多维对比</div>
+        ${dimensions.map(d => `
+          <div class="diagram-section" style="margin:4px 0">
+            <div style="font-size:12px;font-weight:600;margin:2px 0">🔒 ${escHtml(d.title || '')} <span style="font-size:11px;color:var(--text2)">${escHtml(d.subtitle || '')}</span></div>
+            <div class="perm-layers" style="display:flex;flex-wrap:wrap;gap:4px;margin:4px 0">${(d.layers || []).map(l => `<span style="font-size:11px;background:var(--bg);padding:2px 6px;border-radius:4px;border:1px solid var(--border)">${escHtml((l.label||'') + ' ' + (l.value||''))}</span>`).join('')}</div>
+          </div>
+        `).join('')}
+      </div>
+    ` : '';
 
-    // ── 底部 ──
-    const footerHtml = insights.length > 0 ? `
-      <div class="brief-footer">
-        <span class="hint">💡 点「应用到需求」可将借鉴点注入对话继续讨论</span>
-        <div class="btn-row">
-          <button class="btn-small" onclick="chatAssistRegen('${reqId}','reference')" style="font-size:11px">↻ 换一批核心理念</button>
-          <button class="btn-small btn-primary" onclick="referenceApplyAll('${reqId}')" style="font-size:11px">✅ 全部引用到对话</button>
-        </div>
-      </div>` : '';
+    // 底部操作
+    const footer = `<div style="margin-top:10px;display:flex;justify-content:space-between;align-items:center"><span style="font-size:11px;color:var(--text3)">💡 点「应用到需求」可将借鉴点注入对话继续讨论</span><button class="btn-small btn-primary" onclick="referenceApplyAll('${reqId}')" style="font-size:11px">✅ 全部引用到对话</button></div>`;
 
     return `
       <div class="ref-brief">
-        ${profileHtml}
-        ${diagramHtml}
-        ${insightHtml}
-        ${footerHtml}
-      </div>`;
-  }
-
-  // ── 图表渲染 ──
-  function renderDiagram(d) {
-    if (!d || !d.type) return '';
-    switch (d.type) {
-      case 'flow': return renderFlow(d);
-      case 'grid': return renderGrid(d);
-      case 'layers': return renderLayers(d);
-      default: return '';
-    }
-  }
-
-  function renderFlow(d) {
-    const nodes = (d.nodes || []).map((n, i) => `
-      <div class="df-node df-n${i + 1}">
-        <span class="icon">${n.icon || '📋'}</span>
-        <span class="label"><strong>${escHtml(n.label || '')}</strong>${n.detail ? '<br>' + escHtml(n.detail) : ''}</span>
-      </div>`).join('<span class="df-arrow">→</span>');
-    const tags = (d.tags || []).map(t => `<span class="df-tag">${escHtml(t)}</span>`).join('');
-    return `
-      <div class="diagram-section">
-        <div class="diagram-title">📊 ${escHtml(d.title || '')} <span class="sub">${escHtml(d.subtitle || '')}</span></div>
-        <div class="data-flow">${nodes}</div>
-        ${tags ? `<div class="df-tags">${tags}</div>` : ''}
-      </div>`;
-  }
-
-  function renderGrid(d) {
-    const views = (d.views || []).map(v => `
-      <div class="view-card">
-        <span class="vicon">${v.icon || '📊'}</span>
-        <span class="vname">${escHtml(v.name || '')}</span>
-        <span class="vdesc">${escHtml(v.desc || '')}</span>
-      </div>`).join('');
-    return `
-      <div class="diagram-section">
-        <div class="diagram-title">🖼️ ${escHtml(d.title || '')} <span class="sub">${escHtml(d.subtitle || '')}</span></div>
-        <div class="view-showcase">
-          <div class="view-source">
-            <span class="icon">🗄️</span>
-            <span class="label">${escHtml(d.source_label || '')}</span>
-            <span class="sub">${escHtml(d.source_detail || '')}</span>
-          </div>
-          <div class="view-grid">${views}</div>
-        </div>
-      </div>`;
-  }
-
-  function renderLayers(d) {
-    const layers = (d.layers || []).map((l, i) => `
-      <div class="perm-card perm-l${i + 1}">
-        <div class="plevel">${escHtml(l.level || '')}</div>
-        <div class="pname">${escHtml(l.name || '')}</div>
-        <div class="pdesc">${escHtml(l.desc || '')}</div>
-      </div>`).join('');
-    return `
-      <div class="diagram-section">
-        <div class="diagram-title">🔒 ${escHtml(d.title || '')} <span class="sub">${escHtml(d.subtitle || '')}</span></div>
-        <div class="perm-layers">${layers}</div>
-      </div>`;
+        ${productName ? `<div class="brief-top"><h2>🏛 ${escHtml(productName)} · 产品简报</h2></div>` : ''}
+        ${overviewHtml}
+        ${insightsHtml}
+        ${dimensionsHtml}
+        ${footer}
+      </div>
+    `;
   }
 
   window.ACMSAssists.register('reference', { name: '借鉴卡片（产品简报）', render });
@@ -134,15 +78,15 @@ function referenceApplyInsight(reqId, btn) {
 
 /** 全部引用到对话：检测是否在 chat layer → 走统一路径，否则塞输入框 */
 function referenceApplyAll(reqId) {
-  // 如果在 chat assist layer 内，走 chatSendAssistPick 统一路径
-  const btn = document.querySelector(`button[onclick*="referenceApplyAll('${reqId}')"]`);
-  const inChatLayer = btn && btn.closest('.chat-assist-layer');
+  // 如果在 chat assist layer/result 内，走 chatSendAssistPick 统一路径
+  const btn = document.querySelector("button[onclick*=\"referenceApplyAll('" + reqId + "')\"]");
+  const inChatLayer = btn && (btn.closest('.chat-assist-layer') || btn.closest('.chat-assist-result'));
   if (inChatLayer) {
     chatSendAssistPick(reqId, 'reference');
     return;
   }
   // 以下为原有逻辑（独立面板模式）
-  const layer = document.querySelector(`#chat-stream-msgs-${reqId} .chat-assist-layer[data-assist-method="reference"]`);
+  const layer = document.querySelector('#chat-stream-msgs-' + reqId + ' .chat-assist-layer[data-assist-method="reference"]');
   if (!layer) return;
   const brief = layer.querySelector('.ref-brief');
   if (!brief) return;
@@ -160,17 +104,17 @@ function referenceApplyAll(reqId) {
   blocks.forEach(b => {
     const title = b.querySelector('.label')?.textContent?.trim();
     const desc = b.querySelector('.desc')?.textContent?.trim();
-    if (title) parts.push(`\n💡 ${title}`);
-    if (desc) parts.push(`  ${desc}`);
+    if (title) parts.push('\n💡 ' + title);
+    if (desc) parts.push('  ' + desc);
   });
 
   const text = parts.join('\n');
-  const input = document.getElementById(`ai-clarify-input-${reqId}`);
+  const input = document.getElementById('ai-clarify-input-' + reqId);
   if (!input) return;
   input.value = text;
 
   // 自动发送
-  const sendBtn = document.querySelector(`#chat-stream-${reqId} .btn-primary[onclick*="chatSend"]`);
+  const sendBtn = document.querySelector('#chat-stream-' + reqId + ' .btn-primary[onclick*="chatSend"]');
   if (sendBtn) {
     sendBtn.click();
     toast('✅ 已发送借鉴理念到对话', 'success', 1500);
