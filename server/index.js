@@ -32,7 +32,11 @@ console.log('[ACMS] 智能体协同管理系统 v0.3.0');
 console.log(`[ACMS] 日志输出: ${LOG_FILE}`);
 
 // HTTP API
+// P0 v0.X: keepAliveTimeout + headersTimeout 调到 10 分钟 — 防止长跑（>5min）agent-execute 连接被 Node 默认 keepAliveTimeout=5s 主动 reset (Pattern U)
+//   之前默认 5s：dispatcher 调 /agent-execute 后 audit/submit 阶段进行中时连接被 server 主动关，response 永远丢，任务卡 17% (T-MRHSD8OQ 7/13 实战)
 const httpServer = http.createServer(app);
+httpServer.keepAliveTimeout = 600_000; // 10 min — 允许 agent-execute 长跑 10 分钟不被 idle reset
+httpServer.headersTimeout = 605_000;   // 必须 > keepAliveTimeout (Node HTTP server 要求)
 // v0.46 fix: 端口重用（Windows TIME_WAIT 导致重启失败时用）
 httpServer.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {

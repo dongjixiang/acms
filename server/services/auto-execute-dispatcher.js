@@ -216,13 +216,16 @@ class AutoExecuteDispatcher {
       // 调 agent-execute（同样的 API，agent-execute 内部已经做 audit + submit）
       // 不 await——fire-and-forget 模式，跟 handleExecuteSkill 一致
       // 但为了让 caller 等结果，这里 await
+      // P0 v0.X: AbortSignal.timeout(600_000) — 防止长跑（>5min）keep-alive socket reset 后 fetch 永远挂起 (Pattern U)
+      //   之前没 timeout：dispatcher fetch 拿不到响应也不抛错，audit/submit 阶段结果永远丢，任务卡 in_progress 17% (T-MRHSD8OQ 7/13 实战)
       const httpReq = await fetch(`http://127.0.0.1:${process.env.PORT || 3300}/api/ai-tools/agent-execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-API-Key': process.env.ACMS_API_KEY || 'dev-key-001' },
         // P0 v0.X: 带 lang — 优先用 task.doc.preferred_lang（用户之前主动操作时存的），
         //   否则读全局 PM 配置，最后 fallback 'zh'
         body: JSON.stringify({ taskId, agentId: assignee, lang: getPreferredLang(task) }),
-      }).catch(err => ({ error: err.message }));
+        signal: AbortSignal.timeout(600_000),
+      }).catch(err => ({ error: err.message, aborted: err.name === 'AbortError' }));
 
       const result = httpReq && typeof httpReq.json === 'function' ? await httpReq.json() : httpReq;
       if (result && result.success) {
@@ -292,12 +295,14 @@ class AutoExecuteDispatcher {
           `Strategies: (1) Use agent_read_files (batch) to read multiple files in one call. ` +
           `(2) Use agent_patch_file with anchor instead of node -e sed. ` +
           `(3) Do not loop on the same exploration — act decisively with agent_write_file.`;
+        // P0 v0.X: AbortSignal.timeout(600_000) — 同 handleTaskClaimed 修复
         const httpReq = await fetch(`http://127.0.0.1:${port}/api/ai-tools/agent-execute`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
           // P0 v0.X: 带 lang — 跟初始触发的 lang 一致
           body: JSON.stringify({ taskId, agentId: task.assigned_to, steerMessage: retryMsg, lang: getPreferredLang(task) }),
-        }).catch(err => ({ error: err.message }));
+          signal: AbortSignal.timeout(600_000),
+        }).catch(err => ({ error: err.message, aborted: err.name === 'AbortError' }));
         const result = httpReq && typeof httpReq.json === 'function' ? await httpReq.json() : httpReq;
         if (result && result.success) {
           console.log(`[AutoExecuteDispatcher] ✅ ${taskId} 自动重试成功`);
@@ -363,11 +368,13 @@ AutoExecuteDispatcher.prototype.handleTaskRejected = async function (event) {
       // 跟 handleTaskClaimed 一致：调 /agent-execute HTTP 端点（不直接调 executeTaskAgent，避免双重 audit/submit）
       const port = process.env.PORT || 3300;
       const apiKey = process.env.ACMS_API_KEY || 'dev-key-001';
+      // P0 v0.X: AbortSignal.timeout(600_000) — 同 handleTaskClaimed 修复
       const httpReq = await fetch(`http://127.0.0.1:${port}/api/ai-tools/agent-execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
         body: JSON.stringify({ taskId, agentId: task.assigned_to }),
-      }).catch(err => ({ error: err.message }));
+        signal: AbortSignal.timeout(600_000),
+      }).catch(err => ({ error: err.message, aborted: err.name === 'AbortError' }));
       const result = httpReq && typeof httpReq.json === 'function' ? await httpReq.json() : httpReq;
       if (result && result.success) {
         console.log(`[AutoExecuteDispatcher] ✅ ${taskId} 自动重跑完成 (analysis=${result.analysisLength || '?'} chars)`);
