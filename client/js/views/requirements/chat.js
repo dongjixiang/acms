@@ -1342,6 +1342,12 @@ function connectStreamingBrief(reqId, container) {
         streamingBubble.className = 'chat-bubble chat-bubble-ai chat-bubble-error';
         delete streamingBubble.dataset.streaming;
         streamingBubble.dataset.streaming = 'done';
+      } else if (data.type === 'skip') {
+        // v0.46.x fix: free 模式守卫信号 — 移除占位 streaming bubble，避免双气泡
+        //   server 端 runBriefJobStream 在 chat_mode=free 时 yield skip
+        //   这里不渲染任何 AI 回复（文字回复已由 detect-and-respond intent_loop 渲染）
+        es.close();
+        if (streamingBubble && streamingBubble.parentNode) streamingBubble.remove();
       }
     } catch (e) { /* JSON parse error */ }
   });

@@ -627,6 +627,10 @@ router.get('/:id/thinking-brief/stream', async (req, res, next) => {
       } else if (event.type === 'error') {
         send('error', { message: event.message });
         break;
+      } else if (event.type === 'skip') {
+        // v0.46.x fix: free 模式守卫 — 客户端收到后清掉 .chat-streaming-bubble 占位
+        send('skip', { reason: event.reason || 'free_mode' });
+        break;
       }
     }
     res.end();

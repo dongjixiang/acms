@@ -415,6 +415,18 @@ async function* runBriefJobStream(requirementId, opts = {}) {
   const req = reqStore.getById(requirementId);
   if (!req) { yield { type: 'error', message: 'REQ_NOT_FOUND' }; return; }
 
+  // v0.46.x fix: free 模式跳过 brief 流式生成
+  //   7/12 修复 detect-and-respond 跳过 server-side runBriefJob 后，
+  //   client chatSendDetect 末尾的 setTimeout(connectStreamingBrief, 800) 仍会调 SSE
+  //   触发 runBriefJobStream 无条件生成 → free 模式用户看到「文字回复 + brief 气泡」双气泡
+  //   这里守住 chat_mode === 'free' 的不变量（与 detect-and-respond / supplement 端点一致）
+  //   任何 client 路径调 SSE 都安全，不用前端判断
+  if (req.chat_mode === 'free') {
+    console.log(`[brief.stream] ${requirementId} chat_mode=free, 跳过 brief 流式生成`);
+    yield { type: 'skip', reason: 'free_mode' };
+    return;
+  }
+
   // v0.13 B5 fix: 保留之前的 chat_round（不重置为 0，与 runBriefJob 保持一致）
   //   不依赖 status（generating 状态也保留）→ L497 oldRound 直接读这个值
   let prevChatRound = 0;
