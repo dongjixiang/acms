@@ -295,6 +295,10 @@ ${audit.missingFiles.map(m => `- \`${m.path}\` (原因: ${m.reason})`).join('\n'
       //     （routes/ 下没有 task-agent.js，会抛 MODULE_NOT_FOUND 被外层 catch 静默吞掉，
       //      导致 audit 失败后永远不触发自动 steer，任务永远卡在 in_progress）
       // 异步 steer，不阻塞响应
+      // P0 v0.X: 修复 LLM 503 导致 auto-steer 静默失败、任务永远卡死的 bug (T-MRHSD8OQ 7/13 实战)
+      //   - 失败时写 progress_note 让 PM 在任务详情页能看到（不是只 console.error）
+      //   - 30s 后通过 fetch /agent-execute 重试一次（路由自己管并发锁返回 409）
+      //   - 重试也失败再写一次 progress_note 明确"需 PM 手工处理"
       (async () => {
         try {
           await aiTools.executeTaskAgent(taskId, {
@@ -302,6 +306,38 @@ ${audit.missingFiles.map(m => `- \`${m.path}\` (原因: ${m.reason})`).join('\n'
           });
         } catch (e) {
           console.error(`[agent-execute] steer failed for task ${taskId}: ${e.message}`);
+          // P0 v0.X: 失败信息写入 progress_note，让 PM 看板能看到
+          try {
+            const cur = taskStore.getById(taskId);
+            const failMsg = `[自动 steer 失败 ${new Date().toISOString()}] ${e.message} — 30s 后重试`;
+            taskStore.update(taskId, { progress_note: ((cur && cur.progress_note) || '') + (cur && cur.progress_note ? '\n\n' : '') + failMsg });
+          } catch (e2) {
+            console.error(`[agent-execute] failed to write progress_note for ${taskId}: ${e2.message}`);
+          }
+          // P0 v0.X: 30s 后 fetch /agent-execute 重试（路由自己管 409 并发锁）
+          setTimeout(async () => {
+            try {
+              const port = process.env.PORT || 3300;
+              const apiKey = process.env.ACMS_API_KEY || 'dev-key-001';
+              const retryMsg = `### 自动 steer 重试 (LLM 上次调用失败)\n\n你之前被要求创建缺失文件但未成功：\n${missingFiles}\n\n创建后请重新提交。`;
+              const r = await fetch(`http://127.0.0.1:${port}/api/ai-tools/agent-execute`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+                body: JSON.stringify({ taskId, agentId: task.assigned_to, steerMessage: retryMsg }),
+              }).catch(err => ({ error: err.message }));
+              const result = r && typeof r.json === 'function' ? await r.json() : r;
+              if (!result || !result.success) {
+                const errMsg = (result && (result.error || result.message)) || 'unknown';
+                console.warn(`[agent-execute] retry steer failed for ${taskId}: ${errMsg}`);
+                const cur2 = taskStore.getById(taskId);
+                taskStore.update(taskId, { progress_note: ((cur2 && cur2.progress_note) || '') + (cur2 && cur2.progress_note ? '\n\n' : '') + `[自动 steer 重试也失败 ${new Date().toISOString()}] ${errMsg} — 需 PM 手工处理` });
+              } else {
+                console.log(`[agent-execute] retry steer ok for ${taskId}`);
+              }
+            } catch (e3) {
+              console.error(`[agent-execute] retry steer exception for ${taskId}: ${e3.message}`);
+            }
+          }, 30000);
         }
       })();
       return res.status(409).json({
