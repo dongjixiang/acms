@@ -145,7 +145,23 @@ document.addEventListener('DOMContentLoaded', () => {
         <!-- 仪表盘 -->
         <div id="view-dashboard" class="view active">
           <div class="view-header"><h2 id="dash-name"></h2></div>
-          <div class="stats-row" id="dash-stats"></div>
+
+          <!-- v0.46 PM Dashboard 4 张卡 (项目概览合并了原 stat-row 需求/任务) -->
+          <div class="pm-cards-grid" id="pm-cards">
+            <div class="empty" style="padding:24px;text-align:center;color:var(--text2)">Dashboard 加载中...</div>
+          </div>
+
+          <!-- v0.46 Live Monitor 实时活动 (独立行, 每 5s 轮询) -->
+          <div id="pm-live" class="pm-live-container">
+            <div class="pm-card"><div style="color:var(--text2);padding:12px">Live 加载中...</div></div>
+          </div>
+
+          <!-- v0.46 Git Status 卡片 (独立行, 手动刷新) -->
+          <div id="pm-git" class="pm-git-container">
+            <div class="pm-card"><div style="color:var(--text2);padding:12px">Git 状态加载中...</div></div>
+          </div>
+
+          <!-- 原有 dash-panels (最近需求 / 进行中任务 / Token 调用明细) -->
           <div class="dash-panels">
             <div class="dash-panel"><h3 data-i18n="dashboard.recentReqs">📋 最近需求</h3><div id="dash-reqs"></div></div>
             <div class="dash-panel"><h3 data-i18n="dashboard.activeTasks">📌 进行中的任务</h3><div id="dash-tasks"></div></div>

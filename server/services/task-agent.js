@@ -170,15 +170,58 @@ ${task.description || '(no description)'}
   console.log(`[agent-execute] Task ${taskId} | model=${model.id} | project=${projectId}`);
 
   // v0.X: 按任务类型裁剪工具列表 — 治 T-MRGDBST1 多余工具加重空转
-  //   bug 修复任务不需要 browser / db / ssh / http 工具
+// v0.46: 工具筛选 — 不再按 task.type 一刀切, 改按 description 内容智能判断
+  //   历史 bug (T-MRKP19DR 2026-07-14): bug 类型任务被一刀切过滤掉 browser_* 工具,
+  //   导致含 URL 的 bug 任务 (比如 "通过交付管理预览 http://.../dist/ 404")
+  //   agent 没法用 browser_snapshot 自检, 只能猜, 然后提交 "DONE" 但实际未验证.
+  //
+  //   新策略 (智能 4 维检测):
+  //   1. description 含 http(s):// URL  → 需要 browser_* (本地/外网预览页)
+  //   2. description 含浏览器关键字    → 需要 browser_* (404/500/preview/页面/网页)
+  //   3. description 含 DB/SSH/HTTP 关键字 → 需要对应工具
+  //   4. bug/fix 类型 且无以上特征      → 保持原过滤 (省 token)
   const taskType = (task.type || '').toLowerCase();
+  const taskDesc = (task.description || task.actual_behavior || '').toLowerCase();
+  const taskTitle = (task.title || '').toLowerCase();
+  const fullText = `${taskTitle} ${taskDesc}`;
+
+  // 4 维检测
+  const hasUrl = /https?:\/\/[^\s]+/.test(fullText);
+  const hasBrowserKw = /浏览器|browser|网页|页面|preview|dist|404|500|403|网络请求|http request|渲染|dom/i.test(fullText);
+  const hasDbKw = /\bsql\b|\bquery\b|数据库|database|select\s|insert\s|update\s/i.test(fullText);
+  const hasSshKw = /\bssh\b|远程|remote|服务器|server\s+(login|shell|exec)/i.test(fullText);
+  const hasHttpKw = /\bapi\s+(call|request)|fetch\s+url|http\s+request|curl\s+/i.test(fullText);
+
+  // 决定要不要保留哪些工具
   const EXTRA_TOOLS = ['browser_snapshot', 'browser_console', 'browser_click', 'browser_type', 'browser_screenshot',
     'agent_db_query', 'agent_ssh_execute', 'agent_ssh_check', 'agent_http_request'];
-  const isSimpleTask = ['bug', 'fix', 'documentation', 'refactor', 'test'].includes(taskType);
+  const toolsToKeep = new Set();
+  if (hasUrl || hasBrowserKw) {
+    ['browser_snapshot','browser_console','browser_click','browser_type','browser_screenshot']
+      .forEach(t => toolsToKeep.add(t));
+  }
+  if (hasDbKw) toolsToKeep.add('agent_db_query');
+  if (hasSshKw) { toolsToKeep.add('agent_ssh_execute'); toolsToKeep.add('agent_ssh_check'); }
+  if (hasHttpKw) toolsToKeep.add('agent_http_request');
+
   const ALL_TOOLS = ['agent_read_file', 'agent_read_files', 'agent_read_dir_summary', 'agent_list_files', 'agent_search_files', 'agent_exec_command', 'agent_write_file', 'agent_patch_file', 'agent_multi_patch', 'workspace_isolate', 'workspace_merge', 'browser_snapshot', 'browser_console', 'browser_click', 'browser_type', 'browser_screenshot', 'agent_git_status', 'agent_git_diff', 'agent_git_commit', 'agent_git_log', 'agent_git_branch', 'agent_db_query', 'agent_ssh_execute', 'agent_ssh_check', 'agent_http_request', 'agent_set_phase', 'agent_typescheck', 'agent_plan'];
-  const toolNames = isSimpleTask
-    ? ALL_TOOLS.filter(t => !EXTRA_TOOLS.includes(t))
-    : ALL_TOOLS;
+  // 原简单任务过滤: bug/fix/documentation/refactor/test 类不分配 EXTRA_TOOLS
+  // 新逻辑: 如果 description 触发 4 维检测之一, 保留对应工具; 否则走原过滤
+  const isSimpleTask = ['bug', 'fix', 'documentation', 'refactor', 'test'].includes(taskType);
+  const toolNames = isSimpleTask && toolsToKeep.size === 0
+    ? ALL_TOOLS.filter(t => !EXTRA_TOOLS.includes(t))   // 简单任务无浏览器/DB 需求, 走原过滤
+    : isSimpleTask
+      ? ALL_TOOLS.filter(t => !EXTRA_TOOLS.includes(t) || toolsToKeep.has(t))  // 简单任务但有特殊需求, 保留对应工具
+      : ALL_TOOLS;                                       // 复杂任务全部工具
+
+  // v0.46 日志: 记录为什么 agent 拿到/没拿到 browser 工具 (PM 调试友好)
+  const triggerReasons = [];
+  if (hasUrl) triggerReasons.push('URL');
+  if (hasBrowserKw) triggerReasons.push('browser_kw');
+  if (hasDbKw) triggerReasons.push('db_kw');
+  if (hasSshKw) triggerReasons.push('ssh_kw');
+  if (hasHttpKw) triggerReasons.push('http_kw');
+  console.log(`[task-agent v0.46] task=${task.id} type=${taskType} → ${toolNames.length} tools (kept browser/extra: ${Array.from(toolsToKeep).join(',') || 'none'}; triggers: ${triggerReasons.join(',') || 'isSimpleTask'})`);
 
   let analysis;
   try {

@@ -97,11 +97,28 @@ registerTool({
       const r = await workspace.exec(slug, { cmd: 'git add -A', timeout: 5000 });
       lines.push('git add -A: exit=' + r.exitCode);
     }
-    const msg = (args.message || '').replace(/'/g, "\\'");
-    const commitResult = await workspace.exec(slug, {
-      cmd: 'git commit -m \'' + msg + '\'',
-      timeout: 10000,
-    });
+// ⚠️ Shell 单引号字符串内无法 escape 单引号 (`\` 是字面字符, 不是转义)
+    //    历史 bug (T-MRKP19DR 2026-07-14): .replace(/'/g, "\\'") 在 cmd.exe+MSYS2 bash 双层解析下
+    //    会破坏引号结构, 导致 message 含 ' (如 `base: './'`) 时 git 报 "error: pathspec 'xxx'"
+    //    Node spawn 在 Windows 默认用 cmd.exe (单引号按字面传), 然后 git.exe 内部用 MSYS2 bash
+    //    解析, `\'` 在 bash 单引号字符串内 broken → 拆散 message → 多个 token 被 git 当 pathspec
+    //
+    //    修复 (v0.46): 写临时文件 + `git commit -F <msgfile>` (方案 B)
+    //    彻底绕开 shell quoting 问题, 支持任意特殊字符 (', `, $, \, ", \n)
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const msgFile = path.join(os.tmpdir(), `acms-commit-msg-${Date.now()}-${Math.random().toString(36).slice(2,8)}.txt`);
+    fs.writeFileSync(msgFile, args.message || '', 'utf8');
+    let commitResult;
+    try {
+      commitResult = await workspace.exec(slug, {
+        cmd: `git commit -F "${msgFile}"`,
+        timeout: 10000,
+      });
+    } finally {
+      try { fs.unlinkSync(msgFile); } catch (e) { /* ignore cleanup error */ }
+    }
     lines.push('git commit: exit=' + commitResult.exitCode);
     lines.push('output: ' + (commitResult.stdout || '').slice(0, 500));
     if (commitResult.stderr) lines.push('stderr: ' + commitResult.stderr.slice(0, 500));

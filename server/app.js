@@ -211,6 +211,7 @@ app.use('/api/agents', require('./routes/agents'));
 app.use('/api/wiki', require('./routes/wiki'));
 app.use('/api/changes', require('./routes/changes'));
 app.use('/api/admin', require('./routes/admin'));
+app.use('/api/dashboard', require('./routes/dashboard'));  // v0.46 PM Dashboard 4 张卡
 app.use('/api/models', require('./routes/models'));
 app.use('/api/ai', require('./routes/ai-clarify'));
 app.use('/api/ai-tools', require('./routes/ai-tools'));
