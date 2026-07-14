@@ -616,6 +616,42 @@ async function runToolLoop(modelId, messages, options = {}) {
 
     if (droppedCount === 0) return;
 
+    // v0.46: 在压缩前, 扫描 toolCallHistory 找被压缩掉的消息里是否有重复失败
+    //   (治 T-MRKP19DR: 上下文压缩抹掉了 R13 git_commit 失败, R14 重复 commit)
+    //   现在我们把"重复失败"模式显式注入到压缩后的 messages, LLM 不会失忆
+    const failPatterns = [];
+    const droppedRounds = new Set(); // 哪些 round 被压缩了
+    for (const m of msgsToCompress) {
+      // 尝试从 m.content 里提取 "r{N}" round 标记 (LLM_RESPONSE preview 里有 r12, r13 等)
+      const rMatch = m.content && m.content.match(/\br(\d+)\b/);
+      if (rMatch) droppedRounds.add(parseInt(rMatch[1], 10));
+    }
+    const failCounts = new Map(); // `${tool}::${argsSig.slice(0,80)}` -> {count, lastRound, lastErr}
+    for (const h of toolCallHistory) {
+      const isFail = (h.resultPreview && h.resultPreview.includes('"ok":false')) || h.error;
+      if (!isFail) continue;
+      const key = `${h.tool}::${(h.args || '').slice(0, 80)}`;
+      const cur = failCounts.get(key) || { count: 0, lastRound: 0, lastErr: '' };
+      cur.count++;
+      cur.lastRound = Math.max(cur.lastRound, h.round);
+      cur.lastErr = h.resultPreview || h.error || '';
+      failCounts.set(key, cur);
+    }
+    for (const [key, info] of failCounts) {
+      if (info.count < 2) continue;
+      const [toolName, argsSig] = key.split('::');
+      failPatterns.push({
+        tool: toolName,
+        argsSig,
+        count: info.count,
+        lastRound: info.lastRound,
+        lastErr: info.lastErr.slice(0, 200),
+      });
+    }
+    const failWarning = failPatterns.length > 0
+      ? `\n\n### ⚠️ 历史失败警告 (重要!)\n压缩的消息中有以下工具调用已多次失败 — **不要再重试同样的调用**:\n${failPatterns.map(p => `- \`${p.tool}\` 失败 ${p.count} 次 (最近 R${p.lastRound}). 参数: ${p.argsSig.slice(0, 100)}. 最近错误: ${p.lastErr.slice(0, 150)}`).join('\n')}\n`
+      : '';
+
     // 构建压缩提示：让 LLM 总结被丢弃的 messages
     const compressPrompt = [
       { role: 'system', content: 'You are a context summarizer. Summarize the following conversation messages in 3-5 sentences. Focus on: what the agent did, what files were created/modified, what decisions were made. Do NOT include tool call details — only the outcomes.' },
@@ -632,18 +668,20 @@ async function runToolLoop(modelId, messages, options = {}) {
         maxTokens: 500,
       });
       const summaryText = summaryResult.content || `[Earlier ${droppedCount} messages compressed: agent explored workspace and made tool calls. Goal context remains in system prompt above.]`;
-      const compressed = [systemMsg, { role: 'user', content: summaryText }, ...recentMsgs];
+      // v0.46: 把失败警告附加到 LLM 摘要后面, 确保 LLM 看到
+      const finalSummary = summaryText + failWarning;
+      const compressed = [systemMsg, { role: 'user', content: finalSummary }, ...recentMsgs];
       messages.length = 0;
       messages.push(...compressed);
-      console.log(`[runToolLoop] v0.45 context compression: ${messages.length + droppedCount} → ${compressed.length} messages (kept system + last ${KEEP_RECENT} + LLM summary)`);
+      console.log(`[runToolLoop] v0.45 context compression: ${messages.length + droppedCount} → ${compressed.length} messages (kept system + last ${KEEP_RECENT} + LLM summary${failPatterns.length > 0 ? ` + ${failPatterns.length} fail warnings` : ''})`);
     } catch (e) {
       // 摘要失败则降级为规则压缩
       const droppedToolSummary = toolCallHistory.slice(0, toolCallHistory.length - KEEP_RECENT / 2).map(h => `${h.tool}(${(h.args||'').slice(0, 60)})`).join(', ');
-      const summaryText = `[Earlier ${droppedCount} messages compressed: agent explored workspace and made tool calls: ${droppedToolSummary || 'exploration + verification'}. Goal context remains in system prompt above.]`;
+      const summaryText = `[Earlier ${droppedCount} messages compressed: agent explored workspace and made tool calls: ${droppedToolSummary || 'exploration + verification'}. Goal context remains in system prompt above.${failWarning}]`;
       const compressed = [systemMsg, { role: 'user', content: summaryText }, ...recentMsgs];
       messages.length = 0;
       messages.push(...compressed);
-      console.log(`[runToolLoop] v0.45 context compression (fallback): ${messages.length + droppedCount} → ${compressed.length} messages`);
+      console.log(`[runToolLoop] v0.45 context compression (fallback): ${messages.length + droppedCount} → ${compressed.length} messages${failPatterns.length > 0 ? ` + ${failPatterns.length} fail warnings` : ''}`);
     }
   }
 
@@ -655,7 +693,7 @@ async function runToolLoop(modelId, messages, options = {}) {
     //   inject user message 比 system prompt 规则有效（LLM 更听 user role 消息）
     if (typeof lastWriteRound === 'number' && lastWriteRound >= 0 && round - lastWriteRound >= 3 && round >= 6) {
       const idleRounds = round - lastWriteRound;
-      const hasRecentWrite = toolCallHistory.slice(-3).some(h => 
+      const hasRecentWrite = toolCallHistory.slice(-3).some(h =>
         h.tool === 'agent_write_file' || h.tool === 'agent_patch_file' || h.tool === 'agent_multi_patch'
       );
       if (!hasRecentWrite) {
@@ -669,6 +707,38 @@ async function runToolLoop(modelId, messages, options = {}) {
           content: `### ⚠️ 系统检测到你在空转\n\n你已经连续 ${idleRounds} 轮（R${lastWriteRound + 1} → R${round + 1}）没有写任何新文件或补丁。你之前的补丁都已经成功（syntax OK）。\n\n**立即结束任务并提交**，不要再验证/重读/检查 git 状态。\n\n之前完成的补丁：\n${fixSummary}\n\n回复 "DONE" 并产生最终总结。如果再空转 2 轮，系统将自动提交当前改动。`,
         });
       }
+    }
+
+    // v0.46: 重复失败检测 — 同一工具 + 相近 args 连续 ≥3 次返回 ok=false (治 T-MRKP19DR 类死循环)
+    //   T-MRKP19DR 现象: git_commit 因 shell escape bug 失败 3 次 (R13/R14/R15),
+    //   写后空转检测不识别 git_commit 失败 (只认 patch_file/write_file),
+    //   直到 LLM 看了 4 轮失败后才被强制结束 — 浪费 4 轮 LLM token.
+    //   修复: 检测所有 tool call 的 ok=false 重复, 不限于写操作.
+    const failureMap = new Map(); // key = `${tool}::${argsSig}` → count
+    const recent6 = toolCallHistory.slice(-6);
+    for (const h of recent6) {
+      const isFail = (h.resultPreview && h.resultPreview.includes('"ok":false')) || h.error;
+      if (!isFail) continue;
+      const argsSig = (h.args || '').slice(0, 120);
+      const key = `${h.tool}::${argsSig}`;
+      failureMap.set(key, (failureMap.get(key) || 0) + 1);
+    }
+    let injectedFailureSteer = false;
+    for (const [key, count] of failureMap) {
+      if (count < 3) continue;
+      const [toolName, argsSig] = key.split('::');
+      // 防止连续 round 重复注入同样的 steer (检查最近 3 条 messages 里有无同样的标记)
+      const recentSteered = messages.slice(-3).some(m =>
+        m.content && m.content.includes(`系统检测到重复失败`) && m.content.includes(toolName)
+      );
+      if (recentSteered) break;
+      console.warn(`[runToolLoop] ⛔ 重复失败检测: ${toolName} 在最近 ${recent6.length} 轮中失败 ${count} 次. 注入 user steer.`);
+      messages.push({
+        role: 'user',
+        content: `### ⚠️ 系统检测到重复失败\n\n你已经连续 ${count} 次调用 \`${toolName}\` 但都返回 ok=false。\n\n最近参数 (前 200 字符): ${argsSig.slice(0, 200)}\n\n**立即停止重试这个调用。** 这通常意味着：\n- shell escape 问题 (参数含特殊字符: ' \` $ \\ 等)\n- 文件路径错误或权限问题\n- 命令格式错误\n\n**正确做法:**\n1. 简化参数 (例如 commit message 用纯 ASCII, 避免 \\\" \\\" 字符)\n2. 或直接放弃这个工具调用, 提交当前进度\n3. 或换工具 (例如 git_commit 失败就跳过, 不阻塞任务)\n\n继续重试只会浪费 token. **不要第 ${count + 1} 次调 \`${toolName}\` 了.**`,
+      });
+      injectedFailureSteer = true;
+      break; // 每轮只 inject 一次
     }
 
     // v0.X: 只读超时 — 前 N 轮没写过任何文件时强制 steer（治 T-MRGDBST1 33 次读 0 次写的纯探索死循环）
