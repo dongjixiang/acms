@@ -864,6 +864,8 @@ function _captureAdminEntryContext() {
   if (visibleView === 'view-workspace') {
     ctx.projectId = window.App && App.currentProjectId;
     ctx.projectName = window.App && App.currentProject && App.currentProject.name;
+    // P0 v0.X: 也记录最近打开的 taskId — 返回时用于 openTask 重新加载
+    ctx.lastTaskId = window.App && App.lastTaskId;
     const activeSub = document.querySelector('#content .view.active');
     if (activeSub) ctx.workspaceActiveTab = activeSub.id.replace(/^view-/, '');
   }
@@ -897,7 +899,13 @@ function backFromAdmin() {
       if (ctx.projectId && typeof enterProject === 'function') {
         enterProject({ id: ctx.projectId, name: ctx.projectName || '' });
         if (ctx.workspaceActiveTab && ctx.workspaceActiveTab !== 'dashboard' && typeof showWorkspaceView === 'function') {
-          setTimeout(function () { showWorkspaceView(ctx.workspaceActiveTab); }, 30);
+          setTimeout(function () {
+            showWorkspaceView(ctx.workspaceActiveTab);
+            // P0 v0.X: 如果返回到 task-detail，重新调 openTask 加载最新内容（避免陈旧内容）
+            if (ctx.workspaceActiveTab === 'task-detail' && ctx.lastTaskId && typeof openTask === 'function') {
+              openTask(ctx.lastTaskId);
+            }
+          }, 30);
         }
       } else {
         showView('view-workspace');
