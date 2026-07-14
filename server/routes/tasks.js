@@ -198,7 +198,7 @@ router.post('/:id/review', async (req, res, next) => {
   }
 
   const effectiveFeedback = reviewReport
-    ? `${feedback || ''}\n\n--- 🤖 自动审核报告 ---\n${reviewReport.summary}\n\n${testLog}\n\n报告: ${JSON.stringify(reviewReport.phases, null, 2)}`
+    ? `${feedback || ''}\n\n--- 🤖 自动审核报告 ---\n${reviewReport.summary}\n\n${typeof testLog === 'string' ? testLog : JSON.stringify(testLog, null, 2)}\n\n报告: ${JSON.stringify(reviewReport.phases, null, 2)}`
     : testLog
       ? `${feedback || ''}\n\n--- 自动验收日志 ---\n${testLog}`
       : feedback;

@@ -141,11 +141,21 @@ ${task.description || '(no description)'}
     }
   } catch (e) { /* workspace-meta 不可用时不阻塞 */ }
 
-  // v0.X: 精简 messages 结构 — system 只放身份+铁律，任务描述作为 user message
+  // v0.X: 任务记忆 — 结构化的跨轮工作摘要，防 context attrition
+  //   PostToolUse hook 自动跟踪：读文件、写文件、阶段变更
+  //   每次 LLM 调用前注入压缩摘要，让 agent 知道已做了什么
+  let taskMemoryMsg = null;
+  try {
+    const memSummary = require('./task-memory').compressToPrompt(taskId);
+    if (memSummary) taskMemoryMsg = { role: 'user', content: memSummary };
+  } catch (e) { /* 不阻塞 */ }
+
   const systemPrompt = buildSystemPrompt(task, lang);
   const userMessages = [];
   // 背景上下文排在前（workspace 记忆 + 执行历史），任务是最终的"命令"
   if (workspaceMemoryMsg) userMessages.push({ role: 'user', content: workspaceMemoryMsg });
+  // v0.X: TaskMemory 在 workspace 记忆后、历史摘要前 — 让 LLM 先看已知背景再看历史
+  if (taskMemoryMsg) userMessages.push(taskMemoryMsg);
   if (historySummary) userMessages.push({ role: 'user', content: historySummary + '\n\n注意：你之前的尝试记录如上。请不要再重走老路，仔细阅读驳回原因再动手。' });
   userMessages.push({ role: 'user', content: taskContext });
 
@@ -249,7 +259,8 @@ function extractRequiredFiles(taskDoc) {
 
   if (!text) return [];
 
-  const claimed = new Set();
+  // Map<path, {source, pattern}> — 用 Map 去重同时保留首个匹配来源
+  const claimed = new Map();
   const VALID_EXT = /\.(js|ts|jsx|tsx|mjs|cjs|json|md|markdown|py|yml|yaml|toml|sh|bash|html|htm|css|scss|sass|less|vue|svelte|sql|txt|env|gitignore|dockerfile|Dockerfile|lock|csv|xml|png|jpg|jpeg|gif|svg|webp|ico|woff2?|ttf|eot|mp[34]|webm|ogg|wav|pdf)$/i;
   const isValidPath = (p) => {
     if (typeof p !== 'string' || p.length < 4 || p.length > 200) return false;
@@ -258,29 +269,51 @@ function extractRequiredFiles(taskDoc) {
     return true;
   };
 
-  // Pattern 1: backtick-wrapped paths
+  // Pattern 1: backtick-wrapped paths  —  `path/to/file`
   const backtickRe = /`([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)`/g;
   let m;
   while ((m = backtickRe.exec(text)) !== null) {
     const p = m[1];
-    if (!/^(https?:|\/|~)/.test(p) && isValidPath(p)) claimed.add(p);
+    if (!/^(https?:|\/|~)/.test(p) && isValidPath(p) && !claimed.has(p)) {
+      claimed.set(p, { source: `\`${p}\``, pattern: '反引号包裹' });
+    }
   }
 
-  // Pattern 2: 动词 + 路径（创建/写入/修改/生成 file）
+  // Pattern 3: markdown list items  —  - path/to/file（新建）
+  //   支持中文括号标注： （修改）不验证存在，（新建）验证存在，（删除）验证不存在
+  //   示例: - src/utils/dagLayout.ts（新建） → 必须存在
+  //         - src/pages/Causal/index.tsx（修改） → 不检查（可能本来就有）
+  const listRe = /^\s*[-*]\s+[`"']?([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)[`"']?(?:\s*（([^）]*)）)?/gm;
+  while ((m = listRe.exec(text)) !== null) {
+    const p = m[1];
+    if (/^(https?:|\/)/.test(p) || !isValidPath(p) || claimed.has(p)) continue;
+    const annotation = (m[2] || '').trim();
+    let type = 'create';  // 默认新建
+    if (/修改|改动|编辑|更新|modify|edit|update/i.test(annotation)) type = 'modify';
+    else if (/删除|移除|删掉|delete|remove/i.test(annotation)) type = 'delete';
+    claimed.set(p, { source: m[0].trim().substring(0, 60), pattern: '列表项', type });
+  }
+
+  // Pattern 2: 动词 + 路径 — 根据动词推断意图
+  //   创建/新建/implement/create/build/add/generate → create（默认）
+  //   修改/写入/modify/change/write → modify（不验证存在）
   const verbRe = /\b(?:创建|写入|修改|生成|创建|编写|新建|建立|implement|create|write|modify|change|build|add|generate)\s+[`"']?([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)[`"']?/gi;
   while ((m = verbRe.exec(text)) !== null) {
     const p = m[1];
-    if (!/^(https?:|\/)/.test(p) && isValidPath(p)) claimed.add(p);
+    if (/^(https?:|\/)/.test(p) || !isValidPath(p) || claimed.has(p)) continue;
+    const verb = m[0].toLowerCase();
+    const type = /修改|写入|modify|change|write/.test(verb) ? 'modify' : 'create';
+    claimed.set(p, { source: m[0].trim().substring(0, 60), pattern: '动词+路径', type });
   }
 
-  // Pattern 3: markdown list items
-  const listRe = /^\s*[-*]\s+[`"']?([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)[`"']?/gm;
-  while ((m = listRe.exec(text)) !== null) {
-    const p = m[1];
-    if (!/^(https?:|\/)/.test(p) && isValidPath(p)) claimed.add(p);
-  }
-
-  return [...claimed];
+  // 返回 {path, source, pattern}[]，兼容老调用方（.map(p=>p.path) 或 .join() 会报错，
+  // 但引用方都已更新）
+  return Array.from(claimed.entries()).map(([path, meta]) => ({
+    path,
+    source: meta.source,
+    pattern: meta.pattern,
+    type: meta.type || 'create',
+  }));
 }
 
 /**
@@ -305,6 +338,21 @@ function verifyFilesExist(projectId, filePaths) {
       if (content !== null && content !== undefined) {
         out.verified.push(p);
       } else {
+        // v0.X: 后缀容错 — Agent 经常创建 .ts 文件但任务描述写 .tsx（或反过来）
+        //   T-MRHSD8QA 7/13: deepTrace.test.tsx vs deepTrace.test.ts → 循环 6 小时
+        const altExt = p.endsWith('.tsx') ? p.slice(0, -4) + '.ts'
+                     : p.endsWith('.ts') ? p.slice(0, -3) + '.tsx'
+                     : null;
+        if (altExt) {
+          try {
+            const altContent = workspace.readFile(slug, altExt);
+            if (altContent !== null && altContent !== undefined) {
+              out.verified.push(p);
+              console.log(`[verifyFilesExist] ✅ ${p} 匹配到 ${altExt}`);
+              continue;
+            }
+          } catch (e2) { /* 忽略 */ }
+        }
         out.missing.push({ path: p, reason: 'FILE_NOT_FOUND' });
       }
     } catch (e) {
@@ -316,18 +364,73 @@ function verifyFilesExist(projectId, filePaths) {
 
 /**
  * 审计任务需求的文件是否存在
- * 返回: { requiredCount, verifiedCount, missingCount, requiredFiles, missingFiles, verifiedFiles }
+ * 返回: { requiredCount, verifiedCount, missingCount, requiredFiles, missingFiles, verifiedFiles, requiredFileDetails }
+ *   requiredFileDetails: [{path, source, pattern, type, status:'verified'|'missing'|'skipped', reason}]
+ *   type: 'create'=验证存在, 'modify'=跳过验证, 'delete'=验证不存在
  */
 function auditTaskRequirements(projectId, taskDoc) {
   const required = extractRequiredFiles(taskDoc);
-  const result = verifyFilesExist(projectId, required);
+  // 按类型分组
+  const createFiles = required.filter(f => f.type === 'create' || f.type === 'delete');
+  const modifyFiles = required.filter(f => f.type === 'modify');
+  const deleteFiles = required.filter(f => f.type === 'delete');
+
+  // create: 验证存在（用已有 verifyFilesExist）
+  const createResult = createFiles.length
+    ? verifyFilesExist(projectId, createFiles.map(f => f.path))
+    : { verified: [], missing: [] };
+  // delete: 验证不存在（反向检查）
+  const deleteVerified = [];
+  const deleteFailed = [];
+  if (deleteFiles.length) {
+    const allExist = verifyFilesExist(projectId, deleteFiles.map(f => f.path));
+    // 文件存在→删除失败；文件不存在→删除验证通过
+    for (const f of deleteFiles) {
+      if (allExist.verified.includes(f.path)) {
+        deleteFailed.push({ path: f.path, reason: 'FILE_SHOULD_BE_DELETED' });
+      } else {
+        deleteVerified.push(f.path);
+      }
+    }
+  }
+
+  const verifiedSet = new Set(createResult.verified);
+  const missingMap = new Map(createResult.missing.map(m => [m.path, m.reason]));
+  const deleteFailSet = new Set(deleteFailed.map(m => m.path));
+  const deleteFailReasons = new Map(deleteFailed.map(m => [m.path, m.reason]));
+
+  const fileDetails = required.map(f => {
+    if (f.type === 'modify') {
+      return { ...f, status: 'skipped', reason: null };
+    }
+    if (f.type === 'delete') {
+      const failed = deleteFailSet.has(f.path);
+      return { ...f, status: failed ? 'missing' : 'verified', reason: failed ? '文件仍存在，应已删除' : null };
+    }
+    // type === 'create'
+    return {
+      ...f,
+      status: verifiedSet.has(f.path) ? 'verified' : 'missing',
+      reason: missingMap.get(f.path) || null,
+    };
+  });
+
+  // 计算统计 — 只 count create 和 delete（modify 跳过验证不算成功也不算失败）
+  const counted = fileDetails.filter(f => f.type !== 'modify');
+  const verifiedCount = counted.filter(f => f.status === 'verified').length;
+  const missingCount = counted.filter(f => f.status === 'missing').length;
+
   return {
-    requiredCount: required.length,
-    verifiedCount: result.verified.length,
-    missingCount: result.missing.length,
-    requiredFiles: required,
-    missingFiles: result.missing,
-    verifiedFiles: result.verified,
+    requiredCount: counted.length,
+    verifiedCount,
+    missingCount,
+    requiredFiles: required.filter(f => f.type !== 'modify').map(f => f.path),
+    missingFiles: [
+      ...createResult.missing,
+      ...deleteFailed,
+    ],
+    verifiedFiles: [...createResult.verified, ...deleteVerified],
+    requiredFileDetails: fileDetails,
   };
 }
 

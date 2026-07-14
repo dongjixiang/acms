@@ -94,6 +94,13 @@ class WorkspaceService {
   }
 
   /**
+   * v0.X: getProjectRoot 别名（修复 task-agent.js agent_typescheck 引用缺失）
+   */
+  getProjectRoot(projectSlug) {
+    return this.getPath(projectSlug);
+  }
+
+  /**
    * 保存需求 Markdown 文档
    */
   saveRequirementDoc(projectSlug, reqId, title, content) {

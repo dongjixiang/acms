@@ -106,7 +106,26 @@ class AutoExecuteDispatcher {
         t.status === 'in_progress' && this.autoAgents.has(t.assigned_to)
       );
       for (const task of all) {
-        if (task.progress === 0 && (!task.execution_log || task.execution_log === '[]')) {
+        // v0.X: 拓宽恢复条件 — 不只是 progress=0 的新任务
+        //   progress=0 + 无日志: 刚 claim 但被重启中断 → 恢复
+        //   progress>0 + 日志超过 5 分钟未更新: 执行中被重启中断 → 恢复
+        //   之前只有第一个条件，导致 T-MRHSD8PV 7/13 场景：
+        //   progress=3 的半截任务跳过恢复，永远卡 in_progress
+        let shouldResume = false;
+        const logs = typeof task.execution_log === 'string'
+          ? JSON.parse(task.execution_log)
+          : (task.execution_log || []);
+        if (task.progress === 0 && logs.length === 0) {
+          shouldResume = true;
+        } else if (task.progress > 0 && logs.length > 0) {
+          const lastEntry = logs[logs.length - 1];
+          const lastTime = new Date(lastEntry.time || lastEntry.timestamp || 0).getTime();
+          const elapsed = Date.now() - lastTime;
+          if (elapsed > 5 * 60 * 1000) {
+            shouldResume = true;
+          }
+        }
+        if (shouldResume) {
           console.log(`[AutoExecuteDispatcher] 🔄 启动恢复: ${task.id} (assigned=${task.assigned_to}, status=${task.status}, progress=${task.progress})`);
           // 走 handleTaskClaimed 逻辑（复用锁 + fetch）
           await this.handleTaskClaimed({
