@@ -111,8 +111,8 @@ router.get('/overview/:projectId', (req, res) => {
     r => r.project_id === req.params.projectId && r.status === 'done'
   );
 
-  // 获取工作区文件列表
-  const files = workspace.listFiles(slug);
+  // 获取工作区文件列表（HTML 预览需要看到 dist/build 里的产物，所以用 showAll）
+  const files = workspace.listFiles(slug, { showAll: true });
   const codeFiles = files.filter(f => f.path.startsWith('code/'));
 
   // 收集所有 HTML 文件（用于一键体验选择器）

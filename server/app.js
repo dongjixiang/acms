@@ -1,6 +1,7 @@
 // Express 应用组装 — 中间件 + 路由挂载
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
 const config = require('./config');
 const { authMiddleware, agentMiddleware } = require('./middleware/auth');
 
@@ -36,6 +37,19 @@ app.get('/api/i18n/:lang', (req, res) => {
 const workspaceRouter = require('./routes/workspace');
 const previewTokens = workspaceRouter._previewTokens;
 const workspaceSvc = require('./services/workspace-service');
+
+// 重写 HTML 里的根相对 URL：只重写工作区里实际存在的文件，避免误伤 API 端点
+//   href="/...", src="/...", srcset="/...", action="/...", data="/..." 形式
+//   排除 // 开头（协议相对 URL，如 //cdn.example.com/...）
+function rewriteRootRelative(content, wsPath, htmlDir, previewBase) {
+  return content.replace(
+    /((?:href|src|srcset|action|data|poster|cite|formaction)\s*=\s*["'])\/([^/"'][^"']*)(["'])/g,
+    (match, prefix, relUrl, suffix) => {
+      const target = path.join(wsPath, htmlDir && htmlDir !== '.' ? htmlDir : '', relUrl);
+      return fs.existsSync(target) ? prefix + previewBase + relUrl + suffix : match;
+    }
+  );
+}
 
 app.use('/preview/:token', (req, res, next) => {
   const token = req.params.token;
@@ -74,17 +88,96 @@ const mimeMap = {
 
 app.use('/preview/:token', (req, res, next) => {
   const slug = req._previewSlug;
+  const token = req.params.token;
   const wsPath = path.join(__dirname, '..', 'workspaces', slug);
 
-  express.static(wsPath, {
-    setHeaders: (res, filePath) => {
-      const ext = path.extname(filePath).toLowerCase();
-      if (mimeMap[ext]) res.setHeader('Content-Type', mimeMap[ext]);
-    },
-    index: 'index.html',
-  })(req, res, () => {
-    res.status(404).send('File not found in workspace. Make sure the deliverable has been generated.');
-  });
+  // 解析请求路径 → 工作区文件
+  let reqPath;
+  try { reqPath = decodeURIComponent(req.path); } catch (e) { return res.status(400).send('Bad path'); }
+  let fullPath = path.resolve(wsPath, '.' + reqPath);
+  if (fullPath !== wsPath && !fullPath.startsWith(wsPath + path.sep)) {
+    return res.status(403).send('Forbidden');
+  }
+  let stat;
+  try { stat = fs.statSync(fullPath); } catch (e) {
+    // 文件不存在：SPA fallback — 向父目录找 index.html（点 router-link 后刷新页面不会 404）
+    let dir = path.dirname(fullPath);
+    let fallback = null;
+    while (dir.startsWith(wsPath) && dir.length >= wsPath.length) {
+      const idx = path.join(dir, 'index.html');
+      try { fs.statSync(idx); fallback = idx; break; } catch (e2) { /* keep walking up */ }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    if (fallback) {
+      const fbRel = path.relative(wsPath, fallback).split(path.sep).join('/');
+      const fbDir = path.posix.dirname(fbRel);
+      const fbPreviewBase = '/preview/' + token + '/' + (fbDir && fbDir !== '.' ? fbDir + '/' : '');
+      let content = fs.readFileSync(fallback, 'utf-8');
+      content = rewriteRootRelative(content, wsPath, fbDir, fbPreviewBase);
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.send(content);
+    }
+    return res.status(404).send('File not found in workspace. Make sure the deliverable has been generated.');
+  }
+  // 目录 → 找 index.html
+  if (stat.isDirectory()) {
+    const idx = path.join(fullPath, 'index.html');
+    try { stat = fs.statSync(idx); fullPath = idx; } catch (e) {
+      return res.status(404).send('No index.html in directory');
+    }
+  }
+
+  // 如果请求的 URL 真的带 index.html（不是目录请求），302 跳到目录 URL：
+  //   这样 Vue Router 的 createWebHistory(base) 能看到路径 /（不是 /index.html），
+  //   路由的 { path: "/", redirect: "/timeline" } 才能生效
+  if (path.basename(fullPath) === 'index.html' && /\/index\.html(\?.*)?$/.test(req.originalUrl)) {
+    const dirUrl = req.originalUrl.replace(/\/index\.html(\?.*)?$/, '/$1');
+    return res.redirect(302, dirUrl);
+  }
+
+  const ext = path.extname(fullPath).toLowerCase();
+  const contentType = mimeMap[ext] || 'application/octet-stream';
+  res.setHeader('Content-Type', contentType);
+
+  // 找出 HTML 所在目录：JS 在 assets/ 子目录里时，HTML 在父目录；否则 HTML 跟 JS 同目录
+  function htmlDirFor(jsRel) {
+    const jsDir = path.posix.dirname(jsRel);
+    if (path.basename(jsDir) === 'assets') return path.posix.dirname(jsDir);
+    return jsDir;
+  }
+
+  // HTML：把根相对 URL 重写成预览路径，让 Vite 等构建产物的 /assets/*、/favicon.svg 等能解析
+  //   根相对 URL 不受 <base href> 影响（HTML 规范），必须显式重写
+  //   只重写真正存在的文件，避免误伤 API 端点
+  if (ext === '.html') {
+    const relPath = path.relative(wsPath, fullPath).split(path.sep).join('/');
+    const htmlDir = path.posix.dirname(relPath);
+    const previewBase = '/preview/' + token + '/' + (htmlDir && htmlDir !== '.' ? htmlDir + '/' : '');
+    let content = fs.readFileSync(fullPath, 'utf-8');
+    content = rewriteRootRelative(content, wsPath, htmlDir, previewBase);
+    return res.send(content);
+  }
+
+  // JS：修复 Vue Router base + Vite 预加载 helper
+  //   - history:P("/") → history:P("<previewBase>")    让 router 跳转保留在预览路径下
+  //   - return"/"+e    → return"<previewBase>"+e      让 Vite modulepreload 用预览路径
+  if (ext === '.js') {
+    const relPath = path.relative(wsPath, fullPath).split(path.sep).join('/');
+    const htmlDir = htmlDirFor(relPath);
+    const previewBase = '/preview/' + token + '/' + (htmlDir && htmlDir !== '.' ? htmlDir + '/' : '');
+    let content = fs.readFileSync(fullPath, 'utf-8');
+    let changed = false;
+    const newContent = content
+      .replace(/history:([A-Za-z_$]{1,3})\("\/"\)/g, (m, fn) => { changed = true; return `history:${fn}("${previewBase}")`; })
+      .replace(/return"\/"\+([A-Za-z_$]{1,3})(?=[,}\s])/g, (m, fn) => { changed = true; return `return"${previewBase}"+${fn}`; });
+    if (!changed) return fs.createReadStream(fullPath).pipe(res);
+    res.setHeader('Content-Type', contentType);
+    return res.send(newContent);
+  }
+  // 非 HTML：直接流式传输
+  fs.createReadStream(fullPath).pipe(res);
 });
 
 // 认证
