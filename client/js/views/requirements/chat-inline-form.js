@@ -120,7 +120,7 @@ async function submitInlineForm(cardId, reqId) {
   });
 
   // 验证
-  if (!values.prompt && !values.song) {
+  if (!values.prompt && !values.song && !values.instruction) {
     toast('请填写描述内容', 'error');
     return;
   }
@@ -179,6 +179,10 @@ async function submitInlineForm(cardId, reqId) {
     } else if (method === 'music') {
       await chatAssist(reqId, 'music', {
         song: values.song,
+      });
+    } else if (method === 'document_gen') {
+      await chatAssist(reqId, 'document_gen', {
+        instruction: values.instruction,
       });
     }
 

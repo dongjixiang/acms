@@ -32,6 +32,7 @@ const video = require('./video'); // v0.19：AI 视频生成 — 调用 Agnes Vi
 const imageGen = require('./image-gen'); // v0.19：AI 图片生成 — 调用 Agnes Image API
 const clean = require('./clean'); // v0.19：对话清理 — 按角色清理 supplement_history
 const screenplay = require('./screenplay'); // v0.22：剧本辅助 — 一句话生成 3 个短视频剧本
+const documentGen = require('./document-gen'); // v0.46：文档生成 — AI 整理对话 + Pandoc 转 .docx
 
 const ASSISTS = {
   decision_tree: decisionTree,
@@ -53,6 +54,7 @@ const ASSISTS = {
   image_gen: imageGen, // v0.19：AI 图片生成 — 调用 Agnes Image API
   clean: clean, // v0.19：对话清理 — 按角色清理 supplement_history
   screenplay: screenplay, // v0.22：剧本辅助 — 一句话生成 3 个短视频剧本
+  document_gen: documentGen, // v0.46：文档生成 — AI 整理对话 + Pandoc 转 .docx
 };
 
 const ASSIST_METHODS = Object.keys(ASSISTS);

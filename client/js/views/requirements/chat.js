@@ -549,7 +549,7 @@ function renderAssistLayer(container, reqId, assists) {
   // 跟踪已渲染的 assist 数据指纹，避免不必要重建（v0.3.6）
   if (!window._assistRenderCache) window._assistRenderCache = {};
 
-  for (const method of ['diagnosis', 'reference', 'scenarios', 'tradeoff', 'arch', 'decision_tree', 'visual', 'competitive', 'pains', 'stakeholders', 'risks', 'assumptions', 'use_case', 'health_check']) {
+  for (const method of ['diagnosis', 'reference', 'scenarios', 'tradeoff', 'arch', 'decision_tree', 'visual', 'competitive', 'pains', 'stakeholders', 'risks', 'assumptions', 'use_case', 'health_check', 'document_gen']) {
     const d = assists[method];
     if (!d || d.status !== 'done' || d.used) continue;
     // v0.6.7 累积模式：不再 restrict 到 _explicitAssist method
@@ -1086,9 +1086,15 @@ async function chatSendDetect(reqId, text) {
 
     // 启动轮询 + SSE 流式，让用户看到后续 AI 回复（如果有）
     setTimeout(() => startChatPolling(reqId), 500);
-    // v0.46 fix：打开 SSE 触发 brief 流式生成（替代被删除的 detect-and-respond server-side runBriefJob）
-    //   chatSendDetect 路径没有自动开 SSE，brief 永远不生成
-    setTimeout(() => connectStreamingBrief(reqId, c), 800);
+    // v0.46 fix：clarify 模式才开 SSE 触发 brief 流式生成（替代被删除的 detect-and-respond server-side runBriefJob）。
+    //   v0.XX 增量：free 模式**不调** SSE——
+    //     chatSendDetect 路径下，后端 free 模式已写 1 条 assistant entry（来自 tool-loop aiReply），
+    //     若再调 SSE → 后端 runBriefJobStream（除非被 free-mode 兜底拦截）→ SSE done handler 替换
+    //     streamingBubble 内容 → 第 2 条 AI 气泡 → 与 assistant entry 双气泡。
+    //   同时 L184-189 polling 也会渲染 brief 气泡——已通过后端 runBriefJobStream free-mode 兜底拦截。
+    if (window._chatMode?.[reqId] !== 'free') {
+      setTimeout(() => connectStreamingBrief(reqId, c), 800);
+    }
   } catch (e) {
     // v0.18 bugfix：fetch 失败时也移除 typing dots
     const typingErr = document.getElementById(`chat-typing-detect-${reqId}`);
@@ -1424,7 +1430,7 @@ function connectAssistStream(reqId, method, extraBody) {
           es.close();
           const loadingEl = container?.querySelector(`.assist-loading-card[data-method="${method}"]`);
           // v0.19：休闲辅助（music/video/image/clean）直接在聊天流渲染结果卡片
-          const leisureMethods = ['music', 'video', 'image_gen', 'clean', 'screenplay'];
+          const leisureMethods = ['music', 'video', 'image_gen', 'clean', 'screenplay', 'document_gen'];
           if (loadingEl && leisureMethods.includes(method)) {
             // 替换 loading 卡片为"加载中..."
             loadingEl.innerHTML = '<div class="assist-loading-head"><span class="assist-loading-spinner">⏳</span><span class="assist-loading-title">加载结果中…</span></div>';
@@ -1556,6 +1562,20 @@ async function renderLeisureResult(reqId, method, loadingEl) {
       } else {
         loadingEl.innerHTML = `<div class="assist-loading-head" style="border:none"><span style="font-size:16px">📖</span><span class="assist-loading-title">剧本方案</span></div>
           <div style="padding:4px 0;font-size:12px;color:var(--text2)">${(data.screenplays || []).length} 个剧本 · 点选填入输入框</div>`;
+        loadingEl.style.borderTopColor = 'var(--green)';
+        loadingEl.style.animation = 'none';
+      }
+    } else if (method === 'document_gen') {
+      // 复用 assists/document-gen.js 的 render 函数
+      const renderFn = window.ACMSAssists?.get?.('document_gen')?.render;
+      if (renderFn) {
+        loadingEl.innerHTML = renderFn(reqId, data);
+        loadingEl.style.borderTopColor = 'var(--green)';
+        loadingEl.style.animation = 'none';
+      } else {
+        loadingEl.innerHTML = `<div class="assist-loading-head" style="border:none"><span style="font-size:16px">📄</span><span class="assist-loading-title">文档已生成</span></div>
+          <div style="padding:4px 0;font-size:12px">${data.md_url ? `<a href="${escHtml(data.md_url)}" target="_blank" class="btn-small">📥 下载 .md</a>` : ''} ${data.docx_url ? `<a href="${escHtml(data.docx_url)}" target="_blank" class="btn-small">📥 下载 .docx</a>` : ''}</div>
+          ${!data.md_url && !data.docx_url ? '<div style="font-size:12px;color:var(--text2)">文档 URL 不可用</div>' : ''}`;
         loadingEl.style.borderTopColor = 'var(--green)';
         loadingEl.style.animation = 'none';
       }

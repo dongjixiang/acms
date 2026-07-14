@@ -154,6 +154,7 @@ router.post('/detect-and-respond', async (req, res, next) => {
     let deepResearch = false;
     let toolCalls = [];
     let aiReply = '';
+    let documentDetected = false;
 
     // v0.20d：预检音乐意图 → 直接触发音乐辅助工具（现有 assist_music 机制）
     //   - 写 loading 到 supplement_history（即时反馈）
@@ -184,6 +185,27 @@ router.post('/detect-and-respond', async (req, res, next) => {
       }
     }
 
+    // v0.46：预检文档生成意图 → 直接触发文档生成辅助
+    //   匹配关键词如"整理成文档/生成文档/导出文档/Word文档"等
+    const docKeywords = /整理成文档|生成文档|导出文档|Word文档|\.docx|\.doc|文档|变成文档|形成文档|整理成word/i;
+    if (docKeywords.test(text)) {
+      console.log(`[detect-and-respond] ${reqId} 检测到文档意图`);
+      appendChatEntry(reqId, {
+        role: 'system',
+        text: '📄 正在生成文档…（完成前请勿重复发送）',
+        at: new Date().toISOString(),
+        source: 'document_precheck',
+      });
+      try {
+        const docGenSvc = require('../services/assists/document-gen');
+        docGenSvc.runAssistJob(reqId, { instruction: text, autoTriggered: true }).catch(e =>
+          console.error(`[detect-and-respond] ${reqId} document 预触发失败:`, e.message));
+      } catch (e) {
+        console.error(`[detect-and-respond] ${reqId} document 预触发异常:`, e.message);
+      }
+      documentDetected = true;
+    }
+
     try {
       const req = reqStore.getById(reqId);
       if (!req) throw new Error(`需求不存在: ${reqId}`);
@@ -204,6 +226,8 @@ router.post('/detect-and-respond', async (req, res, next) => {
           { role: 'system', content: pickIntentSystemPrompt(req) },
           // v0.20b：如果音乐已预触发，告诉 LLM 不要自己调 tool，直接简短回复
           ...(musicPreCheck.song ? [{ role: 'system', content: '（音乐搜索已自动触发，10-30 秒后显示播放卡片。请简短回复用户"正在找"即可，不要复制歌词或推荐平台，不要调用任何工具。）' }] : []),
+          // v0.46：文档生成已自动触发，让 LLM 简短回复即可
+          ...(documentDetected ? [{ role: 'system', content: '（文档已自动生成，结果将以辅助卡片展示。请不要自己写文档内容，简短回复用户"正在整理文档"即可。）' }] : []),
           // v0.22.23b：删除图片生成意图的 system 提示注入。多多诉求：LLM 自己看 context 决定调不调 tool。
           ...historyMessages,
           { role: 'user', content: text },
