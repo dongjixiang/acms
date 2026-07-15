@@ -266,6 +266,36 @@ function backfillChatRounds(history) {
  *   - 完整选剧本/生成图/视频交互在 assist 卡片（侧栏 + 聊天流 loading 卡）完成
  *   - 聊天流 system 卡片 = 「已选中剧本 + 资源状态」的存档展示（按钮可点）
  */
+/**
+ * v0.47：渲染"待发送邮件"系统卡片
+ *   LLM 调 send_email tool → handler 写一条 pending system entry 到聊天流
+ *   前端识别 source==='send_email_pending' → 调本函数 → 复用 renderToolCallPreviewCard 逻辑
+ *   保持单点渲染,confirmToolCall/editToolCall/cancelToolCall 复用之前的全局函数
+ */
+function renderPendingSendEmailBubble(reqId, jsonText) {
+  if (!jsonText) return '<div class="chat-system-msg">📧 邮件准备（数据为空）</div>';
+  let card;
+  try { card = JSON.parse(jsonText); } catch {
+    return `<div class="chat-system-msg">${escHtml((jsonText || '').slice(0, 100))}</div>`;
+  }
+  if (card.type !== 'pending_send_email') {
+    return `<div class="chat-system-msg">${escHtml((jsonText || '').slice(0, 100))}</div>`;
+  }
+  // 复用 v0.47 工具调用预览卡(to/subject/body/reason/file_ids/attachments/music_url 同构)
+  return renderToolCallPreviewCardHtml(reqId, {
+    method: 'send_email',
+    reason: card.reason || '用户请求发送邮件',
+    args: {
+      to: card.to || '',
+      subject: card.subject || '',
+      body: card.body || '',
+      file_ids: Array.isArray(card.file_ids) ? card.file_ids : [],  // v0.47+
+    },
+    attachments: Array.isArray(card.attachments) ? card.attachments : [],  // v0.47+
+    music_url: card.music_url || '',  // v0.47+
+  });
+}
+
 function renderScreenplayBubble(reqId, jsonText) {
   if (window.ACMSScreenplayCard) {
     return window.ACMSScreenplayCard.renderFromChatEntry(reqId, jsonText);
@@ -307,7 +337,6 @@ function renderScreenplayBubble(reqId, jsonText) {
       </div>
       ${sp.logline ? `<div style="font-style:italic;color:var(--text2);font-size:12px;margin-bottom:6px">${escHtml(sp.logline)}</div>` : ''}
       ${charactersHtml ? `<div style="margin-bottom:6px">${charactersHtml}</div>` : ''}
-      ${sp.setting ? `<div style="font-size:12px;margin-bottom:6px"><span style="color:var(--text2)">场景：</span>${escHtml(sp.setting)}</div>` : ''}
       <div style="font-size:12px;color:var(--text2);margin-bottom:4px">基于创意：${idea}</div>
       <details style="margin-top:4px">
         <summary style="font-size:11px;color:var(--text2);cursor:pointer">📖 展开 ${scenes.length} 场分镜</summary>
@@ -480,10 +509,13 @@ function renderChatBubble(container, entry) {
       ? renderMusicBubble(entry.text || '')
       : isSystem && entry.source === 'image_result'
         ? renderImageBubble(container.id?.replace('chat-stream-msgs-', '') || '', entry.text || '')
-        : isSystem && entry.source === 'screenplay_result'
-        // v0.22 fix: 剧本辅助结果必须配专属 renderer，否则 JSON 走 renderMarkdown 触发 "(s || \"\").replace is not a function"
-        // v0.22.13: 传 reqId 让聊天流卡片能交互（生成图/视频按钮）
-        ? renderScreenplayBubble(container.id?.replace('chat-stream-msgs-', '') || '', entry.text || '')
+    : isSystem && entry.source === 'screenplay_result'
+      // v0.22 fix: 剧本辅助结果必须配专属 renderer，否则 JSON 走 renderMarkdown 触发 "(s || \"\").replace is not a function"
+      // v0.22.13: 传 reqId 让聊天流卡片能交互（生成图/视频按钮）
+      ? renderScreenplayBubble(container.id?.replace('chat-stream-msgs-', '') || '', entry.text || '')
+      : isSystem && entry.source === 'send_email_pending'
+        // v0.47：LLM 调 send_email tool 后写的 system entry → 弹邮件预览卡让用户确认
+        ? renderPendingSendEmailBubble(container.id?.replace('chat-stream-msgs-', '') || '', entry.text || '')
         : isSystem
           ? `<div class="chat-system-msg">${renderMarkdown(entry.text || '')}</div>`
           : `<div>${isAI ? renderMarkdown(entry.text || '') : escHtml(entry.text || '')}</div>`;
@@ -549,7 +581,7 @@ function renderAssistLayer(container, reqId, assists) {
   // 跟踪已渲染的 assist 数据指纹，避免不必要重建（v0.3.6）
   if (!window._assistRenderCache) window._assistRenderCache = {};
 
-  for (const method of ['diagnosis', 'reference', 'scenarios', 'tradeoff', 'arch', 'decision_tree', 'visual', 'competitive', 'pains', 'stakeholders', 'risks', 'assumptions', 'use_case', 'health_check', 'document_gen']) {
+  for (const method of ['diagnosis', 'reference', 'scenarios', 'tradeoff', 'arch', 'decision_tree', 'visual', 'competitive', 'pains', 'stakeholders', 'risks', 'assumptions', 'use_case', 'health_check', 'document_gen', 'send_email']) {
     const d = assists[method];
     if (!d || d.status !== 'done' || d.used) continue;
     // v0.6.7 累积模式：不再 restrict 到 _explicitAssist method
@@ -1257,6 +1289,202 @@ async function chatSendWithFetch(reqId, text, urls) {
   }
 
 /** 连接 SSE 流式思路简报 */
+/**
+ * v0.47：渲染工具调用预览卡片（LLM 识别到发邮件等外部动作意图时）
+ *   用户在聊天流说"把对话内容发邮件给 xxx",AI 提取 to/subject/body,
+ *   在聊天流里弹一个只读预览卡 + [✅ 发送] / [✏ 编辑] / [❌ 取消] 三个按钮
+ *   这是 B 方案的安全设计 — 不直接执行副作用,必须用户确认
+ */
+function renderToolCallPreviewCard(reqId, container, toolCall) {
+  if (!toolCall || toolCall.method !== 'send_email') return;
+  const html = renderToolCallPreviewCardHtml(reqId, toolCall);
+
+  // 插到 streaming bubble 后面（用户在 AI 回复气泡下能看到预览卡）
+  // 找当前 req 对应的最新 AI 气泡(优先插入其后面),没有就 append 到末尾
+  const aiBubbles = container.querySelectorAll('.chat-bubble-ai');
+  const lastAiBubble = aiBubbles[aiBubbles.length - 1];
+  if (lastAiBubble && lastAiBubble.parentNode === container) {
+    lastAiBubble.insertAdjacentHTML('afterend', html);
+  } else {
+    container.insertAdjacentHTML('beforeend', html);
+  }
+  chatScrollToBottom(container);
+}
+
+/**
+ * v0.47：纯 HTML 生成（无副作用），可被多处复用：
+ *   - renderToolCallPreviewCard（clarify 模式 SSE done 时插入）
+ *   - renderPendingSendEmailBubble（free 模式 system entry 渲染）
+ * v0.47+：支持附件列表渲染（toolCall.attachments）+ 音乐 URL（toolCall.music_url）
+ */
+function renderToolCallPreviewCardHtml(reqId, toolCall) {
+  if (!toolCall || toolCall.method !== 'send_email') return '';
+  const args = toolCall.args || {};
+  const cardId = `tool-call-preview-${reqId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+  const toStr = String(args.to || '');
+  const subjectStr = String(args.subject || '');
+  const bodyStr = String(args.body || '');
+  const hasAllFields = toStr.trim() && subjectStr.trim() && bodyStr.trim();
+
+  // 附件预览列表（v0.47+）
+  const attachments = Array.isArray(toolCall.attachments) ? toolCall.attachments : [];
+  const musicUrl = toolCall.music_url || '';
+  const hasAttachOrMusic = attachments.length > 0 || !!musicUrl;
+
+  // 用 base64 编码 args(包含 file_ids)+ extra(attachments + music_url)
+  const argsB64 = btoa(unescape(encodeURIComponent(JSON.stringify({
+    to: toStr,
+    subject: subjectStr,
+    body: bodyStr,
+    file_ids: Array.isArray(args.file_ids) ? args.file_ids : [],  // v0.47+：附件 file_ids
+  }))));
+
+  // 附件列表 HTML
+  const attachmentsHtml = attachments.length > 0
+    ? `<div style="font-size:12px;margin-bottom:6px"><b>📎 附件（${attachments.length}）:</b></div>
+       <div style="font-size:11px;background:var(--bg);padding:6px;border-radius:4px;margin-bottom:8px;max-height:100px;overflow-y:auto">
+         ${attachments.map(a => {
+           const sizeKB = a.size > 1024 * 1024
+             ? (a.size / 1024 / 1024).toFixed(2) + ' MB'
+             : (a.size / 1024).toFixed(1) + ' KB';
+           return `<div style="padding:2px 0">📎 ${escHtml(a.name)} <span style="color:var(--text3)">(${escHtml(a.mime || '?')} · ${sizeKB})</span></div>`;
+         }).join('')}
+       </div>`
+    : '';
+
+  const musicHtml = musicUrl
+    ? `<div style="font-size:11px;background:var(--bg);padding:6px;border-radius:4px;margin-bottom:8px;word-break:break-all">
+         🎵 在线收听：<a href="${escHtml(musicUrl)}" target="_blank" style="color:var(--accent)">${escHtml(musicUrl.slice(0, 60))}${musicUrl.length > 60 ? '…' : ''}</a>
+       </div>`
+    : '';
+
+  return `
+    <div id="${cardId}" class="chat-tool-call-preview" data-card-id="${cardId}" style="background:var(--bg2);border:2px solid var(--accent);border-radius:8px;padding:12px;margin:6px 0">
+      <div style="font-weight:600;font-size:14px;margin-bottom:8px;display:flex;align-items:center;gap:6px">
+        📧 AI 准备发送邮件
+        <span style="font-size:11px;color:var(--text3);font-weight:normal;margin-left:auto">${escHtml(toolCall.reason || '用户请求发送邮件')}</span>
+      </div>
+      <div style="font-size:12px;margin-bottom:4px"><b>收件人：</b>${escHtml(toStr) || '<span style="color:#f55">（AI 未识别,请点 [✏ 编辑] 补全）</span>'}</div>
+      <div style="font-size:12px;margin-bottom:4px"><b>主题：</b>${escHtml(subjectStr) || '<span style="color:#f55">（AI 未识别,请点 [✏ 编辑] 补全）</span>'}</div>
+      <div style="font-size:12px;margin-bottom:6px"><b>正文：</b></div>
+      <div style="font-size:12px;background:var(--bg);padding:8px;border-radius:6px;max-height:200px;overflow-y:auto;white-space:pre-wrap;margin-bottom:8px">${escHtml(bodyStr) || '<span style="color:#f55">（AI 未识别,请点 [✏ 编辑] 补全）</span>'}</div>
+      ${attachmentsHtml}
+      ${musicHtml}
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn-small btn-primary" onclick="confirmToolCallByB64('${reqId}','${cardId}', '${argsB64}')" ${hasAllFields ? '' : 'disabled style="opacity:0.5;cursor:not-allowed"'}>✅ 确认发送${hasAttachOrMusic ? ` (含 ${attachments.length || 0} 附件${musicUrl ? '+音乐链接' : ''})` : ''}</button>
+        <button class="btn-small" onclick="editToolCallByB64('${reqId}','${cardId}', '${argsB64}')">✏ 编辑</button>
+        <button class="btn-small" onclick="cancelToolCall('${cardId}')">❌ 取消</button>
+      </div>
+      ${hasAllFields ? '' : '<div style="font-size:11px;color:#f55;margin-top:6px">⚠ AI 未识别完整(to/subject/body 任一缺失),必须编辑后才能发送</div>'}
+    </div>
+  `;
+}
+
+/**
+ * base64 解码 args(避免引号在 onclick 属性里被破坏)
+ */
+function decodeToolCallArgs(b64) {
+  try {
+    return JSON.parse(decodeURIComponent(escape(atob(b64))));
+  } catch {
+    return { to: '', subject: '', body: '' };
+  }
+}
+
+/**
+ * 用户确认发送 → 调 chatAssist 走原 send_email 流程
+ * 注:必须在 streamingBubble 上下文外定义,因为 streamingBubble 是函数内变量
+ *   这里我们用直接闭包到 streamingBubble 的方式不行,改为通过 reqId 重新查
+ */
+function confirmToolCallByB64(reqId, cardId, argsB64) {
+  const args = decodeToolCallArgs(argsB64);
+  confirmToolCall(reqId, cardId, 'send_email', args);
+}
+
+function editToolCallByB64(reqId, cardId, argsB64) {
+  const args = decodeToolCallArgs(argsB64);
+  editToolCall(reqId, cardId, 'send_email', args);
+}
+
+function confirmToolCall(reqId, cardId, method, args) {
+  const card = document.getElementById(cardId);
+  if (!card) return;
+  card.remove();
+  // 走原 send_email 流程(loading 卡 + SSE)
+  chatAssist(reqId, method, args);
+  toast(`✅ 正在发送邮件...`, 'info', 1500);
+}
+
+/**
+ * 用户点编辑 → 弹内联表单(预填 AI 提取的值)
+ */
+function editToolCall(reqId, cardId, method, args) {
+  const card = document.getElementById(cardId);
+  if (!card) return;
+  card.remove();
+  // 弹内联表单并预填
+  renderEmailFormPrefilled(reqId, args);
+}
+
+/**
+ * 用户取消 → 删卡片 + 调 use 端点清掉 pending entry（避免下次进聊天又弹出来）
+ */
+function cancelToolCall(cardId) {
+  const card = document.getElementById(cardId);
+  if (!card) return;
+  // 从 data-req-id 读 reqId（renderToolCallPreviewCardHtml 里没存,从 DOM 祖先节点推断）
+  const reqId = (card.closest('[id^="chat-stream-msgs-"]')?.id || '').replace('chat-stream-msgs-', '');
+  card.remove();
+  if (reqId && window.ACMSAssistDispatcher?.useAssist) {
+    // 调 use 端点,后端识别 action=cancelled 后从 supplement_history 删 send_email_pending entry
+    window.ACMSAssistDispatcher.useAssist(reqId, 'send_email', { action: 'cancelled' }).catch(e => {
+      console.warn('[cancelToolCall] 清 pending entry failed:', e.message);
+    });
+  }
+}
+
+/**
+ * 渲染"已预填值"的邮件表单(AI 提取 + 用户可改)
+ * v0.47+：保留 file_ids（已附附件不能直接预填到 file input，仅显示只读提示）
+ *   提交时由 submitInlineForm 合并到 args.file_ids 传给 send_email
+ */
+function renderEmailFormPrefilled(reqId, args) {
+  const existingFileIds = Array.isArray(args?.file_ids) ? args.file_ids : [];
+
+  // 如果有已附附件,在聊天流插一个只读 chip 提示
+  if (existingFileIds.length > 0) {
+    const stream = document.getElementById(`chat-stream-msgs-${reqId}`);
+    if (stream) {
+      const hintId = `existing-attach-hint-${reqId}-${Date.now()}`;
+      const hintHtml = `
+        <div id="${hintId}" class="existing-attach-hint" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px;margin:6px 0;font-size:12px">
+          <div style="display:flex;align-items:center;gap:6px">
+            <span>📎 已附 <b>${existingFileIds.length}</b> 个附件(将保留)</span>
+            <span style="margin-left:auto;color:var(--text3);font-size:11px">编辑下方内容后提交即可发送</span>
+          </div>
+        </div>
+      `;
+      // 插到表单前面(在 typing dots 之前)
+      const typing = stream.querySelector('.chat-typing');
+      const temp = document.createElement('div');
+      temp.innerHTML = hintHtml;
+      if (typing) stream.insertBefore(temp.firstElementChild, typing);
+      else stream.insertAdjacentHTML('beforeend', hintHtml);
+    }
+  }
+
+  renderInlineForm(reqId, {
+    icon: '📧', title: '发送邮件(已预填 AI 提取)', method: 'send_email',
+    fields: [
+      { id: 'to', label: '收件人 *', placeholder: '可多个,分号/逗号分隔', type: 'text', default: String(args?.to || '') },
+      { id: 'subject', label: '主题 *', placeholder: '邮件主题', type: 'text', default: String(args?.subject || '') },
+      { id: 'body', label: '正文 *', placeholder: '邮件正文内容', type: 'text', default: String(args?.body || '') },
+      { id: 'attachments', label: '附加新附件(可选)', placeholder: '可多选,任意类型,≤20MB/个,≤10 个', type: 'file', multiple: true, accept: '*' },
+    ],
+  });
+}
+
 function connectStreamingBrief(reqId, container) {
   // 创建或复用 streaming 气泡
   let streamingBubble = container?.querySelector('.chat-streaming-bubble');
@@ -1319,6 +1547,11 @@ function connectStreamingBrief(reqId, container) {
         // v0.13 B5 fix: 同步 dataset.chatRound，避免 polling 误判为新轮次重复渲染
         streamingBubble.dataset.chatRound = String(data.brief.chat_round || 0);
         chatScrollToBottom(container);
+        // v0.47：识别 LLM 输出的 tool_call（如自动发邮件），弹预览卡片让用户确认
+        //   安全设计：不直接执行工具，让用户点 [✅ 发送] 才走 chatAssist
+        if (data.brief.tool_call && data.brief.tool_call.method === 'send_email') {
+          renderToolCallPreviewCard(reqId, container, data.brief.tool_call);
+        }
         // 只保留 suggested_assist（气泡底部的 💡 链接），不自动触发
         // auto_assist 逻辑已移除（2026-06-14：用户自主点击更可靠）
         // 尝试加载 assist
@@ -1430,7 +1663,7 @@ function connectAssistStream(reqId, method, extraBody) {
           es.close();
           const loadingEl = container?.querySelector(`.assist-loading-card[data-method="${method}"]`);
           // v0.19：休闲辅助（music/video/image/clean）直接在聊天流渲染结果卡片
-          const leisureMethods = ['music', 'video', 'image_gen', 'clean', 'screenplay', 'document_gen'];
+          const leisureMethods = ['music', 'video', 'image_gen', 'clean', 'screenplay', 'document_gen', 'send_email'];
           if (loadingEl && leisureMethods.includes(method)) {
             // 替换 loading 卡片为"加载中..."
             loadingEl.innerHTML = '<div class="assist-loading-head"><span class="assist-loading-spinner">⏳</span><span class="assist-loading-title">加载结果中…</span></div>';
@@ -1579,6 +1812,17 @@ async function renderLeisureResult(reqId, method, loadingEl) {
         loadingEl.style.borderTopColor = 'var(--green)';
         loadingEl.style.animation = 'none';
       }
+    } else if (method === 'send_email') {
+      // 复用 assists/send-email.js 的 render 函数
+      const renderFn = window.ACMSAssists?.get?.('send_email')?.render;
+      if (renderFn) {
+        loadingEl.innerHTML = renderFn(reqId, data);
+      } else {
+        loadingEl.innerHTML = `<div class="assist-loading-head" style="border:none"><span style="font-size:16px">📧</span><span class="assist-loading-title">邮件已发送</span></div>
+          <div style="padding:4px 0;font-size:12px">收件人：${escHtml(data.to || '')} · 主题：${escHtml(data.subject || '')}</div>`;
+      }
+      loadingEl.style.borderTopColor = 'var(--green)';
+      loadingEl.style.animation = 'none';
     }
   } catch (e) {
     loadingEl.innerHTML = `<div class="assist-loading-error">加载失败: ${escHtml(e.message)}</div>`;

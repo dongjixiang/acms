@@ -30,11 +30,12 @@ function renderInlineForm(reqId, config) {
     if (f.type === 'file') {
       return `<div class="form-group" style="margin-bottom:8px">
         <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:2px">${escHtml(f.label)}</label>
-        <input type="file" id="${cardId}-${f.id}" accept="${f.accept || '*'}" onchange="previewUploadFile('${cardId}','${f.id}')"
+        <input type="file" id="${cardId}-${f.id}" accept="${f.accept || '*'}" ${f.multiple ? 'multiple' : ''} onchange="previewUploadFile('${cardId}','${f.id}')"
           style="font-size:12px;color:var(--text);width:100%">
         <div id="${cardId}-${f.id}-preview" style="display:none;margin-top:4px;max-width:100px;border-radius:4px;overflow:hidden">
           <img style="width:100%;display:block">
         </div>
+        <div id="${cardId}-${f.id}-list" class="upload-files-list" style="display:none;margin-top:4px;font-size:11px;color:var(--text2)"></div>
       </div>`;
     }
     return `<div class="form-group" style="margin-bottom:8px">
@@ -72,14 +73,34 @@ function renderInlineForm(reqId, config) {
 }
 
 /**
- * 文件选择预览
+ * 文件选择预览（v0.47：支持多文件）
+ *   单文件 + image/  → 显示缩略图（向后兼容旧 video/image_gen）
+ *   多文件           → 显示文件名 + 大小列表
  */
 function previewUploadFile(cardId, fieldId) {
   const input = document.getElementById(`${cardId}-${fieldId}`);
   const preview = document.getElementById(`${cardId}-${fieldId}-preview`);
-  if (!input || !preview) return;
-  const file = input.files?.[0];
-  if (file && file.type.startsWith('image/')) {
+  const list = document.getElementById(`${cardId}-${fieldId}-list`);
+  if (!input) return;
+  const files = Array.from(input.files || []);
+
+  // 多文件：显示文件名+大小列表
+  if (input.multiple && files.length > 0 && list) {
+    list.style.display = 'block';
+    list.innerHTML = files.map(f => {
+      const sizeKB = f.size > 1024 * 1024
+        ? (f.size / 1024 / 1024).toFixed(2) + ' MB'
+        : (f.size / 1024).toFixed(1) + ' KB';
+      return `<div style="padding:2px 0">📎 ${escHtml(f.name)} <span style="color:var(--text3)">(${sizeKB})</span></div>`;
+    }).join('');
+    if (preview) preview.style.display = 'none';
+    return;
+  }
+  if (list) list.style.display = 'none';
+
+  // 单文件 + image：缩略图（向后兼容）
+  const file = files[0];
+  if (file && file.type.startsWith('image/') && preview) {
     const reader = new FileReader();
     reader.onload = (e) => {
       const img = preview.querySelector('img');
@@ -87,7 +108,7 @@ function previewUploadFile(cardId, fieldId) {
       preview.style.display = 'block';
     };
     reader.readAsDataURL(file);
-  } else {
+  } else if (preview) {
     preview.style.display = 'none';
   }
 }
@@ -120,7 +141,7 @@ async function submitInlineForm(cardId, reqId) {
   });
 
   // 验证
-  if (!values.prompt && !values.song && !values.instruction) {
+  if (!values.prompt && !values.song && !values.instruction && !values.to && !values.subject) {
     toast('请填写描述内容', 'error');
     return;
   }
@@ -184,6 +205,36 @@ async function submitInlineForm(cardId, reqId) {
       await chatAssist(reqId, 'document_gen', {
         instruction: values.instruction,
       });
+    } else if (method === 'send_email') {
+      // 上传附件（多文件 + 任意类型，复用 /api/chat/upload）
+      let fileIds = [];
+      const fileInputs = card.querySelectorAll('input[type="file"]');
+      const allFiles = [];
+      fileInputs.forEach(fi => {
+        if (fi.files) for (const f of fi.files) allFiles.push(f);
+      });
+      for (const file of allFiles) {
+        const formData = new FormData();
+        formData.append('file', file);
+        const uploadResp = await fetch('/api/chat/upload', {
+          method: 'POST',
+          headers: { 'X-API-Key': 'dev-key-001' },
+          body: formData,
+        });
+        if (!uploadResp.ok) {
+          const err = await uploadResp.json().catch(() => ({}));
+          throw new Error(`附件 ${file.name} 上传失败: ${err.error || uploadResp.status}`);
+        }
+        const uploadResult = await uploadResp.json();
+        const fid = (Array.isArray(uploadResult) ? uploadResult[0]?.id : uploadResult.id) || '';
+        if (fid) fileIds.push(fid);
+      }
+      await chatAssist(reqId, 'send_email', {
+        to: values.to,
+        subject: values.subject,
+        body: values.body,
+        file_ids: fileIds,
+      });
     }
 
     // 表单提交成功 → 移除表单卡片（chatAssist 已自动插 loading 卡片 + SSE 流式结果）
@@ -243,6 +294,23 @@ function renderMusicForm(reqId) {
     icon: '🎵', title: '音乐播放', method: 'music',
     fields: [
       { id: 'song', label: '歌曲名 *', placeholder: '输入你想听的歌名（中英文均可）', type: 'text' },
+    ],
+  });
+}
+
+/**
+ * 渲染邮件发送表单（v0.47）
+ *   收件人支持分号 / 逗号 / 中文逗号分隔多个邮箱
+ *   附件支持多选、任意类型（最大 20MB/个、10 个，沿用 chat-upload 上限）
+ */
+function renderEmailForm(reqId) {
+  renderInlineForm(reqId, {
+    icon: '📧', title: '发送邮件', method: 'send_email',
+    fields: [
+      { id: 'to', label: '收件人 *', placeholder: '可多个，分号/逗号分隔：a@x.com; b@x.com', type: 'text' },
+      { id: 'subject', label: '主题 *', placeholder: '邮件主题', type: 'text' },
+      { id: 'body', label: '正文 *', placeholder: '邮件正文内容', type: 'text' },
+      { id: 'attachments', label: '附件（可选）', placeholder: '可多选,任意类型,≤20MB/个,≤10 个', type: 'file', multiple: true, accept: '*' },
     ],
   });
 }

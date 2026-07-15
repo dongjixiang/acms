@@ -19,9 +19,10 @@ const modelStore = require('../stores/model-store');
 const INTENT_TOOL_NAMES = [
   'web_search', 'web_research', 'fetch_url', 'get_current_time',  // 信息类
   'agnes_generate_video',  // 视频生成（v0.18 直接调 Agnes API）
-  // v0.20d: play_music 由预检（extractMusicIntent）覆盖，不加进 LLM 可见工具避免重复触发
+  // v0.20d: play_music 由预检覆盖，不加进 LLM 可见工具避免重复触发
   'play_video',           // 视频生成（v0.20 触发 video assist，自动从用户消息提取 prompt）
   'generate_image',       // 图片生成（v0.20 触发 image-gen assist，自动从用户消息提取 prompt）
+  'send_email',           // v0.47：邮件发送（fire-and-forget + 用户确认才真发）
 ];
 
 // v0.16：chat-intent 阶段 LLM 看到的 system prompt（clarify 模式）
@@ -85,8 +86,12 @@ function buildIntentSystemPrompt(req) {
 // 区别于 clarify：基于附件/参考资料直接回答，不追问澄清需求
 // v0.22.23b：精简 system prompt，删掉复用的 clarify 模式限制（"仅在...才调"）+ 暗示 LLM 直接回复的措辞
 //   多多诉求：free 模式更开放，LLM 自主决定调不调 tool。工具 description 自带触发条件，不需要在 system prompt 重复
+// v0.47.1：治「LLM 装睡」 — 用户表达生成图片/视频/搜索/邮件/音乐等明确工具意图时，
+//   **必须调用对应工具**，不能嘴说"正在生成/正在搜索/已发送"等假动作（用户看不到任何卡片，就是空话）。
+//   多次轮询日志显示 LLM 倾向于在第一轮 final answer 中描述"动作"但**不真调用 tool**，
+//   导致用户看不到任何输出（图片/视频/搜索结果都不存在），不得不催第二轮。
 function buildFreeChatSystemPrompt(req) {
-  return `你是 ACMS 自由对话助手。当前用户正在与你自由对话，可能让你总结附件、解读资料、对比方案、画图、生成视频、搜索信息等。
+  return `你是 ACMS 自由对话助手。当前用户正在与你自由对话，可能让你总结附件、解读资料、对比方案、画图、生成视频、搜索信息、发送邮件、找歌曲等。
 
 # 需求上下文（仅作背景，不要当成对话主线）
 - 标题：${req.title || '(空)'}
@@ -95,11 +100,21 @@ function buildFreeChatSystemPrompt(req) {
 
 # 任务
 - 用户没在整理需求，**直接帮用户处理具体请求**。
-- 你可以调用工具（generate_image、play_video、agnes_generate_video、web_search、web_research、fetch_url、get_current_time）来满足用户的具体请求；工具的 description 告诉你何时该调。
+- 你可以调用工具（generate_image、play_video、agnes_generate_video、play_music、web_search、web_research、fetch_url、get_current_time、send_email）来满足用户的具体请求；工具的 description 告诉你何时该调。
 - 也可以直接基于对话历史和已有知识回答。
-- 看到附件（用户消息里以 [文件名] 或 📎 开头的部分）→ **直接基于附件内容回答**。
-- 不要追问"你想要什么功能"——这是澄清场景的逻辑，不适用于自由对话。
-- 不要建议"我们换个方式讨论"——除非用户明确表示想整理需求。
+
+# ⛔ 严禁「装睡」（v0.47.1 治根因）
+当用户消息含**明确的工具调用意图**时（生成图片/视频/搜索/邮件/找歌），你**必须调用对应工具**。绝不能只回文字如"图片正在生成中""视频已发送""邮件已发送""搜索中请稍等"——**这种回复是空话，用户看不到任何卡片，必须避免**。
+
+判断标准（满足任一即视为有工具意图）：
+- 含"生成图片/画一张/画一个/做一张图"等 → 调 **generate_image**
+- 含"生成视频/做一个视频/拍个视频"等 → 调 **play_video** 或 **agnes_generate_video**
+- 含"搜索/查一下/调研/找资料"等 → 调 **web_search** 或 **web_research**
+- 含 URL → 调 **fetch_url**
+- 含"发邮件/发送邮件/转发邮件"等 → 调 **send_email**
+- 含"想听/播放/找一首/放首歌"等 → 调 **play_music**
+
+如果工具已调（msg 里有 role=tool 的返回结果），下一轮 final answer 可以简短告诉用户"已触发，请稍候"——但**第一轮**看到用户意图就必须调工具。
 
 # 回复要求
 - Markdown 格式（### 标题、**粗体**、- 列表）

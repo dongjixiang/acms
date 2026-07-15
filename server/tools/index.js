@@ -17,6 +17,7 @@
 require('./web');
 require('./external-api');
 require('./leisure');
+require('./send-email'); // v0.47：邮件发送（LLM tool-call 走 fire-and-forget + 用户确认才真发）
 require('./agent/read');
 require('./agent/write');
 require('./agent/patch');

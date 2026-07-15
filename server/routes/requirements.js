@@ -761,7 +761,7 @@ router.post('/:id/assist/:method', async (req, res, next) => {
     const { modelId, role, productName } = req.body || {};
     const reqRec = reqStore.getById(req.params.id);
     if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
-    if (reqRec.status !== 'idea' && method !== 'health_check' && method !== 'clean' && method !== 'music' && method !== 'video' && method !== 'image_gen' && method !== 'screenplay' && method !== 'document_gen') {
+    if (reqRec.status !== 'idea' && method !== 'health_check' && method !== 'clean' && method !== 'music' && method !== 'video' && method !== 'image_gen' && method !== 'screenplay' && method !== 'document_gen' && method !== 'send_email') {
       return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
     }
 
@@ -965,6 +965,34 @@ router.post('/:id/assist/:method/use', async (req, res, next) => {
     else if (method === 'screenplay' && body.action === 'set_scene_video') {
       // v0.22.8: 写入分镜头视频
       result = svc.setSceneVideo(req.params.id, body.scene_idx, body);
+    }
+    else if (method === 'document_gen' || method === 'music' || method === 'video' || method === 'image_gen' || method === 'clean' || method === 'send_email') {
+      // v0.47：这些是「输出型」assist（生成文档/发邮件/找音乐/生成图/视频/清理），
+      //   没有「选哪个」的概念。标记 used = no-op success，避免前端 skip 报 METHOD_HAS_NO_USE_HANDLER
+      //   实际上 send_email 等的"使用"语义是「邮件已发出」，由各自的 runAssistJob 完成（status=done 时 used 自然有意义）
+      result = null;
+
+      // v0.47.3：send_email + action=cancelled 时，从 supplement_history 删掉 send_email_pending entry
+      //   避免用户取消后再次进入聊天还能看到预览卡
+      if (method === 'send_email' && body.action === 'cancelled') {
+        try {
+          const reqRec = reqStore.getById(req.params.id);
+          if (reqRec) {
+            let history = [];
+            try { history = JSON.parse(reqRec.supplement_history || '[]'); } catch { /* 静默 */ }
+            if (Array.isArray(history)) {
+              const before = history.length;
+              history = history.filter(e => !(e.role === 'system' && e.source === 'send_email_pending'));
+              if (history.length !== before) {
+                reqStore.update(req.params.id, { supplement_history: JSON.stringify(history) });
+                console.log(`[assist.use] ${req.params.id} 清掉 ${before - history.length} 条 send_email_pending entry`);
+              }
+            }
+          }
+        } catch (e) {
+          console.warn(`[assist.use] 清 pending entry 失败:`, e.message);
+        }
+      }
     }
     else return res.status(400).json({ error: 'METHOD_HAS_NO_USE_HANDLER' });
 

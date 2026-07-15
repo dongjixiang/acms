@@ -33,6 +33,7 @@ const imageGen = require('./image-gen'); // v0.19：AI 图片生成 — 调用 A
 const clean = require('./clean'); // v0.19：对话清理 — 按角色清理 supplement_history
 const screenplay = require('./screenplay'); // v0.22：剧本辅助 — 一句话生成 3 个短视频剧本
 const documentGen = require('./document-gen'); // v0.46：文档生成 — AI 整理对话 + Pandoc 转 .docx
+const sendEmail = require('./send-email'); // v0.47：邮件发送 — nodemailer SMTP
 
 const ASSISTS = {
   decision_tree: decisionTree,
@@ -55,6 +56,7 @@ const ASSISTS = {
   clean: clean, // v0.19：对话清理 — 按角色清理 supplement_history
   screenplay: screenplay, // v0.22：剧本辅助 — 一句话生成 3 个短视频剧本
   document_gen: documentGen, // v0.46：文档生成 — AI 整理对话 + Pandoc 转 .docx
+  send_email: sendEmail, // v0.47：邮件发送 — nodemailer SMTP
 };
 
 const ASSIST_METHODS = Object.keys(ASSISTS);
