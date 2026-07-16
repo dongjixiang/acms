@@ -540,3 +540,7 @@ ${content.slice(0, 5000)}
 
 module.exports = router;
 module.exports.stripAttachmentContext = stripAttachmentContext;
+// v0.48 fix: plan-executor 需要 appendChatEntry 写 plan_loading/plan_step_update/plan_done entries
+//   之前没 export → writeSystemEntry 调 undefined() 抛 TypeError 被 try/catch 静默吞掉
+//   症状：requirement.plan 写对了但 supplement_history 没 plan_* entries → 前端聚合渲染失败
+module.exports.appendChatEntry = appendChatEntry;

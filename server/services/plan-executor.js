@@ -306,14 +306,12 @@ function updatePlanStepEntry(reqId, planDoc, stepId, status, result) {
 }
 
 /**
- * 写 system entry 到聊天流（统一入口 + 容错）
+ * 写 system entry 到聊天流（统一入口 + 错误暴露）
+ * v0.48: 去掉 try/catch 静默吞错——appendChatEntry 失败必须暴露（之前 TypeError 被吞了，
+ *   导致 plan_* entries 实际从未写入，需求"看不到 ⏳ 卡"症状的根因）
  */
 function writeSystemEntry(reqId, entry) {
-  try {
-    appendChatEntry(reqId, entry);
-  } catch (e) {
-    console.warn(`[plan-executor] write system entry failed (${entry.source}):`, e.message);
-  }
+  appendChatEntry(reqId, entry);
 }
 
 module.exports = { executePlan, validatePlan, topologicalSort };
