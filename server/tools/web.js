@@ -56,19 +56,23 @@ registerTool({
       if (!req) return { error: '需求不存在' };
       return { id: req.id, title: req.title, description: req.description, status: req.status, ai_understanding: req.ai_understanding };
     } catch (e) { return { error: e.message }; }
-  },
+},
 });
 
 const { fetchUrlCore } = require('./url-fetch');
 registerTool({
   name: 'fetch_url',
-  description: '抓取外部 URL 网页内容，提取正文转 markdown。'
-    + '当用户消息含 http(s):// 链接时使用，返回标题 + 正文摘要（5000 字以内）。'
+  description: '抓取**单个完整 URL** 的网页内容，提取正文转 markdown。'
+    + '\n\n【⚠️ 严格使用条件】只接受**完整 http(s):// 起始的 URL**，不是搜索关键词、不是主题、不是问题。'
+    + '要"搜索/查一下/调研"请用 **web_search** 或 **web_research**（用 query 参数）。'
+    + '要"查实时信息/查时间"请用 **get_current_time**。'
+    + '\n\n用户消息含完整 URL 链接（如 https://example.com/article.html）时使用。'
+    + '\n\n返回：标题 + 正文摘要（默认 5000 字以内，max_length 可调）。'
     + '已做 SSRF 防护（拒绝内网 URL），超时 30s。',
   parameters: {
     type: 'object',
     properties: {
-      url: { type: 'string', description: '完整 URL（含 http:// 或 https://）' },
+      url: { type: 'string', description: '完整 URL（必须以 http:// 或 https:// 开头，**不是搜索 query**）' },
       max_length: { type: 'number', description: '最大字符数（默认 5000）', default: 5000 },
     },
     required: ['url'],
