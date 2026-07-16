@@ -223,9 +223,17 @@ router.post('/detect-and-respond', async (req, res, next) => {
 
     // v0.46：预检文档生成意图 → 直接触发文档生成辅助
     //   匹配关键词如"整理成文档/生成文档/导出文档/Word文档"等
+    // v0.48 修复：只在"单一文档意图"才抢跑，复合意图（含其他 tool 关键词）让 LLM 调 plan_execute 编排
+    //   否则 document_precheck 抢跑后 LLM 收到"文档已自动生成"提示，会以为整个流程都跑完了 → 装睡
+    //   （v0.48 多多 REQ-MRHNP0PR 案例："查2026世界杯+生成Word+发邮件" → 抢跑文档 → LLM 装睡，没调 web_search）
     const docKeywords = /整理成文档|生成文档|导出文档|Word文档|\.docx|\.doc|文档|变成文档|形成文档|整理成word/i;
-    if (docKeywords.test(text)) {
-      console.log(`[detect-and-respond] ${reqId} 检测到文档意图`);
+    const otherToolKeywords = /发邮件|发送邮件|转发邮件|发给|发到|搜索|查一下|调研|找资料|查\s*\d{4}|生成图片|画[一]?[张个]|做[一]?张图|生成视频|拍个视频|播放|想听|放[一]?首|听[一]?首|找歌/i;
+    const hasDocIntent = docKeywords.test(text);
+    const hasOtherIntent = otherToolKeywords.test(text);
+    const isCompositeIntent = hasDocIntent && hasOtherIntent;
+
+    if (hasDocIntent && !isCompositeIntent) {
+      console.log(`[detect-and-respond] ${reqId} 检测到文档意图（单一意图）→ 抢跑触发`);
       appendChatEntry(reqId, {
         role: 'system',
         text: '📄 正在生成文档…（完成前请勿重复发送）',
@@ -240,6 +248,10 @@ router.post('/detect-and-respond', async (req, res, next) => {
         console.error(`[detect-and-respond] ${reqId} document 预触发异常:`, e.message);
       }
       documentDetected = true;
+    } else if (hasDocIntent && isCompositeIntent) {
+      console.log(`[detect-and-respond] ${reqId} 检测到复合意图（含文档+其他 tool）→ 跳过 document_precheck 抢跑，让 LLM 调 plan_execute 编排`);
+      // 不抢跑 document_gen：让 LLM 通过 plan_execute 走完整流程（web_search → document_gen → send_email）
+      // documentDetected 保持 false，不注入"文档已搞定"误导提示
     }
 
     try {
@@ -263,7 +275,9 @@ router.post('/detect-and-respond', async (req, res, next) => {
           // v0.20b：如果音乐已预触发，告诉 LLM 不要自己调 tool，直接简短回复
           ...(musicPreCheck.song ? [{ role: 'system', content: '（音乐搜索已自动触发，10-30 秒后显示播放卡片。请简短回复用户"正在找"即可，不要复制歌词或推荐平台，不要调用任何工具。）' }] : []),
           // v0.46：文档生成已自动触发，让 LLM 简短回复即可
-          ...(documentDetected ? [{ role: 'system', content: '（文档已自动生成，结果将以辅助卡片展示。请不要自己写文档内容，简短回复用户"正在整理文档"即可。）' }] : []),
+          // v0.48 修复：去掉"请不要自己写文档"等诱导 LLM 装睡的措辞（v0.48 REQ-MRHNP0PR 案例）
+          //   改用中性提示，让 LLM 自己判断是否还有其他 tool 需要调（单一意图则简短回复，复合意图则调 plan_execute）
+          ...(documentDetected ? [{ role: 'system', content: '（文档生成辅助已自动触发。如果用户消息还包含其他工具意图（如发邮件/搜索等），请用 plan_execute 编排多步骤；否则简短回复用户"正在整理文档"即可。）' }] : []),
           // v0.22.23b：删除图片生成意图的 system 提示注入。多多诉求：LLM 自己看 context 决定调不调 tool。
           ...historyMessages,
           { role: 'user', content: text },
