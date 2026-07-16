@@ -23,6 +23,7 @@ const INTENT_TOOL_NAMES = [
   'play_video',           // 视频生成（v0.20 触发 video assist，自动从用户消息提取 prompt）
   'generate_image',       // 图片生成（v0.20 触发 image-gen assist，自动从用户消息提取 prompt）
   'send_email',           // v0.47：邮件发送（fire-and-forget + 用户确认才真发）
+  'plan_execute',         // v0.48：复合意图 plan 执行（多 tool / 多步骤 / 依赖场景）
 ];
 
 // v0.16：chat-intent 阶段 LLM 看到的 system prompt（clarify 模式）
@@ -100,7 +101,7 @@ function buildFreeChatSystemPrompt(req) {
 
 # 任务
 - 用户没在整理需求，**直接帮用户处理具体请求**。
-- 你可以调用工具（generate_image、play_video、agnes_generate_video、play_music、web_search、web_research、fetch_url、get_current_time、send_email）来满足用户的具体请求；工具的 description 告诉你何时该调。
+- 你可以调用工具（generate_image、play_video、agnes_generate_video、play_music、web_search、web_research、fetch_url、get_current_time、send_email、plan_execute）来满足用户的具体请求；工具的 description 告诉你何时该调。
 - 也可以直接基于对话历史和已有知识回答。
 
 # ⛔ 严禁「装睡」（v0.47.1 治根因）
@@ -115,6 +116,26 @@ function buildFreeChatSystemPrompt(req) {
 - 含"想听/播放/找一首/放首歌"等 → 调 **play_music**
 
 如果工具已调（msg 里有 role=tool 的返回结果），下一轮 final answer 可以简短告诉用户"已触发，请稍候"——但**第一轮**看到用户意图就必须调工具。
+
+# ⛔ 复合意图必须调 plan_execute（v0.48 治根因）
+当用户消息**同时涉及 2 个或以上 tool 意图**时（且步骤有先后/依赖/耗时），**必须先调 plan_execute** 把整个事情拆成步骤交给系统执行，不能自己按顺序一个个调 tool。
+
+判断标准：
+- 只有 1 个 tool 意图 → 直接调那个 tool（不走 plan_execute）
+- 2+ tool 意图 且步骤独立或串行依赖 → **调 plan_execute 一次**
+
+典型场景：
+- "生成图片 + 发邮件" → plan_execute (2 步：generate_image → send_email)
+- "调研 A + 调研 B + 调研 C + 生成对比表" → plan_execute (4 步：3 个 web_research 并列 → synthesize)
+- "查天气 + 查日历 + 找咖啡馆" → plan_execute (3 步：3 个查询并列)
+
+**为什么不能用普通多 tool call**：
+LLM 在同一次 tool_loop 里调多个 tool 后，会拿到 tool result 进入 final answer 阶段，不会等异步 tool 完成再调后续 tool。
+v0.47.5 REQ-MRHNP0PR 案例：用户说"生成图片+发邮件" → LLM 调 generate_image → 拿到 result → final answer → 漏调 send_email。
+plan_execute 内部由 plan-executor 按拓扑序保证所有步骤都执行，不会漏调。
+
+调用格式（参考 plan_execute tool description）：
+{"summary": "一句话", "steps": [{"tool": "...", "args": {...}}, {"tool": "...", "args": {...}, "depends_on": ["s1"]}]}
 
 # 回复要求
 - Markdown 格式（### 标题、**粗体**、- 列表）

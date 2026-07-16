@@ -18,6 +18,7 @@ require('./web');
 require('./external-api');
 require('./leisure');
 require('./send-email'); // v0.47：邮件发送（LLM tool-call 走 fire-and-forget + 用户确认才真发）
+require('./plan-execute'); // v0.48：复合意图 plan 执行（LLM tool-call 触发 plan-executor 按拓扑序跑步骤）
 require('./agent/read');
 require('./agent/write');
 require('./agent/patch');
