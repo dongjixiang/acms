@@ -196,7 +196,7 @@ async function runPlan(reqId, planDoc) {
 
       // 失败 → 下游依赖标 skipped
       if (!isOk) {
-        markDownstreamSkipped(reqId, planDoc.steps, step.id);
+        markDownstreamSkipped(reqId, planDoc, step.id);
       }
     } catch (e) {
       step.status = 'failed';
@@ -227,7 +227,12 @@ async function runPlan(reqId, planDoc) {
       status: planDoc.status,
       duration_ms: Date.now() - startTime,
       summary: planDoc.summary,
-      steps: planDoc.steps.map((s) => ({ id: s.id, tool: s.tool, status: s.status })),
+      steps: planDoc.steps.map((s) => ({
+        id: s.id,
+        tool: s.tool,
+        status: s.status,
+        error: s.error,
+      })),
     }),
     at: new Date().toISOString(),
   });
@@ -235,13 +240,14 @@ async function runPlan(reqId, planDoc) {
 
 /**
  * 失败的下游依赖步骤标 skipped（BFS，需要 reqId 写 entry）
+ * 含完整 plan 快照（前端按 plan_id 找最新 entry 直接渲染）
  */
-function markDownstreamSkipped(reqId, steps, failedStepId) {
+function markDownstreamSkipped(reqId, planDoc, failedStepId) {
   const skipIds = new Set([failedStepId]);
   let progressed = true;
   while (progressed) {
     progressed = false;
-    for (const s of steps) {
+    for (const s of planDoc.steps) {
       if (skipIds.has(s.id)) continue;
       if (s.status !== 'pending') continue;
       if (s.depends_on.some((d) => skipIds.has(d))) {
@@ -254,10 +260,14 @@ function markDownstreamSkipped(reqId, steps, failedStepId) {
           source: 'plan_step_update',
           text: JSON.stringify({
             type: 'plan_step_update',
+            plan_id: planDoc.planId,
             step_id: s.id,
             status: 'skipped',
             result: null,
             error: s.error,
+            summary: planDoc.summary,
+            total_steps: planDoc.steps.length,
+            steps: planDoc.steps.map((x) => ({ id: x.id, tool: x.tool, status: x.status, error: x.error })),
           }),
           at: new Date().toISOString(),
         });
@@ -269,6 +279,7 @@ function markDownstreamSkipped(reqId, steps, failedStepId) {
 
 /**
  * 写 step 状态更新 system entry
+ * 含完整 plan 快照（前端按 plan_id 找最新 entry 直接渲染，无需聚合）
  */
 function updatePlanStepEntry(reqId, planDoc, stepId, status, result) {
   writeSystemEntry(reqId, {
@@ -280,6 +291,15 @@ function updatePlanStepEntry(reqId, planDoc, stepId, status, result) {
       step_id: stepId,
       status,
       result: result || null,
+      // 全量快照（前端按 plan_id 找最新 entry 直接渲染）
+      summary: planDoc.summary,
+      total_steps: planDoc.steps.length,
+      steps: planDoc.steps.map((s) => ({
+        id: s.id,
+        tool: s.tool,
+        status: s.status,
+        error: s.error,
+      })),
     }),
     at: new Date().toISOString(),
   });
