@@ -65,6 +65,7 @@
   function renderStepRow(s) {
     const icon = STATUS_ICON[s.status] || '⏸';
     const errorHtml = s.error ? `<div class="plan-step-error">${escHtml(s.error)}</div>` : '';
+    const resultHtml = renderStepResultSummary(s);
     const stepNum = s.id.replace(/^s/, '');
     return `
       <div class="plan-step" data-step-id="${escHtml(s.id)}">
@@ -72,9 +73,44 @@
         <span class="plan-step-num">${escHtml(stepNum)}</span>
         <span class="plan-step-tool">${escHtml(s.tool)}</span>
         <span class="plan-step-status">${escHtml(s.status)}</span>
+        ${resultHtml}
         ${errorHtml}
       </div>
     `;
+  }
+
+  /**
+   * 渲染 step result 摘要（按 tool 类型友好显示）
+   * v0.48.1: 让 plan-bubble ▼ 展开时能看到每个 step 做了什么
+   *   之前只显示 status，看不到"搜索 3 条结果" / "邮件发到 oracle" 等具体内容
+   */
+  function renderStepResultSummary(s) {
+    if (!s.result || typeof s.result !== 'object') return '';
+    const r = s.result;
+    if (r.ok === false) return ''; // 失败的 result 走 errorHtml 显示
+
+    let text = '';
+    if (s.tool === 'web_search') {
+      const n = Array.isArray(r.results) ? r.results.length : (r.count || 0);
+      const first = Array.isArray(r.results) && r.results[0] && r.results[0].title ? r.results[0].title : '';
+      text = `${n} 条结果${first ? ' · ' + first.slice(0, 40) : ''}`;
+    } else if (s.tool === 'web_research') {
+      const n = Array.isArray(r.sources) ? r.sources.length : 0;
+      const ans = (r.answer || '').slice(0, 60);
+      text = `${n} 源${ans ? ' · ' + ans + (ans.length >= 60 ? '...' : '') : ''}`;
+    } else if (s.tool === 'send_email') {
+      text = `→ ${r.to || ''}${r.message_id ? ' · 已发送' : ''}`;
+    } else if (s.tool === 'document_gen') {
+      text = r.docx_url ? '.docx 已生成' : (r.md_content ? '.md 已生成' : '文档已生成');
+    } else if (s.tool === 'generate_image') {
+      text = '图片已生成';
+    } else if (s.tool === 'fetch_url') {
+      text = `${r.title || r.url || ''}`.slice(0, 60);
+    } else if (s.tool === 'play_music' || s.tool === 'play_video') {
+      text = (r.song || r.title || r.prompt || '').slice(0, 60);
+    }
+    if (!text) return '';
+    return `<div class="plan-step-result">${escHtml(text)}</div>`;
   }
 
   /**
@@ -123,19 +159,46 @@
       const bubble = el.closest('.chat-bubble');
       if (bubble) bubble.remove();
     });
-    // 聚合：按 plan_id 找最新 entry
+    // v0.48.1: 双重聚合 —— 按 plan_id 找最新 entry + 按 plan_id+step_id 收集 step result
+    //   plan_done entry 只含 step id/tool/status/error，不含 result
+    //   result 在 plan_step_update entry 里（前面 commit 76c14e2 加的）
+    //   所以聚合时单独扫所有 plan_step_update 的 result，按 step_id 合并到 latest entry 的 steps[]
     const latestById = {};
+    const stepResultByPlan = {}; // {plan_id: {step_id: latest_result}}
+
     for (const e of history) {
       if (!e || !e.source || !e.source.startsWith('plan_')) continue;
       let data;
       try { data = JSON.parse(e.text); } catch { continue; }
       if (!data || !data.plan_id) continue;
+
+      // 收集 step result（按时间 latest wins）
+      if (data.step_id && data.result !== undefined && data.result !== null) {
+        if (!stepResultByPlan[data.plan_id]) stepResultByPlan[data.plan_id] = {};
+        const prev = stepResultByPlan[data.plan_id][data.step_id];
+        const prevAt = prev && prev._at ? prev._at : '';
+        const curAt = e.at || '';
+        if (!prev || curAt >= prevAt) {
+          stepResultByPlan[data.plan_id][data.step_id] = { ...data.result, _at: curAt };
+        }
+      }
+
+      // 找每个 plan_id 的最新 entry
       if (!latestById[data.plan_id] || new Date(e.at) > new Date(latestById[data.plan_id].at)) {
         latestById[data.plan_id] = { entry: e, data };
       }
     }
-    // 渲染每个 plan_id 一张气泡
+
     for (const p of Object.values(latestById)) {
+      // 把 step result 注入到 steps[]（剥 _at helper 字段）
+      if (p.data.steps && stepResultByPlan[p.data.plan_id]) {
+        p.data.steps = p.data.steps.map((s) => {
+          const r = stepResultByPlan[p.data.plan_id][s.id];
+          if (!r) return s;
+          const { _at, ...rest } = r;
+          return { ...s, result: rest };
+        });
+      }
       const html = renderPlanInner(p.data);
       if (!html) continue;
       const div = document.createElement('div');
