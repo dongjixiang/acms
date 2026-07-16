@@ -164,6 +164,47 @@ function topologicalSort(steps) {
 }
 
 /**
+ * v0.48: send_email 自动串联上游 step 的 file_ids 作附件
+ *   触发条件：
+ *     - 当前 step tool === 'send_email'
+ *     - args.file_ids 是空 / 缺省 / 不是数组
+ *   行为：扫 planDoc.steps 找 done 的 + 依赖当前 step 的 + result 含 file_ids 的 step → 合并
+ *   不覆盖 LLM 显式传的 file_ids
+ * @returns {{ changed: boolean, args: object, added: number }}
+ */
+function injectUpstreamFileIds(step, planDoc) {
+  const llmFileIds = Array.isArray(step.args?.file_ids) ? step.args.file_ids : [];
+  if (llmFileIds.length > 0) {
+    return { changed: false, args: step.args, added: 0 };
+  }
+  // 找上游 done step 的 file_ids
+  const upstreamFileIds = [];
+  for (const upstream of planDoc.steps) {
+    if (upstream.id === step.id) continue;
+    if (upstream.status !== 'done') continue;
+    // 必须当前 step 依赖它（depends_on 里包含）
+    if (!Array.isArray(step.depends_on) || !step.depends_on.includes(upstream.id)) continue;
+    const r = upstream.result;
+    if (!r || !Array.isArray(r.file_ids) || r.file_ids.length === 0) continue;
+    for (const f of r.file_ids) {
+      // file_ids 元素可能是 {id, name, size, mime, kind} 或只是 id 字符串
+      if (typeof f === 'string') {
+        upstreamFileIds.push({ id: f, name: '', size: 0, mime: '', kind: 'unknown' });
+      } else if (f && f.id) {
+        upstreamFileIds.push(f);
+      }
+    }
+  }
+  if (upstreamFileIds.length === 0) {
+    return { changed: false, args: step.args, added: 0 };
+  }
+  // 复制 args 避免 mutate planDoc
+  const newArgs = { ...(step.args || {}) };
+  newArgs.file_ids = upstreamFileIds.map((f) => f.id);
+  return { changed: true, args: newArgs, added: upstreamFileIds.length };
+}
+
+/**
  * 实际跑 plan（异步）
  */
 async function runPlan(reqId, planDoc) {
@@ -180,9 +221,22 @@ async function runPlan(reqId, planDoc) {
     updatePlanStepEntry(reqId, planDoc, step.id, 'running', null);
 
     try {
-      // L1 简化：直接传 args，不自动注入上游结果（L2 可加 depends_on 变量替换）
+      // v0.48: send_email 自动串联上游 document_gen / image_gen 等产生 file_ids 的 step
+      //   如果 LLM 在 args.file_ids 里没传（或传空数组），扫 planDoc.steps 找依赖里 done 的 step.result.file_ids 合并
+      if (step.tool === 'send_email' && step.result !== null) {
+        // 此分支永远不会进 — 仅说明意图
+      }
+      let effectiveArgs = step.args;
+      if (step.tool === 'send_email') {
+        const injected = injectUpstreamFileIds(step, planDoc);
+        if (injected.changed) {
+          effectiveArgs = injected.args;
+          console.log(`[plan-executor] ${reqId} send_email 自动注入 ${injected.added} 个 file_ids（来自上游步骤）`);
+        }
+      }
+
       const tool = getTool(step.tool);
-      const result = await tool.handler(step.args, { reqId });
+      const result = await tool.handler(effectiveArgs, { reqId });
 
       const isOk = result && result.ok !== false;
       step.status = isOk ? 'done' : 'failed';
@@ -314,4 +368,4 @@ function writeSystemEntry(reqId, entry) {
   appendChatEntry(reqId, entry);
 }
 
-module.exports = { executePlan, validatePlan, topologicalSort };
+module.exports = { executePlan, validatePlan, topologicalSort, injectUpstreamFileIds };

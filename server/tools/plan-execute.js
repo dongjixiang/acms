@@ -44,9 +44,15 @@ registerTool({
     '- "搜索/查一下/调研" → web_search（用 query）或 web_research（深度调研）\n' +
     '- "抓 URL 网页内容" → fetch_url（**仅接受完整 http(s) URL**，不是搜索 query）\n' +
     '- "生成图片" → generate_image\n' +
-    '- "生成 Word 文档" → document_gen\n' +
-    '- "发邮件" → send_email\n' +
+    '- "生成 Word 文档 / 整理成 Word / 生成 docx / 整理成文档" → **document_gen**（v0.48 真 tool，会返回 .docx + .md + file_ids）\n' +
+    '- "发邮件" → send_email（**file_ids 自动串联上游 document_gen / generate_image 等的产出**）\n' +
     '选错工具 = 那个步骤失败或返回空数据\n' +
+    '\n' +
+    '【⚠️ document_gen + send_email 串联用法】\n' +
+    '当用户要"搜索 + 生成 Word 文档 + 发邮件"这类多步骤，**每个步骤都要列在 plan.steps 里**。\n' +
+    'document_gen 会返回 file_ids（docx + md 都注册到 chat-upload），\n' +
+    'send_email 自动从依赖里收集上游 document_gen 的 file_ids 作附件 —— **你不需要在 send_email args 里手动传 file_ids**。\n' +
+    '只要 plan.steps 正确 depends_on 串联即可。\n' +
     '\n' +
     '【handler 行为】fire-and-forget — handler 不阻塞 tool_loop，立即返回 ok=true 表示"已接收，开始执行"。' +
     '执行过程通过聊天流的 system entry 反馈给用户（loading 卡 → 各 step 实时更新 → done），前端会复用现有 image_card / send_email_done 等结果卡。\n' +
