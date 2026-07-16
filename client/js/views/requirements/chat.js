@@ -53,6 +53,8 @@ async function loadChatStream(reqId) {
     container.innerHTML = '';
     const history = backfillChatRounds(histResp.history || []);
     for (const entry of history) renderChatBubble(container, entry);
+    // v0.48：聚合渲染 plan bubbles（每个 plan_id 一张）
+    if (window.ACMSPlanRenderer) window.ACMSPlanRenderer.aggregateAndRender(container, reqId, history);
     _chatState[reqId].histCount = history.length;
 
     const brief = briefResp.thinkingBrief;
@@ -122,8 +124,10 @@ function startChatPolling(reqId) {
       // 增量：只拉新增的 supplement_history
       const histResp = await api('GET', `/requirements/${reqId}/supplement-history`);
       const history = backfillChatRounds(histResp.history || []);
-      if (history.length > state.histCount) {
+        if (history.length > state.histCount) {
         for (let i = state.histCount; i < history.length; i++) renderChatBubble(container, history[i]);
+        // v0.48：聚合渲染 plan bubbles
+        if (window.ACMSPlanRenderer) window.ACMSPlanRenderer.aggregateAndRender(container, reqId, history);
         state.histCount = history.length;
         // v0.21.4 fix: SSE done 留下的第一份 music 卡在 assist-loading-card.method-music 里
         //   旧 v0.21.3 只清 chat-bubble-system，漏了真正的旧卡所在位置 → 双卡并存
@@ -494,6 +498,8 @@ function toggleChatMusicExpand(btn) {
 }
 
 function renderChatBubble(container, entry) {
+  // v0.48：plan_* entry 跳过 renderChatBubble，由 aggregateAndRender 聚合渲染（避免重复气泡）
+  if (entry && entry.source && entry.source.startsWith && entry.source.startsWith('plan_')) return;
   const isAI = entry.role === 'assistant';
   const isSystem = entry.role === 'system';
   const parts = [];
