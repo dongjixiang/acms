@@ -1,0 +1,18 @@
+# ACMS 默认 .gitignore 模板
+# 由 ACMS 创建 workspace 时自动套用 (server/services/workspace-service.js init())
+# 子项目可自由编辑/扩展，不会被覆盖
+
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+
+# 环境变量
+.env
+
+# 数据 / 数据库 / 缓存
+data/
+
+# 日志
+*.log

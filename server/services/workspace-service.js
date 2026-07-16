@@ -83,6 +83,15 @@ class WorkspaceService {
     const readme = '# ' + projectSlug + '\n\n> ACMS 项目工作区 — 自动生成于 ' + new Date().toISOString().split('T')[0] + '\n\n## 📂 目录说明\n\n| 目录 | 用途 |\n|------|------|\n| requirements/ | 需求文档（AI 自动保存） |\n| exports/ | 导出文件（.docx / .pdf） |\n| code/ | 代码（Agent 产出 / 原型） |\n| deploy/ | 部署配置 |\n| wiki/ | 项目知识库（默认 Wiki 路径） |\n\n## 📝 备注\n\n（可自由编辑，ACMS 不会覆盖此区域）\n';
     fs.writeFileSync(path.join(wsPath, 'README.md'), readme, 'utf-8');
 
+    // v0.48: 自动套 .gitignore 模板（已有则跳过，保护子项目手动配置）
+    const gitignorePath = path.join(wsPath, '.gitignore');
+    if (!fs.existsSync(gitignorePath)) {
+      const tplPath = path.join(__dirname, '..', '..', 'templates', 'workspace-gitignore.template');
+      if (fs.existsSync(tplPath)) {
+        fs.copyFileSync(tplPath, gitignorePath);
+      }
+    }
+
     return wsPath;
   }
 
