@@ -969,7 +969,20 @@ router.post('/:id/assist/:method/use', async (req, res, next) => {
     else if (method === 'document_gen' || method === 'music' || method === 'video' || method === 'image_gen' || method === 'clean' || method === 'send_email') {
       // v0.47：这些是「输出型」assist（生成文档/发邮件/找音乐/生成图/视频/清理），
       //   没有「选哪个」的概念。标记 used = no-op success，避免前端 skip 报 METHOD_HAS_NO_USE_HANDLER
-      //   实际上 send_email 等的"使用"语义是「邮件已发出」，由各自的 runAssistJob 完成（status=done 时 used 自然有意义）
+      // v0.47.4 fix: 必须真正写 used=true 到 assist_<method> JSON，否则 chat.js L586 渲染 filter
+      //   不会跳过这些 done 卡片 → 用户点"跳过"后重新进入需求，卡片会再次出现
+      const fieldName = `assist_${method}`;
+      try {
+        const curStr = reqRec[fieldName];
+        if (curStr) {
+          const cur = typeof curStr === 'string' ? JSON.parse(curStr) : curStr;
+          cur.used = true;
+          cur.used_at = new Date().toISOString();
+          reqStore.update(req.params.id, { [fieldName]: JSON.stringify(cur) });
+        }
+      } catch (e) {
+        console.warn(`[assist.use] mark used 失败 (${method}):`, e.message);
+      }
       result = null;
 
       // v0.47.3：send_email + action=cancelled 时，从 supplement_history 删掉 send_email_pending entry
