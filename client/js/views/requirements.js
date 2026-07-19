@@ -114,7 +114,6 @@ async function openRequirement(id) {
       </div>
       <div class="md-content" id="description-content-${id}">${renderMarkdown(req.structured_description || req.description)}</div>
       <div id="existing-md-editor-${id}" style="margin-top:12px"></div>
-      <div class="section"><strong>优先级:</strong> P${req.priority} | <strong>截止:</strong> ${req.deadline || '未设置'}</div>
     ${(req.status === 'idea') ? renderIdeaPanel(req) : ''}
     ${req.status === 'clarifying' ? renderAiClarifyPanel(req) : ''}
     ${req.status === 'review' ? renderReviewPanel(req) : ''}
