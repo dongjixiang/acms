@@ -195,7 +195,7 @@ async function fetchUrlCore({ url, max_length = MAX_LENGTH_DEFAULT }) {
   const $ = cheerio.load(html, { decodeEntities: true });
 
   // 5. 提取 title
-  const title = $('title').first().text().trim()
+  let title = $('title').first().text().trim()
     || $('meta[property="og:title"]').attr('content')
     || $('meta[name="twitter:title"]').attr('content')
     || '';
@@ -203,12 +203,45 @@ async function fetchUrlCore({ url, max_length = MAX_LENGTH_DEFAULT }) {
   // 6. 提取正文
   const container = findMainContent($) || $('body').get(0);
   if (!container) return { error: '未找到正文容器' };
-  const fullContent = htmlToMarkdown($, container);
+  let fullContent = htmlToMarkdown($, container);
+
+  // v0.52: HTTP 200 不代表正文可用。Next.js/SPA/赛事页常返回静态壳，真实数据要等 JS 渲染。
+  // 旧逻辑只在 HTTP 非 2xx 时走浏览器，导致 FIFA 官方赛果页 200 + 正文为空时静默失败。
+  // 正文为空，或正文很短且 HTML 明显是脚本驱动页面时，用现有 browserFetch 再取渲染后文本。
+  const scriptCount = (html.match(/<script\b/gi) || []).length;
+  const looksDynamic = /__NEXT_DATA__|__NUXT__|data-reactroot|webpack|application\/ld\+json/i.test(html)
+    || scriptCount >= 8;
+  const shouldBrowserRetry = !resp?.browserFallback
+    && (!fullContent || (fullContent.length < 500 && looksDynamic));
+
+  if (shouldBrowserRetry) {
+    const browserResp = await tryBrowserFallback(url);
+    const renderedText = (browserResp?.text || '').trim();
+    if (browserResp?.ok && renderedText.length > Math.max(fullContent.length * 2, 200)) {
+      fullContent = renderedText;
+      title = browserResp.title || title;
+      resp = {
+        ...resp,
+        url: browserResp.finalUrl || resp?.url || url,
+        browserFallback: browserResp,
+      };
+    }
+  }
+
   if (!fullContent) return { error: '正文提取为空' };
 
-  // 7. 截断
+  // 7. 截断。长动态页（赛程/榜单）最新内容常在页面末尾，不能只保留开头。
   const truncated = fullContent.length > max_length;
-  const content = truncated ? fullContent.slice(0, max_length) + '\n\n...[已截断，原文 ' + fullContent.length + ' 字符]' : fullContent;
+  let content = fullContent;
+  if (truncated) {
+    // 动态赛程/榜单的最新结果集中在尾部。保留头 25%（标题/时区）+ 尾 75%（最新赛果）。
+    // FIFA 页面增长到约 78k 字后，旧 40/60 会刚好截掉倒数第二场半决赛，只留下最后一场。
+    const headLength = Math.max(1, Math.floor(max_length * 0.25));
+    const tailLength = Math.max(1, max_length - headLength);
+    content = fullContent.slice(0, headLength)
+      + `\n\n...[中间内容已截断，原文 ${fullContent.length} 字符]...\n\n`
+      + fullContent.slice(-tailLength);
+  }
 
   // v0.14：browser fallback 返回的额外字段（截图 + 原始 HTML）
   //   从 tryBrowserFallback 传递（仅当走了 browser 路径时才有）

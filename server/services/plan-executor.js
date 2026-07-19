@@ -163,6 +163,156 @@ function topologicalSort(steps) {
   return result;
 }
 
+// v0.49: 内容生成类工具自动注入上游数据兜底
+//   适用条件（全部满足才动）：
+//     - tool ∈ {generate_image, document_gen}（"内容生成"工具，需要上游数据才合理）
+//     - step.depends_on 不空（明确在 plan 数据流里）
+//     - 上游 step ∈ {web_search, web_research, fetch_url}（数据源）且有 formatted / results
+//     - 当前 args.prompt（或 instruction）**不含 ${...} 模板**（LLM 没手动引用）
+//   行为：把上游数据源 step 的 formatted 拼到 args.prompt 前面，作为"上游数据"块
+//   不覆盖 LLM 已经写的内容（用 prefix 形式叠加）
+//   治："LLM 不写 ${...} 模板"症状 —— 不管 LLM 学没学会 syntax，prompt 必有真数据
+//   marker：CTX_DIVIDER 隔离 prefix 和原 prompt — handler 可剥 marker 拿原 prompt 做文件名/落库元数据
+const CTX_DIVIDER = '__ACMS_AUTO_CONTEXT_END__';
+
+// 所有数据源工具对 plan 暴露同一个“可读正文 + 结果列表”契约。
+// web_search: formatted/results；web_research: answer/searchResults；fetch_url: content/text。
+function getCanonicalUpstreamPayload(step) {
+  const r = step?.result;
+  if (!r || typeof r !== 'object') return { text: '', results: [] };
+  const textCandidates = [r.formatted, r.answer, r.content, r.text];
+  const text = textCandidates.find(v => typeof v === 'string' && v.trim()) || '';
+  const results = Array.isArray(r.results) ? r.results
+    : Array.isArray(r.searchResults) ? r.searchResults
+    : Array.isArray(r.sources) ? r.sources
+    : [];
+  return { text, results };
+}
+
+function autoInjectUpstreamContext(args, step, planDoc) {
+  if (!args || typeof args !== 'object') return args;
+  const CONTENT_TOOLS = new Set(['generate_image', 'document_gen']);
+  const DATA_TOOLS = new Set(['web_search', 'web_research', 'fetch_url']);
+  if (!CONTENT_TOOLS.has(step.tool)) return args;
+  if (!Array.isArray(step.depends_on) || step.depends_on.length === 0) return args;
+
+  // 检测 prompt / instruction 里是否已经有 ${...} 模板
+  const hasTemplate = (s) => typeof s === 'string' && /\$\{[a-zA-Z0-9_]+\.[^}]+\}/.test(s);
+  const promptField = typeof args.prompt === 'string' ? 'prompt'
+                     : typeof args.instruction === 'string' ? 'instruction'
+                     : null;
+  if (!promptField) return args;
+  const userPrompt = args[promptField];
+  if (hasTemplate(userPrompt)) return args;  // 模板仍未解析：交给 validateResolvedArgs 硬阻断
+  let groundedInstruction = userPrompt;
+
+  // 收集上游 data-source step 的 canonical text/results
+  const blocks = [];
+  for (const depId of step.depends_on) {
+    const depStep = (planDoc.steps || []).find(s => s.id === depId);
+    if (!depStep || !depStep.result) continue;
+    if (!DATA_TOOLS.has(depStep.tool)) continue;
+    const payload = getCanonicalUpstreamPayload(depStep);
+    if (payload.text) {
+      blocks.push(`【上游 ${depId} (${depStep.tool}) 数据】\n${payload.text}`);
+      // 显式模板已在 resolveStepArgs 中展开时，把正文从原指令移除，避免同一上游数据出现两份。
+      if (groundedInstruction.includes(payload.text)) {
+        groundedInstruction = groundedInstruction.split(payload.text).join('【使用上游已核验数据】');
+      }
+    } else if (payload.results.length > 0) {
+      const trimmed = payload.results.slice(0, 5).map(x => ({
+        title: x.title, url: x.url,
+        snippet: (x.snippet || '').slice(0, 200),
+      }));
+      blocks.push(`【上游 ${depId} (${depStep.tool}) 数据(JSON 摘要)】\n${JSON.stringify(trimmed, null, 2)}`);
+    }
+  }
+  if (blocks.length === 0) return args;
+
+  // 注入到 prompt 前；marker 隔离上游事实与原始生成/整理指令。
+  const newArgs = { ...args };
+  newArgs[promptField] = `${blocks.join('\n\n')}\n\n${CTX_DIVIDER}\n${groundedInstruction}`;
+  return newArgs;
+}
+
+/**
+ * v0.49: 模板变量注入 — args 里的 "${s1.formatted}" 替换为 step s1 的 result 中对应字段值
+ *   支持任意深度路径：${s1.formatted} / ${s2.file_ids.0.id} / ${s1.results.0.title}
+ *   语法：${<step_id>.<dot.path>}
+ *   找不到对应 step / result 路径时保留原字符串（不报错，让 LLM 看到 raw 提示自己修正）
+ * @returns 新的 args 对象（不 mutate 原 step.args）
+ */
+function resolveStepArgs(args, planDoc) {
+  if (!args || typeof args !== 'object' || !planDoc) return args;
+  const idx = new Map();
+  for (const s of planDoc.steps) idx.set(s.id, s);
+  const walk = (val) => {
+    if (typeof val === 'string') {
+      return val.replace(/\$\{([a-zA-Z0-9_]+)\.([^\}]+)\}/g, (m, sid, path) => {
+        const s = idx.get(sid);
+        if (!s || !s.result) return m;
+        const pathParts = path.split('.');
+        let cur = s.result;
+        for (const p of pathParts) {
+          if (cur == null) return m;
+          // plan 模板使用 canonical aliases：不同数据工具不再要求 LLM 记住 answer/formatted 等内部字段差异。
+          if (cur === s.result && p === 'formatted' && !Object.prototype.hasOwnProperty.call(cur, p)) {
+            cur = getCanonicalUpstreamPayload(s).text;
+          } else if (cur === s.result && p === 'results' && !Object.prototype.hasOwnProperty.call(cur, p)) {
+            cur = getCanonicalUpstreamPayload(s).results;
+          } else if (Array.isArray(cur) && /^\d+$/.test(p)) {
+            cur = cur[Number(p)];
+          } else if (typeof cur === 'object' && p in cur) {
+            cur = cur[p];
+          } else {
+            return m;
+          }
+        }
+        if (cur == null) return m;
+        if (typeof cur === 'object') return JSON.stringify(cur);
+        return String(cur);
+      });
+    }
+    if (Array.isArray(val)) return val.map(walk);
+    if (typeof val === 'object') {
+      const out = {};
+      for (const [k, v] of Object.entries(val)) out[k] = walk(v);
+      return out;
+    }
+    return val;
+  };
+  return walk(args);
+}
+
+/**
+ * 下游工具绝不能收到未解析的 ${step.path} 占位符。
+ * 过去这里 fail-open，导致邮件把占位符原样发出、plan 仍显示 done。
+ */
+function validateResolvedArgs(args) {
+  const templates = [];
+  const seen = new Set();
+  const walk = (value) => {
+    if (typeof value === 'string') {
+      for (const match of value.matchAll(/\$\{[a-zA-Z0-9_]+\.[^}]+\}/g)) {
+        if (!seen.has(match[0])) {
+          seen.add(match[0]);
+          templates.push(match[0]);
+        }
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(walk);
+      return;
+    }
+    if (value && typeof value === 'object') Object.values(value).forEach(walk);
+  };
+  walk(args);
+  return templates.length > 0
+    ? { ok: false, error: 'UNRESOLVED_UPSTREAM_TEMPLATE', templates }
+    : { ok: true, templates: [] };
+}
+
 /**
  * v0.48: send_email 自动串联上游 step 的 file_ids 作附件
  *   触发条件：
@@ -227,16 +377,40 @@ async function runPlan(reqId, planDoc) {
         // 此分支永远不会进 — 仅说明意图
       }
       let effectiveArgs = step.args;
+      // v0.49: 模板变量注入（${s1.formatted} 引用上游 step result 字段）— 治数据流断层
+      effectiveArgs = resolveStepArgs(effectiveArgs, planDoc);
+      // v0.49: LLM 没引用 ${...} 也能拿到数据——内容生成 tool 上游数据兜底注入
+      effectiveArgs = autoInjectUpstreamContext(effectiveArgs, step, planDoc);
       if (step.tool === 'send_email') {
         const injected = injectUpstreamFileIds(step, planDoc);
         if (injected.changed) {
-          effectiveArgs = injected.args;
+          // v0.49: 合并而非完全覆盖，保留模板解析后的字段
+          effectiveArgs = { ...effectiveArgs, file_ids: injected.args.file_ids };
           console.log(`[plan-executor] ${reqId} send_email 自动注入 ${injected.added} 个 file_ids（来自上游步骤）`);
         }
       }
 
-      const tool = getTool(step.tool);
-      const result = await tool.handler(effectiveArgs, { reqId });
+      // v0.49: 同步工具白名单 — 让 handler 决定"等真完成" vs "fire-and-forget"
+      //   generate_image / document_gen 是真完成类（需 await 真实产出，避免假完成）
+      const SYNC_TOOLS = new Set(['generate_image', 'document_gen']);
+      const resolvedValidation = validateResolvedArgs(effectiveArgs);
+      let result;
+      if (!resolvedValidation.ok) {
+        // fail-closed：不调用有副作用的下游工具，交给统一失败分支写 plan_warning + skip 下游。
+        result = {
+          ok: false,
+          error: resolvedValidation.error,
+          message: `上游模板未解析：${resolvedValidation.templates.join(', ')}`,
+          unresolved_templates: resolvedValidation.templates,
+        };
+      } else {
+        const tool = getTool(step.tool);
+        result = await tool.handler(effectiveArgs, {
+          reqId,
+          sync: SYNC_TOOLS.has(step.tool),    // 同步工具才传 true
+          planDoc,                              // 让 handler 读 plan context (e.g. send_email 据此拒绝全局兜底)
+        });
+      }
 
       const isOk = result && result.ok !== false;
       step.status = isOk ? 'done' : 'failed';
@@ -248,9 +422,24 @@ async function runPlan(reqId, planDoc) {
       }
       updatePlanStepEntry(reqId, planDoc, step.id, step.status, result);
 
-      // 失败 → 下游依赖标 skipped
+      // 失败 → 下游依赖标 skipped + 立刻写 plan_warning system entry（治"用户焦虑等不到反馈"）
+      //   不再让 plan_executor 默默失败 — 失败时显式推到 chat 流让用户/前端立刻看见
       if (!isOk) {
         markDownstreamSkipped(reqId, planDoc, step.id);
+        writeSystemEntry(reqId, {
+          role: 'system',
+          source: 'plan_warning',
+          text: JSON.stringify({
+            type: 'plan_warning',
+            plan_id: planDoc.planId,
+            step_id: step.id,
+            tool: step.tool,
+            error: step.error,
+            message: `⚠️ 计划步骤 ${step.id} (${step.tool}) 失败：${(step.error || '').slice(0, 200)}${Array.isArray(step.depends_on) && step.depends_on.length ? ` — 下游 ${step.depends_on.length} 个步骤已被跳过` : ''}。LLM final answer 不再准确, 实际未完成。`,
+          }),
+          at: new Date().toISOString(),
+        });
+        console.log(`[plan-executor] ${reqId} step ${step.id} (${step.tool}) failed: ${step.error}`);
       }
     } catch (e) {
       step.status = 'failed';
@@ -259,7 +448,22 @@ async function runPlan(reqId, planDoc) {
       step.finished_at = new Date().toISOString();
       anyFailed = true;
       updatePlanStepEntry(reqId, planDoc, step.id, 'failed', step.result);
-      markDownstreamSkipped(reqId, planDoc.steps, step.id);
+      markDownstreamSkipped(reqId, planDoc, step.id);
+      // v0.50: 同步路径异常也写 plan_warning（治 catch 块异常被吞）
+      writeSystemEntry(reqId, {
+        role: 'system',
+        source: 'plan_warning',
+        text: JSON.stringify({
+          type: 'plan_warning',
+          plan_id: planDoc.planId,
+          step_id: step.id,
+          tool: step.tool,
+          error: e.message,
+          message: `⚠️ 计划步骤 ${step.id} (${step.tool}) 抛异常：${e.message.slice(0, 200)} — 已被 mark failed。`,
+        }),
+        at: new Date().toISOString(),
+      });
+      console.log(`[plan-executor] ${reqId} step ${step.id} (${step.tool}) crashed: ${e.message}`);
     }
   }
 
@@ -368,4 +572,13 @@ function writeSystemEntry(reqId, entry) {
   appendChatEntry(reqId, entry);
 }
 
-module.exports = { executePlan, validatePlan, topologicalSort, injectUpstreamFileIds };
+module.exports = {
+  executePlan,
+  validatePlan,
+  topologicalSort,
+  injectUpstreamFileIds,
+  resolveStepArgs,
+  autoInjectUpstreamContext,
+  validateResolvedArgs,
+  getCanonicalUpstreamPayload,
+};

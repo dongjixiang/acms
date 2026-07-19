@@ -39,7 +39,16 @@ registerTool({
   },
 });
 
-console.log('[mock] 3 个 mock tool 注册完成');
+registerTool({
+  name: 'mock_throw',
+  description: 'mock',
+  parameters: { type: 'object', properties: {} },
+  async handler() {
+    throw new Error('MOCK_THROW');
+  },
+});
+
+console.log('[mock] 4 个 mock tool 注册完成');
 
 // === Mock 2: 拦截 reqStore.update，把 plan 数据存到内存 ===
 const fakeStore = { reqId: 'TEST-REQ', plan: null, plan_status: null };
@@ -178,6 +187,28 @@ async function main() {
   if (!fakeStore.plan) throw new Error('plan 字段未持久化');
   if (fakeStore.plan_status !== 'partial_failed') throw new Error('plan_status 应为 partial_failed');
   await test('Test E: plan + plan_status 持久化', async () => {});
+
+  console.log('\n=== Test F: tool throw → 当前 step failed + 下游 skipped ===');
+  chatHistory.length = 0;
+  fakeStore.plan = null;
+  fakeStore.plan_status = null;
+
+  await planExecutor.executePlan(fakeStore.reqId, {
+    summary: '异常失败隔离测试',
+    steps: [
+      { id: 's1', tool: 'mock_throw', args: {} },
+      { id: 's2', tool: 'mock_send_email', args: { to: 'a' }, depends_on: ['s1'] },
+    ],
+  });
+  await sleep(500);
+
+  const finalPlanF = JSON.parse(fakeStore.plan);
+  console.log(`  plan status: ${finalPlanF.status}, steps: ${finalPlanF.steps.map((s) => `${s.id}:${s.status}`).join(', ')}`);
+  if (finalPlanF.status !== 'partial_failed') throw new Error('异常 plan.status 应为 partial_failed');
+  if (finalPlanF.steps[0].status !== 'failed') throw new Error('异常 s1 应 failed');
+  if (finalPlanF.steps[1].status !== 'skipped') throw new Error('异常 s2 应 skipped');
+  if (!chatHistory.some(e => e.source === 'plan_warning')) throw new Error('异常路径缺 plan_warning');
+  await test('Test F: throw 异常隔离 + skipped', async () => {});
 
   console.log('\n=== 全部通过 ===');
 }
