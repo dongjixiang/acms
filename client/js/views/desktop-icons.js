@@ -36,7 +36,8 @@
     }
 
     // launchView('xxx') → actionType='viewName', actionValue=视图名
-    var viewMatch = onclickAttr.match(/launchView\s*\(\s*'(\w+)'\s*\)/);
+    // 注意：view name 可能含 '-'（如 file-manager），所以用 [^']+ 而不是 \w+
+    var viewMatch = onclickAttr.match(/launchView\s*\(\s*'([^']+)'\s*\)/);
     if (viewMatch) {
       return { actionType: 'viewName', actionValue: viewMatch[1] };
     }
