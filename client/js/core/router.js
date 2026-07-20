@@ -67,6 +67,13 @@ function setupWorkspaceNav() {
     btn.addEventListener('click', () => {
       const view = btn.dataset.view;
       showWorkspaceView(view);
+      // v0.57：桌面模式下 showWorkspaceView 内部已通过 ACMSWin.open → viewLoader 完成加载，
+      //   这里再调一遍 loadXxx 会改到隐藏的 #view-{name}（无效且浪费一次请求）。
+      //   只有传统模式（全屏）才需要手动触发对应 load/refresh 函数。
+      if (window.ACMSWin && ACMSWin.isActive()) {
+        App.closeSidebar();
+        return;
+      }
       if (view === 'dashboard' && typeof loadDashboard === 'function') loadDashboard();
       if (view === 'requirements' && typeof loadRequirements === 'function') loadRequirements();
       if (view === 'kanban' && typeof refreshKanban === 'function') refreshKanban();

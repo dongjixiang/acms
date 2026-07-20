@@ -1815,8 +1815,8 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
   display: flex;
   flex-direction: column;
   min-height: 540px;        /* v0.21 fix：原来只有 480px，加几条音乐卡就溢出视口外看不到 */
-  height: 540px;
-  max-height: 75vh;
+  height: 100%;             /* v0.55.1 fix：跟父容器撑开（之前 height:540px 写死 + 删 max-height:75vh 后仍断链） */
+  /* v0.55.1：去掉 max-height: 75vh。最大化窗口时父容器 ≈ 80vh，max-height 75vh 会留 ~5vh 空白 */
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg);

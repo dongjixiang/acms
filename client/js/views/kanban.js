@@ -12,14 +12,22 @@ function _isArchiveFailedExpanded() {
   return localStorage.getItem(_KANBAN_DIVIDER_STORAGE_KEY) === '1';
 }
 
+// document supports getElementById; ACMS window roots are HTMLElements and do not.
+function _kanbanFindById(root, id) {
+  const R = root || document;
+  return R === document ? document.getElementById(id) : R.querySelector('#' + id);
+}
+
 // 应用初始收起状态（页面加载时立即调用）
-function applyKanbanDividerState() {
+// v0.57: root 参数用于 scope 到窗口内的 DOM（默认 document，向后兼容）
+function applyKanbanDividerState(root) {
+  const R = root || document;
   const expanded = _isArchiveFailedExpanded();
   for (const col of _KANBAN_DIVIDER_COLS) {
-    const el = document.querySelector('.kanban-col[data-col="' + col + '"]');
+    const el = R.querySelector('.kanban-col[data-col="' + col + '"]');
     if (el) el.style.display = expanded ? '' : 'none';
   }
-  const btn = document.getElementById('kanban-divider-toggle');
+  const btn = _kanbanFindById(R, 'kanban-divider-toggle');
   if (btn) {
     btn.classList.toggle('expanded', expanded);
     btn.title = expanded ? '收起已归档/失败' : '展开已归档/失败';
@@ -27,20 +35,23 @@ function applyKanbanDividerState() {
 }
 
 // 切换已归档+已失败两列的可见性
-function toggleArchiveFailed() {
+function toggleArchiveFailed(root) {
   const willExpand = !_isArchiveFailedExpanded();
   localStorage.setItem(_KANBAN_DIVIDER_STORAGE_KEY, willExpand ? '1' : '0');
-  applyKanbanDividerState();
+  applyKanbanDividerState(root);
 }
 
 // 页面加载时立即应用（DOM 已就绪，因为脚本在 body 末尾）
 applyKanbanDividerState();
 
-async function loadKanbanReqFilter() {
+// v0.57: root 参数用于 scope 到窗口内的 select 元素
+async function loadKanbanReqFilter(root) {
   if (!App.currentProjectId) return;
   try {
     const reqs = await Requirements.list({ projectId: App.currentProjectId });
-    document.getElementById('kanban-req-filter').innerHTML = '<option value="">全部需求</option>' + reqs.filter(r => ['approved', 'in_execution', 'done'].includes(r.status)).map(r => `<option value="${r.id}">${escHtml(r.title)}</option>`).join('');
+    const R = root || document;
+    const sel = _kanbanFindById(R, 'kanban-req-filter');
+    if (sel) sel.innerHTML = '<option value="">全部需求</option>' + reqs.filter(r => ['approved', 'in_execution', 'done'].includes(r.status)).map(r => `<option value="${r.id}">${escHtml(r.title)}</option>`).join('');
   } catch (e) { /* */ }
 }
 
@@ -101,22 +112,28 @@ function renderGenPreview(t) {
   }
 }
 
-async function refreshKanban(parentId) {
+// v0.57: root 参数用于 scope 到窗口内的 DOM（默认 document，向后兼容）
+async function refreshKanban(parentId, root) {
+  const R = root || document;
   if (!App.currentProjectId) return;
-  const filterVal = parentId || document.getElementById('kanban-req-filter')?.value || '';
+  const filterEl = _kanbanFindById(R, 'kanban-req-filter');
+  const filterVal = parentId || (filterEl && filterEl.value) || '';
   let agentOpts = '<option value="">选择智能体</option>';
   try {
     const r = await fetch('/api/agents', { headers: { 'X-API-Key': 'dev-key-001' } });
     (await r.json()).forEach(a => { agentOpts += '<option value="' + a.id + '">' + (a.name || a.id) + '</option>'; });
   } catch(e) {}
-  if (!_kanbanFilterLoaded) { await loadKanbanReqFilter(); _kanbanFilterLoaded = true; }
+  if (!_kanbanFilterLoaded) { await loadKanbanReqFilter(R); _kanbanFilterLoaded = true; }
   try {
     const board = await Tasks.board(App.currentProjectId, filterVal || undefined);
     // v0.X fix: 加 failed 列 — 之前失败任务被静默丢失，现在后端返回 failed 桶
     for (const col of ['backlog', 'in_progress', 'review', 'done', 'archived', 'failed']) {
       const tasks = board[col] || [];
-      document.getElementById('count-' + col).textContent = tasks.length;
-      document.getElementById('col-' + col).innerHTML = tasks.map(t => {
+      const countEl = _kanbanFindById(R, 'count-' + col);
+      if (countEl) countEl.textContent = tasks.length;
+      const colEl = _kanbanFindById(R, 'col-' + col);
+      if (!colEl) continue;
+      colEl.innerHTML = tasks.map(t => {
         const blocked = t.blocked === 1 || t.blocked === '1' || t.blocked === true;
         const blockedClass = blocked ? ' task-blocked' : '';
         const bugClass = t.type === 'bug' ? ' bug-card' : '';
@@ -138,11 +155,11 @@ async function refreshKanban(parentId) {
         </div>`;
       }).join('') || '<div class="empty" style="padding:12px">-</div>';
     }
-    // v0.35: 初始化拖拽支持
-    initKanbanDragDrop();
+// v0.35: 初始化拖拽支持 — scope 到窗口内 DOM
+    initKanbanDragDrop(R);
     // v0.X: 如果 auto-review checkbox 已勾选但 poller 未启动，自动启动
     //   之前 onchange 只在用户手动操作时触发，页面刷新后 checkbox 状态保留但 poller 丢失
-    var _arCheckbox = document.getElementById('auto-review-global');
+    var _arCheckbox = _kanbanFindById(R, 'auto-review-global');
     if (_arCheckbox && _arCheckbox.checked && (typeof _autoReviewTimer === 'undefined' || _autoReviewTimer === null)) {
       toggleGlobalAutoReview(true);
     }
@@ -505,11 +522,13 @@ function hideProgressTooltip() {
     _progressTooltipPollTimer = null;
   }
 }
-function initKanbanDragDrop() {
+// v0.57: root 参数用于 scope 到窗口内的 DOM（默认 document，向后兼容）
+function initKanbanDragDrop(root) {
+  const R = root || document;
   const columns = ['backlog', 'in_progress', 'review', 'done', 'archived', 'failed'];
   // 为每个泳道列添加 drop 区域
   for (const col of columns) {
-    const colEl = document.getElementById('col-' + col);
+    const colEl = _kanbanFindById(R, 'col-' + col);
     if (!colEl) continue;
     colEl.setAttribute('draggable', 'false');
     colEl.addEventListener('dragover', function(e) {
@@ -531,14 +550,15 @@ function initKanbanDragDrop() {
       try {
         await api('POST', '/tasks/' + taskId + '/drag-drop', { targetStatus: col });
         toast('任务已移入 ' + col + ' ✅', 'success');
-        refreshKanban();
+        // v0.57: 用传入的 root 刷新，避免只刷新原 DOM
+        refreshKanban(undefined, R);
       } catch(err) {
         toast('拖拽失败: ' + err.message, 'error');
       }
     });
   }
-  // 为每个任务卡片添加 draggable
-  const cards = document.querySelectorAll('.task-card');
+  // 为每个任务卡片添加 draggable — scope 到 R 内的 .task-card
+  const cards = R.querySelectorAll('.task-card');
   cards.forEach(function(card) {
     card.setAttribute('draggable', 'true');
     card.addEventListener('dragstart', function(e) {

@@ -351,7 +351,8 @@ document.addEventListener('DOMContentLoaded', () => {
   <div id="toast-container"></div>
 
   <!-- ====== 自由对话（独立窗口模板，复用需求聊天控件结构） ====== -->
-  <div id="view-chat" class="view-main" style="display:none">
+  <!-- v0.55.1 fix：height:100% 让 idea-panel {height:100%} 生效（之前 view-chat 高度 auto，导致 .aw-content flex 撑开断链） -->
+  <div id="view-chat" class="view-main" style="display:none;height:100%">
     <div id="idea-panel-__free__" class="idea-panel" style="height:100%;display:flex;flex-direction:column">
       <div class="insight-header">
         <span class="insight-title" id="chat-mode-title-__free__">💬 自由对话</span>
@@ -769,6 +770,48 @@ document.addEventListener('DOMContentLoaded', () => {
       w.$c.style.flexDirection = 'column';
       w.$c.style.height = '100%';
       if (typeof window.loadChatRecycleBin === 'function') window.loadChatRecycleBin();
+    });
+
+    // v0.57 任务看板 — 克隆 #view-kanban 后 scope 调用 refreshKanban(w.$c)
+    //   bug 修复：
+    //     1. 之前没注册 viewLoader，窗口打开后是空壳（refreshKanban 没被触发）
+    //     2. 之前 kanban.js 用 document.getElementById 全局查 DOM，
+    //        toggleArchiveFailed 改的是隐藏模板 #view-kanban 的列，窗口内副本不响应
+    ACMSWin.registerViewLoader('kanban', function(w) {
+      if (!App.currentProjectId) {
+        w.$c.innerHTML = '<div style="padding:40px;text-align:center;color:var(--accent2)">⚠ 请先在任务栏选择项目</div>';
+        return;
+      }
+      var src = document.getElementById('view-kanban');
+      if (!src) { w.$c.innerHTML = ''; return; }
+      w.$c.innerHTML = src.innerHTML;
+      w.$c.style.display = '';
+      // 重新绑定 kanban-divider-toggle 按钮到窗口内（内联 onclick 在克隆时已带上，
+      // 但 onclick 里的 toggleArchiveFailed() 用 document 查 DOM，会查到原隐藏模板；
+      // 这里用闭包版覆盖 onclick，让它 scope 到 w.$c）
+      var dividerBtn = w.$c.querySelector('#kanban-divider-toggle');
+      if (dividerBtn) {
+        dividerBtn.onclick = function() { toggleArchiveFailed(w.$c); };
+      }
+      // 重新绑定 kanban-req-filter 的 onchange（内联 onchange="refreshKanban()" 不带 root，
+      // 这里 scope 到 w.$c）
+      var filterEl = w.$c.querySelector('#kanban-req-filter');
+      if (filterEl) {
+        filterEl.onchange = function() { refreshKanban(undefined, w.$c); };
+      }
+      // 重新绑定刷新按钮（内联 onclick="refreshKanban()" 不带 root）
+      var refreshBtn = w.$c.querySelector('.view-header button.btn-accept');
+      if (refreshBtn) {
+        refreshBtn.onclick = function() { refreshKanban(undefined, w.$c); };
+      }
+      // 显式加载窗口内的 requirement filter（绕开 _kanbanFilterLoaded 全局 flag —
+      //   否则用户在传统模式用过 kanban 后打开窗口，flag=true 会跳过窗口内 select 填充）
+      if (typeof loadKanbanReqFilter === 'function') loadKanbanReqFilter(w.$c);
+      // 调 refreshKanban 填充任务数据 + 应用 divider 状态（scope 到 w.$c）
+      return Promise.resolve(refreshKanban(undefined, w.$c)).then(function() {
+        if (w.dead) return;
+        applyKanbanDividerState(w.$c);
+      });
     });
   }
 })();
