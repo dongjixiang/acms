@@ -34,29 +34,6 @@ function initApp() {
   if (typeof setupDesktopIcons === 'function') setupDesktopIcons();
 }
 
-// v0.55→v0.56：保留兼容性 shim（desktop-icons.js 已接管图标管理）
-function registerDesktopRecycleIcon() {
-  // 如果 desktop-icons.js 已初始化，不重复注册
-  if (window.ACMSWin && typeof ACMSWin.getPinnedIcons === 'function') {
-    var pinned = ACMSWin.getPinnedIcons();
-    var hasRecycle = pinned.some(function(p) { return p.id === 'chat-recycle'; });
-    if (hasRecycle) return;
-  }
-  // fallback：旧逻辑
-  if (!window.ACMSWin || !ACMSWin.registerDesktopIcon) return;
-  ACMSWin.registerDesktopIcon({
-    id: 'chat-recycle',
-    icon: '🗑',
-    label: '回收站',
-    badge: 0,
-    onClick: function() {
-      if (typeof window.openChatRecycleBin === 'function') {
-        window.openChatRecycleBin();
-      }
-    },
-  });
-}
-
 // ===== 项目列表（从启动菜单调用） =====
 window.showProjectList = function() {
     // 直接调用 launchProjects() 走窗口逻辑

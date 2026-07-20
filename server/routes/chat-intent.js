@@ -13,13 +13,6 @@ const router = express.Router();
 const reqStore = require('../stores/requirement-store');
 const toolRegistry = require('../services/tool-registry');
 const { runToolLoop } = require('../services/llm-adapter');
-
-// v0.55：从 session.title ("对话 N · ...") 提取序号 N；找不到返回 1
-function extractTitleN(title) {
-  if (typeof title !== 'string') return 1;
-  const m = title.match(/^对话\s*(\d+)/);
-  return m ? parseInt(m[1], 10) : 1;
-}
 const modelStore = require('../stores/model-store');
 
 // v0.20d：7 个外部 tool（play_music 由预检覆盖，不加进 LLM 可见避免重复触发）
@@ -189,22 +182,18 @@ router.post('/detect-and-respond', async (req, res, next) => {
         });
       }
 
-      // 1. v0.55：如果是 sessionId，加载历史 + 写 user/assistant 消息 + 触发自动标题
+      // 1. v0.55.1：session 模式委托给 chat-session-service（thin 层）
       const isSession = typeof reqId === 'string' && reqId.startsWith('sess-');
+      const sessionSvc = require('../services/chat-session-service');
       let historyMessages = [];
       let isFirstUserMsg = false;
       let session = null;
       if (isSession) {
         try {
-          const { collection } = require('../db/connection');
-          session = collection('chat_sessions').findOne(s => s.id === reqId);
+          session = sessionSvc.getSession(reqId);
           if (session) {
-            const hist = collection('chat_messages')
-              .find(m => m.session_id === reqId)
-              .sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
-            // 转换为 LLM 消息格式（限最近 20 条，省 token）
-            historyMessages = hist.slice(-20).map(m => ({ role: m.role, content: m.content }));
-            isFirstUserMsg = !hist.some(m => m.role === 'user');
+            historyMessages = sessionSvc.loadHistoryForLLM(reqId);
+            isFirstUserMsg = sessionSvc.isFirstUserMessage(reqId);
           }
         } catch (e) {
           console.error('[detect-and-respond] 加载 session 失败:', e.message);
@@ -214,16 +203,7 @@ router.post('/detect-and-respond', async (req, res, next) => {
       // 2. 写 user message（仅 session 模式）
       if (isSession && session) {
         try {
-          const { collection } = require('../db/connection');
-          collection('chat_messages').insert({
-            session_id: reqId,
-            role: 'user',
-            content: text,
-            attachments_json: null,
-            meta_json: null,
-            ts: new Date().toISOString(),
-          });
-          collection('chat_sessions').update(s => s.id === reqId, { updated_at: new Date().toISOString() });
+          sessionSvc.appendMessage(reqId, 'user', text);
         } catch (e) {
           console.error('[detect-and-respond] 写 user message 失败:', e.message);
         }
@@ -250,24 +230,12 @@ router.post('/detect-and-respond', async (req, res, next) => {
         // 4. 写 assistant message + 触发自动标题（仅 session 模式）
         if (isSession && session) {
           try {
-            const { collection } = require('../db/connection');
-            collection('chat_messages').insert({
-              session_id: reqId,
-              role: 'assistant',
-              content: aiReply,
-              attachments_json: null,
-              meta_json: musicCardJson ? JSON.stringify({ music_card: musicCardJson }) : null,
-              ts: new Date().toISOString(),
-            });
+            const meta = musicCardJson ? { music_card: musicCardJson } : null;
+            sessionSvc.appendMessage(reqId, 'assistant', aiReply, meta);
             // 自动标题：仅首条 user message 时，且 title_auto=1
             if (isFirstUserMsg && session.title_auto) {
-              const first10 = text.trim().replace(/^@\s*/, '').slice(0, 10);
-              const truncated = text.trim().length > 10;
-              const newTitle = `对话 ${extractTitleN(session.title)} · ${first10}${truncated ? '…' : ''}`;
-              collection('chat_sessions').update(s => s.id === reqId, {
-                title: newTitle,
-                updated_at: new Date().toISOString(),
-              });
+              const newTitle = sessionSvc.generateAutoTitle(text, session.title);
+              sessionSvc.updateSessionTitle(reqId, newTitle);
               console.log(`[detect-and-respond] ${reqId} 自动标题: ${newTitle}`);
             }
           } catch (e) {

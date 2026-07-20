@@ -40,7 +40,7 @@
     'web-browser':  { icon: '🌐', label: '浏览器' },
   };
   var viewLoaders = {};
-  var desktopIcons = [];   // v0.55：桌面图标（右下角）
+  // 注：桌面图标渲染由 desktop-icons.js 接管，window-manager 只提供底层 _replaceDesktopIcons / _onDesktopIconMoved API
 
   // ── 注册视图加载器 ──
   function registerViewLoader(viewName, loaderFn) {
@@ -286,7 +286,8 @@
     if (header) header.style.display = 'none';
     d.style.display = 'block';
     desktopShown = true;
-    renderDesktopIcons();
+    // 桌面图标由 desktop-icons.js 监听此事件后自己调用 _replaceDesktopIcons 渲染
+    document.dispatchEvent(new CustomEvent('acms:desktop-shown'));
   }
 
   function disable() {
@@ -388,16 +389,34 @@
     });
   }
 
-  // ── 桌面图标（v0.55 + v0.56 兼容 desktop-icons.js） ──
-  function registerDesktopIcon(spec) {
-    desktopIcons.push(spec);
-    renderDesktopIcons();
+  // v0.55 抽离后：window-manager 只暴露底层 _replaceDesktopIcons / updateDesktopIconBadge API
+  //   - desktop-icons.js 通过 _replaceDesktopIcons 管理 spec 数组 + localStorage
+  //   - 任意模块（如 taskbar.js 刷新回收站 badge）通过 updateDesktopIconBadge 直接改 DOM
+
+  // v0.56：替换全部桌面图标（供 desktop-icons.js 调用）
+  function replaceDesktopIcons(specs) {
+    renderDesktopIcons(specs || []);
   }
 
-  // v0.56：直接更新 DOM badge，不动 desktopIcons 数组（避免 _replaceDesktopIcons 时被覆盖）
+  // 直接更新 DOM badge（不重渲染整图标，避免覆盖 desktop-icons.js 的 spec）
   function updateDesktopIconBadge(id, badge) {
-    var el = document.querySelector('.desktop-icon[data-icon-id="' + cssEscape(id) + '"]');
+    if (!window.CSS || !CSS.escape) {
+      // 老浏览器 fallback：粗暴用 querySelectorAll + 遍历
+      var all = document.querySelectorAll('.desktop-icon');
+      for (var i = 0; i < all.length; i++) {
+        if (all[i].dataset.iconId === id) {
+          applyBadgeToIcon(all[i], badge);
+          return;
+        }
+      }
+      return;
+    }
+    var el = document.querySelector('.desktop-icon[data-icon-id="' + CSS.escape(id) + '"]');
     if (!el) return;
+    applyBadgeToIcon(el, badge);
+  }
+
+  function applyBadgeToIcon(el, badge) {
     var badgeEl = el.querySelector('.di-badge');
     var n = badge && badge > 0 ? badge : 0;
     if (n > 0) {
@@ -414,27 +433,14 @@
     }
   }
 
-  // CSS.escape polyfill（老浏览器兼容）
-  function cssEscape(s) {
-    if (window.CSS && CSS.escape) return CSS.escape(s);
-    return String(s).replace(/[^\w-]/g, function(c) { return '\\' + c.charCodeAt(0).toString(16) + ' '; });
-  }
-
-  // v0.56：替换全部桌面图标（供 desktop-icons.js 调用）
-  function replaceDesktopIcons(specs) {
-    desktopIcons = [];
-    specs.forEach(function(s) { desktopIcons.push(s); });
-    renderDesktopIcons();
-  }
-
-  function renderDesktopIcons() {
+  function renderDesktopIcons(specs) {
     var c = document.getElementById('desktop-icons');
     if (!c) return;
     if (!desktopShown) { c.innerHTML = ''; return; }
     c.innerHTML = '';
     var inner = document.createElement('div');
     inner.id = 'desktop-icons-inner';
-    desktopIcons.forEach(function(icon, idx) {
+    specs.forEach(function(icon, idx) {
       var div = document.createElement('div');
       div.className = 'desktop-icon';
       div.title = icon.label;
@@ -549,26 +555,6 @@
   // 拖拽移动回调（由 desktop-icons.js 设置，持久化 x/y 到 localStorage）
   var _onDesktopIconMoved = null;
 
-  // ── 自动排列——桌面图标──
-  function autoArrangeDesktopIcons() {
-    var startX = 20, startY = 20;
-    var colGap = 100, rowGap = 110;
-    var cols = Math.max(1, Math.floor((window.innerWidth - 40) / colGap));
-    desktopIcons.forEach(function(icon, idx) {
-      var col = idx % cols;
-      var row = Math.floor(idx / cols);
-      icon.x = startX + col * colGap;
-      icon.y = startY + row * rowGap;
-    });
-    renderDesktopIcons();
-    // 持久化位置（遍历所有图标触发回调）
-    desktopIcons.forEach(function(icon) {
-      if (typeof _onDesktopIconMoved === 'function') {
-        _onDesktopIconMoved(icon.id, icon.x, icon.y);
-      }
-    });
-  }
-
   // ── 处理预注册队列（在 window-manager.js 加载前注册的 loader）──
   if (window._viewLoaderQueue) {
     window._viewLoaderQueue.forEach(function(item) {
@@ -593,11 +579,8 @@
     getTitle: getTitle,            // v0.55
     onTitleEdit: function(w, fn) { w.onTitleEdit = fn; },  // v0.55
     onWindowClose: function(w, fn) { w.onClose = fn; },    // v0.55（实际是 open 时传 opts.onClose，这里补一个 setter）
-    registerDesktopIcon: registerDesktopIcon,              // v0.55
-    updateDesktopIconBadge: updateDesktopIconBadge,        // v0.55
-    _replaceDesktopIcons: replaceDesktopIcons,              // v0.56（内部，由 desktop-icons.js 调用）
+    _replaceDesktopIcons: replaceDesktopIcons,              // v0.56 底层 API（由 desktop-icons.js 调用）
+    updateDesktopIconBadge: updateDesktopIconBadge,        // v0.55 保留（直接更新 DOM，taskbar.js 刷回收站 badge 用）
     _onDesktopIconMoved: function(fn) { _onDesktopIconMoved = fn; },  // v0.57：自由拖拽位置持久化回调
-    _onDesktopIconsReordered: null,                         // 保留兼容（不再使用）
-    autoArrangeDesktopIcons: autoArrangeDesktopIcons,       // v0.57：自动排列桌面图标
   };
 })();
