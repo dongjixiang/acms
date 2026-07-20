@@ -30,8 +30,19 @@ function init() {
   // 性能优化
   db.pragma('journal_mode = WAL');       // 写不阻塞读
   db.pragma('synchronous = NORMAL');     // 平衡安全与性能
-  db.pragma('cache_size = -8000');       // 8MB 缓存
+  db.pragma('cache_size = -64000');      // 64MB 缓存（DB 13.6MB 整库可驻留，避免冷查询回盘卡 Node 主线程）
+  db.pragma('wal_autocheckpoint = 2000'); // 默认 1000 → 2000，少 checkpoint 抖动
+  db.pragma('temp_store = MEMORY');      // 临时表/排序走内存，避免临时文件落盘
   db.pragma('foreign_keys = ON');
+
+  // 每 5 分钟 TRUNCATE 一次 WAL，避免 WAL 累积导致读路径变重
+  setInterval(() => {
+    try {
+      const r = db.pragma('wal_checkpoint(TRUNCATE)');
+      // r: [busy, log_pages, checkpointed_pages]
+      if (r && r[1] > 100) console.log(`[DB] WAL checkpoint: ${r[1]} pages → ${r[2]} pages`);
+    } catch (e) { console.error('[DB] WAL truncate failed:', e.message); }
+  }, 5 * 60 * 1000);
 
   // 预建所有已知集合的表
   for (const name of KNOWN_COLLECTIONS) {
