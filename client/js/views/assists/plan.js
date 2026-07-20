@@ -28,6 +28,11 @@
     failed: '❌',
     skipped: '⏭',
   };
+  // v0.50: failed / skipped 步骤的 CSS class（让前端 CSS 可红色高亮）
+  const STATUS_CLASS = {
+    failed: 'plan-step-failed',
+    skipped: 'plan-step-skipped',
+  };
 
   const OVERALL_TEXT = {
     loading: 'AI 正在帮你处理',
@@ -64,11 +69,13 @@
 
   function renderStepRow(s) {
     const icon = STATUS_ICON[s.status] || '⏸';
-    const errorHtml = s.error ? `<div class="plan-step-error">${escHtml(s.error)}</div>` : '';
+    const errorHtml = s.error ? `<div class="plan-step-error">${escHtml(s.error.slice(0, 300))}</div>` : '';
     const resultHtml = renderStepResultSummary(s);
     const stepNum = s.id.replace(/^s/, '');
+    // v0.50: failed / skipped 步骤加 class 让 CSS 可以红色高亮（治"用户看不出步骤失败"症状）
+    const statusClass = (s.status === 'failed' || s.status === 'skipped') ? ` plan-step-${s.status}` : '';
     return `
-      <div class="plan-step" data-step-id="${escHtml(s.id)}">
+      <div class="plan-step${statusClass}" data-step-id="${escHtml(s.id)}" data-step-status="${escHtml(s.status)}">
         <span class="plan-step-icon">${icon}</span>
         <span class="plan-step-num">${escHtml(stepNum)}</span>
         <span class="plan-step-tool">${escHtml(s.tool)}</span>
@@ -90,15 +97,21 @@
     if (r.ok === false) return ''; // 失败的 result 走 errorHtml 显示
 
     let text = '';
-    if (s.tool === 'web_search') {
-      const n = Array.isArray(r.results) ? r.results.length : (r.count || 0);
-      const first = Array.isArray(r.results) && r.results[0] && r.results[0].title ? r.results[0].title : '';
-      text = `${n} 条结果${first ? ' · ' + first.slice(0, 40) : ''}`;
-    } else if (s.tool === 'web_research') {
-      const n = Array.isArray(r.sources) ? r.sources.length : 0;
-      const ans = (r.answer || '').slice(0, 60);
-      text = `${n} 源${ans ? ' · ' + ans + (ans.length >= 60 ? '...' : '') : ''}`;
-    } else if (s.tool === 'send_email') {
+    // v0.50: ▼ 展开时显示 step result 详细摘要（治"前端看不到赛况文字"）
+    //   web_search → r.formatted（带 snippet 的搜索引擎结果列表，前 1500 字）
+    //   web_research → r.answer（LLM 综合摘要，前 1500 字）
+    //   即用户展开 plan-bubble 时能直接读到赛况/调研结论，而不是"8 条结果"一个数字
+    if (s.tool === 'web_search' && typeof r.formatted === 'string' && r.formatted.length > 0) {
+      const lim = r.formatted.slice(0, 1500);
+      const more = r.formatted.length > 1500 ? '\n... (太长已截断)' : '';
+      return `<div class="plan-step-formatted">${escHtml(lim + more)}</div>`;
+    }
+    if (s.tool === 'web_research' && typeof r.answer === 'string' && r.answer.length > 0) {
+      const lim = r.answer.slice(0, 1500);
+      const more = r.answer.length > 1500 ? '\n... (太长已截断)' : '';
+      return `<div class="plan-step-formatted">${escHtml(lim + more)}</div>`;
+    }
+    if (s.tool === 'send_email') {
       text = `→ ${r.to || ''}${r.message_id ? ' · 已发送' : ''}`;
     } else if (s.tool === 'document_gen') {
       text = r.docx_url ? '.docx 已生成' : (r.md_content ? '.md 已生成' : '文档已生成');
@@ -137,7 +150,7 @@
           <span class="plan-step-count">${totalSteps} 步骤</span>
           <span class="plan-toggle">▼</span>
         </div>
-        <div class="plan-detail" style="display:none">
+        <div class="plan-detail" style="display:block">
           ${stepsHtml || '<div class="plan-step-empty">（无步骤）</div>'}
           ${errorMsg}
         </div>
@@ -184,7 +197,7 @@
       }
 
       // 找每个 plan_id 的最新 entry
-      if (!latestById[data.plan_id] || new Date(e.at) > new Date(latestById[data.plan_id].at)) {
+      if (!latestById[data.plan_id] || new Date(e.at) > new Date(latestById[data.plan_id].entry.at)) {
         latestById[data.plan_id] = { entry: e, data };
       }
     }
@@ -209,14 +222,15 @@
     }
   }
 
-  // ▼ 折叠 toggle（暴露给 onclick）
+  // v0.50: 折叠 toggle（默认展开 ▼= ▲，点 ▼ 折叠；点 ▲ 展开）
   window.togglePlanDetail = function (headEl) {
     const detail = headEl.nextElementSibling;
     if (!detail) return;
-    const isHidden = detail.style.display === 'none';
-    detail.style.display = isHidden ? 'block' : 'none';
+    // 默认展开时 inline style = 'block'，点击要设 'none' 隐藏
+    const isHidden = detail.style.display !== 'none';
+    detail.style.display = isHidden ? 'none' : 'block';
     const toggle = headEl.querySelector('.plan-toggle');
-    if (toggle) toggle.textContent = isHidden ? '▲' : '▼';
+    if (toggle) toggle.textContent = isHidden ? '▼' : '▲';
   };
 
   // 暴露给 chat.js 调用

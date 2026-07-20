@@ -11,7 +11,7 @@ router.post('/', async (req, res, next) => {
   try {
     const { projectId, title, description, priority, tags, deadline, parentId, modelId, role, userRole } = req.body;
     if (!projectId || !title) return res.status(400).json({ error: 'MISSING_FIELDS' });
-    const requirement = reqStore.create({ projectId, title, description, priority, tags, deadline, createdBy: req.agentId || 'user', parentId: parentId || null, userRole: userRole || role || '' });
+    const requirement = reqStore.create({ projectId, title, description, priority, tags, deadline, owner: req.userId || 'user', createdBy: req.agentId || 'user', parentId: parentId || null, userRole: userRole || role || '' });
 
     // ── 同步：LLM 评估明确度（30 文档「一放一收」Step 2）──
     try {
@@ -40,13 +40,17 @@ router.post('/', async (req, res, next) => {
 
 // 需求列表
 router.get('/', (req, res) => {
-  const { projectId, status, parentId, rootOnly, limit, offset } = req.query;
+  const { projectId, status, parentId, rootOnly, limit, offset, lite } = req.query;
   res.json(reqStore.list({
     projectId, status,
     parentId: parentId || undefined,
     rootOnly: rootOnly === 'true',
     limit: parseInt(limit) || 50,
-    offset: parseInt(offset) || 0
+    offset: parseInt(offset) || 0,
+    // v0.49: List 接口默认精简（去 srs / structured_description / arch_spec / supplement_history 等大字段）
+    //   详情页走 GET /:id 拿完整 record，不受影响
+    //   显式传 ?lite=false 可拿老版完整 list（兼容 / 调试用）
+    lite: lite !== 'false',
   }));
 });
 

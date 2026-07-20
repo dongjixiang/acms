@@ -44,13 +44,57 @@ function toProviderFormat(api, toolNames) {
   }));
 }
 
+/**
+ * 递归解包 MiniMax/某些 provider 的 $text content block 格式。
+ * MiniMax Anthropic API 在长字符串参数里包装成 {"$text":"..."} 对象，
+ * 某些极端情况下还会散落在嵌套 key 里（如 {"$text":"part1","T":{"$text":"part2"}}）。
+ * 这里把所有对象拍平为字符串：收集所有 string/$text 值按 key 序拼接。
+ */
+function unwrapTextBlocks(obj) {
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj === 'string') return obj;
+  if (typeof obj !== 'object') return obj;
+
+  // 纯 $text 块: {"$text": "string"}
+  if (obj.$text && typeof obj.$text === 'string' && Object.keys(obj).length === 1) {
+    return obj.$text;
+  }
+
+  // 带 $text 的多 key 对象: {"$text":"p1","T":{"$text":"p2"}} → 拼接所有 string 值
+  if (obj.$text && typeof obj.$text === 'string') {
+    const parts = [];
+    for (const key of Object.keys(obj).sort()) {
+      const val = obj[key];
+      if (typeof val === 'string') {
+        parts.push(val);
+      } else if (val && typeof val === 'object' && val.$text && typeof val.$text === 'string') {
+        parts.push(val.$text);
+      } else {
+        // 尝试 JSON 化兜底
+        try { parts.push(JSON.stringify(val)); } catch { /* 静默 */ }
+      }
+    }
+    return parts.join('');
+  }
+
+  // 普通数组/对象 → 递归
+  if (Array.isArray(obj)) {
+    return obj.map(unwrapTextBlocks);
+  }
+  const result = {};
+  for (const [key, value] of Object.entries(obj)) {
+    result[key] = unwrapTextBlocks(value);
+  }
+  return result;
+}
+
 function extractToolCalls(api, responseData) {
   if (!responseData) return [];
 
   if (api === 'anthropic-messages') {
     return (responseData.content || [])
       .filter(b => b.type === 'tool_use')
-      .map(b => ({ id: b.id, name: b.name, args: b.input || {} }));
+      .map(b => ({ id: b.id, name: b.name, args: unwrapTextBlocks(b.input || {}) }));
   }
 
   const choices = responseData.choices || [];
@@ -58,7 +102,7 @@ function extractToolCalls(api, responseData) {
   return (message.tool_calls || []).map(tc => ({
     id: tc.id,
     name: tc.function.name,
-    args: safeParseJSON(tc.function.arguments, {}),
+    args: unwrapTextBlocks(safeParseJSON(tc.function.arguments, {})),
   }));
 }
 

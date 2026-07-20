@@ -22,71 +22,7 @@ document.addEventListener('DOMContentLoaded', () => {
 </head>
 <body>
 <div id="app">
-  <header id="header">
-    <button id="btn-hamburger" onclick="App.toggleSidebar()" title="菜单">☰</button>
-    <h1 id="header-title"><img src="/client/img/logo.png" alt="ACMS" class="header-logo"> <span data-i18n="app.title">智能体协同管理系统</span> <span class="version" data-i18n="app.version">v0.3</span></h1>
-    <div id="header-right">
-      <span id="current-project"></span>
-      <select id="role-switcher" class="role-switcher" onchange="App.setCurrentRole(this.value)" title="你的角色（影响澄清提问方向）">
-        <option value="pm">👤 PM</option>
-        <option value="tech">🛠 技术</option>
-        <option value="design">🎨 设计</option>
-      </select>
-      <button class="btn-small" onclick="navigateToAdmin()" title="系统管理（点击 → 运营工具 → 想法池 / 自我改进）">⚙️</button>
-      <button id="btn-theme-toggle" class="btn-small" onclick="App.toggleTheme()" title="切换主题">🌙</button>
-      <select id="lang-switcher" onchange="I18n.setLang(this.value)">
-        <option value="zh">🇨🇳 中文</option>
-        <option value="en">🇺🇸 English</option>
-      </select>
-      <span id="connection-status" class="status-offline">● <span data-i18n="common.offline">离线</span></span>
-    </div>
-  </header>
-
-  <!-- ====== 项目首页 ====== -->
-  <main id="view-projects" class="view-main">
-    <div class="projects-page">
-      <div class="projects-hero">
-        <div class="hero-icon">📦</div>
-        <h2 data-i18n="projects.title">我的项目</h2>
-        <p class="subtitle" data-i18n="projects.subtitle">选择一个项目进入，或创建新项目开始协作</p>
-      </div>
-
-      <div id="project-grid" class="project-grid"></div>
-
-      <!-- 新建项目区域 -->
-      <div class="create-project-section">
-        <div class="create-project-card" id="create-project-toggle" onclick="toggleCreateProject()">
-          <div class="create-icon">➕</div>
-          <div class="create-text">
-            <strong data-i18n="projects.create">新建项目</strong>
-            <span>创建一个新的工作空间，管理需求、任务和知识库</span>
-          </div>
-        </div>
-
-        <div id="create-project-form" class="create-project-form" style="display:none">
-          <h3 data-i18n="projects.form.title">📦 新建项目</h3>
-          <div class="form-two-col">
-            <div class="form-group">
-              <label data-i18n="projects.form.name">项目名称 <span class="required">*</span></label>
-              <input type="text" id="proj-name" data-i18n-attr="placeholder" data-i18n="projects.form.namePlaceholder" placeholder="例如：智体城" required>
-            </div>
-            <div class="form-group">
-              <label data-i18n="projects.form.slug">项目标识</label>
-              <input type="text" id="proj-slug" data-i18n-attr="placeholder" data-i18n="projects.form.slugPlaceholder" placeholder="URL友好的英文标识">
-            </div>
-          </div>
-          <div class="form-group">
-            <label data-i18n="projects.form.desc">描述</label>
-            <textarea id="proj-desc" rows="3" data-i18n-attr="placeholder" data-i18n="projects.form.descPlaceholder" placeholder="项目的简要描述..."></textarea>
-          </div>
-          <div class="form-actions">
-            <button class="btn-primary btn-lg" onclick="doCreateProject()" data-i18n="projects.form.submit">创建项目</button>
-            <button class="btn-back" onclick="toggleCreateProject()" data-i18n="projects.form.cancel">取消</button>
-          </div>
-        </div>
-      </div>
-  </main>
-
+  
   <!-- ====== 系统管理（独立页面） ====== -->
   <main id="view-admin" class="view-main" style="display:none">
     <div class="projects-page">
@@ -128,7 +64,7 @@ document.addEventListener('DOMContentLoaded', () => {
     <div id="sidebar-backdrop" onclick="App.closeSidebar()"></div>
     <div id="main-layout">
       <nav id="sidebar">
-        <button class="nav-btn nav-back" onclick="goToProjects()" style="margin-bottom:8px;padding-bottom:12px;border-bottom:1px solid var(--border)">← <span data-i18n="nav.backToProjects">返回项目列表</span></button>
+        <button class="nav-btn nav-back" onclick="goToProjects()" style="margin-bottom:8px;padding-bottom:12px;border-bottom:1px solid var(--border)">← <span data-i18n="nav.backToProjects">返回项目管理</span></button>
         <button class="nav-btn active" data-view="dashboard">📊 <span data-i18n="nav.dashboard">仪表盘</span></button>
         <button class="nav-btn" data-view="requirements">📋 <span data-i18n="nav.requirements">需求管理</span></button>
         <button class="nav-btn" data-view="kanban">📌 <span data-i18n="nav.kanban">任务看板</span></button>
@@ -413,6 +349,119 @@ document.addEventListener('DOMContentLoaded', () => {
   </div>
 
   <div id="toast-container"></div>
+
+  <!-- ====== 自由对话（独立窗口模板，复用需求聊天控件结构） ====== -->
+  <div id="view-chat" class="view-main" style="display:none">
+    <div id="idea-panel-__free__" class="idea-panel" style="height:100%;display:flex;flex-direction:column">
+      <div class="insight-header">
+        <span class="insight-title" id="chat-mode-title-__free__">💬 自由对话</span>
+        <span id="chat-mode-chip-__free__" class="chat-mode-chip chat-mode-free"
+              onclick="toggleChatMode('__free__')" title="当前：自由对话 · 点切回想法澄清">
+          <span class="chat-mode-label">💬 自由对话</span>
+          <span class="chat-mode-icon">⇄</span>
+        </span>
+      </div>
+      <div id="chat-stream-container-__free__" class="chat-stream-container" style="flex:1;overflow:hidden;display:flex;flex-direction:column">
+        <div class="chat-stream" id="chat-stream-msgs-__free__" style="flex:1;overflow-y:auto">
+          <div class="chat-free-welcome" style="text-align:center;padding:40px 20px;color:var(--text2)">
+            <div style="font-size:32px;margin-bottom:8px">💬</div>
+            <div style="font-size:15px;font-weight:500;color:var(--text);margin-bottom:4px">自由对话</div>
+            <div style="font-size:12px">问我任何问题，AI 会基于知识库和互联网帮你解答</div>
+          </div>
+        </div>
+        <button class="chat-scroll-top-btn" id="chat-scroll-top-btn-__free__"
+          onclick="chatScrollToggle('__free__')" title="滚到顶部">📜</button>
+        <div class="chat-stream-input">
+          <div class="chat-attach-preview" id="chat-attach-preview-__free__" style="display:none"></div>
+          <div class="chat-input-area">
+            <div class="chat-input-popover" id="chat-input-popover-__free__" style="display:none">
+              <div class="popover-item" onclick="chatUploadTrigger('__free__','image')"><span class="pop-icon">🖼</span><span>图片</span><span class="pop-hint">PNG · JPG · WEBP</span></div>
+              <div class="popover-item" onclick="chatUploadTrigger('__free__','pdf')"><span class="pop-icon">📕</span><span>PDF</span><span class="pop-hint">.pdf</span></div>
+              <div class="popover-item" onclick="chatUploadTrigger('__free__','docx')"><span class="pop-icon">📘</span><span>Word</span><span class="pop-hint">.docx</span></div>
+              <div class="popover-item" onclick="chatUploadTrigger('__free__','text')"><span class="pop-icon">📄</span><span>文本 / 代码</span><span class="pop-hint">.md .txt .json</span></div>
+            </div>
+            <input type="file" id="chat-file-__free__" class="hidden" style="display:none" multiple onchange="chatUploadFile('__free__', this)">
+            <div class="chat-input-row">
+              <button class="btn-attach" id="chat-attach-btn-__free__" onclick="chatToggleAttachPopover('__free__')" title="添加附件">📎</button>
+              <textarea id="chat-input-__free__" rows="1"
+                placeholder="问我任何问题…（可直接 Ctrl+V 粘贴截图）"
+                oninput="chatAutoGrow(this)"
+                onkeydown="if(event.key==='Enter' && !event.ctrlKey && !event.shiftKey && !event.altKey){event.preventDefault();chatSend('__free__')}"
+                onpaste="chatHandlePaste('__free__', event)"></textarea>
+              <div class="chat-input-actions">
+                <button class="btn-small btn-primary" onclick="chatSend('__free__')">📤 发送</button>
+                <button class="btn-ai-mode btn-ai-off" id="ai-mode-btn-__free__" onclick="showAiPopover(event,'__free__')" title="AI 代回">↻<span class="btn-ai-state-dot"></span></button>
+                <div class="ai-reply-popover" id="ai-popover-__free__" data-req-id="__free__">
+                  <div class="ai-reply-popover-title">AI 回复模式</div>
+                  <div class="ai-reply-popover-option" data-mode="off" onclick="selectAiMode('off','__free__')">
+                    <div class="ai-reply-popover-icon ai-reply-popover-icon-off">↻</div>
+                    <div class="ai-reply-popover-content">
+                      <div class="ai-reply-popover-label">关闭</div>
+                      <div class="ai-reply-popover-desc">让 AI 重新问下一轮（原 ↻ 行为）</div>
+                    </div>
+                  </div>
+                  <div class="ai-reply-popover-option" data-mode="draft" onclick="selectAiMode('draft','__free__')">
+                    <div class="ai-reply-popover-icon ai-reply-popover-icon-draft">✏️</div>
+                    <div class="ai-reply-popover-content">
+                      <div class="ai-reply-popover-label">AI 草稿</div>
+                      <div class="ai-reply-popover-desc">AI 帮你起草回复填到输入框，可修改后再发</div>
+                    </div>
+                  </div>
+                  <div class="ai-reply-popover-option" data-mode="auto" onclick="selectAiMode('auto','__free__')">
+                    <div class="ai-reply-popover-icon ai-reply-popover-icon-auto">🚀</div>
+                    <div class="ai-reply-popover-content">
+                      <div class="ai-reply-popover-label">AI 自动</div>
+                      <div class="ai-reply-popover-desc">AI 替你直接回复并发送（需二次确认）</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="chat-extras" style="display:none">
+            <button onclick="chatAssist('__free__', 'decision_tree')">🌳 决策树</button>
+            <button onclick="chatAssist('__free__', 'scenarios')">👥 场景</button>
+            <button onclick="chatAssist('__free__', 'competitive')">🏢 竞品</button>
+            <button onclick="chatAssist('__free__', 'reference')">🏛 借鉴</button>
+            <button onclick="chatAssist('__free__', 'use_case')">✨ 整理</button>
+            <button onclick="chatAssist('__free__', 'health_check')" style="border-color:var(--accent);color:var(--accent)">🏥 体检</button>
+            <button onclick="chatCleanPrompt('__free__')" style="font-size:11px;color:var(--text3)">🧹 清理</button>
+            <button onclick="chatDone('__free__')" style="border-color:rgba(255,68,68,0.2);color:#f55">✅ 够了</button>
+          </div>
+          <div class="chat-extras chat-leisure" style="display:flex">
+            <button onclick="chatMusicPrompt('__free__')">🎵 音乐</button>
+            <button onclick="chatVideoPrompt('__free__')">🎬 视频</button>
+            <button onclick="chatImagePrompt('__free__')">🖼️ 图片</button>
+            <button onclick="chatScreenplayPrompt('__free__')">📖 剧本</button>
+            <button onclick="chatDocumentPrompt('__free__')">📄 文档</button>
+            <button onclick="chatEmailPrompt('__free__')">📧 邮件</button>
+            <button onclick="chatCleanPrompt('__free__')" style="font-size:11px;color:var(--text3)">🧹 清理</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ====== v0.55：自由对话历史窗口模板 ====== -->
+<div id="view-chat-history" class="view-main" style="display:none">
+  <div style="padding:12px;display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--border)">
+    <span style="font-size:14px;font-weight:600;color:var(--text)">📜 对话历史</span>
+    <input id="chat-history-search" type="text" placeholder="搜索标题…" oninput="onChatHistorySearch(this.value)"
+      style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:5px 9px;color:var(--text);font-size:12px;font-family:inherit;outline:none">
+    <button class="btn-small" onclick="loadChatHistory()">🔄 刷新</button>
+  </div>
+  <div id="chat-history-list" style="padding:12px;overflow-y:auto;flex:1"><!-- JS 渲染 --></div>
+</div>
+
+<!-- ====== v0.55：回收站窗口模板 ====== -->
+<div id="view-chat-recycle" class="view-main" style="display:none">
+  <div style="padding:12px;display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--border)">
+    <span style="font-size:14px;font-weight:600;color:var(--text)">🗑 回收站</span>
+    <span style="font-size:11px;color:var(--text2);flex:1">7 天后自动清理 · 数据彻底删除</span>
+    <button class="btn-small" onclick="loadChatRecycleBin()">🔄 刷新</button>
+  </div>
+  <div id="chat-recycle-list" style="padding:12px;overflow-y:auto;flex:1"><!-- JS 渲染 --></div>
 </div>
 
 <script src="/client/js/i18n.js"></script>
@@ -422,8 +471,8 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/core/markdown.js"></script>
 <script src="/client/js/core/voice.js"></script>
 <script src="/client/js/core/router.js"></script>
-<script src="/client/js/views/projects.js"></script>
-<script src="/client/js/views/dashboard.js"></script>
+<script src="/client/js/core/app-loader.js"></script>
+    <script src="/client/js/views/dashboard.js"></script>
 <!-- v0.13 拆分：12 个子模块在 requirements.js 之前加载（HTML onclick 跨文件按名查找） -->
 <!-- v0.21.4 fix: 双卡清理范围扩大到 assist-loading-card.method-music（旧 v0.21.3 漏了真正的旧卡所在位置） -->
 <script src="/client/js/views/requirements/chat.js?v=0.22.23"></script>
@@ -481,5 +530,247 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/admin.js"></script>
 <script src="/client/js/views/improvements.js"></script>
 <script src="/client/js/app.js"></script>
+<!-- ── 任务栏 ── -->
+<div id="taskbar">
+  <button id="tb-start" title="开始菜单">✦</button>
+  <div id="tb-project-pill" onclick="toggleProjectDropdown(event)">
+    <span id="tb-project-icon">📦</span>
+    <span id="tb-project-label">项目</span>
+    <span class="pill-arrow">▾</span>
+    <div id="tb-project-dropdown" class="project-dropdown" onclick="event.stopPropagation()"></div>
+  </div>
+  <div id="tb-windows"></div>
+  <div id="tb-tray">
+    <div class="tray-item" id="tb-agent-count" title="AI Agent 运行中">
+      <span class="tray-dot green pulse"></span>
+      <span id="tb-agent-num">0</span>
+    </div>
+    <div class="tray-item" id="tb-review-count" title="待审核任务">
+      <span class="tray-dot yellow"></span>
+      <span id="tb-review-num">0</span>
+    </div>
+    <div class="tray-item clickable" id="tb-theme-btn" title="切换主题">🎨</div>
+    <div class="tray-item clickable" id="tb-notif-btn" title="通知">🔔 <span id="tb-notif-count" style="display:none;background:var(--accent2);color:#fff;border-radius:99px;padding:0 5px;font-size:10px;min-width:16px;text-align:center;">0</span></div>
+    <div id="tb-clock" style="font-size:11px;color:var(--text2);padding:0 4px"></div>
+  </div>
+</div>
+
+<!-- 新建项目已迁移到\u7a97\u53e3\u5185 inline 快照\u8868\u5355 (触\u53d1\u5668 toggleInlineNewProjectForm)
+     \u539f\u6a21\u6001\u6846 #new-project-dialog-overlay \u5df2\u79fb\u9664\u3002\u5982\u9700\u6062\u590d\u8001\u6837\u5f0f\uff0c\u8bf7\u53c2\u8003 git \u5386\u53f2 -->
+
+<!-- 启动菜单 -->
+<div id="launcher-menu">
+  <div class="launcher-section-title">流程</div>
+  <div class="launcher-item" id="launcher-new-project" onclick="openProjectsWindowWithNewForm()" style="background:color-mix(in srgb, var(--accent) 12%, transparent);border:1px solid color-mix(in srgb, var(--accent) 30%, transparent);margin:2px 0">
+    <span class="li-icon">✦</span><span class="li-label" style="font-weight:600;color:var(--accent)">新建项目</span>
+  </div>
+  <div class="divider"></div>
+  <div class="launcher-section-title">导航</div>
+  <div class="launcher-item" onclick="launchProjects()"><span class="li-icon">📦</span><span class="li-label">项目管理</span></div>
+  <div class="launcher-item" onclick="launchAdmin()"><span class="li-icon">⚙️</span><span class="li-label">系统管理</span></div>
+  <div class="launcher-item" onclick="launchView('file-manager')"><span class="li-icon">📂</span><span class="li-label">文件浏览器</span></div>
+  <div class="launcher-item" onclick="launchView('web-browser')"><span class="li-icon">🌐</span><span class="li-label">浏览器</span></div>
+  <!-- v0.55：💬 对话 hover 子菜单（新建 + 最近历史 + 打开历史/回收站） -->
+  <div class="launcher-item launcher-has-submenu" id="launcher-chat" onmouseenter="onChatLauncherHover()" onmouseleave="onChatLauncherLeave()">
+    <span class="li-icon">💬</span><span class="li-label">对话</span><span class="li-arrow">▸</span>
+    <div class="launcher-submenu" id="launcher-chat-submenu">
+      <div class="launcher-item" onclick="createNewChatWindow()"><span class="li-icon">🆕</span><span class="li-label">新建对话</span></div>
+      <div class="divider"></div>
+      <div class="launcher-section-title">最近对话</div>
+      <div id="launcher-chat-list"><!-- JS 动态填 --></div>
+      <div class="divider"></div>
+      <div class="launcher-item" onclick="openChatHistoryWindow()"><span class="li-icon">📚</span><span class="li-label">打开历史对话窗口…</span></div>
+      <div class="launcher-item" onclick="openChatRecycleBin()">
+        <span class="li-icon">🗑</span><span class="li-label">回收站</span>
+        <span class="li-badge" id="launcher-recycle-count" style="display:none">0</span>
+      </div>
+    </div>
+  </div>
+  <div class="divider"></div>
+  <div class="launcher-section-title" id="launcher-proj-title" style="display:none"></div>
+  <div id="launcher-proj-apps" style="display:none">
+    <div class="launcher-item" onclick="launchView('dashboard')"><span class="li-icon">📊</span><span class="li-label">仪表盘</span></div>
+    <div class="launcher-item" onclick="launchView('requirements')"><span class="li-icon">📋</span><span class="li-label">需求管理</span></div>
+    <div class="launcher-item" onclick="launchView('kanban')"><span class="li-icon">📌</span><span class="li-label">任务看板</span></div>
+    <div class="launcher-item" onclick="launchView('bugs')"><span class="li-icon">🐛</span><span class="li-label">缺陷管理</span></div>
+    <div class="launcher-item" onclick="launchView('knowledge')"><span class="li-icon">📚</span><span class="li-label">知识库</span></div>
+    <div class="launcher-item" onclick="launchView('delivery')"><span class="li-icon">📦</span><span class="li-label">交付管理</span></div>
+    <div class="launcher-item" onclick="launchView('agents')"><span class="li-icon">🤖</span><span class="li-label">智能体协同</span></div>
+    <div class="launcher-item" onclick="launchView('reports')"><span class="li-icon">📊</span><span class="li-label">项目报告</span></div>
+    <div class="launcher-item" onclick="launchView('settings')"><span class="li-icon">⚙️</span><span class="li-label">项目设置</span></div>
+  </div>
+  <div class="divider"></div>
+  <div class="launcher-item" onclick="doLogout()"><span class="li-icon">🚪</span><span class="li-label">退出登录</span></div>
+</div>
+
+<!-- 通知面板 -->
+<div id="notif-panel">
+  <div class="notif-title">通知</div>
+  <div id="notif-list"></div>
+</div>
+
+<!-- v0.55：桌面图标容器（右下角固定，垂直堆叠，由 ACMSWin.registerDesktopIcon 注册） -->
+<div id="desktop-icons" onclick="event.stopPropagation()"></div>
+
+<script src="/client/js/views/taskbar.js?v=0.55"></script>
+<script src="/client/js/views/window-manager.js?v=0.55"></script>
+<script src="/client/js/views/wallpaper.js?v=0.56"></script>
+<script src="/client/js/views/desktop-context-menu.js"></script>
+<script src="/client/js/views/wallpaper-settings.js?v=0.56"></script>
+<script src="/client/js/views/desktop-icons.js"></script>
+<script src="/client/js/views/file-browser.js?v=0.56"></script>
+<script src="/client/js/views/web-browser.js?v=0.56"></script>
+<script>
+// 视图加载器注册（window-manager 加载后执行）
+(function() {
+  // 系统管理 — 调用 loadAdminPage() 填充后克隆 #view-admin 内容
+  if (window.ACMSWin) {
+    ACMSWin.registerViewLoader('admin', function(w) {
+      if (typeof loadAdminPage !== 'function') {
+        if (!w.dead) w.$c.innerHTML = '<div style="padding:40px;text-align:center;color:var(--accent2)">系统管理不可用</div>';
+        return;
+      }
+      return Promise.resolve(loadAdminPage()).then(function() {
+        if (w.dead) return;
+        var src = document.getElementById('view-admin');
+        if (!src) { w.$c.innerHTML = ''; return; }
+        w.$c.innerHTML = src.innerHTML;
+        // 恢复 display（隐藏模板的 display:none 不应带到窗口内）
+        w.$c.style.display = '';
+        // 移除冗余标题栏（窗口标题栏已显示名称）
+        var header = w.$c.querySelector('.view-header');
+        if (header) header.remove();
+        // 重新绑定 admin 标签页切换（scope 到窗口内）
+        (function(winRoot) {
+          var tabBar = winRoot.querySelector('#admin-tabs');
+          var adminRoot = winRoot;
+          if (tabBar && adminRoot) {
+            tabBar.querySelectorAll('.tab-btn').forEach(function(btn) {
+              btn.onclick = function() {
+                tabBar.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
+                btn.classList.add('active');
+                adminRoot.querySelectorAll('.tab-content').forEach(function(c) { c.classList.remove('active'); });
+                var tabEl = adminRoot.querySelector('#' + btn.dataset.tab);
+                if (tabEl) tabEl.classList.add('active');
+              };
+            });
+          }
+        })(w.$c);
+        // 用户管理 tab 懒加载
+        var usersTab = w.$c.querySelector('.tab-btn[data-tab="admin-tab-users"]');
+        if (usersTab && typeof loadUsers === 'function') {
+          usersTab.addEventListener('click', function() { setTimeout(loadUsers, 100); });
+        }
+      });
+    });
+
+    // 项目列表 — 通过 API 加载，直接渲染到窗口内
+    // 删除项目（confirm 弹窗）
+    window.deleteProject = function(id, name) {
+      if (typeof showConfirm === 'function') {
+        showConfirm('确认删除项目「' + name + '」？所有关联的需求、任务、配置都将被删除，此操作不可撤销。').then(function(ok) {
+          if (!ok) return;
+          api('DELETE', '/projects/' + id).then(function() {
+            if (typeof toast === 'function') toast('项目已删除', 'success');
+            // 刷新项目列表窗口：先关掉已存在的窗口再重开（open() 对已存在窗口只 focus，不重载 loader）
+            document.querySelectorAll('.acms-window').forEach(function(el) {
+              var t = el.querySelector('.aw-title');
+              if (t && t.textContent === '项目管理') {
+                var btn = el.querySelector('.aw-btn-close');
+                if (btn) btn.click();
+              }
+            });
+            if (window.ACMSWin) ACMSWin.open('projects');
+          }).catch(function(e) {
+            if (typeof toast === 'function') toast('删除失败: ' + (e.message || ''), 'error');
+          });
+        });
+      }
+    };
+    ACMSWin.registerViewLoader('projects', function(w) {
+      w.$c.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text2)">⏳ 加载项目管理...</div>';
+      return api('GET', '/projects?limit=50').then(function(data) {
+        if (w.dead) return;
+        var projects = Array.isArray(data) ? data : (data.projects || []);
+        var html = '';
+        // 新建项目入口卡片
+        html += '<div style="padding:12px 16px 0">';
+        html += '<div id="np-create-card" class="create-project-card" onclick="toggleInlineNewProjectForm()" style="margin:0;cursor:pointer">➕ <strong>新建项目</strong></div>';        // 内联表单\uff08默认隐藏\uff0c\u70b9击创建卡片切换\uff09
+        html += '<div id="inline-new-project-form" style="display:none;margin:8px 16px 0;padding:10px 12px;background:var(--bg);border:1px solid color-mix(in srgb, var(--accent) 40%, var(--border));border-radius:10px">';        html += '<div style="display:flex;gap:6px;align-items:center">';          html += '<input id="inp-name" placeholder="项目名称 (必填)" style="flex:1;min-width:0;background:var(--window-bg);border:1px solid var(--border);border-radius:6px;padding:6px 9px;color:var(--text);font-size:13px;font-family:inherit;outline:none">';          html += '<input id="inp-desc" placeholder="描述" style="flex:0 0 130px;background:var(--window-bg);border:1px solid var(--border);border-radius:6px;padding:6px 9px;color:var(--text);font-size:13px;font-family:inherit;outline:none">';          html += '<input id="inp-slug" placeholder="slug" style="flex:0 0 90px;background:var(--window-bg);border:1px solid var(--border);border-radius:6px;padding:6px 9px;color:var(--text);font-size:13px;font-family:inherit;outline:none">';          html += '<button id="inp-save" onclick="submitInlineNewProject()" style="flex:0 0 auto;padding:6px 12px;border-radius:6px;font-size:13px;border:none;background:var(--accent);color:var(--window-bg);cursor:pointer;font-weight:500;white-space:nowrap">✓ 保存</button>';          html += '<button onclick="toggleInlineNewProjectForm()" style="flex:0 0 auto;padding:6px 10px;border-radius:6px;font-size:13px;border:1px solid var(--border);background:transparent;color:var(--text2);cursor:pointer;white-space:nowrap">✕</button>';        html += '</div></div>';
+        html += '</div></div>';
+        if (projects.length === 0) {
+          html += '<div class="empty" style="padding:40px">暂无项目</div>';
+          w.$c.innerHTML = html;
+          return;
+        }
+        html += '<div class="project-grid" style="margin:12px 16px 16px;grid-template-columns:1fr">';
+        projects.forEach(function(p) {
+          var safeJson = JSON.stringify(p).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+          html += '<div class="project-card" onclick="enterProject(' + safeJson + ')" style="padding:16px 20px">';
+          html += '<h3 style="margin:0 0 4px;font-size:15px">📦 ' + escHtml(p.name) + '</h3>';
+          html += '<div class="desc" style="font-size:12px;margin:0 0 8px">' + escHtml(p.description || '') + '</div>';
+          html += '<div class="meta" style="font-size:11px;display:flex;gap:12px;color:var(--text2)"><span>' + escHtml(p.id) + '</span><span>' + escHtml(p.status || 'active') + '</span><span>' + fmtDate(p.created_at) + '</span></div>';
+          html += '<button class="btn-small btn-reject" style="margin-top:8px;font-size:10px" onclick="event.stopPropagation();deleteProject(\'' + escAttr(p.id) + '\',\'' + escAttr(p.name) + '\')">🗑 删除</button>';
+          html += '</div>';
+        });
+        html += '</div>';
+        w.$c.innerHTML = html;
+      }).catch(function() {
+        if (!w.dead) w.$c.innerHTML = '<div style="padding:40px;text-align:center;color:var(--accent2)">加载失败</div>';
+      });
+    });
+
+    // v0.55 自由对话 — DOM 克隆 + __free__ 替换为 sessionId（多窗口）
+    // opts.instanceId 存在 → 恢复历史；不存在 → 新建空 session
+    ACMSWin.registerViewLoader('chat', function(w, opts) {
+      var src = document.getElementById('view-chat');
+      if (!src) { w.$c.innerHTML = ''; return; }
+      var sid = (opts && opts.instanceId) || ('new-' + Date.now());
+      var html = src.innerHTML.replace(/__free__/g, sid);
+      w.$c.innerHTML = html;
+      w.$c.style.display = 'flex';
+      w.$c.style.flexDirection = 'column';
+      w.$c.style.height = '100%';
+      // 关窗 → 刷新 launcher 历史 + 回收站 badge
+      w.onClose = function() {
+        try { if (window.refreshLauncherChatList) window.refreshLauncherChatList(); } catch (e) {}
+        try { if (window.refreshRecycleBinCount) window.refreshRecycleBinCount(); } catch (e) {}
+      };
+      // 双击标题栏 → 编辑
+      w.onTitleEdit = function() {
+        try { if (window.editChatWindowTitle) window.editChatWindowTitle(w); } catch (e) { console.warn(e); }
+      };
+      // 委托 chat.js 初始化
+      if (typeof window.initChatWindow === 'function') {
+        window.initChatWindow(w, sid, opts && opts.title);
+      } else {
+        console.warn('[chat loader] window.initChatWindow 不存在，chat.js 可能未加载');
+      }
+    });
+
+    // v0.55 对话历史窗口
+    ACMSWin.registerViewLoader('chat-history', function(w) {
+      var src = document.getElementById('view-chat-history');
+      if (!src) { w.$c.innerHTML = ''; return; }
+      w.$c.innerHTML = src.innerHTML;
+      w.$c.style.display = 'flex';
+      w.$c.style.flexDirection = 'column';
+      w.$c.style.height = '100%';
+      if (typeof window.loadChatHistory === 'function') window.loadChatHistory();
+    });
+
+    // v0.55 回收站窗口
+    ACMSWin.registerViewLoader('chat-recycle', function(w) {
+      var src = document.getElementById('view-chat-recycle');
+      if (!src) { w.$c.innerHTML = ''; return; }
+      w.$c.innerHTML = src.innerHTML;
+      w.$c.style.display = 'flex';
+      w.$c.style.flexDirection = 'column';
+      w.$c.style.height = '100%';
+      if (typeof window.loadChatRecycleBin === 'function') window.loadChatRecycleBin();
+    });
+  }
+})();
+</script>
 </body>
 </html>

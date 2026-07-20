@@ -4,7 +4,7 @@
 // 顶层页面切换（项目列表 ↔ 工作空间 ↔ 系统管理）
 function showView(id) {
   // 隐藏所有顶层页面
-  const pages = ['view-projects', 'view-workspace', 'view-admin', 'view-improvements'];
+  const pages = ['view-workspace', 'view-admin', 'view-improvements'];
   pages.forEach(pid => {
     const el = document.getElementById(pid);
     if (el) el.style.display = 'none';
@@ -15,32 +15,50 @@ function showView(id) {
 
 function goToProjects() {
   App.currentProjectId = null; App.currentProject = null;
-  document.getElementById('current-project').textContent = '';
-  document.getElementById('header-title').innerHTML = `<img src="/client/img/logo.png" alt="ACMS" class="header-logo"> <span data-i18n="app.title">智能体协同管理系统</span> <span class="version" data-i18n="app.version">v0.3</span>`;
-  showView('view-projects');
+  // 更新任务栏项目 pill
+  if (typeof updateProjectPill === 'function') updateProjectPill();
+  // 桌面模式：打开项目列表窗口
+  if (window.ACMSWin) {
+    if (!ACMSWin.isActive()) ACMSWin.enable();
+    ACMSWin.open('projects', { w: 720, h: 500 });
+  }
   App.closeSidebar();
-  if (typeof loadProjects === 'function') loadProjects();
 }
 
 function enterProject(proj) {
   App.currentProjectId = proj.id; App.currentProject = proj;
-  document.getElementById('current-project').textContent = `📦 ${escHtml(proj.name)}`;
-  document.getElementById('header-title').innerHTML = `<img src="/client/img/logo.png" alt="ACMS" class="header-logo"> ${escHtml(proj.name)} <span class="version">v0.3</span>`;
+  // 更新任务栏项目 pill
+  if (typeof updateProjectPill === 'function') updateProjectPill();
   showView('view-workspace');
   setupWorkspaceNav();
-  showWorkspaceView('dashboard');
+  // 启用桌面模式（L2）
+  if (window.ACMSWin) {
+    ACMSWin.enable();
+    setTimeout(function() { ACMSWin.open('dashboard', { w: 700, h: 460 }); }, 200);
+  } else {
+    showWorkspaceView('dashboard');
+  }
   if (typeof loadDashboard === 'function') loadDashboard();
 }
 
 // 工作空间内视图切换
 function showWorkspaceView(name) {
+  // 桌面模式：通过 ACMSWin 打开窗口
+  if (window.ACMSWin && ACMSWin.isActive()) {
+    ACMSWin.open(name);
+    document.querySelectorAll('#sidebar .nav-btn').forEach(function(b) { b.classList.remove('active'); });
+    var sb = document.querySelector('#sidebar [data-view="' + name + '"]');
+    if (sb) sb.classList.add('active');
+    App.closeSidebar();
+    return;
+  }
+  // 传统模式（无桌面时降级）
   document.querySelectorAll('#content .view').forEach(v => v.classList.remove('active'));
-  const el = document.getElementById(`view-${name}`);
+  var el = document.getElementById('view-' + name);
   if (el) el.classList.add('active');
   document.querySelectorAll('#sidebar .nav-btn').forEach(b => b.classList.remove('active'));
-  const btn = document.querySelector(`#sidebar [data-view="${name}"]`);
-  if (btn) btn.classList.add('active');
-  // 移动端：导航后关闭 sidebar
+  var navBtn = document.querySelector('#sidebar [data-view="' + name + '"]');
+  if (navBtn) navBtn.classList.add('active');
   App.closeSidebar();
 }
 

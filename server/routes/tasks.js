@@ -15,7 +15,7 @@ router.post('/', (req, res) => {
     if (cycle) return res.status(400).json({ error: 'CIRCULAR_DEPENDENCY', message: '检测到依赖环' });
   }
 
-  const task = taskStore.create({ projectId, parentId, title, description, type, priority, requiredSkills, estimatedHours, dependsOn, dependsContract, wikiContext, linkedWiki });
+  const task = taskStore.create({ projectId, parentId, title, description, type, priority, requiredSkills, estimatedHours, dependsOn, dependsContract, wikiContext, linkedWiki, owner: req.userId || 'system' });
 
   eventBus.emit('task.created', {
     projectId, actor: { id: req.agentId || 'system', type: 'agent' },

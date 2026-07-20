@@ -1,9 +1,11 @@
 // AI 工具 API — MD文档生成 + 智能任务分解
 const express = require('express');
+const path = require('path');
 const router = express.Router();
 const aiTools = require('../services/ai-tools-service');
 const reqStore = require('../stores/requirement-store');
 const taskStore = require('../stores/task-store');
+const projectStore = require('../stores/project-store');
 const eventBus = require('../services/event-bus');
 const dispatcher = require('../services/auto-execute-dispatcher');
 const { validateChildCoverage, detectIntegrationGaps, validateParentAggregateCoverage } = require('../services/coverage-validator');
@@ -411,6 +413,22 @@ router.post('/agent-execute', async (req, res, next) => {
         target: { type: 'task', id: submitResult.id },
         payload: { task: submitResult },
       });
+
+      // v0.X: 自动触发构建（fire-and-forget，不阻塞响应）
+      try {
+        const { execSync } = require('child_process');
+        const slug = (projectStore.getById(submitResult.project_id) || {}).slug;
+        if (slug) {
+          const wsPath = path.join(__dirname, '..', 'workspaces', slug);
+          execSync('npm run build 2>&1', {
+            cwd: wsPath, timeout: 120000, maxBuffer: 10 * 1024 * 1024, shell: true, encoding: 'utf-8',
+          });
+          console.log(`[agent-execute] ✅ ${slug} 自动构建成功`);
+        }
+      } catch (buildErr) {
+        const msg = (buildErr.stderr || buildErr.stdout || buildErr.message || '').slice(0, 300);
+        console.warn(`[agent-execute] ⚠️ 自动构建失败: ${msg}`);
+      }
     }
 
     res.json({

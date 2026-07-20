@@ -1,6 +1,8 @@
 // Workspace API 路由
 const express = require('express');
 const crypto = require('crypto');
+const { execSync } = require('child_process');
+const path = require('path');
 const router = express.Router();
 const workspace = require('../services/workspace-service');
 const projectStore = require('../stores/project-store');
@@ -76,6 +78,24 @@ router.delete('/files/:projectId', (req, res) => {
   if (!filePath) return res.status(400).json({ error: 'MISSING_PATH' });
   const result = workspace.deleteFile(slug, filePath);
   res.json(result);
+});
+
+// 删除目录（递归）
+router.delete('/directory/:projectId', (req, res) => {
+  const slug = getSlug(req.params.projectId);
+  if (!slug) return res.status(404).json({ error: 'PROJECT_NOT_FOUND' });
+  const dirPath = req.query.path;
+  if (!dirPath) return res.status(400).json({ error: 'MISSING_PATH' });
+  const wsPath = path.join(__dirname, '..', '..', 'workspaces', slug);
+  const fullPath = path.resolve(wsPath, dirPath);
+  if (!fullPath.startsWith(wsPath + path.sep)) return res.status(403).json({ error: 'FORBIDDEN', message: 'Path outside workspace' });
+  try {
+    const fs = require('fs');
+    fs.rmSync(fullPath, { recursive: true, force: true });
+    res.json({ ok: true, deleted: dirPath });
+  } catch (e) {
+    res.status(500).json({ error: 'DELETE_FAILED', message: e.message });
+  }
 });
 
 // 执行命令（沙箱）
@@ -197,6 +217,47 @@ router.post('/preview-token/:projectId', (req, res) => {
   });
 
   res.json({ token, expiresIn: 1800, url: '/preview/' + token + '/' });
+});
+
+/**
+ * 自动部署 — 在工作区运行 npm run build
+ * POST /api/workspace/build/:projectId
+ */
+router.post('/build/:projectId', (req, res) => {
+  const slug = getSlug(req.params.projectId);
+  if (!slug) return res.status(404).json({ error: 'PROJECT_NOT_FOUND' });
+
+  const wsPath = path.join(__dirname, '..', '..', 'workspaces', slug);
+  const start = Date.now();
+
+  try {
+    console.log(`[workspace-build] 🏗️ 开始构建 ${slug}...`);
+    const out = execSync('npm run build 2>&1', {
+      cwd: wsPath,
+      timeout: 120000, // 2 分钟
+      maxBuffer: 10 * 1024 * 1024,
+      shell: true,
+      encoding: 'utf-8',
+    });
+    const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+    console.log(`[workspace-build] ✅ ${slug} 构建成功 (${elapsed}s)`);
+    res.json({
+      ok: true,
+      slug,
+      elapsed: elapsed + 's',
+      output: out.slice(-500),
+    });
+  } catch (e) {
+    const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+    const stderr = (e.stderr || e.stdout || e.message || '').slice(-2000);
+    console.error(`[workspace-build] ❌ ${slug} 构建失败 (${elapsed}s): ${stderr.slice(0, 200)}`);
+    res.status(500).json({
+      ok: false,
+      slug,
+      elapsed: elapsed + 's',
+      error: stderr.slice(0, 2000),
+    });
+  }
 });
 
 // 导出令牌映射供 app.js preview 路由使用

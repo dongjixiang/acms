@@ -19,6 +19,21 @@
 // 6 个函数全部从 git 历史 d5bac94^ 完整恢复，确保 0 行为变化。
 
 async function chatAssist(reqId, method, extraBody) {
+  // ═══ 自由对话兜底 ═══ 通过输入流触发
+  if (reqId === '__free__') {
+    // 对于音乐，拼成自然语言消息通过 detect-and-respond 触发
+    if (method === 'music' && extraBody && extraBody.song) {
+      var artist = extraBody.artist ? extraBody.artist + ' ' : '';
+      var input = document.getElementById('chat-input-__free__');
+      if (input) {
+        input.value = '我想听' + artist + extraBody.song;
+        chatSend(reqId);
+      }
+    } else {
+      toast('自由对话模式暂不支持此工具，直接在输入框描述你的需求即可', 'info');
+    }
+    return;
+  }
   // v0.6.7：累积模式 — 只清**同 method** 的旧卡片，保留其他 method 的卡片
   //   用户多次点不同按钮（决策树/场景/竞品/借鉴/痛点）→ 多张卡片共存
   //   用户重复点同 method → 替换为新卡片（防止累积多张同 method 卡片）

@@ -10,7 +10,7 @@ const eventBus = require('../services/event-bus');
 router.post('/', (req, res) => {
   const { name, slug, description, wikiVaultPath, wikiDocsPath } = req.body;
   if (!name) return res.status(400).json({ error: 'MISSING_NAME' });
-  const project = projectStore.create({ name, slug, description, wikiVaultPath, wikiDocsPath });
+  const project = projectStore.create({ name, slug, owner: req.userId || 'system', description, wikiVaultPath, wikiDocsPath });
   res.status(201).json(project);
 });
 
@@ -18,7 +18,15 @@ router.post('/', (req, res) => {
 router.get('/', (req, res) => {
   const all = projectStore.list();
   // 过滤掉系统项目（如 ACMS 自我改进）
-  const projects = all.filter(p => !p.system_project);
+  let projects = all.filter(p => !p.system_project);
+
+  // 非管理员 / 非 system 用户：只看到自己相关的项目
+  // 向后兼容：没有 owner 字段的旧项目仍然全局可见
+  if (req.user && req.user.role !== 'admin' && req.userId !== 'system') {
+    const accessible = projectStore.getUserProjectIds(req.userId);
+    projects = projects.filter(p => !p.owner || accessible.has(p.id));
+  }
+
   res.json(projects);
 });
 

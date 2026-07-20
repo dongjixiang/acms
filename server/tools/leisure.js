@@ -116,7 +116,33 @@ registerTool({
     if (!args?.prompt) return { ok: false, error: 'NO_PROMPT', message: '必须提供 prompt 参数' };
     try {
       const imageSvc = require('../services/assists/image-gen');
-      console.log(`[tool:generate_image] ${reqId} prompt="${args.prompt.slice(0, 80)}"`);
+      console.log(`[tool:generate_image] ${reqId} mode=${ctx.sync ? 'sync' : 'fire-forget'} prompt="${args.prompt.slice(0, 80)}"`);
+
+      // v0.49: 同步模式（plan_executor 调）— 等图真正下载+保存+import 完成才返回 file_ids
+      if (ctx.sync) {
+        const result = await imageSvc.runAssistJobCore(reqId, {
+          prompt: args.prompt,
+          image_url: args.image_url,
+          image_file_id: args.image_file_id,
+          size: args.size,
+          n: args.n,
+        });
+        return {
+          ok: result.ok,
+          message: result.ok
+            ? `图片已生成: ${result.asset_path}`
+            : `图片生成失败: ${result.error || '未知错误'}`,
+          file_ids: result.file_ids || [],   // v0.49: 关键 — 下游 send_email 精确依赖
+          asset_path: result.asset_path || '',
+          mime: result.mime || '',
+          options: result.options || [],
+          picked_idx: result.picked_idx ?? 0,
+          prompt: args.prompt,
+          reqId,
+        };
+      }
+
+      // 原 fire-and-forget 模式（chat 流直接调）
       setImmediate(() => {
         imageSvc.runAssistJob(reqId, { prompt: args.prompt, writeChatResult: true })
           .catch(e => console.error(`[tool:generate_image] runAssistJob failed:`, e.message));

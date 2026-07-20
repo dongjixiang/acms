@@ -52,6 +52,10 @@ httpServer.on('error', (err) => {
     throw err;
   }
 });
+
+// 创建默认管理员（首次启动）
+try { require('./services/user-service').ensureDefaultAdmin(); } catch (e) { /* DB 未就绪时跳过 */ }
+
 httpServer.listen(config.port, () => {
   console.log(`[ACMS] HTTP API: http://localhost:${config.port}`);
   console.log(`[ACMS] Web UI:  http://localhost:${config.port}/client/index.html`);
@@ -91,6 +95,24 @@ setInterval(() => {
 setInterval(() => {
   try { require('./services/auto-archive-service').autoArchive(); } catch (e) { /* */ }
 }, 24 * 60 * 60 * 1000);
+
+// v0.55：每日清理回收站（删除 > 7 天的软删 session）
+function cleanupExpiredChatSessions() {
+  try {
+    const { collection } = require('./db/connection');
+    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const expired = collection('chat_sessions').find(s => s.deleted_at && new Date(s.deleted_at).getTime() <= cutoff);
+    if (expired.length === 0) return;
+    const messagesCol = collection('chat_messages');
+    let purged = 0;
+    for (const s of expired) {
+      messagesCol.remove(m => m.session_id === s.id);
+      if (collection('chat_sessions').remove(x => x.id === s.id)) purged++;
+    }
+    console.log(`[ACMS] 回收站清理: 删除 ${purged} 个过期 session`);
+  } catch (e) { console.error('[ACMS] 回收站清理失败:', e.message); }
+}
+setInterval(cleanupExpiredChatSessions, 24 * 60 * 60 * 1000);
 
 // v2.0: 启动时注册内建工具
 try {

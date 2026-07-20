@@ -3,6 +3,21 @@ const { collection } = require('../db/connection');
 const { v4: uuidv4 } = require('uuid');
 const { canTransition, getNextStatuses, getGateErrors, shouldAutoAbandon } = require('../services/state-machine');
 
+// v0.49: List 接口精简字段白名单 — 列表前端只用 5 字段，去掉 srs/structured_description/arch_spec/supplement_history 等大字段
+//   单条 record 平均 25KB（srs 9KB + structured_description 8KB + arch_spec 5KB + supplement_history 14KB）
+//   limit=50 默认 → 1.17MB；精简后 → ~50KB（约 96% 减少）
+//   详情页走 GET /:id → getById → 返回完整 record，不受影响
+const LIST_BASIC_FIELDS = [
+  'id', 'title', 'description', 'status', 'priority',
+  'created_at', 'updated_at', 'completed_at',
+  'project_id', 'parent_id', 'phase', 'tags',
+  'deadline', 'progress', 'current_version',
+  'created_by', 'user_role', 'plan_status', 'plan',
+  'clarity_model', 'input_clarity', 'clarity_reason',
+  'wiki_path', 'wiki_synced',
+  'task_ids', 'child_ids',
+];
+
 class RequirementStore {
   create({ projectId, title, description = '', priority = 3, tags = [], deadline = '', createdBy = '', parentId = null, archSpec = null, interfaceContracts = null, srs = null, flowCoverage = null, status = null, role = null, changeLog = null, userRole = null }) {
     const id = `REQ-${Date.now().toString(36).toUpperCase()}`;
@@ -38,14 +53,25 @@ class RequirementStore {
 
   getById(id) { return collection('requirements').findOne(r => r.id === id) || null; }
 
-  list({ projectId, status, parentId, rootOnly = false, limit = 50, offset = 0 } = {}) {
+  list({ projectId, status, parentId, rootOnly = false, limit = 50, offset = 0, lite = false } = {}) {
     let reqs = collection('requirements').all();
     if (projectId) reqs = reqs.filter(r => r.project_id === projectId);
     if (status) reqs = reqs.filter(r => r.status === status);
     if (rootOnly) reqs = reqs.filter(r => !r.parent_id);
     if (parentId !== undefined) reqs = reqs.filter(r => r.parent_id === parentId);
     reqs.sort((a, b) => (a.priority || 99) - (b.priority || 99));
-    return reqs.slice(offset, offset + limit);
+    reqs = reqs.slice(offset, offset + limit);
+    // v0.49: lite 模式 — 只返回白名单字段，详情字段（srs / structured_description / arch_spec / supplement_history）不带
+    if (lite) {
+      return reqs.map(r => {
+        const o = {};
+        for (const k of LIST_BASIC_FIELDS) {
+          if (r[k] !== undefined) o[k] = r[k];
+        }
+        return o;
+      });
+    }
+    return reqs;
   }
 
   update(id, updates) {

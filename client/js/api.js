@@ -4,11 +4,23 @@ const WS_URL = 'ws://' + location.hostname + ':3301/ws';
 const API_KEY = 'dev-key-001';
 
 async function api(method, path, body) {
-  var opts = { method: method, headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY } };
+  var token = localStorage.getItem('acms-token');
+  var headers = { 'Content-Type': 'application/json' };
+  // 同时发送 API Key（向后兼容）和 JWT（用户登录）
+  headers['X-API-Key'] = API_KEY;
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  var opts = { method: method, headers: headers };
   if (body) opts.body = JSON.stringify(body);
   var res = await fetch(API_BASE + path, opts);
-  var data = await res.json();
+  var data;
+  try { data = await res.json(); } catch(e) { data = { error: 'PARSE_ERROR', message: '响应解析失败' }; }
   if (!res.ok) {
+    // 401 → 跳转登录
+    if (res.status === 401 && !window.location.pathname.includes('login.html')) {
+      localStorage.removeItem('acms-token');
+      window.location.href = '/client/login.html';
+      return;
+    }
     var err = new Error(data.message || data.error || 'Request failed');
     err.data = data;
     throw err;

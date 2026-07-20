@@ -15,6 +15,9 @@ const KNOWN_COLLECTIONS = [
   'project_configs', 'requirements', 'clarification_threads', 'tasks',
   'agents', 'events', 'llm_models', 'skills', 'webhooks', 'knowledge_files',
   'requirement_knowledge', 'generators', 'system_configs',
+  'users',
+  // v0.55 自由对话多窗口：会话 + 消息历史（独立 collection，软删/回收站）
+  'chat_sessions', 'chat_messages',
 ];
 
 // === 初始化 ===

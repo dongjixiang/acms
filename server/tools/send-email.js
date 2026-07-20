@@ -21,6 +21,17 @@ registerTool({
     + '**注意**:这是 B 方案的安全设计 — handler 不会真发邮件,只是把邮件信息写到聊天流让用户在预览卡确认。'
     + '**严禁**对"是否需要提醒/通知/总结"等非明确发邮件意图调用本工具;**严禁**用户没提供收件人地址时胡乱编造邮箱。'
     + '返回 ok=true 表示邮件已准备,前端会弹预览卡让用户确认;ok=false 表示参数缺失或不合法,需 LLM 提示用户补充。'
+    + '\n\n'
+    + '【🔥 v0.50 新规 — 复合意图下游 send_email body 必须引用上游数据】\n'
+    + '当 send_email 是在 plan_execute 编排里作为某个上游 step（web_search / web_research / generate_image / document_gen）的下游时（取决于 depends_on），\n'
+    + '你**必须**在 args.body / args.subject 里用 ${...} 模板引用上游真实数据，否则邮件正文会凭空编写：\n'
+    + '  ❌ 错误：body = "Please find attached the latest World Cup promotional image."（纯空话，无任何来自上游 step 的数据）\n'
+    + '  ✅ 正确：body = "世界杯赛况概要：${s1.formatted}\\n\\n海报附件 ID：${s2.file_ids.0.id}..."（含上游 web_research 综合 + 上游生成的图 file_id）\n'
+    + '\n'
+    + '注：plan-executor 对 generate_image / document_gen 会自动注入上游 ${s1.formatted} 作为 prefix 兜底；\n'
+    + '但**send_email body 不自动注入**（邮件正文是发给用户读的，拼接 prefix 会污染纯度）——\n'
+    + '所以你必须显式写 ${...} 引用上游 step result，否则邮件将是空话。这是 v0.50 关键约束。'
+    + '\n\n'
     + '【重要】这是 fire-and-forget 异步任务,调用一次即可,不要重复调用。',
   parameters: {
     type: 'object',
@@ -69,28 +80,59 @@ registerTool({
       const req = reqStore.getById(reqId);
       if (!req) return { ok: false, error: 'REQ_NOT_FOUND' };
 
-      // ── 智能匹配附件（v0.47）──
-      //   forceNoAttach = true: 用户明确说不要附件（跳过匹配）
-      //   attachKeywords.length > 0: 按关键词匹配
-      //   attachKeywords.length == 0 (默认): 附最近 1 个
-      let matchedAssets = [];
-      if (forceNoAttach) {
-        matchedAssets = [];
-        console.log(`[tool:send_email] ${reqId} 用户显式要求无附件`);
-      } else {
-        matchedAssets = matchAssetsByKeywords(req, attachKeywords);
-      }
-      const fileIds = [];
-      const matchedDetails = [];
-      for (const asset of matchedAssets) {
+      // v0.49: 附件来源三档优先级
+      //   1) args.file_ids 显式（plan-executor 已注入上游精确 file_ids / LLM 手填）
+      //   2) ctx.planDoc 上下文 + 没 file_ids → 报错 NO_FILE_IDS_FROM_DEPENDENCIES（不再偷偷走全局兜底）
+      //   3) 非 plan 上下文（chat 流直接调）→ 老逻辑（attach_keywords 或默认"最近 1 个"）
+      let fileIds = [];
+      let matchedDetails = [];
+
+      if (Array.isArray(args?.file_ids) && args.file_ids.length > 0) {
+        // 优先级 1：显式 file_ids（plan 上下文最安全的方式）
+        fileIds = args.file_ids.map(id => typeof id === 'object' ? (id.id || id) : id);
+        // v0.50: plan 模式填 attachments（前端显示附件列表）— chat-upload 没 export getFileMeta，改用 getFilePath
         try {
-          const imported = matchAssetToChatUpload(asset);
-          if (imported?.id) {
-            fileIds.push(imported.id);
-            matchedDetails.push({ name: imported.name, size: imported.size, mime: imported.mime });
+          const chatUpload = require('../services/chat-upload');
+          for (const id of fileIds) {
+            // v0.50 fix 0KB bug: getFilePath 返回 {filePath, meta}, meta 含真实 size/mime/name
+            const info = chatUpload.getFilePath?.(id);
+            const meta = info?.meta;
+            if (meta) {
+              matchedDetails.push({ name: meta.name || '', size: meta.size || 0, mime: meta.mime || '' });
+            } else if (typeof id === 'string') {
+              // 真没 meta 时给个 fallback（前端能看到"有附件"事实）
+              matchedDetails.push({ name: `附件-${id.slice(0, 8)}`, size: 0, mime: 'application/octet-stream' });
+            }
           }
-        } catch (e) {
-          console.warn(`[tool:send_email] 导入附件 ${asset.assetPath || asset.filePath} 失败:`, e.message);
+        } catch {}
+        console.log(`[tool:send_email] ${reqId} plan 模式: 使用 file_ids=${fileIds.length} attachments=${matchedDetails.length}`);
+      } else if (ctx.planDoc) {
+        // 优先级 2：plan 上下文但没有 file_ids → 显式拒绝（避免悄悄错拿历史图）
+        return {
+          ok: false,
+          error: 'NO_FILE_IDS_FROM_DEPENDENCIES',
+          message: 'plan 上下文中 send_email 需要 file_ids。请确保上游步骤（如 generate_image / document_gen）已生成并在 step.result.file_ids 里；plan-executor 会自动注入。',
+          reqId,
+        };
+      } else {
+        // 优先级 3：chat 流直接调 — 老路径（保持向后兼容）
+        let matchedAssets = [];
+        if (forceNoAttach) {
+          matchedAssets = [];
+          console.log(`[tool:send_email] ${reqId} 用户显式要求无附件`);
+        } else {
+          matchedAssets = matchAssetsByKeywords(req, attachKeywords);
+        }
+        for (const asset of matchedAssets) {
+          try {
+            const imported = matchAssetToChatUpload(asset);
+            if (imported?.id) {
+              fileIds.push(imported.id);
+              matchedDetails.push({ name: imported.name, size: imported.size, mime: imported.mime });
+            }
+          } catch (e) {
+            console.warn(`[tool:send_email] 导入附件 ${asset.assetPath || asset.filePath} 失败:`, e.message);
+          }
         }
       }
 

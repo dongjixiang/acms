@@ -13,6 +13,13 @@ const router = express.Router();
 const reqStore = require('../stores/requirement-store');
 const toolRegistry = require('../services/tool-registry');
 const { runToolLoop } = require('../services/llm-adapter');
+
+// v0.55：从 session.title ("对话 N · ...") 提取序号 N；找不到返回 1
+function extractTitleN(title) {
+  if (typeof title !== 'string') return 1;
+  const m = title.match(/^对话\s*(\d+)/);
+  return m ? parseInt(m[1], 10) : 1;
+}
 const modelStore = require('../stores/model-store');
 
 // v0.20d：7 个外部 tool（play_music 由预检覆盖，不加进 LLM 可见避免重复触发）
@@ -155,6 +162,124 @@ router.post('/detect-and-respond', async (req, res, next) => {
     const { reqId, text } = req.body;
     if (!reqId || !text) {
       return res.status(400).json({ error: 'MISSING_FIELDS' });
+    }
+
+    // ═══ 自由对话（免需求）═══ v0.55 支持 sessionId 多窗口 + 历史持久化
+    // 兼容两种调用：
+    //   - reqId === '__free__' → 旧调用，无状态（向后兼容）
+    //   - reqId 以 'sess-' 开头 → 多窗口会话 ID，加载历史 messages
+    if (reqId === '__free__' || (typeof reqId === 'string' && reqId.startsWith('sess-'))) {
+      // 预检：音乐意图（与主流程保持一致）
+      const musicPreCheck = extractMusicIntent(text);
+      let musicCardJson = null;
+      if (musicPreCheck.song && /播放|听[一这]?首|放[一这]?首|想听|找歌|音乐/.test(text)) {
+        const q = encodeURIComponent(musicPreCheck.artist ? musicPreCheck.artist + ' ' + musicPreCheck.song : musicPreCheck.song);
+        const platforms = [
+          { name: '网易云音乐', icon: '🎵', url: `https://music.163.com/#/search/m/?s=${q}&type=1` },
+          { name: 'QQ音乐',     icon: '🎶', url: `https://y.qq.com/n/ryqq/search?w=${q}` },
+          { name: '酷狗音乐',   icon: '🎤', url: `https://www.kugou.com/yy/html/search.html?searchKeyword=${q}` },
+          { name: 'Bilibili',   icon: '📺', url: `https://search.bilibili.com/all?keyword=${q}` },
+        ];
+        musicCardJson = JSON.stringify({
+          type: 'music_card',
+          song: musicPreCheck.song,
+          artist: musicPreCheck.artist || null,
+          platforms: platforms.map(function(p) { return { name: p.name, icon: p.icon, url: p.url }; }),
+          playable: [],
+        });
+      }
+
+      // 1. v0.55：如果是 sessionId，加载历史 + 写 user/assistant 消息 + 触发自动标题
+      const isSession = typeof reqId === 'string' && reqId.startsWith('sess-');
+      let historyMessages = [];
+      let isFirstUserMsg = false;
+      let session = null;
+      if (isSession) {
+        try {
+          const { collection } = require('../db/connection');
+          session = collection('chat_sessions').findOne(s => s.id === reqId);
+          if (session) {
+            const hist = collection('chat_messages')
+              .find(m => m.session_id === reqId)
+              .sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
+            // 转换为 LLM 消息格式（限最近 20 条，省 token）
+            historyMessages = hist.slice(-20).map(m => ({ role: m.role, content: m.content }));
+            isFirstUserMsg = !hist.some(m => m.role === 'user');
+          }
+        } catch (e) {
+          console.error('[detect-and-respond] 加载 session 失败:', e.message);
+        }
+      }
+
+      // 2. 写 user message（仅 session 模式）
+      if (isSession && session) {
+        try {
+          const { collection } = require('../db/connection');
+          collection('chat_messages').insert({
+            session_id: reqId,
+            role: 'user',
+            content: text,
+            attachments_json: null,
+            meta_json: null,
+            ts: new Date().toISOString(),
+          });
+          collection('chat_sessions').update(s => s.id === reqId, { updated_at: new Date().toISOString() });
+        } catch (e) {
+          console.error('[detect-and-respond] 写 user message 失败:', e.message);
+        }
+      }
+
+      const model = pickIntentModel();
+      if (!model) {
+        // 没模型也要把 user 消息保留（已在前面写），返回空
+        return res.json({ ok: true, reqId, directReply: true, aiReply: '⚠️ 当前没有可用的 AI 模型', musicCardJson });
+      }
+
+      // 3. 拼接 messages：system + 历史 + 当前 user
+      const systemPrompt = '你是 ACMS 自由对话助手。用户通过 ACMS（智能体协同管理系统）与你交流。请用中文简洁回答用户的问题（Markdown 格式）。可以主动使用 web_search 工具查询实时信息。不要反问澄清需求——用户只是自由提问。';
+      const messages = [{ role: 'system', content: systemPrompt }, ...historyMessages, { role: 'user', content: text }];
+
+      try {
+        const result = await runToolLoop(model.id, messages, {
+          toolNames: INTENT_TOOL_NAMES.filter(n => n !== 'plan_execute'),
+          maxRounds: 3,
+          context: { reqId },
+        });
+        const aiReply = (result && typeof result === 'string') ? result : (result?.content || '');
+
+        // 4. 写 assistant message + 触发自动标题（仅 session 模式）
+        if (isSession && session) {
+          try {
+            const { collection } = require('../db/connection');
+            collection('chat_messages').insert({
+              session_id: reqId,
+              role: 'assistant',
+              content: aiReply,
+              attachments_json: null,
+              meta_json: musicCardJson ? JSON.stringify({ music_card: musicCardJson }) : null,
+              ts: new Date().toISOString(),
+            });
+            // 自动标题：仅首条 user message 时，且 title_auto=1
+            if (isFirstUserMsg && session.title_auto) {
+              const first10 = text.trim().replace(/^@\s*/, '').slice(0, 10);
+              const truncated = text.trim().length > 10;
+              const newTitle = `对话 ${extractTitleN(session.title)} · ${first10}${truncated ? '…' : ''}`;
+              collection('chat_sessions').update(s => s.id === reqId, {
+                title: newTitle,
+                updated_at: new Date().toISOString(),
+              });
+              console.log(`[detect-and-respond] ${reqId} 自动标题: ${newTitle}`);
+            }
+          } catch (e) {
+            console.error('[detect-and-respond] 写 assistant message / 自动标题失败:', e.message);
+          }
+        }
+
+        return res.json({ ok: true, reqId, directReply: true, aiReply, musicCardJson });
+      } catch (e) {
+        // AI 失败：user 消息已写，回复错误提示但不写 assistant（避免污染历史）
+        return res.json({ ok: true, reqId, directReply: true, aiReply: `⚠️ AI 暂时无响应（${e.message.slice(0, 100)}），请稍后再试。`, musicCardJson });
+      }
     }
 
     // 0. v0.18 bugfix：读历史（在写 user message 之前注入 LLM 上下文，避免重复）

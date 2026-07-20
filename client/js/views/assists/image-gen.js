@@ -25,10 +25,18 @@
       return `<div class="insight-loading">⏳ 正在生成 ${data.n || 3} 张候选图…</div>`;
     }
     if (data.status === 'failed') {
-      const errMsg = data.error === 'NO_PROMPT'
-        ? '❌ 请输入图片描述。点击 🖼️ 图片 按钮重新尝试。'
-        : `❌ 生成失败：${escHtml(data.error || '未知错误')}`;
-      return `<div class="insight-error">${errMsg}</div>`;
+      // v0.53: NO_PROMPT 走老路径（无 prompt 可重用）；其他失败显示重试按钮
+      if (data.error === 'NO_PROMPT') {
+        return `<div class="insight-error">❌ 请输入图片描述。点击 🖼️ 图片 按钮重新尝试。</div>`;
+      }
+      // 配置错误（重试也没用） — 不显示重试按钮
+      const isConfigError = /API Key 未配置|API key/i.test(data.error || '');
+      const errMsg = `❌ 生成失败：${escHtml(data.error || '未知错误')}`;
+      // 有 prompt + 不是配置错误 → 一键重试（避免重输 + 重弹表单）
+      const retryBtn = (data.prompt && !isConfigError)
+        ? `<button class="btn-small btn-primary" style="margin-top:8px" onclick="chatImageRetry('${reqId}')">🔄 用相同描述重试</button>`
+        : '';
+      return `<div class="insight-error">${errMsg}${retryBtn}</div>`;
     }
     if (data.status === 'done') {
       const options = Array.isArray(data.options) ? data.options : [];
@@ -55,6 +63,7 @@
             ${isPicked ? '<div style="position:absolute;top:4px;right:4px;background:var(--accent);color:white;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:12px">✓</div>' : ''}
             <img src="${escHtml(assetUrl || cdnUrl)}" alt="候选 ${i+1}" style="display:block;width:140px;height:140px;object-fit:cover;border-radius:4px;cursor:zoom-in" onclick="event.stopPropagation();if('${escHtml(cdnUrl)}'&&window.previewImage)previewImage('${escHtml(assetUrl || cdnUrl)}','${escHtml(cdnUrl)}')" onerror="this.src='${escHtml(cdnUrl)}';this.onerror=null;" />
             <div style="text-align:center;font-size:11px;color:var(--text2);margin-top:2px">${i+1}${isPicked ? ' · 已选' : ' · 点选'}</div>
+            <button class="btn-small" style="margin-top:4px;width:100%;font-size:11px" onclick="event.stopPropagation();if(window.ACMSWallpaper)ACMSWallpaper.set('${escHtml(assetUrl || cdnUrl)}')">🖼️ 设为壁纸</button>
           </div>
         `;
       }).join('');
@@ -105,6 +114,7 @@
           </div>
           <div style="display:flex;gap:4px;margin-top:4px">
             <button class="btn-small" onclick="previewImage('${escHtml(imgSrc)}','${escHtml(cdnUrl)}')" style="font-size:11px">🔍 放大预览</button>
+            <button class="btn-small" onclick="if(window.ACMSWallpaper)ACMSWallpaper.set('${escHtml(imgSrc)}')" style="font-size:11px">🖼️ 设为壁纸</button>
             <a href="${escHtml(cdnUrl || imgSrc)}" target="_blank" rel="noopener noreferrer" class="btn-small btn-primary" style="text-decoration:none;display:inline-flex;align-items:center;gap:4px;font-size:11px">
               🔗 查看原图
             </a>
@@ -123,6 +133,29 @@
 async function chatImagePrompt(reqId) {
   if (!reqId) return;
   renderImageForm(reqId);
+}
+
+/**
+ * v0.53: 失败卡片的一键重试 — 复用上次 prompt/n/size，不重弹输入框
+ *   从当前 assist_image 字段读 failed 状态，重置成 generating → 后端 retry 机制接管
+ */
+async function chatImageRetry(reqId) {
+  try {
+    const resp = await api('GET', '/requirements/' + reqId + '/assist');
+    const imgAssist = resp.assists?.image_gen;
+    if (!imgAssist || imgAssist.status !== 'failed' || !imgAssist.prompt) {
+      toast('暂无可重试的内容', 'warning');
+      return;
+    }
+    toast('🎨 重新生成…', 'info', 2000);
+    await chatAssist(reqId, 'image_gen', {
+      prompt: imgAssist.prompt,
+      n: imgAssist.n || 3,
+      size: imgAssist.size || '1024x1024',
+    });
+  } catch (e) {
+    toast('重试失败: ' + e.message, 'error');
+  }
 }
 
 /**
