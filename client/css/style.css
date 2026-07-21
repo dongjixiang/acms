@@ -879,7 +879,131 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
 /* ================================================================
    工作区：操作栏 + 文件预览 + 一键体验
    ================================================================ */
-/* 交付概览 stat-card（利用已有 stats-row 布局） */
+/* 交付管理精简横条（v0.58.2 修复：原用 .stats-row grid 容器撑破横排布局） */
+.delivery-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 10px 14px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 12px;
+  color: var(--text2);
+}
+.delivery-summary b { color: var(--text); font-weight: bold; margin: 0 2px; }
+.delivery-summary .sep {
+  width: 1px;
+  height: 12px;
+  background: var(--border);
+  margin: 0 4px;
+}
+
+/* 交付管理文件树（v0.58.2 补全：原 CSS 完全缺失这些类） */
+.delivery-file-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.delivery-search {
+  flex: 1;
+  min-width: 160px;
+  padding: 6px 12px;
+  background: var(--bg3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-family: inherit;
+}
+.delivery-search:focus { outline: none; border-color: var(--accent); }
+
+#delivery-file-list { margin-top: 4px; }
+
+.delivery-dir {
+  margin: 2px 0;
+}
+.delivery-dir > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  user-select: none;
+}
+.delivery-dir > summary::-webkit-details-marker { display: none; }
+.delivery-dir > summary:hover { background: var(--bg3); }
+.delivery-dir-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+.dir-arrow {
+  display: inline-block;
+  font-size: 9px;
+  color: var(--text2);
+  width: 12px;
+  text-align: center;
+  transition: transform 0.15s;
+}
+.delivery-dir[open] > summary .dir-arrow { transform: rotate(90deg); }
+.delivery-dir[open] > summary {
+  background: var(--bg3);
+  margin-bottom: 2px;
+}
+
+.delivery-file-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 4px 10px 4px 24px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: default;
+}
+.delivery-file-row:hover { background: var(--bg3); }
+.delivery-file-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.delivery-file-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text2);
+}
+.delivery-file-size { white-space: nowrap; }
+.delivery-file-date { white-space: nowrap; }
+
+/* 交付管理操作按钮（v0.58.2 补全：原 CSS 完全缺失 .btn-icon） */
+.btn-icon {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 2px 6px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text2);
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+}
+.btn-icon:hover { background: var(--bg2); border-color: var(--border); color: var(--text); }
+.btn-icon.delete:hover { background: rgba(255,85,85,0.1); border-color: rgba(255,85,85,0.3); color: #f55; }
 .stat-card {
   background: var(--bg2); border-radius: var(--radius); padding: 16px;
   text-align: center; box-shadow: var(--shadow);
@@ -3512,6 +3636,174 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
 .notif-entry .ne-desc { font-size: 10px; color: var(--text2, #9090a0); }
 .notif-entry .ne-time { font-size: 10px; color: var(--text2, #9090a0); opacity: 0.6; }
 
+/* v0.58 通知中心增强 */
+.notif-entry.notif-unread {
+  background: rgba(14,168,157,0.06);
+  border-left: 2px solid var(--accent, #0ea89d);
+}
+.notif-entry .ne-dismiss {
+  background: none; border: none; cursor: pointer;
+  font-size: 10px; color: var(--text2, #9090a0);
+  padding: 2px 4px; border-radius: 3px;
+  opacity: 0; transition: opacity 0.15s;
+  flex-shrink: 0; align-self: flex-start;
+}
+.notif-entry:hover .ne-dismiss { opacity: 1; }
+.notif-entry .ne-dismiss:hover { background: var(--bg3, #2a2a3e); color: var(--accent2, #ff6b6b); }
+.notif-empty {
+  padding: 32px; text-align: center; font-size: 13px;
+  color: var(--text2, #888);
+}
+.notif-actions {
+  padding: 8px 10px; border-top: 1px solid var(--border, #333);
+  text-align: center;
+}
+.notif-clear-all {
+  background: none; border: 1px solid var(--border, #333);
+  border-radius: 6px; padding: 4px 12px; cursor: pointer;
+  font-size: 11px; color: var(--text2, #888);
+}
+.notif-clear-all:hover {
+  background: var(--bg3, #2a2a3e); color: var(--accent2, #ff6b6b);
+}
+
+/* ════════════════════════════════════════
+   Agent Buddy (v0.59) — 系统 Agent 临场感
+   ════════════════════════════════════════ */
+
+/* —— 任务栏头像 —— */
+.ab-avatar {
+  font-size: 16px;
+  padding: 2px 6px !important;
+  cursor: pointer !important;
+  transition: transform 0.2s ease, filter 0.3s ease;
+  user-select: none;
+}
+.ab-avatar:hover {
+  transform: scale(1.15);
+  background: var(--bg3, #252540) !important;
+}
+/* 状态动画 */
+.ab-avatar.ab-idle { }
+.ab-avatar.ab-curious {
+  animation: ab-soft-pulse 2s ease-in-out infinite;
+}
+.ab-avatar.ab-urgent {
+  animation: ab-glow-pulse 1.6s ease-in-out infinite;
+  filter: drop-shadow(0 0 3px rgba(255, 165, 0, 0.4));
+}
+.ab-avatar.ab-critical {
+  animation: ab-bounce-flash 0.8s ease-in-out infinite;
+  filter: drop-shadow(0 0 5px rgba(255, 60, 60, 0.5));
+}
+
+@keyframes ab-soft-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.08); opacity: 0.7; }
+}
+@keyframes ab-glow-pulse {
+  0%, 100% { transform: scale(1); filter: drop-shadow(0 0 3px rgba(255,165,0,0.3)); }
+  50% { transform: scale(1.12); filter: drop-shadow(0 0 8px rgba(255,165,0,0.6)); }
+}
+@keyframes ab-bounce-flash {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  25% { transform: scale(1.15) translateY(-2px); opacity: 0.9; }
+  50% { transform: scale(1); opacity: 0.6; }
+  75% { transform: scale(1.1) translateY(-1px); opacity: 0.9; }
+}
+
+/* —— Agent 浮层面板 —— */
+.agent-panel {
+  display: none;
+  position: fixed;
+  bottom: 48px;
+  right: 60px;
+  width: 240px;
+  background: var(--bg2, #1a1a2e);
+  border: 1px solid var(--border, rgba(78,205,196,0.2));
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.35);
+  z-index: 99999;
+  padding: 0;
+  overflow: hidden;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.agent-panel.open {
+  display: block;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Header */
+.ap-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border, rgba(78,205,196,0.15));
+}
+.ap-avatar {
+  font-size: 20px;
+}
+.ap-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text, #e0e0f0);
+}
+.ap-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--text3, #5a5a70);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.ap-close:hover {
+  background: var(--bg3, #252540);
+  color: var(--text, #e0e0f0);
+}
+
+/* Body */
+.ap-body {
+  padding: 12px;
+}
+.ap-message {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text, #e0e0f0);
+  margin-bottom: 12px;
+}
+
+/* Score bar */
+.ap-score-bar {
+  height: 4px;
+  background: var(--bg3, #252540);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+.ap-score-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.4s ease, background 0.3s ease;
+  width: 0%;
+}
+.ap-score-label {
+  font-size: 10px;
+  color: var(--text3, #5a5a70);
+  text-align: right;
+  margin-bottom: 8px;
+}
+
+/* Actions */
+.ap-actions {
+  display: none;
+}
+
 /* 主内容留底部 padding，避免被任务栏遮挡 */
 body { padding-bottom: 40px; }
 
@@ -3813,6 +4105,43 @@ body { padding-bottom: 40px; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* v0.58.4: hover 子菜单「最近对话」每条直接删除按钮 */
+.launcher-section-info {
+  padding: 6px 10px;
+  font-size: 10px;
+  color: var(--text2);
+  background: var(--bg3);
+  border-radius: 4px;
+  margin: 4px 6px 6px;
+  line-height: 1.4;
+}
+.launcher-submenu #launcher-chat-list .launcher-item.launcher-chat-row {
+  position: relative;
+  padding-right: 30px;  /* 给右侧 🗑 按钮留空间 */
+}
+.launcher-item-delete {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 1px 6px;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--text2);
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s, border-color 0.12s, color 0.12s;
+}
+.launcher-item.launcher-chat-row:hover .launcher-item-delete { opacity: 1; }
+.launcher-item-delete:hover {
+  background: rgba(255,85,85,0.15);
+  border-color: rgba(255,85,85,0.3);
+  color: var(--accent2);
 }
 .li-badge {
   display: inline-block;
@@ -4608,4 +4937,122 @@ body { padding-bottom: 40px; }
   white-space: nowrap;
 }
 .wb-btn:hover { background: var(--bg3); }
+
+/* === 窗口内视图紧凑样式（v0.58 修复需求管理 / 列表视图在 .acms-window 内展示过宽 / 挤压）===
+   只针对被克隆到 .acms-window 内的视图，不影响传统全屏模式。
+   原则：保留原视觉语言，只缩小 padding/font/gap，让窗口内看起来像「原生应用」而不是塞进的网页。 */
+.acms-window .aw-content > .view {
+  padding: 12px 14px;
+}
+.acms-window .aw-content .view-header {
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  gap: 8px;
+}
+.acms-window .aw-content .view-header h2 {
+  font-size: 15px;
+  flex: 1;
+  min-width: 0;
+}
+.acms-window .aw-content .filter-select {
+  font-size: 12px;
+  padding: 4px 8px;
+}
+.acms-window .aw-content .panel-form {
+  max-width: 100%;
+  padding: 14px;
+  margin-bottom: 12px;
+}
+.acms-window .aw-content .panel-form label {
+  margin: 8px 0 3px;
+  font-size: 12px;
+}
+.acms-window .aw-content .panel-form input,
+.acms-window .aw-content .panel-form textarea,
+.acms-window .aw-content .panel-form select {
+  padding: 7px 10px;
+  font-size: 13px;
+}
+.acms-window .aw-content .panel-form .form-row {
+  gap: 8px;
+}
+.acms-window .aw-content .req-card {
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.acms-window .aw-content .req-card .title {
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+.acms-window .aw-content .req-card .meta {
+  font-size: 11px;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* 需求详情窗口（v0.58 + 兄弟 agent 加的 .detail-window-view scope） */
+.acms-window .aw-content .detail-window-view > #detail-title {
+  font-size: 15px;
+  margin: 0 0 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.acms-window .aw-content .detail-window-view #detail-status {
+  margin-bottom: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.acms-window .aw-content .detail-window-view #detail-content .section {
+  margin: 10px 0 6px;
+}
+
+/* 任务详情窗口（v0.58） */
+.acms-window .aw-content .task-detail-window-view > .view-header {
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.acms-window .aw-content .task-detail-window-view #task-detail-title {
+  font-size: 15px;
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+}
+.acms-window .aw-content .task-detail-window-view #task-detail-status {
+  font-size: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.acms-window .aw-content .task-detail-window-view #task-detail-content .detail-grid {
+  grid-template-columns: 1fr;
+  gap: 6px;
+  font-size: 13px;
+}
+
+/* ===============================================
+   v0.58 命令面板 (Command Palette)
+   =============================================== */
+#acms-cmd-list::-webkit-scrollbar {
+  width: 6px;
+}
+#acms-cmd-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+#acms-cmd-list::-webkit-scrollbar-thumb {
+  background: var(--border, #333);
+  border-radius: 3px;
+}
+#acms-cmd-list::-webkit-scrollbar-thumb:hover {
+  background: var(--text2, #888);
+}
+#acms-cmd-input::placeholder {
+  color: var(--text2, #666);
+}
 

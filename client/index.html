@@ -8,7 +8,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>ACMS — 智能体协同管理系统</title>
-<link rel="stylesheet" href="/client/css/style.css?v=0.21.0">
+<link rel="stylesheet" href="/client/css/style.css?v=0.59">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js" defer></script>
 <script>
@@ -245,7 +245,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <h2>📦 <span data-i18n="nav.delivery">交付管理</span></h2>
           </div>
           <!-- 交付概览卡片 -->
-          <div id="delivery-overview" class="stats-row" style="margin-bottom:16px"></div>
+          <div id="delivery-overview" style="margin-bottom:12px"></div>
           <!-- 操作栏 -->
           <div id="delivery-actions" class="workspace-actions"></div>
           <!-- 需求交付清单 -->
@@ -615,8 +615,15 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- v0.55：桌面图标容器（右下角固定，垂直堆叠，由 ACMSWin.registerDesktopIcon 注册） -->
 <div id="desktop-icons" onclick="event.stopPropagation()"></div>
 
-<script src="/client/js/views/taskbar.js?v=0.55"></script>
+<script src="/client/js/views/taskbar.js?v=0.59"></script>
 <script src="/client/js/views/window-manager.js?v=0.55"></script>
+
+<!-- v0.58：核心基础设施 — package-registry 必须在所有视图之前加载，command-palette/notification-center 紧随其后 -->
+<script src="/client/js/core/package-registry.js?v=0.58"></script>
+<script src="/client/js/core/command-palette.js?v=0.58.4"></script>
+<script src="/client/js/core/notification-center.js?v=0.58"></script>
+<script src="/client/js/core/agent-buddy.js?v=0.59"></script>
+
 <script src="/client/js/views/wallpaper.js?v=0.56"></script>
 <script src="/client/js/views/desktop-context-menu.js"></script>
 <script src="/client/js/views/wallpaper-settings.js?v=0.56"></script>
@@ -629,11 +636,25 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/terminal.js"></script>
 <script src="/client/js/views/chat-session-list.js?v=0.55"></script>  <!-- v0.55 合并：chat-history + chat-recycle-bin 二合一，共享 render/mode 切换 -->
 <script>
-// 视图加载器注册（window-manager 加载后执行）
+// v0.58：视图加载器注册 — 通过 ACMS.registerPackage 统一注册
+// 包注册系统自动同步到 ACMSWin.registerViewLoader + labels + 命令面板
 (function() {
-  // 系统管理 — 调用 loadAdminPage() 填充后克隆 #view-admin 内容
-  if (window.ACMSWin) {
-    ACMSWin.registerViewLoader('admin', function(w) {
+  var PKG = function(name, cfg) {
+    if (!window.ACMSWin) return;
+    var loader = cfg.loader;
+    ACMS.registerPackage(name, {
+      title: cfg.title,
+      icon: cfg.icon,
+      category: cfg.category || '未分类',
+      defaultSize: cfg.defaultSize || { w: 800, h: 520 },
+      loader: loader,
+    });
+  };
+
+  // 系统管理
+  PKG('admin', {
+    title: '系统管理', icon: '⚙️', category: '系统', defaultSize: { w: 960, h: 640 },
+    loader: function(w) {
       if (typeof loadAdminPage !== 'function') {
         if (!w.dead) w.$c.innerHTML = '<div style="padding:40px;text-align:center;color:var(--accent2)">系统管理不可用</div>';
         return;
@@ -643,12 +664,9 @@ document.addEventListener('DOMContentLoaded', () => {
         var src = document.getElementById('view-admin');
         if (!src) { w.$c.innerHTML = ''; return; }
         w.$c.innerHTML = src.innerHTML;
-        // 恢复 display（隐藏模板的 display:none 不应带到窗口内）
         w.$c.style.display = '';
-        // 移除冗余标题栏（窗口标题栏已显示名称）
         var header = w.$c.querySelector('.view-header');
         if (header) header.remove();
-        // 重新绑定 admin 标签页切换（scope 到窗口内）
         (function(winRoot) {
           var tabBar = winRoot.querySelector('#admin-tabs');
           var adminRoot = winRoot;
@@ -664,46 +682,47 @@ document.addEventListener('DOMContentLoaded', () => {
             });
           }
         })(w.$c);
-        // 用户管理 tab 懒加载
         var usersTab = w.$c.querySelector('.tab-btn[data-tab="admin-tab-users"]');
         if (usersTab && typeof loadUsers === 'function') {
           usersTab.addEventListener('click', function() { setTimeout(loadUsers, 100); });
         }
       });
-    });
+    }
+  });
 
-    // 项目列表 — 通过 API 加载，直接渲染到窗口内
-    // 删除项目（confirm 弹窗）
-    window.deleteProject = function(id, name) {
-      if (typeof showConfirm === 'function') {
-        showConfirm('确认删除项目「' + name + '」？所有关联的需求、任务、配置都将被删除，此操作不可撤销。').then(function(ok) {
-          if (!ok) return;
-          api('DELETE', '/projects/' + id).then(function() {
-            if (typeof toast === 'function') toast('项目已删除', 'success');
-            // 刷新项目列表窗口：先关掉已存在的窗口再重开（open() 对已存在窗口只 focus，不重载 loader）
-            document.querySelectorAll('.acms-window').forEach(function(el) {
-              var t = el.querySelector('.aw-title');
-              if (t && t.textContent === '项目管理') {
-                var btn = el.querySelector('.aw-btn-close');
-                if (btn) btn.click();
-              }
-            });
-            if (window.ACMSWin) ACMSWin.open('projects');
-          }).catch(function(e) {
-            if (typeof toast === 'function') toast('删除失败: ' + (e.message || ''), 'error');
+  // ── 全局删除项目（projects loader 依赖此函数）──
+  window.deleteProject = function(id, name) {
+    if (typeof showConfirm === 'function') {
+      showConfirm('确认删除项目「' + name + '」？所有关联的需求、任务、配置都将被删除，此操作不可撤销。').then(function(ok) {
+        if (!ok) return;
+        api('DELETE', '/projects/' + id).then(function() {
+          if (typeof toast === 'function') toast('项目已删除', 'success');
+          document.querySelectorAll('.acms-window').forEach(function(el) {
+            var t = el.querySelector('.aw-title');
+            if (t && t.textContent === '项目管理') {
+              var btn = el.querySelector('.aw-btn-close');
+              if (btn) btn.click();
+            }
           });
+          if (window.ACMSWin) ACMSWin.open('projects');
+        }).catch(function(e) {
+          if (typeof toast === 'function') toast('删除失败: ' + (e.message || ''), 'error');
         });
-      }
-    };
-    ACMSWin.registerViewLoader('projects', function(w) {
+      });
+    }
+  };
+
+  // 项目管理
+  PKG('projects', {
+    title: '项目管理', icon: '📦', category: '管理', defaultSize: { w: 800, h: 600 },
+    loader: function(w) {
       w.$c.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text2)">⏳ 加载项目管理...</div>';
       return api('GET', '/projects?limit=50').then(function(data) {
         if (w.dead) return;
         var projects = Array.isArray(data) ? data : (data.projects || []);
         var html = '';
-        // 新建项目入口卡片
         html += '<div style="padding:12px 16px 0">';
-        html += '<div id="np-create-card" class="create-project-card" onclick="toggleInlineNewProjectForm()" style="margin:0;cursor:pointer">➕ <strong>新建项目</strong></div>';        // 内联表单\uff08默认隐藏\uff0c\u70b9击创建卡片切换\uff09
+        html += '<div id="np-create-card" class="create-project-card" onclick="toggleInlineNewProjectForm()" style="margin:0;cursor:pointer">➕ <strong>新建项目</strong></div>';
         html += '<div id="inline-new-project-form" style="display:none;margin:8px 16px 0;padding:10px 12px;background:var(--bg);border:1px solid color-mix(in srgb, var(--accent) 40%, var(--border));border-radius:10px">';        html += '<div style="display:flex;gap:6px;align-items:center">';          html += '<input id="inp-name" placeholder="项目名称 (必填)" style="flex:1;min-width:0;background:var(--window-bg);border:1px solid var(--border);border-radius:6px;padding:6px 9px;color:var(--text);font-size:13px;font-family:inherit;outline:none">';          html += '<input id="inp-desc" placeholder="描述" style="flex:0 0 130px;background:var(--window-bg);border:1px solid var(--border);border-radius:6px;padding:6px 9px;color:var(--text);font-size:13px;font-family:inherit;outline:none">';          html += '<input id="inp-slug" placeholder="slug" style="flex:0 0 90px;background:var(--window-bg);border:1px solid var(--border);border-radius:6px;padding:6px 9px;color:var(--text);font-size:13px;font-family:inherit;outline:none">';          html += '<button id="inp-save" onclick="submitInlineNewProject()" style="flex:0 0 auto;padding:6px 12px;border-radius:6px;font-size:13px;border:none;background:var(--accent);color:var(--window-bg);cursor:pointer;font-weight:500;white-space:nowrap">✓ 保存</button>';          html += '<button onclick="toggleInlineNewProjectForm()" style="flex:0 0 auto;padding:6px 10px;border-radius:6px;font-size:13px;border:1px solid var(--border);background:transparent;color:var(--text2);cursor:pointer;white-space:nowrap">✕</button>';        html += '</div></div>';
         html += '</div></div>';
         if (projects.length === 0) {
@@ -726,11 +745,13 @@ document.addEventListener('DOMContentLoaded', () => {
       }).catch(function() {
         if (!w.dead) w.$c.innerHTML = '<div style="padding:40px;text-align:center;color:var(--accent2)">加载失败</div>';
       });
-    });
+    }
+  });
 
-    // v0.55 自由对话 — DOM 克隆 + __free__ 替换为 sessionId（多窗口）
-    // opts.instanceId 存在 → 恢复历史；不存在 → 新建空 session
-    ACMSWin.registerViewLoader('chat', function(w, opts) {
+  // 自由对话
+  PKG('chat', {
+    title: '对话', icon: '💬', category: '协作', defaultSize: { w: 640, h: 480 },
+    loader: function(w, opts) {
       var src = document.getElementById('view-chat');
       if (!src) { w.$c.innerHTML = ''; return; }
       var sid = (opts && opts.instanceId) || ('new-' + Date.now());
@@ -739,25 +760,25 @@ document.addEventListener('DOMContentLoaded', () => {
       w.$c.style.display = 'flex';
       w.$c.style.flexDirection = 'column';
       w.$c.style.height = '100%';
-      // 关窗 → 刷新 launcher 历史 + 回收站 badge
       w.onClose = function() {
         try { if (window.refreshLauncherChatList) window.refreshLauncherChatList(); } catch (e) {}
         try { if (window.refreshRecycleBinCount) window.refreshRecycleBinCount(); } catch (e) {}
       };
-      // 双击标题栏 → 编辑
       w.onTitleEdit = function() {
         try { if (window.editChatWindowTitle) window.editChatWindowTitle(w); } catch (e) { console.warn(e); }
       };
-      // 委托 chat.js 初始化
       if (typeof window.initChatWindow === 'function') {
         window.initChatWindow(w, sid, opts && opts.title);
       } else {
         console.warn('[chat loader] window.initChatWindow 不存在，chat.js 可能未加载');
       }
-    });
+    }
+  });
 
-    // v0.55 对话历史窗口
-    ACMSWin.registerViewLoader('chat-history', function(w) {
+  // 对话历史
+  PKG('chat-history', {
+    title: '对话历史', icon: '📜', category: '协作', defaultSize: { w: 600, h: 420 },
+    loader: function(w) {
       var src = document.getElementById('view-chat-history');
       if (!src) { w.$c.innerHTML = ''; return; }
       w.$c.innerHTML = src.innerHTML;
@@ -765,10 +786,13 @@ document.addEventListener('DOMContentLoaded', () => {
       w.$c.style.flexDirection = 'column';
       w.$c.style.height = '100%';
       if (typeof window.loadChatHistory === 'function') window.loadChatHistory();
-    });
+    }
+  });
 
-    // v0.55 回收站窗口
-    ACMSWin.registerViewLoader('chat-recycle', function(w) {
+  // 回收站
+  PKG('chat-recycle', {
+    title: '回收站', icon: '🗑', category: '协作', defaultSize: { w: 600, h: 420 },
+    loader: function(w) {
       var src = document.getElementById('view-chat-recycle');
       if (!src) { w.$c.innerHTML = ''; return; }
       w.$c.innerHTML = src.innerHTML;
@@ -776,10 +800,13 @@ document.addEventListener('DOMContentLoaded', () => {
       w.$c.style.flexDirection = 'column';
       w.$c.style.height = '100%';
       if (typeof window.loadChatRecycleBin === 'function') window.loadChatRecycleBin();
-    });
+    }
+  });
 
-    // 缺陷管理 — 克隆静态模板后，让视图模块在窗口 root 内加载/交互
-    ACMSWin.registerViewLoader('bugs', function(w) {
+  // 缺陷管理
+  PKG('bugs', {
+    title: '缺陷管理', icon: '🐛', category: '开发', defaultSize: { w: 900, h: 600 },
+    loader: function(w) {
       if (!App.currentProjectId) {
         w.$c.innerHTML = '<div style="padding:40px;text-align:center;color:var(--accent2)">⚠ 请先在任务栏选择项目</div>';
         return;
@@ -789,10 +816,13 @@ document.addEventListener('DOMContentLoaded', () => {
       w.$c.innerHTML = src.innerHTML;
       w.$c.style.display = '';
       return Promise.resolve(loadBugView(w.$c));
-    });
+    }
+  });
 
-    // 知识库 — 同一注册制；模块内对全局上传弹窗保留 document fallback
-    ACMSWin.registerViewLoader('knowledge', function(w) {
+  // 知识库
+  PKG('knowledge', {
+    title: '知识库', icon: '📚', category: '知识', defaultSize: { w: 900, h: 600 },
+    loader: function(w) {
       if (!App.currentProjectId) {
         w.$c.innerHTML = '<div style="padding:40px;text-align:center;color:var(--accent2)">⚠ 请先在任务栏选择项目</div>';
         return;
@@ -802,14 +832,13 @@ document.addEventListener('DOMContentLoaded', () => {
       w.$c.innerHTML = src.innerHTML;
       w.$c.style.display = '';
       return Promise.resolve(loadKnowledgeView(w.$c));
-    });
+    }
+  });
 
-    // v0.57 任务看板 — 克隆 #view-kanban 后 scope 调用 refreshKanban(w.$c)
-    //   bug 修复：
-    //     1. 之前没注册 viewLoader，窗口打开后是空壳（refreshKanban 没被触发）
-    //     2. 之前 kanban.js 用 document.getElementById 全局查 DOM，
-    //        toggleArchiveFailed 改的是隐藏模板 #view-kanban 的列，窗口内副本不响应
-    ACMSWin.registerViewLoader('kanban', function(w) {
+  // 任务看板
+  PKG('kanban', {
+    title: '任务看板', icon: '📌', category: '管理', defaultSize: { w: 1000, h: 640 },
+    loader: function(w) {
       if (!App.currentProjectId) {
         w.$c.innerHTML = '<div style="padding:40px;text-align:center;color:var(--accent2)">⚠ 请先在任务栏选择项目</div>';
         return;
@@ -818,34 +847,81 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!src) { w.$c.innerHTML = ''; return; }
       w.$c.innerHTML = src.innerHTML;
       w.$c.style.display = '';
-      // 重新绑定 kanban-divider-toggle 按钮到窗口内（内联 onclick 在克隆时已带上，
-      // 但 onclick 里的 toggleArchiveFailed() 用 document 查 DOM，会查到原隐藏模板；
-      // 这里用闭包版覆盖 onclick，让它 scope 到 w.$c）
       var dividerBtn = w.$c.querySelector('#kanban-divider-toggle');
       if (dividerBtn) {
         dividerBtn.onclick = function() { toggleArchiveFailed(w.$c); };
       }
-      // 重新绑定 kanban-req-filter 的 onchange（内联 onchange="refreshKanban()" 不带 root，
-      // 这里 scope 到 w.$c）
       var filterEl = w.$c.querySelector('#kanban-req-filter');
       if (filterEl) {
         filterEl.onchange = function() { refreshKanban(undefined, w.$c); };
       }
-      // 重新绑定刷新按钮（内联 onclick="refreshKanban()" 不带 root）
       var refreshBtn = w.$c.querySelector('.view-header button.btn-accept');
       if (refreshBtn) {
         refreshBtn.onclick = function() { refreshKanban(undefined, w.$c); };
       }
-      // 显式加载窗口内的 requirement filter（绕开 _kanbanFilterLoaded 全局 flag —
-      //   否则用户在传统模式用过 kanban 后打开窗口，flag=true 会跳过窗口内 select 填充）
       if (typeof loadKanbanReqFilter === 'function') loadKanbanReqFilter(w.$c);
-      // 调 refreshKanban 填充任务数据 + 应用 divider 状态（scope 到 w.$c）
       return Promise.resolve(refreshKanban(undefined, w.$c)).then(function() {
         if (w.dead) return;
         applyKanbanDividerState(w.$c);
       });
-    });
-  }
+    }
+  });
+
+  // 需求管理
+  PKG('requirements', {
+    title: '需求管理', icon: '📋', category: '管理', defaultSize: { w: 900, h: 600 },
+    loader: function(w) {
+      if (!App.currentProjectId) {
+        w.$c.innerHTML = '<div style="padding:40px;text-align:center;color:var(--accent2)">⚠ 请先在任务栏选择项目</div>';
+        return;
+      }
+      var src = document.getElementById('view-requirements');
+      if (!src) { w.$c.innerHTML = ''; return; }
+      w.$c.innerHTML = '<div class="view active requirements-window-view">' + src.innerHTML + '</div>';
+      w.$c.style.display = '';
+      var filterEl = w.$c.querySelector('#status-filter');
+      if (filterEl) {
+        filterEl.onchange = function() { loadRequirements(w.$c); };
+      }
+      return Promise.resolve(loadRequirements(w.$c));
+    }
+  });
+
+  // 需求详情
+  PKG('detail', {
+    title: '需求详情', icon: '📋', category: '管理', defaultSize: { w: 800, h: 600 },
+    loader: function(w, opts) {
+      var reqId = opts && opts.reqId;
+      var src = document.getElementById('view-detail');
+      if (!src) { w.$c.innerHTML = ''; return; }
+      w.$c.innerHTML = '<div class="view active detail-window-view">' + src.innerHTML + '</div>';
+      w.$c.style.display = '';
+      if (!reqId) {
+        w.$c.querySelector('.detail-window-view').innerHTML =
+          '<div style="padding:40px;text-align:center;color:var(--text2)">⚠ 缺少需求 ID</div>';
+        return;
+      }
+      return Promise.resolve(openRequirement(reqId, w.$c));
+    }
+  });
+
+  // 任务详情
+  PKG('task-detail', {
+    title: '任务详情', icon: '📌', category: '管理', defaultSize: { w: 800, h: 600 },
+    loader: function(w, opts) {
+      var taskId = opts && opts.taskId;
+      var src = document.getElementById('view-task-detail');
+      if (!src) { w.$c.innerHTML = ''; return; }
+      w.$c.innerHTML = '<div class="view active task-detail-window-view">' + src.innerHTML + '</div>';
+      w.$c.style.display = '';
+      if (!taskId) {
+        w.$c.querySelector('.task-detail-window-view').innerHTML =
+          '<div style="padding:40px;text-align:center;color:var(--text2)">⚠ 缺少任务 ID</div>';
+        return;
+      }
+      return Promise.resolve(openTask(taskId, w.$c));
+    }
+  });
 })();
 </script>
 </body>

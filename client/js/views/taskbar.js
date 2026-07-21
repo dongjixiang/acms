@@ -209,17 +209,8 @@
       }).catch(function() {});
     } catch(e) {}
 
-    // 通知（这里简单设几条模拟，后续可对接后端 events）
-    try {
-      var now = localStorage.getItem('acms-notif-last');
-      if (!now) {
-        var sampleNotifs = [
-          { icon: '✅', title: '任务 T-5E7B 审核通过', desc: 'SSE 心跳部署待确认', time: '2 分钟前' },
-          { icon: '⚠️', title: 'image_gen 构建失败', desc: 'ESLint 3 个错误', time: '15 分钟前' },
-        ];
-        renderNotifs(sampleNotifs);
-      }
-    } catch(e) {}
+    // 通知 — v0.58 改为由 notification-center.js 管理
+    // 不再生成 mock 数据，模块初始化时自动渲染
   }
 
   function updateAgentCount(n) {
@@ -238,6 +229,10 @@
     if (n > 0) {
       var badge = document.getElementById('tb-notif-count');
       if (badge) { badge.textContent = n; badge.style.display = 'inline'; }
+      // 通知 Agent Buddy 有积压
+      if (window.ACMS && ACMS.Buddy && ACMS.Buddy.addScore) {
+        ACMS.Buddy.addScore('pending-review', n);
+      }
     }
   }
 
@@ -291,7 +286,12 @@
     if (notifBtn && notifPanel) {
       notifBtn.addEventListener('click', function(e) {
         e.stopPropagation();
-        notifPanel.classList.toggle('open');
+        // v0.58 使用通知中心 API 管理面板状态 + badge
+        if (window.ACMS && ACMS.Notif) {
+          ACMS.Notif.toggle();
+        } else {
+          notifPanel.classList.toggle('open');
+        }
         launcher.classList.remove('open');
         // 清除 badge
         var badge = document.getElementById('tb-notif-count');
@@ -600,20 +600,26 @@ window.launchAdmin = function() {
   // mouseleave 不做关闭（CSS :hover 处理）
   window.onChatLauncherLeave = function() { /* CSS :hover 自动处理 */ };
 
-  function renderLauncherChatList(sessions) {
+function renderLauncherChatList(sessions) {
     var listEl = document.getElementById('launcher-chat-list');
     if (!listEl) return;
     if (!sessions.length) {
       listEl.innerHTML = '<div style="padding:10px 8px;color:var(--text3);font-size:11px;text-align:center">还没有对话 · 点 🆕 创建</div>';
       return;
     }
-    var html = '';
+    // v0.58.4: 顶部总数 + 引导（hover 子菜单只显示最近 8 条，超过 8 条要跳历史窗口管理）
+    var html = '<div class="launcher-section-info" id="launcher-chat-count">显示最近 ' + sessions.length + ' 条 · 超过的请去历史窗口</div>';
     sessions.forEach(function(s) {
       var title = (s.title || '未命名').replace(/</g, '&lt;');
       if (title.length > 22) title = title.slice(0, 22) + '…';
-      html += '<div class="launcher-item" onclick="openChatSessionFromLauncher(\'' + s.id + '\',\'' + title.replace(/'/g, "\\'") + '\')">';
-      html += '<span class="li-icon">💬</span><span class="li-label">' + title + '</span>';
-      html += '</div>';
+      var sid = s.id;
+      var safeTitle = title.replace(/'/g, "\\'");
+      // v0.58.4: 每条加 🗑 按钮直接软删除（stopPropagation 防止冒泡触发打开对话）
+      html += '<div class="launcher-item launcher-chat-row">' +
+        '<span class="li-icon">💬</span>' +
+        '<span class="li-label" onclick="openChatSessionFromLauncher(\'' + sid + '\',\'' + safeTitle + '\')">' + title + '</span>' +
+        '<button class="launcher-item-delete" title="移到回收站（7 天后自动清理）" onclick="event.stopPropagation();softDeleteChatSession(\'' + sid + '\',\'' + safeTitle + '\')">🗑</button>' +
+        '</div>';
     });
     listEl.innerHTML = html;
   }
