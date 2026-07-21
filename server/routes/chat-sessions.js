@@ -133,4 +133,15 @@ router.get('/recycle-bin/count', (req, res) => {
   }
 });
 
+// v0.58.5: 一键清空回收站（用户主动操作，不等过期）
+router.delete('/recycle-bin/purge-all', (req, res) => {
+  try {
+    const purged = svc.purgeAllSessions();
+    res.json({ purged: true, count: purged });
+  } catch (e) {
+    console.error('[chat-sessions] DELETE /recycle-bin/purge-all error:', e);
+    res.status(500).json({ error: 'INTERNAL', message: e.message });
+  }
+});
+
 module.exports = router;

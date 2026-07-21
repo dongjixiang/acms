@@ -253,7 +253,8 @@
       return;
     }
 
-    ACMSWin.registerViewLoader('terminal', function(w) {
+    // v0.58 包注册（优先）或降级直接注册
+    var terminalLoader = function(w) {
       if (w.dead) return;
 
       var opts = (arguments[1] && arguments[1].opts) || {};
@@ -429,7 +430,18 @@
         } catch(e) {}
         if (origOnDestroy) origOnDestroy.call(w);
       };
-    });
+    };
+
+    // 通过包注册系统或降级直接注册
+    if (window.ACMS && ACMS.registerPackage) {
+      ACMS.registerPackage('terminal', {
+        title: '终端', icon: '💻', category: '工具',
+        defaultSize: { w: 800, h: 480 },
+        loader: terminalLoader
+      });
+    } else {
+      ACMSWin.registerViewLoader('terminal', terminalLoader);
+    }
   }
 
   // ── 初始化 ──

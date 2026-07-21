@@ -69,12 +69,18 @@
     var emptyCls = mode === 'history' ? 'chat-hist-empty' : 'chat-recycle-empty';
     var rowCls = mode === 'history' ? 'chat-hist-row' : 'chat-recycle-row';
 
+    // v0.58.5: recycle 模式顶部加「清空全部」按钮（仅当有项目时显示）
+    var topBar = (mode === 'recycle' && sessions.length > 0)
+      ? '<div class="chat-recycle-toolbar"><span class="chat-recycle-count">回收站共 ' + sessions.length + ' 个</span>'
+        + '<button class="btn-purge-all" onclick="purgeAllChatSessions()">🗑 清空全部</button></div>'
+      : '';
+
     if (!sessions.length) {
-      listEl.innerHTML = '<div class="' + emptyCls + '">' + emptyText(mode) + '</div>';
+      listEl.innerHTML = topBar + '<div class="' + emptyCls + '">' + emptyText(mode) + '</div>';
       return;
     }
 
-    var html = '';
+    var html = topBar;
     sessions.forEach(function(s) {
       html += renderRow(s, mode, rowCls);
     });
@@ -210,6 +216,35 @@
       });
     } else {
       if (confirm('永久删除「' + title + '」？此操作不可恢复。')) doPurge();
+    }
+  };
+
+  // v0.58.5: 一键清空回收站（不等 7 天过期）
+  window.purgeAllChatSessions = function() {
+    var doPurge = async function() {
+      try {
+        const r = await api('DELETE', '/chat-sessions/recycle-bin/purge-all');
+        if (r && r.error) { if (typeof toast === 'function') toast('清空失败: ' + r.error, 'error'); return; }
+        var n = (r && typeof r.count === 'number') ? r.count : 0;
+        if (typeof toast === 'function') toast('已清空回收站（' + n + ' 个对话）', 'success');
+        await window.loadChatRecycleBin();
+        if (window.refreshRecycleBinCount) window.refreshRecycleBinCount();
+      } catch (e) {
+        console.error('[purgeAllChatSessions] error:', e);
+        if (typeof toast === 'function') toast('清空失败: ' + e.message, 'error');
+      }
+    };
+    if (typeof showConfirm === 'function') {
+      showConfirm('⚠️ 清空整个回收站？\n\n所有对话及其消息将被永久删除，不可恢复。\n（如果只是想等过期自动清理，不需要点这个）', {
+        title: '清空回收站',
+        confirmText: '确认清空',
+        cancelText: '取消',
+        type: 'warning',
+      }).then(function(ok) {
+        if (ok) doPurge();
+      });
+    } else {
+      if (confirm('清空整个回收站？此操作不可恢复。')) doPurge();
     }
   };
 

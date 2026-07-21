@@ -1,6 +1,32 @@
 // 需求管理视图 — 列表 + 详情 + 澄清 + SRS + 审核 + 分解
 // 依赖: core/state.js, core/utils.js, js/api.js, views/kanban.js
 
+// v0.55+ 窗口作用域：克隆到 .acms-window 内时，_detailFindById 仍指向隐藏的
+//   #view-requirements 模板内的同名元素，导致 showCreateReq / 提交 / 列表渲染全部失效。
+//   模式与 bugs.js / kanban.js 对齐：入口函数接收 root（= w.$c），helper 优先查 root。
+var _reqRoot = null;
+var _detailRoot = null;
+function _reqFindById(id) {
+  if (_reqRoot && _reqRoot !== document) {
+    var scoped = _reqRoot.querySelector('#' + id);
+    if (scoped) return scoped;
+  }
+  return document.getElementById(id);
+}
+function _detailFindById(id) {
+  if (_detailRoot && _detailRoot !== document) {
+    var scoped = _detailRoot.querySelector('#' + id);
+    if (scoped) return scoped;
+  }
+  return document.getElementById(id);
+}
+// 在 _detailRoot 内按 class 查（多个 detail 窗口同时打开时避免 .srs-preview 等
+//   在全局首个 detail 窗口内命中；detail 视图内顶层唯一 class 用这个 helper）
+function _detailQuery(selector) {
+  if (_detailRoot && _detailRoot !== document) return _detailRoot.querySelector(selector);
+  return document.querySelector(selector);
+}
+
 // 将数组项安全转为字符串（兼容 LLM 返回对象数组的情况）
 function fmtArr(arr, sep) {
   if (!arr || !Array.isArray(arr)) return '';
@@ -13,34 +39,46 @@ function fmtArr(arr, sep) {
   }).join(sep || ', ');
 }
 
-async function loadRequirements() {
+// v0.58 详情入口：桌面模式走 ACMSWin.open → detail viewLoader，传统模式 fallback
+function openRequirementInWindow(id) {
+  if (window.ACMSWin && ACMSWin.isActive()) {
+    // 桌面模式：开新窗口（instanceId 用 reqId 实现同时打开多个 req 详情，去重）
+    ACMSWin.open('detail', { reqId: id, instanceId: id, title: '📄 ' + id });
+  } else {
+    openRequirement(id);
+  }
+}
+
+async function loadRequirements(root) {
+  if (root) _reqRoot = root;
+  else if (!_reqRoot) _reqRoot = document;
   if (!App.currentProjectId) return;
   try {
-    const status = document.getElementById('status-filter')?.value || '';
+    const status = _reqFindById('status-filter')?.value || '';
     const reqs = await Requirements.list({ projectId: App.currentProjectId, status: status || undefined, rootOnly: true });
-    const container = document.getElementById('req-list');
+    const container = _reqFindById('req-list');
     if (!reqs.length) { container.innerHTML = '<div class="empty">暂无需求</div>'; return; }
     container.innerHTML = reqs.map(r => `
-      <div class="req-card" onclick="openRequirement('${r.id}')">
+      <div class="req-card" onclick="openRequirementInWindow('${r.id}')">
         <div class="title">${escHtml(r.title)}<span class="status-badge badge-${r.status}">${App.statusLabels[r.status] || r.status}</span></div>
         <div class="meta"><span>${r.id}</span><span>P${r.priority}</span><span>${fmtDate(r.created_at)}</span></div>
       </div>`).join('');
   } catch (e) { toast('加载失败: ' + e.message, 'error'); }
 }
 
-function showCreateReq() { document.getElementById('create-req-panel').style.display = 'block'; }
-function hideCreateReq() { document.getElementById('create-req-panel').style.display = 'none'; }
+function showCreateReq() { _reqFindById('create-req-panel').style.display = 'block'; }
+function hideCreateReq() { _reqFindById('create-req-panel').style.display = 'none'; }
 
 async function doCreateReq() {
-  const title = document.getElementById('create-title').value.trim();
-  const description = document.getElementById('create-desc').value.trim();
+  const title = _reqFindById('create-title').value.trim();
+  const description = _reqFindById('create-desc').value.trim();
   if (!title) return toast('请输入标题', 'error');
 
-  // 高级选项只在用户展开时才读取
-  const advancedOpen = document.querySelector('.create-req-advanced')?.open;
-  const priorityRaw = document.getElementById('create-priority').value;
+// 高级选项只在用户展开时才读取
+  const advancedOpen = _reqFindById('create-req-advanced')?.open;
+  const priorityRaw = _reqFindById('create-priority').value;
   const priority = priorityRaw ? parseInt(priorityRaw, 10) : null;  // 空=系统推断
-  const deadline = document.getElementById('create-deadline').value || undefined;
+  const deadline = _reqFindById('create-deadline').value || undefined;
 
   // 软引导：title 极短（<5 字）且没描述，提示用户考虑走想法池
   if (title.length < 5 && !description) {
@@ -53,13 +91,13 @@ async function doCreateReq() {
     if (goIdea) {
       // 关闭当前面板 → 打开想法池弹窗并预填
       hideCreateReq();
-      document.getElementById('create-title').value = '';
-      document.getElementById('create-desc').value = '';
+      _reqFindById('create-title').value = '';
+      _reqFindById('create-desc').value = '';
       if (typeof showIdeaDialog === 'function') {
         showIdeaDialog();
         setTimeout(() => {
-          const t = document.getElementById('idea-title');
-          const c = document.getElementById('idea-content');
+          const t = _reqFindById('idea-title');
+          const c = _reqFindById('idea-content');
           if (t) t.value = title;
           if (c) c.value = '（从「提个需求」转来 — 用户感觉这更像想法）';
         }, 100);
@@ -73,12 +111,12 @@ async function doCreateReq() {
   try {
     const data = {
       projectId: App.currentProjectId, title, description,
-      tags: document.getElementById('create-tags').value.split(',').map(t => t.trim()).filter(Boolean),
+      tags: _reqFindById('create-tags').value.split(',').map(t => t.trim()).filter(Boolean),
     };
     if (priority !== null) data.priority = priority;
     if (deadline) data.deadline = deadline;
     // 30 文档「角色感知」Step 3：带当前用户角色，影响后续澄清提问方向
-    if (App.currentRole) {
+if (App.currentRole) {
       data.userRole = App.currentRole;
       data.role = App.currentRole;  // 兼容老字段
     }
@@ -86,28 +124,38 @@ async function doCreateReq() {
     const req = await Requirements.create(data);
     toast(advancedOpen ? '需求创建成功！' : '需求已记录 — AI 会在规划阶段自动定优先级', 'success');
     hideCreateReq(); loadRequirements(); loadDashboard();
-    // 创建后直接打开需求详情
-    openRequirement(req.id);
+    // 创建后直接打开需求详情 — 走 openRequirementInWindow 把 reqId 传给
+    //   task-detail viewLoader（直接调 openRequirement 会触发 ACMSWin.open('detail')
+    //   无 reqId → viewLoader 显示 "⚠ 缺少需求 ID"）。
+    openRequirementInWindow(req.id);
   } catch (e) { toast('创建失败: ' + e.message, 'error'); }
 }
 
 // ===== 需求详情 =====
-async function openRequirement(id) {
-  showWorkspaceView('detail');
+async function openRequirement(id, root) {
+  // v0.58 detail viewLoader 传入 root（= w.$c）；approve/reject 等内部调用不传，
+  //   复用 viewLoader 已设置的 _detailRoot（最近一次 detail 窗口加载时设定）。
+  //   若 _detailRoot 未设置（兜底），fallback 到 document（传统全屏模式）。
+  // v0.58.1: 不再调 showWorkspaceView('detail') — 桌面模式由 viewLoader/ACMSWin.open
+  //   处理窗口创建与聚焦；内部刷新只需更新 _detailRoot 内的 DOM。原先的调用会在
+  //   桌面模式下触发第二次 ACMSWin.open('detail')（无 reqId），产生"⚠ 缺少需求 ID"
+  //   的幽灵窗口。
+  if (root) _detailRoot = root;
+  if (!_detailRoot) _detailRoot = document;
   try {
     const req = await Requirements.get(id);
-    document.getElementById('detail-title').textContent = `${req.id}: ${escHtml(req.title)}`;
+    _detailFindById('detail-title').textContent = `${req.id}: ${escHtml(req.title)}`;
     const roleLabels = { pm: '👤 PM', tech: '🛠 技术', design: '🎨 设计', test: '🧪 测试', 'agent:小吉': '🤖 Agent', system: '⚙️ 系统', anonymous: '👻 匿名' };
     const roleTag = req.user_role
       ? `<span class="role-tag-inline" title="提交时选中的角色">${escHtml(roleLabels[req.user_role] || req.user_role)}</span>`
       : '';
-    document.getElementById('detail-status').innerHTML = `
+    _detailFindById('detail-status').innerHTML = `
       <span class="status-badge badge-${req.status}">${App.statusLabels[req.status]}</span>
       ${roleTag}
       ${req.clarifications && req.clarifications.length > 0 ? `<button class="btn-small" style="background:rgba(100,149,237,0.15);color:#6495ED;border-color:rgba(100,149,237,0.3)" onclick="showClarifyThread('${req.id}')">💬 查看澄清过程</button>` : ''}
-      <button class="btn-small" style="background:rgba(78,205,196,0.15);color:var(--green);border-color:rgba(78,205,196,0.3)" onclick="exportRequirement('${req.id}')">📥 导出 Word</button>`;
+<button class="btn-small" style="background:rgba(78,205,196,0.15);color:var(--green);border-color:rgba(78,205,196,0.3)" onclick="exportRequirement('${req.id}')">📥 导出 Word</button>`;
     const srs = safeParse(req.srs);
-    document.getElementById('detail-content').innerHTML = `
+    _detailFindById('detail-content').innerHTML = `
       <div class="section" style="display:flex;justify-content:space-between;align-items:center">
         <strong>描述:</strong>
         <button class="btn-small" onclick="showDescriptionHistory('${id}')" title="查看历史版本" style="font-size:10px">📜 历史</button>
@@ -226,7 +274,7 @@ function renderAiClarifyPanel(req) {
 async function loadAiModels(reqId) {
   try {
     const models = await api('GET', '/models/active');
-    const sel = document.getElementById(`ai-model-select-${reqId}`);
+    const sel = _detailFindById(`ai-model-select-${reqId}`);
     if (sel) sel.innerHTML = '<option value="">选择大模型...</option>' + models.map(m => `<option value="${m.id}">${escHtml(m.name)} (${m.model})</option>`).join('');
   } catch(e) {}
 }
@@ -244,18 +292,18 @@ function detectPreviewNeeds(srs) {
 }
 
 function updateMediaPreviewButtons(reqId) {
-  const container = document.getElementById(`ai-clarify-media-actions-${reqId}`);
+  const container = _detailFindById(`ai-clarify-media-actions-${reqId}`);
   if (!container) return;
 
   // 优先从澄清面板的 SRS 草稿读取，其次从页面底部的 SRS 预览区读取
   let scopeInText = '';
-  const srsEl = document.getElementById(`ai-clarify-srs-${reqId}`);
+  const srsEl = _detailFindById(`ai-clarify-srs-${reqId}`);
   if (srsEl && srsEl.textContent) {
     const match = srsEl.textContent.match(/范围:\s*(.+?)(?=验收|$)/);
     scopeInText = match ? match[1] : srsEl.textContent;
   } else {
     // 从页面底部 SRS 预览区读取
-    const srsPreview = document.querySelector('.srs-preview pre');
+    const srsPreview = _detailQuery('.srs-preview pre');
     if (srsPreview) {
       try {
         const srs = JSON.parse(srsPreview.textContent);
@@ -280,19 +328,19 @@ function updateMediaPreviewButtons(reqId) {
  * 从页面提取需求描述文本（用于语音预览的内容）
  */
 function getRequirementAudioText() {
-  const srsPre = document.querySelector('.srs-preview pre');
+  const srsPre = _detailQuery('.srs-preview pre');
   if (srsPre) {
     try {
       const srsData = JSON.parse(srsPre.textContent);
       if (srsData.summary) return srsData.summary;
     } catch(e) {}
   }
-  const mdContent = document.querySelector('.md-content');
+  const mdContent = _detailQuery('.md-content');
   if (mdContent) {
     const text = mdContent.textContent.replace(/\s+/g, ' ').trim();
     if (text.length > 10) return text.substring(0, 200);
   }
-  const titleEl = document.getElementById('detail-title');
+  const titleEl = _detailFindById('detail-title');
   if (titleEl) {
     const title = titleEl.textContent.replace(/^REQ-\w+:\s*/, '');
     if (title) return title;
@@ -305,13 +353,13 @@ function getRequirementAudioText() {
  * 优化意见累积叠加，不替代需求
  */
 async function generateImagePreviewWithFeedback(reqId, inputId, oldPreviewId) {
-  const feedback = document.getElementById(inputId);
+  const feedback = _detailFindById(inputId);
   if (!feedback) return;
   const feedbackText = feedback.value.trim();
   if (!feedbackText) return toast('请输入优化意见', 'error');
 
   // 从旧卡片读取累积的 basePrompt 和反馈历史，以及上一张图的路径
-  const oldPreview = document.getElementById(oldPreviewId);
+  const oldPreview = _detailFindById(oldPreviewId);
   let basePrompt = '';
   let history = [];
   let prevImageUrl = '';
@@ -324,9 +372,9 @@ async function generateImagePreviewWithFeedback(reqId, inputId, oldPreviewId) {
   }
   // 如果旧卡片没有数据（降级），从 DOM 提取
   if (!basePrompt) {
-    const titleEl = document.getElementById('detail-title');
+    const titleEl = _detailFindById('detail-title');
     const reqTitle = titleEl ? titleEl.textContent.replace(/^REQ-\w+:\s*/, '') : '';
-    const srsPre = document.querySelector('.srs-preview pre');
+    const srsPre = _detailQuery('.srs-preview pre');
     let scopeInText = '';
     try {
       const srsData = srsPre ? JSON.parse(srsPre.textContent) : null;
@@ -343,7 +391,7 @@ async function generateImagePreviewWithFeedback(reqId, inputId, oldPreviewId) {
   const feedbackPart = history.map((h, i) => `优化${i + 1}：${h}`).join('；');
   const enhancedPrompt = basePrompt + '，' + feedbackPart;
 
-  const container = document.getElementById(`ai-clarify-media-actions-${reqId}`);
+  const container = _detailFindById(`ai-clarify-media-actions-${reqId}`);
   if (!container) return;
   if (oldPreview) oldPreview.remove();
 
@@ -391,14 +439,14 @@ async function generateImagePreviewWithFeedback(reqId, inputId, oldPreviewId) {
 }
 
 async function generateImagePreview(reqId) {
-  const container = document.getElementById(`ai-clarify-media-actions-${reqId}`);
+  const container = _detailFindById(`ai-clarify-media-actions-${reqId}`);
   if (!container) return;
   const projectId = App.currentProjectId;
   if (!projectId) return toast('请先选择项目', 'error');
   // 从页面元素提取需求标题和 SRS scopeIn 构建有意义的 prompt
-  const titleEl = document.getElementById('detail-title');
+  const titleEl = _detailFindById('detail-title');
   const reqTitle = titleEl ? titleEl.textContent.replace(/^REQ-\w+:\s*/, '') : '';
-  const srsPre = document.querySelector('.srs-preview pre');
+  const srsPre = _detailQuery('.srs-preview pre');
   let scopeInText = '';
   try {
     const srsData = srsPre ? JSON.parse(srsPre.textContent) : null;
@@ -440,7 +488,7 @@ async function generateImagePreview(reqId) {
 }
 
 async function generateAudioPreview(reqId, customText) {
-  const container = document.getElementById(`ai-clarify-media-actions-${reqId}`);
+  const container = _detailFindById(`ai-clarify-media-actions-${reqId}`);
   if (!container) return;
   const projectId = App.currentProjectId;
   if (!projectId) return toast('请先选择项目', 'error');
@@ -475,11 +523,11 @@ async function generateAudioPreview(reqId, customText) {
  * 自定义文本语音合成 — 用户输入任意文本进行语音试听
  */
 async function generateAudioPreviewWithText(reqId, inputId, oldPreviewId) {
-  const input = document.getElementById(inputId);
+  const input = _detailFindById(inputId);
   if (!input) return;
   const customText = input.value.trim();
   if (!customText) return toast('请输入要朗读的文本', 'error');
-  const oldPreview = document.getElementById(oldPreviewId);
+  const oldPreview = _detailFindById(oldPreviewId);
   if (oldPreview) oldPreview.remove();
   await generateAudioPreview(reqId, customText);
 }
@@ -488,14 +536,14 @@ async function generateAudioPreviewWithText(reqId, inputId, oldPreviewId) {
  * 视频预览生成 — 从需求描述提取 prompt，走 MiniMax → ComfyUI 降级链
  */
 async function generateVideoPreview(reqId) {
-  const container = document.getElementById(`ai-clarify-media-actions-${reqId}`);
+  const container = _detailFindById(`ai-clarify-media-actions-${reqId}`);
   if (!container) return;
   const projectId = App.currentProjectId;
   if (!projectId) return toast('请先选择项目', 'error');
   // 从页面元素提取需求标题和 SRS scopeIn 构建 prompt
-  const titleEl = document.getElementById('detail-title');
+  const titleEl = _detailFindById('detail-title');
   const reqTitle = titleEl ? titleEl.textContent.replace(/^REQ-\w+:\s*/, '') : '';
-  const srsPre = document.querySelector('.srs-preview pre');
+  const srsPre = _detailQuery('.srs-preview pre');
   let scopeInText = '';
   try {
     const srsData = srsPre ? JSON.parse(srsPre.textContent) : null;
@@ -540,12 +588,12 @@ async function generateVideoPreview(reqId) {
  * 带反馈优化的视频生成 — 优化意见累积叠加
  */
 async function generateVideoPreviewWithFeedback(reqId, inputId, oldPreviewId) {
-  const feedback = document.getElementById(inputId);
+  const feedback = _detailFindById(inputId);
   if (!feedback) return;
   const feedbackText = feedback.value.trim();
   if (!feedbackText) return toast('请输入优化意见', 'error');
 
-  const oldPreview = document.getElementById(oldPreviewId);
+  const oldPreview = _detailFindById(oldPreviewId);
   let basePrompt = '';
   let history = [];
   let prevVideoUrl = '';
@@ -555,9 +603,9 @@ async function generateVideoPreviewWithFeedback(reqId, inputId, oldPreviewId) {
     try { history = JSON.parse(oldPreview.getAttribute('data-feedback-history') || '[]'); } catch(e) {}
   }
   if (!basePrompt) {
-    const titleEl = document.getElementById('detail-title');
+    const titleEl = _detailFindById('detail-title');
     const reqTitle = titleEl ? titleEl.textContent.replace(/^REQ-\w+:\s*/, '') : '';
-    const srsPre = document.querySelector('.srs-preview pre');
+    const srsPre = _detailQuery('.srs-preview pre');
     let scopeInText = '';
     try {
       const srsData = srsPre ? JSON.parse(srsPre.textContent) : null;
@@ -572,7 +620,7 @@ async function generateVideoPreviewWithFeedback(reqId, inputId, oldPreviewId) {
   const feedbackPart = history.map((h, i) => `优化${i + 1}：${h}`).join('；');
   const enhancedPrompt = basePrompt + '，' + feedbackPart;
 
-  const container = document.getElementById(`ai-clarify-media-actions-${reqId}`);
+  const container = _detailFindById(`ai-clarify-media-actions-${reqId}`);
   if (!container) return;
   if (oldPreview) oldPreview.remove();
 
@@ -615,7 +663,7 @@ async function generateVideoPreviewWithFeedback(reqId, inputId, oldPreviewId) {
 }
 
 async function startAiClarify(reqId) {
-  const modelId = document.getElementById(`ai-model-select-${reqId}`)?.value;
+  const modelId = _detailFindById(`ai-model-select-${reqId}`)?.value;
   if (!modelId) return toast('请先选择大模型', 'error');
   // 仅在 idea 状态时推进到 clarifying，避免从 review 等状态回退
   try {
@@ -631,10 +679,10 @@ async function startAiClarify(reqId) {
 }
 
 async function sendAiClarify(reqId, choiceAnswer) {
-  const modelId = document.getElementById(`ai-model-select-${reqId}`)?.value;
+  const modelId = _detailFindById(`ai-model-select-${reqId}`)?.value;
   if (!modelId) return toast('请先选择大模型', 'error');
 
-  const input = document.getElementById(`ai-clarify-input-${reqId}`);
+  const input = _detailFindById(`ai-clarify-input-${reqId}`);
   const userMsg = choiceAnswer || (input?.value?.trim() || '');
   if (input && !choiceAnswer) input.value = '';
 
@@ -648,10 +696,10 @@ async function sendAiClarify(reqId, choiceAnswer) {
   }
   if (!batchMsg) return;
 
-  const msgsDiv = document.getElementById(`ai-clarify-messages-${reqId}`);
-  const choicesDiv = document.getElementById(`ai-clarify-choices-${reqId}`);
-  const srsDiv = document.getElementById(`ai-clarify-srs-${reqId}`);
-  const actionsDiv = document.getElementById(`ai-clarify-actions-${reqId}`);
+  const msgsDiv = _detailFindById(`ai-clarify-messages-${reqId}`);
+  const choicesDiv = _detailFindById(`ai-clarify-choices-${reqId}`);
+  const srsDiv = _detailFindById(`ai-clarify-srs-${reqId}`);
+  const actionsDiv = _detailFindById(`ai-clarify-actions-${reqId}`);
 
   aiClarifyHistory[reqId] = aiClarifyHistory[reqId] || [];
   aiClarifyHistory[reqId].push({ role: 'user', content: batchMsg });
@@ -748,7 +796,7 @@ async function sendAiClarify(reqId, choiceAnswer) {
       // 让用户可以直接在输入框中打字推进，而不是卡死在无交互组件状态
       // 注意：decision_tree 模式天然没 choices，不触发此逃生口
       actionsDiv.style.display = 'block';
-      const acceptBtn = document.querySelector('#ai-clarify-actions-' + reqId + ' .btn-accept');
+      const acceptBtn = _detailQuery('#ai-clarify-actions-' + reqId + ' .btn-accept');
       if (acceptBtn) acceptBtn.style.display = 'none';
       actionsDiv.scrollIntoView({ behavior: 'smooth', block: 'center' });
     } else {
@@ -785,7 +833,7 @@ function collectSelections(reqId) {
 }
 
 function renderChoicesWithSubmit(reqId, choices) {
-  const choicesDiv = document.getElementById(`ai-clarify-choices-${reqId}`);
+  const choicesDiv = _detailFindById(`ai-clarify-choices-${reqId}`);
   if (!choicesDiv) return;
 
   if (!aiSelections[reqId]) aiSelections[reqId] = {};
@@ -843,7 +891,7 @@ function toggleChoice(btn, reqId, qi) {
     if (!sel.multiple) {
       // 单选：清除同组其他选择
       sel.values = [];
-      const group = document.getElementById(`choice-group-${reqId}-${qi}`);
+      const group = _detailFindById(`choice-group-${reqId}-${qi}`);
       if (group) group.querySelectorAll('.choice-btn').forEach(b => b.classList.remove('choice-selected'));
     }
     sel.values.push(val);
@@ -872,12 +920,12 @@ function toggleReviewSuggestion(btn, reqId, si) {
 async function submitAllChoices(reqId) {
   const selections = collectSelections(reqId);
   if (selections.length === 0) {
-    const input = document.getElementById(`ai-clarify-input-${reqId}`);
+    const input = _detailFindById(`ai-clarify-input-${reqId}`);
     const custom = input?.value?.trim();
     if (!custom) return toast('请至少选择一个选项或输入自定义内容', 'error');
   }
   // 合并所有选择 + 自定义输入
-  const input = document.getElementById(`ai-clarify-input-${reqId}`);
+  const input = _detailFindById(`ai-clarify-input-${reqId}`);
   const customMsg = input?.value?.trim() || '';
   if (customMsg) {
     aiClarifyHistory[reqId] = aiClarifyHistory[reqId] || [];
@@ -890,14 +938,14 @@ async function submitAllChoices(reqId) {
 
 async function submitAiSrs(reqId) {
   // 显示加载状态
-  const actionsDiv = document.getElementById(`ai-clarify-actions-${reqId}`);
+  const actionsDiv = _detailFindById(`ai-clarify-actions-${reqId}`);
   if (actionsDiv) {
     actionsDiv.innerHTML = '<div style="text-align:center;padding:12px;color:var(--text2)">⏳ AI 正在评审需求，请稍候...</div>';
   }
 
   // 先保存编辑后的 MD 文档（容错：失败不阻塞）
   try {
-    const mdEditor = document.getElementById(`md-editor-${reqId}`);
+    const mdEditor = _detailFindById(`md-editor-${reqId}`);
     if (mdEditor) {
       await Requirements.updateSrs(reqId, { description: mdEditor.value });
     }
@@ -944,7 +992,7 @@ async function submitAiSrs(reqId) {
           </div>`
         : '';
 
-      document.getElementById(`ai-clarify-actions-${reqId}`).innerHTML =
+      _detailFindById(`ai-clarify-actions-${reqId}`).innerHTML =
         `<div style="margin:12px 0;padding:12px;border:1px solid var(--red);border-radius:6px;background:rgba(255,107,107,0.06)">
           <div style="font-weight:bold;color:var(--red);margin-bottom:8px">🔍 AI 评审发现 ${review.issues.length} 个问题（评分 ${review.score}/5）</div>
           ${issuesHtml}
@@ -970,7 +1018,7 @@ async function submitAiSrs(reqId) {
 // ===== 忽略 AI 评审意见，直接提交 =====
 async function forceSubmitReview(reqId) {
   if (!confirm('AI 评审发现的问题尚未解决，确认跳过评审直接提交审核？')) return;
-  const actionsDiv = document.getElementById(`ai-clarify-actions-${reqId}`);
+  const actionsDiv = _detailFindById(`ai-clarify-actions-${reqId}`);
   if (actionsDiv) actionsDiv.innerHTML = '<div style="text-align:center;padding:12px;color:var(--text2)">\u23f3 \u6b63\u5728\u8df3\u8fc7\u8bc4\u5ba1\u63d0\u4ea4...</div>';
   try {
     await api('POST', `/requirements/${reqId}/transition`, { targetStatus: 'review' });
@@ -1019,7 +1067,7 @@ function reconstructMdDoc(reqId) {
 }
 
 async function generateMdDoc(reqId, modelId) {
-  const srsDiv = document.getElementById(`ai-clarify-srs-${reqId}`);
+  const srsDiv = _detailFindById(`ai-clarify-srs-${reqId}`);
   if (!srsDiv) return;
 
   srsDiv.innerHTML += '<div style="margin-top:12px;color:var(--text2)">⏳ 正在生成需求文档...</div>';
@@ -1034,7 +1082,7 @@ async function generateMdDoc(reqId, modelId) {
 }
 
 function renderSectionCards(reqId, modelId) {
-  const srsDiv = document.getElementById(`ai-clarify-srs-${reqId}`);
+  const srsDiv = _detailFindById(`ai-clarify-srs-${reqId}`);
   if (!srsDiv) return;
   const sections = _mdSections[reqId];
   if (!sections) return;
@@ -1078,7 +1126,7 @@ function renderSectionCards(reqId, modelId) {
 function editSection(reqId, idx, modelId) {
   const sections = _mdSections[reqId];
   if (!sections || !sections[idx]) return;
-  const editDiv = document.getElementById(`section-edit-${reqId}-${idx}`);
+  const editDiv = _detailFindById(`section-edit-${reqId}-${idx}`);
   if (!editDiv) return;
 
   editDiv.style.display = 'block';
@@ -1093,7 +1141,7 @@ function editSection(reqId, idx, modelId) {
 async function saveSection(reqId, idx, modelId) {
   const sections = _mdSections[reqId];
   if (!sections || !sections[idx]) return;
-  const ta = document.getElementById(`section-edit-textarea-${reqId}-${idx}`);
+  const ta = _detailFindById(`section-edit-textarea-${reqId}-${idx}`);
   if (!ta) return;
   const oldContent = sections[idx].content;
   const newContent = ta.value;
@@ -1104,7 +1152,7 @@ async function saveSection(reqId, idx, modelId) {
   const fullDoc = reconstructMdDoc(reqId);
 
   // 刷新预览
-  const contentDiv = document.getElementById(`section-content-${reqId}-${idx}`);
+  const contentDiv = _detailFindById(`section-content-${reqId}-${idx}`);
   if (contentDiv) {
     contentDiv.textContent = newContent.length > 300 ? newContent.substring(0, 300) + '...' : newContent;
   }
@@ -1121,7 +1169,7 @@ async function saveSection(reqId, idx, modelId) {
 }
 
 function cancelEditSection(reqId, idx) {
-  const editDiv = document.getElementById(`section-edit-${reqId}-${idx}`);
+  const editDiv = _detailFindById(`section-edit-${reqId}-${idx}`);
   if (editDiv) editDiv.style.display = 'none';
 }
 
@@ -1149,7 +1197,7 @@ function parseMdBlocks(mdContent) {
 function loadExistingMdEditor(reqId) {
   // v0.17e：用 reqId 锁定 md-content（之前 querySelector('.md-content') 拿 DOM 里第一个，
   //   切 REQ 后旧节点残留会错位渲染）
-  var mdContentDiv = document.getElementById(`description-content-${reqId}`);
+  var mdContentDiv = _detailFindById(`description-content-${reqId}`);
   if (!mdContentDiv) return;
   _editMode[reqId] = false;
   Requirements.get(reqId).then(function(req) {
@@ -1160,7 +1208,7 @@ function loadExistingMdEditor(reqId) {
 
     // 收集可用模型列表（从 AI 面板或全量模型）
     var modelOpts = '';
-    var sel = document.getElementById('ai-model-select-' + reqId);
+    var sel = _detailFindById('ai-model-select-' + reqId);
     if (sel) {
       for (var mi = 0; mi < sel.options.length; mi++) {
         var o = sel.options[mi];
@@ -1187,9 +1235,9 @@ function fetchModelsForInline(reqId) {
         return '<option value="' + m.id + '">' + escHtml(m.name) + '</option>';
       }).join('');
       // 如果已经渲染了，刷新底部工具栏
-      var conDiv = document.getElementById('inline-consistency-' + reqId);
+      var conDiv = _detailFindById('inline-consistency-' + reqId);
       if (conDiv) {
-        var container = document.querySelector('.md-content');
+        var container = _detailQuery('.md-content');
         if (container) {
           var badge = document.querySelector('#detail-status .status-badge');
           var isClarifying = badge && (badge.textContent || '').indexOf('澄清') >= 0;
@@ -1242,7 +1290,7 @@ function renderInlineSections(reqId, container, isClarifying) {
 
 function toggleEditMode(reqId) {
   _editMode[reqId] = !_editMode[reqId];
-  var container = document.querySelector('.md-content');
+  var container = _detailQuery('.md-content');
   if (container) {
     var isClarifying = false;
     var badge = document.querySelector('#detail-status .status-badge');
@@ -1255,10 +1303,10 @@ function toggleEditMode(reqId) {
 function editInlineBlock(reqId, idx) {
   var blocks = _mdSections[reqId];
   if (!blocks || !blocks[idx]) return;
-  var editDiv = document.getElementById('inline-edit-' + reqId + '-' + idx);
+  var editDiv = _detailFindById('inline-edit-' + reqId + '-' + idx);
   if (!editDiv) return;
 
-  var modelSel = document.getElementById('ai-model-select-' + reqId);
+  var modelSel = _detailFindById('ai-model-select-' + reqId);
   var modelOpts = '';
   if (modelSel) {
     for (var mi = 0; mi < modelSel.options.length; mi++) {
@@ -1290,14 +1338,14 @@ function editInlineBlock(reqId, idx) {
 }
 
 function closeInlineEdit(reqId, idx) {
-  var editDiv = document.getElementById('inline-edit-' + reqId + '-' + idx);
+  var editDiv = _detailFindById('inline-edit-' + reqId + '-' + idx);
   if (editDiv) { editDiv.style.display = 'none'; editDiv.innerHTML = ''; }
-  var resultDiv = document.getElementById('inline-refine-result-' + reqId + '-' + idx);
+  var resultDiv = _detailFindById('inline-refine-result-' + reqId + '-' + idx);
   if (resultDiv) resultDiv.innerHTML = '';
-  var conDiv = document.getElementById('inline-cons-result-' + reqId + '-' + idx);
+  var conDiv = _detailFindById('inline-cons-result-' + reqId + '-' + idx);
   if (conDiv) conDiv.innerHTML = '';
   // 关闭时刷新预览
-  var container = document.querySelector('.md-content');
+  var container = _detailQuery('.md-content');
   if (container) {
     var isClarifying = false;
     var badge = document.querySelector('#detail-status .status-badge');
@@ -1310,13 +1358,13 @@ function closeInlineEdit(reqId, idx) {
 function doInlineRefine(reqId, idx) {
   var blocks = _mdSections[reqId];
   if (!blocks || !blocks[idx]) return;
-  var modelSel = document.getElementById('inline-refine-model-' + reqId + '-' + idx);
+  var modelSel = _detailFindById('inline-refine-model-' + reqId + '-' + idx);
   var modelId = modelSel ? modelSel.value : '';
   if (!modelId) { toast('请选择模型', 'error'); return; }
-  var instr = document.getElementById('inline-refine-instr-' + reqId + '-' + idx);
+  var instr = _detailFindById('inline-refine-instr-' + reqId + '-' + idx);
   var instrText = instr ? instr.value.trim() : '';
   if (!instrText) instrText = '保持原意优化表达，仅补充缺少的内容，不修改已有内容';
-  var resultDiv = document.getElementById('inline-refine-result-' + reqId + '-' + idx);
+  var resultDiv = _detailFindById('inline-refine-result-' + reqId + '-' + idx);
   if (!resultDiv) return;
 
   resultDiv.innerHTML = '<div style="color:var(--text2);font-size:12px">⏳ AI 润色中...</div>';
@@ -1346,7 +1394,7 @@ function acceptInlineRefine(reqId, idx) {
   var newContent = _pendingRefineContent[reqId + '-' + idx];
   if (!newContent) return;
   delete _pendingRefineContent[reqId + '-' + idx];
-  var ta = document.getElementById('inline-ta-' + reqId + '-' + idx);
+  var ta = _detailFindById('inline-ta-' + reqId + '-' + idx);
   if (ta) ta.value = newContent;
   toast('✅ AI 结果已填入编辑框，请确认后保存', 'success');
 }
@@ -1354,16 +1402,16 @@ function acceptInlineRefine(reqId, idx) {
 function saveInlineBlock(reqId, idx) {
   var blocks = _mdSections[reqId];
   if (!blocks || !blocks[idx]) return;
-  var ta = document.getElementById('inline-ta-' + reqId + '-' + idx);
+  var ta = _detailFindById('inline-ta-' + reqId + '-' + idx);
   if (!ta) return;
   var newContent = ta.value;
   if (newContent === blocks[idx].content) { return; }
 
   // 获取模型 ID（优先级：编辑面板 → AI 面板 → 缓存列表 → 实时获取）
   function getModelId() {
-    var sel = document.getElementById('inline-refine-model-' + reqId + '-' + idx);
+    var sel = _detailFindById('inline-refine-model-' + reqId + '-' + idx);
     if (sel && sel.value) return sel.value;
-    var aiSel = document.getElementById('ai-model-select-' + reqId);
+    var aiSel = _detailFindById('ai-model-select-' + reqId);
     if (aiSel && aiSel.value) return aiSel.value;
     if (_inlineModelOpts[reqId]) {
       var m = _inlineModelOpts[reqId].match(/value="([^"]+)"/);
@@ -1409,8 +1457,8 @@ function checkInlineConsistency(reqId, idx, modelId, oldContent, newContent) {
   var blocks = _mdSections[reqId];
   if (!blocks || !blocks[idx]) return;
   // 优先写入编辑面板内的结果区域，其次底部一致性区域
-  var conDiv = document.getElementById('inline-cons-result-' + reqId + '-' + idx);
-  if (!conDiv) conDiv = document.getElementById('inline-consistency-' + reqId);
+  var conDiv = _detailFindById('inline-cons-result-' + reqId + '-' + idx);
+  if (!conDiv) conDiv = _detailFindById('inline-consistency-' + reqId);
   if (!conDiv) return;
 
   conDiv.innerHTML = '<span style="color:var(--text2)">⏳ 检查关联章节...</span>';
@@ -1456,7 +1504,7 @@ function checkInlineConsistency(reqId, idx, modelId, oldContent, newContent) {
     for (var ci = 0; ci < checkboxes.length; ci++) {
       checkboxes[ci].addEventListener('change', function() {
         var count = conDiv.querySelectorAll('input[type=checkbox]:checked').length;
-        var countEl = document.getElementById('cs-count-' + reqId);
+        var countEl = _detailFindById('cs-count-' + reqId);
         if (countEl) countEl.textContent = count > 0 ? '已选 ' + count + ' 条' : '未选中';
       });
     }
@@ -1501,10 +1549,10 @@ function applyCheckedSuggestions(reqId, modelId) {
   var totalDone = 0;
   var totalErr = 0;
   var btn = document.querySelector('#detail-content button[onclick*="applyCheckedSuggestions"]');
-  if (btn) btn.disabled = true;
+if (btn) btn.disabled = true;
 
   function updateProgress() {
-    var bar = document.getElementById('batch-progress-bar');
+    var bar = document.getElementById('batch-progress-bar');  // progDiv 是 document.body 子元素，全局查找
     var txt = document.getElementById('batch-progress-text');
     if (bar) bar.style.width = ((totalDone + totalErr) / keys.length * 100) + '%';
     if (txt) txt.textContent = (totalDone + totalErr) + '/' + keys.length + ' 段' + (totalErr > 0 ? ' (' + totalErr + ' 失败)' : '');
@@ -1513,7 +1561,7 @@ function applyCheckedSuggestions(reqId, modelId) {
   function processNext(idxArr) {
     if (idxArr.length === 0) {
       if (btn) btn.disabled = false;
-      var prog = document.getElementById('batch-progress');
+      var prog = document.getElementById('batch-progress');  // 全局 body 子元素
       if (prog) prog.remove();
       if (totalErr > 0 && totalDone === 0) {
         toast('全部失败，请检查模型是否可用', 'error');
@@ -1527,7 +1575,7 @@ function applyCheckedSuggestions(reqId, modelId) {
         var fullDoc = reconstructMdDoc(reqId);
         Requirements.updateSrs(reqId, { description: fullDoc }).then(function() {
           toast('✅ ' + totalDone + ' 段已更新', 'success');
-          var container = document.querySelector('.md-content');
+          var container = _detailQuery('.md-content');
           if (container) {
             var badge = document.querySelector('#detail-status .status-badge');
             var isClarifying = badge && (badge.textContent || '').indexOf('澄清') >= 0;
@@ -1579,7 +1627,7 @@ function applyCheckedSuggestions(reqId, modelId) {
 function refineSectionAI(reqId, idx, modelId) {
   const sections = _mdSections[reqId];
   if (!sections || !sections[idx]) return;
-  const refineDiv = document.getElementById(`section-refine-${reqId}-${idx}`);
+  const refineDiv = _detailFindById(`section-refine-${reqId}-${idx}`);
   if (!refineDiv) return;
 
   refineDiv.style.display = 'block';
@@ -1598,8 +1646,8 @@ function refineSectionAI(reqId, idx, modelId) {
 async function doRefineSection(reqId, idx, modelId) {
   const sections = _mdSections[reqId];
   if (!sections || !sections[idx]) return;
-  const instruction = document.getElementById(`refine-instruction-${reqId}-${idx}`)?.value?.trim() || '保持原意优化表达，使其更清晰专业';
-  const resultDiv = document.getElementById(`refine-result-${reqId}-${idx}`);
+  const instruction = _detailFindById(`refine-instruction-${reqId}-${idx}`)?.value?.trim() || '保持原意优化表达，使其更清晰专业';
+  const resultDiv = _detailFindById(`refine-result-${reqId}-${idx}`);
   if (!resultDiv) return;
 
   resultDiv.innerHTML = '<div style="color:var(--text2);font-size:12px">⏳ AI 正在润色...</div>';
@@ -1641,7 +1689,7 @@ function acceptRefine(reqId, idx, modelId) {
   const fullDoc = reconstructMdDoc(reqId);
 
   // 刷新预览
-  const contentDiv = document.getElementById(`section-content-${reqId}-${idx}`);
+  const contentDiv = _detailFindById(`section-content-${reqId}-${idx}`);
   if (contentDiv) {
     contentDiv.textContent = newContent.length > 300 ? newContent.substring(0, 300) + '...' : newContent;
   }
@@ -1657,7 +1705,7 @@ function acceptRefine(reqId, idx, modelId) {
 }
 
 function cancelRefineSection(reqId, idx) {
-  const refineDiv = document.getElementById(`section-refine-${reqId}-${idx}`);
+  const refineDiv = _detailFindById(`section-refine-${reqId}-${idx}`);
   if (refineDiv) refineDiv.style.display = 'none';
 }
 
@@ -1665,11 +1713,11 @@ function cancelRefineSection(reqId, idx) {
 async function checkConsistencyAfterEdit(reqId, idx, modelId, oldContent, newContent) {
   const sections = _mdSections[reqId];
   if (!sections || !sections[idx]) return;
-  const conDiv = document.getElementById(`section-consistency-${reqId}`);
+  const conDiv = _detailFindById(`section-consistency-${reqId}`);
   if (!conDiv) return;
 
   // 获取当前选中模型（回退到传入的 modelId）
-  const sel = document.getElementById(`ai-model-select-${reqId}`);
+  const sel = _detailFindById(`ai-model-select-${reqId}`);
   const activeModelId = modelId || (sel ? sel.value : '');
   if (!activeModelId) return;
 
@@ -1687,7 +1735,7 @@ async function checkConsistencyAfterEdit(reqId, idx, modelId, oldContent, newCon
 }
 
 function renderConsistencyResults(reqId, result) {
-  const conDiv = document.getElementById(`section-consistency-${reqId}`);
+  const conDiv = _detailFindById(`section-consistency-${reqId}`);
   if (!conDiv) return;
   const sections = result.affectedSections || [];
   if (!sections.length) { conDiv.innerHTML = ''; return; }
@@ -1699,7 +1747,7 @@ function renderConsistencyResults(reqId, result) {
   }
 
   // 查找当前选中的模型
-  const modelSel = document.getElementById(`ai-model-select-${reqId}`);
+  const modelSel = _detailFindById(`ai-model-select-${reqId}`);
   const hasModel = modelSel && modelSel.value;
 
   conDiv.innerHTML = `<div style="border:1px solid var(--yellow);border-radius:8px;padding:12px;background:rgba(255,217,61,0.06)">
@@ -1738,12 +1786,12 @@ function applyConsistencySuggestion(reqId, sectionTitle, sectionIdx, suggestion,
   if (!sections || !sections[sectionIdx]) { toast('章节数据不存在', 'error'); return; }
 
   var instruction = '请基于原内容，仅补充缺少的部分，不要修改已有内容。具体需要补充的内容：' + suggestion;
-  var refineDiv = document.getElementById('section-refine-' + reqId + '-' + sectionIdx);
+  var refineDiv = _detailFindById('section-refine-' + reqId + '-' + sectionIdx);
 
   // 自动打开润色面板并填入指令
   if (refineDiv) {
     refineSectionAI(reqId, sectionIdx, modelId);
-    var instInput = document.getElementById('refine-instruction-' + reqId + '-' + sectionIdx);
+    var instInput = _detailFindById('refine-instruction-' + reqId + '-' + sectionIdx);
     if (instInput) instInput.value = instruction;
     doRefineSection(reqId, sectionIdx, modelId);
   } else {
@@ -1761,7 +1809,7 @@ function applyConsistencySuggestion(reqId, sectionTitle, sectionIdx, suggestion,
       var key = reqId + '-' + sectionIdx;
       _pendingRefineContent[key] = newContent;
       // 显示预览供用户确认
-      var refineDiv2 = document.getElementById('section-refine-' + reqId + '-' + sectionIdx);
+      var refineDiv2 = _detailFindById('section-refine-' + reqId + '-' + sectionIdx);
       if (refineDiv2) {
         refineDiv2.style.display = 'block';
         refineDiv2.innerHTML =
@@ -1790,10 +1838,10 @@ function jumpToSection(reqId, idx, suggestion) {
   var sections = _mdSections[reqId];
   if (!sections || !sections[idx]) return;
   // 在澄清流内的需求，使用澄清流的编辑面板
-  var editDiv = document.getElementById('section-edit-' + reqId + '-' + idx);
+  var editDiv = _detailFindById('section-edit-' + reqId + '-' + idx);
   if (editDiv) {
     editSection(reqId, idx, '');
-    var ta = document.getElementById('section-edit-textarea-' + reqId + '-' + idx);
+    var ta = _detailFindById('section-edit-textarea-' + reqId + '-' + idx);
     if (ta) {
       ta.value = ta.value + '\n\n' + suggestion;
       ta.focus();
@@ -1802,10 +1850,10 @@ function jumpToSection(reqId, idx, suggestion) {
     return;
   }
   // 在已有文档编辑器中，使用 existing 编辑面板
-  var existingEditDiv = document.getElementById('existing-section-edit-' + reqId + '-' + idx);
+  var existingEditDiv = _detailFindById('existing-section-edit-' + reqId + '-' + idx);
   if (existingEditDiv) {
     editExistingSection(reqId, idx);
-    var ta2 = document.getElementById('existing-section-textarea-' + reqId + '-' + idx);
+    var ta2 = _detailFindById('existing-section-textarea-' + reqId + '-' + idx);
     if (ta2) {
       ta2.value = ta2.value + '\n\n' + suggestion;
       ta2.focus();
@@ -1816,7 +1864,7 @@ function jumpToSection(reqId, idx, suggestion) {
 
 // ----- 源码查看（保底）-----
 function showRawEditor(reqId) {
-  const rawDiv = document.getElementById(`md-raw-${reqId}`);
+  const rawDiv = _detailFindById(`md-raw-${reqId}`);
   if (!rawDiv) return;
   const visible = rawDiv.style.display !== 'none';
   rawDiv.style.display = visible ? 'none' : 'block';
@@ -1832,7 +1880,7 @@ function showRawEditor(reqId) {
 }
 
 function saveRawEditor(reqId) {
-  const rawDiv = document.getElementById(`md-raw-${reqId}`);
+  const rawDiv = _detailFindById(`md-raw-${reqId}`);
   if (!rawDiv) return;
   const ta = rawDiv.querySelector('textarea');
   if (!ta) return;
@@ -1870,13 +1918,13 @@ function renderAiDecomposePanel(req) {
 async function loadDecomposeModels(reqId) {
   try {
     const models = await api('GET', '/models/active');
-    const sel = document.getElementById(`ai-decompose-model-${reqId}`);
+    const sel = _detailFindById(`ai-decompose-model-${reqId}`);
     if (sel) sel.innerHTML = '<option value="">选择大模型...</option>' + models.map(m => `<option value="${m.id}">${escHtml(m.name)} (${m.model})</option>`).join('');
   } catch(e) {}
 }
 
 async function aiDecompose(reqId) {
-  const modelId = document.getElementById(`ai-decompose-model-${reqId}`)?.value;
+  const modelId = _detailFindById(`ai-decompose-model-${reqId}`)?.value;
   if (!modelId) return toast('请先选择大模型', 'error');
 
   // ★ Guard: 检查是否已有任务，防止重复分解
@@ -1888,14 +1936,14 @@ async function aiDecompose(reqId) {
         // 用户取消，恢复按钮UI
         const btn = document.querySelector(`[onclick="aiDecompose('${reqId}')"]`);
         if (btn) btn.disabled = false;
-        const resultDiv = document.getElementById(`ai-decompose-result-${reqId}`);
+        const resultDiv = _detailFindById(`ai-decompose-result-${reqId}`);
         if (resultDiv) resultDiv.innerHTML = '<div style="color:var(--text2);padding:8px">已取消</div>';
         return;
       }
     }
   } catch(e) { /* 查询失败不阻塞，继续分解 */ }
 
-  const resultDiv = document.getElementById(`ai-decompose-result-${reqId}`);
+  const resultDiv = _detailFindById(`ai-decompose-result-${reqId}`);
   resultDiv.innerHTML = '<div style="color:var(--text2);padding:12px">⏳ AI 正在分析需求并分解任务...</div>';
 
   try {
@@ -1927,21 +1975,21 @@ async function aiDecompose(reqId) {
 }
 
 function continueAiClarify(reqId) {
-  const el = document.getElementById(`ai-clarify-actions-${reqId}`);
+  const el = _detailFindById(`ai-clarify-actions-${reqId}`);
   if (el) el.style.display = 'none';
   // 清除示意图，允许在新的澄清轮次重新生成
-  const sketchesDiv = document.getElementById(`ai-clarify-sketches-${reqId}`);
+  const sketchesDiv = _detailFindById(`ai-clarify-sketches-${reqId}`);
   if (sketchesDiv) {
     sketchesDiv.innerHTML = '';
     delete sketchesDiv.dataset.generated;
   }
-  document.getElementById(`ai-clarify-input-${reqId}`)?.focus();
+  _detailFindById(`ai-clarify-input-${reqId}`)?.focus();
 }
 
 // ===== 澄清记录弹窗 =====
 
 function showClarifyThread(reqId) {
-  if (document.getElementById('clarify-thread-overlay')) return;
+  if (_detailFindById('clarify-thread-overlay')) return;
   const overlay = document.createElement('div');
   overlay.id = 'clarify-thread-overlay';
   overlay.className = 'modal-overlay';
@@ -1961,7 +2009,7 @@ function showClarifyThread(reqId) {
 }
 
 async function loadClarifyThread(reqId) {
-  const body = document.getElementById('clarify-thread-body');
+  const body = _detailFindById('clarify-thread-body');
   if (!body) return;
   try {
     const req = await Requirements.get(reqId);
@@ -1989,7 +2037,7 @@ async function loadClarifyThread(reqId) {
 }
 
 function closeClarifyThread() {
-  const overlay = document.getElementById('clarify-thread-overlay');
+  const overlay = _detailFindById('clarify-thread-overlay');
   if (overlay) overlay.remove();
 }
 
@@ -1998,7 +2046,7 @@ function closeClarifyThread() {
 let splitProposalCache = {}; // reqId → last split proposal
 
 async function openSplitPanel(reqId, suggestedChildren) {
-  const panel = document.getElementById('split-panel');
+  const panel = _detailFindById('split-panel');
   if (panel) { panel.remove(); return; }
 
   // 检查架构宪法是否已定义
@@ -2011,7 +2059,7 @@ async function openSplitPanel(reqId, suggestedChildren) {
     }
   } catch (e) { /* 降级 */ }
 
-  const container = document.getElementById('detail-content');
+  const container = _detailFindById('detail-content');
   const div = document.createElement('div');
   div.id = 'split-panel';
   div.className = 'split-panel';
@@ -2048,10 +2096,10 @@ async function openSplitPanel(reqId, suggestedChildren) {
 }
 
 async function generateSplitProposal(reqId) {
-  const btn = document.getElementById('split-gen-btn-' + reqId);
-  const status = document.getElementById('split-gen-status-' + reqId);
-  const flowDiv = document.getElementById('split-flow-map-' + reqId);
-  const list = document.getElementById('split-children-list');
+  const btn = _detailFindById('split-gen-btn-' + reqId);
+  const status = _detailFindById('split-gen-status-' + reqId);
+  const flowDiv = _detailFindById('split-flow-map-' + reqId);
+  const list = _detailFindById('split-children-list');
 
   btn.disabled = true;
   status.textContent = '⏳ AI 正在分析...';
@@ -2100,7 +2148,7 @@ async function generateSplitProposal(reqId) {
 }
 
 function addSplitChildRow() {
-  const list = document.getElementById('split-children-list');
+  const list = _detailFindById('split-children-list');
   if (!list) return;
   const idx = list.children.length;
   const row = document.createElement('div');
@@ -2132,7 +2180,7 @@ async function doSplit(reqId) {
     const result = await Requirements.split(reqId, children, proposal);
     delete splitProposalCache[reqId];
     toast(`已创建 ${result.children.length} 个子需求 ✅`, 'success');
-    document.getElementById('split-panel')?.remove();
+    _detailFindById('split-panel')?.remove();
     openRequirement(reqId);
     loadRequirements();
     loadDashboard();
@@ -2159,7 +2207,7 @@ async function refreshParent(reqId) {
 
     // 如果有未覆盖的父 scopeIn，高亮提醒
     if (report.uncoveredParentScopeIn.length > 0) {
-      const childrenDiv = document.getElementById('req-children');
+      const childrenDiv = _detailFindById('req-children');
       if (childrenDiv) {
         const warningDiv = document.createElement('div');
         warningDiv.style.cssText = 'padding:8px;margin-top:8px;background:rgba(255,193,7,0.1);border:1px solid var(--yellow);border-radius:4px;font-size:12px;color:var(--yellow)';
@@ -2174,7 +2222,7 @@ async function loadRequirementChildren(reqId) {
   try {
     const children = await Requirements.children(reqId);
     const progress = await Requirements.progress(reqId);
-    const container = document.getElementById('req-children');
+    const container = _detailFindById('req-children');
     if (!container) return;
 
     if (!children.length) {
@@ -2191,7 +2239,7 @@ async function loadRequirementChildren(reqId) {
         </div>
       </div>
       ${children.map(c => `
-        <div class="req-child-card" onclick="openRequirement('${c.id}')" style="cursor:pointer">
+        <div class="req-child-card" onclick="openRequirementInWindow('${c.id}')" style="cursor:pointer">
           <div style="display:flex;justify-content:space-between;align-items:center">
             <div>
               <span class="status-badge badge-${c.status}" style="font-size:10px;margin-right:6px">${App.statusLabels[c.status] || c.status}</span>

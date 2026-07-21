@@ -171,14 +171,28 @@
 
   // ── 注册 viewLoader ──
   if (window.ACMSWin) {
-    ACMSWin.registerViewLoader('web-browser', function(w) {
-      render(w);
-      // 如果有待打开的 URL（从启动参数传入）
-      var opts = arguments[1] || {};
-      if (opts && opts.url) {
-        go(opts.url);
-      }
-    });
+    // v0.58 包注册
+    if (window.ACMS && ACMS.registerPackage) {
+      ACMS.registerPackage('web-browser', {
+        title: '浏览器', icon: '🌐', category: '工具',
+        defaultSize: { w: 820, h: 560 },
+        loader: function(w) {
+          render(w);
+          var opts = arguments[1] || {};
+          if (opts && opts.url) {
+            go(opts.url);
+          }
+        }
+      });
+    } else {
+      ACMSWin.registerViewLoader('web-browser', function(w) {
+        render(w);
+        var opts = arguments[1] || {};
+        if (opts && opts.url) {
+          go(opts.url);
+        }
+      });
+    }
   }
 
 })();

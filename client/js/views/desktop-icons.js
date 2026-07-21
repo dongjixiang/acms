@@ -530,6 +530,17 @@
     refreshDesktopIcons();
   };
 
+  // ── v0.58 包注册（desktop-icons-manager 视图）──
+  (function registerDesktopIconsPackage() {
+    if (window.ACMS && ACMS.registerPackage) {
+      ACMS.registerPackage('desktop-icons-manager', {
+        title: '桌面图标管理', icon: '🗂', category: '系统',
+        defaultSize: { w: 480, h: 420 },
+        loader: managerLoader
+      });
+    }
+  })();
+
   // ── 监听外部触发的桌面图标刷新事件（来自 terminal.js syncDesktopIcons） ──
   window.addEventListener('desktop-icons-changed', function() {
     refreshDesktopIcons();

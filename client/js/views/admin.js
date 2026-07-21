@@ -992,7 +992,7 @@ function backFromAdmin() {
             showWorkspaceView(ctx.workspaceActiveTab);
             // P0 v0.X: 如果返回到 task-detail，重新调 openTask 加载最新内容（避免陈旧内容）
             if (ctx.workspaceActiveTab === 'task-detail' && ctx.lastTaskId && typeof openTask === 'function') {
-              openTask(ctx.lastTaskId);
+              openTaskInWindow(ctx.lastTaskId);
             }
           }, 30);
         }

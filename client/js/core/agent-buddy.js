@@ -58,7 +58,7 @@
   var _scoreMap = {};              // 当前活跃加分项 { key: timestamp }
   var _recentActions = [];         // 最近 10 条操作 { time, action }
 
-  // ── L1：用户记忆（关系成长系统）──
+  // ── L1：用户记忆（小吉知道什么）──
 
   var MEMORY_KEY = 'acms-buddy-memory';
 
@@ -85,13 +85,14 @@
 
   var _userMemory = loadMemory();
 
-  function getRelationshipStage() {
-    var logins = _userMemory.loginCount;
-    var questions = _userMemory.totalQuestions;
-    if (logins <= 1 && questions === 0) return 'newborn';
-    if (logins <= 3 || questions <= 3) return 'acquaintance';
-    if (logins <= 6 || questions <= 10) return 'familiar';
-    return 'partner';
+  function getMemorySummary() {
+    var m = _userMemory;
+    var parts = [];
+    if (m.loginCount > 0) parts.push('见过 ' + m.loginCount + ' 次');
+    if (m.totalQuestions > 0) parts.push('聊过 ' + m.totalQuestions + ' 个话题');
+    var views = m.knownViews || [];
+    if (views.length > 0) parts.push('看过 ' + views.join('、'));
+    return parts.join('；') || '还不了解';
   }
 
   function recordUserView(viewName) {
@@ -232,7 +233,6 @@
       '</div>' +
       '<div class="ap-messages" id="ap-messages">' +
         '<div class="ap-msg ap-msg-buddy">' +
-          '<span class="ap-msg-icon">◕‿◕</span>' +
           '<span class="ap-msg-text">hi～ 我一直在呢</span>' +
         '</div>' +
       '</div>' +
@@ -288,7 +288,7 @@
     if (!container) return;
     var div = document.createElement('div');
     div.className = 'ap-msg ap-msg-buddy';
-    div.innerHTML = '<span class="ap-msg-icon">◕‿◕</span><span class="ap-msg-text">' + escHtml(text) + '</span>';
+    div.innerHTML = '<span class="ap-msg-text">' + escHtml(text) + '</span>';
     container.appendChild(div);
     container.scrollTop = container.scrollHeight;
   }
@@ -309,7 +309,7 @@
     var div = document.createElement('div');
     div.className = 'ap-msg ap-msg-buddy ap-msg-thinking';
     div.id = 'ap-msg-thinking';
-    div.innerHTML = '<span class="ap-msg-icon">◕‿◕</span><span class="ap-msg-text">…</span>';
+    div.innerHTML = '<span class="ap-msg-text">…</span>';
     container.appendChild(div);
     container.scrollTop = container.scrollHeight;
   }
@@ -317,6 +317,32 @@
   function removeThinking() {
     var el = document.getElementById('ap-msg-thinking');
     if (el) el.remove();
+  }
+
+  // ── 动作执行（演示能力）──
+
+  function executeActions(text) {
+    var match = text.match(/【action:([^:]+):([^】]+)】/);
+    if (!match) return;
+    var type = match[1];
+    var param = match[2];
+
+    if (type === 'open_view') {
+      if (window.ACMSWin && ACMSWin.open) {
+        ACMSWin.open(param);
+      }
+    } else if (type === 'highlight') {
+      highlightElement(param);
+    }
+  }
+
+  function highlightElement(id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.classList.add('ab-highlight');
+    setTimeout(function() {
+      el.classList.remove('ab-highlight');
+    }, 3000);
   }
 
   // ── L5：聊天发送 ──
@@ -331,15 +357,12 @@
     _userMemory.totalQuestions = (_userMemory.totalQuestions || 0) + 1;
     saveMemory();
 
-    var stage = getRelationshipStage();
-
     // Focus 输入框
     var input = document.getElementById('ap-input');
     if (input) setTimeout(function() { input.focus(); }, 100);
 
     var context = {
       currentView: _currentView || undefined,
-      relationshipStage: stage,
       loginCount: _userMemory.loginCount || 0,
       totalQuestions: _userMemory.totalQuestions || 0,
       knownViews: (_userMemory.knownViews || []).slice(-8),
@@ -360,33 +383,14 @@
       _chatHistory.push({ role: 'buddy', text: reply });
       // 每次聊天加分 +2（累积）
       addScore('toast-fire');
+      // 执行回复中的动作标记
+      executeActions(reply);
     })
     .catch(function(err) {
       removeThinking();
-      var fallback = getLocalReply(text);
-      if (fallback) {
-        renderMessage(fallback);
-        _chatHistory.push({ role: 'buddy', text: fallback });
-      } else {
-        renderMessage('我好像网络开小差了… 你再跟我说一遍？');
-        _chatHistory.push({ role: 'buddy', text: '（网络异常）' });
-      }
+      renderMessage('我网络开小差了… 你再跟我说一遍？');
+      _chatHistory.push({ role: 'buddy', text: '（网络异常）' });
     });
-  }
-
-  // 本地兜底回复（API 不可用时）
-  function getLocalReply(text) {
-    var t = text.toLowerCase();
-    if (t.indexOf('你是谁') !== -1 || t.indexOf('你叫什么') !== -1 || t.indexOf('你是') !== -1) {
-      return '我是小吉，ACMS 的系统助手～ 我一直在平台里看着，随时可以帮你！';
-    }
-    if (t.indexOf('能做') !== -1 || t.indexOf('你会') !== -1 || t.indexOf('功能') !== -1 || t.indexOf('help') !== -1) {
-      return '我了解 ACMS 的所有功能哦～ 你可以问我「怎么看缺陷」「怎么创建需求」「什么是看板」等等。我还可以在你看到新功能的时候提醒你！';
-    }
-    if (t.indexOf('你好') !== -1 || t.indexOf('hi') !== -1 || t.indexOf('hello') !== -1) {
-      return '你好呀～ 有什么需要帮忙的吗？';
-    }
-    return null;
   }
 
   function renderScoreBar() {
@@ -494,7 +498,7 @@
     return _avatarEl;
   }
 
-  // ── 问候系统（关系成长驱动）──
+  // ── 问候系统（记忆驱动）──
 
   function checkGreeting() {
     var userData = null;
@@ -503,45 +507,24 @@
 
     // 递增登录次数
     _userMemory.loginCount = (_userMemory.loginCount || 0) + 1;
-    // 记录活跃天数
     var d = today();
     _userMemory.daysActive = _userMemory.daysActive || {};
     _userMemory.daysActive[d] = true;
     saveMemory();
 
-    var stage = getRelationshipStage();
     var isFirstEver = _userMemory.loginCount <= 1;
-    var viewCount = (_userMemory.knownViews || []).length;
     var msg = '';
 
     if (isFirstEver) {
-      msg = name + '你好～ 我是小吉，ACMS 的平台助手。我刚诞生，现在还不太了解你。不过每一次你登录、每一次你问我问题，我都会记住，慢慢了解你的习惯。以后请多指教！';
+      msg = name + '你好～ 我是小吉，ACMS 的平台助手。我刚诞生，还不了解你。不过每一次你登录、每一次你问我问题，我都会记住。以后请多指教！';
     } else {
-      // 根据关系阶段生成问候
-      var stageGreetings = {
-        newborn: [
-          '又见面了' + name + '～ 我还在努力了解你中…… 你多用用我，我会越来越懂的。',
-          '欢迎回来～ 你上次看了「' + (_userMemory.lastView || '首页') + '」。有什么想聊的吗？',
-        ],
-        acquaintance: [
-          '嘿 ' + name + '，又见面了。我已经记住你打开的 ' + viewCount + ' 个功能了～ 你对看板好像特别感兴趣？',
-          '你来了！我已经开始慢慢懂你的节奏了。今天想做什么？',
-          '欢迎回来～ 你上次在「' + (_userMemory.lastView || '首页') + '」停留了挺久，是想研究什么吗？',
-        ],
-        familiar: [
-          '早呀 ' + name + '！我已经很熟悉你的习惯了——你通常先看缺陷再看看板对吧？今天照旧？',
-          name + '来了～ 你知道吗，你已经用过 ' + viewCount + ' 个不同功能了。要不要试试还没碰过的？',
-          '嘿，老朋友！今天有什么需要我帮忙的吗？你尽管说。',
-        ],
-        partner: [
-          name + '！我们合作这么久了，我越来越懂你了～ 今天有什么想法？',
-          '早上好！我已经能猜到你接下来要做什么了——先看看板，对吧？今天有 2 个新任务提交了哦。',
-          '你来了～ 我觉得我们已经很有默契了。有什么想做的，直接跟我说。',
-        ],
-      };
-
-      var list = stageGreetings[stage] || stageGreetings.acquaintance;
-      msg = list[Math.floor(Math.random() * list.length)];
+      var facts = [];
+      if (_userMemory.totalQuestions > 0) facts.push('我们已经聊过 ' + _userMemory.totalQuestions + ' 个话题');
+      var views = _userMemory.knownViews || [];
+      if (views.length > 0) facts.push('我见你用过 ' + views.join('、'));
+      if (_userMemory.lastView) facts.push('你上次在看「' + _userMemory.lastView + '」');
+      var factStr = facts.length > 0 ? '我记得：' + facts.join('；') + '。' : '';
+      msg = name + '又见面了～ ' + factStr + '有什么想聊的吗？';
     }
 
     _greetingDone = true;

@@ -65,7 +65,7 @@ async function loadMatchTasksFor(agentId) {
     const container = document.getElementById('match-results');
     if (!matches.length) { container.innerHTML = '<div class="empty">没有匹配的任务</div>'; return; }
     container.innerHTML = `<h4 style="margin-bottom:8px">找到 ${matches.length} 个匹配任务</h4>` + matches.map(m => `
-      <div class="agent-card" style="margin-bottom:6px;cursor:pointer" onclick="openTask('${m.taskId}')">
+      <div class="agent-card" style="margin-bottom:6px;cursor:pointer" onclick="openTaskInWindow('${m.taskId}')">
         <div style="display:flex;justify-content:space-between"><span>${escHtml(m.title)}</span><span style="color:var(--accent);font-weight:bold">⭐ ${m.score}</span></div>
         <div class="skills">${Object.entries(m.requiredSkills || {}).map(([k, v]) => `<span class="skill-tag">${k}:${v}</span>`).join('') || '无技能要求'}</div>
       </div>`).join('');

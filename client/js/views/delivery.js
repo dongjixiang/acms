@@ -400,8 +400,10 @@ function _renderTreeNode(node) {
   let html = '';
   node.children.forEach(child => {
     if (child.isDir) {
+      // v0.58.3: 按层级缩进 summary（每深一层 +18px）— 否则子目录与主目录视觉上同级
+      const summaryPad = (child.depth - 1) * 18 + 10;
       html += '<details class="delivery-dir" data-dirpath="' + escHtml(child.path || child.name).replace(/'/g, "\\'") + '">' +
-        '<summary class="delivery-dir-summary">' +
+        '<summary class="delivery-dir-summary" style="padding-left:' + summaryPad + 'px">' +
           '<span class="delivery-dir-label"><span class="dir-arrow">▶</span>' + (child.depth === 1 && !['/', ''].includes(child.name) ? _dirIcon(child.name) : '📁') + ' ' + escHtml(child.name) + '</span>' +
           '<span style="display:flex;align-items:center;gap:4px;flex-shrink:0">' +
             '<span style="color:var(--text2);font-weight:normal;font-size:11px">' + child.children.filter(c => !c.isDir).length + '</span>' +
@@ -415,6 +417,8 @@ function _renderTreeNode(node) {
       const icon = _getFileIcon(child.type);
       const isImage = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico', '.bmp'].includes(child.type);
       const canPreview = ['.md', '.html', '.js', '.py', '.json', '.css', '.txt', '.xml', '.yaml', '.yml', '.sql', '.sh', '.log', '.ts', '.tsx', '.jsx', '.bat', '.markdown'].includes(child.type);
+      // v0.58.3: 文件行也按层级缩进（每深一层 +18px，base 24px）
+      const filePad = (child.depth - 1) * 18 + 24;
       let actions = '';
       if (child.type === '.html') {
         actions += '<button class="btn-icon" onclick="event.stopPropagation();openExperienceFile(\'' + escHtml(child.path).replace(/'/g, "\\'") + '\')" title="一键体验">🌐</button>';
@@ -427,7 +431,7 @@ function _renderTreeNode(node) {
         actions += '<button class="btn-icon" onclick="event.stopPropagation();editFile(\'' + escHtml(child.path).replace(/'/g, "\\'") + '\',\'' + escHtml(child.name).replace(/'/g, "\\'") + '\')" title="编辑">✏️</button>';
       }
       actions += '<button class="btn-icon delete" onclick="event.stopPropagation();deleteFile(\'' + escHtml(child.path).replace(/'/g, "\\'") + '\')" title="删除">🗑</button>';
-      html += '<div class="delivery-file-row" data-filepath="' + escHtml(child.path) + '" data-filename="' + escHtml(child.name).toLowerCase() + '">' +
+      html += '<div class="delivery-file-row" style="padding-left:' + filePad + 'px" data-filepath="' + escHtml(child.path) + '" data-filename="' + escHtml(child.name).toLowerCase() + '">' +
         '<span class="delivery-file-name">' + icon + ' ' + escHtml(child.name) + '</span>' +
         '<span class="delivery-file-meta">' +
           '<span class="delivery-file-size">' + _fmtSize(child.size) + '</span>' +
@@ -474,8 +478,9 @@ function renderDeliveryFiles(files, showAll) {
   // 从根的子节点开始渲染
   tree.children.forEach(child => {
     if (child.isDir) {
+      // v0.58.3: 顶层目录 summary padding-left=10px（depth=1 基准），子目录由 _renderTreeNode 递归处理
       html += '<details class="delivery-dir" data-dirpath="' + escHtml(child.path || child.name).replace(/'/g, "\\'") + '">' +
-        '<summary class="delivery-dir-summary">' +
+        '<summary class="delivery-dir-summary" style="padding-left:10px">' +
           '<span class="delivery-dir-label"><span class="dir-arrow">▶</span>' + _dirIcon(child.name) + ' ' + escHtml(child.name) + '</span>' +
           '<span style="display:flex;align-items:center;gap:4px;flex-shrink:0">' +
             '<span style="color:var(--text2);font-weight:normal;font-size:11px">' + child.children.filter(c => !c.isDir).length + '</span>' +
@@ -488,8 +493,9 @@ function renderDeliveryFiles(files, showAll) {
     } else {
       // 根目录下的文件
       const icon = _getFileIcon(child.type);
-      html += '<div class="delivery-file-row" data-filepath="' + escHtml(child.path) + '" data-filename="' + escHtml(child.name).toLowerCase() + '">' +
-        '<span class="delivery-file-name" style="padding-left:12px">' + icon + ' ' + escHtml(child.name) + '</span>' +
+      // v0.58.3: 顶层文件 padding-left=24px（depth=1 基准，base 24px）
+      html += '<div class="delivery-file-row" style="padding-left:24px" data-filepath="' + escHtml(child.path) + '" data-filename="' + escHtml(child.name).toLowerCase() + '">' +
+        '<span class="delivery-file-name">' + icon + ' ' + escHtml(child.name) + '</span>' +
         '<span class="delivery-file-meta">' +
           '<span class="delivery-file-size">' + _fmtSize(child.size) + '</span>' +
           '<span class="delivery-file-date">' + fmtDate(child.modified) + '</span>' +

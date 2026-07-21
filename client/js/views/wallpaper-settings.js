@@ -262,10 +262,9 @@
 
   // ── 注册 viewLoader ──
   if (window.ACMSWin) {
-    ACMSWin.registerViewLoader('wallpaper', function(w) {
+    // v0.58 包注册
+    function wallpaperLoader(w) {
       render(w);
-
-      // 监听壁纸变化以更新预览（w.dead 检查保证不操作已关闭窗口）
       if (window.ACMSWallpaper && typeof ACMSWallpaper.onChange === 'function') {
         ACMSWallpaper.onChange(function(data) {
           if (w.dead) return;
@@ -274,7 +273,16 @@
           updateStyleBtns();
         });
       }
-    });
+    }
+    if (window.ACMS && ACMS.registerPackage) {
+      ACMS.registerPackage('wallpaper', {
+        title: '壁纸设置', icon: '🖼', category: '系统',
+        defaultSize: { w: 480, h: 420 },
+        loader: wallpaperLoader
+      });
+    } else {
+      ACMSWin.registerViewLoader('wallpaper', wallpaperLoader);
+    }
   }
 
   // ── 兼容: 如果 desktop-context-menu.js 的 fallback 先执行但 wallpaper-settings.js 后加载，

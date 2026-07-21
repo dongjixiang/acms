@@ -18,27 +18,27 @@
   var desktop = null;
   var desktopShown = false;
 
-  // 默认视图标签（无 instanceId 时用）
-  var labels = {
-    dashboard:    { icon: '📊', label: '仪表盘' },
-    requirements: { icon: '📋', label: '需求管理' },
-    detail:       { icon: '📋', label: '需求详情' },
-    kanban:       { icon: '📌', label: '任务看板' },
-    bugs:         { icon: '🐛', label: '缺陷管理' },
-    knowledge:    { icon: '📚', label: '知识库' },
-    delivery:     { icon: '📦', label: '交付管理' },
-    agents:       { icon: '🤖', label: '智能体' },
-    reports:      { icon: '📊', label: '项目报告' },
-    settings:     { icon: '⚙️', label: '项目设置' },
-    chat:         { icon: '💬', label: '对话' },
-    projects:     { icon: '📦', label: '项目管理' },
-    'agent-activity': { icon: '🤖', label: 'Agent 活动' },
-    admin:        { icon: '⚙️', label: '系统管理' },
-    'chat-history': { icon: '📜', label: '对话历史' },
-    'chat-recycle': { icon: '🗑', label: '回收站' },
-    'file-manager': { icon: '📂', label: '文件浏览器' },
-    'web-browser':  { icon: '🌐', label: '浏览器' },
+  // 默认视图标签（无 instanceId 时用）— v0.58 从包注册表动态读取
+  // 未注册到 package-registry 的内部视图（dashboard/delivery/agents/reports/settings等）用静态 fallback
+  var _labelFallback = {
+    dashboard:       { icon: '📊', label: '仪表盘' },
+    delivery:        { icon: '📦', label: '交付管理' },
+    agents:          { icon: '🤖', label: '智能体' },
+    reports:         { icon: '📊', label: '项目报告' },
+    settings:        { icon: '⚙️', label: '项目设置' },
+    'agent-activity':{ icon: '🤖', label: 'Agent 活动' },
   };
+  function getLabel(viewName) {
+    // 优先从包注册表读取
+    if (window.ACMS && ACMS.getPackage) {
+      var pkg = ACMS.getPackage(viewName);
+      if (pkg) return { icon: pkg.icon, label: pkg.title };
+    }
+    // 未注册的 fallback
+    var fallback = _labelFallback[viewName];
+    if (fallback) return fallback;
+    return { icon: '📄', label: viewName };
+  }
   var viewLoaders = {};
   // 注：桌面图标渲染由 desktop-icons.js 接管，window-manager 只提供底层 _replaceDesktopIcons / _onDesktopIconMoved API
 
@@ -93,7 +93,7 @@
   // ── 打开窗口 ──
   function open(viewName, opts) {
     opts = opts || {};
-    var info = labels[viewName] || { icon: '📄', label: viewName };
+    var info = getLabel(viewName);
     var d = ensureDesktop();
     if (!d) return null;
 
@@ -374,7 +374,7 @@
     c.innerHTML = '';
     windows.forEach(function(w) {
       if (w.dead) return;
-      var info = labels[w.view] || { icon: '📄', label: w.view };
+      var info = getLabel(w.view);
       // v0.55：优先用 titleOverride（customTitle）
       var displayLabel = w.st.titleOverride || info.label;
       var b = document.createElement('button');

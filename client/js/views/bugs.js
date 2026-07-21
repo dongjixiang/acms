@@ -103,10 +103,10 @@ function renderBugList(bugs) {
       : (bug.parent_id ? '<span class="bug-link-dim">' + bug.parent_id + '</span>' : '<span class="bug-link-none">—</span>');
 
     var taskLink = bug.source_task_id && bug.sourceTaskTitle
-      ? '<a href="#" class="bug-link" onclick="openTask(\'' + bug.source_task_id + '\');return false" title="' + escHtml(bug.sourceTaskTitle) + '">' + escHtml(truncate(bug.sourceTaskTitle, 20)) + '</a>'
+      ? '<a href="#" class="bug-link" onclick="openTaskInWindow(\'' + bug.source_task_id + '\');return false" title="' + escHtml(bug.sourceTaskTitle) + '">' + escHtml(truncate(bug.sourceTaskTitle, 20)) + '</a>'
       : (bug.source_task_id ? '<span class="bug-link-dim">' + bug.source_task_id + '</span>' : '<span class="bug-link-none">—</span>');
 
-    html += '<tr class="bug-row" onclick="openTask(\'' + bug.id + '\');return false" style="cursor:pointer">' +
+    html += '<tr class="bug-row" onclick="openTaskInWindow(\'' + bug.id + '\');return false" style="cursor:pointer">' +
       '<td><div class="bug-row-title">' + escHtml(bug.title || '🐛 缺陷') + '</div></td>' +
       '<td>' + severityBadge + '</td>' +
       '<td>' + statusBadge + '</td>' +
@@ -235,7 +235,7 @@ function renderBugClarifyResult(result) {
     }
     if (result.task) {
       html += '<p style="margin-top:12px">' +
-        '<a href="#" onclick="openTask(\'' + result.task.id + '\');return false" style="color:var(--accent)">📋 查看任务: ' + result.task.id + '</a>' +
+        '<a href="#" onclick="openTaskInWindow(\'' + result.task.id + '\');return false" style="color:var(--accent)">📋 查看任务: ' + result.task.id + '</a>' +
         '</p>';
     }
     html += '<button class="btn-small" onclick="hideBugForm();loadBugList()" style="margin-top:12px">📋 返回缺陷列表</button>' +
@@ -411,7 +411,7 @@ async function createBugDirect() {
     var area = _bugFindById('bug-clarify-area');
     area.innerHTML = '<div class="bug-result-success">' +
       '<h4>✅ 缺陷已创建</h4>' +
-      '<p>任务: <a href="#" onclick="openTask(\'' + result.task.id + '\');return false">' + result.task.id + '</a></p>' +
+      '<p>任务: <a href="#" onclick="openTaskInWindow(\'' + result.task.id + '\');return false">' + result.task.id + '</a></p>' +
       '<button class="btn-small" onclick="hideBugForm();loadBugList()" style="margin-top:12px">📋 返回缺陷列表</button>' +
       ' &nbsp; <button class="btn-small" onclick="showBugForm()">➕ 提交新缺陷</button>' +
       '</div>';

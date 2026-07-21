@@ -18,6 +18,28 @@ function _kanbanFindById(root, id) {
   return R === document ? document.getElementById(id) : R.querySelector('#' + id);
 }
 
+// v0.58 task-detail 窗口作用域：openTask(id, root) 由 task-detail viewLoader 传 root，
+//   后续内部 openTask(taskId) 复用 _taskRoot（最近一次 task-detail 窗口加载时设定）。
+//   task-detail 视图内的固定顶层 ID（task-detail-title / task-detail-status / task-detail-content）
+//   都走 _taskFindById，自动 scope 到当前窗口副本。
+var _taskRoot = null;
+function _taskFindById(id) {
+  if (_taskRoot && _taskRoot !== document) {
+    const scoped = _taskRoot.querySelector('#' + id);
+    if (scoped) return scoped;
+  }
+  return document.getElementById(id);
+}
+
+// v0.58 任务详情入口：桌面模式走 ACMSWin.open → task-detail viewLoader，传统模式 fallback
+function openTaskInWindow(taskId) {
+  if (window.ACMSWin && ACMSWin.isActive()) {
+    ACMSWin.open('task-detail', { taskId: taskId, instanceId: taskId, title: '📋 ' + taskId });
+  } else {
+    openTask(taskId);
+  }
+}
+
 // 应用初始收起状态（页面加载时立即调用）
 // v0.57: root 参数用于 scope 到窗口内的 DOM（默认 document，向后兼容）
 function applyKanbanDividerState(root) {
@@ -141,7 +163,7 @@ async function refreshKanban(parentId, root) {
         const bugMeta = t.type === 'bug' && t.source_task_id
           ? '<div style="font-size:10px;color:var(--accent3);margin-top:2px">关联: ' + escHtml(t.source_task_id) + '</div>'
           : '';
-        return `<div class="task-card priority-${t.priority || 3}${blockedClass}${bugClass}" data-task-id="${t.id}" onclick="openTask('${t.id}')">
+        return `<div class="task-card priority-${t.priority || 3}${blockedClass}${bugClass}" data-task-id="${t.id}" onclick="openTaskInWindow('${t.id}')">
           <div class="task-title">${blocked ? '🔒 ' : ''}${escHtml(t.title)}</div>
           ${bugMeta}
           <div class="task-meta"><span>${t.id}</span><span class="type-tag type-${t.type}">${App.typeLabels[t.type] || ''} ${t.type}</span><span>P${t.priority}</span>${t.assigned_to ? '<span>Agent: ' + escHtml(t.assigned_to) + '</span>' : ''}${t.status === 'in_progress' ? '<span>' + (t.progress || 0) + '%</span>' : ''}</div>
@@ -167,14 +189,20 @@ async function refreshKanban(parentId, root) {
 }
 
 // ===== 任务详情 =====
-async function openTask(taskId) {
+async function openTask(taskId, root) {
   // P0 v0.X: 记录最近打开的 taskId — admin 返回时用于重新加载 (避免陈旧内容)
+  // v0.58 task-detail viewLoader 传入 root（= w.$c）；kanban 内部调用不传，
+  //   复用 viewLoader 已设置的 _taskRoot。
   App.lastTaskId = taskId;
-  showWorkspaceView('task-detail');
+  if (root) _taskRoot = root;
+  if (!_taskRoot) _taskRoot = document;
+  // v0.58.1: 不再调 showWorkspaceView('task-detail') — 桌面模式由 viewLoader/ACMSWin.open
+  //   处理窗口创建与聚焦；原先的调用会在桌面模式下触发第二次 ACMSWin.open('task-detail')
+  //   （无 taskId），产生"⚠ 缺少需求 ID"的幽灵窗口（参照 requirements.js 修复）。
   try {
     var t = await Tasks.get(taskId);
-    document.getElementById('task-detail-title').textContent = (t.id || '') + ': ' + escHtml(t.title || '');
-    document.getElementById('task-detail-status').innerHTML =
+    _taskFindById('task-detail-title').textContent = (t.id || '') + ': ' + escHtml(t.title || '');
+    _taskFindById('task-detail-status').innerHTML =
       '<span class="status-badge badge-' + (t.status === 'in_progress' ? 'in_execution' : t.status === 'done' ? 'done' : 'clarifying') + '">' + (t.status || '') + '</span>' +
       '<button class="btn-small" style="background:rgba(78,205,196,0.15);color:var(--green);border-color:rgba(78,205,196,0.3)" onclick="exportTask(\'' + t.id + '\')">📥 导出描述</button>';
     var skills = safeParse(t.required_skills), log = safeParse(t.execution_log), subs = safeParse(t.submissions), revs = safeParse(t.reviews);
@@ -190,7 +218,7 @@ async function openTask(taskId) {
         '</div>';
     }
 
-    document.getElementById('task-detail-content').innerHTML = '<div id="task-detail-progress-container"></div>' + bugInfo +
+    _taskFindById('task-detail-content').innerHTML = '<div id="task-detail-progress-container"></div>' + bugInfo +
       '<div class="detail-grid">' +
         '<div><span class="label">类型:</span> ' + (App.typeLabels[t.type] || '') + ' ' + (t.type || '') + '</div>' +
         '<div><span class="label">优先级:</span> P' + (t.priority || '-') + '</div>' +
@@ -894,10 +922,10 @@ function startProgressViewer(taskId, startedAt) {
   }
   _sseProgressConnected = false;
   
-  // 创建进度卡片
-  const container = document.getElementById('task-detail-progress-container');
+// 创建进度卡片
+  const container = _taskFindById('task-detail-progress-container');
   if (!container) return;
-  
+
   container.innerHTML = `
     <div class="progress-card" style="padding:12px;background:rgba(78,205,196,0.08);border-radius:8px;border:1px solid rgba(78,205,196,0.2);margin-bottom:12px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">

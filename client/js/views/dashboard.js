@@ -23,7 +23,7 @@ function renderLiveCard(data) {
           ? `<span class="pm-live-badge pm-live-badge-danger">⚠️ 卡住 ${t.idleMin}min</span>`
           : `<span class="pm-live-badge">${t.status === 'review' ? '👀 review' : '🔄 running'}</span>`;
         return `
-        <div class="pm-live-task ${stuckClass}" onclick="openTask('${t.id}')">
+        <div class="pm-live-task ${stuckClass}" onclick="openTaskInWindow('${t.id}')">
           <div class="pm-live-task-header">
             <span class="pm-live-task-title">${escHtml(t.title || t.id)}</span>
             ${stuckBadge}
@@ -374,7 +374,7 @@ async function loadDashboard() {
 
     const activeTasks = tasks.filter(t => t.status === 'in_progress').slice(0, 5);
     document.getElementById('dash-tasks').innerHTML = activeTasks.length
-      ? activeTasks.map(t => '<div class="dash-item" onclick="openTask(\'' + t.id + '\')">🔄 ' + escHtml(t.title) + ' <span style="color:var(--text2);font-size:11px">' + (t.progress || 0) + '%</span></div>').join('')
+? activeTasks.map(t => '<div class="dash-item" onclick="openTaskInWindow(\'' + t.id + '\')">🔄 ' + escHtml(t.title) + ' <span style="color:var(--text2);font-size:11px">' + (t.progress || 0) + '%</span></div>').join('')
       : '<div class="empty" style="padding:12px">无进行中任务</div>';
 
     // v0.46: sidebar mini-stats 用 reqs/tasks 直接算 (不需要单独变量)

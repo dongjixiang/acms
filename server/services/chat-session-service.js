@@ -152,6 +152,19 @@ function cleanupExpired() {
   return purged;
 }
 
+// v0.58.5: 用户主动清空回收站（不等过期）— 硬删所有 deleted_at 非空的会话及其消息
+function purgeAllSessions() {
+  const sessions = collection('chat_sessions').find(s => s.deleted_at);
+  if (sessions.length === 0) return 0;
+  const messagesCol = collection('chat_messages');
+  let purged = 0;
+  for (const s of sessions) {
+    messagesCol.remove(m => m.session_id === s.id);
+    if (collection('chat_sessions').remove(x => x.id === s.id)) purged++;
+  }
+  return purged;
+}
+
 // ── Messages ──
 
 function appendMessage(sessionId, role, content, meta) {
@@ -218,6 +231,7 @@ module.exports = {
   getRecycleBin,
   getRecycleBinCount,
   cleanupExpired,
+  purgeAllSessions,
   // Messages
   appendMessage,
   loadHistoryForLLM,

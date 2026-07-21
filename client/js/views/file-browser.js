@@ -826,22 +826,47 @@
   // 注册 viewLoader
   // ════════════════════════════════════════
   if (window.ACMSWin) {
-    ACMSWin.registerViewLoader('file-manager', function(w) {
-      browsingWindow = w;
-      historyStack = [];
-      forwardStack = [];
-      currentSearch = '';
-      expandedDirs = {};
-      treeCache = {};
-      contextEntry = null;
+    // v0.58 包注册
+    if (window.ACMS && ACMS.registerPackage) {
+      ACMS.registerPackage('file-manager', {
+        title: '文件浏览器', icon: '📂', category: '工具',
+        defaultSize: { w: 820, h: 560 },
+        loader: function(w) {
+          browsingWindow = w;
+          historyStack = [];
+          forwardStack = [];
+          currentSearch = '';
+          expandedDirs = {};
+          treeCache = {};
+          contextEntry = null;
 
-      currentPath = getInitialPath();
-      expandTreeToPath(currentPath).then(function() {
-        renderAll(w);
-      }).catch(function() {
-        renderAll(w);
+          currentPath = getInitialPath();
+          expandTreeToPath(currentPath).then(function() {
+            renderAll(w);
+          }).catch(function() {
+            renderAll(w);
+          });
+        }
       });
-    });
+    } else {
+      // 降级：直接注册（ACMS.registerPackage 不可用时）
+      ACMSWin.registerViewLoader('file-manager', function(w) {
+          browsingWindow = w;
+          historyStack = [];
+          forwardStack = [];
+          currentSearch = '';
+          expandedDirs = {};
+          treeCache = {};
+          contextEntry = null;
+
+          currentPath = getInitialPath();
+          expandTreeToPath(currentPath).then(function() {
+            renderAll(w);
+          }).catch(function() {
+            renderAll(w);
+          });
+      });
+    }
   }
 
 })();
