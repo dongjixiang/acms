@@ -18,6 +18,7 @@ try {
 module.exports = {
   port: process.env.PORT || fileConfig.port || 3300,
   wsPort: process.env.WS_PORT || fileConfig.wsPort || 3301,
+  termWSPort: process.env.TERM_WS_PORT || fileConfig.termWSPort || 3302,
   apiKeys: (process.env.ACMS_API_KEYS || (fileConfig.apiKeys ? fileConfig.apiKeys.join(',') : null) || 'dev-key-001,dev-key-002').split(',').map(k => k.trim()).filter(Boolean),
   cors: {
     origin: process.env.CORS_ORIGIN || fileConfig.corsOrigin || '*',

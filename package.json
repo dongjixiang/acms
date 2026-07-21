@@ -19,6 +19,7 @@
     "json-schema": "^0.4.0",
     "mime-types": "^3.0.2",
     "multer": "^2.1.1",
+    "node-pty": "^1.1.0",
     "nodemailer": "^9.0.3",
     "pdf-parse": "^2.4.5",
     "puppeteer": "^25.1.0",

@@ -63,6 +63,11 @@ httpServer.listen(config.port, () => {
 
 // WebSocket
 const wsServer = http.createServer();
+
+// 终端 WebSocket（独立端口 3302，与主 WS 隔离避免扩展协商冲突）
+const { setupTerminalWS } = require('./handlers/terminal-ws');
+setupTerminalWS();
+
 setupWebSocket(wsServer);
 wsServer.listen(config.wsPort, () => {
   console.log(`[ACMS] WebSocket: ws://localhost:${config.wsPort}`);

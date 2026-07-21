@@ -80,6 +80,16 @@
       },
       null, // separator
       {
+        id: 'new-launcher',
+        label: '新建终端启动器…',
+        icon: '🆕',
+        action: function() {
+          if (typeof window.createTerminalLauncher === 'function') {
+            window.createTerminalLauncher();
+          }
+        },
+      },
+      {
         id: 'new-chat',
         label: '新建对话',
         icon: '💬',

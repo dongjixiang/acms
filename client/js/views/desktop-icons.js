@@ -60,12 +60,30 @@
   // ─────────────────────────────────────────────
   // 从 actionType/actionValue 构建 onClick 函数
   // ─────────────────────────────────────────────
-  function buildOnClick(actionType, actionValue) {
+  function buildOnClick(actionType, actionValue, extra) {
+    extra = extra || {};
     if (actionType === 'viewName') {
       return function() {
         if (window.ACMSWin) {
           if (!ACMSWin.isActive()) ACMSWin.enable();
           ACMSWin.open(actionValue);
+        }
+      };
+    }
+    if (actionType === 'terminal') {
+      return function() {
+        if (typeof window.openTerminalLauncher === 'function') {
+          // 从 pinned items 找到完整的条目（含 cwd）
+          var pinned = getPinned() || [];
+          var item = pinned.find(function(p) { return p.actionValue === actionValue && p.actionType === 'terminal'; });
+          var id = (item && item.id) || ('term-' + actionValue.replace(/[^a-zA-Z0-9]/g, '-'));
+          window.openTerminalLauncher(id);
+        } else if (window.ACMSWin) {
+          if (!ACMSWin.isActive()) ACMSWin.enable();
+          ACMSWin.open('terminal', {
+            w: 820, h: 500, title: '💻 ' + actionValue,
+            opts: { cmd: actionValue, cwd: extra.cwd || '~', label: actionValue },
+          });
         }
       };
     }
@@ -143,7 +161,7 @@
         label: item.label,
         x: item.x,
         y: item.y,
-        onClick: buildOnClick(item.actionType, item.actionValue),
+        onClick: buildOnClick(item.actionType, item.actionValue, item),
       };
     });
 
@@ -511,5 +529,10 @@
     // refreshDesktopIcons 会根据自动排列状态决定是否重新计算网格
     refreshDesktopIcons();
   };
+
+  // ── 监听外部触发的桌面图标刷新事件（来自 terminal.js syncDesktopIcons） ──
+  window.addEventListener('desktop-icons-changed', function() {
+    refreshDesktopIcons();
+  });
 
 })();

@@ -1,0 +1,12 @@
+{
+  "method": "terminal",
+  "name": "终端",
+  "icon": "💻",
+  "type": "utility",
+  "description": "ACMS 终端 — 通用 bash 终端，支持快捷方式启动 Hermes 等命令",
+  "author": "ACMS",
+  "version": "1.0.0",
+  "triggers": ["toolbar"],
+  "permissions": ["terminal"],
+  "field": "terminal"
+}
