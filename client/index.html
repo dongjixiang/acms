@@ -772,6 +772,32 @@ document.addEventListener('DOMContentLoaded', () => {
       if (typeof window.loadChatRecycleBin === 'function') window.loadChatRecycleBin();
     });
 
+    // 缺陷管理 — 克隆静态模板后，让视图模块在窗口 root 内加载/交互
+    ACMSWin.registerViewLoader('bugs', function(w) {
+      if (!App.currentProjectId) {
+        w.$c.innerHTML = '<div style="padding:40px;text-align:center;color:var(--accent2)">⚠ 请先在任务栏选择项目</div>';
+        return;
+      }
+      var src = document.getElementById('view-bugs');
+      if (!src) { w.$c.innerHTML = ''; return; }
+      w.$c.innerHTML = src.innerHTML;
+      w.$c.style.display = '';
+      return Promise.resolve(loadBugView(w.$c));
+    });
+
+    // 知识库 — 同一注册制；模块内对全局上传弹窗保留 document fallback
+    ACMSWin.registerViewLoader('knowledge', function(w) {
+      if (!App.currentProjectId) {
+        w.$c.innerHTML = '<div style="padding:40px;text-align:center;color:var(--accent2)">⚠ 请先在任务栏选择项目</div>';
+        return;
+      }
+      var src = document.getElementById('view-knowledge');
+      if (!src) { w.$c.innerHTML = ''; return; }
+      w.$c.innerHTML = src.innerHTML;
+      w.$c.style.display = '';
+      return Promise.resolve(loadKnowledgeView(w.$c));
+    });
+
     // v0.57 任务看板 — 克隆 #view-kanban 后 scope 调用 refreshKanban(w.$c)
     //   bug 修复：
     //     1. 之前没注册 viewLoader，窗口打开后是空壳（refreshKanban 没被触发）

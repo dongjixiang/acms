@@ -3,7 +3,30 @@
 
 let _currentPagePath = null;
 
-async function loadKnowledgeView() {
+// View-local DOM scope: prefer the active ACMS window, then fall back to global dialogs/detail panels.
+let _knowledgeRoot = null;
+function _knowledgeFindById(id) {
+  if (_knowledgeRoot && _knowledgeRoot !== document) {
+    const scoped = _knowledgeRoot.querySelector('#' + id);
+    if (scoped) return scoped;
+  }
+  return document.getElementById(id);
+}
+function _knowledgeQuery(selector) {
+  if (_knowledgeRoot && _knowledgeRoot !== document) {
+    const scoped = _knowledgeRoot.querySelector(selector);
+    if (scoped) return scoped;
+  }
+  return document.querySelector(selector);
+}
+function _knowledgeQueryAll(selector) {
+  if (_knowledgeRoot && _knowledgeRoot !== document) return _knowledgeRoot.querySelectorAll(selector);
+  return document.querySelectorAll(selector);
+}
+
+async function loadKnowledgeView(root) {
+  if (root) _knowledgeRoot = root;
+  else if (!_knowledgeRoot) _knowledgeRoot = document;
   _currentPagePath = null;
   _pagePathCache = null;
   try {
@@ -22,7 +45,7 @@ async function loadKnowledgeView() {
 async function loadKnowledgeStats() {
   try {
     const stats = await api('GET', `/knowledge/${App.currentProjectId}/stats`);
-    const el = document.getElementById('knowledge-stats');
+    const el = _knowledgeFindById('knowledge-stats');
     if (stats.exists) {
       el.textContent = `📄 ${stats.pageCount} 页 | 📁 ${stats.uploadCount} 个上传`;
     } else {
@@ -49,10 +72,10 @@ async function loadKnowledgeTree() {
         }
       }
     }
-    const el = document.getElementById('knowledge-tree');
+    const el = _knowledgeFindById('knowledge-tree');
     el.innerHTML = renderTree(tree);
   } catch (e) {
-    document.getElementById('knowledge-tree').innerHTML =
+    _knowledgeFindById('knowledge-tree').innerHTML =
       `<div class="empty">加载失败: ${escHtml(e.message)}</div>`;
   }
 }
@@ -102,8 +125,8 @@ async function openKnowledgePage(pagePath) {
   _currentPagePath = pagePath;
   try {
     const data = await api('GET', `/knowledge/${App.currentProjectId}/page?path=${encodeURIComponent(pagePath)}`);
-    const contentEl = document.getElementById('knowledge-page-content');
-    const summaryEl = document.getElementById('knowledge-index-summary');
+    const contentEl = _knowledgeFindById('knowledge-page-content');
+    const summaryEl = _knowledgeFindById('knowledge-index-summary');
 
     summaryEl.style.display = 'none';
     contentEl.style.display = 'block';
@@ -112,8 +135,8 @@ async function openKnowledgePage(pagePath) {
     contentEl.innerHTML = renderKnowledgePage(data.content);
 
     // 高亮当前页面
-    document.querySelectorAll('#knowledge-tree a').forEach(a => a.style.fontWeight = 'normal');
-    const activeLink = document.querySelector(`#knowledge-tree a[href*="${escHtml(pagePath)}"]`);
+    _knowledgeQueryAll('#knowledge-tree a').forEach(a => a.style.fontWeight = 'normal');
+    const activeLink = _knowledgeQuery(`#knowledge-tree a[href*="${escHtml(pagePath)}"]`);
     if (activeLink) activeLink.style.fontWeight = 'bold';
 
     // 重新加载树以更新高亮
@@ -240,33 +263,33 @@ let _pendingUploadFile = null;
 
 function showUploadDialog() {
   _pendingUploadFile = null;
-  document.getElementById('upload-file-input').value = '';
-  document.getElementById('upload-file-name').textContent = '未选择文件';
-  document.getElementById('upload-purpose').value = '';
-  document.getElementById('upload-submit-btn').disabled = true;
-  document.getElementById('upload-progress').style.display = 'none';
-  document.getElementById('upload-dialog-overlay').style.display = 'flex';
+  _knowledgeFindById('upload-file-input').value = '';
+  _knowledgeFindById('upload-file-name').textContent = '未选择文件';
+  _knowledgeFindById('upload-purpose').value = '';
+  _knowledgeFindById('upload-submit-btn').disabled = true;
+  _knowledgeFindById('upload-progress').style.display = 'none';
+  _knowledgeFindById('upload-dialog-overlay').style.display = 'flex';
 }
 
 function hideUploadDialog() {
-  document.getElementById('upload-dialog-overlay').style.display = 'none';
+  _knowledgeFindById('upload-dialog-overlay').style.display = 'none';
   _pendingUploadFile = null;
 }
 
 function onFileSelected(input) {
   _pendingUploadFile = input.files[0];
-  document.getElementById('upload-file-name').textContent = _pendingUploadFile ? _pendingUploadFile.name : '未选择文件';
-  document.getElementById('upload-submit-btn').disabled = !_pendingUploadFile;
+  _knowledgeFindById('upload-file-name').textContent = _pendingUploadFile ? _pendingUploadFile.name : '未选择文件';
+  _knowledgeFindById('upload-submit-btn').disabled = !_pendingUploadFile;
 }
 
 async function doUploadWithPurpose() {
   const file = _pendingUploadFile;
   if (!file) return toast('请先选择文件', 'error');
 
-  const purpose = document.getElementById('upload-purpose').value.trim();
-  document.getElementById('upload-submit-btn').disabled = true;
-  document.getElementById('upload-progress').style.display = 'block';
-  document.getElementById('upload-progress').textContent = '⏳ 上传中...';
+  const purpose = _knowledgeFindById('upload-purpose').value.trim();
+  _knowledgeFindById('upload-submit-btn').disabled = true;
+  _knowledgeFindById('upload-progress').style.display = 'block';
+  _knowledgeFindById('upload-progress').textContent = '⏳ 上传中...';
 
   try {
     const formData = new FormData();
@@ -285,8 +308,8 @@ async function doUploadWithPurpose() {
       loadKnowledgeStats(),
     ]);
   } catch (e) {
-    document.getElementById('upload-progress').textContent = '❌ 上传失败: ' + e.message;
-    document.getElementById('upload-submit-btn').disabled = false;
+    _knowledgeFindById('upload-progress').textContent = '❌ 上传失败: ' + e.message;
+    _knowledgeFindById('upload-submit-btn').disabled = false;
     toast('上传失败: ' + e.message, 'error');
   }
 }
@@ -296,7 +319,7 @@ async function doUploadWithPurpose() {
 async function loadKnowledgeFiles() {
   try {
     const files = await api('GET', `/knowledge/${App.currentProjectId}/files`);
-    const el = document.getElementById('knowledge-files');
+    const el = _knowledgeFindById('knowledge-files');
 
     if (!files || !files.length) {
       el.innerHTML = '<div class="empty" style="padding:8px 0;font-size:13px">暂无上传文件</div>';
@@ -320,7 +343,7 @@ async function loadKnowledgeFiles() {
       </div>`;
     }).join('');
   } catch (e) {
-    document.getElementById('knowledge-files').innerHTML =
+    _knowledgeFindById('knowledge-files').innerHTML =
       `<div class="empty">加载失败: ${escHtml(e.message)}</div>`;
   }
 }
@@ -375,7 +398,7 @@ async function rescanKnowledgeFile(fileId) {
 
 async function loadRequirementKnowledge(reqId) {
   try {
-    const panel = document.getElementById(`req-knowledge-panel-${reqId}`);
+    const panel = _knowledgeFindById(`req-knowledge-panel-${reqId}`);
     if (!panel) return;
 
     // 获取已关联的知识
@@ -388,9 +411,9 @@ async function loadRequirementKnowledge(reqId) {
     let matches = [];
     if (!hasLinks) {
       // 获取需求标题（从 DOM 中提取或直接使用 reqId 查询）
-      const titleEl = document.getElementById('detail-title');
+      const titleEl = _knowledgeFindById('detail-title');
       const title = titleEl ? titleEl.textContent.replace(/^[^:]+:\s*/, '') : '';
-      const descEl = document.querySelector('#detail-content .md-content');
+      const descEl = _knowledgeQuery('#detail-content .md-content');
       const desc = descEl ? descEl.textContent.slice(0, 200) : '';
       if (title) {
         matches = await api('GET', `/knowledge/${App.currentProjectId}/match?title=${encodeURIComponent(title)}&description=${encodeURIComponent(desc)}`).catch(() => []);
@@ -435,7 +458,7 @@ async function loadRequirementKnowledge(reqId) {
 
     panel.innerHTML = html;
   } catch (e) {
-    const panel = document.getElementById(`req-knowledge-panel-${reqId}`);
+    const panel = _knowledgeFindById(`req-knowledge-panel-${reqId}`);
     if (panel) {
       panel.innerHTML = '<div style="font-size:12px;color:var(--text2);padding:4px 0">📚 关联知识 — 加载失败</div>';
     }
@@ -470,7 +493,7 @@ async function showKnowledgeMatchPanel(reqId) {
   const title = prompt('输入关键词进行匹配（留空则使用需求标题）:');
   if (title === null) return;
 
-  const searchTitle = title.trim() || (document.getElementById('detail-title')?.textContent.replace(/^[^:]+:\s*/, '') || '');
+  const searchTitle = title.trim() || (_knowledgeFindById('detail-title')?.textContent.replace(/^[^:]+:\s*/, '') || '');
   if (!searchTitle) return toast('请输入关键词', 'error');
 
   try {
@@ -508,8 +531,8 @@ async function deleteKnowledgePage(pagePath, name) {
     toast(`页面 ${name} 已删除`, 'success');
     if (_currentPagePath === pagePath) {
       _currentPagePath = null;
-      document.getElementById('knowledge-page-content').style.display = 'none';
-      document.getElementById('knowledge-index-summary').style.display = 'block';
+      _knowledgeFindById('knowledge-page-content').style.display = 'none';
+      _knowledgeFindById('knowledge-index-summary').style.display = 'block';
     }
     await Promise.all([
       loadKnowledgeTree(),
