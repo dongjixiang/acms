@@ -3899,6 +3899,103 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
   50% { outline-color: var(--accent2, #ffd93d); }
 }
 
+/* —— 注视指示灯 —— */
+.ab-watch-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green, #6bff6b);
+  margin-left: 2px;
+  flex-shrink: 0;
+  transition: background 0.5s ease;
+}
+.ab-watch-dot.pulse {
+  animation: ab-dot-pulse 1.5s ease-in-out infinite;
+}
+.ab-watch-dot.flash {
+  animation: ab-dot-flash 0.8s ease-in-out infinite;
+}
+@keyframes ab-dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.7); }
+}
+@keyframes ab-dot-flash {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.2; }
+}
+
+/* —— 表情动画 —— */
+.fc-happy { animation: fc-breathe 3s ease-in-out infinite; }
+.fc-thinking { animation: fc-tilt 2.5s ease-in-out infinite; }
+.fc-surprised { animation: fc-widen 1.5s ease-in-out infinite; }
+.fc-excited { animation: fc-bounce 0.8s ease-in-out infinite; }
+.fc-caring { animation: fc-breathe 3s ease-in-out infinite; }
+.fc-awkward { animation: fc-sweat 2s ease-in-out infinite; }
+.fc-sleepy { animation: fc-slowblink 4s ease-in-out infinite; }
+.fc-confused { animation: fc-tilt 2s ease-in-out infinite; }
+.fc-lol { animation: fc-shake 0.5s ease-in-out infinite; }
+.fc-love { animation: fc-float 2s ease-in-out infinite; }
+.fc-wink { animation: fc-wink 2s ease-in-out infinite; }
+.fc-determined { animation: fc-nod 1.5s ease-in-out infinite; }
+.fc-idea { animation: fc-bounce 1.5s ease-in-out infinite; }
+.fc-content { animation: fc-breathe 4s ease-in-out infinite; }
+
+@keyframes fc-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.06); }
+}
+@keyframes fc-tilt {
+  0%, 100% { transform: rotate(0deg); }
+  25% { transform: rotate(-5deg); }
+  75% { transform: rotate(3deg); }
+}
+@keyframes fc-widen {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.1); opacity: 0.8; }
+}
+@keyframes fc-bounce {
+  0%, 100% { transform: translateY(0); }
+  40% { transform: translateY(-3px); }
+  60% { transform: translateY(-1px); }
+}
+@keyframes fc-sweat {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-2px); }
+  75% { transform: translateX(2px); }
+}
+@keyframes fc-slowblink {
+  0%, 40%, 100% { opacity: 1; }
+  45%, 55% { opacity: 0.4; }
+}
+@keyframes fc-shake {
+  0%, 100% { transform: translateX(0) rotate(0deg); }
+  20% { transform: translateX(-2px) rotate(-3deg); }
+  40% { transform: translateX(2px) rotate(3deg); }
+  60% { transform: translateX(-1px) rotate(-1deg); }
+  80% { transform: translateX(1px) rotate(1deg); }
+}
+@keyframes fc-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+@keyframes fc-wink {
+  0%, 90%, 100% { transform: scale(1); }
+  95% { transform: scaleY(0.6); }
+}
+@keyframes fc-nod {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  30% { transform: translateY(-2px) rotate(2deg); }
+  60% { transform: translateY(0) rotate(-1deg); }
+}
+
+/* —— 表情切换弹出动画 —— */
+@keyframes fc-pop {
+  0% { transform: scale(0.3); opacity: 0; }
+  60% { transform: scale(1.2); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
 @keyframes ap-fade-in {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }

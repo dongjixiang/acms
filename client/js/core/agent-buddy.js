@@ -45,7 +45,25 @@
 
   // ── 内部状态 ──
 
+  var FACES = {
+    happy:     { face: '◕‿◕', css: 'fc-happy',     label: '开心' },
+    thinking:  { face: '◔_◔', css: 'fc-thinking',  label: '思考' },
+    surprised: { face: '⊙_⊙', css: 'fc-surprised', label: '惊讶' },
+    excited:   { face: '≧◡≦', css: 'fc-excited',   label: '兴奋' },
+    caring:    { face: '◕︵◕', css: 'fc-caring',    label: '担心' },
+    awkward:   { face: '◕▽◕', css: 'fc-awkward',   label: '尴尬' },
+    sleepy:    { face: '◕_◕', css: 'fc-sleepy',    label: '困了' },
+    confused:  { face: '◔_◕', css: 'fc-confused',  label: '疑惑' },
+    lol:       { face: '≧▽≦', css: 'fc-lol',       label: '大笑' },
+    love:      { face: '♥‿♥', css: 'fc-love',      label: '喜欢' },
+    wink:      { face: '◕‿◕', css: 'fc-wink',      label: '眨眼' },
+    determined:{ face: '◕_◕', css: 'fc-determined',label: '认真' },
+    idea:      { face: '◕‿◕', css: 'fc-idea',      label: '有主意' },
+    content:   { face: '◕‿◕', css: 'fc-content',   label: '安心' },
+  };
+
   var _score = 0;
+  var _currentFace = '◕‿◕';
   var _currentState = STATES[0];
   var _greetingDone = false;       // 本次登录是否已问候过
   var _chatHistory = [];           // [{ role: 'buddy'|'user', text }]
@@ -57,6 +75,10 @@
   var _actionTimer = null;         // 重复操作检测定时器
   var _scoreMap = {};              // 当前活跃加分项 { key: timestamp }
   var _recentActions = [];         // 最近 10 条操作 { time, action }
+  var _scoreEvents = [];           // 最近加分事件 [{ type, time }]
+  var _proactiveCooldown = 0;      // 主动弹出冷却时间戳
+  var _proactiveTimer = null;      // 主动检查定时器
+  var _knownPackages = [];         // [{ name, title, icon, category }]
 
   // ── L1：用户记忆（小吉知道什么）──
 
@@ -74,6 +96,8 @@
       knownViews: [],
       lastView: '',
       daysActive: {},
+      chatMemory: [],  // [{ role: 'user'|'buddy', text }] 最近 10 条
+      personality: '',  // LLM 总结的性格认知
     };
   }
 
@@ -143,6 +167,10 @@
     }
     _scoreMap[eventKey] = now;
 
+    // 记录分数事件（用于主动弹出消息生成）
+    _scoreEvents.push({ type: eventKey, time: now });
+    if (_scoreEvents.length > 10) _scoreEvents.shift();
+
     _score = clamp(_score + value, 0, 120);
     updateState();
   }
@@ -150,9 +178,74 @@
   function resetScore() {
     _score = 0;
     _scoreMap = {};
-    // 重置重复操作计数
+    _scoreEvents = [];
     _recentActions = [];
+    _proactiveCooldown = Date.now() + 120 * 1000; // 归零后 2 分钟内不主动弹出
     updateState();
+  }
+
+  // ── L4：主动弹出（分数驱动）──
+
+  function startProactive() {
+    stopProactive();
+    _proactiveTimer = setInterval(checkProactive, 15 * 1000); // 每 15 秒检查
+  }
+
+  function stopProactive() {
+    if (_proactiveTimer) { clearInterval(_proactiveTimer); _proactiveTimer = null; }
+  }
+
+  function checkProactive() {
+    // 面板开着的时候不主动弹
+    if (_panelOpen) return;
+    // 冷却中不弹
+    if (Date.now() < _proactiveCooldown) return;
+    // 分数不够不弹
+    if (_score < 40) return;
+
+    // 找到最重要的最近事件来生成消息
+    var msg = getMessageForScore();
+    if (!msg) return;
+
+    // 冷却 5 分钟
+    _proactiveCooldown = Date.now() + 5 * 60 * 1000;
+
+    // 设置关心的表情
+    setFace('caring');
+
+    // 弹出面板
+    openPanel({ message: msg });
+  }
+
+  function getMessageForScore() {
+    // 按优先级从最近事件中找消息
+    var events = _scoreEvents.slice().reverse();
+    for (var i = 0; i < events.length; i++) {
+      var e = events[i];
+      var age = Date.now() - e.time;
+      if (age > 10 * 60 * 1000) continue; // 超过 10 分钟的事件不处理
+
+      var userName = getBuddyUserName();
+
+      if (e.type === 'new-package') {
+        return '我注意到系统有新功能上线了，要不要看看？';
+      }
+      if (e.type === 'repeat-action') {
+        return '你好像重复了好几次同样的操作，要不要我帮你看看有没有更快的办法？';
+      }
+      if (e.type === 'error-spike') {
+        return '最近好像出了点错，要我检查一下吗？';
+      }
+      if (e.type === 'pending-review') {
+        return '有待审核的任务等着你哦，要去看看吗？';
+      }
+    }
+
+    // 没有特别事件但分数高
+    if (_score >= 70) {
+      return '好像有事想跟你说，你忙完记得点我～';
+    }
+    return null;
   }
 
   // ── 衰减 ──
@@ -178,10 +271,26 @@
     var oldState = _currentState;
     _currentState = getState(_score);
 
-    // 状态变了才更新 UI
-    if (oldState.name !== _currentState.name || oldState.dot !== _currentState.dot) {
-      renderAvatar();
+    // 更新注视指示灯
+    updateWatchDot();
+
+    // 状态变了且不在对话中 → 更新头像表情匹配状态
+    if (oldState.name !== _currentState.name) {
+      if (!_panelOpen && !_chatHistory.length) {
+        setFace('happy');
+      }
     }
+  }
+
+  function updateWatchDot() {
+    var dot = document.getElementById('ab-watch-dot');
+    if (!dot) return;
+    var colors = { idle: 'var(--green)', curious: 'var(--accent3)', urgent: '#e67e22', critical: 'var(--accent2)' };
+    dot.style.background = colors[_currentState.name] || colors.idle;
+    dot.className = 'ab-watch-dot';
+    if (_currentState.name === 'curious' || _currentState.name === 'urgent') dot.classList.add('pulse');
+    if (_currentState.name === 'critical') dot.classList.add('flash');
+    dot.title = _currentState.greeting;
   }
 
   // ── L2：上下文感知 ──
@@ -319,6 +428,58 @@
     if (el) el.remove();
   }
 
+  // ── 对话记忆 ──
+
+  function saveChatMemory(userMsg, buddyReply) {
+    var mem = _userMemory.chatMemory || [];
+    mem.push({ role: 'user', text: userMsg.slice(0, 200) });
+    mem.push({ role: 'buddy', text: buddyReply.slice(0, 200) });
+    if (mem.length > 10) mem.splice(0, mem.length - 10);
+    _userMemory.chatMemory = mem;
+    saveMemory();
+
+    // 每 4 轮对话（8 条消息）触发一次性格总结
+    if (mem.length >= 8 && mem.length % 8 < 2) {
+      updatePersonality();
+    }
+  }
+
+  // ── 性格总结 ──
+
+  function updatePersonality() {
+    var mem = _userMemory.chatMemory || [];
+    if (mem.length < 4) return;
+
+    var historyText = mem.map(function(m) {
+      return (m.role === 'user' ? '用户' : '小吉') + '：' + m.text;
+    }).join('\n');
+
+    var oldPersonality = _userMemory.personality || '还没有了解';
+
+    fetch('/api/agent-buddy/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+      body: JSON.stringify({
+        message: '__personality__',
+        context: {
+          oldPersonality: oldPersonality,
+          history: historyText.slice(0, 1000),
+        },
+      }),
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data && data.reply) {
+        var clean = data.reply.replace(/【[^】]+】/g, '').trim();
+        if (clean && clean.length < 200) {
+          _userMemory.personality = clean;
+          saveMemory();
+        }
+      }
+    })
+    .catch(function() {});
+  }
+
   // ── 动作执行（演示能力）──
 
   function executeActions(text) {
@@ -367,6 +528,9 @@
       totalQuestions: _userMemory.totalQuestions || 0,
       knownViews: (_userMemory.knownViews || []).slice(-8),
       userName: getBuddyUserName(),
+      packages: _knownPackages.map(function(p) { return p.name + '(' + p.title + ')'; }),
+      history: (_userMemory.chatMemory || []).slice(-6),
+      personality: _userMemory.personality || undefined,
     };
 
     // 调后端
@@ -378,18 +542,25 @@
     .then(function(r) { return r.json(); })
     .then(function(data) {
       removeThinking();
-      var reply = data.reply || '嗯… 我没听清，能再说一遍吗？';
+      var raw = data.reply || '嗯… 我没听清，能再说一遍吗？';
+      // 从回复中提取并执行动作和表情标记，然后从显示文本中去除
+      executeActions(raw);
+      var faceMatch = raw.match(/【face:(\w+)】/);
+      if (faceMatch) setFace(faceMatch[1]);
+      // 清除所有标记后展示纯文本
+      var reply = raw.replace(/【[^】]+】/g, '').trim();
       renderMessage(reply);
       _chatHistory.push({ role: 'buddy', text: reply });
-      // 每次聊天加分 +2（累积）
       addScore('toast-fire');
-      // 执行回复中的动作标记
-      executeActions(reply);
+
+      // 保存到长期记忆
+      saveChatMemory(text, reply);
     })
     .catch(function(err) {
       removeThinking();
       renderMessage('我网络开小差了… 你再跟我说一遍？');
       _chatHistory.push({ role: 'buddy', text: '（网络异常）' });
+      saveChatMemory(text, '（网络异常）');
     });
   }
 
@@ -455,15 +626,37 @@
 
   function renderAvatar() {
     if (!_avatarEl) return;
-    _avatarEl.textContent = _currentState.face;
-    // 更新 CSS state class
-    STATES.forEach(function(s) {
-      _avatarEl.classList.toggle(s.css, _currentState.name === s.name);
-    });
-    // 更新 dot color（通过修改 title 不用额外元素）
-    var dotColors = { green: '🟢', yellow: '🟡', orange: '🟠', red: '🔴' };
-    var dot = dotColors[_currentState.dot] || '🟢';
-    _avatarEl.title = dot + ' ' + _currentState.greeting;
+    _avatarEl.textContent = _currentFace;
+    // 更新表情 CSS class
+    for (var key in FACES) {
+      _avatarEl.classList.toggle(FACES[key].css, FACES[key].face === _currentFace);
+    }
+    // 也更新面板头像
+    var headerAvatar = document.querySelector('.ap-avatar');
+    if (headerAvatar) headerAvatar.textContent = _currentFace;
+  }
+
+  function setFace(faceType) {
+    var entry = FACES[faceType];
+    if (!entry) return;
+    if (_currentFace === entry.face) return; // 没变化就不动
+    _currentFace = entry.face;
+    animateFaceChange(_avatarEl);
+    animateFaceChange(document.querySelector('.ap-avatar'));
+    // 更新 CSS class
+    if (_avatarEl) {
+      for (var key in FACES) {
+        _avatarEl.classList.toggle(FACES[key].css, FACES[key].face === _currentFace);
+      }
+    }
+  }
+
+  function animateFaceChange(el) {
+    if (!el) return;
+    el.style.animation = 'none';
+    el.offsetHeight; // force reflow
+    el.style.animation = 'fc-pop 0.35s ease';
+    el.textContent = _currentFace;
   }
 
   function ensureAvatar() {
@@ -473,14 +666,20 @@
 
     _avatarEl = document.createElement('div');
     _avatarEl.id = 'tb-agent-buddy';
-    _avatarEl.className = 'tray-item clickable ab-avatar ' + _currentState.css;
-    _avatarEl.textContent = _currentState.face;
+    _avatarEl.className = 'tray-item clickable ab-avatar fc-happy';
+    _avatarEl.textContent = _currentFace;
     _avatarEl.title = '🟢 我在呢～';
     _avatarEl.addEventListener('click', function(e) {
       e.stopPropagation();
-      // 检查是否有待展示的消息类型
       togglePanel();
     });
+
+    // 注视指示灯
+    var dot = document.createElement('span');
+    dot.id = 'ab-watch-dot';
+    dot.className = 'ab-watch-dot';
+    dot.title = '我在呢～';
+    _avatarEl.appendChild(dot);
 
     // 插在主题按钮之前 (🎨 之前)
     var themeBtn = document.getElementById('tb-theme-btn');
@@ -512,37 +711,82 @@
     _userMemory.daysActive[d] = true;
     saveMemory();
 
-    var isFirstEver = _userMemory.loginCount <= 1;
-    var msg = '';
-
-    if (isFirstEver) {
-      msg = name + '你好～ 我是小吉，ACMS 的平台助手。我刚诞生，还不了解你。不过每一次你登录、每一次你问我问题，我都会记住。以后请多指教！';
-    } else {
-      var facts = [];
-      if (_userMemory.totalQuestions > 0) facts.push('我们已经聊过 ' + _userMemory.totalQuestions + ' 个话题');
-      var views = _userMemory.knownViews || [];
-      if (views.length > 0) facts.push('我见你用过 ' + views.join('、'));
-      if (_userMemory.lastView) facts.push('你上次在看「' + _userMemory.lastView + '」');
-      var factStr = facts.length > 0 ? '我记得：' + facts.join('；') + '。' : '';
-      msg = name + '又见面了～ ' + factStr + '有什么想聊的吗？';
-    }
-
     _greetingDone = true;
     addScore('login-greeting');
 
+    // 让大模型根据记忆生成问候
     setTimeout(function() {
-      openPanel({ message: msg });
+      setFace('happy');
+      openPanel({ message: '……' });
+
+      var context = {
+        greeting: true,
+        userName: name,
+        loginCount: _userMemory.loginCount || 0,
+        totalQuestions: _userMemory.totalQuestions || 0,
+        knownViews: (_userMemory.knownViews || []).slice(-8),
+        lastView: _userMemory.lastView || '',
+        packages: _knownPackages.map(function(p) { return p.name + '(' + p.title + ')'; }),
+        history: (_userMemory.chatMemory || []).slice(-4),
+        personality: _userMemory.personality || undefined,
+      };
+
+      fetch('/api/agent-buddy/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+        body: JSON.stringify({ message: '__greeting__', context: context }),
+      })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        var raw = data && data.reply ? data.reply : '欢迎回来～';
+        var faceMatch = raw.match(/【face:(\w+)】/);
+        if (faceMatch) setFace(faceMatch[1]);
+        var reply = raw.replace(/【[^】]+】/g, '').trim();
+        var container = document.querySelector('#ap-messages');
+        if (container) container.innerHTML = '';
+        renderMessage(reply);
+      })
+      .catch(function() {
+        var container = document.querySelector('#ap-messages');
+        if (container) container.innerHTML = '';
+        renderMessage(name + ' 欢迎回来～');
+      });
+
+    // 5 秒超时兜底：如果 API 没回来，显示默认问候
+    setTimeout(function() {
+      var msgs = document.querySelector('#ap-messages');
+      if (msgs && msgs.children.length === 1 && msgs.children[0].textContent.trim() === '……') {
+        msgs.innerHTML = '';
+        renderMessage('欢迎回来～有什么需要帮忙的吗？');
+      }
+    }, 5000);
     }, 800);
   }
 
   // ── 外部事件集成 ──
 
   function onNewPackage(name, config) {
-    // 新包注册 → 判断是否"新功能未体验"
-    // 简单策略：不是启动时批量注册的（延迟 < 5秒的）才是新功能
-    // 所以这里先加分数，但不展开
-    addScore('new-package');
+    if (!name) return;
+    // 记住这个包
+    var exists = false;
+    for (var i = 0; i < _knownPackages.length; i++) {
+      if (_knownPackages[i].name === name) { exists = true; break; }
+    }
+    if (!exists) {
+      _knownPackages.push({
+        name: name,
+        title: config && (config.title || config.name || name),
+        icon: (config && config.icon) || '📦',
+        category: (config && config.category) || '',
+      });
+    }
+    // 延迟判断：启动后 5 秒内注册的不算新功能（批量初始化）
+    if (Date.now() - (_startTime || Date.now()) > 5000) {
+      addScore('new-package');
+    }
   }
+
+  var _startTime = Date.now();
 
   function onToast(msg, type) {
     // 异常错误 → error-spike
@@ -567,6 +811,9 @@
 
     // 创建 avatar
     ensureAvatar();
+
+    // 初始化注视指示灯
+    updateWatchDot();
 
     // 开启衰减
     startDecay();
@@ -598,6 +845,11 @@
     setTimeout(function() {
       checkGreeting();
     }, 1500);
+
+    // 启动主动弹出检查（15 秒后开始，给问候留时间）
+    setTimeout(function() {
+      startProactive();
+    }, 5000);
   }
 
   // ── 暴露 API ──
