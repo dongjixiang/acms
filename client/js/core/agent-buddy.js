@@ -48,9 +48,7 @@
   var _score = 0;
   var _currentState = STATES[0];
   var _greetingDone = false;       // 本次登录是否已问候过
-  var _greetedDate = '';           // 上次问候日期 (YYYY-MM-DD)
-  var _scoreMap = {};              // 当前活跃加分项 { key: timestamp }
-  var _recentActions = [];         // 最近 5 条操作 { time, action }
+  var _chatHistory = [];           // [{ role: 'buddy'|'user', text }]
   var _currentView = '';
   var _panelOpen = false;
   var _panelEl = null;
@@ -176,11 +174,16 @@
         '<span class="ap-title">小吉</span>' +
         '<button class="ap-close">✕</button>' +
       '</div>' +
-      '<div class="ap-body">' +
-        '<div class="ap-message">hi～ 我一直在呢</div>' +
-        '<div class="ap-score-bar"><div class="ap-score-fill"></div></div>' +
-        '<div class="ap-score-label"></div>' +
-        '<div class="ap-actions"></div>' +
+      '<div class="ap-messages" id="ap-messages">' +
+        '<div class="ap-msg ap-msg-buddy">' +
+          '<span class="ap-msg-icon">◕‿◕</span>' +
+          '<span class="ap-msg-text">hi～ 我一直在呢</span>' +
+        '</div>' +
+      '</div>' +
+      '<div class="ap-score-bar"><div class="ap-score-fill"></div></div>' +
+      '<div class="ap-input-row">' +
+        '<input type="text" class="ap-input" id="ap-input" placeholder="问小吉问题..." autocomplete="off">' +
+        '<button class="ap-send-btn" id="ap-send-btn">➤</button>' +
       '</div>';
     document.body.appendChild(_panelEl);
 
@@ -196,6 +199,25 @@
     // 点击外部关闭
     _panelEl.addEventListener('click', function(e) { e.stopPropagation(); });
 
+    // 输入框回车发送
+    var input = _panelEl.querySelector('#ap-input');
+    var sendBtn = _panelEl.querySelector('#ap-send-btn');
+    if (input && sendBtn) {
+      function doSend() {
+        var text = input.value.trim();
+        if (!text) return;
+        input.value = '';
+        sendMessage(text);
+      }
+      input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); doSend(); }
+      });
+      sendBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        doSend();
+      });
+    }
+
     _panelEl.addEventListener('transitionend', function(e) {
       if (e.propertyName === 'opacity' && !_panelEl.classList.contains('open')) {
         _panelEl.style.display = 'none';
@@ -206,8 +228,98 @@
   }
 
   function renderMessage(text) {
-    var msg = document.querySelector('#agent-panel .ap-message');
-    if (msg) msg.textContent = text || 'hi～ 我一直在呢';
+    var container = document.querySelector('#ap-messages');
+    if (!container) return;
+    var div = document.createElement('div');
+    div.className = 'ap-msg ap-msg-buddy';
+    div.innerHTML = '<span class="ap-msg-icon">◕‿◕</span><span class="ap-msg-text">' + escHtml(text) + '</span>';
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+  }
+
+  function renderUserMessage(text) {
+    var container = document.querySelector('#ap-messages');
+    if (!container) return;
+    var div = document.createElement('div');
+    div.className = 'ap-msg ap-msg-user';
+    div.innerHTML = '<span class="ap-msg-text">' + escHtml(text) + '</span>';
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+  }
+
+  function renderThinking() {
+    var container = document.querySelector('#ap-messages');
+    if (!container) return;
+    var div = document.createElement('div');
+    div.className = 'ap-msg ap-msg-buddy ap-msg-thinking';
+    div.id = 'ap-msg-thinking';
+    div.innerHTML = '<span class="ap-msg-icon">◕‿◕</span><span class="ap-msg-text">…</span>';
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+  }
+
+  function removeThinking() {
+    var el = document.getElementById('ap-msg-thinking');
+    if (el) el.remove();
+  }
+
+  // ── L5：聊天发送 ──
+
+  function sendMessage(text) {
+    renderUserMessage(text);
+    renderThinking();
+
+    _chatHistory.push({ role: 'user', text: text });
+
+    // Focus 输入框
+    var input = document.getElementById('ap-input');
+    if (input) setTimeout(function() { input.focus(); }, 100);
+
+    var context = {
+      currentView: _currentView || undefined,
+    };
+
+    // 调后端
+    fetch('/api/agent-buddy/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+      body: JSON.stringify({ message: text, context: context }),
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      removeThinking();
+      var reply = data.reply || '嗯… 我没听清，能再说一遍吗？';
+      renderMessage(reply);
+      _chatHistory.push({ role: 'buddy', text: reply });
+      // 每次聊天加分 +2（累积）
+      addScore('toast-fire');
+    })
+    .catch(function(err) {
+      removeThinking();
+      var fallback = getLocalReply(text);
+      if (fallback) {
+        renderMessage(fallback);
+        _chatHistory.push({ role: 'buddy', text: fallback });
+      } else {
+        renderMessage('我好像网络开小差了… 你再跟我说一遍？');
+        _chatHistory.push({ role: 'buddy', text: '（网络异常）' });
+      }
+    });
+  }
+
+  // 本地兜底回复（API 不可用时）
+  function getLocalReply(text) {
+    var t = text.toLowerCase();
+    if (t.indexOf('你是谁') !== -1 || t.indexOf('你叫什么') !== -1 || t.indexOf('你是') !== -1) {
+      return '我是小吉，ACMS 的系统助手～ 我一直在平台里看着，随时可以帮你！';
+    }
+    if (t.indexOf('能做') !== -1 || t.indexOf('你会') !== -1 || t.indexOf('功能') !== -1 || t.indexOf('help') !== -1) {
+      return '我了解 ACMS 的所有功能哦～ 你可以问我「怎么看缺陷」「怎么创建需求」「什么是看板」等等。我还可以在你看到新功能的时候提醒你！';
+    }
+    if (t.indexOf('你好') !== -1 || t.indexOf('hi') !== -1 || t.indexOf('hello') !== -1) {
+      return '你好呀～ 有什么需要帮忙的吗？';
+    }
+    return null;
   }
 
   function renderScoreBar() {
@@ -234,6 +346,10 @@
     var panel = ensurePanel();
     if (_panelOpen) { closePanel(); return; }
     _panelOpen = true;
+
+    // 清空旧消息（保留最新一条问候或对话）
+    var container = document.querySelector('#ap-messages');
+    if (container) container.innerHTML = '';
 
     var msg = entry && entry.message;
     if (msg) renderMessage(msg);
@@ -314,37 +430,32 @@
   // ── 问候系统 ──
 
   function checkGreeting() {
-    var d = today();
-    var last = localStorage.getItem('acms-buddy-greeting-date') || '';
-    var greeted = (d === last);
     var userData = null;
     try { userData = JSON.parse(localStorage.getItem('acms-user') || '{}'); } catch(e) {}
+    var name = (userData && userData.username) || '伙伴';
 
-    if (!greeted) {
-      var name = (userData && userData.username) || '伙伴';
-      var msg = '';
-      // 判断是否是"第一天"
-      var firstVisit = !localStorage.getItem('acms-buddy-greeting-date');
-      if (firstVisit) {
-        msg = name + '你好～ 我是小吉，ACMS 的平台助手。我刚诞生，还有很多需要了解你。不过我会慢慢学会的，以后请多指教。';
-      } else {
-        // 根据上下文生成问候
-        var viewHint = _currentView ? ' 你上次在看「' + _currentView + '」' : '';
-        msg = '早上好 ' + name + '～' + viewHint + '。有什么需要帮忙的吗？';
-      }
-
-      // 保存问候日期
-      localStorage.setItem('acms-buddy-greeting-date', d);
-      _greetingDone = true;
-
-      // 加分：首次登录问候
-      addScore('login-greeting');
-
-      // 展示问候（延迟让 UI 先加载完）
-      setTimeout(function() {
-        openPanel({ message: msg });
-      }, 800);
+    // 判断是否是第一次见（从未存过问候日期）
+    var firstVisit = !localStorage.getItem('acms-buddy-greeting-date');
+    var msg = '';
+    if (firstVisit) {
+      msg = name + '你好～ 我是小吉，ACMS 的平台助手。我刚诞生，还有很多需要了解你。不过我会慢慢学会的，以后请多指教。';
+    } else {
+      // 根据上下文生成问候
+      var viewHint = _currentView ? ' 你上次在看「' + _currentView + '」' : '';
+      msg = '欢迎回来 ' + name + '～' + viewHint + '。有什么需要帮忙的吗？可以试着问我问题哦。';
     }
+
+    // 保存问候日期（仅标记已来过，不影响每次问候）
+    localStorage.setItem('acms-buddy-greeting-date', today());
+    _greetingDone = true;
+
+    // 加分：登录问候
+    addScore('login-greeting');
+
+    // 延迟展示问候（让 UI 先加载完）
+    setTimeout(function() {
+      openPanel({ message: msg });
+    }, 800);
   }
 
   // ── 外部事件集成 ──

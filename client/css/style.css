@@ -3804,6 +3804,98 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
   display: none;
 }
 
+/* —— 消息区 —— */
+.ap-messages {
+  padding: 8px 10px;
+  max-height: 160px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  scrollbar-width: thin;
+}
+.ap-msg {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  font-size: 12px;
+  line-height: 1.4;
+  animation: ap-fade-in 0.2s ease;
+}
+.ap-msg-buddy .ap-msg-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.ap-msg-text {
+  background: var(--bg3, #252540);
+  padding: 5px 8px;
+  border-radius: 6px;
+  color: var(--text, #e0e0f0);
+  max-width: 180px;
+  word-break: break-word;
+}
+.ap-msg-user {
+  justify-content: flex-end;
+}
+.ap-msg-user .ap-msg-text {
+  background: var(--accent, #0ea89d);
+  color: #fff;
+  border-bottom-right-radius: 2px;
+}
+.ap-msg-buddy .ap-msg-text {
+  border-bottom-left-radius: 2px;
+}
+.ap-msg-thinking .ap-msg-text {
+  animation: ap-think-pulse 1.2s ease-in-out infinite;
+}
+
+/* —— 输入行 —— */
+.ap-input-row {
+  display: flex;
+  gap: 4px;
+  padding: 6px 10px 10px;
+  border-top: 1px solid var(--border, rgba(78,205,196,0.1));
+}
+.ap-input {
+  flex: 1;
+  background: var(--bg3, #252540);
+  border: 1px solid var(--border, rgba(78,205,196,0.2));
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--text, #e0e0f0);
+  outline: none;
+}
+.ap-input:focus {
+  border-color: var(--accent, #0ea89d);
+}
+.ap-input::placeholder {
+  color: var(--text3, #5a5a70);
+}
+.ap-send-btn {
+  background: var(--accent, #0ea89d);
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 14px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.ap-send-btn:hover {
+  background: var(--accent2, #e67e22);
+}
+
+@keyframes ap-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes ap-think-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
 /* 主内容留底部 padding，避免被任务栏遮挡 */
 body { padding-bottom: 40px; }
 

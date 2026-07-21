@@ -261,6 +261,8 @@ app.use('/api/chat-sessions', require('./routes/chat-sessions'));  // v0.55 自�
 
 // L3: Apps API
 app.use('/api/apps', require('./routes/apps'));
+// v0.59 Agent Buddy 聊天接口
+app.use('/api/agent-buddy', require('./routes/agent-buddy'));
 
 // 404 — v0.18 加 unmatched 路径 log
 app.use((req, res, next) => {
