@@ -55,11 +55,66 @@
   var _avatarEl = null;
   var _decayTimer = null;
   var _actionTimer = null;         // 重复操作检测定时器
+  var _scoreMap = {};              // 当前活跃加分项 { key: timestamp }
+  var _recentActions = [];         // 最近 10 条操作 { time, action }
+
+  // ── L1：用户记忆（关系成长系统）──
+
+  var MEMORY_KEY = 'acms-buddy-memory';
+
+  function loadMemory() {
+    try {
+      var raw = localStorage.getItem(MEMORY_KEY);
+      if (raw) return JSON.parse(raw);
+    } catch(e) {}
+    return {
+      firstSeen: new Date().toISOString(),
+      loginCount: 0,
+      totalQuestions: 0,
+      knownViews: [],
+      lastView: '',
+      daysActive: {},
+    };
+  }
+
+  function saveMemory() {
+    try {
+      localStorage.setItem(MEMORY_KEY, JSON.stringify(_userMemory));
+    } catch(e) { console.warn('[Buddy] memory save failed:', e); }
+  }
+
+  var _userMemory = loadMemory();
+
+  function getRelationshipStage() {
+    var logins = _userMemory.loginCount;
+    var questions = _userMemory.totalQuestions;
+    if (logins <= 1 && questions === 0) return 'newborn';
+    if (logins <= 3 || questions <= 3) return 'acquaintance';
+    if (logins <= 6 || questions <= 10) return 'familiar';
+    return 'partner';
+  }
+
+  function recordUserView(viewName) {
+    if (!viewName) return;
+    _userMemory.lastView = viewName;
+    if (_userMemory.knownViews.indexOf(viewName) === -1) {
+      _userMemory.knownViews.push(viewName);
+      if (_userMemory.knownViews.length > 20) _userMemory.knownViews.shift();
+    }
+    saveMemory();
+  }
 
   // ── 工具函数 ──
 
   function today() {
     return new Date().toISOString().slice(0, 10);
+  }
+
+  function getBuddyUserName() {
+    try {
+      var u = JSON.parse(localStorage.getItem('acms-user') || '{}');
+      return u.username || '伙伴';
+    } catch(e) { return '伙伴'; }
   }
 
   function getState(score) {
@@ -132,6 +187,7 @@
 
   function setCurrentView(viewName) {
     _currentView = viewName || '';
+    if (viewName) recordUserView(viewName);
   }
 
   function recordAction(actionName) {
@@ -271,12 +327,23 @@
 
     _chatHistory.push({ role: 'user', text: text });
 
+    // 递增问题计数
+    _userMemory.totalQuestions = (_userMemory.totalQuestions || 0) + 1;
+    saveMemory();
+
+    var stage = getRelationshipStage();
+
     // Focus 输入框
     var input = document.getElementById('ap-input');
     if (input) setTimeout(function() { input.focus(); }, 100);
 
     var context = {
       currentView: _currentView || undefined,
+      relationshipStage: stage,
+      loginCount: _userMemory.loginCount || 0,
+      totalQuestions: _userMemory.totalQuestions || 0,
+      knownViews: (_userMemory.knownViews || []).slice(-8),
+      userName: getBuddyUserName(),
     };
 
     // 调后端
@@ -427,32 +494,59 @@
     return _avatarEl;
   }
 
-  // ── 问候系统 ──
+  // ── 问候系统（关系成长驱动）──
 
   function checkGreeting() {
     var userData = null;
     try { userData = JSON.parse(localStorage.getItem('acms-user') || '{}'); } catch(e) {}
     var name = (userData && userData.username) || '伙伴';
 
-    // 判断是否是第一次见（从未存过问候日期）
-    var firstVisit = !localStorage.getItem('acms-buddy-greeting-date');
+    // 递增登录次数
+    _userMemory.loginCount = (_userMemory.loginCount || 0) + 1;
+    // 记录活跃天数
+    var d = today();
+    _userMemory.daysActive = _userMemory.daysActive || {};
+    _userMemory.daysActive[d] = true;
+    saveMemory();
+
+    var stage = getRelationshipStage();
+    var isFirstEver = _userMemory.loginCount <= 1;
+    var viewCount = (_userMemory.knownViews || []).length;
     var msg = '';
-    if (firstVisit) {
-      msg = name + '你好～ 我是小吉，ACMS 的平台助手。我刚诞生，还有很多需要了解你。不过我会慢慢学会的，以后请多指教。';
+
+    if (isFirstEver) {
+      msg = name + '你好～ 我是小吉，ACMS 的平台助手。我刚诞生，现在还不太了解你。不过每一次你登录、每一次你问我问题，我都会记住，慢慢了解你的习惯。以后请多指教！';
     } else {
-      // 根据上下文生成问候
-      var viewHint = _currentView ? ' 你上次在看「' + _currentView + '」' : '';
-      msg = '欢迎回来 ' + name + '～' + viewHint + '。有什么需要帮忙的吗？可以试着问我问题哦。';
+      // 根据关系阶段生成问候
+      var stageGreetings = {
+        newborn: [
+          '又见面了' + name + '～ 我还在努力了解你中…… 你多用用我，我会越来越懂的。',
+          '欢迎回来～ 你上次看了「' + (_userMemory.lastView || '首页') + '」。有什么想聊的吗？',
+        ],
+        acquaintance: [
+          '嘿 ' + name + '，又见面了。我已经记住你打开的 ' + viewCount + ' 个功能了～ 你对看板好像特别感兴趣？',
+          '你来了！我已经开始慢慢懂你的节奏了。今天想做什么？',
+          '欢迎回来～ 你上次在「' + (_userMemory.lastView || '首页') + '」停留了挺久，是想研究什么吗？',
+        ],
+        familiar: [
+          '早呀 ' + name + '！我已经很熟悉你的习惯了——你通常先看缺陷再看看板对吧？今天照旧？',
+          name + '来了～ 你知道吗，你已经用过 ' + viewCount + ' 个不同功能了。要不要试试还没碰过的？',
+          '嘿，老朋友！今天有什么需要我帮忙的吗？你尽管说。',
+        ],
+        partner: [
+          name + '！我们合作这么久了，我越来越懂你了～ 今天有什么想法？',
+          '早上好！我已经能猜到你接下来要做什么了——先看看板，对吧？今天有 2 个新任务提交了哦。',
+          '你来了～ 我觉得我们已经很有默契了。有什么想做的，直接跟我说。',
+        ],
+      };
+
+      var list = stageGreetings[stage] || stageGreetings.acquaintance;
+      msg = list[Math.floor(Math.random() * list.length)];
     }
 
-    // 保存问候日期（仅标记已来过，不影响每次问候）
-    localStorage.setItem('acms-buddy-greeting-date', today());
     _greetingDone = true;
-
-    // 加分：登录问候
     addScore('login-greeting');
 
-    // 延迟展示问候（让 UI 先加载完）
     setTimeout(function() {
       openPanel({ message: msg });
     }, 800);
