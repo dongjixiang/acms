@@ -516,6 +516,22 @@
     closeLauncher();
   };
 
+  // v0.59：微信默认走 Puppeteer native-shell，使用原生 Chromium 交互。
+  window.launchWeChat = async function() {
+    closeLauncher();
+    try {
+      var r = await fetch('/api/app-runtime/native-shell/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': (window.ACMSConfig && window.ACMSConfig.apiKey) || 'dev-key-001' },
+        body: JSON.stringify({ appId: 'wechat', url: 'https://wx.qq.com', w: 1180, h: 760 }),
+      }).then(function(resp) { return resp.json(); });
+      if (!r || r.error) throw new Error(r && r.error || '启动失败');
+      if (typeof toast === 'function') toast(r.shell && r.shell.reused ? '已切换到微信' : '微信已打开', 'success', 1500);
+    } catch (e) {
+      if (typeof toast === 'function') toast('微信启动失败：' + e.message, 'error');
+    }
+  };
+
 window.launchAdmin = function() {
     // 系统管理始终以 ACMSWin 窗口打开（独立加载，不依赖 DOM 克隆）
     if (window.ACMSWin) {
@@ -599,6 +615,21 @@ window.launchAdmin = function() {
 
   // mouseleave 不做关闭（CSS :hover 处理）
   window.onChatLauncherLeave = function() { /* CSS :hover 自动处理 */ };
+
+  // v0.61: 辅助工具子菜单 hover（CSS hover 自动处理展开/收起，JS 只需空函数让内联调用不报错）
+  window.onToolLauncherHover = function() { /* CSS :hover 自动处理 */ };
+  window.onToolLauncherLeave = function() { /* CSS :hover 自动处理 */ };
+
+  // v0.61: 辅助工具子菜单点击 — 开 assist-free 浮动窗口并传递 method
+  window.launchAssistTool = function(method, title) {
+    closeLauncher();
+    if (window.ACMSWin) {
+      if (!ACMSWin.isActive()) ACMSWin.enable();
+      ACMSWin.open('assist-free', { method: method, title: title || '辅助工具' });
+    } else if (typeof showWorkspaceView === 'function') {
+      showWorkspaceView('assist-free');
+    }
+  };
 
 function renderLauncherChatList(sessions) {
     var listEl = document.getElementById('launcher-chat-list');

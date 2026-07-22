@@ -73,6 +73,12 @@ wsServer.listen(config.wsPort, () => {
   console.log(`[ACMS] WebSocket: ws://localhost:${config.wsPort}`);
 });
 
+// v0.59 appRuntime WebSocket：挂到主 httpServer（路径 /ws/app-runtime/*）
+//   跟主 ws（/ws）和 terminal-ws（独立端口）做 path 隔离，不冲突
+const { setupAppRuntimeWS } = require('./handlers/app-runtime-ws');
+setupAppRuntimeWS(httpServer);
+console.log('[ACMS] appRuntime WS 已挂到 httpServer: /ws/app-runtime/{sessionId}');
+
 // ── 启动时：自动创建 ACMS 自我改进项目 ──
 try {
   const { collection } = require('./db/connection');

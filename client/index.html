@@ -570,9 +570,6 @@ document.addEventListener('DOMContentLoaded', () => {
   <div class="launcher-section-title">导航</div>
   <div class="launcher-item" onclick="launchProjects()"><span class="li-icon">📦</span><span class="li-label">项目管理</span></div>
   <div class="launcher-item" onclick="launchAdmin()"><span class="li-icon">⚙️</span><span class="li-label">系统管理</span></div>
-  <div class="launcher-item" onclick="launchView('file-manager')"><span class="li-icon">📂</span><span class="li-label">文件浏览器</span></div>
-  <div class="launcher-item" onclick="launchView('web-browser')"><span class="li-icon">🌐</span><span class="li-label">浏览器</span></div>
-  <div class="launcher-item" onclick="openTerminal()"><span class="li-icon">💻</span><span class="li-label">终端</span></div>
   <!-- v0.55：💬 对话 hover 子菜单（新建 + 最近历史 + 打开历史/回收站） -->
   <div class="launcher-item launcher-has-submenu" id="launcher-chat" onmouseenter="onChatLauncherHover()" onmouseleave="onChatLauncherLeave()">
     <span class="li-icon">💬</span><span class="li-label">对话</span><span class="li-arrow">▸</span>
@@ -587,6 +584,24 @@ document.addEventListener('DOMContentLoaded', () => {
         <span class="li-icon">🗑</span><span class="li-label">回收站</span>
         <span class="li-badge" id="launcher-recycle-count" style="display:none">0</span>
       </div>
+    </div>
+  </div>
+  <div class="launcher-item" onclick="launchView('file-manager')"><span class="li-icon">📂</span><span class="li-label">文件浏览器</span></div>
+  <div class="launcher-item" onclick="launchView('web-browser')"><span class="li-icon">🌐</span><span class="li-label">浏览器</span></div>
+  <!-- v0.59：微信 — 通过「本地应用壳」加载真·微信网页版（绕过 X-Frame / CSP） -->
+  <div class="launcher-item" onclick="launchWeChat()" title="打开微信网页版"><span class="li-icon" aria-hidden="true">🟢</span><span class="li-label">微信</span></div>
+  <div class="launcher-item" onclick="openTerminal()"><span class="li-icon">💻</span><span class="li-label">终端</span></div>
+  <!-- v0.61：辅助工具 hover 子菜单（生图/音乐/搜索/文档/邮件/视频） -->
+  <div class="launcher-item launcher-has-submenu" id="launcher-tools" onmouseenter="onToolLauncherHover()" onmouseleave="onToolLauncherLeave()">
+    <span class="li-icon">🛠️</span><span class="li-label">辅助工具</span><span class="li-arrow">▸</span>
+    <div class="launcher-submenu" id="launcher-tools-submenu">
+      <div class="launcher-item" onclick="launchAssistTool('generate_image','生图')"><span class="li-icon">🎨</span><span class="li-label">生图</span></div>
+      <div class="launcher-item" onclick="launchAssistTool('play_music','音乐')"><span class="li-icon">🎵</span><span class="li-label">音乐</span></div>
+      <div class="launcher-item" onclick="launchAssistTool('web_search','搜索')"><span class="li-icon">🔍</span><span class="li-label">搜索</span></div>
+      <div class="launcher-item" onclick="launchAssistTool('web_research','调研')"><span class="li-icon">📊</span><span class="li-label">调研</span></div>
+      <div class="launcher-item" onclick="launchAssistTool('document_gen','文档')"><span class="li-icon">📄</span><span class="li-label">文档</span></div>
+      <div class="launcher-item" onclick="launchAssistTool('send_email','邮件')"><span class="li-icon">📧</span><span class="li-label">邮件</span></div>
+      <div class="launcher-item" onclick="launchAssistTool('play_video','视频')"><span class="li-icon">🎬</span><span class="li-label">视频</span></div>
     </div>
   </div>
   <div class="divider"></div>
@@ -629,7 +644,9 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/wallpaper-settings.js?v=0.56"></script>
 <script src="/client/js/views/desktop-icons.js"></script>
 <script src="/client/js/views/file-browser.js?v=0.56"></script>
-<script src="/client/js/views/web-browser.js?v=0.56"></script>
+<script src="/client/js/views/web-browser.js?v=0.61"></script>
+<!-- v0.59: native-app — Puppeteer CDP screencast 流推送窗口（微信等被 X-Frame 限的网页套壳） -->
+<script src="/client/js/views/native-app-window.js?v=0.59.1"></script>
 <!-- xterm.js — 终端窗口依赖 -->
 <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
 <!-- FitAddon 已内联到 terminal.js，不再需要 CDN -->
@@ -922,7 +939,24 @@ document.addEventListener('DOMContentLoaded', () => {
       return Promise.resolve(openTask(taskId, w.$c));
     }
   });
+
+  // v0.61 辅助工具浮动窗口 — 在 IIFE 内 PKG 注册（与 16 个已有包一致，不存在时序问题）
+  PKG('assist-free', {
+    title: '辅助工具', icon: '🛠️', category: '协作', defaultSize: { w: 460, h: 500 },
+    loader: function(w, opts) {
+      return Promise.resolve(
+        typeof window.loadAssistFreeView === 'function'
+          ? window.loadAssistFreeView(w.$c, opts)
+          : (w.$c.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text2)">⏳ 加载中...</div>')
+      );
+    }
+  });
 })();
 </script>
+
+<!-- v0.61 统一卡片渲染器（小吉面板 + assist-launcher 共用）-->
+<script src="/client/js/core/card-renderer.js?v=0.61"></script>
+<!-- v0.61 辅助工具浮动窗口（启动菜单 + 命令面板入口）-->
+<script src="/client/js/core/assist-launcher.js?v=0.61"></script>
 </body>
 </html>

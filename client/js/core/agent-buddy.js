@@ -142,6 +142,14 @@
     } catch(e) { return '伙伴'; }
   }
 
+  // v0.61: 获取认证头（优先用 JWT token，fallback 到 API Key）
+  function getAuthHeaders() {
+    var token = null;
+    try { token = localStorage.getItem('acms-token'); } catch(e) {}
+    if (token) return { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' };
+    return { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' };
+  }
+
   function getState(score) {
     for (var i = 0; i < STATES.length; i++) {
       if (score <= STATES[i].maxScore) return STATES[i];
@@ -151,6 +159,36 @@
 
   function clamp(v, min, max) {
     return v < min ? min : v > max ? max : v;
+  }
+
+  // ── L2 全局操作解析（v0.61，零侵入，捕获阶段自动钩）──
+
+  var _lastActionTimes = {};
+
+  function getSemanticAction(el) {
+    if (!el || !el.tagName) return null;
+    // 1. data-action / data-act 属性（语义最明确）
+    var da = el.getAttribute('data-action') || el.getAttribute('data-act');
+    if (da) return 'act:' + da;
+    // 2. onclick 属性中的函数名
+    var onclick = el.getAttribute('onclick');
+    if (onclick) {
+      var m = onclick.match(/(\w+)\s*\(/);
+      if (m) return 'click:' + m[1];
+    }
+    // 3. class 推断（常见 ACMS 组件）
+    var cls = typeof el.className === 'string' ? el.className : '';
+    if (cls.includes('req-card') || cls.includes('task-card')) return 'click:card';
+    if (cls.includes('launcher-item')) return 'click:launcher';
+    if (cls.includes('tray-item') || cls.includes('tb-')) return 'click:taskbar';
+    if (cls.includes('aw-') && cls.includes('control')) return 'click:window-btn';
+    // 4. 有文本的按钮（兜底）
+    if (el.tagName === 'BUTTON' || el.tagName === 'A') {
+      var text = (el.textContent || '').trim().slice(0, 24);
+      if (!text || /^[🔢.…●]{1,3}$/.test(text)) return null;
+      return 'btn:' + text;
+    }
+    return null;
   }
 
   // ── L4：计分引擎 ──
@@ -307,6 +345,19 @@
 
     // 重复操作检测：3 次相同操作在 5 分钟内
     checkRepeat(actionName);
+
+    // v0.61: L2 动作上报 — fire-and-forget 到后端，让小吉跨会话知道用户行为
+    _reportAction(actionName);
+  }
+
+  function _reportAction(actionName) {
+    if (!actionName) return;
+    var view = _currentView || 'unknown';
+    fetch('/api/agent-buddy/context', {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ view: view, action: actionName, ts: Date.now() }),
+    }).catch(function() { /* fire-and-forget，不阻塞 */ });
   }
 
   function checkRepeat(actionName) {
@@ -456,11 +507,11 @@
 
     var oldPersonality = _userMemory.personality || '还没有了解';
 
-    fetch('/api/agent-buddy/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
-      body: JSON.stringify({
-        message: '__personality__',
+      fetch('/api/agent-buddy/chat', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          message: '__personality__',
         context: {
           oldPersonality: oldPersonality,
           history: historyText.slice(0, 1000),
@@ -536,7 +587,7 @@
     // 调后端
     fetch('/api/agent-buddy/chat', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+        headers: getAuthHeaders(),
       body: JSON.stringify({ message: text, context: context }),
     })
     .then(function(r) { return r.json(); })
@@ -697,7 +748,112 @@
     return _avatarEl;
   }
 
-  // ── 问候系统（记忆驱动）──
+  // ── v0.61：诞生仪式（首次登录）──
+
+  function runBirthRitual() {
+    _userMemory.birthdayDone = true;
+    saveMemory();
+    addScore('login-greeting');
+
+    // 任务栏头像 bounce-in 动画（800ms）
+    if (_avatarEl) {
+      _avatarEl.classList.remove('ab-face-transition');
+      _avatarEl.classList.add('ab-birthday');
+    }
+    setFace('excited');
+
+    setTimeout(function() {
+      openPanel({ message: '……' });
+
+      // 表情过渡序列（500ms = 5×100ms）
+      var faces = ['thinking', 'awkward', 'surprised', 'excited', 'happy'];
+      var transitionEl = function(face, idx) {
+        setTimeout(function() {
+          setFace(face);
+          // 每次切换加过渡动画 class
+          if (_avatarEl) {
+            _avatarEl.classList.remove('ab-face-transition');
+            _avatarEl.offsetHeight; // force reflow
+            _avatarEl.classList.add('ab-face-transition');
+          }
+          if (idx === faces.length - 1) {
+            // 最后清除过渡 class
+            setTimeout(function() {
+              if (_avatarEl) _avatarEl.classList.remove('ab-birthday', 'ab-face-transition');
+            }, 200);
+          }
+        }, idx * 100);
+      };
+      for (var i = 0; i < faces.length; i++) {
+        transitionEl(faces[i], i);
+      }
+
+      // 过渡结束后调用正常问候 API（在最后 face 后延迟 500ms）
+      setTimeout(function() {
+        if (_panelOpen) doGreetingAPI();
+      }, faces.length * 100 + 500);
+
+    }, 800);
+  }
+
+  function setFaceWithTransition(faceType) {
+    // 与 setFace 等价但确保过渡动画被触发
+    var entry = FACES[faceType];
+    if (!entry) return;
+    _currentFace = entry.face;
+    if (_avatarEl) {
+      _avatarEl.textContent = _currentFace;
+    }
+    var headerAvatar = document.querySelector('.ap-avatar');
+    if (headerAvatar) headerAvatar.textContent = _currentFace;
+  }
+
+  // 抽离通用问候 API 调用（诞生日 + 正常登录共用）
+  function doGreetingAPI() {
+    var context = {
+      greeting: true,
+      userName: getBuddyUserName(),
+      loginCount: _userMemory.loginCount || 0,
+      totalQuestions: _userMemory.totalQuestions || 0,
+      knownViews: (_userMemory.knownViews || []).slice(-8),
+      lastView: _userMemory.lastView || '',
+      packages: _knownPackages.map(function(p) { return p.name + '(' + p.title + ')'; }),
+      history: (_userMemory.chatMemory || []).slice(-4),
+      personality: _userMemory.personality || undefined,
+    };
+
+    fetch('/api/agent-buddy/chat', {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ message: '__greeting__', context: context }),
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var raw = data && data.reply ? data.reply : '欢迎回来～';
+      var faceMatch = raw.match(/【face:(\w+)】/);
+      if (faceMatch) setFace(faceMatch[1]);
+      var reply = raw.replace(/【[^】]+】/g, '').trim();
+      var container = document.querySelector('#ap-messages');
+      if (container) container.innerHTML = '';
+      renderMessage(reply);
+    })
+    .catch(function() {
+      var container = document.querySelector('#ap-messages');
+      if (container) container.innerHTML = '';
+      renderMessage(getBuddyUserName() + ' 欢迎回来～');
+    });
+
+    // 5 秒超时兜底
+    setTimeout(function() {
+      var msgs = document.querySelector('#ap-messages');
+      if (msgs && msgs.children.length === 1 && msgs.children[0].textContent.trim() === '……') {
+        msgs.innerHTML = '';
+        renderMessage('欢迎回来～有什么需要帮忙的吗？');
+      }
+    }, 5000);
+  }
+
+  // ── 问候系统（记忆驱动 + 首次诞生仪式）──
 
   function checkGreeting() {
     var userData = null;
@@ -712,54 +868,21 @@
     saveMemory();
 
     _greetingDone = true;
+
+    // v0.61: 首次登录 → 诞生仪式
+    //   birthdayDone 防止 localStorage 清空后重复触发（清除后重新触发可接受）
+    if (_userMemory.loginCount === 1 && !_userMemory.birthdayDone) {
+      runBirthRitual();
+      return;
+    }
+
     addScore('login-greeting');
 
-    // 让大模型根据记忆生成问候
+    // 正常问候（v0.59 保持）
     setTimeout(function() {
       setFace('happy');
       openPanel({ message: '……' });
-
-      var context = {
-        greeting: true,
-        userName: name,
-        loginCount: _userMemory.loginCount || 0,
-        totalQuestions: _userMemory.totalQuestions || 0,
-        knownViews: (_userMemory.knownViews || []).slice(-8),
-        lastView: _userMemory.lastView || '',
-        packages: _knownPackages.map(function(p) { return p.name + '(' + p.title + ')'; }),
-        history: (_userMemory.chatMemory || []).slice(-4),
-        personality: _userMemory.personality || undefined,
-      };
-
-      fetch('/api/agent-buddy/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
-        body: JSON.stringify({ message: '__greeting__', context: context }),
-      })
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        var raw = data && data.reply ? data.reply : '欢迎回来～';
-        var faceMatch = raw.match(/【face:(\w+)】/);
-        if (faceMatch) setFace(faceMatch[1]);
-        var reply = raw.replace(/【[^】]+】/g, '').trim();
-        var container = document.querySelector('#ap-messages');
-        if (container) container.innerHTML = '';
-        renderMessage(reply);
-      })
-      .catch(function() {
-        var container = document.querySelector('#ap-messages');
-        if (container) container.innerHTML = '';
-        renderMessage(name + ' 欢迎回来～');
-      });
-
-    // 5 秒超时兜底：如果 API 没回来，显示默认问候
-    setTimeout(function() {
-      var msgs = document.querySelector('#ap-messages');
-      if (msgs && msgs.children.length === 1 && msgs.children[0].textContent.trim() === '……') {
-        msgs.innerHTML = '';
-        renderMessage('欢迎回来～有什么需要帮忙的吗？');
-      }
-    }, 5000);
+      doGreetingAPI();
     }, 800);
   }
 
@@ -794,6 +917,11 @@
       addScore('error-spike');
     }
     addScore('toast-fire');
+
+    // v0.61: toast 作为操作记录的补充源（关键操作完成后必有 toast）
+    if (msg && type) {
+      recordAction('toast:' + type + ':' + (msg.slice(0, 30) || ''));
+    }
   }
 
   // ── 初始化 ──
@@ -850,6 +978,20 @@
     setTimeout(function() {
       startProactive();
     }, 5000);
+
+    // v0.61: 全局 click 捕获监听（AOP 零侵入——所有操作自动记录）
+    //   捕获阶段执行，在视图自己的 handler 之前被拦截
+    //   同一操作 5 秒节流，避免重复记录
+    setTimeout(function() {
+      document.addEventListener('click', function(e) {
+        var action = getSemanticAction(e.target);
+        if (!action) return;
+        var now = Date.now();
+        if (_lastActionTimes[action] && (now - _lastActionTimes[action]) < 5000) return;
+        _lastActionTimes[action] = now;
+        recordAction(action);
+      }, true);
+    }, 2000); // 等 UI 稳定后再挂监听
   }
 
   // ── 暴露 API ──

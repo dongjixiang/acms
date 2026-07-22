@@ -31,5 +31,9 @@ require('./agent/ssh');
 require('./agent/http');
 require('./agent/screenshot');
 
+// v0.61 Agent Buddy「小吉」专用：ACMS 内部操作（建需求/审批/看板/统计/...）
+//   让 LLM 驱动的对话能直接 CRUD ACMS 内部资源，权限通过 ctx.user 校验
+require('./acms-internal');
+
 console.log('[tools] 内建工具注册完成:', listBuiltinTools().join(', '));
 function listBuiltinTools() { return require('../services/tool-registry').listTools().map(t => t.name); }

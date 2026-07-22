@@ -120,12 +120,14 @@ function safeParseJSON(str, fallback) {
 
 /**
  * v0.14：执行工具 handler（便利 wrapper）
+ * v0.61: 新增 ctx 参数透传给 handler，让 tool handler 能拿到 userId/username/role/reqId 等上下文
  * @param {string} name - 工具名
  * @param {object} args - 工具参数
+ * @param {object} ctx - 透传上下文（userId/username/role/reqId/taskId/...）
  * @returns {Promise<object>} 工具返回结果
  * @throws {Error} 工具不存在时
  */
-async function execute(name, args) {
+async function execute(name, args, ctx = {}) {
   const tool = getTool(name);
   if (!tool) {
     throw new Error(`未知工具: ${name}`);
@@ -133,7 +135,7 @@ async function execute(name, args) {
   if (typeof tool.handler !== 'function') {
     throw new Error(`工具 ${name} 没有 handler`);
   }
-  return await tool.handler(args || {});
+  return await tool.handler(args || {}, ctx || {});
 }
 
 module.exports = { registerTool, getTool, listTools, toProviderFormat, extractToolCalls, makeToolResult, execute };

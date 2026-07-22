@@ -5285,3 +5285,28 @@ body { padding-bottom: 40px; }
   color: var(--text2, #666);
 }
 
+
+
+/* v0.61 Agent Buddy「小吉」诞生仪式动画 */
+@keyframes avatar-bounce-in {
+  0%   { transform: scale(0.3) rotate(-8deg); opacity: 0; }
+  55%  { transform: scale(1.2) rotate(2deg); opacity: 1; }
+  85%  { transform: scale(0.9) rotate(-1deg); }
+  100% { transform: scale(1) rotate(0deg); opacity: 1; }
+}
+@keyframes avatar-transition {
+  0%   { transform: scale(1); opacity: 1; }
+  40%  { transform: scale(0.85); opacity: 0.7; }
+  100% { transform: scale(1); opacity: 1; }
+}
+.ab-birthday {
+  animation: avatar-bounce-in 0.8s cubic-bezier(0.68, -0.55, 0.27, 1.55) forwards;
+}
+.ab-face-transition {
+  animation: avatar-transition 0.12s ease-in-out forwards;
+}
+.ab-highlight {
+  outline: 3px solid var(--accent3, #ffd93d);
+  outline-offset: 2px;
+  animation: fc-breathe 0.5s ease-in-out 3;
+}

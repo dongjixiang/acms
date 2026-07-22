@@ -18,6 +18,8 @@ const KNOWN_COLLECTIONS = [
   'users',
   // v0.55 自由对话多窗口：会话 + 消息历史（独立 collection，软删/回收站）
   'chat_sessions', 'chat_messages',
+  // v0.61 Agent Buddy「小吉」后端记忆（替代 localStorage，跨设备持久化）
+  'buddy_memory',
 ];
 
 // === 初始化 ===
