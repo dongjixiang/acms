@@ -676,4 +676,175 @@ registerTool({
   }
 });
 
-console.log('[tools/acms-internal] 注册完成:', '24 个 ACMS 内部操作工具（查询 12 + 写 8 + 系统 2 + meta 2）');
+// ════════════════════════════════════════════════════════════
+// v0.62 新增：管家通用查询 tool（query_collection）
+// 设计目标：从「菜单制」→「管家制」——任何数据问题都能直接查
+// C2 enrich：自动附 total（全集数）+ recent_7d（7 天新增）+ returned_count
+// 安全：白名单 + 敏感字段黑名单强制脱敏（即使 LLM 显式要 password 也剥）
+// ════════════════════════════════════════════════════════════
+
+// 管家可读 collection 白名单（业务数据；高敏感系统内部集合明确排除）
+const READABLE_COLLECTIONS = [
+  'projects', 'project_members', 'project_environments',
+  'requirements', 'clarification_threads',
+  'tasks', 'agents', 'events',
+  'users', 'webhooks', 'knowledge_files', 'requirement_knowledge',
+  'llm_models', 'skills', 'generators'
+];
+
+// 敏感字段黑名单（无论 LLM 是否指定 fields，强制脱敏）
+const SENSITIVE_FIELDS = new Set([
+  'password', 'passwd', 'pwd', 'pass',
+  'token', 'access_token', 'refresh_token', 'session_token',
+  'apiKey', 'api_key', 'apiKeyHash', 'api_key_hash',
+  'secret', 'client_secret', 'webhook_secret',
+  'authorization', 'private_key', 'credentials'
+]);
+
+function stripSensitiveFields(doc) {
+  if (!doc || typeof doc !== 'object') return doc;
+  const cleaned = {};
+  for (const [k, v] of Object.entries(doc)) {
+    if (SENSITIVE_FIELDS.has(k)) {
+      cleaned[k] = '[已脱敏]';
+    } else if (v && typeof v === 'object' && !Array.isArray(v)) {
+      cleaned[k] = stripSensitiveFields(v);
+    } else {
+      cleaned[k] = v;
+    }
+  }
+  return cleaned;
+}
+
+function applyWhereFilter(rows, where) {
+  if (!where || typeof where !== 'object' || Object.keys(where).length === 0) return rows;
+  return rows.filter(row => {
+    for (const [field, expected] of Object.entries(where)) {
+      if (row[field] !== expected) return false;
+    }
+    return true;
+  });
+}
+
+function applyOrderBy(rows, orderBy) {
+  if (!orderBy || typeof orderBy !== 'string') return rows;
+  const desc = orderBy.startsWith('-');
+  const field = desc ? orderBy.slice(1) : orderBy;
+  return [...rows].sort((a, b) => {
+    const av = a[field], bv = b[field];
+    if (av === bv) return 0;
+    if (av === undefined || av === null) return 1;
+    if (bv === undefined || bv === null) return -1;
+    return desc ? (av < bv ? 1 : -1) : (av < bv ? -1 : 1);
+  });
+}
+
+function pickFields(rows, fields) {
+  if (!Array.isArray(fields) || fields.length === 0) return rows;
+  return rows.map(row => {
+    const picked = {};
+    for (const f of fields) {
+      if (f in row) picked[f] = row[f];
+    }
+    return picked;
+  });
+}
+
+// C2 enrich：自动附 total + recent_7d
+function enrichCollectionSummary(collName) {
+  const result = {};
+  try {
+    const { collection } = require('../db/connection');
+    const all = collection(collName).all();
+    result.total = all.length;
+    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    result.recent_7d = all.filter(d => {
+      const ts = d.created_at || d.createdAt || d.ts || d.created || d.updated_at;
+      if (!ts) return false;
+      const t = new Date(ts).getTime();
+      return !isNaN(t) && t >= sevenDaysAgo;
+    }).length;
+  } catch (e) {
+    result.total = -1;
+    result.recent_7d = -1;
+  }
+  return result;
+}
+
+registerTool({
+  name: 'query_collection',
+  description: '【管家通用查询·L0 常驻】查 ACMS 任意业务 collection 的数据。回答"X 有多少""Y 的列表""Z 的状态"等管家问题时**优先用这个**。返回会自动附 total（集合总数）+ recent_7d（7 天内新增）+ returned_count（本批返回）。',
+  parameters: {
+    type: 'object',
+    properties: {
+      collection: {
+        type: 'string',
+        description: 'collection 名。可读：projects / project_members / project_environments / requirements / clarification_threads / tasks / agents / events / users / webhooks / knowledge_files / requirement_knowledge / llm_models / skills / generators'
+      },
+      where: {
+        type: 'object',
+        description: '字段过滤（AND 多条件），例：{"system_project": false, "status": "active"}。空对象=查全部。',
+        default: {}
+      },
+      fields: {
+        type: 'array',
+        description: '要返回的字段名列表，例：["id","name"]。空=全部（敏感字段已自动脱敏）。',
+        default: []
+      },
+      limit: {
+        type: 'number',
+        description: '最多返回几条，默认 20，最大 100。',
+        default: 20
+      },
+      order_by: {
+        type: 'string',
+        description: '排序字段，- 前缀表降序。例：-created_at（最新在前）。',
+        default: '-created_at'
+      }
+    },
+    required: ['collection']
+  },
+  async handler(args, ctx) {
+    try {
+      // 1. 白名单校验
+      if (!READABLE_COLLECTIONS.includes(args.collection)) {
+        return {
+          ok: false,
+          error: 'COLLECTION_NOT_READABLE',
+          message: `"${args.collection}" 不在管家可读列表（高敏感内部集合禁止）。可读：${READABLE_COLLECTIONS.join(', ')}`,
+          readableCollections: READABLE_COLLECTIONS
+        };
+      }
+
+      // 2. 查数据 + 过滤/排序/字段裁剪
+      const { collection } = require('../db/connection');
+      const allRows = collection(args.collection).all();
+      let rows = applyWhereFilter(allRows, args.where || {});
+      rows = applyOrderBy(rows, args.order_by);
+      rows = pickFields(rows, args.fields);
+
+      const limit = Math.min(Math.max(args.limit || 20, 1), 100);
+      const sliced = rows.slice(0, limit);
+
+      // 3. 敏感字段脱敏（即便 LLM 显式要 password 也强制剥）
+      const sanitized = sliced.map(stripSensitiveFields);
+
+      // 4. C2 enrich
+      const enrich = enrichCollectionSummary(args.collection);
+
+      return {
+        ok: true,
+        collection: args.collection,
+        data: sanitized,
+        returned_count: sanitized.length,
+        total: enrich.total,
+        recent_7d: enrich.recent_7d,
+        summary: `${args.collection}：共 ${enrich.total} 条，本批返回 ${sanitized.length} 条，7 天内新增 ${enrich.recent_7d} 条`
+      };
+    } catch (e) {
+      return { ok: false, error: 'INTERNAL', message: e.message };
+    }
+  }
+});
+
+console.log('[tools/acms-internal] 注册完成:', '25 个 ACMS 内部操作工具（查询 12 + 写 8 + 系统 2 + meta 2 + 管家通用 1）');

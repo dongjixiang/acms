@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Drag/Resize Test</title>
+</head>
+<body>
+<script>
+async function test() {
+  // Wait a bit for ACMS to fully load
+  await new Promise(r => setTimeout(r, 1000));
+  const panel = document.getElementById('agent-panel');
+  if (!panel) { document.body.innerText = 'NO_PANEL'; return; }
+  const rect = panel.getBoundingClientRect();
+  const handles = panel.querySelectorAll('.ap-rz').length;
+  const headerCursor = getComputedStyle(panel.querySelector('.ap-header')).cursor;
+  const stored = localStorage.getItem('acms-agent-panel-state');
+  const result = {
+    exists: true,
+    visible: panel.classList.contains('open'),
+    display: panel.style.display,
+    rect: { x: Math.round(rect.left), y: Math.round(rect.top), w: Math.round(rect.width), h: Math.round(rect.height) },
+    resizeHandlesCount: handles,
+    headerCursor,
+    classNames: panel.className,
+    localStorageState: stored
+  };
+  document.body.innerText = JSON.stringify(result, null, 2);
+}
+test();
+</script>
+</body>
+</html>

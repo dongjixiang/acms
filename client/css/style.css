@@ -3515,7 +3515,7 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
 .project-dropdown {
   display: none;
   position: absolute;
-  left: 0; top: calc(100% + 4px);
+  left: 0; top: auto; bottom: calc(100% + 4px);
   min-width: 230px;
   background: var(--bg2);
   border: 1px solid var(--border);
@@ -3719,6 +3719,8 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
   bottom: 48px;
   right: 60px;
   width: 240px;
+  min-width: 200px;
+  min-height: 280px;
   background: var(--bg2, #1a1a2e);
   border: 1px solid var(--border, rgba(78,205,196,0.2));
   border-radius: 12px;
@@ -3736,14 +3738,45 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
   transform: translateY(0);
 }
 
-/* Header */
+/* v0.62: 拖拽中状态 */
+.agent-panel.dragging {
+  opacity: 0.92;
+  transition: none !important;
+}
+.agent-panel.dragging * { cursor: grabbing !important; }
+
+/* v0.62: 缩放中禁用过渡防抖动 */
+.agent-panel.resizing { transition: none !important; }
+
+/* v0.62: 8 向 resize handles（始终半透明，hover 时高亮）*/
+.ap-rz {
+  position: absolute;
+  z-index: 2;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+.agent-panel:hover .ap-rz { background: rgba(78,205,196,0.35); }
+.ap-rz-n  { top: 0;    left: 10px;  right: 10px;  height: 4px;  cursor: ns-resize; }
+.ap-rz-s  { bottom: 0; left: 10px;  right: 10px;  height: 4px;  cursor: ns-resize; }
+.ap-rz-e  { right: 0;  top: 10px;   bottom: 10px; width: 4px;   cursor: ew-resize; }
+.ap-rz-w  { left: 0;   top: 10px;   bottom: 10px; width: 4px;   cursor: ew-resize; }
+.ap-rz-ne { top: 0;    right: 0;    width: 10px;  height: 10px; cursor: nesw-resize; }
+.ap-rz-nw { top: 0;    left: 0;     width: 10px;  height: 10px; cursor: nwse-resize; }
+.ap-rz-se { bottom: 0; right: 0;    width: 10px;  height: 10px; cursor: nwse-resize; }
+.ap-rz-sw { bottom: 0; left: 0;     width: 10px;  height: 10px; cursor: nwse-resize; }
+
+/* Header — v0.62 拖拽手柄（小吉专属，不复用 ACMSWin）*/
 .ap-header {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border, rgba(78,205,196,0.15));
+  cursor: move;
+  user-select: none;
 }
+.ap-header:active { cursor: grabbing; }
+.ap-close { cursor: pointer; } /* 关闭按钮单独覆盖拖拽光标 */
 .ap-avatar {
   font-size: 20px;
 }
@@ -4111,7 +4144,7 @@ body { padding-bottom: 40px; }
   overflow: auto;
   padding: 0;
 }
-.aw-content::-webkit-scrollbar { width: 4px; }
+.aw-content::-webkit-scrollbar { width: 10px; height: 10px; }
 .aw-content::-webkit-scrollbar-track { background: transparent; }
 .aw-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 
@@ -4122,7 +4155,7 @@ body { padding-bottom: 40px; }
 }
 .aw-rz[data-d="n"] { top: 0; left: 10px; right: 10px; height: 8px; cursor: n-resize; }
 .aw-rz[data-d="s"] { bottom: 0; left: 10px; right: 10px; height: 8px; cursor: s-resize; }
-.aw-rz[data-d="e"] { right: 0; top: 10px; bottom: 10px; width: 8px; cursor: e-resize; }
+.aw-rz[data-d="e"] { right: -3px; top: 14px; bottom: 14px; width: 5px; cursor: e-resize; }
 .aw-rz[data-d="w"] { left: 0; top: 10px; bottom: 10px; width: 8px; cursor: w-resize; }
 .aw-rz[data-d="ne"] { top: 0; right: 0; width: 14px; height: 14px; cursor: ne-resize; }
 .aw-rz[data-d="nw"] { top: 0; left: 0; width: 14px; height: 14px; cursor: nw-resize; }

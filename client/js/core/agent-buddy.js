@@ -440,6 +440,9 @@
       }
     });
 
+    // v0.62: 小吉专属拖拽 + 8 向缩放（不接 ACMSWin，独一无二的小吉窗口）
+    _initPanelDragAndResize(_panelEl);
+
     return _panelEl;
   }
 
@@ -451,6 +454,129 @@
     div.innerHTML = '<span class="ap-msg-text">' + escHtml(text) + '</span>';
     container.appendChild(div);
     container.scrollTop = container.scrollHeight;
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // v0.62: 小吉专属拖拽 + 8 向缩放（不接 ACMSWin，独一无二的小吉窗口）
+  // 设计动机：ACMSWin 是「标准窗口」，小吉是「独一无二」的浮层面板
+  //          → 不共用窗口系统，自己实现一套简洁的 drag/resize
+  // 持久化：localStorage acms-agent-panel-state = {x, y, w, h}
+  // ════════════════════════════════════════════════════════════
+
+  var PANEL_STATE_KEY = 'acms-agent-panel-state';
+  var PANEL_MIN_W = 200;
+  var PANEL_MIN_H = 280;
+
+  function _loadPanelState() {
+    try {
+      var raw = localStorage.getItem(PANEL_STATE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
+
+  function _savePanelState(panelEl) {
+    try {
+      var rect = panelEl.getBoundingClientRect();
+      localStorage.setItem(PANEL_STATE_KEY, JSON.stringify({
+        x: Math.round(rect.left),
+        y: Math.round(rect.top),
+        w: Math.round(rect.width),
+        h: Math.round(rect.height)
+      }));
+    } catch (e) { /* silent */ }
+  }
+
+  function _applyPanelSavedState(panelEl) {
+    var s = _loadPanelState();
+    if (!s) return;
+    // 首次恢复：把初始的 right/bottom 定位转成 top/left
+    panelEl.style.right = 'auto';
+    panelEl.style.bottom = 'auto';
+    panelEl.style.left = s.x + 'px';
+    panelEl.style.top = s.y + 'px';
+    if (s.w) panelEl.style.width = s.w + 'px';
+    if (s.h) panelEl.style.height = s.h + 'px';
+  }
+
+  function _injectResizeHandles(panelEl) {
+    ['n','s','e','w','ne','nw','se','sw'].forEach(function(d) {
+      var h = document.createElement('div');
+      h.className = 'ap-rz ap-rz-' + d;
+      h.dataset.d = d;
+      panelEl.appendChild(h);
+    });
+  }
+
+  function _initPanelDragAndResize(panelEl) {
+    _injectResizeHandles(panelEl);
+
+    // ── 拖拽：header mousedown ──
+    var header = panelEl.querySelector('.ap-header');
+    if (header) {
+      header.addEventListener('mousedown', function(e) {
+        if (e.target.closest('.ap-close')) return; // 关闭按钮不触发拖拽
+        e.preventDefault();
+        // 首次拖拽：把 right/bottom 默认定位转成 top/left
+        if (panelEl.style.right !== 'auto') {
+          var r0 = panelEl.getBoundingClientRect();
+          panelEl.style.right = 'auto';
+          panelEl.style.bottom = 'auto';
+          panelEl.style.left = r0.left + 'px';
+          panelEl.style.top = r0.top + 'px';
+        }
+        var r = panelEl.getBoundingClientRect();
+        var dx = e.clientX - r.left;
+        var dy = e.clientY - r.top;
+        panelEl.classList.add('dragging');
+        function mv(ev) {
+          var x = Math.max(0, Math.min(window.innerWidth - 40, ev.clientX - dx));
+          var y = Math.max(0, Math.min(window.innerHeight - 30, ev.clientY - dy));
+          panelEl.style.left = x + 'px';
+          panelEl.style.top = y + 'px';
+        }
+        function up() {
+          document.removeEventListener('mousemove', mv);
+          document.removeEventListener('mouseup', up);
+          panelEl.classList.remove('dragging');
+          _savePanelState(panelEl);
+        }
+        document.addEventListener('mousemove', mv);
+        document.addEventListener('mouseup', up);
+      });
+    }
+
+    // ── 8 向缩放：.ap-rz mousedown ──
+    panelEl.querySelectorAll('.ap-rz').forEach(function(h) {
+      h.addEventListener('mousedown', function(e) {
+        e.stopPropagation();
+        e.preventDefault();
+        var dir = h.dataset.d;
+        var r = panelEl.getBoundingClientRect();
+        var sx = e.clientX, sy = e.clientY;
+        var sw = r.width, sh = r.height, sl = r.left, st = r.top;
+        panelEl.classList.add('resizing');
+        function mv(ev) {
+          var dx = ev.clientX - sx, dy = ev.clientY - sy;
+          var nw = sw, nh = sh, nl = sl, nt = st;
+          if (dir.indexOf('e') !== -1) nw = Math.max(PANEL_MIN_W, sw + dx);
+          if (dir.indexOf('s') !== -1) nh = Math.max(PANEL_MIN_H, sh + dy);
+          if (dir.indexOf('w') !== -1) { nw = Math.max(PANEL_MIN_W, sw - dx); nl = sl + (sw - nw); }
+          if (dir.indexOf('n') !== -1) { nh = Math.max(PANEL_MIN_H, sh - dy); nt = st + (sh - nh); }
+          panelEl.style.width = nw + 'px';
+          panelEl.style.height = nh + 'px';
+          panelEl.style.left = nl + 'px';
+          panelEl.style.top = nt + 'px';
+        }
+        function up() {
+          document.removeEventListener('mousemove', mv);
+          document.removeEventListener('mouseup', up);
+          panelEl.classList.remove('resizing');
+          _savePanelState(panelEl);
+        }
+        document.addEventListener('mousemove', mv);
+        document.addEventListener('mouseup', up);
+      });
+    });
   }
 
   function renderUserMessage(text) {
@@ -651,6 +777,8 @@
     renderScoreBar();
 
     panel.style.display = 'block';
+    // v0.62: 恢复上次拖拽/缩放保存的位置（display:block 后才能正确 getBoundingClientRect）
+    _applyPanelSavedState(panel);
     // 强迫回流后加 open class 触发过渡
     panel.offsetHeight;
     panel.classList.add('open');

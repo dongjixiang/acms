@@ -91,6 +91,27 @@ function extractJSON(content) {
   return m ? m[0] : null;
 }
 
+function isExplicitCreateConfirmation(conversationHistory) {
+  const history = Array.isArray(conversationHistory) ? conversationHistory : [];
+  if (history.length < 2) return false;
+
+  const last = history[history.length - 1];
+  const previous = history[history.length - 2];
+  const answer = last && last.role === 'user' ? String(last.content || '') : '';
+  const previousContent = previous && previous.content;
+  const previousChoices = previousContent && typeof previousContent === 'object'
+    ? previousContent.choices
+    : [];
+  const askedToCreate = Array.isArray(previousChoices) && previousChoices.some(choice => {
+    const question = String((choice && choice.question) || '');
+    return /创建.*缺陷|缺陷.*创建/.test(question);
+  });
+
+  if (!askedToCreate) return false;
+  if (/再等|先排查|不想创建|不要创建|否[，, ]/.test(answer)) return false;
+  return /是[，, ]*帮我创建|确认创建|直接创建|创建缺陷单/.test(answer);
+}
+
 /**
  * AI 澄清缺陷
  */
@@ -111,6 +132,12 @@ async function clarifyBug(projectId, bugDescription, modelId, userMessage, conve
 
   if (userMessage) {
     messages.push({ role: 'user', content: userMessage });
+    if (isExplicitCreateConfirmation(messages.slice(2))) {
+      messages.push({
+        role: 'system',
+        content: '用户已明确确认创建缺陷单。不要继续提问，不要再返回确认 choices。请基于已有事实补齐 analysis，并返回 readyToCreate=true。',
+      });
+    }
   } else if (!conversationHistory || conversationHistory.length === 0) {
     messages.push({ role: 'user', content: `请分析以下缺陷报告:\n\n${bugDescription}\n\n请用选择题帮助我澄清细节。` });
   }
@@ -258,11 +285,16 @@ function createBugTask(projectId, analysis, linkedRequirement, linkedTask, sourc
  * @returns {object} { phase, message, choices, analysis, task, linkedRequirement, linkedTask, readyToCreate }
  */
 async function processBugReport(projectId, bugDescription, modelId, userMessage, conversationHistory) {
+  const explicitCreate = isExplicitCreateConfirmation([
+    ...(Array.isArray(conversationHistory) ? conversationHistory : []),
+    ...(userMessage ? [{ role: 'user', content: userMessage }] : []),
+  ]);
+
   // Step 1: AI 澄清
   const clarifyResult = await clarifyBug(projectId, bugDescription, modelId, userMessage, conversationHistory);
 
-  // Step 2: 如果 AI 认为可以创建任务了，自动关联并创建
-  if (clarifyResult.readyToCreate && clarifyResult.analysis) {
+  // Step 2: AI 已准备好，或用户已明确确认创建：自动关联并创建
+  if ((clarifyResult.readyToCreate || explicitCreate) && clarifyResult.analysis) {
     const { linkedRequirement, linkedTask } = findLinkedEntities(projectId, {
       linked_requirement_title: clarifyResult.linkedRequirementTitle,
       linked_task_title: clarifyResult.linkedTaskTitle,
@@ -355,4 +387,4 @@ function listBugs(projectId, status) {
   return enhanced;
 }
 
-module.exports = { processBugReport, createBugDirect, listBugs, BUG_CLARIFY_SYSTEM_PROMPT };
+module.exports = { processBugReport, createBugDirect, listBugs, isExplicitCreateConfirmation, BUG_CLARIFY_SYSTEM_PROMPT };
