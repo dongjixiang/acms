@@ -744,7 +744,15 @@ Round ${round + 1}/${maxRounds}。
       if (progressCallback) {
         progressCallback(round + 1, maxRounds, '正在生成任务总结...', toolCallHistory.map(h => h.tool).slice(-3));
       }
-      return result.content || '';
+      // v0.63 透明化根因：返回带诊断信息的对象（agent-runtime.js 会包装成 rawDiag）
+      //   旧 string 路径会丢失 toolCallHistory/finishReason，导致 task-agent 中止分支看不出根因
+      return {
+        content: result.content || '',
+        finishReason: result.finishReason || 'stop',
+        toolCalls: [],  // 最后一轮没调 tool
+        toolCallCount: toolCallHistory.length,
+        usage: result.usage || null,
+      };
     }
 
     const asstMsg = { role: 'assistant', content: result.content || null };

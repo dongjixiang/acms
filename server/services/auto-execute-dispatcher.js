@@ -90,6 +90,9 @@ class AutoExecuteDispatcher {
     eventBus.on('task.claimed', (event) => this.handleTaskClaimed(event));
     // v0.34: 驳回也自动重跑
     eventBus.on('task.review_rejected', (event) => this.handleTaskRejected(event));
+    // v0.63: multi_role abort 路径 emit task.failed（task-agent.js 中止分支）
+    //   之前无订阅者 → 任务永远卡 in_progress。现在调 scheduleRetry 统一处理
+    eventBus.on('task.failed', (event) => this.handleTaskFailed(event));
 
     // v0.X: 启动时扫描已有 in_progress 任务 — 防重启后 pending 任务不被触发
     //   根因：claim 在重启前发生，重启后 dispatcher 全新启动，不会自动触发已分配的任务
@@ -268,6 +271,40 @@ class AutoExecuteDispatcher {
   }
 
   /**
+   * v0.63: 处理 task.failed 事件 — multi_role abort 路径（task-agent.js 中止分支）
+   *   之前 task.failed 无订阅者 → 任务永远卡 in_progress
+   *   现在统一走 scheduleRetry，复用现有的 elapsedSec 防并发 + MAX_RE_EXECUTE 防无限循环
+   */
+  async handleTaskFailed(event) {
+    const taskId = event.target_id || event.target?.id;
+    if (!taskId) {
+      this.stats.skipped++;
+      return;
+    }
+    const task = taskStore.getById(taskId);
+    if (!task) {
+      this.stats.skipped++;
+      return;
+    }
+    // 只对 in_progress + auto-execute agents 生效
+    //   task.failed emit 时 status 通常还是 in_progress（emit 不改 status），其他状态忽略
+    if (task.status !== 'in_progress') {
+      this.stats.skipped++;
+      return;
+    }
+    if (!this.autoAgents.has(task.assigned_to)) {
+      this.stats.skipped++;
+      return;
+    }
+    const errPreview = (event.payload?.error || 'unknown').slice(0, 120);
+    console.log(`[AutoExecuteDispatcher] ⚠️ ${taskId} task.failed 事件: ${errPreview}`);
+    this.stats.errors++;
+    // v0.63: force=true — task.failed 是 agent 主动退出信号，必须强制重试
+    //   不受 120s 防并发检查约束（execution_log 可能刚有 saveProgressRound entry）
+    await this.scheduleRetry(taskId, task, 'task-failed-event', { force: true });
+  }
+
+  /**
    * v0.45: 失败任务自动重试 — 用 steerMessage 让 agent 知道上一次失败原因
    * v0.X fix: 强制从 DB 重新读最新 task — 之前用 caller 传入的 stale snapshot，
    *   task.execution_log 停留在 5+ 分钟前，导致 elapsedSec 检查（line 261）算出
@@ -275,7 +312,7 @@ class AutoExecuteDispatcher {
    *   根因（fetch failed 罕见边界）：dispatcher 的 await fetch 没有 timeout，
    *   长跑 agent-execute（5 分钟）的 HTTP connection 偶尔被 server keep-alive 主动 close。
    */
-  async scheduleRetry(taskId, task, reason) {
+  async scheduleRetry(taskId, task, reason, options = {}) {
     // v0.X fix: 强制刷最新 task snapshot，不要用 caller 传入的 stale 对象
     task = taskStore.getById(taskId);
     if (!task) return;
@@ -283,16 +320,20 @@ class AutoExecuteDispatcher {
     // v0.X: 重试前检查是否已有活动中的执行 — 防 fetch 超时后重复触发
     //   根因：agent-execute HTTP fetch 超时（~5min）但 server 端 runToolLoop 仍在跑，
     //   scheduleRetry 不检查就启动第二个执行
-    const recentLog = JSON.parse(task.execution_log || '[]');
-    const lastEntry = recentLog[recentLog.length - 1];
-    if (lastEntry && lastEntry.time) {
-      const lastTime = new Date(lastEntry.time).getTime();
-      const now = Date.now();
-      const elapsedSec = (now - lastTime) / 1000;
-      if (elapsedSec < 120) {
-        console.log(`[AutoExecuteDispatcher] ⏭️ ${taskId} 跳过重试: execution_log 在 ${elapsedSec.toFixed(0)} 秒前有更新，agent 仍在运行中`);
-        this.stats.skipped++;
-        return;
+    // v0.63: options.force=true 时跳过此检查（task.failed 路径专用 — agent 已退出，execution_log
+    //   可能刚有 entry 来自 saveProgressRound，但 agent 进程实际已退，必须强制重试）
+    if (!options.force) {
+      const recentLog = JSON.parse(task.execution_log || '[]');
+      const lastEntry = recentLog[recentLog.length - 1];
+      if (lastEntry && lastEntry.time) {
+        const lastTime = new Date(lastEntry.time).getTime();
+        const now = Date.now();
+        const elapsedSec = (now - lastTime) / 1000;
+        if (elapsedSec < 120) {
+          console.log(`[AutoExecuteDispatcher] ⏭️ ${taskId} 跳过重试: execution_log 在 ${elapsedSec.toFixed(0)} 秒前有更新，agent 仍在运行中`);
+          this.stats.skipped++;
+          return;
+        }
       }
     }
 

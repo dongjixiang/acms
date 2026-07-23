@@ -86,14 +86,45 @@ async function execute(opts = {}) {
       content: '',
       modelUsed: model.id,
       error: `[${opts.caller}] runToolLoop failed: ${e.message}`,
+      raw: null,
     };
   }
 
-  // 4. 提取
+  // 4. 提取 + 把 raw 包装成诊断对象（v0.63 透明化根因）
+  //   - 原 raw 可能是 string（旧 llm-adapter line 747 直接 return content）或 {content, finishReason, toolCalls, ...}
+  //   - 调用方（task-agent 中止分支）需要判断 finish_reason=length / tool_call 次数 / error 等
+  //   - 统一成 { _shape, content, finishReason, toolCalls, usage } 让消费方写起来一致
+  let rawDiag;
+  if (raw == null) {
+    rawDiag = null;
+  } else if (typeof raw === 'string') {
+    rawDiag = {
+      _shape: 'string',
+      content: raw,
+      finishReason: null,
+      toolCalls: 0,
+      usage: null,
+    };
+  } else {
+    // 兼容两种 object 形态：
+    //   1. 正常 LLM 响应（callAnthropic/callOpenAI 返回）: {content, toolCalls, finishReason, usage}
+    //   2. runToolLoop 最终答案（v0.63 新形态）: {content, finishReason, toolCalls:[], toolCallCount:N}
+    //   优先用 toolCallCount（累计值），fallback 到 toolCalls.length（当前轮）
+    const toolCallsLen = Array.isArray(raw.toolCalls) ? raw.toolCalls.length : 0;
+    const toolCallCount = typeof raw.toolCallCount === 'number' ? raw.toolCallCount : toolCallsLen;
+    rawDiag = {
+      _shape: 'object',
+      content: raw.content || raw.message?.content || '',
+      finishReason: raw.finishReason || null,
+      toolCalls: toolCallCount,
+      usage: raw.usage || null,
+    };
+  }
+
   return {
     content: extractContent(raw),
     modelUsed: model.id,
-    raw,
+    raw: rawDiag,
   };
 }
 

@@ -582,7 +582,10 @@ async function runMultiRoleSequence(task, options = {}) {
 
   // 共享进度回调（带角色前缀）
   let overallRound = 0;
-  const totalRounds = 5 + 25 + 10 + 5; // planner + coder + tester + reviewer
+  // v0.63: planner maxRounds 5→10 — 任务描述空泛时给 Planner 更多探索轮次
+  //   之前 5 轮经常用光 abort，现在 10 轮 + saveProgressRound 记每轮 tool call，
+  //   让"读了 N 个文件但未规划"的诊断更清晰，也让真实场景有足够时间出规划
+  const totalRounds = 10 + 25 + 10 + 5; // planner + coder + tester + reviewer
   const saveProgress = (note) => {
     const now = new Date().toISOString();
     try {
@@ -598,6 +601,32 @@ async function runMultiRoleSequence(task, options = {}) {
           execution_log: JSON.stringify(log),
           progress: Math.min(100, Math.round((overallRound / totalRounds) * 100)),
           progress_note: note,
+          last_progress_update: now,
+        });
+      }
+    } catch (e) { /* silent */ }
+  };
+
+  // v0.63: per-round progress callback — 写每轮 LLM 调用 + 工具调用到 execution_log
+  //   之前只记阶段切换（开始/完成/中止）→ execution_log 看不到工具调用 → ai-tools.js:387 装睡检测永远 0 hits
+  //   兼容 agent-execute 主路径 saveProgress(round, maxRounds, message, tools) 签名（agent-runtime.js 透传给 llm-adapter.js）
+  const saveProgressRound = (round, maxRounds, message, tools) => {
+    const now = new Date().toISOString();
+    const logEntry = {
+      time: now,
+      action: `round_${round}/${maxRounds}`,
+      note: (message || '') + (tools?.length ? ` [${tools.join(', ')}]` : ''),
+    };
+    try {
+      var { collection } = require('../db/connection');
+      var t = collection('tasks').findOne(t => t.id === taskId);
+      if (t) {
+        var log = JSON.parse(t.execution_log || '[]');
+        log.push(logEntry);
+        if (log.length > 50) log.splice(0, log.length - 50);
+        collection('tasks').update(t => t.id === taskId, {
+          execution_log: JSON.stringify(log),
+          progress_note: logEntry.note,
           last_progress_update: now,
         });
       }
@@ -621,7 +650,7 @@ async function runMultiRoleSequence(task, options = {}) {
 
   // ── 执行流水线 ──
   const pipeline = [
-    { name: 'planner', maxRounds: 5, tools: ROLE_TOOLS.planner, label: '📋 规划' },
+    { name: 'planner', maxRounds: 10, tools: ROLE_TOOLS.planner, label: '📋 规划' },
     { name: 'coder',   maxRounds: 25, tools: ROLE_TOOLS.coder, label: '✏️ 写代码' },
     { name: 'tester',  maxRounds: 10, tools: testerTools, label: '🧪 测试' },
     { name: 'reviewer', maxRounds: 5, tools: ROLE_TOOLS.reviewer, label: '👀 审核' },
@@ -670,6 +699,8 @@ async function runMultiRoleSequence(task, options = {}) {
       maxRounds: phase.maxRounds,
       context: { projectId, taskId },
       caller: 'task-agent-' + phase.name,
+      // v0.63: 把 saveProgressRound 传给 runtime → llm-adapter 每轮 LLM 调用 + 工具调用都写 execution_log
+      onProgress: saveProgressRound,
     });
 
     roleOutputs[phase.name] = runtimeResult;
@@ -677,8 +708,32 @@ async function runMultiRoleSequence(task, options = {}) {
     console.log(`[task-agent] ${phase.label} 完成: ${(runtimeResult.content || '').length} chars`);
 
     // 如果该角色失败（content 为空），提前退出
+    // v0.63 透明化根因：把"输出为空"细分为 4 类真实原因，让 PM 直接看到根因
+    //   A. runToolLoop 抛异常 → content='', error='...'
+    //   B. finish_reason=length → content 被 max_tokens 截断到几乎空
+    //   C. 调了 tool 但最终未生成总结 → toolCalls>0 但 content 空
+    //   D. LLM 正常返回但 content 为空字符串（任务描述空泛 / 模型拒绝规划）
     if (!runtimeResult.content || runtimeResult.content.length < 10) {
-      const errorMsg = `[${phase.label}] 输出为空，流水线中止`;
+      const rawDiag = runtimeResult.raw || {};
+      const errMsg = runtimeResult.error;
+      const finishReason = rawDiag.finishReason;
+      const toolCallCount = rawDiag.toolCalls || 0;
+      const shape = rawDiag._shape || 'unknown';
+
+      let reason;
+      if (errMsg) {
+        reason = `runToolLoop 异常: ${errMsg}`;
+      } else if (finishReason === 'length') {
+        reason = `LLM 输出被截断 (max_tokens 不够，finish_reason=length)`;
+      } else if (toolCallCount > 0) {
+        reason = `LLM 调了 ${toolCallCount} 个 tool 但最终未生成有效总结 (finish_reason=${finishReason || '?'})`;
+      } else if (shape === 'string') {
+        reason = `LLM 返回字符串但 content 为空 (任务描述可能空泛 / 模型拒绝规划)`;
+      } else {
+        reason = `LLM 返回空 content (未知原因，shape=${shape})`;
+      }
+
+      const errorMsg = `[${phase.label}] 输出为空，流水线中止 — ${reason}`;
       console.error(`[task-agent] ${errorMsg}`);
       saveProgress(errorMsg);
       try {
@@ -686,15 +741,25 @@ async function runMultiRoleSequence(task, options = {}) {
           projectId,
           actor: { id: 'agent-acms-self', type: 'agent', name: 'ACMS Agent' },
           target: { type: 'task', id: taskId },
-          payload: { error: errorMsg, failedRole: phase.name },
+          payload: {
+            error: errorMsg,
+            failedRole: phase.name,
+            reason,
+            rawDiag: rawDiag || null,
+            runtimeError: errMsg || null,
+          },
         });
       } catch (e) { /* 不阻塞 */ }
       return {
         taskId,
         modelUsed: model.id,
         analysis: errorMsg,
+        failureReason: reason,
         completedAt: new Date().toISOString(),
-        roles: Object.keys(roleOutputs).reduce((acc, k) => { acc[k] = { ok: !!roleOutputs[k].content }; return acc; }, {}),
+        roles: Object.keys(roleOutputs).reduce((acc, k) => {
+          acc[k] = { ok: !!roleOutputs[k].content, length: (roleOutputs[k].content || '').length };
+          return acc;
+        }, {}),
       };
     }
 
