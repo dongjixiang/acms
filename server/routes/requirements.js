@@ -11,7 +11,7 @@ router.post('/', async (req, res, next) => {
   try {
     const { projectId, title, description, priority, tags, deadline, parentId, modelId, role, userRole } = req.body;
     if (!projectId || !title) return res.status(400).json({ error: 'MISSING_FIELDS' });
-    const requirement = reqStore.create({ projectId, title, description, priority, tags, deadline, owner: req.userId || 'user', createdBy: req.agentId || 'user', parentId: parentId || null, userRole: userRole || role || '' });
+    const requirement = reqStore.create({ projectId, title, description, priority, tags, deadline, createdBy: req.agentId || 'user', parentId: parentId || null, userRole: userRole || role || '' });
 
     // ── 同步：LLM 评估明确度（30 文档「一放一收」Step 2）──
     try {
@@ -40,17 +40,13 @@ router.post('/', async (req, res, next) => {
 
 // 需求列表
 router.get('/', (req, res) => {
-  const { projectId, status, parentId, rootOnly, limit, offset, lite } = req.query;
+  const { projectId, status, parentId, rootOnly, limit, offset } = req.query;
   res.json(reqStore.list({
     projectId, status,
     parentId: parentId || undefined,
     rootOnly: rootOnly === 'true',
     limit: parseInt(limit) || 50,
-    offset: parseInt(offset) || 0,
-    // v0.49: List 接口默认精简（去 srs / structured_description / arch_spec / supplement_history 等大字段）
-    //   详情页走 GET /:id 拿完整 record，不受影响
-    //   显式传 ?lite=false 可拿老版完整 list（兼容 / 调试用）
-    lite: lite !== 'false',
+    offset: parseInt(offset) || 0
   }));
 });
 
@@ -301,16 +297,7 @@ router.post('/:id/approve', async (req, res, next) => {
 });
 
 router.post('/:id/reject', async (req, res, next) => {
-  // P0 v0.X: 驳回必填理由（min 10 字）— 对齐 task review 的策略，避免空 reason 进 DB
-  const reason = (req.body.reason || '').trim();
-  if (reason.length < 10) {
-    return res.status(400).json({
-      error: 'REJECT_REASON_REQUIRED',
-      message: '驳回理由至少 10 字，给 AI 明确方向',
-      minLength: 10,
-    });
-  }
-  try { res.json(await reqService.reject(req.params.id, reason)); } catch (e) { next(e); }
+  try { res.json(await reqService.reject(req.params.id, req.body.reason)); } catch (e) { next(e); }
 });
 
 // 分解（使用 service）
@@ -631,10 +618,6 @@ router.get('/:id/thinking-brief/stream', async (req, res, next) => {
       } else if (event.type === 'error') {
         send('error', { message: event.message });
         break;
-      } else if (event.type === 'skip') {
-        // v0.46.x fix: free 模式守卫 — 客户端收到后清掉 .chat-streaming-bubble 占位
-        send('skip', { reason: event.reason || 'free_mode' });
-        break;
       }
     }
     res.end();
@@ -765,7 +748,7 @@ router.post('/:id/assist/:method', async (req, res, next) => {
     const { modelId, role, productName } = req.body || {};
     const reqRec = reqStore.getById(req.params.id);
     if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
-    if (reqRec.status !== 'idea' && method !== 'health_check' && method !== 'clean' && method !== 'music' && method !== 'video' && method !== 'image_gen' && method !== 'screenplay' && method !== 'document_gen' && method !== 'send_email') {
+    if (reqRec.status !== 'idea' && method !== 'health_check' && method !== 'clean' && method !== 'music' && method !== 'video' && method !== 'image_gen' && method !== 'screenplay') {
       return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
     }
 
@@ -969,47 +952,6 @@ router.post('/:id/assist/:method/use', async (req, res, next) => {
     else if (method === 'screenplay' && body.action === 'set_scene_video') {
       // v0.22.8: 写入分镜头视频
       result = svc.setSceneVideo(req.params.id, body.scene_idx, body);
-    }
-    else if (method === 'document_gen' || method === 'music' || method === 'video' || method === 'image_gen' || method === 'clean' || method === 'send_email') {
-      // v0.47：这些是「输出型」assist（生成文档/发邮件/找音乐/生成图/视频/清理），
-      //   没有「选哪个」的概念。标记 used = no-op success，避免前端 skip 报 METHOD_HAS_NO_USE_HANDLER
-      // v0.47.4 fix: 必须真正写 used=true 到 assist_<method> JSON，否则 chat.js L586 渲染 filter
-      //   不会跳过这些 done 卡片 → 用户点"跳过"后重新进入需求，卡片会再次出现
-      const fieldName = `assist_${method}`;
-      try {
-        const curStr = reqRec[fieldName];
-        if (curStr) {
-          const cur = typeof curStr === 'string' ? JSON.parse(curStr) : curStr;
-          cur.used = true;
-          cur.used_at = new Date().toISOString();
-          reqStore.update(req.params.id, { [fieldName]: JSON.stringify(cur) });
-        }
-      } catch (e) {
-        console.warn(`[assist.use] mark used 失败 (${method}):`, e.message);
-      }
-      result = null;
-
-      // v0.47.3：send_email + action=cancelled 时，从 supplement_history 删掉 send_email_pending entry
-      //   避免用户取消后再次进入聊天还能看到预览卡
-      if (method === 'send_email' && body.action === 'cancelled') {
-        try {
-          const reqRec = reqStore.getById(req.params.id);
-          if (reqRec) {
-            let history = [];
-            try { history = JSON.parse(reqRec.supplement_history || '[]'); } catch { /* 静默 */ }
-            if (Array.isArray(history)) {
-              const before = history.length;
-              history = history.filter(e => !(e.role === 'system' && e.source === 'send_email_pending'));
-              if (history.length !== before) {
-                reqStore.update(req.params.id, { supplement_history: JSON.stringify(history) });
-                console.log(`[assist.use] ${req.params.id} 清掉 ${before - history.length} 条 send_email_pending entry`);
-              }
-            }
-          }
-        } catch (e) {
-          console.warn(`[assist.use] 清 pending entry 失败:`, e.message);
-        }
-      }
     }
     else return res.status(400).json({ error: 'METHOD_HAS_NO_USE_HANDLER' });
 

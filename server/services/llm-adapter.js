@@ -471,7 +471,6 @@ function repairToolName(name, validNames) {
   let best = null;
   let bestScore = Infinity;
   for (const v of validNames) {
-    if (typeof v !== 'string') continue;  // 防非字符串 crash
     const score = levenshtein(lower, v.toLowerCase());
     if (score < bestScore) { bestScore = score; best = v; }
   }
@@ -529,37 +528,12 @@ function detectStreamStall(result, messages) {
   const stallPhrases = [
     'i will write', 'i\'ll write', 'let me write', 'i will create', 'i will modify', 'i will update',
     'now i will', 'next i will', 'will create', 'will write', 'will implement',
-    // 中文 stall phrases（v0.X: 加了中文语言指令后 LLM 用中文思考）
-    '需要写', '去写', '来写', '写一个', '创建文件', '要写', '去创建', '来创建', '来修改', '去修改',
   ];
   const matched = stallPhrases.filter(p => content.includes(p));
   if (matched.length > 0) {
     return { phrases: matched, contentPreview: (result.content || '').slice(0, 200) };
   }
   return null;
-}
-
-// ===== v0.X: Trace Capture — 完整任务执行链路日志 =====
-//   当 options.traceFile 设置时，每轮将完整 messages / LLM 响应 / 工具调用写入 JSONL
-//   生成路径：data/traces/<taskId>-<timestamp>.jsonl
-//   每行一个 JSON 事件：{ type, round, ts, data }
-const fs = require('fs');
-const path = require('path');
-const TRACE_DIR = path.join(__dirname, '..', '..', 'data', 'traces');
-
-function initTrace(taskId) {
-  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const filePath = path.join(TRACE_DIR, `${taskId}-${ts}.jsonl`);
-  try { fs.mkdirSync(TRACE_DIR, { recursive: true }); } catch (e) { /* ignore */ }
-  return filePath;
-}
-
-function writeTrace(filePath, type, round, data) {
-  if (!filePath) return;
-  try {
-    const entry = JSON.stringify({ type, round, ts: new Date().toISOString(), data: data });
-    fs.appendFileSync(filePath, entry + '\n');
-  } catch (e) { /* 不阻塞主流程 */ }
 }
 
 async function runToolLoop(modelId, messages, options = {}) {
@@ -571,27 +545,10 @@ async function runToolLoop(modelId, messages, options = {}) {
   if (!model) throw Object.assign(new Error('模型不存在'), { status: 404 });
   const api = model.api || 'openai-chat';
 
-  // v0.X: Trace capture — 完整执行链路日志
-  //   当 options.traceFile 或 context.taskId + task.trace_mode 设置时启用
-  let traceFile = options.traceFile || null;
-  if (!traceFile && context.taskId) {
-    // 检查 task 是否启用了 trace_mode
-    try {
-      const { collection } = require('../db/connection');
-      const task = collection('tasks').findOne(t => t.id === context.taskId);
-      if (task && task.trace_mode) {
-        traceFile = initTrace(context.taskId);
-        writeTrace(traceFile, 'init', 0, { modelId, maxRounds, toolNames, taskId: context.taskId });
-      }
-    } catch (e) { /* trace init failed */ }
-  }
-
-  // v0.20 bugfix：检测 LLM 连续两轮调同一 tool + 相同 args → 强制退出（避免无限循环）
   // v0.20 bugfix：检测 LLM 连续两轮调同一 tool + 相同 args → 强制退出（避免无限循环）
   //   旧 bug：LLM 调 play_music(song="X") → handler 返回 ok → LLM 再调确认 → 再返回 ok → 死循环
   //   修复：连续两轮同 tool+args 直接返回最后一次 content（不抛错），避免 LLM 死循环
   let lastToolCallKey = null;
-  let lastWriteRound = -1;  // v0.X: 写后空转检测 — 上次成功 write_file/patch_file 的轮次
 
   // v0.25 debug: 记录每轮 LLM 调了啥 + tool 结果，方便 PM 查 tool loop 卡死根因
   const toolCallHistory = [];
@@ -616,42 +573,6 @@ async function runToolLoop(modelId, messages, options = {}) {
 
     if (droppedCount === 0) return;
 
-    // v0.46: 在压缩前, 扫描 toolCallHistory 找被压缩掉的消息里是否有重复失败
-    //   (治 T-MRKP19DR: 上下文压缩抹掉了 R13 git_commit 失败, R14 重复 commit)
-    //   现在我们把"重复失败"模式显式注入到压缩后的 messages, LLM 不会失忆
-    const failPatterns = [];
-    const droppedRounds = new Set(); // 哪些 round 被压缩了
-    for (const m of msgsToCompress) {
-      // 尝试从 m.content 里提取 "r{N}" round 标记 (LLM_RESPONSE preview 里有 r12, r13 等)
-      const rMatch = m.content && m.content.match(/\br(\d+)\b/);
-      if (rMatch) droppedRounds.add(parseInt(rMatch[1], 10));
-    }
-    const failCounts = new Map(); // `${tool}::${argsSig.slice(0,80)}` -> {count, lastRound, lastErr}
-    for (const h of toolCallHistory) {
-      const isFail = (h.resultPreview && h.resultPreview.includes('"ok":false')) || h.error;
-      if (!isFail) continue;
-      const key = `${h.tool}::${(h.args || '').slice(0, 80)}`;
-      const cur = failCounts.get(key) || { count: 0, lastRound: 0, lastErr: '' };
-      cur.count++;
-      cur.lastRound = Math.max(cur.lastRound, h.round);
-      cur.lastErr = h.resultPreview || h.error || '';
-      failCounts.set(key, cur);
-    }
-    for (const [key, info] of failCounts) {
-      if (info.count < 2) continue;
-      const [toolName, argsSig] = key.split('::');
-      failPatterns.push({
-        tool: toolName,
-        argsSig,
-        count: info.count,
-        lastRound: info.lastRound,
-        lastErr: info.lastErr.slice(0, 200),
-      });
-    }
-    const failWarning = failPatterns.length > 0
-      ? `\n\n### ⚠️ 历史失败警告 (重要!)\n压缩的消息中有以下工具调用已多次失败 — **不要再重试同样的调用**:\n${failPatterns.map(p => `- \`${p.tool}\` 失败 ${p.count} 次 (最近 R${p.lastRound}). 参数: ${p.argsSig.slice(0, 100)}. 最近错误: ${p.lastErr.slice(0, 150)}`).join('\n')}\n`
-      : '';
-
     // 构建压缩提示：让 LLM 总结被丢弃的 messages
     const compressPrompt = [
       { role: 'system', content: 'You are a context summarizer. Summarize the following conversation messages in 3-5 sentences. Focus on: what the agent did, what files were created/modified, what decisions were made. Do NOT include tool call details — only the outcomes.' },
@@ -668,93 +589,28 @@ async function runToolLoop(modelId, messages, options = {}) {
         maxTokens: 500,
       });
       const summaryText = summaryResult.content || `[Earlier ${droppedCount} messages compressed: agent explored workspace and made tool calls. Goal context remains in system prompt above.]`;
-      // v0.46: 把失败警告附加到 LLM 摘要后面, 确保 LLM 看到
-      const finalSummary = summaryText + failWarning;
-      const compressed = [systemMsg, { role: 'user', content: finalSummary }, ...recentMsgs];
-      messages.length = 0;
-      messages.push(...compressed);
-      console.log(`[runToolLoop] v0.45 context compression: ${messages.length + droppedCount} → ${compressed.length} messages (kept system + last ${KEEP_RECENT} + LLM summary${failPatterns.length > 0 ? ` + ${failPatterns.length} fail warnings` : ''})`);
-    } catch (e) {
-      // 摘要失败则降级为规则压缩
-      const droppedToolSummary = toolCallHistory.slice(0, toolCallHistory.length - KEEP_RECENT / 2).map(h => `${h.tool}(${(h.args||'').slice(0, 60)})`).join(', ');
-      const summaryText = `[Earlier ${droppedCount} messages compressed: agent explored workspace and made tool calls: ${droppedToolSummary || 'exploration + verification'}. Goal context remains in system prompt above.${failWarning}]`;
       const compressed = [systemMsg, { role: 'user', content: summaryText }, ...recentMsgs];
       messages.length = 0;
       messages.push(...compressed);
-      console.log(`[runToolLoop] v0.45 context compression (fallback): ${messages.length + droppedCount} → ${compressed.length} messages${failPatterns.length > 0 ? ` + ${failPatterns.length} fail warnings` : ''}`);
+      console.log(`[runToolLoop] v0.45 context compression: ${messages.length + droppedCount} → ${compressed.length} messages (kept system + last ${KEEP_RECENT} + LLM summary)`);
+    } catch (e) {
+      // 摘要失败则降级为规则压缩
+      const droppedToolSummary = toolCallHistory.slice(0, toolCallHistory.length - KEEP_RECENT / 2).map(h => `${h.tool}(${(h.args||'').slice(0, 60)})`).join(', ');
+      const summaryText = `[Earlier ${droppedCount} messages compressed: agent explored workspace and made tool calls: ${droppedToolSummary || 'exploration + verification'}. Goal context remains in system prompt above.]`;
+      const compressed = [systemMsg, { role: 'user', content: summaryText }, ...recentMsgs];
+      messages.length = 0;
+      messages.push(...compressed);
+      console.log(`[runToolLoop] v0.45 context compression (fallback): ${messages.length + droppedCount} → ${compressed.length} messages`);
     }
   }
 
   for (let round = 0; round < maxRounds; round++) {
     console.log(`[runToolLoop] round=${round + 1}/${maxRounds} | messages=${messages.length} | taskId=${context.taskId || '?'}`);
 
-    // v0.X: 写后空转检测 — 检测 patch_file/write_file 成功后连续 ≥3 轮无新写操作
-    //   治 T-MRH7H9GA 现象：agent 在 R20 写完 3 个补丁，R21-47 全在 verify/空转
-    //   inject user message 比 system prompt 规则有效（LLM 更听 user role 消息）
-    if (typeof lastWriteRound === 'number' && lastWriteRound >= 0 && round - lastWriteRound >= 3 && round >= 6) {
-      const idleRounds = round - lastWriteRound;
-      const hasRecentWrite = toolCallHistory.slice(-3).some(h =>
-        h.tool === 'agent_write_file' || h.tool === 'agent_patch_file' || h.tool === 'agent_multi_patch'
-      );
-      if (!hasRecentWrite) {
-        const fixSummary = toolCallHistory
-          .filter(h => h.tool === 'agent_patch_file' || h.tool === 'agent_write_file')
-          .map(h => `  r${h.round} ${h.tool}(${(h.args||'').slice(0, 60)}) → ${(h.resultPreview||'').slice(0, 60)}`)
-          .join('\n');
-        console.warn(`[runToolLoop] ⛔ 写后空转检测: 上次写操作在 R${lastWriteRound + 1}, 已空转 ${idleRounds} 轮. 注入 user steer.`);
-        messages.push({
-          role: 'user',
-          content: `### ⚠️ 系统检测到你在空转\n\n你已经连续 ${idleRounds} 轮（R${lastWriteRound + 1} → R${round + 1}）没有写任何新文件或补丁。你之前的补丁都已经成功（syntax OK）。\n\n**立即结束任务并提交**，不要再验证/重读/检查 git 状态。\n\n之前完成的补丁：\n${fixSummary}\n\n回复 "DONE" 并产生最终总结。如果再空转 2 轮，系统将自动提交当前改动。`,
-        });
-      }
-    }
-
-    // v0.46: 重复失败检测 — 同一工具 + 相近 args 连续 ≥3 次返回 ok=false (治 T-MRKP19DR 类死循环)
-    //   T-MRKP19DR 现象: git_commit 因 shell escape bug 失败 3 次 (R13/R14/R15),
-    //   写后空转检测不识别 git_commit 失败 (只认 patch_file/write_file),
-    //   直到 LLM 看了 4 轮失败后才被强制结束 — 浪费 4 轮 LLM token.
-    //   修复: 检测所有 tool call 的 ok=false 重复, 不限于写操作.
-    const failureMap = new Map(); // key = `${tool}::${argsSig}` → count
-    const recent6 = toolCallHistory.slice(-6);
-    for (const h of recent6) {
-      const isFail = (h.resultPreview && h.resultPreview.includes('"ok":false')) || h.error;
-      if (!isFail) continue;
-      const argsSig = (h.args || '').slice(0, 120);
-      const key = `${h.tool}::${argsSig}`;
-      failureMap.set(key, (failureMap.get(key) || 0) + 1);
-    }
-    let injectedFailureSteer = false;
-    for (const [key, count] of failureMap) {
-      if (count < 3) continue;
-      const [toolName, argsSig] = key.split('::');
-      // 防止连续 round 重复注入同样的 steer (检查最近 3 条 messages 里有无同样的标记)
-      const recentSteered = messages.slice(-3).some(m =>
-        m.content && m.content.includes(`系统检测到重复失败`) && m.content.includes(toolName)
-      );
-      if (recentSteered) break;
-      console.warn(`[runToolLoop] ⛔ 重复失败检测: ${toolName} 在最近 ${recent6.length} 轮中失败 ${count} 次. 注入 user steer.`);
-      messages.push({
-        role: 'user',
-        content: `### ⚠️ 系统检测到重复失败\n\n你已经连续 ${count} 次调用 \`${toolName}\` 但都返回 ok=false。\n\n最近参数 (前 200 字符): ${argsSig.slice(0, 200)}\n\n**立即停止重试这个调用。** 这通常意味着：\n- shell escape 问题 (参数含特殊字符: ' \` $ \\ 等)\n- 文件路径错误或权限问题\n- 命令格式错误\n\n**正确做法:**\n1. 简化参数 (例如 commit message 用纯 ASCII, 避免 \\\" \\\" 字符)\n2. 或直接放弃这个工具调用, 提交当前进度\n3. 或换工具 (例如 git_commit 失败就跳过, 不阻塞任务)\n\n继续重试只会浪费 token. **不要第 ${count + 1} 次调 \`${toolName}\` 了.**`,
-      });
-      injectedFailureSteer = true;
-      break; // 每轮只 inject 一次
-    }
-
-    // v0.X: 只读超时 — 前 N 轮没写过任何文件时强制 steer（治 T-MRGDBST1 33 次读 0 次写的纯探索死循环）
-    if (lastWriteRound < 0 && round >= 6 && round % 3 === 0) {
-      console.warn(`[runToolLoop] ⛔ 只读超时检测: 已 ${round + 1} 轮未写任何文件. 注入 user steer.`);
-      const readTools = toolCallHistory.filter(h => h.tool.startsWith('agent_read_') || h.tool === 'agent_list_files' || h.tool === 'agent_search_files');
-      messages.push({
-        role: 'user',
-        content: `### ⚠️ 系统检测到你只读不写\n\n你已经读了 ${readTools.length} 个文件/目录，但还没写任何代码。\n\n**立即停止探索，开始写代码。**\n\n你现在应该已经充分理解了项目结构。接下来必须调用 \`agent_write_file\` 或 \`agent_patch_file\` 来实际完成任务。\n\n如果再读 3 轮还不写，这个 task 将被标记为 failed。`,
-      });
-    }
-
     // v0.45: 执行中途 steer 检查 — 如果 progress_note 中有新的 steer message，注入到 messages
     if (context.taskId && progressCallback) {
       try {
-        const { collection } = require('../db/connection');
+        const { collection } = require('../../db/connection');
         const task = collection('tasks').findOne(t => t.id === context.taskId);
         if (task && task.progress_note) {
           const steerMatch = task.progress_note.match(/--- PM Steer ---\n([\s\S]*?)(?:\n--- PM Steer ---|$)/);
@@ -787,17 +643,6 @@ async function runToolLoop(modelId, messages, options = {}) {
     //   让多多能看到"发给 LLM 啥 + LLM 返回啥"，找到装睡根因
     const sysContent = messages[0]?.content || '';
     const remainingRounds = maxRounds - round;
-    // v0.X: Trace — 本轮发送给模型的完整 messages
-    writeTrace(traceFile, 'round_start', round + 1, {
-      messages: messages.map(m => {
-        // 安全序列化：截断超长 tool result 防 trace 文件膨胀
-        const safe = { role: m.role };
-        if (typeof m.content === 'string') safe.content = m.content.length > 50000 ? m.content.slice(0, 50000) + '...[TRUNCATED]' : m.content;
-        if (m.tool_calls) safe.tool_calls = m.tool_calls;
-        return safe;
-      }),
-      remainingRounds,
-    });
     // v0.45: 把剩余轮次注入到 messages，让 LLM 知道紧迫感（避免到第 80 轮还在试探）
     if (round >= 3 && round % 5 === 0) {
       // 每 5 轮注入一次预算提醒
@@ -818,13 +663,6 @@ async function runToolLoop(modelId, messages, options = {}) {
       console.log(`[runToolLoop] LLM_CALL#${round + 1} msg[${messages.length - 5 + idx}] role=${m.role} preview="${preview}"`);
     });
     const result = await callLLMWithTools(modelId, messages, { ...options, toolNames });
-    // v0.X: Trace — 记录 LLM 返回的完整 content + tool_calls
-    writeTrace(traceFile, 'llm_response', round + 1, {
-      content: result.content || '',
-      toolCalls: (result.toolCalls || []).map(tc => ({ name: tc.name, id: tc.id, args: tc.args })),
-      finishReason: result.finishReason || null,
-      usage: result.usage || null,
-    });
     // v0.31 fix: dump LLM 完整 response
     const content = typeof result.content === 'string' ? result.content : '';
     console.log(`[runToolLoop] LLM_RESP#${round + 1} content_len=${content.length} finish_reason=${result.finishReason || 'n/a'} tool_calls=${result.toolCalls?.length || 0}`);
@@ -874,9 +712,7 @@ async function runToolLoop(modelId, messages, options = {}) {
       //   改成 user 主动观察语气 + 强制 A/B 选择 + 现实威胁（user 接手）
       //   Hermes 的 /steer 命令等价物 — LLM 把 user message 当 "用户的意图"，优先级高于 system warning
       const requiresWrite = Array.isArray(toolNames) && toolNames.includes('agent_write_file');
-      const writeFileCalls = toolCallHistory.filter(h =>
-        ['agent_write_file', 'agent_patch_file', 'agent_multi_patch'].includes(h.tool) && !h.error
-      );
+      const writeFileCalls = toolCallHistory.filter(h => h.tool === 'agent_write_file' && !h.error);
       if (requiresWrite && writeFileCalls.length === 0) {
         const systemPrompt = messages[0]?.content || '';
         const goalMatch = systemPrompt.match(/# YOUR SPECIFIC GOAL FOR THIS TASK\s*([\s\S]+?)(?=# DO NOT STOP|$)/);
@@ -904,12 +740,6 @@ Round ${round + 1}/${maxRounds}。
       }
       console.log(`[runToolLoop] round=${round + 1} LLM 返回最终答案 (no tool calls), content=${(result.content || '').length} chars`);
       if (toolCallHistory.length > 0) console.log(`[runToolLoop] 完整 tool call history:\n${toolCallHistory.map(h => `  r${h.round} ${h.tool}(${(h.args||'').slice(0, 100)})`).join('\n')}`);
-      // v0.X: Trace — 最终答案
-      writeTrace(traceFile, 'final_answer', round + 1, {
-        content: result.content || '',
-        toolCallHistory,
-        remainingRounds,
-      });
       // v0.35: 最终答案回调
       if (progressCallback) {
         progressCallback(round + 1, maxRounds, '正在生成任务总结...', toolCallHistory.map(h => h.tool).slice(-3));
@@ -1005,17 +835,6 @@ Round ${round + 1}/${maxRounds}。
           console.log(`[runToolLoop] v0.33 truncated ${tc.name} result: ${truncated.origSize} → ${TOOL_RESULT_TRUNCATE_BYTES} bytes`);
         }
         console.log(`[runToolLoop]   -> result (${resultPreview.length} chars): ${resultPreview}`);
-        // v0.X: 写后空转检测 — 记录最后成功 write_file/patch_file 的轮次
-        if (['agent_write_file', 'agent_patch_file', 'agent_multi_patch'].includes(tc.name) && toolResult && toolResult.ok) {
-          lastWriteRound = round;
-        }
-        // v0.X: Trace — 记录工具的完整 args + result
-        writeTrace(traceFile, 'tool_result', round + 1, {
-          name: tc.name,
-          args: tc.args,
-          result: toolResult,
-          truncated: truncated.truncated || false,
-        });
         toolCallHistory.push({ round: round + 1, tool: tc.name, args: argsPreview, resultPreview });
         messages.push(toolRegistry.makeToolResult(api, tc.id, truncated.result));
       } catch (e) {
@@ -1026,10 +845,6 @@ Round ${round + 1}/${maxRounds}。
     }
   }
   console.error(`[runToolLoop] Tool loop exceeded max rounds (${maxRounds}). 完整 tool call history (${toolCallHistory.length} 条):\n${toolCallHistory.map(h => `  r${h.round} ${h.tool}(${(h.args||'').slice(0, 80)}) → ${h.resultPreview ? h.resultPreview.slice(0, 80) : (h.result || h.error || '?')}`).join('\n')}`);
-  writeTrace(traceFile, 'tool_loop_exceeded', maxRounds, {
-    toolCallHistory,
-    messagesCount: messages.length,
-  });
   throw new Error(`Tool loop exceeded max rounds (${maxRounds})`);
 }
 

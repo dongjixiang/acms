@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- v0.13 B5 fix: 客户端缓存导致修复后的 JS 不生效；加 no-cache 三件套强制每次校验 -->
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>ACMS — 智能体协同管理系统</title>
+<link rel="stylesheet" href="/client/css/style.css?v=0.9.0">
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js" defer></script>
+<script>
+// Mermaid 配置（跟随主题，脚本加载后初始化）
+document.addEventListener('DOMContentLoaded', () => {
+  if (window.mermaid) {
+    var theme = (window.App && (window.App.theme === 'light' || window.App.theme === 'cream')) ? 'default' : 'dark';
+    window.mermaid.initialize({ startOnLoad: false, theme: theme, securityLevel: 'loose' });
+  }
+});
+</script>
+</head>
+<body>
+<div id="app">
+  <header id="header">
+    <button id="btn-hamburger" onclick="App.toggleSidebar()" title="菜单">☰</button>
+    <h1 id="header-title">🤖 <span data-i18n="app.title">智能体协同管理系统</span> <span class="version" data-i18n="app.version">v0.3</span></h1>
+    <div id="header-right">
+      <span id="current-project"></span>
+      <button class="btn-small" onclick="showIdeaDialog()" title="记录想法">💡</button>
+      <select id="role-switcher" class="role-switcher" onchange="App.setCurrentRole(this.value)" title="你的角色（影响澄清提问方向）">
+        <option value="pm">👤 PM</option>
+        <option value="tech">🛠 技术</option>
+        <option value="design">🎨 设计</option>
+        <option value="test">🧪 测试</option>
+        <option value="agent:小吉">🤖 Agent</option>
+        <option value="system">⚙️ 系统</option>
+        <option value="anonymous">匿名</option>
+      </select>
+      <button class="btn-small" onclick="showView('view-improvements');loadImprovements();" title="自我改进">🔄</button>
+      <button class="btn-small" onclick="showView('view-admin');loadAdminPage();">⚙️</button>
+      <button id="btn-theme-toggle" class="btn-small" onclick="App.toggleTheme()" title="切换主题">🌙</button>
+      <select id="lang-switcher" onchange="I18n.setLang(this.value)">
+        <option value="zh">🇨🇳 中文</option>
+        <option value="en">🇺🇸 English</option>
+      </select>
+      <span id="connection-status" class="status-offline">● <span data-i18n="common.offline">离线</span></span>
+    </div>
+  </header>
+
+  <!-- ====== 项目首页 ====== -->
+  <main id="view-projects" class="view-main">
+    <div class="projects-page">
+      <div class="projects-hero">
+        <div class="hero-icon">📦</div>
+        <h2 data-i18n="projects.title">我的项目</h2>
+        <p class="subtitle" data-i18n="projects.subtitle">选择一个项目进入，或创建新项目开始协作</p>
+      </div>
+
+      <div id="project-grid" class="project-grid"></div>
+
+      <!-- 新建项目区域 -->
+      <div class="create-project-section">
+        <div class="create-project-card" id="create-project-toggle" onclick="toggleCreateProject()">
+          <div class="create-icon">➕</div>
+          <div class="create-text">
+            <strong data-i18n="projects.create">新建项目</strong>
+            <span>创建一个新的工作空间，管理需求、任务和知识库</span>
+          </div>
+        </div>
+
+        <div id="create-project-form" class="create-project-form" style="display:none">
+          <h3 data-i18n="projects.form.title">📦 新建项目</h3>
+          <div class="form-two-col">
+            <div class="form-group">
+              <label data-i18n="projects.form.name">项目名称 <span class="required">*</span></label>
+              <input type="text" id="proj-name" data-i18n-attr="placeholder" data-i18n="projects.form.namePlaceholder" placeholder="例如：智体城" required>
+            </div>
+            <div class="form-group">
+              <label data-i18n="projects.form.slug">项目标识</label>
+              <input type="text" id="proj-slug" data-i18n-attr="placeholder" data-i18n="projects.form.slugPlaceholder" placeholder="URL友好的英文标识">
+            </div>
+          </div>
+          <div class="form-group">
+            <label data-i18n="projects.form.desc">描述</label>
+            <textarea id="proj-desc" rows="3" data-i18n-attr="placeholder" data-i18n="projects.form.descPlaceholder" placeholder="项目的简要描述..."></textarea>
+          </div>
+          <div class="form-actions">
+            <button class="btn-primary btn-lg" onclick="doCreateProject()" data-i18n="projects.form.submit">创建项目</button>
+            <button class="btn-back" onclick="toggleCreateProject()" data-i18n="projects.form.cancel">取消</button>
+          </div>
+        </div>
+      </div>
+  </main>
+
+  <!-- ====== 系统管理（独立页面） ====== -->
+  <main id="view-admin" class="view-main" style="display:none">
+    <div class="projects-page">
+      <div class="view-header" style="display:flex;align-items:center;gap:12px">
+        <button class="btn-back" onclick="showView('view-projects');loadProjects();">← 返回项目</button>
+        <h2>⚙️ 系统管理</h2>
+      </div>
+      <div id="admin-content"></div>
+    </div>
+  </main>
+
+  <!-- ====== 自我改进（独立页面） ====== -->
+  <main id="view-improvements" class="view-main" style="display:none">
+    <div class="projects-page" style="display:flex;flex-direction:column;height:100%">
+      <div class="view-header" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;flex-shrink:0">
+        <button class="btn-back" onclick="showView('view-projects');loadProjects();">← 返回项目</button>
+        <h2>🔄 自我改进</h2>
+        <span id="imp-project-info" style="font-size:11px;color:var(--text2)"></span>
+      </div>
+      <div class="imp-tabs" style="flex-shrink:0">
+        <button class="imp-tab-btn active" data-tab="reports" onclick="switchImprovementTab('reports')">📋 改进报告</button>
+        <button class="imp-tab-btn" data-tab="board" onclick="switchImprovementTab('board')">📌 任务看板</button>
+      </div>
+      <div id="imp-reports-panel" class="imp-content-wrap" style="display:flex;flex:1;overflow:hidden">
+        <div style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+          <div id="imp-reports-toolbar" class="imp-reports-toolbar" style="display:none"></div>
+          <div id="imp-reports-list" class="imp-list-panel"></div>
+        </div>
+        <div id="imp-detail-panel" class="imp-detail-panel"></div>
+      </div>
+      <div id="imp-board-panel" class="imp-board-panel" style="display:none;flex:1;overflow:auto">
+        <div id="imp-board-content"></div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ====== 项目工作空间 ====== -->
+<div id="view-workspace" class="view-main" style="display:none">
+    <div id="sidebar-backdrop" onclick="App.closeSidebar()"></div>
+    <div id="main-layout">
+      <nav id="sidebar">
+        <button class="nav-btn nav-back" onclick="goToProjects()" style="margin-bottom:8px;padding-bottom:12px;border-bottom:1px solid var(--border)">← <span data-i18n="nav.backToProjects">返回项目列表</span></button>
+        <button class="nav-btn active" data-view="dashboard">📊 <span data-i18n="nav.dashboard">仪表盘</span></button>
+        <button class="nav-btn" data-view="requirements">📋 <span data-i18n="nav.requirements">需求管理</span></button>
+        <button class="nav-btn" data-view="kanban">📌 <span data-i18n="nav.kanban">任务看板</span></button>
+        <button class="nav-btn" data-view="bugs">🐛 <span>缺陷管理</span></button>
+        <button class="nav-btn" data-view="knowledge">📚 <span>知识库</span></button>
+        <button class="nav-btn" data-view="delivery">📦 <span data-i18n="nav.delivery">交付管理</span></button>
+        <button class="nav-btn" data-view="agents">🤖 <span>智能体协同</span></button>
+        <button class="nav-btn" data-view="reports">📊 <span>项目报告</span></button>
+        <button class="nav-btn" data-view="settings">⚙️ <span data-i18n="nav.settings">项目设置</span></button>
+        <div id="sidebar-stats"></div>
+      </nav>
+
+      <section id="content">
+        <!-- 仪表盘 -->
+        <div id="view-dashboard" class="view active">
+          <div class="view-header"><h2 id="dash-name"></h2></div>
+          <div class="stats-row" id="dash-stats"></div>
+          <div class="dash-panels">
+            <div class="dash-panel"><h3 data-i18n="dashboard.recentReqs">📋 最近需求</h3><div id="dash-reqs"></div></div>
+            <div class="dash-panel"><h3 data-i18n="dashboard.activeTasks">📌 进行中的任务</h3><div id="dash-tasks"></div></div>
+            <div class="dash-panel"><h3>📋 Token 调用明细</h3><div id="dash-token-logs"></div></div>
+          </div>
+        </div>
+
+        <!-- 需求管理 -->
+        <div id="view-requirements" class="view">
+          <div class="view-header">
+            <h2 data-i18n="requirements.title">📋 需求列表</h2>
+            <button class="btn-primary" onclick="showCreateReq()" data-i18n="requirements.create">➕ 新建需求</button>
+            <select id="status-filter" class="filter-select">
+              <option value="" data-i18n="requirements.filterAll">全部状态</option>
+              <option value="idea">💡 想法</option><option value="clarifying">❓ 澄清中</option><option value="review">👀 待审核</option><option value="approved">✅ 已确认</option><option value="in_execution">🔄 执行中</option><option value="done">🎉 已完成</option>
+            </select>
+          </div>
+          <div id="create-req-panel" class="panel-form" style="display:none">
+            <h3>💭 提个需求</h3>
+            <div class="create-req-hint">
+              先随便写，AI 会帮你理清 — 模糊的会先出预览，规范的直接进澄清。
+            </div>
+            <label>需求标题 <span class="required">*</span></label>
+            <div class="input-voice-row">
+              <input type="text" id="create-title" placeholder="例如：天气特效系统" style="flex:1">
+              <button class="btn-voice" onclick="startVoiceInput(document.getElementById('create-title'), this)" title="语音录入">🎤</button>
+            </div>
+            <label>需求描述</label>
+            <div class="input-voice-row">
+              <textarea id="create-desc" rows="4" placeholder="描述你想要的功能或改进…越具体 AI 越能帮你；模糊也没关系。" style="flex:1"></textarea>
+              <button class="btn-voice" onclick="startVoiceInput(document.getElementById('create-desc'), this)" title="语音录入">🎤</button>
+            </div>
+            <label>标签 <span class="optional-hint">（可选，逗号分隔）</span></label>
+            <input type="text" id="create-tags" placeholder="AI 会根据描述自动建议，确认即可">
+            <details class="create-req-advanced">
+              <summary>高级选项</summary>
+              <div class="form-row">
+                <div><label>优先级</label><select id="create-priority">
+                  <option value="">— 系统推断 —</option>
+                  <option value="1">P1 🔴</option>
+                  <option value="2">P2 🟠</option>
+                  <option value="3" selected>P3 🟡</option>
+                  <option value="4">P4 🟢</option>
+                  <option value="5">P5 ⚪</option>
+                </select></div>
+                <div><label>截止日期</label><input type="date" id="create-deadline"></div>
+              </div>
+              <div class="advanced-hint">不知道就空着 — 优先级会在规划阶段基于澄清结果自动定；截止日期在任务分解时设。</div>
+            </details>
+            <div class="form-actions">
+              <button class="btn-primary" onclick="doCreateReq()">📥 提交</button>
+              <button class="btn-back" onclick="hideCreateReq()">取消</button>
+            </div>
+          </div>
+          <div id="req-list"></div>
+        </div>
+
+        <!-- 任务看板 -->
+        <div id="view-kanban" class="view">
+          <div class="view-header">
+            <h2 data-i18n="kanban.title">📌 任务看板</h2>
+            <select id="kanban-req-filter" class="filter-select" onchange="refreshKanban()"><option value="">全部需求</option></select>
+            <button class="btn-small btn-accept" onclick="refreshKanban()">🔄 刷新</button>
+            <label class="toggle-switch" title="开启后，所有提交到 review 列的任务自动触发 Reviewer Agent 审核" style="margin-left:12px">
+              <input type="checkbox" id="auto-review-global" onchange="toggleGlobalAutoReview(this.checked)">
+              <span class="toggle-slider"></span>
+            </label>
+            <span style="font-size:13px;margin-left:4px">🤖 自动审核</span>
+          </div>
+          <div class="kanban-container">
+            <div class="kanban-col" data-col="backlog"><div class="col-header">📥 <span data-i18n="kanban.cols.backlog">待认领</span> <span class="count" id="count-backlog">0</span></div><div class="col-body" id="col-backlog"></div></div>
+            <div class="kanban-col" data-col="in_progress"><div class="col-header">🔄 <span data-i18n="kanban.cols.in_progress">进行中</span> <span class="count" id="count-in_progress">0</span></div><div class="col-body" id="col-in_progress"></div></div>
+            <div class="kanban-col" data-col="review"><div class="col-header">👀 <span data-i18n="kanban.cols.review">待审核</span> <span class="count" id="count-review">0</span></div><div class="col-body" id="col-review"></div></div>
+            <div class="kanban-col" data-col="done"><div class="col-header">✅ <span data-i18n="kanban.cols.done">已完成</span> <span class="count" id="count-done">0</span></div><div class="col-body" id="col-done"></div></div>
+            <div class="kanban-col" data-col="archived"><div class="col-header">📦 <span data-i18n="kanban.cols.archived">已归档</span> <span class="count" id="count-archived">0</span></div><div class="col-body" id="col-archived"></div></div>
+          </div>
+        </div>
+
+        <!-- 知识库 -->
+        <div id="view-knowledge" class="view">
+          <div class="view-header">
+            <h2>📚 项目知识库</h2>
+            <button class="btn-primary" style="padding:6px 14px;font-size:13px;cursor:pointer" onclick="showUploadDialog()">📤 上传文件</button>
+          </div>
+          <div id="knowledge-content" style="display:flex;gap:16px;height:calc(100% - 48px)">
+            <!-- 左侧：目录树 -->
+            <div id="knowledge-tree-panel" style="width:260px;flex-shrink:0;overflow-y:auto;border-right:1px solid var(--border);padding-right:12px">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+                <span style="font-size:12px;color:var(--text2)" id="knowledge-stats"></span>
+                <button class="btn-small" onclick="refreshKnowledge()" title="刷新">🔄</button>
+              </div>
+              <div id="knowledge-tree"></div>
+            </div>
+            <!-- 右侧：页面内容 / 上传文件列表 -->
+            <div id="knowledge-detail" style="flex:1;overflow-y:auto;padding-left:12px">
+              <div id="knowledge-index-summary"></div>
+              <div id="knowledge-page-content" style="display:none"></div>
+              <div id="knowledge-upload-list" style="margin-top:16px">
+                <h3 style="font-size:14px;margin-bottom:8px;color:var(--text2)">📂 已上传文件</h3>
+                <div id="knowledge-files"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 上传对话框 -->
+        <div id="upload-dialog-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center" onclick="if(event.target===this)hideUploadDialog()">
+          <div id="upload-dialog" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:20px;width:480px;max-width:90vw;box-shadow:0 8px 32px rgba(0,0,0,0.3)">
+            <h3 style="margin:0 0 4px 0;font-size:16px">📤 上传文件到知识库</h3>
+            <p style="margin:0 0 16px 0;font-size:12px;color:var(--text2)">上传后系统会自动扫描文件内容，AI 会分析并更新项目知识库。</p>
+
+            <div style="margin-bottom:14px">
+              <label style="display:block;font-size:13px;font-weight:bold;margin-bottom:6px">选择文件 <span class="required">*</span></label>
+              <div style="display:flex;align-items:center;gap:8px">
+                <button class="btn-small" onclick="document.getElementById('upload-file-input').click()" style="flex-shrink:0">📂 浏览...</button>
+                <input type="file" id="upload-file-input" style="display:none" onchange="onFileSelected(this)">
+                <span id="upload-file-name" style="font-size:13px;color:var(--text2)">未选择文件</span>
+              </div>
+            </div>
+
+            <div style="margin-bottom:16px">
+              <label style="display:block;font-size:13px;font-weight:bold;margin-bottom:6px">
+                📝 上传目的 <span style="font-weight:normal;color:var(--text2);font-size:12px">（选填，帮助 AI 更精准地分析内容）</span>
+              </label>
+              <textarea id="upload-purpose" rows="3" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:4px;background:var(--bg2);color:var(--text);font-size:13px;resize:vertical;box-sizing:border-box" placeholder="例如：这是一张游戏角色头像，需要更新到角色文档中&#10;或者：压缩包包含了后端API代码和数据库脚本"></textarea>
+            </div>
+
+            <div style="display:flex;justify-content:flex-end;gap:8px">
+              <button class="btn-back" onclick="hideUploadDialog()">取消</button>
+              <button class="btn-primary" id="upload-submit-btn" onclick="doUploadWithPurpose()" disabled>📤 上传</button>
+            </div>
+            <div id="upload-progress" style="display:none;margin-top:12px;padding:8px;background:var(--bg2);border-radius:4px;font-size:12px;color:var(--text2);text-align:center">⏳ 上传中...</div>
+          </div>
+        </div>
+
+        <!-- 交付管理 -->
+        <div id="view-delivery" class="view">
+          <div class="view-header">
+            <h2>📦 <span data-i18n="nav.delivery">交付管理</span></h2>
+          </div>
+          <!-- 交付概览卡片 -->
+          <div id="delivery-overview" class="stats-row" style="margin-bottom:16px"></div>
+          <!-- 操作栏 -->
+          <div id="delivery-actions" class="workspace-actions"></div>
+          <!-- 需求交付清单 -->
+          <div id="delivery-req-list" style="margin-bottom:16px"></div>
+          <!-- 工作区文件 -->
+          <div id="delivery-workspace-path" style="font-size:11px;color:var(--text2);margin-bottom:8px"></div>
+          <div id="delivery-files"></div>
+        </div>
+
+        <!-- 智能体协同 -->
+        <div id="view-agents" class="view">
+          <div class="view-header"><h2>🤖 智能体协同</h2></div>
+          <div class="dash-panels">
+            <div class="dash-panel" style="grid-column:1">
+              <h3>📋 已注册智能体</h3>
+              <div id="agent-list"></div>
+              <div class="form-inline" style="margin-top:12px">
+                <input type="text" id="reg-agent-id" placeholder="智能体ID (如 agent-planner-001)">
+                <input type="text" id="reg-agent-name" placeholder="名称 (如 规划师)">
+                <button class="btn-small btn-accept" onclick="registerAgent()">注册</button>
+              </div>
+            </div>
+            <div class="dash-panel">
+              <h3>🎯 技能匹配推荐</h3>
+              <select id="match-agent-select" class="filter-select" onchange="loadMatchTasks()" style="width:100%">
+                <option value="">选择智能体查看匹配任务...</option>
+              </select>
+              <div id="match-results" style="margin-top:8px"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 缺陷管理 -->
+        <div id="view-bugs" class="view">
+          <div class="view-header">
+            <h2>🐛 缺陷管理</h2>
+            <select id="bug-status-filter" class="filter-select" onchange="loadBugList()">
+              <option value="">全部状态</option>
+              <option value="backlog">📥 待修复</option>
+              <option value="in_progress">🔄 修复中</option>
+              <option value="review">👀 待审核</option>
+              <option value="done">✅ 已解决</option>
+              <option value="archived">📦 已归档</option>
+            </select>
+            <select id="bug-severity-filter" class="filter-select" onchange="loadBugList()">
+              <option value="">全部严重级</option>
+              <option value="critical">🔴 Critical</option>
+              <option value="major">🟠 Major</option>
+              <option value="minor">🟡 Minor</option>
+              <option value="trivial">⚪ Trivial</option>
+            </select>
+            <button class="btn-primary" onclick="showBugForm()">➕ 提交缺陷</button>
+          </div>
+          <div id="bug-form-panel" style="display:none"></div>
+          <div id="bug-list"></div>
+        </div>
+
+        <!-- 项目报告 -->
+        <div id="view-reports" class="view">
+          <div class="view-header">
+            <h2>📊 项目报告</h2>
+            <select id="report-template" class="filter-select">
+              <option value="comprehensive">综合报告</option>
+              <option value="quality">质量审查</option>
+              <option value="agent">Agent 绩效</option>
+              <option value="progress">进度报告</option>
+              <option value="security">安全审查</option>
+            </select>
+            <button class="btn-small btn-accept" onclick="generateReport()">➕ 生成报告</button>
+          </div>
+          <div id="report-list"></div>
+          <div id="report-preview" style="display:none">
+            <button class="btn-small" onclick="closeReportPreview()" style="margin-bottom:12px">← 返回列表</button>
+            <div id="report-preview-content"></div>
+          </div>
+        </div>
+
+        <!-- 项目设置 -->
+        <div id="view-settings" class="view">
+          <div class="view-header"><h2 data-i18n="settings.title">⚙️ 项目设置</h2></div>
+          <div class="settings-tabs">
+            <button class="tab-btn active" data-tab="tab-envs">🌐 <span data-i18n="settings.tabs.envs">环境</span></button>
+            <button class="tab-btn" data-tab="tab-repos">📦 <span data-i18n="settings.tabs.repos">仓库</span></button>
+            <button class="tab-btn" data-tab="tab-configs">🔧 <span data-i18n="settings.tabs.configs">配置</span></button>
+            <button class="tab-btn" data-tab="tab-members">👥 <span data-i18n="settings.tabs.members">成员</span></button>
+            <button class="tab-btn" data-tab="tab-workspace">📂 <span>工作区</span></button>
+            <button class="tab-btn" data-tab="tab-skills">🎯 技能</button>
+          </div>
+          <div class="tab-content active" id="tab-envs"><h3 data-i18n="settings.envs.title">环境地址</h3><div id="envs-list"></div><div class="form-inline" style="margin-top:12px"><input type="text" id="env-name" placeholder="dev/staging/prod"><input type="text" id="env-url" placeholder="http://localhost:3000"><button class="btn-small btn-accept" onclick="addEnv()">添加</button></div></div>
+          <div class="tab-content" id="tab-repos"><h3 data-i18n="settings.repos.title">代码仓库</h3><div id="repos-list"></div><div class="form-inline" style="margin-top:12px"><input type="text" id="repo-name" placeholder="仓库名"><input type="text" id="repo-url" placeholder="https://github.com/..."><button class="btn-small btn-accept" onclick="addRepo()">添加</button></div></div>
+          <div class="tab-content" id="tab-configs"><h3 data-i18n="settings.configs.title">配置项</h3><div id="configs-list"></div><div class="config-section"><h4>📦 自动归档</h4><div class="form-inline"><input type="number" id="auto-archive-days" min="1" max="365" style="width:80px"><span style="margin:0 8px;color:var(--text2)">天</span><button class="btn-small btn-accept" onclick="saveAutoArchiveDays()">保存</button><span id="auto-archive-status" style="margin-left:8px;font-size:12px;color:var(--text2)"></span></div><p style="font-size:11px;color:var(--text2);margin-top:4px">任务完成后超过此天数自动归档。设为0表示不自动归档。</p></div><div class="form-inline" style="margin-top:12px"><input type="text" id="cfg-key" placeholder="KEY"><input type="text" id="cfg-value" placeholder="VALUE"><button class="btn-small btn-accept" onclick="addConfig()">添加</button></div></div>
+          <div class="tab-content" id="tab-members"><h3 data-i18n="settings.members.title">项目成员</h3><div id="members-list"></div><div class="form-inline" style="margin-top:12px"><input type="text" id="member-id" placeholder="成员ID"><select id="member-type"><option value="human">👤 人</option><option value="agent">🤖 智能体</option></select><button class="btn-small btn-accept" onclick="addMember()">添加</button></div></div>
+          <div class="tab-content" id="tab-skills"><h3>🎯 技能管理</h3><p style="font-size:12px;color:var(--text2);margin-bottom:12px">技能定义了常见任务类型的标准执行方法</p><div id="skills-list"></div><div class="form-inline" style="margin-top:12px"><input type="text" id="skill-id" placeholder="skill-id"><input type="text" id="skill-name" placeholder="技能名称"><button class="btn-small btn-accept" onclick="addSkill()">添加</button></div></div>
+<div class="tab-content" id="tab-workspace"><h3>📂 项目工作区</h3><p style="font-size:12px;color:var(--text2);margin-bottom:12px">工作区文件浏览已移至独立的 <a href="#" onclick="showWorkspaceView('delivery');loadDelivery();return false;" style="color:var(--accent)">📦 交付管理</a> 页面。点击前往查看完整交付物。</p><div id="workspace-path" style="font-size:11px;color:var(--text2);margin-bottom:8px"></div><div id="workspace-files"></div></div>
+        </div>
+
+        <!-- 需求详情 / 任务详情 -->
+        <div id="view-detail" class="view"><div class="view-header"><button class="btn-back" onclick="showWorkspaceView('requirements');loadRequirements();">← 返回</button><h2 id="detail-title"></h2><span id="detail-status"></span></div><div id="detail-content"></div></div>
+        <div id="view-task-detail" class="view"><div class="view-header"><button class="btn-back" onclick="showWorkspaceView('kanban');refreshKanban();">← 返回</button><h2 id="task-detail-title"></h2><span id="task-detail-status"></span></div><div id="task-detail-content"></div></div>
+      </section>
+    </div>
+  </div>
+
+  <div id="toast-container"></div>
+</div>
+
+<script src="/client/js/i18n.js"></script>
+<script src="/client/js/api.js"></script>
+<script src="/client/js/core/state.js"></script>
+<script src="/client/js/core/utils.js"></script>
+<script src="/client/js/core/markdown.js"></script>
+<script src="/client/js/core/voice.js"></script>
+<script src="/client/js/core/router.js"></script>
+<script src="/client/js/views/projects.js"></script>
+<script src="/client/js/views/dashboard.js"></script>
+<!-- v0.13 拆分：12 个子模块在 requirements.js 之前加载（HTML onclick 跨文件按名查找） -->
+<script src="/client/js/views/requirements/chat.js?v=0.13.0"></script>
+<script src="/client/js/views/requirements/idea-panel.js?v=0.13.0"></script>
+<!-- v0.18 chat 模式切换器（clarify ↔ free）—— idea-panel.js 之后加载，引用 toggleChatMode -->
+<script src="/client/js/views/requirements/chat-mode.js?v=0.18.0"></script>
+<script src="/client/js/views/requirements/ai-state.js?v=0.13.0"></script>
+<script src="/client/js/views/requirements/chat-assist.js?v=0.13.0"></script>
+<script src="/client/js/views/requirements/chat-ui.js?v=0.13.0"></script>
+<script src="/client/js/views/requirements/brief-controls.js?v=0.13.0"></script>
+<script src="/client/js/views/requirements/decision-tree.js?v=0.13.0"></script>
+<script src="/client/js/views/requirements/data-model.js?v=0.13.0"></script>
+<script src="/client/js/views/requirements/arch.js?v=0.13.0"></script>
+<script src="/client/js/views/requirements/prototype.js?v=0.13.0"></script>
+<script src="/client/js/views/requirements/change-history.js?v=0.13.0"></script>
+<script src="/client/js/views/requirements/description-history.js?v=0.13.0"></script>
+<script src="/client/js/views/requirements.js?v=0.13.0"></script>
+<script src="/client/js/views/assists/index.js"></script>
+<script src="/client/js/views/assists/decision-tree.js?v=0.6.9"></script>
+<script src="/client/js/views/assists/use-case.js?v=0.13.0"></script>  <!-- v0.13 方法论驱动的"整理" -->
+<script src="/client/js/views/assists/scenarios.js"></script>
+<script src="/client/js/views/assists/diagnosis.js"></script>
+<script src="/client/js/views/assists/tradeoff.js"></script>
+<script src="/client/js/views/assists/arch.js"></script>
+<script src="/client/js/views/assists/visual.js"></script>  <!-- v0.13 B11：补漏（之前 index.html 漏注册 visual.js，导致视觉卡片走降级分支只显示标题） -->
+<script src="/client/js/views/assists/competitive.js"></script>
+<script src="/client/js/views/assists/reference.js"></script>
+<script src="/client/js/views/assists/pains.js"></script>
+<script src="/client/js/views/assists/risks.js"></script>
+<script src="/client/js/views/assists/stakeholders.js"></script>
+<script src="/client/js/views/assists/assumptions.js"></script>
+<script src="/client/js/views/assists/health-check.js"></script>
+<script src="/client/js/views/assists/music.js?v=0.19.0"></script>  <!-- v0.19 音乐播放辅助 — 找免费播放源链接 -->
+<script src="/client/js/views/assists/video.js?v=0.19.0"></script>  <!-- v0.19 AI 视频生成 → Agnes Video -->
+<script src="/client/js/views/assists/image-gen.js?v=0.19.0"></script>  <!-- v0.19 AI 图片生成 → Agnes Image -->
+<script src="/client/js/views/assists/thinking-brief.js?v=0.9.0"></script>
+<script src="/client/js/views/assists/dispatcher.js"></script>
+<script src="/client/js/views/kanban.js"></script>
+<script src="/client/js/views/bugs.js"></script>
+<script src="/client/js/views/knowledge.js"></script>
+<script src="/client/js/views/delivery.js"></script>
+<script src="/client/js/views/agents.js"></script>
+<script src="/client/js/views/settings.js"></script>
+<script src="/client/js/views/reports.js"></script>
+<script src="/client/js/views/admin.js"></script>
+<script src="/client/js/views/improvements.js"></script>
+<script src="/client/js/app.js"></script>
+</body>
+</html>
