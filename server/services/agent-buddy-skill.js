@@ -13,7 +13,8 @@
 // 依赖：tool-registry（已注册的所有 tool，包括 acms-internal.js）
 
 const toolRegistry = require('./tool-registry');
-
+const skillLoader = require('./skill-loader');
+// L0 基础身份提示（永久常驻层）
 // ── L0 永久层（~500 tokens，常驻不卸载）──
 const L0_BASE = `你是「小吉」，ACMS 智能协同管理平台的系统助手。
 
@@ -94,7 +95,7 @@ const VIEW_TOOLS = {
 // L0 常驻工具（不受视图影响，永远在 SKILL prompt）
 // + chat 流工具（web_search / generate_image / play_music / play_video — 创作/搜索类，常驻避免漏调）
 // v0.62 新增 query_collection（管家通用查询·管家身份基础能力）
-const L0_TOOLS = ['open_view', 'highlight_element', '_expand_tools', 'query_collection', 'generate_image', 'web_search', 'play_music', 'play_video'];
+const L0_TOOLS = ['open_view', 'highlight_element', '_expand_tools', 'query_collection', 'generate_image', 'web_search', 'play_music', 'play_video', 'search_history', 'delegate_subtasks'];
 
 // ── L2 扩载层（按 LLM 主动 _expand_tools({category}) 触发）──
 const CATEGORY_TOOLS = {
@@ -151,13 +152,32 @@ function buildChatPrompt(ctx = {}) {
   const userName = ctx.userName || '伙伴';
   const userSummary = ctx.userSummary ? `\n\n【关于 ${userName}】${ctx.userSummary}` : '';
 
+  // P2: Agent 事件通知（task-agent 完成任务等）
+  const agentEvents = (Array.isArray(ctx.agentEvents) && ctx.agentEvents.length > 0)
+    ? `\n\n【近期 Agent 动态】\n${ctx.agentEvents.map(function(e) { return '- ' + e; }).join('\n')}`
+    : '';
+
   // 性格印象
   const personalityHint = ctx.personality ? `\n\n【你对这个用户的印象】${ctx.personality}` : '';
+
+  // Skill 注入：根据当前视图加载相关 skill（复用 skill-loader）
+  let skillHint = '';
+  try {
+    var skills = skillLoader.getSkills();
+    var viewSkills = skills.filter(function(s) {
+      var cats = s.category || 'general';
+      // 根据视图匹配 skill category
+      return cats === view || (view === 'kanban' && cats === '管理工作流') || (view === 'requirements' && cats === '需求分析') || cats === 'general';
+    }).slice(0, 2);  // 最多注入 2 个
+    if (viewSkills.length > 0) {
+      skillHint = '\n\n【相关技能参考】\n' + viewSkills.map(function(s) { return '- ' + s.name + ': ' + (s.description || s.body.slice(0, 100)); }).join('\n');
+    }
+  } catch (e) { /* skill-loader 不可用时忽略 */ }
 
   // 注入当前视图名到 L0 模板（用 __VIEW__ 占位符，避免被 Node 当场模板插值）
   const l0 = L0_BASE.replace(/__VIEW__/g, view);
 
-  return `${l0}${userSummary}${viewHint}${personalityHint}\n\n【你当前可用的工具（共 ${allToolNames.length} 个）】\n${toolDescs || '(暂无工具，可调 _expand_tools({category: "..."}) 加载)'}`;
+  return `${l0}${userSummary}${agentEvents}${viewHint}${personalityHint}${skillHint}\n\n【你当前可用的工具（共 ${allToolNames.length} 个）】\n${toolDescs || '(暂无工具，可调 _expand_tools({category: "..."}) 加载)'}`;
 }
 
 /**

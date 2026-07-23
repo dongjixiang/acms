@@ -13,9 +13,26 @@
 
 const express = require('express');
 const router = express.Router();
-const { callLLM, runToolLoop } = require('../services/llm-adapter');
+const { callLLM } = require('../services/llm-adapter');
+const { execute: runtimeExec } = require('../services/agent-runtime');
 const modelStore = require('../stores/model-store');
 const buddySkill = require('../services/agent-buddy-skill');
+const eventBus = require('../services/event-bus');
+
+// P2: 订阅 Agent 事件，让小吉知道 task-agent 做了什么
+const _recentAgentEvents = [];
+eventBus.on('task.completed', function(ev) {
+  _recentAgentEvents.push(ev);
+  if (_recentAgentEvents.length > 5) _recentAgentEvents.shift();
+});
+eventBus.on('task.review_rejected', function(ev) {
+  _recentAgentEvents.push(ev);
+  if (_recentAgentEvents.length > 5) _recentAgentEvents.shift();
+});
+eventBus.on('task.failed', function(ev) {
+  _recentAgentEvents.push(ev);
+  if (_recentAgentEvents.length > 5) _recentAgentEvents.shift();
+});
 
 // ─── helpers ───
 
@@ -289,6 +306,12 @@ router.post('/chat', async function(req, res) {
       userName: user ? (user.displayName || user.username || '伙伴') : (context.userName || '伙伴'),
       userSummary: buildUserSummary(context) + actionHint + learnHint,
       personality: context.personality || '',
+      // P2: 注入近期 Agent 事件
+      agentEvents: _recentAgentEvents.slice(-3).map(function(ev) {
+        var t = ev.type || '';
+        var s = (ev.payload && ev.payload.summary) || (ev.payload && ev.payload.error) || '';
+        return t + ': ' + s.slice(0, 120);
+      }),
     };
     var systemPrompt = buddySkill.buildChatPrompt(buddyCtx);
 
@@ -319,21 +342,24 @@ router.post('/chat', async function(req, res) {
     };
 
     // 6. 跑 runToolLoop（LLM 可以调 tool）
-    var result;
+    var runtimeResult;
     if (hasSkills) {
-      result = await runToolLoop(model.id, messages, {
-        toolNames: toolNames,
+      runtimeResult = await runtimeExec({
+        modelId: model.id,
+        messages,
+        toolNames,
         maxRounds: 8,
         context: sharedCtx,
         caller: 'agent-buddy',
       });
     } else {
       // 无 tools 时退回到常规 callLLM
-      result = await callLLM(model.id, messages, {
+      var result = await callLLM(model.id, messages, {
         maxTokens: 500,
         temperature: 0.8,
         caller: 'agent-buddy',
       });
+      runtimeResult = { content: typeof result === 'string' ? result : (result?.content || '') };
     }
 
     // 7. 持久化新的 expandedCategories
@@ -344,16 +370,7 @@ router.post('/chat', async function(req, res) {
     }
 
     // 8. 提取 final answer
-    var reply = '';
-    if (typeof result === 'string') {
-      reply = result;
-    } else if (result && result.content) {
-      reply = result.content;
-    } else if (result && result.message && result.message.content) {
-      reply = result.message.content;
-    } else {
-      reply = '好的，我先消化一下再回答你～';
-    }
+    var reply = runtimeResult.content || '好的，我先消化一下再回答你～';
     reply = reply.trim();
 
     // 清理 LLM 回复中的 tool_result 残留（以防万一）

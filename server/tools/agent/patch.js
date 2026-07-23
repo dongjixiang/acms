@@ -126,7 +126,9 @@ registerTool({
     + 'Supports indent-aware matching (ignores leading whitespace differences). '
     + 'For multiple patches in one file, use agent_multi_patch instead. '
     + 'Parameters: path (required), old_string (required, text to find), '
-    + 'new_string (required, replacement text), replace_all (optional, default false).',
+    + 'new_string (required, replacement text), replace_all (optional, default false). '
+    + '示例: agent_patch_file({path: "src/server.js", old_string: "port: 3000", new_string: "port: 8080"}) — 把端口从 3000 改成 8080。'
+    + ' 如需改多个不同文件或同一文件的多个位置，用 agent_multi_patch 一次完成。',
   parameters: {
     type: 'object',
     properties: {
@@ -218,7 +220,8 @@ registerTool({
     + 'Useful for coordinated changes across multiple files. '
     + 'Returns per-patch results (success/failure). '
     + 'All patches are applied sequentially — if one fails, subsequent patches still run. '
-    + 'Parameters: patches (array of {path, old_string, new_string}).',
+    + 'Parameters: patches (array of {path, old_string, new_string}). '
+    + '示例: agent_multi_patch({patches: [{path: "src/a.js", old_string: "oldFunc", new_string: "newFunc"}, {path: "src/b.js", old_string: "oldFunc", new_string: "newFunc"}]}) — 同时在 a.js 和 b.js 中改名函数。',
   parameters: {
     type: 'object',
     properties: {

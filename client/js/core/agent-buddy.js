@@ -776,7 +776,8 @@
 
     renderScoreBar();
 
-    panel.style.display = 'block';
+    // 让 .open class 的 display:flex 接管（不要 inline 写 block，否则 specificity 压过 CSS）
+    panel.style.display = '';
     // v0.62: 恢复上次拖拽/缩放保存的位置（display:block 后才能正确 getBoundingClientRect）
     _applyPanelSavedState(panel);
     // 强迫回流后加 open class 触发过渡
@@ -794,7 +795,7 @@
     panel.classList.remove('open');
     // transitionend 会把 display 设为 none
     setTimeout(function() {
-      if (panel && !panel.classList.contains('open')) panel.style.display = 'none';
+      if (panel && !panel.classList.contains('open')) panel.style.removeProperty('display');
     }, 250);
   }
 

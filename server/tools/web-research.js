@@ -22,6 +22,30 @@ const { extractJSON } = require('../services/json-extractor');
 const { searchWeb } = require('../services/web-search');
 const modelStore = require('../stores/model-store');
 
+// ═══════════════════════════════════════════════════════════
+// 搜索缓存（5 分钟 TTL）
+// ═══════════════════════════════════════════════════════════
+const _researchCache = new Map();
+const CACHE_TTL = 5 * 60 * 1000;
+
+function getCachedResult(query, maxResults, deepFetch) {
+  const key = `${query}|${maxResults}|${deepFetch}`.toLowerCase().trim();
+  const cached = _researchCache.get(key);
+  if (cached && Date.now() - cached.ts < CACHE_TTL) return cached.data;
+  return null;
+}
+function setCachedResult(query, maxResults, deepFetch, data) {
+  const key = `${query}|${maxResults}|${deepFetch}`.toLowerCase().trim();
+  _researchCache.set(key, { data, ts: Date.now() });
+  // 清理过期缓存（最多 50 条）
+  if (_researchCache.size > 50) {
+    const now = Date.now();
+    for (const [k, v] of _researchCache) {
+      if (now - v.ts > CACHE_TTL) _researchCache.delete(k);
+    }
+  }
+}
+
 /**
  * 解析 modelId：null → 默认思路模型
  */
@@ -311,25 +335,49 @@ async function research(args) {
   if (!query) return { error: '查询问题必填', answer: '', sources: [] };
 
   const { maxResults, deepFetch, modelId } = normalizeResearchArgs(args);
-  const realModelId = resolveModelId(modelId);  // null → 默认模型
+  const realModelId = resolveModelId(modelId);
   const currentTime = buildCurrentTimeContext();
 
+  // ── 缓存命中直接返回 ──
+  const cached = getCachedResult(query, maxResults, deepFetch);
+  if (cached) {
+    console.log(`[web-research] 缓存命中: "${query.slice(0, 50)}"`);
+    return { ...cached, _cached: true };
+  }
+
+  // ── 流式进度回调 ──
+  function writeProgress(stage, msg) {
+    console.log(`[web-research] ${stage}: ${msg}`);
+    try {
+      // 如果有 reqId，写进 supplement_history 让前端可见
+      if (args._reqId) {
+        var { collection } = require('../db/connection');
+        var reqStore = require('../stores/requirement-store');
+        var req = reqStore.getById(args._reqId);
+        if (req) {
+          var hist = [];
+          try { hist = JSON.parse(req.supplement_history || '[]'); } catch {}
+          if (!Array.isArray(hist)) hist = [];
+          hist.push({ role: 'system', text: `[调研进度] ${stage}: ${msg}`, at: new Date().toISOString(), source: 'research_progress' });
+          reqStore.update(args._reqId, { supplement_history: JSON.stringify(hist) });
+        }
+      }
+    } catch (e) { /* 非关键 */ }
+  }
+
   try {
+    writeProgress('Stage1', '正在分析搜索意图...');
+
     // ═══ Stage 1: 提取关键词 + 实时查询扩展 ═══
     const keywords = await extractKeywords(query, modelId);
     console.log(`[web-research] Stage1 提取关键词:`, JSON.stringify(keywords));
     const baseSearchQuery = keywords.query;
-    const searchQueries = buildFreshnessSearchQueries(
-      baseSearchQuery,
-      query,
-      keywords,
-      currentTime,
-    );
+    const searchQueries = buildFreshnessSearchQueries(baseSearchQuery, query, keywords, currentTime);
     const freshness = isFreshnessRequest(query, keywords);
 
+    writeProgress('Stage2', '正在搜索互联网...');
+
     // ═══ Stage 2: 搜索 ═══
-    // 实时问题使用“中文具体日期 + 英文日期 official/results”双表达；按名次轮询合并，
-    // 避免第一组 20 条泛化结果把第二组权威结果挤出 top 20。
     const resultSets = [];
     const searchErrors = [];
     for (const q of searchQueries) {
@@ -355,18 +403,14 @@ async function research(args) {
     const results = rankResultsForResearch(mergedResults, freshness);
 
     if (results.length === 0) {
-      return {
-        error: searchErrors.join(' | ') || '搜索无结果',
-        answer: '',
-        sources: [],
-        keywords,
-        searchResults: [],
-        searchQueries,
-        currentTime,
-      };
+      const errResult = { error: searchErrors.join(' | ') || '搜索无结果', answer: '', sources: [], keywords, searchResults: [], searchQueries, currentTime };
+      setCachedResult(query, maxResults, deepFetch, errResult);
+      return errResult;
     }
 
-    // ═══ Stage 3: 抓取 top N URL 正文（最多 10 条，限并发 3）═══
+    writeProgress('Stage3', `正在抓取 ${Math.min(deepFetch, results.length)} 个网页...`);
+
+    // ═══ Stage 3: 抓取 top N URL 正文 ═══
     const topUrls = results.slice(0, deepFetch);
     const fetchAttempts = [];
     let cursor = 0;
@@ -375,7 +419,6 @@ async function research(args) {
         const idx = cursor++;
         const r = topUrls[idx];
         try {
-          // 先保留足够的头尾正文，再压缩为给综合模型的 8000 字相关片段。
           const fetched = await fetchUrlCore({ url: r.url, max_length: FETCH_BODY_LIMIT });
           if (fetched.error) {
             fetchAttempts[idx] = { index: idx + 1, url: r.url, title: r.title, error: fetched.error };
@@ -383,12 +426,9 @@ async function research(args) {
           }
           const rawContent = fetched.text || fetched.content || '';
           fetchAttempts[idx] = {
-            index: idx + 1,
-            url: r.url,
-            title: fetched.title || r.title,
+            index: idx + 1, url: r.url, title: fetched.title || r.title,
             content: excerptForSynthesis(rawContent, freshness),
-            fetchedAt: fetched.fetchedAt || null,
-            browserFallback: Boolean(fetched.rawHtml || fetched.screenshot),
+            fetchedAt: fetched.fetchedAt || null, browserFallback: Boolean(fetched.rawHtml || fetched.screenshot),
           };
         } catch (e) {
           fetchAttempts[idx] = { index: idx + 1, url: r.url, title: r.title, error: e.message };
@@ -401,62 +441,72 @@ async function research(args) {
     const failedFetches = fetchAttempts.filter(f => f?.error);
     console.log(`[web-research] Stage3 抓取: 成功 ${fetchedContents.length}/${topUrls.length}, 失败 ${failedFetches.length}`);
 
+    writeProgress('Stage4', `正在综合分析 ${fetchedContents.length} 个来源...`);
+
     // ═══ Stage 4: LLM 综合分析 ═══
-    const searchList = results.map((r, i) =>
-      `[${i + 1}] ${r.title}\n   URL: ${r.url}\n   摘要: ${(r.snippet || '').slice(0, 300)}`
-    ).join('\n\n');
-
-    const fetchList = fetchAttempts.length > 0
-      ? fetchAttempts.map(f => f?.content
-        ? `[${f.index}] ${f.title}\n   URL: ${f.url}\n   抓取时间: ${f.fetchedAt || '未知'}\n   正文: ${f.content}`
-        : `[${f?.index || '?'}] ${f?.title || '未知页面'}\n   URL: ${f?.url || '未知'}\n   抓取失败: ${f?.error || '未知错误'}（失败不代表事件未发生）`
-      ).join('\n\n---\n\n')
-      : '（deep_fetch=0，未抓取正文；不能据此断言事件不存在或尚未发生）';
-
-    const userMessage = `## 当前时间\n北京时间：${currentTime.shanghaiDateTime}\nUTC：${currentTime.utcIso}\n\n## 用户原始问题\n${query}\n\n## 实际搜索表达\n${searchQueries.join('\n')}\n（意图: ${keywords.intent}, 实体: ${(keywords.key_entities || []).join('、') || '无'}, 时间限定: ${keywords.time_constraint || '无'}）\n\n## 搜索结果（${results.length}条）\n${searchList}\n\n## 网页抓取（成功 ${fetchedContents.length}/${topUrls.length}）\n${fetchList}\n\n请严格基于当前时间和以上证据回答。资料不足时只说无法确认，不得推导为事件尚未发生。`;
+    function buildSynthesisMessages(currentTime, query, keywords, searchQueries, results, fetchAttempts, fetchedContents, topUrls) {
+      const searchList = results.map((r, i) =>
+        `[${i + 1}] ${r.title}\n   URL: ${r.url}\n   摘要: ${(r.snippet || '').slice(0, 300)}`
+      ).join('\n\n');
+      const fetchList = fetchAttempts.length > 0
+        ? fetchAttempts.map(f => f?.content
+          ? `[${f.index}] ${f.title}\n   URL: ${f.url}\n   抓取时间: ${f.fetchedAt || '未知'}\n   正文: ${f.content}`
+          : `[${f?.index || '?'}] ${f?.title || '未知页面'}\n   URL: ${f?.url || '未知'}\n   抓取失败: ${f?.error || '未知错误'}`
+        ).join('\n\n---\n\n')
+        : '（deep_fetch=0，未抓取正文）';
+      const userMsg = `## 当前时间\n北京时间：${currentTime.shanghaiDateTime}\nUTC：${currentTime.utcIso}\n\n## 用户原始问题\n${query}\n\n## 实际搜索表达\n${searchQueries.join('\n')}\n（意图: ${keywords.intent}, 实体: ${(keywords.key_entities || []).join('、') || '无'}, 时间限定: ${keywords.time_constraint || '无'}）\n\n## 搜索结果（${results.length}条）\n${searchList}\n\n## 网页抓取（成功 ${fetchedContents.length}/${topUrls.length}）\n${fetchList}\n\n请严格基于当前时间和以上证据回答。资料不足时只说无法确认，不得推导为事件尚未发生。`;
+      return [
+        { role: 'system', content: buildSynthesisPrompt(currentTime) },
+        { role: 'user', content: userMsg },
+      ];
+    }
 
     let answer = '';
     try {
-      const result = await callLLM(realModelId, [
-        { role: 'system', content: buildSynthesisPrompt(currentTime) },
-        { role: 'user', content: userMessage },
-      ], {
-        temperature: 0.2,
-        maxTokens: 2200,
-        caller: 'web_research.synthesize',
+      const result = await callLLM(realModelId, buildSynthesisMessages(currentTime, query, keywords, searchQueries, results, fetchAttempts, fetchedContents, topUrls), {
+        temperature: 0.2, maxTokens: 2200, caller: 'web_research.synthesize',
       });
       answer = result.content || '';
     } catch (e) {
-      answer = `（LLM 综合分析失败: ${e.message}）\n\n**原始搜索结果：**\n${searchList}`;
+      answer = `（LLM 综合分析失败: ${e.message}）\n\n**原始搜索结果：**\n${results.map((r, i) => `[${i + 1}] ${r.title}\n   URL: ${r.url}`).join('\n\n')}`;
     }
 
-    // 构造 sources 数组，保留抓取错误供 UI/trace 诊断
+    // ═══ Stage 5: 迭代深搜（如果资料不足，再搜一轮）═══
+    const insufficientEvidence = /资料不足|无法确认|没有找到|未找到|不能确定|未能找到|无相关信息/i.test(answer);
+    if (insufficientEvidence && deepFetch > 0 && !args._skipIterative) {
+      writeProgress('Stage5', '资料不足，正在提炼新关键词再搜一轮...');
+      console.log(`[web-research] 资料不足，启动迭代搜索`);
+      try {
+        // 用当前答案作为上下文，提炼更精准的关键词
+        const refineResult = await callLLM(realModelId, [
+          { role: 'system', content: '你是搜索策略优化助手。用户问了一个问题，但第一次搜索没有得到足够的信息。基于以下回答，提炼一个更精准、更专业的搜索关键词。只返回关键词，不要其他文字。' },
+          { role: 'user', content: `原始问题：${query}\n第一次回答：${answer.slice(0, 800)}\n\n请给出一个更精准的搜索关键词：` },
+        ], { temperature: 0.1, maxTokens: 100, caller: 'web_research.refine' });
+        const refinedQuery = (refineResult.content || '').trim();
+        if (refinedQuery && refinedQuery.length > 5 && refinedQuery !== query) {
+          console.log(`[web-research] 迭代搜索: "${refinedQuery}"`);
+          const refinedArgs = { ...args, query: refinedQuery, _skipIterative: true, _reqId: args._reqId };
+          const iterResult = await research(refinedArgs);
+          if (iterResult.answer && !/资料不足|无法确认/.test(iterResult.answer)) {
+            // 迭代成功：合并两次结果
+            answer = iterResult.answer + '\n\n---\n\n> 补充搜索关键词：' + refinedQuery;
+          }
+        }
+      } catch (e) {
+        console.log(`[web-research] 迭代搜索失败: ${e.message}`);
+      }
+    }
+
+    // 构造 sources
     const sources = results.map((r, i) => {
       const attempt = fetchAttempts.find(f => f?.index === i + 1);
-      return {
-        index: i + 1,
-        title: r.title,
-        url: r.url,
-        snippet: r.snippet,
-        fetched: Boolean(attempt?.content),
-        fetch_error: attempt?.error || null,
-      };
+      return { index: i + 1, title: r.title, url: r.url, snippet: r.snippet, fetched: Boolean(attempt?.content), fetch_error: attempt?.error || null };
     });
 
-    return {
-      answer,
-      sources,
-      keywords,
-      searchResults: results,
-      fetchedCount: fetchedContents.length,
-      failedFetchCount: failedFetches.length,
-      query,
-      searchQuery: searchQueries[0],
-      searchQueries,
-      currentTime,
-      config: { maxResults, deepFetch },
-      intent: keywords.intent,
-    };
+    const result = { answer, sources, keywords, searchResults: results, fetchedCount: fetchedContents.length, failedFetchCount: failedFetches.length, query, searchQuery: searchQueries[0], searchQueries, currentTime, config: { maxResults, deepFetch }, intent: keywords.intent };
+    setCachedResult(query, maxResults, deepFetch, result);
+    writeProgress('完成', `调研完成，${fetchedContents.length} 个来源`);
+    return result;
   } catch (e) {
     return { error: `网络调研失败: ${e.message}`, answer: '', sources: [] };
   }

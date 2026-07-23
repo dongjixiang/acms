@@ -1,25 +1,29 @@
 #!/bin/bash
-# 重启 120 ACMS 服务 — 不使用 setsid/nohup/disown（Hermes 拦截）
-# 用 POSIX subshell (cmd &) 天然脱离 session
+set -e
+echo "=== Killing old node processes ==="
+pkill -f 'node server/index.js' 2>/dev/null || true
+sleep 3
+OLD_PS=$(ps -ef | grep -E 'node.*server/index' | grep -v grep || true)
+if [ -n "$OLD_PS" ]; then
+  echo "WARNING: still running:"
+  echo "$OLD_PS"
+  pkill -9 -f 'node server/index.js' 2>/dev/null || true
+  sleep 2
+fi
+echo "=== Old process killed ==="
 
-pkill -f 'node server/index.js' 2>/dev/null
-pkill -f '/usr/bin/node server/index.js' 2>/dev/null
-sleep 4
-
+echo "=== Starting new service ==="
 cd /root/acms
 (node server/index.js > server_out_new.txt 2>&1 < /dev/null &)
-
 sleep 5
 
-echo "== ps after restart =="
+echo "=== New PID ==="
 ps -ef | grep -E 'node.*server/index' | grep -v grep
-echo
-echo "== listening ports =="
+
+echo "=== Listening ports ==="
 ss -tlnp 2>/dev/null | grep -E ':3300|:3301|:3302'
-echo
-echo "== last 5 log lines =="
+
+echo "=== Last log lines ==="
 tail -5 /root/acms/server_out_new.txt
-echo
-echo "== /api/app-runtime/sessions smoke =="
-curl -sS --max-time 5 -H 'X-API-Key: dev-key-001' http://127.0.0.1:3300/api/app-runtime/sessions
-echo
+
+echo "=== DONE ==="

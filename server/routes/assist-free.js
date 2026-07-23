@@ -19,7 +19,8 @@
 
 const express = require('express');
 const router = express.Router();
-const { callLLM, runToolLoop } = require('../services/llm-adapter');
+const { callLLM } = require('../services/llm-adapter');
+const { execute: runtimeExec } = require('../services/agent-runtime');
 const modelStore = require('../stores/model-store');
 const toolRegistry = require('../services/tool-registry');
 
@@ -90,14 +91,16 @@ router.post('/detect', async (req, res) => {
     ];
 
     // 3. 跑 runToolLoop（只用 FREE_TOOL_NAMES）
-    const result = await runToolLoop(model.id, messages, {
+    const runtimeResult = await runtimeExec({
+      modelId: model.id,
+      messages,
       toolNames: FREE_TOOL_NAMES,
       maxRounds: 6,
       context: { reqId: 'assist-free:' + Date.now() },
       caller: 'assist-free',
     });
 
-    const rawReply = (typeof result === 'string' ? result : (result.content || '')) || '好的，已处理完成。';
+    const rawReply = runtimeResult.content || '好的，已处理完成。';
     const reply = rawReply.replace(/【[^】]+】/g, '').trim() || '好的，已处理完成。';
 
     // 4. 尝试从 LLM 回复中提取卡片标记

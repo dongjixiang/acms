@@ -8,7 +8,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>ACMS — 智能体协同管理系统</title>
-<link rel="stylesheet" href="/client/css/style.css?v=0.59.2">
+<link rel="stylesheet" href="/client/css/style.css?v=0.59.11">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js" defer></script>
 <script>
@@ -531,7 +531,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/reports.js?v=0.22.4"></script>
 <script src="/client/js/views/admin.js"></script>
 <script src="/client/js/views/improvements.js"></script>
-<script src="/client/js/app.js"></script>
+<script src="/client/js/app.js?v=0.62"></script>
 <!-- ── 任务栏 ── -->
 <div id="taskbar">
   <button id="tb-start" title="开始菜单">✦</button>
@@ -586,15 +586,11 @@ document.addEventListener('DOMContentLoaded', () => {
       </div>
     </div>
   </div>
-  <div class="launcher-item" onclick="launchView('file-manager')"><span class="li-icon">📂</span><span class="li-label">文件浏览器</span></div>
-  <div class="launcher-item" onclick="launchView('web-browser')"><span class="li-icon">🌐</span><span class="li-label">浏览器</span></div>
-  <!-- v0.59：微信 — 通过「本地应用壳」加载真·微信网页版（绕过 X-Frame / CSP） -->
-  <div class="launcher-item" onclick="launchWeChat()" title="打开微信网页版"><span class="li-icon" aria-hidden="true">🟢</span><span class="li-label">微信</span></div>
-  <div class="launcher-item" onclick="openTerminal()"><span class="li-icon">💻</span><span class="li-label">终端</span></div>
-  <!-- v0.61：辅助工具 hover 子菜单（生图/音乐/搜索/文档/邮件/视频） -->
+  <!-- v0.61：辅助工具 hover 子菜单（生图/音乐/搜索/文档/邮件/视频 + 应用类：文件浏览/浏览器/微信/终端） -->
   <div class="launcher-item launcher-has-submenu" id="launcher-tools" onmouseenter="onToolLauncherHover()" onmouseleave="onToolLauncherLeave()">
     <span class="li-icon">🛠️</span><span class="li-label">辅助工具</span><span class="li-arrow">▸</span>
     <div class="launcher-submenu" id="launcher-tools-submenu">
+      <div class="launcher-section-title">AI 工具</div>
       <div class="launcher-item" onclick="launchAssistTool('generate_image','生图')"><span class="li-icon">🎨</span><span class="li-label">生图</span></div>
       <div class="launcher-item" onclick="launchAssistTool('play_music','音乐')"><span class="li-icon">🎵</span><span class="li-label">音乐</span></div>
       <div class="launcher-item" onclick="launchAssistTool('web_search','搜索')"><span class="li-icon">🔍</span><span class="li-label">搜索</span></div>
@@ -602,6 +598,16 @@ document.addEventListener('DOMContentLoaded', () => {
       <div class="launcher-item" onclick="launchAssistTool('document_gen','文档')"><span class="li-icon">📄</span><span class="li-label">文档</span></div>
       <div class="launcher-item" onclick="launchAssistTool('send_email','邮件')"><span class="li-icon">📧</span><span class="li-label">邮件</span></div>
       <div class="launcher-item" onclick="launchAssistTool('play_video','视频')"><span class="li-icon">🎬</span><span class="li-label">视频</span></div>
+      <div class="launcher-divider"></div>
+      <div class="launcher-item" onclick="launchView('office-word')"><span class="li-icon">📝</span><span class="li-label">Word</span></div>
+      <div class="launcher-item" onclick="launchView('office-xlsx')"><span class="li-icon">📊</span><span class="li-label">Excel</span></div>
+      <div class="launcher-item" onclick="launchView('office-pptx')"><span class="li-icon">📽️</span><span class="li-label">PPT</span></div>
+      <div class="divider"></div>
+      <div class="launcher-section-title">应用</div>
+      <div class="launcher-item" onclick="launchView('file-manager')"><span class="li-icon">📂</span><span class="li-label">文件浏览器</span></div>
+      <div class="launcher-item" onclick="launchView('web-browser')"><span class="li-icon">🌐</span><span class="li-label">浏览器</span></div>
+      <div class="launcher-item" onclick="launchWeChat()" title="打开微信网页版"><span class="li-icon">🟢</span><span class="li-label">微信</span></div>
+      <div class="launcher-item" onclick="openTerminal()"><span class="li-icon">💻</span><span class="li-label">终端</span></div>
     </div>
   </div>
   <div class="divider"></div>
@@ -638,6 +644,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/core/command-palette.js?v=0.58.4"></script>
 <script src="/client/js/core/notification-center.js?v=0.58"></script>
 <script src="/client/js/core/agent-buddy.js?v=0.59"></script>
+<script src="/client/js/views/office-editor.js?v=0.62"></script>
 
 <script src="/client/js/views/wallpaper.js?v=0.56"></script>
 <script src="/client/js/views/desktop-context-menu.js"></script>
@@ -671,6 +678,14 @@ document.addEventListener('DOMContentLoaded', () => {
   // 系统管理
   PKG('admin', {
     title: '系统管理', icon: '⚙️', category: '系统', defaultSize: { w: 960, h: 640 },
+    // v0.62: model.updated 事件时自动刷新
+    onEvent: function(w, type) {
+      if (type === 'model.updated') {
+        // 重新调 viewLoader: loadAdminPage() → 写隐藏模板 → 克隆到 w.$c
+        var loader = ACMSWin._getLoader && ACMSWin._getLoader('admin');
+        if (loader) loader(w);
+      }
+    },
     loader: function(w) {
       if (typeof loadAdminPage !== 'function') {
         if (!w.dead) w.$c.innerHTML = '<div style="padding:40px;text-align:center;color:var(--accent2)">系统管理不可用</div>';
@@ -680,7 +695,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (w.dead) return;
         var src = document.getElementById('view-admin');
         if (!src) { w.$c.innerHTML = ''; return; }
-        w.$c.innerHTML = src.innerHTML;
+        // v0.62.3: 包 .view 容器，让 .acms-window .aw-content > .view { padding:12px 14px } 规则生效
+        w.$c.innerHTML = '<div class="view active admin-window-view">' + src.innerHTML + '</div>';
         w.$c.style.display = '';
         var header = w.$c.querySelector('.view-header');
         if (header) header.remove();
@@ -830,7 +846,8 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       var src = document.getElementById('view-bugs');
       if (!src) { w.$c.innerHTML = ''; return; }
-      w.$c.innerHTML = src.innerHTML;
+      // v0.62.3: 包 .view 容器，让 padding 规则生效
+      w.$c.innerHTML = '<div class="view active bugs-window-view">' + src.innerHTML + '</div>';
       w.$c.style.display = '';
       return Promise.resolve(loadBugView(w.$c));
     }
@@ -846,7 +863,8 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       var src = document.getElementById('view-knowledge');
       if (!src) { w.$c.innerHTML = ''; return; }
-      w.$c.innerHTML = src.innerHTML;
+      // v0.62.3: 包 .view 容器
+      w.$c.innerHTML = '<div class="view active knowledge-window-view">' + src.innerHTML + '</div>';
       w.$c.style.display = '';
       return Promise.resolve(loadKnowledgeView(w.$c));
     }
@@ -855,6 +873,12 @@ document.addEventListener('DOMContentLoaded', () => {
   // 任务看板
   PKG('kanban', {
     title: '任务看板', icon: '📌', category: '管理', defaultSize: { w: 1000, h: 640 },
+    // v0.62: 任务事件自动刷新看板窗口（w.$c 作用域正确）
+    onEvent: function(w, type) {
+      if (typeof refreshKanban === 'function' && type.indexOf('task.') === 0) {
+        refreshKanban(undefined, w.$c);
+      }
+    },
     loader: function(w) {
       if (!App.currentProjectId) {
         w.$c.innerHTML = '<div style="padding:40px;text-align:center;color:var(--accent2)">⚠ 请先在任务栏选择项目</div>';
@@ -862,7 +886,8 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       var src = document.getElementById('view-kanban');
       if (!src) { w.$c.innerHTML = ''; return; }
-      w.$c.innerHTML = src.innerHTML;
+      // v0.62.3: 包 .view 容器，让 padding 规则生效
+      w.$c.innerHTML = '<div class="view active kanban-window-view">' + src.innerHTML + '</div>';
       w.$c.style.display = '';
       var dividerBtn = w.$c.querySelector('#kanban-divider-toggle');
       if (dividerBtn) {
@@ -949,6 +974,29 @@ document.addEventListener('DOMContentLoaded', () => {
           ? window.loadAssistFreeView(w.$c, opts)
           : (w.$c.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text2)">⏳ 加载中...</div>')
       );
+    }
+  });
+
+  // v0.62 Office 编辑器
+  PKG('office-word', {
+    title: 'Word 文档', icon: '📝', category: '工具', defaultSize: { w: 900, h: 600 },
+    loader: function(w) {
+      if (typeof openWordEditor === 'function') openWordEditor(w);
+      else w.$c.innerHTML = '<div style="padding:40px;text-align:center">加载中...</div>';
+    }
+  });
+  PKG('office-xlsx', {
+    title: 'Excel 表格', icon: '📊', category: '工具', defaultSize: { w: 1000, h: 600 },
+    loader: function(w) {
+      if (typeof openExcelEditor === 'function') openExcelEditor(w);
+      else w.$c.innerHTML = '<div style="padding:40px;text-align:center">加载中...</div>';
+    }
+  });
+  PKG('office-pptx', {
+    title: 'PPT 演示', icon: '📽️', category: '工具', defaultSize: { w: 1000, h: 650 },
+    loader: function(w) {
+      if (typeof openPptEditor === 'function') openPptEditor(w);
+      else w.$c.innerHTML = '<div style="padding:40px;text-align:center">加载中...</div>';
     }
   });
 })();

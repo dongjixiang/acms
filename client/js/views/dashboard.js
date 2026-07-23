@@ -369,7 +369,7 @@ async function loadDashboard() {
 
     const recentReqs = reqs.slice(0, 5);
     document.getElementById('dash-reqs').innerHTML = recentReqs.length
-      ? recentReqs.map(r => '<div class="dash-item" onclick="openRequirement(\'' + r.id + '\')">' + App.statusLabels[r.status] + ' ' + escHtml(r.title) + ' <span style="color:var(--text2);font-size:11px">' + r.id + '</span></div>').join('')
+      ? recentReqs.map(r => '<div class="dash-item" onclick="openRequirementInWindow(\'' + r.id + '\')">' + App.statusLabels[r.status] + ' ' + escHtml(r.title) + ' <span style="color:var(--text2);font-size:11px">' + r.id + '</span></div>').join('')
       : '<div class="empty" style="padding:12px">暂无需求</div>';
 
     const activeTasks = tasks.filter(t => t.status === 'in_progress').slice(0, 5);

@@ -13,6 +13,7 @@ const router = express.Router();
 const reqStore = require('../stores/requirement-store');
 const toolRegistry = require('../services/tool-registry');
 const { runToolLoop } = require('../services/llm-adapter');
+const { execute: runtimeExec } = require('../services/agent-runtime');
 const modelStore = require('../stores/model-store');
 
 // v0.20d：7 个外部 tool（play_music 由预检覆盖，不加进 LLM 可见避免重复触发）
@@ -220,12 +221,15 @@ router.post('/detect-and-respond', async (req, res, next) => {
       const messages = [{ role: 'system', content: systemPrompt }, ...historyMessages, { role: 'user', content: text }];
 
       try {
-        const result = await runToolLoop(model.id, messages, {
+        const runtimeResult = await runtimeExec({
+          modelId: model.id,
+          messages,
           toolNames: INTENT_TOOL_NAMES.filter(n => n !== 'plan_execute'),
           maxRounds: 3,
           context: { reqId },
+          caller: 'chat-intent-session',
         });
-        const aiReply = (result && typeof result === 'string') ? result : (result?.content || '');
+        const aiReply = runtimeResult.content;
 
         // 4. 写 assistant message + 触发自动标题（仅 session 模式）
         if (isSession && session) {
@@ -376,12 +380,15 @@ router.post('/detect-and-respond', async (req, res, next) => {
           { role: 'user', content: text },
         ];
         console.log(`[detect-and-respond] ${reqId} LLM tool-loop (${model.name}, ${INTENT_TOOL_NAMES.length} tools, history=${historyMessages.length})`);
-        const result = await runToolLoop(model.id, messages, {
+        const runtimeResult = await runtimeExec({
+          modelId: model.id,
+          messages,
           toolNames: INTENT_TOOL_NAMES,
-          maxRounds: 5,  // v0.20 bugfix：3 → 5（兜底，runToolLoop 内部重复检测已避免真循环）
-          context: { reqId },  // v0.20：透传 reqId 给 tool handler（play_music/play_video/generate_image 需要）
+          maxRounds: 5,
+          context: { reqId },
+          caller: 'chat-intent',
         });
-        aiReply = (result && typeof result === 'string') ? result : (result?.content || '');
+        aiReply = runtimeResult.content;
 
         // 从 messages 历史提取实际调用的 tool（runToolLoop 内部已写回 messages）
         // 兼容两种格式：

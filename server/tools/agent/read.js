@@ -10,21 +10,58 @@ const workspaceMeta = require('../../services/workspace-meta');
 
 registerTool({
   name: 'agent_read_file',
-  description: 'Read a file from the project workspace. Returns file content as text (truncated to 100000 chars for large files). Use this to understand existing code, configs, or documentation in the project. If the file is truncated, use offset/limit or agent_exec_command with head/tail or sed to view the rest.',
+  description: 'Read file(s) from the project workspace. 支持单文件或批量读取。 '
+    + '传 path（字符串）读单个文件（支持 offset/limit 分页）。'
+    + '传 paths（数组）一次读多个文件。 '
+    + '返回文件内容 text（大文件截断至 100000 字符）。'
+    + '示例: agent_read_file({path: "src/server.js"}) — 读单个文件。'
+    + ' agent_read_file({paths: ["a.js", "b.js"]}) — 批量读多个文件。',
   parameters: {
     type: 'object',
     properties: {
-      path: { type: 'string', description: 'Relative file path in the project workspace (e.g. "README.md", "code/server.js", "requirements/req-001.md")' },
-      offset: { type: 'number', description: 'Line number to start reading from (0-indexed). Useful for large files.' },
-      limit: { type: 'number', description: 'Maximum number of lines to read (default: all lines). Useful for large files.' },
+      path: { type: 'string', description: '单个文件路径（二选一：path 或 paths）。如 "README.md", "code/server.js"' },
+      paths: { type: 'array', items: { type: 'string' }, description: '多个文件路径数组（二选一：path 或 paths）。最多 20 个。' },
+      offset: { type: 'number', description: '起始行号（0-indexed，仅单文件模式 path 有效）。大文件分页用。' },
+      limit: { type: 'number', description: '最大行数（仅单文件模式 path 有效）。' },
     },
-    required: ['path'],
   },
   async handler(args, ctx = {}) {
     const { projectId, taskId } = ctx;
     if (!projectId) return { error: 'NO_PROJECT_ID', message: 'Tool context missing projectId' };
 
-    // P0 v0.X: 缓存命中直接返回，避免 39 次 read_file 重复 IO
+    // === 批量模式（传 paths 数组） ===
+    if (Array.isArray(args.paths)) {
+      if (args.paths.length === 0) return { error: 'NO_PATHS', message: 'paths 不能为空数组' };
+      if (args.paths.length > 20) return { error: 'TOO_MANY_PATHS', message: '最多 20 个文件，分多次调用' };
+      const projectStore = require('../../stores/project-store');
+      const project = projectStore.getById(projectId);
+      if (!project) return { error: 'PROJECT_NOT_FOUND' };
+      const slug = project.slug || project.name;
+      const workspace = require('../../services/workspace-service');
+      const results = [];
+      const maxLen = 100000;
+      for (const p of args.paths) {
+        try {
+          const content = workspace.readFile(slug, p);
+          if (content === null || content === undefined) {
+            results.push({ path: p, ok: false, error: 'FILE_NOT_FOUND' });
+            continue;
+          }
+          const finalContent = content.length > maxLen
+            ? content.substring(0, maxLen) + '\n... [truncated at 100000 chars]'
+            : content;
+          results.push({ path: p, ok: true, content: finalContent, totalLength: content.length, totalLines: content.split('\n').length, truncated: content.length > maxLen });
+        } catch (e) {
+          results.push({ path: p, ok: false, error: e.message });
+        }
+      }
+      return { totalFiles: args.paths.length, successCount: results.filter(r => r.ok).length, failedCount: results.filter(r => !r.ok).length, files: results };
+    }
+
+    // === 单文件模式（传 path 字符串） ===
+    if (!args.path) return { error: 'NO_PATH', message: '请传 path（单文件）或 paths（批量）' };
+
+    // P0 v0.X: 缓存命中直接返回
     //   T-MRGDBST1 实测：GameLoop.js 读 4 次、app/game.js 读 3 次，纯浪费
     //   agent_write_file / patch_file 会调 readCache.invalidate()，所以缓存不会过时
     const cached = readCache.get(taskId, args.path, args.offset, args.limit);
@@ -108,7 +145,9 @@ registerTool({
 
 registerTool({
   name: 'agent_search_files',
-  description: 'Search for a text pattern across all files in the project workspace. Returns matching file paths, line numbers, and line content. Use this to find where specific functions, variables, or keywords are used.',
+  description: 'Search for a text pattern across all files in the project workspace. Returns matching file paths, line numbers, and line content. Use this to find where specific functions, variables, or keywords are used. '
+    + '示例: agent_search_files({pattern: "handleClick", maxResults: 10}) — 搜索 handleClick 函数的所有引用位置。 '
+    + '先用搜索找到位置，再用 agent_read_files 批量读匹配的文件。',
   parameters: {
     type: 'object',
     properties: {
@@ -150,13 +189,14 @@ registerTool({
   },
 });
 
-// v0.45: 批量读多个文件 — 让 LLM 一次获取多个相关文件的完整内容
-//   节省 N 个 read 调用 → N 个 round 变成 1 个 round
+// v0.45: 批量读多个文件 — 已合并到 agent_read_file（传 paths 参数即可）
+//   此工具保留注册但被角色列表隐藏，旧代码调用仍可用
 registerTool({
   name: 'agent_read_files',
   description: 'Read multiple files in one call. Returns each file\'s content concatenated. '
     + 'Use this to explore related files (e.g. all files in src/core/) in a single round instead of '
-    + 'calling agent_read_file multiple times. Each file is truncated to 100000 chars.',
+    + 'calling agent_read_file multiple times. Each file is truncated to 100000 chars. '
+    + '示例: agent_read_files({paths: ["src/server.js", "src/router.js"]}) — 一次读两个相关文件，比单独调用节省 1 轮。',
   parameters: {
     type: 'object',
     properties: {
@@ -222,7 +262,8 @@ registerTool({
 registerTool({
   name: 'agent_read_dir_summary',
   description: 'Get a summary of all files in a directory: name, size, line count, and first N lines of each file. '
-    + 'Use this to quickly understand a directory\'s contents without reading each file fully.',
+    + 'Use this to quickly understand a directory\'s contents without reading each file fully. '
+    + '想列目录和文件名？设 previewLines=0 即可只看文件列表。此工具已替代 agent_list_files。',
   parameters: {
     type: 'object',
     properties: {

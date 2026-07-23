@@ -118,14 +118,54 @@ function safeParseJSON(str, fallback) {
   try { return JSON.parse(str); } catch { return fallback; }
 }
 
+// ═══════════════════════════════════════════════════════════
+// T1: 工具调用统计（v0.62）
+//   记录每个工具的调用次数、报错次数、最后调用时间
+//   供后续数据分析驱动工具优化
+// ═══════════════════════════════════════════════════════════
+const _toolStats = {
+  calls: {},
+  errors: {},
+  lastCalled: {},
+  lastError: {},
+};
+
+/**
+ * 获取工具调用统计数据
+ * @returns {{ calls, errors, lastCalled, lastError, summary: Array }}
+ *   summary 是按调用次数降序排列的数组 [{name, count, errors, lastCalled}]
+ */
+function getToolStats() {
+  const summary = Object.keys(_toolStats.calls)
+    .map(name => ({
+      name,
+      count: _toolStats.calls[name] || 0,
+      errors: _toolStats.errors[name] || 0,
+      lastCalled: _toolStats.lastCalled[name] || null,
+      lastError: _toolStats.lastError[name] || null,
+    }))
+    .sort((a, b) => b.count - a.count);
+  return {
+    calls: { ..._toolStats.calls },
+    errors: { ..._toolStats.errors },
+    lastCalled: { ..._toolStats.lastCalled },
+    lastError: { ..._toolStats.lastError },
+    summary,
+  };
+}
+
+/** 重置统计（用于测试/调试） */
+function resetToolStats() {
+  _toolStats.calls = {};
+  _toolStats.errors = {};
+  _toolStats.lastCalled = {};
+  _toolStats.lastError = {};
+}
+
 /**
  * v0.14：执行工具 handler（便利 wrapper）
- * v0.61: 新增 ctx 参数透传给 handler，让 tool handler 能拿到 userId/username/role/reqId 等上下文
- * @param {string} name - 工具名
- * @param {object} args - 工具参数
- * @param {object} ctx - 透传上下文（userId/username/role/reqId/taskId/...）
- * @returns {Promise<object>} 工具返回结果
- * @throws {Error} 工具不存在时
+ * v0.61: 新增 ctx 参数透传给 handler
+ * v0.62: 自动记录调用统计
  */
 async function execute(name, args, ctx = {}) {
   const tool = getTool(name);
@@ -135,7 +175,24 @@ async function execute(name, args, ctx = {}) {
   if (typeof tool.handler !== 'function') {
     throw new Error(`工具 ${name} 没有 handler`);
   }
-  return await tool.handler(args || {}, ctx || {});
+
+  // T1: 记录调用
+  _toolStats.calls[name] = (_toolStats.calls[name] || 0) + 1;
+  _toolStats.lastCalled[name] = Date.now();
+
+  try {
+    const result = await tool.handler(args || {}, ctx || {});
+    // 记录失败（handler 返回 ok:false 或 error 字段）
+    if (result && (result.error || result.ok === false)) {
+      _toolStats.errors[name] = (_toolStats.errors[name] || 0) + 1;
+      _toolStats.lastError[name] = { ts: Date.now(), error: result.error || result.message || 'FAILED' };
+    }
+    return result;
+  } catch (e) {
+    _toolStats.errors[name] = (_toolStats.errors[name] || 0) + 1;
+    _toolStats.lastError[name] = { ts: Date.now(), error: e.message };
+    throw e;
+  }
 }
 
-module.exports = { registerTool, getTool, listTools, toProviderFormat, extractToolCalls, makeToolResult, execute };
+module.exports = { registerTool, getTool, listTools, toProviderFormat, extractToolCalls, makeToolResult, execute, getToolStats, resetToolStats };

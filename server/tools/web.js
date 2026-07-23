@@ -158,7 +158,7 @@ registerTool({
     required: ['query'],
   },
   async handler(args, ctx = {}) {
-    const result = await webResearch(args);
+    const result = await webResearch({ ...args, _reqId: ctx.reqId });
     // v0.50: 完成后写 research_result 卡片（包含 LLM 综合答案 + 来源列表）
     if (ctx.reqId && !result.error && result.answer && result.answer.length > 0) {
       writeChatEntryForTool(ctx.reqId, 'research_result', {

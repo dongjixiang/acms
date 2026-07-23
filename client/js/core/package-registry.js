@@ -51,6 +51,11 @@
     packages[name] = entry;
     packageList.push(entry);
 
+    // v0.62: 注册事件关心
+    if (config.onEvent && window.ACMSWin && ACMSWin.onViewEvent) {
+      ACMSWin.onViewEvent(name, '__all__', config.onEvent);
+    }
+
     // 同步到 window-manager labels
     if (window.ACMSWin) {
       // ACMSWin 内部的 labels 对象可通过扩展添加

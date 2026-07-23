@@ -193,13 +193,17 @@
         Promise.resolve(loadFn()).then(function() {
           if (w.dead) return;
           if (!document.body.contains(src)) { w.$c.innerHTML = ''; return; }
-          w.$c.innerHTML = src.innerHTML;
+          // v0.62.3: 包 .view 容器，让 .acms-window .aw-content > .view { padding:12px 14px } 规则生效（不再让 h2 贴窗口边缘）
+          w.$c.innerHTML = '<div class="view active ' + w.view + '-window-view">' + src.innerHTML + '</div>';
           w.$c.style.display = '';
         }).catch(function() {
-          if (!w.dead) { w.$c.innerHTML = src.innerHTML; w.$c.style.display = ''; }
+          if (!w.dead) {
+            w.$c.innerHTML = '<div class="view active ' + w.view + '-window-view">' + src.innerHTML + '</div>';
+            w.$c.style.display = '';
+          }
         });
       } else {
-        w.$c.innerHTML = src.innerHTML;
+        w.$c.innerHTML = '<div class="view active ' + w.view + '-window-view">' + src.innerHTML + '</div>';
         w.$c.style.display = '';
       }
       return;
@@ -555,6 +559,58 @@
   // 拖拽移动回调（由 desktop-icons.js 设置，持久化 x/y 到 localStorage）
   var _onDesktopIconMoved = null;
 
+  // ── 视图事件订阅（v0.62） ──
+  //   viewEventHandlers[viewName] = [{ type, handler(w, data) }]
+  var _viewEventHandlers = {};
+
+  /**
+   * 视图注册事件关心：当 dispatchEvent 收到匹配的事件时，自动调 handler(w, data)
+   * @param {string} viewName - 视图名（如 'kanban', 'admin'）
+   * @param {string|string[]} eventTypes - 事件类型或数组（如 'task.claimed', ['task.created','task.claimed']）
+   * @param {function} handler - handler(w, data) — w.$c 即正确的 DOM 作用域
+   */
+  function onViewEvent(viewName, eventTypes, handler) {
+    if (!_viewEventHandlers[viewName]) _viewEventHandlers[viewName] = [];
+    var types = Array.isArray(eventTypes) ? eventTypes : [eventTypes];
+    types.forEach(function(t) {
+      _viewEventHandlers[viewName].push({ type: t, handler: handler });
+    });
+  }
+
+  /**
+   * 事件分发：遍历所有已打开的窗口，匹配事件类型 → 调 handler(w, data)
+   * @param {string} type - 事件类型（如 'task.claimed', 'model.updated'）
+   * @param {object} data - 事件数据
+   */
+  function dispatchEvent(type, data) {
+    if (!type) return;
+    windows.forEach(function(w) {
+      var handlers = _viewEventHandlers[w.view];
+      if (!handlers) return;
+      handlers.forEach(function(h) {
+        // 通配 '__all__'：任何事件都调
+        if (h.type === '__all__') {
+          h.handler(w, type, data);
+        } else if (h.type.endsWith('.') && type.indexOf(h.type) === 0) {
+          h.handler(w, type, data);
+        } else if (h.type === type) {
+          h.handler(w, type, data);
+        }
+      });
+    });
+  }
+
+  /**
+   * 刷新指定视图的所有已打开窗口（重新调 viewLoader）
+   */
+  function refreshView(viewName) {
+    windows.forEach(function(w) {
+      if (w.view === viewName && viewLoaders[viewName]) {
+        viewLoaders[viewName](w);
+      }
+    });
+  }
+
   // ── 处理预注册队列（在 window-manager.js 加载前注册的 loader）──
   if (window._viewLoaderQueue) {
     window._viewLoaderQueue.forEach(function(item) {
@@ -582,5 +638,9 @@
     _replaceDesktopIcons: replaceDesktopIcons,              // v0.56 底层 API（由 desktop-icons.js 调用）
     updateDesktopIconBadge: updateDesktopIconBadge,        // v0.55 保留（直接更新 DOM，taskbar.js 刷回收站 badge 用）
     _onDesktopIconMoved: function(fn) { _onDesktopIconMoved = fn; },  // v0.57：自由拖拽位置持久化回调
+    onViewEvent: onViewEvent,           // v0.62：视图事件订阅
+    dispatchEvent: dispatchEvent,       // v0.62：事件分发
+    refreshView: refreshView,           // v0.62：刷新视图窗口
+    _getLoader: function(v) { return viewLoaders[v] || null; },  // v0.62：获取 viewLoader
   };
 })();

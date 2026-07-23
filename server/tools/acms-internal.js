@@ -847,4 +847,79 @@ registerTool({
   }
 });
 
-console.log('[tools/acms-internal] 注册完成:', '25 个 ACMS 内部操作工具（查询 12 + 写 8 + 系统 2 + meta 2 + 管家通用 1）');
+// ═══════════════════════════════════════════════════════════
+// search_history — 搜索历史任务和事件（跨 session 经验检索）
+//   让小吉和 task-agent 能查之前做过的类似任务
+// ═══════════════════════════════════════════════════════════
+registerTool({
+  name: 'search_history',
+  description: '搜索历史任务和系统事件。可以通过关键词找到之前做过的类似任务及其结果。'
+    + ' 关键词越长越精确。返回最多 10 条匹配记录，包含任务标题、状态、总结。'
+    + ' 示例: search_history({q: "shell escape"}) — 搜索跟 shell 转义相关的历史任务。'
+    + ' search_history({q: "CSS 缓存", limit: 5}) — 搜 CSS 缓存问题。',
+  parameters: {
+    type: 'object',
+    properties: {
+      q: { type: 'string', description: '搜索关键词（必填）。搜任务标题、描述、执行日志。支持空格分隔的多关键词。' },
+      limit: { type: 'number', description: '最大返回条数（默认 5，最多 10）', default: 5 },
+    },
+    required: ['q'],
+  },
+  async handler(args, ctx = {}) {
+    const q = (args.q || '').trim().toLowerCase();
+    const limit = Math.min(args.limit || 5, 10);
+    if (!q) return { ok: false, error: 'NO_QUERY', message: '请输入搜索关键词' };
+
+    try {
+      const { collection } = require('../db/connection');
+      const tasks = collection('tasks').all() || [];
+
+      const keywords = q.split(/\s+/).filter(Boolean);
+      const matched = tasks
+        .map(function(t) {
+          const text = ((t.title || '') + ' ' + (t.description || '') + ' ' + (t.execution_log || '') + ' ' + (JSON.stringify(t.submissions || '[]'))).toLowerCase();
+          const score = keywords.filter(function(k) { return text.includes(k); }).length;
+          return { task: t, score };
+        })
+        .filter(function(m) { return m.score > 0; })
+        .sort(function(a, b) { return b.score - a.score; })
+        .slice(0, limit);
+
+      // 也搜 events 表
+      let eventResults = [];
+      try {
+        var events = collection('events').all() || [];
+        eventResults = events
+          .filter(function(e) {
+            var payloadStr = (typeof e.payload === 'string' ? e.payload : JSON.stringify(e.payload || '')).toLowerCase();
+            return keywords.some(function(k) { return payloadStr.includes(k); });
+          })
+          .slice(-5)
+          .map(function(e) { return { type: e.type, ts: new Date(e.timestamp).toISOString().slice(0, 19), summary: ((e.payload || '') + '').slice(0, 200) }; });
+      } catch (e) { /* 非关键 */ }
+
+      return {
+        ok: true,
+        total: matched.length,
+        tasks: matched.map(function(m) {
+          var t = m.task;
+          var logs = [];
+          try { logs = JSON.parse(t.execution_log || '[]').slice(-3).map(function(l) { return l.note; }); } catch (e) {}
+          return {
+            id: t.id,
+            title: t.title || '',
+            status: t.status || 'unknown',
+            progress: t.progress || 0,
+            lastLog: logs[logs.length - 1] || '',
+            score: m.score,
+          };
+        }),
+        events: eventResults.length > 0 ? eventResults : undefined,
+      };
+    } catch (e) {
+      return { ok: false, error: 'SEARCH_FAILED', message: e.message };
+    }
+  },
+});
+
+console.log('[tools/acms-internal] 注册完成:', '26 个 ACMS 内部操作工具（查询 12 + 写 8 + 系统 2 + meta 2 + 管家通用 1 + 历史搜索 1）');

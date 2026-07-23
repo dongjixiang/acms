@@ -60,10 +60,11 @@ function connectWebSocket() {
     App.ws.onmessage = (e) => {
       try {
         var m = JSON.parse(e.data);
-        if (['task.created', 'task.claimed', 'task.submitted', 'task.completed'].includes(m.type)) {
-          if (typeof refreshKanban === 'function') refreshKanban();
+        // v0.62: 通过 ACMSWin.dispatchEvent 统一分发，视图的事件订阅自动处理
+        if (window.ACMSWin && ACMSWin.dispatchEvent) {
+          ACMSWin.dispatchEvent(m.type, m.payload || {});
         }
-      } catch (err) {}
+      } catch (err) { /* */ }
     };
   } catch (e) { /* */ }
 }

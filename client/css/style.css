@@ -127,7 +127,7 @@ body { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; background: var(-
 .form-row > div { flex: 1; }
 
 /* Buttons */
-.btn-primary { padding: 10px 24px; background: var(--accent); color: var(--bg); border: none; border-radius: var(--radius); font-size: 14px; cursor: pointer; font-weight: bold; transition: opacity 0.2s; }
+.btn-primary { padding: 6px 14px; background: var(--accent); color: var(--bg); border: none; border-radius: var(--radius); font-size: 13px; cursor: pointer; font-weight: bold; transition: opacity 0.2s; }
 .btn-primary:hover { opacity: 0.85; }
 .btn-back { padding: 6px 12px; background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; }
 .btn-small { padding: 4px 12px; font-size: 12px; border-radius: 4px; cursor: pointer; border: 1px solid var(--border); }
@@ -1016,7 +1016,7 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
 
 .btn-experience {
   display: inline-flex; align-items: center; gap: 6px;
-  padding: 10px 24px; font-size: 15px; font-weight: 600;
+  padding: 6px 14px; font-size: 13px; font-weight: 600; /* v0.62.3 紧凑 — 跟 .btn-primary 保持同一尺寸基准 */
   background: linear-gradient(135deg, #4ecdc4, #2ecc71);
   color: #0f0f1a; border: none; border-radius: var(--radius);
   cursor: pointer; transition: transform 0.2s, box-shadow 0.2s;
@@ -3582,6 +3582,7 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
   box-shadow: var(--shadow, 0 4px 16px rgba(0,0,0,0.3));
   z-index: 99999;
   padding: 8px;
+  /* ⚠ 不能加 overflow: hidden / overflow-x: hidden — W3C spec 规定 overflow-x: hidden + overflow-y: visible 会把 visible 强制改为 auto，把 absolute 定位的子菜单（子菜单在 launcher 之外）clip 掉。实测 launcher 内所有 launcher-item 都不超过 220px，无需限制水平。 */
 }
 #launcher-menu.open { display: block; }
 .launcher-section-title {
@@ -3731,9 +3732,10 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
   opacity: 0;
   transform: translateY(8px);
   transition: opacity 0.2s ease, transform 0.2s ease;
+  flex-direction: column; /* 弹性列布局：header/messages/input 自动按比例分布 */
 }
 .agent-panel.open {
-  display: block;
+  display: flex; /* 列布局生效 */
   opacity: 1;
   transform: translateY(0);
 }
@@ -3840,7 +3842,8 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
 /* —— 消息区 —— */
 .ap-messages {
   padding: 8px 10px;
-  max-height: 160px;
+  flex: 1 1 auto; /* 撑满面板中间区域，按面板缩放比例同步扩缩 */
+  min-height: 0; /* flex 子项允许收缩到 0（避免内容溢出限制） */
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -3865,7 +3868,7 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
   padding: 5px 8px;
   border-radius: 6px;
   color: var(--text, #e0e0f0);
-  max-width: 180px;
+  max-width: calc(100% - 24px); /* 按父级 (.ap-msg) 宽度比例扩展，panel 拉宽时气泡跟着变宽；短消息按内容自动窄 — 减 24px 是预留 icon + gap + padding */
   word-break: break-word;
 }
 .ap-msg-user {
@@ -4305,6 +4308,8 @@ body { padding-bottom: 40px; }
 .launcher-item.launcher-has-submenu:hover > .launcher-submenu,
 .launcher-submenu.open {
   display: flex;
+  top: auto;    /* 取消默认顶部对齐 — launcher 父通常在屏幕偏下，子菜单向上展开更合理 */
+  bottom: -2px; /* 底部对齐父项底部（macOS / Win11 风格父靠下时自动向上弹） */
 }
 .launcher-submenu .launcher-item {
   padding: 7px 10px;

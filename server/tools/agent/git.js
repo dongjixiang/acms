@@ -4,7 +4,8 @@ const { registerTool } = require('../../services/tool-registry');
 
 registerTool({
   name: 'agent_git_status',
-  description: 'Show the working tree status — which files are modified, staged, or untracked. Returns git status output.',
+  description: 'Show the working tree status — which files are modified, staged, or untracked. Returns git status output. '
+    + '示例: agent_git_status() — 查看当前哪些文件有改动。提交前先调这个确认改了什么。',
   parameters: {
     type: 'object',
     properties: {
@@ -35,7 +36,8 @@ registerTool({
 
 registerTool({
   name: 'agent_git_diff',
-  description: 'Show changes between working tree and last commit, or between commits. Use to review what was modified before committing.',
+  description: 'Show changes between working tree and last commit, or between commits. Use to review what was modified before committing. '
+    + '示例: agent_git_diff() — 查看未提交的改动。 agent_git_diff({file: "src/server.js"}) — 只看某个文件的改动。',
   parameters: {
     type: 'object',
     properties: {
@@ -70,7 +72,8 @@ registerTool({
 
 registerTool({
   name: 'agent_git_commit',
-  description: 'Stage all modified files and create a commit with the given message. Returns commit hash and summary.',
+  description: 'Stage all modified files and create a commit with the given message. Returns commit hash and summary. '
+    + '示例: agent_git_commit({message: "Fix: handle edge case in login flow"}) — 提交所有改动。写完代码改完后调这个保存进度。',
   parameters: {
     type: 'object',
     properties: {
@@ -147,7 +150,8 @@ registerTool({
 
 registerTool({
   name: 'agent_git_log',
-  description: 'Show commit log. Use to understand recent changes and find commit hashes.',
+  description: 'Show commit log. Use to understand recent changes and find commit hashes. '
+    + '示例: agent_git_log({limit: 5}) — 查看最近 5 条提交记录。',
   parameters: {
     type: 'object',
     properties: {

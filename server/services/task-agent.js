@@ -2,9 +2,11 @@
 const modelStore = require('../stores/model-store');
 const taskStore = require('../stores/task-store');
 const { runToolLoop } = require('./llm-adapter');
+const { execute: runtimeExec } = require('./agent-runtime');
 const skillLoader = require('./skill-loader');
 const { registerTool } = require('./tool-registry');
 const { runHook } = require('./hook-registry');
+const eventBus = require('./event-bus');
 
 // v0.46 TodoWrite — Workflow Phases 5 段进度（PM 看板可见）
 //   顺序：explore → design → write → test → fix
@@ -101,6 +103,12 @@ async function executeTaskAgent(taskId, options = {}) {
   // P0 v0.X: lang 控制 agent 输出语言
   //   优先级：options.lang > task.doc.preferred_lang > 'zh'（多多场景默认）
   const lang = options.lang || task.preferred_lang || 'zh';
+
+  // P1: 多角色模式 — 默认启用，可通过 options.multiRole = false 关闭
+  //   把单 agent 90 轮拆成 Planner → Coder → Tester → Reviewer 流水线
+  if (options.multiRole !== false) {
+    return await runMultiRoleSequence(task, options);
+  }
 
   // v0.30 fix: 接受 options.steerMessage — 多多可以手动 steer（等价 Hermes /steer slash command）
   //   当 PM 通过 POST /api/agents/steer/:taskId 注入消息，把它作为额外 user message prepend 到 messages
@@ -204,7 +212,7 @@ ${task.description || '(no description)'}
   if (hasSshKw) { toolsToKeep.add('agent_ssh_execute'); toolsToKeep.add('agent_ssh_check'); }
   if (hasHttpKw) toolsToKeep.add('agent_http_request');
 
-  const ALL_TOOLS = ['agent_read_file', 'agent_read_files', 'agent_read_dir_summary', 'agent_list_files', 'agent_search_files', 'agent_exec_command', 'agent_write_file', 'agent_patch_file', 'agent_multi_patch', 'workspace_isolate', 'workspace_merge', 'browser_snapshot', 'browser_console', 'browser_click', 'browser_type', 'browser_screenshot', 'agent_git_status', 'agent_git_diff', 'agent_git_commit', 'agent_git_log', 'agent_git_branch', 'agent_db_query', 'agent_ssh_execute', 'agent_ssh_check', 'agent_http_request', 'agent_set_phase', 'agent_typescheck', 'agent_plan'];
+  const ALL_TOOLS = ['agent_read_file', 'agent_read_dir_summary', 'agent_search_files', 'agent_exec_command', 'agent_write_file', 'agent_patch_file', 'agent_multi_patch', 'browser_snapshot', 'browser_console', 'browser_click', 'browser_type', 'browser_screenshot', 'agent_git_status', 'agent_git_diff', 'agent_git_commit', 'agent_git_log', 'agent_git_branch', 'agent_db_query', 'agent_ssh_execute', 'agent_ssh_check', 'agent_http_request', 'agent_set_phase', 'agent_typescheck', 'agent_plan'];
   // 原简单任务过滤: bug/fix/documentation/refactor/test 类不分配 EXTRA_TOOLS
   // 新逻辑: 如果 description 触发 4 维检测之一, 保留对应工具; 否则走原过滤
   const isSimpleTask = ['bug', 'fix', 'documentation', 'refactor', 'test'].includes(taskType);
@@ -259,13 +267,17 @@ ${task.description || '(no description)'}
       } catch (e) { /* silent */ }
     };
 
-    analysis = await runToolLoop(model.id, messages, {
+    const runtimeResult = await runtimeExec({
+      modelId: model.id,
+      messages,
       toolNames,
-      context: { projectId, taskId },
       maxRounds: 90,
       maxTokens: options.maxTokens ?? 32000,
+      context: { projectId, taskId },
       onProgress: saveProgress,
+      caller: 'task-agent',
     });
+    analysis = runtimeResult.content;
   } catch (e) {
     console.error(`[agent-execute] runToolLoop failed: ${e.message}`);
     analysis = `[Agent execution failed: ${e.message}]\n\nTask context:\n${taskContext}`;
@@ -275,6 +287,16 @@ ${task.description || '(no description)'}
 
   // P0 v0.X: flush workspace meta 到磁盘 — agent-execute 结束时避免数据丢失
   try { require('./workspace-meta').flushAll(); } catch (e) { /* 不阻塞 */ }
+
+  // P2: 通过 event-bus 通知系统（单 agent 模式）
+  try {
+    eventBus.emit('task.completed', {
+      projectId,
+      actor: { id: 'agent-acms-self', type: 'agent', name: 'ACMS Agent' },
+      target: { type: 'task', id: taskId },
+      payload: { summary: (analysis || '').slice(0, 300), multiRole: false },
+    });
+  } catch (e) { /* 不阻塞 */ }
 
   return {
     taskId,
@@ -474,6 +496,243 @@ function auditTaskRequirements(projectId, taskDoc) {
     ],
     verifiedFiles: [...createResult.verified, ...deleteVerified],
     requiredFileDetails: fileDetails,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════
+// P1: 多 Agent 角色分工（v0.62）
+//   把单 agent 90 轮循环拆成 4 个专业角色：
+//   Planner → Coder → Tester → Reviewer
+//   每个角色有独立的 system prompt 和 tool 子集
+// ═══════════════════════════════════════════════════════════
+
+// 各角色的工具子集
+const ROLE_TOOLS = {
+  planner: [
+    'agent_read_file', 'agent_read_dir_summary',
+    'agent_search_files',
+    'agent_git_status', 'agent_git_log', 'agent_git_branch',
+  ],
+  coder: [
+    'agent_read_file', 'agent_read_dir_summary',
+    'agent_search_files',
+    'agent_write_file', 'agent_patch_file', 'agent_multi_patch',
+    'agent_typescheck',
+    'agent_git_status', 'agent_git_diff', 'agent_git_commit', 'agent_git_log',
+    'agent_set_phase',
+    'delegate_subtasks',
+  ],
+  tester: [
+    'agent_read_file', 'agent_search_files',
+    'agent_exec_command',
+    'agent_db_query', 'agent_http_request',
+    'browser_snapshot', 'browser_console',
+    'agent_git_diff', 'agent_git_log',
+    'agent_set_phase',
+  ],
+  reviewer: [
+    'agent_read_file', 'agent_search_files', 'agent_read_dir_summary',
+    'agent_git_diff', 'agent_git_log', 'agent_git_status',
+  ],
+};
+
+// 各角色的 system prompt 附加段（追加到基础 AGENT_SYSTEM_PROMPT 之后）
+const ROLE_PROMPTS = {
+  planner: `\n\n## Role: Planner\nYour ONLY job is to understand the task and produce a plan. Do NOT write any code.\n\n### What to do:\n1. Explore the workspace structure (read key files to understand the project)\n2. Identify which files need to be created or modified\n3. Plan the implementation approach\n4. Output a detailed plan covering: files to change, approach, order of operations\n\n### Constraints:\n- You CANNOT write files or execute commands\n- Focus on understanding, not doing\n- Keep your plan concrete and actionable for the next agent (Coder)\n- Estimate the number of files and complexity`,
+
+  coder: `\n\n## Role: Coder\nYour ONLY job is to write the code according to the plan. Do NOT run tests or verify.\n\n### What to do:\n1. Read the plan from the previous agent\n2. Create/modify files using agent_write_file and agent_patch_file\n3. Run agent_typescheck to verify TypeScript syntax\n4. Commit changes with agent_git_commit when done\n\n### Constraints:\n- You CANNOT execute arbitrary commands (no agent_exec_command)\n- You CANNOT browse the web or make HTTP requests\n- Focus on producing correct, working code\n- Call agent_set_phase to show progress through explore → design → write`,
+
+  tester: `\n\n## Role: Tester\nYour ONLY job is to verify the code works correctly. Do NOT modify any files.\n\n### What to do:\n1. Read the modified files to understand what was changed\n2. Run tests, build commands, or verification scripts\n3. Check for errors, broken functionality, or edge cases\n4. Report what works and what doesn't\n\n### Constraints:\n- You CANNOT modify any files (no agent_write_file, no agent_patch_file)\n- You CAN run commands and make HTTP requests\n- If you find bugs, describe them clearly for the Reviewer`,
+
+  reviewer: `\n\n## Role: Reviewer\nYour ONLY job is to evaluate the completed work against the task requirements.\n\n### What to do:\n1. Read the original task requirements\n2. Read the plan that was created\n3. Check the actual files that were created/modified\n4. Verify acceptance criteria are met\n5. Produce a final verdict: APPROVED (task done) or REJECTED (explain what's missing)\n\n### Constraints:\n- You CANNOT write files or execute commands\n- Read-only evaluation only\n- Be strict: if the task isn't complete, say so and explain what's missing`,
+};
+
+/**
+ * 判断测试角色是否应获得 browser 工具（根据任务描述中的 URL/浏览器关键词）
+ */
+function testerNeedsBrowserTools(task) {
+  const fullText = ((task.title || '') + ' ' + (task.description || '') + ' ' + (task.actual_behavior || '')).toLowerCase();
+  return /https?:\/\/[^\s]+/.test(fullText) ||
+    /浏览器|browser|网页|页面|preview|dist|404|500|403|渲染|dom/i.test(fullText);
+}
+
+/**
+ * 多角色流水线执行（P1 核心）
+ * 按 Planner → Coder → Tester → Reviewer 顺序执行，角色间传递上下文
+ */
+async function runMultiRoleSequence(task, options = {}) {
+  const taskId = task.id;
+  const projectId = task.project_id;
+  const modelId = options.modelId || (modelStore.getDefaultGenModel() || {}).id;
+  if (!modelId) throw Object.assign(new Error('No active model available'), { status: 500 });
+  const model = modelStore.getById(modelId);
+  if (!model) throw Object.assign(new Error('Model not found: ' + modelId), { status: 404 });
+  const lang = options.lang || task.preferred_lang || 'zh';
+
+  const { execute: runtimeExec } = require('./agent-runtime');
+
+  // 构建基础 task context（复用现有逻辑）
+  const taskContext = `# Task ${task.id}: ${task.title}\n\n${task.description || '(no description)'}\n\n**Type**: ${task.type || 'general'} | **Estimated**: ${task.estimated_hours || 'N/A'}h\n**Acceptance Criteria**: ${task.acceptance_criteria || task.acceptanceCriteria || '(not specified)'}`;
+
+  // 为 tester 动态添加 browser 工具
+  const testerTools = [...ROLE_TOOLS.tester];
+  if (testerNeedsBrowserTools(task)) {
+    testerTools.push('browser_click', 'browser_type');
+  }
+
+  // 共享进度回调（带角色前缀）
+  let overallRound = 0;
+  const totalRounds = 5 + 25 + 10 + 5; // planner + coder + tester + reviewer
+  const saveProgress = (note) => {
+    const now = new Date().toISOString();
+    try {
+      var logEntry = { time: now, action: 'multi_role', note };
+      var { collection } = require('../db/connection');
+      var t = collection('tasks').findOne(t => t.id === taskId);
+      if (t) {
+        var log = JSON.parse(t.execution_log || '[]');
+        log.push(logEntry);
+        if (log.length > 50) log.splice(0, log.length - 50);
+        overallRound++;
+        collection('tasks').update(t => t.id === taskId, {
+          execution_log: JSON.stringify(log),
+          progress: Math.min(100, Math.round((overallRound / totalRounds) * 100)),
+          progress_note: note,
+          last_progress_update: now,
+        });
+      }
+    } catch (e) { /* silent */ }
+  };
+
+  // 构建基础 system prompt（复用现有 buildSystemPrompt 的 lang directive + skill loader）
+  const baseSystemPrompt = buildSystemPrompt(task, lang);
+  const previousAttempts = buildHistorySummary(task);
+  // workspace 记忆
+  let workspaceMemoryMsg = null;
+  try {
+    const workspaceMeta = require('./workspace-meta');
+    const projectStore = require('../stores/project-store');
+    const project = projectStore.getById(projectId);
+    if (project) {
+      const slug = project.slug || project.name;
+      workspaceMemoryMsg = workspaceMeta.getSummaryForPrompt(slug, task.id);
+    }
+  } catch (e) { /* silent */ }
+
+  // ── 执行流水线 ──
+  const pipeline = [
+    { name: 'planner', maxRounds: 5, tools: ROLE_TOOLS.planner, label: '📋 规划' },
+    { name: 'coder',   maxRounds: 25, tools: ROLE_TOOLS.coder, label: '✏️ 写代码' },
+    { name: 'tester',  maxRounds: 10, tools: testerTools, label: '🧪 测试' },
+    { name: 'reviewer', maxRounds: 5, tools: ROLE_TOOLS.reviewer, label: '👀 审核' },
+  ];
+
+  const roleOutputs = {};
+  let rejectVerdict = null;
+
+  for (let idx = 0; idx < pipeline.length; idx++) {
+    const phase = pipeline[idx];
+    saveProgress(`[${phase.label}] 开始`);
+
+    // 系统提示：基础 + 角色指令
+    const roleSystemPrompt = baseSystemPrompt + ROLE_PROMPTS[phase.name];
+
+    // 消息构建
+    const msgs = [{ role: 'system', content: roleSystemPrompt }];
+
+    if (idx === 0) {
+      // Planner：注入 workspace + 历史 + 任务
+      if (workspaceMemoryMsg) msgs.push({ role: 'user', content: workspaceMemoryMsg });
+      if (previousAttempts) msgs.push({ role: 'user', content: previousAttempts + '\n\n注意：之前的尝试记录如上。请不要在规划中重复已被驳回过的方法。' });
+      msgs.push({ role: 'user', content: taskContext });
+    } else {
+      // 非首个角色：注入前序角色输出（压缩到 1500 字内）
+      for (let pi = 0; pi < idx; pi++) {
+        const out = roleOutputs[pipeline[pi].name];
+        if (out && out.content) {
+          msgs.push({ role: 'user', content: `## ${pipeline[pi].label} 输出\n\n${out.content.slice(0, 1500)}` });
+        }
+      }
+      // 重新加上原始任务
+      msgs.push({ role: 'user', content: `---\n\n## 原始任务\n\n${taskContext}` });
+
+      // reviewer 要求结构化输出
+      if (phase.name === 'reviewer') {
+        msgs.push({ role: 'user', content: '请给出最终审核结论。用以下格式回复：\n\n## 审核结论\n- 状态：APPROVED / REJECTED\n- 说明：...\n- 缺失项（如有）：...' });
+      }
+    }
+
+    // 执行
+    const runtimeResult = await runtimeExec({
+      modelId: model.id,
+      messages: msgs,
+      toolNames: phase.tools,
+      maxRounds: phase.maxRounds,
+      context: { projectId, taskId },
+      caller: 'task-agent-' + phase.name,
+    });
+
+    roleOutputs[phase.name] = runtimeResult;
+    saveProgress(`[${phase.label}] 完成 (${(runtimeResult.content || '').length} chars)`);
+    console.log(`[task-agent] ${phase.label} 完成: ${(runtimeResult.content || '').length} chars`);
+
+    // 如果该角色失败（content 为空），提前退出
+    if (!runtimeResult.content || runtimeResult.content.length < 10) {
+      const errorMsg = `[${phase.label}] 输出为空，流水线中止`;
+      console.error(`[task-agent] ${errorMsg}`);
+      saveProgress(errorMsg);
+      try {
+        eventBus.emit('task.failed', {
+          projectId,
+          actor: { id: 'agent-acms-self', type: 'agent', name: 'ACMS Agent' },
+          target: { type: 'task', id: taskId },
+          payload: { error: errorMsg, failedRole: phase.name },
+        });
+      } catch (e) { /* 不阻塞 */ }
+      return {
+        taskId,
+        modelUsed: model.id,
+        analysis: errorMsg,
+        completedAt: new Date().toISOString(),
+        roles: Object.keys(roleOutputs).reduce((acc, k) => { acc[k] = { ok: !!roleOutputs[k].content }; return acc; }, {}),
+      };
+    }
+
+    // reviewer 驳回检测
+    if (phase.name === 'reviewer') {
+      const upper = (runtimeResult.content || '').toUpperCase();
+      if (upper.includes('REJECTED') || upper.includes('驳回') || upper.includes('不通过')) {
+        rejectVerdict = runtimeResult.content;
+      }
+    }
+  }
+
+  // 汇总
+  const finalOutput = roleOutputs['reviewer'] || {};
+  const summary = rejectVerdict
+    ? `[审核驳回]\n\n${rejectVerdict.slice(0, 2000)}`
+    : `✅ 所有角色执行完成。\n\n${(finalOutput.content || '(无审核结论)').slice(0, 3000)}`;
+
+  // P2: 通过 event-bus 通知系统
+  const eventType = rejectVerdict ? 'task.review_rejected' : 'task.completed';
+  try {
+    eventBus.emit(eventType, {
+      projectId,
+      actor: { id: 'agent-acms-self', type: 'agent', name: 'ACMS Agent' },
+      target: { type: 'task', id: taskId },
+      payload: { summary: summary.slice(0, 300), multiRole: true, rejected: !!rejectVerdict },
+    });
+  } catch (e) { /* 不阻塞 */ }
+
+  return {
+    taskId,
+    modelUsed: model.id,
+    analysis: summary,
+    completedAt: new Date().toISOString(),
+    roles: Object.keys(roleOutputs).reduce((acc, k) => {
+      acc[k] = { length: (roleOutputs[k].content || '').length };
+      return acc;
+    }, {}),
   };
 }
 
@@ -794,5 +1053,69 @@ registerTool({
       plan,
       message: `Plan written (${plan.files.length} files, ${plan.steps.length} steps). Awaiting PM approval.`,
     };
+  },
+});
+
+// ═══════════════════════════════════════════════════════════
+// delegate_subtasks — 并行子任务委派
+//   让 agent 把一个大任务拆成多个子任务并行执行
+// ═══════════════════════════════════════════════════════════
+registerTool({
+  name: 'delegate_subtasks',
+  description: '把当前任务拆成多个子任务并行执行。每个子任务有独立的目标和工具集。'
+    + '适合并行处理多个文件、同时调研多个方案、前后端并行开发等场景。'
+    + '返回每个子任务的执行摘要。最多同时 3 个子任务。'
+    + '示例: delegate_subtasks({tasks: [{goal: "修复登录页样式", tools: ["read","write"]}, {goal: "添加 API 测试", tools: ["read","exec"]}]})',
+  parameters: {
+    type: 'object',
+    properties: {
+      tasks: {
+        type: 'array',
+        description: '子任务数组，每个子任务包含 goal（目标描述）和 tools（工具集名称列表）',
+        items: {
+          type: 'object',
+          properties: {
+            goal: { type: 'string', description: '子任务目标（必填），清晰描述要做什么' },
+            tools: { type: 'array', description: '工具集名称列表：read, write, git, exec, browser, db, http', items: { type: 'string' } },
+          },
+          required: ['goal'],
+        },
+      },
+    },
+    required: ['tasks'],
+  },
+  async handler(args, ctx = {}) {
+    var tasks = args.tasks || [];
+    if (!Array.isArray(tasks) || tasks.length === 0) return { ok: false, error: 'NO_TASKS' };
+    if (tasks.length > 3) return { ok: false, error: 'TOO_MANY_TASKS' };
+
+    const { execute: runtimeExec } = require('./agent-runtime');
+    var TOOLSET_MAP = {
+      read: ['agent_read_file', 'agent_search_files', 'agent_list_files'],
+      write: ['agent_read_file', 'agent_search_files', 'agent_write_file', 'agent_patch_file', 'agent_multi_patch'],
+      git: ['agent_git_status', 'agent_git_diff', 'agent_git_commit', 'agent_git_log'],
+      exec: ['agent_read_file', 'agent_search_files', 'agent_exec_command'],
+      browser: ['browser_snapshot', 'browser_console', 'browser_click', 'browser_type'],
+      db: ['agent_db_query'],
+      http: ['agent_http_request'],
+    };
+
+    var results = await Promise.all(tasks.map(async function(subtask, idx) {
+      var toolNames = (subtask.tools || ['read', 'write']).flatMap(function(t) { return TOOLSET_MAP[t] || []; });
+      toolNames = [...new Set(toolNames)];
+      var msgs = [
+        { role: 'system', content: '你是一个专注的子任务 Agent。你的目标明确且范围有限。完成任务后给出简洁总结（3-5 行）。工具可用：' + toolNames.join(', ') },
+        { role: 'user', content: subtask.goal },
+      ];
+      try {
+        var start = Date.now();
+        var result = await runtimeExec({ messages: msgs, toolNames: toolNames, maxRounds: 10, context: ctx, caller: 'delegate-' + idx });
+        return { index: idx, goal: subtask.goal.slice(0, 100), ok: true, summary: (result.content || '').slice(0, 500), elapsed: (Date.now() - start) + 'ms' };
+      } catch (e) {
+        return { index: idx, goal: subtask.goal.slice(0, 100), ok: false, error: e.message };
+      }
+    }));
+
+    return { ok: true, total: results.length, successCount: results.filter(function(r) { return r.ok; }).length, failedCount: results.filter(function(r) { return !r.ok; }).length, results: results };
   },
 });
