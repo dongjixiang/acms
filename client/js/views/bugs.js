@@ -64,6 +64,10 @@ async function loadBugList() {
     _bugFindById('bug-list').innerHTML =
       '<div style="padding:32px;text-align:center;color:var(--text2)">❌ 加载失败: ' + escHtml(e.message) + '</div>';
   }
+  // v0.62: 如果没传 root（刷了隐藏模板），同时刷新所有打开的 bugs 窗口
+  if (_bugRoot === document && window.ACMSWin && ACMSWin.refreshView) {
+    ACMSWin.refreshView('bugs');
+  }
 }
 
 function renderBugList(bugs) {

@@ -39,7 +39,7 @@ router.patch('/:id', async (req, res, next) => {
     if (!updated) return res.status(404).json({ error: 'MODEL_NOT_FOUND' });
     console.log('[models] PATCH 成功，准备 emit');
     await eventBus.emit('model.updated', { actor: { id: 'admin', type: 'human' }, target: { type: 'model', id: req.params.id }, payload: { model: updated } });
-    console.log('[models] emit 完成');
+    console.error('[models] emit 完成, wsClients:', eventBus._wsClients ? eventBus._wsClients.size : 0);
     res.json(updated);
   } catch (e) { next(e); }
 });

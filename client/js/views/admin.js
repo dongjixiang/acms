@@ -555,7 +555,9 @@ async function saveModel() {
       toast('模型已添加', 'success');
     }
     resetModelForm();
-    loadAdminPage();
+    await loadAdminPage();
+    // 刷新已打开的 admin 窗口（从隐藏模板重新克隆到 w.$c）
+    if (window.ACMSWin && ACMSWin.refreshView) ACMSWin.refreshView('admin');
   } catch(e) { toast('保存失败: '+e.message, 'error'); }
 }
 
@@ -693,7 +695,9 @@ async function setDefaultGenModel(modelId) {
     await api('POST', '/admin/default-gen-model', { modelId });
     toast('默认思路模型已更新', 'success');
     loadAdminPage();
-  } catch(e) { toast('设置失败: '+e.message, 'error'); }
+    // 刷新已打开的 admin 窗口
+    if (window.ACMSWin && ACMSWin.refreshView) ACMSWin.refreshView('admin');
+  } catch(e) { toast('设置失败: ' + e.message, 'error'); }
 }
 
 // v0.4 收官后：实时切换 elicitor 软开关（无需重启）
