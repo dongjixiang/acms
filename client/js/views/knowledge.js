@@ -38,6 +38,10 @@ async function loadKnowledgeView(root) {
   } catch (e) {
     // 全局容错
   }
+  // v0.62: 如果没传 root，刷新所有打开的 knowledge 窗口
+  if (!root && window.ACMSWin && ACMSWin.refreshView) {
+    ACMSWin.refreshView('knowledge');
+  }
 }
 
 // ── 知识库统计 ──

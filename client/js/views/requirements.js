@@ -64,6 +64,10 @@ async function loadRequirements(root) {
         <div class="meta"><span>${r.id}</span><span>P${r.priority}</span><span>${fmtDate(r.created_at)}</span></div>
       </div>`).join('');
   } catch (e) { toast('加载失败: ' + e.message, 'error'); }
+  // v0.62: 如果没传 root，刷新所有打开的 requirements 窗口
+  if (!root && window.ACMSWin && ACMSWin.refreshView) {
+    ACMSWin.refreshView('requirements');
+  }
 }
 
 function showCreateReq() { _reqFindById('create-req-panel').style.display = 'block'; }

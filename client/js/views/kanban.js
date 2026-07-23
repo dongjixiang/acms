@@ -185,6 +185,10 @@ async function refreshKanban(parentId, root) {
     if (_arCheckbox && _arCheckbox.checked && (typeof _autoReviewTimer === 'undefined' || _autoReviewTimer === null)) {
       toggleGlobalAutoReview(true);
     }
+    // v0.62: 如果没传 root（刷新了隐藏模板），同时刷新所有打开的看板窗口
+    if (!root && window.ACMSWin && ACMSWin.refreshView) {
+      ACMSWin.refreshView('kanban');
+    }
   } catch (e) { toast('加载看板失败: ' + e.message, 'error'); }
 }
 

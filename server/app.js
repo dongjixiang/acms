@@ -268,6 +268,11 @@ app.use('/api/assist-free', require('./routes/assist-free'));
 // v0.59 appRuntime — 把外部网页装进「本地应用壳」（chrome CDP screencast 流推送 + input 桥接）
 app.use('/api/app-runtime', require('./routes/app-runtime'));
 app.use('/api/office', require('./routes/office'));  // v0.62 Office 文档编辑器
+// 调试端点：检查 event-bus WS 客户端
+app.get('/api/debug/ws-clients', (req, res) => {
+  const eb = require('./services/event-bus');
+  res.json({ wsClients: eb._wsClients ? eb._wsClients.size : 0 });
+});
 
 // 404 — v0.18 加 unmatched 路径 log
 app.use((req, res, next) => {
