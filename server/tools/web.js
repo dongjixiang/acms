@@ -56,19 +56,23 @@ registerTool({
       if (!req) return { error: '需求不存在' };
       return { id: req.id, title: req.title, description: req.description, status: req.status, ai_understanding: req.ai_understanding };
     } catch (e) { return { error: e.message }; }
-  },
+},
 });
 
 const { fetchUrlCore } = require('./url-fetch');
 registerTool({
   name: 'fetch_url',
-  description: '抓取外部 URL 网页内容，提取正文转 markdown。'
-    + '当用户消息含 http(s):// 链接时使用，返回标题 + 正文摘要（5000 字以内）。'
+  description: '抓取**单个完整 URL** 的网页内容，提取正文转 markdown。'
+    + '\n\n【⚠️ 严格使用条件】只接受**完整 http(s):// 起始的 URL**，不是搜索关键词、不是主题、不是问题。'
+    + '要"搜索/查一下/调研"请用 **web_search** 或 **web_research**（用 query 参数）。'
+    + '要"查实时信息/查时间"请用 **get_current_time**。'
+    + '\n\n用户消息含完整 URL 链接（如 https://example.com/article.html）时使用。'
+    + '\n\n返回：标题 + 正文摘要（默认 5000 字以内，max_length 可调）。'
     + '已做 SSRF 防护（拒绝内网 URL），超时 30s。',
   parameters: {
     type: 'object',
     properties: {
-      url: { type: 'string', description: '完整 URL（含 http:// 或 https://）' },
+      url: { type: 'string', description: '完整 URL（必须以 http:// 或 https:// 开头，**不是搜索 query**）' },
       max_length: { type: 'number', description: '最大字符数（默认 5000）', default: 5000 },
     },
     required: ['url'],
@@ -79,6 +83,37 @@ registerTool({
 });
 
 const { search: webSearch } = require('./web-search');
+const { research: webResearch } = require('./web-research');
+const reqStore = require('../stores/requirement-store');
+
+// v0.50: search/research 完成后写独立 chat 气泡（治"用户看不到赛况文字"症状）
+//   dedupe: 同一 reqId + source + query 不会重复写
+function writeChatEntryForTool(reqId, source, payload) {
+  if (!reqId) return;
+  const req = reqStore.getById(reqId);
+  if (!req) return;
+  let hist = [];
+  try { hist = JSON.parse(req.supplement_history || '[]'); } catch { hist = []; }
+  if (!Array.isArray(hist)) hist = [];
+  const dedupeKey = `${source}:${String(payload.query || '').slice(0, 80)}:${(payload.answer || '').slice(0, 80)}`;
+  const dup = hist.some(e => {
+    if (e.source !== source) return false;
+    try {
+      const old = JSON.parse(e.text || '{}');
+      const oldKey = `${source}:${String(old.query || '').slice(0, 80)}:${(old.answer || '').slice(0, 80)}`;
+      return oldKey === dedupeKey;
+    } catch { return false; }
+  });
+  if (dup) return;
+  hist.push({
+    role: 'system',
+    text: JSON.stringify(payload),
+    at: new Date().toISOString(),
+    source,
+  });
+  reqStore.update(reqId, { supplement_history: JSON.stringify(hist) });
+}
+
 registerTool({
   name: 'web_search',
   description: '联网搜索最新信息。'
@@ -89,17 +124,23 @@ registerTool({
     type: 'object',
     properties: {
       query: { type: 'string', description: '搜索关键词（越精确越好）' },
-      max_results: { type: 'number', description: '最大返回结果数（1-8）', default: 8 },
+      max_results: { type: 'number', description: '最大返回结果数（默认 20，上限 20）', default: 20, minimum: 1, maximum: 20 },
     },
     required: ['query'],
   },
-  async handler(args) {
-    return await webSearch(args);
+  async handler(args, ctx = {}) {
+    const result = await webSearch(args);
+    // v0.50: 完成后写 search_result 卡片到 chat 流（前端立刻显示赛况）
+    if (ctx.reqId && !result.error && Array.isArray(result.results) && result.results.length > 0) {
+      writeChatEntryForTool(ctx.reqId, 'search_result', {
+        type: 'search_result', query: args.query, count: result.count, formatted: result.formatted, results: result.results,
+      });
+    }
+    return result;
   },
 });
 
-// v0.15：综合网络调研
-const { research: webResearch } = require('./web-research');
+// v0.15：综合网络调研（webResearch 已在文件顶部 require 过）
 registerTool({
   name: 'web_research',
   description: '综合网络调研：搜索互联网 + 自动抓取 Top N 链接正文 + LLM 综合分析，返回结构化答案（含引用来源）。'
@@ -110,13 +151,20 @@ registerTool({
     type: 'object',
     properties: {
       query: { type: 'string', description: '调研问题或主题' },
-      max_results: { type: 'number', description: '搜索返回条数（默认 6，1-10）', default: 6 },
-      deep_fetch: { type: 'number', description: '自动抓取的 URL 数（默认 3，0=不抓取只返回搜索结果）', default: 3 },
+      max_results: { type: 'number', description: '搜索返回条数（默认 20，上限 20）', default: 20, minimum: 1, maximum: 20 },
+      deep_fetch: { type: 'number', description: '自动抓取的 URL 数（默认 10，上限 10，0=不抓取只返回搜索结果）', default: 10, minimum: 0, maximum: 10 },
       model_id: { type: 'string', description: '综合分析用的 LLM（可选，默认用系统默认模型）' },
     },
     required: ['query'],
   },
-  async handler(args) {
-    return await webResearch(args);
+  async handler(args, ctx = {}) {
+    const result = await webResearch({ ...args, _reqId: ctx.reqId });
+    // v0.50: 完成后写 research_result 卡片（包含 LLM 综合答案 + 来源列表）
+    if (ctx.reqId && !result.error && result.answer && result.answer.length > 0) {
+      writeChatEntryForTool(ctx.reqId, 'research_result', {
+        type: 'research_result', query: args.query, answer: result.answer, sources: result.sources || [],
+      });
+    }
+    return result;
   },
 });

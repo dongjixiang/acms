@@ -200,6 +200,48 @@ function calcNumFrames(targetSeconds, frameRate = 24) {
  * 运行视频生成任务
  *   v0.22.30: 支持 _attach_to.sceneIdx → 按分桶字段存储（剧本多镜头互不覆盖）
  */
+/**
+ * v0.53 (2026-07-18): 调 agnes_generate_video 工具 + 自动重试
+ *   与 image 的 callAgnesImageOnce 同模式（最多 3 次，指数退避 500ms / 1s）
+ *   retryable (白名单): HTTP 429/5xx + transport (status_code 0/408) + transport-level exception
+ *   NO retry (未知 status): 防御性 — 不浪费 3 次重试在未识别的永久错误上
+ *   NO retry (4xx 除 429): 配置/参数问题，再试也是同样错
+ *   返回 { ok, error, result } — 调用方用 retried.ok 判断，retried.result 拿原始响应
+ */
+async function callAgnesVideoWithRetry(tool, params) {
+  const MAX_ATTEMPTS = 3;
+  const RETRY_STATUSES = [429, 502, 503, 504];
+  // transport errors 在 agnes-video.js 里 status_code=0（默认）或 408（timeout）
+  const RETRY_TRANSPORT_CODES = [0, 408];
+  const backoff = (n) => new Promise(r => setTimeout(r, 500 * Math.pow(2, n - 1)));
+  let lastErr = '未知错误';
+  let lastResult = null;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const result = await tool.handler(params);
+      lastResult = result;
+      if (!result || !result.error) return { ok: true, error: null, result };
+      lastErr = result.error;
+      const sc = result.status_code;
+      // 未定义 status_code (e.g. API Key 缺失) → 不重试
+      if (sc === undefined) return { ok: false, error: result.error, result };
+      // 只对白名单内的 status 重试
+      const retryable = RETRY_STATUSES.includes(sc) || RETRY_TRANSPORT_CODES.includes(sc);
+      if (!retryable || attempt >= MAX_ATTEMPTS) return { ok: false, error: result.error, result };
+      console.warn(`[assist:video] status=${sc}（${attempt}/${MAX_ATTEMPTS}），${500 * Math.pow(2, attempt - 1)}ms 后重试...`);
+      await backoff(attempt);
+    } catch (e) {
+      lastErr = e.message || String(e);
+      const isConnError = /ECONNRESET|UND_ERR|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|fetch failed/i.test(lastErr);
+      if (!isConnError) return { ok: false, error: lastErr, result: lastResult };
+      if (attempt >= MAX_ATTEMPTS) return { ok: false, error: lastErr, result: lastResult };
+      console.warn(`[assist:video] 连接错误 ${lastErr}（${attempt}/${MAX_ATTEMPTS}），${500 * Math.pow(2, attempt - 1)}ms 后重试...`);
+      await backoff(attempt);
+    }
+  }
+  return { ok: false, error: lastErr, result: lastResult };
+}
+
 async function runAssistJob(requirementId, opts = {}) {
   const req = reqStore.getById(requirementId);
   if (!req) return;
@@ -304,10 +346,11 @@ let finalImage = imageUrl || null;
         console.warn(`[assist:video] ${requirementId} finalImage 解析失败，降级为文生视频`);
       }
     }
-    const result = await videoTool.handler(params);
-
-    if (result.error) {
-      throw new Error(result.error);
+    // v0.53: 包一层重试（最多 3 次，指数退避）— 5xx/429/transport errors 重试，4xx/API Key 缺失不重试
+    const retried = await callAgnesVideoWithRetry(videoTool, params);
+    const result = retried.result;
+    if (!retried.ok || result.error) {
+      throw new Error(retried.error || result.error || '视频生成失败');
     }
 
     reqStore.update(requirementId, {

@@ -11,7 +11,10 @@ const workspaceMeta = require('../../services/workspace-meta');
 
 registerTool({
   name: 'agent_exec_command',
-  description: 'Execute a shell command in the project workspace (sandboxed). Allowed commands: node, npm, npx, python, git, ls, cat, echo, etc. Returns stdout, stderr, and exit code. Use for running tests, checking syntax (node --check), viewing git log, listing directories, etc.',
+  description: 'Execute a shell command in the project workspace (sandboxed). Allowed commands: node, npm, npx, python, git, ls, cat, echo, etc. Returns stdout, stderr, and exit code. Use for running tests, checking syntax (node --check), viewing git log, listing directories, etc. '
+    + '示例: agent_exec_command({cmd: "node --check src/server.js"}) — 检查 JS 语法。'
+    + ' agent_exec_command({cmd: "npm test"}) — 运行测试。'
+    + ' agent_exec_command({cmd: "ls -la"}) — 列出目录内容。',
   parameters: {
     type: 'object',
     properties: {
@@ -48,7 +51,9 @@ registerTool({
     + 'Use this to create new files (docs, configs, code) or modify existing ones. '
     + 'Content must be valid UTF-8 text. For code files, ensure syntax is correct before writing. '
     + 'IMPORTANT: always pass `path` (relative path from workspace root) AND `content` (full file body). '
-    + 'When overwriting an existing file, the new content must preserve existing methods/imports unless explicitly rewriting the whole module.',
+    + 'When overwriting an existing file, the new content must preserve existing methods/imports unless explicitly rewriting the whole module. '
+    + '示例: agent_write_file({path: "README.md", content: "# My Project\\n\\nA demo project."}) — 创建或覆盖 README 文件。 '
+    + '如果只想改文件中的一小段，用 agent_patch_file 代替，不要全量重写。',
   parameters: {
     type: 'object',
     properties: {

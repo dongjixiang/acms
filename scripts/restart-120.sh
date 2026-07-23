@@ -1,9 +1,29 @@
 #!/bin/bash
-pkill -f 'node server/index.js' 2>/dev/null
+set -e
+echo "=== Killing old node processes ==="
+pkill -f 'node server/index.js' 2>/dev/null || true
 sleep 3
+OLD_PS=$(ps -ef | grep -E 'node.*server/index' | grep -v grep || true)
+if [ -n "$OLD_PS" ]; then
+  echo "WARNING: still running:"
+  echo "$OLD_PS"
+  pkill -9 -f 'node server/index.js' 2>/dev/null || true
+  sleep 2
+fi
+echo "=== Old process killed ==="
+
+echo "=== Starting new service ==="
 cd /root/acms
-PORT=3300 node server/index.js > server_out_new.txt 2>&1 < /dev/null &
-sleep 4
-ps aux | grep -E 'node.*server/index' | grep -v grep && echo "STARTED OK"
-curl -s --max-time 3 -H "X-API-Key: dev-key-001" http://127.0.0.1:3300/api/kanban 2>&1 | head -c 200
-echo
+(node server/index.js > server_out_new.txt 2>&1 < /dev/null &)
+sleep 5
+
+echo "=== New PID ==="
+ps -ef | grep -E 'node.*server/index' | grep -v grep
+
+echo "=== Listening ports ==="
+ss -tlnp 2>/dev/null | grep -E ':3300|:3301|:3302'
+
+echo "=== Last log lines ==="
+tail -5 /root/acms/server_out_new.txt
+
+echo "=== DONE ==="

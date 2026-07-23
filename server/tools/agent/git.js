@@ -4,7 +4,8 @@ const { registerTool } = require('../../services/tool-registry');
 
 registerTool({
   name: 'agent_git_status',
-  description: 'Show the working tree status — which files are modified, staged, or untracked. Returns git status output.',
+  description: 'Show the working tree status — which files are modified, staged, or untracked. Returns git status output. '
+    + '示例: agent_git_status() — 查看当前哪些文件有改动。提交前先调这个确认改了什么。',
   parameters: {
     type: 'object',
     properties: {
@@ -35,7 +36,8 @@ registerTool({
 
 registerTool({
   name: 'agent_git_diff',
-  description: 'Show changes between working tree and last commit, or between commits. Use to review what was modified before committing.',
+  description: 'Show changes between working tree and last commit, or between commits. Use to review what was modified before committing. '
+    + '示例: agent_git_diff() — 查看未提交的改动。 agent_git_diff({file: "src/server.js"}) — 只看某个文件的改动。',
   parameters: {
     type: 'object',
     properties: {
@@ -70,7 +72,8 @@ registerTool({
 
 registerTool({
   name: 'agent_git_commit',
-  description: 'Stage all modified files and create a commit with the given message. Returns commit hash and summary.',
+  description: 'Stage all modified files and create a commit with the given message. Returns commit hash and summary. '
+    + '示例: agent_git_commit({message: "Fix: handle edge case in login flow"}) — 提交所有改动。写完代码改完后调这个保存进度。',
   parameters: {
     type: 'object',
     properties: {
@@ -97,11 +100,28 @@ registerTool({
       const r = await workspace.exec(slug, { cmd: 'git add -A', timeout: 5000 });
       lines.push('git add -A: exit=' + r.exitCode);
     }
-    const msg = (args.message || '').replace(/'/g, "\\'");
-    const commitResult = await workspace.exec(slug, {
-      cmd: 'git commit -m \'' + msg + '\'',
-      timeout: 10000,
-    });
+// ⚠️ Shell 单引号字符串内无法 escape 单引号 (`\` 是字面字符, 不是转义)
+    //    历史 bug (T-MRKP19DR 2026-07-14): .replace(/'/g, "\\'") 在 cmd.exe+MSYS2 bash 双层解析下
+    //    会破坏引号结构, 导致 message 含 ' (如 `base: './'`) 时 git 报 "error: pathspec 'xxx'"
+    //    Node spawn 在 Windows 默认用 cmd.exe (单引号按字面传), 然后 git.exe 内部用 MSYS2 bash
+    //    解析, `\'` 在 bash 单引号字符串内 broken → 拆散 message → 多个 token 被 git 当 pathspec
+    //
+    //    修复 (v0.46): 写临时文件 + `git commit -F <msgfile>` (方案 B)
+    //    彻底绕开 shell quoting 问题, 支持任意特殊字符 (', `, $, \, ", \n)
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const msgFile = path.join(os.tmpdir(), `acms-commit-msg-${Date.now()}-${Math.random().toString(36).slice(2,8)}.txt`);
+    fs.writeFileSync(msgFile, args.message || '', 'utf8');
+    let commitResult;
+    try {
+      commitResult = await workspace.exec(slug, {
+        cmd: `git commit -F "${msgFile}"`,
+        timeout: 10000,
+      });
+    } finally {
+      try { fs.unlinkSync(msgFile); } catch (e) { /* ignore cleanup error */ }
+    }
     lines.push('git commit: exit=' + commitResult.exitCode);
     lines.push('output: ' + (commitResult.stdout || '').slice(0, 500));
     if (commitResult.stderr) lines.push('stderr: ' + commitResult.stderr.slice(0, 500));
@@ -130,7 +150,8 @@ registerTool({
 
 registerTool({
   name: 'agent_git_log',
-  description: 'Show commit log. Use to understand recent changes and find commit hashes.',
+  description: 'Show commit log. Use to understand recent changes and find commit hashes. '
+    + '示例: agent_git_log({limit: 5}) — 查看最近 5 条提交记录。',
   parameters: {
     type: 'object',
     properties: {

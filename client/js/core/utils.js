@@ -1,5 +1,6 @@
 // 工具函数
 function escHtml(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function escAttr(s) { if (!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function fmtDate(s) { if (!s) return ''; return new Date(s).toLocaleDateString('zh-CN'); }  // zh-CN OK; date 本身无时区歧义
 function safeParse(s) { if (!s) return {}; if (typeof s === 'object') return s; try { return JSON.parse(s); } catch { return {}; } }
 function toast(msg, type = 'success') {

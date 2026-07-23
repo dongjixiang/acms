@@ -19,6 +19,21 @@
 // 6 个函数全部从 git 历史 d5bac94^ 完整恢复，确保 0 行为变化。
 
 async function chatAssist(reqId, method, extraBody) {
+  // ═══ 自由对话兜底 ═══ 通过输入流触发
+  if (reqId === '__free__') {
+    // 对于音乐，拼成自然语言消息通过 detect-and-respond 触发
+    if (method === 'music' && extraBody && extraBody.song) {
+      var artist = extraBody.artist ? extraBody.artist + ' ' : '';
+      var input = document.getElementById('chat-input-__free__');
+      if (input) {
+        input.value = '我想听' + artist + extraBody.song;
+        chatSend(reqId);
+      }
+    } else {
+      toast('自由对话模式暂不支持此工具，直接在输入框描述你的需求即可', 'info');
+    }
+    return;
+  }
   // v0.6.7：累积模式 — 只清**同 method** 的旧卡片，保留其他 method 的卡片
   //   用户多次点不同按钮（决策树/场景/竞品/借鉴/痛点）→ 多张卡片共存
   //   用户重复点同 method → 替换为新卡片（防止累积多张同 method 卡片）
@@ -39,7 +54,7 @@ async function chatAssist(reqId, method, extraBody) {
   window._explicitAssist[reqId] = method;
   // v0.6.6：先插 loading 卡片到 chat-stream-msgs 末尾（最后一条聊天记录下方）
   //   标题用 method 中文名（用 methodTitles 跟 renderAssistLayer 保持一致）
-  const methodTitles = { decision_tree:'🌳 决策树', scenarios:'👥 场景', tradeoff:'⚖️ 取舍', arch:'🏗️ 架构', diagnosis:'🩺 体检', visual:'🎨 视觉', competitive:'🏢 竞品', reference:'🏛 借鉴', pains:'🔥 痛点', stakeholders:'👥 干系人', risks:'⚠️ 风险', assumptions:'📌 假设', music:'🎵 音乐', video:'🎬 视频', image_gen:'🖼️ 图片', clean:'🧹 清理', screenplay:'📖 剧本' };
+  const methodTitles = { decision_tree:'🌳 决策树', scenarios:'👥 场景', tradeoff:'⚖️ 取舍', arch:'🏗️ 架构', diagnosis:'🩺 体检', visual:'🎨 视觉', competitive:'🏢 竞品', reference:'🏛 借鉴', pains:'🔥 痛点', stakeholders:'👥 干系人', risks:'⚠️ 风险', assumptions:'📌 假设', music:'🎵 音乐', video:'🎬 视频', image_gen:'🖼️ 图片', clean:'🧹 清理', screenplay:'📖 剧本', document_gen:'📄 文档', send_email:'📧 邮件' };
   if (c) {
     const loading = showAssistLoading({
       method,

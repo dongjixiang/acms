@@ -28,6 +28,7 @@ async function loadAdminPage() {
         <button class="tab-btn" data-tab="admin-tab-events">📋 事件</button>
         <button class="tab-btn" data-tab="admin-tab-webhooks">🔔 Webhooks</button>
         <button class="tab-btn" data-tab="admin-tab-ops">🛠 运营工具</button>
+        <button class="tab-btn" data-tab="admin-tab-users">👥 用户管理</button>
       </div>
 
       <!-- Tab 1 · 概览 — 系统状态卡片（uptime / memory 超阈值变色警示） -->
@@ -369,6 +370,17 @@ async function loadAdminPage() {
           在任意页面快速打开"记录想法"对话框
         </div>
       </div>
+
+      <!-- Tab · 用户管理 -->
+      <div class="tab-content" id="admin-tab-users">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <h3 style="margin:0">👥 用户管理</h3>
+          <button class="btn-primary" onclick="showCreateUserDialog()" style="font-size:12px">+ 创建用户</button>
+        </div>
+        <div id="user-list" style="font-size:13px">
+          <span style="color:var(--text2)">⏳ 加载中…</span>
+        </div>
+      </div>
     `;
     setupAdminTabs();
     // 加载"运营工具"tab 的统计（异步）
@@ -376,11 +388,13 @@ async function loadAdminPage() {
   } catch (e) { document.getElementById('admin-content').innerHTML = `<div class="empty">加载失败: ${e.message}</div>`; }
 }
 
-// admin Tab 切换：scope 到 #admin-tabs + #admin-content
+// admin Tab 切换：scope 到 #admin-tabs + #admin-content（默认），也支持传入克隆窗口根节点
 //   区别于 setupSettingsTabs（settings 全局 .tab-btn），避免 admin 容器 + settings 容器同时在 DOM 时相互干扰
-function setupAdminTabs() {
-  const tabBar = document.getElementById('admin-tabs');
-  const adminRoot = document.getElementById('admin-content');
+//   当 admin HTML 被克隆进浮窗时（taskbar.js showAdminWindow），DOM 里会出现两份 #admin-tabs / #admin-content，
+//   共享同一份 handler 逻辑但只命中第一份，浮窗里的 tab 点不动。修复：传入 root 后仅 scope 到该 root。
+function setupAdminTabs(root) {
+  const tabBar = root ? root.querySelector('#admin-tabs') : document.getElementById('admin-tabs');
+  const adminRoot = root || document.getElementById('admin-content');
   if (!tabBar || !adminRoot) return;
   tabBar.querySelectorAll('.tab-btn').forEach(btn => {
     btn.onclick = () => {
@@ -741,6 +755,86 @@ async function clearAgnesKey() {
 // ═══ 运营工具 Tab 辅助（想法池 + 自我改进快捷入口，从 header 移到此） ═══
 
 // 加载"运营工具"tab 内的统计摘要（独立失败容忍，避免阻塞 admin 主流程）
+// ── 用户管理 ──
+async function loadUsers() {
+  var el = document.getElementById('user-list');
+  if (!el) return;
+  el.innerHTML = '<span style="color:var(--text2)">⏳ 加载中…</span>';
+  try {
+    var token = localStorage.getItem('acms-token');
+    var res = await fetch('/api/auth/users', {
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }
+    });
+    var data = await res.json();
+    if (!res.ok) {
+      el.innerHTML = '<div style="color:var(--accent2);padding:12px">⚠️ ' + (data.message || '无权访问') + '</div>';
+      return;
+    }
+    var users = data.users || [];
+    if (!users.length) {
+      el.innerHTML = '<div style="color:var(--text2);padding:12px">📭 暂无用户</div>';
+      return;
+    }
+    var html = '<table style="width:100%;border-collapse:collapse">' +
+      '<thead><tr style="color:var(--text2);font-size:11px;text-transform:uppercase;border-bottom:1px solid var(--border)">' +
+      '<th style="padding:6px 8px;text-align:left">用户名</th>' +
+      '<th style="padding:6px 8px;text-align:left">显示名</th>' +
+      '<th style="padding:6px 8px;text-align:left">角色</th>' +
+      '<th style="padding:6px 8px;text-align:left">创建时间</th>' +
+      '<th style="padding:6px 8px;text-align:left">最后登录</th>' +
+      '</tr></thead><tbody>';
+    for (var i = 0; i < users.length; i++) {
+      var u = users[i];
+      html += '<tr style="border-bottom:1px solid var(--bg3)">' +
+        '<td style="padding:8px">' + escHtml(u.username) + '</td>' +
+        '<td style="padding:8px">' + escHtml(u.displayName || '') + '</td>' +
+        '<td style="padding:8px"><span class="badge" style="background:color-mix(in srgb, var(--accent) 15%, transparent);color:var(--accent);padding:2px 8px;border-radius:4px;font-size:11px">' + escHtml(u.role) + '</span></td>' +
+        '<td style="padding:8px;font-size:12px;color:var(--text2)">' + (u.createdAt ? u.createdAt.slice(0, 10) : '-') + '</td>' +
+        '<td style="padding:8px;font-size:12px;color:var(--text2)">' + (u.lastLogin ? u.lastLogin.slice(0, 10) : '-') + '</td>' +
+        '</tr>';
+    }
+    html += '</tbody></table>';
+    el.innerHTML = html;
+  } catch(e) {
+    el.innerHTML = '<div style="color:var(--accent2);padding:12px">⚠️ 加载失败: ' + e.message + '</div>';
+  }
+}
+
+function showCreateUserDialog() {
+  // 简单 prompt 式创建（后续可改成内联表单）
+  var username = prompt('请输入新用户名：');
+  if (!username || !username.trim()) return;
+  var password = prompt('请输入密码（至少4位）：');
+  if (!password || password.length < 4) { alert('密码至少4位'); return; }
+  var displayName = prompt('请输入显示名称（可选）：') || username.trim();
+
+  api('POST', '/auth/register', { username: username.trim(), password: password, displayName: displayName })
+    .then(function(data) {
+      alert('✅ 用户 ' + data.user.displayName + ' 创建成功');
+      loadUsers();
+    })
+    .catch(function(err) {
+      alert('❌ 创建失败: ' + (err.data ? err.data.message : err.message));
+    });
+}
+
+// 触发加载用户列表（当用户切到该 tab 时）
+function setupUsersTab() {
+  var tab = document.querySelector('#admin-tabs .tab-btn[data-tab="admin-tab-users"]');
+  if (tab) {
+    tab.addEventListener('click', function() {
+      setTimeout(loadUsers, 100);
+    });
+  }
+}
+
+// 在 loadAdminPage 末尾调用 setupUsersTab
+var origSetupAdminTabs = setupAdminTabs;
+setupAdminTabs = function(root) {
+  origSetupAdminTabs(root);
+  setupUsersTab();
+};
+
 async function loadOpsTabStats() {
   // 想法池：取 /ideas/stats
   try {
@@ -850,7 +944,7 @@ function backToOpsTab() {
 let _adminEntryContext = null;
 
 function _captureAdminEntryContext() {
-  const pages = ['view-projects', 'view-workspace', 'view-admin', 'view-improvements'];
+  const pages = ['view-workspace', 'view-admin', 'view-improvements'];
   let visibleView = null;
   for (const p of pages) {
     const el = document.getElementById(p);
@@ -864,6 +958,8 @@ function _captureAdminEntryContext() {
   if (visibleView === 'view-workspace') {
     ctx.projectId = window.App && App.currentProjectId;
     ctx.projectName = window.App && App.currentProject && App.currentProject.name;
+    // P0 v0.X: 也记录最近打开的 taskId — 返回时用于 openTask 重新加载
+    ctx.lastTaskId = window.App && App.lastTaskId;
     const activeSub = document.querySelector('#content .view.active');
     if (activeSub) ctx.workspaceActiveTab = activeSub.id.replace(/^view-/, '');
   }
@@ -882,22 +978,23 @@ function backFromAdmin() {
   const ctx = _adminEntryContext;
   _adminEntryContext = null;
   if (!ctx || !ctx.view) {
-    // 没记录到上下文（直接刷新页面等情况）— 兜底回项目列表
-    showView('view-projects');
-    if (typeof loadProjects === 'function') loadProjects();
+    // 没记录到上下文（直接刷新页面等情况）— 兜底回项目列表（桌面窗口）
+    goToProjects();
     return;
   }
   switch (ctx.view) {
-    case 'view-projects':
-      showView('view-projects');
-      if (typeof loadProjects === 'function') loadProjects();
-      break;
     case 'view-workspace':
       // 重新进入项目 → enterProject 会默认切到 dashboard，再用 setTimeout 还原原 tab
       if (ctx.projectId && typeof enterProject === 'function') {
         enterProject({ id: ctx.projectId, name: ctx.projectName || '' });
         if (ctx.workspaceActiveTab && ctx.workspaceActiveTab !== 'dashboard' && typeof showWorkspaceView === 'function') {
-          setTimeout(function () { showWorkspaceView(ctx.workspaceActiveTab); }, 30);
+          setTimeout(function () {
+            showWorkspaceView(ctx.workspaceActiveTab);
+            // P0 v0.X: 如果返回到 task-detail，重新调 openTask 加载最新内容（避免陈旧内容）
+            if (ctx.workspaceActiveTab === 'task-detail' && ctx.lastTaskId && typeof openTask === 'function') {
+              openTaskInWindow(ctx.lastTaskId);
+            }
+          }, 30);
         }
       } else {
         showView('view-workspace');
@@ -908,7 +1005,6 @@ function backFromAdmin() {
       if (typeof loadImprovements === 'function') loadImprovements();
       break;
     default:
-      showView('view-projects');
-      if (typeof loadProjects === 'function') loadProjects();
+      goToProjects();
   }
 }

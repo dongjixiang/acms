@@ -4,6 +4,12 @@
 
 const { searchWeb } = require('../services/web-search');
 
+function normalizeSearchArgs(args = {}) {
+  const raw = Number(args.max_results ?? args.maxResults ?? 20);
+  if (!Number.isFinite(raw)) return 20;
+  return Math.min(20, Math.max(1, Math.trunc(raw)));
+}
+
 /**
  * 搜索互联网
  * @param {object} args - { query, maxResults? }
@@ -13,7 +19,7 @@ async function search(args) {
   const query = args?.query;
   if (!query) return { error: '搜索关键词必填' };
 
-  const result = await searchWeb(query, { maxResults: args?.maxResults || 8 });
+  const result = await searchWeb(query, { maxResults: normalizeSearchArgs(args) });
   if (result.error) return { error: result.error };
 
   // 格式化返回（简洁版用于 LLM prompt + UI 显示）
@@ -32,4 +38,4 @@ async function search(args) {
   };
 }
 
-module.exports = { search };
+module.exports = { search, normalizeSearchArgs };

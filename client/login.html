@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<title>ACMS — 登录</title>
+<link rel="stylesheet" href="/client/css/style.css?v=0.21.0">
+<style>
+  /* ── 登录页独有样式 ── */
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding-bottom: 0;
+    overflow: hidden;
+    background: var(--bg);
+    background-image: 
+      radial-gradient(ellipse at 30% 40%, color-mix(in srgb, var(--accent) 8%, transparent) 0%, transparent 60%),
+      radial-gradient(ellipse at 70% 60%, color-mix(in srgb, var(--accent2) 6%, transparent) 0%, transparent 60%);
+  }
+
+  .login-card {
+    width: 380px;
+    max-width: 92vw;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    box-shadow: var(--shadow);
+    padding: 36px 32px 28px;
+    transition: transform 0.3s ease, opacity 0.3s ease;
+  }
+
+  .login-logo { text-align: center; margin-bottom: 4px; }
+  .login-logo .logo-icon {
+    width: 56px; height: 56px;
+    border-radius: 16px;
+    background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 60%, var(--accent2)));
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 24px; color: var(--bg2);
+    box-shadow: 0 4px 16px color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  .login-logo h1 { font-size: 20px; font-weight: 700; margin-top: 10px; letter-spacing: -0.3px; color: var(--text); }
+  .login-logo p { font-size: 13px; color: var(--text2); margin-top: 2px; }
+  .login-subtitle { text-align: center; font-size: 12px; color: var(--text2); margin: 14px 0 18px; }
+
+  .form-group { margin-bottom: 14px; }
+  .form-group label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 5px; font-weight: 500; }
+  .form-group .input-wrap { position: relative; }
+  .form-group .input-icon {
+    position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+    font-size: 16px; opacity: 0.5; pointer-events: none;
+  }
+  .form-group input, .form-group select {
+    width: 100%; padding: 10px 12px 10px 38px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text); font-size: 14px; font-family: inherit;
+    outline: none; transition: border-color 0.2s;
+  }
+  .form-group input:focus, .form-group select:focus { border-color: var(--accent); }
+  .form-group input::placeholder { color: var(--text2); opacity: 0.5; }
+  .form-group select { appearance: none; cursor: pointer; }
+  .form-group .input-error { border-color: var(--accent2); }
+  .form-group .error-msg { font-size: 11px; color: var(--accent2); margin-top: 4px; display: none; }
+  .form-group .error-msg.show { display: block; }
+
+  .form-options { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; font-size: 12px; }
+  .form-options label { display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--text2); }
+  .form-options label input[type="checkbox"] { accent-color: var(--accent); width: 14px; height: 14px; }
+  .form-options a { color: var(--accent); text-decoration: none; cursor: pointer; }
+  .form-options a:hover { text-decoration: underline; }
+
+  .btn-primary {
+    width: 100%; padding: 11px; border: none; border-radius: var(--radius);
+    background: var(--accent); color: var(--bg2);
+    font-size: 15px; font-weight: 600; cursor: pointer; font-family: inherit;
+    transition: transform 0.1s, box-shadow 0.2s;
+  }
+  .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 16px color-mix(in srgb, var(--accent) 30%, transparent); }
+  .btn-primary:active { transform: scale(0.98); }
+  .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+  .btn-ghost {
+    width: 100%; padding: 10px; margin-top: 8px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: transparent; color: var(--text2);
+    font-size: 13px; cursor: pointer; font-family: inherit;
+    transition: all 0.15s;
+  }
+  .btn-ghost:hover { background: var(--bg3); color: var(--text); border-color: var(--accent); }
+
+  .login-footer { text-align: center; margin-top: 16px; font-size: 12px; color: var(--text2); }
+  .login-footer a { color: var(--accent); text-decoration: none; cursor: pointer; }
+  .login-footer a:hover { text-decoration: underline; }
+
+  .error-banner {
+    display: none; padding: 10px 14px;
+    background: color-mix(in srgb, var(--accent2) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent2) 30%, transparent);
+    border-radius: var(--radius); font-size: 12px; color: var(--accent2);
+    margin-bottom: 14px; text-align: center;
+  }
+  .error-banner.show { display: block; }
+
+  .spinner-mini {
+    display: inline-block; width: 16px; height: 16px;
+    border: 2px solid color-mix(in srgb, var(--bg2) 40%, transparent);
+    border-top-color: var(--bg2);
+    border-radius: 50%; animation: spin 0.7s linear infinite;
+    vertical-align: middle; margin-right: 4px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .slide-up { transform: translateY(-20px); opacity: 0; }
+
+  /* ── 主题切换按钮 ── */
+  .theme-toggle {
+    position: fixed; left: 16px; bottom: 16px;
+    display: flex; gap: 4px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 8px; padding: 4px; z-index: 10;
+  }
+  .theme-btn {
+    width: 22px; height: 22px; border-radius: 5px;
+    border: 2px solid transparent; cursor: pointer; transition: all 0.15s;
+  }
+  .theme-btn:hover { transform: scale(1.15); }
+  .theme-btn.active { border-color: var(--accent); }
+  .theme-btn.t-dark { background: #0f0f1a; }
+  .theme-btn.t-light { background: #f5f5f7; }
+  .theme-btn.t-cream { background: #fef9ef; }
+
+  .auth-panel[hidden] { display: none; }
+  .auth-hint {
+    margin: -2px 0 16px;
+    padding: 9px 11px;
+    background: var(--bg3);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    color: var(--text2);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  .optional-label { color: var(--text2); font-size: 11px; font-weight: normal; margin-left: 4px; }
+  .error-banner.success {
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+    color: var(--accent);
+  }
+  @media (max-width: 420px) { .login-card { padding: 24px 20px; } }
+</style>
+</head>
+<body>
+<!-- 主题切换 -->
+<div class="theme-toggle">
+  <button class="theme-btn t-dark" onclick="switchTheme('dark')" title="深色"></button>
+  <button class="theme-btn t-light" onclick="switchTheme('light')" title="浅色"></button>
+  <button class="theme-btn t-cream active" onclick="switchTheme('cream')" title="奶油"></button>
+</div>
+
+<div class="login-card" id="loginCard">
+  <div class="login-logo">
+    <div class="logo-icon">✦</div>
+    <h1>ACMS</h1>
+    <p>智能体协同管理系统</p>
+  </div>
+  <div class="login-subtitle" id="authSubtitle">登录以访问你的项目和工作空间</div>
+
+  <div class="error-banner" id="errorBanner" role="alert"></div>
+
+  <div class="auth-panel" id="loginPanel">
+    <form id="loginForm">
+      <div class="form-group">
+        <label>用户名</label>
+        <div class="input-wrap">
+          <span class="input-icon">👤</span>
+          <input type="text" id="username" placeholder="输入用户名" autocomplete="username" autofocus>
+        </div>
+        <div class="error-msg" id="usernameError">请输入用户名</div>
+      </div>
+      <div class="form-group">
+        <label>密码</label>
+        <div class="input-wrap">
+          <span class="input-icon">🔑</span>
+          <input type="password" id="password" placeholder="输入密码" autocomplete="current-password">
+        </div>
+        <div class="error-msg" id="passwordError">请输入密码</div>
+      </div>
+      <div class="form-options">
+        <label><input type="checkbox" id="rememberMe" checked> 记住登录</label>
+        <a onclick="showForgot()">忘记密码？</a>
+      </div>
+      <button type="submit" class="btn-primary" id="loginBtn">登录</button>
+      <button type="button" class="btn-ghost" id="guestBtn" onclick="guestLogin()">以游客身份进入 →</button>
+    </form>
+
+    <div class="login-footer">
+      还没有账户？<a onclick="showRegister()">注册</a>
+      <span style="margin:0 6px">·</span>
+      <a onclick="toast('ACMS · 智能体协同')">关于</a>
+    </div>
+  </div>
+
+  <div class="auth-panel" id="registerPanel" hidden>
+    <form id="registerForm">
+      <div class="form-group">
+        <label>用户名</label>
+        <div class="input-wrap">
+          <span class="input-icon">👤</span>
+          <input type="text" id="registerUsername" placeholder="设置一个用户名" autocomplete="username">
+        </div>
+        <div class="error-msg" id="registerUsernameError">请输入用户名</div>
+      </div>
+      <div class="form-group">
+        <label>显示名称 <span class="optional-label">可选</span></label>
+        <div class="input-wrap">
+          <span class="input-icon">✨</span>
+          <input type="text" id="displayName" placeholder="别人看到的名称" autocomplete="name">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>用户类型</label>
+        <div class="input-wrap">
+          <span class="input-icon">🎯</span>
+          <select id="workspaceRole" aria-label="用户类型">
+            <option value="pm">👤 PM</option>
+            <option value="tech">🛠 技术</option>
+            <option value="design">🎨 设计</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>密码</label>
+        <div class="input-wrap">
+          <span class="input-icon">🔑</span>
+          <input type="password" id="registerPassword" placeholder="至少 4 位" autocomplete="new-password">
+        </div>
+        <div class="error-msg" id="registerPasswordError">请输入密码</div>
+      </div>
+      <div class="form-group">
+        <label>确认密码</label>
+        <div class="input-wrap">
+          <span class="input-icon">🔒</span>
+          <input type="password" id="registerPasswordConfirm" placeholder="再输入一次密码" autocomplete="new-password">
+        </div>
+        <div class="error-msg" id="registerPasswordConfirmError">请再次输入密码</div>
+      </div>
+      <button type="submit" class="btn-primary" id="registerBtn">创建账户</button>
+    </form>
+    <div class="login-footer">已有账户？<a onclick="showLogin()">返回登录</a></div>
+  </div>
+
+  <div class="auth-panel" id="forgotPanel" hidden>
+    <div class="auth-hint">输入账号并设置新密码，重置后即可使用新密码登录。</div>
+    <form id="forgotForm">
+      <div class="form-group">
+        <label>用户名</label>
+        <div class="input-wrap">
+          <span class="input-icon">👤</span>
+          <input type="text" id="forgotUsername" placeholder="输入要找回的用户名" autocomplete="username">
+        </div>
+        <div class="error-msg" id="forgotUsernameError">请输入用户名</div>
+      </div>
+      <div class="form-group">
+        <label>新密码</label>
+        <div class="input-wrap">
+          <span class="input-icon">🔑</span>
+          <input type="password" id="forgotPassword" placeholder="至少 4 位" autocomplete="new-password">
+        </div>
+        <div class="error-msg" id="forgotPasswordError">请输入新密码</div>
+      </div>
+      <div class="form-group">
+        <label>确认新密码</label>
+        <div class="input-wrap">
+          <span class="input-icon">🔒</span>
+          <input type="password" id="forgotPasswordConfirm" placeholder="再输入一次新密码" autocomplete="new-password">
+        </div>
+        <div class="error-msg" id="forgotPasswordConfirmError">请再次输入新密码</div>
+      </div>
+      <button type="submit" class="btn-primary" id="forgotBtn">重置密码</button>
+    </form>
+    <div class="login-footer"><a onclick="showLogin()">← 返回登录</a></div>
+  </div>
+</div>
+
+<script>
+// ── API 基础地址 ──
+const API = location.origin;
+
+// ── 初始化主题（主站共享 localStorage）──
+(function() {
+  var saved = localStorage.getItem('acms-theme');
+  var theme = (saved === 'dark' || saved === 'light' || saved === 'cream') ? saved : 'cream';
+  document.documentElement.setAttribute('data-theme', theme);
+})();
+
+// ── 主题切换 ──
+function switchTheme(name) {
+  document.documentElement.setAttribute('data-theme', name);
+  localStorage.setItem('acms-theme', name);
+  document.querySelectorAll('.theme-btn').forEach(function(b) {
+    b.classList.toggle('active', b.classList.contains('t-' + name));
+  });
+}
+
+// ── 工具函数 ──
+function toast(msg) {
+  const t = document.createElement('div');
+  t.textContent = msg;
+  Object.assign(t.style, {
+    position:'fixed', bottom:'60px', left:'50%', transform:'translateX(-50%)',
+    background:'var(--bg2)', border:'1px solid var(--accent)',
+    padding:'8px 18px', borderRadius:'8px', fontSize:'13px',
+    color:'var(--text)', zIndex:99999, boxShadow:'var(--shadow)',
+    transition:'opacity 0.25s, transform 0.25s'
+  });
+  document.body.appendChild(t);
+  setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 2500);
+}
+
+function showError(inputId, msg) {
+  const el = document.getElementById(inputId);
+  const err = el.closest('.form-group').querySelector('.error-msg');
+  el.classList.add('input-error');
+  err.textContent = msg;
+  err.classList.add('show');
+}
+
+function clearErrors() {
+  document.querySelectorAll('.input-error').forEach(e => e.classList.remove('input-error'));
+  document.querySelectorAll('.error-msg.show').forEach(e => e.classList.remove('show'));
+  document.getElementById('errorBanner').classList.remove('show');
+}
+
+// ── 认证面板 ──
+var AUTH_SUBTITLES = {
+  login: '登录以访问你的项目和工作空间',
+  register: '创建账户，开始管理你的项目和工作空间',
+  forgot: '找回账户，重新设置你的登录密码'
+};
+
+function showBanner(message, type) {
+  var banner = document.getElementById('errorBanner');
+  banner.textContent = message ? (type === 'success' ? message : '⚠️ ' + message) : '';
+  banner.classList.toggle('success', type === 'success');
+  banner.classList.toggle('show', !!message);
+}
+
+function setAuthMode(mode) {
+  ['login', 'register', 'forgot'].forEach(function(name) {
+    var panel = document.getElementById(name + 'Panel');
+    if (panel) panel.hidden = name !== mode;
+  });
+  document.getElementById('authSubtitle').textContent = AUTH_SUBTITLES[mode];
+  clearErrors();
+  var panel = document.getElementById(mode + 'Panel');
+  var firstInput = panel && panel.querySelector('input');
+  if (firstInput) setTimeout(function() { firstInput.focus(); }, 0);
+}
+
+function showLogin() { setAuthMode('login'); }
+function showRegister() { setAuthMode('register'); }
+function showForgot() { setAuthMode('forgot'); }
+
+async function requestAuth(path, payload) {
+  var res = await fetch(API + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  var data = await res.json().catch(function() { return {}; });
+  if (!res.ok) throw new Error(data.message || '请求失败');
+  return data;
+}
+
+function setButtonState(id, busyText, idleText, busy) {
+  var btn = document.getElementById(id);
+  if (!btn) return;
+  btn.disabled = busy;
+  btn.innerHTML = busy ? '<span class="spinner-mini"></span> ' + busyText : idleText;
+}
+
+function doLogin(token, user) {
+  localStorage.setItem('acms-token', token);
+  if (user) localStorage.setItem('acms-user', JSON.stringify(user));
+
+  // auth role（admin/user/guest）与工作角色（pm/tech/design）是两个维度。
+  // 游客进入时强制回到 PM，避免沿用上一个账号留下的 tech/design 选择。
+  var workspaceRole = user && (user.workspaceRole || user.defaultRole);
+  if (user && (user.isGuest || user.role === 'guest')) workspaceRole = 'pm';
+  if (workspaceRole === 'pm' || workspaceRole === 'tech' || workspaceRole === 'design') {
+    localStorage.setItem('acms-current-role', workspaceRole);
+  }
+
+  if (document.getElementById('rememberMe') && document.getElementById('rememberMe').checked) {
+    localStorage.setItem('acms-token-remember', '1');
+  } else {
+    localStorage.removeItem('acms-token-remember');
+  }
+  document.getElementById('loginCard').classList.add('slide-up');
+  setTimeout(function() { window.location.href = '/client/index.html'; }, 400);
+}
+
+// ── 登录 ──
+document.getElementById('loginForm').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  clearErrors();
+  var username = document.getElementById('username').value.trim();
+  var password = document.getElementById('password').value;
+  var valid = true;
+  if (!username) { showError('username', '请输入用户名'); valid = false; }
+  if (!password) { showError('password', '请输入密码'); valid = false; }
+  if (!valid) return;
+
+  setButtonState('loginBtn', '登录中...', '登录', true);
+  try {
+    var data = await requestAuth('/api/auth/login', { username: username, password: password });
+    doLogin(data.token, data.user);
+  } catch (err) {
+    showBanner(err.message || '登录失败');
+    setButtonState('loginBtn', '', '登录', false);
+  }
+});
+
+// ── 游客登录 ──
+async function guestLogin() {
+  clearErrors();
+  var btn = document.getElementById('guestBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-mini"></span> 进入中...';
+  try {
+    var clientId = localStorage.getItem('acms-guest-client-id');
+    if (!clientId) {
+      clientId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + Math.random();
+      localStorage.setItem('acms-guest-client-id', clientId);
+    }
+    var data = await requestAuth('/api/auth/guest', { clientId: clientId });
+    doLogin(data.token, data.user);
+  } catch (err) {
+    showBanner(err.message || '游客登录失败');
+    btn.disabled = false;
+    btn.innerHTML = '以游客身份进入 →';
+  }
+}
+
+// ── 注册 ──
+document.getElementById('registerForm').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  clearErrors();
+  var username = document.getElementById('registerUsername').value.trim();
+  var displayName = document.getElementById('displayName').value.trim();
+  var workspaceRole = document.getElementById('workspaceRole').value;
+  var password = document.getElementById('registerPassword').value;
+  var confirmPassword = document.getElementById('registerPasswordConfirm').value;
+  var valid = true;
+  if (!username) { showError('registerUsername', '请输入用户名'); valid = false; }
+  if (!password) { showError('registerPassword', '请输入密码'); valid = false; }
+  else if (password.length < 4) { showError('registerPassword', '密码至少 4 位'); valid = false; }
+  if (!confirmPassword) { showError('registerPasswordConfirm', '请再次输入密码'); valid = false; }
+  else if (password !== confirmPassword) { showError('registerPasswordConfirm', '两次输入的密码不一致'); valid = false; }
+  if (!valid) return;
+
+  setButtonState('registerBtn', '创建中...', '创建账户', true);
+  try {
+    var data = await requestAuth('/api/auth/register', {
+      username: username,
+      password: password,
+      displayName: displayName || username,
+      workspaceRole: workspaceRole
+    });
+    doLogin(data.token, data.user);
+  } catch (err) {
+    showBanner(err.message || '注册失败');
+    setButtonState('registerBtn', '', '创建账户', false);
+  }
+});
+
+// ── 忘记密码 ──
+document.getElementById('forgotForm').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  clearErrors();
+  var username = document.getElementById('forgotUsername').value.trim();
+  var password = document.getElementById('forgotPassword').value;
+  var confirmPassword = document.getElementById('forgotPasswordConfirm').value;
+  var valid = true;
+  if (!username) { showError('forgotUsername', '请输入用户名'); valid = false; }
+  if (!password) { showError('forgotPassword', '请输入新密码'); valid = false; }
+  else if (password.length < 4) { showError('forgotPassword', '密码至少 4 位'); valid = false; }
+  if (!confirmPassword) { showError('forgotPasswordConfirm', '请再次输入新密码'); valid = false; }
+  else if (password !== confirmPassword) { showError('forgotPasswordConfirm', '两次输入的密码不一致'); valid = false; }
+  if (!valid) return;
+
+  setButtonState('forgotBtn', '重置中...', '重置密码', true);
+  try {
+    await requestAuth('/api/auth/forgot-password', { username: username, newPassword: password });
+    showLogin();
+    document.getElementById('username').value = username;
+    showBanner('密码已重置，请使用新密码登录', 'success');
+  } catch (err) {
+    showBanner(err.message || '密码重置失败');
+    setButtonState('forgotBtn', '', '重置密码', false);
+  }
+});
+
+// ── 回车提交 ──
+['username', 'password', 'registerUsername', 'displayName', 'registerPassword', 'registerPasswordConfirm', 'forgotUsername', 'forgotPassword', 'forgotPasswordConfirm'].forEach(function(id) {
+  var input = document.getElementById(id);
+  if (input) input.addEventListener('keydown', function(e) {
+    if (e.key !== 'Enter') return;
+    var form = input.closest('form');
+    if (form) form.requestSubmit();
+  });
+});</script>
+</body>
+</html>

@@ -98,7 +98,8 @@ registerTool({
     + '当用户表达"生成图片 X""画一张 X""画一个 X""给我生成一张图"等图片生成意图时使用。'
     + '需要从用户消息中提取图片描述作为 prompt。'
     + '返回 ok=true 表示已触发异步生成（通常 10-60 秒），完成后用户看到图片卡片。'
-    + '【重要】这是 fire-and-forget 异步任务，**调用一次即可，不要重复调用**。'
+    + '**严禁只回文字而不调本工具**（如"图片正在生成中"是空话，用户看不到任何卡片）。'
+    + '**严禁重复调用**（一轮 LLM 调用一次即可，看到 ok=true 就等用户后续指令）。'
     // v0.22.23c：补充"对已有图给反馈/要求重做"场景。原描述只覆盖"新生成"，LLM 看到"需要更专业"
     // 这类调整反馈时倾向不调 tool、装睡自编"已生成"。加上这句让工具 description 覆盖全场景。
     + '**用户对已有图给反馈、要求更专业/调整/重画/改风格/加元素时也必须调用本工具**（prompt = 原 prompt + 用户给的调整方向，从 history 找原 prompt）。',
@@ -115,7 +116,33 @@ registerTool({
     if (!args?.prompt) return { ok: false, error: 'NO_PROMPT', message: '必须提供 prompt 参数' };
     try {
       const imageSvc = require('../services/assists/image-gen');
-      console.log(`[tool:generate_image] ${reqId} prompt="${args.prompt.slice(0, 80)}"`);
+      console.log(`[tool:generate_image] ${reqId} mode=${ctx.sync ? 'sync' : 'fire-forget'} prompt="${args.prompt.slice(0, 80)}"`);
+
+      // v0.49: 同步模式（plan_executor 调）— 等图真正下载+保存+import 完成才返回 file_ids
+      if (ctx.sync) {
+        const result = await imageSvc.runAssistJobCore(reqId, {
+          prompt: args.prompt,
+          image_url: args.image_url,
+          image_file_id: args.image_file_id,
+          size: args.size,
+          n: args.n,
+        });
+        return {
+          ok: result.ok,
+          message: result.ok
+            ? `图片已生成: ${result.asset_path}`
+            : `图片生成失败: ${result.error || '未知错误'}`,
+          file_ids: result.file_ids || [],   // v0.49: 关键 — 下游 send_email 精确依赖
+          asset_path: result.asset_path || '',
+          mime: result.mime || '',
+          options: result.options || [],
+          picked_idx: result.picked_idx ?? 0,
+          prompt: args.prompt,
+          reqId,
+        };
+      }
+
+      // 原 fire-and-forget 模式（chat 流直接调）
       setImmediate(() => {
         imageSvc.runAssistJob(reqId, { prompt: args.prompt, writeChatResult: true })
           .catch(e => console.error(`[tool:generate_image] runAssistJob failed:`, e.message));

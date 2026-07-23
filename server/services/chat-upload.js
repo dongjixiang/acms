@@ -123,6 +123,44 @@ async function describeImage(imagePath, maxTokens = 800) {
   }
 }
 
+/**
+ * v0.47：从已有文件路径导入为 chat-upload 文件（用于 workspace 资产 → 邮件附件）
+ *   - 不重新解析（避免 vision/pdf 解析耗时）
+ *   - 复制到 UPLOAD_DIR + 写 meta.json
+ *   - 返回与 saveAndParse 兼容的 { id, name, size, mime, ... }
+ *
+ * @param {string} srcPath - 源文件绝对路径（workspace 资产）
+ * @param {object} meta - { name, mime, size?, category? }
+ * @returns {object} - { id, name, size, mime, category, savedAt, filePath, ... }
+ */
+function importFromPath(srcPath, meta = {}) {
+  if (!srcPath || !fs.existsSync(srcPath)) throw new Error('SRC_FILE_NOT_FOUND: ' + srcPath);
+  try { fs.mkdirSync(UPLOAD_DIR, { recursive: true }); } catch (e) { /* ignore */ }
+
+  const id = crypto.randomUUID();
+  const ext = path.extname(srcPath) || (meta.name ? path.extname(meta.name) : '') || '';
+  const safeName = `${id}${ext}`;
+  const destPath = path.join(UPLOAD_DIR, safeName);
+  fs.copyFileSync(srcPath, destPath);
+
+  const size = meta.size || fs.statSync(srcPath).size;
+  const mime = meta.mime || 'application/octet-stream';
+  const name = meta.name || path.basename(srcPath);
+  const category = meta.category || 'unknown';
+
+  const fullMeta = {
+    id, name, size, mime, category,
+    savedAt: new Date().toISOString(),
+    filePath: safeName,
+    source: 'workspace_import',  // 标记来源,便于追溯
+  };
+  try {
+    fs.writeFileSync(path.join(UPLOAD_DIR, `${id}.meta.json`), JSON.stringify(fullMeta, null, 2));
+  } catch (e) { /* ignore */ }
+
+  return fullMeta;
+}
+
 // ── 主入口：保存并解析 ──
 async function saveAndParse(file) {
   if (!file) throw new Error('NO_FILE');
@@ -210,4 +248,4 @@ function readImageAsDataURI(id) {
   return `data:${info.meta.mime};base64,${b64}`;
 }
 
-module.exports = { saveAndParse, getFilePath, readImageAsDataURI, UPLOAD_DIR };
+module.exports = { saveAndParse, getFilePath, readImageAsDataURI, importFromPath, UPLOAD_DIR };

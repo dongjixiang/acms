@@ -10,8 +10,24 @@ var bugState = {
   analysis: null,
 };
 
+// The desktop window passes its .aw-content HTMLElement as the view root.
+var _bugRoot = null;
+function _bugFindById(id) {
+  if (_bugRoot && _bugRoot !== document) {
+    var scoped = _bugRoot.querySelector('#' + id);
+    if (scoped) return scoped;
+  }
+  return document.getElementById(id);
+}
+function _bugQueryAll(selector) {
+  if (_bugRoot && _bugRoot !== document) return _bugRoot.querySelectorAll(selector);
+  return document.querySelectorAll(selector);
+}
+
 // ========== 入口：默认加载缺陷列表 ==========
-function loadBugView() {
+function loadBugView(root) {
+  if (root) _bugRoot = root;
+  else if (!_bugRoot) _bugRoot = document;
   if (!App.currentProjectId) return;
   bugState.projectId = App.currentProjectId;
   bugState.conversationHistory = [];
@@ -20,14 +36,14 @@ function loadBugView() {
   bugState.bugDescription = '';
 
   // 隐藏表单，显示列表
-  document.getElementById('bug-form-panel').style.display = 'none';
-  loadBugList();
+  _bugFindById('bug-form-panel').style.display = 'none';
+  return loadBugList();
 }
 
 // ========== 缺陷列表 ==========
 async function loadBugList() {
-  var statusFilter = document.getElementById('bug-status-filter').value;
-  var severityFilter = document.getElementById('bug-severity-filter').value;
+  var statusFilter = _bugFindById('bug-status-filter').value;
+  var severityFilter = _bugFindById('bug-severity-filter').value;
 
   var query = 'projectId=' + encodeURIComponent(bugState.projectId);
   if (statusFilter) query += '&status=' + encodeURIComponent(statusFilter);
@@ -45,13 +61,13 @@ async function loadBugList() {
 
     renderBugList(bugs);
   } catch(e) {
-    document.getElementById('bug-list').innerHTML =
+    _bugFindById('bug-list').innerHTML =
       '<div style="padding:32px;text-align:center;color:var(--text2)">❌ 加载失败: ' + escHtml(e.message) + '</div>';
   }
 }
 
 function renderBugList(bugs) {
-  var el = document.getElementById('bug-list');
+  var el = _bugFindById('bug-list');
 
   if (!bugs || bugs.length === 0) {
     el.innerHTML = '<div class="bug-empty">' +
@@ -87,10 +103,10 @@ function renderBugList(bugs) {
       : (bug.parent_id ? '<span class="bug-link-dim">' + bug.parent_id + '</span>' : '<span class="bug-link-none">—</span>');
 
     var taskLink = bug.source_task_id && bug.sourceTaskTitle
-      ? '<a href="#" class="bug-link" onclick="openTask(\'' + bug.source_task_id + '\');return false" title="' + escHtml(bug.sourceTaskTitle) + '">' + escHtml(truncate(bug.sourceTaskTitle, 20)) + '</a>'
+      ? '<a href="#" class="bug-link" onclick="openTaskInWindow(\'' + bug.source_task_id + '\');return false" title="' + escHtml(bug.sourceTaskTitle) + '">' + escHtml(truncate(bug.sourceTaskTitle, 20)) + '</a>'
       : (bug.source_task_id ? '<span class="bug-link-dim">' + bug.source_task_id + '</span>' : '<span class="bug-link-none">—</span>');
 
-    html += '<tr class="bug-row" onclick="openTask(\'' + bug.id + '\');return false" style="cursor:pointer">' +
+    html += '<tr class="bug-row" onclick="openTaskInWindow(\'' + bug.id + '\');return false" style="cursor:pointer">' +
       '<td><div class="bug-row-title">' + escHtml(bug.title || '🐛 缺陷') + '</div></td>' +
       '<td>' + severityBadge + '</td>' +
       '<td>' + statusBadge + '</td>' +
@@ -119,7 +135,7 @@ function renderBugList(bugs) {
 
 // ========== 表单切换 ==========
 function showBugForm() {
-  var panel = document.getElementById('bug-form-panel');
+  var panel = _bugFindById('bug-form-panel');
   // 加载模型列表
   try {
     fetch('/api/models', { headers: { 'X-API-Key': 'dev-key-001' } })
@@ -154,7 +170,7 @@ function showBugForm() {
 }
 
 function hideBugForm() {
-  document.getElementById('bug-form-panel').style.display = 'none';
+  _bugFindById('bug-form-panel').style.display = 'none';
   bugState.conversationHistory = [];
   bugState.readyToCreate = false;
   bugState.analysis = null;
@@ -162,8 +178,8 @@ function hideBugForm() {
 
 // ========== AI 澄清流程 ==========
 async function startBugClarify() {
-  var desc = document.getElementById('bug-desc-input').value.trim();
-  var modelId = document.getElementById('bug-model-select').value;
+  var desc = _bugFindById('bug-desc-input').value.trim();
+  var modelId = _bugFindById('bug-model-select').value;
 
   if (!desc) { toast('请填写缺陷描述', 'error'); return; }
   if (!modelId) { toast('请选择 AI 模型', 'error'); return; }
@@ -172,7 +188,7 @@ async function startBugClarify() {
   bugState.modelId = modelId;
   bugState.conversationHistory = [];
 
-  var area = document.getElementById('bug-clarify-area');
+  var area = _bugFindById('bug-clarify-area');
   area.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text2)">🤔 AI 正在分析缺陷...</div>';
 
   try {
@@ -194,7 +210,7 @@ async function startBugClarify() {
 }
 
 function renderBugClarifyResult(result) {
-  var area = document.getElementById('bug-clarify-area');
+  var area = _bugFindById('bug-clarify-area');
   var html = '';
 
   if (result.phase === 'created') {
@@ -219,7 +235,7 @@ function renderBugClarifyResult(result) {
     }
     if (result.task) {
       html += '<p style="margin-top:12px">' +
-        '<a href="#" onclick="openTask(\'' + result.task.id + '\');return false" style="color:var(--accent)">📋 查看任务: ' + result.task.id + '</a>' +
+        '<a href="#" onclick="openTaskInWindow(\'' + result.task.id + '\');return false" style="color:var(--accent)">📋 查看任务: ' + result.task.id + '</a>' +
         '</p>';
     }
     html += '<button class="btn-small" onclick="hideBugForm();loadBugList()" style="margin-top:12px">📋 返回缺陷列表</button>' +
@@ -333,7 +349,7 @@ function markBugChoiceSelected(input) {
 
 async function submitBugChoices() {
   var answers = [];
-  document.querySelectorAll('.bug-choice-opts').forEach(function(group) {
+  _bugQueryAll('.bug-choice-opts').forEach(function(group) {
     var qi = parseInt(group.getAttribute('data-qi'));
     var selected = [];
     group.querySelectorAll('.bug-choice-btn.selected').forEach(function(btn) {
@@ -351,7 +367,7 @@ async function submitBugChoices() {
   var answerMsg = answers.map(function(a) { return '问题' + (a.questionIndex + 1) + ': ' + a.answer; }).join('\n');
   bugState.conversationHistory.push({ role: 'user', content: answerMsg });
 
-  var area = document.getElementById('bug-clarify-area');
+  var area = _bugFindById('bug-clarify-area');
   area.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text2)">🤔 AI 正在分析你的回答...</div>';
 
   try {
@@ -376,7 +392,7 @@ async function submitBugChoices() {
 
 // ========== 跳过澄清直接创建 ==========
 async function createBugDirect() {
-  var desc = document.getElementById('bug-desc-input').value.trim();
+  var desc = _bugFindById('bug-desc-input').value.trim();
   if (!desc) { toast('请填写缺陷描述', 'error'); return; }
 
   try {
@@ -392,10 +408,10 @@ async function createBugDirect() {
       }),
     });
     var result = await resp.json();
-    var area = document.getElementById('bug-clarify-area');
+    var area = _bugFindById('bug-clarify-area');
     area.innerHTML = '<div class="bug-result-success">' +
       '<h4>✅ 缺陷已创建</h4>' +
-      '<p>任务: <a href="#" onclick="openTask(\'' + result.task.id + '\');return false">' + result.task.id + '</a></p>' +
+      '<p>任务: <a href="#" onclick="openTaskInWindow(\'' + result.task.id + '\');return false">' + result.task.id + '</a></p>' +
       '<button class="btn-small" onclick="hideBugForm();loadBugList()" style="margin-top:12px">📋 返回缺陷列表</button>' +
       ' &nbsp; <button class="btn-small" onclick="showBugForm()">➕ 提交新缺陷</button>' +
       '</div>';

@@ -15,7 +15,7 @@ router.post('/', (req, res) => {
     if (cycle) return res.status(400).json({ error: 'CIRCULAR_DEPENDENCY', message: '检测到依赖环' });
   }
 
-  const task = taskStore.create({ projectId, parentId, title, description, type, priority, requiredSkills, estimatedHours, dependsOn, dependsContract, wikiContext, linkedWiki });
+  const task = taskStore.create({ projectId, parentId, title, description, type, priority, requiredSkills, estimatedHours, dependsOn, dependsContract, wikiContext, linkedWiki, owner: req.userId || 'system' });
 
   eventBus.emit('task.created', {
     projectId, actor: { id: req.agentId || 'system', type: 'agent' },
@@ -198,7 +198,7 @@ router.post('/:id/review', async (req, res, next) => {
   }
 
   const effectiveFeedback = reviewReport
-    ? `${feedback || ''}\n\n--- 🤖 自动审核报告 ---\n${reviewReport.summary}\n\n${testLog}\n\n报告: ${JSON.stringify(reviewReport.phases, null, 2)}`
+    ? `${feedback || ''}\n\n--- 🤖 自动审核报告 ---\n${reviewReport.summary}\n\n${typeof testLog === 'string' ? testLog : JSON.stringify(testLog, null, 2)}\n\n报告: ${JSON.stringify(reviewReport.phases, null, 2)}`
     : testLog
       ? `${feedback || ''}\n\n--- 自动验收日志 ---\n${testLog}`
       : feedback;

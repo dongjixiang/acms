@@ -10,7 +10,7 @@
     "requirements": "需求管理",
     "kanban": "任务看板",
     "settings": "项目设置",
-    "backToProjects": "← 返回项目列表"
+    "backToProjects": "← 返回项目管理"
   },
   "projects": {
     "title": "我的项目",

@@ -2,9 +2,11 @@
 const modelStore = require('../stores/model-store');
 const taskStore = require('../stores/task-store');
 const { runToolLoop } = require('./llm-adapter');
+const { execute: runtimeExec } = require('./agent-runtime');
 const skillLoader = require('./skill-loader');
 const { registerTool } = require('./tool-registry');
 const { runHook } = require('./hook-registry');
+const eventBus = require('./event-bus');
 
 // v0.46 TodoWrite — Workflow Phases 5 段进度（PM 看板可见）
 //   顺序：explore → design → write → test → fix
@@ -102,6 +104,12 @@ async function executeTaskAgent(taskId, options = {}) {
   //   优先级：options.lang > task.doc.preferred_lang > 'zh'（多多场景默认）
   const lang = options.lang || task.preferred_lang || 'zh';
 
+  // P1: 多角色模式 — 默认启用，可通过 options.multiRole = false 关闭
+  //   把单 agent 90 轮拆成 Planner → Coder → Tester → Reviewer 流水线
+  if (options.multiRole !== false) {
+    return await runMultiRoleSequence(task, options);
+  }
+
   // v0.30 fix: 接受 options.steerMessage — 多多可以手动 steer（等价 Hermes /steer slash command）
   //   当 PM 通过 POST /api/agents/steer/:taskId 注入消息，把它作为额外 user message prepend 到 messages
   const steerMessages = [];
@@ -141,11 +149,21 @@ ${task.description || '(no description)'}
     }
   } catch (e) { /* workspace-meta 不可用时不阻塞 */ }
 
-  // v0.X: 精简 messages 结构 — system 只放身份+铁律，任务描述作为 user message
+  // v0.X: 任务记忆 — 结构化的跨轮工作摘要，防 context attrition
+  //   PostToolUse hook 自动跟踪：读文件、写文件、阶段变更
+  //   每次 LLM 调用前注入压缩摘要，让 agent 知道已做了什么
+  let taskMemoryMsg = null;
+  try {
+    const memSummary = require('./task-memory').compressToPrompt(taskId);
+    if (memSummary) taskMemoryMsg = { role: 'user', content: memSummary };
+  } catch (e) { /* 不阻塞 */ }
+
   const systemPrompt = buildSystemPrompt(task, lang);
   const userMessages = [];
   // 背景上下文排在前（workspace 记忆 + 执行历史），任务是最终的"命令"
   if (workspaceMemoryMsg) userMessages.push({ role: 'user', content: workspaceMemoryMsg });
+  // v0.X: TaskMemory 在 workspace 记忆后、历史摘要前 — 让 LLM 先看已知背景再看历史
+  if (taskMemoryMsg) userMessages.push(taskMemoryMsg);
   if (historySummary) userMessages.push({ role: 'user', content: historySummary + '\n\n注意：你之前的尝试记录如上。请不要再重走老路，仔细阅读驳回原因再动手。' });
   userMessages.push({ role: 'user', content: taskContext });
 
@@ -160,15 +178,58 @@ ${task.description || '(no description)'}
   console.log(`[agent-execute] Task ${taskId} | model=${model.id} | project=${projectId}`);
 
   // v0.X: 按任务类型裁剪工具列表 — 治 T-MRGDBST1 多余工具加重空转
-  //   bug 修复任务不需要 browser / db / ssh / http 工具
+// v0.46: 工具筛选 — 不再按 task.type 一刀切, 改按 description 内容智能判断
+  //   历史 bug (T-MRKP19DR 2026-07-14): bug 类型任务被一刀切过滤掉 browser_* 工具,
+  //   导致含 URL 的 bug 任务 (比如 "通过交付管理预览 http://.../dist/ 404")
+  //   agent 没法用 browser_snapshot 自检, 只能猜, 然后提交 "DONE" 但实际未验证.
+  //
+  //   新策略 (智能 4 维检测):
+  //   1. description 含 http(s):// URL  → 需要 browser_* (本地/外网预览页)
+  //   2. description 含浏览器关键字    → 需要 browser_* (404/500/preview/页面/网页)
+  //   3. description 含 DB/SSH/HTTP 关键字 → 需要对应工具
+  //   4. bug/fix 类型 且无以上特征      → 保持原过滤 (省 token)
   const taskType = (task.type || '').toLowerCase();
+  const taskDesc = (task.description || task.actual_behavior || '').toLowerCase();
+  const taskTitle = (task.title || '').toLowerCase();
+  const fullText = `${taskTitle} ${taskDesc}`;
+
+  // 4 维检测
+  const hasUrl = /https?:\/\/[^\s]+/.test(fullText);
+  const hasBrowserKw = /浏览器|browser|网页|页面|preview|dist|404|500|403|网络请求|http request|渲染|dom/i.test(fullText);
+  const hasDbKw = /\bsql\b|\bquery\b|数据库|database|select\s|insert\s|update\s/i.test(fullText);
+  const hasSshKw = /\bssh\b|远程|remote|服务器|server\s+(login|shell|exec)/i.test(fullText);
+  const hasHttpKw = /\bapi\s+(call|request)|fetch\s+url|http\s+request|curl\s+/i.test(fullText);
+
+  // 决定要不要保留哪些工具
   const EXTRA_TOOLS = ['browser_snapshot', 'browser_console', 'browser_click', 'browser_type', 'browser_screenshot',
     'agent_db_query', 'agent_ssh_execute', 'agent_ssh_check', 'agent_http_request'];
+  const toolsToKeep = new Set();
+  if (hasUrl || hasBrowserKw) {
+    ['browser_snapshot','browser_console','browser_click','browser_type','browser_screenshot']
+      .forEach(t => toolsToKeep.add(t));
+  }
+  if (hasDbKw) toolsToKeep.add('agent_db_query');
+  if (hasSshKw) { toolsToKeep.add('agent_ssh_execute'); toolsToKeep.add('agent_ssh_check'); }
+  if (hasHttpKw) toolsToKeep.add('agent_http_request');
+
+  const ALL_TOOLS = ['agent_read_file', 'agent_read_dir_summary', 'agent_search_files', 'agent_exec_command', 'agent_write_file', 'agent_patch_file', 'agent_multi_patch', 'browser_snapshot', 'browser_console', 'browser_click', 'browser_type', 'browser_screenshot', 'agent_git_status', 'agent_git_diff', 'agent_git_commit', 'agent_git_log', 'agent_git_branch', 'agent_db_query', 'agent_ssh_execute', 'agent_ssh_check', 'agent_http_request', 'agent_set_phase', 'agent_typescheck', 'agent_plan'];
+  // 原简单任务过滤: bug/fix/documentation/refactor/test 类不分配 EXTRA_TOOLS
+  // 新逻辑: 如果 description 触发 4 维检测之一, 保留对应工具; 否则走原过滤
   const isSimpleTask = ['bug', 'fix', 'documentation', 'refactor', 'test'].includes(taskType);
-  const ALL_TOOLS = ['agent_read_file', 'agent_read_files', 'agent_read_dir_summary', 'agent_list_files', 'agent_search_files', 'agent_exec_command', 'agent_write_file', 'agent_patch_file', 'agent_multi_patch', 'workspace_isolate', 'workspace_merge', 'browser_snapshot', 'browser_console', 'browser_click', 'browser_type', 'browser_screenshot', 'agent_git_status', 'agent_git_diff', 'agent_git_commit', 'agent_git_log', 'agent_git_branch', 'agent_db_query', 'agent_ssh_execute', 'agent_ssh_check', 'agent_http_request', 'agent_set_phase', 'agent_typescheck', 'agent_plan'];
-  const toolNames = isSimpleTask
-    ? ALL_TOOLS.filter(t => !EXTRA_TOOLS.includes(t))
-    : ALL_TOOLS;
+  const toolNames = isSimpleTask && toolsToKeep.size === 0
+    ? ALL_TOOLS.filter(t => !EXTRA_TOOLS.includes(t))   // 简单任务无浏览器/DB 需求, 走原过滤
+    : isSimpleTask
+      ? ALL_TOOLS.filter(t => !EXTRA_TOOLS.includes(t) || toolsToKeep.has(t))  // 简单任务但有特殊需求, 保留对应工具
+      : ALL_TOOLS;                                       // 复杂任务全部工具
+
+  // v0.46 日志: 记录为什么 agent 拿到/没拿到 browser 工具 (PM 调试友好)
+  const triggerReasons = [];
+  if (hasUrl) triggerReasons.push('URL');
+  if (hasBrowserKw) triggerReasons.push('browser_kw');
+  if (hasDbKw) triggerReasons.push('db_kw');
+  if (hasSshKw) triggerReasons.push('ssh_kw');
+  if (hasHttpKw) triggerReasons.push('http_kw');
+  console.log(`[task-agent v0.46] task=${task.id} type=${taskType} → ${toolNames.length} tools (kept browser/extra: ${Array.from(toolsToKeep).join(',') || 'none'}; triggers: ${triggerReasons.join(',') || 'isSimpleTask'})`);
 
   let analysis;
   try {
@@ -206,13 +267,17 @@ ${task.description || '(no description)'}
       } catch (e) { /* silent */ }
     };
 
-    analysis = await runToolLoop(model.id, messages, {
+    const runtimeResult = await runtimeExec({
+      modelId: model.id,
+      messages,
       toolNames,
-      context: { projectId, taskId },
       maxRounds: 90,
       maxTokens: options.maxTokens ?? 32000,
+      context: { projectId, taskId },
       onProgress: saveProgress,
+      caller: 'task-agent',
     });
+    analysis = runtimeResult.content;
   } catch (e) {
     console.error(`[agent-execute] runToolLoop failed: ${e.message}`);
     analysis = `[Agent execution failed: ${e.message}]\n\nTask context:\n${taskContext}`;
@@ -222,6 +287,16 @@ ${task.description || '(no description)'}
 
   // P0 v0.X: flush workspace meta 到磁盘 — agent-execute 结束时避免数据丢失
   try { require('./workspace-meta').flushAll(); } catch (e) { /* 不阻塞 */ }
+
+  // P2: 通过 event-bus 通知系统（单 agent 模式）
+  try {
+    eventBus.emit('task.completed', {
+      projectId,
+      actor: { id: 'agent-acms-self', type: 'agent', name: 'ACMS Agent' },
+      target: { type: 'task', id: taskId },
+      payload: { summary: (analysis || '').slice(0, 300), multiRole: false },
+    });
+  } catch (e) { /* 不阻塞 */ }
 
   return {
     taskId,
@@ -249,7 +324,8 @@ function extractRequiredFiles(taskDoc) {
 
   if (!text) return [];
 
-  const claimed = new Set();
+  // Map<path, {source, pattern}> — 用 Map 去重同时保留首个匹配来源
+  const claimed = new Map();
   const VALID_EXT = /\.(js|ts|jsx|tsx|mjs|cjs|json|md|markdown|py|yml|yaml|toml|sh|bash|html|htm|css|scss|sass|less|vue|svelte|sql|txt|env|gitignore|dockerfile|Dockerfile|lock|csv|xml|png|jpg|jpeg|gif|svg|webp|ico|woff2?|ttf|eot|mp[34]|webm|ogg|wav|pdf)$/i;
   const isValidPath = (p) => {
     if (typeof p !== 'string' || p.length < 4 || p.length > 200) return false;
@@ -258,29 +334,51 @@ function extractRequiredFiles(taskDoc) {
     return true;
   };
 
-  // Pattern 1: backtick-wrapped paths
+  // Pattern 1: backtick-wrapped paths  —  `path/to/file`
   const backtickRe = /`([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)`/g;
   let m;
   while ((m = backtickRe.exec(text)) !== null) {
     const p = m[1];
-    if (!/^(https?:|\/|~)/.test(p) && isValidPath(p)) claimed.add(p);
+    if (!/^(https?:|\/|~)/.test(p) && isValidPath(p) && !claimed.has(p)) {
+      claimed.set(p, { source: `\`${p}\``, pattern: '反引号包裹' });
+    }
   }
 
-  // Pattern 2: 动词 + 路径（创建/写入/修改/生成 file）
+  // Pattern 3: markdown list items  —  - path/to/file（新建）
+  //   支持中文括号标注： （修改）不验证存在，（新建）验证存在，（删除）验证不存在
+  //   示例: - src/utils/dagLayout.ts（新建） → 必须存在
+  //         - src/pages/Causal/index.tsx（修改） → 不检查（可能本来就有）
+  const listRe = /^\s*[-*]\s+[`"']?([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)[`"']?(?:\s*（([^）]*)）)?/gm;
+  while ((m = listRe.exec(text)) !== null) {
+    const p = m[1];
+    if (/^(https?:|\/)/.test(p) || !isValidPath(p) || claimed.has(p)) continue;
+    const annotation = (m[2] || '').trim();
+    let type = 'create';  // 默认新建
+    if (/修改|改动|编辑|更新|modify|edit|update/i.test(annotation)) type = 'modify';
+    else if (/删除|移除|删掉|delete|remove/i.test(annotation)) type = 'delete';
+    claimed.set(p, { source: m[0].trim().substring(0, 60), pattern: '列表项', type });
+  }
+
+  // Pattern 2: 动词 + 路径 — 根据动词推断意图
+  //   创建/新建/implement/create/build/add/generate → create（默认）
+  //   修改/写入/modify/change/write → modify（不验证存在）
   const verbRe = /\b(?:创建|写入|修改|生成|创建|编写|新建|建立|implement|create|write|modify|change|build|add|generate)\s+[`"']?([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)[`"']?/gi;
   while ((m = verbRe.exec(text)) !== null) {
     const p = m[1];
-    if (!/^(https?:|\/)/.test(p) && isValidPath(p)) claimed.add(p);
+    if (/^(https?:|\/)/.test(p) || !isValidPath(p) || claimed.has(p)) continue;
+    const verb = m[0].toLowerCase();
+    const type = /修改|写入|modify|change|write/.test(verb) ? 'modify' : 'create';
+    claimed.set(p, { source: m[0].trim().substring(0, 60), pattern: '动词+路径', type });
   }
 
-  // Pattern 3: markdown list items
-  const listRe = /^\s*[-*]\s+[`"']?([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)[`"']?/gm;
-  while ((m = listRe.exec(text)) !== null) {
-    const p = m[1];
-    if (!/^(https?:|\/)/.test(p) && isValidPath(p)) claimed.add(p);
-  }
-
-  return [...claimed];
+  // 返回 {path, source, pattern}[]，兼容老调用方（.map(p=>p.path) 或 .join() 会报错，
+  // 但引用方都已更新）
+  return Array.from(claimed.entries()).map(([path, meta]) => ({
+    path,
+    source: meta.source,
+    pattern: meta.pattern,
+    type: meta.type || 'create',
+  }));
 }
 
 /**
@@ -305,6 +403,21 @@ function verifyFilesExist(projectId, filePaths) {
       if (content !== null && content !== undefined) {
         out.verified.push(p);
       } else {
+        // v0.X: 后缀容错 — Agent 经常创建 .ts 文件但任务描述写 .tsx（或反过来）
+        //   T-MRHSD8QA 7/13: deepTrace.test.tsx vs deepTrace.test.ts → 循环 6 小时
+        const altExt = p.endsWith('.tsx') ? p.slice(0, -4) + '.ts'
+                     : p.endsWith('.ts') ? p.slice(0, -3) + '.tsx'
+                     : null;
+        if (altExt) {
+          try {
+            const altContent = workspace.readFile(slug, altExt);
+            if (altContent !== null && altContent !== undefined) {
+              out.verified.push(p);
+              console.log(`[verifyFilesExist] ✅ ${p} 匹配到 ${altExt}`);
+              continue;
+            }
+          } catch (e2) { /* 忽略 */ }
+        }
         out.missing.push({ path: p, reason: 'FILE_NOT_FOUND' });
       }
     } catch (e) {
@@ -316,18 +429,310 @@ function verifyFilesExist(projectId, filePaths) {
 
 /**
  * 审计任务需求的文件是否存在
- * 返回: { requiredCount, verifiedCount, missingCount, requiredFiles, missingFiles, verifiedFiles }
+ * 返回: { requiredCount, verifiedCount, missingCount, requiredFiles, missingFiles, verifiedFiles, requiredFileDetails }
+ *   requiredFileDetails: [{path, source, pattern, type, status:'verified'|'missing'|'skipped', reason}]
+ *   type: 'create'=验证存在, 'modify'=跳过验证, 'delete'=验证不存在
  */
 function auditTaskRequirements(projectId, taskDoc) {
   const required = extractRequiredFiles(taskDoc);
-  const result = verifyFilesExist(projectId, required);
+  // 按类型分组
+  const createFiles = required.filter(f => f.type === 'create' || f.type === 'delete');
+  const modifyFiles = required.filter(f => f.type === 'modify');
+  const deleteFiles = required.filter(f => f.type === 'delete');
+
+  // create: 验证存在（用已有 verifyFilesExist）
+  const createResult = createFiles.length
+    ? verifyFilesExist(projectId, createFiles.map(f => f.path))
+    : { verified: [], missing: [] };
+  // delete: 验证不存在（反向检查）
+  const deleteVerified = [];
+  const deleteFailed = [];
+  if (deleteFiles.length) {
+    const allExist = verifyFilesExist(projectId, deleteFiles.map(f => f.path));
+    // 文件存在→删除失败；文件不存在→删除验证通过
+    for (const f of deleteFiles) {
+      if (allExist.verified.includes(f.path)) {
+        deleteFailed.push({ path: f.path, reason: 'FILE_SHOULD_BE_DELETED' });
+      } else {
+        deleteVerified.push(f.path);
+      }
+    }
+  }
+
+  const verifiedSet = new Set(createResult.verified);
+  const missingMap = new Map(createResult.missing.map(m => [m.path, m.reason]));
+  const deleteFailSet = new Set(deleteFailed.map(m => m.path));
+  const deleteFailReasons = new Map(deleteFailed.map(m => [m.path, m.reason]));
+
+  const fileDetails = required.map(f => {
+    if (f.type === 'modify') {
+      return { ...f, status: 'skipped', reason: null };
+    }
+    if (f.type === 'delete') {
+      const failed = deleteFailSet.has(f.path);
+      return { ...f, status: failed ? 'missing' : 'verified', reason: failed ? '文件仍存在，应已删除' : null };
+    }
+    // type === 'create'
+    return {
+      ...f,
+      status: verifiedSet.has(f.path) ? 'verified' : 'missing',
+      reason: missingMap.get(f.path) || null,
+    };
+  });
+
+  // 计算统计 — 只 count create 和 delete（modify 跳过验证不算成功也不算失败）
+  const counted = fileDetails.filter(f => f.type !== 'modify');
+  const verifiedCount = counted.filter(f => f.status === 'verified').length;
+  const missingCount = counted.filter(f => f.status === 'missing').length;
+
   return {
-    requiredCount: required.length,
-    verifiedCount: result.verified.length,
-    missingCount: result.missing.length,
-    requiredFiles: required,
-    missingFiles: result.missing,
-    verifiedFiles: result.verified,
+    requiredCount: counted.length,
+    verifiedCount,
+    missingCount,
+    requiredFiles: required.filter(f => f.type !== 'modify').map(f => f.path),
+    missingFiles: [
+      ...createResult.missing,
+      ...deleteFailed,
+    ],
+    verifiedFiles: [...createResult.verified, ...deleteVerified],
+    requiredFileDetails: fileDetails,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════
+// P1: 多 Agent 角色分工（v0.62）
+//   把单 agent 90 轮循环拆成 4 个专业角色：
+//   Planner → Coder → Tester → Reviewer
+//   每个角色有独立的 system prompt 和 tool 子集
+// ═══════════════════════════════════════════════════════════
+
+// 各角色的工具子集
+const ROLE_TOOLS = {
+  planner: [
+    'agent_read_file', 'agent_read_dir_summary',
+    'agent_search_files',
+    'agent_git_status', 'agent_git_log', 'agent_git_branch',
+  ],
+  coder: [
+    'agent_read_file', 'agent_read_dir_summary',
+    'agent_search_files',
+    'agent_write_file', 'agent_patch_file', 'agent_multi_patch',
+    'agent_typescheck',
+    'agent_git_status', 'agent_git_diff', 'agent_git_commit', 'agent_git_log',
+    'agent_set_phase',
+    'delegate_subtasks',
+  ],
+  tester: [
+    'agent_read_file', 'agent_search_files',
+    'agent_exec_command',
+    'agent_db_query', 'agent_http_request',
+    'browser_snapshot', 'browser_console',
+    'agent_git_diff', 'agent_git_log',
+    'agent_set_phase',
+  ],
+  reviewer: [
+    'agent_read_file', 'agent_search_files', 'agent_read_dir_summary',
+    'agent_git_diff', 'agent_git_log', 'agent_git_status',
+  ],
+};
+
+// 各角色的 system prompt 附加段（追加到基础 AGENT_SYSTEM_PROMPT 之后）
+const ROLE_PROMPTS = {
+  planner: `\n\n## Role: Planner\nYour ONLY job is to understand the task and produce a plan. Do NOT write any code.\n\n### What to do:\n1. Explore the workspace structure (read key files to understand the project)\n2. Identify which files need to be created or modified\n3. Plan the implementation approach\n4. Output a detailed plan covering: files to change, approach, order of operations\n\n### Constraints:\n- You CANNOT write files or execute commands\n- Focus on understanding, not doing\n- Keep your plan concrete and actionable for the next agent (Coder)\n- Estimate the number of files and complexity`,
+
+  coder: `\n\n## Role: Coder\nYour ONLY job is to write the code according to the plan. Do NOT run tests or verify.\n\n### What to do:\n1. Read the plan from the previous agent\n2. Create/modify files using agent_write_file and agent_patch_file\n3. Run agent_typescheck to verify TypeScript syntax\n4. Commit changes with agent_git_commit when done\n\n### Constraints:\n- You CANNOT execute arbitrary commands (no agent_exec_command)\n- You CANNOT browse the web or make HTTP requests\n- Focus on producing correct, working code\n- Call agent_set_phase to show progress through explore → design → write`,
+
+  tester: `\n\n## Role: Tester\nYour ONLY job is to verify the code works correctly. Do NOT modify any files.\n\n### What to do:\n1. Read the modified files to understand what was changed\n2. Run tests, build commands, or verification scripts\n3. Check for errors, broken functionality, or edge cases\n4. Report what works and what doesn't\n\n### Constraints:\n- You CANNOT modify any files (no agent_write_file, no agent_patch_file)\n- You CAN run commands and make HTTP requests\n- If you find bugs, describe them clearly for the Reviewer`,
+
+  reviewer: `\n\n## Role: Reviewer\nYour ONLY job is to evaluate the completed work against the task requirements.\n\n### What to do:\n1. Read the original task requirements\n2. Read the plan that was created\n3. Check the actual files that were created/modified\n4. Verify acceptance criteria are met\n5. Produce a final verdict: APPROVED (task done) or REJECTED (explain what's missing)\n\n### Constraints:\n- You CANNOT write files or execute commands\n- Read-only evaluation only\n- Be strict: if the task isn't complete, say so and explain what's missing`,
+};
+
+/**
+ * 判断测试角色是否应获得 browser 工具（根据任务描述中的 URL/浏览器关键词）
+ */
+function testerNeedsBrowserTools(task) {
+  const fullText = ((task.title || '') + ' ' + (task.description || '') + ' ' + (task.actual_behavior || '')).toLowerCase();
+  return /https?:\/\/[^\s]+/.test(fullText) ||
+    /浏览器|browser|网页|页面|preview|dist|404|500|403|渲染|dom/i.test(fullText);
+}
+
+/**
+ * 多角色流水线执行（P1 核心）
+ * 按 Planner → Coder → Tester → Reviewer 顺序执行，角色间传递上下文
+ */
+async function runMultiRoleSequence(task, options = {}) {
+  const taskId = task.id;
+  const projectId = task.project_id;
+  const modelId = options.modelId || (modelStore.getDefaultGenModel() || {}).id;
+  if (!modelId) throw Object.assign(new Error('No active model available'), { status: 500 });
+  const model = modelStore.getById(modelId);
+  if (!model) throw Object.assign(new Error('Model not found: ' + modelId), { status: 404 });
+  const lang = options.lang || task.preferred_lang || 'zh';
+
+  const { execute: runtimeExec } = require('./agent-runtime');
+
+  // 构建基础 task context（复用现有逻辑）
+  const taskContext = `# Task ${task.id}: ${task.title}\n\n${task.description || '(no description)'}\n\n**Type**: ${task.type || 'general'} | **Estimated**: ${task.estimated_hours || 'N/A'}h\n**Acceptance Criteria**: ${task.acceptance_criteria || task.acceptanceCriteria || '(not specified)'}`;
+
+  // 为 tester 动态添加 browser 工具
+  const testerTools = [...ROLE_TOOLS.tester];
+  if (testerNeedsBrowserTools(task)) {
+    testerTools.push('browser_click', 'browser_type');
+  }
+
+  // 共享进度回调（带角色前缀）
+  let overallRound = 0;
+  const totalRounds = 5 + 25 + 10 + 5; // planner + coder + tester + reviewer
+  const saveProgress = (note) => {
+    const now = new Date().toISOString();
+    try {
+      var logEntry = { time: now, action: 'multi_role', note };
+      var { collection } = require('../db/connection');
+      var t = collection('tasks').findOne(t => t.id === taskId);
+      if (t) {
+        var log = JSON.parse(t.execution_log || '[]');
+        log.push(logEntry);
+        if (log.length > 50) log.splice(0, log.length - 50);
+        overallRound++;
+        collection('tasks').update(t => t.id === taskId, {
+          execution_log: JSON.stringify(log),
+          progress: Math.min(100, Math.round((overallRound / totalRounds) * 100)),
+          progress_note: note,
+          last_progress_update: now,
+        });
+      }
+    } catch (e) { /* silent */ }
+  };
+
+  // 构建基础 system prompt（复用现有 buildSystemPrompt 的 lang directive + skill loader）
+  const baseSystemPrompt = buildSystemPrompt(task, lang);
+  const previousAttempts = buildHistorySummary(task);
+  // workspace 记忆
+  let workspaceMemoryMsg = null;
+  try {
+    const workspaceMeta = require('./workspace-meta');
+    const projectStore = require('../stores/project-store');
+    const project = projectStore.getById(projectId);
+    if (project) {
+      const slug = project.slug || project.name;
+      workspaceMemoryMsg = workspaceMeta.getSummaryForPrompt(slug, task.id);
+    }
+  } catch (e) { /* silent */ }
+
+  // ── 执行流水线 ──
+  const pipeline = [
+    { name: 'planner', maxRounds: 5, tools: ROLE_TOOLS.planner, label: '📋 规划' },
+    { name: 'coder',   maxRounds: 25, tools: ROLE_TOOLS.coder, label: '✏️ 写代码' },
+    { name: 'tester',  maxRounds: 10, tools: testerTools, label: '🧪 测试' },
+    { name: 'reviewer', maxRounds: 5, tools: ROLE_TOOLS.reviewer, label: '👀 审核' },
+  ];
+
+  const roleOutputs = {};
+  let rejectVerdict = null;
+
+  for (let idx = 0; idx < pipeline.length; idx++) {
+    const phase = pipeline[idx];
+    saveProgress(`[${phase.label}] 开始`);
+
+    // 系统提示：基础 + 角色指令
+    const roleSystemPrompt = baseSystemPrompt + ROLE_PROMPTS[phase.name];
+
+    // 消息构建
+    const msgs = [{ role: 'system', content: roleSystemPrompt }];
+
+    if (idx === 0) {
+      // Planner：注入 workspace + 历史 + 任务
+      if (workspaceMemoryMsg) msgs.push({ role: 'user', content: workspaceMemoryMsg });
+      if (previousAttempts) msgs.push({ role: 'user', content: previousAttempts + '\n\n注意：之前的尝试记录如上。请不要在规划中重复已被驳回过的方法。' });
+      msgs.push({ role: 'user', content: taskContext });
+    } else {
+      // 非首个角色：注入前序角色输出（压缩到 1500 字内）
+      for (let pi = 0; pi < idx; pi++) {
+        const out = roleOutputs[pipeline[pi].name];
+        if (out && out.content) {
+          msgs.push({ role: 'user', content: `## ${pipeline[pi].label} 输出\n\n${out.content.slice(0, 1500)}` });
+        }
+      }
+      // 重新加上原始任务
+      msgs.push({ role: 'user', content: `---\n\n## 原始任务\n\n${taskContext}` });
+
+      // reviewer 要求结构化输出
+      if (phase.name === 'reviewer') {
+        msgs.push({ role: 'user', content: '请给出最终审核结论。用以下格式回复：\n\n## 审核结论\n- 状态：APPROVED / REJECTED\n- 说明：...\n- 缺失项（如有）：...' });
+      }
+    }
+
+    // 执行
+    const runtimeResult = await runtimeExec({
+      modelId: model.id,
+      messages: msgs,
+      toolNames: phase.tools,
+      maxRounds: phase.maxRounds,
+      context: { projectId, taskId },
+      caller: 'task-agent-' + phase.name,
+    });
+
+    roleOutputs[phase.name] = runtimeResult;
+    saveProgress(`[${phase.label}] 完成 (${(runtimeResult.content || '').length} chars)`);
+    console.log(`[task-agent] ${phase.label} 完成: ${(runtimeResult.content || '').length} chars`);
+
+    // 如果该角色失败（content 为空），提前退出
+    if (!runtimeResult.content || runtimeResult.content.length < 10) {
+      const errorMsg = `[${phase.label}] 输出为空，流水线中止`;
+      console.error(`[task-agent] ${errorMsg}`);
+      saveProgress(errorMsg);
+      try {
+        eventBus.emit('task.failed', {
+          projectId,
+          actor: { id: 'agent-acms-self', type: 'agent', name: 'ACMS Agent' },
+          target: { type: 'task', id: taskId },
+          payload: { error: errorMsg, failedRole: phase.name },
+        });
+      } catch (e) { /* 不阻塞 */ }
+      return {
+        taskId,
+        modelUsed: model.id,
+        analysis: errorMsg,
+        completedAt: new Date().toISOString(),
+        roles: Object.keys(roleOutputs).reduce((acc, k) => { acc[k] = { ok: !!roleOutputs[k].content }; return acc; }, {}),
+      };
+    }
+
+    // reviewer 驳回检测
+    if (phase.name === 'reviewer') {
+      const upper = (runtimeResult.content || '').toUpperCase();
+      if (upper.includes('REJECTED') || upper.includes('驳回') || upper.includes('不通过')) {
+        rejectVerdict = runtimeResult.content;
+      }
+    }
+  }
+
+  // 汇总
+  const finalOutput = roleOutputs['reviewer'] || {};
+  const summary = rejectVerdict
+    ? `[审核驳回]\n\n${rejectVerdict.slice(0, 2000)}`
+    : `✅ 所有角色执行完成。\n\n${(finalOutput.content || '(无审核结论)').slice(0, 3000)}`;
+
+  // P2: 通过 event-bus 通知系统
+  const eventType = rejectVerdict ? 'task.review_rejected' : 'task.completed';
+  try {
+    eventBus.emit(eventType, {
+      projectId,
+      actor: { id: 'agent-acms-self', type: 'agent', name: 'ACMS Agent' },
+      target: { type: 'task', id: taskId },
+      payload: { summary: summary.slice(0, 300), multiRole: true, rejected: !!rejectVerdict },
+    });
+  } catch (e) { /* 不阻塞 */ }
+
+  return {
+    taskId,
+    modelUsed: model.id,
+    analysis: summary,
+    completedAt: new Date().toISOString(),
+    roles: Object.keys(roleOutputs).reduce((acc, k) => {
+      acc[k] = { length: (roleOutputs[k].content || '').length };
+      return acc;
+    }, {}),
   };
 }
 
@@ -648,5 +1053,69 @@ registerTool({
       plan,
       message: `Plan written (${plan.files.length} files, ${plan.steps.length} steps). Awaiting PM approval.`,
     };
+  },
+});
+
+// ═══════════════════════════════════════════════════════════
+// delegate_subtasks — 并行子任务委派
+//   让 agent 把一个大任务拆成多个子任务并行执行
+// ═══════════════════════════════════════════════════════════
+registerTool({
+  name: 'delegate_subtasks',
+  description: '把当前任务拆成多个子任务并行执行。每个子任务有独立的目标和工具集。'
+    + '适合并行处理多个文件、同时调研多个方案、前后端并行开发等场景。'
+    + '返回每个子任务的执行摘要。最多同时 3 个子任务。'
+    + '示例: delegate_subtasks({tasks: [{goal: "修复登录页样式", tools: ["read","write"]}, {goal: "添加 API 测试", tools: ["read","exec"]}]})',
+  parameters: {
+    type: 'object',
+    properties: {
+      tasks: {
+        type: 'array',
+        description: '子任务数组，每个子任务包含 goal（目标描述）和 tools（工具集名称列表）',
+        items: {
+          type: 'object',
+          properties: {
+            goal: { type: 'string', description: '子任务目标（必填），清晰描述要做什么' },
+            tools: { type: 'array', description: '工具集名称列表：read, write, git, exec, browser, db, http', items: { type: 'string' } },
+          },
+          required: ['goal'],
+        },
+      },
+    },
+    required: ['tasks'],
+  },
+  async handler(args, ctx = {}) {
+    var tasks = args.tasks || [];
+    if (!Array.isArray(tasks) || tasks.length === 0) return { ok: false, error: 'NO_TASKS' };
+    if (tasks.length > 3) return { ok: false, error: 'TOO_MANY_TASKS' };
+
+    const { execute: runtimeExec } = require('./agent-runtime');
+    var TOOLSET_MAP = {
+      read: ['agent_read_file', 'agent_search_files', 'agent_list_files'],
+      write: ['agent_read_file', 'agent_search_files', 'agent_write_file', 'agent_patch_file', 'agent_multi_patch'],
+      git: ['agent_git_status', 'agent_git_diff', 'agent_git_commit', 'agent_git_log'],
+      exec: ['agent_read_file', 'agent_search_files', 'agent_exec_command'],
+      browser: ['browser_snapshot', 'browser_console', 'browser_click', 'browser_type'],
+      db: ['agent_db_query'],
+      http: ['agent_http_request'],
+    };
+
+    var results = await Promise.all(tasks.map(async function(subtask, idx) {
+      var toolNames = (subtask.tools || ['read', 'write']).flatMap(function(t) { return TOOLSET_MAP[t] || []; });
+      toolNames = [...new Set(toolNames)];
+      var msgs = [
+        { role: 'system', content: '你是一个专注的子任务 Agent。你的目标明确且范围有限。完成任务后给出简洁总结（3-5 行）。工具可用：' + toolNames.join(', ') },
+        { role: 'user', content: subtask.goal },
+      ];
+      try {
+        var start = Date.now();
+        var result = await runtimeExec({ messages: msgs, toolNames: toolNames, maxRounds: 10, context: ctx, caller: 'delegate-' + idx });
+        return { index: idx, goal: subtask.goal.slice(0, 100), ok: true, summary: (result.content || '').slice(0, 500), elapsed: (Date.now() - start) + 'ms' };
+      } catch (e) {
+        return { index: idx, goal: subtask.goal.slice(0, 100), ok: false, error: e.message };
+      }
+    }));
+
+    return { ok: true, total: results.length, successCount: results.filter(function(r) { return r.ok; }).length, failedCount: results.filter(function(r) { return !r.ok; }).length, results: results };
   },
 });

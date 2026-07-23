@@ -1,0 +1,12 @@
+{
+  "method": "file-browser",
+  "name": "文件浏览器",
+  "icon": "📂",
+  "type": "tool",
+  "description": "浏览服务器文件系统，支持目录树、文件操作、搜索、上传和设为壁纸",
+  "author": "ACMS",
+  "version": "1.0.0",
+  "triggers": ["toolbar"],
+  "permissions": ["filesystem"],
+  "field": "assist_file_browser"
+}

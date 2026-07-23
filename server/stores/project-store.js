@@ -3,16 +3,18 @@ const { collection } = require('../db/connection');
 const path = require('path');
 
 class ProjectStore {
-  create({ name, slug, description = '', wikiVaultPath = '', wikiDocsPath = 'docs/' }) {
+  create({ name, slug, description = '', wikiVaultPath = '', wikiDocsPath = 'docs/', owner = 'system' }) {
     const id = `proj_${slug || name.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
     const now = new Date().toISOString();
-    // 默认 Wiki 路径：项目工作区下的 wiki/ 目录
     const resolvedSlug = slug || name;
     const defaultWikiPath = path.join(__dirname, '..', '..', 'workspaces', resolvedSlug, 'wiki');
-    const project = { id, name, slug: resolvedSlug, description, status: 'active', visibility: 'team',
+    const project = { id, name, slug: resolvedSlug, description, owner, status: 'active', visibility: 'team',
       tech_stack: '{}', wiki_vault_path: wikiVaultPath || defaultWikiPath, wiki_docs_path: wikiDocsPath,
       stats: '{}', created_at: now, updated_at: now };
     collection('projects').insert(project);
+
+    // 自动把创建者加为项目成员（角色: owner）
+    this.addMember(id, { memberId: owner, memberType: 'user', memberRole: 'owner' });
 
     // 自动初始化项目工作区
     try {
@@ -48,6 +50,13 @@ class ProjectStore {
   }
 
   getMembers(projectId) { return collection('project_members').find(m => m.project_id === projectId); }
+
+  // 获取用户有权访问的所有项目 ID（owner 或 member）
+  getUserProjectIds(userId) {
+    const owned = collection('projects').find(p => p.owner === userId).map(p => p.id);
+    const memberOf = collection('project_members').find(m => m.member_id === userId).map(m => m.project_id);
+    return new Set([...owned, ...memberOf]);
+  }
 
   addEnvironment(projectId, { name, url, type = 'local' }) {
     const env = { id: Date.now(), project_id: projectId, name, url, type, status: 'active' };

@@ -229,6 +229,17 @@ const url = `https://www.sogou.com/web?query=${encodeURIComponent(query)}`;
       const items = [];
       const seen = new Set();
 
+      // v0.49 web-search 修复：搜狗结果常带 AD/竞价链接（元宝入口/1688 抢购等），先做 quality gate
+      //   标题黑名单：覆盖国内搜索引擎常见的 AD 标题模板
+      //   URL 黑名单：覆盖 sogou 推广转链 + 腾讯/阿里系 AD 落地页
+      const titleBanRe = /(看看元宝|抢购|限时|钜惠|特惠|钜献|landing-?page|redirect-?page|推广链接|^推广$|^赞助$|^广告$)/i;
+      const urlBanRe = /(landing-?page|redirect-?page|tridChannel|pkgChId|sogou\.com\/link\?|html5\.qq\.com\/landingpage|tencent\.com\/evt\/dl|yuanbao\.tencent\.com|so\.html5\.qq)/i;
+      const isBadResult = (title, url) =>
+        !title ||
+        title.length < 4 ||
+        titleBanRe.test(title) ||
+        urlBanRe.test(url);
+
       // 解码 sogou 重定向链接，提取真实 URL
       const resolveSogouLink = (rawUrl) => {
         const cleanUrl = (u) => {
@@ -270,7 +281,8 @@ const url = `https://www.sogou.com/web?query=${encodeURIComponent(query)}`;
         const rawUrl = link.href;
         const url = resolveSogouLink(rawUrl);
         const title = (link.textContent || '').trim();
-        if (!title || seen.has(url)) continue;
+        if (isBadResult(title, url)) continue;       // v0.49: AD/质量 gate
+        if (seen.has(url)) continue;
         if (url.includes('sogou.com') && !url.includes('/web')) continue;
         seen.add(url);
 
@@ -289,7 +301,8 @@ const url = `https://www.sogou.com/web?query=${encodeURIComponent(query)}`;
           const rawUrl = link.href;
           const url = resolveSogouLink(rawUrl);
           const title = (link.textContent || '').trim();
-          if (!title || seen.has(url) || url.includes('sogou.com')) continue;
+          if (isBadResult(title, url)) continue;       // v0.49: AD/质量 gate
+          if (seen.has(url) || url.includes('sogou.com')) continue;
           seen.add(url);
           items.push({ title: title.slice(0, 200), url, snippet: '' });
         }
@@ -303,7 +316,8 @@ const url = `https://www.sogou.com/web?query=${encodeURIComponent(query)}`;
           const rawUrl = link.href;
           const url = resolveSogouLink(rawUrl);
           const title = (link.textContent || '').trim();
-          if (!title || title.length < 5 || seen.has(url)) continue;
+          if (isBadResult(title, url)) continue;       // v0.49: AD/质量 gate
+          if (title.length < 5 || seen.has(url)) continue;
           if (url.includes('sogou.com') || url.includes('bing.com')) continue;
           seen.add(url);
           items.push({ title: title.slice(0, 200), url, snippet: '' });

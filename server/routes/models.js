@@ -2,6 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const modelStore = require('../stores/model-store');
+const eventBus = require('../services/event-bus');
 
 const ALL_CAPABILITIES = ['text', 'vision', 'json-mode', 'extended-thinking', 'audio-input', 'function-calling'];
 
@@ -21,11 +22,13 @@ router.post('/', (req, res, next) => {
     const { name, provider, model, baseUrl, apiKey, systemPrompt, api, capabilities } = req.body;
     if (!name || !provider || !model) return res.status(400).json({ error: 'MISSING_FIELDS' });
     if (capabilities && !Array.isArray(capabilities)) return res.status(400).json({ error: 'capabilities 必须是数组' });
-    res.status(201).json(modelStore.create({ name, provider, model, baseUrl, apiKey, systemPrompt, api, capabilities }));
+    var created = modelStore.create({ name, provider, model, baseUrl, apiKey, systemPrompt, api, capabilities });
+    eventBus.emit('model.updated', { actor: { id: 'admin', type: 'human' }, target: { type: 'model', id: created.id }, payload: { action: 'created' } });
+    res.status(201).json(created);
   } catch (e) { next(e); }
 });
 
-router.patch('/:id', (req, res, next) => {
+router.patch('/:id', async (req, res, next) => {
   try {
     const updates = { ...req.body };
     delete updates.id; delete updates.created_at;
@@ -34,12 +37,16 @@ router.patch('/:id', (req, res, next) => {
     }
     const updated = modelStore.update(req.params.id, updates);
     if (!updated) return res.status(404).json({ error: 'MODEL_NOT_FOUND' });
+    console.log('[models] PATCH 成功，准备 emit');
+    await eventBus.emit('model.updated', { actor: { id: 'admin', type: 'human' }, target: { type: 'model', id: req.params.id }, payload: { model: updated } });
+    console.log('[models] emit 完成');
     res.json(updated);
   } catch (e) { next(e); }
 });
 
 router.delete('/:id', (req, res) => {
   modelStore.remove(req.params.id);
+  eventBus.emit('model.updated', { actor: { id: 'admin', type: 'human' }, target: { type: 'model', id: req.params.id }, payload: { action: 'deleted' } });
   res.json({ success: true });
 });
 

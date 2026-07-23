@@ -18,6 +18,7 @@ try {
 module.exports = {
   port: process.env.PORT || fileConfig.port || 3300,
   wsPort: process.env.WS_PORT || fileConfig.wsPort || 3301,
+  termWSPort: process.env.TERM_WS_PORT || fileConfig.termWSPort || 3302,
   apiKeys: (process.env.ACMS_API_KEYS || (fileConfig.apiKeys ? fileConfig.apiKeys.join(',') : null) || 'dev-key-001,dev-key-002').split(',').map(k => k.trim()).filter(Boolean),
   cors: {
     origin: process.env.CORS_ORIGIN || fileConfig.corsOrigin || '*',
@@ -28,6 +29,33 @@ module.exports = {
     maxAge: '2min',
   },
   agnesApiKey: process.env.AGNES_API_KEY || fileConfig.agnesApiKey || '',
+  // v0.47：SMTP 邮件发送配置（assist.send_email 用）
+  //   加载顺序：环境变量 > config.json smtp 字段；未配置时邮件工具返回友好错误而非崩溃
+  smtp: (() => {
+    const envHost = process.env.SMTP_HOST;
+    if (envHost) {
+      return {
+        host: envHost,
+        port: parseInt(process.env.SMTP_PORT || '465', 10),
+        secure: (process.env.SMTP_SECURE || 'true') !== 'false',  // 465=true(SSL), 587=false(STARTTLS)
+        user: process.env.SMTP_USER || '',
+        pass: process.env.SMTP_PASS || '',
+        from: process.env.SMTP_FROM || (process.env.SMTP_USER || ''),
+        fromName: process.env.SMTP_FROM_NAME || 'ACMS',
+      };
+    }
+    const f = fileConfig.smtp || {};
+    if (!f.host) return null;  // 未配置 SMTP
+    return {
+      host: f.host,
+      port: parseInt(f.port || 465, 10),
+      secure: f.secure !== false,
+      user: f.user || '',
+      pass: f.pass || '',
+      from: f.from || f.user || '',
+      fromName: f.fromName || 'ACMS',
+    };
+  })(),
   // v0.22.20: 统一 workspace 根目录（之前 image-gen.js / video.js 用了 2 层 `..` 错位到 server/workspaces/）
   // 任何地方要读写项目文件都走这个常量，避免再出现「写一个目录读另一个目录」的 bug
   workspaceRoot: path.join(__dirname, '..', 'workspaces'),

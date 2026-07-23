@@ -32,7 +32,11 @@ console.log('[ACMS] 智能体协同管理系统 v0.3.0');
 console.log(`[ACMS] 日志输出: ${LOG_FILE}`);
 
 // HTTP API
+// P0 v0.X: keepAliveTimeout + headersTimeout 调到 10 分钟 — 防止长跑（>5min）agent-execute 连接被 Node 默认 keepAliveTimeout=5s 主动 reset (Pattern U)
+//   之前默认 5s：dispatcher 调 /agent-execute 后 audit/submit 阶段进行中时连接被 server 主动关，response 永远丢，任务卡 17% (T-MRHSD8OQ 7/13 实战)
 const httpServer = http.createServer(app);
+httpServer.keepAliveTimeout = 600_000; // 10 min — 允许 agent-execute 长跑 10 分钟不被 idle reset
+httpServer.headersTimeout = 605_000;   // 必须 > keepAliveTimeout (Node HTTP server 要求)
 // v0.46 fix: 端口重用（Windows TIME_WAIT 导致重启失败时用）
 httpServer.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
@@ -48,6 +52,10 @@ httpServer.on('error', (err) => {
     throw err;
   }
 });
+
+// 创建默认管理员（首次启动）
+try { require('./services/user-service').ensureDefaultAdmin(); } catch (e) { /* DB 未就绪时跳过 */ }
+
 httpServer.listen(config.port, () => {
   console.log(`[ACMS] HTTP API: http://localhost:${config.port}`);
   console.log(`[ACMS] Web UI:  http://localhost:${config.port}/client/index.html`);
@@ -55,10 +63,21 @@ httpServer.listen(config.port, () => {
 
 // WebSocket
 const wsServer = http.createServer();
+
+// 终端 WebSocket（独立端口 3302，与主 WS 隔离避免扩展协商冲突）
+const { setupTerminalWS } = require('./handlers/terminal-ws');
+setupTerminalWS();
+
 setupWebSocket(wsServer);
 wsServer.listen(config.wsPort, () => {
   console.log(`[ACMS] WebSocket: ws://localhost:${config.wsPort}`);
 });
+
+// v0.59 appRuntime WebSocket：挂到主 httpServer（路径 /ws/app-runtime/*）
+//   跟主 ws（/ws）和 terminal-ws（独立端口）做 path 隔离，不冲突
+const { setupAppRuntimeWS } = require('./handlers/app-runtime-ws');
+setupAppRuntimeWS(httpServer);
+console.log('[ACMS] appRuntime WS 已挂到 httpServer: /ws/app-runtime/{sessionId}');
 
 // ── 启动时：自动创建 ACMS 自我改进项目 ──
 try {
@@ -87,6 +106,15 @@ setInterval(() => {
 setInterval(() => {
   try { require('./services/auto-archive-service').autoArchive(); } catch (e) { /* */ }
 }, 24 * 60 * 60 * 1000);
+
+// v0.55.1：每日清理回收站（删除 > 7 天的软删 session）
+function cleanupExpiredChatSessions() {
+  try {
+    const n = require('./services/chat-session-service').cleanupExpired();
+    if (n > 0) console.log(`[ACMS] 回收站清理: 删除 ${n} 个过期 session`);
+  } catch (e) { console.error('[ACMS] 回收站清理失败:', e.message); }
+}
+setInterval(cleanupExpiredChatSessions, 24 * 60 * 60 * 1000);
 
 // v2.0: 启动时注册内建工具
 try {

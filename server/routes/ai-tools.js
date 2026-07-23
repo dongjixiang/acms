@@ -1,9 +1,11 @@
 // AI 工具 API — MD文档生成 + 智能任务分解
 const express = require('express');
+const path = require('path');
 const router = express.Router();
 const aiTools = require('../services/ai-tools-service');
 const reqStore = require('../stores/requirement-store');
 const taskStore = require('../stores/task-store');
+const projectStore = require('../stores/project-store');
 const eventBus = require('../services/event-bus');
 const dispatcher = require('../services/auto-execute-dispatcher');
 const { validateChildCoverage, detectIntegrationGaps, validateParentAggregateCoverage } = require('../services/coverage-validator');
@@ -280,30 +282,94 @@ router.post('/agent-execute', async (req, res, next) => {
       const missingList = audit.missingFiles.map(m => `${m.path} (${m.reason})`).join(', ');
       console.warn(`[agent-execute] ⚠ Task ${taskId} 需求文件 ${audit.missingCount} 缺失: ${missingList}`);
       const missingFiles = audit.missingFiles.map(m => m.path).join(', ');
-      const feedbackNotes = `[需求文件验证未通过 — 请创建缺失文件]
-
-你的任务描述中要求创建以下文件，但它们不存在：
-${audit.missingFiles.map(m => `- \`${m.path}\` (原因: ${m.reason})`).join('\n')}
-
-需求中提到的文件(${audit.requiredCount}): ${audit.requiredFiles.join(', ') || '(无)'}`;
+      // v0.X: 审计日志包含匹配来源 — 让 PM 知道"为什么这个文件被列入必检名单"
+      //   requiredFileDetails: [{path, source, pattern, status, reason}]
+      const detailLines = (audit.requiredFileDetails || []).map(f => {
+        let icon, note;
+        if (f.status === 'skipped') {
+          icon = '⏭️';
+          note = '修改类，跳过验证';
+        } else if (f.status === 'verified') {
+          icon = '✅';
+          note = '已通过';
+        } else {
+          icon = '❌';
+          note = f.type === 'delete' ? '应删除但文件仍存在' : `缺失: ${f.reason || 'FILE_NOT_FOUND'}`;
+        }
+        return `${icon} ${f.path}  [${f.pattern}] ${f.source} → ${note}`;
+      }).join('\n');
+      const feedbackNotes = `[需求文件验证未通过 — 缺少 ${audit.missingCount}/${audit.requiredCount} 个需求文件]\n\n` +
+        `任务描述中涉及以下 ${audit.requiredCount} 个文件，其中 ${audit.missingCount} 个未创建：\n\n` +
+        detailLines + '\n\n' +
+        `请创建缺失文件后重新提交。`;
       // 退回 in_progress，附 feedback 让 LLM 重做
       taskStore.update(taskId, { status: 'in_progress', progress_note: feedbackNotes });
-      // v0.44.5: 自动 steer agent — 把 feedback 注入到 agent 的 messages 里，让它知道要去补文件
-      //   之前 agent 拿到反馈后可能不知道要创建文件，或者继续装睡
-      //   修法：直接 steer agent，明确告诉它"创建缺失文件"
-      //   v0.X fix: 复用顶部已经导入的 aiTools.executeTaskAgent，**不要重新 require './task-agent'**
-      //     （routes/ 下没有 task-agent.js，会抛 MODULE_NOT_FOUND 被外层 catch 静默吞掉，
-      //      导致 audit 失败后永远不触发自动 steer，任务永远卡在 in_progress）
+      // v0.X: 自动 steer 防递归 — _skipAutoSteer 标记阻止 auto-steer 请求再次触发 auto-steer
+      //   之前 auto-steer 走 HTTP 统一路径后，路由层 audit 发现文件仍缺失会再次触发 auto-steer，
+      //   导致 T-MRHSD8QA 7/13 场景：auto-steer → audit 缺1文件 → auto-steer → audit 缺1文件 → 循环
+      if (req.body && req.body._skipAutoSteer) {
+        // 来自 auto-steer 的请求，不再触发二次 auto-steer
+        console.log(`[agent-execute] ⏭️ ${taskId} 跳过 auto-steer（_skipAutoSteer=true）`);
+      } else {
+      // v0.X: 自动 steer — 走 HTTP 统一路径，不直接调 executeTaskAgent
+      //   之前直接调函数绕过锁，现在所有触发都走 POST /agent-execute 让路由层管锁
       // 异步 steer，不阻塞响应
+      // P0 v0.X: 修复 LLM 503 导致 auto-steer 静默失败、任务永远卡死的 bug (T-MRHSD8OQ 7/13 实战)
+      //   - 失败时写 progress_note 让 PM 在任务详情页能看到（不是只 console.error）
+      //   - 30s 后通过 fetch /agent-execute 重试一次（路由自己管并发锁返回 409）
+      //   - 重试也失败再写一次 progress_note 明确"需 PM 手工处理"
       (async () => {
-        try {
-          await aiTools.executeTaskAgent(taskId, {
-            steerMessage: `### 自动 steer: 创建缺失文件\n\n你的提交被拒绝了，因为以下文件不存在：\n${missingFiles}\n\n请创建这些文件。对于每个文件，根据任务描述中的需求，用合理的内容创建它。如果你不知道该放什么内容，创建一个合理的空骨架（比如空类/空函数/空模块）。\n\n创建后重新提交。`,
-          });
-        } catch (e) {
-          console.error(`[agent-execute] steer failed for task ${taskId}: ${e.message}`);
+        // v0.X: auto-steer 统一走 HTTP 路由（不再直接调 executeTaskAgent），
+        //   让路由层的锁、audit、submit 全部统一处理。
+        //   之前直接调函数绕过锁，导致并发执行无保护。
+        const port = process.env.PORT || 3300;
+        const apiKey = process.env.ACMS_API_KEY || 'dev-key-001';
+        const steerMsg = `### 自动 steer: 创建缺失文件\n\n你的提交被拒绝了，因为以下文件不存在：\n${missingFiles}\n\n请创建这些文件。对于每个文件，根据任务描述中的需求，用合理的内容创建它。如果你不知道该放什么内容，创建一个合理的空骨架（比如空类/空函数/空模块）。\n\n创建后重新提交。`;
+        // 重试 3 次，每次间隔 1s（用于处理锁未释放的 409）
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const r = await fetch(`http://127.0.0.1:${port}/api/ai-tools/agent-execute`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+              body: JSON.stringify({ taskId, agentId: task.assigned_to, steerMessage: steerMsg, _skipAutoSteer: true }),
+              signal: AbortSignal.timeout(600_000),
+            }).catch(err => ({ error: err.message }));
+            const result = r && typeof r.json === 'function' ? await r.json() : r;
+            if (!result || result.error === 'TASK_ALREADY_RUNNING') {
+              // 锁未释放，等 1s 重试
+              if (attempt < 2) await new Promise(r => setTimeout(r, 1000));
+              continue;
+            }
+            if (result && result.success) {
+              console.log(`[agent-execute] ✅ auto-steer 成功 ${taskId}`);
+            } else {
+              // FILES_MISSING 或其它错误 — post-steer audit 已在路由内处理
+              console.warn(`[agent-execute] ⚠ auto-steer 未完全成功: ${result?.error || result?.message || 'unknown'}`);
+            }
+            break;  // 无论成功失败，不继续重试
+          } catch (e) {
+            console.error(`[agent-execute] auto-steer fetch failed (attempt ${attempt + 1}): ${e.message}`);
+            if (attempt < 2) await new Promise(r => setTimeout(r, 1000));
+          }
+        }
+        // 最后检查一次
+        const afterTask = taskStore.getById(taskId);
+        if (afterTask) {
+          try {
+            const afterAudit = aiTools.auditTaskRequirements(afterTask.project_id, afterTask);
+            if (afterAudit.missingCount > 0) {
+              const stillMissing = afterAudit.missingFiles.map(m => m.path).join(', ');
+              console.warn(`[agent-execute] ⚠ auto-steer 结束但文件仍缺失: ${stillMissing}`);
+              taskStore.update(taskId, {
+                progress_note: ((afterTask.progress_note) || '') +
+                  (afterTask.progress_note ? '\n\n' : '') +
+                  `[自动 steer 结束但文件仍缺失 ${new Date().toISOString()}] 以下文件未创建: ${stillMissing} — 需 PM 手工处理`,
+              });
+            }
+          } catch (e) { /* silent */ }
         }
       })();
+      }  // end else: !_skipAutoSteer
       return res.status(409).json({
         success: false,
         taskId,
@@ -347,6 +413,22 @@ ${audit.missingFiles.map(m => `- \`${m.path}\` (原因: ${m.reason})`).join('\n'
         target: { type: 'task', id: submitResult.id },
         payload: { task: submitResult },
       });
+
+      // v0.X: 自动触发构建（fire-and-forget，不阻塞响应）
+      try {
+        const { execSync } = require('child_process');
+        const slug = (projectStore.getById(submitResult.project_id) || {}).slug;
+        if (slug) {
+          const wsPath = path.join(__dirname, '..', 'workspaces', slug);
+          execSync('npm run build 2>&1', {
+            cwd: wsPath, timeout: 120000, maxBuffer: 10 * 1024 * 1024, shell: true, encoding: 'utf-8',
+          });
+          console.log(`[agent-execute] ✅ ${slug} 自动构建成功`);
+        }
+      } catch (buildErr) {
+        const msg = (buildErr.stderr || buildErr.stdout || buildErr.message || '').slice(0, 300);
+        console.warn(`[agent-execute] ⚠️ 自动构建失败: ${msg}`);
+      }
     }
 
     res.json({
@@ -363,7 +445,18 @@ ${audit.missingFiles.map(m => `- \`${m.path}\` (原因: ${m.reason})`).join('\n'
       // v0.X: 释放任务执行锁 — 无论 success/audit-fail/stall 都要释放
       dispatcher.releaseTaskLock(taskId);
     }
-  } catch (e) { next(e); }
+  } catch (e) {
+    // v0.X: 异常写入 progress_note — 让 PM 在看板能看到错误（不只在 console.error）
+    try {
+      const cur = taskStore.getById(taskId);
+      taskStore.update(taskId, {
+        progress_note: ((cur && cur.progress_note) || '') +
+          (cur && cur.progress_note ? '\n\n' : '') +
+          `[执行异常 ${new Date().toISOString()}] ${e.message}`,
+      });
+    } catch (e2) { /* silent */ }
+    next(e);
+  }
 });
 
 // v0.30 fix: 手动 steer endpoint — Hermes /steer slash command 的 ACMS 等价物

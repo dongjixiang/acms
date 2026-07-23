@@ -13,15 +13,18 @@ const router = express.Router();
 const reqStore = require('../stores/requirement-store');
 const toolRegistry = require('../services/tool-registry');
 const { runToolLoop } = require('../services/llm-adapter');
+const { execute: runtimeExec } = require('../services/agent-runtime');
 const modelStore = require('../stores/model-store');
 
 // v0.20d：7 个外部 tool（play_music 由预检覆盖，不加进 LLM 可见避免重复触发）
 const INTENT_TOOL_NAMES = [
   'web_search', 'web_research', 'fetch_url', 'get_current_time',  // 信息类
   'agnes_generate_video',  // 视频生成（v0.18 直接调 Agnes API）
-  // v0.20d: play_music 由预检（extractMusicIntent）覆盖，不加进 LLM 可见工具避免重复触发
+  // v0.20d: play_music 由预检覆盖，不加进 LLM 可见工具避免重复触发
   'play_video',           // 视频生成（v0.20 触发 video assist，自动从用户消息提取 prompt）
   'generate_image',       // 图片生成（v0.20 触发 image-gen assist，自动从用户消息提取 prompt）
+  'send_email',           // v0.47：邮件发送（fire-and-forget + 用户确认才真发）
+  'plan_execute',         // v0.48：复合意图 plan 执行（多 tool / 多步骤 / 依赖场景）
 ];
 
 // v0.16：chat-intent 阶段 LLM 看到的 system prompt（clarify 模式）
@@ -85,8 +88,12 @@ function buildIntentSystemPrompt(req) {
 // 区别于 clarify：基于附件/参考资料直接回答，不追问澄清需求
 // v0.22.23b：精简 system prompt，删掉复用的 clarify 模式限制（"仅在...才调"）+ 暗示 LLM 直接回复的措辞
 //   多多诉求：free 模式更开放，LLM 自主决定调不调 tool。工具 description 自带触发条件，不需要在 system prompt 重复
+// v0.47.1：治「LLM 装睡」 — 用户表达生成图片/视频/搜索/邮件/音乐等明确工具意图时，
+//   **必须调用对应工具**，不能嘴说"正在生成/正在搜索/已发送"等假动作（用户看不到任何卡片，就是空话）。
+//   多次轮询日志显示 LLM 倾向于在第一轮 final answer 中描述"动作"但**不真调用 tool**，
+//   导致用户看不到任何输出（图片/视频/搜索结果都不存在），不得不催第二轮。
 function buildFreeChatSystemPrompt(req) {
-  return `你是 ACMS 自由对话助手。当前用户正在与你自由对话，可能让你总结附件、解读资料、对比方案、画图、生成视频、搜索信息等。
+  return `你是 ACMS 自由对话助手。当前用户正在与你自由对话，可能让你总结附件、解读资料、对比方案、画图、生成视频、搜索信息、发送邮件、找歌曲等。
 
 # 需求上下文（仅作背景，不要当成对话主线）
 - 标题：${req.title || '(空)'}
@@ -95,11 +102,41 @@ function buildFreeChatSystemPrompt(req) {
 
 # 任务
 - 用户没在整理需求，**直接帮用户处理具体请求**。
-- 你可以调用工具（generate_image、play_video、agnes_generate_video、web_search、web_research、fetch_url、get_current_time）来满足用户的具体请求；工具的 description 告诉你何时该调。
+- 你可以调用工具（generate_image、play_video、agnes_generate_video、play_music、web_search、web_research、fetch_url、get_current_time、send_email、plan_execute）来满足用户的具体请求；工具的 description 告诉你何时该调。
 - 也可以直接基于对话历史和已有知识回答。
-- 看到附件（用户消息里以 [文件名] 或 📎 开头的部分）→ **直接基于附件内容回答**。
-- 不要追问"你想要什么功能"——这是澄清场景的逻辑，不适用于自由对话。
-- 不要建议"我们换个方式讨论"——除非用户明确表示想整理需求。
+
+# ⛔ 严禁「装睡」（v0.47.1 治根因）
+当用户消息含**明确的工具调用意图**时（生成图片/视频/搜索/邮件/找歌），你**必须调用对应工具**。绝不能只回文字如"图片正在生成中""视频已发送""邮件已发送""搜索中请稍等"——**这种回复是空话，用户看不到任何卡片，必须避免**。
+
+判断标准（满足任一即视为有工具意图）：
+- 含"生成图片/画一张/画一个/做一张图"等 → 调 **generate_image**
+- 含"生成视频/做一个视频/拍个视频"等 → 调 **play_video** 或 **agnes_generate_video**
+- 含"搜索/查一下/调研/找资料"等 → 调 **web_search** 或 **web_research**
+- 含 URL → 调 **fetch_url**
+- 含"发邮件/发送邮件/转发邮件"等 → 调 **send_email**
+- 含"想听/播放/找一首/放首歌"等 → 调 **play_music**
+
+如果工具已调（msg 里有 role=tool 的返回结果），下一轮 final answer 可以简短告诉用户"已触发，请稍候"——但**第一轮**看到用户意图就必须调工具。
+
+# ⛔ 复合意图必须调 plan_execute（v0.48 治根因）
+当用户消息**同时涉及 2 个或以上 tool 意图**时（且步骤有先后/依赖/耗时），**必须先调 plan_execute** 把整个事情拆成步骤交给系统执行，不能自己按顺序一个个调 tool。
+
+判断标准：
+- 只有 1 个 tool 意图 → 直接调那个 tool（不走 plan_execute）
+- 2+ tool 意图 且步骤独立或串行依赖 → **调 plan_execute 一次**
+
+典型场景：
+- "生成图片 + 发邮件" → plan_execute (2 步：generate_image → send_email)
+- "调研 A + 调研 B + 调研 C + 生成对比表" → plan_execute (4 步：3 个 web_research 并列 → synthesize)
+- "查天气 + 查日历 + 找咖啡馆" → plan_execute (3 步：3 个查询并列)
+
+**为什么不能用普通多 tool call**：
+LLM 在同一次 tool_loop 里调多个 tool 后，会拿到 tool result 进入 final answer 阶段，不会等异步 tool 完成再调后续 tool。
+v0.47.5 REQ-MRHNP0PR 案例：用户说"生成图片+发邮件" → LLM 调 generate_image → 拿到 result → final answer → 漏调 send_email。
+plan_execute 内部由 plan-executor 按拓扑序保证所有步骤都执行，不会漏调。
+
+调用格式（参考 plan_execute tool description）：
+{"summary": "一句话", "steps": [{"tool": "...", "args": {...}}, {"tool": "...", "args": {...}, "depends_on": ["s1"]}]}
 
 # 回复要求
 - Markdown 格式（### 标题、**粗体**、- 列表）
@@ -119,6 +156,102 @@ router.post('/detect-and-respond', async (req, res, next) => {
     const { reqId, text } = req.body;
     if (!reqId || !text) {
       return res.status(400).json({ error: 'MISSING_FIELDS' });
+    }
+
+    // ═══ 自由对话（免需求）═══ v0.55 支持 sessionId 多窗口 + 历史持久化
+    // 兼容两种调用：
+    //   - reqId === '__free__' → 旧调用，无状态（向后兼容）
+    //   - reqId 以 'sess-' 开头 → 多窗口会话 ID，加载历史 messages
+    if (reqId === '__free__' || (typeof reqId === 'string' && reqId.startsWith('sess-'))) {
+      // 预检：音乐意图（与主流程保持一致）
+      const musicPreCheck = extractMusicIntent(text);
+      let musicCardJson = null;
+      if (musicPreCheck.song && /播放|听[一这]?首|放[一这]?首|想听|找歌|音乐/.test(text)) {
+        const q = encodeURIComponent(musicPreCheck.artist ? musicPreCheck.artist + ' ' + musicPreCheck.song : musicPreCheck.song);
+        const platforms = [
+          { name: '网易云音乐', icon: '🎵', url: `https://music.163.com/#/search/m/?s=${q}&type=1` },
+          { name: 'QQ音乐',     icon: '🎶', url: `https://y.qq.com/n/ryqq/search?w=${q}` },
+          { name: '酷狗音乐',   icon: '🎤', url: `https://www.kugou.com/yy/html/search.html?searchKeyword=${q}` },
+          { name: 'Bilibili',   icon: '📺', url: `https://search.bilibili.com/all?keyword=${q}` },
+        ];
+        musicCardJson = JSON.stringify({
+          type: 'music_card',
+          song: musicPreCheck.song,
+          artist: musicPreCheck.artist || null,
+          platforms: platforms.map(function(p) { return { name: p.name, icon: p.icon, url: p.url }; }),
+          playable: [],
+        });
+      }
+
+      // 1. v0.55.1：session 模式委托给 chat-session-service（thin 层）
+      const isSession = typeof reqId === 'string' && reqId.startsWith('sess-');
+      const sessionSvc = require('../services/chat-session-service');
+      let historyMessages = [];
+      let isFirstUserMsg = false;
+      let session = null;
+      if (isSession) {
+        try {
+          session = sessionSvc.getSession(reqId);
+          if (session) {
+            historyMessages = sessionSvc.loadHistoryForLLM(reqId);
+            isFirstUserMsg = sessionSvc.isFirstUserMessage(reqId);
+          }
+        } catch (e) {
+          console.error('[detect-and-respond] 加载 session 失败:', e.message);
+        }
+      }
+
+      // 2. 写 user message（仅 session 模式）
+      if (isSession && session) {
+        try {
+          sessionSvc.appendMessage(reqId, 'user', text);
+        } catch (e) {
+          console.error('[detect-and-respond] 写 user message 失败:', e.message);
+        }
+      }
+
+      const model = pickIntentModel();
+      if (!model) {
+        // 没模型也要把 user 消息保留（已在前面写），返回空
+        return res.json({ ok: true, reqId, directReply: true, aiReply: '⚠️ 当前没有可用的 AI 模型', musicCardJson });
+      }
+
+      // 3. 拼接 messages：system + 历史 + 当前 user
+      const systemPrompt = '你是 ACMS 自由对话助手。用户通过 ACMS（智能体协同管理系统）与你交流。请用中文简洁回答用户的问题（Markdown 格式）。可以主动使用 web_search 工具查询实时信息。不要反问澄清需求——用户只是自由提问。';
+      const messages = [{ role: 'system', content: systemPrompt }, ...historyMessages, { role: 'user', content: text }];
+
+      try {
+        const runtimeResult = await runtimeExec({
+          modelId: model.id,
+          messages,
+          toolNames: INTENT_TOOL_NAMES.filter(n => n !== 'plan_execute'),
+          maxRounds: 3,
+          context: { reqId },
+          caller: 'chat-intent-session',
+        });
+        const aiReply = runtimeResult.content;
+
+        // 4. 写 assistant message + 触发自动标题（仅 session 模式）
+        if (isSession && session) {
+          try {
+            const meta = musicCardJson ? { music_card: musicCardJson } : null;
+            sessionSvc.appendMessage(reqId, 'assistant', aiReply, meta);
+            // 自动标题：仅首条 user message 时，且 title_auto=1
+            if (isFirstUserMsg && session.title_auto) {
+              const newTitle = sessionSvc.generateAutoTitle(text, session.title);
+              sessionSvc.updateSessionTitle(reqId, newTitle);
+              console.log(`[detect-and-respond] ${reqId} 自动标题: ${newTitle}`);
+            }
+          } catch (e) {
+            console.error('[detect-and-respond] 写 assistant message / 自动标题失败:', e.message);
+          }
+        }
+
+        return res.json({ ok: true, reqId, directReply: true, aiReply, musicCardJson });
+      } catch (e) {
+        // AI 失败：user 消息已写，回复错误提示但不写 assistant（避免污染历史）
+        return res.json({ ok: true, reqId, directReply: true, aiReply: `⚠️ AI 暂时无响应（${e.message.slice(0, 100)}），请稍后再试。`, musicCardJson });
+      }
     }
 
     // 0. v0.18 bugfix：读历史（在写 user message 之前注入 LLM 上下文，避免重复）
@@ -154,6 +287,7 @@ router.post('/detect-and-respond', async (req, res, next) => {
     let deepResearch = false;
     let toolCalls = [];
     let aiReply = '';
+    let documentDetected = false;
 
     // v0.20d：预检音乐意图 → 直接触发音乐辅助工具（现有 assist_music 机制）
     //   - 写 loading 到 supplement_history（即时反馈）
@@ -184,6 +318,39 @@ router.post('/detect-and-respond', async (req, res, next) => {
       }
     }
 
+    // v0.46：预检文档生成意图 → 直接触发文档生成辅助
+    //   匹配关键词如"整理成文档/生成文档/导出文档/Word文档"等
+    // v0.48 修复：只在"单一文档意图"才抢跑，复合意图（含其他 tool 关键词）让 LLM 调 plan_execute 编排
+    //   否则 document_precheck 抢跑后 LLM 收到"文档已自动生成"提示，会以为整个流程都跑完了 → 装睡
+    //   （v0.48 多多 REQ-MRHNP0PR 案例："查2026世界杯+生成Word+发邮件" → 抢跑文档 → LLM 装睡，没调 web_search）
+    const docKeywords = /整理成文档|生成文档|导出文档|Word文档|\.docx|\.doc|文档|变成文档|形成文档|整理成word/i;
+    const otherToolKeywords = /发邮件|发送邮件|转发邮件|发给|发到|搜索|查一下|调研|找资料|查\s*\d{4}|生成图片|画[一]?[张个]|做[一]?张图|生成视频|拍个视频|播放|想听|放[一]?首|听[一]?首|找歌/i;
+    const hasDocIntent = docKeywords.test(text);
+    const hasOtherIntent = otherToolKeywords.test(text);
+    const isCompositeIntent = hasDocIntent && hasOtherIntent;
+
+    if (hasDocIntent && !isCompositeIntent) {
+      console.log(`[detect-and-respond] ${reqId} 检测到文档意图（单一意图）→ 抢跑触发`);
+      appendChatEntry(reqId, {
+        role: 'system',
+        text: '📄 正在生成文档…（完成前请勿重复发送）',
+        at: new Date().toISOString(),
+        source: 'document_precheck',
+      });
+      try {
+        const docGenSvc = require('../services/assists/document-gen');
+        docGenSvc.runAssistJob(reqId, { instruction: text, autoTriggered: true }).catch(e =>
+          console.error(`[detect-and-respond] ${reqId} document 预触发失败:`, e.message));
+      } catch (e) {
+        console.error(`[detect-and-respond] ${reqId} document 预触发异常:`, e.message);
+      }
+      documentDetected = true;
+    } else if (hasDocIntent && isCompositeIntent) {
+      console.log(`[detect-and-respond] ${reqId} 检测到复合意图（含文档+其他 tool）→ 跳过 document_precheck 抢跑，让 LLM 调 plan_execute 编排`);
+      // 不抢跑 document_gen：让 LLM 通过 plan_execute 走完整流程（web_search → document_gen → send_email）
+      // documentDetected 保持 false，不注入"文档已搞定"误导提示
+    }
+
     try {
       const req = reqStore.getById(reqId);
       if (!req) throw new Error(`需求不存在: ${reqId}`);
@@ -204,17 +371,24 @@ router.post('/detect-and-respond', async (req, res, next) => {
           { role: 'system', content: pickIntentSystemPrompt(req) },
           // v0.20b：如果音乐已预触发，告诉 LLM 不要自己调 tool，直接简短回复
           ...(musicPreCheck.song ? [{ role: 'system', content: '（音乐搜索已自动触发，10-30 秒后显示播放卡片。请简短回复用户"正在找"即可，不要复制歌词或推荐平台，不要调用任何工具。）' }] : []),
+          // v0.46：文档生成已自动触发，让 LLM 简短回复即可
+          // v0.48 修复：去掉"请不要自己写文档"等诱导 LLM 装睡的措辞（v0.48 REQ-MRHNP0PR 案例）
+          //   改用中性提示，让 LLM 自己判断是否还有其他 tool 需要调（单一意图则简短回复，复合意图则调 plan_execute）
+          ...(documentDetected ? [{ role: 'system', content: '（文档生成辅助已自动触发。如果用户消息还包含其他工具意图（如发邮件/搜索等），请用 plan_execute 编排多步骤；否则简短回复用户"正在整理文档"即可。）' }] : []),
           // v0.22.23b：删除图片生成意图的 system 提示注入。多多诉求：LLM 自己看 context 决定调不调 tool。
           ...historyMessages,
           { role: 'user', content: text },
         ];
         console.log(`[detect-and-respond] ${reqId} LLM tool-loop (${model.name}, ${INTENT_TOOL_NAMES.length} tools, history=${historyMessages.length})`);
-        const result = await runToolLoop(model.id, messages, {
+        const runtimeResult = await runtimeExec({
+          modelId: model.id,
+          messages,
           toolNames: INTENT_TOOL_NAMES,
-          maxRounds: 5,  // v0.20 bugfix：3 → 5（兜底，runToolLoop 内部重复检测已避免真循环）
-          context: { reqId },  // v0.20：透传 reqId 给 tool handler（play_music/play_video/generate_image 需要）
+          maxRounds: 5,
+          context: { reqId },
+          caller: 'chat-intent',
         });
-        aiReply = (result && typeof result === 'string') ? result : (result?.content || '');
+        aiReply = runtimeResult.content;
 
         // 从 messages 历史提取实际调用的 tool（runToolLoop 内部已写回 messages）
         // 兼容两种格式：
@@ -466,3 +640,7 @@ ${content.slice(0, 5000)}
 
 module.exports = router;
 module.exports.stripAttachmentContext = stripAttachmentContext;
+// v0.48 fix: plan-executor 需要 appendChatEntry 写 plan_loading/plan_step_update/plan_done entries
+//   之前没 export → writeSystemEntry 调 undefined() 抛 TypeError 被 try/catch 静默吞掉
+//   症状：requirement.plan 写对了但 supplement_history 没 plan_* entries → 前端聚合渲染失败
+module.exports.appendChatEntry = appendChatEntry;

@@ -9,5 +9,6 @@
 require('./auto-typescheck-on-write');
 require('./track-tool-stats');
 require('./git-guard');
+require('./task-memory-hook');
 
 console.log('[hooks] 内置 hooks 注册完成');

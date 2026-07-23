@@ -67,10 +67,18 @@
       `;
     }
     if (data.status === 'failed') {
-      const errMsg = data.error === 'NO_PROMPT'
-        ? '❌ 请输入视频描述。点击 🎬 视频 按钮重新尝试。'
-        : `❌ 生成失败：${escHtml(data.error || '未知错误')}`;
-      return `<div class="insight-error">${errMsg}</div>`;
+      // v0.53: NO_PROMPT 走老路径（无 prompt 可重用）；其他失败显示重试按钮
+      if (data.error === 'NO_PROMPT') {
+        return `<div class="insight-error">❌ 请输入视频描述。点击 🎬 视频 按钮重新尝试。</div>`;
+      }
+      // 配置错误（重试也没用）— 不显示重试按钮
+      const isConfigError = /API Key 未配置|API key/i.test(data.error || '');
+      const errMsg = `❌ 生成失败：${escHtml(data.error || '未知错误')}`;
+      // 有 prompt + 不是配置错误 → 一键重试
+      const retryBtn = (data.prompt && !isConfigError)
+        ? `<button class="btn-small btn-primary" style="margin-top:8px" onclick="chatVideoRetry('${reqId}')">🔄 用相同描述重试</button>`
+        : '';
+      return `<div class="insight-error">${errMsg}${retryBtn}</div>`;
     }
     return '';
   }
@@ -84,6 +92,32 @@
 async function chatVideoPrompt(reqId) {
   if (!reqId) return;
   renderVideoForm(reqId);
+}
+
+/**
+ * v0.53: 失败卡片的一键重试 — 复用上次 prompt/duration/frame_rate/image_url，不重弹输入框
+ *   重新调 chatAssist('video', ...) → 后端 callAgnesVideoWithRetry 接管重试机制
+ *   注意：sceneIdx/_attachTo 暂不复用（plan_executor 多镜头路径用户一般手动重选）
+ */
+async function chatVideoRetry(reqId) {
+  try {
+    const resp = await api('GET', '/requirements/' + reqId + '/assist');
+    const vidAssist = resp.assists?.video;
+    if (!vidAssist || vidAssist.status !== 'failed' || !vidAssist.prompt) {
+      toast('暂无可重试的内容', 'warning');
+      return;
+    }
+    toast('🎬 重新提交视频任务…', 'info', 2000);
+    const payload = {
+      prompt: vidAssist.prompt,
+      duration: vidAssist.duration || 5,
+      frame_rate: vidAssist.frame_rate || 24,
+    };
+    if (vidAssist.image_url) payload.image_url = vidAssist.image_url;
+    await chatAssist(reqId, 'video', payload);
+  } catch (e) {
+    toast('重试失败: ' + e.message, 'error');
+  }
 }
 
 /**

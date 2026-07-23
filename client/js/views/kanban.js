@@ -12,14 +12,44 @@ function _isArchiveFailedExpanded() {
   return localStorage.getItem(_KANBAN_DIVIDER_STORAGE_KEY) === '1';
 }
 
+// document supports getElementById; ACMS window roots are HTMLElements and do not.
+function _kanbanFindById(root, id) {
+  const R = root || document;
+  return R === document ? document.getElementById(id) : R.querySelector('#' + id);
+}
+
+// v0.58 task-detail 窗口作用域：openTask(id, root) 由 task-detail viewLoader 传 root，
+//   后续内部 openTask(taskId) 复用 _taskRoot（最近一次 task-detail 窗口加载时设定）。
+//   task-detail 视图内的固定顶层 ID（task-detail-title / task-detail-status / task-detail-content）
+//   都走 _taskFindById，自动 scope 到当前窗口副本。
+var _taskRoot = null;
+function _taskFindById(id) {
+  if (_taskRoot && _taskRoot !== document) {
+    const scoped = _taskRoot.querySelector('#' + id);
+    if (scoped) return scoped;
+  }
+  return document.getElementById(id);
+}
+
+// v0.58 任务详情入口：桌面模式走 ACMSWin.open → task-detail viewLoader，传统模式 fallback
+function openTaskInWindow(taskId) {
+  if (window.ACMSWin && ACMSWin.isActive()) {
+    ACMSWin.open('task-detail', { taskId: taskId, instanceId: taskId, title: '📋 ' + taskId });
+  } else {
+    openTask(taskId);
+  }
+}
+
 // 应用初始收起状态（页面加载时立即调用）
-function applyKanbanDividerState() {
+// v0.57: root 参数用于 scope 到窗口内的 DOM（默认 document，向后兼容）
+function applyKanbanDividerState(root) {
+  const R = root || document;
   const expanded = _isArchiveFailedExpanded();
   for (const col of _KANBAN_DIVIDER_COLS) {
-    const el = document.querySelector('.kanban-col[data-col="' + col + '"]');
+    const el = R.querySelector('.kanban-col[data-col="' + col + '"]');
     if (el) el.style.display = expanded ? '' : 'none';
   }
-  const btn = document.getElementById('kanban-divider-toggle');
+  const btn = _kanbanFindById(R, 'kanban-divider-toggle');
   if (btn) {
     btn.classList.toggle('expanded', expanded);
     btn.title = expanded ? '收起已归档/失败' : '展开已归档/失败';
@@ -27,20 +57,23 @@ function applyKanbanDividerState() {
 }
 
 // 切换已归档+已失败两列的可见性
-function toggleArchiveFailed() {
+function toggleArchiveFailed(root) {
   const willExpand = !_isArchiveFailedExpanded();
   localStorage.setItem(_KANBAN_DIVIDER_STORAGE_KEY, willExpand ? '1' : '0');
-  applyKanbanDividerState();
+  applyKanbanDividerState(root);
 }
 
 // 页面加载时立即应用（DOM 已就绪，因为脚本在 body 末尾）
 applyKanbanDividerState();
 
-async function loadKanbanReqFilter() {
+// v0.57: root 参数用于 scope 到窗口内的 select 元素
+async function loadKanbanReqFilter(root) {
   if (!App.currentProjectId) return;
   try {
     const reqs = await Requirements.list({ projectId: App.currentProjectId });
-    document.getElementById('kanban-req-filter').innerHTML = '<option value="">全部需求</option>' + reqs.filter(r => ['approved', 'in_execution', 'done'].includes(r.status)).map(r => `<option value="${r.id}">${escHtml(r.title)}</option>`).join('');
+    const R = root || document;
+    const sel = _kanbanFindById(R, 'kanban-req-filter');
+    if (sel) sel.innerHTML = '<option value="">全部需求</option>' + reqs.filter(r => ['approved', 'in_execution', 'done'].includes(r.status)).map(r => `<option value="${r.id}">${escHtml(r.title)}</option>`).join('');
   } catch (e) { /* */ }
 }
 
@@ -101,22 +134,28 @@ function renderGenPreview(t) {
   }
 }
 
-async function refreshKanban(parentId) {
+// v0.57: root 参数用于 scope 到窗口内的 DOM（默认 document，向后兼容）
+async function refreshKanban(parentId, root) {
+  const R = root || document;
   if (!App.currentProjectId) return;
-  const filterVal = parentId || document.getElementById('kanban-req-filter')?.value || '';
+  const filterEl = _kanbanFindById(R, 'kanban-req-filter');
+  const filterVal = parentId || (filterEl && filterEl.value) || '';
   let agentOpts = '<option value="">选择智能体</option>';
   try {
     const r = await fetch('/api/agents', { headers: { 'X-API-Key': 'dev-key-001' } });
     (await r.json()).forEach(a => { agentOpts += '<option value="' + a.id + '">' + (a.name || a.id) + '</option>'; });
   } catch(e) {}
-  if (!_kanbanFilterLoaded) { await loadKanbanReqFilter(); _kanbanFilterLoaded = true; }
+  if (!_kanbanFilterLoaded) { await loadKanbanReqFilter(R); _kanbanFilterLoaded = true; }
   try {
     const board = await Tasks.board(App.currentProjectId, filterVal || undefined);
     // v0.X fix: 加 failed 列 — 之前失败任务被静默丢失，现在后端返回 failed 桶
     for (const col of ['backlog', 'in_progress', 'review', 'done', 'archived', 'failed']) {
       const tasks = board[col] || [];
-      document.getElementById('count-' + col).textContent = tasks.length;
-      document.getElementById('col-' + col).innerHTML = tasks.map(t => {
+      const countEl = _kanbanFindById(R, 'count-' + col);
+      if (countEl) countEl.textContent = tasks.length;
+      const colEl = _kanbanFindById(R, 'col-' + col);
+      if (!colEl) continue;
+      colEl.innerHTML = tasks.map(t => {
         const blocked = t.blocked === 1 || t.blocked === '1' || t.blocked === true;
         const blockedClass = blocked ? ' task-blocked' : '';
         const bugClass = t.type === 'bug' ? ' bug-card' : '';
@@ -124,7 +163,7 @@ async function refreshKanban(parentId) {
         const bugMeta = t.type === 'bug' && t.source_task_id
           ? '<div style="font-size:10px;color:var(--accent3);margin-top:2px">关联: ' + escHtml(t.source_task_id) + '</div>'
           : '';
-        return `<div class="task-card priority-${t.priority || 3}${blockedClass}${bugClass}" data-task-id="${t.id}" onclick="openTask('${t.id}')">
+        return `<div class="task-card priority-${t.priority || 3}${blockedClass}${bugClass}" data-task-id="${t.id}" onclick="openTaskInWindow('${t.id}')">
           <div class="task-title">${blocked ? '🔒 ' : ''}${escHtml(t.title)}</div>
           ${bugMeta}
           <div class="task-meta"><span>${t.id}</span><span class="type-tag type-${t.type}">${App.typeLabels[t.type] || ''} ${t.type}</span><span>P${t.priority}</span>${t.assigned_to ? '<span>Agent: ' + escHtml(t.assigned_to) + '</span>' : ''}${t.status === 'in_progress' ? '<span>' + (t.progress || 0) + '%</span>' : ''}</div>
@@ -138,18 +177,32 @@ async function refreshKanban(parentId) {
         </div>`;
       }).join('') || '<div class="empty" style="padding:12px">-</div>';
     }
-    // v0.35: 初始化拖拽支持
-    initKanbanDragDrop();
+// v0.35: 初始化拖拽支持 — scope 到窗口内 DOM
+    initKanbanDragDrop(R);
+    // v0.X: 如果 auto-review checkbox 已勾选但 poller 未启动，自动启动
+    //   之前 onchange 只在用户手动操作时触发，页面刷新后 checkbox 状态保留但 poller 丢失
+    var _arCheckbox = _kanbanFindById(R, 'auto-review-global');
+    if (_arCheckbox && _arCheckbox.checked && (typeof _autoReviewTimer === 'undefined' || _autoReviewTimer === null)) {
+      toggleGlobalAutoReview(true);
+    }
   } catch (e) { toast('加载看板失败: ' + e.message, 'error'); }
 }
 
 // ===== 任务详情 =====
-async function openTask(taskId) {
-  showWorkspaceView('task-detail');
+async function openTask(taskId, root) {
+  // P0 v0.X: 记录最近打开的 taskId — admin 返回时用于重新加载 (避免陈旧内容)
+  // v0.58 task-detail viewLoader 传入 root（= w.$c）；kanban 内部调用不传，
+  //   复用 viewLoader 已设置的 _taskRoot。
+  App.lastTaskId = taskId;
+  if (root) _taskRoot = root;
+  if (!_taskRoot) _taskRoot = document;
+  // v0.58.1: 不再调 showWorkspaceView('task-detail') — 桌面模式由 viewLoader/ACMSWin.open
+  //   处理窗口创建与聚焦；原先的调用会在桌面模式下触发第二次 ACMSWin.open('task-detail')
+  //   （无 taskId），产生"⚠ 缺少需求 ID"的幽灵窗口（参照 requirements.js 修复）。
   try {
     var t = await Tasks.get(taskId);
-    document.getElementById('task-detail-title').textContent = (t.id || '') + ': ' + escHtml(t.title || '');
-    document.getElementById('task-detail-status').innerHTML =
+    _taskFindById('task-detail-title').textContent = (t.id || '') + ': ' + escHtml(t.title || '');
+    _taskFindById('task-detail-status').innerHTML =
       '<span class="status-badge badge-' + (t.status === 'in_progress' ? 'in_execution' : t.status === 'done' ? 'done' : 'clarifying') + '">' + (t.status || '') + '</span>' +
       '<button class="btn-small" style="background:rgba(78,205,196,0.15);color:var(--green);border-color:rgba(78,205,196,0.3)" onclick="exportTask(\'' + t.id + '\')">📥 导出描述</button>';
     var skills = safeParse(t.required_skills), log = safeParse(t.execution_log), subs = safeParse(t.submissions), revs = safeParse(t.reviews);
@@ -165,7 +218,7 @@ async function openTask(taskId) {
         '</div>';
     }
 
-    document.getElementById('task-detail-content').innerHTML = '<div id="task-detail-progress-container"></div>' + bugInfo +
+    _taskFindById('task-detail-content').innerHTML = '<div id="task-detail-progress-container"></div>' + bugInfo +
       '<div class="detail-grid">' +
         '<div><span class="label">类型:</span> ' + (App.typeLabels[t.type] || '') + ' ' + (t.type || '') + '</div>' +
         '<div><span class="label">优先级:</span> P' + (t.priority || '-') + '</div>' +
@@ -192,12 +245,28 @@ async function openTask(taskId) {
       // v0.46 Plan mode: 显示 plan 区块（如果存在）
       renderPlanSection(t) +
       (Object.keys(skills).length ? '<h3>🎯 技能</h3><div class="skills">' + Object.entries(skills).map(function(e) { return '<span class="skill-tag">' + e[0] + ':' + e[1] + '</span>'; }).join('') + '</div>' : '') +
+      // v0.X: 执行记忆时间线 — 展示 TaskMemory 结构化的跨轮工作摘要
+      renderTaskTimeline(t) +
       // v0.42: in_progress 状态下隐藏这个"📝 日志"section — 进度窗口下边已经实时展示
       (t.status === 'in_progress' ? '' : '<h3>📝 日志</h3><div>' + (log.length ? log.map(function(l) { return '<div class="log-entry">' + new Date(l.time).toLocaleString('zh-CN', {hour12:false}) + ' — ' + l.action + ': ' + escHtml(l.note || '') + '</div>'; }).join('') : '<div class="empty">暂无</div>') + '</div>') +
       (subs.length ? '<h3>📦 提交</h3>' + subs.map(function(s) { return '<div class="log-entry">' + fmtDate(s.submittedAt) + ' — ' + (s.submittedBy || '') + ': ' + escHtml(s.notes || '') + '</div>'; }).join('') : '') +
       // 生成任务展示媒体预览
       ((t.type === 'image-gen' || t.type === 'audio-gen') && t.status === 'done' ? renderGenPreview(t) : '') +
-      (revs.length ? '<h3>👁 审核</h3>' + revs.map(function(r) { return '<div class="log-entry">' + fmtDate(r.reviewedAt) + ' — ' + (r.verdict === 'approved' ? '✅' : '❌') + ' ' + escHtml(r.feedback || '') + '</div>'; }).join('') : '') +
+      (revs.length ? '<h3>👁 审核</h3>' + revs.map(function(r) {
+        var verdictIcon = r.verdict === 'approved' ? '✅' : '❌';
+        var fb = (r.feedback || '').trim();
+        // v0.X: 自动审核报告用 <pre> 渲染，[object Object] 修了之后是可读 JSON
+        var fbHtml = '';
+        if (fb.startsWith('--- 🤖 自动审核报告 ---')) {
+          fbHtml = '<div class="review-report" style="background:rgba(255,255,255,0.03);padding:8px;border-radius:4px;font-family:monospace;font-size:11px;line-height:1.4;white-space:pre-wrap;max-height:300px;overflow-y:auto">' + escHtml(fb) + '</div>';
+        } else {
+          fbHtml = escHtml(fb);
+        }
+        return '<div class="log-entry" style="margin-bottom:8px">' +
+          '<span style="font-weight:bold">' + fmtDate(r.reviewedAt) + '</span> — ' + verdictIcon + ' ' + escHtml(r.reviewedBy || '') +
+          '<br>' + fbHtml +
+          '</div>';
+      }).join('') : '') +
       (t.review_status ? '<div class="review-status ' + t.review_status + '">' +
         (t.review_status === 'reviewing' ? '🤖 审核中…' : t.review_status === 'approved' ? '✅ 自动审核通过' : t.review_status === 'rejected' ? '❌ 自动审核驳回' : '⚠️ ' + escHtml(t.review_status)) +
       '</div>' : '') +
@@ -481,11 +550,13 @@ function hideProgressTooltip() {
     _progressTooltipPollTimer = null;
   }
 }
-function initKanbanDragDrop() {
+// v0.57: root 参数用于 scope 到窗口内的 DOM（默认 document，向后兼容）
+function initKanbanDragDrop(root) {
+  const R = root || document;
   const columns = ['backlog', 'in_progress', 'review', 'done', 'archived', 'failed'];
   // 为每个泳道列添加 drop 区域
   for (const col of columns) {
-    const colEl = document.getElementById('col-' + col);
+    const colEl = _kanbanFindById(R, 'col-' + col);
     if (!colEl) continue;
     colEl.setAttribute('draggable', 'false');
     colEl.addEventListener('dragover', function(e) {
@@ -507,14 +578,15 @@ function initKanbanDragDrop() {
       try {
         await api('POST', '/tasks/' + taskId + '/drag-drop', { targetStatus: col });
         toast('任务已移入 ' + col + ' ✅', 'success');
-        refreshKanban();
+        // v0.57: 用传入的 root 刷新，避免只刷新原 DOM
+        refreshKanban(undefined, R);
       } catch(err) {
         toast('拖拽失败: ' + err.message, 'error');
       }
     });
   }
-  // 为每个任务卡片添加 draggable
-  const cards = document.querySelectorAll('.task-card');
+  // 为每个任务卡片添加 draggable — scope 到 R 内的 .task-card
+  const cards = R.querySelectorAll('.task-card');
   cards.forEach(function(card) {
     card.setAttribute('draggable', 'true');
     card.addEventListener('dragstart', function(e) {
@@ -596,6 +668,132 @@ function renderPlanSection(task) {
   }
 
   return '';
+}
+
+// v0.X: 执行记忆时间线 — 渲染 TaskMemory 为可视化时间线
+//   展示：阶段、已探索文件、已创建文件、决策、错误修复
+function renderTaskTimeline(task) {
+  const mem = safeParse(task.task_memory);
+  if (!mem || (!mem.explored?.files?.length && !mem.files_written?.length && !mem.decisions?.length && !mem.errors?.length)) {
+    return '';  // 没有记忆数据
+  }
+
+  const phaseColors = { explore: '#6b7280', design: '#8b5cf6', implement: '#10b981', test: '#f59e0b', fix: '#ef4444', done: '#3b82f6' };
+  const phaseLabels = { explore: '探索中', design: '设计中', implement: '实现中', test: '测试中', fix: '修复中', done: '已完成' };
+  const phaseColor = phaseColors[mem.phase] || '#6b7280';
+  const phaseLabel = phaseLabels[mem.phase] || mem.phase;
+
+  var html = '<div class="timeline-section" style="margin-top:16px;margin-bottom:12px;background:rgba(16,185,129,0.03);border-radius:8px;border:1px solid rgba(16,185,129,0.12);padding:12px">';
+  html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">';
+  html += '<span style="font-size:16px">🧠</span>';
+  html += '<span style="font-weight:bold;font-size:13px">执行记忆时间线</span>';
+  // Phase badge
+  html += '<span style="margin-left:auto;background:' + phaseColor + '22;color:' + phaseColor + ';padding:2px 10px;border-radius:10px;font-size:11px;font-weight:bold;border:1px solid ' + phaseColor + '44' + '">' + phaseLabel + '</span>';
+  html += '</div>';
+
+  var hasAny = false;
+
+  // 已创建文件
+  if (mem.files_written && mem.files_written.length) {
+    hasAny = true;
+    html += '<div style="margin-bottom:8px">';
+    html += '<div style="font-size:12px;font-weight:bold;color:var(--green);margin-bottom:4px">✍️ 已创建文件 (' + mem.files_written.length + ')</div>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:4px">';
+    mem.files_written.forEach(function(f) {
+      var icon = f.status === 'done' ? '✅' : (f.status === 'in_progress' ? '🔄' : '⏳');
+      html += '<span style="font-size:11px;background:rgba(16,185,129,0.08);padding:3px 8px;border-radius:4px;border:1px solid rgba(16,185,129,0.15)">' + icon + ' <code style="background:none;padding:0;font-size:11px">' + escHtml(f.path) + '</code></span>';
+    });
+    html += '</div></div>';
+  }
+
+  // 已读取文件
+  if (mem.explored && mem.explored.files && mem.explored.files.length) {
+    hasAny = true;
+    var withPurpose = mem.explored.files.filter(function(f) { return f.purpose; });
+    var withoutPurpose = mem.explored.files.filter(function(f) { return !f.purpose; });
+    html += '<div style="margin-bottom:8px">';
+    html += '<div style="font-size:12px;font-weight:bold;color:var(--accent);margin-bottom:4px">📖 已读取文件 (' + mem.explored.files.length + ')</div>';
+    // 有 purpose 的显示用途
+    if (withPurpose.length) {
+      html += '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:4px">';
+      withPurpose.forEach(function(f) {
+        html += '<span style="font-size:11px;background:rgba(99,102,241,0.06);padding:3px 8px;border-radius:4px;border:1px solid rgba(99,102,241,0.12)"><code style="background:none;padding:0;font-size:11px">' + escHtml(f.path) + '</code> <span style="color:#888">(' + escHtml(f.purpose) + ')</span></span>';
+      });
+      html += '</div>';
+    }
+    // 无 purpose 的折叠显示
+    if (withoutPurpose.length) {
+      html += '<details style="font-size:11px">';
+      html += '<summary style="cursor:pointer;color:#888">显示全部 ' + withoutPurpose.length + ' 个文件</summary>';
+      html += '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">';
+      withoutPurpose.forEach(function(f) {
+        html += '<span style="font-size:11px;background:rgba(99,102,241,0.04);padding:2px 6px;border-radius:3px"><code style="background:none;padding:0;font-size:11px">' + escHtml(f.path) + '</code></span>';
+      });
+      html += '</div></details>';
+    }
+    html += '</div>';
+  }
+
+  // 关键发现
+  if (mem.explored && mem.explored.key_findings && mem.explored.key_findings.length) {
+    hasAny = true;
+    html += '<div style="margin-bottom:8px">';
+    html += '<div style="font-size:12px;font-weight:bold;color:var(--accent3);margin-bottom:4px">💡 关键发现</div>';
+    html += '<ul style="margin:0;padding-left:16px;font-size:11px;color:#bbb">';
+    mem.explored.key_findings.forEach(function(f) {
+      html += '<li>' + escHtml(f) + '</li>';
+    });
+    html += '</ul></div>';
+  }
+
+  // 决策
+  if (mem.decisions && mem.decisions.length) {
+    hasAny = true;
+    html += '<div style="margin-bottom:8px">';
+    html += '<div style="font-size:12px;font-weight:bold;color:#8b5cf6;margin-bottom:4px">🎯 已定方案</div>';
+    mem.decisions.forEach(function(d) {
+      html += '<div style="font-size:11px;background:rgba(139,92,246,0.06);padding:6px 8px;border-radius:4px;border:1px solid rgba(139,92,246,0.12);margin-bottom:4px">';
+      html += '<div style="font-weight:bold">' + escHtml(d.what) + '</div>';
+      if (d.why) html += '<div style="color:#888;margin-top:2px">原因: ' + escHtml(d.why) + '</div>';
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+
+  // 错误和修复
+  if (mem.errors && mem.errors.length) {
+    hasAny = true;
+    html += '<div style="margin-bottom:8px">';
+    html += '<div style="font-size:12px;font-weight:bold;color:#ef4444;margin-bottom:4px">🔧 已修复问题 (' + mem.errors.length + ')</div>';
+    mem.errors.slice(-3).forEach(function(e) {
+      html += '<div style="font-size:11px;background:rgba(239,68,68,0.06);padding:5px 8px;border-radius:4px;border:1px solid rgba(239,68,68,0.12);margin-bottom:3px">';
+      html += '<span style="color:#ef4444">⚠ ' + escHtml(e.what) + '</span>';
+      if (e.fix) html += ' → <span style="color:var(--green)">' + escHtml(e.fix) + '</span>';
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+
+  // Tool stats
+  var stats = safeParse(task.tool_stats);
+  if (stats && stats.total) {
+    hasAny = true;
+    html += '<div style="margin-bottom:4px">';
+    html += '<div style="font-size:12px;font-weight:bold;color:var(--accent3);margin-bottom:4px">🔧 工具调用 (' + stats.total + ' 次)</div>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:3px">';
+    Object.keys(stats).filter(function(k) { return k !== 'total' && k !== 'lastTool' && k !== 'lastToolAt'; }).sort().forEach(function(k) {
+      html += '<span style="font-size:10px;background:rgba(255,255,255,0.04);padding:2px 6px;border-radius:3px"><code style="background:none;padding:0;font-size:10px">' + escHtml(k) + '</code> ×' + stats[k] + '</span>';
+    });
+    html += '</div></div>';
+  }
+
+  // 更新时间
+  if (mem.updated_at) {
+    html += '<div style="font-size:10px;color:#666;margin-top:6px">🕐 最后更新: ' + new Date(mem.updated_at).toLocaleString('zh-CN', {hour12:false}) + '</div>';
+  }
+
+  html += '</div>';
+  return html;
 }
 
 // v0.46 Plan mode: Plan API 调用 helpers
@@ -724,10 +922,10 @@ function startProgressViewer(taskId, startedAt) {
   }
   _sseProgressConnected = false;
   
-  // 创建进度卡片
-  const container = document.getElementById('task-detail-progress-container');
+// 创建进度卡片
+  const container = _taskFindById('task-detail-progress-container');
   if (!container) return;
-  
+
   container.innerHTML = `
     <div class="progress-card" style="padding:12px;background:rgba(78,205,196,0.08);border-radius:8px;border:1px solid rgba(78,205,196,0.2);margin-bottom:12px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
@@ -987,9 +1185,23 @@ async function autoReviewPoll() {
     if (!Array.isArray(tasks) || tasks.length === 0) { _autoReviewBusy = false; return; }
 
     for (var t of tasks) {
-      // 跳过已由 Reviewer Agent 审核过的（避免重复）
+      // v0.X: 跳过已由 Reviewer Agent 审核过的（避免重复）
+      //   修：比较时间戳 — 如果最新审核在最新提交之前，说明是旧审核，需要重审
+      //   之前只看有没有 agent-reviewer-001 的记录，导致 T-MRHSD8PV 被驳回后重提交
+      //   但 poller 看到旧记录就跳过，新提交永远不被审核
       var revs = safeParse(t.reviews);
-      if (Array.isArray(revs) && revs.some(function(r) { return r.reviewedBy === 'agent-reviewer-001'; })) continue;
+      var subs = safeParse(t.submissions);
+      var latestSubTime = Array.isArray(subs) && subs.length
+        ? new Date(subs[subs.length - 1].submittedAt || 0).getTime() : 0;
+      var latestReviewByReviewer = Array.isArray(revs)
+        ? revs.filter(function(r) { return r.reviewedBy === 'agent-reviewer-001'; })
+            .sort(function(a,b) { return new Date(b.reviewedAt || 0) - new Date(a.reviewedAt || 0); })[0]
+        : null;
+      if (latestReviewByReviewer) {
+        var reviewTime = new Date(latestReviewByReviewer.reviewedAt || 0).getTime();
+        // 审核时间 >= 最新提交时间 → 已审过当前版本，跳过
+        if (reviewTime >= latestSubTime) continue;
+      }
       // 跳过 Reviewer 自己执行的任务（SELF_REVIEW_FORBIDDEN）
       if (t.assigned_to === 'agent-reviewer-001') continue;
 

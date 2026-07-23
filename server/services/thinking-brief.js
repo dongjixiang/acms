@@ -90,13 +90,46 @@ confidence < 0.6 时默认走 vague（宁松勿严）。
 - **followup_question** 必须包含该产品名，改成引导："你对 ModelN 的哪些方面感兴趣？咱们从功能、流程、特色上挑"
 - **auto_assist** 设为 \`{"method":"reference","reason":"用户提到可参考的产品，是否要拆解其功能和流程？"}\`
 
+## 工具调用意图识别（v0.47 — 自动发邮件等）
+如果用户最新一条补充是**请求执行某个外部动作**（不只是回答问题），如：
+- "把对话内容发邮件给 xxx@yyy.com"
+- "转发这份需求给 boss@company.com"
+- "帮我给 alice@x.com 发个通知"
+- "把这个总结邮件给团队"
+
+请：
+- **opening** 用 1 句话致意 + 说明"我帮你准备了一封邮件，请确认后发送"
+- **followup_question** 改回澄清主线，例如"等你确认邮件内容后，我们继续讨论需求方向"
+- **diagnosis** 设为 null（不是澄清需求，是请求外部动作）
+- **auto_assist** 设为 null
+- **tool_call** 设为：
+\`\`\`json
+{
+  "method": "send_email",
+  "reason": "用户请求发送邮件",
+  "args": {
+    "to": "提取的收件人邮箱(必填,多个用 ; 分隔)",
+    "subject": "邮件主题(必填,简短概括,如'XX需求讨论纪要'或'XX需求文档转发')",
+    "body": "邮件正文(必填,可基于对话历史整理,3-5 句话概括 + 关键决策/待办)"
+  }
+}
+\`\`\`
+
+**重要**：
+- to/subject/body 三个字段**必须能填出来**，缺哪个就留空字符串（前端会要求用户补全）
+- 收件人地址必须是合法邮箱格式，从用户最新消息里抽取；多个用 ; 分隔
+- 主题和正文要简洁，体现 ACMS 正在讨论的需求上下文
+
+如果用户的动作不是发邮件（如"把这个帮我生成图表""帮我记下来""提醒我"），且 ACMS 暂不支持该工具，tool_call 设为 null，opening 用自然语言说明"这个动作暂不支持，我可以..."。
+
 输出严格 JSON，格式：
 {
   "ai_understanding": "...",
   "opening": "...",
   "followup_question": "...",
   "diagnosis": { "type": "...", "label": "...", "guide": "...", "confidence": 0.0 },
-  "auto_assist": null  // 可选：仅当用户问竞品/产品时设为 {"method":"competitive","reason":"..."}，其他情况为 null
+  "auto_assist": null,  // 可选：仅当用户问竞品/产品时设为 {"method":"competitive","reason":"..."}，其他情况为 null
+  "tool_call": null  // 可选：仅当用户请求执行外部工具时设 {"method":"send_email","args":{...}}
 }
 
 不要任何额外文字、markdown 代码块、解释。`;
@@ -415,6 +448,18 @@ async function* runBriefJobStream(requirementId, opts = {}) {
   const req = reqStore.getById(requirementId);
   if (!req) { yield { type: 'error', message: 'REQ_NOT_FOUND' }; return; }
 
+  // v0.46.x fix: free 模式跳过 brief 流式生成
+  //   7/12 修复 detect-and-respond 跳过 server-side runBriefJob 后，
+  //   client chatSendDetect 末尾的 setTimeout(connectStreamingBrief, 800) 仍会调 SSE
+  //   触发 runBriefJobStream 无条件生成 → free 模式用户看到「文字回复 + brief 气泡」双气泡
+  //   这里守住 chat_mode === 'free' 的不变量（与 detect-and-respond / supplement 端点一致）
+  //   任何 client 路径调 SSE 都安全，不用前端判断
+  if (req.chat_mode === 'free') {
+    console.log(`[brief.stream] ${requirementId} chat_mode=free, 跳过 brief 流式生成`);
+    yield { type: 'skip', reason: 'free_mode' };
+    return;
+  }
+
   // v0.13 B5 fix: 保留之前的 chat_round（不重置为 0，与 runBriefJob 保持一致）
   //   不依赖 status（generating 状态也保留）→ L497 oldRound 直接读这个值
   let prevChatRound = 0;
@@ -540,6 +585,23 @@ for await (const event of callLLMStream(model.id, messages, { temperature: 0.7, 
           generated_at: new Date().toISOString(), model: model.id, error: null,
           // v0.3.6：LLM 检测到知识/竞品问题时标记自动触发
           auto_assist: parsed.auto_assist && ['competitive', 'reference'].includes(parsed.auto_assist.method) ? { method: parsed.auto_assist.method, reason: parsed.auto_assist.reason || '' } : null,
+          // v0.47：LLM 检测到"发邮件"等外部工具调用意图
+          tool_call: (() => {
+            const tc = parsed.tool_call;
+            if (!tc || typeof tc !== 'object') return null;
+            if (tc.method !== 'send_email') return null;  // 暂只支持 send_email
+            const args = tc.args || {};
+            if (typeof args.to !== 'string' || typeof args.subject !== 'string' || typeof args.body !== 'string') return null;
+            return {
+              method: 'send_email',
+              reason: typeof tc.reason === 'string' ? tc.reason : '用户请求发送邮件',
+              args: {
+                to: args.to.trim(),
+                subject: args.subject.trim(),
+                body: args.body.trim(),
+              },
+            };
+          })(),
         };
 
         // v0.3.6：路由器选一种辅助手段作为建议（仅建议，不自动生成）
