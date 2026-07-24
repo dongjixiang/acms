@@ -46,11 +46,13 @@ registerTool({
       const maxLen = 100000;
       for (const p of args.paths) {
         try {
-          // 批量模式也检测重复读
-          const prevRead = readCache.wasPathRead(taskId, p);
-          if (prevRead) {
-            results.push({ path: p, ok: false, _alreadyRead: true, _readCount: prevRead.readCount, error: 'ALREADY_READ — 此文件已在之前轮次读过，请勿重复读取。如需最新内容，单独调用 agent_read_file({path: "' + p + '", forceRefresh: true})' });
-            continue;
+          // 批量模式也检测重复读（forceRefresh=true 跳过检测）
+          if (!args.forceRefresh) {
+            const prevRead = readCache.wasPathRead(taskId, p);
+            if (prevRead) {
+              results.push({ path: p, ok: false, _alreadyRead: true, _readCount: prevRead.readCount, error: 'ALREADY_READ — 此文件已在之前轮次读过，请勿重复读取。如需最新内容，单独调用 agent_read_file({path: "' + p + '", forceRefresh: true})' });
+              continue;
+            }
           }
           const content = workspace.readFile(slug, p);
           if (content === null || content === undefined) {

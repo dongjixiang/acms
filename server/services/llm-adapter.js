@@ -512,7 +512,7 @@ function truncateToolResult(name, result) {
     _truncated: true,
     _origSize: json.length,
     _truncatedAt: TOOL_RESULT_TRUNCATE_BYTES,
-    _hint: 'Output exceeded 12KB and was truncated. If you need a specific section, use read_file with a smaller window (offset/length) or grep for the exact pattern.',
+    _hint: 'Output exceeded ' + Math.round(TOOL_RESULT_TRUNCATE_BYTES / 1024) + 'KB and was truncated. If you need a specific section, use agent_read_file with offset/limit for a smaller window or grep for the exact pattern.',
     head,
     tail,
   };
