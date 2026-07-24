@@ -273,6 +273,26 @@ router.post('/agent-execute', async (req, res, next) => {
 
       const result = await aiTools.executeTaskAgent(taskId, { modelId, lang: effectiveLang });
 
+      // v0.63 #1: abort 拦截 — multi_role 中止时不走 audit + submit
+    //   之前 abort 后 status 还在 in_progress，路由层继续 audit + submit → task 进 review
+    //   PM 看到 review 状态误以为成功，又拖回 in_progress 重跑 → 死循环
+    //   现在 abort 分支返回 {aborted: true}，路由层直接 return 422 让 PM 看到失败
+      if (result && (result.aborted || result.failureReason)) {
+        console.warn(`[agent-execute] ⛔ Task ${taskId} aborted at role "${result.abortedRole}": ${result.failureReason || 'unknown'}`);
+        return res.status(422).json({
+          success: false,
+          taskId,
+          modelUsed: result.modelUsed,
+        error: 'TASK_ABORTED',
+        aborted: true,
+        abortedRole: result.abortedRole,
+        failureReason: result.failureReason,
+        analysis: result.analysis,
+        roles: result.roles,
+          message: `任务在 ${result.abortedRole} 阶段中止：${result.failureReason || '请查看 progress_note'}`,
+      });
+    }
+
     // v0.35 改版：基于任务需求验证文件，不 parse LLM summary
     //   从任务描述/acceptance criteria 提取文件路径 → 验证是否存在
     //   缺失 → 退回 in_progress 重做（不是直接 FAIL）
