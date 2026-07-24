@@ -86,7 +86,59 @@ router.get('/read/:fileId', function (req, res) {
   }
 });
 
-// ─────────── /download：流式下载（带 Content-Type） ───────────
+// ──────────── /load：根据 fileId 加载文件供编辑器打开（PR 5）────────────
+// GET /api/office/load/:fileId?source=office|chat
+//   source=office (默认) → 读 server/public/office/<fileId>.<ext>
+//   source=chat           → 读 data/chat-uploads/<fileId>.<ext>
+// 返回：{ ok, filename, content (base64), type, text (plain text 提取) }
+router.get('/load/:fileId', function (req, res) {
+  try {
+    var fileId = req.params.fileId;
+    var source = (req.query.source || 'office').toString();
+    var baseDir = source === 'chat'
+      ? path.join(__dirname, '..', '..', 'data', 'chat-uploads')
+      : OFFICE_DIR;
+    var files = fs.readdirSync(baseDir);
+    var match = files.find(function (f) { return f === fileId || f.startsWith(fileId + '.') || f.startsWith(fileId); });
+    if (!match) return res.status(404).json({ error: 'FILE_NOT_FOUND', fileId: fileId, source: source });
+    var filePath = path.join(baseDir, match);
+    var buf = fs.readFileSync(filePath);
+    var ext = (path.extname(match) || '').toLowerCase().replace(/^\./, '');
+    var text = '';
+    // docx 提取纯文本（简单实现：解 zip 读 word/document.xml，提取 w:t 内容）
+    if (ext === 'docx') {
+      try {
+        var AdmZip = require('adm-zip');
+        var zip = new AdmZip(buf);
+        var docXml = zip.readAsText('word/document.xml');
+        // 提取所有 <w:t>...</w:t> 内容，<w:p> 分段
+        text = docXml
+          .replace(/<\/w:p>/g, '\n')
+          .replace(/<[^>]+>/g, '')
+          .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&quot;/g, '"')
+          .replace(/\n{3,}/g, '\n\n')
+          .trim();
+      } catch (e) { text = '(docx 文本提取失败: ' + e.message + ')'; }
+    } else if (ext === 'xlsx' || ext === 'pptx') {
+      text = '(二进制文件，请使用专门的 Excel/PPT 编辑器打开)';
+    } else {
+      text = buf.toString('utf8');
+    }
+    res.json({
+      ok: true,
+      filename: match,
+      source: source,
+      ext: ext,
+      size: buf.length,
+      content: buf.toString('base64'),
+      text: text.slice(0, 20000), // 截断避免巨大响应
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+
 router.get('/download/:fileId/:name', function (req, res) {
   const files = fs.readdirSync(OFFICE_DIR);
   const match = files.find((f) => f.startsWith(req.params.fileId));

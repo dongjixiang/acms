@@ -6,7 +6,8 @@ function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;'
 // ===== Word 编辑器（v0.62.1 块编辑器）=====
 // 改用自研 office-doc-editor 替代 Quill
 // 依赖：window.OfficeDoc + window.OfficeDocEditor（由 index.html 在 office-editor.js 之前加载）
-function openWordEditor(w) {
+// v0.62.4: 支持 (w, fileId, name) 加载现有 .docx
+function openWordEditor(w, fileId, fileName) {
   // 容器 = 整个 PKG 内容区
   w.$c.innerHTML = '<div id="word-host" style="height:100%;display:flex;flex-direction:column"></div>';
   var host = w.$c.querySelector('#word-host');
@@ -14,7 +15,8 @@ function openWordEditor(w) {
   // 顶部 toolbar：标题 + 保存按钮（自己加，不依赖编辑器内置）
   var bar = document.createElement('div');
   bar.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0';
-  bar.innerHTML = '<span style="font-weight:600;flex:1;font-size:13px">📝 Word 文档（块编辑）</span><button class="btn-small btn-accept" id="word-save-btn">💾 保存</button>';
+  var titleText = fileName ? '📝 Word 文档（已加载：' + fileName + '）' : '📝 Word 文档（块编辑）';
+  bar.innerHTML = '<span style="font-weight:600;flex:1;font-size:13px">' + titleText + '</span><button class="btn-small btn-accept" id="word-save-btn">💾 保存</button>';
   host.appendChild(bar);
 
   // 编辑器 mount 区
@@ -29,12 +31,54 @@ function openWordEditor(w) {
     return;
   }
 
-  // 挂块编辑器（用空 doc 初始化）
-  var doc = window.OfficeDoc.makeDocument({ title: 'untitled' });
-  var instance = window.OfficeDocEditor.mountEditor(editorHost, doc, {
-    onChange: function() { /* 实时更新，不做任何事 */ }
-  });
-  w._officeDocInstance = instance; // 挂到 w 上方便 PKG 关闭时清理
+  // 初始化 doc（空或从 fileId 加载）
+  var doc = window.OfficeDoc.makeDocument({ title: fileName || 'untitled' });
+  if (fileId) {
+    // 显示 loading
+    editorHost.innerHTML = '<div style="padding:40px;text-align:center;color:#888">⏳ 正在加载 ' + fileName + '...</div>';
+    fetch('/api/office/load/' + encodeURIComponent(fileId))
+      .then(function (r) { return r.json(); })
+      .then(function (resp) {
+        editorHost.innerHTML = '';
+        if (!resp.ok) {
+          editorHost.innerHTML = '<div style="padding:24px;color:#a00">❌ 加载失败：' + (resp.error || '未知') + '<br>fileId: ' + fileId + '</div>';
+          return;
+        }
+        // v0.62.4: 简单转换 — 把提取的纯文本按行拆 paragraph（不做复杂 block 映射）
+        if (resp.text) {
+          var lines = resp.text.split('\n').filter(function (l) { return l.trim(); });
+          if (lines.length === 0) {
+            doc.blocks.push(window.OfficeDoc.paragraph(''));
+          } else {
+            lines.forEach(function (line) {
+              // 简单检测：# 开头 → heading
+              var h = line.match(/^(#{1,6})\s+(.+)$/);
+              if (h) {
+                doc.blocks.push(window.OfficeDoc.heading(h[2], h[1].length));
+              } else {
+                doc.blocks.push(window.OfficeDoc.paragraph(line));
+              }
+            });
+          }
+        } else {
+          doc.blocks.push(window.OfficeDoc.paragraph(''));
+        }
+        mountBlockEditor();
+      })
+      .catch(function (e) {
+        editorHost.innerHTML = '<div style="padding:24px;color:#a00">❌ 网络错误：' + e.message + '</div>';
+      });
+  } else {
+    mountBlockEditor();
+  }
+
+  function mountBlockEditor() {
+    // v0.62.2: 空 doc 自动加 1 个 paragraph（mountEditor 内部已处理）
+    var instance = window.OfficeDocEditor.mountEditor(editorHost, doc, {
+      onChange: function () { /* 实时更新，不做任何事 */ }
+    });
+    w._officeDocInstance = instance;
+  }
 
   // 保存按钮：showPrompt 拿文件名（避免 browser dialog），send blocks 到 /api/office/save
   bar.querySelector('#word-save-btn').onclick = async function() {
@@ -388,3 +432,37 @@ function openPptEditor(w) {
 window.openWordEditor = openWordEditor;
 window.openExcelEditor = openExcelEditor;
 window.openPptEditor = openPptEditor;
+
+// ===== v0.62.4 全局 helper：让 chat / file-browser / delivery 等地方能一键打开文件到块编辑器 =====
+// 用法：ACMS.openInOfficeEditor(fileId, fileName, source)
+//   source = 'office' (默认) | 'chat'
+// 行为：开 office-word PKG，把指定 fileId 的内容加载进块编辑器
+window.ACMS = window.ACMS || {};
+window.ACMS.openInOfficeEditor = function (fileId, fileName, source) {
+  if (typeof openWordEditor !== 'function') {
+    if (typeof toast === 'function') toast('块编辑器未加载', 'error');
+    return;
+  }
+  // 构造一个 mock PKG window（复用 PKG 窗口的 $c 接口）
+  var pkgWindow = {
+    $c: document.createElement('div'),
+    _isMock: true,
+    _fileId: fileId,
+    _fileName: fileName,
+  };
+  pkgWindow.$c.style.cssText = 'position:fixed;top:5%;left:5%;width:90%;height:90%;background:#fafaf6;border:2px solid #5b8c5a;box-shadow:0 8px 32px rgba(0,0,0,0.3);z-index:9999;display:flex;flex-direction:column';
+  var header = document.createElement('div');
+  header.style.cssText = 'display:flex;align-items:center;padding:8px 12px;background:#5b8c5a;color:white;flex-shrink:0';
+  header.innerHTML = '<span style="flex:1;font-weight:600">📝 ' + (fileName || 'Word 文档') + '</span><button id="acms-office-close" style="background:#fff;color:#333;border:none;padding:4px 12px;cursor:pointer">✕ 关闭</button>';
+  pkgWindow.$c.appendChild(header);
+  var body = document.createElement('div');
+  body.style.cssText = 'flex:1;min-height:0;display:flex;flex-direction:column';
+  pkgWindow.$c.appendChild(body);
+  pkgWindow.$c = body; // 替换 $c 为实际编辑器区
+  document.body.appendChild(pkgWindow.$c.parentElement); // 整个浮层
+  openWordEditor(pkgWindow, fileId, fileName);
+  document.getElementById('acms-office-close').onclick = function () {
+    var overlay = pkgWindow.$c.parentElement;
+    if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+  };
+};

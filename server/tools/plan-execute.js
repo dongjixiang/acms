@@ -36,7 +36,7 @@ registerTool({
     '\n' +
     '【参数 plan.steps 格式】\n' +
     '每个 step: { tool, args, depends_on? }\n' +
-    '- tool: 必须是已注册的工具名（generate_image / play_video / send_email / web_search / web_research / fetch_url / get_current_time / play_music / agnes_generate_video / document_gen / generate_docx / generate_xlsx / generate_pptx）' +
+    '- tool: 必须是已注册的工具名（generate_image / play_video / send_email / web_search / web_research / fetch_url / get_current_time / play_music / agnes_generate_video / document_gen / generate_docx / generate_xlsx / generate_pptx / document_edit）' +
     '- args: 该 tool 的参数对象（按各 tool 的 schema）\n' +
     '- depends_on: 上游 step id 数组（可选），表示等这些步骤完成才执行本步\n' +
     '\n' +
@@ -49,6 +49,7 @@ registerTool({
     '（备选：**generate_docx** — v0.62 复活，输入 Markdown 文本转 .docx，无 LLM 整理步骤；适合 LLM 自己已经写好 Markdown 内容的场景，**省一次 LLM 调用**）' +
     '- "生成 Excel 表格 / 生成 xlsx / 输出数据表" → **generate_xlsx**（v0.62 复活，输入 headers + rows 转 .xlsx）' +
     '- "生成 PPT / 生成 PowerPoint / 生成幻灯片 / 整理成演示文稿" → **generate_pptx**（v0.62 复活，输入 slides 数组转 .pptx）' +
+    '- "修改已有文档 / 改 Word / 改 docx / 编辑文档 / 更新文档" → **document_edit**（v0.62.4 输入 fileId + markdown 内容覆写文件）' +
     '- "发邮件/通知/把对话发邮件" → send_email（**file_ids 自动串联上游 document_gen / generate_image 等的产出**）\n' +
     '选错工具 = 那个步骤失败或返回空数据。**复合意图里 web_research vs web_search 二选一**：要"读起来通顺的赛况总结" 用 web_research；要"原始链接 + snippet 列表" 用 web_search。\n' +
     '\n' +

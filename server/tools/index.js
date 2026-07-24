@@ -34,6 +34,8 @@ require('./agent/plan');
 // 但全 server 没人 require 它，导致 LLM 永远拿不到这三个 tool
 // 加上这一行后，三个 tool 立即注册，plan_execute 的 validatePlan 会自动接受它们
 require('./office-gen');
+// v0.62.4: document_edit tool（让 LLM 在 plan_execute 里改/新建 .docx）
+require('./document-edit');
 
 console.log('[tools] 内建工具注册完成:', listBuiltinTools().join(', '));
 function listBuiltinTools() { return require('../services/tool-registry').listTools().map(t => t.name); }
