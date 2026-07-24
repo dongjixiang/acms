@@ -22,6 +22,10 @@
     container.innerHTML = '';
     container.classList.add('ode-editor');
     var state = { doc: doc || OfficeDoc.makeDocument({ title: opts.title || 'untitled' }), onChange: opts.onChange || null };
+    // v0.62.2: 空 doc 自动加 1 个 paragraph，避免打开时啥也看不见
+    if (state.doc.blocks.length === 0) {
+      state.doc.blocks.push(OfficeDoc.paragraph(''));
+    }
     renderAll(container, state);
     return {
       getDocument: function () { return state.doc; },

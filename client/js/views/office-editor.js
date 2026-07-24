@@ -3,32 +3,80 @@
 
 function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
-// ===== Word 编辑器 =====
-var _quillLoaded = false;
-function loadQuill(cb) {
-  if (window.Quill) { cb(); return; }
-  if (_quillLoaded) { setTimeout(function() { loadQuill(cb); }, 300); return; }
-  _quillLoaded = true;
-  var l = document.createElement('link'); l.href = 'https://cdn.quilljs.com/1.3.7/quill.snow.css'; l.rel = 'stylesheet'; document.head.appendChild(l);
-  var s = document.createElement('script'); s.src = 'https://cdn.quilljs.com/1.3.7/quill.min.js'; s.onload = cb; document.head.appendChild(s);
-}
-
+// ===== Word 编辑器（v0.62.1 块编辑器）=====
+// 改用自研 office-doc-editor 替代 Quill
+// 依赖：window.OfficeDoc + window.OfficeDocEditor（由 index.html 在 office-editor.js 之前加载）
 function openWordEditor(w) {
-  w.$c.innerHTML = '<div style="display:flex;flex-direction:column;height:100%"><div id="word-toolbar-area" style="flex-shrink:0;min-height:42px"></div><div id="word-editor" style="flex:1;overflow:auto"></div></div>';
-  loadQuill(function() {
-    var ed = document.createElement('div'); ed.id = 'word-editor-inner'; ed.style.cssText = 'height:100%;padding:20px';
-    w.$c.querySelector('#word-editor').appendChild(ed);
-    var q = new Quill('#word-editor-inner', { theme: 'snow', modules: { toolbar: [['bold','italic','underline','strike'], [{list:'ordered'},{list:'bullet'}], ['link','image'], ['clean']] } });
-    w.$c.querySelector('#word-toolbar-area').appendChild(w.$c.querySelector('.ql-toolbar'));
-    var tb = document.createElement('div'); tb.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bg2);border-bottom:1px solid var(--border)';
-    tb.innerHTML = '<span style="font-weight:600;flex:1;font-size:13px">📝 Word 文档</span><button class="btn-small btn-accept" id="word-save-btn">💾 保存</button>';
-    w.$c.querySelector('#word-toolbar-area').appendChild(tb);
-    tb.querySelector('#word-save-btn').onclick = function() {
-      var name = prompt('文件名：', '文档.docx') || '文档.docx';
-      fetch('/api/office/save', { method:'POST', headers:{'Content-Type':'application/json','X-API-Key':'dev-key-001'}, body:JSON.stringify({ type:'docx', name:name, data:{ type:'word', html:q.root.innerHTML, text:q.getText() } }) })
-        .then(function(r){return r.json()}).then(function(r){ toast(r.ok?'已保存 ✅':'保存失败','success'); });
-    };
+  // 容器 = 整个 PKG 内容区
+  w.$c.innerHTML = '<div id="word-host" style="height:100%;display:flex;flex-direction:column"></div>';
+  var host = w.$c.querySelector('#word-host');
+
+  // 顶部 toolbar：标题 + 保存按钮（自己加，不依赖编辑器内置）
+  var bar = document.createElement('div');
+  bar.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0';
+  bar.innerHTML = '<span style="font-weight:600;flex:1;font-size:13px">📝 Word 文档（块编辑）</span><button class="btn-small btn-accept" id="word-save-btn">💾 保存</button>';
+  host.appendChild(bar);
+
+  // 编辑器 mount 区
+  var editorHost = document.createElement('div');
+  editorHost.id = 'word-editor-mount';
+  editorHost.style.cssText = 'flex:1;min-height:0;overflow:auto;background:#fafaf6';
+  host.appendChild(editorHost);
+
+  // 检查依赖是否加载（office-doc.js + office-doc-converter.js 必须在 office-editor.js 之前）
+  if (!window.OfficeDoc || !window.OfficeDocEditor) {
+    editorHost.innerHTML = '<div style="padding:24px;color:#a00">❌ 块编辑器未加载<br><br>请确认 client/index.html 在 office-editor.js 之前加载了：<br><br>&lt;script src="/client/js/core/office-doc.js"&gt;&lt;/script&gt;<br>&lt;script src="/client/js/core/office-doc-converter.js"&gt;&lt;/script&gt;</div>';
+    return;
+  }
+
+  // 挂块编辑器（用空 doc 初始化）
+  var doc = window.OfficeDoc.makeDocument({ title: 'untitled' });
+  var instance = window.OfficeDocEditor.mountEditor(editorHost, doc, {
+    onChange: function() { /* 实时更新，不做任何事 */ }
   });
+  w._officeDocInstance = instance; // 挂到 w 上方便 PKG 关闭时清理
+
+  // 保存按钮：showPrompt 拿文件名（避免 browser dialog），send blocks 到 /api/office/save
+  bar.querySelector('#word-save-btn').onclick = async function() {
+    if (typeof showPrompt !== 'function') {
+      toast('showPrompt 未加载，无法输入文件名', 'error');
+      return;
+    }
+    var name = await showPrompt({
+      title: '保存 Word 文档',
+      message: '输入文件名（.docx 后缀自动加）',
+      placeholder: '文档',
+      defaultValue: '文档',
+      multiline: false,
+      minLength: 1,
+    });
+    if (!name) return; // 用户取消
+    name = String(name).trim();
+    if (!name.toLowerCase().endsWith('.docx')) name += '.docx';
+
+    var d = instance.getDocument();
+    var payload = {
+      type: 'docx',
+      name: name,
+      data: {
+        title: d.meta.title,
+        blocks: d.blocks,
+        // 兼容旧 payload 字段（如果服务端兼容检查用）
+        content: window.OfficeDocConverter.documentToMarkdown(d),
+      }
+    };
+    fetch('/api/office/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+      body: JSON.stringify(payload),
+    })
+    .then(function(r){return r.json()})
+    .then(function(r){
+      if (r.ok) toast('已保存 ✅ ' + name + ' (' + r.size + ' bytes)', 'success');
+      else toast('保存失败: ' + (r.error || '未知错误'), 'error');
+    })
+    .catch(function(e){ toast('保存失败: ' + e.message, 'error'); });
+  };
 }
 
 // ===== Excel 编辑器（纯原生，无外部依赖）=====
