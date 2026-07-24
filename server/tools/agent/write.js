@@ -98,6 +98,23 @@ registerTool({
       readCache.invalidate(ctx.taskId, args.path);
       // P0 v0.X: 跨任务记忆 — 记录这次写
       try { workspaceMeta.recordWrite(slug, args.path, { taskId: ctx.taskId }); } catch (e) { /* 不阻塞 */ }
+
+      // v0.64: JSON 文件写后验证 — 防 LLM tool_call content 被截断导致文件损坏
+      //   根因：multi_role Coder 的 maxTokens 默认 2000（→已改为 32000），
+      //   即使修复后仍可能在其他路径（delegate_subtasks）被截断
+      if (args.path.endsWith('.json')) {
+        try {
+          JSON.parse(args.content);
+        } catch (jsonErr) {
+          // 文件已写入磁盘，但内容不是合法 JSON → 回滚 + 返回明确错误
+          try { workspace.writeFile(slug, args.path, existingContent || ''); } catch (rollbackErr) { /* 回滚失败静默 */ }
+          return {
+            ok: false, error: 'WRITE_TRUNCATED',
+            path: args.path, size: (args.content || '').length,
+            message: '写入的内容不是合法的 JSON（解析错误: ' + jsonErr.message + '）。工具调用被截断了。请用 agent_write_file 写一个脚本 + agent_exec_command 执行来生成文件，不要直接在 content 参数中嵌入完整 JSON。',
+          };
+        }
+      }
       // v0.29 fix: 简洁 feedback — Hermes-style status / bytes / syntax check
       //   LLM 看一眼就懂成功状态，不用深挖嵌套对象
       let syntaxStatus = null;

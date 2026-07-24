@@ -1778,6 +1778,8 @@ async function runMultiRoleSequence(task, options = {}) {
       maxRounds: phase.maxRounds,
       context: { projectId, taskId },
       caller: 'task-agent-' + phase.name,
+      // v0.64: 多角色 path 显式传 maxTokens（默认 32000，不传则 runToolLoop 用 2000 → 大文件 tool_call 被截断）
+      maxTokens: 32000,
       // v0.63: 把 saveProgressRound 传给 runtime → llm-adapter 每轮 LLM 调用 + 工具调用都写 execution_log
       onProgress: saveProgressRound,
     });
@@ -2796,7 +2798,7 @@ registerTool({
 
         var start = Date.now();
 
-        var result = await runtimeExec({ messages: msgs, toolNames: toolNames, maxRounds: 10, context: ctx, caller: 'delegate-' + idx });
+        var result = await runtimeExec({ messages: msgs, toolNames: toolNames, maxRounds: 10, maxTokens: 32000, context: ctx, caller: 'delegate-' + idx });
 
         return { index: idx, goal: subtask.goal.slice(0, 100), ok: true, summary: (result.content || '').slice(0, 500), elapsed: (Date.now() - start) + 'ms' };
 
