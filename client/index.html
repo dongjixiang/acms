@@ -9,6 +9,7 @@
 <meta http-equiv="Expires" content="0">
 <title>ACMS — 智能体协同管理系统</title>
 <link rel="stylesheet" href="/client/css/style.css?v=0.59.11">
+<link rel="stylesheet" href="/client/css/office-doc.css?v=0.62.1">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js" defer></script>
 <script>
@@ -162,6 +163,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <h2 data-i18n="kanban.title">📌 任务看板</h2>
             <select id="kanban-req-filter" class="filter-select" onchange="refreshKanban()"><option value="">全部需求</option></select>
             <button class="btn-small btn-accept" onclick="refreshKanban()">🔄 刷新</button>
+            <button class="btn-small" style="background:rgba(91,140,90,0.12);color:var(--green);border-color:rgba(91,140,90,0.25);margin-left:4px" onclick="showExecutionDashboard()">📊 执行报告</button>
             <label class="toggle-switch" title="开启后，所有提交到 review 列的任务自动触发 Reviewer Agent 审核" style="margin-left:12px">
               <input type="checkbox" id="auto-review-global" onchange="toggleGlobalAutoReview(this.checked)">
               <span class="toggle-slider"></span>
@@ -645,6 +647,10 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/core/notification-center.js?v=0.58"></script>
 <script src="/client/js/core/agent-buddy.js?v=0.59"></script>
 <script src="/client/js/views/office-editor.js?v=0.62"></script>
+<!-- v0.62.1: 块编辑器核心（schema + 转换器 + UI），PR 3 将接 office-word PKG -->
+<script src="/client/js/core/office-doc.js?v=0.62.1"></script>
+<script src="/client/js/core/office-doc-converter.js?v=0.62.1"></script>
+<script src="/client/js/views/office-doc-editor.js?v=0.62.1"></script>
 
 <script src="/client/js/views/wallpaper.js?v=0.56"></script>
 <script src="/client/js/views/desktop-context-menu.js"></script>
