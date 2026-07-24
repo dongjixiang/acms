@@ -121,7 +121,7 @@ function loadMermaid() {
   }
 
   const script = document.createElement('script');
-  script.src = 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js';
+  script.src = '/client/lib/mermaid.min.js';
   script.onload = () => {
     const theme = (window.App && (window.App.theme === 'light' || window.App.theme === 'cream')) ? 'default' : 'dark';
     window.mermaid.initialize({ startOnLoad: false, theme: theme, securityLevel: 'loose' });
