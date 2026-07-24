@@ -36,7 +36,7 @@ registerTool({
     '\n' +
     '【参数 plan.steps 格式】\n' +
     '每个 step: { tool, args, depends_on? }\n' +
-    '- tool: 必须是已注册的工具名（generate_image / play_video / send_email / web_search / web_research / fetch_url / get_current_time / play_music / agnes_generate_video / document_gen）\n' +
+    '- tool: 必须是已注册的工具名（generate_image / play_video / send_email / web_search / web_research / fetch_url / get_current_time / play_music / agnes_generate_video / document_gen / generate_docx / generate_xlsx / generate_pptx）' +
     '- args: 该 tool 的参数对象（按各 tool 的 schema）\n' +
     '- depends_on: 上游 step id 数组（可选），表示等这些步骤完成才执行本步\n' +
     '\n' +
@@ -45,7 +45,10 @@ registerTool({
     '- "查某个具体事实/产品价格/某词列表/某单一信息" → web_search（搜索引擎原生 list of titles）\n' +
     '- "抓 URL 网页内容" → fetch_url（**仅接受完整 http(s) URL**，不是搜索 query）\n' +
     '- "生成图片/海报/插图" → generate_image\n' +
-    '- "生成 Word 文档 / 整理成 Word / 生成 docx / 整理成文档" → **document_gen**（v0.48 真 tool，会返回 .docx + .md + file_ids）\n' +
+    '- "生成 Word 文档 / 整理成 Word / 生成 docx / 整理成文档" → **document_gen**（v0.48 真 tool，会返回 .docx + .md + file_ids）' +
+    '（备选：**generate_docx** — v0.62 复活，输入 Markdown 文本转 .docx，无 LLM 整理步骤；适合 LLM 自己已经写好 Markdown 内容的场景，**省一次 LLM 调用**）' +
+    '- "生成 Excel 表格 / 生成 xlsx / 输出数据表" → **generate_xlsx**（v0.62 复活，输入 headers + rows 转 .xlsx）' +
+    '- "生成 PPT / 生成 PowerPoint / 生成幻灯片 / 整理成演示文稿" → **generate_pptx**（v0.62 复活，输入 slides 数组转 .pptx）' +
     '- "发邮件/通知/把对话发邮件" → send_email（**file_ids 自动串联上游 document_gen / generate_image 等的产出**）\n' +
     '选错工具 = 那个步骤失败或返回空数据。**复合意图里 web_research vs web_search 二选一**：要"读起来通顺的赛况总结" 用 web_research；要"原始链接 + snippet 列表" 用 web_search。\n' +
     '\n' +

@@ -27,6 +27,13 @@ require('./agent/database');
 require('./agent/ssh');
 require('./agent/http');
 require('./agent/screenshot');
+require('./agent/phase');
+require('./agent/check');
+require('./agent/plan');
+// v0.62 修死代码：office-gen.js 之前 registerTool 了三个工具（generate_docx/xlsx/pptx）
+// 但全 server 没人 require 它，导致 LLM 永远拿不到这三个 tool
+// 加上这一行后，三个 tool 立即注册，plan_execute 的 validatePlan 会自动接受它们
+require('./office-gen');
 
 console.log('[tools] 内建工具注册完成:', listBuiltinTools().join(', '));
 function listBuiltinTools() { return require('../services/tool-registry').listTools().map(t => t.name); }
