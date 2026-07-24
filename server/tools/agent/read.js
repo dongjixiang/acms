@@ -14,7 +14,10 @@ registerTool({
     + '传 path（字符串）读单个文件（支持 offset/limit 分页）。'
     + '传 paths（数组）一次读多个文件。 '
     + '返回文件内容 text（大文件截断至 100000 字符）。'
+    + '注意：同一文件第二次读会返回"已读"提醒而非内容（防重复读浪费）。'
+    + '如需强制重新读取最新内容，增加参数 forceRefresh:true。'
     + '示例: agent_read_file({path: "src/server.js"}) — 读单个文件。'
+    + ' agent_read_file({path: "src/server.js", forceRefresh: true}) — 强制从磁盘读取。'
     + ' agent_read_file({paths: ["a.js", "b.js"]}) — 批量读多个文件。',
   parameters: {
     type: 'object',
@@ -23,6 +26,7 @@ registerTool({
       paths: { type: 'array', items: { type: 'string' }, description: '多个文件路径数组（二选一：path 或 paths）。最多 20 个。' },
       offset: { type: 'number', description: '起始行号（0-indexed，仅单文件模式 path 有效）。大文件分页用。' },
       limit: { type: 'number', description: '最大行数（仅单文件模式 path 有效）。' },
+      forceRefresh: { type: 'boolean', description: '如果为 true，强制从磁盘重新读取，绕过已读检测和缓存。默认 false。已读过的文件第二次调 agent_read_file 时会收到提醒而不是内容；传 forceRefresh=true 跳过提醒。' },
     },
   },
   async handler(args, ctx = {}) {
@@ -42,6 +46,12 @@ registerTool({
       const maxLen = 100000;
       for (const p of args.paths) {
         try {
+          // 批量模式也检测重复读
+          const prevRead = readCache.wasPathRead(taskId, p);
+          if (prevRead) {
+            results.push({ path: p, ok: false, _alreadyRead: true, _readCount: prevRead.readCount, error: 'ALREADY_READ — 此文件已在之前轮次读过，请勿重复读取。如需最新内容，单独调用 agent_read_file({path: "' + p + '", forceRefresh: true})' });
+            continue;
+          }
           const content = workspace.readFile(slug, p);
           if (content === null || content === undefined) {
             results.push({ path: p, ok: false, error: 'FILE_NOT_FOUND' });
@@ -61,11 +71,28 @@ registerTool({
     // === 单文件模式（传 path 字符串） ===
     if (!args.path) return { error: 'NO_PATH', message: '请传 path（单文件）或 paths（批量）' };
 
-    // P0 v0.X: 缓存命中直接返回
+    // v0.64: 检测是否已在之前轮次读过此 path（跨 offset/limit）— 防研究到死
+    //   首次读自动记录；forceRefresh=true 跳过检测；write/patch 后 invalidate 清索引
+    if (!args.forceRefresh) {
+      const prevRead = readCache.wasPathRead(taskId, args.path);
+      if (prevRead) {
+        return {
+          path: args.path,
+          _alreadyRead: true,
+          _readCount: prevRead.readCount,
+          warning: '此文件已在之前轮次读过（第 ' + prevRead.readCount + ' 次重复读取），无需再次读取。如需最新内容：agent_read_file({forceRefresh: true, path: "' + args.path + '", offset: ..., limit: ...})',
+          reminder: '如果只是想回顾内容，参考之前轮次收到的内容即可。如果怀疑文件已被其他 agent 修改，先 agent_search_files 确认变化再 forceRefresh。',
+        };
+      }
+    }
+
+    // P0 v0.X: 缓存命中直接返回（forceRefresh=true 时跳过缓存，强制读磁盘）
     //   T-MRGDBST1 实测：GameLoop.js 读 4 次、app/game.js 读 3 次，纯浪费
     //   agent_write_file / patch_file 会调 readCache.invalidate()，所以缓存不会过时
-    const cached = readCache.get(taskId, args.path, args.offset, args.limit);
-    if (cached) return cached;
+    if (!args.forceRefresh) {
+      const cached = readCache.get(taskId, args.path, args.offset, args.limit);
+      if (cached) return cached;
+    }
 
     const projectStore = require('../../stores/project-store');
     const project = projectStore.getById(projectId);

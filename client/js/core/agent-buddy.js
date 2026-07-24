@@ -1121,6 +1121,36 @@
         recordAction(action);
       }, true);
     }, 2000); // 等 UI 稳定后再挂监听
+
+    // v0.64: Agent 事件主动通知 — 任务失败/完成时自动弹面板
+    var _agentEventNames = ['acms:task.failed', 'acms:task.completed', 'acms:task.review_rejected'];
+    _agentEventNames.forEach(function(evName) {
+      window.addEventListener(evName, function(e) {
+        var payload = e.detail || {};
+        var taskId = payload.taskId || payload.target?.id || '';
+        var status = payload.status || '';
+        var summary = payload.summary || payload.error || payload.progressNote || '';
+
+        // 构建通知消息
+        var msg = '';
+        if (evName === 'acms:task.failed') {
+          msg = '⚠️ 任务 ' + taskId + ' 执行失败';
+          if (summary) msg += ': ' + String(summary).slice(0, 100);
+          addScore('task-failed', 10);
+        } else if (evName === 'acms:task.completed') {
+          msg = '✅ 任务 ' + taskId + ' 已完成';
+          addScore('task-completed', 5);
+        } else if (evName === 'acms:task.review_rejected') {
+          msg = '🔄 任务 ' + taskId + ' 被驳回';
+          if (summary) msg += ': ' + String(summary).slice(0, 100);
+          addScore('task-rejected', 8);
+        }
+
+        if (msg) {
+          openPanel({ message: msg });
+        }
+      });
+    });
   }
 
   // ── 暴露 API ──

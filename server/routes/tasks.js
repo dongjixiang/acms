@@ -17,6 +17,16 @@ router.post('/', (req, res) => {
 
   const task = taskStore.create({ projectId, parentId, title, description, type, priority, requiredSkills, estimatedHours, dependsOn, dependsContract, wikiContext, linkedWiki, owner: req.userId || 'system' });
 
+  // Guardrail: 描述过短时加标记，让 agent 跳过不必要的探索
+  if (description && description.length < 20) {
+    try {
+      taskStore.update(task.id, {
+        description_too_short: true,
+        progress_note: '⚠️ 描述较短（' + description.length + ' 字），Agent 可能需更多上下文。建议补充：期望行为、复现步骤、相关文件。',
+      });
+    } catch (e) { /* non-critical */ }
+  }
+
   eventBus.emit('task.created', {
     projectId, actor: { id: req.agentId || 'system', type: 'agent' },
     target: { type: 'task', id: task.id }, payload: { task },

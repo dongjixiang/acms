@@ -500,7 +500,7 @@ function levenshtein(a, b) {
 // v0.33: tool result 截断（参考 Hermes enforce_turn_budget:181）
 //   防止 LLM 调一次 read_file 拿到 50KB 文件把 context 撑爆
 //   ACMS 没 sandbox fs 持久化机制，改成"超阈值截断 + 在 message 里标注"，后续轮 LLM 自己判断要不要 read 一次小窗口
-const TOOL_RESULT_TRUNCATE_BYTES = 12 * 1024; // 单条 tool result 12KB 阈值（Hermes 默认 4MB turn，ACMS agent 单 tool 12KB 够用）
+const TOOL_RESULT_TRUNCATE_BYTES = 96 * 1024; // 单条 tool result 96KB 阈值（v0.64: 12→96KB，historical-events.json 16KB 一次返回不截断）
 
 function truncateToolResult(name, result) {
   const json = JSON.stringify(result);

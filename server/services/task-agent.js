@@ -22,199 +22,13 @@ const eventBus = require('./event-bus');
 
 
 
-// v0.46 TodoWrite — Workflow Phases 5 段进度（PM 看板可见）
 
 
-//   顺序：explore → design → write → test → fix
 
 
-//   LLM 在合适时机调 agent_set_phase 切换 phase，task.doc.phase 实时更新
 
 
-const PHASES = ['explore', 'design', 'write', 'test', 'fix'];
 
-
-const PHASE_META = {
-
-
-  explore: { icon: '🔍', label: '探索', color: '#94a3b8' },
-
-
-  design:  { icon: '📝', label: '设计', color: '#8b5cf6' },
-
-
-  write:   { icon: '✏️', label: '写代码', color: '#3b82f6' },
-
-
-  test:    { icon: '🧪', label: '测试', color: '#10b981' },
-
-
-  fix:     { icon: '🔧', label: '修复', color: '#f59e0b' },
-
-
-};
-
-
-
-
-
-// v0.46 TodoWrite — agent_set_phase 工具（让 LLM 主动声明 phase 切换）
-
-
-registerTool({
-
-
-  name: 'agent_set_phase',
-
-
-  description: 'Update the current workflow phase. Phases: explore (workspace recon), design (planning approach), write (creating/modifying files), test (running tests/verifying), fix (debugging failures). Call this when transitioning between phases so the PM can see real-time progress.',
-
-
-  parameters: {
-
-
-    type: 'object',
-
-
-    properties: {
-
-
-      phase: { type: 'string', enum: PHASES, description: 'New phase to enter' },
-
-
-      note: { type: 'string', description: 'Optional one-line note describing what you did in the previous phase or plan for the next' },
-
-
-    },
-
-
-    required: ['phase'],
-
-
-  },
-
-
-  async handler(args, ctx = {}) {
-
-
-    const { phase, note } = args;
-
-
-    const { taskId } = ctx;
-
-
-    if (!taskId) return { error: 'NO_TASK_ID', ok: false };
-
-
-    if (!PHASES.includes(phase)) return { error: `INVALID_PHASE: ${phase}. Valid: ${PHASES.join(', ')}`, ok: false };
-
-
-
-
-
-    // 读取历史 phase
-
-
-    const task = taskStore.getById(taskId);
-
-
-    if (!task) return { error: 'TASK_NOT_FOUND', ok: false };
-
-
-
-
-
-    const history = JSON.parse(task.phase_history || '[]');
-
-
-
-
-
-    // v0.X: phase 防抖 — 同一 phase 连续 ≥3 次切换时警告（治 R83 那种反复切 phase 的循环）
-
-
-    const recentSame = history.slice(-3).filter(h => h.phase === phase).length;
-
-
-    if (recentSame >= 3) {
-
-
-      return {
-
-
-        ok: false,
-
-
-        phase,
-
-
-        warning: `LOOP_DETECTED: 已连续 ${recentSame + 1} 次切到 phase "${phase}"。你可能在循环。应该停止 phase 切换并产生最终总结，而不是反复切 phase。`,
-
-
-        hint: 'review Anti-Loop Rules (system prompt §A) and synthesize your final answer now.',
-
-
-      };
-
-
-    }
-
-
-
-
-
-    history.push({ phase, note: note || '', at: new Date().toISOString() });
-
-
-    // 只保留最近 20 条切换
-
-
-    if (history.length > 20) history.splice(0, history.length - 20);
-
-
-
-
-
-    taskStore.update(taskId, {
-
-
-      phase,
-
-
-      phase_history: JSON.stringify(history),
-
-
-    });
-
-
-
-
-
-    return {
-
-
-      ok: true,
-
-
-      phase,
-
-
-      icon: PHASE_META[phase].icon,
-
-
-      label: PHASE_META[phase].label,
-
-
-      message: `Phase → ${PHASE_META[phase].icon} ${PHASE_META[phase].label}${note ? ` (${note})` : ''}`,
-
-
-    };
-
-
-  },
-
-
-});
 
 
 
@@ -1483,6 +1297,8 @@ const ROLE_TOOLS = {
 
     'agent_git_status', 'agent_git_log', 'agent_git_branch',
 
+    'delegate_subtasks', 'search_history',
+
   ],
 
   coder: [
@@ -1582,7 +1398,7 @@ const PLANNER_CANNOT_UNDERSTAND_PATTERNS = [
 
   /(?:任务|描述|说明)\s*(?:太短|不够|不清晰|不明确|模糊|过于简单|过于简短|太简单)/,
 
-  /(?:请|需要|请先)\s*(?:补充|提供|明确|澄清)\s*(?:描述|详情|信息|上下文|要求|任务说明)/,
+  /(?:请|需要|请先)\s*(?:补充|提供|明确|澄清)\s*(?:描述|详情|信息|上下文|要求|任务说明|任务描述)/,
 
 ];
 
@@ -1718,13 +1534,16 @@ async function runMultiRoleSequence(task, options = {}) {
 
   let overallRound = 0;
 
-  // v0.63: planner maxRounds 5→10 — 任务描述空泛时给 Planner 更多探索轮次
+  // v0.64: 动态角色编排 — 简单任务跳过 Tester 和 Reviewer 省 token
+  const skipReviewRoles = ['documentation', 'refactor', 'test'].includes((task.type || '').toLowerCase());
+
+  // v0.63: planner maxRounds 5→10
 
   //   之前 5 轮经常用光 abort，现在 10 轮 + saveProgressRound 记每轮 tool call，
 
   //   让"读了 N 个文件但未规划"的诊断更清晰，也让真实场景有足够时间出规划
 
-  const totalRounds = 10 + 25 + 10 + 5; // planner + coder + tester + reviewer
+  const totalRounds = skipReviewRoles ? 10 + 15 : 10 + 25 + 10 + 5; // planner + coder (+ tester + reviewer)
 
   const saveProgress = (note) => {
 
@@ -1856,13 +1675,14 @@ async function runMultiRoleSequence(task, options = {}) {
 
     { name: 'planner', maxRounds: 10, tools: ROLE_TOOLS.planner, label: '📋 规划' },
 
-    { name: 'coder',   maxRounds: 25, tools: ROLE_TOOLS.coder, label: '✏️ 写代码' },
-
-    { name: 'tester',  maxRounds: 10, tools: testerTools, label: '🧪 测试' },
-
-    { name: 'reviewer', maxRounds: 5, tools: ROLE_TOOLS.reviewer, label: '👀 审核' },
-
+    { name: 'coder',   maxRounds: skipReviewRoles ? 15 : 25, tools: ROLE_TOOLS.coder, label: '✏️ 写代码' },
   ];
+  if (!skipReviewRoles) {
+    pipeline.push(
+      { name: 'tester',  maxRounds: 10, tools: testerTools, label: '🧪 测试' },
+      { name: 'reviewer', maxRounds: 5, tools: ROLE_TOOLS.reviewer, label: '👀 审核' },
+    );
+  }
 
 
 
@@ -2010,6 +1830,20 @@ async function runMultiRoleSequence(task, options = {}) {
             updated_at: new Date().toISOString(),
           });
         } catch (e) { /* silent */ }
+        // 记录失败经验
+        try {
+          const projectStore = require('../stores/project-store');
+          const project = projectStore.getById(projectId);
+          const slug = project?.slug || project?.name;
+          if (slug) {
+            require('./workspace-meta').recordExperience(slug, {
+              taskId, title: task.title,
+              outcome: 'failed',
+              summary: `Planner 无法理解任务: ${verdict.reasonLabel || verdict.reason}`.slice(0, 400),
+              pitfalls: `Planner ${phase.maxRounds} 轮探索后仍无法理解，请补充任务描述`,
+            });
+          }
+        } catch (e) { /* silent */ }
         return {
           taskId,
           modelUsed: model.id,
@@ -2149,6 +1983,24 @@ async function runMultiRoleSequence(task, options = {}) {
         });
       } catch (e) { /* silent */ }
 
+      // 记录失败经验
+      try {
+        const projectStore = require('../stores/project-store');
+        const project = projectStore.getById(projectId);
+        const slug = project?.slug || project?.name;
+        if (slug) {
+          const emptyPitfalls = (phase.name === 'planner')
+            ? `Planner 无法生成有效规划 (${reason})`
+            : `${phase.name} 输出为空 (${reason})`;
+          require('./workspace-meta').recordExperience(slug, {
+            taskId, title: task.title,
+            outcome: 'failed',
+            summary: `${phase.label} 输出为空: ${reason}`.slice(0, 400),
+            pitfalls: emptyPitfalls.slice(0, 300),
+          });
+        }
+      } catch (e) { /* silent */ }
+
       return {
 
         taskId,
@@ -2197,6 +2049,35 @@ async function runMultiRoleSequence(task, options = {}) {
   }
 
 
+
+  // 汇总前记录跨任务经验
+
+  const roleOutcome = rejectVerdict ? 'rejected' : 'completed';
+  const xpPitfalls = [];
+  for (const name of Object.keys(roleOutputs)) {
+    const r = roleOutputs[name];
+    if (!r || !r.content || r.content.length < 10) {
+      xpPitfalls.push(name + ' 阶段输出为空');
+    }
+  }
+  if (rejectVerdict) xpPitfalls.push('审核驳回');
+  try {
+    const projectStore = require('../stores/project-store');
+    const project = projectStore.getById(projectId);
+    const slug = project && (project.slug || project.name);
+    if (slug) {
+      const workspaceMeta = require('./workspace-meta');
+      const summary = rejectVerdict
+        ? '审核驳回: ' + (rejectVerdict || '').slice(0, 200)
+        : ((finalOutput.content || '').slice(0, 200).replace(/\n+/g, '; '));
+      workspaceMeta.recordExperience(slug, {
+        taskId, title: task.title,
+        outcome: roleOutcome,
+        summary: summary.slice(0, 400),
+        pitfalls: xpPitfalls.join('; ').slice(0, 300),
+      });
+    }
+  } catch (e) { /* 经验记录非关键 */ }
 
   // 汇总
 
@@ -2272,10 +2153,6 @@ module.exports = {
   generatePlan,
 
 
-  PHASES,
-
-
-  PHASE_META,
 
 
 };
@@ -2491,229 +2368,7 @@ function buildSystemPrompt(task, lang = 'zh') {
 
 
 
-// ===== v0.46: agent_typescheck 工具 — tsc --noEmit 包装 =====
 
-
-const { execFile: _execFileTypescheck } = require('child_process');
-
-
-const _fsTypescheck = require('fs');
-
-
-const _pathTypescheck = require('path');
-
-
-
-
-
-registerTool({
-
-
-  name: 'agent_typescheck',
-
-
-  description: 'Run TypeScript type checking on the workspace. Auto-detects tsconfig.json or jsconfig.json. Uses tsc --noEmit (no output files produced). Use after writing TypeScript files to catch type errors before tests.',
-
-
-  parameters: {
-
-
-    type: 'object',
-
-
-    properties: {
-
-
-      path: { type: 'string', description: 'Optional: specific file or directory to check. Defaults to workspace root.' },
-
-
-    },
-
-
-    required: [],
-
-
-  },
-
-
-  async handler(args, ctx = {}) {
-
-
-    const { projectId } = ctx;
-
-
-    if (!projectId) return { ok: false, error: 'NO_PROJECT_ID' };
-
-
-
-
-
-    const projectStore = require('../stores/project-store');
-
-
-    const project = projectStore.getById(projectId);
-
-
-    if (!project) return { ok: false, error: 'PROJECT_NOT_FOUND' };
-
-
-
-
-
-    const slug = project.slug || project.name;
-
-
-    const workspace = require('./workspace-service');
-
-
-    const projectRoot = workspace.getProjectRoot(slug);
-
-
-
-
-
-    // 检测 tsconfig.json 或 jsconfig.json
-
-
-    const tsconfigPath = _pathTypescheck.join(projectRoot, 'tsconfig.json');
-
-
-    const jsconfigPath = _pathTypescheck.join(projectRoot, 'jsconfig.json');
-
-
-    let configFile = null;
-
-
-    if (_fsTypescheck.existsSync(tsconfigPath)) configFile = 'tsconfig.json';
-
-
-    else if (_fsTypescheck.existsSync(jsconfigPath)) configFile = 'jsconfig.json';
-
-
-    else {
-
-
-      // 没 config 文件 → 尝试直接 tsc 看是否有 TS 文件
-
-
-      const tsFiles = _fsTypescheck.existsSync(projectRoot)
-
-
-        ? require('child_process').execSync(`node -e "const fs=require('fs'),p=require('path');function walk(d){let r=[];try{for(const f of fs.readdirSync(d)){const fp=p.join(d,f);const s=fs.statSync(fp);if(s.isDirectory()&&!['node_modules','.git','dist','build'].includes(f))r=r.concat(walk(fp));else if(/\\.(ts|tsx)$/.test(f))r.push(fp);}}catch(e){}return r;}console.log(walk(process.argv[1]).length)" "${projectRoot}"`, { encoding: 'utf-8', timeout: 5000 }).trim()
-
-
-        : '0';
-
-
-      if (parseInt(tsFiles) === 0) {
-
-
-        return {
-
-
-          ok: false,
-
-
-          error: 'NO_TYPESCRIPT_PROJECT',
-
-
-          message: 'No tsconfig.json/jsconfig.json found and no .ts/.tsx files in workspace. Use node --check for syntax checking.',
-
-
-        };
-
-
-      }
-
-
-      configFile = 'tsconfig.json';  // 让 tsc 自己报错说缺 config
-
-
-    }
-
-
-
-
-
-    // 跑 tsc --noEmit
-
-
-    const target = args.path || '';
-
-
-    const cmd = `npx --no-install tsc --noEmit${configFile ? ` -p ${configFile}` : ''}${target ? ` ${target}` : ''}`.trim();
-
-
-
-
-
-    return new Promise((resolve) => {
-
-
-      _execFileTypescheck('npx', ['--no-install', 'tsc', '--noEmit', ...(configFile ? ['-p', configFile] : []), ...(target ? [target] : [])], {
-
-
-        cwd: projectRoot,
-
-
-        timeout: 60000,
-
-
-        maxBuffer: 1024 * 1024,
-
-
-        shell: true,
-
-
-      }, (err, stdout, stderr) => {
-
-
-        const exitCode = err ? err.code || 1 : 0;
-
-
-        resolve({
-
-
-          ok: exitCode === 0,
-
-
-          exitCode,
-
-
-          configFile,
-
-
-          target: target || '<workspace>',
-
-
-          stdout: (stdout || '').slice(0, 5000),
-
-
-          stderr: (stderr || '').slice(0, 5000),
-
-
-          message: exitCode === 0
-
-
-            ? `✅ TypeScript check passed (${configFile})`
-
-
-            : `❌ TypeScript errors found (exit ${exitCode})`,
-
-
-        });
-
-
-      });
-
-
-    });
-
-
-  },
-
-
-});
 
 
 
@@ -3031,179 +2686,7 @@ Respond with ONLY valid JSON in this exact shape:
 
 
 
-// ===== v0.46: agent_plan 工具 — 让 agent 一次性输出实施计划 =====
 
-
-//   LLM 在第一轮调这个工具，写 plan 到 task.doc.plan，PM 在前端 modal 看 + 决定 approve/reject
-
-
-registerTool({
-
-
-  name: 'agent_plan',
-
-
-  description: 'Generate an implementation plan for the current task. Call this FIRST after exploring the workspace. Writes the plan to task.doc.plan for PM review. The PM will approve or reject the plan; only after approval will the agent proceed to actual execution.',
-
-
-  parameters: {
-
-
-    type: 'object',
-
-
-    properties: {
-
-
-      summary: { type: 'string', description: 'One-line summary of the approach (e.g. "Add 3 files: GameState.js, GameTypes.js, GameState.test.js")' },
-
-
-      files: {
-
-
-        type: 'array',
-
-
-        items: {
-
-
-          type: 'object',
-
-
-          properties: {
-
-
-            path: { type: 'string' },
-
-
-            purpose: { type: 'string' },
-
-
-            estimatedLines: { type: 'number' },
-
-
-          },
-
-
-        },
-
-
-        description: 'List of files to be created/modified with purpose',
-
-
-      },
-
-
-      steps: {
-
-
-        type: 'array',
-
-
-        items: { type: 'string' },
-
-
-        description: 'Ordered execution steps (e.g. ["1. Create GameTypes.js with constants", "2. Create GameState.js with state machine", "3. Create GameState.test.js with 5 test cases"])',
-
-
-      },
-
-
-      risks: {
-
-
-        type: 'array',
-
-
-        items: { type: 'string' },
-
-
-        description: 'Known risks or assumptions the PM should be aware of',
-
-
-      },
-
-
-    },
-
-
-    required: ['summary', 'files', 'steps'],
-
-
-  },
-
-
-  async handler(args, ctx = {}) {
-
-
-    const { taskId } = ctx;
-
-
-    if (!taskId) return { ok: false, error: 'NO_TASK_ID' };
-
-
-
-
-
-    const plan = {
-
-
-      summary: args.summary,
-
-
-      files: args.files || [],
-
-
-      steps: args.steps || [],
-
-
-      risks: args.risks || [],
-
-
-      createdAt: new Date().toISOString(),
-
-
-      approved: false,
-
-
-      rejectedReason: '',
-
-
-    };
-
-
-
-
-
-    taskStore.update(taskId, {
-
-
-      plan,
-
-
-      plan_status: 'pending',
-
-
-    });
-
-
-
-
-
-    return {
-
-
-      ok: true,
-
-      plan,
-
-      message: `Plan written (${plan.files.length} files, ${plan.steps.length} steps). Awaiting PM approval.`,
-
-    };
-
-  },
-
-});
 
 
 

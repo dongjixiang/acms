@@ -21,6 +21,7 @@ const META_FILENAME = '.acms-meta.json';
 const MAX_FILES_READ = 200;
 const MAX_FILES_CACHED = 100;
 const MAX_ERRORS = 50;
+const MAX_EXPERIENCES = 20;
 const FLUSH_INTERVAL_MS = 5000;
 
 // in-memory cache: workspaceSlug -> meta object
@@ -58,8 +59,9 @@ function getEmptyMeta() {
     filesWritten: {},     // path -> [taskId, ...]
     filesCached: {},      // path -> { taskId, summary, lastRead }
     errorsHit: [],        // [{ at, msg, taskId }, ...]
+    experiences: [],      // [{ taskId, title, outcome, summary, pitfalls, timestamp }, ...]
     lastTouched: new Date().toISOString(),
-    version: 1,
+    version: 2,
   };
 }
 
@@ -150,6 +152,32 @@ function cacheFileSummary(slug, filePath, summary, ctx = {}) {
   return meta;
 }
 
+// 记录跨任务经验（语义级：什么方案成功、什么坑踩过）
+function recordExperience(slug, experience, ctx = {}) {
+  const meta = load(slug);
+  meta.experiences.push({
+    taskId: experience.taskId || ctx.taskId || '',
+    title: String(experience.title || '').slice(0, 100),
+    outcome: String(experience.outcome || 'completed').slice(0, 20),  // completed / failed / rejected
+    summary: String(experience.summary || '').slice(0, 400),
+    pitfalls: String(experience.pitfalls || '').slice(0, 300),
+    timestamp: new Date().toISOString(),
+  });
+  if (meta.experiences.length > MAX_EXPERIENCES) {
+    meta.experiences = meta.experiences.slice(-MAX_EXPERIENCES);
+  }
+  meta.lastTouched = new Date().toISOString();
+  dirty.add(slug);
+  scheduleFlush();
+  return meta;
+}
+
+// 获取最近 N 条经验
+function getRecentExperiences(slug, count = 3) {
+  const meta = load(slug);
+  return meta.experiences.slice(-count);
+}
+
 // 给 agent-execute 注入 system prompt 用的摘要
 //   只显示 read 最多 10 个 + written 最多 10 个 + 最近 5 个 errors
 function getSummaryForPrompt(slug, currentTaskId = '') {
@@ -161,11 +189,12 @@ function getSummaryForPrompt(slug, currentTaskId = '') {
     .filter(([path, taskIds]) => !currentTaskId || !taskIds.includes(currentTaskId))
     .slice(0, 10);
   const recentErrors = meta.errorsHit.slice(-5);
+  const recentXp = meta.experiences.slice(-3);
 
   const lines = [];
   lines.push('# 🧠 Workspace Memory (from previous tasks in this workspace)');
   lines.push('');
-  if (topRead.length === 0 && topWritten.length === 0 && recentErrors.length === 0) {
+  if (topRead.length === 0 && topWritten.length === 0 && recentErrors.length === 0 && recentXp.length === 0) {
     lines.push('_No prior task history in this workspace._');
     return lines.join('\n');
   }
@@ -193,6 +222,19 @@ function getSummaryForPrompt(slug, currentTaskId = '') {
     }
     lines.push('');
   }
+
+  // 经验记忆：最近完成的任务经验
+  if (recentXp.length > 0) {
+    lines.push('## 📗 Past task experience (lessons learned from similar tasks):');
+    for (const xp of recentXp) {
+      const outcomeIcon = xp.outcome === 'completed' ? '✅' : xp.outcome === 'failed' ? '❌' : '🔶';
+      lines.push(`- ${outcomeIcon} **${xp.title}** → ${xp.outcome}`);
+      lines.push(`  ${xp.summary}`);
+      if (xp.pitfalls) lines.push(`  ⚠️ ${xp.pitfalls}`);
+    }
+    lines.push('');
+  }
+
   return lines.join('\n');
 }
 
@@ -214,5 +256,7 @@ module.exports = {
   recordError,
   cacheFileSummary,
   getSummaryForPrompt,
+  recordExperience,
+  getRecentExperiences,
   flushAll,
 };

@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ACMS Agent 架构全景</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    background: #f5f0eb;
+    color: #2c2c2c;
+    padding: 32px;
+    line-height: 1.6;
+  }
+  h1 {
+    font-size: 28px; font-weight: 700; margin-bottom: 6px;
+    color: #5b8c5a; letter-spacing: -0.5px;
+  }
+  .subtitle { color: #666; font-size: 14px; margin-bottom: 32px; }
+
+  /* ── Layer Section ── */
+  .layer {
+    background: #fff; border-radius: 12px; padding: 20px 24px;
+    margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    border-left: 4px solid #5b8c5a;
+    transition: box-shadow 0.2s;
+  }
+  .layer:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+  .layer-header {
+    display: flex; align-items: center; gap: 12px;
+    cursor: pointer; user-select: none;
+  }
+  .layer-header h2 { font-size: 16px; font-weight: 600; color: #3a3a3a; }
+  .layer-badge {
+    font-size: 11px; padding: 2px 8px; border-radius: 99px;
+    background: #e8f0e8; color: #5b8c5a; font-weight: 500;
+  }
+  .layer-icon { font-size: 20px; width: 28px; text-align: center; }
+  .layer-toggle {
+    margin-left: auto; font-size: 13px; color: #aaa;
+    transition: transform 0.2s;
+  }
+  .layer-toggle.open { transform: rotate(180deg); }
+  .layer-body {
+    margin-top: 14px; overflow: hidden; transition: max-height 0.3s;
+  }
+  .layer-body.collapsed { max-height: 0; margin-top: 0; }
+
+  /* ── Grid Cards ── */
+  .card-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 10px; margin-top: 10px;
+  }
+  .card {
+    background: #faf8f5; border: 1px solid #eee; border-radius: 8px;
+    padding: 12px 14px; position: relative;
+  }
+  .card .emoji { font-size: 18px; margin-right: 6px; }
+  .card-title { font-weight: 600; font-size: 13px; color: #3a3a3a; }
+  .card-desc { font-size: 12px; color: #777; margin-top: 4px; line-height: 1.5; }
+  .card-tag {
+    display: inline-block; font-size: 10px; padding: 1px 6px;
+    border-radius: 4px; margin-top: 6px; font-weight: 500;
+  }
+  .tag-green { background: #e8f0e8; color: #5b8c5a; }
+  .tag-blue { background: #e4edf5; color: #3a7ebf; }
+  .tag-orange { background: #f5ede4; color: #bf7a3a; }
+  .tag-purple { background: #ede4f5; color: #7a3abf; }
+  .tag-red { background: #f5e4e4; color: #bf3a3a; }
+
+  /* ── Pipeline Flow ── */
+  .pipeline {
+    display: flex; gap: 8px; align-items: stretch; flex-wrap: wrap;
+    margin: 12px 0;
+  }
+  .pipe-step {
+    flex: 1; min-width: 120px; padding: 14px 12px; border-radius: 8px;
+    text-align: center; font-size: 13px; position: relative;
+  }
+  .pipe-step .arrow {
+    position: absolute; right: -14px; top: 50%; transform: translateY(-50%);
+    font-size: 18px; color: #bbb;
+  }
+  .pipe-step.planner { background: #ede4f5; border: 1px solid #d5c6e8; }
+  .pipe-step.coder { background: #e4edf5; border: 1px solid #c6d6e8; }
+  .pipe-step.tester { background: #e8f0e8; border: 1px solid #c6e0c6; }
+  .pipe-step.reviewer { background: #f5ede4; border: 1px solid #e8d5c6; }
+  .pipe-step .label { font-weight: 600; display: block; }
+  .pipe-step .rounds { font-size: 11px; color: #888; display: block; margin-top: 2px; }
+  .pipe-step .tools { font-size: 10px; color: #999; display: block; margin-top: 4px; }
+  .pipe-skip {
+    display: inline-block; font-size: 10px; padding: 2px 8px;
+    background: #fef0e0; color: #b8863a; border-radius: 4px;
+    margin-left: 4px; font-weight: 500;
+  }
+
+  /* ── Event Flow ── */
+  .event-flow {
+    display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px;
+  }
+  .event-box {
+    padding: 6px 10px; border-radius: 6px; font-size: 12px;
+    background: #fff; border: 1px solid #e0d8d0;
+  }
+  .event-box .src { font-weight: 500; color: #5b8c5a; }
+  .event-box .arr { color: #aaa; margin: 0 4px; }
+  .event-box .dst { font-weight: 500; color: #3a7ebf; }
+
+  /* ── Tool List ── */
+  .tool-list { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .tool-chip {
+    font-size: 11px; padding: 2px 8px; border-radius: 4px;
+    background: #f0ece8; color: #555; border: 1px solid #e0dcd8;
+  }
+  .tool-chip.read { background: #e8f0f5; border-color: #c6d6e8; }
+  .tool-chip.write { background: #f5e8e8; border-color: #e8c6c6; }
+  .tool-chip.git { background: #f0e8f5; border-color: #d8c6e8; }
+  .tool-chip.exec { background: #f5f0e8; border-color: #e8d8c6; }
+  .tool-chip.system { background: #e8f5e8; border-color: #c6e0c6; }
+
+  /* ── Timeline ── */
+  .version-timeline {
+    margin: 12px 0; padding: 0; list-style: none;
+  }
+  .version-timeline li {
+    padding: 6px 0 6px 20px; border-left: 2px solid #ddd;
+    position: relative; font-size: 13px;
+  }
+  .version-timeline li::before {
+    content: ''; position: absolute; left: -5px; top: 10px;
+    width: 8px; height: 8px; border-radius: 50%; background: #5b8c5a;
+  }
+  .version-timeline .vtag {
+    font-weight: 600; font-size: 12px; color: #5b8c5a;
+    margin-right: 6px;
+  }
+
+  /* ── Stats Bar ── */
+  .stats-row {
+    display: flex; gap: 16px; margin: 10px 0; flex-wrap: wrap;
+  }
+  .stat-item {
+    padding: 8px 14px; background: #faf8f5; border-radius: 8px;
+    text-align: center; min-width: 80px;
+  }
+  .stat-item .num { font-size: 22px; font-weight: 700; color: #5b8c5a; }
+  .stat-item .lbl { font-size: 11px; color: #888; }
+
+  /* ── Responsive ── */
+  @media (max-width: 600px) {
+    body { padding: 16px; }
+    .card-grid { grid-template-columns: 1fr; }
+    .pipeline { flex-direction: column; }
+    .pipe-step .arrow { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<h1>🌿 ACMS Agent 架构全景</h1>
+<div class="subtitle">智能体协同管理系统 · 内部智能体架构 v0.64 · <span style="color:#5b8c5a">净 -285 行 · 11 文件 · 42 测试通过</span></div>
+
+<!-- ═══════════ Stats ═══════════ -->
+<div class="stats-row">
+  <div class="stat-item"><div class="num">5</div><div class="lbl">Agent 框架<br>已统一</div></div>
+  <div class="stat-item"><div class="num">4</div><div class="lbl">角色流水线<br>动态编排</div></div>
+  <div class="stat-item"><div class="num">42</div><div class="lbl">自动化测试<br>全部通过</div></div>
+  <div class="stat-item"><div class="num">33</div><div class="lbl">Agent 工具<br>注册可用</div></div>
+  <div class="stat-item"><div class="num">3</div><div class="lbl">审核门禁<br>提交前拦截</div></div>
+</div>
+
+<!-- ═══════════ Layer 1: Event Bus ═══════════ -->
+<div class="layer" style="border-left-color:#3a7ebf">
+  <div class="layer-header" onclick="toggle(this)">
+    <span class="layer-icon">📡</span>
+    <h2>事件总线 · Event Bus</h2>
+    <span class="layer-badge">通信层</span>
+    <span class="layer-toggle open">▾</span>
+  </div>
+  <div class="layer-body">
+    <p style="font-size:13px;color:#666;margin-bottom:10px">ACMS 内部通信中枢。所有 Agent 组件通过事件驱动解耦，不直接调对方代码。</p>
+    <div class="event-flow">
+      <div class="event-box"><span class="src">task-agent</span> <span class="arr">→emit→</span> <code>task.completed</code> <span class="arr">→</span> <span class="dst">dispatcher / 小吉 / reviewer</span></div>
+      <div class="event-box"><span class="src">task-agent</span> <span class="arr">→emit→</span> <code>task.failed</code> <span class="arr">→</span> <span class="dst">dispatcher(重试) / 小吉(弹面板)</span></div>
+      <div class="event-box"><span class="src">task-agent</span> <span class="arr">→emit→</span> <code>task.review_rejected</code> <span class="arr">→</span> <span class="dst">dispatcher / 小吉</span></div>
+      <div class="event-box"><span class="src">dispatcher</span> <span class="arr">→emit→</span> <code>task.claimed</code> <span class="arr">→</span> <span class="dst">task-agent(触发执行)</span></div>
+      <div class="event-box"><span class="src">用户</span> <span class="arr">→WebSocket→</span> <code>task.* / agent.*</code> <span class="arr">→CustomEvent→</span> <span class="dst">小吉(弹面板+加分)</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ Layer 2: Multi-Role Pipeline ═══════════ -->
+<div class="layer" style="border-left-color:#8b5cf6">
+  <div class="layer-header" onclick="toggle(this)">
+    <span class="layer-icon">🏭</span>
+    <h2>多角色流水线 · Multi-Role Pipeline</h2>
+    <span class="layer-badge">执行引擎</span>
+    <span class="layer-toggle open">▾</span>
+  </div>
+  <div class="layer-body">
+    <p style="font-size:13px;color:#666;margin-bottom:10px">
+      串行 4 角色（或 2 角色），每角色独立 system prompt + 工具子集，天然交叉验证。
+      <span class="pipe-skip">文档/重构/测试类 → 跳过 Tester+Reviewer，省 40% token</span>
+    </p>
+    <div class="pipeline">
+      <div class="pipe-step planner">
+        <span class="label">📋 Planner</span>
+        <span class="rounds">max 10 轮</span>
+        <span class="tools">read + git + search_history + delegate_subtasks</span>
+      </div>
+      <div class="pipe-step coder">
+        <span class="label">✏️ Coder</span>
+        <span class="rounds">max 25 轮 (简单 15)</span>
+        <span class="tools">read/write/patch/git + typescheck + delegate_subtasks</span>
+      </div>
+      <div class="pipe-step tester">
+        <span class="label">🧪 Tester</span>
+        <span class="rounds">max 10 轮</span>
+        <span class="tools">read + exec + browser + http + db</span>
+      </div>
+      <div class="pipe-step reviewer">
+        <span class="label">👀 Reviewer</span>
+        <span class="rounds">max 5 轮</span>
+        <span class="tools">read + git diff + 只读评估</span>
+      </div>
+    </div>
+    <div class="card-grid">
+      <div class="card">
+        <span class="card-title"><span class="emoji">⛔</span>Planner 中止 4 类检测</span>
+        <div class="card-desc">输出过短 &lt;50 字 · 关键词"无法理解" · LLM 异常 · maxRounds 用光</div>
+        <span class="card-tag tag-purple">v0.63</span>
+      </div>
+      <div class="card">
+        <span class="card-title"><span class="emoji">🔗</span>Planner→Coder 衔接</span>
+        <div class="card-desc">Plan 持久化到 task.doc.plan（不截断），Coder 直接读完整计划，省 5-10 轮 explore</div>
+        <span class="card-tag tag-purple">v0.63</span>
+      </div>
+      <div class="card">
+        <span class="card-title"><span class="emoji">🔄</span>任务中止恢复闭环</span>
+        <div class="card-desc">dispatcher 监听 task.failed → force retry (跳过 120s 防并发检查)</div>
+        <span class="card-tag tag-purple">v0.63</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ Layer 3: Unified Runtime ═══════════ -->
+<div class="layer" style="border-left-color:#3a7ebf">
+  <div class="layer-header" onclick="toggle(this)">
+    <span class="layer-icon">⚙️</span>
+    <h2>统一运行时 · agent-runtime.js</h2>
+    <span class="layer-badge">基础设施</span>
+    <span class="layer-toggle open">▾</span>
+  </div>
+  <div class="layer-body">
+    <p style="font-size:13px;color:#666;margin-bottom:10px">105 行核心——4 套框架共用同一个 <code>runtime.execute()</code>，消除 7 个重复包装层（~1500 行）</p>
+    <div class="card-grid">
+      <div class="card">
+        <span class="card-title"><span class="emoji">1️⃣</span>task-agent</span>
+        <div class="card-desc">Kanban 任务执行器 · 计划→实现→测试→审核</div>
+        <span class="card-tag tag-blue">多角色</span>
+      </div>
+      <div class="card">
+        <span class="card-title"><span class="emoji">2️⃣</span>chat-intent</span>
+        <div class="card-desc">Requirement 对话 · LLM tool-loop + 意图识别</div>
+        <span class="card-tag tag-blue">单 agent</span>
+      </div>
+      <div class="card">
+        <span class="card-title"><span class="emoji">3️⃣</span>agent-buddy (小吉)</span>
+        <div class="card-desc">系统人格化管家 · SKILL 三层 prompt + 主动弹窗</div>
+        <span class="card-tag tag-blue">L0+L1+L2</span>
+      </div>
+      <div class="card">
+        <span class="card-title"><span class="emoji">4️⃣</span>assist-free</span>
+        <div class="card-desc">自由对话 · 无 requirement 上下文，轻量工具集</div>
+        <span class="card-tag tag-blue">Lite</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ Layer 4: Tool System ═══════════ -->
+<div class="layer" style="border-left-color:#bf7a3a">
+  <div class="layer-header" onclick="toggle(this)">
+    <span class="layer-icon">🔧</span>
+    <h2>工具系统 · Tool Registry + ACI</h2>
+    <span class="layer-badge">能力层</span>
+    <span class="layer-toggle open">▾</span>
+  </div>
+  <div class="layer-body">
+    <p style="font-size:13px;color:#666;margin-bottom:10px">集中注册，按角色裁剪可见性。getToolStats 监控调用频次+失败率，驱动描述升级。</p>
+    <div class="tool-list">
+      <span class="tool-chip read">agent_read_file</span>
+      <span class="tool-chip read">agent_search_files</span>
+      <span class="tool-chip read">agent_read_dir_summary</span>
+      <span class="tool-chip write">agent_write_file</span>
+      <span class="tool-chip write">agent_patch_file</span>
+      <span class="tool-chip write">agent_multi_patch</span>
+      <span class="tool-chip exec">agent_exec_command</span>
+      <span class="tool-chip git">agent_git_status</span>
+      <span class="tool-chip git">agent_git_diff</span>
+      <span class="tool-chip git">agent_git_commit</span>
+      <span class="tool-chip git">agent_git_log</span>
+      <span class="tool-chip system">agent_set_phase</span>
+      <span class="tool-chip system">agent_typescheck</span>
+      <span class="tool-chip system">agent_plan</span>
+      <span class="tool-chip system">agent_db_query</span>
+      <span class="tool-chip system">agent_ssh_execute</span>
+      <span class="tool-chip system">agent_http_request</span>
+      <span class="tool-chip system">delegate_subtasks</span>
+      <span class="tool-chip system">search_history</span>
+    </div>
+    <div class="card-grid" style="margin-top:10px">
+      <div class="card">
+        <span class="card-title"><span class="emoji">🎯</span>ACI 优化（Anthropic 原则）</span>
+        <div class="card-desc">「花更多时间优化工具定义而非 prompt」——agent_git_commit 加 Conventional Commits 格式说明；agent_ssh_execute 加安全警告</div>
+        <span class="card-tag tag-orange">v0.64</span>
+      </div>
+      <div class="card">
+        <span class="card-title"><span class="emoji">📊</span>getToolStats 监控</span>
+        <div class="card-desc">每工具调用次数、错误率、最后调用时间；T0-T2 分级（描述升级→合并→监控）</div>
+        <span class="card-tag tag-orange">v0.62</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ Layer 5: Memory & Experience ═══════════ -->
+<div class="layer" style="border-left-color:#5b8c5a">
+  <div class="layer-header" onclick="toggle(this)">
+    <span class="layer-icon">🧠</span>
+    <h2>记忆系统 · Memory + Experience</h2>
+    <span class="layer-badge">知识层</span>
+    <span class="layer-toggle open">▾</span>
+  </div>
+  <div class="layer-body">
+    <div class="card-grid">
+      <div class="card">
+        <span class="card-title"><span class="emoji">📁</span>workspace-meta.json</span>
+        <div class="card-desc">跨任务文件级记忆：哪些文件被读过（top 10）、哪些被改过、踩过哪些坑。Planner 启动时自动注入。</div>
+        <span class="card-tag tag-green">v0.X</span>
+      </div>
+      <div class="card">
+        <span class="card-title"><span class="emoji">📗</span>经验记忆 (Experiences)</span>
+        <div class="card-desc">语义级跨任务经验：任务完成/失败/驳回时自动记录。getSummaryForPrompt 注入最近 3 条。管道: 完成→总结→存→下任务注入</div>
+        <span class="card-tag tag-green">v0.64</span>
+      </div>
+      <div class="card">
+        <span class="card-title"><span class="emoji">🔍</span>search_history 工具</span>
+        <div class="card-desc">Planner 可主动搜索历史任务（标题/描述/execution_log），找类似场景</div>
+        <span class="card-tag tag-green">v0.62</span>
+      </div>
+      <div class="card">
+        <span class="card-title"><span class="emoji">🧸</span>小吉 buddy_memory</span>
+        <div class="card-desc">用户偏好/扩载分类/最近操作持久化，跨对话保留</div>
+        <span class="card-tag tag-green">v0.61</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ Layer 6: Guardrails & Quality Gates ═══════════ -->
+<div class="layer" style="border-left-color:#bf3a3a">
+  <div class="layer-header" onclick="toggle(this)">
+    <span class="layer-icon">🛡️</span>
+    <h2>审核门禁 · Guardrails + Quality Gates</h2>
+    <span class="layer-badge">安全层</span>
+    <span class="layer-toggle open">▾</span>
+  </div>
+  <div class="layer-body">
+    <div class="pipeline" style="gap:4px">
+      <div class="pipe-step" style="background:#f5e4e4;border-color:#e8c6c6;min-width:100px;padding:10px">
+        <span class="label" style="font-size:12px">① 装睡检测</span>
+        <span style="font-size:10px;color:#888">execution_log 0 tool calls → 退回</span>
+      </div>
+      <div class="pipe-step" style="background:#f5ede4;border-color:#e8d5c6;min-width:100px;padding:10px">
+        <span class="label" style="font-size:12px">② 输出质量门禁</span>
+        <span style="font-size:10px;color:#888">分析内容 < 50 字或空洞 → 退回</span>
+      </div>
+      <div class="pipe-step" style="background:#e4edf5;border-color:#c6d6e8;min-width:100px;padding:10px">
+        <span class="label" style="font-size:12px">③ 文件审计</span>
+        <span style="font-size:10px;color:#888">需求文件缺失 → auto-steer</span>
+      </div>
+      <div class="pipe-step" style="background:#e8f0e8;border-color:#c6e0c6;min-width:100px;padding:10px">
+        <span class="label" style="font-size:12px">✅ 提交到 review</span>
+      </div>
+    </div>
+    <div class="card-grid" style="margin-top:10px">
+      <div class="card">
+        <span class="card-title"><span class="emoji">⚠️</span>Guardrail 描述校验</span>
+        <div class="card-desc">描述 < 20 字 → 自动标记 description_too_short + progress_note 提示。Planner 提前收到警告，省 10 轮探索。</div>
+        <span class="card-tag tag-red">v0.64</span>
+      </div>
+      <div class="card">
+        <span class="card-title"><span class="emoji">🔌</span>SSH 安全警告</span>
+        <div class="card-desc">agent_ssh_execute 描述内嵌安全约束：禁止 rm -rf / kill -9 / service stop 等破坏性命令</div>
+        <span class="card-tag tag-red">v0.64</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ Timeline ═══════════ -->
+<div class="layer" style="border-left-color:#888">
+  <div class="layer-header" onclick="toggle(this)">
+    <span class="layer-icon">📅</span>
+    <h2>演进时间线</h2>
+    <span class="layer-badge">2026-07</span>
+    <span class="layer-toggle open">▾</span>
+  </div>
+  <div class="layer-body">
+    <ul class="version-timeline">
+      <li><span class="vtag">v0.62</span>统一运行时（agent-runtime.js）· 多角色流水线（Planner→Coder→Tester→Reviewer）· event-bus 打通 · 管家查询（query_collection）· search_history / delegate_subtasks</li>
+      <li><span class="vtag">v0.63</span>角色中止透明化（4 类根因）· abort 恢复闭环 · Planner 主动报告无法理解 · 中止循环断链 · Planner→Coder 计划持久化衔接</li>
+      <li><span class="vtag">v0.64</span>Planner→并行 Worker · 工具 ACI 优化 · Cross-task 经验记忆 · Guardrails 输入校验 · Agent Tracing · 三级审核门禁 · task-agent.js 重构拆分 · 42 个自动化测试 · 小吉事件主动通知 · 动态角色编排</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+function toggle(el) {
+  var body = el.parentElement.querySelector('.layer-body');
+  var toggler = el.querySelector('.layer-toggle');
+  if (body.classList.toggle('collapsed')) {
+    toggler.classList.remove('open');
+  } else {
+    toggler.classList.add('open');
+  }
+}
+</script>
+
+</body>
+</html>

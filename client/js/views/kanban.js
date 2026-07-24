@@ -208,7 +208,8 @@ async function openTask(taskId, root) {
     _taskFindById('task-detail-title').textContent = (t.id || '') + ': ' + escHtml(t.title || '');
     _taskFindById('task-detail-status').innerHTML =
       '<span class="status-badge badge-' + (t.status === 'in_progress' ? 'in_execution' : t.status === 'done' ? 'done' : 'clarifying') + '">' + (t.status || '') + '</span>' +
-      '<button class="btn-small" style="background:rgba(78,205,196,0.15);color:var(--green);border-color:rgba(78,205,196,0.3)" onclick="exportTask(\'' + t.id + '\')">📥 导出描述</button>';
+      '<button class="btn-small" style="background:rgba(78,205,196,0.15);color:var(--green);border-color:rgba(78,205,196,0.3)" onclick="exportTask(\'' + t.id + '\');return false">📥 导出描述</button>' +
+      '<button class="btn-small" style="background:rgba(255,200,50,0.12);color:var(--yellow);border-color:rgba(255,200,50,0.25);margin-left:4px" onclick="showTrace(\'' + t.id + '\');return false">🔍 追踪</button>';
     var skills = safeParse(t.required_skills), log = safeParse(t.execution_log), subs = safeParse(t.submissions), revs = safeParse(t.reviews);
 
     // Bug 额外信息
@@ -1224,4 +1225,266 @@ async function autoReviewPoll() {
     refreshKanban();
   } catch(e) { /* */ }
   _autoReviewBusy = false;
+}
+
+// ═══════════════════════════════════════════════════
+// Agent 执行追踪展示（Tracing）
+// ═══════════════════════════════════════════════════
+async function showTrace(taskId) {
+  console.log('[showTrace] 1 start', taskId);
+
+  // 如已有面板，先删除并清理其关联遮罩
+  var win = document.querySelector('.trace-panel-modal');
+  if (win) {
+    var oldOverlay = win._overlay;
+    win.remove();
+    if (oldOverlay) oldOverlay.remove();
+    return;
+  }
+
+  // 遮罩层（必须先清理旧面板再创建新遮罩，避免旧遮罩成为孤儿）
+  var overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:9998';
+  document.body.appendChild(overlay);
+  console.log('[showTrace] 2 modal created');
+
+  win = document.createElement('div');
+  win.className = 'trace-panel-modal';
+  win.style.cssText = 'position:fixed;top:5%;left:5%;width:90%;height:90%;background:var(--bg2);border:1px solid var(--border);border-radius:8px;z-index:9999;display:flex;flex-direction:column;box-shadow:0 4px 24px rgba(0,0,0,0.3);overflow:hidden';
+  win.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid var(--border);flex-shrink:0">' +
+    '<span style="font-weight:bold;font-size:14px">🔍 追踪: ' + taskId + '</span>' +
+    '<button onclick="var m=this.closest(\'.trace-panel-modal\');var o=m._overlay;m.remove();if(o)o.remove()" style="background:none;border:none;color:var(--text);font-size:20px;cursor:pointer">✕</button></div>' +
+    '<div style="padding:14px;color:#888;font-size:13px" id="trace-content">加载中...</div>';
+  win._overlay = overlay;
+  document.body.appendChild(win);
+  console.log('[showTrace] 3 DOM appended');
+
+  try {
+    console.log('[showTrace] 4 fetching');
+    var controller = new AbortController();
+    var timeoutId = setTimeout(function() { console.log('[showTrace] TIMEOUT'); controller.abort(); }, 10000);
+    var token = localStorage.getItem('acms-token');
+    var headers = { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' };
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    var resp = await fetch('/api/ai-tools/traces/' + taskId, { headers: headers, signal: controller.signal });
+    clearTimeout(timeoutId);
+    console.log('[showTrace] 5 fetched status=' + resp.status);
+    var data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || data.message || ('HTTP ' + resp.status));
+    console.log('[showTrace] 6 data received, building HTML');
+
+    var el = document.getElementById('trace-content');
+    if (!el) return;
+
+    // 构建可视化追踪展示
+    console.log('[showTrace] 7 building HTML');
+
+    function escHtml(s) {
+      if (s == null) return '';
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function statusBadge(status) {
+      var cls = status === 'done' ? '#4ecdc4' : status === 'failed' ? '#ff6b6b' : status === 'in_progress' ? '#ffd93d' : '#9090a0';
+      return '<span style="display:inline-block;padding:1px 8px;border-radius:8px;font-size:11px;font-weight:600;background:' + cls + '22;color:' + cls + ';border:1px solid ' + cls + '44">' + escHtml(status) + '</span>';
+    }
+
+    // Header 概览
+    var headerHtml = '<div style="padding:10px 14px;border-bottom:1px solid var(--border);flex-shrink:0">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">' +
+        '<span style="font-weight:bold;font-size:14px">🔍 <span style="color:var(--accent)">' + escHtml(data.taskId) + '</span></span>' +
+        statusBadge(data.status) +
+      '</div>' +
+      (data.title ? '<div style="font-size:12px;color:var(--text2);margin-bottom:6px">' + escHtml(data.title) + '</div>' : '') +
+      '<div style="display:flex;gap:14px;font-size:11px;color:var(--text2)">' +
+        (data.duration && data.duration !== 'N/A' ? '<span>⏱ ' + escHtml(data.duration) + '</span>' : '') +
+        (data.modelUsed && data.modelUsed !== 'unknown' ? '<span>🤖 ' + escHtml(data.modelUsed) + '</span>' : '') +
+        '<span>📝 共 ' + data.totalEntries + ' 条</span>' +
+      '</div>' +
+    '</div>';
+
+    // 角色统计
+    var roles = data.roleStats || {};
+    var roleKeys = Object.keys(roles);
+    var roleHtml = '';
+    if (roleKeys.length > 0) {
+      roleHtml = '<div style="padding:8px 14px;border-bottom:1px solid var(--border);flex-shrink:0;font-size:12px">' +
+        '<div style="font-weight:bold;margin-bottom:4px;font-size:12px;color:var(--text2)">角色执行统计</div>';
+      for (var ri = 0; ri < roleKeys.length; ri++) {
+        var r = roles[roleKeys[ri]];
+        var toolList = (r.tools || []).slice(0,6).map(function(t) {
+          return '<span style="display:inline-block;padding:0 5px;margin:1px 2px;background:var(--bg3);border-radius:3px;font-size:10px;color:var(--text2)">' + escHtml(t) + '</span>';
+        }).join('');
+        if ((r.tools || []).length > 6) toolList += '<span style="font-size:10px;color:#888"> +' + ((r.tools||[]).length - 6) + '</span>';
+        roleHtml +=
+          '<div style="display:flex;gap:10px;align-items:center;padding:3px 0">' +
+            '<span style="font-weight:bold;min-width:60px;font-size:11px">' + escHtml(roleKeys[ri]) + '</span>' +
+            '<span style="color:var(--text2);font-size:11px">' + r.entries + ' 步</span>' +
+            '<span style="color:var(--text2);font-size:11px">' + r.rounds + ' 轮</span>' +
+            '<span style="flex:1;overflow:hidden">' + toolList + '</span>' +
+          '</div>';
+      }
+      roleHtml += '</div>';
+    }
+
+    // 时间线
+    var timeline = data.timeline || [];
+    var timelineHtml = '<div style="display:flex;flex-direction:column;flex:1;min-height:0">' +
+      '<div style="padding:6px 14px;font-size:11px;font-weight:bold;color:var(--text2);border-bottom:1px solid var(--border);flex-shrink:0">📋 执行时间线 (' + timeline.length + ' 条)</div>' +
+      '<div style="flex:1;overflow-y:auto;padding:6px 14px;font-size:11px">';
+    if (timeline.length === 0) {
+      timelineHtml += '<div style="text-align:center;color:#888;padding:30px 0">⏳ 暂无执行日志</div>';
+    } else {
+      for (var ti = Math.max(0, timeline.length - 80); ti < timeline.length; ti++) {
+        var entry = timeline[ti];
+        var timeStr = entry.time ? new Date(entry.time).toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '';
+        var note = entry.note || '';
+        var action = entry.action || '';
+        var icon = '🔧';
+        if (note.indexOf('💡') >= 0 || note.indexOf('思路') >= 0) icon = '💡';
+        else if (note.indexOf('修复') >= 0 || note.indexOf('fix') >= 0) icon = '🔧';
+        else if (note.indexOf('已') === 0 || note.indexOf('完成') >= 0) icon = '✅';
+        else if (note.indexOf('检查') >= 0 || note.indexOf('验证') >= 0 || note.indexOf('确认') >= 0) icon = '🔍';
+        else if (action.indexOf('round') === 0) icon = '🔄';
+
+        var noteDisplay = note.length > 180 ? note.slice(0, 180) + '...' : note;
+
+        timelineHtml +=
+          '<div style="display:flex;gap:6px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.03)">' +
+            '<span style="flex-shrink:0;width:16px;text-align:center;font-size:11px">' + icon + '</span>' +
+            (timeStr ? '<span style="color:#888;flex-shrink:0;font-size:10px;min-width:60px">' + timeStr + '</span>' : '') +
+            '<div style="flex:1;min-width:0">' +
+              (action ? '<span style="color:var(--accent);font-weight:500;font-size:10px;margin-right:4px">' + escHtml(action) + '</span>' : '') +
+              '<span style="color:var(--text);word-break:break-word;line-height:1.4">' + escHtml(noteDisplay) + '</span>' +
+            '</div>' +
+          '</div>';
+      }
+    }
+    timelineHtml += '</div></div>';
+
+    el.innerHTML = headerHtml + roleHtml + timelineHtml;
+    el.style.cssText = 'display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden';
+    console.log('[showTrace] 8 done');
+
+  } catch(e) {
+    console.log('[showTrace] ERROR', e);
+    var el2 = document.getElementById('trace-content');
+    if (el2) el2.textContent = '❌ ' + (e.message || '失败');
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// 执行效果仪表盘
+// ═══════════════════════════════════════════════════
+async function showExecutionDashboard() {
+  // 移除已有面板
+  var old = document.querySelector('.exec-dashboard-modal');
+  if (old) old.remove();
+
+  // 加载中
+  var win = document.createElement('div');
+  win.className = 'exec-dashboard-modal';
+  win.style.cssText = 'position:fixed;top:8%;left:8%;width:84%;height:84%;background:var(--bg2);border:1px solid var(--border);border-radius:8px;z-index:9999;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,0.4)';
+  win.innerHTML = '<div style="padding:20px;text-align:center;color:#888">📊 加载执行数据...</div>';
+  document.body.appendChild(win);
+
+  try {
+    var data = await api('GET', '/ai-tools/execution-report');
+    if (!data) { toast('暂无执行数据', 'info'); win.remove(); return; }
+
+    var isLoading = false;
+    var analysisResult = '';
+
+    function render() {
+      var reasonsHtml = (data.failureReasons || []).map(function(r) {
+        return '<div style="display:flex;justify-content:space-between;padding:4px 8px;border-bottom:1px solid rgba(255,255,255,0.04);font-size:12px">' +
+          '<span>' + escHtml(r.reason) + '</span><span style="color:' + (r.count > 2 ? '#ff6b6b' : '#ffd93d') + ';font-weight:bold">' + r.count + ' 次</span></div>';
+      }).join('') || '<div style="color:#888;font-size:12px">暂无失败记录</div>';
+
+      var typeHtml = (data.typeDistribution || []).map(function(t) {
+        var pct = data.total > 0 ? Math.round(t.count / data.total * 100) : 0;
+        return '<div style="display:flex;justify-content:space-between;padding:3px 8px;font-size:12px">' +
+          '<span>' + escHtml(t.type) + '</span><span>' + t.count + ' (' + pct + '%)</span></div>';
+      }).join('');
+
+      var toolHtml = (data.toolStats || []).slice(0, 8).map(function(t) {
+        var errClass = t.errors > 0 ? 'color:#ff6b6b' : 'color:var(--green)';
+        return '<div style="display:flex;justify-content:space-between;padding:3px 8px;font-size:11px">' +
+          '<span>' + escHtml(t.name) + '</span><span style="' + errClass + '">' + t.count + ' 次' + (t.errors > 0 ? ' / ❌' + t.errors : '') + '</span></div>';
+      }).join('') || '<div style="color:#888;font-size:12px">暂无工具数据</div>';
+
+      var successRate = data.total > 0
+        ? Math.round(data.statusBreakdown.completed / Math.max(data.total - data.statusBreakdown.inProgress, 1) * 100)
+        : 0;
+
+      var analysisBlock = analysisResult
+        ? '<div style="flex:1;overflow-y:auto;padding:12px;font-size:12px;line-height:1.6;white-space:pre-wrap;background:rgba(0,0,0,0.03);border-top:1px solid var(--border)">' + escHtml(analysisResult) + '</div>'
+        : '';
+
+      win.innerHTML =
+        '<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border);flex-shrink:0">' +
+          '<span style="font-weight:bold">📊 执行效果报告</span>' +
+          '<div>' +
+            '<button class="btn-small" style="background:rgba(91,140,90,0.15);color:var(--green);border-color:rgba(91,140,90,0.3);margin-right:4px" onclick="generateExecutionAnalysis()" id="exec-analysis-btn">🤖 AI 分析</button>' +
+            '<button onclick="this.closest(\'.exec-dashboard-modal\').remove()" style="background:none;border:none;color:var(--text);font-size:18px;cursor:pointer;margin-left:4px">✕</button>' +
+          '</div>' +
+        '</div>' +
+        '<div style="display:flex;gap:12px;padding:12px 16px;flex-wrap:wrap;border-bottom:1px solid var(--border);flex-shrink:0;font-size:13px">' +
+          '<div style="padding:8px 16px;background:rgba(91,140,90,0.08);border-radius:6px;text-align:center"><div style="font-size:22px;font-weight:bold;color:var(--green)">' + data.total + '</div><div style="font-size:11px;color:#888">总任务</div></div>' +
+          '<div style="padding:8px 16px;background:rgba(78,205,196,0.08);border-radius:6px;text-align:center"><div style="font-size:22px;font-weight:bold;color:var(--green)">' + successRate + '%</div><div style="font-size:11px;color:#888">成功率</div></div>' +
+          '<div style="padding:8px 16px;background:rgba(255,100,100,0.08);border-radius:6px;text-align:center"><div style="font-size:22px;font-weight:bold;color:#ff6b6b">' + data.statusBreakdown.failed + '</div><div style="font-size:11px;color:#888">已失败</div></div>' +
+          (data.recent7 ? '<div style="padding:8px 16px;background:rgba(255,200,50,0.08);border-radius:6px;text-align:center"><div style="font-size:22px;font-weight:bold;color:var(--yellow)">' + data.recent7.total + '</div><div style="font-size:11px;color:#888">近 7 天</div></div>' : '') +
+          '<div style="padding:8px 16px;background:rgba(200,150,255,0.08);border-radius:6px;text-align:center"><div style="font-size:22px;font-weight:bold;color:#b388ff">' + (data.executionStats ? data.executionStats.totalRounds : 0) + '</div><div style="font-size:11px;color:#888">总轮次</div></div>' +
+        '</div>' +
+        '<div style="display:flex;flex:1;overflow:hidden;min-height:0">' +
+          '<div style="width:260px;border-right:1px solid var(--border);overflow-y:auto;padding:12px;flex-shrink:0;font-size:12px">' +
+            '<div style="font-weight:bold;margin-bottom:8px">❌ 失败原因</div>' + reasonsHtml +
+            '<div style="font-weight:bold;margin:12px 0 8px">📂 任务类型</div>' + typeHtml +
+            '<div style="font-weight:bold;margin:12px 0 8px">🔧 工具统计</div>' + toolHtml +
+          '</div>' +
+          '<div style="flex:1;overflow-y:auto;padding:12px;font-size:12px">' +
+            '<div style="font-weight:bold;margin-bottom:8px">📗 最近经验</div>' +
+            ((data.recentExperiences || []).length > 0
+              ? data.recentExperiences.map(function(x) {
+                  var icon = x.outcome === 'completed' ? '✅' : x.outcome === 'failed' ? '❌' : '🔶';
+                  return '<div style="padding:6px 8px;margin-bottom:6px;background:rgba(255,255,255,0.04);border-radius:4px;border-left:3px solid ' + (x.outcome === 'completed' ? 'var(--green)' : '#ff6b6b') + '">' +
+                    '<div style="font-weight:bold;font-size:13px">' + icon + ' ' + escHtml(x.title || '') + '</div>' +
+                    '<div style="color:#888;font-size:11px;margin-top:2px">' + escHtml(x.summary || '') + '</div>' +
+                    (x.pitfalls ? '<div style="color:#ff6b6b;font-size:11px;margin-top:2px">⚠️ ' + escHtml(x.pitfalls) + '</div>' : '') +
+                    '</div>';
+                }).join('')
+              : '<div style="color:#888">暂无经验数据</div>'
+            ) +
+          '</div>' +
+        '</div>' +
+        analysisBlock;
+
+      // Wire up AI分析按钮
+      document.getElementById('exec-analysis-btn').onclick = generateExecutionAnalysis;
+    }
+
+    async function generateExecutionAnalysis() {
+      if (isLoading) return;
+      isLoading = true;
+      var btn = document.getElementById('exec-analysis-btn');
+      if (btn) { btn.textContent = '⏳ 分析中...'; btn.disabled = true; }
+
+      try {
+        var result = await api('POST', '/ai-tools/execution-analysis');
+        analysisResult = result.analysis || '分析无返回结果';
+      } catch(e) {
+        analysisResult = 'AI 分析失败: ' + e.message;
+      }
+
+      isLoading = false;
+      if (btn) { btn.textContent = '🤖 AI 分析'; btn.disabled = false; }
+      render();
+    }
+
+    window.generateExecutionAnalysis = generateExecutionAnalysis;
+    render();
+
+  } catch(e) {
+    win.innerHTML = '<div style="padding:20px;text-align:center;color:#ff6b6b">❌ 加载失败: ' + escHtml(e.message) + '</div>';
+  }
 }

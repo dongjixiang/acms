@@ -73,7 +73,9 @@ registerTool({
 registerTool({
   name: 'agent_git_commit',
   description: 'Stage all modified files and create a commit with the given message. Returns commit hash and summary. '
-    + '示例: agent_git_commit({message: "Fix: handle edge case in login flow"}) — 提交所有改动。写完代码改完后调这个保存进度。',
+    + 'IMPORTANT: Runs `git add -A` automatically — you do NOT need to call git_add separately. '
+    + 'Use Conventional Commits format for message: "Feat: add user login", "Fix: handle null in getItem", "Refactor: extract Grid class". '
+    + '示例: agent_git_commit({message: "Feat: add renderGrid call in game.js"}) — 提交所有改动。写完代码改完后调这个保存进度。',
   parameters: {
     type: 'object',
     properties: {

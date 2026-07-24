@@ -4,7 +4,8 @@ const { registerTool } = require('../../services/tool-registry');
 
 registerTool({
   name: 'agent_ssh_execute',
-  description: 'Execute a command on a remote server via SSH. Requires SSH key configured in ~/.ssh/. Supported hosts: 120 (120.24.204.130), local (localhost). Use for remote debugging, log checking, and server-side operations.',
+  description: 'Execute a command on a remote server via SSH. Requires SSH key configured in ~/.ssh/. Supported hosts: 120 (120.24.204.130), local (localhost). Use for remote debugging, log checking, and server-side operations. '
+    + '⚠️ SAFETY: NEVER run destructive commands (rm -rf, kill -9, service stop, docker rm) without explicit user confirmation. Prefer read-only commands (tail, cat, ls, ps, grep, df, docker ps).',
   parameters: {
     type: 'object',
     properties: {

@@ -420,6 +420,26 @@ router.post('/agent-execute', async (req, res, next) => {
       });
     }
 
+    // P1③ 审核网关: 输出质量检查 — 防止 agent 提交空/无意义内容
+    const analysisText = (result && result.analysis || '').trim();
+    const hasMeaningfulOutput = analysisText.length > 50
+      && !analysisText.startsWith('✅ 所有角色执行完成。\n\n(无审核结论)')
+      && !analysisText.includes('0 files modified')
+      && !analysisText.includes('没有发现任何问题');
+    if (!hasMeaningfulOutput) {
+      const qualityWarning = `⚠️ 输出质量检查未通过: agent 提交的分析内容过于空洞 (${analysisText.length} 字符)。`
+        + '\n\n请确保任务实际执行了有意义的工作（修改文件、运行测试、验证结果），并在提交时提供详细的完成说明。';
+      taskStore.update(taskId, { status: 'in_progress', progress_note: qualityWarning });
+      console.warn(`[agent-execute] ⚠️ 质量门禁: Task ${taskId} - 分析内容空洞 (${analysisText.length} chars), returning to in_progress`);
+      return res.status(409).json({
+        success: false,
+        taskId,
+        error: 'QUALITY_GATE_REJECTED',
+        message: `Quality gate: analysis too short (${analysisText.length} chars). Task returned to in_progress.`,
+        notes: qualityWarning,
+      });
+    }
+
     const submitResult = taskStore.submit(taskId, {
       agentId: agentId || 'agent-xiaoji',
       notes: result.analysis,
@@ -633,6 +653,262 @@ router.post('/decompose', async (req, res, next) => {
       taskCount: createdTasks.length,
       tasks: createdTasks,
       taskGraph,
+    });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// Agent 执行链路追踪（Tracing）
+// ═══════════════════════════════════════════════════════════
+router.get('/traces/:taskId', (req, res) => {
+  const task = taskStore.getById(req.params.taskId);
+  if (!task) return res.status(404).json({ error: 'TASK_NOT_FOUND' });
+
+  // 解析 execution_log
+  let timeline = [];
+  try {
+    timeline = JSON.parse(task.execution_log || '[]');
+  } catch (e) { /* 空日志 */ }
+
+  // 按角色分组统计
+  const roleStats = {};
+  for (const entry of timeline) {
+    const roleMatch = entry.note ? entry.note.match(/^\[([^\]]+)\]/) : null;
+    const role = roleMatch ? roleMatch[1] : 'system';
+    if (!roleStats[role]) roleStats[role] = { entries: 0, tools: [], rounds: 0, lastAction: '' };
+    roleStats[role].entries++;
+    roleStats[role].lastAction = entry.note || entry.action || '';
+    if (entry.action && entry.action.startsWith('round_')) roleStats[role].rounds++;
+    if (entry.note) {
+      const toolMatch = entry.note.match(/\[([\w_, ]+)\]/g);
+      if (toolMatch) {
+        for (const m of toolMatch) {
+          const tools = m.replace(/[\[\]]/g, '').split(',').map(t => t.trim());
+          for (const t of tools) roleStats[role].tools.push(t);
+        }
+      }
+    }
+  }
+
+  // 去重工具列表
+  for (const r of Object.keys(roleStats)) {
+    roleStats[r].tools = [...new Set(roleStats[r].tools)];
+  }
+
+  res.json({
+    taskId: task.id,
+    title: task.title,
+    status: task.status,
+    progress: task.progress,
+    modelUsed: task.model || 'unknown',
+    duration: task.completed_at && task.created_at
+      ? Math.round((new Date(task.completed_at) - new Date(task.created_at)) / 1000) + 's'
+      : 'N/A',
+    roleStats,
+    timeline: timeline.slice(-50), // 最近 50 条
+    totalEntries: timeline.length,
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// 执行效果报告（聚合统计）
+// ═══════════════════════════════════════════════════════════
+router.get('/execution-report', (req, res) => {
+  const tasks = taskStore.list({ limit: 200 }) || [];
+  const now = Date.now();
+  const DAY_MS = 86400000;
+
+  // 按状态分组
+  const total = tasks.length;
+  const completed = tasks.filter(t => t.status === 'done');
+  const failed = tasks.filter(t => t.status === 'failed');
+  const inReview = tasks.filter(t => t.status === 'review');
+  const inProgress = tasks.filter(t => t.status === 'in_progress');
+
+  // 最近 7 天
+  const recent7 = tasks.filter(t => t.created_at && (now - new Date(t.created_at).getTime()) < 7 * DAY_MS);
+  const recent7Completed = recent7.filter(t => t.status === 'done');
+  const recent7Failed = recent7.filter(t => t.status === 'failed');
+
+  // 失败原因分析（从 progress_note 提取）
+  const failureReasons = {};
+  for (const t of failed) {
+    const note = t.progress_note || '';
+    if (note.includes('无法理解')) failureReasons['Planner 无法理解任务'] = (failureReasons['Planner 无法理解任务'] || 0) + 1;
+    else if (note.includes('输出为空')) failureReasons['角色输出为空'] = (failureReasons['角色输出为空'] || 0) + 1;
+    else if (note.includes('装睡')) failureReasons['装睡检测'] = (failureReasons['装睡检测'] || 0) + 1;
+    else if (note.includes('质量')) failureReasons['质量门禁'] = (failureReasons['质量门禁'] || 0) + 1;
+    else if (note.includes('STALL')) failureReasons['装睡检测（英文）'] = (failureReasons['装睡检测（英文）'] || 0) + 1;
+    else failureReasons['其他'] = (failureReasons['其他'] || 0) + 1;
+  }
+
+  // 任务类型分布
+  const typeDist = {};
+  for (const t of tasks) {
+    const type = t.type || 'general';
+    typeDist[type] = (typeDist[type] || 0) + 1;
+  }
+
+  // 角色执行统计（从 execution_log 解析）
+  let totalRounds = 0, roleRoundCount = {};
+  for (const t of tasks) {
+    try {
+      const log = JSON.parse(t.execution_log || '[]');
+      for (const entry of log) {
+        if (entry.action && entry.action.startsWith('round_')) {
+          totalRounds++;
+          const roleMatch = entry.note ? entry.note.match(/^\[([^\]]+)\]/) : null;
+          const role = roleMatch ? roleMatch[1] : 'system';
+          roleRoundCount[role] = (roleRoundCount[role] || 0) + 1;
+        }
+      }
+    } catch (e) { /* skip */ }
+  }
+
+  const toolStats = (() => {
+    try { return require('../services/tool-registry').getToolStats(); } catch (e) { return null; }
+  })();
+
+  // 最近经验
+  let recentExperiences = [];
+  try {
+    const { collection } = require('../db/connection');
+    const projects = (collection('projects').all && collection('projects').all()) || [];
+    for (const p of projects) {
+      try {
+        const ws = require('../services/workspace-meta');
+        const slug = p.slug || p.name;
+        const xp = ws.getRecentExperiences(slug, 3);
+        if (xp && xp.length > 0) recentExperiences = recentExperiences.concat(xp);
+      } catch (e) { /* skip */ }
+    }
+    recentExperiences.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+    recentExperiences = recentExperiences.slice(0, 10);
+  } catch (e) { /* skip */ }
+
+  res.json({
+    total,
+    statusBreakdown: { completed: completed.length, failed: failed.length, review: inReview.length, inProgress: inProgress.length, other: total - completed.length - failed.length - inReview.length - inProgress.length },
+    recent7: { total: recent7.length, completed: recent7Completed.length, failed: recent7Failed.length, successRate: recent7.length > 0 ? Math.round(recent7Completed.length / Math.max(recent7.length - recent7Failed.length, 1) * 100) : 0 },
+    failureReasons: Object.entries(failureReasons).sort((a, b) => b[1] - a[1]).map(([reason, count]) => ({ reason, count })),
+    typeDistribution: Object.entries(typeDist).sort((a, b) => b[1] - a[1]).map(([type, count]) => ({ type, count })),
+    executionStats: { totalRounds, roleRounds: roleRoundCount },
+    toolStats: toolStats ? (toolStats.summary || []).slice(0, 15) : [],
+    recentExperiences,
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// AI 执行分析（LLM 生成根因分析 + 改进建议）
+// ═══════════════════════════════════════════════════════════
+router.post('/execution-analysis', async (req, res, next) => {
+  try {
+    // 先拿报告数据
+    const tasks = taskStore.list({ limit: 200 }) || [];
+    const now = Date.now();
+    const DAY_MS = 86400000;
+    const completed = tasks.filter(t => t.status === 'done');
+    const failed = tasks.filter(t => t.status === 'failed');
+
+    // 收集失败任务的 progress_note + execution_log 前 5 条
+    const failureSamples = failed.slice(-5).map(t => {
+      let logPreview = '';
+      try { logPreview = JSON.parse(t.execution_log || '[]').slice(-5).map(e => `${e.action}: ${(e.note || '').slice(0, 80)}`).join('\n'); } catch(e) {}
+      return {
+        id: t.id, title: t.title, type: t.type,
+        note: (t.progress_note || '').slice(0, 200),
+        logPreview,
+      };
+    });
+
+    // 成功任务的执行摘要
+    const successSamples = completed.slice(-3).map(t => {
+      let logPreview = '';
+      try { logPreview = JSON.parse(t.execution_log || '[]').slice(-3).map(e => `${e.action}: ${(e.note || '').slice(0, 80)}`).join('\n'); } catch(e) {}
+      return {
+        id: t.id, title: t.title, type: t.type,
+        rounds: t.execution_log ? (JSON.parse(t.execution_log).filter(e => e.action && e.action.startsWith('round_')).length) : 0,
+        logPreview,
+      };
+    });
+
+    const toolStats = (() => { try { return require('../services/tool-registry').getToolStats(); } catch(e) { return null; } })();
+    const errorTools = toolStats ? toolStats.summary.filter(s => s.errors > 0).map(s => `${s.name}: ${s.errors} errors / ${s.count} calls`) : [];
+
+    // 构建 LLM prompt
+    const prompt = `你是一个 ACMS 智能体系统的运维分析专家。请分析以下执行数据，输出中文分析报告。
+
+## 执行概况
+- 总任务数: ${tasks.length}
+- 已完成: ${completed.length}
+- 已失败: ${failed.length}
+- 成功率: ${tasks.length > 0 ? Math.round(completed.length / (completed.length + failed.length) * 100) : 0}%
+
+## 失败原因分布
+${(tasks.length > 0 ? (() => {
+  const reasons = {};
+  for (const t of failed) {
+    const n = t.progress_note || '';
+    if (n.includes('无法理解')) reasons['Planner 无法理解任务'] = (reasons['Planner 无法理解任务'] || 0) + 1;
+    else if (n.includes('输出为空')) reasons['角色输出为空'] = (reasons['角色输出为空'] || 0) + 1;
+    else reasons['其他'] = (reasons['其他'] || 0) + 1;
+  }
+  return Object.entries(reasons).map(([k, v]) => `- ${k}: ${v}次`).join('\n');
+})() : '暂无数据')}
+
+## 最近失败任务样本
+${failureSamples.map(t => `### ${t.id} (${t.type})
+备注: ${t.note}
+日志: ${t.logPreview || '(无)'}`).join('\n\n') || '(无)'}
+
+## 高错误率工具
+${errorTools.join('\n') || '暂无'}
+
+## 最近成功任务样本
+${successSamples.map(t => `### ${t.id} (${t.type})
+轮次: ${t.rounds}
+日志: ${t.logPreview || '(无)'}`).join('\n\n') || '(无)'}
+
+## 要求
+请输出以下结构的分析报告（用中文）：
+
+**1. 根因分析**
+- 列出 2-3 个最突出的失败模式
+- 每个模式给出量化数据（出现次数、占比）
+- 推断根本原因
+
+**2. 改进建议**
+- 针对每个根因给出具体可操作的改进建议
+- 优先级排序（P0/P1/P2）
+
+**3. 亮点**
+- 表现好的方面
+- 值得保持或加强的做法
+
+**4. 趋势判断**
+- 当前运行状态整体评价（健康 / 亚健康 / 不健康）
+- 如果不改善会有什么后果`;
+
+    const { execute: runtimeExec } = require('../services/agent-runtime');
+    const modelStore = require('../stores/model-store');
+    const model = modelStore.getDefaultGenModel();
+
+    if (!model) return res.status(400).json({ error: 'NO_MODEL', message: '请先配置 LLM 模型' });
+
+    const result = await runtimeExec({
+      modelId: model.id,
+      messages: [{ role: 'user', content: prompt }],
+      toolNames: [],
+      maxRounds: 1,
+      caller: 'execution-analysis',
+    });
+
+    res.json({
+      analysis: result.content || '生成分析失败',
+      modelUsed: model.id,
+      generatedAt: new Date().toISOString(),
     });
   } catch (e) {
     next(e);
