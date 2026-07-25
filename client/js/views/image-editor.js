@@ -143,6 +143,11 @@
         cssMaxHeight: 9999,
         selectionStyle: { cornerSize: 8, rotatingPointOffset: 20 },
       });
+
+      // 监听图片加载 → 自动适应窗口
+      imageEditor.on('afterLoadImage', function () {
+        setTimeout(function () { imageEditor.zoom('fit'); }, 100);
+      });
     }
 
     // 默认加载空白图片供用户打开文件
@@ -186,6 +191,7 @@
                 try {
                   imageEditor.loadImageFromFile(file).then(function () {
                     toast('已加载 ' + file.name, 'success');
+                    setTimeout(function () { imageEditor.zoom('fit'); }, 200);
                   }).catch(function (err) {
                     // 方法2: 回退 dataURL
                     console.warn('[ImageEditor] loadImageFromFile failed, trying dataURL', err);
