@@ -576,4 +576,77 @@
   root.OfficeDocEditor = root.OfficeDocEditor || {};
   root.OfficeDocEditor.mountEditor = mountEditor;
 
+  // ─── Bubble Menu (浮动工具栏 — 选区 ↑ 显示 B/I/U/</> 按钮) ───
+  var bubble = null;
+  function getBubble() {
+    if (bubble) return bubble;
+    bubble = document.createElement('div');
+    bubble.className = 'ode-bubble';
+    bubble.style.cssText =
+      'position:fixed;z-index:99999;display:none;background:var(--bg,#2a2a2a);' +
+      'border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.25);padding:4px;gap:2px;';
+    var btns = [
+      { label: 'B', cmd: 'bold', style: 'font-weight:700' },
+      { label: 'I', cmd: 'italic', style: 'font-style:italic' },
+      { label: 'U', cmd: 'underline', style: 'text-decoration:underline' },
+      { label: '</>', cmd: 'code', style: 'font-family:monospace' },
+    ];
+    btns.forEach(function (b) {
+      var btn = document.createElement('button');
+      btn.textContent = b.label;
+      btn.dataset.cmd = b.cmd;
+      btn.style.cssText = 'border:none;background:transparent;color:#fff;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:13px;';
+      btn.onmouseenter = function () { this.style.background = 'rgba(255,255,255,0.15)'; };
+      btn.onmouseleave = function () { this.style.background = 'transparent'; };
+      btn.onmousedown = function (e) {
+        e.preventDefault();
+        var sel = window.getSelection();
+        if (!sel.rangeCount || sel.isCollapsed) return;
+        var cmd = this.dataset.cmd;
+        if (cmd === 'code') {
+          // code: wrap with backticks via execCommand insertText
+          var txt = sel.toString();
+          document.execCommand('insertText', false, '`' + txt + '`');
+        } else {
+          document.execCommand(cmd);
+        }
+        bubble.style.display = 'none';
+      };
+      bubble.appendChild(btn);
+    });
+    document.body.appendChild(bubble);
+    return bubble;
+  }
+
+  function updateBubble() {
+    var sel = window.getSelection();
+    if (!sel.rangeCount || sel.isCollapsed || !sel.toString().trim()) {
+      if (bubble) bubble.style.display = 'none';
+      return;
+    }
+    var r = sel.getRangeAt(0);
+    var rect = r.getBoundingClientRect();
+    var b = getBubble();
+    b.style.left = (rect.left + rect.width / 2 - b.offsetWidth / 2) + 'px';
+    b.style.top = (rect.top - b.offsetHeight - 8) + 'px';
+    b.style.display = 'flex';
+    // 检测已激活的格式
+    var btns = b.querySelectorAll('button');
+    btns.forEach(function (btn) {
+      try {
+        var state = document.queryCommandState(btn.dataset.cmd);
+        btn.style.background = state ? 'rgba(255,255,255,0.25)' : 'transparent';
+      } catch(e) {}
+    });
+  }
+
+  document.addEventListener('selectionchange', updateBubble);
+
+  // 点击外部关闭
+  document.addEventListener('mousedown', function (e) {
+    if (bubble && !bubble.contains(e.target)) {
+      bubble.style.display = 'none';
+    }
+  });
+
 })(window);

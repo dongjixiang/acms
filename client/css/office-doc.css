@@ -361,3 +361,8 @@
   .ode-handle { left: -28px; }
   .ode-type-badge { display: none; }
 }
+
+/* ─── Bubble Menu ─── */
+.ode-bubble button:active {
+  background: rgba(255,255,255,0.35) !important;
+}
