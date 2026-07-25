@@ -144,17 +144,38 @@
             input.onchange = function () {
               var file = input.files && input.files[0];
               if (!file) return;
-              var reader = new FileReader();
-              reader.onload = function (e) {
-                var src = e.target.result;
-                w.$c.querySelector('#img-title-input').value = file.name;
-                if (imageEditor) {
-                  imageEditor.loadImageFromURL(src, file.name);
-                } else {
-                  loadEditor(src);
+              w.$c.querySelector('#img-title-input').value = file.name;
+              if (imageEditor) {
+                // 方法1: 直接传 File 对象 (避免 dataURL 体积过大)
+                try {
+                  imageEditor.loadImageFromFile(file).then(function () {
+                    toast('已加载 ' + file.name, 'success');
+                  }).catch(function (err) {
+                    // 方法2: 回退 dataURL
+                    console.warn('[ImageEditor] loadImageFromFile failed, trying dataURL', err);
+                    var r2 = new FileReader();
+                    r2.onload = function (ev) {
+                      imageEditor.loadImageFromURL(ev.target.result, file.name)
+                        .then(function () { toast('已加载 ' + file.name, 'success'); })
+                        .catch(function (e2) { toast('加载失败: ' + e2.message, 'error'); });
+                    };
+                    r2.readAsDataURL(file);
+                  });
+                } catch(e) {
+                  toast('加载失败: ' + e.message, 'error');
                 }
-              };
-              reader.readAsDataURL(file);
+              } else {
+                loadEditor(null);
+                // 编辑器加载后再打开
+                var checkReady = setInterval(function () {
+                  if (imageEditor) {
+                    clearInterval(checkReady);
+                    imageEditor.loadImageFromFile(file)
+                      .then(function () { toast('已加载 ' + file.name, 'success'); })
+                      .catch(function () { /* ignore */ });
+                  }
+                }, 200);
+              }
             };
             input.click();
             break;
