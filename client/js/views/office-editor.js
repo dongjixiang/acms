@@ -32,6 +32,30 @@ function openWordEditor(w, fileId, fileName) {
     '</div>';
   host.appendChild(titlebar);
 
+  // v0.62.6: SearchBar (学 OO SearchBar.js 260行 — 浮动查找/替换)
+  var searchBar = document.createElement('div');
+  searchBar.id = 'word-search-bar';
+  searchBar.className = 'oo-searchbar';
+  searchBar.style.display = 'none';
+  searchBar.innerHTML =
+    '<div class="oo-searchbar-inner">' +
+      '<input id="ws-search-input" type="search" placeholder="查找..." autocomplete="off">' +
+      '<span id="ws-search-count" class="oo-searchbar-count">0/0</span>' +
+      '<button id="ws-search-prev" class="oo-searchbar-btn" title="上一个">\u25B2</button>' +
+      '<button id="ws-search-next" class="oo-searchbar-btn" title="下一个">\u25BC</button>' +
+      '<button id="ws-search-toggle-replace" class="oo-searchbar-btn" title="替换">\u21B5</button>' +
+      '<button id="ws-search-close" class="oo-searchbar-btn" title="关闭 (Esc)">\u2715</button>' +
+    '</div>' +
+    '<div id="ws-replace-row" class="oo-searchbar-replace" style="display:none">' +
+      '<input id="ws-replace-input" type="text" placeholder="替换为...">' +
+      '<button id="ws-replace-one" class="oo-searchbar-btn">替换</button>' +
+      '<button id="ws-replace-all" class="oo-searchbar-btn">全部替换</button>' +
+    '</div>';
+  host.appendChild(searchBar);
+
+  // 搜索状态
+  var searchState = { query: '', matches: [], currentIdx: -1, replaceMode: false };
+
   // ●已修改点控制函数（外部可调）
   function setDirty(isDirty) {
     var dot = host.querySelector('#word-modified-dot');
@@ -444,6 +468,184 @@ function mountBlockEditor() {
     URL.revokeObjectURL(url);
     toast('已导出 ' + baseName + '.md', 'success');
   };
+
+  // ─── SearchBar 逻辑 (学 OO SearchBar.js 浮动查找/替换) ───
+  function wordSearchFindAll(query) {
+    if (!query || !instance) return [];
+    var doc = instance.getDocument();
+    if (!doc || !doc.blocks) return [];
+    var matches = [];
+    doc.blocks.forEach(function (block, idx) {
+      if (!block.content) return;
+      var re;
+      try { re = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'); }
+      catch(e) { return; }
+      var m;
+      while ((m = re.exec(block.content)) !== null) {
+        matches.push({ blockIdx: idx, blockId: block.id, start: m.index, end: m.index + m[0].length, text: m[0] });
+      }
+    });
+    return matches;
+  }
+
+  function wordSearchNavigate(idx) {
+    if (!searchState.matches.length) return;
+    idx = Math.max(0, Math.min(idx, searchState.matches.length - 1));
+    searchState.currentIdx = idx;
+    var match = searchState.matches[idx];
+    // 高亮所有匹配
+    var mount = editorHost.querySelector('.ode-editor');
+    if (!mount) return;
+    var blocks = mount.querySelectorAll('.ode-block');
+    blocks.forEach(function (el, bi) {
+      var contentEl = el.querySelector('.ode-content');
+      if (!contentEl) return;
+      var blockData = searchState.matches.filter(function(m){ return m.blockIdx === bi; });
+      if (blockData.length && bi === match.blockIdx) {
+        // 当前匹配 — 高亮并滚动
+        el.style.background = 'rgba(255, 200, 0, 0.25)';
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        contentEl.focus();
+      } else if (blockData.length) {
+        el.style.background = 'rgba(255, 230, 100, 0.12)';
+      } else {
+        el.style.background = '';
+      }
+    });
+    var countEl = host.querySelector('#ws-search-count');
+    if (countEl) countEl.textContent = (idx + 1) + '/' + searchState.matches.length;
+  }
+
+  function wordSearchReplace(newText) {
+    if (!searchState.matches.length || searchState.currentIdx < 0) return;
+    var match = searchState.matches[searchState.currentIdx];
+    var doc = instance.getDocument();
+    if (!doc || !doc.blocks[match.blockIdx]) return;
+    var oldContent = doc.blocks[match.blockIdx].content;
+    var before = oldContent.slice(0, match.start);
+    var after = oldContent.slice(match.end);
+    doc.blocks[match.blockIdx].content = before + newText + after;
+    instance.rerender();
+    // 更新匹配列表
+    searchState.matches = wordSearchFindAll(searchState.query);
+    searchState.currentIdx = Math.min(searchState.currentIdx, searchState.matches.length - 1);
+    // 跳到下一个
+    if (searchState.matches.length) wordSearchNavigate(searchState.currentIdx);
+    var countEl = host.querySelector('#ws-search-count');
+    if (countEl) countEl.textContent = (searchState.matches.length > 0 ? (searchState.currentIdx + 1) : 0) + '/' + searchState.matches.length;
+    setDirty(true);
+  }
+
+  function wordSearchReplaceAll(newText) {
+    if (!searchState.matches.length) return;
+    var doc = instance.getDocument();
+    if (!doc || !doc.blocks) return;
+    // 从后往前替换，避免 offset 漂移
+    var sorted = searchState.matches.slice().sort(function (a, b) { return b.start - a.start; });
+    sorted.forEach(function (m) {
+      if (doc.blocks[m.blockIdx]) {
+        var before = doc.blocks[m.blockIdx].content.slice(0, m.start);
+        var after = doc.blocks[m.blockIdx].content.slice(m.end);
+        doc.blocks[m.blockIdx].content = before + newText + after;
+      }
+    });
+    instance.rerender();
+    searchState.query = '';
+    searchState.matches = [];
+    searchState.currentIdx = -1;
+    var countEl = host.querySelector('#ws-search-count');
+    if (countEl) countEl.textContent = '0/0';
+    // 清除高亮
+    var mount = editorHost.querySelector('.ode-editor');
+    if (mount) mount.querySelectorAll('.ode-block').forEach(function(el){ el.style.background = ''; });
+    setDirty(true);
+    toast('已替换 ' + sorted.length + ' 处', 'success');
+  }
+
+  // 绑定 SearchBar 事件
+  setTimeout(function () {
+    var searchInput = host.querySelector('#ws-search-input');
+    if (!searchInput) return;
+    var replaceInput = host.querySelector('#ws-replace-input');
+
+    searchInput.oninput = function () {
+      var q = this.value.trim();
+      searchState.query = q;
+      if (!q) {
+        searchState.matches = [];
+        searchState.currentIdx = -1;
+        var countEl = host.querySelector('#ws-search-count');
+        if (countEl) countEl.textContent = '0/0';
+        var mount = editorHost.querySelector('.ode-editor');
+        if (mount) mount.querySelectorAll('.ode-block').forEach(function(el){ el.style.background = ''; });
+        return;
+      }
+      searchState.matches = wordSearchFindAll(q);
+      if (searchState.matches.length) {
+        wordSearchNavigate(0);
+      } else {
+        var countEl = host.querySelector('#ws-search-count');
+        if (countEl) countEl.textContent = '0/0';
+      }
+    };
+
+    host.querySelector('#ws-search-next').onclick = function () {
+      if (searchState.matches.length) wordSearchNavigate(searchState.currentIdx + 1);
+    };
+    host.querySelector('#ws-search-prev').onclick = function () {
+      if (searchState.matches.length) wordSearchNavigate(searchState.currentIdx - 1);
+    };
+    host.querySelector('#ws-search-close').onclick = function () {
+      searchBar.style.display = 'none';
+      var mount = editorHost.querySelector('.ode-editor');
+      if (mount) mount.querySelectorAll('.ode-block').forEach(function(el){ el.style.background = ''; });
+      searchInput.value = '';
+      searchState.matches = [];
+      searchState.currentIdx = -1;
+      searchState.replaceMode = false;
+      var rr = host.querySelector('#ws-replace-row');
+      if (rr) rr.style.display = 'none';
+    };
+    host.querySelector('#ws-search-toggle-replace').onclick = function () {
+      searchState.replaceMode = !searchState.replaceMode;
+      var rr = host.querySelector('#ws-replace-row');
+      if (rr) rr.style.display = searchState.replaceMode ? '' : 'none';
+    };
+    if (replaceInput) {
+      host.querySelector('#ws-replace-one').onclick = function () {
+        var t = replaceInput.value;
+        wordSearchReplace(t);
+      };
+      host.querySelector('#ws-replace-all').onclick = function () {
+        var t = replaceInput.value;
+        wordSearchReplaceAll(t);
+      };
+    }
+
+    // Ctrl+F / Cmd+F 切换 SearchBar
+    document.addEventListener('keydown', function (e) {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+        // 只当 Word 编辑器可见时响应
+        if (!host || !host.parentNode || !document.body.contains(host)) return;
+        // 检查是否可见 (PKG 窗口可能被最小化)
+        var pkgWin = host.closest('.aw-window');
+        if (pkgWin && pkgWin.classList.contains('aw-minimized')) return;
+        e.preventDefault();
+        if (searchBar.style.display === 'none') {
+          searchBar.style.display = '';
+          searchInput.focus();
+          searchInput.select();
+        } else {
+          searchBar.style.display = 'none';
+          var mount = editorHost.querySelector('.ode-editor');
+          if (mount) mount.querySelectorAll('.ode-block').forEach(function(el){ el.style.background = ''; });
+          searchInput.value = '';
+          searchState.matches = [];
+          searchState.currentIdx = -1;
+        }
+      }
+    });
+  }, 100); // 延迟等 DOM 就绪
 }
 
 // ===== Excel 编辑器（v0.62.5 OO 风格标题栏）=====
