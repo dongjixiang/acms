@@ -895,7 +895,7 @@ function openExcelEditor(w) {
     for (var r = r1; r <= r2; r++) {
       for (var c = c1; c <= c2; c++) {
         count++;
-        if (isNum(data[r][c])) { sum += parseFloat(data[r][c]); numCount++; }
+        if (isNum(cellStr(data[r][c]))) { sum += parseFloat(cellStr(data[r][c])); numCount++; }
       }
     }
     var parts = [
@@ -970,7 +970,7 @@ function openExcelEditor(w) {
     },
     clearCell: function () {
       if (!sel.start) return toast('请先选中单元格', 'warning');
-      data[sel.start[0]][sel.start[1]] = '';
+      data[sel.start[0]][sel.start[1]] = { v: '' };
       markDirty();
       renderTable();
     },
@@ -986,7 +986,7 @@ function openExcelEditor(w) {
       var values = [];
       for (var ri = Math.min(r1,r2); ri <= Math.max(r1,r2); ri++) {
         for (var ci = Math.min(c1,c2); ci <= Math.max(c1,c2); ci++) {
-          var v = data[ri] && data[ri][ci];
+          var v = data[ri] ? cellStr(data[ri][ci]) : '';
           if (v !== '' && v != null && !isNaN(parseFloat(v)) && isFinite(v)) values.push(parseFloat(v));
         }
       }
@@ -1011,7 +1011,7 @@ function openExcelEditor(w) {
       var vals = [];
       // 先向上找
       for (var ri = r - 1; ri >= 0; ri--) {
-        var v = data[ri] && data[ri][c];
+        var v = data[ri] ? cellStr(data[ri][c]) : '';
         if (v === '' || v == null) break;
         if (!isNaN(parseFloat(v)) && isFinite(v)) vals.push(parseFloat(v));
         else break;
@@ -1019,7 +1019,7 @@ function openExcelEditor(w) {
       if (vals.length === 0) {
         // 再向左找
         for (var ci = c - 1; ci >= 0; ci--) {
-          var v2 = data[r] && data[r][ci];
+          var v2 = data[r] ? cellStr(data[r][ci]) : '';
           if (v2 === '' || v2 == null) break;
           if (!isNaN(parseFloat(v2)) && isFinite(v2)) vals.push(parseFloat(v2));
           else break;
@@ -1046,9 +1046,9 @@ function openExcelEditor(w) {
       }
       // 按第1列排序
       rows.sort(function (a, b) {
-        var va = parseFloat(a.cells[0]), vb = parseFloat(b.cells[0]);
+        var va = parseFloat(cellStr(a.cells[0])), vb = parseFloat(cellStr(b.cells[0]));
         if (!isNaN(va) && !isNaN(vb)) return ascending ? va - vb : vb - va;
-        var sa = String(a.cells[0] || ''), sb = String(b.cells[0] || '');
+        var sa = cellStr(a.cells[0] || ''), sb = cellStr(b.cells[0] || '');
         return ascending ? sa.localeCompare(sb) : sb.localeCompare(sa);
       });
       // 写回 data
@@ -1095,6 +1095,9 @@ function openExcelEditor(w) {
     // v0.62.6: Undo/Redo
     undo: function () { xlUndo(); },
     redo: function () { xlRedo(); },
+    toggleBold: function () { toggleCellFmt('b'); },
+    toggleItalic: function () { toggleCellFmt('i'); },
+    toggleUnderline: function () { toggleCellFmt('u'); },
   };
 
   function markDirty() {
@@ -1218,6 +1221,9 @@ function openExcelEditor(w) {
               ]},
               { title: '单元格', buttons: [
                 { id: 'clear',     icon: '🧹', label: '清空', action: ops.clearCell },
+                { id: 'bold',      icon: 'B',   label: '粗体', action: ops.toggleBold },
+                { id: 'italic',    icon: 'I',   label: '斜体', action: ops.toggleItalic },
+                { id: 'underline', icon: 'U',   label: '下划线', action: ops.toggleUnderline },
               ]},
               { title: '行列', buttons: [
                 { id: 'add-row',   icon: '➕', label: '加行', action: ops.addRow },
@@ -1291,8 +1297,8 @@ function openExcelEditor(w) {
         el.style.outline = 'none';
         el.style.background = '';
         var newVal = el.textContent;
-        if (data[r][c] !== newVal) {
-          data[r][c] = newVal;
+        if (cellStr(data[r][c]) !== newVal) {
+          data[r][c] = { v: newVal };
           markDirty();
         }
       };
