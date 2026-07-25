@@ -111,22 +111,10 @@
     }
 
     function initEditor(src) {
-      // 生成空白占位图 (避免 dataURL base64 解析失败)
-      var canvas = document.createElement('canvas');
-      canvas.width = 100; canvas.height = 80;
-      var ctx = canvas.getContext('2d');
-      ctx.fillStyle = '#2a2a3e';
-      ctx.fillRect(0, 0, 100, 80);
-      ctx.fillStyle = '#888';
-      ctx.font = '10px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('打开图片', 50, 45);
-      var blankImg = canvas.toDataURL();
-      canvas = null;
-
+      // 不用占位图 — 留空让用户打开文件
       imageEditor = new window.tui.ImageEditor(mountEl, {
         includeUI: {
-          loadImage: { path: src || blankImg, name: 'image' },
+          loadImage: { path: src || '', name: 'image' },
           theme: {
             'menu.normal.backgroundColor': '#2a2a3e',
             'menu.active.backgroundColor': '#446995',
@@ -144,7 +132,15 @@
         selectionStyle: { cornerSize: 8, rotatingPointOffset: 20 },
       });
 
-
+      // JS 移除内置标题栏 (比 CSS 可靠)
+      setTimeout(function () {
+        var hdr = mountEl.querySelector('.tui-image-editor-header');
+        if (hdr) hdr.style.display = 'none';
+        var logo = mountEl.querySelector('.tui-image-editor-header-logo');
+        if (logo) logo.style.display = 'none';
+        var btns = mountEl.querySelector('.tui-image-editor-header-buttons');
+        if (btns) btns.style.display = 'none';
+      }, 200);
     }
 
     // 默认加载空白图片供用户打开文件
