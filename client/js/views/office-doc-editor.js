@@ -270,7 +270,7 @@
   function handleEnter(e, container, state) {
     var sel = window.getSelection();
     if (!sel.rangeCount) return;
-    var blockData = getBlockData(container, sel.getFocusNode());
+    var blockData = getBlockData(container, sel.focusNode);
     if (!blockData) return;
 
     e.preventDefault();
@@ -280,8 +280,8 @@
     if (!curBlock) return;
 
     // 分裂当前 block：光标前的内容留在当前 block，光标后的内容去新 block
-    var focusNode = sel.getFocusNode();
-    var focusOffset = sel.getFocusOffset();
+    var focusNode = sel.focusNode;
+    var focusOffset = sel.focusOffset;
     var textBefore = '', textAfter = '';
     if (focusNode.nodeType === Node.TEXT_NODE) {
       textBefore = focusNode.textContent.slice(0, focusOffset);
@@ -328,8 +328,8 @@
   function handleBackspace(e, container, state) {
     var sel = window.getSelection();
     if (!sel.rangeCount) return;
-    var focusNode = sel.getFocusNode();
-    var focusOffset = sel.getFocusOffset();
+    var focusNode = sel.focusNode;
+    var focusOffset = sel.focusOffset;
 
     // 只在光标在元素开头时处理合并
     if (focusOffset !== 0 || focusNode.nodeType !== Node.TEXT_NODE) return;
@@ -413,7 +413,7 @@
     function getCurrentBlockData() {
       var sel = window.getSelection();
       if (!sel.rangeCount) return null;
-      return getBlockData(container, sel.getFocusNode());
+      return getBlockData(container, sel.focusNode);
     }
 
     function focusBlock(blockId, position) {
