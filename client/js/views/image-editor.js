@@ -105,9 +105,22 @@
     }
 
     function initEditor(src) {
+      // 生成空白占位图 (避免 dataURL base64 解析失败)
+      var canvas = document.createElement('canvas');
+      canvas.width = 100; canvas.height = 80;
+      var ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#2a2a3e';
+      ctx.fillRect(0, 0, 100, 80);
+      ctx.fillStyle = '#888';
+      ctx.font = '10px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('打开图片', 50, 45);
+      var blankImg = canvas.toDataURL();
+      canvas = null;
+
       imageEditor = new window.tui.ImageEditor(mountEl, {
         includeUI: {
-          loadImage: { path: src || 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQAAAAlwSFlzAAAWJQAAFiUBSVIk8AAAAA0lEQVQI12P4z8BQDwAEgAF/QualzQAAAABJRU5ErkJggg==', name: 'image' },
+          loadImage: { path: src || blankImg, name: 'image' },
           theme: {
             'menu.normal.backgroundColor': '#2a2a3e',
             'menu.active.backgroundColor': '#446995',
