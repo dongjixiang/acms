@@ -605,6 +605,7 @@ document.addEventListener('DOMContentLoaded', () => {
       <div class="launcher-item" onclick="launchView('office-xlsx')"><span class="li-icon">📊</span><span class="li-label">Excel</span></div>
       <div class="launcher-item" onclick="launchView('office-pptx')"><span class="li-icon">📽️</span><span class="li-label">PPT</span></div>
       <div class="launcher-item" onclick="launchView('code-editor')"><span class="li-icon">💻</span><span class="li-label">代码</span></div>
+      <div class="launcher-item" onclick="launchView('image-editor')"><span class="li-icon">🖼️</span><span class="li-label">图片</span></div>
       <div class="divider"></div>
       <div class="launcher-section-title">应用</div>
       <div class="launcher-item" onclick="launchView('file-manager')"><span class="li-icon">🗂️</span><span class="li-label">文件浏览器</span></div>
@@ -656,6 +657,8 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/office-editor.js?v=0.62.6"></script>
 <!-- v0.62.7: 代码编辑器 (Monaco Editor + AI) -->
 <script src="/client/js/views/code-editor.js?v=0.62.7"></script>
+<!-- v0.62.7: 图片编辑器 (TOAST UI Image Editor + AI) -->
+<script src="/client/js/views/image-editor.js?v=0.62.7"></script>
 <!-- v0.62.1: 块编辑器核心（schema + 转换器 + UI），PR 3 将接 office-word PKG -->
 <script src="/client/js/core/office-doc.js?v=0.62.1"></script>
 <script src="/client/js/core/office-doc-converter.js?v=0.62.1"></script>
@@ -1021,6 +1024,14 @@ document.addEventListener('DOMContentLoaded', () => {
     title: '代码编辑器', icon: '💻', category: '工具', defaultSize: { w: 1000, h: 650 },
     loader: function(w) {
       if (typeof openCodeEditor === 'function') openCodeEditor(w);
+      else w.$c.innerHTML = '<div style="padding:40px;text-align:center">加载中...</div>';
+    }
+  });
+  // v0.62.7: 图片编辑器 (TOAST UI Image Editor + AI)
+  PKG('image-editor', {
+    title: '图片编辑器', icon: '🖼️', category: '工具', defaultSize: { w: 1000, h: 700 },
+    loader: function(w) {
+      if (typeof openImageEditor === 'function') openImageEditor(w);
       else w.$c.innerHTML = '<div style="padding:40px;text-align:center">加载中...</div>';
     }
   });
