@@ -216,6 +216,9 @@
     Win.getPinnedIcons = function() {
       return getPinned() || [];
     };
+
+    // v0.60: 触发桌面图标重渲染（用于工具条对齐/删除后刷新）
+    Win.refreshDesktopIcons = refreshDesktopIcons;
   }
 
   // ── 图标覆盖（localStorage 持久化） ──

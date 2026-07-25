@@ -5373,6 +5373,71 @@ body { padding-bottom: 40px; }
   pointer-events: none;
 }
 
+/* ── v0.60 框选工具条（marquee toolbar）── */
+.acms-marquee-toolbar {
+  position: fixed;
+  background: rgba(34, 34, 34, 0.95);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 6px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+  z-index: 60000;  /* 高于图标 z-index 51 和 marquee rect 50000 */
+  color: #fff;
+  font-size: 13px;
+  user-select: none;
+  /* 入场动画 */
+  animation: acmsMarqueeToolbarIn 0.16s ease-out;
+}
+.acms-marquee-toolbar.hidden { display: none; }
+@keyframes acmsMarqueeToolbarIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.acms-marquee-toolbar .amt-count {
+  padding: 8px 12px;
+  color: var(--accent);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.acms-marquee-toolbar .amt-divider {
+  width: 1px;
+  height: 22px;
+  background: rgba(255, 255, 255, 0.12);
+  margin: 0 4px;
+}
+.acms-marquee-toolbar .amt-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid transparent;
+  color: #fff;
+  padding: 8px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+  transition: background 0.12s, border-color 0.12s;
+  white-space: nowrap;
+}
+.acms-marquee-toolbar .amt-btn:hover {
+  background: color-mix(in srgb, var(--accent) 28%, rgba(255, 255, 255, 0.06));
+  border-color: var(--accent);
+}
+.acms-marquee-toolbar .amt-btn:active {
+  background: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.acms-marquee-toolbar .amt-btn.amt-danger { color: #ff7675; }
+.acms-marquee-toolbar .amt-btn.amt-danger:hover {
+  background: rgba(255, 118, 117, 0.25);
+  border-color: #ff7675;
+}
+.acms-marquee-toolbar .amt-btn.amt-cancel {
+  padding: 8px 10px;
+  font-size: 14px;
+}
+
 /* ── 内部浏览器（v0.56）── */
 .wb-btn {
   padding: 4px 8px;
