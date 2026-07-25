@@ -189,8 +189,10 @@
   // ─── 导航在块间移动 ───
   function getBlockData(container, el) {
     if (!el) return null;
-    // 从 contenteditable 元素向上找带 data-bid 的容器
-    var blockEl = el.closest('[data-bid]');
+    // text node 没有 closest()，需要先取 parentElement
+    var node = el.nodeType === Node.ELEMENT_NODE ? el : el.parentElement;
+    if (!node) return null;
+    var blockEl = node.closest('[data-bid]');
     if (!blockEl) return null;
     var idx = Array.prototype.indexOf.call(container.children, blockEl);
     return { el: blockEl, id: blockEl.dataset.bid, idx: idx, type: blockEl.dataset.btype };
