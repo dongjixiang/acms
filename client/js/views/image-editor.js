@@ -70,7 +70,7 @@
 
     // ─── 加载 tui-image-editor ───
     function loadEditor(src, callback) {
-      if (window.ImageEditor) {
+      if (window.tui && window.tui.ImageEditor) {
         initEditor(src);
         if (callback) callback();
         return;
@@ -88,7 +88,7 @@
     }
 
     function initEditor(src) {
-      imageEditor = new window.ImageEditor(mountEl, {
+      imageEditor = new window.tui.ImageEditor(mountEl, {
         includeUI: {
           loadImage: { path: src || 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQAAAAlwSFlzAAAWJQAAFiUBSVIk8AAAAA0lEQVQI12P4z8BQDwAEgAF/QualzQAAAABJRU5ErkJggg==', name: 'image' },
           theme: {
