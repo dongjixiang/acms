@@ -57,6 +57,8 @@
   // ─── 编辑器主入口 ───
   function openCodeEditor(w, fileId, fileName, initialContent) {
     var lang = langFromFileName(fileName);
+    var _isServerFile = !!fileId;
+    var _fileId = fileId || null;
     var menuOpen = null; // 当前打开的菜单
 
     function closeMenu() {
@@ -245,7 +247,25 @@
       if (!editor) { toast('编辑器未就绪', 'warning'); return; }
       var content = editor.getValue();
       var name = (w.$c.querySelector('#code-title-input').value || '').trim() || 'untitled.txt';
-      toast('已保存 ' + name + ' (' + content.length + ' chars)', 'success');
+      if (_isServerFile && _fileId) {
+        // 服务器文件 → POST 覆写
+        fetch('/api/office/save', { method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': (window.ACMSConfig && window.ACMSConfig.apiKey) || 'dev-key-001' },
+          body: JSON.stringify({ type: 'txt', fileId: _fileId, name: name, data: { content: content } }),
+        }).then(function(r){return r.json()}).then(function(r){
+          if (r.ok) toast('已保存 ✅ ' + name, 'success');
+          else toast('保存失败: ' + (r.error || '未知'), 'error');
+        }).catch(function(e){ toast('保存失败: ' + e.message, 'error'); });
+      } else {
+        // 新文件 → 浏览器下载
+        var blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url; a.download = name;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        toast('已下载 ' + name, 'success');
+      }
     };
 
     // ─── 键盘快捷键 ───

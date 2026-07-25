@@ -286,11 +286,13 @@
       if (!imageEditor) { toast('编辑器未就绪', 'warning'); return; }
       var dataURL = imageEditor.toDataURL();
       var name = (w.$c.querySelector('#img-title-input').value || '').trim() || 'image.png';
+      // 始终下载到本地 (图片编辑器目前只支持打开本地文件)
       var link = document.createElement('a');
       link.href = dataURL;
       link.download = name;
       document.body.appendChild(link); link.click(); document.body.removeChild(link);
-      toast('已保存 ' + name, 'success');
+      URL.revokeObjectURL(dataURL);
+      toast('已下载 ' + name, 'success');
     };
   }
 

@@ -207,6 +207,10 @@ function openWordEditor(w, fileId, fileName) {
     return;
   }
 
+  // v0.62.7: 文件来源: server(有fileId) / local(无fileId)
+  var _isServerFile = !!fileId;
+  var _fileId = fileId || null;
+
   // 初始化 doc（空或从 fileId 加载）
   var doc = window.OfficeDoc.makeDocument({ title: fileName || 'untitled' });
   if (fileId) {
@@ -612,46 +616,43 @@ function mountBlockEditor() {
 
   // 保存按钮：showPrompt 拿文件名（避免 browser dialog），send blocks 到 /api/office/save
   titlebar.querySelector('#word-save-btn').onclick = async function() {
-    if (typeof showPrompt !== 'function') {
-      toast('showPrompt 未加载，无法输入文件名', 'error');
-      return;
-    }
-    // v0.62.5: 用标题输入框当前值作为默认文件名（OO 模式：标题即文件名）
-    var currentName = (titlebar.querySelector('#word-title-input').value || '').trim() || '文档';
-    var name = await showPrompt({
-      title: '保存 Word 文档',
-      message: '输入文件名（.docx 后缀自动加）',
-      placeholder: '文档',
-      defaultValue: currentName.replace(/\.docx$/i, ''),
-      multiline: false,
-      minLength: 1,
-    });
-    if (!name) return; // 用户取消
-    name = String(name).trim();
-    if (!name.toLowerCase().endsWith('.docx')) name += '.docx';
-
     var d = instance.getDocument();
-    var payload = {
-      type: 'docx',
-      name: name,
-      data: {
-        title: d.meta.title,
-        blocks: d.blocks,
-        // 兼容旧 payload 字段（如果服务端兼容检查用）
-        content: window.OfficeDocConverter.documentToMarkdown(d),
-      }
-    };
-    fetch('/api/office/save', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
-      body: JSON.stringify(payload),
-    })
-    .then(function(r){return r.json()})
-    .then(function(r){
-      if (r.ok) { toast('已保存 ✅ ' + name + ' (' + r.size + ' bytes)', 'success'); setDirty(null); /* 显示已保存点 */ }
-      else toast('保存失败: ' + (r.error || '未知错误'), 'error');
-    })
-    .catch(function(e){ toast('保存失败: ' + e.message, 'error'); });
+    var currentName = (titlebar.querySelector('#word-title-input').value || '').trim() || '文档';
+
+    if (_isServerFile && _fileId) {
+      // 服务器文件 → 直接覆写
+      var payload = {
+        type: 'docx', fileId: _fileId, name: currentName,
+        data: { title: d.meta.title, blocks: d.blocks, content: window.OfficeDocConverter.documentToMarkdown(d) },
+      };
+      fetch('/api/office/save', { method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+        body: JSON.stringify(payload),
+      }).then(function(r){return r.json()}).then(function(r){
+        if (r.ok) { toast('已保存 ✅ ' + currentName, 'success'); setDirty(null); }
+        else toast('保存失败: ' + (r.error || '未知错误'), 'error');
+      }).catch(function(e){ toast('保存失败: ' + e.message, 'error'); });
+    } else {
+      // 新文件/本地文件 → 浏览器下载
+      if (typeof showPrompt !== 'function') { toast('showPrompt 未加载', 'error'); return; }
+      var name = await showPrompt({
+        title: '保存 Word 文档', message: '输入文件名（将下载到本地）',
+        placeholder: '文档', defaultValue: currentName.replace(/\.docx$/i, ''),
+        multiline: false, minLength: 1,
+      });
+      if (!name) return;
+      name = String(name).trim();
+      if (!name.toLowerCase().endsWith('.docx')) name += '.docx';
+      var md = window.OfficeDocConverter.documentToMarkdown(d);
+      var blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url; a.download = name;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast('已下载 ' + name, 'success');
+      setDirty(null);
+    }
   };
 
   // v0.62.5: 导出 Markdown 按钮（学 OO FileMenu "Download as"）
