@@ -201,10 +201,12 @@ router.post('/detect-and-respond', async (req, res, next) => {
     }
 
     // ═══ 自由对话（免需求）═══ v0.55 支持 sessionId 多窗口 + 历史持久化
-    // 兼容两种调用：
+    // 兼容三种调用：
     //   - reqId === '__free__' → 旧调用，无状态（向后兼容）
     //   - reqId 以 'sess-' 开头 → 多窗口会话 ID，加载历史 messages
-    if (reqId === '__free__' || (typeof reqId === 'string' && reqId.startsWith('sess-'))) {
+    //   - reqId 以 '_' 开头（不含前缀 sess-/_free_/_img_... 等虚拟 ID） → L3 App 的组件级 AI 调用
+    //     （image-editor / code-editor / file-browser 等 standalone LLM 调用，无需持久需求上下文）
+    if (reqId === '__free__' || (typeof reqId === 'string' && (reqId.startsWith('sess-') || reqId.startsWith('_')))) {
       // 预检：音乐意图（与主流程保持一致）
       const musicPreCheck = extractMusicIntent(text);
       let musicCardJson = null;
