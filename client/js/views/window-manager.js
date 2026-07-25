@@ -812,8 +812,12 @@
   }
 
   // v0.60 全局键盘快捷键（桌面模式下生效）
-  //   Esc  取消选择
-  //   Ctrl/Cmd+A  全选所有桌面图标
+  //   Esc            取消选择
+  //   Ctrl/Cmd+A     全选所有桌面图标
+  //   Delete/Backspace  删除选中（带 confirm 弹窗）
+  var _deleteHandler = null;  // 由 desktop-marquee-toolbar.js 注入（封装 confirm + 多图标 unpin）
+  function setDeleteHandler(fn) { _deleteHandler = fn; }
+
   document.addEventListener('keydown', function(e) {
     if (!desktopShown) return;  // 只在桌面模式下生效
     var t = e.target;
@@ -828,6 +832,11 @@
     } else if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
       e.preventDefault();
       selectAll();
+    } else if ((e.key === 'Delete' || e.key === 'Backspace') && desktopSelection.size > 0) {
+      e.preventDefault();
+      if (typeof _deleteHandler === 'function') {
+        _deleteHandler(getSelection());
+      }
     }
   });
 
@@ -860,5 +869,6 @@
     toggleSelection: toggleSelection,
     selectAll: selectAll,
     onSelectionChange: onSelectionChange,
+    setDeleteHandler: setDeleteHandler,
   };
 })();

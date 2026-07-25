@@ -205,7 +205,7 @@
     }, 0);
   }
 
-  // ── 批量删除 ──
+  // ── 批量删除（暴露给工具条 + 键盘 Delete 公用）──
   function doDeleteSelected(ids) {
     if (!window.ACMSWin) return;
     var n = ids.length;
@@ -217,23 +217,24 @@
       ok = window.confirm(msg);
     }
     if (!ok) return;
-    // 先清 selection（避免 unpin 过程中 selection 回调干扰）
+    // 先清 selection（避免删除过程中 selection 变化触发工具条跳动）
     if (typeof ACMSWin.clearSelection === 'function') {
       ACMSWin.clearSelection();
     }
-    // 顺序删除（unpinDesktopIcon 会调 refreshDesktopIcons 触发重渲染，但循环每次重渲会导致性能问题）
-    // 优化：先全部从 localStorage 移除，最后一次性 refresh
+    // 从 localStorage 一次性移除（避免多次 refreshDesktopIcons 性能开销）
     var pinned = ACMSWin.getPinnedIcons ? ACMSWin.getPinnedIcons() : [];
     var setIds = {};
     ids.forEach(function(id) { setIds[id] = true; });
     var remain = pinned.filter(function(p) { return !setIds[p.id]; });
     localStorage.setItem('acms-desktop-pinned', JSON.stringify(remain));
-    // 不调用 unpinDesktopIcon（多次 refresh），改用低层：直接重渲染
     if (typeof ACMSWin.refreshDesktopIcons === 'function') {
       ACMSWin.refreshDesktopIcons();
     }
     flashToast('🗑 已删除 ' + n + ' 个图标');
   }
+
+  // 暴露给 window 供 toolbar/键盘删除复用
+  window.acmsDeleteSelectedIcons = doDeleteSelected;
 
   // ── Toast ──
   function flashToast(msg) {
@@ -260,6 +261,10 @@
       if (ids.length >= 2) show(ids);
       else hide();
     });
+    // 把删除函数注入 ACMSWin，让 Delete/Backspace 键复用同一份逻辑
+    if (typeof ACMSWin.setDeleteHandler === 'function' && typeof window.acmsDeleteSelectedIcons === 'function') {
+      ACMSWin.setDeleteHandler(window.acmsDeleteSelectedIcons);
+    }
     // 初始化时根据现有 selection 决定显示/隐藏
     var cur = ACMSWin.getSelection();
     if (cur.length >= 2) show(cur);
