@@ -386,7 +386,7 @@
     // 保留已有 flex 样式，只追加文档流样式
     container.style.padding = '40px 64px';
     container.style.maxWidth = '880px';
-    container.style.margin = '0 auto';
+    container.style.boxSizing = 'border-box';
     container.style.lineHeight = '1.7';
     container.style.fontSize = '15px';
     container.style.fontFamily = 'Calibri, PingFang SC, sans-serif';

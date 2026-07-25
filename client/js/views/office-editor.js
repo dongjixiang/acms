@@ -49,7 +49,7 @@ document.addEventListener('contextmenu', function (e) { e.preventDefault(); });
 // v0.62.4: 支持 (w, fileId, name) 加载现有 .docx
 // v0.62.5: OO 风格标题栏（学 OO FileMenu.js 设计）— 文件名 + ●已修改点 + 右上角保存按钮
 function openWordEditor(w, fileId, fileName) {
-  console.log('[Word] openWordEditor called', { fileId, fileName });
+  console.log('[Word] openWordEditor called', { fileId, fileName, wcW: w.$c.offsetWidth, wcH: w.$c.offsetHeight });
   // 容器 = 整个 PKG 内容区，套 .oo-editor 类（让主题色生效）
   w.$c.innerHTML = '<div class="oo-editor oo-editor-word" style="height:100%;display:flex;flex-direction:column"></div>';
   var host = w.$c.querySelector('.oo-editor');
@@ -72,6 +72,7 @@ function openWordEditor(w, fileId, fileName) {
       '<button class="oo-titlebar-btn primary" id="word-save-btn">💾 保存</button>' +
     '</div>';
   host.appendChild(titlebar);
+  console.log('[Word] host after titlebar', { hostW: host.offsetWidth, hostH: host.offsetHeight });
 
   // v0.62.6: SearchBar (学 OO SearchBar.js 260行 — 浮动查找/替换)
   var searchBar = document.createElement('div');
