@@ -74,20 +74,29 @@
     }
     if (type === 'todo') {
       var t = block.attrs && block.attrs.checked;
-      return '<div data-bid="' + block.id + '" data-btype="todo" class="ode-todo" style="display:flex;align-items:center;gap:8px">' +
-        '<input type="checkbox" ' + (t ? 'checked' : '') + ' style="width:16px;height:16px;cursor:pointer;flex-shrink:0">' +
-        '<span contenteditable="true" class="ode-ce" style="flex:1;outline:none">' + escHtml(block.content||'') + '</span></div>';
+      var todoItems = (block.content||'').split('\n').filter(function(s){ return s !== ''; });
+      if (!todoItems.length) todoItems = [''];
+      var todoHtml = todoItems.map(function(item){
+        return '<span contenteditable="true" class="ode-ce" style="display:block;outline:none;padding:1px 0">' + escHtml(item) + '</span>';
+      }).join('');
+      return '<div data-bid="' + block.id + '" data-btype="todo" class="ode-todo" style="display:flex;align-items:flex-start;gap:8px">' +
+        '<input type="checkbox" ' + (t ? 'checked' : '') + ' style="width:16px;height:16px;cursor:pointer;flex-shrink:0;margin-top:4px">' +
+        '<div style="flex:1">' + todoHtml + '</div></div>';
     }
     if (type === 'code') {
       return '<pre data-bid="' + block.id + '" data-btype="code" style="background:var(--bg2,#f5f5f7);padding:12px;border-radius:4px;overflow-x:auto;font-family:Consolas,monospace;font-size:13px;line-height:1.5;white-space:pre-wrap" contenteditable="true" class="ode-ce">' + escHtml(block.content||'') + '</pre>';
     }
     if (type === 'bulletList') {
-      return '<ul data-bid="' + block.id + '" data-btype="bulletList" style="margin:4px 0;padding-left:24px">' +
-        '<li contenteditable="true" class="ode-ce" style="outline:none">' + escHtml(block.content||'') + '</li></ul>';
+      var items = (block.content||'').split('\n').filter(function(s){ return s !== ''; });
+      if (!items.length) items = [''];
+      var lis1 = items.map(function(item){ return '<li contenteditable="true" class="ode-ce" style="outline:none">' + escHtml(item) + '</li>'; }).join('');
+      return '<ul data-bid="' + block.id + '" data-btype="bulletList" style="margin:4px 0;padding-left:24px">' + lis1 + '</ul>';
     }
     if (type === 'orderedList') {
-      return '<ol data-bid="' + block.id + '" data-btype="orderedList" style="margin:4px 0;padding-left:24px">' +
-        '<li contenteditable="true" class="ode-ce" style="outline:none">' + escHtml(block.content||'') + '</li></ol>';
+      var items2 = (block.content||'').split('\n').filter(function(s){ return s !== ''; });
+      if (!items2.length) items2 = [''];
+      var lis2 = items2.map(function(item){ return '<li contenteditable="true" class="ode-ce" style="outline:none">' + escHtml(item) + '</li>'; }).join('');
+      return '<ol data-bid="' + block.id + '" data-btype="orderedList" style="margin:4px 0;padding-left:24px">' + lis2 + '</ol>';
     }
     if (type === 'quote') {
       return '<blockquote data-bid="' + block.id + '" data-btype="quote" style="margin:4px 0;padding:4px 16px;border-left:3px solid var(--office-primary,#446995);color:var(--text2,#666)">' +
@@ -333,36 +342,28 @@
 
     // 只在光标在元素开头时处理合并
     if (focusOffset !== 0 || focusNode.nodeType !== Node.TEXT_NODE) return;
-    if (focusNode.textContent.length > 0 && focusOffset === 0) {
-      // 在开头但不是空元素 → 合并到上一个 block
-    }
 
     var blockData = getBlockData(container, focusNode);
     if (!blockData || blockData.idx <= 0) return;
 
-    // 光标在当前 block 的最开头 → 合并到上一个 block
-    var hasPrevious = focusNode.previousSibling || (focusNode.parentElement && focusNode.parentElement.previousElementSibling);
-    if (hasPrevious || !(focusNode.textContent || '').trim()) {
-      e.preventDefault();
-      syncBlocks(container, state.doc);
-      var prevIdx = blockData.idx - 1;
-      var curBlock = state.doc.blocks[blockData.idx];
-      var prevBlock = state.doc.blocks[prevIdx];
-      if (prevBlock && curBlock) {
-        var mergeContent = (prevBlock.content || '') + (curBlock.content || '');
-        prevBlock.content = mergeContent;
-        state.doc.blocks.splice(blockData.idx, 1);
-        fullRender(container, state.doc);
-        notifyChange(state);
-        // 聚焦到合并位置
-        setTimeout(function () {
-          var el = container.querySelector('[data-bid="' + prevBlock.id + '"]');
-          if (el) {
-            var ce = el.querySelector('.ode-ce') || el;
-            if (ce && ce.isContentEditable) { ce.focus(); placeCaretAtEnd(ce); }
-          }
-        }, 0);
-      }
+    e.preventDefault();
+    syncBlocks(container, state.doc);
+    var prevIdx = blockData.idx - 1;
+    var curBlock = state.doc.blocks[blockData.idx];
+    var prevBlock = state.doc.blocks[prevIdx];
+    if (prevBlock && curBlock) {
+      var mergeContent = (prevBlock.content || '') + (curBlock.content || '');
+      prevBlock.content = mergeContent;
+      state.doc.blocks.splice(blockData.idx, 1);
+      fullRender(container, state.doc);
+      notifyChange(state);
+      setTimeout(function () {
+        var el = container.querySelector('[data-bid="' + prevBlock.id + '"]');
+        if (el) {
+          var ce = el.querySelector('.ode-ce') || el;
+          if (ce && ce.isContentEditable) { ce.focus(); placeCaretAtEnd(ce); }
+        }
+      }, 0);
     }
   }
 
