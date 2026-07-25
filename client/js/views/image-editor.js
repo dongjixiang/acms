@@ -70,6 +70,23 @@
 
     // ─── 加载 tui-image-editor ───
     function loadEditor(src, callback) {
+      // 先确保 tui-color-picker 已加载
+      if (!window['tui-color-picker']) {
+        var cpLink = document.createElement('link');
+        cpLink.rel = 'stylesheet';
+        cpLink.href = IMG_EDITOR_PATH + '/tui-color-picker.css';
+        document.head.appendChild(cpLink);
+        var cpScript = document.createElement('script');
+        cpScript.src = IMG_EDITOR_PATH + '/tui-color-picker.min.js';
+        cpScript.onload = function () { loadMainEditor(src, callback); };
+        cpScript.onerror = function () { mountEl.innerHTML = '<div style="padding:40px;text-align:center;color:#a00">❌ 颜色选择器加载失败</div>'; };
+        document.head.appendChild(cpScript);
+      } else {
+        loadMainEditor(src, callback);
+      }
+    }
+
+    function loadMainEditor(src, callback) {
       if (window.tui && window.tui.ImageEditor) {
         initEditor(src);
         if (callback) callback();
@@ -82,7 +99,7 @@
         if (callback) callback();
       };
       script.onerror = function () {
-        mountEl.innerHTML = '<div style="padding:40px;text-align:center;color:#a00">❌ 图片编辑器加载失败<br><br>缺少 ' + IMG_EDITOR_PATH + '/tui-image-editor.min.js</div>';
+        mountEl.innerHTML = '<div style="padding:40px;text-align:center;color:#a00">❌ 图片编辑器加载失败</div>';
       };
       document.head.appendChild(script);
     }
