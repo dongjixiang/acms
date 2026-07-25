@@ -6,8 +6,18 @@
   'use strict';
 
   var MONACO_CDN = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.0/min/vs';
+var MONACO_CDN_FALLBACK = 'https://unpkg.com/monaco-editor@0.52.0/min/vs';
   var loaded = false;
   var loadQueue = [];
+
+  var loadAttempts = 0;
+  function tryLoadCDN(cdn, onload, onerror) {
+    var s = document.createElement('script');
+    s.src = cdn + '/loader.js';
+    s.onload = onload;
+    s.onerror = onerror;
+    document.head.appendChild(s);
+  }
 
   function loadMonaco(callback) {
     if (typeof monaco !== 'undefined' && monaco.editor) {
@@ -18,21 +28,45 @@
     if (loaded) return;
     loaded = true;
 
-    // Monaco 通过 require.js 加载
-    var script = document.createElement('script');
-    script.src = MONACO_CDN + '/loader.js';
-    script.onload = function () {
-      require.config({ paths: { vs: MONACO_CDN } });
-      require(['vs/editor/editor.main'], function () {
-        loadQueue.forEach(function (cb) { cb(); });
-        loadQueue = [];
-      });
-    };
-    script.onerror = function () {
+    function onLoaderReady() {
+      try {
+        require.config({ paths: { vs: MONACO_CDN } });
+        require(['vs/editor/editor.main'], function () {
+          loadQueue.forEach(function (cb) { cb(); });
+          loadQueue = [];
+        }, function (err) {
+          console.error('[CodeEditor] Monaco editor.main 加载失败', err);
+          // 尝试 fallback CDN
+          require.config({ paths: { vs: MONACO_CDN_FALLBACK } });
+          require(['vs/editor/editor.main'], function () {
+            loadQueue.forEach(function (cb) { cb(); });
+            loadQueue = [];
+          }, function () {
+            showMonacoError();
+          });
+        });
+      } catch(e) {
+        showMonacoError();
+      }
+    }
+
+    tryLoadCDN(MONACO_CDN, onLoaderReady, function () {
+      // 主 CDN 失败 → fallback
+      console.warn('[CodeEditor] 主 CDN 失败, 尝试 fallback');
+      tryLoadCDN(MONACO_CDN_FALLBACK, onLoaderReady, showMonacoError);
+    });
+
+    function showMonacoError() {
       loaded = false;
-      console.error('[CodeEditor] Monaco CDN 加载失败');
-    };
-    document.head.appendChild(script);
+      var mount = document.getElementById('code-editor-mount');
+      if (mount) {
+        mount.innerHTML = '<div style="padding:40px;text-align:center;color:#a00">' +
+          '❌ Monaco Editor 加载失败<br><br>' +
+          '请检查网络连接或尝试刷新<br>' +
+          '<button onclick="location.reload()" style="margin-top:12px;padding:8px 24px;cursor:pointer">🔄 刷新</button>' +
+          '</div>';
+      }
+    }
   }
 
   // 文件扩展名 → language 映射
@@ -134,15 +168,15 @@
   function showAIMenu(panel, editor, text, lang) {
     panel.style.display = 'block';
     panel.innerHTML =
-      '<div style="margin-bottom:6px;font-weight:600;color:var(--text)">🤖 AI 对所选代码做什么？</div>' +
+      '<div style="margin-bottom:6px;font-weight:600;color:var(--text,#333)">🤖 AI 对所选代码做什么？</div>' +
       '<div style="display:flex;gap:6px;flex-wrap:wrap">' +
-        '<button class="oo-titlebar-btn" data-ai="explain">📖 解释</button>' +
-        '<button class="oo-titlebar-btn" data-ai="optimize">⚡ 优化</button>' +
-        '<button class="oo-titlebar-btn" data-ai="translate-en">🇺🇸 译成英文</button>' +
-        '<button class="oo-titlebar-btn" data-ai="translate-zh">🇨🇳 译成中文</button>' +
-        '<button class="oo-titlebar-btn" data-ai="comments">💬 加注释</button>' +
-        '<button class="oo-titlebar-btn" data-ai="fix">🔧 找 Bug</button>' +
-        '<button class="oo-titlebar-btn" style="margin-left:auto" id="code-ai-close">✕ 关闭</button>' +
+        '<button style="padding:4px 10px;border:1px solid var(--office-divider,#ccc);border-radius:3px;background:var(--bg,#fff);color:var(--text,#333);cursor:pointer;font-size:12px" data-ai="explain">📖 解释</button>' +
+        '<button style="padding:4px 10px;border:1px solid var(--office-divider,#ccc);border-radius:3px;background:var(--bg,#fff);color:var(--text,#333);cursor:pointer;font-size:12px" data-ai="optimize">⚡ 优化</button>' +
+        '<button style="padding:4px 10px;border:1px solid var(--office-divider,#ccc);border-radius:3px;background:var(--bg,#fff);color:var(--text,#333);cursor:pointer;font-size:12px" data-ai="translate-en">🇺🇸 译英文</button>' +
+        '<button style="padding:4px 10px;border:1px solid var(--office-divider,#ccc);border-radius:3px;background:var(--bg,#fff);color:var(--text,#333);cursor:pointer;font-size:12px" data-ai="translate-zh">🇨🇳 译中文</button>' +
+        '<button style="padding:4px 10px;border:1px solid var(--office-divider,#ccc);border-radius:3px;background:var(--bg,#fff);color:var(--text,#333);cursor:pointer;font-size:12px" data-ai="comments">💬 加注释</button>' +
+        '<button style="padding:4px 10px;border:1px solid var(--office-divider,#ccc);border-radius:3px;background:var(--bg,#fff);color:var(--text,#333);cursor:pointer;font-size:12px" data-ai="fix">🔧 找 Bug</button>' +
+        '<button style="margin-left:auto;padding:4px 10px;border:1px solid var(--office-divider,#ccc);border-radius:3px;background:transparent;color:var(--text,#333);cursor:pointer;font-size:12px" id="code-ai-close">✕ 关闭</button>' +
       '</div>' +
       '<div id="code-ai-result" style="margin-top:8px;white-space:pre-wrap;color:var(--text2)"></div>';
 

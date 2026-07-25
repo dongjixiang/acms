@@ -713,3 +713,24 @@
 .oo-table-picker-overlay .cell {
   transition: background 0.1s, border-color 0.1s;
 }
+
+/* ════════════ 代码编辑器 (Monaco Editor + AI) ════════════ */
+.oo-editor-code .oo-titlebar-btn {
+  color: var(--text, #333);
+  background: var(--bg3, #eee);
+  border: 1px solid var(--office-divider, #ccc);
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.oo-editor-code .oo-titlebar-btn:hover {
+  background: var(--office-tab-hover-bg, rgba(0,0,0,0.08));
+}
+#code-ai-panel .oo-titlebar-btn {
+  color: var(--text, #333);
+  background: var(--bg, #fff);
+}
+#code-ai-panel .oo-titlebar-btn:hover {
+  background: var(--office-tab-hover-bg, rgba(0,0,0,0.08));
+}
