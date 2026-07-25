@@ -144,10 +144,7 @@
         selectionStyle: { cornerSize: 8, rotatingPointOffset: 20 },
       });
 
-      // 监听图片加载 → 自动适应窗口
-      imageEditor.on('afterLoadImage', function () {
-        setTimeout(function () { imageEditor.zoom('fit'); }, 100);
-      });
+
     }
 
     // 默认加载空白图片供用户打开文件
