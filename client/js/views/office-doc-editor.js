@@ -377,6 +377,7 @@
   // 主入口
   // ════════════════════════════════════════════
   function mountEditor(container, doc, opts) {
+    console.log('[FlowEditor] mountEditor called', { containerId: container.id, blocks: doc.blocks.length, OfficeDoc: typeof OfficeDoc });
     opts = opts || {};
     if (typeof container === 'string') container = document.getElementById(container);
     if (!container) throw new Error('office-doc-editor: container not found');
@@ -400,7 +401,12 @@
 
     // 最初渲染
     var html = state.doc.blocks.map(blockToHTML).join('\n');
+    console.log('[FlowEditor] HTML rendered', { htmlLen: html.length, htmlPreview: html.slice(0, 200) });
     container.innerHTML = html;
+    console.log('[FlowEditor] Container dims', { 
+      offsetH: container.offsetHeight, offsetW: container.offsetWidth,
+      scrollH: container.scrollHeight, childCount: container.children.length 
+    });
 
     // 事件监听
     container.addEventListener('keydown', function (e) {

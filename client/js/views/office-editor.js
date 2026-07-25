@@ -49,6 +49,7 @@ document.addEventListener('contextmenu', function (e) { e.preventDefault(); });
 // v0.62.4: 支持 (w, fileId, name) 加载现有 .docx
 // v0.62.5: OO 风格标题栏（学 OO FileMenu.js 设计）— 文件名 + ●已修改点 + 右上角保存按钮
 function openWordEditor(w, fileId, fileName) {
+  console.log('[Word] openWordEditor called', { fileId, fileName });
   // 容器 = 整个 PKG 内容区，套 .oo-editor 类（让主题色生效）
   w.$c.innerHTML = '<div class="oo-editor oo-editor-word" style="height:100%;display:flex;flex-direction:column"></div>';
   var host = w.$c.querySelector('.oo-editor');
@@ -247,7 +248,8 @@ function openWordEditor(w, fileId, fileName) {
   }
 
 function mountBlockEditor() {
-    // v0.62.2: 空 doc 自动加 1 个 paragraph（mountEditor 内部已处理）
+  console.log('[Word] mountBlockEditor called, OfficeDocEditor=', typeof window.OfficeDocEditor);
+  // v0.62.2: 空 doc 自动加 1 个 paragraph（mountEditor 内部已处理）
     // v0.62.6: Undo/Redo stack (学 OO 的 asc_getCanUndo/Redo 模式)
     var undoStack = [];
     var redoStack = [];
