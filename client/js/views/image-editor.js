@@ -24,10 +24,8 @@
           '<div class="oo-titlebar-name">' +
             '<input id="img-title-input" value="' + escHtml(fileName || '未命名.png') + '" placeholder="未命名.png" style="background:transparent;border:none;outline:none;font-size:13px;color:var(--text,#333)">' +
           '</div>' +
-          '<div class="oo-titlebar-actions" style="display:flex;gap:4px;align-items:center">' +
-            '<button class="img-btn" id="img-ai-desc">🤖 描述</button>' +
-            '<button class="img-btn" id="img-ai-enhance">✨ 增强</button>' +
-            '<button class="img-btn primary" id="img-save-btn">💾 保存</button>' +
+          '<div class="oo-titlebar-actions">' +
+            '<button class="img-btn primary" id="img-save-btn" style="font-size:12px;padding:4px 12px;border:1px solid var(--office-primary,#446995);border-radius:3px;background:var(--office-primary,#446995);color:#fff;cursor:pointer">💾 保存</button>' +
           '</div>' +
         '</div>' +
         '<div class="code-menu-bar" style="display:flex;background:var(--bg2,#f0f0f0);border-bottom:1px solid var(--office-divider,#ddd);flex-shrink:0">' +
@@ -37,6 +35,14 @@
               '<div class="code-menu-dropdown-item" data-action="save-img">💾 保存</div>' +
               '<div class="code-menu-divider" style="height:1px;background:var(--office-divider,#ddd);margin:4px 8px"></div>' +
               '<div class="code-menu-dropdown-item" data-action="reset-img">🔄 重置</div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="code-menu-item" data-menu="view" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none" onmouseenter="this.style.background=\'var(--office-tab-hover-bg,rgba(0,0,0,0.05))\'" onmouseleave="this.style.background=\'transparent\'">🔍 查看' +
+            '<div class="code-menu-dropdown" style="display:none;position:absolute;top:100%;left:0;z-index:9999;background:var(--bg,#fff);border:1px solid var(--office-divider,#ddd);border-radius:6px;box-shadow:0 4px 20px rgba(0,0,0,0.15);min-width:160px;padding:6px 0">' +
+              '<div class="code-menu-dropdown-item" data-action="zoom-in">🔍+ 放大</div>' +
+              '<div class="code-menu-dropdown-item" data-action="zoom-out">🔍− 缩小</div>' +
+              '<div class="code-menu-dropdown-item" data-action="zoom-fit">📐 适应窗口</div>' +
+              '<div class="code-menu-dropdown-item" data-action="zoom-100">🔢 100%</div>' +
             '</div>' +
           '</div>' +
           '<div class="code-menu-item" data-menu="filter" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none" onmouseenter="this.style.background=\'var(--office-tab-hover-bg,rgba(0,0,0,0.05))\'" onmouseleave="this.style.background=\'transparent\'">🎨 滤镜' +
@@ -60,7 +66,7 @@
           '</div>' +
           '<div style="flex:1"></div>' +
         '</div>' +
-        '<div id="img-editor-mount" style="flex:1;min-height:0;background:var(--bg,#1a1a2e);overflow:hidden"></div>' +
+        '<div id="img-editor-mount" style="flex:1;min-height:0;overflow:auto;background:var(--bg,#1a1a2e)"></div>' +
         '<div id="img-ai-panel" style="display:none;flex-shrink:0;max-height:150px;overflow:auto;background:var(--bg2,#f5f5f7);border-top:1px solid var(--office-divider,#ddd);padding:8px;font-size:13px"></div>' +
       '</div>';
 
@@ -233,6 +239,11 @@
           case 'ai-describe': runAIDescribe(); break;
           case 'ai-enhance': runAIEnhance(); break;
           case 'ai-upscale': toast('AI 放大（即将支持）', 'info'); break;
+          // View/Zoom
+          case 'zoom-in': if (imageEditor) imageEditor.zoom('in'); break;
+          case 'zoom-out': if (imageEditor) imageEditor.zoom('out'); break;
+          case 'zoom-fit': if (imageEditor) imageEditor.zoom('fit'); break;
+          case 'zoom-100': if (imageEditor) imageEditor.zoom('100%'); break;
         }
       };
     });
@@ -281,10 +292,6 @@
       document.body.appendChild(link); link.click(); document.body.removeChild(link);
       toast('已保存 ' + name, 'success');
     };
-
-    // ─── AI 按钮 ───
-    w.$c.querySelector('#img-ai-desc').onclick = runAIDescribe;
-    w.$c.querySelector('#img-ai-enhance').onclick = runAIEnhance;
   }
 
   function escHtml(s) {
