@@ -380,8 +380,14 @@
     if (typeof container === 'string') container = document.getElementById(container);
     if (!container) throw new Error('office-doc-editor: container not found');
     container.innerHTML = '';
-    container.classList.add('ode-editor-flow');  // 新 class，不冲突旧 ode-editor
-    container.style.cssText = 'padding:40px 64px;max-width:880px;margin:0 auto;min-height:100%;line-height:1.7;font-size:15px;font-family:Calibri,PingFang SC,sans-serif';
+    container.classList.add('ode-editor-flow');
+    // 保留已有 flex 样式，只追加文档流样式
+    container.style.padding = '40px 64px';
+    container.style.maxWidth = '880px';
+    container.style.margin = '0 auto';
+    container.style.lineHeight = '1.7';
+    container.style.fontSize = '15px';
+    container.style.fontFamily = 'Calibri, PingFang SC, sans-serif';
 
     var state = {
       doc: doc || OfficeDoc.makeDocument({ title: opts.title || 'untitled' }),
