@@ -714,6 +714,16 @@
   transition: background 0.1s, border-color 0.1s;
 }
 
+/* ════════════ 图片编辑器 (tui-image-editor) ════════════ */
+/* 隐藏 TOAST UI 品牌标识 */
+.tui-image-editor-header {
+  display: none !important;
+}
+/* 编辑器填满容器 */
+.tui-image-editor-container {
+  min-height: 0 !important;
+  height: 100% !important;
+}
 /* ════════════ 代码编辑器 (Monaco Editor + AI) ════════════ */
 .oo-editor-code .code-menu-bar {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;

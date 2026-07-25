@@ -139,8 +139,8 @@
           initMenu: 'draw',
           uiSize: { width: '100%', height: '100%' },
         },
-        cssMaxWidth: mountEl.offsetWidth || 800,
-        cssMaxHeight: mountEl.offsetHeight || 500,
+        cssMaxWidth: 9999,
+        cssMaxHeight: 9999,
         selectionStyle: { cornerSize: 8, rotatingPointOffset: 20 },
       });
     }
