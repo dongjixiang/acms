@@ -208,10 +208,72 @@ function openWordEditor(w, fileId, fileName) {
 
 function mountBlockEditor() {
     // v0.62.2: 空 doc 自动加 1 个 paragraph（mountEditor 内部已处理）
+    // v0.62.6: Undo/Redo stack (学 OO 的 asc_getCanUndo/Redo 模式)
+    var undoStack = [];
+    var redoStack = [];
+    var undoMax = 50;
+    var undoDebounce = null;
+    var undoInitialPushed = false;
+    function snapshotDoc() { return JSON.parse(JSON.stringify(instance.getDocument())); }
+    function pushUndo() {
+      if (!undoInitialPushed) { undoStack.push(snapshotDoc()); undoInitialPushed = true; }
+      undoStack.push(snapshotDoc());
+      if (undoStack.length > undoMax) undoStack.shift();
+      redoStack = [];
+      updateUndoButtons();
+    }
+    function undo() {
+      if (undoStack.length < 2) return; // 至少保留初始状态
+      redoStack.push(undoStack.pop());  // 当前状态进 redo
+      var prev = undoStack[undoStack.length - 1]; // 上一个状态
+      // 恢复 doc
+      var doc = instance.getDocument();
+      doc.blocks = prev.blocks;
+      doc.meta = prev.meta;
+      instance.rerender();
+      setDirty(true);
+      updateUndoButtons();
+    }
+    function redo() {
+      if (!redoStack.length) return;
+      undoStack.push(snapshotDoc()); // 当前状态进 undo
+      var next = redoStack.pop();
+      var doc = instance.getDocument();
+      doc.blocks = next.blocks;
+      doc.meta = next.meta;
+      instance.rerender();
+      setDirty(true);
+      updateUndoButtons();
+    }
+    function updateUndoButtons() {
+      if (window._wordRibbon) {
+        window._wordRibbon.setButtonActive('home', 'undo', undoStack.length > 1);
+        window._wordRibbon.setButtonActive('home', 'redo', redoStack.length > 0);
+      }
+    }
+
     instance = window.OfficeDocEditor.mountEditor(editorHost, doc, {
-      onChange: function () { setDirty(true); /* 实时更新, 显示已修改点 */ }
+      onChange: function () {
+        setDirty(true);
+        if (undoDebounce) clearTimeout(undoDebounce);
+        undoDebounce = setTimeout(function () { pushUndo(); }, 300);
+      }
     });
+    // 初始状态入栈
+    setTimeout(function () { undoStack.push(snapshotDoc()); undoInitialPushed = true; }, 100);
     w._officeDocInstance = instance;
+
+    // Ctrl+Z / Ctrl+Y
+    document.addEventListener('keydown', function (e) {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+        if (e.shiftKey) { redo(); return; }
+        undo();
+        e.preventDefault();
+      } else if ((e.ctrlKey || e.metaKey) && e.key === 'y') {
+        redo();
+        e.preventDefault();
+      }
+    });
 
 // v0.62.5: Word Ribbon 操作集合（学 OO FileMenu.js 的 Home/Insert/Format 结构）
     // PR-W2: 加 inline format toggle + block formatting setter
@@ -283,6 +345,9 @@ function mountBlockEditor() {
           toast('已导出 ' + baseName + '.docx', 'success');
         });
       },
+      // v0.62.6: Undo/Redo
+      undo: function () { undo(); },
+      redo: function () { redo(); },
     };
 
     // v0.62.5: Ribbon 挂载 — 学 OO TabBar.js + FileMenu.js 的 Home/Insert/Format 结构
@@ -292,6 +357,10 @@ function mountBlockEditor() {
           {
             id: 'home', label: '🏠 Home',
             groups: [
+              { title: '历史', buttons: [
+                { id: 'undo', icon: '↩', label: '撤销', action: wordOps.undo },
+                { id: 'redo', icon: '↪', label: '重做', action: wordOps.redo },
+              ]},
               { title: '格式', buttons: [
                 { id: 'bold',      icon: 'B',   label: '粗体', action: function(){ wordOps.toggleInline('bold'); } },
                 { id: 'italic',    icon: 'I',   label: '斜体', action: function(){ wordOps.toggleInline('italic'); } },
