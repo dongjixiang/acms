@@ -388,6 +388,45 @@ function mountBlockEditor() {
       // v0.62.6: Undo/Redo
       undo: function () { undo(); },
       redo: function () { redo(); },
+      // v0.62.7: Layout (学 OO Layout tab)
+      setMargin: function (size) {
+        var mount = editorHost.querySelector('.ode-editor-flow');
+        if (!mount) return;
+        var margins = { narrow: '24px 48px', normal: '40px 64px', moderate: '60px 80px', wide: '80px 120px' };
+        mount.style.padding = margins[size] || margins.normal;
+        if (window._wordRibbon) {
+          Object.keys(margins).forEach(function(k){ window._wordRibbon.setButtonActive('layout', 'margin-' + k, k === size); });
+        }
+      },
+      setOrientation: function (orient) {
+        var mount = editorHost.querySelector('.ode-editor-flow');
+        if (!mount) return;
+        if (orient === 'landscape') { mount.style.maxWidth = '1100px'; }
+        else { mount.style.maxWidth = '880px'; }
+        if (window._wordRibbon) {
+          ['portrait','landscape'].forEach(function(o){ window._wordRibbon.setButtonActive('layout', 'orient-' + o, o === orient); });
+        }
+      },
+      insertPageBreak: function () {
+        var mount = editorHost.querySelector('.ode-editor-flow');
+        if (!mount) return;
+        var pb = document.createElement('div');
+        pb.className = 'ode-page-break';
+        pb.innerHTML = '<hr style="border:none;border-top:1px dashed var(--office-divider,#ddd);margin:16px 0"><div style="text-align:center;font-size:11px;color:var(--text2,#999)">— 分页符 —</div>';
+        // Insert at cursor position or append
+        var sel = window.getSelection();
+        if (sel.rangeCount) {
+          var node = sel.getFocusNode();
+          if (node && mount.contains(node)) {
+            var block = node.closest('[data-bid]');
+            if (block) {
+              block.parentNode.insertBefore(pb, block.nextSibling);
+              return;
+            }
+          }
+        }
+        mount.appendChild(pb);
+      },
     };
 
     // v0.62.5: Ribbon 挂载 — 学 OO TabBar.js + FileMenu.js 的 Home/Insert/Format 结构
@@ -486,6 +525,23 @@ function mountBlockEditor() {
                     toast('表格已插入（双击单元格编辑）', 'info');
                   }
                 }},
+              ]},
+            ],
+          },
+          {
+            id: 'layout', label: '📐 Layout',
+            groups: [
+              { title: '边距', buttons: [
+                { id: 'margin-normal',  icon: '📄', label: '普通', action: function(){ wordOps.setMargin('normal'); } },
+                { id: 'margin-narrow',  icon: '📃', label: '窄',   action: function(){ wordOps.setMargin('narrow'); } },
+                { id: 'margin-wide',    icon: '📑', label: '宽',   action: function(){ wordOps.setMargin('wide'); } },
+              ]},
+              { title: '方向', buttons: [
+                { id: 'orient-portrait',  icon: '📄', label: '纵向', action: function(){ wordOps.setOrientation('portrait'); } },
+                { id: 'orient-landscape', icon: '📁', label: '横向', action: function(){ wordOps.setOrientation('landscape'); } },
+              ]},
+              { title: '分页', buttons: [
+                { id: 'page-break', icon: '➖', label: '分页符', action: wordOps.insertPageBreak },
               ]},
             ],
           },
@@ -1098,6 +1154,25 @@ function openExcelEditor(w) {
     toggleBold: function () { toggleCellFmt('b'); },
     toggleItalic: function () { toggleCellFmt('i'); },
     toggleUnderline: function () { toggleCellFmt('u'); },
+    // v0.62.7: Layout
+    setXlMargin: function (size) {
+      var tbl = w.$c.querySelector('#xlsx-table');
+      if (!tbl) return;
+      var margins = { narrow: '0 8px', normal: '0 16px', wide: '0 32px' };
+      tbl.style.margin = margins[size] || margins.normal;
+      if (window.__xlRibbon) {
+        Object.keys(margins).forEach(function(k){ window.__xlRibbon.setButtonActive('layout', 'xl-margin-' + k, k === size); });
+      }
+    },
+    setXlOrientation: function (orient) {
+      var cont = w.$c.querySelector('.xlsx-table-wrap');
+      if (!cont) return;
+      if (orient === 'landscape') { cont.style.maxWidth = '1200px'; }
+      else { cont.style.maxWidth = ''; }
+      if (window.__xlRibbon) {
+        ['portrait','landscape'].forEach(function(o){ window.__xlRibbon.setButtonActive('layout', 'xl-orient-' + o, o === orient); });
+      }
+    },
   };
 
   function markDirty() {
@@ -1210,7 +1285,7 @@ function openExcelEditor(w) {
 
     // v0.62.5: Ribbon 挂载 — 学 OO FileMenu.js 的 Home/Insert 结构
     if (window.ACMSRibbon) {
-      window.ACMSRibbon.create(w.$c.querySelector('#xlsx-ribbon-host'), {
+      window.__xlRibbon = window.ACMSRibbon.create(w.$c.querySelector('#xlsx-ribbon-host'), {
         tabs: [
           {
             id: 'home', label: '🏠 Home',
@@ -1273,6 +1348,20 @@ function openExcelEditor(w) {
               ]},
               { title: '筛选', buttons: [
                 { id: 'toggle-filter', icon: '🔍', label: '筛选', action: ops.toggleFilter },
+              ]},
+            ],
+          },
+          {
+            id: 'layout', label: '📐 Layout',
+            groups: [
+              { title: '边距', buttons: [
+                { id: 'xl-margin-normal', icon: '📄', label: '普通', action: function(){ ops.setXlMargin('normal'); } },
+                { id: 'xl-margin-narrow', icon: '📃', label: '窄',   action: function(){ ops.setXlMargin('narrow'); } },
+                { id: 'xl-margin-wide',   icon: '📑', label: '宽',   action: function(){ ops.setXlMargin('wide'); } },
+              ]},
+              { title: '方向', buttons: [
+                { id: 'xl-orient-portrait',  icon: '📄', label: '纵向', action: function(){ ops.setXlOrientation('portrait'); } },
+                { id: 'xl-orient-landscape', icon: '📁', label: '横向', action: function(){ ops.setXlOrientation('landscape'); } },
               ]},
             ],
           },
