@@ -624,6 +624,124 @@ function openExcelEditor(w) {
       renderTable();
     },
     save: function () { saveExcel(); },
+
+    // ─── Formula tab (学 OO Formula Tab) ───
+    insertFormula: function (fnName) {
+      if (!sel.start) return toast('请先选中单元格', 'warning');
+      var r = sel.start[0], c = sel.start[1];
+      // 从选中范围收集数值
+      var r1 = sel.start[0], c1 = sel.start[1];
+      var r2 = sel.end ? sel.end[0] : r1, c2 = sel.end ? sel.end[1] : c1;
+      var values = [];
+      for (var ri = Math.min(r1,r2); ri <= Math.max(r1,r2); ri++) {
+        for (var ci = Math.min(c1,c2); ci <= Math.max(c1,c2); ci++) {
+          var v = data[ri] && data[ri][ci];
+          if (v !== '' && v != null && !isNaN(parseFloat(v)) && isFinite(v)) values.push(parseFloat(v));
+        }
+      }
+      var result = '';
+      switch (fnName) {
+        case 'SUM':   result = values.reduce(function(a,b){return a+b;}, 0); break;
+        case 'AVG':   result = values.length ? values.reduce(function(a,b){return a+b;}, 0) / values.length : 0; break;
+        case 'COUNT': result = values.length; break;
+        case 'MAX':   result = values.length ? Math.max.apply(null, values) : ''; break;
+        case 'MIN':   result = values.length ? Math.min.apply(null, values) : ''; break;
+        default: return toast('未知公式: ' + fnName, 'error');
+      }
+      data[r][c] = String(result);
+      markDirty();
+      renderTable();
+      toast(fnName + ' = ' + result, 'success');
+    },
+    autoSum: function () {
+      if (!sel.start) return toast('请先选中单元格', 'warning');
+      var r = sel.start[0], c = sel.start[1];
+      // 向上或向左找数值
+      var vals = [];
+      // 先向上找
+      for (var ri = r - 1; ri >= 0; ri--) {
+        var v = data[ri] && data[ri][c];
+        if (v === '' || v == null) break;
+        if (!isNaN(parseFloat(v)) && isFinite(v)) vals.push(parseFloat(v));
+        else break;
+      }
+      if (vals.length === 0) {
+        // 再向左找
+        for (var ci = c - 1; ci >= 0; ci--) {
+          var v2 = data[r] && data[r][ci];
+          if (v2 === '' || v2 == null) break;
+          if (!isNaN(parseFloat(v2)) && isFinite(v2)) vals.push(parseFloat(v2));
+          else break;
+        }
+      }
+      var sum = vals.reduce(function(a,b){return a+b;}, 0);
+      data[r][c] = String(sum);
+      markDirty();
+      renderTable();
+      toast('自动求和 = ' + sum, 'success');
+    },
+
+    // ─── Data tab (学 OO Data Tab) ───
+    sortRange: function (ascending) {
+      if (!sel.start || !sel.end) return toast('请先选中一个区域', 'warning');
+      var r1 = Math.min(sel.start[0], sel.end[0]);
+      var r2 = Math.max(sel.start[0], sel.end[0]);
+      var c1 = Math.min(sel.start[1], sel.end[1]);
+      var c2 = Math.max(sel.start[1], sel.end[1]);
+      // 提取区域数据
+      var rows = [];
+      for (var ri = r1; ri <= r2; ri++) {
+        rows.push({ idx: ri, cells: data[ri].slice(c1, c2 + 1) });
+      }
+      // 按第1列排序
+      rows.sort(function (a, b) {
+        var va = parseFloat(a.cells[0]), vb = parseFloat(b.cells[0]);
+        if (!isNaN(va) && !isNaN(vb)) return ascending ? va - vb : vb - va;
+        var sa = String(a.cells[0] || ''), sb = String(b.cells[0] || '');
+        return ascending ? sa.localeCompare(sb) : sb.localeCompare(sa);
+      });
+      // 写回 data
+      rows.forEach(function (row, i) {
+        for (var ci = c1; ci <= c2; ci++) {
+          data[r1 + i][ci] = row.cells[ci - c1];
+        }
+      });
+      markDirty();
+      renderTable();
+      toast('已排序 ' + (r2 - r1 + 1) + ' 行 ' + (ascending ? '升序' : '降序'), 'success');
+    },
+    toggleFilter: function () {
+      // 简单筛选: 在当前选中的列上方添加/移除筛选行 (首行变成 filter row)
+      if (!sel.start) return toast('请先选中一个单元格', 'warning');
+      var filterRow = 0; // 默认第0行为筛选标题行
+      if (window._excelFilterActive) {
+        // 关闭筛选 — 恢复所有行显示
+        window._excelFilterActive = false;
+        toast('筛选已关闭', 'info');
+        renderTable();
+      } else {
+        window._excelFilterActive = true;
+        toast('筛选已开启 — 点击筛选行值筛选', 'info');
+        renderTable();
+      }
+    },
+    applyFilter: function (colIdx, value) {
+      if (!window._excelFilterActive) return;
+      // 简单筛选: 只显示匹配的行 (非破坏性)
+      var cells = w.$c.querySelectorAll('.xlsx-cell');
+      cells.forEach(function(el) {
+        var c = parseInt(el.dataset.c);
+        if (c === colIdx) {
+          var td = el.parentNode;
+          var tr = td.parentNode;
+          if (value === '' || el.textContent.trim() === value) {
+            tr.style.display = '';
+          } else {
+            tr.style.display = 'none';
+          }
+        }
+      });
+    },
   };
 
   function markDirty() {
@@ -734,6 +852,33 @@ function openExcelEditor(w) {
               { title: '插入列', buttons: [
                 { id: 'ins-col-left',  icon: '⬅️', label: '左侧', action: ops.insertColLeft },
                 { id: 'ins-col-right', icon: '➡️', label: '右侧', action: ops.insertColRight },
+              ]},
+            ],
+          },
+          {
+            id: 'formula', label: 'ƒ Formula',
+            groups: [
+              { title: '自动求和', buttons: [
+                { id: 'auto-sum', icon: 'Σ', label: '自动求和', large: true, action: ops.autoSum },
+              ]},
+              { title: '常用函数', buttons: [
+                { id: 'fn-sum',   icon: 'Σ', label: 'SUM',   action: function(){ ops.insertFormula('SUM'); } },
+                { id: 'fn-avg',   icon: 'x̄', label: 'AVG',   action: function(){ ops.insertFormula('AVG'); } },
+                { id: 'fn-count', icon: '#', label: 'COUNT', action: function(){ ops.insertFormula('COUNT'); } },
+                { id: 'fn-max',   icon: '↑', label: 'MAX',   action: function(){ ops.insertFormula('MAX'); } },
+                { id: 'fn-min',   icon: '↓', label: 'MIN',   action: function(){ ops.insertFormula('MIN'); } },
+              ]},
+            ],
+          },
+          {
+            id: 'data', label: '🔢 Data',
+            groups: [
+              { title: '排序', buttons: [
+                { id: 'sort-asc',  icon: '⬆️', label: '升序', action: function(){ ops.sortRange(true); } },
+                { id: 'sort-desc', icon: '⬇️', label: '降序', action: function(){ ops.sortRange(false); } },
+              ]},
+              { title: '筛选', buttons: [
+                { id: 'toggle-filter', icon: '🔍', label: '筛选', action: ops.toggleFilter },
               ]},
             ],
           },
