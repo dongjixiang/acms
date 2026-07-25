@@ -411,8 +411,19 @@ function mountBlockEditor() {
             groups: [
               { title: '媒体', buttons: [
                 { id: 'image', icon: '🖼️', label: '图片', action: function(){
-                  var url = prompt('图片 URL（留空取消）:');
-                  if (url) wordOps.insertAfter('image', { src: url });
+                  var input = document.createElement('input');
+                  input.type = 'file';
+                  input.accept = 'image/png,image/jpeg,image/gif,image/webp,image/svg+xml';
+                  input.onchange = function () {
+                    var file = input.files && input.files[0];
+                    if (!file) return;
+                    var reader = new FileReader();
+                    reader.onload = function (e) {
+                      wordOps.insertAfter('image', { src: e.target.result, alt: file.name });
+                    };
+                    reader.readAsDataURL(file);
+                  };
+                  input.click();
                 }},
               ]},
               { title: '表格', buttons: [
@@ -1579,9 +1590,56 @@ function openPptEditor(w) {
             id: 'insert', label: '➕ Insert',
             groups: [
               { title: '插入', buttons: [
-                { id: 'ins-text',  icon: '📝', label: '文本框', action: function(){ toast('即将推出', 'info'); } },
-                { id: 'ins-image', icon: '🖼️', label: '图片',   action: function(){ toast('即将推出', 'info'); } },
-                { id: 'ins-shape', icon: '⬜', label: '形状',   action: function(){ toast('即将推出', 'info'); } },
+                { id: 'ins-text',  icon: '📝', label: '文本框', action: function(){
+                  slides[cur].content += (slides[cur].content ? '\n\n' : '') + '新文本框内容';
+                  markPptDirty();
+                  render();
+                  // 聚焦到文本框
+                  var contentEl = w.$c.querySelector('#ppt-content');
+                  if (contentEl) { contentEl.focus(); contentEl.selectionStart = contentEl.value.length; }
+                } },
+                { id: 'ins-image', icon: '🖼️', label: '图片',   action: function(){
+                  var input = document.createElement('input');
+                  input.type = 'file';
+                  input.accept = 'image/png,image/jpeg,image/gif,image/webp,image/svg+xml';
+                  input.onchange = function () {
+                    var file = input.files && input.files[0];
+                    if (!file) return;
+                    var reader = new FileReader();
+                    reader.onload = function (e) {
+                      // 在当前 slide 内容追加图片标记
+                      slides[cur].content += (slides[cur].content ? '\n\n' : '') + '![' + file.name + '](' + e.target.result + ')';
+                      markPptDirty();
+                      render();
+                    };
+                    reader.readAsDataURL(file);
+                  };
+                  input.click();
+                } },
+                { id: 'ins-shape', icon: '⬜', label: '形状',   action: function(){
+                  var shapes = ['⬜ 方框', '● 圆', '▲ 三角', '◆ 菱形', '⭐ 星'];
+                  if (typeof showPrompt === 'function') {
+                    showPrompt({
+                      title: '选择形状',
+                      message: '输入形状类型:',
+                      multiline: false,
+                      minLength: 1,
+                      buttons: shapes.map(function(s){ return { text: s, value: s.split(' ')[1] }; }),
+                    }).then(function(shape){
+                      if (!shape || shape === '__cancel__') return;
+                      slides[cur].content += (slides[cur].content ? '\n\n' : '') + '[' + shape + ']';
+                      markPptDirty();
+                      render();
+                    });
+                  } else {
+                    var shape = prompt('选择形状 (方框/圆/三角/菱形/星):', '方框');
+                    if (shape) {
+                      slides[cur].content += (slides[cur].content ? '\n\n' : '') + '[' + shape + ']';
+                      markPptDirty();
+                      render();
+                    }
+                  }
+                } },
               ]},
             ],
           },
