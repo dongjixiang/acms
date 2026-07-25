@@ -5,68 +5,35 @@
 (function (root) {
   'use strict';
 
-  var MONACO_CDN = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.0/min/vs';
-var MONACO_CDN_FALLBACK = 'https://unpkg.com/monaco-editor@0.52.0/min/vs';
+  var MONACO_PATH = '/client/lib/monaco';
   var loaded = false;
   var loadQueue = [];
 
-  var loadAttempts = 0;
-  function tryLoadCDN(cdn, onload, onerror) {
-    var s = document.createElement('script');
-    s.src = cdn + '/loader.js';
-    s.onload = onload;
-    s.onerror = onerror;
-    document.head.appendChild(s);
-  }
-
   function loadMonaco(callback) {
-    if (typeof monaco !== 'undefined' && monaco.editor) {
-      callback();
-      return;
-    }
+    if (typeof monaco !== 'undefined' && monaco.editor) { callback(); return; }
     loadQueue.push(callback);
     if (loaded) return;
     loaded = true;
 
-    function onLoaderReady() {
-      try {
-        require.config({ paths: { vs: MONACO_CDN } });
-        require(['vs/editor/editor.main'], function () {
-          loadQueue.forEach(function (cb) { cb(); });
-          loadQueue = [];
-        }, function (err) {
-          console.error('[CodeEditor] Monaco editor.main 加载失败', err);
-          // 尝试 fallback CDN
-          require.config({ paths: { vs: MONACO_CDN_FALLBACK } });
-          require(['vs/editor/editor.main'], function () {
-            loadQueue.forEach(function (cb) { cb(); });
-            loadQueue = [];
-          }, function () {
-            showMonacoError();
-          });
-        });
-      } catch(e) {
-        showMonacoError();
-      }
-    }
-
-    tryLoadCDN(MONACO_CDN, onLoaderReady, function () {
-      // 主 CDN 失败 → fallback
-      console.warn('[CodeEditor] 主 CDN 失败, 尝试 fallback');
-      tryLoadCDN(MONACO_CDN_FALLBACK, onLoaderReady, showMonacoError);
-    });
-
-    function showMonacoError() {
+    var s = document.createElement('script');
+    s.src = MONACO_PATH + '/loader.js';
+    s.onload = function () {
+      require.config({ paths: { vs: MONACO_PATH } });
+      require(['vs/editor/editor.main'], function () {
+        loadQueue.forEach(function (cb) { cb(); });
+        loadQueue = [];
+      }, function () {
+        loaded = false;
+        var mount = document.getElementById('code-editor-mount');
+        if (mount) mount.innerHTML = '<div style="padding:40px;text-align:center;color:#a00">❌ Monaco Editor 加载失败<br><br>请检查 /client/lib/monaco/ 文件完整性<br><button onclick="location.reload()" style="margin-top:12px;padding:8px 24px;cursor:pointer">🔄 刷新</button></div>';
+      });
+    };
+    s.onerror = function () {
       loaded = false;
       var mount = document.getElementById('code-editor-mount');
-      if (mount) {
-        mount.innerHTML = '<div style="padding:40px;text-align:center;color:#a00">' +
-          '❌ Monaco Editor 加载失败<br><br>' +
-          '请检查网络连接或尝试刷新<br>' +
-          '<button onclick="location.reload()" style="margin-top:12px;padding:8px 24px;cursor:pointer">🔄 刷新</button>' +
-          '</div>';
-      }
-    }
+      if (mount) mount.innerHTML = '<div style="padding:40px;text-align:center;color:#a00">❌ Monaco Editor 加载失败<br><br>缺少 /client/lib/monaco/loader.js 文件</div>';
+    };
+    document.head.appendChild(s);
   }
 
   // 文件扩展名 → language 映射
