@@ -427,9 +427,24 @@ function mountBlockEditor() {
                 }},
               ]},
               { title: '表格', buttons: [
-                { id: 'table', icon: '⊞', label: '3×3', action: function(){
-                  wordOps.insertAfter('table', {}, '');
-                  toast('表格已插入（双击单元格编辑）', 'info');
+                { id: 'table', icon: '⊞', label: '表格', action: function(){
+                  if (window.ACMS && window.ACMS.TablePicker) {
+                    window.ACMS.TablePicker.create(ribbonHost.querySelector('[data-btn-id="table"]'), function (rows, cols) {
+                      var headers = [];
+                      for (var ci = 0; ci < cols; ci++) headers.push('列' + (ci + 1));
+                      var rowsData = [];
+                      for (var ri = 0; ri < rows; ri++) {
+                        var row = [];
+                        for (var ci2 = 0; ci2 < cols; ci2++) row.push('');
+                        rowsData.push(row);
+                      }
+                      wordOps.insertAfter('table', { headers: headers, rows: rowsData }, '');
+                      toast('已插入 ' + rows + '×' + cols + ' 表格（双击单元格编辑）', 'info');
+                    });
+                  } else {
+                    wordOps.insertAfter('table', {}, '');
+                    toast('表格已插入（双击单元格编辑）', 'info');
+                  }
                 }},
               ]},
             ],

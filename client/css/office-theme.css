@@ -667,3 +667,9 @@
   padding-top: 4px;
   border-top: 1px solid var(--office-divider, rgba(0,0,0,0.08));
 }
+
+/* ════════════ Table Picker (学 OO DimensionPicker 297行 + InsertTableDialog 147行) ════════════ */
+.oo-table-picker-overlay { z-index: 9999; }
+.oo-table-picker-overlay .cell {
+  transition: background 0.1s, border-color 0.1s;
+}
