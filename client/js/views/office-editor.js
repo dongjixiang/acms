@@ -998,7 +998,6 @@ function openExcelEditor(w) {
     },
     applyFilter: function (colIdx, value) {
       if (!window._excelFilterActive) return;
-      // 简单筛选: 只显示匹配的行 (非破坏性)
       var cells = w.$c.querySelectorAll('.xlsx-cell');
       cells.forEach(function(el) {
         var c = parseInt(el.dataset.c);
@@ -1013,6 +1012,9 @@ function openExcelEditor(w) {
         }
       });
     },
+    // v0.62.6: Undo/Redo
+    undo: function () { xlUndo(); },
+    redo: function () { xlRedo(); },
   };
 
   function markDirty() {
@@ -1026,6 +1028,37 @@ function openExcelEditor(w) {
     var dot = w.$c.querySelector('#xlsx-modified-dot');
     if (dot) { dot.classList.remove('is-dirty'); dot.classList.add('is-saved'); dot.title = '已保存';
       setTimeout(function(){ dot.classList.remove('is-saved'); }, 1200); }
+  }
+
+  // v0.62.6: Excel Undo/Redo
+  var xlUndoStack = [];
+  var xlRedoStack = [];
+  function xlSnapshot() { return JSON.parse(JSON.stringify({ data: data, sheets: sheets, currentSheetIdx: currentSheetIdx })); }
+  function xlPushUndo() {
+    xlUndoStack.push(xlSnapshot());
+    if (xlUndoStack.length > 30) xlUndoStack.shift();
+    xlRedoStack = [];
+  }
+  function xlRestoreState(s) {
+    data.length = 0; s.data.forEach(function(r){ data.push(r); });
+    sheets.length = 0; s.sheets.forEach(function(sh){ sheets.push({ name: sh.name, data: sh.data }); });
+    currentSheetIdx = s.currentSheetIdx;
+    data = sheets[currentSheetIdx].data;
+    renderTable();
+  }
+  function xlUndo() {
+    if (xlUndoStack.length < 2) return;
+    xlRedoStack.push(xlSnapshot());
+    var s = xlUndoStack.pop();
+    xlRestoreState(xlUndoStack[xlUndoStack.length - 1]);
+    markDirty();
+  }
+  function xlRedo() {
+    if (!xlRedoStack.length) return;
+    xlUndoStack.push(xlSnapshot());
+    var s = xlRedoStack.pop();
+    xlRestoreState(s);
+    markDirty();
   }
 
   // 名称框 — 同步显示/编辑当前 cell 坐标 (学 OO Spreadsheet Name Box)
@@ -1099,6 +1132,10 @@ function openExcelEditor(w) {
           {
             id: 'home', label: '🏠 Home',
             groups: [
+              { title: '历史', buttons: [
+                { id: 'undo', icon: '↩', label: '撤销', action: ops.undo },
+                { id: 'redo', icon: '↪', label: '重做', action: ops.redo },
+              ]},
               { title: '单元格', buttons: [
                 { id: 'clear',     icon: '🧹', label: '清空', action: ops.clearCell },
               ]},
@@ -1291,6 +1328,8 @@ updateNameBox();
     };
   }
 
+  // 初始状态入 undo 栈
+  setTimeout(function () { xlPushUndo(); }, 100);
   renderTable();
 }
 
@@ -1432,11 +1471,44 @@ function openPptEditor(w) {
       document.addEventListener('keydown', onKey);
       renderSlide(slideIdx);
     },
+    // v0.62.6: Undo/Redo
+    undo: function () { pptUndo(); },
+    redo: function () { pptRedo(); },
   };
 
   function markPptDirty() {
     var dot = w.$c.querySelector('#ppt-modified-dot');
     if (dot) { dot.classList.add('is-dirty'); dot.classList.remove('is-saved'); dot.title = '已修改未保存'; }
+  }
+
+  // v0.62.6: PPT Undo/Redo
+  var pptUndoStack = [];
+  var pptRedoStack = [];
+  function pptSnapshot() { return JSON.parse(JSON.stringify({ slides: slides, cur: cur })); }
+  function pptPushUndo() {
+    pptUndoStack.push(pptSnapshot());
+    if (pptUndoStack.length > 30) pptUndoStack.shift();
+    pptRedoStack = [];
+  }
+  function pptRestoreState(s) {
+    slides.length = 0;
+    s.slides.forEach(function(sl){ slides.push(sl); });
+    cur = s.cur;
+    render();
+  }
+  function pptUndo() {
+    if (pptUndoStack.length < 2) return;
+    pptRedoStack.push(pptSnapshot());
+    var s = pptUndoStack.pop();
+    pptRestoreState(pptUndoStack[pptUndoStack.length - 1]);
+    markPptDirty();
+  }
+  function pptRedo() {
+    if (!pptRedoStack.length) return;
+    pptUndoStack.push(pptSnapshot());
+    var s = pptRedoStack.pop();
+    pptRestoreState(s);
+    markPptDirty();
   }
 
   function render() {
@@ -1490,6 +1562,10 @@ function openPptEditor(w) {
           {
             id: 'home', label: '🏠 Home',
             groups: [
+              { title: '历史', buttons: [
+                { id: 'undo', icon: '↩', label: '撤销', action: pptOps.undo },
+                { id: 'redo', icon: '↪', label: '重做', action: pptOps.redo },
+              ]},
               { title: '幻灯片', buttons: [
                 { id: 'add-slide', icon: '➕', label: '添加', action: pptOps.addSlide },
                 { id: 'del-slide', icon: '➖', label: '删除', action: pptOps.delSlide },
@@ -1623,6 +1699,8 @@ function updateStatus() {
     if (saveBtn) saveBtn.onclick = function () { savePpt(); };
   }
 
+  // 初始状态入 undo 栈
+  setTimeout(function () { pptPushUndo(); }, 100);
   render();
 }
 
