@@ -604,6 +604,7 @@ document.addEventListener('DOMContentLoaded', () => {
       <div class="launcher-item" onclick="launchView('office-word')"><span class="li-icon">📝</span><span class="li-label">Word</span></div>
       <div class="launcher-item" onclick="launchView('office-xlsx')"><span class="li-icon">📊</span><span class="li-label">Excel</span></div>
       <div class="launcher-item" onclick="launchView('office-pptx')"><span class="li-icon">📽️</span><span class="li-label">PPT</span></div>
+      <div class="launcher-item" onclick="launchView('code-editor')"><span class="li-icon">💻</span><span class="li-label">代码</span></div>
       <div class="divider"></div>
       <div class="launcher-section-title">应用</div>
       <div class="launcher-item" onclick="launchView('file-manager')"><span class="li-icon">🗂️</span><span class="li-label">文件浏览器</span></div>
@@ -653,6 +654,8 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- v0.62.6: 表格维度选择器 (学 OO DimensionPicker + InsertTableDialog) -->
 <script src="/client/js/views/office-table-picker.js?v=0.62.6"></script>
 <script src="/client/js/views/office-editor.js?v=0.62.6"></script>
+<!-- v0.62.7: 代码编辑器 (Monaco Editor + AI) -->
+<script src="/client/js/views/code-editor.js?v=0.62.7"></script>
 <!-- v0.62.1: 块编辑器核心（schema + 转换器 + UI），PR 3 将接 office-word PKG -->
 <script src="/client/js/core/office-doc.js?v=0.62.1"></script>
 <script src="/client/js/core/office-doc-converter.js?v=0.62.1"></script>
@@ -1010,6 +1013,14 @@ document.addEventListener('DOMContentLoaded', () => {
     title: 'PPT 演示', icon: '📽️', category: '工具', defaultSize: { w: 1000, h: 650 },
     loader: function(w) {
       if (typeof openPptEditor === 'function') openPptEditor(w);
+      else w.$c.innerHTML = '<div style="padding:40px;text-align:center">加载中...</div>';
+    }
+  });
+  // v0.62.7: 代码编辑器 (Monaco Editor + AI)
+  PKG('code-editor', {
+    title: '代码编辑器', icon: '💻', category: '工具', defaultSize: { w: 1000, h: 650 },
+    loader: function(w) {
+      if (typeof openCodeEditor === 'function') openCodeEditor(w);
       else w.$c.innerHTML = '<div style="padding:40px;text-align:center">加载中...</div>';
     }
   });
