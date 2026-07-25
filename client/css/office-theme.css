@@ -668,6 +668,13 @@
   border-top: 1px solid var(--office-divider, rgba(0,0,0,0.08));
 }
 
+/* ════════════ 右键菜单 (学 OO DocumentHolderExt 模式) ════════════ */
+.oo-ctx-menu hr {
+  margin: 4px 0;
+  border: none;
+  border-top: 1px solid var(--office-divider, rgba(0,0,0,0.1));
+}
+
 /* ════════════ Table Picker (学 OO DimensionPicker 297行 + InsertTableDialog 147行) ════════════ */
 .oo-table-picker-overlay { z-index: 9999; }
 .oo-table-picker-overlay .cell {

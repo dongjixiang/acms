@@ -3,6 +3,46 @@
 
 function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
+// ─── 右键菜单组件 (学 OO DocumentHolderExt 模式) ───
+var activeCtxMenu = null;
+function showCtxMenu(items, x, y) {
+  if (activeCtxMenu) { document.body.removeChild(activeCtxMenu); activeCtxMenu = null; }
+  var menu = document.createElement('div');
+  menu.className = 'oo-ctx-menu';
+  menu.style.cssText = 'position:fixed;left:' + x + 'px;top:' + y + 'px;z-index:99999;' +
+    'background:var(--bg,#fff);border:1px solid var(--border,#ddd);border-radius:4px;' +
+    'box-shadow:0 4px 16px rgba(0,0,0,0.15);padding:4px 0;min-width:120px;';
+  items.forEach(function (item) {
+    if (item === '-') {
+      menu.appendChild(document.createElement('hr'));
+      return;
+    }
+    var btn = document.createElement('button');
+    btn.textContent = item.label;
+    btn.style.cssText = 'display:block;width:100%;padding:6px 16px;border:none;background:transparent;' +
+      'text-align:left;font-size:13px;cursor:pointer;color:var(--text,#333);';
+    btn.onmouseenter = function () { this.style.background = 'var(--office-tab-hover-bg,rgba(0,0,0,0.05))'; };
+    btn.onmouseleave = function () { this.style.background = 'transparent'; };
+    btn.onclick = function (e) {
+      e.stopPropagation();
+      item.action();
+      if (activeCtxMenu) { document.body.removeChild(activeCtxMenu); activeCtxMenu = null; }
+    };
+    menu.appendChild(btn);
+  });
+  function closeMenu(e) {
+    if (menu && !menu.contains(e.target)) {
+      if (activeCtxMenu) { document.body.removeChild(activeCtxMenu); activeCtxMenu = null; }
+      document.removeEventListener('mousedown', closeMenu);
+    }
+  }
+  setTimeout(function () { document.addEventListener('mousedown', closeMenu); }, 0);
+  document.body.appendChild(menu);
+  activeCtxMenu = menu;
+}
+// 阻止浏览器默认右键菜单
+document.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+
 // ===== Word 编辑器（v0.62.5 OO 风格标题栏 + 块编辑器）=====
 // 改用自研 office-doc-editor 替代 Quill
 // 依赖：window.OfficeDoc + window.OfficeDocEditor（由 index.html 在 office-editor.js 之前加载）
@@ -740,6 +780,20 @@ function mountBlockEditor() {
         }
       }
     });
+  // v0.62.6: Word 右键菜单
+  editorHost.addEventListener('contextmenu', function (e) {
+    var blockEl = e.target.closest('.ode-block');
+    if (!blockEl) return;
+    var blockId = blockEl.dataset.blockId;
+    e.preventDefault();
+    showCtxMenu([
+      { label: '\u2702 \u5220\u9664\u5757', action: function () { if (blockId) instance.deleteBlock(blockId); } },
+      { label: '\u2191 \u4E0A\u79FB', action: function () { if (blockId) instance.moveBlockUp(blockId); } },
+      { label: '\u2193 \u4E0B\u79FB', action: function () { if (blockId) instance.moveBlockDown(blockId); } },
+      '-',
+      { label: '\u2716 \u53D6\u6D88', action: function () {} },
+    ], e.clientX, e.clientY);
+  });
   }, 100); // 延迟等 DOM 就绪
 }
 
@@ -1301,6 +1355,33 @@ updateNameBox();
     var addSheetBtn = w.$c.querySelector('#xlsx-add-sheet');
     if (addSheetBtn) addSheetBtn.onclick = function () { addSheet(); };
 
+    // v0.62.6: Excel 右键菜单
+    w.$c.addEventListener('contextmenu', function (e) {
+      var cell = e.target.closest('.xlsx-cell');
+      if (!cell) return;
+      e.preventDefault();
+      var r = parseInt(cell.dataset.r), c = parseInt(cell.dataset.c);
+      sel = { start: [r, c], end: [r, c] };
+      updateNameBox();
+      showCtxMenu([
+        { label: '\u2726 \u6E05\u7A7A', action: function () { data[r][c] = ''; markDirty(); renderTable(); } },
+        { label: '\u2191 \u4E0A\u65B9\u63D2\u884C', action: function () {
+          var nr = []; for (var k = 0; k < (data[0]||[]).length; k++) nr.push('');
+          data.splice(r, 0, nr); markDirty(); renderTable();
+        }},
+        { label: '\u2193 \u4E0B\u65B9\u63D2\u884C', action: function () {
+          var nr = []; for (var k = 0; k < (data[0]||[]).length; k++) nr.push('');
+          data.splice(r + 1, 0, nr); markDirty(); renderTable();
+        }},
+        { label: '\u2716 \u5220\u9664\u884C', action: function () {
+          if (data.length <= 1) return toast('\u81F3\u5C11\u4FDD\u7559\u4E00\u884C', 'warning');
+          data.splice(r, 1); markDirty(); renderTable();
+        }},
+        '-',
+        { label: '\u53D6\u6D88', action: function () {} },
+      ], e.clientX, e.clientY);
+    });
+
 // v0.62.5: 保存逻辑抽成 saveExcel 函数（Ribbon "保存"按钮 + 标题栏 "保存"按钮共用）
     function saveExcel() {
       var name;
@@ -1716,6 +1797,31 @@ function openPptEditor(w) {
         if (contentEl) slides[cur].content = contentEl.value;
         cur = parseInt(this.dataset.i);
         render();
+      };
+      // v0.62.6: PPT 缩略图右键菜单
+      el.oncontextmenu = function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        var idx = parseInt(this.dataset.i);
+        showCtxMenu([
+          { label: '\u2795 \u65B0\u5EFA\u5E7B\u706F\u7247', action: function () {
+            slides.splice(idx + 1, 0, { title: '\u65B0\u9875\u9762', content: '', layout: 'content', transition: { type: 'none', direction: 'from-right', duration: 500 } });
+            cur = idx + 1; markPptDirty(); render();
+          }},
+          { label: '📋 复制幻灯片', action: function () {
+            var copy = JSON.parse(JSON.stringify(slides[idx]));
+            slides.splice(idx + 1, 0, copy);
+            cur = idx + 1; markPptDirty(); render();
+          }},
+          { label: '\u2716 \u5220\u9664', action: function () {
+            if (slides.length <= 1) return toast('\u81F3\u5C11\u4FDD\u7559\u4E00\u9875', 'warning');
+            slides.splice(idx, 1);
+            if (cur >= slides.length) cur = slides.length - 1;
+            markPptDirty(); render();
+          }},
+          '-',
+          { label: '\u53D6\u6D88', action: function () {} },
+        ], e.clientX, e.clientY);
       };
     });
 
