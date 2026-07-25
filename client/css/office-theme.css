@@ -715,8 +715,16 @@
 }
 
 /* ════════════ 图片编辑器 (tui-image-editor) ════════════ */
-/* 隐藏 TOAST UI 品牌标识 */
+/* 隐藏 TOAST UI 品牌标识和内置标题栏 */
 .tui-image-editor-header {
+  display: none !important;
+  height: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+/* 隐藏内置文件名栏 */
+.tui-image-editor-header-logo,
+.tui-image-editor-header-buttons {
   display: none !important;
 }
 /* 编辑器填满容器 */
