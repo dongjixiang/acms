@@ -80,14 +80,16 @@
     h += '<button class="oo-titlebar-btn" id="code-save-btn">💾 保存</button>';
     h += '</div></div>';
     // 菜单栏
-    h += '<div class="code-menu-bar" style="display:flex;background:var(--bg2,#f0f0f0);border-bottom:1px solid var(--office-divider,#ddd);flex-shrink:0">';
-    h += '<div class="code-menu-item" data-menu="file" style="position:relative;padding:4px 14px;cursor:pointer;font-size:13px;user-select:none">文件';
+    h += '<div class="code-menu-bar" style="display:flex;background:var(--bg2,#f0f0f0);border-bottom:1px solid var(--office-divider,#ddd);flex-shrink:0;font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;font-size:13px">';
+    h += '<div class="code-menu-item" data-menu="file" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none;transition:background 0.1s" onmouseenter="this.style.background=\'var(--office-tab-hover-bg,rgba(0,0,0,0.05))\'" onmouseleave="this.style.background=\'transparent\'">📄 文件';
     h += '<div class="code-menu-dropdown" style="display:none;position:absolute;top:100%;left:0;z-index:9999;background:var(--bg,#fff);border:1px solid var(--office-divider,#ddd);border-radius:4px;box-shadow:0 4px 16px rgba(0,0,0,0.12);min-width:160px;padding:4px 0">';
+    h += '<div class="code-menu-dropdown-item" data-action="open-file">📂 打开文件 <span style="float:right;color:var(--text2,#999);font-size:11px">Ctrl+O</span></div>';
+    h += '<div class="code-menu-divider" style="height:1px;background:var(--office-divider,#ddd);margin:4px 8px"></div>';
     h += '<div class="code-menu-dropdown-item" data-action="save">💾 保存 <span style="float:right;color:var(--text2,#999);font-size:11px">Ctrl+S</span></div>';
     h += '<div class="code-menu-divider" style="height:1px;background:var(--office-divider,#ddd);margin:4px 8px"></div>';
     h += '<div class="code-menu-dropdown-item" data-action="new-tab">📄 新建文件</div>';
     h += '</div></div>';
-    h += '<div class="code-menu-item" data-menu="edit" style="position:relative;padding:4px 14px;cursor:pointer;font-size:13px;user-select:none">编辑';
+    h += '<div class="code-menu-item" data-menu="edit" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none;transition:background 0.1s" onmouseenter="this.style.background=\'var(--office-tab-hover-bg,rgba(0,0,0,0.05))\'" onmouseleave="this.style.background=\'transparent\'">✏️ 编辑';
     h += '<div class="code-menu-dropdown" style="display:none;position:absolute;top:100%;left:0;z-index:9999;background:var(--bg,#fff);border:1px solid var(--office-divider,#ddd);border-radius:4px;box-shadow:0 4px 16px rgba(0,0,0,0.12);min-width:160px;padding:4px 0">';
     h += '<div class="code-menu-dropdown-item" data-action="undo">↩ 撤销 <span style="float:right;color:var(--text2,#999);font-size:11px">Ctrl+Z</span></div>';
     h += '<div class="code-menu-dropdown-item" data-action="redo">↪ 重做 <span style="float:right;color:var(--text2,#999);font-size:11px">Ctrl+Y</span></div>';
@@ -97,7 +99,7 @@
     h += '<div class="code-menu-divider" style="height:1px;background:var(--office-divider,#ddd);margin:4px 8px"></div>';
     h += '<div class="code-menu-dropdown-item" data-action="select-all">☐ 全选 <span style="float:right;color:var(--text2,#999);font-size:11px">Ctrl+A</span></div>';
     h += '</div></div>';
-    h += '<div class="code-menu-item" data-menu="view" style="position:relative;padding:4px 14px;cursor:pointer;font-size:13px;user-select:none">查看';
+    h += '<div class="code-menu-item" data-menu="view" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none;transition:background 0.1s" onmouseenter="this.style.background=\'var(--office-tab-hover-bg,rgba(0,0,0,0.05))\'" onmouseleave="this.style.background=\'transparent\'">👁️ 查看';
     h += '<div class="code-menu-dropdown" style="display:none;position:absolute;top:100%;left:0;z-index:9999;background:var(--bg,#fff);border:1px solid var(--office-divider,#ddd);border-radius:4px;box-shadow:0 4px 16px rgba(0,0,0,0.12);min-width:160px;padding:4px 0">';
     h += '<div class="code-menu-dropdown-item" data-action="toggle-minimap">☐ 缩略图</div>';
     h += '<div class="code-menu-dropdown-item" data-action="toggle-wordwrap">☐ 自动换行</div>';
@@ -106,7 +108,7 @@
     h += '<div class="code-menu-dropdown-item" data-action="zoom-out">🔍− 缩小</div>';
     h += '<div class="code-menu-dropdown-item" data-action="zoom-reset">🔍 重置</div>';
     h += '</div></div>';
-    h += '<div class="code-menu-item" data-menu="ai" style="position:relative;padding:4px 14px;cursor:pointer;font-size:13px;user-select:none;color:var(--office-word-primary,#446995);font-weight:600">🤖 AI';
+    h += '<div class="code-menu-item" data-menu="ai" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none;transition:background 0.1s;font-weight:600" onmouseenter="this.style.background=\'var(--office-tab-hover-bg,rgba(0,0,0,0.05))\'" onmouseleave="this.style.background=\'transparent\'">🤖 AI';
     h += '<div class="code-menu-dropdown" style="display:none;position:absolute;top:100%;left:0;z-index:9999;background:var(--bg,#fff);border:1px solid var(--office-divider,#ddd);border-radius:4px;box-shadow:0 4px 16px rgba(0,0,0,0.12);min-width:160px;padding:4px 0">';
     h += '<div class="code-menu-dropdown-item" data-action="ai-explain">📖 解释代码</div>';
     h += '<div class="code-menu-dropdown-item" data-action="ai-optimize">⚡ 优化代码</div>';
@@ -181,6 +183,29 @@
             var name = (w.$c.querySelector('#code-title-input').value || '').trim() || 'untitled.txt';
             toast('已保存 ' + name + ' (' + content.length + ' chars)', 'success');
             break;
+          case 'open-file':
+            var fileInput = document.createElement('input');
+            fileInput.type = 'file';
+            fileInput.accept = '.js,.ts,.py,.html,.css,.json,.md,.txt,.jsx,.tsx,.go,.rs,.java,.c,.cpp,.rb,.php,.sh,.yaml,.yml,.xml,.sql,.vue,.svelte';
+            fileInput.onchange = function () {
+              var file = fileInput.files && fileInput.files[0];
+              if (!file) return;
+              var reader = new FileReader();
+              reader.onload = function (e) {
+                var content = e.target.result;
+                var name = file.name;
+                var lang = langFromFileName(name);
+                if (editor) {
+                  editor.setValue(content);
+                  var model = editor.getModel();
+                  monaco.editor.setModelLanguage(model, lang);
+                  w.$c.querySelector('#code-title-input').value = name;
+                }
+              };
+              reader.readAsText(file);
+            };
+            fileInput.click();
+            break;
           case 'new-tab': toast('新建文件 (即将支持)', 'info'); break;
           case 'undo': editor.trigger('keyboard', 'undo'); break;
           case 'redo': editor.trigger('keyboard', 'redo'); break;
@@ -227,6 +252,14 @@
 
     // ─── 键盘快捷键 ───
     document.addEventListener('keydown', function (e) {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'o') {
+        if (!w.$c || !document.body.contains(w.$c)) return;
+        e.preventDefault();
+        var items = w.$c.querySelectorAll('.code-menu-dropdown-item');
+        for (var i = 0; i < items.length; i++) {
+          if (items[i].dataset.action === 'open-file') { items[i].click(); break; }
+        }
+      }
       if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         if (!w.$c || !document.body.contains(w.$c)) return;
         e.preventDefault();
@@ -269,12 +302,12 @@
     function runAI(action) {
       var p = buildPrompt(action, text, lang);
       resultEl.textContent = '⏳ AI 思考中...';
-      fetch('/api/chat/stream', {
+      fetch('/api/chat/detect-and-respond', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-API-Key': (window.ACMSConfig && window.ACMSConfig.apiKey) || 'dev-key-001' },
-        body: JSON.stringify({ messages: [{ role: 'user', content: p }], stream: false }),
+        body: JSON.stringify({ reqId: '_code_editor', text: p }),
       }).then(function (r) { return r.json(); }).then(function (data) {
-        var answer = data && (data.content || data.message || data.text || data.reply) || '无响应';
+        var answer = data && (data.aiReply || data.content || data.message || data.text || data.reply) || '无响应';
         resultEl.textContent = answer;
       }).catch(function (e) { resultEl.textContent = '❌ ' + e.message; });
     }

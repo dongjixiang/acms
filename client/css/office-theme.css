@@ -715,6 +715,57 @@
 }
 
 /* ════════════ 代码编辑器 (Monaco Editor + AI) ════════════ */
+.oo-editor-code .code-menu-bar {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+  user-select: none;
+}
+.oo-editor-code .code-menu-item {
+  position: relative;
+  padding: 5px 16px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.oo-editor-code .code-menu-item:hover {
+  background: var(--office-tab-hover-bg, rgba(0,0,0,0.05));
+}
+.oo-editor-code .code-menu-item:active {
+  background: var(--office-button-active-bg, rgba(0,0,0,0.1));
+}
+.oo-editor-code .code-menu-dropdown {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 9999;
+  background: var(--bg, #fff);
+  border: 1px solid var(--office-divider, #ddd);
+  border-radius: 6px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+  min-width: 180px;
+  padding: 6px 0;
+}
+.oo-editor-code .code-menu-dropdown-item {
+  padding: 6px 16px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text, #333);
+  transition: background 0.1s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.oo-editor-code .code-menu-dropdown-item:hover {
+  background: var(--office-tab-hover-bg, rgba(0,0,0,0.05));
+}
+.oo-editor-code .code-menu-dropdown-item:active {
+  background: var(--office-button-active-bg, rgba(0,0,0,0.1));
+}
+.oo-editor-code .code-menu-divider {
+  height: 1px;
+  background: var(--office-divider, #ddd);
+  margin: 4px 8px;
+}
 .oo-editor-code .oo-titlebar-btn {
   color: var(--text, #333);
   background: var(--bg3, #eee);
