@@ -1452,7 +1452,7 @@ updateNameBox();
 // 保留：缩略图侧边栏 / 标题+正文编辑 / +添加页 / 删除 / 保存
 // 升级：showPrompt 替代 prompt()
 function openPptEditor(w) {
-  var slides = [{ title: 'PPT 标题', content: '第一页正文\n支持多行\n- 项目 A\n- 项目 B', layout: 'content', transition: { type: 'none', direction: 'from-right', duration: 500 } }];
+  var slides = [{ title: 'PPT 标题', content: '第一页正文\n支持多行\n- 项目 A\n- 项目 B', layout: 'content', transition: { type: 'none', direction: 'from-right', duration: 500 }, animations: [] }];
   var cur = 0;
 
   // 布局下拉变化时改 placeholder + 字号
@@ -1478,7 +1478,7 @@ function openPptEditor(w) {
   // v0.62.5: PPT 操作函数集合（Ribbon + 标题栏共用）
   var pptOps = {
     addSlide: function () {
-      slides.push({ title: '新页面', content: '', layout: 'content', transition: { type: 'none', direction: 'from-right', duration: 500 } });
+      slides.push({ title: '新页面', content: '', layout: 'content', transition: { type: 'none', direction: 'from-right', duration: 500 }, animations: [] });
       cur = slides.length - 1;
       markPptDirty();
       render();
@@ -1538,6 +1538,52 @@ function openPptEditor(w) {
       markPptDirty();
       if (typeof toast === 'function') toast('已应用到全部 ' + slides.length + ' 页', 'success');
     },
+    // ─── Animations (学 OO Animation.js) ───
+    _animState: { target: 'title', type: 'fade', trigger: 'onClick', duration: 500 },
+    _getAnim: function () {
+      var s = slides[cur];
+      if (!s.animations) s.animations = [];
+      return s.animations;
+    },
+    setAnimTarget: function (target) {
+      pptOps._animState.target = target;
+      if (window._pptRibbon) {
+        ['title','content'].forEach(function(t){ window._pptRibbon.setButtonActive('animate', 'anim-' + t, t === target); });
+      }
+    },
+    setAnimEffect: function (type) {
+      pptOps._animState.type = type;
+      // Add/update animation for current target
+      var anims = pptOps._getAnim();
+      var target = pptOps._animState.target;
+      var existing = null;
+      anims.forEach(function(a){ if (a.target === target) existing = a; });
+      if (existing) { existing.type = type; existing.duration = pptOps._animState.duration; existing.trigger = pptOps._animState.trigger; }
+      else { anims.push({ target: target, type: type, trigger: pptOps._animState.trigger, duration: pptOps._animState.duration }); }
+      markPptDirty();
+      if (window._pptRibbon) {
+        ['fade','fly-in','zoom','bounce'].forEach(function(t){ window._pptRibbon.setButtonActive('animate', 'anim-' + t, t === type); });
+      }
+      toast('动画已添加: ' + (target === 'title' ? '标题' : '正文') + ' → ' + type, 'info');
+    },
+    setAnimTrigger: function (trigger) {
+      pptOps._animState.trigger = trigger;
+      if (window._pptRibbon) {
+        ['onClick','auto'].forEach(function(t){ window._pptRibbon.setButtonActive('animate', 'trig-' + t.replace('onClick','click').replace('auto','auto'), t === trigger); });
+      }
+    },
+    setAnimDuration: function (duration) {
+      pptOps._animState.duration = duration;
+      // Update existing animations
+      var anims = pptOps._getAnim();
+      anims.forEach(function(a){ if (a.target === pptOps._animState.target) a.duration = duration; });
+      markPptDirty();
+      if (window._pptRibbon) {
+        [{id:'anim-dur-fast',v:300},{id:'anim-dur-med',v:500},{id:'anim-dur-slow',v:1000}].forEach(function(d){
+          window._pptRibbon.setButtonActive('animate', d.id, d.v === duration);
+        });
+      }
+    },
     startSlideshow: function () {
       var oldOverlay = document.getElementById('ppt-slideshow-overlay');
       if (oldOverlay) oldOverlay.parentNode.removeChild(oldOverlay);
@@ -1551,11 +1597,15 @@ function openPptEditor(w) {
         if (!s) return;
         var trans = s.transition || { type: 'none', direction: 'from-right', duration: 500 };
         var layoutClass = s.layout === 'cover' ? 'ppt-sls-cover' : (s.layout === 'blank' ? 'ppt-sls-blank' : 'ppt-sls-content');
+        function animFor(target) {
+          var a = (s.animations || []).find(function(x){ return x.target === target; });
+          return a || { type: 'fade', duration: 500, trigger: 'onClick' };
+        }
         overlay.innerHTML =
           '<div class="ppt-slideshow-slide ' + layoutClass + '" style="animation:ppt-trans-' + trans.type + ' ' + trans.duration + 'ms ease">' +
             '<div class="ppt-slideshow-slide-inner">' +
-              (s.title ? '<h1>' + escHtml(s.title) + '</h1>' : '') +
-              (s.content ? '<div class="ppt-slideshow-content">' + escHtml(s.content).replace(/\n/g, '<br>') + '</div>' : '') +
+              (s.title ? '<h1 class="ppt-sls-title" style="animation:ppt-elem-' + (animFor('title').type) + ' ' + (animFor('title').duration) + 'ms ease">' + escHtml(s.title) + '</h1>' : '') +
+              (s.content ? '<div class="ppt-slideshow-content" style="animation:ppt-elem-' + (animFor('content').type) + ' ' + (animFor('content').duration) + 'ms ease">' + escHtml(s.content).replace(/\\n/g, '<br>') + '</div>' : '') +
             '</div>' +
             '<div class="ppt-slideshow-nav">' +
               '<button id="ppt-sls-prev" class="ppt-sls-nav-btn" ' + (idx <= 0 ? 'disabled' : '') + '>\u25C0</button>' +
@@ -1783,6 +1833,30 @@ function openPptEditor(w) {
               { title: '操作', buttons: [
                 { id: 'apply-all', icon: '📋', label: '应用到全部', action: pptOps.applyToAll },
                 { id: 'slideshow', icon: '▶️', label: '开始放映', large: true, action: pptOps.startSlideshow },
+              ]},
+            ],
+          },
+          {
+            id: 'animate', label: '💫 Animations',
+            groups: [
+              { title: '目标', buttons: [
+                { id: 'anim-title',   icon: '📝', label: '标题',   action: function(){ pptOps.setAnimTarget('title'); } },
+                { id: 'anim-content', icon: '📄', label: '正文',   action: function(){ pptOps.setAnimTarget('content'); } },
+              ]},
+              { title: '效果', buttons: [
+                { id: 'anim-fade',    icon: '🌫️', label: '淡入',  action: function(){ pptOps.setAnimEffect('fade'); } },
+                { id: 'anim-fly',     icon: '✈️',  label: '飞入',  action: function(){ pptOps.setAnimEffect('fly-in'); } },
+                { id: 'anim-zoom',    icon: '🔍', label: '缩放',  action: function(){ pptOps.setAnimEffect('zoom'); } },
+                { id: 'anim-bounce',  icon: '🌀', label: '弹入',  action: function(){ pptOps.setAnimEffect('bounce'); } },
+              ]},
+              { title: '触发', buttons: [
+                { id: 'trig-click', icon: '👆', label: '点击', action: function(){ pptOps.setAnimTrigger('onClick'); }, active: true },
+                { id: 'trig-auto',  icon: '⏩', label: '自动', action: function(){ pptOps.setAnimTrigger('auto'); } },
+              ]},
+              { title: '时长', buttons: [
+                { id: 'anim-dur-fast', icon: '⚡', label: '快', action: function(){ pptOps.setAnimDuration(300); } },
+                { id: 'anim-dur-med',  icon: '⏸️', label: '中', action: function(){ pptOps.setAnimDuration(500); }, active: true },
+                { id: 'anim-dur-slow', icon: '🐢', label: '慢', action: function(){ pptOps.setAnimDuration(1000); } },
               ]},
             ],
           },
