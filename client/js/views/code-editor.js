@@ -157,18 +157,6 @@
       });
     });
 
-    // ─── AI 按钮 ───
-    w.$c.querySelector('#code-ask-ai-btn').onclick = async function () {
-      if (!editor) { toast('编辑器未就绪', 'warning'); return; }
-      var selection = editor.getSelection();
-      var selectedText = editor.getModel().getValueInRange(selection);
-      if (!selectedText.trim()) {
-        // 无选中 → 对整个文件操作
-        selectedText = editor.getValue();
-      }
-      showAIMenu(aiPanel, editor, selectedText, lang);
-    };
-
     // ─── 菜单事件绑定 ───
     // 点击菜单项展开下拉
     w.$c.querySelectorAll('.code-menu-item').forEach(function (item) {
