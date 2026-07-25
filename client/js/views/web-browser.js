@@ -296,8 +296,8 @@
   function go(url) {
     if (!url || !url.trim()) return;
     url = url.trim();
-    // 没有协议头则补 http://
-    if (!/^https?:\/\//i.test(url)) {
+    // 没有协议头则补 http://（跳过相对路径 /api/...）
+    if (!/^https?:\/\//i.test(url) && url.charAt(0) !== '/') {
       url = 'http://' + url;
     }
     var input = document.getElementById('wb-url');
@@ -448,11 +448,18 @@
       ACMS.registerPackage('web-browser', {
         title: '浏览器', icon: '🌐', category: '工具',
         defaultSize: { w: 820, h: 560 },
-        loader: function(w) {
+        loader: function(w, opts) {
           render(w);
-          var opts = arguments[1] || {};
+          opts = opts || {};
           if (opts && opts.url) {
-            go(opts.url);
+            if (opts.srcdoc) {
+              var container = document.getElementById('wb-container');
+              if (container) {
+                container.innerHTML = '<iframe id="wb-iframe" style="width:100%;height:100%;border:none" srcdoc="' + escHtml(opts.srcdoc).replace(/"/g,'&quot;') + '" sandbox="allow-scripts allow-same-origin allow-forms"></iframe>';
+              }
+            } else {
+              go(opts.url);
+            }
           }
         }
       });
@@ -461,7 +468,14 @@
         render(w);
         var opts = arguments[1] || {};
         if (opts && opts.url) {
-          go(opts.url);
+          if (opts.srcdoc) {
+            var container = document.getElementById('wb-container');
+            if (container) {
+              container.innerHTML = '<iframe id="wb-iframe" style="width:100%;height:100%;border:none" srcdoc="' + escHtml(opts.srcdoc).replace(/"/g,'&quot;') + '" sandbox="allow-scripts allow-same-origin allow-forms"></iframe>';
+            }
+          } else {
+            go(opts.url);
+          }
         }
       });
     }

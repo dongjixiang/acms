@@ -5849,7 +5849,9 @@ body { padding-bottom: 40px; }
 .ts-bb:hover { background:var(--bg3); border-color:var(--border); }
 .ts-bb:disabled { opacity:0.3; cursor:default; }
 .ts-bb:disabled:hover { background:transparent; border-color:transparent; }
-.ts-bc { flex:1; display:flex; align-items:center; gap:2px; font-size:12px; overflow:hidden; margin:0 6px; }
+.ts-bc { flex:1; display:flex; align-items:center; gap:2px; font-size:12px; overflow-x:auto; overflow-y:hidden; margin:0 4px; white-space:nowrap; min-width:50px; }
+.ts-bc::-webkit-scrollbar { height:3px; }
+.ts-bc::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
 .ts-bp { cursor:pointer; color:var(--accent); padding:1px 3px; border-radius:3px; white-space:nowrap; }
 .ts-bp:hover { background:var(--bg3); }
 .ts-bs { color:var(--text2); }
@@ -5874,6 +5876,7 @@ body { padding-bottom: 40px; }
 .ts-lg { border-bottom:1px solid var(--border); }
 .ts-lg-t { padding:6px 10px 3px; font-size:11px; font-weight:600; color:var(--text2); }
 .ts-lg-c { display:flex; flex-wrap:wrap; gap:3px; padding:3px 10px 8px; }
+.ts-loc-item { display:inline-block; }
 
 /* ── 标签 chip ── */
 .tc { display:inline-flex; align-items:center; gap:2px; padding:1px 7px; border-radius:10px; font-size:10px; font-weight:600; line-height:1.6; white-space:nowrap; user-select:none; transition:opacity 0.1s; }

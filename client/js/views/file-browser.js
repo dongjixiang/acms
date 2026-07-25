@@ -1,872 +1,639 @@
-// ACMS 文件浏览器 v0.70 — 完整重写：目录树 + 文件操作 + 搜索 + 上传 + 拖拽
-// 依赖: api(), ACMSWin, ACMSWallpaper, toast()
-// API:
-//   GET  /files?path=...           → { currentPath, parentPath, entries: [{name,type,size,mtime}] }
-//   POST /files/delete  { path }
-//   POST /files/rename  { path, newName }
-//   POST /files/mkdir   { path, name }
-//   POST /files/upload  { path, fileName, content }  content=base64
-//   GET  /files/search?q=xxx&path=yyy
+// ACMS 文件浏览器 v0.73 — TagSpaces 深度风格
+// 标签第一导航 + 多视角 + 右侧面板 + AI
+// 布局: 左侧[标签|树] / 中间[文件列表] / 右侧[文件信息]
 (function() {
   'use strict';
 
-  // ── 状态 ──
-  var browsingWindow = null;
-  var currentPath = '/';
-  var historyStack = [];       // 后退历史
-  var forwardStack = [];       // 前进历史
-  var expandedDirs = {};       // 已展开的目录树节点 { path: true }
-  var treeCache = {};          // 目录树子列表缓存 { path: [entries] }
-  var currentSearch = '';      // 当前搜索关键词
-  var renameTarget = null;     // 正在重命名的条目
-  var contextEntry = null;     // 右键菜单的目标数据
+  var w = null, curPath = '/', hist = [], fwd = [];
+  var expDirs = {}, treeCache = {}, curSearch = '';
+  var AK = 'dev-key-001'; // 同 api.js
+  var ctxEntry = null;
+  var _drives = null; // 缓存盘符列表
 
-  // ── 工具函数 ──
-  function escHtml(s) {
-    if (s == null) return '';
-    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  // ── 标签系统 ──
+  var TG_KEY = 'fb_tg', TF_KEY = 'fb_tf';
+  var tagGroups = [], fileTags = {};
+  var filterTag = '', sortKey = 'name', sortDir = 1;
+  var selPath = '', viewMode = 'list'; // list | grid | gallery
+  var leftTab = 'tags'; // 'tags' | 'tree'
+
+  var DEF_TAGS = [
+    {title:'优先级',color:'#e74c3c',textcolor:'#fff',children:[
+      {title:'urgent',color:'#e74c3c',textcolor:'#fff'},
+      {title:'high',color:'#e67e22',textcolor:'#fff'},
+      {title:'normal',color:'#3498db',textcolor:'#fff'},
+      {title:'low',color:'#95a5a6',textcolor:'#fff'}]},
+    {title:'状态',color:'#2ecc71',textcolor:'#fff',children:[
+      {title:'done',color:'#27ae60',textcolor:'#fff'},
+      {title:'wip',color:'#f1c40f',textcolor:'#333'},
+      {title:'todo',color:'#9b59b6',textcolor:'#fff'},
+      {title:'review',color:'#1abc9c',textcolor:'#fff'}]},
+    {title:'类型',color:'#34495e',textcolor:'#fff',children:[
+      {title:'doc',color:'#2c3e50',textcolor:'#fff'},
+      {title:'image',color:'#8e44ad',textcolor:'#fff'},
+      {title:'code',color:'#2980b9',textcolor:'#fff'},
+      {title:'data',color:'#d35400',textcolor:'#fff'}]},
+  ];
+
+  function loadTags(){
+    try{var r=localStorage.getItem(TG_KEY);tagGroups=r?JSON.parse(r):JSON.parse(JSON.stringify(DEF_TAGS));}catch(e){tagGroups=JSON.parse(JSON.stringify(DEF_TAGS));}
+    try{var f=localStorage.getItem(TF_KEY);fileTags=f?JSON.parse(f):{};}catch(e){fileTags={};}
+  }
+  function svTg(){localStorage.setItem(TG_KEY,JSON.stringify(tagGroups));}
+  function svTf(){localStorage.setItem(TF_KEY,JSON.stringify(fileTags));}
+  function gT(p){return fileTags[p]||[];}
+  function sT(p,a){if(a&&a.length)fileTags[p]=a;else delete fileTags[p];svTf();}
+  function aT(p,t){var a=gT(p);if(a.indexOf(t)===-1){a.push(t);sT(p,a);}}
+  function rT(p,t){sT(p,gT(p).filter(function(x){return x!==t;}));}
+  function allTN(){var n=[];tagGroups.forEach(function(g){(g.children||[]).forEach(function(t){if(n.indexOf(t.title)===-1)n.push(t.title);});});return n;}
+  function tD(t){for(var i=0;i<tagGroups.length;i++)for(var j=0;j<(tagGroups[i].children||[]).length;j++)if(tagGroups[i].children[j].title===t)return tagGroups[i].children[j];return{title:t,color:'#95a5a6',textcolor:'#fff'};}
+  function smartTags(){
+    var n=new Date(),td=n.toDateString(),wkS=new Date(n);wkS.setDate(n.getDate()-n.getDay());wkS=wkS.toDateString();
+    return[{title:'📅 今天',id:'_st_t',fn:function(d){return d&&new Date(d).toDateString()===td;}},
+           {title:'📅 本周',id:'_st_w',fn:function(d){return d&&new Date(d).toDateString()>=wkS;}},
+           {title:'📅 本月',id:'_st_m',fn:function(d){if(!d)return false;var dt=new Date(d);return dt.getMonth()===n.getMonth()&&dt.getFullYear()===n.getFullYear();}}];
   }
 
-  function jsStr(s) {
-    return JSON.stringify(s).replace(/'/g, "\\'");
+  // ── 工具 ──
+  function esc(s){return s==null?'':String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+  function jQ(s){return JSON.stringify(s).replace(/'/g,"\\'");}
+  function sz(n){if(n==null)return'—';if(n<1024)return n+' B';if(n<1024*1024)return(n/1024).toFixed(1)+' KB';return(n/(1024*1024)).toFixed(1)+' MB';}
+  function mt(t){if(!t)return'';try{var d=new Date(t);if(isNaN(d.getTime()))return String(t);return String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');}catch(e){return String(t);}}
+  function ic(n,t){if(t==='directory')return'📁';var e=n?n.split('.').pop().toLowerCase():'';if(['jpg','jpeg','png','gif','bmp','webp','svg'].indexOf(e)!==-1)return'🖼';if(['mp4','webm','avi','mov','mkv'].indexOf(e)!==-1)return'🎬';if(['mp3','wav','ogg','flac','aac'].indexOf(e)!==-1)return'🎵';if(['pdf'].indexOf(e)!==-1)return'📄';if(['zip','rar','7z','tar','gz'].indexOf(e)!==-1)return'📦';if(['doc','docx'].indexOf(e)!==-1)return'📝';if(['xls','xlsx','csv'].indexOf(e)!==-1)return'📊';if(['js','ts','py','java','cpp','c','h','go','rs'].indexOf(e)!==-1)return'💻';if(['json','xml','yaml','yml','toml','ini','cfg','conf'].indexOf(e)!==-1)return'⚙';if(['html','htm','css','scss','less'].indexOf(e)!==-1)return'🌐';if(['md','txt','log'].indexOf(e)!==-1)return'📃';return'📄';}
+  function isImg(n){return n?['jpg','jpeg','png','gif','bmp','webp','svg'].indexOf(n.split('.').pop().toLowerCase())!==-1:false;}
+  function jn(a,b){var c=a.replace(/\/+$/,'');return c?c+'/'+b:'/'+b;}
+  function pp(p){if(!p||p==='/')return'/';var a=p.replace(/\/+$/,'').split('/');a.pop();return a.length<=1?'/':a.join('/');}
+  function sn(p){if(!p||p==='/')return'/';return p.replace(/\/+$/,'').split('/').pop();}
+  function iP(){try{var r=localStorage.getItem('acms-user');if(r){var u=JSON.parse(r);if(u.role!=='admin')return'/workspaces';}}catch(e){}return'/';}
+  function to(m,t){if(typeof toast==='function')toast(m,t||'success');}
+  function rf(){if(w&&!w.dead)render(w);}
+
+  // ── 标签 chip ──
+  function tc(t,rm,onClick){
+    var d=tD(t);
+    var r=rm?'<span class="tc-x" data-t="'+esc(t)+'" onclick="event.stopPropagation();FB_rmT(this)">✕</span>':'';
+    var oc=onClick?' onclick="'+onClick+'"':'';
+    return '<span class="tc" style="background:'+d.color+';color:'+d.textcolor+'"'+oc+'>'+esc(t)+r+'</span>';
   }
 
-  function fmtSize(bytes) {
-    if (bytes == null) return '—';
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-  }
+  // ═══ 主渲染 ═══
+  function render(_w){
+    if(!_w||_w.dead)return;w=_w;
+    var h='';
+    // ── 工具栏 ──
+    h+='<div class="ts-bar">';
+    h+=tb('◀','FB_gb()','后退',hist.length>0);
+    h+=tb('▶','FB_gf()','前进',fwd.length>0);
+    h+=tb('↑','FB_gu()','上级',curPath!=='/');
+    h+=tb('↻','FB_rf()','刷新',true);
+    h+=tb('📁+','FB_nf()','新建文件夹',true);
+    h+=tb('📤','FB_uf()','上传文件',true);
+    h+='<div class="ts-bc">'+bc(curPath)+'</div><div class="ts-sp"></div>';
+    // 视角切换
+    h+='<button class="ts-vb'+(viewMode==='list'?' ts-va':'')+'" onclick="FB_vm(\'list\')" title="列表">☰</button>';
+    h+='<button class="ts-vb'+(viewMode==='grid'?' ts-va':'')+'" onclick="FB_vm(\'grid\')" title="网格">⊞</button>';
+    h+='<button class="ts-vb'+(viewMode==='gallery'?' ts-va':'')+'" onclick="FB_vm(\'gallery\')" title="画廊">🖼</button>';
+    h+='<input class="ts-sr" id="__fb_s" placeholder="🔍 搜索…" value="'+esc(curSearch)+'" oninput="FB_sr(this.value)">';
+    h+='</div>';
 
-  function fmtMtime(ts) {
-    if (!ts) return '';
-    try {
-      var d = new Date(ts);
-      if (isNaN(d.getTime())) return String(ts);
-      var month = String(d.getMonth() + 1).padStart(2, '0');
-      var day = String(d.getDate()).padStart(2, '0');
-      var hour = String(d.getHours()).padStart(2, '0');
-      var min = String(d.getMinutes()).padStart(2, '0');
-      return month + '-' + day + ' ' + hour + ':' + min;
-    } catch (e) {
-      return String(ts);
-    }
-  }
+    // ── 三栏主体 ──
+    h+='<div class="ts-bd">';
 
-  function guessIcon(name, type) {
-    if (type === 'directory') return '📁';
-    var ext = name ? name.split('.').pop().toLowerCase() : '';
-    if (['jpg','jpeg','png','gif','bmp','webp','svg'].indexOf(ext) !== -1) return '🖼';
-    if (['mp4','webm','avi','mov','mkv'].indexOf(ext) !== -1) return '🎬';
-    if (['mp3','wav','ogg','flac','aac'].indexOf(ext) !== -1) return '🎵';
-    if (['pdf'].indexOf(ext) !== -1) return '📄';
-    if (['zip','rar','7z','tar','gz'].indexOf(ext) !== -1) return '📦';
-    if (['doc','docx'].indexOf(ext) !== -1) return '📝';
-    if (['xls','xlsx','csv'].indexOf(ext) !== -1) return '📊';
-    if (['js','ts','py','java','cpp','c','h','go','rs'].indexOf(ext) !== -1) return '💻';
-    if (['json','xml','yaml','yml','toml','ini','cfg','conf'].indexOf(ext) !== -1) return '⚙';
-    if (['html','htm','css','scss','less'].indexOf(ext) !== -1) return '🌐';
-    if (['md','txt','log'].indexOf(ext) !== -1) return '📃';
-    return '📄';
-  }
-
-  function isImage(name) {
-    if (!name) return false;
-    var ext = name.split('.').pop().toLowerCase();
-    return ['jpg','jpeg','png','gif','bmp','webp','svg'].indexOf(ext) !== -1;
-  }
-
-  function joinPath(base, name) {
-    var b = base.replace(/\/+$/, '');
-    if (!b) return '/' + name;
-    return b + '/' + name;
-  }
-
-  function parentPathOf(p) {
-    if (!p || p === '/') return '/';
-    var parts = p.replace(/\/+$/, '').split('/');
-    parts.pop();
-    if (parts.length <= 1) return '/';
-    return parts.join('/');
-  }
-
-  function shortName(path) {
-    if (!path || path === '/') return '/';
-    return path.replace(/\/+$/, '').split('/').pop();
-  }
-
-  function getInitialPath() {
-    var userInfo = null;
-    try {
-      var raw = localStorage.getItem('acms-user');
-      if (raw) userInfo = JSON.parse(raw);
-    } catch (e) { /* ignore */ }
-    if (userInfo && userInfo.role !== 'admin') {
-      return '/workspaces';
-    }
-    return '/';
-  }
-
-  // ── Toast 封装 ──
-  function fbToast(msg, type) {
-    if (typeof toast === 'function') {
-      toast(msg, type || 'success');
-    }
-  }
-
-  // ── 通知窗口重新绘制 ──
-  function refreshView() {
-    if (!browsingWindow || browsingWindow.dead) return;
-    renderAll(browsingWindow);
-  }
-
-  // ── 渲染全部 (工具栏 + 树 + 文件列表) ──
-  function renderAll(w) {
-    if (!w || w.dead) return;
-
-    var html = '';
-
-    // ═══ 工具栏 ═══
-    html += '<div class="fb-toolbar">';
-    // 后退 / 前进 / 上级 / 刷新
-    html += '<button class="fb-tb-btn" onclick="window.FB_goBack()" title="后退" ' + (historyStack.length === 0 ? 'disabled style="opacity:0.4"' : '') + '>◀</button>';
-    html += '<button class="fb-tb-btn" onclick="window.FB_goForward()" title="前进" ' + (forwardStack.length === 0 ? 'disabled style="opacity:0.4"' : '') + '>▶</button>';
-    html += '<button class="fb-tb-btn" onclick="window.FB_goUp()" title="上级目录" ' + (currentPath === '/' ? 'disabled style="opacity:0.4"' : '') + '>↑</button>';
-    html += '<button class="fb-tb-btn" onclick="window.FB_refresh()" title="刷新">↻</button>';
-    // 面包屑导航
-    html += '<div class="fb-path-bar">' + renderBreadcrumbs(currentPath) + '</div>';
-    // 新建文件夹按钮
-    html += '<button class="fb-tb-btn" onclick="window.FB_newFolder()" title="新建文件夹">📁+</button>';
-    // 上传按钮
-    html += '<button class="fb-tb-btn" onclick="window.FB_uploadFile()" title="上传文件">📤</button>';
-    // 搜索框
-    html += '<input class="fb-search-input" type="text" id="__fb_search" placeholder="🔍 搜索…" value="' + escHtml(currentSearch) + '" oninput="window.FB_onSearch(this.value)">';
-    html += '</div>';
-
-    // ═══ 主内容区（左右分栏） ═══
-    html += '<div class="fb-body">';
-
-    // 左侧：目录树
-    html += '<div class="fb-tree-panel">';
-    html += '<div class="fb-tree-header">📂 目录</div>';
-    html += '<div class="fb-tree-content" id="__fb_tree">';
-    html += renderTreeContent(currentPath);
-    html += '</div>';
-    html += '</div>';
-
-    // 右侧：文件列表
-    html += '<div class="fb-list-panel">';
-    html += '<div class="fb-list-header">';
-    html += '<span class="fb-col-icon"></span>';
-    html += '<span class="fb-col-name">名称</span>';
-    html += '<span class="fb-col-size">大小</span>';
-    html += '<span class="fb-col-mtime">修改时间</span>';
-    html += '<span class="fb-col-actions">操作</span>';
-    html += '</div>';
-    html += '<div class="fb-list" id="__fb_list">';
-    html += '<div style="padding:40px;text-align:center;color:var(--text2)">⏳ 加载中...</div>';
-    html += '</div>';
-    html += '</div>';
-
-    html += '</div>'; // .fb-body
-
-    // ═══ 状态栏 ═══
-    html += '<div class="fb-statusbar" id="__fb_status"></div>';
-
-    // ── 拖拽上传遮罩 ──
-    html += '<div class="fb-dropzone" id="__fb_dropzone">📂 拖放文件到此处上传</div>';
-
-    w.$c.innerHTML = html;
-
-    // 加载文件列表
-    loadFileList(w, currentPath, currentSearch);
-  }
-
-  // ── 面包屑 ──
-  function renderBreadcrumbs(path) {
-    if (!path || path === '/') {
-      return '<span class="fb-path-part" onclick="window.FB_navigate(\'/\')">/</span>';
-    }
-    var parts = path.replace(/^\/+/, '').replace(/\/+$/, '').split('/');
-    var html = '<span class="fb-path-part" onclick="window.FB_navigate(\'/\')">/</span>';
-    var accumulated = '';
-    parts.forEach(function(part) {
-      if (!part) return;
-      accumulated += '/' + part;
-      html += '<span class="fb-path-sep">/</span>';
-      html += '<span class="fb-path-part" onclick="window.FB_navigate(\'' + escHtml(accumulated) + '\')">' + escHtml(part) + '</span>';
+    // 左侧
+    h+='<div class="ts-lt">';
+    // 位置 / 盘符
+    h+='<div class="ts-lg"><div class="ts-lg-t" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between" onclick="FB_toggleDrives()">💾 位置 <span id="ts_drives_arr">▼</span></div><div id="ts_drives_list" class="ts-lg-c">';
+    h+='<span class="ts-loc-item ts-loc-active" onclick="FB_nv(\'/\')" style="cursor:pointer;padding:3px 6px;border-radius:4px;font-size:12px;background:color-mix(in srgb,var(--accent) 8%,transparent);color:var(--accent)">📁 /</span>';
+    if(_drives) _drives.forEach(function(d){
+      h+='<span class="ts-loc-item" onclick="FB_nv(\''+esc(d.path)+'\')" style="cursor:pointer;padding:3px 6px;border-radius:4px;font-size:12px">💾 '+esc(d.label)+'</span>';
     });
-    return html;
-  }
-
-  // ── 目录树渲染 ──
-  function renderTreeContent(activePath) {
-    var rootPath = '/';
-    var rootLabel = '/';
-    var isActive = (activePath === '/');
-    var isExpanded = !!expandedDirs['/'];
-    var arrow = isExpanded ? '▼' : '▶';
-    var html = '<ul class="fb-tree-ul">';
-    html += '<li class="fb-tree-li' + (isActive ? ' fb-tree-active' : '') + '" data-path="/">';
-    html += '<span class="fb-tree-arrow" onclick="event.stopPropagation();window.FB_toggleTree(\'/\')">' + arrow + '</span>';
-    html += '<span class="fb-tree-label" onclick="window.FB_navigate(\'/\')">📁 /</span>';
-    if (isExpanded) {
-      html += renderTreeChildren('/', activePath, 1);
-    }
-    html += '</li>';
-    html += '</ul>';
-    return html;
-  }
-
-  function renderTreeChildren(parentPath, activePath, depth) {
-    // 检查缓存
-    var cached = treeCache[parentPath];
-    if (!cached) {
-      // 未加载，显示加载指示器，触发加载
-      return '<span class="fb-tree-loading">⏳</span>';
-    }
-    var dirs = cached.filter(function(e) { return e.type === 'directory'; });
-    if (dirs.length === 0) {
-      return '<span class="fb-tree-empty" style="padding-left:' + (depth * 16 + 8) + 'px;font-size:11px;color:var(--text2)">(空)</span>';
-    }
-    var html = '<ul class="fb-tree-ul" style="padding-left:' + (depth * 12) + 'px">';
-    dirs.forEach(function(entry) {
-      var childPath = joinPath(parentPath, entry.name);
-      var isActive = (childPath === activePath);
-      var isExpanded = !!expandedDirs[childPath];
-      var hasCached = !!treeCache[childPath];
-      var arrow = '▶';
-      if (hasCached) {
-        arrow = isExpanded ? '▼' : '▶';
-      }
-      html += '<li class="fb-tree-li' + (isActive ? ' fb-tree-active' : '') + '" data-path="' + escHtml(childPath) + '">';
-      html += '<span class="fb-tree-arrow" onclick="event.stopPropagation();window.FB_toggleTree(\'' + escHtml(childPath) + '\')">' + arrow + '</span>';
-      html += '<span class="fb-tree-label" onclick="window.FB_navigate(\'' + escHtml(childPath) + '\')">📁 ' + escHtml(entry.name) + '</span>';
-      if (isExpanded) {
-        html += renderTreeChildren(childPath, activePath, depth + 1);
-      }
-      html += '</li>';
-    });
-    html += '</ul>';
-    return html;
-  }
-
-  // ── 加载目录树子节点 ──
-  function loadTreeChildren(path) {
-    return api('GET', '/files?path=' + encodeURIComponent(path))
-      .then(function(data) {
-        if (data && data.entries) {
-          treeCache[path] = data.entries;
-        }
-        return data;
-      })
-      .catch(function(err) {
-        treeCache[path] = [];
-        fbToast('加载目录树失败: ' + (err.message || ''), 'error');
+    h+='</div></div>';
+    // 标签/树切换标签
+    h+='<div class="ts-lt-tabs"><span class="ts-lt-tab'+(leftTab==='tags'?' ts-lta':'')+'" onclick="FB_lt(\'tags\')">🏷 标签</span><span class="ts-lt-tab'+(leftTab==='tree'?' ts-lta':'')+'" onclick="FB_lt(\'tree\')">📂 目录</span></div>';
+    if(leftTab==='tags'){
+      // 智能标签
+      h+='<div class="ts-lg"><div class="ts-lg-t">🧠 智能标签</div><div class="ts-lg-c" style="padding:2px 10px 6px">';
+      smartTags().forEach(function(s){
+        var a=filterTag===s.id?' ts-ta':'';
+        h+='<span class="tc'+a+'" style="background:color-mix(in srgb, var(--accent) 10%, transparent);color:var(--accent);cursor:pointer" onclick="FB_fl(\''+s.id+'\')">'+esc(s.title)+'</span>';
       });
+      h+='</div></div>';
+      // 用户标签组
+      tagGroups.forEach(function(g){
+        h+='<div class="ts-lg"><div class="ts-lg-t">● '+esc(g.title)+'</div><div class="ts-lg-c">';
+        (g.children||[]).forEach(function(t){
+          var a=filterTag===t.title?' ts-ta':'';
+          h+='<span class="tc'+a+'" style="background:'+t.color+';color:'+t.textcolor+';cursor:pointer" onclick="FB_fl(\''+esc(t.title)+'\')">'+esc(t.title)+'</span>';
+        });
+        h+='</div></div>';
+      });
+    } else {
+      // 目录树
+      h+=treeHTML(curPath);
+    }
+    h+='</div>'; // left
+
+    // 中间文件列表
+    h+='<div class="ts-md"><div class="ts-mh">';
+    h+='<span class="ts-mn" onclick="FB_st(\'name\')">名称'+sa('name')+'</span>';
+    h+='<span class="ts-ms" onclick="FB_st(\'size\')">大小'+sa('size')+'</span>';
+    h+='<span class="ts-mdt" onclick="FB_st(\'mtime\')">日期'+sa('mtime')+'</span>';
+    h+='</div><div class="ts-ml ts-mv-'+viewMode+'" id="__fb_l" tabindex="0">';
+    h+='<div class="ts-ld">⏳ 加载中...</div></div></div>';
+
+    // 右侧面板
+    h+='<div class="ts-rt" id="__fb_r">';
+    h+=selPath?rPanel(selPath):'<div class="ts-re">选择文件查看详情</div>';
+    h+='</div></div>';
+
+    // 状态栏 + 拖拽区
+    h+='<div class="ts-st" id="__fb_st"></div><div class="fb-dropzone" id="__fb_dz">📂 拖放文件上传</div>';
+    w.$c.innerHTML=h;
+
+    // 键盘
+    var le=w.$c.querySelector('#__fb_l');
+    if(le){le.onkeydown=function(e){
+      if((e.key==='Delete'||e.key==='Backspace')&&selPath){e.preventDefault();FB_dl(selPath,sn(selPath),false);}
+      else if(e.key==='F2'&&selPath){e.preventDefault();FB_rn(selPath,sn(selPath),false);}
+      else if(e.key==='Enter'&&selPath)navigate(selPath);
+    };}
+    w.$c.addEventListener('keydown',function(e){
+      if(e.ctrlKey&&e.key==='f'){e.preventDefault();var i=w.$c.querySelector('#__fb_s');if(i)i.focus();}
+    });
+    loadList(w,curPath,curSearch);
+  }
+
+  // ── 辅助 ──
+  function tb(l,a,t,e){return'<button class="ts-bb"'+(e?'':' disabled')+' onclick="'+a+'" title="'+esc(t)+'">'+l+'</button>';}
+  function sa(k){return sortKey===k?'<span class="ts-sa">'+(sortDir===1?'▲':'▼')+'</span>':'';}
+  function bc(p){if(!p||p==='/')return'<span class="ts-bp" onclick="FB_nv(\'/\')">/</span>';
+    var pt=p.replace(/^\/+/,'').replace(/\/+$/,'').split('/'),h='<span class="ts-bp" onclick="FB_nv(\'/\')">/</span>',a='';
+    pt.forEach(function(x){if(!x)return;a+='/'+x;h+='<span class="ts-bs">/</span><span class="ts-bp" onclick="FB_nv(\''+esc(a)+'\')">'+esc(x)+'</span>';});
+    return h;
+  }
+
+  function treeHTML(a){
+    var ex=!!expDirs['/'];
+    var h='<ul class="ts-tr"><li class="ts-tl'+(a==='/'?' ts-ta':'')+'"><span class="ts-ta" onclick="event.stopPropagation();FB_tT(\'/\')">'+(ex?'▾':'▸')+'</span><span class="ts-tb" onclick="FB_nv(\'/\')">📁 /</span>';
+    if(ex)h+=treeCh('/',a,1);
+    h+='</li></ul>';
+    return h;
+  }
+  function treeCh(p,a,d){
+    var c=treeCache[p];
+    if(!c)return'<span class="ts-tl">⏳</span>';
+    var ds=c.filter(function(e){return e.type==='directory';});
+    if(ds.length===0)return'<span class="ts-te">(空)</span>';
+    var h='<ul class="ts-tr" style="padding-left:'+(d*12)+'px">';
+    ds.forEach(function(e){
+      var cp=jn(p,e.name),ac=cp===a,ex=!!expDirs[cp],hc=!!treeCache[cp];
+      h+='<li class="ts-tl'+(ac?' ts-ta':'')+'"><span class="ts-ta" onclick="event.stopPropagation();FB_tT(\''+esc(cp)+'\')">'+(ex?'▾':'▸')+'</span><span class="ts-tb" onclick="FB_nv(\''+esc(cp)+'\')">📁 '+esc(e.name)+'</span>';
+      if(ex)h+=treeCh(cp,a,d+1);
+      h+='</li>';
+    });
+    h+='</ul>';return h;
+  }
+
+  // ── 右侧面板 ──
+  function rPanel(fp){
+    var nm=sn(fp),tg=gT(fp);
+    var im=isImg(nm)?'<img src="/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK+'" class="ts-rt-im">':'';
+    var ex=nm.indexOf('.')>=0?nm.split('.').pop().toUpperCase():'未知';
+    var r='<div class="ts-rh">📄 '+esc(nm)+'</div>';
+    r+=im;
+    r+='<div class="ts-rs"><div class="ts-rr"><span class="ts-rl">类型</span><span>'+ex+'</span></div></div>';
+    r+='<div class="ts-rs"><div class="ts-rr"><span class="ts-rl">🏷 标签</span></div><div class="ts-rtg" id="__fb_rt">';
+    if(tg.length===0)r+='<span class="ts-rn">无标签</span>';
+    else tg.forEach(function(t){r+=tc(t,true);});
+    r+='</div>';
+    var av=allTN().filter(function(x){return tg.indexOf(x)===-1;});
+    if(av.length>0){
+      r+='<select class="ts-ras" onchange="FB_aTF(this,\''+esc(fp)+'\')"><option value="">+ 添加标签</option>';
+      av.forEach(function(t){r+='<option value="'+esc(t)+'">'+t+'</option>';});
+      r+='</select>';
+    }
+    r+='</div>';
+    r+='<div class="ts-rs"><button class="ts-ai" onclick="FB_ai(\''+esc(fp)+'\',\''+esc(nm)+'\')" id="__fb_ai">🤖 AI 生成标签</button></div>';
+    r+='<div class="ts-rs" style="display:flex;gap:4px;flex-wrap:wrap">';
+    if(isImg(nm)){r+=tb('🖼 预览','FB_pv(\''+esc(fp)+'\',\''+esc(nm)+'\')','预览',true);r+=tb('🖼 壁纸','FB_wp(\''+esc(fp)+'\')','壁纸',true);}
+    r+=tb('✏️ 重命名','FB_rn(\''+esc(fp)+'\',\''+esc(nm)+'\',false)','重命名',true);
+    r+=tb('🗑️ 删除','FB_dl(\''+esc(fp)+'\',\''+esc(nm)+'\',false)','删除',true);
+    r+='</div></div>';
+    return r;
   }
 
   // ── 加载文件列表 ──
-  function loadFileList(w, path, search) {
-    var listEl = w.$c.querySelector('#__fb_list');
-    if (!listEl) return;
-    listEl.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text2)">⏳ 加载中...</div>';
-
-    var statusEl = w.$c.querySelector('#__fb_status');
-    if (statusEl) statusEl.textContent = '⏳ 加载中...';
-
-    var promise;
-    if (search && search.trim()) {
-      promise = api('GET', '/files/search?q=' + encodeURIComponent(search) + '&path=' + encodeURIComponent(path));
-    } else {
-      promise = api('GET', '/files?path=' + encodeURIComponent(path));
-    }
-
-    return promise
-      .then(function(data) {
-        if (w.dead) return;
-        if (!data || !data.entries) {
-          listEl.innerHTML = '<div class="fb-error">⚠ 返回数据格式异常</div>';
-          if (statusEl) statusEl.textContent = '错误：数据格式异常';
-          return;
-        }
-        renderFileList(listEl, statusEl, path, data, search);
-      })
-      .catch(function(err) {
-        if (w.dead) return;
-        listEl.innerHTML = '<div class="fb-error">⚠ 加载失败: ' + escHtml(err.message || '未知错误') + '</div>';
-        if (statusEl) statusEl.textContent = '加载失败';
-      });
+  function loadList(_w,path,search){
+    var el=_w.$c.querySelector('#__fb_l');if(!el)return;
+    el.innerHTML='<div class="ts-ld">⏳ 加载中...</div>';
+    var st=_w.$c.querySelector('#__fb_st');if(st)st.textContent='⏳ 加载中...';
+    var p=search&&search.trim()?api('GET','/files/search?q='+encodeURIComponent(search)+'&path='+encodeURIComponent(path)):api('GET','/files?path='+encodeURIComponent(path));
+    return p.then(function(d){
+      if(_w.dead)return;
+      if(!d||!d.entries){el.innerHTML='<div class="ts-er">⚠ 数据异常</div>';if(st)st.textContent='错误';return;}
+      renderList(el,st,path,d,search);
+    }).catch(function(e){
+      if(_w.dead)return;
+      el.innerHTML='<div class="ts-er">⚠ '+esc(e.message||'错误')+'</div>';if(st)st.textContent='加载失败';
+    });
   }
 
-  // ── 渲染文件列表 ──
-  function renderFileList(listEl, statusEl, path, data, search) {
-    var entries = data.entries || [];
-    var parent = data.parentPath;
-
-    // 排序：目录在前，然后按名称排序
-    entries.sort(function(a, b) {
-      if (a.type === 'directory' && b.type !== 'directory') return -1;
-      if (a.type !== 'directory' && b.type === 'directory') return 1;
-      var na = (a.name || '').toLowerCase();
-      var nb = (b.name || '').toLowerCase();
-      if (na < nb) return -1;
-      if (na > nb) return 1;
-      return 0;
+  function renderList(el,st,path,data,search){
+    var entries=data.entries||[],parent=data.parentPath;
+    // 排序
+    entries.sort(function(a,b){
+      if(a.type==='directory'&&b.type!=='directory')return-1;
+      if(a.type!=='directory'&&b.type==='directory')return 1;
+      var c=0;
+      if(sortKey==='name')c=(a.name||'').toLowerCase().localeCompare((b.name||'').toLowerCase());
+      else if(sortKey==='size')c=(a.size||0)-(b.size||0);
+      else if(sortKey==='mtime')c=(a.mtime||'')<(b.mtime||'')?-1:(a.mtime||'')>(b.mtime||'')?1:0;
+      else c=(a.name||'').toLowerCase().localeCompare((b.name||'').toLowerCase());
+      return c*sortDir;
     });
-
-    var html = '';
-
-    // ".." 上级目录（不在根目录且非搜索模式）
-    if (parent && path !== '/' && (!search || !search.trim())) {
-      html += '<div class="fb-entry" onclick="window.FB_navigate(\'' + escHtml(parent) + '\')">';
-      html += '<span class="fb-icon">🔙</span>';
-      html += '<span class="fb-name" style="color:var(--text2);font-style:italic">.. 上级目录</span>';
-      html += '<span class="fb-size">—</span>';
-      html += '<span class="fb-mtime"></span>';
-      html += '<span class="fb-actions"></span>';
-      html += '</div>';
+    // 标签筛选
+    if(filterTag){
+      var sts=smartTags(),sm=sts.filter(function(s){return s.id===filterTag;});
+      if(sm.length>0)entries=entries.filter(function(e){return sm[0].fn(e.mtime);});
+      else entries=entries.filter(function(e){if(e.type==='directory')return true;return gT(jn(path,e.name)).indexOf(filterTag)!==-1;});
     }
 
-    if (search && search.trim()) {
-      // 搜索结果提示
-      html += '<div class="fb-search-info">🔍 搜索 "' + escHtml(search) + '" 在 ' + escHtml(path) + ' 中的结果 (' + entries.length + ' 条)</div>';
+    var html='';
+    if(parent&&path!=='/'&&(!search||!search.trim())){
+      html+='<div class="ts-et ts-ed" onclick="FB_nv(\''+esc(parent)+'\')"><span class="ts-ei">🔙</span><span class="ts-en" style="color:var(--text2);font-style:italic">.. 上级</span><span class="ts-es">—</span><span class="ts-edt"></span></div>';
     }
+    if(filterTag)html+='<div class="ts-ii">🏷 '+tc(filterTag)+' <a href="#" onclick="FB_fl(\'\');return false" style="font-size:11px;color:var(--text2);margin-left:6px">清除</a></div>';
 
-    if (entries.length === 0) {
-      html += '<div class="fb-empty">📂 此目录为空</div>';
+    if(entries.length===0){
+      html+='<div class="ts-emp">📂 '+(filterTag?'无匹配文件':'此目录为空')+'</div>';
+    } else if(viewMode==='gallery'){
+      html+='<div class="ts-gl">';
+      entries.forEach(function(e){
+        var fp=jn(path,e.name),isD=e.type==='dir'||e.type==='directory';
+        var sel=selPath===fp?' ts-sl':'';
+        html+='<div class="ts-gi'+sel+'" onclick="'+(isD?'FB_nv(\''+esc(fp)+'\')':'FB_sl(\''+esc(fp)+'\')')+'" oncontextmenu="event.preventDefault();FB_cx(event,\''+esc(fp)+'\',\''+esc(e.name)+'\','+(isD?'true':'false')+',\''+esc(ic(e.name,e.type))+'\')">';
+        if(isD) html+='<div class="ts-gm" style="font-size:48px;display:flex;align-items:center;justify-content:center;background:var(--bg2)">📁</div>';
+        else if(isImg(e.name)) html+='<img src="/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK+'" class="ts-gm">';
+        else html+='<div class="ts-gm" style="font-size:48px;display:flex;align-items:center;justify-content:center;background:var(--bg2)">📄</div>';
+        html+='<div class="ts-gn">'+esc(e.name)+'</div></div>';
+      });
+      html+='</div>';
+    } else if(viewMode==='grid'){
+      entries.forEach(function(e){
+        var fp=jn(path,e.name),isD=e.type==='dir'||e.type==='directory',icn=e.icon||ic(e.name,e.type);
+        var sel=selPath===fp?' ts-sl':'';
+        html+='<div class="ts-gv'+sel+'" onclick="'+(isD?'FB_nv(\''+esc(fp)+'\')':'FB_sl(\''+esc(fp)+'\')')+'" ondblclick="'+(isImg(e.name)?'FB_pv(\''+esc(fp)+'\',\''+esc(e.name)+'\')':'')+'" oncontextmenu="event.preventDefault();FB_cx(event,\''+esc(fp)+'\',\''+esc(e.name)+'\','+(isD?'true':'false')+',\''+esc(icn)+'\')">';
+        html+='<div class="ts-gi2">'+(isD?'📁':(isImg(e.name)?'<img src="/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK+'" class="ts-gt">':'📄'))+'</div>';
+        html+='<div class="ts-gn2">'+esc(e.name)+'</div>';
+        var tg=gT(fp);
+        if(tg.length>0)html+='<div class="ts-gtg">'+tg.slice(0,2).map(function(t){return tc(t);}).join('')+(tg.length>2?'<span class="ts-gm2">+'+(tg.length-2)+'</span>':'')+'</div>';
+        html+='</div>';
+      });
     } else {
-      entries.forEach(function(entry) {
-        var icon = entry.icon || guessIcon(entry.name, entry.type);
-        var isDir = entry.type === 'dir' || entry.type === 'directory';
-        var fullPath = joinPath(path, entry.name);
-        var entryClass = 'fb-entry';
-        if (isDir) entryClass += ' fb-entry-dir';
-
-        var clickAttr = '';
-        if (isDir) {
-          clickAttr = ' onclick="window.FB_navigate(\'' + escHtml(fullPath) + '\')"';
-        } else if (isImage(entry.name)) {
-          clickAttr = ' onclick="window.FB_previewImage(\'' + escHtml(fullPath) + '\', \'' + escHtml(entry.name) + '\')"';
-        }
-
-        // 操作按钮
-        var actionsHtml = '';
-        actionsHtml += '<button class="fb-act-btn" title="重命名" onclick="event.stopPropagation();window.FB_rename(\'' + escHtml(fullPath) + '\', \'' + escHtml(entry.name) + '\', ' + (isDir ? 'true' : 'false') + ')">✏️</button>';
-        actionsHtml += '<button class="fb-act-btn" title="删除" onclick="event.stopPropagation();window.FB_delete(\'' + escHtml(fullPath) + '\', \'' + escHtml(entry.name) + '\', ' + (isDir ? 'true' : 'false') + ')">🗑️</button>';
-        if (isImage(entry.name)) {
-          actionsHtml += '<button class="fb-act-btn" title="设为壁纸" onclick="event.stopPropagation();window.FB_setWallpaper(\'' + escHtml(fullPath) + '\')">🖼</button>';
-        }
-
-        html += '<div class="' + entryClass + '"' + clickAttr + ' oncontextmenu="event.preventDefault();event.stopPropagation();window.FB_contextMenu(event, \'' + escHtml(fullPath) + '\', \'' + escHtml(entry.name) + '\', ' + (isDir ? 'true' : 'false') + ', \'' + escHtml(icon) + '\')">';
-        html += '<span class="fb-icon">' + icon + '</span>';
-        html += '<span class="fb-name">' + escHtml(entry.name) + '</span>';
-        html += '<span class="fb-size">' + (isDir ? '—' : fmtSize(entry.size)) + '</span>';
-        html += '<span class="fb-mtime">' + fmtMtime(entry.mtime) + '</span>';
-        html += '<span class="fb-actions">' + actionsHtml + '</span>';
-        html += '</div>';
+      // 列表视图
+      entries.forEach(function(e){
+        var fp=jn(path,e.name),isD=e.type==='dir'||e.type==='directory',icn=e.icon||ic(e.name,e.type);
+        var sel=selPath===fp?' ts-sl':'';
+        var clk=isD?'FB_nv(\''+esc(fp)+'\')':'FB_sl(\''+esc(fp)+'\')';
+        var dbl=isImg(e.name)?' ondblclick="FB_pv(\''+esc(fp)+'\',\''+esc(e.name)+'\')"':'';
+        var ac='<button class="ts-ab" onclick="event.stopPropagation();FB_rn(\''+esc(fp)+'\',\''+esc(e.name)+'\','+(isD?'true':'false')+')" title="重命名">✏️</button>';
+        ac+='<button class="ts-ab" onclick="event.stopPropagation();FB_dl(\''+esc(fp)+'\',\''+esc(e.name)+'\','+(isD?'true':'false')+')" title="删除">🗑️</button>';
+        html+='<div class="ts-et ts-e'+(isD?'d':'f')+sel+'" onclick="'+clk+'"'+dbl+' oncontextmenu="event.preventDefault();FB_cx(event,\''+esc(fp)+'\',\''+esc(e.name)+'\','+(isD?'true':'false')+',\''+esc(icn)+'\')">';
+        html+='<span class="ts-ei">'+icn+'</span><span class="ts-en">'+esc(e.name)+'</span>';
+        html+='<span class="ts-es">'+(isD?'—':sz(e.size))+'</span><span class="ts-edt">'+mt(e.mtime)+'</span>';
+        html+='<span class="ts-ea">'+ac+'</span></div>';
+        // 标签行（TagSpaces 风格：跟在文件名下面）
+        if(!isD){var tg=gT(fp);if(tg.length>0)html+='<div class="ts-eg">'+tg.map(function(t){return tc(t,true);}).join('')+'</div>';}
       });
     }
-
-    listEl.innerHTML = html;
-
-    // 状态栏
-    if (statusEl) {
-      var dirCount = entries.filter(function(e) { return e.type === 'directory'; }).length;
-      var fileCount = entries.length - dirCount;
-      if (search && search.trim()) {
-        statusEl.textContent = '🔍 "' + search + '" — ' + entries.length + ' 个结果';
-      } else {
-        statusEl.textContent = dirCount + ' 个目录, ' + fileCount + ' 个文件';
-      }
+    el.innerHTML=html;
+    if(st){
+      var dc=entries.filter(function(e){return e.type==='directory';}).length;
+      var fc=entries.length-dc;
+      st.textContent=(search||filterTag)?(entries.length+' 项'):(dc+' 个目录, '+fc+' 个文件');
     }
-
-    // 绑定拖拽事件
-    bindDragDrop(listEl, path);
+    bindDD(el,path);
+    el.addEventListener('click',function(e){
+      if(e.target===el||e.target.classList.contains('ts-emp')||e.target.classList.contains('ts-ld')){selPath='';rf();}
+    });
   }
 
   // ── 拖拽上传 ──
-  function bindDragDrop(container, path) {
-    var dropzone = browsingWindow && browsingWindow.$c ? browsingWindow.$c.querySelector('#__fb_dropzone') : null;
-    if (!dropzone) return;
-
-    function showDropzone(show) {
-      dropzone.classList.toggle('fb-dropzone-active', show);
-    }
-
-    // 移除旧监听器（用新函数替换）
-    var onDragOver = function(e) {
-      e.preventDefault();
-      e.stopPropagation();
-      showDropzone(true);
-    };
-    var onDragLeave = function(e) {
-      e.preventDefault();
-      e.stopPropagation();
-      showDropzone(false);
-    };
-    var onDrop = function(e) {
-      e.preventDefault();
-      e.stopPropagation();
-      showDropzone(false);
-      var files = e.dataTransfer.files;
-      if (files && files.length > 0) {
-        handleFileUpload(files, path);
-      }
-    };
-
-    // 重新绑定（先移除旧的全局监听）
-    container._fb_dropHandlers = container._fb_dropHandlers || [];
-    container._fb_dropHandlers.forEach(function(h) {
-      container.removeEventListener(h.type, h.fn);
+  function bindDD(c,path){
+    var dz=w&&w.$c?w.$c.querySelector('#__fb_dz'):null;if(!dz)return;
+    function sh(s){dz.classList.toggle('fb-dropzone-active',s);}
+    c._fbh=c._fbh||[];
+    c._fbh.forEach(function(h){c.removeEventListener(h.t,h.f);});
+    c._fbh=[];
+    [function(e){e.preventDefault();e.stopPropagation();sh(true);},
+     function(e){e.preventDefault();e.stopPropagation();sh(false);},
+     function(e){e.preventDefault();e.stopPropagation();sh(false);var f=e.dataTransfer.files;if(f&&f.length>0)up(f,path);}
+    ].forEach(function(fn){
+      var t=fn.name==='1'?'dragover':fn.name==='2'?'dragleave':'drop';
+      c.addEventListener(t,fn);c._fbh.push({t:t,f:fn});
     });
-    container._fb_dropHandlers = [];
-
-    [onDragOver, onDragLeave, onDrop].forEach(function(fn) {
-      container.addEventListener(fn.name === 'onDragOver' ? 'dragover' : fn.name === 'onDragLeave' ? 'dragleave' : 'drop', fn);
-      container._fb_dropHandlers.push({ type: fn.name === 'onDragOver' ? 'dragover' : fn.name === 'onDragLeave' ? 'dragleave' : 'drop', fn: fn });
-    });
-
-    // 文档级拖放防止浏览器打开文件
-    document.body.addEventListener('dragover', function(e) { e.preventDefault(); });
-    document.body.addEventListener('drop', function(e) { e.preventDefault(); });
+    document.body.addEventListener('dragover',function(e){e.preventDefault();});
+    document.body.addEventListener('drop',function(e){e.preventDefault();});
   }
 
-  function handleFileUpload(files, path) {
-    if (!files || files.length === 0) return;
-    fbToast('正在上传 ' + files.length + ' 个文件...', 'info');
-    var uploaded = 0;
-    var failed = 0;
-
-    function uploadNext(index) {
-      if (index >= files.length) {
-        var msg = '上传完成: ' + uploaded + ' 成功';
-        if (failed > 0) msg += ', ' + failed + ' 失败';
-        fbToast(msg, failed > 0 ? 'warning' : 'success');
-        if (uploaded > 0) refreshView();
-        return;
-      }
-      var file = files[index];
-      var reader = new FileReader();
-      reader.onload = function(e) {
-        var base64 = e.target.result.split(',')[1];
-        api('POST', '/files/upload', {
-          path: path,
-          fileName: file.name,
-          content: base64
-        }).then(function() {
-          uploaded++;
-          uploadNext(index + 1);
-        }).catch(function(err) {
-          failed++;
-          fbToast('上传失败 ' + file.name + ': ' + (err.message || ''), 'error');
-          uploadNext(index + 1);
-        });
-      };
-      reader.onerror = function() {
-        failed++;
-        fbToast('读取文件失败: ' + file.name, 'error');
-        uploadNext(index + 1);
-      };
-      reader.readAsDataURL(file);
+  // ── 上传 ──
+  function up(files,path){
+    if(!files||!files.length)return;
+    to('上传 '+files.length+' 个文件...','info');
+    var ok=0,fail=0;
+    function nx(idx){
+      if(idx>=files.length){to('上传完成: '+ok+' 成功'+(fail?', '+fail+' 失败':''),fail?'warning':'success');if(ok>0)rf();return;}
+      var f=files[idx],r=new FileReader();
+      r.onload=function(e){api('POST','/files/upload',{path:path,fileName:f.name,content:e.target.result.split(',')[1]}).then(function(){ok++;nx(idx+1);}).catch(function(){fail++;nx(idx+1);});};
+      r.readAsDataURL(f);
     }
-
-    uploadNext(0);
+    nx(0);
   }
 
-  // ── 图片预览 ──
-  function previewImage(filePath, fileName) {
-    var imgUrl = '/api/files?path=' + encodeURIComponent(filePath) + '&raw=1';
-    var overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:99999;display:flex;align-items:center;justify-content:center;animation:fadeIn 0.15s';
+  // ── 预览 ──
+  function pv(fp,fn){
+    var ov=document.createElement('div');
+    ov.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:99999;display:flex;align-items:center;justify-content:center';
+    var pp=document.createElement('div');
+    pp.style.cssText='background:var(--window-bg,#1e1e2e);border-radius:12px;padding:20px;max-width:90vw;max-height:90vh;box-shadow:0 8px 40px rgba(0,0,0,0.4);text-align:center';
+    var im=document.createElement('img');
+    im.src='/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK;
+    im.style.cssText='max-width:80vw;max-height:70vh;border-radius:8px;object-fit:contain;margin-bottom:12px';
+    im.alt=fn||'预览';
+    var bt=document.createElement('div');
+    bt.style.cssText='font-size:12px;color:var(--text2,#aaa)';
+    bt.innerHTML='<span>'+esc(fn)+'</span> &nbsp; <button onclick="this.parentElement.parentElement.parentElement.remove()" style="padding:4px 12px;border:1px solid var(--border,#444);border-radius:4px;background:transparent;color:var(--text,#ccc);cursor:pointer">✕ 关闭</button>';
+    pp.appendChild(im);pp.appendChild(bt);ov.appendChild(pp);
+    ov.addEventListener('click',function(e){if(e.target===ov)ov.remove();});
+    document.body.appendChild(ov);
+  }
 
-    var popup = document.createElement('div');
-    popup.style.cssText = 'background:var(--window-bg,#1e1e2e);border-radius:12px;padding:16px;max-width:90vw;max-height:90vh;display:flex;flex-direction:column;align-items:center;box-shadow:0 8px 40px rgba(0,0,0,0.4);animation:scaleIn 0.15s';
+  // ── 右键（带子菜单支持） ──
+  var _activeSubmenu = null;
+  function closeSubmenu() { if (_activeSubmenu) { _activeSubmenu.remove(); _activeSubmenu = null; } }
 
-    var img = document.createElement('img');
-    img.src = imgUrl;
-    img.style.cssText = 'max-width:70vw;max-height:60vh;border-radius:8px;object-fit:contain;margin-bottom:12px';
-    img.alt = fileName || '预览';
-
-    var errMsg = document.createElement('div');
-    errMsg.style.cssText = 'display:none;padding:20px;color:var(--accent2,#f87171);text-align:center';
-    errMsg.textContent = '⚠ 图片加载失败';
-    img.onerror = function() {
-      img.style.display = 'none';
-      errMsg.style.display = 'block';
-    };
-
-    var infoRow = document.createElement('div');
-    infoRow.style.cssText = 'display:flex;align-items:center;gap:12px;font-size:13px;color:var(--text2,#a0a0b0)';
-    infoRow.textContent = fileName || '';
-
-    var btnWallpaper = document.createElement('button');
-    btnWallpaper.textContent = '🖼 设为壁纸';
-    btnWallpaper.style.cssText = 'padding:6px 16px;border-radius:6px;border:none;background:var(--accent,#6366f1);color:white;cursor:pointer;font-size:13px;font-weight:500';
-    btnWallpaper.onclick = function() {
-      if (window.ACMSWallpaper) {
-        ACMSWallpaper.set(imgUrl, 'cover').catch(function(err) {
-          console.warn('[FileBrowser] 壁纸设置失败:', err.message);
-          fbToast('壁纸设置失败', 'error');
+  function cx(e,fp,fn,isD,icn){
+    document.querySelectorAll('.ts-cx').forEach(function(m){m.remove();});
+    closeSubmenu();
+    var items=[];
+    if(isD) items.push({l:'📂 打开',a:function(){navigate(fp);}});
+    else {
+      items.push({l:'📄 选择',a:function(){FB_sl(fp);}});
+      if(isImg(fn)){items.push({l:'🖼 预览',a:function(){pv(fp,fn);}});items.push({l:'🖼 壁纸',a:function(){wp(fp);}});}
+      items.push({l:'🖥 系统打开',a:function(){openSys(fp);}});
+      // ACMS 应用（全部列出，让用户自由选择）
+      var ext=fn.split('.').pop().toLowerCase();
+      var allApps=[
+        {name:'image-editor',label:'🖼️ 图片编辑器',icon:'🖼️'},
+        {name:'code-editor',label:'💻 代码编辑器',icon:'💻'},
+        {name:'office-word',label:'📝 Word 编辑器',icon:'📝'},
+        {name:'office-xlsx',label:'📊 Excel 编辑器',icon:'📊'},
+        {name:'office-pptx',label:'📽️ PPT 编辑器',icon:'📽️'},
+        {name:'web-browser',label:'🌐 浏览器',icon:'🌐'},
+      ];
+      items.push({l:'📂 打开方式 ▶',sub:allApps.map(function(a){
+        return {l:'  '+a.label,st:'padding-left:16px;font-size:12px',a:function(){openWithAcms(a.name,fp,fn,ext);}};
+      })});
+      var assocKey='fb_open_'+ext;
+      var saved;
+      try{saved=JSON.parse(localStorage.getItem(assocKey)||'[]');}catch(e){saved=[];}
+      saved.forEach(function(appName){
+        items.push({l:'  '+appName,st:'padding-left:20px;color:var(--accent);font-size:11px',a:function(){openWith(fp,appName,ext);}});
+      });
+    }
+    items.push({l:'✏️ 重命名',a:function(){rn(fp,fn,isD);}});
+    items.push({l:'🗑️ 删除',a:function(){dl(fp,fn,isD);}});
+    if(!isD){
+      // AI 标签子菜单
+      var tg=gT(fp);
+      var availTags=allTN().filter(function(t){return tg.indexOf(t)===-1;});
+      items.push({l:'🧠 AI 标签 ▶',sub:availTags.map(function(t){var d=tD(t);return{l:'  '+t,st:'color:'+d.color+';font-size:12px',a:function(){aT(fp,t);rf();}};}),
+        subOnClick: function(subItem) { subItem.a(); }
+      });
+      if(tg.length>0){
+        items.push({l:'🏷 移除标签 ▶',sub:tg.map(function(t){var d=tD(t);return{l:'  '+t+' ✕',st:'color:'+d.color+';font-size:12px;opacity:0.7',a:function(){rT(fp,t);rf();}};}),
+          subOnClick: function(subItem) { subItem.a(); }
         });
       }
-    };
-
-    var btnClose = document.createElement('button');
-    btnClose.textContent = '✕';
-    btnClose.style.cssText = 'padding:4px 10px;border-radius:4px;border:1px solid var(--border,#333);background:transparent;color:var(--text,#ccc);cursor:pointer;font-size:13px;margin-left:auto';
-    btnClose.onclick = function() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); };
-
-    var topBar = document.createElement('div');
-    topBar.style.cssText = 'display:flex;align-items:center;width:100%;margin-bottom:8px';
-    topBar.appendChild(infoRow);
-    topBar.appendChild(btnClose);
-
-    popup.appendChild(topBar);
-    popup.appendChild(img);
-    popup.appendChild(errMsg);
-    popup.appendChild(btnWallpaper);
-    overlay.appendChild(popup);
-    document.body.appendChild(overlay);
-
-    overlay.addEventListener('click', function(e) {
-      if (e.target === overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
-    });
-  }
-
-  // ── 上下文菜单 ──
-  function showContextMenu(e, filePath, fileName, isDir, icon) {
-    // 移除已有菜单
-    var existing = document.querySelector('.fb-context-menu');
-    if (existing) existing.parentNode.removeChild(existing);
-    contextEntry = { path: filePath, name: fileName, isDir: isDir, icon: icon };
-
-    var menu = document.createElement('div');
-    menu.className = 'fb-context-menu';
-    menu.style.cssText = 'position:fixed;z-index:100000;min-width:160px;padding:6px 0;background:var(--window-bg,#1e1e32);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,0.4);font-size:13px;color:var(--text);left:' + e.clientX + 'px;top:' + e.clientY + 'px;backdrop-filter:blur(12px)';
-
-    var items = [];
-    // 重命名
-    items.push({ label: '✏️ 重命名', action: function() {
-      window.FB_rename(contextEntry.path, contextEntry.name, contextEntry.isDir);
-    }});
-    // 删除
-    items.push({ label: '🗑️ 删除', action: function() {
-      window.FB_delete(contextEntry.path, contextEntry.name, contextEntry.isDir);
-    }});
-    // 分隔线
-    items.push({ sep: true });
-    if (!isDir && isImage(fileName)) {
-      items.push({ label: '🖼 设为壁纸', action: function() {
-        window.FB_setWallpaper(contextEntry.path);
-      }});
+      items.push({l:'🤖 AI 生成',a:function(){ai(fp,fn);}});
     }
-    // 复制路径
-    items.push({ label: '📋 复制路径', action: function() {
-      navigator.clipboard.writeText(contextEntry.path).then(function() {
-        fbToast('路径已复制', 'success');
-      }).catch(function() {
-        fbToast('复制失败', 'error');
-      });
-    }});
 
-    items.forEach(function(item) {
-      if (item.sep) {
-        var sep = document.createElement('div');
-        sep.style.cssText = 'height:1px;margin:4px 10px;background:var(--border)';
-        menu.appendChild(sep);
-        return;
-      }
-      var el = document.createElement('div');
-      el.style.cssText = 'display:flex;align-items:center;padding:8px 14px;cursor:pointer;transition:background 0.1s;gap:8px';
-      el.textContent = item.label;
-      el.addEventListener('mouseenter', function() { el.style.background = 'color-mix(in srgb, var(--accent) 14%, transparent)'; });
-      el.addEventListener('mouseleave', function() { el.style.background = 'transparent'; });
-      el.addEventListener('click', function() {
-        removeMenu();
-        item.action();
-      });
-      menu.appendChild(el);
-    });
-
-    document.body.appendChild(menu);
-
-    // 点击其他地方关闭
-    function removeMenu() {
-      if (menu.parentNode) menu.parentNode.removeChild(menu);
-      document.removeEventListener('click', removeMenu);
-      document.removeEventListener('contextmenu', removeMenu);
-    }
-    setTimeout(function() {
-      document.addEventListener('click', removeMenu);
-      document.addEventListener('contextmenu', removeMenu);
-    }, 0);
-  }
-
-  // ── 新建文件夹对话框 ──
-  function promptNewFolder() {
-    var name = prompt('请输入新文件夹名称:', '新建文件夹');
-    if (!name || !name.trim()) return;
-    name = name.trim();
-    // 检查非法字符
-    if (/[/\\:*?"<>|]/.test(name)) {
-      fbToast('文件夹名称包含非法字符', 'error');
-      return;
-    }
-    api('POST', '/files/mkdir', { path: currentPath, name: name })
-      .then(function() {
-        fbToast('文件夹 "' + name + '" 创建成功', 'success');
-        // 清除该目录的树缓存，以便重新加载
-        delete treeCache[currentPath];
-        refreshView();
-      })
-      .catch(function(err) {
-        fbToast('创建失败: ' + (err.message || ''), 'error');
-      });
-  }
-
-  // ── 上传文件对话框 ──
-  function promptUploadFile() {
-    var input = document.createElement('input');
-    input.type = 'file';
-    input.multiple = true;
-    input.onchange = function() {
-      if (input.files && input.files.length > 0) {
-        handleFileUpload(input.files, currentPath);
-      }
-    };
-    input.click();
-  }
-
-  // ── 重命名 ──
-  function renameEntry(filePath, oldName, isDir) {
-    var newName = prompt('重命名 "' + oldName + '" 为:', oldName);
-    if (!newName || !newName.trim()) return;
-    newName = newName.trim();
-    if (newName === oldName) return;
-    if (/[/\\:*?"<>|]/.test(newName)) {
-      fbToast('名称包含非法字符', 'error');
-      return;
-    }
-    api('POST', '/files/rename', { path: filePath, newName: newName })
-      .then(function() {
-        fbToast('已重命名为 "' + newName + '"', 'success');
-        delete treeCache[currentPath];
-        delete treeCache[parentPathOf(filePath)];
-        refreshView();
-      })
-      .catch(function(err) {
-        fbToast('重命名失败: ' + (err.message || ''), 'error');
-      });
-  }
-
-  // ── 删除确认 ──
-  function deleteEntry(filePath, fileName, isDir) {
-    if (isDir) {
-      if (!confirm('确定要删除目录 "' + fileName + '" 及其所有内容吗？\n（非空目录可能无法删除）')) return;
-    } else {
-      if (!confirm('确定要删除文件 "' + fileName + '" 吗？')) return;
-    }
-    api('POST', '/files/delete', { path: filePath })
-      .then(function() {
-        fbToast('已删除 "' + fileName + '"', 'success');
-        delete treeCache[currentPath];
-        var parentPath = parentPathOf(filePath);
-        delete treeCache[parentPath];
-        refreshView();
-      })
-      .catch(function(err) {
-        fbToast('删除失败: ' + (err.message || ''), 'error');
-      });
-  }
-
-  // ── 设为壁纸 ──
-  function setWallpaper(filePath) {
-    var imgUrl = '/api/files?path=' + encodeURIComponent(filePath) + '&raw=1';
-    if (window.ACMSWallpaper) {
-      ACMSWallpaper.set(imgUrl, 'cover').catch(function(err) {
-        console.warn('[FileBrowser] 壁纸设置失败:', err.message);
-        fbToast('壁纸设置失败', 'error');
-      });
-    }
-  }
-
-  // ── 导航 ──
-  function navigate(path) {
-    if (!browsingWindow || browsingWindow.dead) return;
-    if (path === currentPath) return;
-    // 保存当前路径到历史
-    historyStack.push(currentPath);
-    forwardStack = [];
-    currentPath = path;
-    currentSearch = '';
-    // 展开目录树中的当前目录
-    expandTreeToPath(path);
-    renderAll(browsingWindow);
-  }
-
-  function goBack() {
-    if (historyStack.length === 0) return;
-    forwardStack.push(currentPath);
-    currentPath = historyStack.pop();
-    currentSearch = '';
-    expandTreeToPath(currentPath);
-    renderAll(browsingWindow);
-  }
-
-  function goForward() {
-    if (forwardStack.length === 0) return;
-    historyStack.push(currentPath);
-    currentPath = forwardStack.pop();
-    currentSearch = '';
-    expandTreeToPath(currentPath);
-    renderAll(browsingWindow);
-  }
-
-  function goUp() {
-    if (currentPath === '/') return;
-    var parent = parentPathOf(currentPath);
-    navigate(parent);
-  }
-
-  function refresh() {
-    // 清除当前路径的缓存
-    delete treeCache[currentPath];
-    renderAll(browsingWindow);
-  }
-
-  // ── 展开目录树到指定路径 ──
-  function expandTreeToPath(path) {
-    if (!path || path === '/') return loadTreeChildren('/');
-    expandedDirs['/'] = true;
-    var parts = path.replace(/^\/+/, '').replace(/\/+$/, '').split('/');
-    var accumulated = '';
-    parts.forEach(function(part) {
-      if (!part) return;
-      accumulated = accumulated ? accumulated + '/' + part : '/' + part;
-      expandedDirs[accumulated] = true;
-    });
-    // 确保加载所有展开节点的子目录
-    return loadTreeChain(path);
-  }
-
-  function loadTreeChain(path) {
-    if (!path || path === '/') {
-      if (!treeCache['/']) {
-        return loadTreeChildren('/');
-      }
-      return Promise.resolve();
-    }
-    var parts = path.replace(/^\/+/, '').replace(/\/+$/, '').split('/');
-    var accumulated = '';
-    var chain = ['/'];
-    parts.forEach(function(part) {
-      if (!part) return;
-      accumulated = accumulated ? accumulated + '/' + part : '/' + part;
-      chain.push(accumulated);
-    });
-    // 从根到目标依次加载缓存
-    function loadNext(idx) {
-      if (idx >= chain.length) return Promise.resolve();
-      var p = chain[idx];
-      if (!treeCache[p]) {
-        return loadTreeChildren(p).then(function() {
-          return loadNext(idx + 1);
-        });
-      }
-      return loadNext(idx + 1);
-    }
-    return loadNext(0);
-  }
-
-  // ── 切换目录树展开/折叠 ──
-  function toggleTree(path) {
-    expandedDirs[path] = !expandedDirs[path];
-    if (expandedDirs[path] && !treeCache[path]) {
-      loadTreeChildren(path).then(function() {
-        renderAll(browsingWindow);
-      });
-    }
-    renderAll(browsingWindow);
-  }
-
-  // ── 搜索 ──
-  function onSearch(value) {
-    currentSearch = value.trim();
-    loadFileList(browsingWindow, currentPath, currentSearch);
-  }
-
-  // ════════════════════════════════════════
-  // 全局函数（供 onclick 调用）
-  // ════════════════════════════════════════
-
-  window.FB_navigate = function(path) { navigate(path); };
-  window.FB_goBack = function() { goBack(); };
-  window.FB_goForward = function() { goForward(); };
-  window.FB_goUp = function() { goUp(); };
-  window.FB_refresh = function() { refresh(); };
-  window.FB_newFolder = function() { promptNewFolder(); };
-  window.FB_uploadFile = function() { promptUploadFile(); };
-  window.FB_previewImage = function(filePath, fileName) { previewImage(filePath, fileName); };
-  window.FB_toggleTree = function(path) { toggleTree(path); };
-  window.FB_onSearch = function(value) { onSearch(value); };
-  window.FB_rename = function(filePath, fileName, isDir) { renameEntry(filePath, fileName, isDir); };
-  window.FB_delete = function(filePath, fileName, isDir) { deleteEntry(filePath, fileName, isDir); };
-  window.FB_setWallpaper = function(filePath) { setWallpaper(filePath); };
-  window.FB_contextMenu = function(e, filePath, fileName, isDir, icon) {
-    showContextMenu(e, filePath, fileName, isDir, icon);
-  };
-  window.FB_loadDir = function(path) {
-    if (browsingWindow && !browsingWindow.dead) {
-      navigate(path);
-    }
-  };
-
-  // ════════════════════════════════════════
-  // 注册 viewLoader
-  // ════════════════════════════════════════
-  if (window.ACMSWin) {
-    // v0.58 包注册
-    if (window.ACMS && ACMS.registerPackage) {
-      ACMS.registerPackage('file-manager', {
-        title: '文件浏览器', icon: '📂', category: '工具',
-        defaultSize: { w: 820, h: 560 },
-        loader: function(w) {
-          browsingWindow = w;
-          historyStack = [];
-          forwardStack = [];
-          currentSearch = '';
-          expandedDirs = {};
-          treeCache = {};
-          contextEntry = null;
-
-          currentPath = getInitialPath();
-          expandTreeToPath(currentPath).then(function() {
-            renderAll(w);
-          }).catch(function() {
-            renderAll(w);
+    var m=document.createElement('div');
+    m.className='ts-cx';
+    m.style.cssText='position:fixed;z-index:100000;min-width:170px;padding:5px 0;background:var(--window-bg,#fff);border:1px solid var(--border,#ddd);border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.2);left:'+e.clientX+'px;top:'+e.clientY+'px';
+    items.forEach(function(it){
+      if(it.sep){var d=document.createElement('div');d.style.cssText='height:1px;background:var(--border);margin:4px 8px';m.appendChild(d);return;}
+      var el=document.createElement('div');
+      var baseStyle='display:flex;align-items:center;padding:5px 12px;cursor:pointer;font-size:12px;gap:5px;transition:background 0.08s';
+      if(it.st) baseStyle += ';' + it.st;
+      if(it.sub) baseStyle += ';position:relative';
+      el.style.cssText=baseStyle;
+      el.textContent=it.l;
+      el.addEventListener('mouseenter',function(){el.style.background='color-mix(in srgb, var(--accent) 10%, transparent)';});
+      el.addEventListener('mouseleave',function(){el.style.background='transparent';});
+      if(it.a) el.addEventListener('click',function(){rmCx();closeSubmenu();it.a();});
+      // 子菜单 hover
+      if(it.sub){
+        el.addEventListener('mouseenter',function(){
+          closeSubmenu();
+          var sm=document.createElement('div');
+          sm.className='ts-cx ts-sub';
+          sm.style.cssText='position:fixed;z-index:100001;min-width:140px;padding:5px 0;background:var(--window-bg,#fff);border:1px solid var(--border,#ddd);border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.2)';
+          var rect=el.getBoundingClientRect();
+          sm.style.left=(rect.right)+'px';
+          sm.style.top=rect.top+'px';
+          // 防溢出
+          if(rect.right+160>window.innerWidth) sm.style.left=(rect.left-150)+'px';
+          if(rect.bottom+it.sub.length*28>window.innerHeight) sm.style.top=Math.max(5,window.innerHeight-it.sub.length*28-10)+'px';
+          it.sub.forEach(function(si){
+            var sel=document.createElement('div');
+            var sb='display:flex;align-items:center;padding:5px 12px;cursor:pointer;font-size:12px;gap:5px;transition:background 0.08s'+(si.st?';'+si.st:'');
+            sel.style.cssText=sb;
+            sel.textContent=si.l;
+            sel.addEventListener('mouseenter',function(){sel.style.background='color-mix(in srgb, var(--accent) 10%, transparent)';});
+            sel.addEventListener('mouseleave',function(){sel.style.background='transparent';});
+            sel.addEventListener('click',function(e){e.stopPropagation();rmCx();closeSubmenu();si.a();});
+            sm.appendChild(sel);
           });
+          document.body.appendChild(sm);
+          _activeSubmenu=sm;
+        });
+      }
+      m.appendChild(el);
+    });
+    document.body.appendChild(m);
+    function rmCx(){if(m.parentNode)m.parentNode.removeChild(m);document.removeEventListener('click',rmCx);document.removeEventListener('contextmenu',rmCx);closeSubmenu();}
+    setTimeout(function(){document.addEventListener('click',rmCx);document.addEventListener('contextmenu',rmCx);},0);
+  }
+
+  // ── 系统打开 / 选择应用 / ACMS 应用 ──
+  function openSys(fp){
+    api('POST','/files/open',{path:fp}).then(function(){to('已用系统默认应用打开','success');}).catch(function(e){to('打开失败: '+(e.message||''),'error');});
+  }
+  function openWithAcms(appName,fp,fn,ext){
+    // 先保存文件信息到全局，PKG loader 会读取
+    window._fb_open_file = null;
+    if(appName==='image-editor'){
+      // 图片：传 URL
+      var src='/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK;
+      window._fb_open_file = {name:fn,src:src};
+      ACMSWin.open('image-editor',{w:1000,h:700,title:'🖼️ '+fn});
+    } else if(appName==='code-editor'){
+      // 代码：下载文本内容
+      fetch('/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK).then(function(r){return r.text();}).then(function(content){
+        window._fb_open_file = {name:fn,content:content};
+        ACMSWin.open('code-editor',{w:900,h:600,title:'💻 '+fn});
+      }).catch(function(){to('读取文件失败','error');});
+    } else if(appName==='office-word'){
+      fetch('/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK).then(function(r){return r.text();}).then(function(content){
+        window._fb_open_file = {name:fn,content:content};
+        ACMSWin.open('office-word',{w:1000,h:700,title:'📝 '+fn});
+      }).catch(function(){to('读取文件失败','error');});
+    } else if(appName==='web-browser'){
+      // 浏览器：fetch HTML 内容用 srcdoc 渲染（保证正确渲染而非显示源码）
+      var fileUrl='/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK;
+      fetch(fileUrl).then(function(r){return r.text();}).then(function(html){
+        ACMSWin.open('web-browser',{w:1100,h:750,title:'🌐 '+fn,srcdoc:html,url:fileUrl});
+      }).catch(function(){to('读取文件失败','error');});
+    } else {
+      ACMSWin.open(appName,{w:900,h:600});
+    }
+  }
+  function openWith(fp,appName,ext){
+    api('POST','/files/open',{path:fp,app:appName}).then(function(){to('已用 '+appName+' 打开','success');}).catch(function(e){to('打开失败: '+(e.message||''),'error');});
+  }
+  function promptOpenWith(fp,fn,ext){
+    if(typeof showPrompt==='function'){
+      showPrompt({title:'选择应用',message:'输入用于打开 '+fn+' 的应用名称',placeholder:'如: notepad.exe, code, firefox'}).then(function(appName){
+        if(!appName||!appName.trim())return;
+        appName=appName.trim();
+        // 询问是否记住此关联
+        if(typeof showConfirm==='function'){
+          showConfirm('以后 .'+ext+' 文件都默认用 '+appName+' 打开吗？',{title:'记住选择',confirmText:'记住',type:'info'}).then(function(remember){
+            if(remember){
+              var key='fb_open_'+ext;
+              var list;
+              try{list=JSON.parse(localStorage.getItem(key)||'[]');}catch(e){list=[];}
+              if(list.indexOf(appName)===-1)list.push(appName);
+              localStorage.setItem(key,JSON.stringify(list));
+            }
+            openWith(fp,appName,ext);
+          });
+        } else {
+          openWith(fp,appName,ext);
         }
       });
     } else {
-      // 降级：直接注册（ACMS.registerPackage 不可用时）
-      ACMSWin.registerViewLoader('file-manager', function(w) {
-          browsingWindow = w;
-          historyStack = [];
-          forwardStack = [];
-          currentSearch = '';
-          expandedDirs = {};
-          treeCache = {};
-          contextEntry = null;
-
-          currentPath = getInitialPath();
-          expandTreeToPath(currentPath).then(function() {
-            renderAll(w);
-          }).catch(function() {
-            renderAll(w);
-          });
-      });
+      var appName=prompt('输入用于打开 '+fn+' 的应用名称:');
+      if(appName&&appName.trim())openWith(fp,appName.trim(),ext);
     }
   }
 
+  // ── 操作 ──
+  function nf(){
+    if(typeof showPrompt==='function'){showPrompt({title:'新建文件夹',placeholder:'名称',defaultValue:'新建文件夹',minLength:1}).then(function(n){if(n)mkd(n);});}
+    else{var n=prompt('名称:','新建文件夹');if(n&&n.trim())mkd(n.trim());}
+  }
+  function mkd(n){api('POST','/files/mkdir',{path:curPath,name:n}).then(function(){to('已创建','success');delete treeCache[curPath];rf();}).catch(function(){to('创建失败','error');});}
+  function uf(){var i=document.createElement('input');i.type='file';i.multiple=true;i.onchange=function(){if(i.files&&i.files.length>0)up(i.files,curPath);};i.click();}
+  function rn(fp,on,isD){
+    if(typeof showPrompt==='function'){showPrompt({title:'重命名',message:'重命名 "'+on+'"',defaultValue:on,minLength:1}).then(function(n){if(n&&n.trim()&&n.trim()!==on)dorn(fp,n.trim());});}
+    else{var n=prompt('重命名 "'+on+'" 为:',on);if(n&&n.trim()&&n.trim()!==on)dorn(fp,n.trim());}
+  }
+  function dorn(fp,nn){api('POST','/files/rename',{path:fp,newName:nn}).then(function(){to('已重命名','success');delete treeCache[curPath];delete treeCache[pp(fp)];rf();}).catch(function(){to('重命名失败','error');});}
+  function dl(fp,fn,isD){
+    var msg=isD?'删除目录 "'+fn+'" 及其所有内容？':'删除文件 "'+fn+'"？';
+    if(typeof showConfirm==='function'){showConfirm(msg,{title:'确认删除',confirmText:'删除'}).then(function(o){if(o)dodl(fp);});}
+    else{if(confirm(msg))dodl(fp);}
+  }
+  function dodl(fp){api('POST','/files/delete',{path:fp}).then(function(){to('已删除','success');delete treeCache[curPath];delete treeCache[pp(fp)];selPath='';rf();}).catch(function(){to('删除失败','error');});}
+  function wp(fp){if(window.ACMSWallpaper)ACMSWallpaper.set('/api/files?path='+encodeURIComponent(fp)+'&raw=1','cover').catch(function(){to('壁纸失败','error');});}
+
+  // ── 导航 ──
+  function navigate(p){if(!w||w.dead||p===curPath)return;hist.push(curPath);fwd=[];curPath=p;curSearch='';selPath='';expTree(p);rf();}
+  function gb(){if(hist.length===0)return;fwd.push(curPath);curPath=hist.pop();curSearch='';selPath='';expTree(curPath);rf();}
+  function gf(){if(fwd.length===0)return;hist.push(curPath);curPath=fwd.pop();curSearch='';selPath='';expTree(curPath);rf();}
+  function gu(){if(curPath==='/')return;navigate(pp(curPath));}
+  function rfs(){delete treeCache[curPath];selPath='';rf();}
+  function expTree(p){
+    if(!p||p==='/')return lTC('/');
+    expDirs['/']=true;
+    var pts=p.replace(/^\/+/,'').replace(/\/+$/,'').split('/'),a='';
+    pts.forEach(function(x){if(!x)return;a=a?a+'/'+x:'/'+x;expDirs[a]=true;});
+    return lCh(p);
+  }
+  function lCh(p){
+    if(!p||p==='/')return treeCache['/']?Promise.resolve():lTC('/');
+    var pts=p.replace(/^\/+/,'').replace(/\/+$/,'').split('/'),ch=['/'],a='';
+    pts.forEach(function(x){if(!x)return;a=a?a+'/'+x:'/'+x;ch.push(a);});
+    function nx(i){if(i>=ch.length)return Promise.resolve();var p2=ch[i];return treeCache[p2]?nx(i+1):lTC(p2).then(function(){return nx(i+1);});}
+    return nx(0);
+  }
+  function lTC(p){return api('GET','/files?path='+encodeURIComponent(p)).then(function(d){if(d&&d.entries)treeCache[p]=d.entries;}).catch(function(){treeCache[p]=[];});}
+  function tT(p){expDirs[p]=!expDirs[p];if(expDirs[p]&&!treeCache[p])lTC(p).then(function(){rf();});rf();}
+  function sr(v){curSearch=v.trim();selPath='';loadList(w,curPath,curSearch);}
+  function st(k){if(sortKey===k)sortDir*=-1;else{sortKey=k;sortDir=1;}rf();}
+  function sl(p){selPath=(selPath===p)?'':p;rf();}
+  function fl(t){filterTag=(filterTag===t)?'':t;rf();}
+  function vm(m){viewMode=m;rf();}
+  function lT(t){leftTab=t;rf();}
+
+  // ── AI 标签 ──
+  function ai(fp,fn){
+    var btn=w&&w.$c?w.$c.querySelector('#__fb_ai'):null;
+    if(btn)btn.disabled=true;
+    to('🤖 AI 分析 '+fn+'...','info');
+    api('POST','/api/chat/detect-and-respond',{reqId:'_fb_ai',text:'为文件 "'+fn+'" 生成 3-5 个中文标签（词或短语），只返回逗号分隔的列表。路径: '+fp})
+    .then(function(d){
+      var r=d&&(d.aiReply||d.content||d.message||d.text||'');
+      if(!r){to('AI 无响应','warning');return;}
+      var tags=r.split(/[,，、\n]/).map(function(s){return s.trim().replace(/^["'「『\s]+|["'」』\s]+$/g,'');}).filter(function(s){return s.length>0&&s.length<20;});
+      if(tags.length===0){to('AI 未生成有效标签','warning');return;}
+      tags.forEach(function(t){
+        var f=false;
+        tagGroups.forEach(function(g){(g.children||[]).forEach(function(c){if(c.title===t)f=true;});});
+        if(!f&&tagGroups.length>0){tagGroups[0].children.push({title:t,color:'#95a5a6',textcolor:'#fff'});svTg();}
+        aT(fp,t);
+      });
+      to('✅ 已添加 '+tags.length+' 个标签','success');
+      rf();
+    }).catch(function(e){to('AI 标签失败: '+(e.message||'错误'),'error');}).then(function(){if(btn)btn.disabled=false;});
+  }
+
+  // ── 标签操作 ──
+  function aTF(sel,fp){if(!sel.value)return;aT(fp,sel.value);sel.value='';rf();}
+  function rmT(el){var t=el.getAttribute('data-t');if(!t)return;var fp=selPath;if(fp){rT(fp,t);rf();}}
+
+  // ═══ 全局 ═══
+  window.FB_nv=navigate;window.FB_gb=gb;window.FB_gf=gf;window.FB_gu=gu;window.FB_rf=rfs;
+  window.FB_nf=nf;window.FB_uf=uf;window.FB_pv=pv;window.FB_tT=tT;
+  window.FB_sr=sr;window.FB_rn=rn;window.FB_dl=dl;window.FB_wp=wp;
+  window.FB_cx=cx;window.FB_sl=sl;window.FB_fl=fl;window.FB_st=st;
+  window.FB_vm=vm;window.FB_lt=lT;
+  window.FB_ai=ai;window.FB_aTF=aTF;window.FB_rmT=rmT;
+  window.FB_loadDir=function(p){if(w&&!w.dead)navigate(p);};
+  window.FB_toggleDrives=function(){
+    var list=document.getElementById('ts_drives_list');
+    var arr=document.getElementById('ts_drives_arr');
+    if(!list||!arr)return;
+    var h=list.style.display==='none';
+    list.style.display=h?'':'none';
+    arr.textContent=h?'▼':'▶';
+  };
+
+  // ═══ 注册 ═══
+  if(window.ACMSWin){
+    var ld=function(_w){
+      w=_w;hist=[];fwd=[];curSearch='';expDirs={};treeCache={};ctxEntry=null;selPath='';filterTag='';viewMode='list';leftTab='tags';
+      loadTags();curPath=iP();
+      // 加载盘符
+      api('GET','/files/drives').then(function(d){if(d&&d.drives){_drives=d.drives;if(w&&!w.dead)render(w);}}).catch(function(){});
+      expTree(curPath).then(function(){render(w);}).catch(function(){render(w);});
+    };
+    if(window.ACMS&&ACMS.registerPackage){
+      ACMS.registerPackage('file-manager',{title:'文件浏览器',icon:'📂',category:'工具',defaultSize:{w:1280,h:800},loader:ld});
+    } else {
+      ACMSWin.registerViewLoader('file-manager',ld);
+    }
+  }
 })();

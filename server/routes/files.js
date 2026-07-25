@@ -5,6 +5,18 @@ var fs = require('fs');
 
 var WORKSPACE_ROOT = path.resolve(__dirname, '..', '..', 'workspaces');
 
+// Windows 上把 /d → D:\ 等盘符路径转换成真实路径
+// path.resolve('/d') 在 Windows 上会解析成 C:\d，必须手动处理
+function resolveDrivePath(reqPath) {
+  if (process.platform === 'win32' && reqPath) {
+    var m = reqPath.match(/^\/([a-zA-Z])(?:\/|$)/);
+    if (m) {
+      return m[1].toUpperCase() + ':\\' + reqPath.slice(2).replace(/\//g, '\\');
+    }
+  }
+  return null;
+}
+
 /**
  * GET /api/files?path=...
  */
@@ -12,9 +24,29 @@ router.get('/', function(req, res) {
   var reqPath = req.query.path || '';
   var isAdmin = req.user && req.user.role === 'admin';
   
+  // raw=1: 直接返回文件内容（供 img 标签预览）
+  if (req.query.raw === '1') {
+    var r;
+    if (isAdmin) {
+      var dp = resolveDrivePath(reqPath);
+      r = dp || path.resolve(reqPath || '/');
+    } else {
+      var resolved = path.resolve(WORKSPACE_ROOT, reqPath || '');
+      if (!resolved.startsWith(WORKSPACE_ROOT)) return res.status(403).json({ error: 'FORBIDDEN' });
+      r = resolved;
+    }
+    if (!fs.existsSync(r)) return res.status(404).json({ error: 'NOT_FOUND' });
+    var st = fs.statSync(r);
+    if (st.isDirectory()) return res.status(400).json({ error: 'IS_DIR' });
+    res.sendFile(r);
+    return;
+  }
+  
   var safePath;
   if (isAdmin) {
-    safePath = path.resolve(reqPath || '/');
+    var dp = resolveDrivePath(reqPath);
+    console.log('[Files DEBUG] path=/d test:', JSON.stringify({reqPath: reqPath, dp: dp, resolved: dp || path.resolve(reqPath || '/')}));
+    safePath = dp || path.resolve(reqPath || '/');
   } else {
     var resolved = path.resolve(WORKSPACE_ROOT, reqPath || '');
     if (!resolved.startsWith(WORKSPACE_ROOT)) {
@@ -73,7 +105,8 @@ router.get('/info', function(req, res) {
   var isAdmin = req.user && req.user.role === 'admin';
   var safePath;
   if (isAdmin) {
-    safePath = path.resolve(reqPath);
+    var dp = resolveDrivePath(reqPath);
+    safePath = dp || path.resolve(reqPath);
   } else {
     var resolved = path.resolve(WORKSPACE_ROOT, reqPath);
     if (!resolved.startsWith(WORKSPACE_ROOT)) return res.status(403).json({ error: 'FORBIDDEN' });
@@ -87,7 +120,7 @@ router.get('/info', function(req, res) {
 function getFileIcon(name) {
   var ext = path.extname(name).toLowerCase();
   var icons = {
-    '.js':'\ud83d\udcdc', '.ts':'\ud83d\udcd8', '.py':'\U0001f40d', '.html':'\U0001f310', '.css':'\U0001f3a8',
+    '.js':'\ud83d\udcdc', '.ts':'\ud83d\udcd8', '.py':'\ud83d\udc0d', '.html':'\ud83c\udf10', '.css':'\ud83c\udfa8',
     '.json':'\ud83d\udccb', '.md':'\ud83d\udcdd', '.txt':'\ud83d\udcc4', '.yml':'\u2699\ufe0f', '.yaml':'\u2699\ufe0f',
     '.png':'\ud83d\uddbc', '.jpg':'\ud83d\uddbc', '.jpeg':'\ud83d\uddbc', '.gif':'\ud83d\uddbc', '.svg':'\ud83d\uddbc', '.webp':'\ud83d\uddbc',
     '.zip':'\ud83d\udce6', '.tar':'\ud83d\udce6', '.gz':'\ud83d\udce6',
@@ -103,7 +136,8 @@ function getFileIcon(name) {
 function resolveSafePath(req, reqPath) {
   var isAdmin = req.user && req.user.role === 'admin';
   if (isAdmin) {
-    return { safePath: path.resolve(reqPath || '/'), isAdmin: true };
+    var dp = resolveDrivePath(reqPath);
+    return { safePath: dp || path.resolve(reqPath || '/'), isAdmin: true };
   }
   var resolved = path.resolve(WORKSPACE_ROOT, reqPath || '');
   if (!resolved.startsWith(WORKSPACE_ROOT)) {
@@ -291,6 +325,57 @@ router.get('/search', function(req, res) {
     console.error('[Files] search error:', e);
     res.status(500).json({ error: 'SEARCH_ERROR', message: e.message });
   }
+});
+
+// ===== OPEN /api/files/open =====
+// 用系统默认应用或指定应用打开文件
+router.post('/open', function(req, res) {
+  var reqPath = req.body && req.body.path;
+  var appName = req.body && req.body.app; // 可选，指定应用名称
+  if (!reqPath) return res.status(400).json({ error: 'MISSING_PATH' });
+
+  var resolved = resolveSafePath(req, reqPath);
+  if (!resolved) return res.status(403).json({ error: 'FORBIDDEN' });
+  if (!fs.existsSync(resolved.safePath)) return res.status(404).json({ error: 'NOT_FOUND' });
+
+  var exec = require('child_process').exec;
+  var cmd;
+  if (process.platform === 'win32') {
+    cmd = appName ? 'start "" "' + appName + '" "' + resolved.safePath + '"' : 'start "" "' + resolved.safePath + '"';
+  } else if (process.platform === 'darwin') {
+    cmd = appName ? 'open -a "' + appName + '" "' + resolved.safePath + '"' : 'open "' + resolved.safePath + '"';
+  } else {
+    cmd = appName ? appName + ' "' + resolved.safePath + '"' : 'xdg-open "' + resolved.safePath + '"';
+  }
+  exec(cmd, function(err) {
+    if (err) return res.status(500).json({ error: 'OPEN_FAILED', message: err.message });
+    res.json({ success: true });
+  });
+});
+
+// ===== DRIVES /api/files/drives =====
+// 列出系统中的可用盘符（Windows）或根目录
+router.get('/drives', function(req, res) {
+  var isAdmin = req.user && req.user.role === 'admin';
+  if (!isAdmin) return res.status(403).json({ error: 'FORBIDDEN' });
+
+  var drives = [];
+  if (process.platform === 'win32') {
+    // Windows: 检测 A: 到 Z:
+    for (var ch = 67; ch <= 90; ch++) { // C: 到 Z: (跳过 A: B:)
+      var letter = String.fromCharCode(ch);
+      try {
+        var root = letter + ':\\';
+        if (fs.existsSync(root)) {
+          var st = fs.statSync(root);
+          drives.push({ name: letter + ':', path: '/' + letter.toLowerCase(), label: letter + ': 盘', mtime: st.mtime.toISOString() });
+        }
+      } catch(e) {}
+    }
+  } else {
+    drives.push({ name: '/', path: '/', label: '根目录 /' });
+  }
+  res.json({ drives: drives });
 });
 
 module.exports = router;

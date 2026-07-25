@@ -16,18 +16,16 @@
       document.head.appendChild(link);
     }
 
+    var _currentFileName = fileName || '未命名.png';
+
+    // 窗口标题栏显示文件名
+    if (window.ACMSWin && ACMSWin.setTitle) {
+      ACMSWin.setTitle(w, _currentFileName);
+    }
+
     // 渲染 UI
     w.$c.innerHTML =
       '<div class="oo-editor oo-editor-img" style="display:flex;flex-direction:column;height:100%">' +
-        '<div class="oo-titlebar">' +
-          '<span class="oo-titlebar-icon">🖼️</span>' +
-          '<div class="oo-titlebar-name">' +
-            '<input id="img-title-input" value="' + escHtml(fileName || '未命名.png') + '" placeholder="未命名.png" style="background:transparent;border:none;outline:none;font-size:13px;color:var(--text,#333)">' +
-          '</div>' +
-          '<div class="oo-titlebar-actions">' +
-            '<button class="img-btn primary" id="img-save-btn" style="font-size:12px;padding:4px 12px;border:1px solid var(--office-primary,#446995);border-radius:3px;background:var(--office-primary,#446995);color:#fff;cursor:pointer">💾 保存</button>' +
-          '</div>' +
-        '</div>' +
         '<div class="code-menu-bar" style="display:flex;background:var(--bg2,#f0f0f0);border-bottom:1px solid var(--office-divider,#ddd);flex-shrink:0">' +
           '<div class="code-menu-item" data-menu="file" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none">📄 文件' +
             '<div class="code-menu-dropdown" style="display:none;position:absolute;top:100%;left:0;z-index:9999;background:var(--bg,#fff);border:1px solid var(--office-divider,#ddd);border-radius:6px;box-shadow:0 4px 20px rgba(0,0,0,0.15);min-width:180px;padding:6px 0">' +
@@ -82,32 +80,40 @@
         cpLink.rel = 'stylesheet';
         cpLink.href = IMG_EDITOR_PATH + '/tui-color-picker.css';
         document.head.appendChild(cpLink);
-        var cpScript = document.createElement('script');
-        cpScript.src = IMG_EDITOR_PATH + '/tui-color-picker.min.js';
-        cpScript.onload = function () { loadMainEditor(src, callback); };
-        cpScript.onerror = function () { mountEl.innerHTML = '<div style="padding:40px;text-align:center;color:#a00">❌ 颜色选择器加载失败</div>'; };
-        document.head.appendChild(cpScript);
+        // tui-color-picker 用 define() (AMD), Monaco loader 拦截了 define
+        // 方案: 用 fetch 获取源码 + eval 执行（绕过 AMD loader）
+        fetch(IMG_EDITOR_PATH + '/tui-color-picker.min.js').then(function(r){return r.text();}).then(function(code){
+          // 保存原 define，临时屏蔽 Monaco loader 的 define
+          var savedDefine = window.define;
+          window.define = undefined;
+          try { (new Function(code))(); } catch(e) { console.warn('[ImageEditor] color-picker eval error:', e); }
+          window.define = savedDefine;
+          loadMainEditor(src, callback);
+        }).catch(function(){
+          mountEl.innerHTML = '<div style="padding:40px;text-align:center;color:#a00">❌ 颜色选择器加载失败</div>';
+        });
       } else {
         loadMainEditor(src, callback);
       }
     }
 
     function loadMainEditor(src, callback) {
-      if (window.tui && window.tui.ImageEditor) {
+      if (window.tui && window.tui.ImageEditor && typeof window.tui.ImageEditor === 'function') {
         initEditor(src);
         if (callback) callback();
         return;
       }
-      var script = document.createElement('script');
-      script.src = IMG_EDITOR_PATH + '/tui-image-editor.min.js';
-      script.onload = function () {
+      // tui-image-editor 也用 define()，fetch + eval 绕过 AMD loader
+      fetch(IMG_EDITOR_PATH + '/tui-image-editor.min.js').then(function(r){return r.text();}).then(function(code){
+        var savedDefine = window.define;
+        window.define = undefined;
+        try { (new Function(code))(); } catch(e) { console.warn('[ImageEditor] main eval error:', e); }
+        window.define = savedDefine;
         initEditor(src);
         if (callback) callback();
-      };
-      script.onerror = function () {
+      }).catch(function(){
         mountEl.innerHTML = '<div style="padding:40px;text-align:center;color:#a00">❌ 图片编辑器加载失败</div>';
-      };
-      document.head.appendChild(script);
+      });
     }
 
     function initEditor(src) {
@@ -141,10 +147,17 @@
         var btns = mountEl.querySelector('.tui-image-editor-header-buttons');
         if (btns) btns.style.display = 'none';
       }, 200);
+
+      // 激活内置按钮事件 (initCanvas 里只在 loadImage.path 有值时才调用 activeMenuEvent)
+      if (imageEditor && imageEditor.ui && typeof imageEditor.ui.activeMenuEvent === 'function') {
+        setTimeout(function () {
+          try { imageEditor.ui.activeMenuEvent(); } catch(e) {}
+        }, 300);
+      }
     }
 
     // 默认加载空白图片供用户打开文件
-    loadEditor(null);
+    loadEditor(initialSrc || null);
 
     // ─── 菜单事件 ───
     w.$c.querySelectorAll('.code-menu-item').forEach(function (item) {
@@ -178,14 +191,31 @@
             input.onchange = function () {
               var file = input.files && input.files[0];
               if (!file) return;
-              w.$c.querySelector('#img-title-input').value = file.name;
+              _currentFileName = file.name;
+              if (window.ACMSWin && ACMSWin.setTitle) {
+                ACMSWin.setTitle(w, _currentFileName);
+              }
               if (imageEditor) {
                 // 方法1: 直接传 File 对象 (避免 dataURL 体积过大)
                 try {
-                  imageEditor.loadImageFromFile(file).then(function () {
+                  imageEditor.loadImageFromFile(file).then(function (result) {
                     toast('已加载 ' + file.name, 'success');
-                    setTimeout(function () { imageEditor.zoom('fit'); }, 200);
+                    // 手动计算 zoom 适配窗口 (resizeEditor 会读取 cssMaxWidth=9999 导致编辑器溢出)
+                    try {
+                      var mountRect = mountEl.getBoundingClientRect();
+                      var cw = mountRect.width;
+                      var ch = mountRect.height;
+                      var iw = result.newWidth;
+                      var ih = result.newHeight;
+                      if (cw > 0 && ch > 0 && iw > 0 && ih > 0) {
+                        var zoomLevel = Math.min(cw / iw, ch / ih);
+                        var cx = cw / 2;
+                        var cy = ch / 2;
+                        imageEditor.zoom({ x: cx, y: cy, zoomLevel: zoomLevel });
+                      }
+                    } catch(e) {}
                   }).catch(function (err) {
+                    console.log('[ImageEditor] loadImageFromFile FAILED:', err, 'file=', file.name);
                     // 方法2: 回退 dataURL
                     console.warn('[ImageEditor] loadImageFromFile failed, trying dataURL', err);
                     var r2 = new FileReader();
@@ -206,7 +236,14 @@
                   if (imageEditor) {
                     clearInterval(checkReady);
                     imageEditor.loadImageFromFile(file)
-                      .then(function () { toast('已加载 ' + file.name, 'success'); })
+                      .then(function (result) {
+                        toast('已加载 ' + file.name, 'success');
+                        try {
+                          var mRect = mountEl.getBoundingClientRect();
+                          var zl = Math.min(mRect.width / result.newWidth, mRect.height / result.newHeight);
+                          if (zl > 0) imageEditor.zoom({ x: mRect.width/2, y: mRect.height/2, zoomLevel: zl });
+                        } catch(e) {}
+                      })
                       .catch(function () { /* ignore */ });
                   }
                 }, 200);
@@ -216,7 +253,7 @@
             break;
           case 'save-img':
             var dataURL = imageEditor.toDataURL();
-            var name = (w.$c.querySelector('#img-title-input').value || '').trim() || 'image.png';
+            var name = _currentFileName || 'image.png';
             var link = document.createElement('a');
             link.href = dataURL;
             link.download = name;
@@ -280,19 +317,6 @@
       }, 400);
     }
 
-    // ─── 保存按钮 ───
-    w.$c.querySelector('#img-save-btn').onclick = function () {
-      if (!imageEditor) { toast('编辑器未就绪', 'warning'); return; }
-      var dataURL = imageEditor.toDataURL();
-      var name = (w.$c.querySelector('#img-title-input').value || '').trim() || 'image.png';
-      // 始终下载到本地 (图片编辑器目前只支持打开本地文件)
-      var link = document.createElement('a');
-      link.href = dataURL;
-      link.download = name;
-      document.body.appendChild(link); link.click(); document.body.removeChild(link);
-      URL.revokeObjectURL(dataURL);
-      toast('已下载 ' + name, 'success');
-    };
   }
 
   function escHtml(s) {

@@ -237,8 +237,12 @@
     }
 
     var n = windows.length;
-    var ww = opts.w || 600;
-    var wh = opts.h || 400;
+    // 优先使用调用者传入的尺寸，其次包注册的 defaultSize，最后 600x400
+    var pkgDef = (window.ACMS && ACMS.getPackage) ? ACMS.getPackage(viewName) : null;
+    var defW = (pkgDef && pkgDef.defaultSize) ? pkgDef.defaultSize.w : 600;
+    var defH = (pkgDef && pkgDef.defaultSize) ? pkgDef.defaultSize.h : 400;
+    var ww = opts.w || defW;
+    var wh = opts.h || defH;
     var pos = calcStackPos(n, ww, wh);
 
     var w = {

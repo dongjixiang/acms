@@ -658,7 +658,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- v0.62.7: 代码编辑器 (Monaco Editor + AI) -->
 <script src="/client/js/views/code-editor.js?v=0.62.7"></script>
 <!-- v0.62.7: 图片编辑器 (TOAST UI Image Editor + AI) -->
-<script src="/client/js/views/image-editor.js?v=0.62.8"></script>
+<script src="/client/js/views/image-editor.js?v=0.63"></script>
 <!-- v0.62.1: 块编辑器核心（schema + 转换器 + UI），PR 3 将接 office-word PKG -->
 <script src="/client/js/core/office-doc.js?v=0.62.1"></script>
 <script src="/client/js/core/office-doc-converter.js?v=0.62.1"></script>
@@ -1024,7 +1024,8 @@ document.addEventListener('DOMContentLoaded', () => {
   PKG('code-editor', {
     title: '代码编辑器', icon: '💻', category: '工具', defaultSize: { w: 1000, h: 650 },
     loader: function(w) {
-      if (typeof openCodeEditor === 'function') openCodeEditor(w);
+      var f = window._fb_open_file; window._fb_open_file = null;
+      if (typeof openCodeEditor === 'function') openCodeEditor(w, null, f ? f.name : null, f ? f.content : null);
       else w.$c.innerHTML = '<div style="padding:40px;text-align:center">加载中...</div>';
     }
   });
@@ -1032,7 +1033,8 @@ document.addEventListener('DOMContentLoaded', () => {
   PKG('image-editor', {
     title: '图片编辑器', icon: '🖼️', category: '工具', defaultSize: { w: 1000, h: 700 },
     loader: function(w) {
-      if (typeof openImageEditor === 'function') openImageEditor(w);
+      var f = window._fb_open_file; window._fb_open_file = null;
+      if (typeof openImageEditor === 'function') openImageEditor(w, null, f ? f.name : null, f ? f.src : null);
       else w.$c.innerHTML = '<div style="padding:40px;text-align:center">加载中...</div>';
     }
   });
