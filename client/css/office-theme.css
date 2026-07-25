@@ -1,0 +1,501 @@
+/* ACMS Office 编辑器统一主题 — 学 OO colors-table-classic.less 设计语言
+ * 借鉴 ONLYOFFICE 的核心思想:
+ *   - 每个编辑器独立主题色（OO: Word #446995 / Excel #3A8056 / PPT #B75B44）
+ *   - CSS 变量化（OO: :root { --toolbar-header-document: #446995 }）
+ *   - 多主题适配（OO 6 套: classic/dark/dark-contrast/gray/night/white）
+ * AGPL 安全: 全部自己重写，不复制 OO 代码，只借鉴设计模式
+ *
+ * 用法:
+ *   在 PKG 窗口 root 加 class="oo-editor oo-editor-word" / "xlsx" / "pptx"
+ *   子元素引用 var(--office-primary) / var(--office-header-bg) 等
+ *
+ * 三个值在 style.css 的 cream/light/dark 主题块下都注册了一份
+ */
+/* ──────── 标题栏 (学 OO FileMenu.js 设计) ──────── */
+/* v0.62.5 PR-D: hardcode 改成 var(--bg2, ...) / var(--bg, ...) 跟随 dark 主题 */
+.oo-editor {
+  --office-primary: var(--office-word-primary, #446995);
+  --office-header-bg: var(--office-word-header, #446995);
+  --office-header-text: #ffffff;
+  --office-toolbar-bg: var(--bg2, #f5f5f7);    /* 跟随主题 (dark 下=#1a1a2e) */
+  --office-statusbar-bg: var(--bg2, #f5f5f7);  /* 跟随主题 */
+  --office-paper-bg: var(--bg, #ffffff);        /* 跟随主题 (dark 下=#0f0f1a) */
+  --office-paper-border: var(--border, #e2dfd6);
+  --office-accent-soft: var(--office-word-soft, #dde4ee);
+  --office-toolbar-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  --office-tab-active-bg: var(--office-word-soft, #dde4ee);
+  --office-tab-hover-bg: rgba(0,0,0,0.05);
+  --office-modified-dot: #ff6b35;
+  --office-button-bg: var(--bg, #ffffff);
+  --office-button-hover-bg: var(--office-word-soft, #dde4ee);
+  --office-button-active-bg: var(--office-word-primary, #446995);
+  --office-divider: rgba(0,0,0,0.08);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+/* v0.62.5 PR-D: dark 主题下 ribbon 按钮默认背景不能是白色 */
+[data-theme="dark"] .oo-editor {
+  --office-tab-hover-bg: rgba(255,255,255,0.08);
+  --office-toolbar-shadow: 0 1px 3px rgba(0,0,0,0.4);
+  --office-divider: rgba(255,255,255,0.1);
+  --office-button-bg: var(--bg3, #252540);
+  --office-button-hover-bg: rgba(255,255,255,0.08);
+}
+[data-theme="dark"] .oo-editor .oo-ribbon-btn {
+  color: var(--text, #e0e0e0);
+  border-color: transparent;
+}
+[data-theme="dark"] .oo-editor .oo-ribbon-tab {
+  color: var(--text, #e0e0e0);
+}
+
+.oo-editor-word  {
+  --office-primary: var(--office-word-primary, #446995);
+  --office-header-bg: var(--office-word-header, #446995);
+  --office-accent-soft: var(--office-word-soft, #dde4ee);
+  --office-tab-active-bg: var(--office-word-soft, #dde4ee);
+  --office-button-hover-bg: var(--office-word-soft, #dde4ee);
+  --office-button-active-bg: var(--office-word-primary, #446995);
+}
+
+.oo-editor-xlsx  {
+  --office-primary: var(--office-xlsx-primary, #3A8056);
+  --office-header-bg: var(--office-xlsx-header, #3A8056);
+  --office-accent-soft: var(--office-xlsx-soft, #d8e8df);
+  --office-tab-active-bg: var(--office-xlsx-soft, #d8e8df);
+  --office-button-hover-bg: var(--office-xlsx-soft, #d8e8df);
+  --office-button-active-bg: var(--office-xlsx-primary, #3A8056);
+}
+
+.oo-editor-pptx  {
+  --office-primary: var(--office-pptx-primary, #B75B44);
+  --office-header-bg: var(--office-pptx-header, #B75B44);
+  --office-accent-soft: var(--office-pptx-soft, #eedcd6);
+  --office-tab-active-bg: var(--office-pptx-soft, #eedcd6);
+  --office-button-hover-bg: var(--office-pptx-soft, #eedcd6);
+  --office-button-active-bg: var(--office-pptx-primary, #B75B44);
+}
+
+/* ──────── 标题栏 (学 OO FileMenu.js 设计) ──────── */
+.oo-titlebar {
+  display: flex;
+  align-items: center;
+  height: 40px;
+  padding: 0 12px;
+  background: var(--office-header-bg);
+  color: var(--office-header-text);
+  flex-shrink: 0;
+  user-select: none;
+}
+.oo-titlebar-icon {
+  font-size: 18px;
+  margin-right: 10px;
+  opacity: 0.92;
+}
+.oo-titlebar-name {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+}
+.oo-titlebar-name input {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  outline: none;
+  flex: 1;
+  min-width: 60px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  cursor: text;
+}
+.oo-titlebar-name input:hover,
+.oo-titlebar-name input:focus {
+  background: rgba(255,255,255,0.12);
+}
+.oo-modified-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--office-modified-dot);
+  box-shadow: 0 0 0 2px rgba(255,107,53,0.25);
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.oo-modified-dot.is-dirty { opacity: 1; }
+.oo-modified-dot.is-saved {
+  background: #6dd06d;
+  box-shadow: 0 0 0 2px rgba(109,208,109,0.25);
+  opacity: 1;
+}
+.oo-titlebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.oo-titlebar-btn {
+  background: transparent;
+  border: none;
+  color: var(--office-header-text);
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: background 0.12s;
+}
+.oo-titlebar-btn:hover { background: rgba(255,255,255,0.15); }
+.oo-titlebar-btn:active { background: rgba(0,0,0,0.18); }
+.oo-titlebar-btn.primary {
+  background: rgba(255,255,255,0.18);
+  font-weight: 600;
+}
+.oo-titlebar-btn.primary:hover { background: rgba(255,255,255,0.28); }
+
+/* ──────── Ribbon 工具栏 (学 OO TabBar.js 设计) ──────── */
+.oo-ribbon {
+  display: flex;
+  flex-direction: column;
+  background: var(--office-toolbar-bg);
+  border-bottom: 1px solid var(--office-divider);
+  flex-shrink: 0;
+  box-shadow: var(--office-toolbar-shadow);
+}
+.oo-ribbon-tabs {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 8px;
+  gap: 0;
+  background: var(--office-toolbar-bg);
+  border-bottom: 1px solid var(--office-divider);
+}
+.oo-ribbon-tab {
+  background: transparent;
+  border: none;
+  color: var(--text, #333);
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 0;
+  position: relative;
+  font-weight: 500;
+  transition: background 0.12s;
+}
+.oo-ribbon-tab:hover { background: var(--office-tab-hover-bg); }
+.oo-ribbon-tab.is-active {
+  color: var(--office-primary);
+  background: var(--office-tab-active-bg);
+  font-weight: 600;
+}
+.oo-ribbon-tab.is-active::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: -1px;
+  height: 2px;
+  background: var(--office-primary);
+}
+.oo-ribbon-content {
+  display: flex;
+  align-items: stretch;
+  padding: 6px 12px;
+  gap: 12px;
+  min-height: 76px;
+  background: var(--office-toolbar-bg);
+  overflow-x: auto;
+}
+.oo-ribbon-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 12px 0 0;
+  border-right: 1px solid var(--office-divider);
+  min-width: 0;
+}
+.oo-ribbon-group:last-child { border-right: none; }
+.oo-ribbon-group-title {
+  font-size: 10px;
+  color: var(--text2, #888);
+  text-align: center;
+  margin-top: auto;
+  letter-spacing: 0.3px;
+}
+.oo-ribbon-buttons {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.oo-ribbon-btn {
+  background: var(--office-button-bg);
+  border: 1px solid transparent;
+  color: var(--text, #333);
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 3px;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 44px;
+  transition: all 0.12s;
+}
+.oo-ribbon-btn:hover {
+  background: var(--office-button-hover-bg);
+  border-color: var(--office-divider);
+}
+.oo-ribbon-btn:active,
+.oo-ribbon-btn.is-active {
+  background: var(--office-button-active-bg);
+  color: white;
+  border-color: var(--office-primary);
+}
+.oo-ribbon-btn .icon { font-size: 18px; line-height: 1; }
+.oo-ribbon-btn .label { font-size: 11px; line-height: 1; }
+.oo-ribbon-btn.is-large .icon { font-size: 22px; }
+
+/* ──────── 状态栏 (学 OO Statusbar.js 设计) ──────── */
+.oo-statusbar {
+  display: flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 12px;
+  background: var(--office-statusbar-bg);
+  border-top: 1px solid var(--office-divider);
+  font-size: 11px;
+  color: var(--text2, #666);
+  font-family: Consolas, "SF Mono", "Monaco", monospace;
+  flex-shrink: 0;
+  gap: 16px;
+}
+.oo-statusbar-section {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border-right: 1px solid var(--office-divider);
+}
+.oo-statusbar-section:last-child { border-right: none; }
+.oo-statusbar-namebox {
+  background: white;
+  border: 1px solid var(--office-divider);
+  padding: 2px 8px;
+  font-family: inherit;
+  font-size: 11px;
+  width: 70px;
+  border-radius: 2px;
+  outline: none;
+}
+.oo-statusbar-namebox:focus { border-color: var(--office-primary); }
+.oo-statusbar-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.oo-statusbar-zoom input[type="range"] {
+  width: 80px;
+  accent-color: var(--office-primary);
+}
+
+/* ──────── 块编辑器样式增强 ──────── */
+.oo-editor .ode-editor {
+  background: var(--office-paper-bg);
+  font-family: 'Georgia', 'Cambria', 'PingFang SC', serif;
+}
+.oo-editor .ode-toolbar {
+  background: var(--office-toolbar-bg);
+  border-bottom: 1px solid var(--office-divider);
+}
+.oo-editor .ode-toolbar button {
+  background: var(--office-button-bg);
+  border: 1px solid var(--office-divider);
+  color: var(--text, #333);
+}
+.oo-editor .ode-toolbar button:hover {
+  background: var(--office-button-hover-bg);
+  border-color: var(--office-primary);
+}
+.oo-editor .ode-block-list {
+  max-width: 820px;
+  padding: 32px 56px 32px 80px;
+  background: var(--office-paper-bg);
+  min-height: 100%;
+  box-shadow: 0 1px 8px rgba(0,0,0,0.04);
+  margin: 16px auto;
+  border-radius: 2px;
+  border: 1px solid var(--office-paper-border);
+}
+.oo-editor .ode-handle button:hover,
+.oo-editor .ode-type-badge:hover {
+  background: var(--office-primary);
+  color: white;
+}
+
+/* ──────── Excel 表格增强 ──────── */
+.oo-editor #xlsx-table {
+  border-collapse: collapse;
+  background: var(--office-paper-bg);
+  font-family: 'Calibri', 'PingFang SC', sans-serif;
+  font-size: 13px;
+}
+.oo-editor #xlsx-table th {
+  background: var(--office-toolbar-bg);
+  border: 1px solid var(--office-divider);
+  font-weight: 600;
+  color: var(--text, #333);
+  padding: 4px 8px;
+}
+.oo-editor #xlsx-table td {
+  border: 1px solid var(--office-divider);
+  padding: 0;
+}
+.oo-editor .xlsx-cell {
+  padding: 4px 8px !important;
+  min-height: 22px;
+}
+.oo-editor .xlsx-cell:focus {
+  outline: 2px solid var(--office-primary) !important;
+  outline-offset: -2px;
+  background: rgba(255,255,255,0.5) !important;
+}
+
+/* ──────── Excel 表格增强 ──────── */
+.oo-editor #xlsx-sheets {
+  display: flex;
+  background: var(--office-toolbar-bg);
+  border-top: 1px solid var(--office-divider);
+  padding: 0 4px;
+  flex-shrink: 0;
+  height: 28px;
+  align-items: center;
+  gap: 0;
+  overflow-x: auto;
+}
+.oo-editor .xlsx-sheet-tab {
+  padding: 4px 14px 4px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 3px 3px 0 0;
+  background: transparent;
+  color: var(--text, #333);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  user-select: none;
+  position: relative;
+}
+.oo-editor .xlsx-sheet-tab:hover {
+  background: var(--office-button-hover-bg);
+}
+.oo-editor .xlsx-sheet-tab:hover .xlsx-sheet-close { opacity: 1; }
+.oo-editor .xlsx-sheet-tab.is-active {
+  background: var(--office-paper-bg);
+  border-color: var(--office-divider);
+  border-bottom-color: var(--office-paper-bg);
+  margin-bottom: -1px;
+  color: var(--office-primary);
+  font-weight: 600;
+}
+.oo-editor .xlsx-sheet-tab.is-active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  background: var(--office-primary);
+  border-radius: 3px 3px 0 0;
+}
+.oo-editor .xlsx-sheet-close {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  padding: 0;
+  line-height: 1;
+}
+.oo-editor .xlsx-sheet-close:hover { background: rgba(0,0,0,0.1); color: var(--accent2, #d9534f); }
+.oo-editor .xlsx-sheet-add {
+  background: transparent;
+  border: 1px dashed transparent;
+  color: var(--text2, #888);
+  font-size: 14px;
+  cursor: pointer;
+  width: 24px;
+  height: 22px;
+  border-radius: 3px;
+  margin-left: 4px;
+  padding: 0;
+  line-height: 1;
+}
+.oo-editor .xlsx-sheet-add:hover {
+  background: var(--office-button-hover-bg);
+  color: var(--office-primary);
+  border-color: var(--office-primary);
+}
+
+/* ──────── PPT 缩略图增强 ──────── */
+.oo-editor .ppt-thumb {
+  background: var(--office-paper-bg);
+  border: 2px solid var(--office-divider);
+  transition: all 0.15s;
+  cursor: pointer;
+  padding: 6px 10px;
+  min-width: 80px;
+  text-align: center;
+  font-size: 11px;
+  border-radius: 3px;
+}
+.oo-editor .ppt-thumb:hover {
+  border-color: var(--office-primary);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+.oo-editor .ppt-thumb.is-active {
+  border-color: var(--office-primary);
+  box-shadow: 0 0 0 1px var(--office-primary);
+  background: var(--office-accent-soft);
+}
+.oo-editor .ppt-thumb-icon {
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+.oo-editor .ppt-thumb-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 80px;
+}
+.oo-editor .ppt-thumb-page {
+  font-size: 10px;
+  color: var(--text2, #888);
+  margin-top: 2px;
+}
+.oo-editor .ppt-slide-paper {
+  background: var(--office-paper-bg);
+  border: 1px solid var(--office-paper-border);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  aspect-ratio: 16/9;
+  border-radius: 4px;
+}

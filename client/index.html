@@ -566,12 +566,12 @@ document.addEventListener('DOMContentLoaded', () => {
 <div id="launcher-menu">
   <div class="launcher-section-title">流程</div>
   <div class="launcher-item" id="launcher-new-project" onclick="openProjectsWindowWithNewForm()" style="background:color-mix(in srgb, var(--accent) 12%, transparent);border:1px solid color-mix(in srgb, var(--accent) 30%, transparent);margin:2px 0">
-    <span class="li-icon">✦</span><span class="li-label" style="font-weight:600;color:var(--accent)">新建项目</span>
+    <span class="li-icon">🚀</span><span class="li-label" style="font-weight:600;color:var(--accent)">新建项目</span>
   </div>
   <div class="divider"></div>
   <div class="launcher-section-title">导航</div>
-  <div class="launcher-item" onclick="launchProjects()"><span class="li-icon">📦</span><span class="li-label">项目管理</span></div>
-  <div class="launcher-item" onclick="launchAdmin()"><span class="li-icon">⚙️</span><span class="li-label">系统管理</span></div>
+  <div class="launcher-item" onclick="launchProjects()"><span class="li-icon">📊</span><span class="li-label">项目管理</span></div>
+  <div class="launcher-item" onclick="launchAdmin()"><span class="li-icon">🔧</span><span class="li-label">系统管理</span></div>
   <!-- v0.55：💬 对话 hover 子菜单（新建 + 最近历史 + 打开历史/回收站） -->
   <div class="launcher-item launcher-has-submenu" id="launcher-chat" onmouseenter="onChatLauncherHover()" onmouseleave="onChatLauncherLeave()">
     <span class="li-icon">💬</span><span class="li-label">对话</span><span class="li-arrow">▸</span>
@@ -596,7 +596,7 @@ document.addEventListener('DOMContentLoaded', () => {
       <div class="launcher-item" onclick="launchAssistTool('generate_image','生图')"><span class="li-icon">🎨</span><span class="li-label">生图</span></div>
       <div class="launcher-item" onclick="launchAssistTool('play_music','音乐')"><span class="li-icon">🎵</span><span class="li-label">音乐</span></div>
       <div class="launcher-item" onclick="launchAssistTool('web_search','搜索')"><span class="li-icon">🔍</span><span class="li-label">搜索</span></div>
-      <div class="launcher-item" onclick="launchAssistTool('web_research','调研')"><span class="li-icon">📊</span><span class="li-label">调研</span></div>
+      <div class="launcher-item" onclick="launchAssistTool('web_research','调研')"><span class="li-icon">🔬</span><span class="li-label">调研</span></div>
       <div class="launcher-item" onclick="launchAssistTool('document_gen','文档')"><span class="li-icon">📄</span><span class="li-label">文档</span></div>
       <div class="launcher-item" onclick="launchAssistTool('send_email','邮件')"><span class="li-icon">📧</span><span class="li-label">邮件</span></div>
       <div class="launcher-item" onclick="launchAssistTool('play_video','视频')"><span class="li-icon">🎬</span><span class="li-label">视频</span></div>
@@ -606,10 +606,10 @@ document.addEventListener('DOMContentLoaded', () => {
       <div class="launcher-item" onclick="launchView('office-pptx')"><span class="li-icon">📽️</span><span class="li-label">PPT</span></div>
       <div class="divider"></div>
       <div class="launcher-section-title">应用</div>
-      <div class="launcher-item" onclick="launchView('file-manager')"><span class="li-icon">📂</span><span class="li-label">文件浏览器</span></div>
+      <div class="launcher-item" onclick="launchView('file-manager')"><span class="li-icon">🗂️</span><span class="li-label">文件浏览器</span></div>
       <div class="launcher-item" onclick="launchView('web-browser')"><span class="li-icon">🌐</span><span class="li-label">浏览器</span></div>
-      <div class="launcher-item" onclick="launchWeChat()" title="打开微信网页版"><span class="li-icon">🟢</span><span class="li-label">微信</span></div>
-      <div class="launcher-item" onclick="openTerminal()"><span class="li-icon">💻</span><span class="li-label">终端</span></div>
+      <div class="launcher-item" onclick="launchWeChat()" title="打开微信网页版"><span class="li-icon">💚</span><span class="li-label">微信</span></div>
+      <div class="launcher-item" onclick="openTerminal()"><span class="li-icon">⌨️</span><span class="li-label">终端</span></div>
     </div>
   </div>
   <div class="divider"></div>
@@ -622,8 +622,8 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="launcher-item" onclick="launchView('knowledge')"><span class="li-icon">📚</span><span class="li-label">知识库</span></div>
     <div class="launcher-item" onclick="launchView('delivery')"><span class="li-icon">📦</span><span class="li-label">交付管理</span></div>
     <div class="launcher-item" onclick="launchView('agents')"><span class="li-icon">🤖</span><span class="li-label">智能体协同</span></div>
-    <div class="launcher-item" onclick="launchView('reports')"><span class="li-icon">📊</span><span class="li-label">项目报告</span></div>
-    <div class="launcher-item" onclick="launchView('settings')"><span class="li-icon">⚙️</span><span class="li-label">项目设置</span></div>
+    <div class="launcher-item" onclick="launchView('reports')"><span class="li-icon">📈</span><span class="li-label">项目报告</span></div>
+    <div class="launcher-item" onclick="launchView('settings')"><span class="li-icon">🔧</span><span class="li-label">项目设置</span></div>
   </div>
   <div class="divider"></div>
   <div class="launcher-item" onclick="doLogout()"><span class="li-icon">🚪</span><span class="li-label">退出登录</span></div>
@@ -646,7 +646,11 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/core/command-palette.js?v=0.58.4"></script>
 <script src="/client/js/core/notification-center.js?v=0.58"></script>
 <script src="/client/js/core/agent-buddy.js?v=0.59"></script>
-<script src="/client/js/views/office-editor.js?v=0.62.4"></script>
+<!-- v0.62.5: Office 编辑器 OO 风格主题 + 标题栏 (学 colors-table-classic.less + FileMenu.js) -->
+<link rel="stylesheet" href="/client/css/office-theme.css?v=0.62.5">
+<!-- v0.62.5: Ribbon TabBar 组件（学 OO TabBar.js API, 简化重写）— 必须在 office-editor.js 之前 -->
+<script src="/client/js/views/office-ribbon.js?v=0.62.5"></script>
+<script src="/client/js/views/office-editor.js?v=0.62.5"></script>
 <!-- v0.62.1: 块编辑器核心（schema + 转换器 + UI），PR 3 将接 office-word PKG -->
 <script src="/client/js/core/office-doc.js?v=0.62.1"></script>
 <script src="/client/js/core/office-doc-converter.js?v=0.62.1"></script>
@@ -655,6 +659,8 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/wallpaper.js?v=0.56"></script>
 <script src="/client/js/views/desktop-context-menu.js"></script>
 <script src="/client/js/views/wallpaper-settings.js?v=0.56"></script>
+<script src="/client/js/core/icon-picker.js"></script>
+<script src="/client/js/core/mobile.js"></script>
 <script src="/client/js/views/desktop-icons.js"></script>
 <script src="/client/js/views/file-browser.js?v=0.56"></script>
 <script src="/client/js/views/web-browser.js?v=0.61"></script>

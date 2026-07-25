@@ -6,6 +6,16 @@
   --bg3: #252540;
   --text: #e0e0e0;
   --text2: #9090a0;
+  /* Office 编辑器独立主色 (OO design language) */
+  --office-word-primary: #5b7fb0;
+  --office-word-header:  #3a5e8a;
+  --office-word-soft:    rgba(91,127,176,0.18);
+  --office-xlsx-primary: #4a9466;
+  --office-xlsx-header:  #2f7048;
+  --office-xlsx-soft:    rgba(74,148,102,0.18);
+  --office-pptx-primary: #c46e54;
+  --office-pptx-header:  #974434;
+  --office-pptx-soft:    rgba(196,110,84,0.18);
   --accent: #4ecdc4;
   --accent2: #ff6b6b;
   --accent3: #ffd93d;
@@ -18,6 +28,16 @@
   --window-title: #16162a;
 }
 [data-theme="light"] {
+  /* Office 编辑器主色 — 浅色主题下偏清新 */
+  --office-word-primary: #4a7ab5;
+  --office-word-header:  #2e5a8a;
+  --office-word-soft:    #e0e8f4;
+  --office-xlsx-primary: #3c8c40;
+  --office-xlsx-header:  #2a7036;
+  --office-xlsx-soft:    #d8eddb;
+  --office-pptx-primary: #c45a3e;
+  --office-pptx-header:  #994030;
+  --office-pptx-soft:    #f0dad2;
   --bg: #f5f5f7;
   --bg2: #ffffff;
   --bg3: #eeeef1;
@@ -34,6 +54,16 @@
   --window-title: #f5f5f7;
 }
 [data-theme="cream"] {
+  /* Office 编辑器主色 — 奶油主题下偏柔和 */
+  --office-word-primary: #5a7ba8;
+  --office-word-header:  #446995;
+  --office-word-soft:    #dde4ee;
+  --office-xlsx-primary: #4a8a5e;
+  --office-xlsx-header:  #3A8056;
+  --office-xlsx-soft:    #d8e8df;
+  --office-pptx-primary: #b66550;
+  --office-pptx-header:  #B75B44;
+  --office-pptx-soft:    #eedcd6;
   --bg: #fef9ef;
   --bg2: #fffbf0;
   --bg3: #f5eedc;
@@ -1285,6 +1315,105 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
 
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes slideUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ═══════════════════════════════════════
+   图标选择器（Icon Picker）
+   ═══════════════════════════════════════ */
+.ip-dialog {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: 520px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  animation: slideUp 0.25s;
+  overflow: hidden;
+}
+.ip-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px 8px;
+}
+.ip-title { font-size: 16px; font-weight: 600; color: var(--text); }
+.ip-close {
+  cursor: pointer; font-size: 18px; color: var(--text2);
+  padding: 4px 8px; border-radius: 6px;
+}
+.ip-close:hover { background: var(--bg3); color: var(--text); }
+.ip-preview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.ip-preview-label { font-size: 13px; color: var(--text2); }
+.ip-custom-row {
+  display: flex;
+  gap: 8px;
+  padding: 8px 20px;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+}
+.ip-custom-input {
+  flex: 1;
+  padding: 8px 12px;
+  font-size: 14px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  outline: none;
+  font-family: inherit;
+}
+.ip-custom-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(78,205,196,0.2); }
+.ip-grid-wrap {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 20px 12px;
+}
+.ip-category { margin-bottom: 10px; }
+.ip-cat-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+.ip-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+.ip-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  font-size: 18px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.1s;
+}
+.ip-cell:hover { background: var(--bg3); transform: scale(1.15); }
+.ip-cell.ip-active {
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.ip-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+}
+.ip-footer button { padding: 9px 24px; font-size: 14px; border-radius: 8px; cursor: pointer; }
 
 /* ===== 自我改进 ===== */
 .imp-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); }
@@ -5381,4 +5510,246 @@ body { padding-bottom: 40px; }
   outline: 3px solid var(--accent3, #ffd93d);
   outline-offset: 2px;
   animation: fc-breathe 0.5s ease-in-out 3;
+}
+
+/* ═══════════════════════════════════════
+   移动端适配 (max-width: 768px)
+   — 仅影响小屏，桌面完全不受影响
+   ═══════════════════════════════════════ */
+@media (max-width: 768px) {
+
+  /* ── 全局：触控目标 ≥ 44px ── */
+  .launcher-item,
+  .launcher-submenu .launcher-item,
+  .desktop-icon,
+  #taskbar button,
+  .tray-item,
+  .btn-small,
+  button:not(.ip-cell) {
+    min-height: 44px !important;
+  }
+  .launcher-item { padding: 11px 14px !important; font-size: 15px !important; }
+  .launcher-item:active { background: var(--bg3, #252540) !important; }
+  .launcher-item .li-icon { font-size: 20px !important; width: 28px !important; }
+  .launcher-item .li-label { font-size: 15px !important; }
+  .launcher-submenu .launcher-item { padding: 11px 14px !important; font-size: 14px !important; }
+
+  /* ── 桌面图标：隐藏 ── */
+  #desktop-icons { display: none !important; }
+
+  /* ── 消除 iOS 300ms 点击延迟 ── */
+  .launcher-item, .desktop-icon, button, .clickable, .tray-item {
+    touch-action: manipulation;
+  }
+
+  /* ── Workspace：底部留出 tab bar 空间 ── */
+  #view-workspace { bottom: 56px !important; }
+  #view-workspace .view-main { bottom: 0 !important; }
+
+  /* ── 窗口管理器：全屏显示 ── */
+  .acms-window {
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100% !important;
+    height: calc(100% - 56px) !important;
+    top: 0 !important;
+    left: 0 !important;
+    border: none !important;
+    border-radius: 0 !important;
+    z-index: 1000 !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+  }
+  .acms-window.aw-min { display: none !important; }
+  /* 窗口标题栏：紧凑 */
+  .acms-window .aw-titlebar {
+    padding: 8px 10px !important;
+    height: auto !important;
+    min-height: 44px !important;
+    cursor: default !important;
+  }
+  .acms-window .aw-titlebar .aw-close,
+  .acms-window .aw-titlebar .aw-minbtn,
+  .acms-window .aw-titlebar .aw-maxbtn {
+    width: 36px !important;
+    height: 36px !important;
+    font-size: 16px !important;
+  }
+  .aw-title {
+    font-size: 14px !important;
+  }
+  /* 窗口内容自适应 */
+  .aw-content { height: calc(100% - 44px) !important; }
+
+  /* ── 任务栏 → 底部 Tab Bar ── */
+  #taskbar {
+    height: 56px !important;
+    padding: 0 4px !important;
+    z-index: 9999 !important;
+    gap: 0 !important;
+  }
+  #tb-start {
+    width: 44px !important;
+    height: 44px !important;
+    font-size: 18px !important;
+    margin-right: 2px !important;
+  }
+  #tb-project-pill {
+    display: none !important; /* 手机隐藏项目 pill，用 launcher 代替 */
+  }
+  #tb-windows {
+    display: none !important; /* 手机不显示多窗口标签 */
+  }
+  #tb-tray {
+    gap: 2px !important;
+  }
+  .tray-item {
+    padding: 4px 8px !important;
+    font-size: 14px !important;
+  }
+  #tb-clock { font-size: 11px !important; padding: 0 4px !important; }
+  /* Agent 头像在手机上保持可见 */
+  .ab-avatar {
+    font-size: 18px !important;
+    padding: 4px 8px !important;
+  }
+
+  /* ── Launcher：全屏底部 Drawer ── */
+  #launcher-menu {
+    position: fixed !important;
+    left: 0 !important;
+    top: 0 !important;
+    bottom: 56px !important;
+    width: 100vw !important;
+    height: auto !important;
+    max-height: calc(100% - 56px) !important;
+    border-radius: 0 !important;
+    border: none !important;
+    padding: 8px 4px 16px !important;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch;
+    z-index: 99998 !important;
+  }
+  /* launcher 内子菜单：内联展开，不飞出 */
+  .launcher-item.launcher-has-submenu {
+    position: relative !important;
+  }
+  .launcher-item.launcher-has-submenu > .launcher-submenu {
+    position: static !important;
+    left: auto !important;
+    top: auto !important;
+    bottom: auto !important;
+    min-width: auto !important;
+    max-width: none !important;
+    width: 100% !important;
+    box-shadow: none !important;
+    border: none !important;
+    border-left: 2px solid var(--accent, #4ecdc4) !important;
+    border-radius: 0 !important;
+    margin: 4px 0 4px 24px !important;
+    padding: 2px 0 !important;
+    background: transparent !important;
+  }
+  .launcher-item.launcher-has-submenu:hover > .launcher-submenu,
+  .launcher-submenu.open {
+    display: flex !important;
+    position: static !important;
+  }
+  .launcher-submenu .launcher-section-title {
+    padding: 8px 10px 4px !important;
+    font-size: 11px !important;
+  }
+  .launcher-divider { display: none !important; }
+
+  /* ── 启动菜单标题 ── */
+  .launcher-section-title {
+    font-size: 11px !important;
+    padding: 10px 12px 4px !important;
+  }
+
+  /* ── Notif 面板：全屏 ── */
+  #notif-panel {
+    position: fixed !important;
+    left: 0 !important;
+    top: 0 !important;
+    bottom: 56px !important;
+    width: 100% !important;
+    max-height: none !important;
+    border-radius: 0 !important;
+    border: none !important;
+    z-index: 99998 !important;
+  }
+
+  /* ── Agent 面板：全屏 ── */
+  .agent-panel {
+    position: fixed !important;
+    left: 0 !important;
+    top: 0 !important;
+    bottom: 56px !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    border-radius: 0 !important;
+    border: none !important;
+    z-index: 99998 !important;
+  }
+  .agent-panel .ap-rz { display: none !important; } /* 手机无调整大小 */
+
+  /* ── 主题弹窗：自适应 ── */
+  #tb-theme-popup {
+    position: fixed !important;
+    left: 0 !important;
+    bottom: 56px !important;
+    width: 100% !important;
+    border-radius: 12px 12px 0 0 !important;
+    max-height: 50vh !important;
+    z-index: 99999 !important;
+  }
+
+  /* ── 各种弹窗：全屏/自适应 ── */
+  .confirm-dialog {
+    max-width: 90vw !important;
+    width: 90% !important;
+    padding: 20px !important;
+  }
+  .prompt-dialog { min-width: auto !important; max-width: 90vw !important; }
+
+  /* ── Icon Picker：全屏 ── */
+  .ip-dialog {
+    width: 100vw !important;
+    max-width: 100vw !important;
+    max-height: 100vh !important;
+    border-radius: 0 !important;
+    border: none !important;
+  }
+  .ip-cell {
+    width: 42px !important;
+    height: 42px !important;
+    font-size: 22px !important;
+  }
+  .ip-header { padding: 12px 16px 8px !important; }
+  .ip-preview { padding: 8px 16px !important; }
+  .ip-custom-row { padding: 8px 16px !important; }
+  .ip-grid-wrap { padding: 8px 16px 12px !important; }
+  .ip-footer { padding: 12px 16px !important; }
+
+  /* ── Kanban：水平滚动 ── */
+  .kanban-board {
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch;
+  }
+  .kanban-col { min-width: 280px !important; }
+
+  /* ── 键盘快捷键 / hover 提示：隐藏 ── */
+  .kb-hint,
+  .tooltip,
+  [title] { /* OS 原生 title 在很多浏览器触摸时不触发 */ }
+
+  /* ── 表格可滚动 ── */
+  table { display: block !important; overflow-x: auto !important; }
+
+  /* ── 输入框 / 按钮适配 ── */
+  input, textarea, select, button {
+    font-size: 16px !important; /* 防 iOS 自动缩放 */
+  }
 }

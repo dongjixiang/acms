@@ -14,23 +14,198 @@
 (function (root) {
   'use strict';
 
-  // ──────────── 主入口：mount 到一个容器 ────────────
+// ──────────── 主入口：mount 到一个容器 ────────────
   function mountEditor(container, doc, opts) {
     opts = opts || {};
     if (typeof container === 'string') container = document.getElementById(container);
     if (!container) throw new Error('office-doc-editor: container not found');
     container.innerHTML = '';
     container.classList.add('ode-editor');
-    var state = { doc: doc || OfficeDoc.makeDocument({ title: opts.title || 'untitled' }), onChange: opts.onChange || null };
-    // v0.62.2: 空 doc 自动加 1 个 paragraph，避免打开时啥也看不见
+    var state = {
+      doc: doc || OfficeDoc.makeDocument({ title: opts.title || 'untitled' }),
+      onChange: opts.onChange || null,
+      currentBlockId: null,   // v0.62.5: 跟踪当前 focus 的 block（Ribbon 需要）
+    };
+    // v0.62.2: 空 doc 自动加 1 个 paragraph（mountEditor 内部已处理）
     if (state.doc.blocks.length === 0) {
       state.doc.blocks.push(OfficeDoc.paragraph(''));
     }
     renderAll(container, state);
+
+    // ──────── v0.62.5: Ribbon 友好的 instance API ────────
+
+    function getContainer() { return container; }
+
+    function findBlockIdx(blockId) {
+      return state.doc.blocks.findIndex(function (b) { return b.id === blockId; });
+    }
+
+    function focusBlock(blockId, position) {
+      setTimeout(function () {
+        var el = container.querySelector('[data-block-id="' + blockId + '"] .ode-content');
+        if (el) {
+          el.focus();
+          if (position === 'end') placeCaretAtEnd(el);
+          else placeCaretAtStart(el);
+        }
+      }, 0);
+    }
+
+    function getCurrentBlock() {
+      return state.currentBlockId
+        ? state.doc.blocks.find(function (b) { return b.id === state.currentBlockId; }) || null
+        : null;
+    }
+
+    // v0.62.5: 工厂分发 — 支持 OfficeDoc.paragraph(...) / .heading(c, level) / .table(...) 等
+    // v0.62.5 PR-W2: instance API 扩展 — 块级 formatting (align/fontSize/fontFamily/bold/italic/underline)
+    function getBlockFormatting(blockId) {
+      var b = state.doc.blocks.find(function (x) { return x.id === blockId; });
+      if (!b || !b.attrs) return {};
+      return b.attrs.formatting || {};
+    }
+    function setBlockFormatting(blockId, fmtPatch) {
+      var b = state.doc.blocks.find(function (x) { return x.id === blockId; });
+      if (!b) return false;
+      var cur = (b.attrs && b.attrs.formatting) || {};
+      var next = Object.assign({}, cur, fmtPatch);
+      // 清掉 false/空 值
+      Object.keys(next).forEach(function (k) {
+        if (next[k] === false || next[k] === '' || next[k] == null) delete next[k];
+      });
+      var attrs = Object.assign({}, b.attrs, { formatting: next });
+      OfficeDoc.updateBlock(state.doc, blockId, { attrs: attrs });
+      notifyChange(state);
+      rerender(container, state);
+      focusBlock(blockId, 'end');
+      return true;
+    }
+    function toggleInlineFormat(blockId, marker) {
+      // PR-W2: 利用 schema 现有 parseInline 支持的 markdown 行内语法
+      //   **bold** *italic* `code` [link](url) __underline__
+      var b = state.doc.blocks.find(function (x) { return x.id === blockId; });
+      if (!b || !b.content) return false;
+      var content = b.content;
+      var m;
+      if (marker === 'bold') m = /^\*\*(.*)\*\*$/.exec(content);
+      if (marker === 'italic') m = /^\*(.*)\*$/.exec(content);
+      if (marker === 'underline') m = /^__(.*)__$/.exec(content);
+      if (marker === 'code') m = /^`(.*)`$/.exec(content);
+      var newContent;
+      if (m) {
+        // 已经包了 → 去掉
+        newContent = m[1];
+      } else {
+        // 没包 → 包上
+        var pair = (marker === 'bold') ? ['**', '**']
+                 : (marker === 'italic') ? ['*', '*']
+                 : (marker === 'underline') ? ['__', '__']
+                 : ['`', '`'];
+        newContent = pair[0] + content + pair[1];
+      }
+      OfficeDoc.updateBlock(state.doc, blockId, { content: newContent });
+      notifyChange(state);
+      rerender(container, state);
+      focusBlock(blockId, 'end');
+      return true;
+    }
+
+    function makeBlockByType(type, attrs, content) {
+      var factory = OfficeDoc[type];
+      if (typeof factory === 'function') {
+        // heading 需要 level, 其它用 content/attrs
+        if (type === 'heading') return factory(content || '', (attrs && attrs.level) || 1);
+        return factory(content || '');
+      }
+      // fallback: 直接构造
+      var b = {
+        id: typeof OfficeDoc.uuid === 'function' ? OfficeDoc.uuid()
+             : Math.random().toString(36).slice(2) + Date.now().toString(36),
+        type: type,
+        attrs: attrs || {},
+        content: content || '',
+      };
+      if (type === 'heading' && b.attrs.level === undefined) b.attrs.level = 1;
+      if (type === 'todo') b.attrs.checked = b.attrs.checked === true;
+      return b;
+    }
+
+    // v0.62.5: 在某块后(或末尾)插入新类型块
+    function addBlock(type, attrs, content, afterBlockId) {
+      var newBlock = makeBlockByType(type, attrs, content);
+      var insertIdx;
+      if (afterBlockId) {
+        var idx = findBlockIdx(afterBlockId);
+        insertIdx = idx >= 0 ? idx + 1 : state.doc.blocks.length;
+      } else {
+        insertIdx = state.doc.blocks.length;
+      }
+      OfficeDoc.insertBlock(state.doc, newBlock, insertIdx);
+      notifyChange(state);
+      rerender(container, state);
+      focusBlock(newBlock.id, 'start');
+      return newBlock.id;
+    }
+
+    function changeBlockType(blockId, newType) {
+      OfficeDoc.updateBlock(state.doc, blockId, { type: newType });
+      notifyChange(state);
+      rerender(container, state);
+      focusBlock(blockId, 'end');
+    }
+
+    function deleteBlock(blockId) {
+      if (state.doc.blocks.length <= 1) return false;
+      var idx = findBlockIdx(blockId);
+      if (idx < 0) return false;
+      var prevBlock = state.doc.blocks[idx - 1];
+      OfficeDoc.removeBlock(state.doc, blockId);
+      notifyChange(state);
+      rerender(container, state);
+      if (prevBlock) focusBlock(prevBlock.id, 'end');
+      return true;
+    }
+
+    function moveBlockUp(blockId) {
+      var idx = findBlockIdx(blockId);
+      if (idx <= 0) return false;
+      OfficeDoc.moveBlock(state.doc, blockId, idx - 1);
+      notifyChange(state);
+      rerender(container, state);
+      return true;
+    }
+
+    function moveBlockDown(blockId) {
+      var idx = findBlockIdx(blockId);
+      if (idx < 0 || idx >= state.doc.blocks.length - 1) return false;
+      OfficeDoc.moveBlock(state.doc, blockId, idx + 2);
+      notifyChange(state);
+      rerender(container, state);
+      return true;
+    }
+
     return {
+      // 原有 API
       getDocument: function () { return state.doc; },
       getMarkdown: function () { return OfficeDocConverter.documentToMarkdown(state.doc); },
       destroy: function () { container.innerHTML = ''; container.classList.remove('ode-editor'); },
+      // v0.62.5: 新 API（Ribbon 用）
+      getCurrentBlockId: function () { return state.currentBlockId; },
+      getCurrentBlock: getCurrentBlock,
+      getBlock: function (id) { return state.doc.blocks.find(function (b) { return b.id === id; }) || null; },
+      getAllBlocks: function () { return state.doc.blocks.slice(); },
+      focusBlock: focusBlock,
+      addBlock: addBlock,
+      changeBlockType: changeBlockType,
+      deleteBlock: deleteBlock,
+      moveBlockUp: moveBlockUp,
+      moveBlockDown: moveBlockDown,
+      // PR-W2: 块级 formatting + 行内格式 toggle
+      getBlockFormatting: getBlockFormatting,
+      setBlockFormatting: setBlockFormatting,
+      toggleInlineFormat: toggleInlineFormat,
+      // 触发重新渲染（外部 schema 改了之后用）
+      rerender: function () { rerender(container, state); },
     };
   }
 
@@ -110,6 +285,7 @@
   function renderBlockMain(block, state) {
     var c = block.content || '';
     var a = block.attrs || {};
+    var fmt = a.formatting || {};
     var main = document.createElement('div');
     main.className = 'ode-main';
 
@@ -151,13 +327,22 @@
     content.contentEditable = 'true';
     content.spellcheck = false;
     content.dataset.placeholder = placeholderFor(block.type);
-    content.textContent = c;
+    // PR-W2: 块级 formatting — className + style
+    if (fmt.align) content.classList.add('ode-align-' + fmt.align);
+    if (fmt.fontSize) content.classList.add('ode-fs-' + fmt.fontSize);
+    if (fmt.fontFamily) content.classList.add('ode-ff-' + fmt.fontFamily);
+    // PR-W2: inline 格式 — 用 schema 现有 parseInline 转 HTML, escapeHtml 防 XSS
+    if (block.type === 'code') {
+      content.textContent = c;  // code 块纯文本, 不解析 inline
+    } else {
+      content.innerHTML = renderInlineHtml(c);
+    }
     if (block.type === 'heading') {
-      content.className = 'ode-content ode-heading ode-h' + (a.level || 1);
+      content.className += ' ode-heading ode-h' + (a.level || 1);
     } else if (block.type === 'quote') {
-      content.className = 'ode-content ode-quote';
+      content.className += ' ode-quote';
     } else if (block.type === 'code') {
-      content.className = 'ode-content ode-code';
+      content.className += ' ode-code';
       content.style.fontFamily = 'Consolas, monospace';
     } else if (block.type === 'todo' && a.checked) {
       content.classList.add('ode-todo-done');
@@ -165,6 +350,23 @@
     bindContentEvents(content, block, state);
     main.appendChild(content);
     return main;
+  }
+
+  // PR-W2: parseInline → escaped HTML (防 XSS)
+  function renderInlineHtml(content) {
+    if (!content) return '';
+    var tokens = OfficeDoc.parseInline(content);
+    var html = '';
+    for (var i = 0; i < tokens.length; i++) {
+      var t = tokens[i];
+      var text = escapeHtml(t.text || '');
+      if (t.type === 'bold') html += '<strong>' + text + '</strong>';
+      else if (t.type === 'italic') html += '<em>' + text + '</em>';
+      else if (t.type === 'code') html += '<code class="ode-inline-code">' + text + '</code>';
+      else if (t.type === 'link') html += '<a href="' + escapeAttr(t.href || '#') + '" target="_blank" rel="noopener">' + text + '</a>';
+      else html += text;
+    }
+    return html;
   }
 
   function placeholderFor(type) {
@@ -184,23 +386,117 @@
 
   // ──────────── 内容编辑事件 ────────────
   function bindContentEvents(content, block, state) {
+    // v0.62.5: 记录当前 focus 的 block (Ribbon 需要 getCurrentBlockId)
+    content.onfocus = function () { state.currentBlockId = block.id; };
     content.oninput = function () {
       OfficeDoc.updateBlock(state.doc, block.id, { content: content.textContent });
       notifyChange(state);
     };
     content.onkeydown = function (e) {
+      // PR-W4: markdown shortcut — 输入 `# ` / `## ` / `### ` 空格后转 H1/H2/H3 (OO Word 行为)
+      // 关键: onkeydown 触发时空格还没插入 DOM, 所以 txt 要 + ' ' 模拟
+      // PR-W4 bug 修复: bindContentEvents 在 mountEditor 外, 不能直接调 focusBlock
+      //   → 改成 inline 找 DOM + focus
+      var mdShortcutEditor = content.closest('.ode-editor');
+      function mdShortcutRefocus() {
+        setTimeout(function () {
+          if (!mdShortcutEditor) return;
+          var targetEl = mdShortcutEditor.querySelector('[data-block-id="' + block.id + '"] .ode-content');
+          if (targetEl) { targetEl.focus(); placeCaretAtStart(targetEl); }
+        }, 0);
+      }
+      if (e.key === ' ') {
+        var txt = (content.textContent || '') + ' ';  // 模拟空格
+        var m;
+        if ((m = /^(#{1,3})\s$/.exec(txt))) {
+          e.preventDefault();
+          var level = m[1].length;
+          OfficeDoc.updateBlock(state.doc, block.id, {
+            type: 'heading',
+            content: '',
+            attrs: Object.assign({}, block.attrs || {}, { level: level })
+          });
+          notifyChange(state);
+          rerender(mdShortcutEditor, state);
+          mdShortcutRefocus();
+          return;
+        }
+        if (txt === '* ' || txt === '- ') {
+          e.preventDefault();
+          OfficeDoc.updateBlock(state.doc, block.id, { type: 'bulletList', content: '' });
+          notifyChange(state);
+          rerender(mdShortcutEditor, state);
+          mdShortcutRefocus();
+          return;
+        }
+        if (/^1\.\s$/.test(txt)) {
+          e.preventDefault();
+          OfficeDoc.updateBlock(state.doc, block.id, { type: 'orderedList', content: '' });
+          notifyChange(state);
+          rerender(mdShortcutEditor, state);
+          mdShortcutRefocus();
+          return;
+        }
+        if (txt === '[] ' || txt === '[ ] ') {
+          e.preventDefault();
+          OfficeDoc.updateBlock(state.doc, block.id, { type: 'todo', content: '', attrs: Object.assign({}, block.attrs || {}, { checked: false }) });
+          notifyChange(state);
+          rerender(mdShortcutEditor, state);
+          mdShortcutRefocus();
+          return;
+        }
+        if (txt === '> ') {
+          e.preventDefault();
+          OfficeDoc.updateBlock(state.doc, block.id, { type: 'quote', content: '' });
+          notifyChange(state);
+          rerender(mdShortcutEditor, state);
+          mdShortcutRefocus();
+          return;
+        }
+        if (txt === '```' || txt === '``` ') {
+          e.preventDefault();
+          OfficeDoc.updateBlock(state.doc, block.id, { type: 'code', content: '' });
+          notifyChange(state);
+          rerender(mdShortcutEditor, state);
+          mdShortcutRefocus();
+          return;
+        }
+        if (/^-{3,}\s*$/.test(txt)) {
+          e.preventDefault();
+          instance_addBlockAfter(block.id, 'divider');
+          content.textContent = '';
+          OfficeDoc.updateBlock(state.doc, block.id, { content: '' });
+          notifyChange(state);
+          rerender(mdShortcutEditor, state);
+          setTimeout(function () {
+            var el = content.closest('.ode-editor');
+            if (el) {
+              var next = el.querySelectorAll('.ode-block');
+              if (next.length) {
+                var last = next[next.length - 1].querySelector('.ode-content');
+                if (last) { last.focus(); placeCaretAtEnd(last); }
+              }
+            }
+          }, 0);
+          return;
+        }
+      }
       // Enter → 新建一个 paragraph 跟在后面
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         var newBlock = OfficeDoc.paragraph('');
         var idx = state.doc.blocks.findIndex(function (b) { return b.id === block.id; });
+        // PR-W4: heading 后 Enter 自动转普通段落 (OO Word 行为)
+        if (block.type === 'heading') {
+          newBlock = OfficeDoc.paragraph('');
+        }
         OfficeDoc.insertBlock(state.doc, newBlock, idx + 1);
         notifyChange(state);
-        var container = content.closest('.ode-editor');
-        rerender(container, state);
+        var container2 = content.closest('.ode-editor');
+        rerender(container2, state);
         // 聚焦新 block
         setTimeout(function () {
-          var newEl = container.querySelector('[data-block-id="' + newBlock.id + '"] .ode-content');
+          var newEl = container2.querySelector('[data-block-id="' + newBlock.id + '"] .ode-content');
           if (newEl) { newEl.focus(); placeCaretAtStart(newEl); }
         }, 0);
         return;
@@ -213,17 +509,24 @@
         var prevBlock = state.doc.blocks[idx2 - 1];
         OfficeDoc.removeBlock(state.doc, block.id);
         notifyChange(state);
-        var container2 = content.closest('.ode-editor');
-        rerender(container2, state);
+        var container3 = content.closest('.ode-editor');
+        rerender(container3, state);
         if (prevBlock) {
           setTimeout(function () {
-            var prevEl = container2.querySelector('[data-block-id="' + prevBlock.id + '"] .ode-content');
+            var prevEl = container3.querySelector('[data-block-id="' + prevBlock.id + '"] .ode-content');
             if (prevEl) { prevEl.focus(); placeCaretAtEnd(prevEl); }
           }, 0);
         }
         return;
       }
     };
+  }
+
+  // PR-W4: helper — 简化 addBlockAfter 调用 (markdown shortcut 用)
+  function instance_addBlockAfter(afterBlockId, type) {
+    var nb = makeBlockByType(type, null, '');
+    var idx = state.doc.blocks.findIndex(function (b) { return b.id === afterBlockId; });
+    OfficeDoc.insertBlock(state.doc, nb, idx >= 0 ? idx + 1 : state.doc.blocks.length);
   }
 
   // ──────────── 块类型菜单 ────────────
@@ -328,6 +631,109 @@
     s.removeAllRanges();
     s.addRange(r);
   }
+
+  // ──────────── Bubble Menu (PR-W6: 选中文字浮动工具栏) ────────────
+  // 监听 selectionchange, 选中 .ode-content 内文字时显示浮动 B/I/U 工具栏
+  // 用 DOM 操作 + dispatch input 触发 oninput handler (跟用户输入同一路径)
+  var odBubbleMenu = (function () {
+    var menu = document.createElement('div');
+    menu.className = 'ode-bubble-menu';
+    menu.style.cssText = 'position:fixed;z-index:9999;background:white;border:1px solid #d0d0d0;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.12);padding:4px 6px;display:none;gap:2px;align-items:center;font-family:-apple-system,BlinkMacSystemFont,sans-serif';
+    var btns = [
+      { id: 'bold',      label: 'B', title: '粗体 **', style: 'font-weight:700' },
+      { id: 'italic',    label: 'I', title: '斜体 *',  style: 'font-style:italic' },
+      { id: 'underline', label: 'U', title: '下划线 __', style: 'text-decoration:underline' },
+      { id: 'code',      label: '</>', title: '代码 `' },
+    ];
+    btns.forEach(function (b) {
+      var btn = document.createElement('button');
+      btn.dataset.bubbleId = b.id;
+      btn.title = b.title;
+      btn.textContent = b.label;
+      btn.style.cssText = 'background:transparent;border:none;padding:4px 8px;cursor:pointer;border-radius:3px;font-size:13px;color:#333;min-width:24px;' + (b.style || '');
+      btn.onmouseover = function () { btn.style.background = '#f0f0f0'; };
+      btn.onmouseout = function () { btn.style.background = 'transparent'; };
+      btn.onmousedown = function (e) {
+        // mousedown 阻止默认, 避免 selection 丢失
+        e.preventDefault();
+        applyMarkdownWrap(b.id);
+        hideMenu();
+      };
+      menu.appendChild(btn);
+    });
+    document.body.appendChild(menu);
+
+    function applyMarkdownWrap(marker) {
+      var sel = window.getSelection();
+      if (!sel.rangeCount) return;
+      var text = sel.toString();
+      if (!text) return;
+      var pair = (marker === 'bold')      ? ['**', '**']
+               : (marker === 'italic')    ? ['*', '*']
+               : (marker === 'underline') ? ['__', '__']
+               : (marker === 'code')      ? ['`', '`']
+               : ['', ''];
+      // 检测已包 → 去掉; 没包 → 加上
+      var isWrapped = (marker === 'bold'      && /^\*\*[\s\S]*\*\*$/.test(text))
+                   || (marker === 'italic'    && /^\*[\s\S]*\*$/.test(text))
+                   || (marker === 'underline' && /^__[\s\S]*__$/.test(text))
+                   || (marker === 'code'      && /^`[\s\S]*`$/.test(text));
+      var newText = isWrapped
+        ? text.slice(pair[0].length, text.length - pair[0].length)
+        : pair[0] + text + pair[1];
+      // 用 document.execCommand 替换 selection (保留 undo 历史)
+      try {
+        document.execCommand('insertText', false, newText);
+      } catch (e) {
+        // execCommand 不可用时 fallback: 直接 range 替换
+        var range = sel.getRangeAt(0);
+        range.deleteContents();
+        range.insertNode(document.createTextNode(newText));
+        // 触发 input 事件
+        var container = range.startContainer;
+        while (container && !(container.classList && container.classList.contains('ode-content'))) {
+          container = container.parentNode;
+        }
+        if (container) container.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    }
+
+    function showMenu(rect) {
+      // toolbar 显示在选区上方
+      menu.style.display = 'flex';
+      menu.style.left = (rect.left + rect.width / 2 - menu.offsetWidth / 2) + 'px';
+      menu.style.top = (rect.top - menu.offsetHeight - 8) + 'px';
+    }
+    function hideMenu() { menu.style.display = 'none'; }
+
+    // 监听 selectionchange (但只在 selection 在 .ode-content 内时显示)
+    document.addEventListener('selectionchange', function () {
+      var sel = window.getSelection();
+      if (!sel.rangeCount) { hideMenu(); return; }
+      var node = sel.anchorNode;
+      // 找最近的 .ode-content
+      while (node && node.nodeType !== 1) node = node.parentNode;
+      while (node && !(node.classList && node.classList.contains('ode-content'))) {
+        node = node.parentNode;
+      }
+      if (!node) { hideMenu(); return; }
+      var text = sel.toString();
+      if (!text || text.length < 1) { hideMenu(); return; }
+      // collapsed selection (只有光标, 没有选区) 不显示
+      if (sel.isCollapsed) { hideMenu(); return; }
+      // 显示菜单
+      var range = sel.getRangeAt(0);
+      var rect = range.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) { hideMenu(); return; }
+      showMenu(rect);
+    });
+
+    // 滚动/编辑器 resize 时隐藏
+    window.addEventListener('scroll', hideMenu, true);
+    window.addEventListener('resize', hideMenu);
+
+    return { menu: menu, hideMenu: hideMenu };
+  })();
 
   // ──────────── 导出 ────────────
   var OfficeDocEditor = { mountEditor: mountEditor };

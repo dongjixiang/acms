@@ -3,27 +3,137 @@
 
 function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
-// ===== Word 编辑器（v0.62.1 块编辑器）=====
+// ===== Word 编辑器（v0.62.5 OO 风格标题栏 + 块编辑器）=====
 // 改用自研 office-doc-editor 替代 Quill
 // 依赖：window.OfficeDoc + window.OfficeDocEditor（由 index.html 在 office-editor.js 之前加载）
 // v0.62.4: 支持 (w, fileId, name) 加载现有 .docx
+// v0.62.5: OO 风格标题栏（学 OO FileMenu.js 设计）— 文件名 + ●已修改点 + 右上角保存按钮
 function openWordEditor(w, fileId, fileName) {
-  // 容器 = 整个 PKG 内容区
-  w.$c.innerHTML = '<div id="word-host" style="height:100%;display:flex;flex-direction:column"></div>';
-  var host = w.$c.querySelector('#word-host');
+  // 容器 = 整个 PKG 内容区，套 .oo-editor 类（让主题色生效）
+  w.$c.innerHTML = '<div class="oo-editor oo-editor-word" style="height:100%;display:flex;flex-direction:column"></div>';
+  var host = w.$c.querySelector('.oo-editor');
 
-  // 顶部 toolbar：标题 + 保存按钮（自己加，不依赖编辑器内置）
-  var bar = document.createElement('div');
-  bar.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0';
-  var titleText = fileName ? '📝 Word 文档（已加载：' + fileName + '）' : '📝 Word 文档（块编辑）';
-  bar.innerHTML = '<span style="font-weight:600;flex:1;font-size:13px">' + titleText + '</span><button class="btn-small btn-accept" id="word-save-btn">💾 保存</button>';
-  host.appendChild(bar);
+  // v0.62.5: instance 提到 closure 顶层（saveWordDoc + Ribbon 都要用）
+  var instance = null;
+
+  // OO 风格标题栏（学 OO FileMenu.js 模式：图标 + 文件名 + ●已修改点 + 右上角按钮）
+  var titlebar = document.createElement('div');
+  titlebar.className = 'oo-titlebar';
+  var docTitle = fileName || '未命名.docx';
+  titlebar.innerHTML =
+    '<span class="oo-titlebar-icon">📝</span>' +
+    '<div class="oo-titlebar-name">' +
+      '<input id="word-title-input" value="' + escHtml(docTitle) + '" placeholder="未命名.docx">' +
+      '<span id="word-modified-dot" class="oo-modified-dot" title="已修改未保存"></span>' +
+    '</div>' +
+    '<div class="oo-titlebar-actions">' +
+      '<button class="oo-titlebar-btn" id="word-export-md-btn" title="导出 Markdown">📄 .md</button>' +
+      '<button class="oo-titlebar-btn primary" id="word-save-btn">💾 保存</button>' +
+    '</div>';
+  host.appendChild(titlebar);
+
+  // ●已修改点控制函数（外部可调）
+  function setDirty(isDirty) {
+    var dot = host.querySelector('#word-modified-dot');
+    if (!dot) return;
+    if (isDirty === null) {
+      dot.classList.remove('is-dirty');
+      dot.classList.add('is-saved');
+      dot.title = '已保存';
+      setTimeout(function () { dot.classList.remove('is-saved'); }, 1200);
+    } else if (isDirty) {
+      dot.classList.add('is-dirty');
+      dot.classList.remove('is-saved');
+      dot.title = '已修改未保存';
+    } else {
+      dot.classList.remove('is-dirty', 'is-saved');
+      dot.title = '未修改';
+    }
+  }
+  // 标题输入框修改 → 立刻显示已修改点
+  host.querySelector('#word-title-input').addEventListener('input', function () {
+    setDirty(true);
+  });
 
   // 编辑器 mount 区
   var editorHost = document.createElement('div');
   editorHost.id = 'word-editor-mount';
   editorHost.style.cssText = 'flex:1;min-height:0;overflow:auto;background:#fafaf6';
   host.appendChild(editorHost);
+
+  // v0.62.5: Ribbon 挂载点（在 editorHost 之前）
+  var ribbonHost = document.createElement('div');
+  ribbonHost.id = 'word-ribbon-host';
+  ribbonHost.style.cssText = 'flex-shrink:0';
+  host.insertBefore(ribbonHost, editorHost);
+
+  // v0.62.5 PR-W2.3: Word 状态栏 (页码 + 字数 + 缩放) — 学 OO statusbar.less
+  var statusbarEl = document.createElement('div');
+  statusbarEl.className = 'oo-statusbar';
+  statusbarEl.id = 'word-statusbar';
+  statusbarEl.style.cssText = 'justify-content:space-between; padding:4px 12px';
+  statusbarEl.innerHTML =
+    '<span style="display:flex;align-items:center;gap:16px">' +
+      '<span id="ws-pages" title="页码">第 1 / 1 页</span>' +
+      '<span id="ws-words" title="字数">0 字</span>' +
+      '<span id="ws-blocks" title="块数">0 块</span>' +
+    '</span>' +
+    '<span style="display:flex;align-items:center;gap:6px">' +
+      '<button id="ws-zoom-out" class="oo-statusbar-btn" title="缩小">−</button>' +
+      '<input id="ws-zoom" class="oo-statusbar-namebox" type="number" min="50" max="200" value="100" title="缩放 (%)">' +
+      '<span style="font-size:11px;color:var(--text2,#888)">%</span>' +
+      '<button id="ws-zoom-in" class="oo-statusbar-btn" title="放大">+</button>' +
+    '</span>';
+  host.appendChild(statusbarEl);
+
+  // 更新字数/块数 (从 instance.getDocument() 算)
+  function updateWordStatusbar() {
+    if (!instance) return;
+    var doc = instance.getDocument();
+    var blocks = doc.blocks || [];
+    var wordCount = 0;
+    blocks.forEach(function (b) {
+      if (b.content) {
+        // 简单字数统计: 中文字符按 1 字, 英文单词按空格分
+        var s = b.content.replace(/\*\*|__|`/g, '');  // 去掉 markdown 符号
+        // 中文字符数
+        var cn = (s.match(/[\u4e00-\u9fa5]/g) || []).length;
+        // 英文单词数 (粗略)
+        var en = (s.match(/[a-zA-Z]+/g) || []).length;
+        wordCount += cn + en;
+      }
+    });
+    var pagesEl = statusbarEl.querySelector('#ws-pages');
+    var wordsEl = statusbarEl.querySelector('#ws-words');
+    var blocksEl = statusbarEl.querySelector('#ws-blocks');
+    if (pagesEl) pagesEl.textContent = '第 1 / 1 页';
+    if (wordsEl) wordsEl.textContent = wordCount + ' 字';
+    if (blocksEl) blocksEl.textContent = blocks.length + ' 块';
+  }
+  updateWordStatusbar();
+
+  // 缩放按钮 (PR-W2.3 状态栏) — 改 editorHost 字体大小
+  function setWordZoom(pct) {
+    pct = Math.max(50, Math.min(200, parseInt(pct) || 100));
+    var zoomEl = statusbarEl.querySelector('#ws-zoom');
+    if (zoomEl) zoomEl.value = pct;
+    if (editorHost) editorHost.style.fontSize = (15 * pct / 100) + 'px';
+  }
+  statusbarEl.querySelector('#ws-zoom-in').onclick = function () {
+    var v = parseInt(statusbarEl.querySelector('#ws-zoom').value) || 100;
+    setWordZoom(v + 10);
+  };
+  statusbarEl.querySelector('#ws-zoom-out').onclick = function () {
+    var v = parseInt(statusbarEl.querySelector('#ws-zoom').value) || 100;
+    setWordZoom(v - 10);
+  };
+  statusbarEl.querySelector('#ws-zoom').onchange = function () {
+    setWordZoom(this.value);
+  };
+  // 把 updateWordStatusbar 挂到 instance.onChange (mountBlockEditor 已有 onChange)
+  // 这里用一个 MutationObserver 监听 doc.blocks DOM 变化
+  var statusObs = new MutationObserver(updateWordStatusbar);
+  statusObs.observe(editorHost, { childList: true, subtree: true, characterData: true });
 
   // 检查依赖是否加载（office-doc.js + office-doc-converter.js 必须在 office-editor.js 之前）
   if (!window.OfficeDoc || !window.OfficeDocEditor) {
@@ -72,25 +182,224 @@ function openWordEditor(w, fileId, fileName) {
     mountBlockEditor();
   }
 
-  function mountBlockEditor() {
+function mountBlockEditor() {
     // v0.62.2: 空 doc 自动加 1 个 paragraph（mountEditor 内部已处理）
-    var instance = window.OfficeDocEditor.mountEditor(editorHost, doc, {
-      onChange: function () { /* 实时更新，不做任何事 */ }
+    instance = window.OfficeDocEditor.mountEditor(editorHost, doc, {
+      onChange: function () { setDirty(true); /* 实时更新, 显示已修改点 */ }
     });
     w._officeDocInstance = instance;
+
+// v0.62.5: Word Ribbon 操作集合（学 OO FileMenu.js 的 Home/Insert/Format 结构）
+    // PR-W2: 加 inline format toggle + block formatting setter
+    var wordOps = {
+      setType: function (type, attrs) {
+        var cur = instance.getCurrentBlockId();
+        if (cur) instance.changeBlockType(cur, type);
+        else instance.addBlock(type, attrs || null);
+      },
+      insertAfter: function (type, attrs, content) {
+        var cur = instance.getCurrentBlockId();
+        instance.addBlock(type, attrs || null, content || '', cur);
+      },
+      deleteCurrent: function () {
+        var cur = instance.getCurrentBlockId();
+        if (!cur) return toast('请先把光标放在某个块里', 'warning');
+        instance.deleteBlock(cur);
+      },
+      // PR-W2: inline 格式 (toggle **bold** 等)
+      toggleInline: function (marker) {
+        var cur = instance.getCurrentBlockId();
+        if (!cur) return toast('请先把光标放在某个块里', 'warning');
+        instance.toggleInlineFormat(cur, marker);
+      },
+      // PR-W2: 块级 formatting (对齐/字号/字体)
+      setAlign: function (align) {
+        var cur = instance.getCurrentBlockId();
+        if (!cur) return toast('请先把光标放在某个块里', 'warning');
+        instance.setBlockFormatting(cur, { align: align });
+      },
+      setFontSize: function (size) {
+        var cur = instance.getCurrentBlockId();
+        if (!cur) return;
+        instance.setBlockFormatting(cur, { fontSize: size });
+      },
+      setFontFamily: function (family) {
+        var cur = instance.getCurrentBlockId();
+        if (!cur) return;
+        instance.setBlockFormatting(cur, { fontFamily: family });
+      },
+      exportMd: function () {
+        var d = instance.getDocument();
+        var md = window.OfficeDocConverter.documentToMarkdown(d);
+        var baseName = (titlebar.querySelector('#word-title-input').value || '未命名').replace(/\.docx$/i, '');
+        var blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url; a.download = baseName + '.md';
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        toast('已导出 ' + baseName + '.md', 'success');
+      },
+      exportDocx: function () {
+        if (typeof window.docx === 'undefined') {
+          toast('docx 包未加载，降级为 .md', 'warning');
+          return wordOps.exportMd();
+        }
+        var d = instance.getDocument();
+        var p = window.OfficeDocConverter.blocksToDocxBuffer(d.blocks, window.docx);
+        if (!p) { toast('导出失败', 'error'); return; }
+        Promise.resolve(p).then(function (buf) {
+          var baseName = (titlebar.querySelector('#word-title-input').value || '未命名').replace(/\.docx$/i, '');
+          var blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.href = url; a.download = baseName + '.docx';
+          document.body.appendChild(a); a.click(); document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+          toast('已导出 ' + baseName + '.docx', 'success');
+        });
+      },
+    };
+
+    // v0.62.5: Ribbon 挂载 — 学 OO TabBar.js + FileMenu.js 的 Home/Insert/Format 结构
+    if (window.ACMSRibbon) {
+      window._wordRibbon = window.ACMSRibbon.create(w.$c.querySelector('#word-ribbon-host'), {
+        tabs: [
+          {
+            id: 'home', label: '🏠 Home',
+            groups: [
+              { title: '格式', buttons: [
+                { id: 'bold',      icon: 'B',   label: '粗体', action: function(){ wordOps.toggleInline('bold'); } },
+                { id: 'italic',    icon: 'I',   label: '斜体', action: function(){ wordOps.toggleInline('italic'); } },
+                { id: 'underline', icon: 'U',   label: '下划线', action: function(){ wordOps.toggleInline('underline'); } },
+                { id: 'inline-code', icon: '</>', label: '代码', action: function(){ wordOps.toggleInline('code'); } },
+              ]},
+              { title: '字号', buttons: [
+                { id: 'fs-12', icon: '12', label: '12', action: function(){ wordOps.setFontSize(12); } },
+                { id: 'fs-14', icon: '14', label: '14', action: function(){ wordOps.setFontSize(14); } },
+                { id: 'fs-16', icon: '16', label: '16', action: function(){ wordOps.setFontSize(16); } },
+                { id: 'fs-18', icon: '18', label: '18', action: function(){ wordOps.setFontSize(18); } },
+                { id: 'fs-24', icon: '24', label: '24', action: function(){ wordOps.setFontSize(24); } },
+              ]},
+              { title: '字体', buttons: [
+                { id: 'ff-sans',  icon: 'Aa', label: 'Sans',  action: function(){ wordOps.setFontFamily('sans'); } },
+                { id: 'ff-serif', icon: 'Aa', label: 'Serif', action: function(){ wordOps.setFontFamily('serif'); } },
+                { id: 'ff-mono',  icon: 'Aa', label: 'Mono',  action: function(){ wordOps.setFontFamily('mono'); } },
+              ]},
+              { title: '对齐', buttons: [
+                { id: 'align-left',    icon: '⬅', label: '左',   action: function(){ wordOps.setAlign('left'); } },
+                { id: 'align-center',  icon: '↔', label: '中',   action: function(){ wordOps.setAlign('center'); } },
+                { id: 'align-right',   icon: '➡', label: '右',   action: function(){ wordOps.setAlign('right'); } },
+                { id: 'align-justify', icon: '☰', label: '两端', action: function(){ wordOps.setAlign('justify'); } },
+              ]},
+              { title: '样式', buttons: [
+                { id: 'h1',     icon: 'H1',     label: '标题1',  action: function(){ wordOps.setType('heading', {level:1}); } },
+                { id: 'h2',     icon: 'H2',     label: '标题2',  action: function(){ wordOps.setType('heading', {level:2}); } },
+                { id: 'h3',     icon: 'H3',     label: '标题3',  action: function(){ wordOps.setType('heading', {level:3}); } },
+                { id: 'para',   icon: '¶',      label: '正文',   action: function(){ wordOps.setType('paragraph'); } },
+                { id: 'quote',  icon: '❝',      label: '引用',   action: function(){ wordOps.setType('quote'); } },
+                { id: 'code',   icon: '</>',    label: '代码',   action: function(){ wordOps.setType('code'); } },
+              ]},
+              { title: '列表', buttons: [
+                { id: 'bullet',  icon: '•',   label: '项目',   action: function(){ wordOps.setType('bulletList'); } },
+                { id: 'ordered', icon: '1.',  label: '编号',   action: function(){ wordOps.setType('orderedList'); } },
+                { id: 'todo',    icon: '☑',   label: '待办',   action: function(){ wordOps.setType('todo'); } },
+              ]},
+              { title: '元素', buttons: [
+                { id: 'divider', icon: '─',  label: '分割线', action: function(){ wordOps.insertAfter('divider'); } },
+              ]},
+              { title: '保存', buttons: [
+                { id: 'save', icon: '💾', label: '保存', large: true, action: function(){ saveWordDoc(); } },
+              ]},
+            ],
+          },
+          {
+            id: 'insert', label: '➕ Insert',
+            groups: [
+              { title: '媒体', buttons: [
+                { id: 'image', icon: '🖼️', label: '图片', action: function(){
+                  var url = prompt('图片 URL（留空取消）:');
+                  if (url) wordOps.insertAfter('image', { src: url });
+                }},
+              ]},
+              { title: '表格', buttons: [
+                { id: 'table', icon: '⊞', label: '3×3', action: function(){
+                  wordOps.insertAfter('table', {}, '');
+                  toast('表格已插入（双击单元格编辑）', 'info');
+                }},
+              ]},
+            ],
+          },
+          {
+            id: 'format', label: '📤 Format',
+            groups: [
+              { title: '导出', buttons: [
+                { id: 'export-md',   icon: '📄', label: '.md',   large: true, action: wordOps.exportMd },
+                { id: 'export-docx', icon: '📘', label: '.docx', large: true, action: wordOps.exportDocx },
+              ]},
+              { title: '操作', buttons: [
+                { id: 'del-block', icon: '🗑', label: '删块', action: wordOps.deleteCurrent },
+              ]},
+            ],
+          },
+        ],
+        active: 'home',
+      });
+    }
+  }
+
+  // v0.62.5: Word 保存函数（Ribbon "保存" 按钮 + 标题栏 "保存" 按钮共用）
+  function saveWordDoc() {
+    if (typeof showPrompt !== 'function') {
+      toast('showPrompt 未加载，无法输入文件名', 'error');
+      return Promise.resolve();
+    }
+    var currentName = (titlebar.querySelector('#word-title-input').value || '').trim() || '文档';
+    return Promise.resolve(showPrompt({
+      title: '保存 Word 文档',
+      message: '输入文件名（.docx 后缀自动加）',
+      placeholder: '文档',
+      defaultValue: currentName.replace(/\.docx$/i, ''),
+      multiline: false,
+      minLength: 1,
+    })).then(function (name) {
+      if (!name) return;
+      name = String(name).trim();
+      if (!name.toLowerCase().endsWith('.docx')) name += '.docx';
+      var d = instance.getDocument();
+      var payload = {
+        type: 'docx',
+        name: name,
+        data: {
+          title: d.meta.title,
+          blocks: d.blocks,
+          content: window.OfficeDocConverter.documentToMarkdown(d),
+        }
+      };
+      return fetch('/api/office/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+        body: JSON.stringify(payload),
+      }).then(function (r) { return r.json(); }).then(function (r) {
+        if (r.ok) { toast('已保存 ✅ ' + name + ' (' + r.size + ' bytes)', 'success'); setDirty(null); }
+        else toast('保存失败: ' + (r.error || '未知错误'), 'error');
+      }).catch(function (e) { toast('保存失败: ' + e.message, 'error'); });
+    });
   }
 
   // 保存按钮：showPrompt 拿文件名（避免 browser dialog），send blocks 到 /api/office/save
-  bar.querySelector('#word-save-btn').onclick = async function() {
+  titlebar.querySelector('#word-save-btn').onclick = async function() {
     if (typeof showPrompt !== 'function') {
       toast('showPrompt 未加载，无法输入文件名', 'error');
       return;
     }
+    // v0.62.5: 用标题输入框当前值作为默认文件名（OO 模式：标题即文件名）
+    var currentName = (titlebar.querySelector('#word-title-input').value || '').trim() || '文档';
     var name = await showPrompt({
       title: '保存 Word 文档',
       message: '输入文件名（.docx 后缀自动加）',
       placeholder: '文档',
-      defaultValue: '文档',
+      defaultValue: currentName.replace(/\.docx$/i, ''),
       multiline: false,
       minLength: 1,
     });
@@ -116,21 +425,85 @@ function openWordEditor(w, fileId, fileName) {
     })
     .then(function(r){return r.json()})
     .then(function(r){
-      if (r.ok) toast('已保存 ✅ ' + name + ' (' + r.size + ' bytes)', 'success');
+      if (r.ok) { toast('已保存 ✅ ' + name + ' (' + r.size + ' bytes)', 'success'); setDirty(null); /* 显示已保存点 */ }
       else toast('保存失败: ' + (r.error || '未知错误'), 'error');
     })
     .catch(function(e){ toast('保存失败: ' + e.message, 'error'); });
   };
+
+  // v0.62.5: 导出 Markdown 按钮（学 OO FileMenu "Download as"）
+  titlebar.querySelector('#word-export-md-btn').onclick = function () {
+    var d = instance.getDocument();
+    var md = window.OfficeDocConverter.documentToMarkdown(d);
+    var baseName = (titlebar.querySelector('#word-title-input').value || '未命名').replace(/\.docx$/i, '');
+    var blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = baseName + '.md';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast('已导出 ' + baseName + '.md', 'success');
+  };
 }
 
-// ===== Excel 编辑器（v0.62.3 状态栏 + 选中统计）=====
-// 新增：底部状态栏（位置 / 选中范围 / sum / avg / count）
+// ===== Excel 编辑器（v0.62.5 OO 风格标题栏）=====
+// 新增：OO 风格标题栏（学 OO FileMenu.js）+ ●已修改点
 // 保留：20×8 默认网格 / +行 / +列 / 保存
+// v0.62.3: 底部状态栏（位置 / 选中范围 / sum / avg / count）
 // 升级：showPrompt 替代 prompt() / 保存 payload 改 sheets[] 数组（PR 1 兼容）
+// v0.62.5 PR-C: 多 sheet 支持 — sheets[] 数组 + currentSheetIdx + 底部 Sheet tabs
 function openExcelEditor(w) {
   var ROWS = 20, COLS = 8;
+
+  // v0.62.5: 多 sheet 数据结构（每个 sheet 独立 data 数组）
+  var sheets = [];
+  var currentSheetIdx = 0;
+  // 当前 sheet 的 data 引用（切换 sheet 时重新指向，便于旧代码直接用 data）
   var data = [];
-  for (var ri = 0; ri < ROWS; ri++) { data[ri] = []; for (var ci = 0; ci < COLS; ci++) data[ri][ci] = ''; }
+
+  function blankData() {
+    var d = [];
+    for (var ri = 0; ri < ROWS; ri++) { d[ri] = []; for (var ci = 0; ci < COLS; ci++) d[ri][ci] = ''; }
+    return d;
+  }
+  function defaultSheetName() { return 'Sheet' + (sheets.length + 1); }
+  function addSheet() {
+    sheets.push({ name: defaultSheetName(), data: blankData() });
+    currentSheetIdx = sheets.length - 1;
+    data = sheets[currentSheetIdx].data;
+    sel = { start: null, end: null };
+    markDirty();
+    renderTable();
+  }
+  function switchSheet(idx) {
+    if (idx < 0 || idx >= sheets.length) return;
+    currentSheetIdx = idx;
+    data = sheets[idx].data;
+    sel = { start: null, end: null };
+    markDirty();
+    renderTable();
+  }
+  function removeSheet(idx) {
+    if (sheets.length <= 1) return toast('至少保留一个 Sheet', 'warning');
+    sheets.splice(idx, 1);
+    if (currentSheetIdx >= sheets.length) currentSheetIdx = sheets.length - 1;
+    data = sheets[currentSheetIdx].data;
+    sel = { start: null, end: null };
+    markDirty();
+    renderTable();
+  }
+  function renameSheet(idx, name) {
+    if (idx < 0 || idx >= sheets.length) return;
+    name = String(name || '').trim();
+    if (!name) return;
+    sheets[idx].name = name;
+    markDirty();
+    renderTable();
+  }
+
+  // 初始化默认 Sheet1
+  sheets.push({ name: 'Sheet1', data: blankData() });
+  data = sheets[0].data;
 
   // 选中状态：{start: [r,c], end: [r,c]} — 跟踪当前 cell range
   var sel = { start: null, end: null };
@@ -150,6 +523,9 @@ function openExcelEditor(w) {
     var n = parseFloat(v);
     return !isNaN(n) && isFinite(n);
   }
+
+  // v0.62.5: Excel 标题栏独立的 dirty 跟踪
+  var isDirty = false;
 
   function updateStatusBar() {
     var bar = w.$c.querySelector('#xlsx-status');
@@ -181,15 +557,114 @@ function openExcelEditor(w) {
     bar.textContent = parts.join(' · ');
   }
 
+// v0.62.5: 操作函数集合（Ribbon 按钮 + 标题栏按钮复用同一组 operations）
+  var ops = {
+    addRow: function () {
+      var newRow = [];
+      for (var k = 0; k < (data[0] || []).length; k++) newRow[k] = '';
+      data.push(newRow);
+      markDirty();
+      renderTable();
+    },
+    addCol: function () {
+      for (var k = 0; k < data.length; k++) data[k].push('');
+      markDirty();
+      renderTable();
+    },
+    insertRowAbove: function () {
+      // 在选中行上方插入
+      var insertAt = sel.start ? sel.start[0] : 0;
+      var newRow = [];
+      for (var k = 0; k < (data[0] || []).length; k++) newRow[k] = '';
+      data.splice(insertAt, 0, newRow);
+      markDirty();
+      renderTable();
+    },
+    insertRowBelow: function () {
+      var insertAt = sel.start ? sel.start[0] + 1 : data.length;
+      var newRow = [];
+      for (var k = 0; k < (data[0] || []).length; k++) newRow[k] = '';
+      data.splice(insertAt, 0, newRow);
+      markDirty();
+      renderTable();
+    },
+    insertColLeft: function () {
+      var insertAt = sel.start ? sel.start[1] : 0;
+      for (var k = 0; k < data.length; k++) data[k].splice(insertAt, 0, '');
+      markDirty();
+      renderTable();
+    },
+    insertColRight: function () {
+      var insertAt = sel.start ? sel.start[1] + 1 : (data[0] || []).length;
+      for (var k = 0; k < data.length; k++) data[k].splice(insertAt, 0, '');
+      markDirty();
+      renderTable();
+    },
+    deleteRow: function () {
+      if (!sel.start) return toast('请先选中一行', 'warning');
+      if (data.length <= 1) return toast('至少保留一行', 'warning');
+      data.splice(sel.start[0], 1);
+      sel = { start: null, end: null };
+      markDirty();
+      renderTable();
+    },
+    deleteCol: function () {
+      if (!sel.start) return toast('请先选中一列', 'warning');
+      if ((data[0] || []).length <= 1) return toast('至少保留一列', 'warning');
+      var c = sel.start[1];
+      for (var k = 0; k < data.length; k++) data[k].splice(c, 1);
+      sel = { start: null, end: null };
+      markDirty();
+      renderTable();
+    },
+    clearCell: function () {
+      if (!sel.start) return toast('请先选中单元格', 'warning');
+      data[sel.start[0]][sel.start[1]] = '';
+      markDirty();
+      renderTable();
+    },
+    save: function () { saveExcel(); },
+  };
+
+  function markDirty() {
+    isDirty = true;
+    var dot = w.$c.querySelector('#xlsx-modified-dot');
+    if (dot) { dot.classList.add('is-dirty'); dot.classList.remove('is-saved'); dot.title = '已修改未保存'; }
+  }
+
+  function markSaved() {
+    isDirty = false;
+    var dot = w.$c.querySelector('#xlsx-modified-dot');
+    if (dot) { dot.classList.remove('is-dirty'); dot.classList.add('is-saved'); dot.title = '已保存';
+      setTimeout(function(){ dot.classList.remove('is-saved'); }, 1200); }
+  }
+
+  // 名称框 — 同步显示/编辑当前 cell 坐标 (学 OO Spreadsheet Name Box)
+  function updateNameBox() {
+    var box = w.$c.querySelector('#xlsx-namebox');
+    if (!box) return;
+    if (!sel.start) { box.value = ''; return; }
+    var r = sel.start[0], c = sel.start[1];
+    box.value = colLetter(c) + (r + 1);
+  }
+
   function renderTable() {
-    var h = '<div style="display:flex;flex-direction:column;height:100%">';
-    // 顶部 toolbar
-    h += '<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0">';
-    h += '<span style="font-weight:600;flex:1;font-size:13px">📊 Excel 表格（v0.62.3 增强）</span>';
-    h += '<button class="btn-small" id="xlsx-add-row">+ 行</button>';
-    h += '<button class="btn-small" id="xlsx-add-col">+ 列</button>';
-    h += '<button class="btn-small btn-accept" id="xlsx-save-btn">💾 保存</button>';
+    // v0.62.5: 容器套 .oo-editor oo-editor-xlsx class（让 Excel 墨绿色主题生效）
+    var h = '<div class="oo-editor oo-editor-xlsx" style="display:flex;flex-direction:column;height:100%">';
+    // OO 风格标题栏（v0.62.5: 简化 — 只留文件名 + 保存, 功能按钮移到 Ribbon）
+    h += '<div class="oo-titlebar">';
+    h += '<span class="oo-titlebar-icon">📊</span>';
+    h += '<div class="oo-titlebar-name">';
+    h += '<input id="xlsx-title-input" value="未命名.xlsx" placeholder="未命名.xlsx">';
+    h += '<span id="xlsx-modified-dot" class="oo-modified-dot" title="未修改"></span>';
     h += '</div>';
+    h += '<div class="oo-titlebar-actions">';
+    h += '<button class="oo-titlebar-btn" id="xlsx-export-csv-btn" title="导出 CSV">📄 CSV</button>';
+    h += '<button class="oo-titlebar-btn primary" id="xlsx-save-btn">💾 保存</button>';
+    h += '</div>';
+    h += '</div>';
+    // v0.62.5: Ribbon 工具栏（学 OO TabBar.js + FileMenu.js）
+    h += '<div id="xlsx-ribbon-host" style="flex-shrink:0"></div>';
     // 表格区
     h += '<div style="flex:1;overflow:auto;padding:4px">';
     h += '<table id="xlsx-table" style="border-collapse:collapse;width:100%;font-size:13px">';
@@ -207,10 +682,65 @@ function openExcelEditor(w) {
       h += '</tr>';
     }
     h += '</table></div>';
-    // v0.62.3: 底部状态栏
-    h += '<div id="xlsx-status" style="padding:4px 12px;background:var(--bg2);border-top:1px solid var(--border);font-size:11px;color:var(--text2);font-family:Consolas,monospace;flex-shrink:0;min-height:24px;display:flex;align-items:center">A1 · 总 20 行 × 8 列</div>';
+    // v0.62.5: 底部状态栏行（含名称框 + 状态信息）
+    h += '<div style="display:flex;align-items:center;background:var(--office-toolbar-bg);border-top:1px solid var(--office-divider);flex-shrink:0;height:28px">';
+    h += '<input id="xlsx-namebox" class="oo-statusbar-namebox" placeholder="A1" title="当前选中单元格（输入跳转）" style="margin:0 4px 0 8px">';
+    h += '<div id="xlsx-status" class="oo-statusbar" style="flex:1;border:none;background:transparent">A1 · 总 20 行 × 8 列</div>';
+    h += '</div>';
+    // v0.62.5 PR-C: Sheet tabs (学 OO Spreadsheet 底部 sheet 切换条)
+    h += '<div id="xlsx-sheets">';
+    sheets.forEach(function(s, i) {
+      var activeCls = i === currentSheetIdx ? ' is-active' : '';
+      h += '<div class="xlsx-sheet-tab' + activeCls + '" data-i="' + i + '" title="' + escHtml(s.name) + '（双击改名 / 右键菜单）">';
+      h += '<span class="xlsx-sheet-name">' + escHtml(s.name) + '</span>';
+      if (sheets.length > 1) {
+        h += '<button class="xlsx-sheet-close" data-i="' + i + '" title="删除 Sheet">×</button>';
+      }
+      h += '</div>';
+    });
+    h += '<button id="xlsx-add-sheet" class="xlsx-sheet-add" title="新建 Sheet">+</button>';
+    h += '</div>';
     h += '</div>';
     w.$c.innerHTML = h;
+
+    // v0.62.5: Ribbon 挂载 — 学 OO FileMenu.js 的 Home/Insert 结构
+    if (window.ACMSRibbon) {
+      window.ACMSRibbon.create(w.$c.querySelector('#xlsx-ribbon-host'), {
+        tabs: [
+          {
+            id: 'home', label: '🏠 Home',
+            groups: [
+              { title: '单元格', buttons: [
+                { id: 'clear',     icon: '🧹', label: '清空', action: ops.clearCell },
+              ]},
+              { title: '行列', buttons: [
+                { id: 'add-row',   icon: '➕', label: '加行', action: ops.addRow },
+                { id: 'add-col',   icon: '➕', label: '加列', action: ops.addCol },
+                { id: 'del-row',   icon: '➖', label: '删行', action: ops.deleteRow },
+                { id: 'del-col',   icon: '➖', label: '删列', action: ops.deleteCol },
+              ]},
+              { title: '保存', buttons: [
+                { id: 'save',      icon: '💾', label: '保存', large: true, action: ops.save },
+              ]},
+            ],
+          },
+          {
+            id: 'insert', label: '➕ Insert',
+            groups: [
+              { title: '插入行', buttons: [
+                { id: 'ins-row-above', icon: '⬆️', label: '上方', action: ops.insertRowAbove },
+                { id: 'ins-row-below', icon: '⬇️', label: '下方', action: ops.insertRowBelow },
+              ]},
+              { title: '插入列', buttons: [
+                { id: 'ins-col-left',  icon: '⬅️', label: '左侧', action: ops.insertColLeft },
+                { id: 'ins-col-right', icon: '➡️', label: '右侧', action: ops.insertColRight },
+              ]},
+            ],
+          },
+        ],
+        active: 'home',
+      });
+    }
 
     // 单元格编辑 + 选中跟踪
     var cells = w.$c.querySelectorAll('.xlsx-cell');
@@ -222,56 +752,126 @@ function openExcelEditor(w) {
         el.style.outline = '2px solid var(--accent)';
         el.style.background = '#f0f8ff';
         updateStatusBar();
+        updateNameBox();
       };
       el.onblur = function() {
         el.style.outline = 'none';
         el.style.background = '';
-        data[r][c] = el.textContent;
+        var newVal = el.textContent;
+        if (data[r][c] !== newVal) {
+          data[r][c] = newVal;
+          markDirty();
+        }
       };
       el.onkeydown = function(e) {
         if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
       };
     });
 
-    // 添加行
-    w.$c.querySelector('#xlsx-add-row').onclick = function() {
-      var newRow = [];
-      for (var ci3 = 0; ci3 < (data[0] || []).length; ci3++) newRow[ci3] = '';
-      data.push(newRow);
-      renderTable();
+    // 名称框: 输入 cell 坐标跳转 (B2 → 选中 B2)
+    var namebox = w.$c.querySelector('#xlsx-namebox');
+    namebox.onkeydown = function (e) {
+      if (e.key !== 'Enter') return;
+      var v = (namebox.value || '').trim().toUpperCase();
+      var m = v.match(/^([A-Z]+)(\d+)$/);
+      if (!m) return toast('格式示例: A1, B2, AA10', 'warning');
+      var colStr = m[1], rowStr = m[2];
+      var colIdx = 0;
+      for (var i = 0; i < colStr.length; i++) colIdx = colIdx * 26 + (colStr.charCodeAt(i) - 64);
+      colIdx -= 1; // 0-based
+      var rowIdx = parseInt(rowStr) - 1;
+      var cellEl = w.$c.querySelector('.xlsx-cell[data-r="' + rowIdx + '"][data-c="' + colIdx + '"]');
+      if (!cellEl) return toast('超出范围', 'warning');
+      cellEl.focus();
+      namebox.blur();
     };
-    // 添加列
-    w.$c.querySelector('#xlsx-add-col').onclick = function() {
-      for (var ri2 = 0; ri2 < data.length; ri2++) data[ri2].push('');
-      renderTable();
-    };
-    // 保存（用 showPrompt 替代 prompt）
-    w.$c.querySelector('#xlsx-save-btn').onclick = async function() {
+updateNameBox();
+
+    // v0.62.5 PR-C: Sheet tabs 事件绑定
+    w.$c.querySelectorAll('.xlsx-sheet-tab').forEach(function (tab) {
+      tab.onclick = function (e) {
+        if (e.target.classList.contains('xlsx-sheet-close')) return; // 关闭按钮单独处理
+        switchSheet(parseInt(tab.dataset.i));
+      };
+      // 双击改名（学 OO Spreadsheet 双击 sheet 改名）
+      tab.ondblclick = function () {
+        var idx = parseInt(tab.dataset.i);
+        var cur = sheets[idx].name;
+        if (typeof showPrompt === 'function') {
+          showPrompt({
+            title: '重命名 Sheet',
+            message: '输入新名称',
+            defaultValue: cur,
+            multiline: false,
+            minLength: 1,
+          }).then(function (n) { if (n) renameSheet(idx, n); });
+        } else {
+          var n = prompt('新名称:', cur);
+          if (n) renameSheet(idx, n);
+        }
+      };
+      // 关闭按钮
+      var closeBtn = tab.querySelector('.xlsx-sheet-close');
+      if (closeBtn) {
+        closeBtn.onclick = function (e) {
+          e.stopPropagation();
+          removeSheet(parseInt(closeBtn.dataset.i));
+        };
+      }
+    });
+    var addSheetBtn = w.$c.querySelector('#xlsx-add-sheet');
+    if (addSheetBtn) addSheetBtn.onclick = function () { addSheet(); };
+
+// v0.62.5: 保存逻辑抽成 saveExcel 函数（Ribbon "保存"按钮 + 标题栏 "保存"按钮共用）
+    function saveExcel() {
       var name;
+      var currentName = (w.$c.querySelector('#xlsx-title-input').value || '').trim() || '表格';
       if (typeof showPrompt === 'function') {
-        name = await showPrompt({
+        name = showPrompt({
           title: '保存 Excel 表格',
           message: '输入文件名（.xlsx 后缀自动加）',
-          defaultValue: '表格',
+          defaultValue: currentName.replace(/\.xlsx$/i, ''),
           multiline: false,
           minLength: 1,
         });
-        if (!name) return;
       } else {
-        name = prompt('文件名：', '表格.xlsx') || '表格.xlsx';
+        name = Promise.resolve(prompt('文件名：', '表格.xlsx') || '表格.xlsx');
       }
-      name = String(name).trim();
-      if (!name.toLowerCase().endsWith('.xlsx')) name += '.xlsx';
-      // v0.62.3: 用 sheets[] 数组格式（PR 1 兼容）
-      var sheets = [{ name: 'Sheet1', headers: data[0] || [], rows: data.slice(1) }];
-      fetch('/api/office/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
-        body: JSON.stringify({ type: 'xlsx', name: name, data: { title: 'Sheet1', sheets: sheets, rows: data.length, cols: (data[0]||[]).length } }),
-      })
-      .then(function(r){ return r.json(); })
-      .then(function(r){ toast(r.ok ? '已保存 ✅ ' + name + ' (' + r.size + ' bytes)' : '保存失败: ' + (r.error || '未知'), r.ok ? 'success' : 'error'); })
-      .catch(function(e){ toast('保存失败: ' + e.message, 'error'); });
+      return Promise.resolve(name).then(function(n) {
+        if (!n) return;
+        n = String(n).trim();
+        if (!n.toLowerCase().endsWith('.xlsx')) n += '.xlsx';
+        // v0.62.5 PR-C: 多 sheet payload — 每个 sheet 单独 headers + rows
+        var payloadSheets = sheets.map(function (s) {
+          var d = s.data;
+          return { name: s.name, headers: d[0] || [], rows: d.slice(1) };
+        });
+        return fetch('/api/office/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+          body: JSON.stringify({ type: 'xlsx', name: n, data: { title: n.replace(/\.xlsx$/, ''), sheets: payloadSheets, rows: data.length, cols: (data[0]||[]).length } }),
+        }).then(function(r){ return r.json(); }).then(function(r){
+          if (r.ok) { toast('已保存 ✅ ' + n + ' (' + r.size + ' bytes, ' + sheets.length + ' 个 Sheet)', 'success'); markSaved(); }
+          else toast('保存失败: ' + (r.error || '未知'), 'error');
+        }).catch(function(e){ toast('保存失败: ' + e.message, 'error'); });
+      });
+    }
+    // 标题栏 "保存" 按钮 — 调用 saveExcel（v0.62.5 重构）
+    var saveBtn = w.$c.querySelector('#xlsx-save-btn');
+    if (saveBtn) saveBtn.onclick = function () { saveExcel(); };
+
+    // 标题栏 "导出 CSV" 按钮
+    var csvBtn = w.$c.querySelector('#xlsx-export-csv-btn');
+    if (csvBtn) csvBtn.onclick = function () {
+      var csv = data.map(function(row){ return row.map(function(c){ return '"' + String(c).replace(/"/g,'""') + '"'; }).join(','); }).join('\n');
+      var baseName = (w.$c.querySelector('#xlsx-title-input').value || '未命名').replace(/\.xlsx$/i, '');
+      var blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url; a.download = baseName + '.csv';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast('已导出 ' + baseName + '.csv', 'success');
     };
   }
 
@@ -307,42 +907,83 @@ function openPptEditor(w) {
     }
   }
 
+  // v0.62.5: PPT 操作函数集合（Ribbon + 标题栏共用）
+  var pptOps = {
+    addSlide: function () {
+      slides.push({ title: '新页面', content: '', layout: 'content' });
+      cur = slides.length - 1;
+      markPptDirty();
+      render();
+    },
+    delSlide: function () {
+      if (slides.length <= 1) { toast('至少保留一页', 'warning'); return; }
+      slides.splice(cur, 1);
+      if (cur >= slides.length) cur = slides.length - 1;
+      markPptDirty();
+      render();
+    },
+    setLayout: function (layout) {
+      slides[cur].layout = layout;
+      markPptDirty();
+      // 不重新 render — 只更新当前 slide 的视觉 + 缩略图 + 状态栏
+      var titleEl = w.$c.querySelector('#ppt-title');
+      var contentEl = w.$c.querySelector('#ppt-content');
+      if (titleEl && contentEl) applyLayout(layout, titleEl, contentEl);
+      updateThumb();
+      updateStatus();
+      // 同步 Ribbon Design tab 的激活状态
+      if (window._pptRibbon) {
+        window._pptRibbon.setButtonActive('design', 'layout-' + layout, true);
+        ['content','cover','blank'].forEach(function (l) {
+          if (l !== layout) window._pptRibbon.setButtonActive('design', 'layout-' + l, false);
+        });
+      }
+    },
+    save: function () { savePpt(); },
+  };
+
+  function markPptDirty() {
+    var dot = w.$c.querySelector('#ppt-modified-dot');
+    if (dot) { dot.classList.add('is-dirty'); dot.classList.remove('is-saved'); dot.title = '已修改未保存'; }
+  }
+
   function render() {
-    var h = '<div style="display:flex;flex-direction:column;height:100%">';
-    // 顶部 toolbar
-    h += '<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0">';
-    h += '<span style="font-weight:600;font-size:13px">📽️ PPT 演示（v0.62.3 增强）</span>';
-    h += '<span style="flex:1"></span>';
-    h += '<label style="font-size:11px;color:var(--text2)">布局:</label>';
-    h += '<select id="ppt-layout" style="font-size:12px;padding:2px 6px;border:1px solid var(--border);background:var(--bg2);border-radius:0">';
-    h += '<option value="content"' + (slides[cur].layout === 'content' ? ' selected' : '') + '>内容页</option>';
-    h += '<option value="cover"' + (slides[cur].layout === 'cover' ? ' selected' : '') + '>封面</option>';
-    h += '<option value="blank"' + (slides[cur].layout === 'blank' ? ' selected' : '') + '>空白</option>';
-    h += '</select>';
-    h += '<button class="btn-small" id="ppt-add" style="flex-shrink:0">+ 添加页</button>';
-    h += '<button class="btn-small" id="ppt-del" style="flex-shrink:0;color:var(--danger)">🗑 删除</button>';
-    h += '<button class="btn-small btn-accept" id="ppt-save-btn">💾 保存</button>';
+    // v0.62.5: 容器套 .oo-editor oo-editor-pptx class（让 PPT 棕红色主题生效）
+    var h = '<div class="oo-editor oo-editor-pptx" style="display:flex;flex-direction:column;height:100%">';
+    // OO 风格标题栏（v0.62.5: 简化 — 只留文件名 + 保存, 功能按钮全部移到 Ribbon）
+    h += '<div class="oo-titlebar">';
+    h += '<span class="oo-titlebar-icon">📽️</span>';
+    h += '<div class="oo-titlebar-name">';
+    h += '<input id="ppt-title-input" value="未命名.pptx" placeholder="未命名.pptx">';
+    h += '<span id="ppt-modified-dot" class="oo-modified-dot" title="未修改"></span>';
     h += '</div>';
-    // 缩略图栏
-    h += '<div id="ppt-thumbs" style="display:flex;gap:6px;padding:8px;background:var(--bg2);border-bottom:1px solid var(--border);overflow-x:auto;flex-shrink:0">';
+    h += '<div class="oo-titlebar-actions">';
+    h += '<button class="oo-titlebar-btn primary" id="ppt-save-btn">💾 保存</button>';
+    h += '</div>';
+    h += '</div>';
+    // v0.62.5: Ribbon 工具栏（学 OO TabBar.js）
+    h += '<div id="ppt-ribbon-host" style="flex-shrink:0"></div>';
+    // 缩略图栏（OO 风格）
+    h += '<div id="ppt-thumbs" style="display:flex;gap:8px;padding:10px;background:var(--office-toolbar-bg);border-bottom:1px solid var(--office-divider);overflow-x:auto;flex-shrink:0">';
     slides.forEach(function(s, i) {
       var layoutTag = s.layout === 'cover' ? '📄' : (s.layout === 'blank' ? '⬜' : '📃');
-      h += '<div class="ppt-thumb" data-i="' + i + '" style="cursor:pointer;padding:6px 10px;border:2px solid ' + (i === cur ? 'var(--accent)' : 'var(--border)') + ';background:' + (i === cur ? '#e8f4e8' : 'var(--bg1)') + ';min-width:80px;text-align:center;font-size:11px;border-radius:0">';
-      h += '<div style="font-size:14px;margin-bottom:2px">' + layoutTag + '</div>';
-      h += '<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:80px">' + escHtml((s.title||'无标题').slice(0, 10)) + '</div>';
-      h += '<div style="font-size:10px;color:var(--text2);margin-top:2px">' + (i+1) + '/' + slides.length + '</div>';
+      var activeCls = i === cur ? ' is-active' : '';
+      h += '<div class="ppt-thumb' + activeCls + '" data-i="' + i + '">';
+      h += '<div class="ppt-thumb-icon">' + layoutTag + '</div>';
+      h += '<div class="ppt-thumb-title">' + escHtml((s.title||'无标题').slice(0, 10)) + '</div>';
+      h += '<div class="ppt-thumb-page">' + (i+1) + '/' + slides.length + '</div>';
       h += '</div>';
     });
     h += '</div>';
-    // 编辑区
+    // 编辑区（OO 风格 — slide 卡片样式）
     var s = slides[cur] || { title: '', content: '', layout: 'content' };
     h += '<div style="flex:1;padding:20px;overflow:auto;display:flex;justify-content:center">';
-    h += '<div style="max-width:800px;width:100%;background:white;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,0.15);padding:40px;min-height:350px;display:flex;flex-direction:column">';
+    h += '<div class="ppt-slide-paper" style="max-width:800px;width:100%;padding:40px;display:flex;flex-direction:column">';
     h += '<input id="ppt-title" value="' + escHtml(s.title) + '" style="width:100%;font-weight:600;border:none;outline:none;border-bottom:2px solid #e0e0e0;margin-bottom:16px;padding:8px 4px;background:transparent;font-family:inherit" placeholder="幻灯片标题">';
     h += '<textarea id="ppt-content" style="width:100%;flex:1;min-height:250px;border:none;outline:none;font-size:15px;line-height:1.7;padding:8px 4px;background:transparent;resize:vertical;font-family:inherit" placeholder="正文内容（支持换行）">' + escHtml(s.content) + '</textarea>';
     h += '</div></div>';
-    // v0.62.3: 底部状态栏
-    h += '<div id="ppt-status" style="padding:4px 12px;background:var(--bg2);border-top:1px solid var(--border);font-size:11px;color:var(--text2);font-family:Consolas,monospace;flex-shrink:0;min-height:24px;display:flex;align-items:center;justify-content:space-between">';
+    // v0.62.5: 底部状态栏（OO 风格）
+    h += '<div id="ppt-status" class="oo-statusbar" style="justify-content:space-between">';
     h += '<span>第 ' + (cur+1) + ' / ' + slides.length + ' 页</span>';
     h += '<span>' + (s.layout === 'cover' ? '封面' : (s.layout === 'blank' ? '空白' : '内容页')) + ' 布局</span>';
     h += '</div>';
@@ -350,34 +991,60 @@ function openPptEditor(w) {
 
     w.$c.innerHTML = h;
 
+    // v0.62.5: Ribbon 挂载（Home / Insert / Design 三 tab）
+    if (window.ACMSRibbon) {
+      window._pptRibbon = window.ACMSRibbon.create(w.$c.querySelector('#ppt-ribbon-host'), {
+        tabs: [
+          {
+            id: 'home', label: '🏠 Home',
+            groups: [
+              { title: '幻灯片', buttons: [
+                { id: 'add-slide', icon: '➕', label: '添加', action: pptOps.addSlide },
+                { id: 'del-slide', icon: '➖', label: '删除', action: pptOps.delSlide },
+              ]},
+              { title: '保存', buttons: [
+                { id: 'save', icon: '💾', label: '保存', large: true, action: pptOps.save },
+              ]},
+            ],
+          },
+          {
+            id: 'insert', label: '➕ Insert',
+            groups: [
+              { title: '插入', buttons: [
+                { id: 'ins-text',  icon: '📝', label: '文本框', action: function(){ toast('即将推出', 'info'); } },
+                { id: 'ins-image', icon: '🖼️', label: '图片',   action: function(){ toast('即将推出', 'info'); } },
+                { id: 'ins-shape', icon: '⬜', label: '形状',   action: function(){ toast('即将推出', 'info'); } },
+              ]},
+            ],
+          },
+          {
+            id: 'design', label: '🎨 Design',
+            groups: [
+              { title: '布局', buttons: [
+                { id: 'layout-content', icon: '📃', label: '内容', large: true,
+                  action: function(){ pptOps.setLayout('content'); }, active: s.layout === 'content' },
+                { id: 'layout-cover',   icon: '📄', label: '封面', large: true,
+                  action: function(){ pptOps.setLayout('cover'); },   active: s.layout === 'cover' },
+                { id: 'layout-blank',   icon: '⬜', label: '空白', large: true,
+                  action: function(){ pptOps.setLayout('blank'); },   active: s.layout === 'blank' },
+              ]},
+            ],
+          },
+        ],
+        active: 'home',
+      });
+    }
+
     // 编辑同步
     var titleEl = w.$c.querySelector('#ppt-title');
     var contentEl = w.$c.querySelector('#ppt-content');
-    var layoutSel = w.$c.querySelector('#ppt-layout');
     applyLayout(s.layout, titleEl, contentEl);
-    titleEl.oninput = function() { slides[cur].title = this.value; updateThumb(); };
-    contentEl.oninput = function() { slides[cur].content = this.value; };
-    layoutSel.onchange = function() {
-      slides[cur].layout = this.value;
-      applyLayout(this.value, titleEl, contentEl);
-      updateStatus();
-    };
-    w.$c.querySelector('#ppt-add').onclick = function() {
-      slides.push({ title: '新页面', content: '', layout: 'content' });
-      cur = slides.length - 1;
-      render();
-    };
-    w.$c.querySelector('#ppt-del').onclick = function() {
-      if (slides.length <= 1) { toast('至少保留一页', 'warning'); return; }
-      slides.splice(cur, 1);
-      if (cur >= slides.length) cur = slides.length - 1;
-      render();
-    };
+    titleEl.oninput = function() { slides[cur].title = this.value; updateThumb(); markPptDirty(); };
+    contentEl.oninput = function() { slides[cur].content = this.value; markPptDirty(); };
     w.$c.querySelectorAll('.ppt-thumb').forEach(function(el) {
       el.onclick = function() {
         if (titleEl) slides[cur].title = titleEl.value;
         if (contentEl) slides[cur].content = contentEl.value;
-        if (layoutSel) slides[cur].layout = layoutSel.value;
         cur = parseInt(this.dataset.i);
         render();
       };
@@ -390,39 +1057,50 @@ function openPptEditor(w) {
         if (t) t.textContent = (slides[cur].title || '无标题').slice(0, 10);
       }
     }
-    function updateStatus() {
+function updateStatus() {
       var bar = w.$c.querySelector('#ppt-status');
       if (!bar) return;
       var lbl = slides[cur].layout === 'cover' ? '封面' : (slides[cur].layout === 'blank' ? '空白' : '内容页');
       bar.innerHTML = '<span>第 ' + (cur+1) + ' / ' + slides.length + ' 页</span><span>' + lbl + ' 布局</span>';
     }
 
-    // 保存按钮（用 showPrompt 替代 prompt）
-    w.$c.querySelector('#ppt-save-btn').onclick = async function() {
-      var name;
+    // v0.62.5: PPT 保存函数（Ribbon "保存" 按钮 + 标题栏 "保存" 按钮共用）
+    function savePpt() {
+      var currentName = (w.$c.querySelector('#ppt-title-input').value || '').trim() || '演示';
+      var p;
       if (typeof showPrompt === 'function') {
-        name = await showPrompt({
+        p = Promise.resolve(showPrompt({
           title: '保存 PPT 演示',
           message: '输入文件名（.pptx 后缀自动加）',
-          defaultValue: '演示',
+          defaultValue: currentName.replace(/\.pptx$/i, ''),
           multiline: false,
           minLength: 1,
-        });
-        if (!name) return;
+        }));
       } else {
-        name = prompt('文件名：', '演示.pptx') || '演示.pptx';
+        p = Promise.resolve(prompt('文件名：', '演示.pptx') || '演示.pptx');
       }
-      name = String(name).trim();
-      if (!name.toLowerCase().endsWith('.pptx')) name += '.pptx';
-      fetch('/api/office/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
-        body: JSON.stringify({ type: 'pptx', name: name, data: { title: name.replace(/\.pptx$/, ''), slides: slides } }),
-      })
-      .then(function(r){ return r.json(); })
-      .then(function(r){ toast(r.ok ? '已保存 ✅ ' + name + ' (' + r.size + ' bytes)' : '保存失败: ' + (r.error || '未知'), r.ok ? 'success' : 'error'); })
-      .catch(function(e){ toast('保存失败: ' + e.message, 'error'); });
-    };
+      return p.then(function(name) {
+        if (!name) return;
+        name = String(name).trim();
+        if (!name.toLowerCase().endsWith('.pptx')) name += '.pptx';
+        return fetch('/api/office/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+          body: JSON.stringify({ type: 'pptx', name: name, data: { title: name.replace(/\.pptx$/, ''), slides: slides } }),
+        }).then(function(r){ return r.json(); }).then(function(r){
+          if (r.ok) {
+            toast('已保存 ✅ ' + name + ' (' + r.size + ' bytes)', 'success');
+            var dot = w.$c.querySelector('#ppt-modified-dot');
+            if (dot) { dot.classList.remove('is-dirty'); dot.classList.add('is-saved'); dot.title = '已保存'; setTimeout(function(){ dot.classList.remove('is-saved'); }, 1200); }
+          }
+          else toast('保存失败: ' + (r.error || '未知'), 'error');
+        }).catch(function(e){ toast('保存失败: ' + e.message, 'error'); });
+      });
+    }
+
+    // 标题栏 "保存" 按钮 — 调 savePpt（v0.62.5 重构）
+    var saveBtn = w.$c.querySelector('#ppt-save-btn');
+    if (saveBtn) saveBtn.onclick = function () { savePpt(); };
   }
 
   render();

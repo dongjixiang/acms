@@ -1,0 +1,147 @@
+feat(v0.65): ACMS Office 编辑器 OO 风格化 (8 PR 累计)
+
+═══════════════════════════════════════════
+v0.62.5: ACMS Office 编辑器视觉 + 交互深度改造
+═══════════════════════════════════════════
+
+背景: 用户反馈 "Office 编辑器丑" + "Word 体验像表单一样一行一行再加"
+借鉴: ONLYOFFICE Document Editor 设计语言 (web-apps AGPL-3.0 开源, 学不抄)
+根因: 之前每个 block 独立 contenteditable, 视觉/输入/排版都不连续
+
+═══════════════════════════════════════════
+8 个 PR 累计交付 (8 个独立可测功能)
+═══════════════════════════════════════════
+
+PR-A  OO 风格色板 + 标题栏 + ●已修改点
+  • 新建 client/css/office-theme.css (411 行)
+  • client/css/style.css +30 行: 三主题下注册 --office-{word,xlsx,pptx}-{primary,header,soft}
+  • Word/Excel/PPT 各自分色 (OO classic 色板: #446995/#3A8056/#B75B44)
+  • .oo-titlebar + .oo-modified-dot 三态控制 (true=改 / null=刚保存 / false=未改)
+  • DOM 验证 (cream 主题下精确匹配 OO 原色值)
+
+PR-B  Ribbon TabBar + Excel/PPT 应用
+  • 新建 client/js/views/office-ribbon.js (147 行): ACMSRibbon.create() 极简组件
+  • Excel Ribbon: Home (4 按钮) + Insert (2 按钮) = 10 按钮
+  • PPT Ribbon: Home (2 按钮) + Insert (3 按钮) + Design (3 按钮) = 9 按钮
+  • 学 OO TabBar.js API 设计: create(host, {tabs, groups, buttons, active})
+
+PR-W  Word Ribbon + OfficeDocEditor instance API + 视觉
+  • 治根: 重写 mountEditor 暴露 instance API (9 个新方法)
+    getCurrentBlockId / focusBlock / addBlock / changeBlockType /
+    deleteBlock / moveBlockUp / moveBlockDown / getBlock / getAllBlocks
+  • Word Ribbon 16 按钮 (Home/Insert/Format 三 tab)
+  • 视觉: Calibri 字体 + paper 880px 卡片 + 24px padding + box-shadow
+  • heading 字号: H1=2em H2=1.5em H3=1.25em + margin
+  • 引用块: 4px 色条 + italic + 圆角
+
+PR-W2  块级 formatting + 行内格式 + 状态栏
+  • 治根: schema 已有 parseInline 函数 (8 个月前写但 UI 没用过), 接入渲染层
+  • instance API 扩 3 个: getBlockFormatting / setBlockFormatting / toggleInlineFormat
+  • Word Ribbon 16→32 按钮: 加 B/I/U/code 格式组 + 12/14/16/18/24 字号组 + Sans/Serif/Mono 字体组 + 左/中/右/两端 对齐组
+  • Word 状态栏: 页码/字数/块数/缩放 (学 OO statusbar.less)
+  • CSS: .ode-align-{left,center,right,justify} / .ode-fs-{12-30} / .ode-ff-{serif,sans,mono}
+
+PR-W3  隐藏"字段化" UI (治根)
+  • 根因: type-badge 永远显示 + "+ 添加块"按钮永远显示 → 用户感觉"在填字段"
+  • .ode-type-badge: 默认 opacity:0 + pointer-events:none, hover 才出
+  • .ode-add-end: 默认 opacity:0, .ode-block-list:hover 或 .ode-add-end:hover/focus 才出
+  • .ode-block padding 2px → 0 (段落完全无视觉分隔, 像 Word)
+
+PR-W4  Markdown Shortcut (Notion/OO 体验)
+  • 治根 bug: bindContentEvents 在 mountEditor 外, 不能闭包访问 focusBlock
+  • 修复: inline find DOM + focus, 暴露 scope 隔离问题
+  • 7 个 markdown shortcut:
+    # + 空格 → H1, ## → H2, ### → H3
+    * 或 - + 空格 → bullet list
+    1. + 空格 → numbered list
+    [] + 空格 → todo, > + 空格 → quote, ``` + 空格 → code
+  • heading 后 Enter 自动转普通段落 (OO Word 行为)
+
+PR-W5  Word 文档"页面化" 视觉 (纯 CSS)
+  • heading 加大 margin (H1: 1em top 0.4em bottom, H2: 0.8em top)
+  • paragraph line-height 1.7 (Word 默认)
+  • paper 卡片 4 层 box-shadow (1px + 4px + 12px + 0px) 模拟多纸叠感
+  • 段落间 padding-top 4px (相邻同类型 block)
+
+PR-W6  选中文本浮动工具栏 (Bubble Menu) (1 天)
+  • 100 行 module-level IIFE
+  • 监听 selectionchange → 选区上方浮动 4 按钮 (B / I / U / </>)
+  • 用 document.execCommand('insertText') 替换选区
+  • 已包检测 → toggle 行为
+  • 跟 markdown shortcut 互补: shortcut 是全文本, bubble menu 是选区
+
+═══════════════════════════════════════════
+核心复用模式 (供未来 Office 改造)
+═══════════════════════════════════════════
+
+1. ACMSRibbon 极简组件 (147 行覆盖 OO TabBar.js 728 行核心功能)
+   - create(host, {tabs, groups, buttons, active}) → {setActive, setButtonActive, destroy}
+2. ops 对象模式: Ribbon 按钮 + 标题栏按钮共用同一组操作函数
+3. instance API 暴露模式: mount 返回的不只是"读"接口, 还要"写/改"接口
+4. closure scope hoisting: 内层函数(instance 创建) 调外层辅助函数(save 等) 必须提升变量
+5. schema 已有但 UI 没用过的功能 (parseInline), 接入渲染层即可
+6. data 引用切换模式 (sheets[].data 缓存到 closure var, 切 sheet 重新指向)
+7. var(--bg2, fallback) 模式: 主题感知 CSS, dark 主题下自动跟随
+
+═══════════════════════════════════════════
+改动文件清单
+═══════════════════════════════════════════
+
+新建 (2):
+  client/css/office-theme.css        411 行   OO 风格色板 + 标题栏 + Ribbon + 状态栏
+  client/js/views/office-ribbon.js   147 行   ACMSRibbon 通用组件
+
+改 (5):
+  client/css/office-doc.css         +157/-X  块编辑器 paper 视觉 + 段距 + formatting
+  client/css/style.css              +163/-X  三主题注册 office-* 变量
+  client/index.html                  +33/-X  加载 office-theme.css + office-ribbon.js
+  client/js/views/office-doc-editor.js  +432/-X  instance API + markdown shortcut + bubble menu
+  client/js/views/office-editor.js    +922/-X  Word/Excel/PPT 三个 openXxxEditor 重构
+
+总计: 7 文件, +2300 行 (精确数字要看最终 diff)
+
+═══════════════════════════════════════════
+测试 (puppeteer headless 实测)
+═══════════════════════════════════════════
+
+PR-A  DOM 验证: 三个 titlebar 颜色精确匹配 OO classic 色板
+PR-B  DOM 验证: Excel ribbon tabCount=2 btnCount=10; PPT tabCount=3 btnCount=9
+PR-W  DOM 验证: ribbon tabCount=3 btnCount=16; H2 button click 真的改 state (blocks 增 1)
+PR-W2 DOM 验证: Bold/align-center/fs-18 真的改 className + computed style
+     + 状态栏字数初始 0 → 输入后 8 字 → 缩放 100→110 editor fontSize 15px→16.5px
+PR-W3 DOM 验证: badgeOpacity=0 默认 + addEndOpacity=0 默认, hover 后 =1
+PR-W4 DOM 验证: 5 个 markdown shortcut 真的改 type (H1/H2/bullet/quote/code)
+PR-W5 DOM 验证: paper box-shadow 4 层叠 + H1 33px + paragraph line-height 25.5px
+PR-W6 DOM 验证: 选中后 bubble menu display:flex + 点 B 真的包了 **
+
+截图: C:\Users\swede\acms\data\office-screenshots-v0.62.5\
+  cream-02-word.png  42KB  PR-A 基础
+  PR-B-*.png 3 文件   PR-B Ribbon
+  PR-W-*.png 5 文件   PR-W Word Ribbon
+  PR-W2-*.png 3 文件  PR-W2 格式化 + 状态栏
+  PR-W3-*.png 2 文件  PR-W3 隐藏字段感
+  PR-W4-shortcuts.png PR-W4 markdown
+  PR-W5-paper.png     PR-W5 paper 视觉
+  PR-W6-bubble.png    PR-W6 浮动工具栏
+
+═══════════════════════════════════════════
+未来工作 (后续 PR 候选)
+═══════════════════════════════════════════
+
+PR-C  Excel Sheet tabs (半天) - 已做, 见 git log
+PR-D  深色模式适配 (半天) - 已做
+PR-X  contenteditable flow 改造 (2-3 天) - 真正治本, 但浏览器兼容风险高
+PR-Y  bubble menu 扩展 (1 天) - 加字号/字体/链接选择器
+PR-Z  Excel/PPT 深度 (2-3 天) - Page Layout / Transitions / Animations
+
+═══════════════════════════════════════════
+AGPL 红线
+═══════════════════════════════════════════
+
+ONLYOFFICE web-apps (AGPL-3.0) 学设计, 不抄代码
+所有 8 个 PR 改的 CSS/JS 都是新写, 没有 fork OO 源码
+核验 license: curl https://api.github.com/repos/ONLYOFFICE/web-apps
+              | python3 -c "import json,sys; print(json.load(sys.stdin)['license']['spdx_id'])"
+              → AGPL-3.0
+
+未来任何 Office 改造继续遵循这个红线
