@@ -490,9 +490,7 @@ function mountBlockEditor() {
               { title: '元素', buttons: [
                 { id: 'divider', icon: '─',  label: '分割线', action: function(){ wordOps.insertAfter('divider'); } },
               ]},
-              { title: '保存', buttons: [
-                { id: 'save', icon: '💾', label: '保存', large: true, action: function(){ saveWordDoc(); } },
-              ]},
+
             ],
           },
           {
@@ -1316,9 +1314,7 @@ function openExcelEditor(w) {
                 { id: 'del-row',   icon: '➖', label: '删行', action: ops.deleteRow },
                 { id: 'del-col',   icon: '➖', label: '删列', action: ops.deleteCol },
               ]},
-              { title: '保存', buttons: [
-                { id: 'save',      icon: '💾', label: '保存', large: true, action: ops.save },
-              ]},
+
             ],
           },
           {
@@ -1832,9 +1828,7 @@ function openPptEditor(w) {
                 { id: 'add-slide', icon: '➕', label: '添加', action: pptOps.addSlide },
                 { id: 'del-slide', icon: '➖', label: '删除', action: pptOps.delSlide },
               ]},
-              { title: '保存', buttons: [
-                { id: 'save', icon: '💾', label: '保存', large: true, action: pptOps.save },
-              ]},
+
             ],
           },
           {
