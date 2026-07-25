@@ -1639,7 +1639,7 @@ function openPptEditor(w) {
     slides.forEach(function(s, i) {
       var layoutTag = s.layout === 'cover' ? '📄' : (s.layout === 'blank' ? '⬜' : '📃');
       var activeCls = i === cur ? ' is-active' : '';
-      h += '<div class="ppt-thumb' + activeCls + '" data-i="' + i + '">';
+      h += '<div class="ppt-thumb' + activeCls + '" data-i="' + i + '" draggable="true">';
       h += '<div class="ppt-thumb-icon">' + layoutTag + '</div>';
       h += '<div class="ppt-thumb-title">' + escHtml((s.title||'无标题').slice(0, 10)) + '</div>';
       h += '<div class="ppt-thumb-page">' + (i+1) + '/' + slides.length + '</div>';
@@ -1791,11 +1791,45 @@ function openPptEditor(w) {
     applyLayout(s.layout, titleEl, contentEl);
     titleEl.oninput = function() { slides[cur].title = this.value; updateThumb(); markPptDirty(); };
     contentEl.oninput = function() { slides[cur].content = this.value; markPptDirty(); };
+    var dragSrcIdx = -1;
     w.$c.querySelectorAll('.ppt-thumb').forEach(function(el) {
       el.onclick = function() {
         if (titleEl) slides[cur].title = titleEl.value;
         if (contentEl) slides[cur].content = contentEl.value;
         cur = parseInt(this.dataset.i);
+        render();
+      };
+      // v0.62.6: PPT 拖拽排序 (HTML5 Drag & Drop)
+      el.ondragstart = function (e) {
+        dragSrcIdx = parseInt(this.dataset.i);
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', String(dragSrcIdx));
+        this.style.opacity = '0.4';
+      };
+      el.ondragend = function () {
+        this.style.opacity = '';
+        w.$c.querySelectorAll('.ppt-thumb').forEach(function(t){ t.style.borderColor = ''; });
+      };
+      el.ondragover = function (e) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        w.$c.querySelectorAll('.ppt-thumb').forEach(function(t){ t.style.borderColor = ''; });
+        this.style.borderColor = 'var(--office-primary, #446995)';
+        this.style.borderWidth = '2px';
+      };
+      el.ondragleave = function () {
+        this.style.borderColor = '';
+      };
+      el.ondrop = function (e) {
+        e.preventDefault();
+        var fromIdx = dragSrcIdx;
+        var toIdx = parseInt(this.dataset.i);
+        if (fromIdx === toIdx) return;
+        // 移动 slides 数组
+        var item = slides.splice(fromIdx, 1)[0];
+        slides.splice(toIdx, 0, item);
+        cur = toIdx;
+        markPptDirty();
         render();
       };
       // v0.62.6: PPT 缩略图右键菜单
