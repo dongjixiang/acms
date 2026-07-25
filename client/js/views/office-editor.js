@@ -629,11 +629,11 @@ function mountBlockEditor() {
     searchState.currentIdx = idx;
     var match = searchState.matches[idx];
     // 高亮所有匹配
-    var mount = editorHost.querySelector('.ode-editor');
+    var mount = editorHost.querySelector('.ode-editor-flow');
     if (!mount) return;
-    var blocks = mount.querySelectorAll('.ode-block');
+    var blocks = mount.querySelectorAll('[data-bid]');
     blocks.forEach(function (el, bi) {
-      var contentEl = el.querySelector('.ode-content');
+      var contentEl = el.querySelector('.ode-ce');
       if (!contentEl) return;
       var blockData = searchState.matches.filter(function(m){ return m.blockIdx === bi; });
       if (blockData.length && bi === match.blockIdx) {
@@ -691,8 +691,8 @@ function mountBlockEditor() {
     var countEl = host.querySelector('#ws-search-count');
     if (countEl) countEl.textContent = '0/0';
     // 清除高亮
-    var mount = editorHost.querySelector('.ode-editor');
-    if (mount) mount.querySelectorAll('.ode-block').forEach(function(el){ el.style.background = ''; });
+    var mount = editorHost.querySelector('.ode-editor-flow');
+    if (mount) mount.querySelectorAll('[data-bid]').forEach(function(el){ el.style.background = ''; });
     setDirty(true);
     toast('已替换 ' + sorted.length + ' 处', 'success');
   }
@@ -711,8 +711,8 @@ function mountBlockEditor() {
         searchState.currentIdx = -1;
         var countEl = host.querySelector('#ws-search-count');
         if (countEl) countEl.textContent = '0/0';
-        var mount = editorHost.querySelector('.ode-editor');
-        if (mount) mount.querySelectorAll('.ode-block').forEach(function(el){ el.style.background = ''; });
+        var mount = editorHost.querySelector('.ode-editor-flow');
+        if (mount) mount.querySelectorAll('[data-bid]').forEach(function(el){ el.style.background = ''; });
         return;
       }
       searchState.matches = wordSearchFindAll(q);
@@ -732,8 +732,8 @@ function mountBlockEditor() {
     };
     host.querySelector('#ws-search-close').onclick = function () {
       searchBar.style.display = 'none';
-      var mount = editorHost.querySelector('.ode-editor');
-      if (mount) mount.querySelectorAll('.ode-block').forEach(function(el){ el.style.background = ''; });
+      var mount = editorHost.querySelector('.ode-editor-flow');
+      if (mount) mount.querySelectorAll('[data-bid]').forEach(function(el){ el.style.background = ''; });
       searchInput.value = '';
       searchState.matches = [];
       searchState.currentIdx = -1;
@@ -772,8 +772,8 @@ function mountBlockEditor() {
           searchInput.select();
         } else {
           searchBar.style.display = 'none';
-          var mount = editorHost.querySelector('.ode-editor');
-          if (mount) mount.querySelectorAll('.ode-block').forEach(function(el){ el.style.background = ''; });
+          var mount = editorHost.querySelector('.ode-editor-flow');
+          if (mount) mount.querySelectorAll('[data-bid]').forEach(function(el){ el.style.background = ''; });
           searchInput.value = '';
           searchState.matches = [];
           searchState.currentIdx = -1;
@@ -782,9 +782,9 @@ function mountBlockEditor() {
     });
   // v0.62.6: Word 右键菜单
   editorHost.addEventListener('contextmenu', function (e) {
-    var blockEl = e.target.closest('.ode-block');
+    var blockEl = e.target.closest('[data-bid]');
     if (!blockEl) return;
-    var blockId = blockEl.dataset.blockId;
+    var blockId = blockEl.dataset.bid;
     e.preventDefault();
     showCtxMenu([
       { label: '\u2702 \u5220\u9664\u5757', action: function () { if (blockId) instance.deleteBlock(blockId); } },
