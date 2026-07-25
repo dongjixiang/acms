@@ -29,7 +29,7 @@
           '</div>' +
         '</div>' +
         '<div class="code-menu-bar" style="display:flex;background:var(--bg2,#f0f0f0);border-bottom:1px solid var(--office-divider,#ddd);flex-shrink:0">' +
-          '<div class="code-menu-item" data-menu="file" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none" onmouseenter="this.style.background=\'var(--office-tab-hover-bg,rgba(0,0,0,0.05))\'" onmouseleave="this.style.background=\'transparent\'">📄 文件' +
+          '<div class="code-menu-item" data-menu="file" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none">📄 文件' +
             '<div class="code-menu-dropdown" style="display:none;position:absolute;top:100%;left:0;z-index:9999;background:var(--bg,#fff);border:1px solid var(--office-divider,#ddd);border-radius:6px;box-shadow:0 4px 20px rgba(0,0,0,0.15);min-width:180px;padding:6px 0">' +
               '<div class="code-menu-dropdown-item" data-action="open-img">📂 打开图片</div>' +
               '<div class="code-menu-dropdown-item" data-action="save-img">💾 保存</div>' +
@@ -37,7 +37,7 @@
               '<div class="code-menu-dropdown-item" data-action="reset-img">🔄 重置</div>' +
             '</div>' +
           '</div>' +
-          '<div class="code-menu-item" data-menu="view" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none" onmouseenter="this.style.background=\'var(--office-tab-hover-bg,rgba(0,0,0,0.05))\'" onmouseleave="this.style.background=\'transparent\'">🔍 查看' +
+          '<div class="code-menu-item" data-menu="view" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none">🔍 查看' +
             '<div class="code-menu-dropdown" style="display:none;position:absolute;top:100%;left:0;z-index:9999;background:var(--bg,#fff);border:1px solid var(--office-divider,#ddd);border-radius:6px;box-shadow:0 4px 20px rgba(0,0,0,0.15);min-width:160px;padding:6px 0">' +
               '<div class="code-menu-dropdown-item" data-action="zoom-in">🔍+ 放大</div>' +
               '<div class="code-menu-dropdown-item" data-action="zoom-out">🔍− 缩小</div>' +
@@ -45,7 +45,7 @@
               '<div class="code-menu-dropdown-item" data-action="zoom-100">🔢 100%</div>' +
             '</div>' +
           '</div>' +
-          '<div class="code-menu-item" data-menu="filter" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none" onmouseenter="this.style.background=\'var(--office-tab-hover-bg,rgba(0,0,0,0.05))\'" onmouseleave="this.style.background=\'transparent\'">🎨 滤镜' +
+          '<div class="code-menu-item" data-menu="filter" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none">🎨 滤镜' +
             '<div class="code-menu-dropdown" style="display:none;position:absolute;top:100%;left:0;z-index:9999;background:var(--bg,#fff);border:1px solid var(--office-divider,#ddd);border-radius:6px;box-shadow:0 4px 20px rgba(0,0,0,0.15);min-width:160px;padding:6px 0">' +
               '<div class="code-menu-dropdown-item" data-action="filter-grayscale">◐ 灰度</div>' +
               '<div class="code-menu-dropdown-item" data-action="filter-sepia">🟫 怀旧</div>' +
@@ -57,7 +57,7 @@
               '<div class="code-menu-dropdown-item" data-action="filter-reset">🔄 重置滤镜</div>' +
             '</div>' +
           '</div>' +
-          '<div class="code-menu-item" data-menu="ai" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none" onmouseenter="this.style.background=\'var(--office-tab-hover-bg,rgba(0,0,0,0.05))\'" onmouseleave="this.style.background=\'transparent\';font-weight:600">🤖 AI' +
+          '<div class="code-menu-item" data-menu="ai" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none;font-weight:600">🤖 AI' +
             '<div class="code-menu-dropdown" style="display:none;position:absolute;top:100%;left:0;z-index:9999;background:var(--bg,#fff);border:1px solid var(--office-divider,#ddd);border-radius:6px;box-shadow:0 4px 20px rgba(0,0,0,0.15);min-width:160px;padding:6px 0">' +
               '<div class="code-menu-dropdown-item" data-action="ai-describe">📖 描述图片</div>' +
               '<div class="code-menu-dropdown-item" data-action="ai-enhance">✨ 智能增强</div>' +

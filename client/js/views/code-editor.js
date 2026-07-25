@@ -83,13 +83,13 @@
     h += '</div></div>';
     // 菜单栏
     h += '<div class="code-menu-bar" style="display:flex;background:var(--bg2,#f0f0f0);border-bottom:1px solid var(--office-divider,#ddd);flex-shrink:0;font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;font-size:13px">';
-    h += '<div class="code-menu-item" data-menu="file" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none;transition:background 0.1s" onmouseenter="this.style.background=\'var(--office-tab-hover-bg,rgba(0,0,0,0.05))\'" onmouseleave="this.style.background=\'transparent\'">📄 文件';
+    h += '<div class="code-menu-item" data-menu="file" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none;transition:background 0.1s">📄 文件';
     h += '<div class="code-menu-dropdown" style="display:none;position:absolute;top:100%;left:0;z-index:9999;background:var(--bg,#fff);border:1px solid var(--office-divider,#ddd);border-radius:4px;box-shadow:0 4px 16px rgba(0,0,0,0.12);min-width:160px;padding:4px 0">';
     h += '<div class="code-menu-dropdown-item" data-action="open-file">📂 打开文件 <span style="float:right;color:var(--text2,#999);font-size:11px">Ctrl+O</span></div>';
     h += '<div class="code-menu-divider" style="height:1px;background:var(--office-divider,#ddd);margin:4px 8px"></div>';
     h += '<div class="code-menu-dropdown-item" data-action="new-tab">📄 新建文件</div>';
     h += '</div></div>';
-    h += '<div class="code-menu-item" data-menu="edit" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none;transition:background 0.1s" onmouseenter="this.style.background=\'var(--office-tab-hover-bg,rgba(0,0,0,0.05))\'" onmouseleave="this.style.background=\'transparent\'">✏️ 编辑';
+    h += '<div class="code-menu-item" data-menu="edit" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none;transition:background 0.1s">✏️ 编辑';
     h += '<div class="code-menu-dropdown" style="display:none;position:absolute;top:100%;left:0;z-index:9999;background:var(--bg,#fff);border:1px solid var(--office-divider,#ddd);border-radius:4px;box-shadow:0 4px 16px rgba(0,0,0,0.12);min-width:160px;padding:4px 0">';
     h += '<div class="code-menu-dropdown-item" data-action="undo">↩ 撤销 <span style="float:right;color:var(--text2,#999);font-size:11px">Ctrl+Z</span></div>';
     h += '<div class="code-menu-dropdown-item" data-action="redo">↪ 重做 <span style="float:right;color:var(--text2,#999);font-size:11px">Ctrl+Y</span></div>';
@@ -99,7 +99,7 @@
     h += '<div class="code-menu-divider" style="height:1px;background:var(--office-divider,#ddd);margin:4px 8px"></div>';
     h += '<div class="code-menu-dropdown-item" data-action="select-all">☐ 全选 <span style="float:right;color:var(--text2,#999);font-size:11px">Ctrl+A</span></div>';
     h += '</div></div>';
-    h += '<div class="code-menu-item" data-menu="view" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none;transition:background 0.1s" onmouseenter="this.style.background=\'var(--office-tab-hover-bg,rgba(0,0,0,0.05))\'" onmouseleave="this.style.background=\'transparent\'">👁️ 查看';
+    h += '<div class="code-menu-item" data-menu="view" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none;transition:background 0.1s">👁️ 查看';
     h += '<div class="code-menu-dropdown" style="display:none;position:absolute;top:100%;left:0;z-index:9999;background:var(--bg,#fff);border:1px solid var(--office-divider,#ddd);border-radius:4px;box-shadow:0 4px 16px rgba(0,0,0,0.12);min-width:160px;padding:4px 0">';
     h += '<div class="code-menu-dropdown-item" data-action="toggle-minimap">☐ 缩略图</div>';
     h += '<div class="code-menu-dropdown-item" data-action="toggle-wordwrap">☐ 自动换行</div>';
@@ -108,7 +108,7 @@
     h += '<div class="code-menu-dropdown-item" data-action="zoom-out">🔍− 缩小</div>';
     h += '<div class="code-menu-dropdown-item" data-action="zoom-reset">🔍 重置</div>';
     h += '</div></div>';
-    h += '<div class="code-menu-item" data-menu="ai" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none;transition:background 0.1s;font-weight:600" onmouseenter="this.style.background=\'var(--office-tab-hover-bg,rgba(0,0,0,0.05))\'" onmouseleave="this.style.background=\'transparent\'">🤖 AI';
+    h += '<div class="code-menu-item" data-menu="ai" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none;transition:background 0.1s;font-weight:600">🤖 AI';
     h += '<div class="code-menu-dropdown" style="display:none;position:absolute;top:100%;left:0;z-index:9999;background:var(--bg,#fff);border:1px solid var(--office-divider,#ddd);border-radius:4px;box-shadow:0 4px 16px rgba(0,0,0,0.12);min-width:160px;padding:4px 0">';
     h += '<div class="code-menu-dropdown-item" data-action="ai-explain">📖 解释代码</div>';
     h += '<div class="code-menu-dropdown-item" data-action="ai-optimize">⚡ 优化代码</div>';
