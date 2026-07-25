@@ -5354,6 +5354,25 @@ body { padding-bottom: 40px; }
   background: color-mix(in srgb, var(--accent) 15%, transparent);
 }
 
+/* ── v0.60 桌面图标选中态（marquee selection）── */
+.desktop-icon.selected {
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.desktop-icon.selected:hover {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+/* ── v0.60 框选矩形（marquee rect）── */
+.acms-marquee-rect {
+  position: fixed;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  z-index: 50000;
+  pointer-events: none;
+}
+
 /* ── 内部浏览器（v0.56）── */
 .wb-btn {
   padding: 4px 8px;
@@ -5753,3 +5772,130 @@ body { padding-bottom: 40px; }
     font-size: 16px !important; /* 防 iOS 自动缩放 */
   }
 }
+
+/* ═══════════════════════════════════
+   文件浏览器 v0.73 — TagSpaces 深度风格
+   标签第一导航 + 多视角 + 右侧面板 + AI
+   ═══════════════════════════════════ */
+
+/* ── 布局 ── */
+.ts-bar { display:flex; align-items:center; gap:4px; padding:5px 8px; border-bottom:1px solid var(--border); flex-shrink:0; background:var(--bg2); }
+.ts-bb { font-size:13px; padding:2px 6px; border-radius:4px; border:1px solid transparent; background:transparent; color:var(--text); cursor:pointer; line-height:1.3; transition:all 0.1s; }
+.ts-bb:hover { background:var(--bg3); border-color:var(--border); }
+.ts-bb:disabled { opacity:0.3; cursor:default; }
+.ts-bb:disabled:hover { background:transparent; border-color:transparent; }
+.ts-bc { flex:1; display:flex; align-items:center; gap:2px; font-size:12px; overflow:hidden; margin:0 6px; }
+.ts-bp { cursor:pointer; color:var(--accent); padding:1px 3px; border-radius:3px; white-space:nowrap; }
+.ts-bp:hover { background:var(--bg3); }
+.ts-bs { color:var(--text2); }
+.ts-sp { flex:1; }
+.ts-vb { font-size:12px; padding:2px 6px; border-radius:4px; border:1px solid var(--border); background:transparent; color:var(--text2); cursor:pointer; line-height:1.3; transition:all 0.1s; }
+.ts-vb:hover { background:var(--bg3); color:var(--text); }
+.ts-va { background:var(--accent); color:#fff; border-color:var(--accent); }
+.ts-sr { width:130px; padding:3px 8px; border-radius:14px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:11px; outline:none; transition:border-color 0.15s,width 0.2s; }
+.ts-sr:focus { border-color:var(--accent); width:160px; }
+.ts-sr::placeholder { color:var(--text2); }
+
+.ts-bd { flex:1; display:flex; overflow:hidden; min-height:0; }
+
+/* ── 左侧面板 ── */
+.ts-lt { width:200px; min-width:165px; border-right:1px solid var(--border); display:flex; flex-direction:column; overflow:hidden; background:var(--bg2); }
+.ts-lt-tabs { display:flex; border-bottom:1px solid var(--border); flex-shrink:0; }
+.ts-lt-tab { flex:1; padding:5px 8px; font-size:11px; font-weight:600; color:var(--text2); cursor:pointer; text-align:center; transition:all 0.1s; border-bottom:2px solid transparent; }
+.ts-lt-tab:hover { background:var(--bg3); }
+.ts-lta { color:var(--accent); border-bottom-color:var(--accent); background:var(--bg); }
+
+/* ── 标签组 ── */
+.ts-lg { border-bottom:1px solid var(--border); }
+.ts-lg-t { padding:6px 10px 3px; font-size:11px; font-weight:600; color:var(--text2); }
+.ts-lg-c { display:flex; flex-wrap:wrap; gap:3px; padding:3px 10px 8px; }
+
+/* ── 标签 chip ── */
+.tc { display:inline-flex; align-items:center; gap:2px; padding:1px 7px; border-radius:10px; font-size:10px; font-weight:600; line-height:1.6; white-space:nowrap; user-select:none; transition:opacity 0.1s; }
+.tc:hover { opacity:0.85; }
+.tc.ts-ta { box-shadow:0 0 0 2px var(--accent); }
+.tc-x { cursor:pointer; opacity:0.5; font-size:9px; margin-left:2px; border-radius:50%; width:12px; height:12px; display:inline-flex; align-items:center; justify-content:center; }
+.tc-x:hover { opacity:1; background:rgba(0,0,0,0.2); }
+
+/* ── 目录树 ── */
+.ts-tr { list-style:none; margin:0; padding:2px 0; font-size:12px; }
+.ts-tl { display:flex; align-items:center; flex-wrap:wrap; padding:2px 0; border-radius:3px; cursor:pointer; }
+.ts-tl:hover { background:var(--bg3); }
+.ts-tl.ts-ta { background:color-mix(in srgb,var(--accent) 10%,transparent); }
+.ts-tr .ts-ta { font-size:9px; width:16px; text-align:center; cursor:pointer; flex-shrink:0; color:var(--text2); padding:2px 0; }
+.ts-tr .ts-ta:hover { color:var(--accent); }
+.ts-tb { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:2px 2px; }
+.ts-tb:hover { color:var(--accent); }
+.ts-te { font-size:10px; color:var(--text2); font-style:italic; padding:4px 10px; display:block; }
+
+/* ── 中间文件列表 ── */
+.ts-md { flex:1; display:flex; flex-direction:column; overflow:hidden; min-width:280px; background:var(--bg); }
+.ts-mh { display:flex; align-items:center; gap:8px; padding:4px 10px; font-size:11px; font-weight:600; color:var(--text2); border-bottom:1px solid var(--border); background:var(--bg2); flex-shrink:0; user-select:none; }
+.ts-mn { flex:1; min-width:0; cursor:pointer; }
+.ts-mn:hover { color:var(--accent); }
+.ts-ms { width:65px; text-align:right; flex-shrink:0; cursor:pointer; }
+.ts-ms:hover { color:var(--accent); }
+.ts-mh .ts-mdt { width:80px; text-align:right; flex-shrink:0; cursor:pointer; }
+.ts-mh .ts-mdt:hover { color:var(--accent); }
+.ts-sa { font-size:9px; margin-left:2px; }
+.ts-ml { flex:1; overflow-y:auto; outline:none; }
+
+/* ── 文件条目（列表） ── */
+.ts-et { display:flex; align-items:center; gap:6px; padding:4px 8px; border-radius:0; cursor:pointer; font-size:13px; border-bottom:1px solid var(--border); transition:background 0.06s; }
+.ts-et:hover { background:var(--bg3); }
+.ts-sl { background:color-mix(in srgb,var(--accent) 10%,transparent) !important; }
+.ts-ei { font-size:15px; width:20px; text-align:center; flex-shrink:0; }
+.ts-en { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+.ts-es { font-size:11px; color:var(--text2); width:65px; text-align:right; flex-shrink:0; }
+.ts-edt { font-size:11px; color:var(--text2); width:80px; text-align:right; flex-shrink:0; }
+.ts-ea { font-size:0; width:50px; text-align:right; flex-shrink:0; opacity:0; transition:opacity 0.1s; }
+.ts-et:hover .ts-ea { opacity:1; }
+.ts-eg { display:flex; flex-wrap:wrap; gap:2px; padding:0 8px 4px 34px; font-size:0; border-bottom:1px solid var(--border); }
+.ts-ab { font-size:10px; padding:1px 3px; border-radius:3px; border:none; background:transparent; color:var(--text2); cursor:pointer; line-height:1; transition:all 0.08s; }
+.ts-ab:hover { color:var(--accent); background:var(--bg); }
+
+/* ── 网格视图 ── */
+.ts-mv-grid { padding:6px; display:flex; flex-wrap:wrap; gap:6px; align-content:flex-start; }
+.ts-gv { width:105px; border:1px solid var(--border); border-radius:8px; padding:6px; cursor:pointer; text-align:center; transition:all 0.1s; background:var(--bg2); }
+.ts-gv:hover { border-color:var(--accent); box-shadow:0 2px 8px rgba(0,0,0,0.1); }
+.ts-gv.ts-sl { border-color:var(--accent); background:color-mix(in srgb,var(--accent) 8%,transparent); }
+.ts-gi2 { font-size:32px; margin-bottom:4px; width:100%; height:55px; display:flex; align-items:center; justify-content:center; }
+.ts-gt { max-width:100%; max-height:55px; border-radius:4px; object-fit:cover; }
+.ts-gn2 { font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ts-gtg { display:flex; justify-content:center; gap:2px; margin-top:3px; flex-wrap:wrap; }
+.ts-gm2 { font-size:9px; color:var(--text2); }
+
+/* ── 画廊视图 ── */
+.ts-mv-gallery { padding:6px; display:flex; flex-wrap:wrap; gap:4px; align-content:flex-start; }
+.ts-gl { display:flex; flex-wrap:wrap; gap:4px; padding:6px; }
+.ts-gi { width:150px; border-radius:6px; overflow:hidden; cursor:pointer; border:2px solid transparent; transition:all 0.1s; }
+.ts-gi:hover { border-color:var(--accent); }
+.ts-gi.ts-sl { border-color:var(--accent); }
+.ts-gm { width:100%; height:110px; object-fit:cover; display:block; }
+.ts-gn { font-size:10px; padding:3px 4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:center; background:var(--bg); }
+
+/* ── 右侧面板 ── */
+.ts-rt { width:220px; min-width:185px; border-left:1px solid var(--border); display:flex; flex-direction:column; overflow-y:auto; background:var(--bg2); font-size:12px; flex-shrink:0; }
+.ts-re { padding:25px 14px; text-align:center; color:var(--text2); font-size:12px; }
+.ts-rh { padding:8px 10px; font-size:12px; font-weight:700; color:var(--text); border-bottom:1px solid var(--border); background:var(--bg); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ts-rt-im { max-width:100%; max-height:100px; border-radius:6px; margin:8px 10px; object-fit:cover; }
+.ts-rs { padding:8px 10px; border-bottom:1px solid var(--border); }
+.ts-rr { display:flex; gap:6px; margin-bottom:3px; font-size:12px; }
+.ts-rl { font-weight:600; color:var(--text2); min-width:35px; flex-shrink:0; font-size:11px; }
+.ts-rtg { display:flex; flex-wrap:wrap; gap:3px; }
+.ts-rn { color:var(--text2); font-style:italic; font-size:11px; }
+.ts-ras { width:100%; margin-top:5px; padding:3px 5px; border-radius:4px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:11px; outline:none; cursor:pointer; }
+
+/* ── AI 按钮 ── */
+.ts-ai { width:100%; padding:5px 8px; border-radius:14px; border:1px solid var(--accent); background:color-mix(in srgb,var(--accent) 8%,transparent); color:var(--accent); cursor:pointer; font-size:11px; transition:all 0.12s; text-align:center; }
+.ts-ai:hover { background:var(--accent); color:#fff; }
+.ts-ai:disabled { opacity:0.5; cursor:wait; }
+
+/* ── 通用 ── */
+.ts-ld { padding:35px; text-align:center; color:var(--text2); font-size:13px; }
+.ts-er { padding:25px; text-align:center; color:var(--accent2); font-size:13px; }
+.ts-emp { padding:35px; text-align:center; color:var(--text2); font-size:13px; }
+.ts-ii { padding:4px 10px; font-size:11px; color:var(--text2); border-bottom:1px solid var(--border); display:flex; align-items:center; gap:4px; flex-wrap:wrap; }
+
+/* ── 状态栏 ── */
+.ts-st { padding:2px 10px; font-size:11px; color:var(--text2); border-top:1px solid var(--border); flex-shrink:0; background:var(--bg); }

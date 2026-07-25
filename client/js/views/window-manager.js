@@ -71,6 +71,137 @@
         if (btn) btn.click();
       }
     });
+    // v0.60 框选绑定（marquee selection）
+    bindDesktopMarquee(d);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  // v0.60: 桌面图标框选 (marquee selection) + 选中态
+  //   - 桌面空白 mousedown → 拖拽 >5px 进入框选模式 → mouseup 保留选中
+  //   - 图标 mousedown 仍走原有自由拖拽 / click handler（不冲突）
+  //   - Shift/Ctrl+Click 增量选；普通 click 触发应用 + 清旧 selection
+  //   - Selection 状态：desktopSelection: Set<iconId>
+  //   - 选中态用 .desktop-icon.selected CSS class 控制（不用 inline style，避 P42）
+  // ─────────────────────────────────────────────────────────────────────
+  var desktopSelection = new Set();
+  var _selectionChangeListeners = [];
+
+  function getSelection() {
+    return Array.from(desktopSelection);
+  }
+
+  function clearSelection() {
+    if (desktopSelection.size === 0) return;
+    desktopSelection.clear();
+    updateSelectionUI();
+  }
+
+  function toggleSelection(id) {
+    if (!id) return;
+    if (desktopSelection.has(id)) desktopSelection.delete(id);
+    else desktopSelection.add(id);
+    updateSelectionUI();
+  }
+
+  function selectAll() {
+    var icons = document.querySelectorAll('.desktop-icon[data-icon-id]');
+    icons.forEach(function(el) {
+      var id = el.dataset.iconId;
+      if (id) desktopSelection.add(id);
+    });
+    updateSelectionUI();
+  }
+
+  function onSelectionChange(cb) {
+    _selectionChangeListeners.push(cb);
+  }
+
+  function emitSelectionChange() {
+    var ids = getSelection();
+    _selectionChangeListeners.forEach(function(cb) {
+      try { cb(ids); } catch (e) { console.warn('[selection] listener err:', e); }
+    });
+  }
+
+  function updateSelectionUI() {
+    var icons = document.querySelectorAll('.desktop-icon[data-icon-id]');
+    icons.forEach(function(el) {
+      var id = el.dataset.iconId;
+      if (id && desktopSelection.has(id)) {
+        el.classList.add('selected');
+      } else {
+        el.classList.remove('selected');
+      }
+    });
+    emitSelectionChange();
+  }
+
+  // 框选核心：mousedown 在桌面空白（非图标）+ 拖拽 >5px → 进入框选模式
+  function bindDesktopMarquee(d) {
+    d.addEventListener('mousedown', function(e) {
+      if (e.button !== 0) return;
+      // 图标自己处理自由拖拽（已有 stopPropagation，这里也是早退）
+      if (e.target.closest('.desktop-icon')) return;
+
+      var sx = e.clientX, sy = e.clientY;
+      var moved = false;
+      var rect = null;
+      var additive = e.shiftKey || e.ctrlKey || e.metaKey;
+
+      function onMove(ev) {
+        var cx = Math.min(ev.clientX, sx);
+        var cy = Math.min(ev.clientY, sy);
+        var cw = Math.abs(ev.clientX - sx);
+        var ch = Math.abs(ev.clientY - sy);
+
+        // 5px 阈值切换为框选模式
+        if (!moved && (cw > 5 || ch > 5)) {
+          moved = true;
+          // 首次进入框选时，若非增量模式先清空
+          if (!additive) {
+            desktopSelection.clear();
+          }
+          rect = document.createElement('div');
+          rect.className = 'acms-marquee-rect';
+          document.body.appendChild(rect);
+        }
+        if (!moved) return;
+        rect.style.left = cx + 'px';
+        rect.style.top = cy + 'px';
+        rect.style.width = cw + 'px';
+        rect.style.height = ch + 'px';
+
+        // 实时框选碰撞：AABB 相交
+        var icons = document.querySelectorAll('.desktop-icon[data-icon-id]');
+        for (var i = 0; i < icons.length; i++) {
+          var el = icons[i];
+          var id = el.dataset.iconId;
+          if (!id) continue;
+          var ib = el.getBoundingClientRect();
+          var hit = !(ib.right < cx || ib.left > cx + cw || ib.bottom < cy || ib.top > cy + ch);
+          if (hit) {
+            if (additive && (ev.ctrlKey || ev.metaKey)) {
+              // Ctrl+框选 = 反转：命中则取消选中
+              if (desktopSelection.has(id)) desktopSelection.delete(id);
+              else desktopSelection.add(id);
+            } else {
+              desktopSelection.add(id);
+            }
+          } else if (!additive) {
+            // 非增量模式：拖过之后未命中的取消选中
+            desktopSelection.delete(id);
+          }
+        }
+        updateSelectionUI();
+      }
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        if (rect) { rect.remove(); rect = null; }
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
   }
 
   // ── 温和堆叠算法（v0.55 防 5+ 窗口飘出屏幕）──
@@ -290,6 +421,8 @@
     if (header) header.style.display = 'none';
     d.style.display = 'block';
     desktopShown = true;
+    // v0.60 切换桌面时清旧 selection（避免跨模式残留）
+    clearSelection();
     // 桌面图标由 desktop-icons.js 监听此事件后自己调用 _replaceDesktopIcons 渲染
     document.dispatchEvent(new CustomEvent('acms:desktop-shown'));
   }
@@ -464,6 +597,12 @@
       div.addEventListener('click', function(e) {
         e.stopPropagation();
         if (div._wasDragged) { div._wasDragged = false; return; }
+        // v0.60: Ctrl/Shift 多选不触发应用，普通 click 触发应用 + 清旧 selection
+        if (e.ctrlKey || e.metaKey || e.shiftKey) {
+          toggleSelection(icon.id);
+          return;
+        }
+        clearSelection();
         if (typeof icon.onClick === 'function') icon.onClick();
       });
       // ── 右键图标 → 操作菜单 ──
@@ -672,6 +811,26 @@
     window._viewLoaderQueue = null;
   }
 
+  // v0.60 全局键盘快捷键（桌面模式下生效）
+  //   Esc  取消选择
+  //   Ctrl/Cmd+A  全选所有桌面图标
+  document.addEventListener('keydown', function(e) {
+    if (!desktopShown) return;  // 只在桌面模式下生效
+    var t = e.target;
+    // 输入框 / contenteditable 不拦截
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+
+    if (e.key === 'Escape') {
+      if (desktopSelection.size > 0) {
+        e.preventDefault();
+        clearSelection();
+      }
+    } else if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
+      e.preventDefault();
+      selectAll();
+    }
+  });
+
   // ── 暴露 API ──
   window.ACMSWin = {
     open: open,
@@ -695,5 +854,11 @@
     dispatchEvent: dispatchEvent,       // v0.62：事件分发
     refreshView: refreshView,           // v0.62：刷新视图窗口
     _getLoader: function(v) { return viewLoaders[v] || null; },  // v0.62：获取 viewLoader
+    // ── v0.60 桌面图标选中 ──
+    getSelection: getSelection,
+    clearSelection: clearSelection,
+    toggleSelection: toggleSelection,
+    selectAll: selectAll,
+    onSelectionChange: onSelectionChange,
   };
 })();
