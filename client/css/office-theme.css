@@ -689,6 +689,18 @@
   border-top: 1px solid var(--office-divider, rgba(0,0,0,0.08));
 }
 
+/* Ribbon select 下拉 */
+.oo-ribbon-select {
+  font-size: 12px;
+  padding: 2px 4px;
+  border: 1px solid var(--office-divider, #ddd);
+  border-radius: 3px;
+  background: var(--office-button-bg, #fff);
+  color: var(--text, #333);
+  cursor: pointer;
+  min-width: 64px;
+}
+
 /* ════════════ 右键菜单 (学 OO DocumentHolderExt 模式) ════════════ */
 .oo-ctx-menu hr {
   margin: 4px 0;

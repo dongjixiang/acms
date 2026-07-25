@@ -450,11 +450,18 @@ function mountBlockEditor() {
                 { id: 'inline-code', icon: '</>', label: '代码', action: function(){ wordOps.toggleInline('code'); } },
               ]},
               { title: '字号', buttons: [
-                { id: 'fs-12', icon: '12', label: '12', action: function(){ wordOps.setFontSize(12); } },
-                { id: 'fs-14', icon: '14', label: '14', action: function(){ wordOps.setFontSize(14); } },
-                { id: 'fs-16', icon: '16', label: '16', action: function(){ wordOps.setFontSize(16); } },
-                { id: 'fs-18', icon: '18', label: '18', action: function(){ wordOps.setFontSize(18); } },
-                { id: 'fs-24', icon: '24', label: '24', action: function(){ wordOps.setFontSize(24); } },
+                { id: 'font-size', type: 'select', value: '16',
+                  options: [
+                    { value: '8', label: '8' }, { value: '9', label: '9' },
+                    { value: '10', label: '10' }, { value: '11', label: '11' },
+                    { value: '12', label: '12' }, { value: '14', label: '14' },
+                    { value: '16', label: '16' }, { value: '18', label: '18' },
+                    { value: '20', label: '20' }, { value: '22', label: '22' },
+                    { value: '24', label: '24' }, { value: '30', label: '30' },
+                    { value: '36', label: '36' }, { value: '48', label: '48' },
+                  ],
+                  action: function(val){ wordOps.setFontSize(parseInt(val)); },
+                },
               ]},
               { title: '字体', buttons: [
                 { id: 'ff-sans',  icon: 'Aa', label: 'Sans',  action: function(){ wordOps.setFontFamily('sans'); } },

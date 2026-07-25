@@ -304,6 +304,10 @@
     // 新 block 类型：heading → 变 paragraph；其它保持同类型
     var newType = curBlock.type;
     var newAttrs = {};
+    // 继承当前 block 的格式 (字号/对齐/字体)
+    if (curBlock.attrs && curBlock.attrs.formatting) {
+      newAttrs.formatting = JSON.parse(JSON.stringify(curBlock.attrs.formatting));
+    }
     if (curBlock.type === 'heading') {
       newType = 'paragraph';
     } else if (curBlock.type === 'bulletList' || curBlock.type === 'orderedList') {

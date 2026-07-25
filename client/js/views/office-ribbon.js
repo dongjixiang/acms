@@ -41,6 +41,22 @@
   }
 
   function renderButton(b) {
+    if (b.type === 'select' && b.options) {
+      var sel = el('select', 'oo-ribbon-select');
+      sel.dataset.btnId = b.id || '';
+      sel.title = b.label || b.id || '';
+      b.options.forEach(function (opt) {
+        var optEl = document.createElement('option');
+        optEl.value = opt.value;
+        optEl.textContent = opt.label || opt.value;
+        if (opt.value === b.value) optEl.selected = true;
+        sel.appendChild(optEl);
+      });
+      sel.onchange = function () {
+        if (typeof b.action === 'function') b.action(sel.value);
+      };
+      return sel;
+    }
     var cls = 'oo-ribbon-btn' + (b.large ? ' is-large' : '') + (b.active ? ' is-active' : '');
     var btn = el('button', cls);
     btn.dataset.btnId = b.id || '';
@@ -115,9 +131,9 @@
     function findButtonEl(tabId, btnId) {
       var panel = state.contentEls[tabId];
       if (!panel) return null;
-      var btns = panel.querySelectorAll('.oo-ribbon-btn');
-      for (var i = 0; i < btns.length; i++) {
-        if (btns[i].dataset.btnId === btnId) return btns[i];
+      var els = panel.querySelectorAll('.oo-ribbon-btn, .oo-ribbon-select');
+      for (var i = 0; i < els.length; i++) {
+        if (els[i].dataset.btnId === btnId) return els[i];
       }
       return null;
     }
@@ -134,6 +150,10 @@
           var lblEl = b.querySelector('.label');
           if (lblEl) lblEl.textContent = label;
         }
+      },
+      setSelectValue: function (tabId, selectId, value) {
+        var el = findButtonEl(tabId, selectId);
+        if (el && el.tagName === 'SELECT') el.value = value;
       },
       getActiveTab: function () { return state.activeTab; },
       destroy: function () {
