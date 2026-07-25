@@ -466,7 +466,7 @@
         if (div._wasDragged) { div._wasDragged = false; return; }
         if (typeof icon.onClick === 'function') icon.onClick();
       });
-      // ── 右键图标 → 移除快捷方式 ──
+      // ── 右键图标 → 操作菜单 ──
       div.addEventListener('contextmenu', function(e) {
         e.preventDefault();
         e.stopPropagation();
@@ -475,23 +475,76 @@
         if (old) old.remove();
         var menu = document.createElement('div');
         menu.id = 'di-context-menu';
-        menu.style.cssText = 'position:fixed;z-index:100000;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:4px;min-width:140px;box-shadow:0 4px 16px rgba(0,0,0,0.3);font-size:13px';
-        var item = document.createElement('div');
-        item.textContent = '❌ 从桌面移除';
-        item.style.cssText = 'padding:6px 10px;border-radius:4px;cursor:pointer;display:flex;align-items:center;gap:6px;color:var(--accent2)';
-        item.addEventListener('mouseenter', function() { item.style.background = 'var(--bg3)'; });
-        item.addEventListener('mouseleave', function() { item.style.background = 'transparent'; });
-        menu.appendChild(item);
-        menu.style.left = e.clientX + 'px';
-        menu.style.top = e.clientY + 'px';
-        document.body.appendChild(menu);
-        // 点击移除
-        item.addEventListener('click', function() {
+        menu.style.cssText = 'position:fixed;z-index:100000;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:4px;min-width:150px;box-shadow:0 4px 16px rgba(0,0,0,0.3);font-size:13px';
+
+        // ── 从桌面移除 ──
+        var removeItem = document.createElement('div');
+        removeItem.textContent = '❌ 从桌面移除';
+        removeItem.style.cssText = 'padding:6px 10px;border-radius:4px;cursor:pointer;display:flex;align-items:center;gap:6px;color:var(--accent2)';
+        removeItem.addEventListener('mouseenter', function() { removeItem.style.background = 'var(--bg3)'; });
+        removeItem.addEventListener('mouseleave', function() { removeItem.style.background = 'transparent'; });
+        removeItem.addEventListener('click', function() {
           menu.remove();
           if (window.ACMSWin && typeof ACMSWin.unpinDesktopIcon === 'function') {
             ACMSWin.unpinDesktopIcon(icon.id);
           }
         });
+        menu.appendChild(removeItem);
+
+        // ── 修改图标 ──
+        var changeItem = document.createElement('div');
+        changeItem.style.cssText = 'padding:6px 10px;border-radius:4px;cursor:pointer;display:flex;align-items:center;gap:6px';
+        changeItem.innerHTML = '<span style="font-size:16px">' + icon.icon + '</span> 修改图标…';
+        changeItem.addEventListener('mouseenter', function() { changeItem.style.background = 'var(--bg3)'; });
+        changeItem.addEventListener('mouseleave', function() { changeItem.style.background = 'transparent'; });
+        changeItem.addEventListener('click', async function() {
+          menu.remove();
+          if (typeof window.showIconPicker !== 'function') return;
+          var newIcon = await window.showIconPicker({ current: icon.icon, title: '修改桌面图标' });
+          if (!newIcon || newIcon === icon.icon) return;
+
+          // 1. 更新 DOM
+          var emojiEl = div.querySelector('.di-emoji');
+          if (emojiEl) emojiEl.textContent = newIcon;
+
+          // 2. 更新 localStorage pinned items
+          if (window.ACMSWin && typeof ACMSWin.getPinnedIcons === 'function') {
+            var pinned = ACMSWin.getPinnedIcons();
+            var found = false;
+            pinned.forEach(function(p) {
+              if (p.id === icon.id) { p.icon = newIcon; found = true; }
+            });
+            if (found) {
+              localStorage.setItem('acms-desktop-pinned', JSON.stringify(pinned));
+              // 3. 通知桌面图标管理器刷新
+              window.dispatchEvent(new CustomEvent('desktop-icons-changed'));
+            }
+          }
+
+          // 4. 尝试更新对应的 launcher item 图标覆盖
+          var launcherLabel = icon.label || '';
+          var launcherEl = document.querySelector('.launcher-item .li-label');
+          if (launcherEl && launcherEl.textContent.trim() === launcherLabel) {
+            var parentItem = launcherEl.closest('.launcher-item');
+            if (parentItem) {
+              var iconEl = parentItem.querySelector('.li-icon');
+              if (iconEl) iconEl.textContent = newIcon;
+              // 保存到 localStorage icon overrides
+              if (parentItem.id) {
+                try {
+                  var map = JSON.parse(localStorage.getItem('acms-icon-overrides') || '{}');
+                  map[parentItem.id] = newIcon;
+                  localStorage.setItem('acms-icon-overrides', JSON.stringify(map));
+                } catch(e) {}
+              }
+            }
+          }
+        });
+        menu.appendChild(changeItem);
+
+        menu.style.left = e.clientX + 'px';
+        menu.style.top = e.clientY + 'px';
+        document.body.appendChild(menu);
         // 点击外部关闭
         function closeMenu(ev) {
           if (!menu.contains(ev.target)) {

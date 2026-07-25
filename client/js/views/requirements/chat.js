@@ -1133,6 +1133,37 @@ async function chatSendDetect(reqId, text) {
         }
         chatScrollToBottom(c);
       }
+      // v0.65: session 模式关联了隐藏 requirement → 轮询音乐/视频结果
+      if (data.sessionRequirementId && data.musicCardJson) {
+        var _pollReqId = data.sessionRequirementId;
+        var _musicAttempts = 0;
+        var _musicTimer = setInterval(function() {
+          _musicAttempts++;
+          api('GET', '/requirements/' + _pollReqId + '/supplement-history').then(function(_hr) {
+            var _history = _hr.history || [];
+            var _stream = document.getElementById('chat-stream-msgs-' + reqId);
+            if (!_stream) { clearInterval(_musicTimer); return; }
+            for (var _i = 0; _i < _history.length; _i++) {
+              var _entry = _history[_i];
+              if (_entry.source === 'music_result' && _entry.text && typeof renderMusicBubble === 'function') {
+                try {
+                  var _card = JSON.parse(_entry.text);
+                  if (_card.type === 'music_card') {
+                    var _html = renderMusicBubble(_card);
+                    if (_html) {
+                      _stream.insertAdjacentHTML('beforeend', '<div class="chat-bubble chat-bubble-system"><div class="chat-bubble-meta"><span class="chat-label">🎵</span></div>' + _html + '</div>');
+                      chatScrollToBottom(_stream);
+                    }
+                    clearInterval(_musicTimer);
+                    return;
+                  }
+                } catch(e) {}
+              }
+            }
+            if (_musicAttempts >= 30) clearInterval(_musicTimer);
+          }).catch(function() {});
+        }, 2000);
+      }
       return;
     }
 

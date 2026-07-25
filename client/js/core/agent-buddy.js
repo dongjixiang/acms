@@ -495,29 +495,59 @@
     return img.image_url_output || (img.options && img.options[0] && img.options[0].image_url_output) || '';
   }
 
+  function isNonPlanTerminal(state) {
+    var img = state && state.assistImage;
+    var email = state && state.assistEmail;
+    return (img && ['done', 'failed'].indexOf(img.status) >= 0)
+        || (email && ['done', 'failed'].indexOf(email.status) >= 0);
+  }
+
   function updateActionCard(card, state, action) {
     if (!card) return;
     var plan = state.plan || {};
     var steps = Array.isArray(plan.steps) ? plan.steps : [];
     var mode = action && action.mode || 'conversational_action';
     var summary = plan.summary || (mode === 'conversational_action' ? '小吉正在连续执行' : '小吉正在执行');
-    var stepsHtml = steps.length ? steps.map(function(step) {
-      var meta = actionStatusMeta(step.status);
-      var label = step.tool === 'generate_image' ? '生成图片'
-        : step.tool === 'send_email' ? '准备邮件'
-        : step.tool === 'document_gen' ? '生成文档'
-        : step.tool === 'web_research' || step.tool === 'web_search' ? '搜索资料'
-        : step.tool;
-      return '<div class="ap-action-step ap-step-' + escHtml(step.status || 'pending') + '">'
-        + '<span class="ap-action-step-icon">' + meta[0] + '</span>'
-        + '<span class="ap-action-step-label">' + escHtml(label || '步骤') + '</span>'
-        + '<span class="ap-action-step-state">' + escHtml(meta[1]) + '</span></div>';
-    }).join('') : '<div class="ap-action-empty">正在准备动作…</div>';
+
+    // 无 plan steps 时，检查 assistImage / assistEmail 独立状态（single_action 模式）
+    var img = state && state.assistImage;
+    var email = state && state.assistEmail;
+    var stepsHtml;
+    if (steps.length) {
+      stepsHtml = steps.map(function(step) {
+        var meta = actionStatusMeta(step.status);
+        var label = step.tool === 'generate_image' ? '生成图片'
+          : step.tool === 'send_email' ? '准备邮件'
+          : step.tool === 'document_gen' ? '生成文档'
+          : step.tool === 'web_research' || step.tool === 'web_search' ? '搜索资料'
+          : step.tool;
+        return '<div class="ap-action-step ap-step-' + escHtml(step.status || 'pending') + '">'
+          + '<span class="ap-action-step-icon">' + meta[0] + '</span>'
+          + '<span class="ap-action-step-label">' + escHtml(label || '步骤') + '</span>'
+          + '<span class="ap-action-step-state">' + escHtml(meta[1]) + '</span></div>';
+      }).join('');
+    } else if (img && img.status === 'done') {
+      stepsHtml = '<div class="ap-action-step ap-step-done">'
+        + '<span class="ap-action-step-icon">✓</span>'
+        + '<span class="ap-action-step-label">生成图片</span>'
+        + '<span class="ap-action-step-state">完成</span></div>';
+    } else if (img && img.status === 'failed') {
+      stepsHtml = '<div class="ap-action-step ap-step-failed">'
+        + '<span class="ap-action-step-icon">!</span>'
+        + '<span class="ap-action-step-label">生成图片</span>'
+        + '<span class="ap-action-step-state">失败：' + escHtml(img.error || '未知错误') + '</span></div>';
+    } else if (img && (img.status === 'running' || img.status === 'pending')) {
+      stepsHtml = '<div class="ap-action-step ap-step-running">'
+        + '<span class="ap-action-step-icon">◌</span>'
+        + '<span class="ap-action-step-label">生成图片</span>'
+        + '<span class="ap-action-step-state">生成中…</span></div>';
+    } else {
+      stepsHtml = '<div class="ap-action-empty">正在准备动作…</div>';
+    }
 
     var imageUrl = imagePreviewUrl(card.dataset.requirementId, state);
     var imageHtml = imageUrl ? '<img class="ap-action-image" src="' + escHtml(imageUrl) + '" alt="生成图片">' : '';
     var pending = state.pendingEmail;
-    var email = state.assistEmail;
     var emailHtml = '';
     if (pending) {
       var attachments = Array.isArray(pending.attachments) ? pending.attachments : [];
@@ -534,12 +564,13 @@
       emailHtml = '<div class="ap-action-result ap-result-failed">! 邮件发送失败：' + escHtml(email.error || '未知错误') + '</div>';
     }
 
-    var terminal = ['done', 'failed'].indexOf(plan.status) >= 0 || (email && ['done', 'failed'].indexOf(email.status) >= 0);
+    var terminal = ['done', 'failed'].indexOf(plan.status) >= 0
+      || isNonPlanTerminal(state);
     card.innerHTML = '<div class="ap-action-head"><span>⚡</span><b>' + escHtml(summary) + '</b>'
       + '<span class="ap-action-mode">' + escHtml(mode) + '</span></div>'
       + '<div class="ap-action-steps">' + stepsHtml + '</div>' + imageHtml + emailHtml
       + '<button class="ap-action-trace" data-action="toggle-trace">▼ 查看执行详情</button>'
-      + '<div class="ap-action-trace-body" hidden>' + escHtml(JSON.stringify({ planStatus: state.planStatus, plan: plan }, null, 2)) + '</div>';
+      + '<div class="ap-action-trace-body" hidden>' + escHtml(JSON.stringify({ planStatus: state.planStatus, plan: plan, assistImage: img, assistEmail: email }, null, 2)) + '</div>';
 
     var sendBtn = card.querySelector('[data-action="send-email"]');
     if (sendBtn) sendBtn.onclick = function(e) { e.stopPropagation(); sendActionEmail(card.dataset.requirementId, card, sendBtn); };
@@ -566,7 +597,7 @@
         .then(function(data) {
           var card = document.getElementById('ap-action-' + requirementId);
           if (card && data && data.state) updateActionCard(card, data.state, { mode: card.dataset.mode || 'conversational_action' });
-          if (card && data && data.state && data.state.planStatus === 'done') {
+          if (card && data && data.state && (data.state.planStatus === 'done' || isNonPlanTerminal(data.state))) {
             clearInterval(_actionPollers[requirementId]);
             delete _actionPollers[requirementId];
           }

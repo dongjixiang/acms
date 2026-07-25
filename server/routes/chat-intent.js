@@ -16,7 +16,49 @@ const { runToolLoop } = require('../services/llm-adapter');
 const { execute: runtimeExec } = require('../services/agent-runtime');
 const modelStore = require('../stores/model-store');
 
-// v0.20d：7 个外部 tool（play_music 由预检覆盖，不加进 LLM 可见避免重复触发）
+// v0.65: 自由对话 session → 创建隐藏 requirement，让 play_music/play_video 等工具有真实存储容器
+function getOrCreateSessionRequirement(sessionId) {
+  if (!sessionId) return null;
+  try {
+    const { collection } = require('../db/connection');
+    const mem = collection('buddy_memory').findOne(m => m.key === 'session_req:' + sessionId);
+    if (mem) {
+      const existing = reqStore.getById(mem.value);
+      if (existing) return existing;
+    }
+    // 获取/创建隐藏项目
+    const projectSlug = 'agent-buddy-actions';
+    const projectStore = require('../stores/project-store');
+    let project = collection('projects').findOne(p => p.slug === projectSlug);
+    if (!project) {
+      project = projectStore.create({
+        name: '小吉动作记录', slug: projectSlug,
+        description: '小吉即时聊天动作的隐藏运行容器。',
+        owner: 'system',
+      });
+      collection('projects').update(p => p.id === project.id, { system_project: 1 });
+      project = collection('projects').findOne(p => p.id === project.id) || project;
+    }
+    const req = reqStore.create({
+      projectId: project.id,
+      title: '自由对话会话 · ' + sessionId,
+      description: '自由对话会话的隐藏运行容器（音乐/视频/图片等辅助工具）。',
+      createdBy: 'system', status: 'idea', role: 'system',
+    });
+    reqStore.update(req.id, { chat_mode: 'free', system_record: 1 });
+    // 存映射
+    const value = req.id;
+    if (mem) {
+      collection('buddy_memory').update(m => m.key === 'session_req:' + sessionId, { value, updated_at: new Date().toISOString() });
+    } else {
+      collection('buddy_memory').insert({ key: 'session_req:' + sessionId, user_id: 'system', value, updated_at: new Date().toISOString() });
+    }
+    return reqStore.getById(req.id);
+  } catch (e) {
+    console.warn('[getOrCreateSessionRequirement] 失败:', e.message);
+    return null;
+  }
+}
 const INTENT_TOOL_NAMES = [
   'web_search', 'web_research', 'fetch_url', 'get_current_time',  // 信息类
   'agnes_generate_video',  // 视频生成（v0.18 直接调 Agnes API）
@@ -220,13 +262,20 @@ router.post('/detect-and-respond', async (req, res, next) => {
       const systemPrompt = '你是 ACMS 自由对话助手。用户通过 ACMS（智能体协同管理系统）与你交流。请用中文简洁回答用户的问题（Markdown 格式）。可以主动使用 web_search 工具查询实时信息。不要反问澄清需求——用户只是自由提问。';
       const messages = [{ role: 'system', content: systemPrompt }, ...historyMessages, { role: 'user', content: text }];
 
+      // v0.65: session 模式 → 创建隐藏 requirement 作为工具存储容器（play_music/play_video/generate_image 需要真实 reqId）
+      let contextReqId = reqId;
+      if (isSession) {
+        const sessionReq = getOrCreateSessionRequirement(reqId);
+        if (sessionReq) contextReqId = sessionReq.id;
+      }
+
       try {
         const runtimeResult = await runtimeExec({
           modelId: model.id,
           messages,
-          toolNames: INTENT_TOOL_NAMES.filter(n => n !== 'plan_execute'),
+          toolNames: [...INTENT_TOOL_NAMES.filter(n => n !== 'plan_execute'), 'play_music'],
           maxRounds: 3,
-          context: { reqId },
+          context: { reqId: contextReqId },
           caller: 'chat-intent-session',
         });
         const aiReply = runtimeResult.content;
@@ -247,10 +296,10 @@ router.post('/detect-and-respond', async (req, res, next) => {
           }
         }
 
-        return res.json({ ok: true, reqId, directReply: true, aiReply, musicCardJson });
+        return res.json({ ok: true, reqId, directReply: true, aiReply, musicCardJson, sessionRequirementId: contextReqId !== reqId ? contextReqId : undefined });
       } catch (e) {
         // AI 失败：user 消息已写，回复错误提示但不写 assistant（避免污染历史）
-        return res.json({ ok: true, reqId, directReply: true, aiReply: `⚠️ AI 暂时无响应（${e.message.slice(0, 100)}），请稍后再试。`, musicCardJson });
+        return res.json({ ok: true, reqId, directReply: true, aiReply: `⚠️ AI 暂时无响应（${e.message.slice(0, 100)}），请稍后再试。`, musicCardJson, sessionRequirementId: contextReqId !== reqId ? contextReqId : undefined });
       }
     }
 
@@ -524,7 +573,7 @@ function extractMusicIntent(text) {
     if (song) return { song, artist: artist || undefined };
   }
   // 模式2："想听/播放/放/听 [歌名]"
-  m = text.match(/(?:想听|播放|放一首?|听一首?|听)\s+([^，。！？\n]{1,30})/);
+  m = text.match(/(?:想听|播放|放一首?|听一首?|听)\s*([^，。！？\n]{1,30})/);
   if (m && m[1]) return { song: m[1].trim() };
   return {};
 }

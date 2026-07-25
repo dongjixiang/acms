@@ -218,8 +218,59 @@
     };
   }
 
+  // ── 图标覆盖（localStorage 持久化） ──
+  var ICON_OVERRIDES_KEY = 'acms-icon-overrides';
+
+  function getIconOverrides() {
+    try { return JSON.parse(localStorage.getItem(ICON_OVERRIDES_KEY) || '{}'); } catch(e) { return {}; }
+  }
+
+  function getIconOverrideId(el) {
+    // 优先 DOM id，其次 data-icon-id（动态绑定），最后 fallback 基于 label
+    var id = el.id || el.getAttribute('data-icon-id') || '';
+    if (id) return id;
+    var labelEl = el.querySelector('.li-label');
+    if (labelEl) {
+      id = 'li-' + labelEl.textContent.trim().toLowerCase().replace(/[\s\/]+/g, '-');
+      el.setAttribute('data-icon-id', id);
+      return id;
+    }
+    return '';
+  }
+
+  function saveIconOverride(id, icon) {
+    var map = getIconOverrides();
+    map[id] = icon;
+    localStorage.setItem(ICON_OVERRIDES_KEY, JSON.stringify(map));
+  }
+
+  function getEffectiveIcon(el) {
+    var id = getIconOverrideId(el);
+    var map = getIconOverrides();
+    if (id && map[id]) return map[id];
+    // 其次 DOM 中的原始图标
+    var iconEl = el.querySelector('.li-icon');
+    return iconEl ? iconEl.textContent : '📄';
+  }
+
+  // ── 应用图标覆盖到 DOM ──
+  function applyIconOverrides() {
+    var map = getIconOverrides();
+    Object.keys(map).forEach(function(id) {
+      // 先按 DOM id 找
+      var el = document.getElementById(id);
+      if (!el) {
+        // 再按 data-icon-id 找
+        el = document.querySelector('[data-icon-id="' + id.replace(/"/g, '\\"') + '"]');
+      }
+      if (!el) return;
+      var iconEl = el.querySelector('.li-icon');
+      if (iconEl) iconEl.textContent = map[id];
+    });
+  }
+
   // ─────────────────────────────────────────────
-  // 右键 .launcher-item → 弹出固定/移除菜单
+  // 右键 .launcher-item → 弹出固定/移除 + 修改图标菜单
   // ─────────────────────────────────────────────
   function bindLauncherContextMenu() {
     // 使用事件委托监听所有 .launcher-item 的 contextmenu
@@ -240,8 +291,9 @@
       // 获取图标信息
       var iconEl = item.querySelector('.li-icon');
       var labelEl = item.querySelector('.li-label');
-      var icon = iconEl ? iconEl.textContent : '📄';
+      var icon = getEffectiveIcon(item);
       var label = labelEl ? labelEl.textContent : item.textContent.trim();
+      var itemId = getIconOverrideId(item);
 
       // 生成唯一 id（基于 label 做 slug）
       var id = 'pinned-' + label.replace(/[\s\/]+/g, '-').toLowerCase();
@@ -258,27 +310,24 @@
         'position:fixed;left:' + e.clientX + 'px;top:' + e.clientY +
         'px;background:var(--bg2);border:1px solid var(--border);' +
         'border-radius:8px;padding:4px;z-index:100000;' +
-        'box-shadow:0 4px 16px rgba(0,0,0,0.4);min-width:140px;';
+        'box-shadow:0 4px 16px rgba(0,0,0,0.4);min-width:150px;';
 
-      var option = document.createElement('div');
-      option.style.cssText =
+      // ── 固定/移除 ──
+      var option1 = document.createElement('div');
+      option1.style.cssText =
         'padding:6px 12px;cursor:pointer;font-size:13px;border-radius:6px;' +
         'display:flex;align-items:center;gap:6px;white-space:nowrap;';
-      option.textContent = alreadyPinned ? '❌ 从桌面移除' : '📌 固定到桌面';
-      option.addEventListener('mouseenter', function() {
-        this.style.background = 'var(--bg3)';
-      });
-      option.addEventListener('mouseleave', function() {
-        this.style.background = 'transparent';
-      });
-      option.addEventListener('click', function() {
+      option1.textContent = alreadyPinned ? '❌ 从桌面移除' : '📌 固定到桌面';
+      option1.addEventListener('mouseenter', function() { this.style.background = 'var(--bg3)'; });
+      option1.addEventListener('mouseleave', function() { this.style.background = 'transparent'; });
+      option1.addEventListener('click', function() {
         if (window.ACMSWin) {
           if (alreadyPinned) {
             ACMSWin.unpinDesktopIcon(id);
           } else if (action) {
             ACMSWin.pinLauncherItem({
               id: id,
-              icon: icon,
+              icon: getEffectiveIcon(item),
               label: label,
               actionType: action.actionType,
               actionValue: action.actionValue,
@@ -287,7 +336,54 @@
         }
         menu.remove();
       });
-      menu.appendChild(option);
+      menu.appendChild(option1);
+
+      // ── 修改图标 ──
+      var option2 = document.createElement('div');
+      option2.style.cssText =
+        'padding:6px 12px;cursor:pointer;font-size:13px;border-radius:6px;' +
+        'display:flex;align-items:center;gap:6px;white-space:nowrap;';
+      option2.innerHTML = '<span style="font-size:16px">' + icon + '</span> 修改图标…';
+      option2.addEventListener('mouseenter', function() { this.style.background = 'var(--bg3)'; });
+      option2.addEventListener('mouseleave', function() { this.style.background = 'transparent'; });
+      option2.addEventListener('click', async function() {
+        var newIcon = await window.showIconPicker({ current: icon, title: '修改「' + label + '」图标' });
+        if (!newIcon || newIcon === icon) { menu.remove(); return; }
+
+        // 1. 更新 DOM
+        if (iconEl) iconEl.textContent = newIcon;
+
+        // 2. 持久化图标覆盖
+        saveIconOverride(itemId, newIcon);
+
+        // 3. 如果是 L3 app（method 匹配），调用后端 PATCH API
+        var method = tryExtractAppMethod(item);
+        if (method) {
+          try {
+            await api('PATCH', '/apps/' + method + '/icon', { icon: newIcon });
+            toast('✅ 应用图标已更新');
+          } catch (err) {
+            console.warn('[icons] PATCH 失败（非 L3 app，仅本地保存）:', err);
+          }
+        }
+
+        // 4. 更新桌面固定图标
+        var pinned = getPinned() || [];
+        var matched = false;
+        pinned.forEach(function(p) {
+          if (p.id === id) { p.icon = newIcon; matched = true; }
+        });
+        if (matched) {
+          savePinned(pinned);
+          refreshDesktopIcons();
+        }
+
+        // 5. 触发全局事件，让其他打开的管理器刷新
+        window.dispatchEvent(new CustomEvent('acms-icons-changed'));
+
+        menu.remove();
+      });
+      menu.appendChild(option2);
 
       // 点击其他地方关闭菜单
       var closeMenu = function(ev) {
@@ -302,6 +398,18 @@
 
       document.body.appendChild(menu);
     });
+  }
+
+  // ── 从 launcher item 提取 app method（如果是 L3 app）──
+  function tryExtractAppMethod(item) {
+    var onclickAttr = item.getAttribute('onclick') || '';
+    // launchView('xxx') 匹配视图名为 app method
+    var match = onclickAttr.match(/launchView\s*\(\s*'([^']+)'\s*\)/);
+    if (match) return match[1];
+    // launchAssistTool('xxx') 匹配
+    match = onclickAttr.match(/launchAssistTool\s*\(\s*'([^']+)'/);
+    if (match) return match[1];
+    return null;
   }
 
   // ─────────────────────────────────────────────
@@ -441,9 +549,8 @@
       // 非管理员隐藏系统管理
       if (!isAdmin && onclickAttr.indexOf('launchAdmin') !== -1) return;
 
-      var iconEl = el.querySelector('.li-icon');
+      var icon = getEffectiveIcon(el);
       var labelEl = el.querySelector('.li-label');
-      var icon = iconEl ? iconEl.textContent : '📄';
       var label = labelEl ? labelEl.textContent.trim() : '';
       if (!label) return;
 
@@ -465,9 +572,8 @@
     var subItems = document.querySelectorAll('#launcher-chat-submenu .launcher-item');
     subItems.forEach(function(el) {
       var onclickAttr = el.getAttribute('onclick') || '';
-      var iconEl = el.querySelector('.li-icon');
+      var icon = getEffectiveIcon(el);
       var labelEl = el.querySelector('.li-label');
-      var icon = iconEl ? iconEl.textContent : '📄';
       var label = labelEl ? labelEl.textContent.trim() : '';
       if (!label) return;
 
@@ -514,9 +620,13 @@
    */
   window.setupDesktopIcons = function setupDesktopIcons() {
     extendACMSWin();
+    applyIconOverrides();  // 恢复 localStorage 中的图标覆盖
     refreshDesktopIcons();
     bindLauncherContextMenu();
     registerManagerLoader();
+
+    // 监听图标变更事件，刷新桌面固定图标
+    window.addEventListener('acms-icons-changed', refreshDesktopIcons);
   };
 
   /**

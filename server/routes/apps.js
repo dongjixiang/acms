@@ -17,4 +17,17 @@ router.get('/:method', (req, res) => {
   res.json({ app: safe });
 });
 
+// 更新 app 图标
+router.patch('/:method/icon', (req, res) => {
+  const { icon } = req.body;
+  if (!icon || typeof icon !== 'string') {
+    return res.status(400).json({ error: 'INVALID_ICON' });
+  }
+  const result = appManager.updateAppIcon(req.params.method, icon);
+  if (result.error) {
+    return res.status(result.error === 'APP_NOT_FOUND' ? 404 : 500).json(result);
+  }
+  res.json({ success: true });
+});
+
 module.exports = router;

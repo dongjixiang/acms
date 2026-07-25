@@ -81,7 +81,7 @@ function normalizeRoute(raw) {
 }
 
 async function routeMessage(modelId, message, history = []) {
-  const historyText = (history || []).slice(-4).map(h => `${h.role}: ${String(h.text || '').slice(0, 180)}`).join('\n');
+  const historyText = (history || []).slice(-4).map(h => `${h.role}: ${String(h.text || '').slice(0, 180)}`).join('\\n');
   const system = `你是 ACMS 小吉的动作路由器。只做分类，不调用工具，不制定开发计划。
 输出严格 JSON：
 {"mode":"conversation|single_action|conversational_action","confidence":0.0,"capabilities":[],"requires_confirmation":false,"reason":"..."}
@@ -91,7 +91,8 @@ async function routeMessage(modelId, message, history = []) {
 - 一个明确工具动作 → single_action。
 - 两个及以上有依赖的动作（如生成图片后发邮件）→ conversational_action。
 - send email 是外部副作用，必须包含 email_draft + email_send，requires_confirmation=true。
-- 用户描述简短但动作明确时照常分类，不要因为缺少主题、数量等默认参数判无法理解。`;
+- 用户描述简短但动作明确时照常分类，不要因为缺少主题、数量等默认参数判无法理解。
+- **重要：mode 为 single_action 或 conversational_action 时，必须根据用户意图将相关能力填入 capabilities 数组，不要留空。**`;
   const result = await callLLM(modelId, [
     { role: 'system', content: system },
     ...(historyText ? [{ role: 'user', content: `最近对话：\n${historyText}` }] : []),

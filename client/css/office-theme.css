@@ -499,3 +499,118 @@
   aspect-ratio: 16/9;
   border-radius: 4px;
 }
+
+/* ════════════ PPT Transitions (学 OO Transitions.js 设计模式) ════════════ */
+/* AGPL 安全: 全部自写 CSS keyframes, 不复制 OO 源码 */
+
+/* ─── 幻灯片放映遮罩层 ─── */
+.ppt-slideshow-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ppt-slideshow-slide {
+  width: 80vw;
+  max-width: 1000px;
+  min-height: 60vh;
+  max-height: 85vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 48px 64px;
+  border-radius: 8px;
+  position: relative;
+}
+.ppt-sls-cover {
+  background: linear-gradient(135deg, #1a1a2e, #16213e);
+  color: #fff;
+  text-align: center;
+}
+.ppt-sls-cover h1 { font-size: 48px; margin-bottom: 16px; }
+.ppt-sls-cover .ppt-slideshow-content { font-size: 22px; color: #aab; }
+
+.ppt-sls-content {
+  background: linear-gradient(135deg, #0f0f23, #1a1a3e);
+  color: #e0e0e0;
+}
+.ppt-sls-content h1 { font-size: 32px; margin-bottom: 24px; color: #fff; }
+.ppt-sls-content .ppt-slideshow-content { font-size: 18px; line-height: 1.8; }
+
+.ppt-sls-blank {
+  background: #111;
+}
+
+.ppt-slideshow-slide-inner {
+  max-height: calc(85vh - 60px);
+  overflow: auto;
+}
+
+.ppt-slideshow-nav {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: rgba(0,0,0,0.5);
+  padding: 6px 16px;
+  border-radius: 20px;
+}
+.ppt-sls-nav-btn {
+  background: rgba(255,255,255,0.15);
+  border: none;
+  color: #fff;
+  font-size: 16px;
+  padding: 6px 14px;
+  border-radius: 14px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.ppt-sls-nav-btn:hover { background: rgba(255,255,255,0.3); }
+.ppt-sls-nav-btn:disabled { opacity: 0.3; cursor: default; }
+.ppt-sls-page { color: #aaa; font-size: 13px; }
+
+/* ─── Transition keyframes (学 OO _arrEffectName 分组: subtle / exciting) ─── */
+
+/* fade: 透明度过渡 (学 OO "Fade" = subtle) */
+@keyframes ppt-trans-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* push: 平移进入 (学 OO "Push" = subtle, 方向通过 slide-direction 变量控制) */
+@keyframes ppt-trans-push {
+  from { transform: translateX(100px); opacity: 0.3; }
+  to   { transform: translateX(0);     opacity: 1; }
+}
+
+/* wipe: clip-path 擦除效果 (学 OO "Wipe" = subtle) */
+@keyframes ppt-trans-wipe {
+  from { clip-path: inset(0 100% 0 0); }
+  to   { clip-path: inset(0 0 0 0); }
+}
+
+/* dissolve: 溶解 (学 OO "Dissolve" = exciting) */
+@keyframes ppt-trans-dissolve {
+  from { opacity: 0; filter: blur(4px); }
+  to   { opacity: 1; filter: blur(0); }
+}
+
+/* zoom: 缩放进入 (学 OO "Zoom" = exciting) */
+@keyframes ppt-trans-zoom {
+  from { transform: scale(0.7); opacity: 0; }
+  to   { transform: scale(1);   opacity: 1; }
+}
+
+/* none: 无动画 — 直接显示 */
+@keyframes ppt-trans-none {
+  from { opacity: 1; }
+  to   { opacity: 1; }
+}

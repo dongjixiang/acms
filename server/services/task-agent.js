@@ -671,7 +671,7 @@ ${task.description || '(no description)'}
 
   try {
 
-    eventBus.emit('task.completed', {
+    await eventBus.emit('task.completed', {
 
       projectId,
 
@@ -1823,7 +1823,7 @@ async function runMultiRoleSequence(task, options = {}) {
           taskStore.update(taskId, { progress_note: progressNote });
         } catch (e) { /* silent */ }
         try {
-          eventBus.emit('task.failed', {
+          await eventBus.emit('task.failed', {
             projectId,
             actor: { id: 'agent-acms-self', type: 'agent', name: 'ACMS Agent' },
             target: { type: 'task', id: taskId },
@@ -1964,7 +1964,7 @@ async function runMultiRoleSequence(task, options = {}) {
 
       try {
 
-        eventBus.emit('task.failed', {
+        await eventBus.emit('task.failed', {
 
           projectId,
 
@@ -2113,7 +2113,7 @@ async function runMultiRoleSequence(task, options = {}) {
 
   try {
 
-    eventBus.emit(eventType, {
+    await eventBus.emit(eventType, {
 
       projectId,
 

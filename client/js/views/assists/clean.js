@@ -30,6 +30,13 @@
  */
 async function chatCleanPrompt(reqId) {
   if (!reqId) return;
+
+  // ═══ 自由对话：清理功能暂不支持（无 requirement 的 supplement_history）
+  if (reqId === '__free__' || (reqId && reqId.startsWith('sess-'))) {
+    toast('自由对话暂不支持清理功能，直接发新消息即可覆盖', 'info');
+    return;
+  }
+
   const stream = document.getElementById(`chat-stream-msgs-${reqId}`);
   if (!stream) return;
 

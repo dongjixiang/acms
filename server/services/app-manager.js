@@ -99,6 +99,25 @@ function getAppManifest(method) {
 }
 
 /**
+ * 更新 app 图标
+ */
+function updateAppIcon(method, icon) {
+  const manifests = loadManifests();
+  const manifest = manifests[method];
+  if (!manifest) return { error: 'APP_NOT_FOUND' };
+
+  const manifestPath = path.join(manifest._dir, 'manifest.json');
+  try {
+    manifest.icon = icon;
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
+    _manifestCache = null; // 清除缓存让下次读取
+    return { success: true };
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+/**
  * 清除缓存（开发时用于 hot-reload）
  */
 function clearCache() {
@@ -106,4 +125,4 @@ function clearCache() {
   _apps = {};
 }
 
-module.exports = { loadManifests, registerAll, getAllApps, getAppService, getAppManifest, clearCache };
+module.exports = { loadManifests, registerAll, getAllApps, getAppService, getAppManifest, updateAppIcon, clearCache };

@@ -1,7 +1,7 @@
 {
   "method": "image_gen",
   "name": "图片生成",
-  "icon": "🖼️",
+  "icon": "🎨",
   "type": "leisure",
   "description": "AI 图片生成 — 调用 DALL-E / Agnes API",
   "author": "ACMS",

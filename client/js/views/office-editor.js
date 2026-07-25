@@ -884,7 +884,7 @@ updateNameBox();
 // 保留：缩略图侧边栏 / 标题+正文编辑 / +添加页 / 删除 / 保存
 // 升级：showPrompt 替代 prompt()
 function openPptEditor(w) {
-  var slides = [{ title: 'PPT 标题', content: '第一页正文\n支持多行\n- 项目 A\n- 项目 B', layout: 'content' }];
+  var slides = [{ title: 'PPT 标题', content: '第一页正文\n支持多行\n- 项目 A\n- 项目 B', layout: 'content', transition: { type: 'none', direction: 'from-right', duration: 500 } }];
   var cur = 0;
 
   // 布局下拉变化时改 placeholder + 字号
@@ -910,7 +910,7 @@ function openPptEditor(w) {
   // v0.62.5: PPT 操作函数集合（Ribbon + 标题栏共用）
   var pptOps = {
     addSlide: function () {
-      slides.push({ title: '新页面', content: '', layout: 'content' });
+      slides.push({ title: '新页面', content: '', layout: 'content', transition: { type: 'none', direction: 'from-right', duration: 500 } });
       cur = slides.length - 1;
       markPptDirty();
       render();
@@ -940,6 +940,82 @@ function openPptEditor(w) {
       }
     },
     save: function () { savePpt(); },
+    getCurrentTransition: function () {
+      var s = slides[cur];
+      return s.transition || { type: 'none', direction: 'from-right', duration: 500 };
+    },
+    setTransition: function (opts) {
+      var s = slides[cur];
+      if (!s.transition) s.transition = { type: 'none', direction: 'from-right', duration: 500 };
+      if (opts.type) s.transition.type = opts.type;
+      if (opts.direction) s.transition.direction = opts.direction;
+      if (opts.duration) s.transition.duration = opts.duration;
+      markPptDirty();
+      // 同步 Ribbon Transition tab 激活状态
+      if (window._pptRibbon) {
+        ['none','fade','push','wipe','dissolve','zoom'].forEach(function(t){
+          window._pptRibbon.setButtonActive('transit', 'transit-' + t, t === s.transition.type);
+        });
+        ['from-right','from-left','from-top','from-bottom'].forEach(function(d){
+          window._pptRibbon.setButtonActive('transit', 'dir-' + d.replace('from-',''), d === s.transition.direction);
+        });
+        [{id:'dur-fast',v:300},{id:'dur-med',v:500},{id:'dur-slow',v:1000}].forEach(function(d){
+          window._pptRibbon.setButtonActive('transit', d.id, d.v === s.transition.duration);
+        });
+      }
+    },
+    applyToAll: function () {
+      var t = slides[cur].transition || { type: 'none', direction: 'from-right', duration: 500 };
+      slides.forEach(function (s) { s.transition = JSON.parse(JSON.stringify(t)); });
+      markPptDirty();
+      if (typeof toast === 'function') toast('已应用到全部 ' + slides.length + ' 页', 'success');
+    },
+    startSlideshow: function () {
+      var oldOverlay = document.getElementById('ppt-slideshow-overlay');
+      if (oldOverlay) oldOverlay.parentNode.removeChild(oldOverlay);
+      var overlay = document.createElement('div');
+      overlay.id = 'ppt-slideshow-overlay';
+      overlay.className = 'ppt-slideshow-overlay';
+      document.body.appendChild(overlay);
+      var slideIdx = cur;
+      function renderSlide(idx) {
+        var s = slides[idx];
+        if (!s) return;
+        var trans = s.transition || { type: 'none', direction: 'from-right', duration: 500 };
+        var layoutClass = s.layout === 'cover' ? 'ppt-sls-cover' : (s.layout === 'blank' ? 'ppt-sls-blank' : 'ppt-sls-content');
+        overlay.innerHTML =
+          '<div class="ppt-slideshow-slide ' + layoutClass + '" style="animation:ppt-trans-' + trans.type + ' ' + trans.duration + 'ms ease">' +
+            '<div class="ppt-slideshow-slide-inner">' +
+              (s.title ? '<h1>' + escHtml(s.title) + '</h1>' : '') +
+              (s.content ? '<div class="ppt-slideshow-content">' + escHtml(s.content).replace(/\n/g, '<br>') + '</div>' : '') +
+            '</div>' +
+            '<div class="ppt-slideshow-nav">' +
+              '<button id="ppt-sls-prev" class="ppt-sls-nav-btn" ' + (idx <= 0 ? 'disabled' : '') + '>\u25C0</button>' +
+              '<span class="ppt-sls-page">' + (idx+1) + ' / ' + slides.length + '</span>' +
+              '<button id="ppt-sls-next" class="ppt-sls-nav-btn" ' + (idx >= slides.length-1 ? 'disabled' : '') + '>\u25B6</button>' +
+              '<button id="ppt-sls-close" class="ppt-sls-nav-btn" style="margin-left:auto">\u2715 \u9000\u51FA</button>' +
+            '</div>' +
+          '</div>';
+        document.getElementById('ppt-sls-next').onclick = function () { slideIdx = Math.min(slideIdx+1, slides.length-1); renderSlide(slideIdx); };
+        document.getElementById('ppt-sls-prev').onclick = function () { slideIdx = Math.max(slideIdx-1, 0); renderSlide(slideIdx); };
+        document.getElementById('ppt-sls-close').onclick = function () {
+          overlay.parentNode.removeChild(overlay);
+          document.removeEventListener('keydown', onKey);
+        };
+      }
+      function onKey(e) {
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === ' ') {
+          e.preventDefault(); slideIdx = Math.min(slideIdx+1, slides.length-1); renderSlide(slideIdx);
+        } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+          e.preventDefault(); slideIdx = Math.max(slideIdx-1, 0); renderSlide(slideIdx);
+        } else if (e.key === 'Escape') {
+          if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+          document.removeEventListener('keydown', onKey);
+        }
+      }
+      document.addEventListener('keydown', onKey);
+      renderSlide(slideIdx);
+    },
   };
 
   function markPptDirty() {
@@ -1027,6 +1103,34 @@ function openPptEditor(w) {
                   action: function(){ pptOps.setLayout('cover'); },   active: s.layout === 'cover' },
                 { id: 'layout-blank',   icon: '⬜', label: '空白', large: true,
                   action: function(){ pptOps.setLayout('blank'); },   active: s.layout === 'blank' },
+              ]},
+            ],
+          },
+          {
+            id: 'transit', label: '🎬 Transitions',
+            groups: [
+              { title: '效果', buttons: [
+                { id: 'transit-none',    icon: '🚫', label: '无',     action: function(){ pptOps.setTransition({ type: 'none' }); } },
+                { id: 'transit-fade',    icon: '🌫️', label: '淡入',  action: function(){ pptOps.setTransition({ type: 'fade' }); } },
+                { id: 'transit-push',    icon: '👉', label: '推动',  action: function(){ pptOps.setTransition({ type: 'push' }); } },
+                { id: 'transit-wipe',    icon: '🧹', label: '擦除',  action: function(){ pptOps.setTransition({ type: 'wipe' }); } },
+                { id: 'transit-dissolve',icon: '💧', label: '溶解',  action: function(){ pptOps.setTransition({ type: 'dissolve' }); } },
+                { id: 'transit-zoom',    icon: '🔍', label: '缩放',  action: function(){ pptOps.setTransition({ type: 'zoom' }); } },
+              ]},
+              { title: '方向', buttons: [
+                { id: 'dir-right', icon: '→', label: '右', action: function(){ pptOps.setTransition({ direction: 'from-right' }); } },
+                { id: 'dir-left',  icon: '←', label: '左', action: function(){ pptOps.setTransition({ direction: 'from-left' }); } },
+                { id: 'dir-top',   icon: '↑', label: '上', action: function(){ pptOps.setTransition({ direction: 'from-top' }); } },
+                { id: 'dir-bottom',icon: '↓', label: '下', action: function(){ pptOps.setTransition({ direction: 'from-bottom' }); } },
+              ]},
+              { title: '时长', buttons: [
+                { id: 'dur-fast', icon: '⚡', label: '快',  action: function(){ pptOps.setTransition({ duration: 300 }); } },
+                { id: 'dur-med',  icon: '⏸️', label: '中',  action: function(){ pptOps.setTransition({ duration: 500 }); }, active: true },
+                { id: 'dur-slow', icon: '🐢', label: '慢',  action: function(){ pptOps.setTransition({ duration: 1000 }); } },
+              ]},
+              { title: '操作', buttons: [
+                { id: 'apply-all', icon: '📋', label: '应用到全部', action: pptOps.applyToAll },
+                { id: 'slideshow', icon: '▶️', label: '开始放映', large: true, action: pptOps.startSlideshow },
               ]},
             ],
           },

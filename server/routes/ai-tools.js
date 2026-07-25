@@ -153,7 +153,7 @@ router.post('/requirements/:id/decompose-ai', async (req, res, next) => {
     }
 
     for (const task of createdTasks) {
-      eventBus.emit('task.created', {
+      await eventBus.emit('task.created', {
         projectId: requirement.project_id,
         actor: { id: 'ai-planner', type: 'agent' },
         target: { type: 'task', id: task.id },
@@ -447,7 +447,7 @@ router.post('/agent-execute', async (req, res, next) => {
 
     // 发出 task.submitted 事件（触发 reviewer 审核等后续流程）
     if (submitResult && !submitResult.error) {
-      eventBus.emit('task.submitted', {
+      await eventBus.emit('task.submitted', {
         projectId: submitResult.project_id,
         actor: { id: agentId || 'agent-xiaoji', type: 'agent' },
         target: { type: 'task', id: submitResult.id },
@@ -641,7 +641,7 @@ router.post('/decompose', async (req, res, next) => {
     }
 
     // 第三步：发出事件（触发下游流程）
-    eventBus.emit('tasks.decomposed', {
+    await eventBus.emit('tasks.decomposed', {
       projectId,
       parentId,
       createdTasks: createdTasks.map(t => t.id),

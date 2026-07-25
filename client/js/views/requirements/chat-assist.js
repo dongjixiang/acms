@@ -20,14 +20,18 @@
 
 async function chatAssist(reqId, method, extraBody) {
   // ═══ 自由对话兜底 ═══ 通过输入流触发
-  if (reqId === '__free__') {
-    // 对于音乐，拼成自然语言消息通过 detect-and-respond 触发
+  // reqId 可能是 __free__（旧占位符）或 sess-xxx（替换后的真实会话ID）
+  if (reqId === '__free__' || (reqId && reqId.startsWith('sess-'))) {
+    // 对于音乐，拼成自然语言消息通过 chatSend 触发
     if (method === 'music' && extraBody && extraBody.song) {
       var artist = extraBody.artist ? extraBody.artist + ' ' : '';
-      var input = document.getElementById('chat-input-__free__');
+      var inputId = 'chat-input-' + reqId;
+      var input = document.getElementById(inputId);
       if (input) {
-        input.value = '我想听' + artist + extraBody.song;
-        chatSend(reqId);
+        input.value = '我想听 ' + artist + extraBody.song;
+        try { await chatSend(reqId); } catch (e) {
+          toast('发送失败: ' + (e.message || '未知错误'), 'error');
+        }
       }
     } else {
       toast('自由对话模式暂不支持此工具，直接在输入框描述你的需求即可', 'info');
