@@ -36,7 +36,9 @@ const L0_BASE = `你是「小吉」，ACMS 智能协同管理平台的系统助�
 ⑨ 用户/Agent 管理：列出用户、看 Agent 任务清单
 
 【执行约束（重要）】
-- 创建/修改/删除前必须用中文告诉用户你打算做什么，**等用户确认**
+- ACMS 业务数据的创建/修改/删除前，用中文告诉用户并等待确认；但图片/文档生成等可逆创作动作可直接执行
+- 复合聊天动作（如“生成图片后发邮件”）必须用 plan_execute 连续执行上游步骤；不要弹 plan 审批，也不要逐个漏调
+- send_email 永远只准备邮件预览，真正发送由用户点击“确认发送”；严禁声称邮件已发送
 - 重要操作（审批需求）有权限校验（pm 才能审批，tech 才能认领任务）
 - 完成后用【action:open_view:xxx】打开对应窗口给用户看结果
 - 数据不足时不要编造，必须告诉用户"我没找到相关数据"
@@ -95,7 +97,7 @@ const VIEW_TOOLS = {
 // L0 常驻工具（不受视图影响，永远在 SKILL prompt）
 // + chat 流工具（web_search / generate_image / play_music / play_video — 创作/搜索类，常驻避免漏调）
 // v0.62 新增 query_collection（管家通用查询·管家身份基础能力）
-const L0_TOOLS = ['open_view', 'highlight_element', '_expand_tools', 'query_collection', 'generate_image', 'web_search', 'play_music', 'play_video', 'search_history', 'delegate_subtasks'];
+const L0_TOOLS = ['open_view', 'highlight_element', '_expand_tools', 'query_collection', 'generate_image', 'send_email', 'plan_execute', 'web_search', 'play_music', 'play_video', 'search_history', 'delegate_subtasks'];
 
 // ── L2 扩载层（按 LLM 主动 _expand_tools({category}) 触发）──
 const CATEGORY_TOOLS = {

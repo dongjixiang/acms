@@ -3839,7 +3839,41 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
   display: none;
 }
 
-/* —— 消息区 —— */
+/* —— 小吉动作卡 —— */
+.ap-action-card {
+  margin: 4px 0 2px 0;
+  padding: 9px;
+  border: 1px solid var(--accent, #0ea89d);
+  border-radius: 8px;
+  background: var(--bg2, #1a1a2e);
+  font-size: 11px;
+  color: var(--text, #e0e0f0);
+  animation: ap-fade-in 0.2s ease;
+}
+.ap-action-head { display:flex; align-items:center; gap:5px; margin-bottom:7px; }
+.ap-action-head b { font-size:12px; flex:1; }
+.ap-action-mode { font-size:9px; color:var(--text3, #777); }
+.ap-action-steps { display:flex; flex-direction:column; gap:3px; margin-bottom:7px; }
+.ap-action-step { display:flex; align-items:center; gap:5px; padding:4px 5px; border-radius:4px; background:var(--bg3, #252540); }
+.ap-action-step-icon { width:14px; text-align:center; color:var(--text3, #777); }
+.ap-step-running .ap-action-step-icon { color:var(--accent, #0ea89d); }
+.ap-step-done .ap-action-step-icon { color:#55c878; }
+.ap-step-failed .ap-action-step-icon { color:#ff6b6b; }
+.ap-action-step-label { flex:1; }
+.ap-action-step-state { color:var(--text3, #777); font-size:10px; }
+.ap-action-image { display:block; width:100%; max-height:150px; object-fit:cover; border-radius:6px; margin:6px 0; }
+.ap-action-email { margin-top:7px; padding:7px; border-radius:6px; background:var(--bg3, #252540); border-left:3px solid var(--accent, #0ea89d); }
+.ap-action-email-line { margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.ap-action-send { margin-top:7px; width:100%; border:0; border-radius:5px; padding:6px; cursor:pointer; color:#fff; background:var(--accent, #0ea89d); }
+.ap-action-send:disabled { opacity:.65; cursor:wait; }
+.ap-action-result { margin-top:7px; padding:6px; border-radius:5px; }
+.ap-result-done { color:#55c878; background:rgba(85,200,120,.1); }
+.ap-result-failed { color:#ff6b6b; background:rgba(255,107,107,.1); }
+.ap-action-trace { margin-top:7px; padding:0; border:0; background:none; color:var(--text3, #777); cursor:pointer; font-size:10px; }
+.ap-action-trace-body { margin-top:5px; max-height:140px; overflow:auto; white-space:pre-wrap; font:9px/1.35 monospace; color:var(--text3, #777); }
+.ap-action-empty { color:var(--text3, #777); padding:4px; }
+
+
 .ap-messages {
   padding: 8px 10px;
   flex: 1 1 auto; /* 撑满面板中间区域，按面板缩放比例同步扩缩 */

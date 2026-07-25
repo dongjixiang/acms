@@ -17,6 +17,7 @@ const { callLLM } = require('../services/llm-adapter');
 const { execute: runtimeExec } = require('../services/agent-runtime');
 const modelStore = require('../stores/model-store');
 const buddySkill = require('../services/agent-buddy-skill');
+const buddyAction = require('../services/agent-buddy-action');
 const eventBus = require('../services/event-bus');
 
 // P2: 订阅 Agent 事件，让小吉知道 task-agent 做了什么
@@ -180,6 +181,38 @@ function buildPersonalityPrompt(context) {
   return buddySkill.buildPersonalityPrompt(context || {});
 }
 
+// GET /api/agent-buddy/action/:requirementId — 小吉动作卡轮询状态
+router.get('/action/:requirementId', function(req, res) {
+  try {
+    const state = buddyAction.snapshotActionState(req.params.requirementId);
+    if (!state) return res.status(404).json({ error: 'ACTION_NOT_FOUND' });
+    return res.json({ ok: true, state });
+  } catch (e) {
+    return res.status(500).json({ error: 'ACTION_STATE_FAILED', message: e.message });
+  }
+});
+
+// POST /api/agent-buddy/action/:requirementId/send-email — 用户在小吉动作卡确认发送
+router.post('/action/:requirementId/send-email', async function(req, res) {
+  try {
+    const state = buddyAction.snapshotActionState(req.params.requirementId);
+    if (!state) return res.status(404).json({ error: 'ACTION_NOT_FOUND' });
+    const pending = state.pendingEmail;
+    if (!pending) return res.status(409).json({ error: 'NO_PENDING_EMAIL' });
+    const emailSvc = require('../services/assists/send-email');
+    await emailSvc.runAssistJob(req.params.requirementId, {
+      to: pending.to,
+      subject: pending.subject,
+      body: pending.body,
+      file_ids: pending.file_ids || [],
+    });
+    const next = buddyAction.snapshotActionState(req.params.requirementId);
+    return res.json({ ok: next?.assistEmail?.status === 'done', state: next });
+  } catch (e) {
+    return res.status(500).json({ error: 'EMAIL_SEND_FAILED', message: e.message });
+  }
+});
+
 // ════════════════════════════════════════
 // chat 端点
 // ════════════════════════════════════════
@@ -315,8 +348,24 @@ router.post('/chat', async function(req, res) {
     };
     var systemPrompt = buddySkill.buildChatPrompt(buddyCtx);
 
+    // 2.5 conversational-action：单轮 LLM 路由，只决定即时聊天动作模式。
+    // Router 无工具；真正执行仍走下面统一 runtime/tool-loop。
+    var actionRoute = await buddyAction.routeMessage(model.id, message, context.history || []);
+    var actionRequirement = null;
+    if (actionRoute.mode !== 'conversation') {
+      actionRequirement = buddyAction.getOrCreateActionRequirement(userId || 'anonymous');
+      systemPrompt += buddyAction.buildActionPrompt(actionRoute);
+      console.log('[agent-buddy] action route:', JSON.stringify({
+        mode: actionRoute.mode,
+        capabilities: actionRoute.capabilities,
+        confidence: actionRoute.confidence,
+        reqId: actionRequirement.id,
+      }));
+    }
+
     // 3. 算 toolNames（与 SKILL prompt 一一对应）
     var toolNames = computeToolNames(context.currentView, previousCategories);
+    toolNames = buddyAction.getActionToolNames(actionRoute, toolNames);
     // 如果已经有 ACMS 内部 tool 注册了就全用，否则退回到 v0.59 纯对话模式（不传 tools）
     var hasSkills = toolNames.length > 0 && require('../services/tool-registry').getTool(toolNames[0]);
 
@@ -337,7 +386,10 @@ router.post('/chat', async function(req, res) {
       user: user || {},
       apiKey: req.headers['x-api-key'],
       userToken: req.headers['authorization'],
-      reqId: 'buddy:' + (userId || 'anonymous'),  // 让 chat 流工具（play_music/generate_image/web_search 等）能找到"身份"
+      // 图片/邮件/plan 工具必须使用真实 requirement id；普通问答保留兼容标识。
+      reqId: actionRequirement ? actionRequirement.id : ('buddy:' + (userId || 'anonymous')),
+      actionMode: actionRoute.mode,
+      actionRoute: actionRoute,
       expandedCategories: previousCategories.slice(),  // 初始复制
     };
 
@@ -417,7 +469,17 @@ router.post('/chat', async function(req, res) {
       }
     }
 
-    return res.json({ reply: reply });
+    return res.json({
+      reply: reply,
+      action: actionRequirement ? {
+        mode: actionRoute.mode,
+        capabilities: actionRoute.capabilities,
+        confidence: actionRoute.confidence,
+        requires_confirmation: actionRoute.requires_confirmation,
+        requirementId: actionRequirement.id,
+        status: buddyAction.snapshotActionState(actionRequirement.id),
+      } : null,
+    });
   } catch (e) {
     console.error('[agent-buddy] 错误:', e);
     // 非关键错误：给用户一个友好兜底，不让前端报 500

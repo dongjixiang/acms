@@ -10,7 +10,7 @@ const taskStore = require('../stores/task-store');
 const { runToolLoop } = require('./llm-adapter');
 
 const { execute: runtimeExec } = require('./agent-runtime');
-
+const taskRouter = require('./task-router');
 const skillLoader = require('./skill-loader');
 
 const { registerTool } = require('./tool-registry');
@@ -120,17 +120,31 @@ async function executeTaskAgent(taskId, options = {}) {
 
   const lang = options.lang || task.preferred_lang || 'zh';
 
-
-
-  // P1: 多角色模式 — 默认启用，可通过 options.multiRole = false 关闭
-
-  //   把单 agent 90 轮拆成 Planner → Coder → Tester → Reviewer 流水线
-
-  if (options.multiRole !== false) {
-
-    return await runMultiRoleSequence(task, options);
-
+  // P0d: Task Router 必须在 multiRole 判断之前执行。
+  // 之前这里只判断 options.multiRole，导致所有 auto task 永远进入 Planner。
+  const route = taskRouter.classify(task);
+  const routeRecord = taskRouter.buildRouterRecord(task, route);
+  try {
+    taskStore.update(taskId, {
+      execution_route: JSON.stringify(routeRecord),
+      execution_mode_resolved: route.mode,
+      progress_note: `执行路由：${route.mode}。${route.reason}`,
+    });
+  } catch (e) {
+    console.warn(`[task-agent] ${taskId} 保存路由记录失败:`, e.message);
   }
+  console.log(`[task-agent] ${taskId} route=${route.mode} risk=${route.risk} reason=${route.reason}`);
+
+  // 只有显式要求 multiRole，或 Router 判定复杂任务时，才进入完整流水线。
+  // lightweight 先复用单 Agent 主路径；后续可替换为专用 data executor。
+  const shouldRunMultiRole = options.multiRole === true
+    || (options.multiRole !== false && route.mode === 'full-pipeline');
+
+  if (shouldRunMultiRole) {
+    return await runMultiRoleSequence(task, options);
+  }
+
+  // lightweight/direct-data 走下面单 Agent 执行路径。
 
 
 

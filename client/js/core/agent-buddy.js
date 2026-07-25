@@ -456,6 +456,144 @@
     container.scrollTop = container.scrollHeight;
   }
 
+  var _actionPollers = {};
+
+  function renderActionCard(action) {
+    if (!action || !action.requirementId) return;
+    var container = document.querySelector('#ap-messages');
+    if (!container) return;
+    var id = 'ap-action-' + action.requirementId;
+    var existing = document.getElementById(id);
+    var card = existing || document.createElement('div');
+    card.id = id;
+    card.className = 'ap-action-card';
+    card.dataset.requirementId = action.requirementId;
+    card.dataset.mode = action.mode || 'conversational_action';
+    if (!existing) container.appendChild(card);
+    updateActionCard(card, action.status || {}, action);
+    container.scrollTop = container.scrollHeight;
+    startActionPolling(action.requirementId);
+  }
+
+  function actionStatusMeta(status) {
+    var map = {
+      pending: ['○', '等待'], running: ['◌', '执行中'], done: ['✓', '完成'],
+      failed: ['!', '失败'], skipped: ['–', '跳过'], sending: ['◌', '发送中']
+    };
+    return map[status] || ['○', status || '等待'];
+  }
+
+  function imagePreviewUrl(requirementId, state) {
+    var img = state && state.assistImage;
+    if (!img || img.status !== 'done') return '';
+    var planSteps = state.plan && state.plan.steps || [];
+    var imageStep = planSteps.find(function(s) { return s.tool === 'generate_image' && s.result; });
+    var fileIds = imageStep && imageStep.result && imageStep.result.file_ids || [];
+    var first = fileIds[0];
+    var fid = typeof first === 'string' ? first : first && first.id;
+    if (fid) return '/api/chat/upload/' + encodeURIComponent(fid) + '/raw';
+    return img.image_url_output || (img.options && img.options[0] && img.options[0].image_url_output) || '';
+  }
+
+  function updateActionCard(card, state, action) {
+    if (!card) return;
+    var plan = state.plan || {};
+    var steps = Array.isArray(plan.steps) ? plan.steps : [];
+    var mode = action && action.mode || 'conversational_action';
+    var summary = plan.summary || (mode === 'conversational_action' ? '小吉正在连续执行' : '小吉正在执行');
+    var stepsHtml = steps.length ? steps.map(function(step) {
+      var meta = actionStatusMeta(step.status);
+      var label = step.tool === 'generate_image' ? '生成图片'
+        : step.tool === 'send_email' ? '准备邮件'
+        : step.tool === 'document_gen' ? '生成文档'
+        : step.tool === 'web_research' || step.tool === 'web_search' ? '搜索资料'
+        : step.tool;
+      return '<div class="ap-action-step ap-step-' + escHtml(step.status || 'pending') + '">'
+        + '<span class="ap-action-step-icon">' + meta[0] + '</span>'
+        + '<span class="ap-action-step-label">' + escHtml(label || '步骤') + '</span>'
+        + '<span class="ap-action-step-state">' + escHtml(meta[1]) + '</span></div>';
+    }).join('') : '<div class="ap-action-empty">正在准备动作…</div>';
+
+    var imageUrl = imagePreviewUrl(card.dataset.requirementId, state);
+    var imageHtml = imageUrl ? '<img class="ap-action-image" src="' + escHtml(imageUrl) + '" alt="生成图片">' : '';
+    var pending = state.pendingEmail;
+    var email = state.assistEmail;
+    var emailHtml = '';
+    if (pending) {
+      var attachments = Array.isArray(pending.attachments) ? pending.attachments : [];
+      emailHtml = '<div class="ap-action-email">'
+        + '<div><b>📧 待发送邮件</b></div>'
+        + '<div class="ap-action-email-line">收件人：' + escHtml(pending.to || '待补充') + '</div>'
+        + '<div class="ap-action-email-line">主题：' + escHtml(pending.subject || '待补充') + '</div>'
+        + (attachments.length ? '<div class="ap-action-email-line">附件：' + attachments.length + ' 个</div>' : '')
+        + '<button class="ap-action-send" data-action="send-email">确认发送</button>'
+        + '</div>';
+    } else if (email && email.status === 'done') {
+      emailHtml = '<div class="ap-action-result ap-result-done">✓ 邮件已发送到 ' + escHtml(email.to || '') + '</div>';
+    } else if (email && email.status === 'failed') {
+      emailHtml = '<div class="ap-action-result ap-result-failed">! 邮件发送失败：' + escHtml(email.error || '未知错误') + '</div>';
+    }
+
+    var terminal = ['done', 'failed'].indexOf(plan.status) >= 0 || (email && ['done', 'failed'].indexOf(email.status) >= 0);
+    card.innerHTML = '<div class="ap-action-head"><span>⚡</span><b>' + escHtml(summary) + '</b>'
+      + '<span class="ap-action-mode">' + escHtml(mode) + '</span></div>'
+      + '<div class="ap-action-steps">' + stepsHtml + '</div>' + imageHtml + emailHtml
+      + '<button class="ap-action-trace" data-action="toggle-trace">▼ 查看执行详情</button>'
+      + '<div class="ap-action-trace-body" hidden>' + escHtml(JSON.stringify({ planStatus: state.planStatus, plan: plan }, null, 2)) + '</div>';
+
+    var sendBtn = card.querySelector('[data-action="send-email"]');
+    if (sendBtn) sendBtn.onclick = function(e) { e.stopPropagation(); sendActionEmail(card.dataset.requirementId, card, sendBtn); };
+    var traceBtn = card.querySelector('[data-action="toggle-trace"]');
+    if (traceBtn) traceBtn.onclick = function(e) {
+      e.stopPropagation();
+      var body = card.querySelector('.ap-action-trace-body');
+      body.hidden = !body.hidden;
+      traceBtn.textContent = body.hidden ? '▼ 查看执行详情' : '▲ 收起执行详情';
+    };
+    if (terminal && _actionPollers[card.dataset.requirementId]) {
+      clearInterval(_actionPollers[card.dataset.requirementId]);
+      delete _actionPollers[card.dataset.requirementId];
+    }
+  }
+
+  function startActionPolling(requirementId) {
+    if (_actionPollers[requirementId]) return;
+    var attempts = 0;
+    _actionPollers[requirementId] = setInterval(function() {
+      attempts++;
+      fetch('/api/agent-buddy/action/' + encodeURIComponent(requirementId), { headers: getAuthHeaders() })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          var card = document.getElementById('ap-action-' + requirementId);
+          if (card && data && data.state) updateActionCard(card, data.state, { mode: card.dataset.mode || 'conversational_action' });
+          if (card && data && data.state && data.state.planStatus === 'done') {
+            clearInterval(_actionPollers[requirementId]);
+            delete _actionPollers[requirementId];
+          }
+        })
+        .catch(function() {});
+      if (attempts >= 150) {
+        clearInterval(_actionPollers[requirementId]);
+        delete _actionPollers[requirementId];
+      }
+    }, 2000);
+  }
+
+  function sendActionEmail(requirementId, card, button) {
+    button.disabled = true;
+    button.textContent = '发送中…';
+    fetch('/api/agent-buddy/action/' + encodeURIComponent(requirementId) + '/send-email', {
+      method: 'POST', headers: getAuthHeaders(), body: '{}'
+    }).then(function(r) { return r.json(); }).then(function(data) {
+      if (data && data.state) updateActionCard(card, data.state, { mode: 'conversational_action' });
+      if (!data || !data.ok) throw new Error(data && (data.message || data.error) || '发送失败');
+    }).catch(function(e) {
+      button.disabled = false;
+      button.textContent = '重试发送';
+      renderMessage('邮件没有发出去：' + e.message);
+    });
+  }
+
   // ════════════════════════════════════════════════════════════
   // v0.62: 小吉专属拖拽 + 8 向缩放（不接 ACMSWin，独一无二的小吉窗口）
   // 设计动机：ACMSWin 是「标准窗口」，小吉是「独一无二」的浮层面板
@@ -727,6 +865,7 @@
       // 清除所有标记后展示纯文本
       var reply = raw.replace(/【[^】]+】/g, '').trim();
       renderMessage(reply);
+      if (data.action && data.action.requirementId) renderActionCard(data.action);
       _chatHistory.push({ role: 'buddy', text: reply });
       addScore('toast-fire');
 
