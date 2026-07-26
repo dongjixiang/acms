@@ -694,6 +694,7 @@ document.addEventListener('DOMContentLoaded', () => {
       category: cfg.category || '未分类',
       defaultSize: cfg.defaultSize || { w: 800, h: 520 },
       loader: loader,
+      agentTools: cfg.agentTools || [],  // v0.66: App-as-Tool 透传
     });
   };
 
@@ -1033,6 +1034,75 @@ document.addEventListener('DOMContentLoaded', () => {
   // v0.62.7: 图片编辑器 (TOAST UI Image Editor + AI)
   PKG('image-editor', {
     title: '图片编辑器', icon: '🖼️', category: '工具', defaultSize: { w: 1000, h: 700 },
+    // v0.66 PR2: 4 个 app-tool（imageEditorAPI 由 image-editor.js 暴露）
+    agentTools: [
+      {
+        name: 'image_get_info',
+        description: 'USE WHEN: 用户问"图片多大""宽高""尺寸"时。读图片元数据：宽、高、格式、文件大小（字节）。',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: '图片绝对路径（如 C:/Users/多/Pictures/1.png）' },
+          },
+          required: ['path'],
+        },
+        handler: async function(args) {
+          return await window.imageEditorAPI.getInfo(args.path);
+        },
+      },
+      {
+        name: 'image_resize',
+        description: 'USE WHEN: 用户想"改图片大小""缩放成 800x600""压成缩略图"时。把图片缩放到指定宽高，保存为新文件（原文件不动）。',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: '源图片绝对路径' },
+            width: { type: 'integer', description: '目标宽度（像素，>=1）' },
+            height: { type: 'integer', description: '目标高度（像素，>=1）' },
+            outputPath: { type: 'string', description: '可选：保存目录（默认与源同目录）' },
+          },
+          required: ['path', 'width', 'height'],
+        },
+        handler: async function(args) {
+          return await window.imageEditorAPI.resize(args.path, args.width, args.height, args);
+        },
+      },
+      {
+        name: 'image_crop',
+        description: 'USE WHEN: 用户想"裁剪图片""裁掉边缘""截取中间区域"时。按 (x, y, width, height) 裁剪源图，保存为新文件。坐标原点 (0,0) 在左上角。',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: '源图片绝对路径' },
+            x: { type: 'integer', description: '裁剪起点 X（左上角）' },
+            y: { type: 'integer', description: '裁剪起点 Y（左上角）' },
+            width: { type: 'integer', description: '裁剪宽度' },
+            height: { type: 'integer', description: '裁剪高度' },
+            outputPath: { type: 'string', description: '可选：保存目录' },
+          },
+          required: ['path', 'x', 'y', 'width', 'height'],
+        },
+        handler: async function(args) {
+          return await window.imageEditorAPI.crop(args.path, args.x, args.y, args.width, args.height, args);
+        },
+      },
+      {
+        name: 'image_convert',
+        description: 'USE WHEN: 用户想"把 png 转 jpg""转 webp""压缩图片"时。转换图片格式，保存为新文件。注意：JPG/WebP/GIF 不支持透明通道（自动填白底）。',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: '源图片绝对路径' },
+            targetFormat: { type: 'string', description: '目标格式：png / jpg / webp / gif（不区分大小写）' },
+            outputPath: { type: 'string', description: '可选：保存目录' },
+          },
+          required: ['path', 'targetFormat'],
+        },
+        handler: async function(args) {
+          return await window.imageEditorAPI.convert(args.path, args.targetFormat, args);
+        },
+      },
+    ],
     loader: function(w) {
       var f = window._fb_open_file; window._fb_open_file = null;
       if (typeof openImageEditor === 'function') openImageEditor(w, null, f ? f.name : null, f ? f.src : null);

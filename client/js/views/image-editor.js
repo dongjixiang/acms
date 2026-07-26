@@ -319,9 +319,196 @@
 
   }
 
-  function escHtml(s) {
+function escHtml(s) {
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
+
+  // v0.66 PR2: 暴露 imageEditorAPI 给小吉/chat 流调用
+  //   复用 /api/files 接口读取原始图片 → Canvas 处理 → /api/files/upload 保存
+  //   不引入新依赖（纯浏览器 Canvas API）
+  function fileToDataURL(url) {
+    return fetch(url).then(function(r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.blob();
+    }).then(function(blob) {
+      return new Promise(function(resolve, reject) {
+        var fr = new FileReader();
+        fr.onload = function() { resolve({ dataUrl: fr.result, size: blob.size, mime: blob.type }); };
+        fr.onerror = function() { reject(new Error('FileReader failed')); };
+        fr.readAsDataURL(blob);
+      });
+    });
+  }
+
+  function loadImage(dataUrl) {
+    return new Promise(function(resolve, reject) {
+      var img = new Image();
+      img.onload = function() { resolve(img); };
+      img.onerror = function() { reject(new Error('Image decode failed')); };
+      img.src = dataUrl;
+    });
+  }
+
+  function canvasToBlob(canvas, mime, quality) {
+    return new Promise(function(resolve) {
+      canvas.toBlob(function(blob) {
+        resolve(blob);
+      }, mime, quality);
+    });
+  }
+
+  function blobToBase64(blob) {
+    return new Promise(function(resolve, reject) {
+      var fr = new FileReader();
+      fr.onload = function() {
+        var s = fr.result;
+        // data:image/png;base64,XXXXX → XXXXX
+        var idx = s.indexOf(',');
+        resolve(idx >= 0 ? s.slice(idx + 1) : s);
+      };
+      fr.onerror = function() { reject(new Error('blobToBase64 failed')); };
+      fr.readAsDataURL(blob);
+    });
+  }
+
+  function inferFormat(path) {
+    var m = (path || '').toLowerCase().match(/\.([a-z0-9]+)$/);
+    return m ? m[1] : 'png';
+  }
+
+  function inferMime(format) {
+    var f = (format || '').toLowerCase();
+    if (f === 'jpg' || f === 'jpeg') return 'image/jpeg';
+    if (f === 'webp') return 'image/webp';
+    if (f === 'gif') return 'image/gif';
+    return 'image/png';
+  }
+
+  function buildOutputName(srcPath, suffix, targetFormat) {
+    var baseName = (srcPath || '').split(/[\\\/]/).pop() || 'image';
+    var dotIdx = baseName.lastIndexOf('.');
+    var stem = dotIdx > 0 ? baseName.slice(0, dotIdx) : baseName;
+    var fmt = targetFormat || inferFormat(srcPath);
+    return stem + suffix + '.' + fmt;
+  }
+
+  function uploadOutput(srcPath, outputName, blob, outputPath) {
+    return blobToBase64(blob).then(function(b64) {
+      var apiPath = (window.api ? window.api : null);
+      // 用 api() 上传（带 X-API-Key + JWT）
+      var dir = srcPath.replace(/[\\\/][^\\\/]+$/, '');
+      var saveDir = outputPath || dir;
+      return fetch('/api/files/upload', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': (window.AK || 'dev-key-001'),
+          'Authorization': 'Bearer ' + (localStorage.getItem('acms-token') || ''),
+        },
+        body: JSON.stringify({ path: saveDir, fileName: outputName, content: b64 }),
+      }).then(function(r) {
+        if (!r.ok) return r.json().then(function(e) { throw new Error(e.message || 'HTTP ' + r.status); });
+        return r.json();
+      });
+    });
+  }
+
+  root.imageEditorAPI = {
+    // 同步 RPC：读图片元数据
+    getInfo: function(path) {
+      if (!path) return Promise.resolve({ ok: false, error: 'INVALID_ARGS', message: '需要 path' });
+      return fileToDataURL('/api/files?path=' + encodeURIComponent(path) + '&raw=1')
+        .then(function(r) { return loadImage(r.dataUrl).then(function(img) {
+          return { ok: true, path: path, width: img.naturalWidth, height: img.naturalHeight, format: inferFormat(path), size: r.size, mime: r.mime };
+        }); })
+        .catch(function(e) { return { ok: false, error: 'GET_INFO_FAILED', message: e.message }; });
+    },
+
+    // 异步：缩放图片 → 保存为新文件
+    resize: function(path, width, height, opts) {
+      opts = opts || {};
+      if (!path || !width || !height) return Promise.resolve({ ok: false, error: 'INVALID_ARGS', message: '需要 path/width/height' });
+      var suffix = opts.suffix || ('_resized_' + width + 'x' + height);
+      var outputPath = opts.outputPath;
+      return fileToDataURL('/api/files?path=' + encodeURIComponent(path) + '&raw=1')
+        .then(function(r) { return loadImage(r.dataUrl); })
+        .then(function(img) {
+          var canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round(width));
+          canvas.height = Math.max(1, Math.round(height));
+          var ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          return canvasToBlob(canvas, inferMime(inferFormat(path)), 0.92);
+        })
+        .then(function(blob) {
+          var outputName = buildOutputName(path, suffix);
+          return uploadOutput(path, outputName, blob, outputPath);
+        })
+        .then(function(info) { return { ok: true, outputPath: (outputPath || path.replace(/[\\\/][^\\\/]+$/, '')) + '/' + info.name, width: width, height: height }; })
+        .catch(function(e) { return { ok: false, error: 'RESIZE_FAILED', message: e.message }; });
+    },
+
+    // 异步：裁剪图片（(x, y, w, h) 是源图坐标系）
+    crop: function(path, x, y, width, height, opts) {
+      opts = opts || {};
+      if (!path || x == null || y == null || !width || !height) {
+        return Promise.resolve({ ok: false, error: 'INVALID_ARGS', message: '需要 path/x/y/width/height' });
+      }
+      var suffix = opts.suffix || ('_cropped_' + Math.round(x) + '_' + Math.round(y) + '_' + Math.round(width) + 'x' + Math.round(height));
+      var outputPath = opts.outputPath;
+      return fileToDataURL('/api/files?path=' + encodeURIComponent(path) + '&raw=1')
+        .then(function(r) { return loadImage(r.dataUrl); })
+        .then(function(img) {
+          // 边界 clamp 到源图范围
+          var sx = Math.max(0, Math.round(x));
+          var sy = Math.max(0, Math.round(y));
+          var sw = Math.min(Math.round(width), img.naturalWidth - sx);
+          var sh = Math.min(Math.round(height), img.naturalHeight - sy);
+          if (sw <= 0 || sh <= 0) throw new Error('裁剪区域超出图片边界');
+          var canvas = document.createElement('canvas');
+          canvas.width = sw;
+          canvas.height = sh;
+          var ctx = canvas.getContext('2d');
+          ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+          return canvasToBlob(canvas, inferMime(inferFormat(path)), 0.92);
+        })
+        .then(function(blob) {
+          var outputName = buildOutputName(path, suffix);
+          return uploadOutput(path, outputName, blob, outputPath);
+        })
+        .then(function(info) { return { ok: true, outputPath: (outputPath || path.replace(/[\\\/][^\\\/]+$/, '')) + '/' + info.name }; })
+        .catch(function(e) { return { ok: false, error: 'CROP_FAILED', message: e.message }; });
+    },
+
+    // 异步：转格式（png/jpg/webp/gif）
+    convert: function(path, targetFormat, opts) {
+      opts = opts || {};
+      if (!path || !targetFormat) return Promise.resolve({ ok: false, error: 'INVALID_ARGS', message: '需要 path/targetFormat' });
+      var suffix = opts.suffix || ('_converted');
+      var outputPath = opts.outputPath;
+      return fileToDataURL('/api/files?path=' + encodeURIComponent(path) + '&raw=1')
+        .then(function(r) { return loadImage(r.dataUrl); })
+        .then(function(img) {
+          var canvas = document.createElement('canvas');
+          canvas.width = img.naturalWidth;
+          canvas.height = img.naturalHeight;
+          var ctx = canvas.getContext('2d');
+          // JPG 不支持透明，填白底
+          if (inferMime(targetFormat) === 'image/jpeg') {
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+          }
+          ctx.drawImage(img, 0, 0);
+          return canvasToBlob(canvas, inferMime(targetFormat), 0.92);
+        })
+        .then(function(blob) {
+          var outputName = buildOutputName(path, suffix, targetFormat);
+          return uploadOutput(path, outputName, blob, outputPath);
+        })
+        .then(function(info) { return { ok: true, outputPath: (outputPath || path.replace(/[\\\/][^\\\/]+$/, '')) + '/' + info.name, format: targetFormat }; })
+        .catch(function(e) { return { ok: false, error: 'CONVERT_FAILED', message: e.message }; });
+    },
+  };
 
   root.openImageEditor = openImageEditor;
   root.ImageEditorApp = { open: openImageEditor };
