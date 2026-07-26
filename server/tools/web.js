@@ -130,13 +130,34 @@ registerTool({
   },
   async handler(args, ctx = {}) {
     const result = await webSearch(args);
-    // v0.50: 完成后写 search_result 卡片到 chat 流（前端立刻显示赛况）
+    // v0.66: 图片搜索 — 若 image_search=true 或查询含图片关键词，自动跑百度图片搜索
+    const imageKeywords = /图片|照片|写真|壁纸|头像|海报|截图|相片|图集|靓照|艺术照/;
+    const isImageSearch = args.image_search || (args.query && imageKeywords.test(args.query));
+    let imageResults = null;
+    if (ctx.reqId && isImageSearch) {
+      console.log('[web_search] 触发图片搜索: query=' + args.query);
+      try {
+        const { browserSearchBaiduImage } = require('../services/web-search');
+        const imgResult = await browserSearchBaiduImage(args.query, 9);
+        console.log('[web_search] 图片搜索结果: ' + (imgResult?.images?.length || 0) + ' 张');
+        if (imgResult && Array.isArray(imgResult.images) && imgResult.images.length > 0) {
+          imageResults = imgResult.images;
+          // 存到 requirement 供 action card 轮询读取
+          const reqStore = require('../stores/requirement-store');
+          reqStore.update(ctx.reqId, {
+            assist_image_search: JSON.stringify({ query: args.query, images: imgResult.images }),
+          });
+        }
+      } catch (e) {
+        console.warn('[web_search] 图片搜索失败（可忽略）:', e.message);
+      }
+    }
     if (ctx.reqId && !result.error && Array.isArray(result.results) && result.results.length > 0) {
       writeChatEntryForTool(ctx.reqId, 'search_result', {
         type: 'search_result', query: args.query, count: result.count, formatted: result.formatted, results: result.results,
       });
     }
-    return result;
+    return { ...result, image_results: imageResults || [] };
   },
 });
 

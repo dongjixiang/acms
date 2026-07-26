@@ -409,6 +409,7 @@ function renderMusicBubble(jsonText) {
     <div>${links || '暂无可用平台'}</div>
   </div>`;
 }
+window.renderMusicBubble = renderMusicBubble;
 
 function renderImageBubble(reqId, jsonText) {
   if (!jsonText) return '<div class="chat-system-msg">🖼️ 图片生成结果（数据为空）</div>';

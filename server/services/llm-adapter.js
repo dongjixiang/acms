@@ -528,6 +528,10 @@ function detectStreamStall(result, messages) {
   const stallPhrases = [
     'i will write', 'i\'ll write', 'let me write', 'i will create', 'i will modify', 'i will update',
     'now i will', 'next i will', 'will create', 'will write', 'will implement',
+    // v0.66 中文装睡检测：LLM 说"这就为你生成"但实际不调工具
+    '这就为你', '这就给', '我这就', '马上为你', '我来为你',
+    // v0.66 更多装睡模式：LLM 说"正在为您XX"但实际不调工具
+    '正在为您', '正在为你', '正在生成', '正在准备', '请稍等', '请稍后',
   ];
   const matched = stallPhrases.filter(p => content.includes(p));
   if (matched.length > 0) {

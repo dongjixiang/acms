@@ -1115,7 +1115,11 @@ document.addEventListener('DOMContentLoaded', () => {
     ],
     loader: function(w) {
       var f = window._fb_open_file; window._fb_open_file = null;
-      if (typeof openImageEditor === 'function') openImageEditor(w, null, f ? f.name : null, f ? f.src : null);
+      var d = window._dragImageUrl; window._dragImageUrl = null;
+      console.log('[IMG-LOADER] _fb_open_file:', f ? (f.name || f.src || '').slice(0,80) : null, '_dragImageUrl:', d ? d.slice(0,80) : null);
+      var name = f ? f.name : null;
+      var src = f ? f.src : (d || null);
+      if (typeof openImageEditor === 'function') openImageEditor(w, null, name, src);
       else w.$c.innerHTML = '<div style="padding:40px;text-align:center">加载中...</div>';
     }
   });

@@ -26,16 +26,6 @@ function ensureActionProject(userId) {
 
 function getOrCreateActionRequirement(userId) {
   const { collection } = require('../db/connection');
-  const key = `buddy_action_req:${userId || 'anonymous'}`;
-  const mem = collection('buddy_memory').findOne(m => m.user_id === (userId || 'anonymous') && m.key === key);
-  if (mem) {
-    try {
-      const id = JSON.parse(mem.value);
-      const existing = reqStore.getById(id);
-      if (existing) return existing;
-    } catch (_) { /* recreate */ }
-  }
-
   const project = ensureActionProject(userId);
   const requirement = reqStore.create({
     projectId: project.id,
@@ -47,6 +37,8 @@ function getOrCreateActionRequirement(userId) {
   });
   reqStore.update(requirement.id, { chat_mode: 'free', system_record: 1 });
 
+  const key = `buddy_action_req:${userId || 'anonymous'}`;
+  const mem = collection('buddy_memory').findOne(m => m.user_id === (userId || 'anonymous') && m.key === key);
   const value = JSON.stringify(requirement.id);
   if (mem) collection('buddy_memory').update(m => m.user_id === (userId || 'anonymous') && m.key === key, { value, updated_at: new Date().toISOString() });
   else collection('buddy_memory').insert({ user_id: userId || 'anonymous', key, value, updated_at: new Date().toISOString() });
@@ -69,7 +61,7 @@ function normalizeRoute(raw) {
   const value = raw && typeof raw === 'object' ? raw : {};
   const mode = ACTION_MODES.has(value.mode) ? value.mode : 'conversation';
   const capabilities = Array.isArray(value.capabilities)
-    ? value.capabilities.filter(x => ['image_generation', 'email_draft', 'email_send', 'web_research', 'document_generation'].includes(x))
+    ? value.capabilities.filter(x => ['image_generation', 'image_search', 'music_playback', 'email_draft', 'email_send', 'web_research', 'document_generation'].includes(x))
     : [];
   return {
     mode,
@@ -85,21 +77,29 @@ async function routeMessage(modelId, message, history = []) {
   const system = `你是 ACMS 小吉的动作路由器。只做分类，不调用工具，不制定开发计划。
 输出严格 JSON：
 {"mode":"conversation|single_action|conversational_action","confidence":0.0,"capabilities":[],"requires_confirmation":false,"reason":"..."}
-能力枚举：image_generation、email_draft、email_send、web_research、document_generation。
+能力枚举：image_generation、image_search、music_playback、email_draft、email_send、web_research、document_generation。
 规则：
 - 纯问答/查询 ACMS 数据/闲聊 → conversation。
 - 一个明确工具动作 → single_action。
 - 两个及以上有依赖的动作（如生成图片后发邮件）→ conversational_action。
 - send email 是外部副作用，必须包含 email_draft + email_send，requires_confirmation=true。
 - 用户描述简短但动作明确时照常分类，不要因为缺少主题、数量等默认参数判无法理解。
-- **重要：mode 为 single_action 或 conversational_action 时，必须根据用户意图将相关能力填入 capabilities 数组，不要留空。**`;
+- **重要：mode 为 single_action 或 conversational_action 时，必须根据用户意图将相关能力填入 capabilities 数组，不要留空。**
+- **找图片/搜图片/查图片→ capabilities 含 image_search。生成图片/画图片/创作图片→ capabilities 含 image_generation。两者不同。**`;
   const result = await callLLM(modelId, [
     { role: 'system', content: system },
-    ...(historyText ? [{ role: 'user', content: `最近对话：\n${historyText}` }] : []),
+    ...(historyText ? [{ role: 'user', content: `最近对话：\\n${historyText}` }] : []),
     { role: 'user', content: message },
   ], { maxTokens: 350, temperature: 0, caller: 'agent-buddy-action-router' });
   const content = typeof result === 'string' ? result : (result && result.content) || '';
-  return normalizeRoute(extractJson(content));
+  const route = normalizeRoute(extractJson(content));
+  // v0.66: 关键词前置拦截 — 不管路由器 LLM 怎么分类，看到"找图片"就强制 image_search
+  const searchImgRe = /找图片|搜图片|查图片|找一张.*图|搜一张.*图/;
+  if (searchImgRe.test(message) && route.mode !== 'conversation') {
+    route.capabilities = ['image_search'];
+    console.log('[agent-buddy-action] 关键词命中 image_search, 强制覆盖路由');
+  }
+  return route;
 }
 
 function getActionToolNames(route, baseTools) {
@@ -108,16 +108,20 @@ function getActionToolNames(route, baseTools) {
     tools.add('plan_execute');
     route.capabilities.forEach(capability => {
       if (capability === 'image_generation') tools.add('generate_image');
+      if (capability === 'music_playback') tools.add('play_music');
       if (capability === 'email_send' || capability === 'email_draft') tools.add('send_email');
       if (capability === 'web_research') { tools.add('web_search'); tools.add('web_research'); }
       if (capability === 'document_generation') tools.add('document_gen');
+      if (capability === 'image_search') { tools.delete('generate_image'); tools.add('web_search'); }
     });
   } else if (route.mode === 'single_action') {
     route.capabilities.forEach(capability => {
       if (capability === 'image_generation') tools.add('generate_image');
+      if (capability === 'music_playback') tools.add('play_music');
       if (capability === 'email_send' || capability === 'email_draft') tools.add('send_email');
       if (capability === 'web_research') { tools.add('web_search'); tools.add('web_research'); }
       if (capability === 'document_generation') tools.add('document_gen');
+      if (capability === 'image_search') { tools.delete('generate_image'); tools.add('web_search'); }
     });
   }
   return [...tools];
@@ -135,10 +139,18 @@ function buildActionPrompt(route) {
     return shared + `
 这是复合聊天动作。必须调用 plan_execute 一次完成全部步骤，不要逐个直接调用，也不要输出“正在做”而不调工具。
 图片→邮件示例：s1 generate_image；s2 send_email depends_on=["s1"]。s2 不手填 file_ids，系统会从 s1 精确注入附件。
-邮件发送工具只创建 pending_send_email 预览，不会真正发送；必须等待用户确认后才发送，严禁声称“邮件已发送”。`;
+邮件发送工具只创建 pending_send_email 预览，不会真正发送；必须等待用户确认后才发送，严禁声称“邮件已发送”。
+**生成图片时用户给了描述就直接调工具，严禁反问用户描述风格或特征；AI 自行补充细节或使用默认值。**
+**找歌/搜歌时只能调 play_music 工具，不能调 generate_image 或其他创作工具。**
+**注意区分：用户说“找图片“/ “搜图片“时是想要真实照片，不是 AI 生图，此时应调 web_search 而不是 generate_image。generate_image 只用于“画一张“/ “生成“/ “创作“等 AI 创作场景。**
+**调用 web_search 找图片时必须传 image_search=true 参数（如 web_search(query="莫文蔚写真", image_search=true)），这样才能取到缩略图。**`;
   }
   return shared + `
-这是单一动作，必须调用对应工具一次。若是 send_email，工具只准备预览并等待确认，严禁声称已发送。`;
+这是单一动作，必须调用对应工具一次。若是 send_email，工具只准备预览并等待确认，严禁声称已发送。
+**生成图片时用户给了描述就直接调工具，严禁反问用户描述风格或特征；AI 自行补充细节或使用默认值。**
+**找歌/搜歌时只能调 play_music 工具，不能调 generate_image 或其他创作工具。**
+**注意区分：用户说“找图片“/ “搜图片“时是想要真实照片，不是 AI 生图，此时应调 web_search 而不是 generate_image。generate_image 只用于“画一张“/ “生成“/ “创作“等 AI 创作场景。**
+**调用 web_search 找图片时必须传 image_search=true 参数（如 web_search(query="莫文蔚写真", image_search=true)），这样才能取到缩略图。**`;
 }
 
 function snapshotActionState(requirementId) {
@@ -151,6 +163,8 @@ function snapshotActionState(requirementId) {
     planStatus: req.plan_status || '',
     plan,
     assistImage: safeJson(req.assist_image),
+    assistImageSearch: safeJson(req.assist_image_search),
+    assistMusic: safeJson(req.assist_music),
     assistEmail: safeJson(req.assist_send_email),
     pendingEmail: getLatestPendingEmail(req),
   };

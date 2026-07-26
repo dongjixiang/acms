@@ -451,7 +451,9 @@
     if (!container) return;
     var div = document.createElement('div');
     div.className = 'ap-msg ap-msg-buddy';
-    div.innerHTML = '<span class="ap-msg-text">' + escHtml(text) + '</span>';
+    // v0.66: 使用 renderMarkdown 渲染 MD 样式
+    var mdFn = typeof renderMarkdown === 'function' ? renderMarkdown : function(t) { return escHtml(t); };
+    div.innerHTML = '<span class="ap-msg-text">' + mdFn(text) + '</span>';
     container.appendChild(div);
     container.scrollTop = container.scrollHeight;
   }
@@ -492,13 +494,20 @@
     var first = fileIds[0];
     var fid = typeof first === 'string' ? first : first && first.id;
     if (fid) return '/api/chat/upload/' + encodeURIComponent(fid) + '/raw';
+    // v0.73: 优先用本地 workspace_path（含 projectSlug 前缀，解决 CDN CORS 问题）
+    var localPath = img.workspace_path || (img.options && img.options[0] && img.options[0].workspace_path) || '';
+    if (localPath) return '/api/files/asset?path=' + encodeURIComponent(localPath);
     return img.image_url_output || (img.options && img.options[0] && img.options[0].image_url_output) || '';
   }
 
   function isNonPlanTerminal(state) {
     var img = state && state.assistImage;
+    var imgSearch = state && state.assistImageSearch;
+    var music = state && state.assistMusic;
     var email = state && state.assistEmail;
     return (img && ['done', 'failed'].indexOf(img.status) >= 0)
+        || (imgSearch && Array.isArray(imgSearch.images) && imgSearch.images.length > 0)
+        || (music && ['done', 'failed'].indexOf(music.status) >= 0)
         || (email && ['done', 'failed'].indexOf(email.status) >= 0);
   }
 
@@ -509,8 +518,10 @@
     var mode = action && action.mode || 'conversational_action';
     var summary = plan.summary || (mode === 'conversational_action' ? '小吉正在连续执行' : '小吉正在执行');
 
-    // 无 plan steps 时，检查 assistImage / assistEmail 独立状态（single_action 模式）
+    // 无 plan steps 时，检查 assistImage / assistImageSearch / assistMusic / assistEmail 独立状态（single_action 模式）
     var img = state && state.assistImage;
+    var imgSearch = state && state.assistImageSearch;
+    var music = state && state.assistMusic;
     var email = state && state.assistEmail;
     var stepsHtml;
     if (steps.length) {
@@ -536,18 +547,69 @@
         + '<span class="ap-action-step-icon">!</span>'
         + '<span class="ap-action-step-label">生成图片</span>'
         + '<span class="ap-action-step-state">失败：' + escHtml(img.error || '未知错误') + '</span></div>';
-    } else if (img && (img.status === 'running' || img.status === 'pending')) {
+    } else if (img && (img.status === 'generating' || img.status === 'running' || img.status === 'pending')) {
       stepsHtml = '<div class="ap-action-step ap-step-running">'
         + '<span class="ap-action-step-icon">◌</span>'
         + '<span class="ap-action-step-label">生成图片</span>'
         + '<span class="ap-action-step-state">生成中…</span></div>';
+    } else if (music && music.status === 'done') {
+      stepsHtml = '<div class="ap-action-step ap-step-done">'
+        + '<span class="ap-action-step-icon">✓</span>'
+        + '<span class="ap-action-step-label">找歌</span>'
+        + '<span class="ap-action-step-state">完成</span></div>';
+    } else if (music && music.status === 'failed') {
+      stepsHtml = '<div class="ap-action-step ap-step-failed">'
+        + '<span class="ap-action-step-icon">!</span>'
+        + '<span class="ap-action-step-label">找歌</span>'
+        + '<span class="ap-action-step-state">失败：' + escHtml(music.error || '未找到') + '</span></div>';
+    } else if (music && (music.status === 'generating' || music.status === 'running' || music.status === 'pending')) {
+      stepsHtml = '<div class="ap-action-step ap-step-running">'
+        + '<span class="ap-action-step-icon">◌</span>'
+        + '<span class="ap-action-step-label">找歌</span>'
+        + '<span class="ap-action-step-state">搜索中…</span></div>';
     } else {
       stepsHtml = '<div class="ap-action-empty">正在准备动作…</div>';
     }
 
     var imageUrl = imagePreviewUrl(card.dataset.requirementId, state);
-    var imageHtml = imageUrl ? '<img class="ap-action-image" src="' + escHtml(imageUrl) + '" alt="生成图片">' : '';
-    var pending = state.pendingEmail;
+    var imageHtml = imageUrl ? '<img class="ap-action-image" src="' + escHtml(imageUrl) + '" alt="生成图片" draggable="true" data-imgurl="' + escHtml(imageUrl) + '">' : '';
+    var musicHtml = '';
+    if (music && music.status === 'done') {
+      var musicCard = {
+        type: 'music_card',
+        song: music.song || '',
+        artist: music.artist || '',
+        playable: (music.playable_sources || []).filter(function(s) { return s && s.url; }),
+        platforms: (music.sources || []).map(function(s) {
+          return { name: s.platform || '', icon: s.icon || '\ud83d\udd17', url: s.url || '' };
+        }),
+      };
+      var renderFn = window.renderMusicBubble;
+      if (typeof renderFn === 'function') {
+        musicHtml = '<div class="ap-music-result">' + renderFn(JSON.stringify(musicCard)) + '</div>';
+      } else {
+        // fallback: simple links
+        musicHtml = '<div class="ap-action-sources">'
+          + (music.sources || []).map(function(s) {
+              return '<a class="ap-action-source" href="' + escHtml(s.url || '#') + '" target="_blank" rel="noopener">'
+                + (s.icon || '\ud83d\udd17') + ' ' + escHtml(s.platform || '平台') + '</a>';
+            }).join('')
+          + '</div>';
+      }
+    }
+    
+    var imgSearchHtml = '';
+    if (imgSearch && Array.isArray(imgSearch.images) && imgSearch.images.length > 0) {
+      imgSearchHtml = '<div class="ap-action-imggrid">'
+        + imgSearch.images.map(function(img) {
+            var thumb = escHtml(img.thumb || img.url || '');
+            var link = escHtml(img.url || img.thumb || '');
+            var title = escHtml(img.title || '');
+            return '<a class="ap-action-imgitem" href="' + link + '" target="_blank" rel="noopener" title="' + title + '">'
+              + '<img src="' + thumb + '" alt="' + title + '" loading="lazy" draggable="true" data-imgurl="' + thumb + '"></a>';
+          }).join('')
+        + '</div>';
+    }var pending = state.pendingEmail;
     var emailHtml = '';
     if (pending) {
       var attachments = Array.isArray(pending.attachments) ? pending.attachments : [];
@@ -568,9 +630,9 @@
       || isNonPlanTerminal(state);
     card.innerHTML = '<div class="ap-action-head"><span>⚡</span><b>' + escHtml(summary) + '</b>'
       + '<span class="ap-action-mode">' + escHtml(mode) + '</span></div>'
-      + '<div class="ap-action-steps">' + stepsHtml + '</div>' + imageHtml + emailHtml
+      + '<div class="ap-action-steps">' + stepsHtml + '</div>' + imageHtml + musicHtml + imgSearchHtml + emailHtml
       + '<button class="ap-action-trace" data-action="toggle-trace">▼ 查看执行详情</button>'
-      + '<div class="ap-action-trace-body" hidden>' + escHtml(JSON.stringify({ planStatus: state.planStatus, plan: plan, assistImage: img, assistEmail: email }, null, 2)) + '</div>';
+      + '<div class="ap-action-trace-body" hidden>' + escHtml(JSON.stringify({ planStatus: state.planStatus, plan: plan, assistImage: img, assistMusic: music, assistEmail: email }, null, 2)) + '</div>';
 
     var sendBtn = card.querySelector('[data-action="send-email"]');
     if (sendBtn) sendBtn.onclick = function(e) { e.stopPropagation(); sendActionEmail(card.dataset.requirementId, card, sendBtn); };
@@ -879,29 +941,93 @@
       personality: _userMemory.personality || undefined,
     };
 
-    // 调后端
-    fetch('/api/agent-buddy/chat', {
+    // 调后端（v0.66: 支持流式 SSE）
+    var isStreaming = true;
+    var streamUrl = '/api/agent-buddy/chat?stream=1';
+    fetch(streamUrl, {
       method: 'POST',
         headers: getAuthHeaders(),
       body: JSON.stringify({ message: text, context: context }),
     })
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      removeThinking();
-      var raw = data.reply || '嗯… 我没听清，能再说一遍吗？';
-      // 从回复中提取并执行动作和表情标记，然后从显示文本中去除
-      executeActions(raw);
-      var faceMatch = raw.match(/【face:(\w+)】/);
-      if (faceMatch) setFace(faceMatch[1]);
-      // 清除所有标记后展示纯文本
-      var reply = raw.replace(/【[^】]+】/g, '').trim();
-      renderMessage(reply);
-      if (data.action && data.action.requirementId) renderActionCard(data.action);
-      _chatHistory.push({ role: 'buddy', text: reply });
-      addScore('toast-fire');
+    .then(function(r) {
+      if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || '请求失败'); });
+      // v0.66: 流式读取 SSE
+      var reader = r.body.getReader();
+      var decoder = new TextDecoder();
+      var accumulated = '';
+      var streamDone = false;
+      var actionData = null;
 
-      // 保存到长期记忆
-      saveChatMemory(text, reply);
+      function processStream() {
+        reader.read().then(function(result) {
+          if (result.done) {
+            streamDone = true;
+            finalizeStream();
+            return;
+          }
+          var text = decoder.decode(result.value, { stream: true });
+          // 解析 SSE 事件
+          var lines = text.split('\n');
+          for (var li = 0; li < lines.length; li++) {
+            var line = lines[li].trim();
+            if (!line || !line.startsWith('data: ')) continue;
+            try {
+              var evt = JSON.parse(line.slice(6));
+              if (evt.type === 'text') {
+                accumulated += evt.chunk || '';
+                updateStreamMessage(accumulated);
+              } else if (evt.type === 'action') {
+                actionData = evt;
+              }
+            } catch(e) { /* 跳过解析失败的 SSE 行 */ }
+          }
+          processStream();
+        }).catch(function(err) {
+          console.warn('[buddy-stream] 读取错误:', err);
+          streamDone = true;
+          finalizeStream();
+        });
+      }
+
+      function updateStreamMessage(text) {
+        removeThinking();
+        // 清除所有标记后展示纯文本
+        var cleanText = text.replace(/【face:\w+】/g, '').replace(/【action:[^:]+:[^】]+】/g, '').trim();
+        var mdFn = typeof renderMarkdown === 'function' ? renderMarkdown : function(t) { return escHtml(t); };
+        var container = document.querySelector('#ap-messages');
+        if (!container) return;
+        var msgEl = document.getElementById('ap-stream-msg');
+        if (!msgEl) {
+          msgEl = document.createElement('div');
+          msgEl.id = 'ap-stream-msg';
+          msgEl.className = 'ap-msg ap-msg-buddy';
+          container.appendChild(msgEl);
+        }
+        msgEl.innerHTML = '<span class="ap-msg-text">' + mdFn(cleanText) + '<span class="ap-cursor">|</span></span>';
+        container.scrollTop = container.scrollHeight;
+      }
+
+      function finalizeStream() {
+        removeThinking();
+        var raw = accumulated || '嗯… 我没听清，能再说一遍吗？';
+        // 移除流式消息元素（带光标）
+        var msgEl = document.getElementById('ap-stream-msg');
+        if (msgEl) msgEl.remove();
+        // 从回复中提取并执行动作和表情标记
+        executeActions(raw);
+        var faceMatch = raw.match(/【face:(\w+)】/);
+        if (faceMatch) setFace(faceMatch[1]);
+        // 清除所有标记后展示纯文本
+        var reply = raw.replace(/【[^】]+】/g, '').trim();
+        renderMessage(reply);
+        if (actionData && actionData.action && actionData.action.requirementId) renderActionCard(actionData.action);
+        _chatHistory.push({ role: 'buddy', text: reply });
+        addScore('toast-fire');
+        // 保存到长期记忆
+        saveChatMemory(text, reply);
+      }
+
+      processStream();
     })
     .catch(function(err) {
       removeThinking();
@@ -1267,6 +1393,72 @@
         return origOpen.call(ACMSWin, viewName, opts);
       };
     }
+
+    // v0.66: 图片拖拽 — 从 action card 拖图片到应用图标
+    document.addEventListener('dragstart', function(e) {
+      var img = e.target;
+      if (img.tagName !== 'IMG' || !img.hasAttribute('data-imgurl')) return;
+      var url = img.getAttribute('data-imgurl') || img.src || '';
+      if (url) {
+        e.dataTransfer.setData('text/plain', url);
+        e.dataTransfer.setData('application/acms-image', url);
+        e.dataTransfer.effectAllowed = 'copy';
+        // 半透明拖拽预览
+        if (img.style) img.style.opacity = '0.5';
+        setTimeout(function() { img.style.opacity = ''; }, 0);
+      }
+    });
+
+    // 全局放置目标：图片拖到任意 .launcher-item / .desktop-icon 上打开对应应用
+    document.addEventListener('dragover', function(e) {
+      var target = e.target.closest('.launcher-item, .desktop-icon');
+      if (target && e.dataTransfer.types.includes('application/acms-image')) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        target.classList.add('drag-over');
+      }
+    });
+    document.addEventListener('dragleave', function(e) {
+      var target = e.target.closest('.launcher-item, .desktop-icon');
+      if (target) target.classList.remove('drag-over');
+    });
+    document.addEventListener('drop', function(e) {
+      var target = e.target.closest('.launcher-item, .desktop-icon');
+      if (!target) return;
+      var imgUrl = e.dataTransfer.getData('application/acms-image') || e.dataTransfer.getData('text/plain');
+      if (!imgUrl) return;
+      e.preventDefault();
+      target.classList.remove('drag-over');
+      // 存拖拽图片 URL
+      window._dragImageUrl = imgUrl;
+      console.log('[DRAG-DEBUG] _dragImageUrl 已设置:', imgUrl.slice(0, 120));
+      // 如果是 desktop-icon，直接触发 click（onClick 会自动消费 _dragImageUrl）
+      if (target.classList.contains('desktop-icon')) {
+        target.click();
+        return;
+      }
+      // 从 launcher item 解析要打开的应用名
+      var onclickAttr = target.getAttribute('onclick') || '';
+      var match = onclickAttr.match(/launchView\(['"]([^'"]+)['"]\)/);
+      if (match) {
+        window._dragImageUrl = imgUrl;
+        console.log('[DRAG-DEBUG] launchView 将打开:', match[1]);
+        launchView(match[1]);
+        return;
+      }
+      match = onclickAttr.match(/launchAssistTool\(['"]([^'"]+)['"]/);
+      if (match) {
+        window._dragImageUrl = imgUrl;
+        launchAssistTool(match[1]);
+        return;
+      }
+      // 兜底：检查 data-app 属性
+      var appName = target.getAttribute('data-app') || target.getAttribute('data-view') || '';
+      if (appName) {
+        window._dragImageUrl = imgUrl;
+        launchView(appName);
+      }
+    });
 
     // 检查问候
     setTimeout(function() {

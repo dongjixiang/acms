@@ -27,7 +27,7 @@ async function search(args) {
   // 改成 title + URL 分行显示：URL 在自己一行，渲染器自动包成 <a> 标签
   const formatted = result.results.map((r, i) => {
     const snip = (r.snippet || '').slice(0, 200);
-    return `${i + 1}. **${r.title}**\n   ${r.url}${snip ? '\n   ' + snip : ''}`;
+    return `[${i + 1}] **${r.title}**\n    ${r.url}${snip ? '\n    > ' + snip : ''}`;
   }).join('\n\n');
 
   return {

@@ -353,6 +353,30 @@ router.post('/open', function(req, res) {
   });
 });
 
+// ===== ASSET /api/files/asset =====
+// v0.73: 通过 workspace 相对路径访问资源文件（解决 CDN 图片 CORS 问题）
+//   path 参数格式: "{projectSlug}/assets/{dateStr}/{fileName}.png"
+//   返回文件本身 + CORS 头，供 image-editor/tui-image-editor 的 crossOrigin 加载
+router.get('/asset', function(req, res) {
+  var reqPath = req.query.path || '';
+  if (!reqPath) return res.status(400).json({ error: 'MISSING_PATH' });
+  // 限制在 workspace 目录下
+  var resolved = path.resolve(WORKSPACE_ROOT, reqPath);
+  if (!resolved.startsWith(WORKSPACE_ROOT)) return res.status(403).json({ error: 'FORBIDDEN' });
+  if (!fs.existsSync(resolved)) return res.status(404).json({ error: 'NOT_FOUND' });
+  var st = fs.statSync(resolved);
+  if (st.isDirectory()) return res.status(400).json({ error: 'IS_DIR' });
+  // CORS 头 — tui-image-editor 的 crossOrigin 加载需要
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'GET');
+  res.set('Access-Control-Allow-Headers', '*');
+  // 根据扩展名推断 Content-Type（sendFile 可能不自动推）
+  var ext = path.extname(resolved).toLowerCase();
+  var mimeMap = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.bmp': 'image/bmp' };
+  if (mimeMap[ext]) res.set('Content-Type', mimeMap[ext]);
+  res.sendFile(resolved);
+});
+
 // ===== DRIVES /api/files/drives =====
 // 列出系统中的可用盘符（Windows）或根目录
 router.get('/drives', function(req, res) {

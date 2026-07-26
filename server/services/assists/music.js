@@ -20,8 +20,9 @@ const PLATFORM_TEMPLATES = [
   { platform: 'Bilibili',   icon: '📺', search: (q) => `https://search.bilibili.com/all?keyword=${q}` },
 ];
 
-function buildPlatformSearchLinks(song) {
-  const q = encodeURIComponent(song);
+function buildPlatformSearchLinks(song, artist) {
+  const query = artist ? (artist + ' ' + song) : song;
+  const q = encodeURIComponent(query);
   return PLATFORM_TEMPLATES.map(t => ({
     platform: t.platform,
     icon: t.icon,
@@ -122,6 +123,7 @@ async function runAssistJob(requirementId, opts = {}) {
     assist_music: JSON.stringify({
       status: 'generating',
       song,
+      artist: opts.artist || '',
       sources: [],
       started_at: new Date().toISOString(),
     }),
@@ -146,7 +148,7 @@ async function runAssistJob(requirementId, opts = {}) {
 
   try {
     // 1. 永远构造平台搜索链接（兜底）
-    const platformLinks = buildPlatformSearchLinks(song);
+    const platformLinks = buildPlatformSearchLinks(song, artist);
 
     // 2. 可选：用 web_search 验证（找具体歌单）
     let sources = platformLinks;
@@ -156,8 +158,11 @@ async function runAssistJob(requirementId, opts = {}) {
       const searchTool = toolRegistry.getTool('web_search');
       if (searchTool) {
         console.log(`[assist:music] ${requirementId} web_search 验证: ${song}`);
+        const searchQuery = artist
+          ? `${artist} ${song} 网易云 OR QQ音乐 OR 酷狗 OR Bilibili`
+          : `${song} 网易云 OR QQ音乐 OR 酷狗 OR Bilibili`;
         const result = await searchTool.handler({
-          query: `${song} 网易云 OR QQ音乐 OR 酷狗 OR Bilibili`,
+          query: searchQuery,
           max_results: 6,
         });
         const picked = pickVerifiedLinks(result?.results || [], song, platformLinks);
@@ -176,7 +181,8 @@ async function runAssistJob(requirementId, opts = {}) {
     let playableSources = [];  // v0.19：多个可播放源
     try {
       // 3a. 搜 Bilibili 可播放视频（国内可用，几乎每首歌都有）
-      const biliResp = await fetchWithTimeout(`https://api.bilibili.com/x/web-interface/search/all/v2?keyword=${encodeURIComponent(song)}`, {
+      const biliQuery = artist ? (artist + ' ' + song) : song;
+      const biliResp = await fetchWithTimeout(`https://api.bilibili.com/x/web-interface/search/all/v2?keyword=${encodeURIComponent(biliQuery)}`, {
         headers: { 'User-Agent': 'Mozilla/5.0' },
       }, 10000);
       if (biliResp.ok) {
@@ -320,6 +326,7 @@ async function runAssistJob(requirementId, opts = {}) {
       assist_music: JSON.stringify({
         status: 'done',
         song,
+        artist,
         sources,
         verified,
         playable_url: playableUrl,
@@ -340,7 +347,8 @@ async function runAssistJob(requirementId, opts = {}) {
       assist_music: JSON.stringify({
         status: 'failed',
         song,
-        sources: buildPlatformSearchLinks(song),  // 失败也返回平台链接兜底
+        artist,
+        sources: buildPlatformSearchLinks(song, artist),  // 失败也返回平台链接兜底
         error: e.message || '未知错误',
         generated_at: new Date().toISOString(),
       }),

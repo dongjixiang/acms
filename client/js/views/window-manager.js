@@ -231,10 +231,12 @@
     // v0.55：联合去重 key = (view, instanceId)
     var existing = find(viewName, opts.instanceId);
     if (existing) {
+      console.log('[WIN-DEBUG] 窗口已存在，复用:', viewName, 'instanceId:', opts.instanceId, '_dragImageUrl:', (window._dragImageUrl||'').slice(0,80));
       if (existing.st.min) toggleMin(existing);
       focus(existing);
       return existing;
     }
+    console.log('[WIN-DEBUG] 新建窗口:', viewName, '_dragImageUrl:', (window._dragImageUrl||'').slice(0,80));
 
     var n = windows.length;
     // 优先使用调用者传入的尺寸，其次包注册的 defaultSize，最后 600x400
@@ -601,6 +603,10 @@
       div.addEventListener('click', function(e) {
         e.stopPropagation();
         if (div._wasDragged) { div._wasDragged = false; return; }
+        // v0.66: 拖拽图片到桌面图标时，先把 _dragImageUrl 设好再调 onClick
+        if (window._dragImageUrl) {
+          // 已有拖拽 URL，由 onClick 内部消费
+        }
         // v0.60: Ctrl/Shift 多选不触发应用，普通 click 触发应用 + 清旧 selection
         if (e.ctrlKey || e.metaKey || e.shiftKey) {
           toggleSelection(icon.id);
@@ -608,6 +614,8 @@
         }
         clearSelection();
         if (typeof icon.onClick === 'function') icon.onClick();
+        // v0.66: 消费后清除拖拽 URL，避免影响下次 click
+        window._dragImageUrl = null;
       });
       // ── 右键图标 → 操作菜单 ──
       div.addEventListener('contextmenu', function(e) {

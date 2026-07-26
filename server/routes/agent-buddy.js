@@ -469,17 +469,51 @@ router.post('/chat', async function(req, res) {
       }
     }
 
-    return res.json({
-      reply: reply,
-      action: actionRequirement ? {
-        mode: actionRoute.mode,
-        capabilities: actionRoute.capabilities,
-        confidence: actionRoute.confidence,
-        requires_confirmation: actionRoute.requires_confirmation,
-        requirementId: actionRequirement.id,
-        status: buddyAction.snapshotActionState(actionRequirement.id),
-      } : null,
-    });
+    // v0.66: 流式输出 — 当 query stream=1 时，reply 文本分块 SSE 推送，最后发 action JSON
+    var isStream = req.query && req.query.stream === '1';
+    if (isStream) {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      // 分块推送 reply 文本（每块 3-6 字，模拟流式）
+      var chunks = reply.match(/.{1,6}/g) || [reply || ''];
+      for (var si = 0; si < chunks.length; si++) {
+        if (!res.headersSent || res.writableEnded) break;
+        res.write('data: ' + JSON.stringify({ type: 'text', chunk: chunks[si] }) + '\n\n');
+        // 微延时模拟流式（最后一块不延时）
+        if (si < chunks.length - 1) await new Promise(r => setTimeout(r, 30));
+      }
+      // 发 action
+      if (!res.writableEnded) {
+        res.write('data: ' + JSON.stringify({
+          type: 'action',
+          action: actionRequirement ? {
+            mode: actionRoute.mode,
+            capabilities: actionRoute.capabilities,
+            confidence: actionRoute.confidence,
+            requires_confirmation: actionRoute.requires_confirmation,
+            requirementId: actionRequirement.id,
+            status: buddyAction.snapshotActionState(actionRequirement.id),
+          } : null,
+        }) + '\n\n');
+      }
+      if (!res.writableEnded) res.end();
+    } else {
+      return res.json({
+        reply: reply,
+        action: actionRequirement ? {
+          mode: actionRoute.mode,
+          capabilities: actionRoute.capabilities,
+          confidence: actionRoute.confidence,
+          requires_confirmation: actionRoute.requires_confirmation,
+          requirementId: actionRequirement.id,
+          status: buddyAction.snapshotActionState(actionRequirement.id),
+        } : null,
+      });
+    }
   } catch (e) {
     console.error('[agent-buddy] 错误:', e);
     // 非关键错误：给用户一个友好兜底，不让前端报 500

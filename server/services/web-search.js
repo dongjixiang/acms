@@ -104,8 +104,18 @@ function filterByRelevance(results, query) {
     return strong.slice(0, MAX_RESULTS);
   }
 
-  // 都没有强匹配 (说明 query 失配/搜索引擎烂), fallback 原结果
-  return results;
+  // 都没有强匹配 — 降级过滤：至少去掉明显无关的结果（如单字字典页）
+  if (results.length <= 3) return results;  // 结果太少不滤
+  const filtered = results.filter(function(r) {
+    var u = (r.url || '').toLowerCase();
+    var t = (r.title || '').toLowerCase();
+    // 去掉汉字单字字典页（baike.baidu.com/item/单字 或 baike.baidu.com/item/单字/数字ID）
+    if (u.match(/baike\.baidu\.com\/item\/[\u4e00-\u9fff%]+\/?\d*$/)) return false;
+    // 去掉 hanyuguoxue 等字典站
+    if (u.includes('hanyuguoxue.com') || u.includes('zdic.net') || u.includes('guoxuedashi.com') || u.includes('guoxue.com')) return false;
+    return true;
+  });
+  return filtered.length > 0 ? filtered.slice(0, MAX_RESULTS) : results.slice(0, MAX_RESULTS);
 }
 
 // v0.50: 提取关键词 — 中文按 2-char sliding window（与 browser-fetch.js 一致），英文按空格拆
@@ -162,7 +172,7 @@ async function searchWeb(query, options = {}) {
       console.log('[web-search] 使用 Bing API 搜索');
       const data = await fetchBingApi(apiKey, encodedQuery, maxResults);
       const results = parseBingApiResults(data, maxResults);
-      if (results.length > 0) return { results };
+      if (results.length > 0) return { results, source: 'sogou-html' };
     }
 
     // 模式 B：浏览器 Puppeteer 搜索（v0.49 重排 + v0.50 提级 Baidu 为主路径）
@@ -179,10 +189,10 @@ async function searchWeb(query, options = {}) {
         const filtered = filterByRelevance(r.results, query);
         if (filtered.length > 0) {
           console.log(`[web-search] Baidu 相关性过滤: ${r.results.length} → ${filtered.length} 条`);
-          return { results: filtered };
+          return { results: filtered, source: 'baidu' };
         }
         console.warn('[web-search] Baidu 相关性过滤后为空, 兜底所有结果');
-        return { results: r.results };
+        return { results: r.results, source: 'baidu' };
       }
       console.warn(`[web-search] Baidu 无结果或失败: ${r.error || 'empty'}`);
     } catch (e) {
@@ -193,36 +203,64 @@ async function searchWeb(query, options = {}) {
       const r = await browserSearchBingCn(query, maxResults);
       if (!r.error && r.results?.length > 0) {
         console.log(`[web-search] BingCN 浏览器搜索: ${r.results.length} 条`);
-        // v0.50: 同样做相关性过滤
         const filtered = filterByRelevance(r.results, query);
-        if (filtered.length > 0) return { results: filtered };
-        return { results: r.results };
+        // v0.66: 质量门 — 如果过滤后没结果，跳过
+        //   再加一关：过滤后的结果标题里必须包含 query 的 2-gram（如"张曼""曼玉"），否则说明全是无关结果
+        var hasBigram = false;
+        if (filtered.length > 0) {
+          var grams = extractKeyTokens(query);
+          for (var gi = 0; gi < filtered.length && !hasBigram; gi++) {
+            var t = (filtered[gi].title || '').toLowerCase();
+            for (var gj = 0; gj < grams.length && !hasBigram; gj++) {
+              if (t.includes(grams[gj].toLowerCase())) hasBigram = true;
+            }
+          }
+        }
+        if (filtered.length === 0 || !hasBigram) {
+          console.warn('[web-search] BingCN 结果不相关，引擎切换');
+        } else {
+          return { results: filtered, source: 'bingcn' };
+        }
       }
       console.warn(`[web-search] BingCN 无结果或失败: ${r.error || 'empty'}`);
     } catch (e) {
       console.warn('[web-search] BingCN 抛错:', e.message);
     }
 
-    // 模式 C：搜狗兜底（带 v0.49 quality gate，过滤元宝/抢购等 AD/竞价链接）
+    // 模式 C：头条搜索（v0.66 新增 — 无反爬，中文结果好）
+    try {
+      console.log('[web-search] 浏览器 Toutiao 搜索: ' + query);
+      const tr = await browserSearchToutiao(query, maxResults);
+      if (!tr.error && tr.results?.length > 0) {
+        console.log(`[web-search] Toutiao 浏览器搜索: ${tr.results.length} 条`);
+        const filtered = filterByRelevance(tr.results, query);
+        if (filtered.length > 0) return { results: filtered, source: 'toutiao' };
+      }
+      console.warn(`[web-search] Toutiao 无结果或失败: ${tr?.error || 'empty'}`);
+    } catch (e) {
+      console.warn('[web-search] Toutiao 抛错:', e.message);
+    }
+
+    // 模式 D：搜狗兜底（带 v0.49 quality gate，过滤元宝/抢购等 AD/竞价链接）
     console.log('[web-search] 浏览器 Sogou 兜底搜索: ' + query);
     const browserResults = await browserSearch(query, maxResults);
     if (!browserResults.error && browserResults.results?.length > 0) {
       // sogou 自带 quality gate（title/url 黑名单），不过滤更严
       console.log(`[web-search] Sogou 浏览器搜索: ${browserResults.results.length} 条`);
-      return { results: browserResults.results };
+      return { results: browserResults.results, source: 'sogou' };
     }
 
     // 模式 D：搜狗 HTML 解析（再降级，无浏览器）
     console.log('[web-search] 浏览器搜索失败，尝试搜狗 HTML 解析');
     const html = await fetchSogou(encodedQuery);
     let results = parseSogouResults(html, maxResults);
-    if (results.length > 0) return { results };
+    if (results.length > 0) return { results, source: 'sogou-html' };
 
     // 模式 D：Bing 网页版 HTML 解析（最终降级）
     console.log('[web-search] 搜狗无结果，尝试 Bing 网页版');
     const bingHtml = await fetchBingHtml(encodedQuery);
     results = parseBingHtmlResults(bingHtml, maxResults);
-    if (results.length > 0) return { results };
+    if (results.length > 0) return { results, source: 'sogou-html' };
 
     return { error: '未找到相关结果', results: [] };
   } catch (e) {
@@ -589,4 +627,125 @@ async function browserSearchBaidu(query, maxResults = 8) {
   }
 }
 
-module.exports = { searchWeb, browserSearchBingCn, browserSearchBaidu, filterByRelevance };
+/**
+ * 百度图片搜索 — 返回直接图片 URL 列表
+ */
+async function browserSearchBaiduImage(query, maxResults = 9) {
+  let browser;
+  try {
+    browser = await launchBrowser();
+  } catch (e) {
+    return { error: `浏览器启动失败: ${e.message}`, images: [] };
+  }
+  let page = null;
+  try {
+    page = await browser.newPage();
+    await page.setDefaultNavigationTimeout(30000);
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36');
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'zh-CN,zh;q=0.9' });
+
+    const url = `https://image.baidu.com/search/index?tn=baiduimage&word=${encodeURIComponent(query)}`;
+    await page.goto(url, { waitUntil: 'networkidle0', timeout: 30000 });
+    // 等 JS 加载 + 首屏图片渲染
+    await new Promise(resolve => setTimeout(resolve, 4000));
+
+    const images = await page.evaluate((max) => {
+      const items = [];
+      const seen = new Set();
+      // 百度图片结构：img 标签用 data-objurl 存大图 URL，src 懒加载为空
+      const imgElements = document.querySelectorAll('img[data-objurl]');
+      for (const img of imgElements) {
+        if (items.length >= max) break;
+        const objUrl = img.getAttribute('data-objurl') || '';
+        if (!objUrl || seen.has(objUrl)) continue;
+        seen.add(objUrl);
+        const thumb = img.getAttribute('data-th') || img.getAttribute('src') || objUrl;
+        const title = img.alt || img.title || '';
+        items.push({ thumb, url: objUrl, title: title.slice(0, 100) });
+      }
+      return items;
+    }, maxResults);
+
+    // 百度图片首屏只渲染约 8 张 data-objurl，滚动加载更多凑满 3x3 网格
+    if (images.length < maxResults) {
+      // 多次滚动加载更多
+      for (var scrollAttempt = 0; scrollAttempt < 3 && images.length < maxResults; scrollAttempt++) {
+        await page.evaluate(() => window.scrollBy(0, 600));
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        var existingUrls = images.map(function(i) { return i.url; });
+        var moreImages = await page.evaluate(function(max, existingUrls) {
+          var items = [];
+          document.querySelectorAll('img[data-objurl]').forEach(function(img) {
+            if (items.length >= max) return;
+            var objUrl = img.getAttribute('data-objurl') || '';
+            if (!objUrl || existingUrls.indexOf(objUrl) >= 0) return;
+            items.push({
+              thumb: img.getAttribute('data-th') || img.getAttribute('src') || objUrl,
+              url: objUrl,
+              title: (img.alt || img.title || '').slice(0, 100),
+            });
+          });
+          return items;
+        }, maxResults - images.length, existingUrls);
+        for (var mi = 0; mi < moreImages.length && images.length < maxResults; mi++) {
+          images.push(moreImages[mi]);
+        }
+      }
+    }
+
+    console.log(`[web-search] Baidu 图片搜索: ${images.length} 张`);
+    return { images, query };
+  } catch (e) {
+    return { error: `Baidu 图片搜索失败: ${e.message}`, images: [] };
+  } finally {
+    if (page) { try { await page.close(); } catch {} }
+  }
+}
+
+
+/**
+ * 头条搜索 — 无反爬，中文搜索质量好
+ */
+async function browserSearchToutiao(query, maxResults = 8) {
+  let browser;
+  try {
+    browser = await launchBrowser();
+  } catch (e) {
+    return { error: `浏览器启动失败: ${e.message}`, results: [] };
+  }
+  let page = null;
+  try {
+    page = await browser.newPage();
+    await page.setDefaultNavigationTimeout(30000);
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36');
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'zh-CN,zh;q=0.9' });
+
+    const url = 'https://www.toutiao.com/search/?keyword=' + encodeURIComponent(query);
+    await page.goto(url, { waitUntil: 'networkidle0', timeout: 30000 });
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    const results = await page.evaluate((max) => {
+      const items = [];
+      const seen = new Set();
+      document.querySelectorAll('a[href*="sou.toutiao.com/search/jump"]').forEach(a => {
+        if (items.length >= max) return;
+        const title = (a.textContent || '').trim();
+        const url = a.href;
+        if (title.length < 6 || seen.has(url)) return;
+        seen.add(url);
+        items.push({ title: title.slice(0, 200), url, snippet: '' });
+      });
+      return items;
+    }, maxResults);
+
+    console.log('[web-search] Toutiao 浏览器搜索: ' + results.length + ' 条');
+    return { results };
+  } catch (e) {
+    return { error: 'Toutiao 搜索失败: ' + e.message, results: [] };
+  } finally {
+    if (page) { try { await page.close(); } catch {} }
+  }
+}
+
+
+module.exports = { searchWeb, browserSearchToutiao, browserSearchBingCn, browserSearchBaidu, browserSearchBaiduImage, filterByRelevance };

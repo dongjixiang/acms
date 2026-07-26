@@ -307,6 +307,7 @@ async function runAssistJob(requirementId, opts = {}) {
       .map(r => ({
         image_url_output: r.url,
         asset_path: r.asset_path,
+        workspace_path: projectSlug + '/' + r.asset_path,  // v0.73: 含 projectSlug 前缀，供前端 /api/files/asset 访问
         mime: r.mime,
         size: r.size,
       }));
@@ -332,6 +333,7 @@ async function runAssistJob(requirementId, opts = {}) {
       // 兼容旧字段（image_url_output / asset_path = picked 的）
       image_url_output: picked.image_url_output,
       asset_path: picked.asset_path,
+      workspace_path: projectSlug + '/' + picked.asset_path,  // v0.73
       mime: picked.mime,
       generated_at: generatedAt,
     };
@@ -380,6 +382,14 @@ function pickOption(requirementId, idx) {
   // 同步旧字段（向后兼容）
   assist.image_url_output = picked.image_url_output;
   assist.asset_path = picked.asset_path;
+  // v0.73: 同步 workspace_path（部分老记录可能没有，此时用 projectSlug 拼接）
+  if (!picked.workspace_path && picked.asset_path) {
+    var slug = 'default';
+    try { var p = req.project_id ? require('../stores/project-store').getById(req.project_id) : null; if (p && p.slug) slug = p.slug; } catch {}
+    assist.workspace_path = slug + '/' + picked.asset_path;
+  } else {
+    assist.workspace_path = picked.workspace_path;
+  }
   assist.mime = picked.mime;
   reqStore.update(requirementId, { assist_image: JSON.stringify(assist) });
   return assist;

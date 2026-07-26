@@ -74,6 +74,7 @@
 
     // ─── 加载 tui-image-editor ───
     function loadEditor(src, callback) {
+      console.log('[IMG-LOAD] loadEditor src:', src ? src.slice(0, 80) : 'null/empty', 'colorPicker loaded:', !!window['tui-color-picker']);
       // 先确保 tui-color-picker 已加载
       if (!window['tui-color-picker']) {
         var cpLink = document.createElement('link');
@@ -98,6 +99,7 @@
     }
 
     function loadMainEditor(src, callback) {
+      console.log('[IMG-MAIN] loadMainEditor src:', src ? src.slice(0, 80) : 'null/empty', 'tui.ImageEditor ready:', !!(window.tui && window.tui.ImageEditor && typeof window.tui.ImageEditor === 'function'));
       if (window.tui && window.tui.ImageEditor && typeof window.tui.ImageEditor === 'function') {
         initEditor(src);
         if (callback) callback();
@@ -117,6 +119,7 @@
     }
 
     function initEditor(src) {
+      console.log('[IMG-INIT] initEditor called with src:', src ? src.slice(0, 80) : 'null/empty');
       // 不用占位图 — 留空让用户打开文件
       imageEditor = new window.tui.ImageEditor(mountEl, {
         includeUI: {
@@ -151,13 +154,25 @@
       // 激活内置按钮事件 (initCanvas 里只在 loadImage.path 有值时才调用 activeMenuEvent)
       if (imageEditor && imageEditor.ui && typeof imageEditor.ui.activeMenuEvent === 'function') {
         setTimeout(function () {
-          try { imageEditor.ui.activeMenuEvent(); } catch(e) {}
+          try { imageEditor.ui.activeMenuEvent(); } catch(e) { console.warn('[IMG-ERR] activeMenuEvent:', e); }
         }, 300);
       }
+
+      // 监听 tui 图片加载结果
+      imageEditor.on('loadImage', function(result) {
+        console.log('[IMG-LOADED] tui loadImage 完成:', result ? (result.newWidth+'x'+result.newHeight) : 'no result');
+      });
+      imageEditor.on('error', function(err) {
+        console.warn('[IMG-ERR] tui error:', err && err.message ? err.message : err);
+      });
     }
 
     // 默认加载空白图片供用户打开文件
-    loadEditor(initialSrc || null);
+    // v0.66: 支持拖拽传入图片（window._dragImageUrl）
+    var src = initialSrc || (window._dragImageUrl || null);
+    console.log('[IMG-EDIT] initialSrc:', initialSrc ? initialSrc.slice(0, 80) : null, '_dragImageUrl:', window._dragImageUrl ? window._dragImageUrl.slice(0, 80) : null, '→ src:', src ? src.slice(0, 80) : null);
+    if (src === window._dragImageUrl) { window._dragImageUrl = null; console.log('[IMG-EDIT] _dragImageUrl 已消费'); }
+    loadEditor(src);
 
     // ─── 菜单事件 ───
     w.$c.querySelectorAll('.code-menu-item').forEach(function (item) {

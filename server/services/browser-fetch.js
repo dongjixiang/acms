@@ -17,6 +17,10 @@
 //   - `--no-sandbox`（Linux 服务器必须）
 //   - 页面关闭 + 异常处理（不泄漏 page 实例）
 
+const puppeteerExtra = require('puppeteer-extra');
+const stealthPlugin = require('puppeteer-extra-plugin-stealth');
+puppeteerExtra.use(stealthPlugin());
+// 保留原生 puppeteer 引用（部分功能如 executablePath 仍用原生）
 const puppeteer = require('puppeteer');
 
 const BROWSER_TIMEOUT_MS = 45000;  // 45s（百度百科 JS 渲染慢 + 冷启动 3-5s）
@@ -37,9 +41,13 @@ async function launchBrowser() {
       _browser = null;
     }
   } else if (_browser) {
-    // _browser 存在但没有 isConnected 方法（旧实例/损坏）
-    console.warn('[browser-fetch] _browser 无 isConnected 方法，重置');
-    _browser = null;
+    // v0.66: puppeteerExtra.launch 的 browser 可能无 isConnected; 用 connected 属性替代
+    if (typeof _browser.connected === 'boolean') {
+      isValid = _browser.connected;
+    } else {
+      console.warn('[browser-fetch] _browser 无 isConnected 方法或 connected 属性，重置');
+      _browser = null;
+    }
   }
   if (isValid) return _browser;
   if (_launching) return _launching;
@@ -90,7 +98,7 @@ const verDir = entries.find(d => d.isDirectory() && d.name.startsWith('win64-'))
         console.warn('[browser-fetch] 未找到浏览器可执行文件');
       }
 
-      _browser = await puppeteer.launch(launchOpts);
+      _browser = await puppeteerExtra.launch(launchOpts);
       return _browser;
     } finally {
       _launching = null;
