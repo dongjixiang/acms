@@ -34,7 +34,9 @@ function assert(cond, msg) {
   assert(stats.totals !== undefined, 'stats.totals 存在');
   assert(Array.isArray(stats.totals.topErrors), 'totals.topErrors 是数组');
   assert(stats.totals.totalCalls === 0, '空 stats totalCalls = 0');
-  assert(stats.totals.toolCount === 1, 'toolCount = 1');
+  assert(stats.totals.appToolCount === 1, 'appToolCount = 1');
+  assert(stats.totals.totalToolCount >= 1, 'totalToolCount >= 1');
+  assert(stats.totals.serverToolCount >= 0, 'serverToolCount >= 0');
   assert(stats.totals.registeredApps.length === 1, 'registeredApps 含 file-mgr');
 
   // ── Test 2: 成功调用 → recordCall(calls, latency, no error) ──
@@ -116,7 +118,8 @@ function assert(cond, msg) {
   console.log('\n[test] totals 聚合正确');
   assert(stats.totals.totalCalls >= 6, 'totalCalls >= 6（file_search 5 + slow_op 1）');
   assert(stats.totals.totalErrors >= 5, 'totalErrors >= 5（NOT_FOUND ×4 + TIMEOUT ×1）');
-  assert(stats.totals.toolCount === 2, 'toolCount = 2（file_search + slow_op）');
+  assert(stats.totals.appToolCount === 2, 'appToolCount = 2（file_search + slow_op）');
+  assert(stats.totals.totalToolCount >= 2, 'totalToolCount >= 2');
 
   // ── Test 7: tool-registry.getAppToolStats 透传 ──
   console.log('\n[test] tool-registry.getAppToolStats 透传');

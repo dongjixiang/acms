@@ -430,10 +430,19 @@ function renderAdminAppTools(stats) {
 
   // 顶部 4 张小卡（与系统状态风格一致）
   html += '<div class="stats-row" style="grid-template-columns:repeat(4,1fr);margin:12px 0">';
-  html += '<div class="stat-card"><div class="num">' + (totals.totalCalls || 0) + '</div><div class="label">总调用次数</div></div>';
-  html += '<div class="stat-card"><div class="num">' + (totals.totalErrors || 0) + '</div><div class="label">总错误次数</div></div>';
-  html += '<div class="stat-card"><div class="num">' + (totals.toolCount || 0) + '</div><div class="label">已注册 Tool 数</div></div>';
+  html += '<div class="stat-card"><div class="num">' + (totals.totalCalls || 0) + '</div><div class="label">App-Tool 总调用</div></div>';
+  html += '<div class="stat-card"><div class="num">' + (totals.totalErrors || 0) + '</div><div class="label">App-Tool 总错误</div></div>';
+  html += '<div class="stat-card"><div class="num">' + (totals.totalToolCount || 0) + '</div><div class="label">全平台 Tool 数</div></div>';
   html += '<div class="stat-card"><div class="num">' + ((totals.registeredApps || []).length) + '</div><div class="label">已接入应用</div></div>';
+  html += '</div>';
+
+  // Tool 分项明细（Server / App）
+  html += '<div style="font-size:12px;color:var(--text2);margin:4px 0 8px">';
+  html += '📊 Server Tools: <strong style="color:var(--accent)">' + (totals.serverToolCount || 0) + '</strong>';
+  html += ' &nbsp;|&nbsp; ';
+  html += '🔌 App Tools: <strong style="color:var(--accent)">' + (totals.appToolCount || 0) + '</strong>';
+  html += ' &nbsp;|&nbsp; ';
+  html += '已接入应用: ' + ((totals.registeredApps || []).join(', ') || '(无)');
   html += '</div>';
 
   // 工具调用排行表

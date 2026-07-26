@@ -201,12 +201,25 @@ function getStats() {
   }
   perTool.sort(function(a, b) { return b.calls - a.calls; });
 
+  // v0.66 PR4 fix: 把 server tool 数量也算进来（之前只算 app tool，少得离谱）
+  var serverToolCount = 0;
+  try {
+    var toolRegistry = require('./tool-registry');
+    // toolRegistry.listTools() = server tools + app tools 合并
+    var allToolNames = toolRegistry.listTools().map(function(t) { return t.name; });
+    serverToolCount = allToolNames.length - listAppToolNames().length;
+    if (serverToolCount < 0) serverToolCount = 0;
+  } catch (e) { /* 静默：tool-registry 不可用不影响 app-tool 统计 */ }
+
   var totals = {
     totalCalls: perTool.reduce(function(s, t) { return s + t.calls; }, 0),
     totalErrors: perTool.reduce(function(s, t) { return s + t.errors; }, 0),
     pendingInvokes: pendingInvokes.size,
     registeredApps: Array.from(clientAppTools.keys()),
-    toolCount: listAppToolNames().length,
+    appToolCount: listAppToolNames().length,
+    serverToolCount: serverToolCount,
+    totalToolCount: listAppToolNames().length + serverToolCount,
+    topErrors: [],
   };
 
   // 全局高频错误聚合（所有 tool 累加）
@@ -223,7 +236,6 @@ function getStats() {
 
   return { perTool: perTool, totals: totals };
 }
-
 // 重置统计（测试用）
 function resetStats() {
   _toolStats.perTool.clear();
