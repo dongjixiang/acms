@@ -450,13 +450,113 @@
     }
 
     return {
-      getDocument: function () { return state.doc; },
+getDocument: function () { return state.doc; },
       getMarkdown: function () {
         // 先同步
         syncBlocks(container, state.doc);
         return OfficeDocConverter.documentToMarkdown(state.doc);
       },
-      destroy: function () { container.innerHTML = ''; container.classList.remove('ode-editor-flow'); },
+
+      // v0.66 fix: Bubble Menu 移到 mountEditor 内
+      //   导致在任何地方选词都触发显示 ode-bubble — cream 主题下又是白字米色底看不见 → "空白方框"）
+      //   现在 scope 到 editorRoot（container），只在编辑器内选词才显示
+      destroy: (function () {
+        var _bubble = null;
+        function _getBubble() {
+          if (_bubble) return _bubble;
+          _bubble = document.createElement('div');
+          _bubble.className = 'ode-bubble';
+          // 固定深色背景 + 白字（cream 主题下也清晰）
+          _bubble.style.cssText =
+            'position:fixed;z-index:99999;display:none;background:#2a2a2a;' +
+            'border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.35);padding:4px;gap:2px;';
+          var btns = [
+            { label: 'B', cmd: 'bold', style: 'font-weight:700' },
+            { label: 'I', cmd: 'italic', style: 'font-style:italic' },
+            { label: 'U', cmd: 'underline', style: 'text-decoration:underline' },
+            { label: '</>', cmd: 'code', style: 'font-family:monospace' },
+          ];
+          btns.forEach(function (b) {
+            var btn = document.createElement('button');
+            btn.textContent = b.label;
+            btn.dataset.cmd = b.cmd;
+            btn.style.cssText = 'border:none;background:transparent;color:#fff;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:13px;';
+            btn.onmouseenter = function () { this.style.background = 'rgba(255,255,255,0.15)'; };
+            btn.onmouseleave = function () { this.style.background = 'transparent'; };
+            btn.onmousedown = function (e) {
+              e.preventDefault();
+              var sel = window.getSelection();
+              if (!sel.rangeCount || sel.isCollapsed) return;
+              var cmd = this.dataset.cmd;
+              if (cmd === 'code') {
+                var txt = sel.toString();
+                document.execCommand('insertText', false, '`' + txt + '`');
+              } else {
+                document.execCommand(cmd);
+              }
+              _bubble.style.display = 'none';
+            };
+            _bubble.appendChild(btn);
+          });
+          document.body.appendChild(_bubble);
+          return _bubble;
+        }
+
+        function _updateBubble() {
+          var sel = window.getSelection();
+          if (!sel.rangeCount || sel.isCollapsed || !sel.toString().trim()) {
+            if (_bubble) _bubble.style.display = 'none';
+            return;
+          }
+          // v0.66 fix: 检查 selection 是否在编辑器内（root scope）
+          var r = sel.getRangeAt(0);
+          var node = r.commonAncestorContainer;
+          // commonAncestorContainer 可能是 Text 节点（无 parentElement），用 contains 检查
+          var inEditor = (node.nodeType === 1)
+            ? container.contains(node)
+            : (node.parentElement && container.contains(node.parentElement));
+          if (!inEditor) {
+            if (_bubble) _bubble.style.display = 'none';
+            return;
+          }
+          var rect = r.getBoundingClientRect();
+          var b = _getBubble();
+          // 修正：先 display:flex 再读 offsetWidth（之前 display:none 时读 = 0 导致位置错乱）
+          b.style.display = 'flex';
+          b.style.visibility = 'hidden';
+          var bw = b.offsetWidth, bh = b.offsetHeight;
+          b.style.visibility = '';
+          b.style.left = (rect.left + rect.width / 2 - bw / 2) + 'px';
+          b.style.top = (rect.top - bh - 8) + 'px';
+          // 检测已激活的格式
+          var btns = b.querySelectorAll('button');
+          btns.forEach(function (btn) {
+            try {
+              var state = document.queryCommandState(btn.dataset.cmd);
+              btn.style.background = state ? 'rgba(255,255,255,0.25)' : 'transparent';
+            } catch(e) {}
+          });
+        }
+
+        document.addEventListener('selectionchange', _updateBubble);
+        // 点击外部关闭
+        function _onMouseDown(e) {
+          if (_bubble && !_bubble.contains(e.target)) {
+            _bubble.style.display = 'none';
+          }
+        }
+        document.addEventListener('mousedown', _onMouseDown);
+
+        return function () {
+          container.innerHTML = '';
+          container.classList.remove('ode-editor-flow');
+          // v0.66 fix: 清理全局监听 + DOM 节点（防泄漏）
+          document.removeEventListener('selectionchange', _updateBubble);
+          document.removeEventListener('mousedown', _onMouseDown);
+          if (_bubble && _bubble.parentNode) _bubble.parentNode.removeChild(_bubble);
+          _bubble = null;
+        };
+      })(),
       getCurrentBlockId: function () {
         var d = getCurrentBlockData();
         return d ? d.id : null;
@@ -594,78 +694,4 @@
 
   root.OfficeDocEditor = root.OfficeDocEditor || {};
   root.OfficeDocEditor.mountEditor = mountEditor;
-
-  // ─── Bubble Menu (浮动工具栏 — 选区 ↑ 显示 B/I/U/</> 按钮) ───
-  var bubble = null;
-  function getBubble() {
-    if (bubble) return bubble;
-    bubble = document.createElement('div');
-    bubble.className = 'ode-bubble';
-    bubble.style.cssText =
-      'position:fixed;z-index:99999;display:none;background:var(--bg,#2a2a2a);' +
-      'border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.25);padding:4px;gap:2px;';
-    var btns = [
-      { label: 'B', cmd: 'bold', style: 'font-weight:700' },
-      { label: 'I', cmd: 'italic', style: 'font-style:italic' },
-      { label: 'U', cmd: 'underline', style: 'text-decoration:underline' },
-      { label: '</>', cmd: 'code', style: 'font-family:monospace' },
-    ];
-    btns.forEach(function (b) {
-      var btn = document.createElement('button');
-      btn.textContent = b.label;
-      btn.dataset.cmd = b.cmd;
-      btn.style.cssText = 'border:none;background:transparent;color:#fff;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:13px;';
-      btn.onmouseenter = function () { this.style.background = 'rgba(255,255,255,0.15)'; };
-      btn.onmouseleave = function () { this.style.background = 'transparent'; };
-      btn.onmousedown = function (e) {
-        e.preventDefault();
-        var sel = window.getSelection();
-        if (!sel.rangeCount || sel.isCollapsed) return;
-        var cmd = this.dataset.cmd;
-        if (cmd === 'code') {
-          // code: wrap with backticks via execCommand insertText
-          var txt = sel.toString();
-          document.execCommand('insertText', false, '`' + txt + '`');
-        } else {
-          document.execCommand(cmd);
-        }
-        bubble.style.display = 'none';
-      };
-      bubble.appendChild(btn);
-    });
-    document.body.appendChild(bubble);
-    return bubble;
-  }
-
-  function updateBubble() {
-    var sel = window.getSelection();
-    if (!sel.rangeCount || sel.isCollapsed || !sel.toString().trim()) {
-      if (bubble) bubble.style.display = 'none';
-      return;
-    }
-    var r = sel.getRangeAt(0);
-    var rect = r.getBoundingClientRect();
-    var b = getBubble();
-    b.style.left = (rect.left + rect.width / 2 - b.offsetWidth / 2) + 'px';
-    b.style.top = (rect.top - b.offsetHeight - 8) + 'px';
-    b.style.display = 'flex';
-    // 检测已激活的格式
-    var btns = b.querySelectorAll('button');
-    btns.forEach(function (btn) {
-      try {
-        var state = document.queryCommandState(btn.dataset.cmd);
-        btn.style.background = state ? 'rgba(255,255,255,0.25)' : 'transparent';
-      } catch(e) {}
-    });
-  }
-
-  document.addEventListener('selectionchange', updateBubble);
-
-  // 点击外部关闭
-  document.addEventListener('mousedown', function (e) {
-    if (bubble && !bubble.contains(e.target)) {
-      bubble.style.display = 'none';
-    }
-  });
-
 })(window);
