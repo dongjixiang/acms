@@ -748,6 +748,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (typeof loadAdminAppToolsStats === 'function') {
           loadAdminAppToolsStats(w.$c);
         }
+        // v0.66 PR4 fix: loadOpsTabStats 也支持 root scope（运营工具 tab 同样在浮窗里失效）
+        if (typeof loadOpsTabStats === 'function') {
+          loadOpsTabStats(w.$c);
+        }
       });
     }
   });

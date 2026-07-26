@@ -926,11 +926,18 @@ setupAdminTabs = function(root) {
   setupUsersTab();
 };
 
-async function loadOpsTabStats() {
+async function loadOpsTabStats(root) {
+  // v0.66 PR4 fix: 支持 root scope（与 loadAdminAppToolsStats 一致）
+  //   主窗口用 document 查找；浮窗（taskbar showAdminWindow）需传入 w.$c
+  var scope = root || document;
+  function findEl(id) {
+    return root ? root.querySelector('#' + id) : document.getElementById(id);
+  }
+
   // 想法池：取 /ideas/stats
   try {
     const stats = await api('GET', '/improvements/ideas/stats');
-    const el = document.getElementById('ops-idea-stats');
+    const el = findEl('ops-idea-stats');
     if (!el) return;
     const total = stats.total || 0;
     const byStatus = stats.byStatus || {};
@@ -954,14 +961,14 @@ async function loadOpsTabStats() {
         (roleParts ? `<div style="margin-top:6px;color:var(--text2)">来源角色: ${escHtml(roleParts)}</div>` : '');
     }
   } catch (e) {
-    const el = document.getElementById('ops-idea-stats');
+    const el = findEl('ops-idea-stats');
     if (el) el.innerHTML = '<span style="color:var(--accent2)">加载失败: ' + escHtml(e.message) + '</span>';
   }
 
   // 自我改进：取 /improvements/project（拿到 taskStats）
   try {
     const proj = await api('GET', '/improvements/project');
-    const el = document.getElementById('ops-improvement-stats');
+    const el = findEl('ops-improvement-stats');
     if (!el) return;
     const ts = proj.taskStats || {};
     const total = ts.total || 0;
@@ -980,7 +987,7 @@ async function loadOpsTabStats() {
         `<div style="margin-top:6px;color:var(--text2)">完成率 ${pct}%${pct < 30 && inProgress > 0 ? ' · 建议跟进积压' : ''}</div>`;
     }
   } catch (e) {
-    const el = document.getElementById('ops-improvement-stats');
+    const el = findEl('ops-improvement-stats');
     if (el) el.innerHTML = '<span style="color:var(--accent2)">加载失败: ' + escHtml(e.message) + '</span>';
   }
 }
