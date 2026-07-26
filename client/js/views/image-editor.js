@@ -139,6 +139,8 @@
         cssMaxWidth: 9999,
         cssMaxHeight: 9999,
         selectionStyle: { cornerSize: 8, rotatingPointOffset: 20 },
+        // v0.73: 允许缩放到 10%（默认 minZoom=1 只能放大不能缩小到比原图小）
+        minZoom: 0.1,
       });
 
       // JS 移除内置标题栏 (比 CSS 可靠)
@@ -166,6 +168,37 @@
         console.warn('[IMG-ERR] tui error:', err && err.message ? err.message : err);
       });
     }
+
+    // v0.73: 暴露图片重载函数（供拖拽到已打开的编辑器窗口时使用）
+    function reloadImage(url) {
+      if (!imageEditor || !url) return;
+      console.log('[IMG-RELOAD] 重新加载图片:', url.slice(0, 80));
+      var name = url.split('/').pop() || 'image';
+      imageEditor.loadImageFromURL(url, name).then(function() {
+        console.log('[IMG-RELOAD] 加载成功');
+        // 适应窗口
+        setTimeout(function() {
+          try {
+            var rect = mountEl.getBoundingClientRect();
+            var img = imageEditor.getCanvasImage();
+            if (img) {
+              var zl = Math.min(rect.width / img.width, rect.height / img.height);
+              if (zl > 0) imageEditor.zoom({ x: rect.width / 2, y: rect.height / 2, zoomLevel: zl });
+            }
+          } catch(e) {}
+        }, 100);
+      }).catch(function(e) {
+        console.warn('[IMG-RELOAD] 加载失败:', e);
+      });
+    }
+    // 挂到窗口元素上，供 ACMSWin.open 复用窗口时调用
+    w.reloadImage = reloadImage;
+    // 也挂到全局，供拖拽到窗口内容区时直接调用
+    window.__activeImageEditorReload = reloadImage;
+    // 窗口关闭时清理全局引用
+    w.onClose = w.onClose || function() {
+      if (window.__activeImageEditorReload === reloadImage) window.__activeImageEditorReload = null;
+    };
 
     // 默认加载空白图片供用户打开文件
     // v0.66: 支持拖拽传入图片（window._dragImageUrl）
@@ -522,6 +555,87 @@ function escHtml(s) {
         })
         .then(function(info) { return { ok: true, outputPath: (outputPath || path.replace(/[\\\/][^\\\/]+$/, '')) + '/' + info.name, format: targetFormat }; })
         .catch(function(e) { return { ok: false, error: 'CONVERT_FAILED', message: e.message }; });
+    },
+
+    // v0.66 PR2: AI 文生图（无源图，直接生成）
+    aiGenerate: function(prompt, count, opts) {
+      opts = opts || {};
+      if (!prompt) return Promise.resolve({ ok: false, error: 'INVALID_ARGS', message: '需要 prompt' });
+      var n = Math.max(1, Math.min(6, parseInt(count) || 4));
+      var projectSlug = opts.projectSlug || 'image-tools';
+      var size = opts.size || '1024x1024';
+      return fetch('/api/image-tools/ai-generate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': (window.AK || 'dev-key-001'),
+          'Authorization': 'Bearer ' + (localStorage.getItem('acms-token') || ''),
+        },
+        body: JSON.stringify({ prompt: prompt, n: n, projectSlug: projectSlug, size: size }),
+      }).then(function(r) {
+        if (!r.ok) return r.json().then(function(e) { throw new Error(e.message || ('HTTP_' + r.status)); });
+        return r.json();
+      }).catch(function(e) { return { ok: false, error: 'AI_GENERATE_FAILED', message: e.message }; });
+    },
+
+    // v0.66 PR2: AI 图生图（基于当前画布或传入的 referenceImage）
+    aiEdit: function(prompt, sourceDataUrl, count, opts) {
+      opts = opts || {};
+      if (!prompt) return Promise.resolve({ ok: false, error: 'INVALID_ARGS', message: '需要 prompt' });
+      if (!sourceDataUrl) return Promise.resolve({ ok: false, error: 'INVALID_ARGS', message: '需要 referenceImage (canvas dataUrl 或 http URL)' });
+      var n = Math.max(1, Math.min(6, parseInt(count) || 4));
+      var projectSlug = opts.projectSlug || 'image-tools';
+      var size = opts.size || '1024x1024';
+      return fetch('/api/image-tools/ai-edit', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': (window.AK || 'dev-key-001'),
+          'Authorization': 'Bearer ' + (localStorage.getItem('acms-token') || ''),
+        },
+        body: JSON.stringify({
+          prompt: prompt,
+          referenceImage: sourceDataUrl,
+          n: n,
+          projectSlug: projectSlug,
+          size: size,
+        }),
+      }).then(function(r) {
+        if (!r.ok) return r.json().then(function(e) { throw new Error(e.message || ('HTTP_' + r.status)); });
+        return r.json();
+      }).catch(function(e) { return { ok: false, error: 'AI_EDIT_FAILED', message: e.message }; });
+    },
+
+    // v0.66 PR2: 保存当前画布快照（用于 AI 修改前的撤销机制）
+    //   canvasInst: TOAST UI ImageEditor 实例（自带 getCanvas()）或 HTMLCanvasElement
+    saveCanvasSnapshot: function(canvasInst) {
+      if (!canvasInst) return null;
+      // TOAST UI ImageEditor 实例
+      if (typeof canvasInst.getCanvas === 'function') {
+        var c = canvasInst.getCanvas();
+        if (c && typeof c.toDataURL === 'function') return c.toDataURL('image/png');
+      }
+      // 直接传 canvas
+      if (typeof canvasInst.toDataURL === 'function') return canvasInst.toDataURL('image/png');
+      return null;
+    },
+
+    // v0.66 PR2: 从快照恢复画布
+    restoreCanvasSnapshot: function(canvasInst, dataUrl) {
+      if (!canvasInst || !dataUrl) return Promise.resolve(false);
+      var canvas = (typeof canvasInst.getCanvas === 'function') ? canvasInst.getCanvas() : canvasInst;
+      if (!canvas || typeof canvas.getContext !== 'function') return Promise.resolve(false);
+      return new Promise(function(resolve) {
+        var img = new Image();
+        img.onload = function() {
+          var ctx = canvas.getContext('2d');
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(img, 0, 0);
+          resolve(true);
+        };
+        img.onerror = function() { resolve(false); };
+        img.src = dataUrl;
+      });
     },
   };
 

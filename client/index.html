@@ -661,7 +661,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- v0.62.7: 代码编辑器 (Monaco Editor + AI) -->
 <script src="/client/js/views/code-editor.js?v=0.62.7"></script>
 <!-- v0.62.7: 图片编辑器 (TOAST UI Image Editor + AI) -->
-<script src="/client/js/views/image-editor.js?v=0.63"></script>
+<script src="/client/js/views/image-editor.js?v=0.66.2"></script>
 <!-- v0.62.1: 块编辑器核心（schema + 转换器 + UI），PR 3 将接 office-word PKG -->
 <script src="/client/js/core/office-doc.js?v=0.62.1"></script>
 <script src="/client/js/core/office-doc-converter.js?v=0.62.1"></script>
@@ -1110,6 +1110,43 @@ document.addEventListener('DOMContentLoaded', () => {
         },
         handler: async function(args) {
           return await window.imageEditorAPI.convert(args.path, args.targetFormat, args);
+        },
+      },
+
+      // v0.66 PR2: AI 文生图（无源图）
+      {
+        name: 'image_ai_generate',
+        description: 'USE WHEN: 用户想"画一张图""生成图片"等文生图任务（无参考图）。返回 N 张候选图 URL，prompt 中文/英文均可。',
+        parameters: {
+          type: 'object',
+          properties: {
+            prompt: { type: 'string', description: '图片描述（中文/英文，越具体越好）' },
+            n: { type: 'integer', description: '候选数量（1-6，默认 4）' },
+            size: { type: 'string', description: '图片尺寸：1024x1024 / 1024x1792 / 1792x1024，默认 1024x1024' },
+          },
+          required: ['prompt'],
+        },
+        handler: async function(args) {
+          return await window.imageEditorAPI.aiGenerate(args.prompt, args.n, args);
+        },
+      },
+
+      // v0.66 PR2: AI 图生图（基于当前画布或传入 referenceImage）
+      {
+        name: 'image_ai_edit',
+        description: 'USE WHEN: 用户在 image-editor 内打开了一张图，想"改成夜景""加个月亮""去背景"等图生图任务。referenceImage 必须是 data:image/...;base64,XXX 或 http(s) URL。返回 N 张候选图 URL。',
+        parameters: {
+          type: 'object',
+          properties: {
+            prompt: { type: 'string', description: '修改意见（中文/英文，如"改成夜景风格"）' },
+            referenceImage: { type: 'string', description: 'data:image/...;base64,XXX 或 http(s) URL（必填）' },
+            n: { type: 'integer', description: '候选数量（1-6，默认 4）' },
+            size: { type: 'string', description: '图片尺寸' },
+          },
+          required: ['prompt', 'referenceImage'],
+        },
+        handler: async function(args) {
+          return await window.imageEditorAPI.aiEdit(args.prompt, args.referenceImage, args.n, args);
         },
       },
     ],
