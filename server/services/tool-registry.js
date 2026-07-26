@@ -172,52 +172,50 @@ function resetToolStats() {
  * v0.14：执行工具 handler（便利 wrapper）
  * v0.61: 新增 ctx 参数透传给 handler
  * v0.62: 自动记录调用统计
- * v0.66: 找不到 server tool 时，自动路由到 app-tool（前端应用能力）
+ * v0.66: 路由到 app-tool（前端应用通过 WS 暴露的能力）
+ *         getTool() 现在统一返回 server+app 两边 schema，但 app-tool schema 没有 handler，
+ *         所以优先按"有 handler"判定为 server tool，否则走 app-tool 路径
  */
 async function execute(name, args, ctx = {}) {
-  const tool = getTool(name);
-  if (!tool) {
-    // v0.66: app-tool fallback（前端应用通过 WS 暴露的能力）
-    const appSchema = appToolsRegistry.getAppToolSchema(name);
-    if (appSchema) {
-      _toolStats.calls[name] = (_toolStats.calls[name] || 0) + 1;
-      _toolStats.lastCalled[name] = Date.now();
-      try {
-        const result = await appToolsRegistry.invokeClientAppTool(name, args || {}, ctx || {});
-        if (result && (result.error || result.ok === false)) {
-          _toolStats.errors[name] = (_toolStats.errors[name] || 0) + 1;
-          _toolStats.lastError[name] = { ts: Date.now(), error: result.error || result.message || 'FAILED' };
-        }
-        return result;
-      } catch (e) {
+  // v0.66: 优先查 server tool（有 handler 才是真可执行）
+  const serverTool = registry.get(name);
+  if (serverTool && typeof serverTool.handler === 'function') {
+    _toolStats.calls[name] = (_toolStats.calls[name] || 0) + 1;
+    _toolStats.lastCalled[name] = Date.now();
+    try {
+      const result = await serverTool.handler(args || {}, ctx || {});
+      if (result && (result.error || result.ok === false)) {
         _toolStats.errors[name] = (_toolStats.errors[name] || 0) + 1;
-        _toolStats.lastError[name] = { ts: Date.now(), error: e.message };
-        throw e;
+        _toolStats.lastError[name] = { ts: Date.now(), error: result.error || result.message || 'FAILED' };
       }
-    }
-    throw new Error(`未知工具: ${name}`);
-  }
-  if (typeof tool.handler !== 'function') {
-    throw new Error(`工具 ${name} 没有 handler`);
-  }
-
-  // T1: 记录调用
-  _toolStats.calls[name] = (_toolStats.calls[name] || 0) + 1;
-  _toolStats.lastCalled[name] = Date.now();
-
-  try {
-    const result = await tool.handler(args || {}, ctx || {});
-    // 记录失败（handler 返回 ok:false 或 error 字段）
-    if (result && (result.error || result.ok === false)) {
+      return result;
+    } catch (e) {
       _toolStats.errors[name] = (_toolStats.errors[name] || 0) + 1;
-      _toolStats.lastError[name] = { ts: Date.now(), error: result.error || result.message || 'FAILED' };
+      _toolStats.lastError[name] = { ts: Date.now(), error: e.message };
+      throw e;
     }
-    return result;
-  } catch (e) {
-    _toolStats.errors[name] = (_toolStats.errors[name] || 0) + 1;
-    _toolStats.lastError[name] = { ts: Date.now(), error: e.message };
-    throw e;
   }
+
+  // v0.66: app-tool fallback（前端应用通过 WS 暴露的能力）
+  const appSchema = appToolsRegistry.getAppToolSchema(name);
+  if (appSchema) {
+    _toolStats.calls[name] = (_toolStats.calls[name] || 0) + 1;
+    _toolStats.lastCalled[name] = Date.now();
+    try {
+      const result = await appToolsRegistry.invokeClientAppTool(name, args || {}, ctx || {});
+      if (result && (result.error || result.ok === false)) {
+        _toolStats.errors[name] = (_toolStats.errors[name] || 0) + 1;
+        _toolStats.lastError[name] = { ts: Date.now(), error: result.error || result.message || 'FAILED' };
+      }
+      return result;
+    } catch (e) {
+      _toolStats.errors[name] = (_toolStats.errors[name] || 0) + 1;
+      _toolStats.lastError[name] = { ts: Date.now(), error: e.message };
+      throw e;
+    }
+  }
+
+  throw new Error(`未知工具: ${name}`);
 }
 
 module.exports = { registerTool, getTool, listTools, toProviderFormat, extractToolCalls, makeToolResult, execute, getToolStats, resetToolStats };

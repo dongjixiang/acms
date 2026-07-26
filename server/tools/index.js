@@ -37,5 +37,13 @@ require('./office-gen');
 // v0.62.4: document_edit tool（让 LLM 在 plan_execute 里改/新建 .docx）
 require('./document-edit');
 
+// v0.66 bug fix: acms-internal.js 从未被 require，26 个 ACMS 业务工具（query_collection /
+//   list_my_tasks / claim_task / create_requirement / open_view / highlight_element 等）
+//   对 LLM 完全不可见。LLM 调 _expand_tools({category:'task'|'requirement'|'window'|'system'|
+//   'dashboard'|'bug'|'agent'}) 拿不到任何工具（除了 v0.66 新加的 'app'）。
+//   CATEGORY_TOOLS 里硬编码的 list_xxx 等工具也全部失效。
+//   修复：在 tools/index.js 加 require('./acms-internal')，让所有 server 入口触发注册。
+require('./acms-internal');
+
 console.log('[tools] 内建工具注册完成:', listBuiltinTools().join(', '));
 function listBuiltinTools() { return require('../services/tool-registry').listTools().map(t => t.name); }
