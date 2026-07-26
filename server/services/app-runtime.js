@@ -201,6 +201,30 @@ class AppRuntimeService extends EventEmitter {
     // 异常兜底：page 崩溃 / 关闭 → 自动 closeSession
     page.on('crash', () => { console.warn(`[app-runtime] session ${sessionId} 页面崩溃`); this._safeClose(sessionId); });
     page.on('close', () => { this._safeClose(sessionId); });
+    // v0.73: 拦截页面弹窗（window.open / target="_blank"）
+    // Puppeteer 的 popup 事件在新页面创建时触发，我们拿到 URL 后关掉新页，
+    // 把当前 session 导航过去，避免卡死。
+    page.on('popup', async (popupPage) => {
+      try {
+        var popupUrl = popupPage.url() || '';
+        if (!popupUrl) {
+          // 新页可能还没导航完，等一 navigation
+          try { await popupPage.waitForNavigation({ timeout: 5000 }); } catch {}
+          popupUrl = popupPage.url() || '';
+        }
+        if (popupUrl && popupUrl !== 'about:blank') {
+          console.log(`[app-runtime] session ${sessionId.slice(0,8)} 拦截弹窗 → ${popupUrl.slice(0,100)}`);
+          // 把当前页导航到弹窗 URL
+          await page.goto(popupUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+          s.url = page.url();
+          service._broadcast(s, { type: 'navigated', url: s.url });
+        }
+      } catch (e) {
+        console.warn(`[app-runtime] session ${sessionId.slice(0,8)} 弹窗拦截异常:`, e.message);
+      }
+      // 无论如何关掉新页
+      try { await popupPage.close(); } catch {}
+    });
 
     this.sessions.set(sessionId, session);
 

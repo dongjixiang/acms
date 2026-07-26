@@ -152,7 +152,8 @@ registerTool({
         console.warn('[web_search] 图片搜索失败（可忽略）:', e.message);
       }
     }
-    if (ctx.reqId && !result.error && Array.isArray(result.results) && result.results.length > 0) {
+    // v0.73: 图片搜索时只展示图片，不写文字搜索结果到聊天流
+    if (ctx.reqId && !result.error && Array.isArray(result.results) && result.results.length > 0 && !isImageSearch) {
       writeChatEntryForTool(ctx.reqId, 'search_result', {
         type: 'search_result', query: args.query, count: result.count, formatted: result.formatted, results: result.results,
       });

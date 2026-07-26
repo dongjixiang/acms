@@ -532,6 +532,8 @@ function detectStreamStall(result, messages) {
     '这就为你', '这就给', '我这就', '马上为你', '我来为你',
     // v0.66 更多装睡模式：LLM 说"正在为您XX"但实际不调工具
     '正在为您', '正在为你', '正在生成', '正在准备', '请稍等', '请稍后',
+    // v0.73: 更多装睡模式
+    '任务已提交', '正在创作', '请耐心等待', '已提交', '图片生成任务', '秒后完成', '消化一下', '让我想想', '我先看看',
   ];
   const matched = stallPhrases.filter(p => content.includes(p));
   if (matched.length > 0) {

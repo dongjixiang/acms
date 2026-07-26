@@ -543,10 +543,14 @@
         + '<span class="ap-action-step-label">生成图片</span>'
         + '<span class="ap-action-step-state">完成</span></div>';
     } else if (img && img.status === 'failed') {
+      console.log('[AC-DEBUG] 图片生成失败:', img.error);
       stepsHtml = '<div class="ap-action-step ap-step-failed">'
         + '<span class="ap-action-step-icon">!</span>'
         + '<span class="ap-action-step-label">生成图片</span>'
         + '<span class="ap-action-step-state">失败：' + escHtml(img.error || '未知错误') + '</span></div>';
+      // 失败时加大号错误提示，不让用户空等
+      stepsHtml += '<div class="ap-action-result ap-result-failed" style="margin-top:6px;padding:8px 12px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;color:#b91c1c;font-size:12px;line-height:1.5">'
+        + '⚠️ ' + escHtml(img.error || '图片生成失败，请重试') + '</div>';
     } else if (img && (img.status === 'generating' || img.status === 'running' || img.status === 'pending')) {
       stepsHtml = '<div class="ap-action-step ap-step-running">'
         + '<span class="ap-action-step-icon">◌</span>'
@@ -660,6 +664,8 @@
           var card = document.getElementById('ap-action-' + requirementId);
           if (card && data && data.state) updateActionCard(card, data.state, { mode: card.dataset.mode || 'conversational_action' });
           if (card && data && data.state && (data.state.planStatus === 'done' || isNonPlanTerminal(data.state))) {
+            // v0.73: planStatus='done' 时图片可能还在后台生成，必须等到真正终态才停轮询
+            if (!isNonPlanTerminal(data.state)) return;
             clearInterval(_actionPollers[requirementId]);
             delete _actionPollers[requirementId];
           }
@@ -1411,7 +1417,7 @@
 
     // 全局放置目标：图片拖到任意 .launcher-item / .desktop-icon 上打开对应应用
     document.addEventListener('dragover', function(e) {
-      var target = e.target.closest('.launcher-item, .desktop-icon');
+      var target = e.target.closest('.launcher-item, .desktop-icon, .oo-editor-img, #img-editor-mount');
       if (target && e.dataTransfer.types.includes('application/acms-image')) {
         e.preventDefault();
         e.dataTransfer.dropEffect = 'copy';
@@ -1423,12 +1429,19 @@
       if (target) target.classList.remove('drag-over');
     });
     document.addEventListener('drop', function(e) {
-      var target = e.target.closest('.launcher-item, .desktop-icon');
+      var target = e.target.closest('.launcher-item, .desktop-icon, .oo-editor-img, #img-editor-mount');
       if (!target) return;
       var imgUrl = e.dataTransfer.getData('application/acms-image') || e.dataTransfer.getData('text/plain');
       if (!imgUrl) return;
       e.preventDefault();
-      target.classList.remove('drag-over');
+      if (target.classList) target.classList.remove('drag-over');
+      // 直接拖到图片编辑器窗口 → 用 reloadImage
+      if (target.classList.contains('oo-editor-img') || target.id === 'img-editor-mount') {
+        if (typeof window.__activeImageEditorReload === 'function') {
+          window.__activeImageEditorReload(imgUrl);
+        }
+        return;
+      }
       // 存拖拽图片 URL
       window._dragImageUrl = imgUrl;
       console.log('[DRAG-DEBUG] _dragImageUrl 已设置:', imgUrl.slice(0, 120));

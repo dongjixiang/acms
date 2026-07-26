@@ -265,7 +265,7 @@
           + '</div>'
           + '</div>';
       } else {
-        html += '<iframe id="wb-iframe" src="' + escHtml(currentUrl) + '" style="width:100%;height:100%;border:none" sandbox="allow-scripts allow-same-origin allow-forms" onerror="window.WB_showFallback()"></iframe>';
+        html += '<iframe id="wb-iframe" src="' + escHtml(currentUrl) + '" style="width:100%;height:100%;border:none" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" onerror="window.WB_showFallback()"></iframe>';
       }
     } else {
       html += '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text2);font-size:14px;flex-direction:column;gap:8px">' +
@@ -306,9 +306,13 @@
     if (currentUrl) historyStack.push(currentUrl);
     currentUrl = url;
 
+    // v0.73: 清除跨域提示条（新导航重置状态）
+    var oldHint = document.getElementById('wb-cross-hint');
+    if (oldHint) oldHint.remove();
+
     var container = document.getElementById('wb-container');
     if (!container) return;
-    container.innerHTML = '<iframe id="wb-iframe" src="' + escHtml(url) + '" style="width:100%;height:100%;border:none" sandbox="allow-scripts allow-same-origin allow-forms"></iframe>' +
+    container.innerHTML = '<iframe id="wb-iframe" src="' + escHtml(url) + '" style="width:100%;height:100%;border:none" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>' +
       '<div id="wb-blocked" style="display:none;position:absolute;inset:0;background:var(--bg);flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:20px">' +
       '<div style="font-size:40px">🚫</div>' +
       '<div style="font-size:14px;color:var(--text);text-align:center">该页面禁止在 iframe 中显示</div>' +
@@ -323,6 +327,58 @@
     if (iframe) {
       iframe.addEventListener('load', function() {
         setStatus('完成');
+        // v0.73: 如果 iframe 内部发生了导航，同步地址栏（仅同源）
+        try {
+          var iUrl = iframe.contentWindow && iframe.contentWindow.location.href;
+          if (iUrl && iUrl !== currentUrl && iUrl !== 'about:blank') {
+            currentUrl = iUrl;
+            var input = document.getElementById('wb-url');
+            if (input) input.value = iUrl;
+            updateNavBtns();
+          }
+        } catch(e) { /* 跨域读不到 */ }
+        // v0.73: 尝试向 iframe 注入弹窗拦截（同源生效，跨域静默失败）
+        try {
+          var iDoc = iframe.contentDocument || iframe.contentWindow.document;
+          // 注入 <base target="_top"> — 强制所有链接在当前 iframe 导航
+          if (iDoc && iDoc.head && !iDoc.querySelector('base[data-acms]')) {
+            var base = iDoc.createElement('base');
+            base.target = '_top';
+            base.setAttribute('data-acms', '1');
+            iDoc.head.appendChild(base);
+          }
+          // 覆盖 window.open — 拦截 JS 弹窗，改为在当前浏览器窗口导航
+          if (iframe.contentWindow && iframe.contentWindow._acmsOpenPatched) {
+            // 已在当前文档中打过补丁（SPA 场景不重复打）
+          } else if (iframe.contentWindow) {
+            iframe.contentWindow._acmsOpen = iframe.contentWindow.open;
+            iframe.contentWindow.open = function(openUrl, name, features) {
+              if (openUrl && typeof openUrl === 'string') {
+                window.WB_go(openUrl);
+                return null;  // 返回 null 告知调用方"弹窗被拦截"
+              }
+              return iframe.contentWindow._acmsOpen.apply(this, arguments);
+            };
+            iframe.contentWindow._acmsOpenPatched = true;
+          }
+        } catch(e) {
+          // 跨域 iframe — 静默失败，靠 UI 提示用户切 🪟 远程预览
+          console.log('[WB] 跨域 iframe，无法注入弹窗拦截');
+          // 显示跨域提示条
+          var hint = document.getElementById('wb-cross-hint');
+          if (!hint) {
+            hint = document.createElement('div');
+            hint.id = 'wb-cross-hint';
+            hint.style.cssText = 'padding:4px 10px;font-size:11px;background:#fff3cd;color:#856404;border-bottom:1px solid #ffc107;flex-shrink:0;display:flex;align-items:center;gap:6px';
+            hint.innerHTML = '🔒 跨域页面，弹窗或 window.open 可能被拦截。'
+              + ' <button onclick="window.WB_togglePreview()" style="background:transparent;border:1px solid #856404;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:11px">🪟 切换远程预览</button>'
+              + ' <button onclick="this.parentElement.remove()" style="background:transparent;border:none;cursor:pointer;color:#856404;font-size:14px;margin-left:auto">×</button>';
+            var container = document.getElementById('wb-container');
+            if (container && container.parentNode) {
+              container.parentNode.insertBefore(hint, container);
+            }
+          }
+        }
       });
       // 某些浏览器在 X-Frame-Options 拒绝时触发 error 事件
       iframe.addEventListener('error', function() {
@@ -368,7 +424,7 @@
     if (input) input.value = url;
     var container = document.getElementById('wb-container');
     if (container) {
-      container.innerHTML = '<iframe id="wb-iframe" src="' + escHtml(url) + '" style="width:100%;height:100%;border:none" sandbox="allow-scripts allow-same-origin allow-forms"></iframe>' +
+      container.innerHTML = '<iframe id="wb-iframe" src="' + escHtml(url) + '" style="width:100%;height:100%;border:none" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>' +
         '<div id="wb-blocked" style="display:none;position:absolute;inset:0;background:var(--bg);flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:20px">' +
         '<div style="font-size:40px">🚫</div>' +
         '<div style="font-size:14px;color:var(--text);text-align:center">该页面禁止在 iframe 中显示</div>' +
@@ -455,7 +511,7 @@
             if (opts.srcdoc) {
               var container = document.getElementById('wb-container');
               if (container) {
-                container.innerHTML = '<iframe id="wb-iframe" style="width:100%;height:100%;border:none" srcdoc="' + escHtml(opts.srcdoc).replace(/"/g,'&quot;') + '" sandbox="allow-scripts allow-same-origin allow-forms"></iframe>';
+                container.innerHTML = '<iframe id="wb-iframe" style="width:100%;height:100%;border:none" srcdoc="' + escHtml(opts.srcdoc).replace(/"/g,'&quot;') + '" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>';
               }
             } else {
               go(opts.url);
@@ -471,7 +527,7 @@
           if (opts.srcdoc) {
             var container = document.getElementById('wb-container');
             if (container) {
-              container.innerHTML = '<iframe id="wb-iframe" style="width:100%;height:100%;border:none" srcdoc="' + escHtml(opts.srcdoc).replace(/"/g,'&quot;') + '" sandbox="allow-scripts allow-same-origin allow-forms"></iframe>';
+              container.innerHTML = '<iframe id="wb-iframe" style="width:100%;height:100%;border:none" srcdoc="' + escHtml(opts.srcdoc).replace(/"/g,'&quot;') + '" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>';
             }
           } else {
             go(opts.url);

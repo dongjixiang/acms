@@ -25,7 +25,6 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const config = require('../config');
-const { http1Fetch } = require('../tools/http1-fetch');
 
 const WORKSPACE_ROOT = config.workspaceRoot;
 
@@ -35,7 +34,7 @@ function getAgnesApiKey() {
   if (config.agnesApiKey) return config.agnesApiKey;
   if (process.env.AGNES_API_KEY) return process.env.AGNES_API_KEY;
   try {
-    const { collection } = require('../../db/connection');
+    const { collection } = require('../db/connection');
     const cfg = collection('system_configs').findOne(c => c.key === 'agnes_api_key');
     if (cfg && cfg.value) return cfg.value;
   } catch (e) { /* ignore */ }
@@ -71,11 +70,12 @@ function saveImageAsset(projectSlug, buffer, ext, mime, metadata) {
   };
 }
 
-async function callAgnesImageOnce(apiKey, body, timeoutMs) {
+async function callAgnesImageOnce(apiKey, body, timeoutMs, attempt) {
+  attempt = attempt || 1;
   var controller = new AbortController();
-  var timer = setTimeout(function () { controller.abort(); }, timeoutMs || 30000);
+  var timer = setTimeout(function () { controller.abort(); }, timeoutMs || 60000);
   try {
-    var resp = await http1Fetch('https://api-ai.agnes-ai.com/v1/images/generations', {
+    var resp = await fetch('https://apihub.agnes-ai.com/v1/images/generations', {
       method: 'POST',
       headers: {
         'Authorization': 'Bearer ' + apiKey,
@@ -86,20 +86,45 @@ async function callAgnesImageOnce(apiKey, body, timeoutMs) {
     });
     clearTimeout(timer);
     if (!resp.ok) {
-      return { ok: false, error: 'HTTP_' + resp.status };
+      var errBody = '';
+      try { errBody = await resp.text(); } catch(e) {}
+      var parsed;
+      try { parsed = JSON.parse(errBody); } catch(e) {}
+      var detail = (parsed && (parsed.error && parsed.error.message)) || (parsed && parsed.error) || errBody;
+      // 5xx 或队列满：重试最多 2 次
+      if (resp.status >= 500 && attempt < 3) {
+        await new Promise(function(r) { setTimeout(r, 1000 * attempt); });
+        return callAgnesImageOnce(apiKey, body, timeoutMs, attempt + 1);
+      }
+      return { ok: false, error: 'HTTP_' + resp.status + ': ' + String(detail).slice(0, 200) };
     }
-    var data = resp.json;
-    var url = data && data.data && data.data[0] && data.data[0].url;
+    var data = await resp.json();
+    var url = data && data.data && data.data[0] && (data.data[0].url || data.data[0].b64_json);
     if (!url) return { ok: false, error: 'NO_URL_IN_RESPONSE' };
     return { ok: true, url: url };
   } catch (e) {
     clearTimeout(timer);
+    // 超时或网络错误：重试最多 2 次
+    if (attempt < 3) {
+      await new Promise(function(r) { setTimeout(r, 1000 * attempt); });
+      return callAgnesImageOnce(apiKey, body, timeoutMs, attempt + 1);
+    }
     return { ok: false, error: e.name === 'AbortError' ? 'TIMEOUT' : e.message };
   }
 }
 
 async function downloadAndSaveOne(apiKey, projectSlug, url, metadata) {
   try {
+    // 如果返回的是 base64 data URL，直接解码保存，无需 fetch
+    if (url && url.startsWith('data:')) {
+      var matches = url.match(/^data:([^;]+);base64,(.+)$/);
+      if (matches) {
+        var mime = matches[1];
+        var buf = Buffer.from(matches[2], 'base64');
+        var ext = inferExtFromMime(mime);
+        return { ok: true, url: url, asset_path: saveImageAsset(projectSlug, buf, ext, mime, metadata).relPath, mime: mime, size: buf.length };
+      }
+    }
     var controller = new AbortController();
     var timer = setTimeout(function () { controller.abort(); }, 60000);
     var resp = await fetch(url, { signal: controller.signal });
@@ -172,6 +197,7 @@ async function coreGenerate(opts) {
     return {
       image_url_output: r.url,
       asset_path: r.asset_path,
+      workspace_path: r.asset_path,
       mime: r.mime,
       size: r.size,
     };

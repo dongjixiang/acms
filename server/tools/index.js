@@ -44,6 +44,9 @@ require('./document-edit');
 //   CATEGORY_TOOLS 里硬编码的 list_xxx 等工具也全部失效。
 //   修复：在 tools/index.js 加 require('./acms-internal')，让所有 server 入口触发注册。
 require('./acms-internal');
+// v0.73: plan-execute.js / send-email.js 从未被 require → plan_execute 找不到 send_email
+require('./plan-execute');
+require('./send-email');
 
 console.log('[tools] 内建工具注册完成:', listBuiltinTools().join(', '));
 function listBuiltinTools() { return require('../services/tool-registry').listTools().map(t => t.name); }

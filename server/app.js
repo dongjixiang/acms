@@ -264,6 +264,8 @@ app.use('/api/chat-sessions', require('./routes/chat-sessions'));  // v0.55 自�
 app.use('/api/apps', require('./routes/apps'));
 // v0.59 Agent Buddy 聊天接口
 app.use('/api/agent-buddy', require('./routes/agent-buddy'));
+// v0.73: 邮件收件箱 API（IMAP）
+app.use('/api/emails', require('./routes/emails'));
 // v0.61 辅助工具自由对话接口（轻量版 chat-intent，无 requirement 依赖）
 app.use('/api/assist-free', require('./routes/assist-free'));
 // v0.59 appRuntime — 把外部网页装进「本地应用壳」（chrome CDP screencast 流推送 + input 桥接）

@@ -142,6 +142,8 @@
       if (e.button !== 0) return;
       // 图标自己处理自由拖拽（已有 stopPropagation，这里也是早退）
       if (e.target.closest('.desktop-icon')) return;
+      // v0.73: 窗口自己处理标题栏拖拽，不触发桌面框选
+      if (e.target.closest('.acms-window')) return;
 
       var sx = e.clientX, sy = e.clientY;
       var moved = false;
@@ -230,13 +232,23 @@
 
     // v0.55：联合去重 key = (view, instanceId)
     var existing = find(viewName, opts.instanceId);
+    // v0.73：复用已有窗口时，若有待加载的拖拽图片，通过 reloadImage 注入
     if (existing) {
-      console.log('[WIN-DEBUG] 窗口已存在，复用:', viewName, 'instanceId:', opts.instanceId, '_dragImageUrl:', (window._dragImageUrl||'').slice(0,80));
+      console.log('[WIN-DEBUG] 窗口已存在，复用:', viewName, 'instanceId:', opts.instanceId);
+      if (window._dragImageUrl) {
+        var url = window._dragImageUrl; window._dragImageUrl = null;
+        console.log('[WIN-DEBUG] 检测到待加载拖拽图片:', url.slice(0, 80));
+        if (typeof existing.reloadImage === 'function') {
+          existing.reloadImage(url);
+        } else if (window.__activeImageEditorReload) {
+          window.__activeImageEditorReload(url);
+        }
+      }
       if (existing.st.min) toggleMin(existing);
       focus(existing);
       return existing;
     }
-    console.log('[WIN-DEBUG] 新建窗口:', viewName, '_dragImageUrl:', (window._dragImageUrl||'').slice(0,80));
+    console.log('[WIN-DEBUG] 新建窗口:', viewName);
 
     var n = windows.length;
     // 优先使用调用者传入的尺寸，其次包注册的 defaultSize，最后 600x400

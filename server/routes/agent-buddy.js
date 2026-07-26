@@ -366,8 +366,10 @@ router.post('/chat', async function(req, res) {
     // 3. 算 toolNames（与 SKILL prompt 一一对应）
     var toolNames = computeToolNames(context.currentView, previousCategories);
     toolNames = buddyAction.getActionToolNames(actionRoute, toolNames);
+    console.log('[agent-buddy DEBUG] toolNames:', JSON.stringify(toolNames));
     // 如果已经有 ACMS 内部 tool 注册了就全用，否则退回到 v0.59 纯对话模式（不传 tools）
     var hasSkills = toolNames.length > 0 && require('../services/tool-registry').getTool(toolNames[0]);
+    console.log('[agent-buddy DEBUG] hasSkills:', hasSkills, 'toolNames[0]:', toolNames[0], 'getTool result:', toolNames.length > 0 ? !!require('../services/tool-registry').getTool(toolNames[0]) : 'N/A');
 
     // 4. 构建 messages（含对话历史）
     var messages = [
@@ -396,6 +398,7 @@ router.post('/chat', async function(req, res) {
     // 6. 跑 runToolLoop（LLM 可以调 tool）
     var runtimeResult;
     if (hasSkills) {
+      console.log('[agent-buddy DEBUG] 开始 runToolLoop, model:', model.id, 'toolNames:', JSON.stringify(toolNames));
       runtimeResult = await runtimeExec({
         modelId: model.id,
         messages,
@@ -404,6 +407,7 @@ router.post('/chat', async function(req, res) {
         context: sharedCtx,
         caller: 'agent-buddy',
       });
+      console.log('[agent-buddy DEBUG] runToolLoop 完成, content:', (runtimeResult.content || '').slice(0, 100));
     } else {
       // 无 tools 时退回到常规 callLLM
       var result = await callLLM(model.id, messages, {

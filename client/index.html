@@ -608,6 +608,7 @@ document.addEventListener('DOMContentLoaded', () => {
       <div class="launcher-item" onclick="launchView('office-pptx')"><span class="li-icon">📽️</span><span class="li-label">PPT</span></div>
       <div class="launcher-item" onclick="launchView('code-editor')"><span class="li-icon">💻</span><span class="li-label">代码</span></div>
       <div class="launcher-item" onclick="launchView('image-editor')"><span class="li-icon">🖼️</span><span class="li-label">图片</span></div>
+      <div class="launcher-item" onclick="window.openEmailInbox()"><span class="li-icon">📬</span><span class="li-label">收件箱</span></div>
       <div class="divider"></div>
       <div class="launcher-section-title">应用</div>
       <div class="launcher-item" onclick="launchView('file-manager')"><span class="li-icon">🗂️</span><span class="li-label">文件浏览器</span></div>
@@ -1167,5 +1168,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/core/card-renderer.js?v=0.61"></script>
 <!-- v0.61 辅助工具浮动窗口（启动菜单 + 命令面板入口）-->
 <script src="/client/js/core/assist-launcher.js?v=0.61"></script>
+<!-- v0.73: 邮件收件箱 (IMAP) -->
+<script src="/client/js/views/email-inbox.js?v=0.73"></script>
 </body>
 </html>

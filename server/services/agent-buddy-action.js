@@ -99,21 +99,25 @@ async function routeMessage(modelId, message, history = []) {
     route.capabilities = ['image_search'];
     console.log('[agent-buddy-action] 关键词命中 image_search, 强制覆盖路由');
   }
+  // v0.73: "生成X然后发邮件"关键词拦截 — 强制 conversational_action + image_generation + email_send
+  const emailAfterRe = /然后发邮件|再发邮件|发邮件给我|发邮件到|发邮件至|并发送邮件|且发邮件/;
+  if (emailAfterRe.test(message) && (route.capabilities.includes('image_generation') || /生成|画|创作/.test(message))) {
+    route.mode = 'conversational_action';
+    if (!route.capabilities.includes('image_generation')) route.capabilities.push('image_generation');
+    if (!route.capabilities.includes('email_send')) route.capabilities.push('email_send');
+    if (!route.capabilities.includes('email_draft')) route.capabilities.push('email_draft');
+    route.requires_confirmation = true;
+    console.log('[agent-buddy-action] 关键词命中 生成+发邮件, 强制 conversational_action');
+  }
   return route;
 }
 
 function getActionToolNames(route, baseTools) {
   const tools = new Set(baseTools || []);
   if (route.mode === 'conversational_action') {
+    // v0.73: 复合动作只给 plan_execute，清掉所有基础工具
+    tools.clear();
     tools.add('plan_execute');
-    route.capabilities.forEach(capability => {
-      if (capability === 'image_generation') tools.add('generate_image');
-      if (capability === 'music_playback') tools.add('play_music');
-      if (capability === 'email_send' || capability === 'email_draft') tools.add('send_email');
-      if (capability === 'web_research') { tools.add('web_search'); tools.add('web_research'); }
-      if (capability === 'document_generation') tools.add('document_gen');
-      if (capability === 'image_search') { tools.delete('generate_image'); tools.add('web_search'); }
-    });
   } else if (route.mode === 'single_action') {
     route.capabilities.forEach(capability => {
       if (capability === 'image_generation') tools.add('generate_image');
@@ -138,6 +142,7 @@ function buildActionPrompt(route) {
   if (route.mode === 'conversational_action') {
     return shared + `
 这是复合聊天动作。必须调用 plan_execute 一次完成全部步骤，不要逐个直接调用，也不要输出“正在做”而不调工具。
+**严重警告：你的回复中如果只有文字描述而不调用对应工具，系统会判定为“装睡”并强制重试。必须实际调用工具，不能只说“已提交”“请等待”之类的空话。**
 图片→邮件示例：s1 generate_image；s2 send_email depends_on=["s1"]。s2 不手填 file_ids，系统会从 s1 精确注入附件。
 邮件发送工具只创建 pending_send_email 预览，不会真正发送；必须等待用户确认后才发送，严禁声称“邮件已发送”。
 **生成图片时用户给了描述就直接调工具，严禁反问用户描述风格或特征；AI 自行补充细节或使用默认值。**
@@ -147,6 +152,7 @@ function buildActionPrompt(route) {
   }
   return shared + `
 这是单一动作，必须调用对应工具一次。若是 send_email，工具只准备预览并等待确认，严禁声称已发送。
+**严重警告：你的回复中如果只有文字描述而不调用对应工具，系统会判定为“装睡”并强制重试。必须实际调用工具，不能只说“已提交”“请等待”之类的空话。**
 **生成图片时用户给了描述就直接调工具，严禁反问用户描述风格或特征；AI 自行补充细节或使用默认值。**
 **找歌/搜歌时只能调 play_music 工具，不能调 generate_image 或其他创作工具。**
 **注意区分：用户说“找图片“/ “搜图片“时是想要真实照片，不是 AI 生图，此时应调 web_search 而不是 generate_image。generate_image 只用于“画一张“/ “生成“/ “创作“等 AI 创作场景。**

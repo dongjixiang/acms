@@ -55,16 +55,8 @@
               '<div class="code-menu-dropdown-item" data-action="filter-reset">🔄 重置滤镜</div>' +
             '</div>' +
           '</div>' +
-          '<div class="code-menu-item" data-menu="ai" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none;font-weight:600">🤖 AI' +
-            '<div class="code-menu-dropdown" style="display:none;position:absolute;top:100%;left:0;z-index:9999;background:var(--bg,#fff);border:1px solid var(--office-divider,#ddd);border-radius:6px;box-shadow:0 4px 20px rgba(0,0,0,0.15);min-width:160px;padding:6px 0">' +
-              '<div class="code-menu-dropdown-item" data-action="ai-describe">📖 描述图片</div>' +
-              '<div class="code-menu-dropdown-item" data-action="ai-enhance">✨ 智能增强</div>' +
-              '<div class="code-menu-dropdown-item" data-action="ai-upscale">🔍 放大</div>' +
-            '</div>' +
-          '</div>' +
+          '<div class="code-menu-item" data-action="open-ai-panel" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none;font-weight:600;color:var(--accent,#0ea89d)">⚡ AI助手</div>' +
           '<div style="flex:1"></div>' +
-          // v0.66 PR3: AI 助手 toggle 按钮（toolbar 右侧）
-          '<div class="code-menu-item" data-action="toggle-ai-assistant" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none;font-weight:600;color:var(--accent,#0ea89d)">✨ AI 助手 <span id="ai-assistant-toggle-icon" style="font-size:10px;margin-left:4px">▼</span></div>' +
         '</div>' +
         '<div id="img-editor-mount" style="flex:1;min-height:0;overflow:auto;background:var(--bg,#1a1a2e)"></div>' +
         '<div id="img-ai-panel" style="display:none;flex-shrink:0;max-height:360px;overflow:auto;background:var(--bg2,#f5f5f7);border-top:1px solid var(--office-divider,#ddd);padding:8px;font-size:13px"></div>' +
@@ -102,481 +94,539 @@
 
     function loadMainEditor(src, callback) {
       console.log('[IMG-MAIN] loadMainEditor src:', src ? src.slice(0, 80) : 'null/empty', 'tui.ImageEditor ready:', !!(window.tui && window.tui.ImageEditor && typeof window.tui.ImageEditor === 'function'));
+      if (window.tui && window.tui.ImageEditor && typeof window.tui.ImageEditor === 'function') {
+        initEditor(src);
+        if (callback) callback();
+        return;
+      }
+      // tui-image-editor 也用 define()，fetch + eval 绕过 AMD loader
       fetch(IMG_EDITOR_PATH + '/tui-image-editor.min.js').then(function(r){return r.text();}).then(function(code){
-        // 保存原 define，临时屏蔽 Monaco loader 的 define
         var savedDefine = window.define;
         window.define = undefined;
-        try { (new Function(code))(); } catch(e) { console.warn('[ImageEditor] main editor eval error:', e); }
+        try { (new Function(code))(); } catch(e) { console.warn('[ImageEditor] main eval error:', e); }
         window.define = savedDefine;
-        initEditor(src, callback);
+        initEditor(src);
+        if (callback) callback();
       }).catch(function(){
         mountEl.innerHTML = '<div style="padding:40px;text-align:center;color:#a00">❌ 图片编辑器加载失败</div>';
       });
     }
 
-    function initEditor(src, callback) {
+    function initEditor(src) {
       console.log('[IMG-INIT] initEditor called with src:', src ? src.slice(0, 80) : 'null/empty');
-      if (!(window.tui && window.tui.ImageEditor)) {
-        mountEl.innerHTML = '<div style="padding:40px;text-align:center;color:#a00">❌ tui.ImageEditor 未加载</div>';
-        return;
-      }
-      try {
-        // v0.63 修复：彩蛋黑底 + 灰白主题适配 dark theme
-        var theme = (typeof getThemeMode === 'function') ? getThemeMode() : (document.documentElement.getAttribute('data-theme') || 'dark');
-        var themeConfig = (theme === 'dark' || theme === 'cream') ? {
-          'menu.backgroundColor': '#1a1a2e',
-          'menu.color': '#e8e8e8',
-          'menu.hoverBackgroundColor': '#252540',
-          'menu.activeColor': '#5b8c5a',
-          'menu.activeBackgroundColor': '#252540',
-          'menu.borderColor': '#252540',
-          'submenu.backgroundColor': '#1a1a2e',
-          'submenu.color': '#e8e8e8',
-          'submenu.hoverBackgroundColor': '#252540',
-          'submenu.activeColor': '#5b8c5a',
-          'submenu.activeBackgroundColor': '#252540',
-          'submenu.borderColor': '#252540',
-          'submenu.shadowColor': 'rgba(0,0,0,0.4)',
-          'range.backgroundColor': '#252540',
-          'range.color': '#e8e8e8',
-          'range.borderColor': '#252540',
-          'range.pointColor': '#5b8c5a',
-          'range.disabled.pointColor': '#555',
-          'range.barColor': '#5b8c5a',
-          'range.disabled.barColor': '#555',
-        } : {};
-
-        imageEditor = new window.tui.ImageEditor(mountEl, {
-          includeUI: {
-            loadImage: { path: src || null, name: _currentFileName },
-            theme: themeConfig,
-            menu: ['resize', 'crop', 'flip', 'rotate', 'draw', 'shape', 'icon', 'text', 'mask', 'filter'],
-            initMenu: 'filter',
-            uiSize: { width: '100%', height: 'auto' },
-            menuBarPosition: 'bottom',
+      // 不用占位图 — 留空让用户打开文件
+      imageEditor = new window.tui.ImageEditor(mountEl, {
+        includeUI: {
+          loadImage: { path: src || '', name: 'image' },
+          theme: {
+            'menu.normal.backgroundColor': '#2a2a3e',
+            'menu.active.backgroundColor': '#446995',
+            'menu.hover.backgroundColor': '#3a3a5e',
+            'submenu.normal.backgroundColor': '#1a1a2e',
+            'submenu.active.backgroundColor': '#446995',
+            'submenu-label.color': '#ccc',
           },
-          cssMaxWidth: 700,
-          cssMaxHeight: 500,
-          selectionStyle: { cornerSize: 8, rotatingPointOffset: 20 }
-        });
+          menu: ['crop', 'flip', 'rotate', 'draw', 'shape', 'icon', 'text', 'mask', 'filter'],
+          initMenu: 'draw',
+          uiSize: { width: '100%', height: '100%' },
+        },
+        cssMaxWidth: 9999,
+        cssMaxHeight: 9999,
+        selectionStyle: { cornerSize: 8, rotatingPointOffset: 20 },
+        // v0.73: 允许缩放到 10%（默认 minZoom=1 只能放大不能缩小到比原图小）
+        minZoom: 0.1,
+      });
 
-        // 默认激活 filter 菜单（让用户看到工具栏）
-        setTimeout(function() {
+      // JS 移除内置标题栏 (比 CSS 可靠)
+      setTimeout(function () {
+        var hdr = mountEl.querySelector('.tui-image-editor-header');
+        if (hdr) hdr.style.display = 'none';
+        var logo = mountEl.querySelector('.tui-image-editor-header-logo');
+        if (logo) logo.style.display = 'none';
+        var btns = mountEl.querySelector('.tui-image-editor-header-buttons');
+        if (btns) btns.style.display = 'none';
+      }, 200);
+
+      // 激活内置按钮事件 (initCanvas 里只在 loadImage.path 有值时才调用 activeMenuEvent)
+      if (imageEditor && imageEditor.ui && typeof imageEditor.ui.activeMenuEvent === 'function') {
+        setTimeout(function () {
           try { imageEditor.ui.activeMenuEvent(); } catch(e) { console.warn('[IMG-ERR] activeMenuEvent:', e); }
-        }, 100);
-
-        // 监听 tui 图片加载结果
-        imageEditor.on('loadImage', function(result) {
-          console.log('[IMG-LOADED] tui loadImage 完成:', result ? (result.newWidth+'x'+result.newHeight) : 'no result');
-        });
-        imageEditor.on('error', function(err) {
-          console.warn('[IMG-ERR] tui error:', err && err.message ? err.message : err);
-        });
-      } catch (e) {
-        console.error('[IMG-INIT-ERR]', e);
-        mountEl.innerHTML = '<div style="padding:40px;text-align:center;color:#a00">❌ 编辑器初始化失败: ' + escHtml(e.message) + '</div>';
-        return;
+        }, 300);
       }
 
-      // 默认加载空白图片供用户打开文件
-      var src = initialSrc || (window._dragImageUrl || null);
-      console.log('[IMG-EDIT] initialSrc:', initialSrc ? initialSrc.slice(0, 80) : null, '_dragImageUrl:', window._dragImageUrl ? window._dragImageUrl.slice(0, 80) : null, '→ src:', src ? src.slice(0, 80) : null);
-      if (src === window._dragImageUrl) { window._dragImageUrl = null; console.log('[IMG-EDIT] _dragImageUrl 已消费'); }
-      loadEditor(src);
-
-      // ─── 菜单事件 ───
-      w.$c.querySelectorAll('.code-menu-item').forEach(function (item) {
-        item.onclick = function (e) {
-          e.stopPropagation();
-          var menuName = item.dataset.menu;
-          var action = item.dataset.action;
-          // 切换 dropdown
-          if (menuName) {
-            var dropdown = item.querySelector('.code-menu-dropdown');
-            var wasOpen = dropdown && dropdown.style.display !== 'none';
-            w.$c.querySelectorAll('.code-menu-dropdown').forEach(function (d) { d.style.display = 'none'; });
-            if (!wasOpen && dropdown) dropdown.style.display = 'block';
-          } else if (action === 'toggle-ai-assistant') {
-            // v0.66 PR3: 切换 AI 助手 panel
-            window.imageAiAssistant.toggle(imageEditor, aiPanel, w);
-          } else if (action) {
-            // 关闭所有 dropdown
-            w.$c.querySelectorAll('.code-menu-dropdown').forEach(function (d) { d.style.display = 'none'; });
-            handleAction(action);
-          }
-        };
+      // 监听 tui 图片加载结果
+      imageEditor.on('loadImage', function(result) {
+        console.log('[IMG-LOADED] tui loadImage 完成:', result ? (result.newWidth+'x'+result.newHeight) : 'no result');
       });
+      imageEditor.on('error', function(err) {
+        console.warn('[IMG-ERR] tui error:', err && err.message ? err.message : err);
+      });
+    }
 
-      // 点击外部关闭 dropdown
-      document.addEventListener('click', function closeDropdowns(e) {
-        if (!w.$c.contains(e.target)) {
-          w.$c.querySelectorAll('.code-menu-dropdown').forEach(function (d) { d.style.display = 'none'; });
+    // v0.73: 暴露图片重载函数（供拖拽到已打开的编辑器窗口时使用）
+    function reloadImage(url) {
+      if (!imageEditor || !url) return;
+      console.log('[IMG-RELOAD] 重新加载图片:', url.slice(0, 80));
+      var name = url.split('/').pop() || 'image';
+      imageEditor.loadImageFromURL(url, name).then(function() {
+        console.log('[IMG-RELOAD] 加载成功');
+        // 适应窗口
+        setTimeout(function() {
+          try {
+            var rect = mountEl.getBoundingClientRect();
+            var img = imageEditor.getCanvasImage();
+            if (img) {
+              var zl = Math.min(rect.width / img.width, rect.height / img.height);
+              if (zl > 0) imageEditor.zoom({ x: rect.width / 2, y: rect.height / 2, zoomLevel: zl });
+            }
+          } catch(e) {}
+        }, 100);
+      }).catch(function(e) {
+        console.warn('[IMG-RELOAD] 加载失败:', e);
+      });
+    }
+    // 挂到窗口元素上，供 ACMSWin.open 复用窗口时调用
+    w.reloadImage = reloadImage;
+    // 也挂到全局，供拖拽到窗口内容区时直接调用
+    window.__activeImageEditorReload = reloadImage;
+    // 窗口关闭时清理全局引用
+    w.onClose = w.onClose || function() {
+      if (window.__activeImageEditorReload === reloadImage) window.__activeImageEditorReload = null;
+    };
+
+    // 默认加载空白图片供用户打开文件
+    // v0.66: 支持拖拽传入图片（window._dragImageUrl）
+    var src = initialSrc || (window._dragImageUrl || null);
+    console.log('[IMG-EDIT] initialSrc:', initialSrc ? initialSrc.slice(0, 80) : null, '_dragImageUrl:', window._dragImageUrl ? window._dragImageUrl.slice(0, 80) : null, '→ src:', src ? src.slice(0, 80) : null);
+    if (src === window._dragImageUrl) { window._dragImageUrl = null; console.log('[IMG-EDIT] _dragImageUrl 已消费'); }
+    loadEditor(src);
+
+    // ─── 菜单事件（支持 dropdown + 直接 action）───
+    w.$c.querySelectorAll('.code-menu-item').forEach(function (item) {
+      item.onclick = function (e) {
+        e.stopPropagation();
+        var dd = this.querySelector('.code-menu-dropdown');
+        var action = this.dataset.action;
+        if (dd) {
+          // 有下拉菜单：切换显示
+          w.$c.querySelectorAll('.code-menu-dropdown').forEach(function (d) { if (d !== dd) d.style.display = 'none'; });
+          dd.style.display = dd.style.display === 'block' ? 'none' : 'block';
+        } else if (action === 'open-ai-panel') {
+          // AI 助手直接动作
+          toggleAIPanel();
         }
-      });
+      };
+    });
+    w.$c.addEventListener('mousedown', function (e) {
+      if (!e.target.closest('.code-menu-item')) {
+        w.$c.querySelectorAll('.code-menu-dropdown').forEach(function (d) { d.style.display = 'none'; });
+      }
+    });
 
-      // ─── 操作路由 ───
-      function handleAction(action) {
+    w.$c.querySelectorAll('.code-menu-dropdown-item').forEach(function (item) {
+      item.onclick = function (e) {
+        e.stopPropagation();
+        w.$c.querySelectorAll('.code-menu-dropdown').forEach(function (d) { d.style.display = 'none'; });
+        var action = this.dataset.action;
+        if (!imageEditor && action !== 'open-img') { toast('编辑器未就绪', 'warning'); return; }
+
         switch (action) {
-          case 'open-img': openFilePicker(); break;
-          case 'save-img': saveCurrent(); break;
-          case 'reset-img': resetImage(); break;
-          case 'filter-grayscale': imageEditor.applyFilter('Grayscale'); break;
-          case 'filter-sepia': imageEditor.applyFilter('Sepia'); break;
-          case 'filter-invert': imageEditor.applyFilter('Invert'); break;
+          case 'open-img':
+            var input = document.createElement('input');
+            input.type = 'file';
+            input.accept = 'image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/bmp';
+            input.onchange = function () {
+              var file = input.files && input.files[0];
+              if (!file) return;
+              _currentFileName = file.name;
+              if (window.ACMSWin && ACMSWin.setTitle) {
+                ACMSWin.setTitle(w, _currentFileName);
+              }
+              if (imageEditor) {
+                // 方法1: 直接传 File 对象 (避免 dataURL 体积过大)
+                try {
+                  imageEditor.loadImageFromFile(file).then(function (result) {
+                    toast('已加载 ' + file.name, 'success');
+                    // 手动计算 zoom 适配窗口 (resizeEditor 会读取 cssMaxWidth=9999 导致编辑器溢出)
+                    try {
+                      var mountRect = mountEl.getBoundingClientRect();
+                      var cw = mountRect.width;
+                      var ch = mountRect.height;
+                      var iw = result.newWidth;
+                      var ih = result.newHeight;
+                      if (cw > 0 && ch > 0 && iw > 0 && ih > 0) {
+                        var zoomLevel = Math.min(cw / iw, ch / ih);
+                        var cx = cw / 2;
+                        var cy = ch / 2;
+                        imageEditor.zoom({ x: cx, y: cy, zoomLevel: zoomLevel });
+                      }
+                    } catch(e) {}
+                  }).catch(function (err) {
+                    console.log('[ImageEditor] loadImageFromFile FAILED:', err, 'file=', file.name);
+                    // 方法2: 回退 dataURL
+                    console.warn('[ImageEditor] loadImageFromFile failed, trying dataURL', err);
+                    var r2 = new FileReader();
+                    r2.onload = function (ev) {
+                      imageEditor.loadImageFromURL(ev.target.result, file.name)
+                        .then(function () { toast('已加载 ' + file.name, 'success'); })
+                        .catch(function (e2) { toast('加载失败: ' + e2.message, 'error'); });
+                    };
+                    r2.readAsDataURL(file);
+                  });
+                } catch(e) {
+                  toast('加载失败: ' + e.message, 'error');
+                }
+              } else {
+                loadEditor(null);
+                // 编辑器加载后再打开
+                var checkReady = setInterval(function () {
+                  if (imageEditor) {
+                    clearInterval(checkReady);
+                    imageEditor.loadImageFromFile(file)
+                      .then(function (result) {
+                        toast('已加载 ' + file.name, 'success');
+                        try {
+                          var mRect = mountEl.getBoundingClientRect();
+                          var zl = Math.min(mRect.width / result.newWidth, mRect.height / result.newHeight);
+                          if (zl > 0) imageEditor.zoom({ x: mRect.width/2, y: mRect.height/2, zoomLevel: zl });
+                        } catch(e) {}
+                      })
+                      .catch(function () { /* ignore */ });
+                  }
+                }, 200);
+              }
+            };
+            input.click();
+            break;
+          case 'save-img':
+            var dataURL = imageEditor.toDataURL();
+            var name = _currentFileName || 'image.png';
+            var link = document.createElement('a');
+            link.href = dataURL;
+            link.download = name;
+            document.body.appendChild(link); link.click(); document.body.removeChild(link);
+            toast('已导出 ' + name, 'success');
+            break;
+          case 'reset-img':
+            if (imageEditor) imageEditor.loadImageFromURL(imageEditor.getCurrentImageUrl(), 'image');
+            break;
+          // Filters
+          case 'filter-grayscale': imageEditor.applyFilter('grayscale'); break;
+          case 'filter-sepia': imageEditor.applyFilter('sepia'); break;
+          case 'filter-invert': imageEditor.applyFilter('invert'); break;
           case 'filter-blur': imageEditor.applyFilter('blur'); break;
           case 'filter-sharpen': imageEditor.applyFilter('sharpen'); break;
           case 'filter-emboss': imageEditor.applyFilter('emboss'); break;
           case 'filter-reset': imageEditor.applyFilter('removeAll'); break;
-          // AI
-          case 'ai-describe': runAIDescribe(); break;
-          case 'ai-enhance': runAIEnhance(); break;
-          case 'ai-upscale': toast('AI 放大（即将支持）', 'info'); break;
+          // AI 助手 — 打开统一面板
+          case 'open-ai-panel': toggleAIPanel(); break;
           // View/Zoom
           case 'zoom-in': if (imageEditor) imageEditor.zoom('in'); break;
           case 'zoom-out': if (imageEditor) imageEditor.zoom('out'); break;
           case 'zoom-fit': if (imageEditor) imageEditor.zoom('fit'); break;
           case 'zoom-100': if (imageEditor) imageEditor.zoom('100%'); break;
         }
-      }
+      };
+    });
 
-      // ─── 文件操作 ───
-      function openFilePicker() {
-        var input = document.createElement('input');
-        input.type = 'file';
-        input.accept = 'image/*';
-        input.onchange = function() {
-          if (input.files && input.files[0]) {
-            var file = input.files[0];
-            _currentFileName = file.name;
-            if (window.ACMSWin && ACMSWin.setTitle) {
-              ACMSWin.setTitle(w, _currentFileName);
-            }
-            var reader = new FileReader();
-            reader.onload = function(ev) {
-              if (imageEditor && typeof imageEditor.loadImageFromURL === 'function') {
-                imageEditor.loadImageFromURL(ev.target.result);
-              }
-            };
-            reader.readAsDataURL(file);
-          }
-        };
-        input.click();
-      }
+    // ─── AI 助手面板（统一入口：模式标签切换）───
+    var _aiOpen = false;
+    var _aiBusy = false;
+    var _aiHistory = [];     // [{dataUrl, ts, label}] 限 10
+    var _aiResult = null;
+    var _aiMode = 'describe'; // describe | enhance | generate | edit | upscale
+    var AI_MODES = [
+      { id: 'describe', icon: '📖', label: '描述' },
+      { id: 'enhance',  icon: '✨', label: '增强' },
+      { id: 'generate', icon: '🎨', label: '文生图' },
+      { id: 'edit',     icon: '🖼️', label: '图生图' },
+      { id: 'upscale',  icon: '🔍', label: '放大' },
+    ];
 
-      function saveCurrent() {
-        if (!imageEditor) return;
-        try {
-          var dataURL = imageEditor.toDataURL();
-          if (!dataURL) { toast('保存失败：未加载图片', 'error'); return; }
-          var a = document.createElement('a');
-          a.href = dataURL;
-          a.download = _currentFileName;
-          a.click();
-          toast('💾 已下载 ' + _currentFileName, 'success');
-        } catch (e) {
-          toast('保存失败: ' + e.message, 'error');
+    function toggleAIPanel() {
+      _aiOpen = !_aiOpen;
+      aiPanel.style.display = _aiOpen ? 'block' : 'none';
+      if (_aiOpen) renderAIPanel();
+    }
+
+    function openAIPanel(mode) {
+      _aiMode = mode;
+      _aiOpen = true;
+      aiPanel.style.display = 'block';
+      renderAIPanel();
+    }
+
+    function renderAIPanel() {
+      // 检测是否有图
+      var hasImage = false;
+      try {
+        if (imageEditor && imageEditor.getImageName && imageEditor.getImageName()) hasImage = true;
+      } catch(e) {}
+      if (!hasImage) try {
+        if (imageEditor && imageEditor.getCanvas) {
+          var c = imageEditor.getCanvas();
+          if (c && c.width > 0 && c.height > 0) hasImage = true;
         }
-      }
+      } catch(e) {}
 
-      function resetImage() {
-        if (!imageEditor) return;
-        if (imageEditor.clearObjects) imageEditor.clearObjects();
-        toast('🔄 已清除', 'success');
-      }
+      // ① 渲染面板骨架（标题 + 模式标签栏）
+      var tabsHtml = AI_MODES.map(function(m) {
+        var active = m.id === _aiMode ? ' background:var(--accent,#0ea89d);color:#fff' : ' background:var(--bg,#fff);color:var(--text,#333)';
+        return '<span class="ai-mode-tab" data-mode="' + m.id + '" style="display:inline-flex;align-items:center;gap:3px;padding:4px 10px;border:1px solid var(--border,#ddd);border-radius:4px;cursor:pointer;font-size:11px;' + active + '">' + m.icon + ' ' + m.label + '</span>';
+      }).join('');
 
-      // ─── AI 描述（现有功能，保留）──
-      function runAIDescribe() {
-        if (!imageEditor) { toast('请先打开图片', 'error'); return; }
-        var dataURL = imageEditor.toDataURL();
-        aiPanel.style.display = 'block';
-        aiPanel.innerHTML = '<div style="padding:4px;color:var(--text2,#888)">⏳ AI 正在分析图片...</div>';
-        fetch('/api/chat/detect-and-respond', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
-          body: JSON.stringify({
-            messages: [{ role: 'user', content: [{ type: 'text', text: '请用 50 字以内描述这张图片的内容和风格' }] }],
-            images: [dataURL]
-          })
-        }).then(function(r){ return r.json(); }).then(function(data){
-          var answer = (data && data.reply) || (data && data.aiReply) || (data && data.answer) || (data && data.content) || JSON.stringify(data);
-          aiPanel.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span style="font-weight:600">🤖 AI 描述</span><button style="padding:2px 8px;border:1px solid var(--office-divider,#ccc);border-radius:3px;cursor:pointer;font-size:11px;background:transparent" onclick="this.parentNode.parentNode.style.display=\'none\'">✕ 关闭</button></div><div style="color:var(--text,#333);line-height:1.6">' + escHtml(answer) + '</div>';
-        }).catch(function (e) { aiPanel.innerHTML = '<div style="color:#a00">❌ ' + e.message + '</div>'; });
-      }
+      aiPanel.innerHTML =
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
+          '<span style="font-weight:600">⚡ AI助手</span>' +
+          '<div style="display:flex;align-items:center;gap:6px">' +
+            tabsHtml +
+            '<button onclick="toggleAIPanel()" style="padding:2px 8px;border:1px solid var(--border,#ddd);border-radius:3px;cursor:pointer;font-size:11px;background:transparent;color:var(--text2,#888)">✕</button>' +
+          '</div>' +
+        '</div>' +
+        '<div id="ai-content" style="font-size:12px;color:var(--text,#333)"></div>';
 
-      // ─── AI 增强（现有功能，保留）──
-      function runAIEnhance() {
-        if (!imageEditor) return;
+      // 绑定模式切换事件
+      aiPanel.querySelectorAll('.ai-mode-tab').forEach(function(tab) {
+        tab.onclick = function(e) {
+          e.stopPropagation();
+          _aiMode = this.getAttribute('data-mode');
+          renderAIPanel(); // 重新渲染
+        };
+      });
+
+      // ② 渲染当前模式内容
+      renderModeContent(hasImage);
+    }
+
+    function renderModeContent(hasImage) {
+      var contentEl = document.getElementById('ai-content');
+      if (!contentEl) return;
+
+      switch (_aiMode) {
+        case 'describe': renderDescribe(contentEl); break;
+        case 'enhance': renderEnhance(contentEl, hasImage); break;
+        case 'generate': renderGenerateEdit(contentEl, hasImage, false); break;
+        case 'edit': renderGenerateEdit(contentEl, hasImage, true); break;
+        case 'upscale': renderUpscale(contentEl); break;
+      }
+    }
+
+    function renderDescribe(contentEl) {
+      if (!imageEditor) { contentEl.innerHTML = '<div style="color:var(--text2,#888)">请先打开图片</div>'; return; }
+      contentEl.innerHTML = '<div style="color:var(--text2,#888)">⏳ 分析中...</div>';
+      var dataURL = imageEditor.toDataURL();
+      fetch('/api/chat/detect-and-respond', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': (window.ACMSConfig && window.ACMSConfig.apiKey) || 'dev-key-001' },
+        body: JSON.stringify({
+          reqId: '_img_editor',
+          text: '请描述这张图片的内容、色调、构图，用中文回答。图片为 base64 dataURL，前缀: ' + dataURL.slice(0, 100) + '...',
+        }),
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        var answer = data && (data.aiReply || data.content || data.message || data.text || data.reply) || '无响应';
+        contentEl.innerHTML = '<div style="line-height:1.6;padding:4px 0">' + escHtml(answer) + '</div>';
+      }).catch(function (e) { contentEl.innerHTML = '<div style="color:#a00">❌ ' + e.message + '</div>'; });
+    }
+
+    function renderEnhance(contentEl, hasImage) {
+      if (!hasImage) { contentEl.innerHTML = '<div style="color:var(--text2,#888)">请先打开图片</div>'; return; }
+      contentEl.innerHTML =
+        '<div style="margin-bottom:6px">一键提升图片亮度、对比度、饱和度</div>' +
+        '<button id="ai-enhance-btn" style="padding:5px 14px;background:var(--accent,#0ea89d);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600">✨ 执行增强</button>' +
+        '<div id="ai-enhance-result" style="margin-top:6px;color:var(--text2,#888)"></div>';
+      document.getElementById('ai-enhance-btn').onclick = function() {
+        var resultEl = document.getElementById('ai-enhance-result');
         imageEditor.applyFilter('brightness', { brightness: 10 });
         setTimeout(function () {
           imageEditor.applyFilter('contrast', { contrast: 10 });
         }, 200);
         setTimeout(function () {
           imageEditor.applyFilter('saturation', { saturation: 10 });
-          toast('✨ 已自动增强', 'success');
+          resultEl.innerHTML = '<span style="color:#080">✅ 已应用亮度+10、对比度+10、饱和度+10</span>';
         }, 400);
-      }
-
-      if (typeof callback === 'function') callback();
-    }
-  }
-
-  // ──────────────────────────────────────────────────────────────────
-  // v0.66 PR3: AI 修改助手 singleton（独立 IIFE，避免作用域混乱）
-  // 通过 window.imageAiAssistant.toggle(imageEditor, aiPanel, w) 接入
-  // ──────────────────────────────────────────────────────────────────
-  (function() {
-    var _open = false;
-    var _mode = 'edit';      // 'generate' | 'edit' — 自动检测（有图就 edit）
-    var _history = [];      // [{dataUrl, ts, label}] 限 10 条
-    var _busy = false;
-    var _currentResult = null;
-    var HISTORY_MAX = 10;
-    var _ctx = null;        // { imageEditor, aiPanel, w }
-
-    function setStatus(panel, text, color) {
-      var el = panel.querySelector('#ai-assistant-status');
-      if (el) { el.textContent = text; if (color) el.style.color = color; }
+      };
     }
 
-    function detectMode(imageEditor) {
-      // 启发式：是否有 currentSrc / getImageName 返回非空
-      try {
-        if (imageEditor.getImageName && imageEditor.getImageName()) return 'edit';
-      } catch (e) {}
-      try {
-        if (imageEditor.getCanvas) {
-          var c = imageEditor.getCanvas();
-          if (c && c.width > 0 && c.height > 0) return 'edit';
-        }
-      } catch (e) {}
-      return 'generate';
-    }
+    function renderGenerateEdit(contentEl, hasImage, isEdit) {
+      var effectiveMode = isEdit && hasImage ? 'edit' : 'generate';
+      var hint = effectiveMode === 'edit' ? '输入修改意见（如"改成夜景"、"去背景电线"）' : '输入图片描述（如"一只橘猫在窗台"）';
+      var placeholder = effectiveMode === 'edit' ? '改成夜景 / 加个月亮 / 去背景电线' : '一只橘猫在窗台，阳光透过窗帘';
 
-    function renderPanel() {
-      if (!_ctx) return;
-      var panel = _ctx.aiPanel;
-      var editor = _ctx.imageEditor;
-
-      if (!editor) {
-        panel.innerHTML = '<div style="color:var(--text2,#888)">⚠️ 请先打开图片</div>';
-        return;
-      }
-
-      _mode = detectMode(editor);
-      var modeLabel = _mode === 'edit' ? '🖼️ 当前图改图' : '🎨 从头生成';
-      var modeHint = _mode === 'edit' ? '输入修改意见（如"改成夜景"）' : '输入图片描述（如"一只橘猫在窗台"）';
-      var placeholder = _mode === 'edit' ? '改成夜景 / 加个月亮 / 去背景电线' : '一只橘猫在窗台，阳光透过窗帘';
-
-      panel.innerHTML =
-        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
-          '<span style="font-weight:600">✨ AI 修改助手</span>' +
-          '<div>' +
-            '<span style="font-size:11px;padding:2px 8px;background:var(--accent,#0ea89d);color:#fff;border-radius:10px;margin-right:8px">' + modeLabel + '</span>' +
-            '<button id="ai-assistant-close" style="padding:2px 8px;border:1px solid var(--office-divider,#ccc);border-radius:3px;cursor:pointer;font-size:11px;background:transparent">✕ 关闭</button>' +
-          '</div>' +
-        '</div>' +
-        '<div style="margin-bottom:6px;font-size:11px;color:var(--text2,#888)">' + modeHint + '</div>' +
-        '<textarea id="ai-assistant-prompt" placeholder="' + escHtml(placeholder) + '" style="width:100%;min-height:50px;padding:6px;border:1px solid var(--office-divider,#ccc);border-radius:4px;font-size:13px;font-family:inherit;box-sizing:border-box;resize:vertical"></textarea>' +
+      contentEl.innerHTML =
+        '<div style="margin-bottom:6px;color:var(--text2,#888)">' + hint + '</div>' +
+        '<textarea id="ai-prompt" placeholder="' + escHtml(placeholder) + '" style="width:100%;min-height:50px;padding:6px;border:1px solid var(--border,#ddd);border-radius:4px;font-size:12px;font-family:inherit;box-sizing:border-box;resize:vertical"></textarea>' +
         '<div style="display:flex;gap:6px;margin-top:6px;align-items:center">' +
-          '<button id="ai-assistant-generate" style="padding:5px 14px;background:var(--accent,#0ea89d);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px;font-weight:600">✨ 重新生成</button>' +
-          '<span id="ai-assistant-status" style="flex:1;font-size:11px;color:var(--text2,#888)">就绪</span>' +
-          '<button id="ai-assistant-undo" style="padding:5px 10px;border:1px solid var(--office-divider,#ccc);border-radius:4px;cursor:pointer;font-size:12px;background:transparent" disabled>↩️ 撤销</button>' +
+          '<button id="ai-gen-btn" style="padding:5px 14px;background:var(--accent,#0ea89d);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600">✨ 生成</button>' +
+          '<span id="ai-status" style="flex:1;font-size:11px;color:var(--text2,#888)">就绪</span>' +
+          '<button id="ai-undo-btn" style="padding:5px 10px;border:1px solid var(--border,#ddd);border-radius:4px;cursor:pointer;font-size:11px;background:transparent" disabled>↩ 撤销</button>' +
         '</div>' +
-        '<div id="ai-assistant-candidates" style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap"></div>' +
-        '<div id="ai-assistant-history" style="margin-top:10px;font-size:11px;color:var(--text2,#888)"></div>';
+        '<div id="ai-candidates" style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap"></div>' +
+        '<div id="ai-history" style="margin-top:8px;font-size:11px;color:var(--text2,#888)"></div>';
 
-      // 事件绑定
-      panel.querySelector('#ai-assistant-close').onclick = function() { window.imageAiAssistant.toggle(); };
-      panel.querySelector('#ai-assistant-generate').onclick = runGenerate;
-      panel.querySelector('#ai-assistant-undo').onclick = undoLast;
-      updateUI();
+      document.getElementById('ai-gen-btn').onclick = function() { runAIGenerate(effectiveMode === 'edit'); };
+      document.getElementById('ai-undo-btn').onclick = aiUndo;
+      updateAIUI();
+      setTimeout(function() { var p = document.getElementById('ai-prompt'); if (p) p.focus(); }, 50);
     }
 
-    function updateUI() {
-      if (!_ctx) return;
-      var panel = _ctx.aiPanel;
-      var genBtn = panel.querySelector('#ai-assistant-generate');
-      if (genBtn) {
-        genBtn.disabled = _busy;
-        genBtn.textContent = _busy ? '⏳ 生成中...' : '✨ 重新生成';
-      }
-      var undoBtn = panel.querySelector('#ai-assistant-undo');
-      if (undoBtn) undoBtn.disabled = (_history.length === 0);
-      // history 区
-      var histEl = panel.querySelector('#ai-assistant-history');
+    function renderUpscale(contentEl) {
+      contentEl.innerHTML = '<div style="color:var(--text2,#888);padding:10px 0">🔍 AI 放大功能即将支持</div>';
+    }
+
+    function updateAIUI() {
+      var genBtn = document.getElementById('ai-gen-btn');
+      if (genBtn) { genBtn.disabled = _aiBusy; genBtn.textContent = _aiBusy ? '⏳ 生成中...' : '✨ 生成'; }
+      var undoBtn = document.getElementById('ai-undo-btn');
+      if (undoBtn) undoBtn.disabled = (_aiHistory.length === 0);
+      var histEl = document.getElementById('ai-history');
       if (histEl) {
-        if (_history.length === 0) {
-          histEl.innerHTML = '📜 历史：' + (_busy ? '生成中...' : '空（点击"重新生成"开始）');
+        if (_aiHistory.length === 0) {
+          histEl.innerHTML = '📜 历史：空';
         } else {
-          histEl.innerHTML = '📜 历史 (' + _history.length + '/' + HISTORY_MAX + ')：' +
-            _history.map(function(h, i) {
-              return '<img src="' + h.dataUrl + '" data-idx="' + i + '" title="' + escHtml(h.label || '') + ' · ' + new Date(h.ts).toLocaleTimeString() + '" style="width:48px;height:48px;object-fit:cover;border:1px solid var(--office-divider,#ccc);border-radius:3px;margin-right:4px;cursor:pointer;vertical-align:middle">';
-            }).join('') +
-            ' <span style="font-size:10px;color:var(--text2,#aaa)">点击缩略图回到那一步</span>';
-          var imgs = histEl.querySelectorAll('img[data-idx]');
+          histEl.innerHTML = '📜 历史 (' + _aiHistory.length + '/10)：' +
+            _aiHistory.map(function(h, i) {
+              return '<img src="' + h.dataUrl + '" data-ai-idx="' + i + '" style="width:40px;height:40px;object-fit:cover;border:1px solid var(--border,#ddd);border-radius:3px;margin-right:3px;cursor:pointer;vertical-align:middle">';
+            }).join('');
+          var imgs = histEl.querySelectorAll('img[data-ai-idx]');
           Array.prototype.forEach.call(imgs, function(img) {
-            img.onclick = function() { restoreAt(parseInt(img.getAttribute('data-idx'))); };
+            img.onclick = function() { aiRestoreAt(parseInt(img.getAttribute('data-ai-idx'))); };
           });
         }
       }
     }
 
     function pushHistory(label) {
-      if (!_ctx || !_ctx.imageEditor) return;
-      var dataUrl = window.imageEditorAPI.saveCanvasSnapshot(_ctx.imageEditor);
+      if (!imageEditor) return;
+      var dataUrl = window.imageEditorAPI.saveCanvasSnapshot(imageEditor);
       if (!dataUrl) return;
-      _history.push({ dataUrl: dataUrl, ts: Date.now(), label: label });
-      while (_history.length > HISTORY_MAX) _history.shift();
+      _aiHistory.push({ dataUrl: dataUrl, ts: Date.now(), label: label });
+      while (_aiHistory.length > 10) _aiHistory.shift();
     }
 
-    async function runGenerate() {
-      if (_busy || !_ctx) return;
-      var panel = _ctx.aiPanel;
-      var promptEl = panel.querySelector('#ai-assistant-prompt');
-      var prompt = promptEl ? promptEl.value.trim() : '';
-      if (!prompt) { setStatus(panel, '⚠️ 请输入修改意见', '#c00'); return; }
+    async function runAIGenerate(isEdit) {
+      if (_aiBusy || !imageEditor) return;
+      var promptEl = document.getElementById('ai-prompt');
+      var statusEl = document.getElementById('ai-status');
+      if (!promptEl || !statusEl) return;
+      var prompt = promptEl.value.trim();
+      if (!prompt) { statusEl.innerHTML = '<span style="color:#c00">⚠️ 请输入内容</span>'; return; }
 
-      _busy = true;
-      updateUI();
-      setStatus(panel, '⏳ 生成中（Agnes API 调用 4 次）...', '#888');
+      _aiBusy = true;
+      updateAIUI();
+      statusEl.textContent = '⏳ 生成中...';
 
       var dataUrl = null;
-      if (_mode === 'edit' && _ctx.imageEditor) {
-        dataUrl = window.imageEditorAPI.saveCanvasSnapshot(_ctx.imageEditor);
-      }
+      if (isEdit) dataUrl = window.imageEditorAPI.saveCanvasSnapshot(imageEditor);
 
       try {
-        var result;
-        if (dataUrl) {
-          result = await window.imageEditorAPI.aiEdit(prompt, dataUrl, 4);
-        } else {
-          result = await window.imageEditorAPI.aiGenerate(prompt, 4);
-        }
+        var result = dataUrl
+          ? await window.imageEditorAPI.aiEdit(prompt, dataUrl, 4)
+          : await window.imageEditorAPI.aiGenerate(prompt, 4);
         if (!result || !result.ok) {
-          setStatus(panel, '❌ 生成失败：' + (result && result.error ? result.error : 'unknown'), '#c00');
+          statusEl.innerHTML = '<span style="color:#c00">❌ ' + escHtml((result && result.error ? result.error : '生成失败')) + '</span>';
           return;
         }
-        _currentResult = result;
+        _aiResult = result;
         renderCandidates(result.options || []);
-        setStatus(panel, '✅ 生成 ' + (result.options ? result.options.length : 0) + ' 张候选，点击应用', '#0a0');
+        statusEl.innerHTML = '<span style="color:#080">✅ ' + (result.options ? result.options.length : 0) + ' 张</span>';
       } catch (e) {
-        setStatus(panel, '❌ 异常：' + e.message, '#c00');
+        statusEl.innerHTML = '<span style="color:#c00">❌ ' + escHtml(e.message) + '</span>';
       } finally {
-        _busy = false;
-        updateUI();
+        _aiBusy = false;
+        updateAIUI();
       }
     }
 
     function renderCandidates(options) {
-      if (!_ctx) return;
-      var el = _ctx.aiPanel.querySelector('#ai-assistant-candidates');
+      var el = document.getElementById('ai-candidates');
       if (!el) return;
-      if (!options || options.length === 0) {
-        el.innerHTML = '<div style="color:var(--text2,#888);font-size:11px">无候选</div>';
-        return;
-      }
+      if (!options || options.length === 0) { el.innerHTML = ''; return; }
       el.innerHTML = options.map(function(opt, i) {
-        return '<div data-idx="' + i + '" style="position:relative;cursor:pointer;border:2px solid transparent;border-radius:4px;overflow:hidden;transition:border-color 0.15s" title="点击应用候选 ' + (i + 1) + '">' +
-          '<img src="' + escHtml(opt.image_url_output) + '" style="width:96px;height:96px;object-fit:cover;display:block">' +
-          '<span style="position:absolute;top:2px;left:4px;background:rgba(0,0,0,0.6);color:#fff;font-size:10px;padding:1px 5px;border-radius:3px">#' + (i + 1) + '</span>' +
+        return '<div data-ai-cand="' + i + '" style="position:relative;cursor:pointer;border:2px solid transparent;border-radius:4px;overflow:hidden" title="点击应用">' +
+          '<img src="' + escHtml(opt.image_url_output) + '" style="width:80px;height:80px;object-fit:cover;display:block">' +
+          '<span style="position:absolute;top:1px;left:2px;background:rgba(0,0,0,0.6);color:#fff;font-size:9px;padding:1px 4px;border-radius:2px">#' + (i + 1) + '</span>' +
         '</div>';
       }).join('');
-      Array.prototype.forEach.call(el.querySelectorAll('[data-idx]'), function(node) {
-        node.onclick = function() { applyCandidate(parseInt(node.getAttribute('data-idx'))); };
+      Array.prototype.forEach.call(el.querySelectorAll('[data-ai-cand]'), function(node) {
+        node.onclick = function() { applyCandidate(parseInt(node.getAttribute('data-ai-cand'))); };
         node.onmouseenter = function() { node.style.borderColor = 'var(--accent,#0ea89d)'; };
         node.onmouseleave = function() { node.style.borderColor = 'transparent'; };
       });
     }
 
     function applyCandidate(idx) {
-      if (!_ctx || !_currentResult || !_currentResult.options) return;
-      var opt = _currentResult.options[idx];
+      if (!_aiResult || !_aiResult.options) return;
+      var opt = _aiResult.options[idx];
       if (!opt) return;
-      pushHistory('应用候选 #' + (idx + 1));
-      // 加载候选图到画布（TOAST UI setImage 或 fallback canvas）
-      var editor = _ctx.imageEditor;
-      var img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = function() {
-        if (typeof editor.setImage === 'function') {
-          editor.setImage(opt.image_url_output, opt.mime || 'image/png');
-        } else if (typeof editor.loadImageFromURL === 'function') {
-          editor.loadImageFromURL(opt.image_url_output);
-        } else {
-          var canvas = editor.getCanvas ? editor.getCanvas() : null;
-          if (canvas) {
-            var ctx = canvas.getContext('2d');
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.drawImage(img, 0, 0);
-          }
-        }
-        setStatus(_ctx.aiPanel, '✅ 已应用候选 #' + (idx + 1) + '（' + escHtml(opt.asset_path || '') + '）', '#0a0');
-      };
-      img.onerror = function() {
-        setStatus(_ctx.aiPanel, '❌ 候选图加载失败', '#c00');
-      };
-      img.src = opt.image_url_output;
+      pushHistory('候选 #' + (idx + 1));
+      var loadUrl = opt.workspace_path
+        ? '/api/files/asset?path=' + encodeURIComponent(opt.workspace_path)
+        : opt.image_url_output;
+      imageEditor.loadImageFromURL(loadUrl, 'ai_' + (idx + 1) + '.png').then(function(result) {
+        // 等 tui 内部布局完成后缩放，确保图片完整可见
+        setTimeout(function() {
+          try {
+            var rect = mountEl.getBoundingClientRect();
+            var iw = result && result.newWidth;
+            var ih = result && result.newHeight;
+            if (!iw || !ih) {
+              var img = imageEditor.getCanvasImage();
+              if (img) { iw = img.width; ih = img.height; }
+            }
+            if (iw > 0 && ih > 0 && rect.width > 0 && rect.height > 0) {
+              var zl = Math.min(rect.width / iw, rect.height / ih);
+              if (zl > 0) imageEditor.zoom({ x: rect.width / 2, y: rect.height / 2, zoomLevel: zl });
+            }
+          } catch(e) { console.warn('[AI] 缩放失败:', e); }
+        }, 100);
+      }).catch(function(e) { console.warn('[AI] 加载候选失败:', e); });
     }
 
-    async function undoLast() {
-      if (_history.length === 0) return;
-      var last = _history.pop();
-      var ok = await window.imageEditorAPI.restoreCanvasSnapshot(_ctx.imageEditor, last.dataUrl);
-      if (ok) {
-        setStatus(_ctx.aiPanel, '↩️ 已撤销：' + escHtml(last.label || ''), '#888');
-      } else {
-        setStatus(_ctx.aiPanel, '❌ 撤销失败', '#c00');
-      }
-      updateUI();
+    function aiUndo() {
+      if (_aiHistory.length === 0) return;
+      _aiHistory.pop();
+      if (_aiHistory.length > 0) aiRestoreSnapshot(_aiHistory[_aiHistory.length - 1].dataUrl);
+      else imageEditor.loadImageFromURL('', 'blank').catch(function(){});
+      updateAIUI();
     }
 
-    async function restoreAt(idx) {
-      if (idx < 0 || idx >= _history.length) return;
-      var snap = _history[idx];
-      var ok = await window.imageEditorAPI.restoreCanvasSnapshot(_ctx.imageEditor, snap.dataUrl);
-      if (ok) {
-        // 删掉 idx 之后的所有历史（回到 idx 之前的"当前"）
-        _history = _history.slice(0, idx);
-        setStatus(_ctx.aiPanel, '↩️ 已回到历史 #' + (idx + 1) + '：' + escHtml(snap.label || ''), '#888');
-      } else {
-        setStatus(_ctx.aiPanel, '❌ 还原失败', '#c00');
-      }
-      updateUI();
+    function aiRestoreAt(idx) {
+      if (idx < 0 || idx >= _aiHistory.length) return;
+      aiRestoreSnapshot(_aiHistory[idx].dataUrl);
+      _aiHistory = _aiHistory.slice(0, idx + 1);
+      updateAIUI();
     }
 
-    // 暴露 API
-    window.imageAiAssistant = {
-      toggle: function(imageEditor, aiPanel, w) {
-        // v0.66 PR3 fix: null 保护（缺参数或空 panel 不 crash）
-        if (!aiPanel) {
-          console.warn('[imageAiAssistant] toggle: aiPanel is required');
-          return;
-        }
-        _ctx = { imageEditor: imageEditor || (_ctx && _ctx.imageEditor), aiPanel: aiPanel, w: w || (_ctx && _ctx.w) };
-        _open = !_open;
-        if (_open) {
-          aiPanel.style.display = 'block';
-          renderPanel();
-          var icon = w && w.$c && w.$c.querySelector('#ai-assistant-toggle-icon');
-          if (icon) icon.textContent = '▲';
-        } else {
-          aiPanel.style.display = 'none';
-          var icon2 = w && w.$c && w.$c.querySelector('#ai-assistant-toggle-icon');
-          if (icon2) icon2.textContent = '▼';
-        }
-      },
-      isOpen: function() { return _open; },
-      getHistoryLength: function() { return _history.length; },
-      // 测试用：暴露内部状态
-      _state: function() { return { open: _open, mode: _mode, busy: _busy, historyCount: _history.length }; }
-    };
-  })();
+    function aiRestoreSnapshot(dataUrl) {
+      if (!dataUrl) return;
+      imageEditor.loadImageFromURL(dataUrl, 'snapshot').then(function(result) {
+        setTimeout(function() {
+          try {
+            var rect = mountEl.getBoundingClientRect();
+            var iw = result && result.newWidth;
+            var ih = result && result.newHeight;
+            if (!iw || !ih) {
+              var img = imageEditor.getCanvasImage();
+              if (img) { iw = img.width; ih = img.height; }
+            }
+            if (iw > 0 && ih > 0 && rect.width > 0 && rect.height > 0) {
+              var zl = Math.min(rect.width / iw, rect.height / ih);
+              if (zl > 0) imageEditor.zoom({ x: rect.width / 2, y: rect.height / 2, zoomLevel: zl });
+            }
+          } catch(e) { console.warn('[AI] 恢复快照缩放失败:', e); }
+        }, 100);
+      }).catch(function(e) { console.warn('[AI] 恢复快照失败:', e); });
+    }
 
-  function escHtml(s) {
-    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    // 暴露 toggle 给内联 onclick（aiPanel HTML 里的关闭按钮用）
+    window.toggleAIPanel = toggleAIPanel;
   }
 
-  // ─── v0.66 PR2: 暴露 imageEditorAPI 给小吉/chat 流调用 ───
+function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // v0.66 PR2: 暴露 imageEditorAPI 给小吉/chat 流调用
   //   复用 /api/files 接口读取原始图片 → Canvas 处理 → /api/files/upload 保存
   //   不引入新依赖（纯浏览器 Canvas API）
   function fileToDataURL(url) {
@@ -615,6 +665,7 @@
       var fr = new FileReader();
       fr.onload = function() {
         var s = fr.result;
+        // data:image/png;base64,XXXXX → XXXXX
         var idx = s.indexOf(',');
         resolve(idx >= 0 ? s.slice(idx + 1) : s);
       };
@@ -646,6 +697,8 @@
 
   function uploadOutput(srcPath, outputName, blob, outputPath) {
     return blobToBase64(blob).then(function(b64) {
+      var apiPath = (window.api ? window.api : null);
+      // 用 api() 上传（带 X-API-Key + JWT）
       var dir = srcPath.replace(/[\\\/][^\\\/]+$/, '');
       var saveDir = outputPath || dir;
       return fetch('/api/files/upload', {
@@ -701,40 +754,34 @@
     // 异步：裁剪图片（(x, y, w, h) 是源图坐标系）
     crop: function(path, x, y, width, height, opts) {
       opts = opts || {};
-      if (!path || x == null || y == null || !width || !height) {
-        return Promise.resolve({ ok: false, error: 'INVALID_ARGS', message: '需要 path/x/y/width/height' });
-      }
-      var suffix = opts.suffix || ('_cropped_' + Math.round(x) + '_' + Math.round(y) + '_' + Math.round(width) + 'x' + Math.round(height));
+      if (!path || x == null || y == null || !width || !height) return Promise.resolve({ ok: false, error: 'INVALID_ARGS', message: '需要 path/x/y/width/height' });
+      var suffix = opts.suffix || ('_cropped_' + width + 'x' + height);
       var outputPath = opts.outputPath;
       return fileToDataURL('/api/files?path=' + encodeURIComponent(path) + '&raw=1')
         .then(function(r) { return loadImage(r.dataUrl); })
         .then(function(img) {
-          var sx = Math.max(0, Math.round(x));
-          var sy = Math.max(0, Math.round(y));
-          var sw = Math.min(Math.round(width), img.naturalWidth - sx);
-          var sh = Math.min(Math.round(height), img.naturalHeight - sy);
-          if (sw <= 0 || sh <= 0) throw new Error('裁剪区域超出图片边界');
           var canvas = document.createElement('canvas');
-          canvas.width = sw;
-          canvas.height = sh;
+          canvas.width = Math.max(1, Math.round(width));
+          canvas.height = Math.max(1, Math.round(height));
           var ctx = canvas.getContext('2d');
-          ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+          ctx.drawImage(img, Math.round(x), Math.round(y), canvas.width, canvas.height, 0, 0, canvas.width, canvas.height);
           return canvasToBlob(canvas, inferMime(inferFormat(path)), 0.92);
         })
         .then(function(blob) {
           var outputName = buildOutputName(path, suffix);
           return uploadOutput(path, outputName, blob, outputPath);
         })
-        .then(function(info) { return { ok: true, outputPath: (outputPath || path.replace(/[\\\/][^\\\/]+$/, '')) + '/' + info.name }; })
+        .then(function(info) { return { ok: true, outputPath: (outputPath || path.replace(/[\\\/][^\\\/]+$/, '')) + '/' + info.name, width: width, height: height }; })
         .catch(function(e) { return { ok: false, error: 'CROP_FAILED', message: e.message }; });
     },
 
-    // 异步：转格式（png/jpg/webp/gif）
+    // 异步：格式转换
     convert: function(path, targetFormat, opts) {
       opts = opts || {};
       if (!path || !targetFormat) return Promise.resolve({ ok: false, error: 'INVALID_ARGS', message: '需要 path/targetFormat' });
-      var suffix = opts.suffix || ('_converted');
+      var suffix = opts.suffix || ('_converted.' + targetFormat);
       var outputPath = opts.outputPath;
+      var mime = inferMime(targetFormat);
       return fileToDataURL('/api/files?path=' + encodeURIComponent(path) + '&raw=1')
         .then(function(r) { return loadImage(r.dataUrl); })
         .then(function(img) {
@@ -742,12 +789,13 @@
           canvas.width = img.naturalWidth;
           canvas.height = img.naturalHeight;
           var ctx = canvas.getContext('2d');
-          if (inferMime(targetFormat) === 'image/jpeg') {
-            ctx.fillStyle = '#ffffff';
+          // JPG/WebP 不支持透明 → 白底
+          if (mime === 'image/jpeg' || mime === 'image/webp') {
+            ctx.fillStyle = '#fff';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
           }
           ctx.drawImage(img, 0, 0);
-          return canvasToBlob(canvas, inferMime(targetFormat), 0.92);
+          return canvasToBlob(canvas, mime, 0.92);
         })
         .then(function(blob) {
           var outputName = buildOutputName(path, suffix, targetFormat);
@@ -757,63 +805,46 @@
         .catch(function(e) { return { ok: false, error: 'CONVERT_FAILED', message: e.message }; });
     },
 
-    // v0.66 PR2: AI 文生图（无源图，直接生成）
-    aiGenerate: function(prompt, count, opts) {
+    // v0.66 PR2: AI 文生图（无源图）
+    aiGenerate: function(prompt, n, opts) {
       opts = opts || {};
       if (!prompt) return Promise.resolve({ ok: false, error: 'INVALID_ARGS', message: '需要 prompt' });
-      var n = Math.max(1, Math.min(6, parseInt(count) || 4));
-      var projectSlug = opts.projectSlug || 'image-tools';
-      var size = opts.size || '1024x1024';
+      var count = n || 4;
       return fetch('/api/image-tools/ai-generate', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': (window.AK || 'dev-key-001'),
-          'Authorization': 'Bearer ' + (localStorage.getItem('acms-token') || ''),
-        },
-        body: JSON.stringify({ prompt: prompt, n: n, projectSlug: projectSlug, size: size }),
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': (window.AK || 'dev-key-001') },
+        body: JSON.stringify({ prompt: prompt, n: count, size: opts.size || '1024x1024' }),
       }).then(function(r) {
-        if (!r.ok) return r.json().then(function(e) { throw new Error(e.message || ('HTTP_' + r.status)); });
+        if (!r.ok) return r.json().then(function(e) { throw new Error(e.message || 'HTTP ' + r.status); });
         return r.json();
-      }).catch(function(e) { return { ok: false, error: 'AI_GENERATE_FAILED', message: e.message }; });
+      }).catch(function(e) {
+        return { ok: false, error: e.message };
+      });
     },
 
-    // v0.66 PR2: AI 图生图（基于当前画布或传入的 referenceImage）
-    aiEdit: function(prompt, sourceDataUrl, count, opts) {
+    // v0.66 PR2: AI 图生图（基于当前画布或传入 referenceImage）
+    aiEdit: function(prompt, referenceImage, n, opts) {
       opts = opts || {};
-      if (!prompt) return Promise.resolve({ ok: false, error: 'INVALID_ARGS', message: '需要 prompt' });
-      if (!sourceDataUrl) return Promise.resolve({ ok: false, error: 'INVALID_ARGS', message: '需要 referenceImage (canvas dataUrl 或 http URL)' });
-      var n = Math.max(1, Math.min(6, parseInt(count) || 4));
-      var projectSlug = opts.projectSlug || 'image-tools';
-      var size = opts.size || '1024x1024';
+      if (!prompt || !referenceImage) return Promise.resolve({ ok: false, error: 'INVALID_ARGS', message: '需要 prompt 和 referenceImage' });
+      var count = n || 4;
       return fetch('/api/image-tools/ai-edit', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': (window.AK || 'dev-key-001'),
-          'Authorization': 'Bearer ' + (localStorage.getItem('acms-token') || ''),
-        },
-        body: JSON.stringify({
-          prompt: prompt,
-          referenceImage: sourceDataUrl,
-          n: n,
-          projectSlug: projectSlug,
-          size: size,
-        }),
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': (window.AK || 'dev-key-001') },
+        body: JSON.stringify({ prompt: prompt, referenceImage: referenceImage, n: count, size: opts.size || '1024x1024' }),
       }).then(function(r) {
-        if (!r.ok) return r.json().then(function(e) { throw new Error(e.message || ('HTTP_' + r.status)); });
+        if (!r.ok) return r.json().then(function(e) { throw new Error(e.message || 'HTTP ' + r.status); });
         return r.json();
-      }).catch(function(e) { return { ok: false, error: 'AI_EDIT_FAILED', message: e.message }; });
+      }).catch(function(e) {
+        return { ok: false, error: e.message };
+      });
     },
 
-    // v0.66 PR2: 保存当前画布快照
+    // v0.66 PR2: 保存画布快照（dataURL）
     saveCanvasSnapshot: function(canvasInst) {
       if (!canvasInst) return null;
-      if (typeof canvasInst.getCanvas === 'function') {
-        var c = canvasInst.getCanvas();
-        if (c && typeof c.toDataURL === 'function') return c.toDataURL('image/png');
-      }
       if (typeof canvasInst.toDataURL === 'function') return canvasInst.toDataURL('image/png');
+      var canvas = (typeof canvasInst.getCanvas === 'function') ? canvasInst.getCanvas() : canvasInst;
+      if (canvas && typeof canvas.toDataURL === 'function') return canvas.toDataURL('image/png');
       return null;
     },
 
