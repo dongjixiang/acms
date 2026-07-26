@@ -47,6 +47,7 @@
       tags: config.tags || [],
       defaultSize: config.defaultSize || { w: 800, h: 520 },
       loader: loader,
+      agentTools: config.agentTools || [],  // v0.66: App-as-Tool 元数据（不含 handler）
     };
     packages[name] = entry;
     packageList.push(entry);
@@ -79,6 +80,15 @@
     events.forEach(function(fn) {
       try { fn(name, entry); } catch(e) { console.warn('[PKG] 事件错误:', e); }
     });
+
+    // v0.66: 注册 agentTools 到 runtime（应用自声明的工具能力）
+    if (entry.agentTools && entry.agentTools.length > 0 && window.ACMSAppTools && typeof window.ACMSAppTools.register === 'function') {
+      try {
+        window.ACMSAppTools.register(name, entry.agentTools);
+      } catch (e) {
+        console.warn('[PKG] agentTools register failed for ' + name + ':', e);
+      }
+    }
 
     // console.log('[PKG] 已注册: ' + name);
   }

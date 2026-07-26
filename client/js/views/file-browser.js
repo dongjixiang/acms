@@ -631,7 +631,46 @@
       expTree(curPath).then(function(){render(w);}).catch(function(){render(w);});
     };
     if(window.ACMS&&ACMS.registerPackage){
-      ACMS.registerPackage('file-manager',{title:'文件浏览器',icon:'📂',category:'工具',defaultSize:{w:1280,h:800},loader:ld});
+      // v0.66: 暴露 fileBrowserAPI（agentTools handler 复用）
+      window.fileBrowserAPI = {
+        searchFiles: async function(path, query, maxResults) {
+          var url = '/files/search?q=' + encodeURIComponent(query) +
+                    '&path=' + encodeURIComponent(path) +
+                    '&limit=' + encodeURIComponent(maxResults || 20);
+          var data = await api('GET', url);
+          if (data && data.error) {
+            return { ok: false, error: data.error, message: data.message, files: [] };
+          }
+          var files = (data && data.files) || (data && data.results) || (Array.isArray(data) ? data : []);
+          return { ok: true, files: files, count: files.length };
+        },
+      };
+
+      ACMS.registerPackage('file-manager',{
+        title:'文件浏览器',icon:'📂',category:'工具',defaultSize:{w:1280,h:800},loader:ld,
+        // v0.66: App-as-Tool 声明 — 让小吉/chat 流能直接调 file-browser 能力
+        agentTools: [
+          {
+            name: 'file_search',
+            description: 'USE WHEN: 用户想"找文件""搜文件""列出目录下含 X 的文件"。在指定目录下搜索文件名包含关键词的文件，返回文件名、路径、大小。注意：仅搜文件名，不搜文件内容。',
+            parameters: {
+              type: 'object',
+              properties: {
+                path: { type: 'string', description: '搜索根目录绝对路径（Windows 如 C:/Users/多/Documents，Linux 如 /home/user/Documents）' },
+                query: { type: 'string', description: '文件名关键词（支持中文，如 README、需求、季度汇报）' },
+                maxResults: { type: 'number', description: '最大返回数（默认 20，建议不超过 100）' },
+              },
+              required: ['path', 'query'],
+            },
+            handler: async function(args) {
+              if (!args || !args.path || !args.query) {
+                return { ok: false, error: 'INVALID_ARGS', message: '需要 path 和 query' };
+              }
+              return await window.fileBrowserAPI.searchFiles(args.path, args.query, args.maxResults);
+            },
+          },
+        ],
+      });
     } else {
       ACMSWin.registerViewLoader('file-manager',ld);
     }

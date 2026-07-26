@@ -60,6 +60,11 @@ function connectWebSocket() {
     App.ws.onmessage = (e) => {
       try {
         var m = JSON.parse(e.data);
+        // v0.66: app-tool invoke 走 ACMSAppTools.handleInvoke（不进 ACMSWin 事件流）
+        if (m && m.type === 'app_tool:invoke' && window.ACMSAppTools && typeof window.ACMSAppTools.handleInvoke === 'function') {
+          window.ACMSAppTools.handleInvoke(m);
+          return;
+        }
         // v0.62: 通过 ACMSWin.dispatchEvent 统一分发，视图的事件订阅自动处理
         if (window.ACMSWin && ACMSWin.dispatchEvent) {
           ACMSWin.dispatchEvent(m.type, m.payload || {});
