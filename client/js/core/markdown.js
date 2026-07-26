@@ -47,6 +47,9 @@ function renderMarkdown(md) {
   // 自动链接 URL（http/https 开头，排除已包裹在 <a> 内的）— 注释掉，图片/链接已在动作卡片中展示，无需在文本中重复显示 URL
   // html = html.replace(/(https?:\/\/[^\s<>"']+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
 
+  // 移除 markdown 图片语法 ![alt](url)，图片已在动作卡片中展示
+  html = html.replace(/!\[([^\]]*)\]\([^)]+\)/g, '');
+
   // 包裹为段落
   html = '<p>' + html + '</p>';
   // 清理空段落和空行导致的嵌套问题
