@@ -14,6 +14,7 @@ const reqStore = require('../stores/requirement-store');
 const toolRegistry = require('../services/tool-registry');
 const { runToolLoop } = require('../services/llm-adapter');
 const { execute: runtimeExec } = require('../services/agent-runtime');
+const appToolsRegistry = require('../services/app-tools-registry');  // v0.66
 const modelStore = require('../stores/model-store');
 
 // v0.65: 自由对话 session → 创建隐藏 requirement，让 play_music/play_video 等工具有真实存储容器
@@ -68,6 +69,16 @@ const INTENT_TOOL_NAMES = [
   'send_email',           // v0.47：邮件发送（fire-and-forget + 用户确认才真发）
   'plan_execute',         // v0.48：复合意图 plan 执行（多 tool / 多步骤 / 依赖场景）
 ];
+
+// v0.66: chat 流动态注入 app-tool（前端应用通过 WS 注册的能力）
+// 返回函数，确保每次 chat 请求时拿到最新的 app-tool 列表（应用启动/关闭后能反映）
+function getIntentToolNames() {
+  var appTools = [];
+  try {
+    appTools = appToolsRegistry.listAppToolNames();
+  } catch (e) { /* appTools 不可用时不影响基础 9 个 server tool */ }
+  return [...INTENT_TOOL_NAMES, ...appTools];
+}
 
 // v0.16：chat-intent 阶段 LLM 看到的 system prompt（clarify 模式）
 // 核心：「一放一收」—— 默认不调 tool，只有显式外部信息需求才调
@@ -144,7 +155,7 @@ function buildFreeChatSystemPrompt(req) {
 
 # 任务
 - 用户没在整理需求，**直接帮用户处理具体请求**。
-- 你可以调用工具（generate_image、play_video、agnes_generate_video、play_music、web_search、web_research、fetch_url、get_current_time、send_email、plan_execute）来满足用户的具体请求；工具的 description 告诉你何时该调。
+- 你可以调用任何已注册的工具（包括 server tool 如 generate_image/play_video/web_search/send_email/plan_execute 等，以及 v0.66 新增的 ACMS 应用工具如 file_search 等）来满足用户的具体请求；工具的 description 告诉你何时该调。
 - 也可以直接基于对话历史和已有知识回答。
 
 # ⛔ 严禁「装睡」（v0.47.1 治根因）
@@ -275,7 +286,8 @@ router.post('/detect-and-respond', async (req, res, next) => {
         const runtimeResult = await runtimeExec({
           modelId: model.id,
           messages,
-          toolNames: [...INTENT_TOOL_NAMES.filter(n => n !== 'plan_execute'), 'play_music'],
+          // v0.66: 把 chat 流可见 tools 改为动态函数（每次 chat 请求拿最新 app-tool 列表）
+          toolNames: getIntentToolNames().filter(function(n) { return n !== 'plan_execute'; }).concat(['play_music']),
           maxRounds: 3,
           context: { reqId: contextReqId },
           caller: 'chat-intent-session',
@@ -427,14 +439,14 @@ router.post('/detect-and-respond', async (req, res, next) => {
           //   改用中性提示，让 LLM 自己判断是否还有其他 tool 需要调（单一意图则简短回复，复合意图则调 plan_execute）
           ...(documentDetected ? [{ role: 'system', content: '（文档生成辅助已自动触发。如果用户消息还包含其他工具意图（如发邮件/搜索等），请用 plan_execute 编排多步骤；否则简短回复用户"正在整理文档"即可。）' }] : []),
           // v0.22.23b：删除图片生成意图的 system 提示注入。多多诉求：LLM 自己看 context 决定调不调 tool。
-          ...historyMessages,
+...historyMessages,
           { role: 'user', content: text },
         ];
-        console.log(`[detect-and-respond] ${reqId} LLM tool-loop (${model.name}, ${INTENT_TOOL_NAMES.length} tools, history=${historyMessages.length})`);
+        console.log(`[detect-and-respond] ${reqId} LLM tool-loop (${model.name}, ${getIntentToolNames().length} tools, history=${historyMessages.length})`);
         const runtimeResult = await runtimeExec({
           modelId: model.id,
           messages,
-          toolNames: INTENT_TOOL_NAMES,
+          toolNames: getIntentToolNames(),  // v0.66: 动态加载 app-tool
           maxRounds: 5,
           context: { reqId },
           caller: 'chat-intent',

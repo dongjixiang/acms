@@ -1,7 +1,8 @@
 // ACMS Tool Registry — 工具注册中心（v2.0）
 // v0.66: 接入 app-tools-registry（前端应用通过 WS 暴露的能力）
 const registry = new Map();
-const appToolsRegistry = require('./app-tools-registry');  // v0.66
+// v0.66: app-tool registry（前端应用通过 WS 暴露的能力）
+const appToolsRegistry = require('./app-tools-registry');
 
 function registerTool(def) {
   if (!def || !def.name || typeof def.handler !== 'function') {
@@ -16,16 +17,19 @@ function registerTool(def) {
 }
 
 function getTool(name) {
-  return registry.get(name) || null;
+  // v0.66: server tool 找不到时也查 app-tool（统一 getTool 入口）
+  return registry.get(name) || appToolsRegistry.getAppToolSchema(name) || null;
 }
 
 function listTools() {
-  return Array.from(registry.values());
+  // v0.66: 合并 server tools + app tools
+  return [...Array.from(registry.values()), ...appToolsRegistry.listAppTools()];
 }
 
 function toProviderFormat(api, toolNames) {
+  // v0.66: 合并 server + app 两边的 schema
   const sources = toolNames
-    ? toolNames.map(n => registry.get(n)).filter(Boolean)
+    ? toolNames.map(n => registry.get(n) || appToolsRegistry.getAppToolSchema(n)).filter(Boolean)
     : listTools();
 
   if (api === 'anthropic-messages') {

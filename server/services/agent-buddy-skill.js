@@ -14,6 +14,7 @@
 
 const toolRegistry = require('./tool-registry');
 const skillLoader = require('./skill-loader');
+const appToolsRegistry = require('./app-tools-registry');  // v0.66
 // L0 基础身份提示（永久常驻层）
 // ── L0 永久层（~500 tokens，常驻不卸载）──
 const L0_BASE = `你是「小吉」，ACMS 智能协同管理平台的系统助手。
@@ -31,9 +32,12 @@ const L0_BASE = `你是「小吉」，ACMS 智能协同管理平台的系统助�
 ④ 调研/搜索：联网搜资料（web_search）、综合多源调研（web_research）、抓 URL 内容
 ⑤ 创作：生成图片（generate_image）、Word 文档（document_gen / generate_docx / document_edit）、Excel 表格（generate_xlsx）、PPT 演示（generate_pptx）、视频（play_video）、找歌（play_music）
 ⑥ 通讯：发邮件给团队（send_email，前端有预览卡）
-⑦ 自动化：复合意图 plan_execute（多步骤任务编排）
-⑧ 系统能力：打开 ACMS 窗口（open_view）、高亮元素（highlight_element）、看统计数据
-⑨ 用户/Agent 管理：列出用户、看 Agent 任务清单
+| ⑦ 自动化：复合意图 plan_execute（多步骤任务编排）
+| ⑧ 系统能力：打开 ACMS 窗口（open_view）、高亮元素（highlight_element）、看统计数据
+| ⑨ 用户/Agent 管理：列出用户、看 Agent 任务清单
+| ⑩ 应用能力（v0.66 app-tools）：每个 ACMS 应用可暴露自己的工具给 AI 调用
+|    例：file-manager 暴露 file_search（在指定目录搜文件名）、image-editor 暴露 image_get_info 等
+|    调当前可见的 app-tool 直接调；要看完整 app-tool 列表，调 _expand_tools({category:'app'})
 
 【执行约束（重要）】
 - ACMS 业务数据的创建/修改/删除前，用中文告诉用户并等待确认；但图片/文档生成等可逆创作动作可直接执行
@@ -107,8 +111,18 @@ const CATEGORY_TOOLS = {
   'agent':       ['list_agents', 'get_agent_tasks', 'register_agent', 'update_agent_status'],
   'window':      ['open_view', 'highlight_element', 'close_window'],
   'system':      ['list_users', 'get_my_profile', 'get_system_config', 'list_my_work'],
-  'dashboard':   ['get_dashboard_stats', 'list_recent_events', 'get_project_health']
+  'dashboard':   ['get_dashboard_stats', 'list_recent_events', 'get_project_health'],
 };
+
+// v0.66: L2 'app' category 动态加载所有 app-tool（前端应用通过 WS 暴露的能力）
+// 注意：必须在 CATEGORY_TOOLS 之后定义，因为函数引用
+function getAppCategoryTools() {
+  try {
+    return appToolsRegistry.listAppToolNames();
+  } catch (e) {
+    return [];
+  }
+}
 
 // 把 tool def 序列化成 LLM 友好的 description
 function formatToolDescription(tool) {
@@ -137,7 +151,12 @@ function formatToolDescription(tool) {
 function buildChatPrompt(ctx = {}) {
   const view = ctx.currentView || '_default';
   const l1ToolNames = VIEW_TOOLS[view] || VIEW_TOOLS['_default'];
-  const l2ToolNames = (ctx.expandedCategories || []).flatMap(cat => CATEGORY_TOOLS[cat] || []);
+  // v0.66: L2 'app' category 动态注入所有 app-tool（前端应用通过 WS 注册的能力）
+  const expandedCategories = ctx.expandedCategories || [];
+  const l2ToolNames = expandedCategories.flatMap(cat => {
+    if (cat === 'app') return getAppCategoryTools();
+    return CATEGORY_TOOLS[cat] || [];
+  });
   const allToolNames = [...new Set([...L0_TOOLS, ...l1ToolNames, ...l2ToolNames])];
 
   const toolDescs = allToolNames
