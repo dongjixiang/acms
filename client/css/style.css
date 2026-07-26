@@ -795,6 +795,8 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
 .tab-btn:hover { color: var(--text); }
 .tab-btn.active { background: var(--bg2); color: var(--accent); }
 .tab-content { display: none; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-top: -1px; }
+/* v0.66 PR4 fix: admin 概览里的 stats-row 跟随 tab-content 宽度（之前 max-width:480px 是给 agents.js 设计的） */
+.tab-content .stats-row { max-width: none; }
 .tab-content.active { display: block; }
 .config-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
 .config-row:last-child { border-bottom: none; }
@@ -4001,6 +4003,10 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
 .ap-action-trace { margin-top:7px; padding:0; border:0; background:none; color:var(--text3, #777); cursor:pointer; font-size:10px; }
 .ap-action-trace-body { margin-top:5px; max-height:140px; overflow:auto; white-space:pre-wrap; font:9px/1.35 monospace; color:var(--text3, #777); }
 .ap-action-empty { color:var(--text3, #777); padding:4px; }
+.ap-action-imggrid { display:grid; grid-template-columns:repeat(3,1fr); gap:5px; margin:6px 0; }
+.ap-action-imgitem { display:block; border-radius:5px; overflow:hidden; background:var(--bg3, #252540); aspect-ratio:1; }
+.ap-action-imgitem img { width:100%; height:100%; object-fit:cover; display:block; }
+.ap-action-imgitem:hover { filter:brightness(1.15); }
 .ap-action-sources { display:flex; flex-wrap:wrap; gap:5px; margin:6px 0; }
 .ap-action-source { display:inline-flex; align-items:center; gap:3px; padding:4px 8px; border-radius:5px; background:var(--bg3, #252540); color:var(--accent, #0ea89d); text-decoration:none; font-size:11px; }
 .ap-action-source:hover { filter:brightness(1.15); }

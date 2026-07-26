@@ -34,7 +34,7 @@ async function loadAdminPage() {
 <!-- Tab 1 · 概览 — 系统状态卡片（uptime / memory 超阈值变色警示） -->
       <div class="tab-content" id="admin-tab-overview">
         <h3>📊 系统状态</h3>
-        <div class="stats-row" style="grid-template-columns:repeat(4,1fr);margin:12px 0">
+        <div class="stats-row" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr));margin:12px 0">
           <div class="stat-card ${uptimeCls}" title="${uptimeH > 72 ? '运行时间 > 72 小时，建议重启' : uptimeH > 24 ? '运行时间 > 24 小时' : ''}">
             <div class="num">${Math.floor(status.uptime/3600)}h${Math.floor((status.uptime%3600)/60)}m</div>
             <div class="label">运行时间 ${uptimeH > 24 ? (uptimeH > 72 ? '🚨' : '⚠️') : ''}</div>
@@ -429,7 +429,7 @@ function renderAdminAppTools(stats) {
   var html = '';
 
   // 顶部 4 张小卡（与系统状态风格一致）
-  html += '<div class="stats-row" style="grid-template-columns:repeat(4,1fr);margin:12px 0">';
+  html += '<div class="stats-row" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr));margin:12px 0">';
   html += '<div class="stat-card"><div class="num">' + (totals.totalCalls || 0) + '</div><div class="label">App-Tool 总调用</div></div>';
   html += '<div class="stat-card"><div class="num">' + (totals.totalErrors || 0) + '</div><div class="label">App-Tool 总错误</div></div>';
   html += '<div class="stat-card"><div class="num">' + (totals.totalToolCount || 0) + '</div><div class="label">全平台 Tool 数</div></div>';
