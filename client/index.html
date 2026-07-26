@@ -8,7 +8,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>ACMS — 智能体协同管理系统</title>
-<link rel="stylesheet" href="/client/css/style.css?v=0.59.13">
+<link rel="stylesheet" href="/client/css/style.css?v=0.66">
 <link rel="stylesheet" href="/client/css/office-doc.css?v=0.62.7">
 <link rel="stylesheet" href="/client/lib/xterm.min.css">
 <script src="/client/lib/mermaid.min.js" defer></script>
@@ -94,10 +94,12 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="pm-card"><div style="color:var(--text2);padding:12px">Live 加载中...</div></div>
           </div>
 
-          <!-- v0.46 Git Status 卡片 (独立行, 手动刷新) -->
+<!-- v0.46 Git Status 卡片 (独立行, 手动刷新) -->
           <div id="pm-git" class="pm-git-container">
             <div class="pm-card"><div style="color:var(--text2);padding:12px">Git 状态加载中...</div></div>
           </div>
+
+          <!-- v0.66 PR4: App-Tools 使用排行移到 Admin 视图（平台级统计，不放项目 Dashboard） -->
 
           <!-- 原有 dash-panels (最近需求 / 进行中任务 / Token 调用明细) -->
           <div class="dash-panels">

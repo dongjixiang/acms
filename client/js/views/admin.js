@@ -31,7 +31,7 @@ async function loadAdminPage() {
         <button class="tab-btn" data-tab="admin-tab-users">👥 用户管理</button>
       </div>
 
-      <!-- Tab 1 · 概览 — 系统状态卡片（uptime / memory 超阈值变色警示） -->
+<!-- Tab 1 · 概览 — 系统状态卡片（uptime / memory 超阈值变色警示） -->
       <div class="tab-content" id="admin-tab-overview">
         <h3>📊 系统状态</h3>
         <div class="stats-row" style="grid-template-columns:repeat(4,1fr);margin:12px 0">
@@ -46,6 +46,10 @@ async function loadAdminPage() {
           <div class="stat-card"><div class="num">${status.node}</div><div class="label">Node.js</div></div>
           <div class="stat-card"><div class="num">${status.counts.projects}P / ${status.counts.requirements}R / ${status.counts.tasks}T</div><div class="label">数据量</div></div>
         </div>
+
+        <!-- v0.66 PR4: App-Tools 使用统计（平台级，admin 概览 tab） -->
+        <h3 style="margin-top:18px">🛠 App-Tools 使用统计 <span style="font-size:12px;color:var(--text2);font-weight:400">— 小吉/chat 流调用的前端应用工具</span></h3>
+        <div id="admin-app-tools-overview"><div style="color:var(--text2);padding:8px">加载中...</div></div>
       </div>
 
       <!-- Tab 2 · 模型 — 列表 + 添加/编辑表单（默认折叠，点 ➕ 或 ✏️ 展开） -->
@@ -380,11 +384,13 @@ async function loadAdminPage() {
         <div id="user-list" style="font-size:13px">
           <span style="color:var(--text2)">⏳ 加载中…</span>
         </div>
-      </div>
+</div>
     `;
     setupAdminTabs();
     // 加载"运营工具"tab 的统计（异步）
     loadOpsTabStats();
+    // v0.66 PR4: 加载"App-Tools 使用统计"（admin 概览 tab，平台级）
+    loadAdminAppToolsStats();
   } catch (e) { document.getElementById('admin-content').innerHTML = `<div class="empty">加载失败: ${e.message}</div>`; }
 }
 
@@ -405,6 +411,85 @@ function setupAdminTabs(root) {
       if (tabEl) tabEl.classList.add('active');
     };
   });
+}
+
+// v0.66 PR4: App-Tools 使用统计（admin 概览 tab）
+function escHtmlAdmin(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function renderAdminAppTools(stats) {
+  if (!stats) return '<div style="color:var(--text2);padding:8px">暂无 App-Tool 数据</div>';
+  var totals = stats.totals || {};
+  var perTool = (stats.perTool || []).slice(0, 10);
+  var topErrors = totals.topErrors || [];
+
+  var html = '';
+
+  // 顶部 4 张小卡（与系统状态风格一致）
+  html += '<div class="stats-row" style="grid-template-columns:repeat(4,1fr);margin:12px 0">';
+  html += '<div class="stat-card"><div class="num">' + (totals.totalCalls || 0) + '</div><div class="label">总调用次数</div></div>';
+  html += '<div class="stat-card"><div class="num">' + (totals.totalErrors || 0) + '</div><div class="label">总错误次数</div></div>';
+  html += '<div class="stat-card"><div class="num">' + (totals.toolCount || 0) + '</div><div class="label">已注册 Tool 数</div></div>';
+  html += '<div class="stat-card"><div class="num">' + ((totals.registeredApps || []).length) + '</div><div class="label">已接入应用</div></div>';
+  html += '</div>';
+
+  // 工具调用排行表
+  if (perTool.length === 0) {
+    html += '<div style="padding:14px;color:var(--text2);font-size:13px;background:var(--bg2);border-radius:6px">还没有 app-tool 被调用过。让小吉或 chat 流试试：<br><code style="background:var(--bg);padding:2px 6px;border-radius:4px;margin-top:6px;display:inline-block">在 Documents 里找 README.md</code></div>';
+  } else {
+    html += '<div style="background:var(--bg2);border-radius:6px;padding:8px 12px;margin-top:6px">';
+    html += '<table style="width:100%;font-size:12px;border-collapse:collapse">';
+    html += '<thead><tr style="text-align:left;color:var(--text2);border-bottom:1px solid var(--bg3)">';
+    html += '<th style="padding:6px">Tool</th><th style="padding:6px">应用</th>';
+    html += '<th style="padding:6px;text-align:right">调用</th>';
+    html += '<th style="padding:6px;text-align:right">错误</th>';
+    html += '<th style="padding:6px;text-align:right">错误率</th>';
+    html += '<th style="padding:6px;text-align:right">平均延迟</th>';
+    html += '<th style="padding:6px;text-align:right">最后调用</th>';
+    html += '</tr></thead><tbody>';
+    for (var i = 0; i < perTool.length; i++) {
+      var t = perTool[i];
+      var errRateColor = t.errorRate > 0.2 ? 'var(--danger)' : (t.errorRate > 0.05 ? '#e6a23c' : 'var(--text2)');
+      var lastCalled = t.lastCalled ? new Date(t.lastCalled).toLocaleString('zh-CN', { hour12: false }) : '-';
+      html += '<tr style="border-bottom:1px solid var(--bg3)">';
+      html += '<td style="padding:6px"><code style="background:var(--bg);padding:2px 6px;border-radius:3px;font-size:11px">' + escHtmlAdmin(t.name) + '</code></td>';
+      html += '<td style="padding:6px;color:var(--text2)">' + escHtmlAdmin(t.appId || '') + '</td>';
+      html += '<td style="padding:6px;text-align:right">' + t.calls + '</td>';
+      html += '<td style="padding:6px;text-align:right;color:' + (t.errors > 0 ? 'var(--danger)' : 'var(--text2)') + '">' + t.errors + '</td>';
+      html += '<td style="padding:6px;text-align:right;color:' + errRateColor + '">' + (t.errorRate * 100).toFixed(1) + '%</td>';
+      html += '<td style="padding:6px;text-align:right">' + t.avgLatencyMs + 'ms</td>';
+      html += '<td style="padding:6px;text-align:right;color:var(--text2);font-size:11px">' + lastCalled + '</td>';
+      html += '</tr>';
+    }
+    html += '</tbody></table></div>';
+  }
+
+  // 高频错误
+  if (topErrors.length > 0) {
+    html += '<div style="padding:8px 0;margin-top:8px;font-size:12px">';
+    html += '<span style="color:var(--text2);margin-right:8px">⚠️ 高频错误：</span>';
+    for (var j = 0; j < Math.min(5, topErrors.length); j++) {
+      var e = topErrors[j];
+      html += '<span style="background:var(--bg2);padding:2px 8px;border-radius:4px;color:var(--danger);margin-right:4px">' + escHtmlAdmin(e.code) + ' × ' + e.count + '</span>';
+    }
+    html += '</div>';
+  }
+
+  return html;
+}
+
+async function loadAdminAppToolsStats() {
+  try {
+    var resp = await fetch('/api/ai-tools/app-tool-stats', { headers: { 'X-API-Key': 'dev-key-001' } });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    var stats = await resp.json();
+    var el = document.getElementById('admin-app-tools-overview');
+    if (el) el.innerHTML = renderAdminAppTools(stats);
+  } catch (e) {
+    var el2 = document.getElementById('admin-app-tools-overview');
+    if (el2) el2.innerHTML = '<div style="color:var(--danger);padding:8px">App-Tools 加载失败: ' + escHtmlAdmin(e.message) + '</div>';
+  }
 }
 
 // v0.17d：事件 Tab 实时过滤（按 type / actor_name / target_type / target_id 子串匹配）

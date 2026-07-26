@@ -429,9 +429,9 @@ async function loadDashboard() {
   try {
     // v0.46: 加载 PM Dashboard 4 张卡 + 启动 Live 轮询 + Git Status
     await loadPmDashboard();
-    loadAppToolsStats();  // v0.66 PR4: App-Tool 排行（独立加载，失败不影响主面板）
     startLivePolling();
     loadGitStatus();  // Git 状态不需要轮询, 手动刷新即可
+    // v0.66 PR4: App-Tools 统计已迁移到 Admin 视图（平台级），不在项目 Dashboard 加载
 
     const reqs = await Requirements.list({ projectId: App.currentProjectId, limit: 200 });
     const tasks = await Tasks.list({ projectId: App.currentProjectId, limit: 200 });
