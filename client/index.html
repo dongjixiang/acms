@@ -739,10 +739,14 @@ document.addEventListener('DOMContentLoaded', () => {
               };
             });
           }
-        })(w.$c);
+})(w.$c);
         var usersTab = w.$c.querySelector('.tab-btn[data-tab="admin-tab-users"]');
         if (usersTab && typeof loadUsers === 'function') {
           usersTab.addEventListener('click', function() { setTimeout(loadUsers, 100); });
+        }
+        // v0.66 PR4: 浮窗里也要加载 App-Tools 统计（scope 到 w.$c）
+        if (typeof loadAdminAppToolsStats === 'function') {
+          loadAdminAppToolsStats(w.$c);
         }
       });
     }

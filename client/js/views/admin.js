@@ -414,6 +414,8 @@ function setupAdminTabs(root) {
 }
 
 // v0.66 PR4: App-Tools 使用统计（admin 概览 tab）
+//   支持 root scope：主窗口用 document 查找，浮窗（taskbar showAdminWindow）需传入 w.$c
+//   否则 document.getElementById 找到主窗口副本（可能已被覆盖），浮窗里"加载中..."永不更新
 function escHtmlAdmin(s) {
   return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
@@ -479,16 +481,16 @@ function renderAdminAppTools(stats) {
   return html;
 }
 
-async function loadAdminAppToolsStats() {
+async function loadAdminAppToolsStats(root) {
+  var el = root ? root.querySelector('#admin-app-tools-overview') : document.getElementById('admin-app-tools-overview');
+  if (!el) return;
   try {
     var resp = await fetch('/api/ai-tools/app-tool-stats', { headers: { 'X-API-Key': 'dev-key-001' } });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     var stats = await resp.json();
-    var el = document.getElementById('admin-app-tools-overview');
-    if (el) el.innerHTML = renderAdminAppTools(stats);
+    el.innerHTML = renderAdminAppTools(stats);
   } catch (e) {
-    var el2 = document.getElementById('admin-app-tools-overview');
-    if (el2) el2.innerHTML = '<div style="color:var(--danger);padding:8px">App-Tools 加载失败: ' + escHtmlAdmin(e.message) + '</div>';
+    el.innerHTML = '<div style="color:var(--danger);padding:8px">App-Tools 加载失败: ' + escHtmlAdmin(e.message) + '</div>';
   }
 }
 
