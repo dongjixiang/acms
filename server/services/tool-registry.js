@@ -1,5 +1,7 @@
 // ACMS Tool Registry — 工具注册中心（v2.0）
+// v0.66: 接入 app-tools-registry（前端应用通过 WS 暴露的能力）
 const registry = new Map();
+const appToolsRegistry = require('./app-tools-registry');  // v0.66
 
 function registerTool(def) {
   if (!def || !def.name || typeof def.handler !== 'function') {
@@ -166,10 +168,29 @@ function resetToolStats() {
  * v0.14：执行工具 handler（便利 wrapper）
  * v0.61: 新增 ctx 参数透传给 handler
  * v0.62: 自动记录调用统计
+ * v0.66: 找不到 server tool 时，自动路由到 app-tool（前端应用能力）
  */
 async function execute(name, args, ctx = {}) {
   const tool = getTool(name);
   if (!tool) {
+    // v0.66: app-tool fallback（前端应用通过 WS 暴露的能力）
+    const appSchema = appToolsRegistry.getAppToolSchema(name);
+    if (appSchema) {
+      _toolStats.calls[name] = (_toolStats.calls[name] || 0) + 1;
+      _toolStats.lastCalled[name] = Date.now();
+      try {
+        const result = await appToolsRegistry.invokeClientAppTool(name, args || {}, ctx || {});
+        if (result && (result.error || result.ok === false)) {
+          _toolStats.errors[name] = (_toolStats.errors[name] || 0) + 1;
+          _toolStats.lastError[name] = { ts: Date.now(), error: result.error || result.message || 'FAILED' };
+        }
+        return result;
+      } catch (e) {
+        _toolStats.errors[name] = (_toolStats.errors[name] || 0) + 1;
+        _toolStats.lastError[name] = { ts: Date.now(), error: e.message };
+        throw e;
+      }
+    }
     throw new Error(`未知工具: ${name}`);
   }
   if (typeof tool.handler !== 'function') {
