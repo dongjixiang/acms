@@ -234,6 +234,7 @@ app.use('/api/dashboard', require('./routes/dashboard'));  // v0.46 PM Dashboard
 app.use('/api/models', require('./routes/models'));
 app.use('/api/ai', require('./routes/ai-clarify'));
 app.use('/api/ai-tools', require('./routes/ai-tools'));
+app.use('/api/image-tools', require('./routes/image-tools'));  // v0.66 PR1: 文生图/图生图独立 API
 app.use('/api/exports', require('./routes/exports'));
 app.use('/api/workspace', workspaceRouter);
 app.use('/api/skills', require('./routes/skills'));
