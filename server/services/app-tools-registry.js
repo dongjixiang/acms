@@ -89,15 +89,17 @@ async function invokeClientAppTool(name, args, ctx = {}) {
 
   const reqId = generateReqId();
   const timeoutMs = schema.timeoutMs || DEFAULT_TIMEOUT;
+  const startTs = Date.now();
 
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       if (pendingInvokes.delete(reqId)) {
+        recordCall(name, schema.appId, Date.now() - startTs, 'TIMEOUT');
         resolve({ ok: false, error: 'TIMEOUT', message: `Tool ${name} timed out after ${timeoutMs}ms`, timeoutMs });
       }
     }, timeoutMs);
 
-    pendingInvokes.set(reqId, { resolve, timer, toolName: name, appId: schema.appId, ts: Date.now() });
+    pendingInvokes.set(reqId, { resolve, timer, toolName: name, appId: schema.appId, ts: startTs });
 
     // 推送给 ws 客户端
     const sendResult = _wsSender ? _wsSender(ctx.userId, {
@@ -112,12 +114,16 @@ async function invokeClientAppTool(name, args, ctx = {}) {
     if (!sendResult.ok) {
       if (pendingInvokes.delete(reqId)) {
         clearTimeout(timer);
+        recordCall(name, schema.appId, Date.now() - startTs, sendResult.error || 'CLIENT_OFFLINE');
         resolve({
           ok: false,
           error: sendResult.error || 'CLIENT_OFFLINE',
           message: sendResult.message || 'No WS client to receive invoke',
         });
       }
+    } else {
+      // 记录成功发起的调用（latency 在 resolveClientResult 时计算）
+      // 不在此时调用 recordCall，等客户端回传
     }
   });
 }
@@ -128,6 +134,10 @@ function resolveClientResult(reqId, payload) {
   if (!pending) return false;
   pendingInvokes.delete(reqId);
   clearTimeout(pending.timer);
+  const latency = Date.now() - pending.ts;
+  // 错误判定：payload.ok === false 或有 error 字段
+  const isError = payload && (payload.ok === false || payload.error);
+  recordCall(pending.toolName, pending.appId, latency, isError ? (payload.error || 'UNKNOWN_ERROR') : null);
   pending.resolve(payload || { ok: false, error: 'EMPTY_RESULT' });
   return true;
 }
@@ -139,13 +149,85 @@ function setWsSender(fn) {
 }
 
 // ── 统计（PR4 完整化）──
+const _toolStats = {
+  // toolName → { calls, errors, totalLatencyMs, lastCalled, lastError, errorTypes: Map<code, count> }
+  perTool: new Map(),
+  // 全局 pending（活跃调用）
+  pending: 0,
+};
+
+// 记录一次调用结果（成功或失败）
+function recordCall(name, appId, latencyMs, errorCode) {
+  var s = _toolStats.perTool.get(name);
+  if (!s) {
+    s = {
+      appId: appId,
+      calls: 0,
+      errors: 0,
+      totalLatencyMs: 0,
+      lastCalled: null,
+      lastError: null,
+      errorTypes: new Map(),
+    };
+    _toolStats.perTool.set(name, s);
+  }
+  s.calls++;
+  s.totalLatencyMs += latencyMs || 0;
+  s.lastCalled = Date.now();
+  if (errorCode) {
+    s.errors++;
+    s.lastError = { ts: Date.now(), code: errorCode };
+    s.errorTypes.set(errorCode, (s.errorTypes.get(errorCode) || 0) + 1);
+  }
+}
+
 function getStats() {
-  return {
+  var perTool = [];
+  for (var [name, s] of _toolStats.perTool) {
+    perTool.push({
+      name: name,
+      appId: s.appId,
+      calls: s.calls,
+      errors: s.errors,
+      errorRate: s.calls > 0 ? +(s.errors / s.calls).toFixed(4) : 0,
+      avgLatencyMs: s.calls > 0 ? Math.round(s.totalLatencyMs / s.calls) : 0,
+      totalLatencyMs: s.totalLatencyMs,
+      lastCalled: s.lastCalled,
+      lastError: s.lastError,
+      errorTypes: Array.from(s.errorTypes.entries())
+        .map(function(e) { return { code: e[0], count: e[1] }; })
+        .sort(function(a, b) { return b.count - a.count; }),
+    });
+  }
+  perTool.sort(function(a, b) { return b.calls - a.calls; });
+
+  var totals = {
+    totalCalls: perTool.reduce(function(s, t) { return s + t.calls; }, 0),
+    totalErrors: perTool.reduce(function(s, t) { return s + t.errors; }, 0),
+    pendingInvokes: pendingInvokes.size,
     registeredApps: Array.from(clientAppTools.keys()),
     toolCount: listAppToolNames().length,
-    pendingCount: pendingInvokes.size,
-    pendingTools: Array.from(pendingInvokes.values()).map(p => ({ tool: p.toolName, ageMs: Date.now() - p.ts })),
   };
+
+  // 全局高频错误聚合（所有 tool 累加）
+  var globalErrorTypes = new Map();
+  for (var t of perTool) {
+    for (var et of t.errorTypes) {
+      globalErrorTypes.set(et.code, (globalErrorTypes.get(et.code) || 0) + et.count);
+    }
+  }
+  totals.topErrors = Array.from(globalErrorTypes.entries())
+    .map(function(e) { return { code: e[0], count: e[1] }; })
+    .sort(function(a, b) { return b.count - a.count; })
+    .slice(0, 10);
+
+  return { perTool: perTool, totals: totals };
+}
+
+// 重置统计（测试用）
+function resetStats() {
+  _toolStats.perTool.clear();
+  _toolStats.pending = 0;
 }
 
 module.exports = {
@@ -158,7 +240,10 @@ module.exports = {
   resolveClientResult,
   setWsSender,
   getStats,
+  resetStats,
+  recordCall,
   // 测试用
   _pendingInvokes: pendingInvokes,
   _clientAppTools: clientAppTools,
+  _toolStats: _toolStats,
 };

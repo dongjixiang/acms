@@ -336,6 +336,77 @@ function renderPmCardsWithLive(stats) {
   return renderPmCards(stats);
 }
 
+// v0.66 PR4: App-Tool 使用排行卡片
+function renderAppToolsCard(stats) {
+  if (!stats) return '<div class="empty" style="padding:12px">暂无 App-Tool 数据</div>';
+  var totals = stats.totals || {};
+  var perTool = (stats.perTool || []).slice(0, 10);
+  var topErrors = totals.topErrors || [];
+
+  var html = '<div class="pm-card pm-card-app-tools">';
+  html += '<div class="pm-card-header">';
+  html += '<span class="pm-card-icon">🛠</span>';
+  html += '<span class="pm-card-title">App-Tools 使用排行</span>';
+  html += '<span style="margin-left:auto;font-size:12px;color:var(--accent2)">';
+  html += '总调用 ' + (totals.totalCalls || 0) + ' · 错误 ' + (totals.totalErrors || 0);
+  if (totals.pendingInvokes) html += ' · 进行中 ' + totals.pendingInvokes;
+  html += '</span></div>';
+
+  if (perTool.length === 0) {
+    html += '<div style="padding:14px;color:var(--accent2);font-size:13px">还没有 app-tool 被调用过。让小吉或 chat 流试试看：<br><code style="background:var(--bg2);padding:2px 6px;border-radius:4px">在 Documents 里找 README.md</code></div>';
+  } else {
+    html += '<div style="padding:8px 12px;max-height:300px;overflow:auto">';
+    html += '<table style="width:100%;font-size:12px;border-collapse:collapse">';
+    html += '<thead><tr style="text-align:left;color:var(--accent2);border-bottom:1px solid var(--bg3)">';
+    html += '<th style="padding:4px 6px">Tool</th><th style="padding:4px 6px">App</th>';
+    html += '<th style="padding:4px 6px;text-align:right">调用</th>';
+    html += '<th style="padding:4px 6px;text-align:right">错误</th>';
+    html += '<th style="padding:4px 6px;text-align:right">错误率</th>';
+    html += '<th style="padding:4px 6px;text-align:right">平均延迟</th>';
+    html += '</tr></thead><tbody>';
+    for (var i = 0; i < perTool.length; i++) {
+      var t = perTool[i];
+      var errRateColor = t.errorRate > 0.2 ? 'var(--danger)' : (t.errorRate > 0.05 ? 'var(--warn, #e6a23c)' : 'var(--accent2)');
+      html += '<tr style="border-bottom:1px solid var(--bg3)">';
+      html += '<td style="padding:5px 6px"><code style="background:var(--bg2);padding:1px 5px;border-radius:3px;font-size:11px">' + escHtml(t.name) + '</code></td>';
+      html += '<td style="padding:5px 6px;color:var(--accent2)">' + escHtml(t.appId || '') + '</td>';
+      html += '<td style="padding:5px 6px;text-align:right">' + t.calls + '</td>';
+      html += '<td style="padding:5px 6px;text-align:right;color:' + (t.errors > 0 ? 'var(--danger)' : 'var(--accent2)') + '">' + t.errors + '</td>';
+      html += '<td style="padding:5px 6px;text-align:right;color:' + errRateColor + '">' + (t.errorRate * 100).toFixed(1) + '%</td>';
+      html += '<td style="padding:5px 6px;text-align:right">' + t.avgLatencyMs + 'ms</td>';
+      html += '</tr>';
+    }
+    html += '</tbody></table></div>';
+  }
+
+  if (topErrors.length > 0) {
+    html += '<div style="padding:8px 12px;border-top:1px solid var(--bg3);font-size:12px">';
+    html += '<div style="color:var(--accent2);margin-bottom:4px">⚠️ 高频错误：</div>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:6px">';
+    for (var j = 0; j < Math.min(5, topErrors.length); j++) {
+      var e = topErrors[j];
+      html += '<span style="background:var(--bg2);padding:2px 8px;border-radius:4px;color:var(--danger)">' + escHtml(e.code) + ' × ' + e.count + '</span>';
+    }
+    html += '</div></div>';
+  }
+
+  html += '</div>';
+  return html;
+}
+
+async function loadAppToolsStats() {
+  try {
+    var resp = await fetch('/api/ai-tools/app-tool-stats', { headers: { 'X-API-Key': 'dev-key-001' } });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    var stats = await resp.json();
+    var el = document.getElementById('app-tools-card');
+    if (el) el.innerHTML = renderAppToolsCard(stats);
+  } catch (e) {
+    var el2 = document.getElementById('app-tools-card');
+    if (el2) el2.innerHTML = '<div class="pm-card"><div style="color:var(--danger);padding:12px">App-Tools 加载失败: ' + escHtml(e.message) + '</div></div>';
+  }
+}
+
 async function loadPmDashboard() {
   if (!App.currentProjectId) return;
   try {
@@ -358,6 +429,7 @@ async function loadDashboard() {
   try {
     // v0.46: 加载 PM Dashboard 4 张卡 + 启动 Live 轮询 + Git Status
     await loadPmDashboard();
+    loadAppToolsStats();  // v0.66 PR4: App-Tool 排行（独立加载，失败不影响主面板）
     startLivePolling();
     loadGitStatus();  // Git 状态不需要轮询, 手动刷新即可
 

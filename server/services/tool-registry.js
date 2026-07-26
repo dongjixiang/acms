@@ -218,4 +218,10 @@ async function execute(name, args, ctx = {}) {
   throw new Error(`未知工具: ${name}`);
 }
 
-module.exports = { registerTool, getTool, listTools, toProviderFormat, extractToolCalls, makeToolResult, execute, getToolStats, resetToolStats };
+module.exports = {
+  registerTool, getTool, listTools, toProviderFormat, extractToolCalls, makeToolResult, execute,
+  getToolStats, resetToolStats,
+  // v0.66 PR4: app-tool 统计（透传 app-tools-registry.getStats）
+  getAppToolStats: function() { return appToolsRegistry.getStats(); },
+  resetAppToolStats: function() { return appToolsRegistry.resetStats(); },
+};

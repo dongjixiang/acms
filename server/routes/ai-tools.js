@@ -11,6 +11,21 @@ const dispatcher = require('../services/auto-execute-dispatcher');
 const { validateChildCoverage, detectIntegrationGaps, validateParentAggregateCoverage } = require('../services/coverage-validator');
 const decomposer = require('../services/decomposer');
 
+// v0.66 PR4: App-Tool 使用统计（dashboard 用）
+router.get('/app-tool-stats', (req, res) => {
+  try {
+    const stats = require('../services/tool-registry').getAppToolStats();
+    res.json({
+      ok: true,
+      perTool: stats.perTool,
+      totals: stats.totals,
+      ts: Date.now(),
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: 'STATS_FAILED', message: e.message });
+  }
+});
+
 // 生成 MD 需求文档
 router.post('/requirements/:id/generate-doc', async (req, res, next) => {
   try {
