@@ -168,8 +168,8 @@ async function coreGenerate(opts) {
     extra_body: { response_format: 'url' },
   };
   if (referenceImage) {
-    // Agnes API 接受 image 作为 reference（文生图变图生图）
-    body.extra_body.image = [referenceImage];
+    // Agnes API: image 是顶层参数（string[]），不在 extra_body 里
+    body.image = [referenceImage];
   }
 
   // 并行调 N 次（agnes-image-2.0-flash 不支持 n>1）
