@@ -23,7 +23,7 @@
       ACMSWin.setTitle(w, _currentFileName);
     }
 
-    // 渲染 UI
+    // 渲染 UI — AI 面板在右侧（2026-07-27 从底部改到侧面）
     w.$c.innerHTML =
       '<div class="oo-editor oo-editor-img" style="display:flex;flex-direction:column;height:100%">' +
         '<div class="code-menu-bar" style="display:flex;background:var(--bg2,#f0f0f0);border-bottom:1px solid var(--office-divider,#ddd);flex-shrink:0">' +
@@ -58,8 +58,10 @@
           '<div class="code-menu-item" data-action="open-ai-panel" style="position:relative;padding:5px 16px;cursor:pointer;font-size:13px;user-select:none;font-weight:600;color:var(--accent,#0ea89d)">⚡ AI助手</div>' +
           '<div style="flex:1"></div>' +
         '</div>' +
-        '<div id="img-editor-mount" style="flex:1;min-height:0;overflow:auto;background:var(--bg,#1a1a2e)"></div>' +
-        '<div id="img-ai-panel" style="display:none;flex-shrink:0;max-height:360px;overflow:auto;background:var(--bg2,#f5f5f7);border-top:1px solid var(--office-divider,#ddd);padding:8px;font-size:13px"></div>' +
+        '<div class="oo-editor-body" style="display:flex;flex:1;min-height:0">' +
+          '<div id="img-editor-mount" style="flex:1;min-height:0;overflow:auto;background:var(--bg,#1a1a2e)"></div>' +
+          '<div id="img-ai-panel" style="display:none;flex-shrink:0;width:360px;overflow:auto;background:var(--bg2,#f5f5f7);border-left:1px solid var(--office-divider,#ddd);padding:8px;font-size:13px"></div>' +
+        '</div>' +
       '</div>';
 
     var mountEl = w.$c.querySelector('#img-editor-mount');
@@ -127,7 +129,7 @@
             'submenu-label.color': '#ccc',
           },
           menu: ['crop', 'flip', 'rotate', 'draw', 'shape', 'icon', 'text', 'mask', 'filter'],
-          initMenu: 'draw',
+          initMenu: '',        // 默认不打开任何子菜单
           uiSize: { width: '100%', height: '100%' },
         },
         cssMaxWidth: 9999,
@@ -137,7 +139,7 @@
         minZoom: 0.1,
       });
 
-      // JS 移除内置标题栏 (比 CSS 可靠)
+      // JS 移除内置标题栏 + 溢出处理 + zoomOut 按钮劫持
       setTimeout(function () {
         var hdr = mountEl.querySelector('.tui-image-editor-header');
         if (hdr) hdr.style.display = 'none';
@@ -145,6 +147,77 @@
         if (logo) logo.style.display = 'none';
         var btns = mountEl.querySelector('.tui-image-editor-header-buttons');
         if (btns) btns.style.display = 'none';
+        // 确保 tui 内部容器 overflow 可滚动，放大到超出画布时能拖动查看
+        var mainArea = mountEl.querySelector('.tui-image-editor-main');
+        if (mainArea) mainArea.style.overflow = 'auto';
+        var wrapArea = mountEl.querySelector('.tui-image-editor-wrap');
+        if (wrapArea) wrapArea.style.overflow = 'auto';
+        // 劫持 tui zoomIn/zoomOut 按钮 — 走 doZoom 绕过 _centerPoints 撤销栈
+        var zoomInBtn = mountEl.querySelector('.tie-btn-zoomIn');
+        if (zoomInBtn) {
+          zoomInBtn.style.display = '';
+          zoomInBtn.addEventListener('click', function(e) {
+            e.stopImmediatePropagation();
+            e.preventDefault();
+            _aiZoomLevel = Math.min((_aiZoomLevel || 1) * 1.2, 5);
+            doZoom(_aiZoomLevel);
+          });
+        }
+        var zoomOutBtn = mountEl.querySelector('.tie-btn-zoomOut');
+        if (zoomOutBtn) {
+          zoomOutBtn.style.display = '';
+          zoomOutBtn.addEventListener('click', function(e) {
+            e.stopImmediatePropagation();
+            e.preventDefault();
+            _aiZoomLevel = Math.max((_aiZoomLevel || 1) * 0.8, 0.1);
+            doZoom(_aiZoomLevel);
+          });
+        }
+        // 劫持 hand 按钮 — 自定义拖拽平移（绕过 tui zoomLevel<=1 无法移动的限制）
+        var handBtn = mountEl.querySelector('.tie-btn-hand');
+        var _panStart = null;
+        if (handBtn) {
+          handBtn.style.display = '';
+          handBtn.addEventListener('click', function(e) {
+            e.stopImmediatePropagation();
+            e.preventDefault();
+            _handActive = !_handActive;
+            handBtn.classList.toggle('tui-image-editor-button', _handActive);
+            try {
+              var c = imageEditor._graphics && imageEditor._graphics.getCanvas();
+              if (c) {
+                c.selection = !_handActive;
+                c.defaultCursor = _handActive ? 'grab' : 'default';
+                if (_handActive) {
+                  c.on('mouse:down', function(opt) {
+                    if (!_handActive) return;
+                    _panStart = { x: opt.e.clientX, y: opt.e.clientY };
+                    c.defaultCursor = 'grabbing';
+                    var onMove = function(o) {
+                      if (!_panStart) return;
+                      var dx = o.e.clientX - _panStart.x;
+                      var dy = o.e.clientY - _panStart.y;
+                      c.relativePan({ x: dx, y: dy });
+                      _panStart = { x: o.e.clientX, y: o.e.clientY };
+                    };
+                    var onUp = function() {
+                      c.off('mouse:move', onMove);
+                      c.off('mouse:up', onUp);
+                      _panStart = null;
+                      if (_handActive) c.defaultCursor = 'grab';
+                    };
+                    c.on('mouse:move', onMove);
+                    c.on('mouse:up', onUp);
+                  });
+                } else {
+                  c.off('mouse:down');
+                }
+              }
+            } catch(ex) { console.warn('[HAND]', ex); }
+          });
+        }
+        // 安装默认框选放大（hand 关闭时拖拽=选择区域放大）
+        setTimeout(function() { setupZoomDrag(); }, 500);
       }, 200);
 
       // 激活内置按钮事件 (initCanvas 里只在 loadImage.path 有值时才调用 activeMenuEvent)
@@ -177,7 +250,7 @@
             var img = imageEditor.getCanvasImage();
             if (img) {
               var zl = Math.min(rect.width / img.width, rect.height / img.height);
-              if (zl > 0) imageEditor.zoom({ x: rect.width / 2, y: rect.height / 2, zoomLevel: zl });
+              if (zl > 0) { doZoom(zl); }
             }
           } catch(e) {}
         }, 100);
@@ -255,11 +328,9 @@
                       var iw = result.newWidth;
                       var ih = result.newHeight;
                       if (cw > 0 && ch > 0 && iw > 0 && ih > 0) {
-                        var zoomLevel = Math.min(cw / iw, ch / ih);
-                        var cx = cw / 2;
-                        var cy = ch / 2;
-                        imageEditor.zoom({ x: cx, y: cy, zoomLevel: zoomLevel });
-                      }
+                          var zoomLevel = Math.min(cw / iw, ch / ih);
+                          doZoom(zoomLevel);
+                       }
                     } catch(e) {}
                   }).catch(function (err) {
                     console.log('[ImageEditor] loadImageFromFile FAILED:', err, 'file=', file.name);
@@ -288,7 +359,7 @@
                         try {
                           var mRect = mountEl.getBoundingClientRect();
                           var zl = Math.min(mRect.width / result.newWidth, mRect.height / result.newHeight);
-                          if (zl > 0) imageEditor.zoom({ x: mRect.width/2, y: mRect.height/2, zoomLevel: zl });
+                          if (zl > 0) doZoom(zl);
                         } catch(e) {}
                       })
                       .catch(function () { /* ignore */ });
@@ -320,11 +391,31 @@
           case 'filter-reset': imageEditor.applyFilter('removeAll'); break;
           // AI 助手 — 打开统一面板
           case 'open-ai-panel': toggleAIPanel(); break;
-          // View/Zoom
-          case 'zoom-in': if (imageEditor) imageEditor.zoom('in'); break;
-          case 'zoom-out': if (imageEditor) imageEditor.zoom('out'); break;
-          case 'zoom-fit': if (imageEditor) imageEditor.zoom('fit'); break;
-          case 'zoom-100': if (imageEditor) imageEditor.zoom('100%'); break;
+          // View/Zoom — 通过 doZoom 统一入口
+          case 'zoom-in':
+            if (imageEditor) {
+              _aiZoomLevel = Math.min((_aiZoomLevel || 1) * 1.2, 5);
+              doZoom(_aiZoomLevel);
+            }
+            break;
+          case 'zoom-out':
+            if (imageEditor) {
+              _aiZoomLevel = Math.max((_aiZoomLevel || 1) * 0.8, 0.1);
+              doZoom(_aiZoomLevel);
+            }
+            break;
+          case 'zoom-fit':
+            if (imageEditor) {
+              var img = imageEditor.getCanvasImage();
+              if (img && img.width > 0 && img.height > 0) {
+                var rect = mountEl.getBoundingClientRect();
+                doZoom(Math.min(rect.width / img.width, rect.height / img.height));
+              }
+            }
+            break;
+          case 'zoom-100':
+            if (imageEditor) doZoom(1);
+            break;
         }
       };
     });
@@ -334,13 +425,57 @@
     var _aiBusy = false;
     var _aiHistory = [];     // [{dataUrl, ts, label}] 限 10
     var _aiResult = null;
-    var _aiMode = 'describe'; // describe | enhance | generate | edit | upscale
+    var _aiZoomLevel = 1;     // 手动跟踪 zoom 级别
+    var _handActive = false;  // hand 模式激活标志（框选放大和 hand 互斥）
+    var _aiMode = 'describe'; // describe | enhance | generate | edit
+
+    // zoom 统一入口：设 fabric zoom + 同步 ZOOM 组件级别（hand 模式检查用）
+    function doZoom(level) {
+      _aiZoomLevel = level;
+      try {
+        var _zc = imageEditor._graphics && imageEditor._graphics.getCanvas();
+        if (_zc) {
+          var _r = mountEl.getBoundingClientRect();
+          _zc.zoomToPoint({ x: _r.width / 2, y: _r.height / 2 }, level);
+          _zc.requestRenderAll();
+        }
+        var _zcomp = imageEditor._graphics && imageEditor._graphics.getComponent('zoom');
+        if (_zcomp) _zcomp.zoomLevel = level;
+      } catch(e) { console.warn('[ZOOM] doZoom:', e); }
+    }
+
+    // 默认框选放大：在画布拖拽=选择区域自动放大（hand 模式激活时不触发）
+    function setupZoomDrag() {
+      try {
+        var c = imageEditor._graphics && imageEditor._graphics.getCanvas();
+        if (!c) return;
+        var _sd = null;
+        c.on('mouse:down', function(opt) {
+          if (opt.target || _handActive) return; // 点到对象或 hand 模式不触发
+          _sd = c.getPointer(opt.e);
+        });
+        c.on('mouse:up', function(opt) {
+          if (!_sd || _handActive) return;
+          var p = c.getPointer(opt.e);
+          var sx = _sd.x, sy = _sd.y;
+          var w = Math.abs(p.x - sx), h = Math.abs(p.y - sy);
+          _sd = null;
+          if (w < 10 || h < 10) return;
+          var mr = mountEl.getBoundingClientRect();
+          var cx = (sx + p.x) / 2, cy = (sy + p.y) / 2;
+          _aiZoomLevel = Math.max(Math.min(Math.min(mr.width / w, mr.height / h), 5), 0.1);
+          c.zoomToPoint({ x: cx, y: cy }, _aiZoomLevel);
+          c.requestRenderAll();
+          var zc = imageEditor._graphics.getComponent('zoom');
+          if (zc) zc.zoomLevel = _aiZoomLevel;
+        });
+      } catch(e) { console.warn('[ZOOM-DRAG] setup:', e); }
+    }
     var AI_MODES = [
       { id: 'describe', icon: '📖', label: '描述' },
       { id: 'enhance',  icon: '✨', label: '增强' },
       { id: 'generate', icon: '🎨', label: '文生图' },
       { id: 'edit',     icon: '🖼️', label: '图生图' },
-      { id: 'upscale',  icon: '🔍', label: '放大' },
     ];
 
     function toggleAIPanel() {
@@ -407,7 +542,6 @@
         case 'enhance': renderEnhance(contentEl, hasImage); break;
         case 'generate': renderGenerateEdit(contentEl, hasImage, false); break;
         case 'edit': renderGenerateEdit(contentEl, hasImage, true); break;
-        case 'upscale': renderUpscale(contentEl); break;
       }
     }
 
@@ -467,10 +601,6 @@
       document.getElementById('ai-undo-btn').onclick = aiUndo;
       updateAIUI();
       setTimeout(function() { var p = document.getElementById('ai-prompt'); if (p) p.focus(); }, 50);
-    }
-
-    function renderUpscale(contentEl) {
-      contentEl.innerHTML = '<div style="color:var(--text2,#888);padding:10px 0">🔍 AI 放大功能即将支持</div>';
     }
 
     function updateAIUI() {
@@ -575,7 +705,7 @@
             }
             if (iw > 0 && ih > 0 && rect.width > 0 && rect.height > 0) {
               var zl = Math.min(rect.width / iw, rect.height / ih);
-              if (zl > 0) imageEditor.zoom({ x: rect.width / 2, y: rect.height / 2, zoomLevel: zl });
+              if (zl > 0) { doZoom(zl); }
             }
           } catch(e) { console.warn('[AI] 缩放失败:', e); }
         }, 100);
@@ -611,7 +741,7 @@
             }
             if (iw > 0 && ih > 0 && rect.width > 0 && rect.height > 0) {
               var zl = Math.min(rect.width / iw, rect.height / ih);
-              if (zl > 0) imageEditor.zoom({ x: rect.width / 2, y: rect.height / 2, zoomLevel: zl });
+              if (zl > 0) { doZoom(zl); }
             }
           } catch(e) { console.warn('[AI] 恢复快照缩放失败:', e); }
         }, 100);

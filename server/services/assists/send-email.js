@@ -8,50 +8,11 @@
 // SMTP 配置从 server/config.js 的 smtp 字段读（环境变量或 config.json.smtp）；
 // 未配置时返回友好错误（前端显示「未配置 SMTP」），不崩溃。
 
-const nodemailer = require('nodemailer');
 const reqStore = require('../../stores/requirement-store');
 const config = require('../../config');
-const chatUploadSvc = require('../chat-upload'); // 复用文件上传:getFilePath(id) → { filePath, meta }
+const emailSender = require('../email-sender');
 
 const name = '邮件发送';
-
-// 简单邮箱校验（够用即可，复杂的留后端 SMTP 拒信提示）
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-/**
- * 把 to 字段解析成数组（支持分号、逗号、中文逗号分隔）
- *   "a@x.com; b@x.com, c@x.com、d@x.com" → ["a@x.com", "b@x.com", "c@x.com", "d@x.com"]
- */
-function parseRecipients(to) {
-  if (Array.isArray(to)) return to.map(s => String(s).trim()).filter(Boolean);
-  return String(to || '')
-    .split(/[;,,、\s]+/)
-    .map(s => s.trim())
-    .filter(Boolean);
-}
-
-/**
- * 把附件 ID 列表解析成 nodemailer attachments
- *   复用 chat-upload 服务的 getFilePath(id)，文件已在磁盘上不复制
- * @returns {Array<{filename, path, contentType}>} 解析失败的会抛出
- */
-function resolveAttachments(fileIds) {
-  if (!fileIds) return [];
-  const ids = Array.isArray(fileIds) ? fileIds : [fileIds];
-  const atts = [];
-  for (const id of ids) {
-    if (!id) continue;
-    const found = chatUploadSvc.getFilePath(id);
-    if (!found) throw new Error(`附件不存在或已过期: ${id}`);
-    const meta = found.meta || {};
-    atts.push({
-      filename: meta.name || '附件',
-      path: found.filePath,
-      contentType: meta.mime || undefined,
-    });
-  }
-  return atts;
-}
 
 /**
  * 跑邮件发送任务
@@ -79,7 +40,7 @@ async function runAssistJob(requirementId, opts = {}) {
     }
 
     // ── 1. 解析 + 校验入参 ──
-    const recipients = parseRecipients(opts.to);
+    const recipients = emailSender.parseRecipients(opts.to);
     if (recipients.length === 0) {
       reqStore.update(requirementId, {
         assist_send_email: JSON.stringify({
@@ -90,7 +51,7 @@ async function runAssistJob(requirementId, opts = {}) {
       });
       return;
     }
-    const invalid = recipients.filter(r => !EMAIL_RE.test(r));
+    const invalid = recipients.filter(r => !emailSender.isValidAddress(r));
     if (invalid.length > 0) {
       reqStore.update(requirementId, {
         assist_send_email: JSON.stringify({
@@ -127,7 +88,7 @@ async function runAssistJob(requirementId, opts = {}) {
     // ── 2. 解析附件（可选，错误直接 failed 不发空）──
     let attachments = [];
     try {
-      attachments = resolveAttachments(opts.file_ids);
+      attachments = emailSender.resolveAttachments(opts.file_ids);
     } catch (e) {
       reqStore.update(requirementId, {
         assist_send_email: JSON.stringify({
@@ -153,24 +114,17 @@ async function runAssistJob(requirementId, opts = {}) {
     });
 
     // ── 4. 发信 ──
-    const transporter = nodemailer.createTransport({
-      host: smtp.host,
-      port: smtp.port,
-      secure: smtp.secure,
-      auth: smtp.user ? { user: smtp.user, pass: smtp.pass } : undefined,
-    });
-
-    const fromAddr = smtp.fromName
-      ? `"${smtp.fromName}" <${smtp.from}>`
-      : smtp.from;
-
-    const info = await transporter.sendMail({
-      from: fromAddr,
-      to: recipients.join(', '),
+    const sendResult = await emailSender.sendEmail({
+      to: recipients,
+      cc: opts.cc,
+      bcc: opts.bcc,
+      replyTo: opts.replyTo,
       subject,
-      text: body,
-      attachments,
-    });
+      body,
+      isHtml: opts.isHtml === true,
+      file_ids: opts.file_ids,
+    }, { attachments });
+    const info = sendResult.info || {};
 
     // ── 5. 写 done ──
     reqStore.update(requirementId, {

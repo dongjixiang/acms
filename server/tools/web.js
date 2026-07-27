@@ -67,6 +67,8 @@ registerTool({
     + '要"搜索/查一下/调研"请用 **web_search** 或 **web_research**（用 query 参数）。'
     + '要"查实时信息/查时间"请用 **get_current_time**。'
     + '\n\n用户消息含完整 URL 链接（如 https://example.com/article.html）时使用。'
+    + '\n\n【⚠️ 严禁】用 fetch_url 验证收件人邮箱域名 — send_email 工具独立工作，不需要你预先验证收件人域名。'
+    + '如果你不确定某个 URL 是否真实存在，**直接调对应的工具**（如 send_email）即可，让服务端处理失败。'
     + '\n\n返回：标题 + 正文摘要（默认 5000 字以内，max_length 可调）。'
     + '已做 SSRF 防护（拒绝内网 URL），超时 30s。',
   parameters: {

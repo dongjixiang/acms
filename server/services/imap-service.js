@@ -4,6 +4,103 @@
 const Imap = require('imap');
 const { EventEmitter } = require('events');
 
+// ── RFC 2047 encoded-word 解码（修复 Imap.parseHeader 把 base64 解码字节当 latin1 的 bug）──
+const iconv = require('iconv-lite');
+
+function decodeMimeWord(text) {
+  if (!text) return '';
+  // 匹配 =?charset?encoding?text?= （B 或 Q），允许 \\r\\n + WSP 折叠
+  const re = /=\\?([^?]+)\\?([BbQq])\\?([^?]*?)\\?=/g;
+  return String(text).replace(re, function(_m, charset, enc, data) {
+    try {
+      const encUpper = enc.toUpperCase();
+      let buf;
+      if (encUpper === 'B') {
+        buf = Buffer.from(data, 'base64');
+      } else {
+        // Q encoding: '_' = ' ', =XX = hex byte
+        const q = data.replace(/_/g, ' ').replace(/=([0-9A-Fa-f]{2})/g, (_x, h) => String.fromCharCode(parseInt(h, 16)));
+        buf = Buffer.from(q, 'binary');
+      }
+      const cs = String(charset).toLowerCase().replace(/^["']|["']$/g, '');
+      if (cs === 'utf-8' || cs === 'utf8') return buf.toString('utf8');
+      if (cs === 'gb2312' || cs === 'gbk' || cs === 'gb18030') return iconv.decode(buf, 'gbk');
+      if (cs === 'big5') return iconv.decode(buf, 'big5');
+      if (cs === 'iso-8859-1' || cs === 'latin1') return buf.toString('latin1');
+      // 未知 charset 兜底：先尝试 utf8 失败再 latin1
+      try { return buf.toString('utf8'); } catch (_) { return buf.toString('latin1'); }
+    } catch (e) { return _m; }
+  });
+}
+
+// 合并多行 encoded-word + 折叠 CRLF（RFC 5322 §2.2.3）
+function decodeHeaderValue(s) {
+  if (!s) return '';
+  return decodeMimeWord(String(s).replace(/\\r\\n[ \\t]+/g, ''));
+}
+
+// 按 Content-Transfer-encoding 解码 raw body bytes
+function decodeBodyBuffer(buf, encoding) {
+  if (!buf) return '';
+  const enc = String(encoding || '').toLowerCase();
+  try {
+    if (enc === 'base64') return Buffer.from(buf.toString('latin1').replace(/\\s+/g, ''), 'base64');
+    if (enc === 'quoted-printable') return Buffer.from(buf.toString('binary')
+      .replace(/=([0-9A-Fa-f]{2})/g, (_x, h) => String.fromCharCode(parseInt(h, 16))), 'binary');
+    // 7bit / 8bit / binary：原样
+    return buf;
+  } catch (e) { return buf; }
+}
+
+
+// 从 header 字符串提取单个字段值（处理 RFC 5322 多行折叠 + 重复行）
+function extractHeaderField(headerStr, fieldName) {
+  if (!headerStr) return '';
+  const re = new RegExp('^' + fieldName + ':\\s*(.+)$', 'im');
+  const m = headerStr.match(re);
+  if (!m) return '';
+  let value = m[1];
+  // 合并续行（RFC 5322 §2.2.3）
+  const continuation = headerStr.slice(headerStr.indexOf(m[0]) + m[0].length);
+  const moreRe = new RegExp('^[ \\t]+(.+)$', 'gm');
+  let cm;
+  const subs = [];
+  while ((cm = moreRe.exec(continuation)) !== null) {
+    subs.push(cm[1]);
+    if (!cm[1].match(/^[ \\t]/)) break;
+  }
+  return decodeMimeWord((value + (subs.length ? ' ' + subs.join(' ') : '')).trim());
+}
+
+// body 解码后按 charset 转字符串
+function charsetToString(buf, charset) {
+  if (!buf) return '';
+  const cs = String(charset || '').toLowerCase().replace(/^["']|["']$/g, '');
+  if (cs === 'utf-8' || cs === 'utf8') return buf.toString('utf8');
+  if (cs === 'gb2312' || cs === 'gbk' || cs === 'gb18030') { try { return iconv.decode(buf, 'gbk'); } catch (_) {} }
+  if (cs === 'big5') { try { return iconv.decode(buf, 'big5'); } catch (_) {} }
+  if (cs === 'iso-8859-1' || cs === 'latin1') return buf.toString('latin1');
+  // 默认 utf8
+  return buf.toString('utf8');
+}
+
+
+// 在 struct 中找 partID 对应的 part（含 encoding/charset 等）
+function findPartInStruct(parts, partID) {
+  if (!Array.isArray(parts)) return null;
+  for (const p of parts) {
+    if (!p) continue;
+    if (Array.isArray(p)) {
+      const f = findPartInStruct(p, partID);
+      if (f) return f;
+      continue;
+    }
+    if (p.partID === partID) return p;
+  }
+  return null;
+}
+
+
 function createImapService(config) {
   config = config || {};
   const host = config.host || 'imap.263.net';
@@ -119,11 +216,11 @@ function createImapService(config) {
             let body = '';
             stream.on('data', chunk => body += chunk.toString('utf8'));
             stream.on('end', () => {
-              const parsed = Imap.parseHeader(body);
-              email.subject = (parsed.subject && parsed.subject[0]) || '';
-              email.from = (parsed.from && parsed.from[0]) || '';
-              email.date = (parsed.date && parsed.date[0]) || '';
-              email.messageId = (parsed['message-id'] && parsed['message-id'][0]) || '';
+              const headerStr = decodeHeaderValue(body);
+              email.subject = extractHeaderField(headerStr, 'subject') || '';
+              email.from = extractHeaderField(headerStr, 'from') || '';
+              email.date = extractHeaderField(headerStr, 'date') || '';
+              email.messageId = extractHeaderField(headerStr, 'message-id') || '';
             });
           });
           msg.on('attributes', (attrs) => {
@@ -200,13 +297,13 @@ function createImapService(config) {
             let body = '';
             stream.on('data', chunk => body += chunk.toString('utf8'));
             stream.on('end', () => {
-              const parsed = Imap.parseHeader(body);
-              email.subject = (parsed.subject && parsed.subject[0]) || '';
-              email.from = (parsed.from && parsed.from[0]) || '';
-              email.to = (parsed.to && parsed.to[0]) || '';
-              email.cc = (parsed.cc && parsed.cc[0]) || '';
-              email.date = (parsed.date && parsed.date[0]) || '';
-              email.messageId = (parsed['message-id'] && parsed['message-id'][0]) || '';
+              const headerStr = decodeHeaderValue(body);
+              email.subject = extractHeaderField(headerStr, 'subject') || '';
+              email.from = extractHeaderField(headerStr, 'from') || '';
+              email.to = extractHeaderField(headerStr, 'to') || '';
+              email.cc = extractHeaderField(headerStr, 'cc') || '';
+              email.date = extractHeaderField(headerStr, 'date') || '';
+              email.messageId = extractHeaderField(headerStr, 'message-id') || '';
               headerDone = true;
               checkResolve();
             });
@@ -296,9 +393,16 @@ function createImapService(config) {
               fetch2 = _imap.fetch([uid], { bodies: bodyParts });
               fetch2.on('message', (msg2) => {
                 msg2.on('body', (stream2, info2) => {
-                  let body2 = '';
-                  stream2.on('data', chunk => body2 += chunk.toString('utf8'));
+                  const chunks = [];
+                  stream2.on('data', chunk => chunks.push(chunk));
                   stream2.on('end', () => {
+                    const rawBuf = Buffer.concat(chunks);
+                    // 按 part 的 encoding 解码（struct 中已包含）
+                    const partInfo = findPartInStruct(attrs.struct, info2.which);
+                    const encoding = partInfo && partInfo.encoding;
+                    const charset = partInfo && partInfo.params && partInfo.params.charset;
+                    const decoded = decodeBodyBuffer(rawBuf, encoding);
+                    const body2 = charsetToString(decoded, charset);
                     if (htmlPartId && info2.which === htmlPartId) {
                       email.html = body2;
                     } else {
@@ -374,10 +478,10 @@ function createImapService(config) {
           let body = '';
           stream.on('data', chunk => body += chunk.toString('utf8'));
           stream.on('end', () => {
-            const parsed = Imap.parseHeader(body);
-            email.subject = (parsed.subject && parsed.subject[0]) || '';
-            email.from = (parsed.from && parsed.from[0]) || '';
-            email.date = (parsed.date && parsed.date[0]) || '';
+            const headerStr = decodeHeaderValue(body);
+            email.subject = extractHeaderField(headerStr, 'subject') || '';
+            email.from = extractHeaderField(headerStr, 'from') || '';
+            email.date = extractHeaderField(headerStr, 'date') || '';
           });
         });
         msg.on('attributes', (attrs) => { email.uid = attrs.uid; });

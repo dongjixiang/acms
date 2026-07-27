@@ -1,310 +1,1318 @@
-// ACMS 邮件收件箱 + 发送（v0.73）
-// 通过 IMAP 读取收件箱，在 ACMS 窗口内展示，支持写信发送
-(function(root) {
-  'use strict';
+'use strict';
 
-  var AK = '';
-  try { AK = (window.ACMSConfig && window.ACMSConfig.apiKey) || 'dev-key-001'; } catch(e) {}
-  function auth() { return { 'X-API-Key': AK }; }
+// ACMS · 邮件应用 v0.74
+// 三栏（文件夹 / 邮件列表 / 阅读/写信）布局，所有事件、DOM 状态、按钮
+// 都绑定到 ACMSWin 提供的 root 容器；不依赖全局 EM_* 接口。HTML 邮件内容
+// 通过 sanitizeEmailHtml 过滤后再 innerHTML。SMTP 发送使用 Content-Type:
+// application/json，附件走 /api/chat/upload。
 
-  // ── 渲染 ──
-  function render(w) {
-    if (w.dead) return;
-    w.$c.innerHTML =
-      '<div style="display:flex;flex-direction:column;height:100%;font-size:13px">'
-      + '<div style="display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid var(--border,#ddd);flex-shrink:0;background:var(--bg2,#f5f5f7)">'
-        + '<span style="font-size:16px">📬</span>'
-        + '<b>收件箱</b>'
-        + '<input id="em-search" type="text" placeholder="搜索邮件…" style="flex:1;min-width:0;padding:4px 8px;border:1px solid var(--border,#ddd);border-radius:4px;font-size:12px;outline:none" onkeydown="if(event.key===\'Enter\')window.EM_search(this.value)">'
-        + '<button class="em-btn" onclick="window.EM_refresh()" title="刷新" style="padding:4px 10px;border:1px solid var(--border,#ddd);border-radius:4px;cursor:pointer;background:var(--bg,#fff)">↻</button>'
-        + '<button class="em-btn" onclick="window.EM_compose()" title="写信" style="padding:4px 10px;border:1px solid var(--accent,#0ea89d);border-radius:4px;cursor:pointer;background:var(--accent,#0ea89d);color:#fff;font-size:12px">✉ 写信</button>'
-      + '</div>'
-      + '<div id="em-list" style="flex:1;overflow-y:auto;background:var(--bg,#fff)"></div>'
-      + '<div id="em-detail" style="display:none;flex:1;overflow-y:auto;background:var(--bg,#fff);padding:16px"></div>'
-      + '<div id="em-status" style="padding:3px 10px;font-size:10px;color:var(--text2,#888);border-top:1px solid var(--border,#ddd);flex-shrink:0">就绪</div>'
-      + '</div>';
-    refreshList();
+(function (root) {
+  var API_KEY = (root.ACMSConfig && root.ACMSConfig.apiKey) || 'dev-key-001';
+  var DRAFT_KEY = 'acms.email-draft.v1';
+  var MAX_BODY_LENGTH = 5000;
+  var HTML_LIKE_TAGS = {
+    'SCRIPT': true, 'STYLE': true, 'IFRAME': true, 'OBJECT': true,
+    'EMBED': true, 'LINK': true, 'META': true, 'FORM': true, 'INPUT': true,
+    'BUTTON': true, 'TEXTAREA': true, 'SELECT': true, 'BASE': true,
+  };
+  var ALLOWED_ATTRS = {
+    '*': ['style', 'title', 'lang'],
+    'A': ['href', 'name', 'target', 'rel'],
+    'IMG': ['src', 'alt', 'width', 'height'],
+    'TABLE': ['align', 'border', 'cellpadding', 'cellspacing', 'width'],
+    'TH': ['colspan', 'rowspan', 'align', 'valign', 'width'],
+    'TD': ['colspan', 'rowspan', 'align', 'valign', 'width'],
+  };
+
+  function escHtml(value) {
+    if (value === null || value === undefined) return '';
+    return String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
-  function setStatus(msg) {
-    var el = document.getElementById('em-status');
-    if (el) el.textContent = msg;
+  function escAttr(value) {
+    return escHtml(value);
   }
 
-  // ── 刷新邮件列表 ──
-  function refreshList() {
-    setStatus('加载中…');
-    var list = document.getElementById('em-list');
-    var detail = document.getElementById('em-detail');
-    if (detail) detail.style.display = 'none';
-    if (list) list.style.display = 'block';
-    fetch('/api/emails?limit=30', { headers: auth() })
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        if (!list) return;
-        if (data.error) {
-          list.innerHTML = '<div style="padding:30px;text-align:center;color:#a00">❌ ' + escHtml(data.error || data.message || '未知错误') + '</div>';
-          setStatus('加载失败');
-          // 如果是连接错误，显示配置提示
-          if (data.error === 'IMAP_CONNECT_FAILED') {
-            list.innerHTML += '<div style="padding:10px 30px;text-align:center;font-size:12px;color:#666">请确认 config.json 中 smtp 配置了正确的邮箱和密码</div>';
-          }
-          return;
-        }
-        if (!data.emails || data.emails.length === 0) {
-          list.innerHTML = '<div style="padding:30px;text-align:center;color:var(--text2,#888)">📭 收件箱为空</div>';
-          setStatus('0 封邮件');
-          return;
-        }
-        var html = data.emails.map(function(e) {
-          var dateStr = '';
-          try {
-            var d = new Date(e.date);
-            dateStr = isNaN(d.getTime()) ? e.date : d.toLocaleDateString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
-          } catch(e) { dateStr = e.date || ''; }
-          var fromName = e.from ? e.from.replace(/<[^>]+>/g, '').trim() || e.from : '(未知)';
-          return '<div class="em-item" data-uid="' + e.uid + '" onclick="window.EM_open(' + e.uid + ')" style="padding:8px 12px;border-bottom:1px solid var(--border,#eee);cursor:pointer;display:flex;gap:8px;align-items:flex-start">'
-            + '<div style="flex-shrink:0;width:28px;height:28px;border-radius:50%;background:var(--accent,#0ea89d);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:bold">' + escHtml((fromName.charAt(0) || '?').toUpperCase()) + '</div>'
-            + '<div style="flex:1;min-width:0">'
-              + '<div style="display:flex;justify-content:space-between;align-items:center">'
-                + '<b style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px">' + escHtml(fromName) + '</b>'
-                + '<span style="font-size:10px;color:var(--text3,#aaa);flex-shrink:0">' + escHtml(dateStr) + '</span>'
-              + '</div>'
-              + '<div style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text2,#666);margin-top:2px">' + escHtml(e.subject || '(无主题)') + '</div>'
-            + '</div>'
-            + (e.hasAttachments ? '<span style="font-size:10px;color:var(--text3,#aaa);flex-shrink:0">📎</span>' : '')
-            + '</div>';
-        }).join('');
-        list.innerHTML = html;
-        setStatus(data.total + ' 封邮件，显示 ' + data.emails.length + ' 封');
-      })
-      .catch(function(e) {
-        if (list) list.innerHTML = '<div style="padding:30px;text-align:center;color:#a00">❌ 网络错误</div>';
-        setStatus('加载失败');
-      });
-  }
-
-  // ── 打开邮件 ──
-  function openEmail(uid) {
-    setStatus('加载邮件…');
-    var list = document.getElementById('em-list');
-    var detail = document.getElementById('em-detail');
-    if (list) list.style.display = 'none';
-    if (detail) {
-      detail.style.display = 'block';
-      detail.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text2,#888)">⏳ 加载中…</div>';
+  function buildUrl(path, query) {
+    if (!query) return path;
+    var pairs = [];
+    for (var key in query) {
+      if (!Object.prototype.hasOwnProperty.call(query, key)) continue;
+      var v = query[key];
+      if (v === undefined || v === null) continue;
+      pairs.push(encodeURIComponent(key) + '=' + encodeURIComponent(v));
     }
-    fetch('/api/emails/' + uid, { headers: auth() })
-      .then(function(r) { return r.json(); })
-      .then(function(email) {
-        if (!detail) return;
-        if (email.error) {
-          detail.innerHTML = '<div style="padding:20px;text-align:center;color:#a00">❌ ' + escHtml(email.error) + '</div>';
-          setStatus('加载失败');
-          return;
-        }
-        var dateStr = '';
-        try { var d = new Date(email.date); dateStr = isNaN(d.getTime()) ? email.date : d.toLocaleString('zh-CN'); } catch(e) { dateStr = email.date || ''; }
-        var html = '<div style="margin-bottom:16px">'
-          + '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">'
-            + '<h2 style="margin:0;font-size:15px;line-height:1.4;word-break:break-word">' + escHtml(email.subject || '(无主题)') + '</h2>'
-            + '<button onclick="window.EM_back()" style="padding:4px 10px;border:1px solid var(--border,#ddd);border-radius:4px;cursor:pointer;background:var(--bg,#fff);font-size:12px;flex-shrink:0">← 返回</button>'
-          + '</div>'
-          + '<table style="font-size:12px;color:var(--text2,#666);width:100%">'
-            + '<tr><td style="padding:2px 8px 2px 0;white-space:nowrap;color:var(--text3,#999)">发件人</td><td style="word-break:break-all">' + escHtml(email.from || '') + '</td></tr>'
-            + '<tr><td style="padding:2px 8px 2px 0;white-space:nowrap;color:var(--text3,#999)">收件人</td><td style="word-break:break-all">' + escHtml(email.to || '') + '</td></tr>'
-            + (email.cc ? '<tr><td style="padding:2px 8px 2px 0;white-space:nowrap;color:var(--text3,#999)">抄送</td><td>' + escHtml(email.cc) + '</td></tr>' : '')
-            + '<tr><td style="padding:2px 8px 2px 0;white-space:nowrap;color:var(--text3,#999)">时间</td><td>' + escHtml(dateStr) + '</td></tr>'
-          + '</table>'
-        + '</div>'
-        + '<div style="border-top:1px solid var(--border,#eee);padding-top:12px;font-size:13px;line-height:1.6;word-break:break-word;white-space:pre-wrap;color:var(--text,#333)">'
-          + (email.html ? email.html : escHtml(email.text || '(无正文)'))
-        + '</div>';
-        // 附件
-        if (email.attachments && email.attachments.length > 0) {
-          html += '<div style="border-top:1px solid var(--border,#eee);padding-top:12px;margin-top:12px">'
-            + '<div style="font-size:12px;font-weight:bold;margin-bottom:6px">📎 附件 (' + email.attachments.length + ')</div>'
-            + email.attachments.map(function(a) {
-                var sizeStr = a.size > 1024*1024 ? (a.size/1024/1024).toFixed(1)+'MB' : (a.size/1024).toFixed(0)+'KB';
-                return '<div style="padding:6px 10px;border:1px solid var(--border,#eee);border-radius:4px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;font-size:12px">'
-                  + '<span>' + escHtml(a.name) + ' (' + sizeStr + ')</span>'
-                  + '<a href="/api/emails/' + uid + '/attachment/' + encodeURIComponent(a.partID) + '?mailbox=INBOX&api_key=' + encodeURIComponent(AK) + '" target="_blank" style="padding:2px 8px;border:1px solid var(--accent,#0ea89d);border-radius:4px;text-decoration:none;color:var(--accent,#0ea89d);font-size:11px">下载</a>'
-                  + '</div>';
-              }).join('')
-            + '</div>';
-        }
-        detail.innerHTML = html;
-        setStatus('邮件已加载');
-      })
-      .catch(function(e) {
-        if (detail) detail.innerHTML = '<div style="padding:20px;text-align:center;color:#a00">❌ 加载失败</div>';
-        setStatus('加载失败');
-      });
+    return pairs.length ? path + (path.indexOf('?') >= 0 ? '&' : '?') + pairs.join('&') : path;
   }
 
-  // ── 写信 ──
-  function compose() {
-    var list = document.getElementById('em-list');
-    var detail = document.getElementById('em-detail');
-    if (list) list.style.display = 'none';
-    if (detail) {
-      detail.style.display = 'block';
-      detail.innerHTML =
-        '<div style="max-width:600px;margin:0 auto">'
-        + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">'
-          + '<b style="font-size:15px">✉ 写邮件</b>'
-          + '<button onclick="window.EM_back()" style="padding:4px 10px;border:1px solid var(--border,#ddd);border-radius:4px;cursor:pointer;background:var(--bg,#fff);font-size:12px">取消</button>'
-        + '</div>'
-        + '<div style="margin-bottom:8px">'
-          + '<label style="display:block;font-size:12px;color:var(--text2,#666);margin-bottom:2px">收件人 *</label>'
-          + '<input id="em-to" type="text" placeholder="收件人邮箱" style="width:100%;padding:6px 8px;border:1px solid var(--border,#ddd);border-radius:4px;font-size:13px;outline:none;box-sizing:border-box">'
-        + '</div>'
-        + '<div style="margin-bottom:8px">'
-          + '<label style="display:block;font-size:12px;color:var(--text2,#666);margin-bottom:2px">抄送</label>'
-          + '<input id="em-cc" type="text" placeholder="抄送（可选，多个用分号分隔）" style="width:100%;padding:6px 8px;border:1px solid var(--border,#ddd);border-radius:4px;font-size:13px;outline:none;box-sizing:border-box">'
-        + '</div>'
-        + '<div style="margin-bottom:8px">'
-          + '<label style="display:block;font-size:12px;color:var(--text2,#666);margin-bottom:2px">主题 *</label>'
-          + '<input id="em-subject" type="text" placeholder="邮件主题" style="width:100%;padding:6px 8px;border:1px solid var(--border,#ddd);border-radius:4px;font-size:13px;outline:none;box-sizing:border-box">'
-        + '</div>'
-        + '<div style="margin-bottom:8px">'
-          + '<label style="display:block;font-size:12px;color:var(--text2,#666);margin-bottom:2px">正文 *</label>'
-          + '<textarea id="em-body" placeholder="邮件正文…" style="width:100%;height:180px;padding:6px 8px;border:1px solid var(--border,#ddd);border-radius:4px;font-size:13px;outline:none;resize:vertical;box-sizing:border-box;font-family:inherit;line-height:1.5"></textarea>'
-        + '</div>'
-        + '<div style="display:flex;align-items:center;gap:8px;margin-top:12px">'
-          + '<button id="em-send-btn" onclick="window.EM_send()" style="padding:6px 20px;border:none;border-radius:4px;cursor:pointer;background:var(--accent,#0ea89d);color:#fff;font-size:13px">发送</button>'
-          + '<span id="em-send-status" style="font-size:12px;color:var(--text2,#888)"></span>'
-        + '</div>'
-        + '</div>';
-      setStatus('写信');
-      // 焦点到收件人
-      setTimeout(function() { var el = document.getElementById('em-to'); if (el) el.focus(); }, 50);
+  function apiFetch(method, path, body) {
+    var headers = { 'X-API-Key': API_KEY };
+    var init = { method: method, headers: headers };
+    if (body !== undefined && body !== null) {
+      headers['Content-Type'] = 'application/json';
+      init.body = JSON.stringify(body);
+    }
+    return fetch(path, init).then(function (response) {
+      var dataPromise = response.json().catch(function () { return {}; });
+      return dataPromise.then(function (data) {
+        if (!response.ok) {
+          var err = new Error((data && (data.message || data.error)) || ('HTTP ' + response.status));
+          err.status = response.status;
+          err.code = (data && data.error) || 'HTTP_ERROR';
+          err.payload = data;
+          throw err;
+        }
+        return data;
+      });
+    });
+  }
+
+  function showToast(message, type) {
+    if (typeof root.toast === 'function') {
+      root.toast(message, type || 'info');
+    } else if (root.ACMS && typeof root.ACMS.toast === 'function') {
+      root.ACMS.toast(message, type || 'info');
     }
   }
 
-  // ── 发送邮件 ──
-  function send() {
-    var btn = document.getElementById('em-send-btn');
-    var status = document.getElementById('em-send-status');
-    if (!btn || !status) return;
-    var to = document.getElementById('em-to');
-    var cc = document.getElementById('em-cc');
-    var subject = document.getElementById('em-subject');
-    var body = document.getElementById('em-body');
-    if (!to || !subject || !body) return;
-    // 校验
-    if (!to.value.trim()) { status.innerHTML = '<span style="color:#a00">请输入收件人</span>'; to.focus(); return; }
-    if (!subject.value.trim()) { status.innerHTML = '<span style="color:#a00">请输入主题</span>'; subject.focus(); return; }
-    if (!body.value.trim()) { status.innerHTML = '<span style="color:#a00">请输入正文</span>'; body.focus(); return; }
-    btn.disabled = true;
-    btn.style.opacity = '0.6';
-    status.textContent = '发送中…';
-    fetch('/api/emails/send', {
-      method: 'POST',
-      headers: auth(),
-      body: JSON.stringify({
-        to: to.value.trim(),
-        cc: cc.value.trim(),
-        subject: subject.value.trim(),
-        body: body.value,
-        isHtml: false,
-      }),
-    })
-      .then(function(r) { return r.json(); })
-      .then(function(result) {
-        if (result.error) {
-          status.innerHTML = '<span style="color:#a00">❌ ' + escHtml(result.message || result.error) + '</span>';
-          btn.disabled = false;
-          btn.style.opacity = '1';
+  function showConfirm(message, opts) {
+    if (typeof root.showConfirm === 'function') return root.showConfirm(message, opts);
+    if (root.ACMS && typeof root.ACMS.showConfirm === 'function') return root.ACMS.showConfirm(message, opts);
+    return Promise.resolve(root.confirm(message));
+  }
+
+  function showPrompt(message, defaultValue) {
+    if (typeof root.showPrompt === 'function') return root.showPrompt(message, defaultValue);
+    if (root.ACMS && typeof root.ACMS.showPrompt === 'function') return root.ACMS.showPrompt(message, defaultValue);
+    return Promise.resolve(root.prompt(message, defaultValue || ''));
+  }
+
+  function sanitizeEmailHtml(html) {
+    if (!html) return '';
+    var doc;
+    try {
+      doc = new DOMParser().parseFromString(String(html), 'text/html');
+    } catch (err) {
+      return escHtml(String(html));
+    }
+    if (!doc || !doc.body) return escHtml(String(html));
+    var walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_ELEMENT, null, false);
+    var toRemove = [];
+    var node = walker.currentNode;
+    while (node) {
+      var tag = node.tagName ? node.tagName.toUpperCase() : '';
+      if (HTML_LIKE_TAGS[tag]) {
+        toRemove.push(node);
+      } else if (tag === 'A') {
+        for (var i = node.attributes.length - 1; i >= 0; i--) {
+          var attr = node.attributes[i];
+          if (!isAttrAllowed(tag, attr.name)) node.removeAttribute(attr.name);
+        }
+        var href = node.getAttribute('href') || '';
+        if (/^\s*javascript:/i.test(href)) node.removeAttribute('href');
+        if (!node.getAttribute('rel')) node.setAttribute('rel', 'noopener noreferrer');
+        if (!node.getAttribute('target')) node.setAttribute('target', '_blank');
+      } else if (tag === 'IMG') {
+        for (var j = node.attributes.length - 1; j >= 0; j--) {
+          var a = node.attributes[j];
+          if (!isAttrAllowed(tag, a.name)) node.removeAttribute(a.name);
+        }
+        var src = node.getAttribute('src') || '';
+        if (!/^(https?:|data:image\/|cid:)/i.test(src)) node.removeAttribute('src');
+        if (!node.getAttribute('alt')) node.setAttribute('alt', '');
+      } else {
+        for (var k = node.attributes.length - 1; k >= 0; k--) {
+          var at = node.attributes[k];
+          if (!isAttrAllowed(tag, at.name)) node.removeAttribute(at.name);
+        }
+      }
+      node = walker.nextNode();
+    }
+    toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el); });
+    return doc.body.innerHTML;
+  }
+
+  function isAttrAllowed(tag, attr) {
+    var name = String(attr || '').toLowerCase();
+    if (name.indexOf('on') === 0) return false;
+    var allow = ALLOWED_ATTRS[tag] || [];
+    if (allow.indexOf(name) >= 0) return true;
+    var any = ALLOWED_ATTRS['*'] || [];
+    return any.indexOf(name) >= 0;
+  }
+
+  function formatDate(dateValue) {
+    if (!dateValue) return '';
+    var d = new Date(dateValue);
+    if (isNaN(d.getTime())) return String(dateValue);
+    var now = new Date();
+    var sameDay = d.toDateString() === now.toDateString();
+    if (sameDay) {
+      return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    }
+    var yearDiff = now.getFullYear() - d.getFullYear();
+    if (yearDiff >= 1) {
+      return d.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+    }
+    return d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  }
+
+  function formatSize(bytes) {
+    var n = Number(bytes) || 0;
+    if (n > 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
+    if (n > 1024) return (n / 1024).toFixed(0) + ' KB';
+    return n + ' B';
+  }
+
+  function formatAddress(value) {
+    if (!value) return '';
+    var angle = String(value).match(/<\s*([^<>]+)\s*>\s*$/);
+    return angle ? angle[1] : value;
+  }
+
+  function extractName(value) {
+    if (!value) return '';
+    var angle = String(value).match(/<\s*([^<>]+)\s*>\s*$/);
+    var display = angle ? value.replace(/<\s*[^<>]+\s*>\s*$/, '').trim() : value;
+    return display || (angle ? angle[1] : '');
+  }
+
+  function avatarLetter(value) {
+    var name = extractName(value) || formatAddress(value) || '?';
+    return name.charAt(0).toUpperCase();
+  }
+
+  // ── 附件 → 可用 ACMS 应用 ──
+  // 按 MIME / 扩展名推断。ACMS 没有对应应用时返回 []（菜单降级为「仅下载」提示）。
+  // 命中规则参考 file-browser.js 的 allApps 列表 + openWithAcms() 的支持范围。
+  var ATT_APP_RULES = [
+    { app: 'image-editor', label: '🖼️ 图片编辑器',
+      mime: /^image\//i,
+      exts: ['png','jpg','jpeg','gif','webp','bmp','svg','ico','avif','tif','tiff'] },
+    { app: 'code-editor', label: '💻 代码编辑器',
+      mime: /^text\/(?!html)/i,
+      exts: ['txt','md','json','js','jsx','ts','tsx','py','java','c','cpp','h','hpp','css','scss','sass','less','xml','csv','tsv','log','sh','bash','zsh','yaml','yml','ini','conf','toml','sql','env','gitignore','dockerfile','vue','svelte','go','rs','rb','php','kt','swift','r','lua','pl','asm'] },
+    { app: 'web-browser', label: '🌐 浏览器（HTML）',
+      mime: /^text\/html/i,
+      exts: ['html','htm','mhtml'] },
+    { app: 'web-browser', label: '📕 PDF 预览',
+      mime: /^application\/pdf/i,
+      exts: ['pdf'] },
+    { app: 'web-browser', label: '🎬 视频播放',
+      mime: /^video\//i,
+      exts: ['mp4','webm','mov','avi','mkv','m4v','ogv'] },
+    { app: 'web-browser', label: '🎵 音频播放',
+      mime: /^audio\//i,
+      exts: ['mp3','wav','ogg','m4a','flac','aac','opus'] },
+    // Office: 需要先存 workspace 再用 office editor 打开（v0.74 暂未支持附件直传，留 TODO）
+    { app: 'office-word', label: '📝 Word 编辑器（暂未支持邮件附件，请下载）',
+      mime: /(officedocument\.word|msword)/i,
+      exts: ['docx','doc','odt','rtf'] },
+    { app: 'office-xlsx', label: '📊 Excel 编辑器（暂未支持邮件附件，请下载）',
+      mime: /(officedocument\.spreadsheet|excel)/i,
+      exts: ['xlsx','xls','ods'] },
+    { app: 'office-pptx', label: '📽️ PPT 编辑器（暂未支持邮件附件，请下载）',
+      mime: /(officedocument\.presentation|powerpoint)/i,
+      exts: ['pptx','ppt','odp'] },
+  ];
+
+  function attachmentExt(name) {
+    var s = String(name || '');
+    var dot = s.lastIndexOf('.');
+    if (dot < 0 || dot === s.length - 1) return '';
+    return s.slice(dot + 1).toLowerCase();
+  }
+
+  function getAppsForAttachment(name, type) {
+    var mime = String(type || '').toLowerCase();
+    var ext = attachmentExt(name);
+    var apps = [];
+    var seen = {};
+    ATT_APP_RULES.forEach(function (rule) {
+      var match = false;
+      if (mime && rule.mime.test(mime)) match = true;
+      if (!match && ext && rule.exts.indexOf(ext) >= 0) match = true;
+      if (!match) return;
+      if (seen[rule.app]) return; // 去重：同一应用多条规则只取第一条 label
+      seen[rule.app] = true;
+      apps.push({ name: rule.app, label: rule.label, supported: rule.app !== 'office-word' && rule.app !== 'office-xlsx' && rule.app !== 'office-pptx' });
+    });
+    return apps;
+  }
+
+  function attachmentIcon(name, type) {
+    var apps = getAppsForAttachment(name, type);
+    var mime = String(type || '').toLowerCase();
+    var ext = attachmentExt(name);
+    if (apps.length) {
+      var a = apps[0];
+      if (a.name === 'image-editor') return '🖼️';
+      if (a.name === 'code-editor') return '📄';
+      if (a.name === 'web-browser') {
+        if (/^audio\//.test(mime) || ['mp3','wav','ogg','m4a','flac','aac'].indexOf(ext) >= 0) return '🎵';
+        if (/^video\//.test(mime) || ['mp4','webm','mov','avi','mkv'].indexOf(ext) >= 0) return '🎬';
+        if (/pdf/.test(mime) || ext === 'pdf') return '📕';
+        return '🌐';
+      }
+      if (a.name === 'office-word') return '📝';
+      if (a.name === 'office-xlsx') return '📊';
+      if (a.name === 'office-pptx') return '📽️';
+    }
+    // 兜底按扩展名/类型
+    if (/zip|rar|7z|tar|gz|gzip/.test(ext)) return '🗜';
+    if (/exe|msi|dmg/.test(ext)) return '⚙️';
+    return '📎';
+  }
+
+  // ── 附件 → 可用 ACMS 应用（实例方法） ──
+  EmailApp.prototype.openAttachmentWithAcms = function (appName, att) {
+    var emailUid = this.state.detail && this.state.detail.uid;
+    var mailbox = this.state.mailbox;
+    var url = buildUrl('/api/emails/' + emailUid + '/attachment/' + encodeURIComponent(att.partID), {
+      mailbox: mailbox,
+      api_key: API_KEY,
+      name: att.name,
+      type: att.type,
+    });
+    var self = this;
+    if (!window.ACMSFileApps) {
+      showToast('文件应用 registry 未加载', 'error');
+      return Promise.resolve();
+    }
+    self.setStatus('打开中…');
+    return window.ACMSFileApps.openFileWith(appName, { url: url, name: att.name, mime: att.type })
+      .then(function (result) {
+        if (result && result.ok) self.setStatus('附件已打开');
+        else if (result && result.reason === 'needs-download') {
+          showToast('该附件类型需下载到本地后再打开', 'info');
+          self.setStatus('需要下载后打开');
         } else {
-          status.innerHTML = '<span style="color:#080">✅ 发送成功</span>';
-          // 2 秒后回列表
-          setTimeout(function() { window.EM_back(); }, 2000);
+          showToast('打开失败' + (result && result.error ? ': ' + result.error : ''), 'error');
+          self.setStatus('打开失败', 'error');
         }
-      })
-      .catch(function(e) {
-        status.innerHTML = '<span style="color:#a00">❌ 网络错误</span>';
-        btn.disabled = false;
-        btn.style.opacity = '1';
       });
-  }
+  };
 
-  // ── 搜索 ──
-  function search(keyword) {
-    if (!keyword || !keyword.trim()) { refreshList(); return; }
-    setStatus('搜索: ' + keyword);
-    var list = document.getElementById('em-list');
-    var detail = document.getElementById('em-detail');
-    if (detail) detail.style.display = 'none';
-    if (list) {
-      list.style.display = 'block';
-      list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text2,#888)">⏳ 搜索中…</div>';
+  // 弹「打开方式」菜单（仿 file-browser.js 的 cx 子菜单）
+  // - 有 ACMS 应用：列出可用应用 + 下载兜底
+  // - 无 ACMS 应用：只显示「未找到 ACMS 应用」提示 + 下载
+  // - 已记住的偏好（localStorage）：直接打开并提示
+  EmailApp.prototype.pickAttachmentOpener = function (target) {
+    var self = this;
+    var li = target.closest('[data-att-name]');
+    if (!li) return;
+    var name = li.getAttribute('data-att-name');
+    var type = li.getAttribute('data-att-type');
+    var partID = li.getAttribute('data-att-part');
+    var size = parseInt(li.getAttribute('data-att-size') || '0', 10);
+    var att = { name: name, type: type, partID: partID, size: size };
+    var apps = getAppsForAttachment(name, type);
+    var ext = attachmentExt(name);
+
+    // 检查 localStorage 是否记住了偏好（em_att_open_<ext>）
+    var assocKey = 'em_att_open_' + ext;
+    var preferred = null;
+    try { preferred = JSON.parse(localStorage.getItem(assocKey) || 'null'); } catch (e) { preferred = null; }
+    if (preferred && apps.some(function (a) { return a.name === preferred; })) {
+      this.openAttachmentWithAcms(preferred, att);
+      this.setStatus('已用 ' + preferred + ' 打开');
+      return;
     }
-    fetch('/api/emails/search?q=' + encodeURIComponent(keyword.trim()) + '&limit=30', { headers: auth() })
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        if (!list) return;
-        if (!data.emails || data.emails.length === 0) {
-          list.innerHTML = '<div style="padding:30px;text-align:center;color:var(--text2,#888)">📭 没有找到匹配的邮件</div>';
-          setStatus('搜索无结果');
-          return;
+
+    // 关闭已有菜单
+    var existing = document.querySelectorAll('.em-att-menu');
+    existing.forEach(function (m) { m.remove(); });
+
+    var menu = document.createElement('div');
+    menu.className = 'em-att-menu';
+    var appsHtml = apps.map(function (a) {
+      return '<div class="em-att-menu-item' + (a.supported ? '' : ' em-att-menu-disabled') + '" data-app="' + escAttr(a.name) + '">'
+        + escHtml(a.label) + (a.supported ? '' : ' <span style="color:var(--text3);font-size:10px">⬇ 下载提示</span>')
+        + '</div>';
+    }).join('');
+    var emptyHint = apps.length === 0
+      ? '<div class="em-att-menu-empty">⚠ 未找到 ACMS 应用处理该类型<br/><span style="color:var(--text3);font-size:11px">可下载到本地后用系统应用打开</span></div>'
+      : '';
+    menu.innerHTML = [
+      '<div class="em-att-menu-head">📂 打开方式 · ' + escHtml(name) + '</div>',
+      appsHtml,
+      emptyHint,
+      '<div class="em-att-menu-sep"></div>',
+      '<div class="em-att-menu-item" data-action="download">💾 下载到本地</div>',
+    ].filter(Boolean).join('');
+
+    var rect = target.getBoundingClientRect();
+    var mw = 240, mh = 40 + apps.length * 30 + 24;
+    var left = rect.right + 4;
+    var top = rect.top;
+    if (left + mw > window.innerWidth) left = Math.max(4, rect.left - mw - 4);
+    if (top + mh > window.innerHeight) top = Math.max(4, window.innerHeight - mh - 8);
+    menu.style.cssText = 'position:fixed;z-index:100000;left:' + left + 'px;top:' + top + 'px';
+
+    // 点击行为
+    Array.prototype.forEach.call(menu.querySelectorAll('[data-app]'), function (el) {
+      el.addEventListener('click', function () {
+        var app = el.getAttribute('data-app');
+        var matched = apps.find(function (a) { return a.name === app; });
+        menu.remove();
+        if (matched && matched.supported) {
+          self.openAttachmentWithAcms(app, att);
+        } else if (matched && !matched.supported) {
+          // Office 等暂未支持的：提示 + 引导下载
+          showToast('该附件需下载后再打开', 'info');
+          self.downloadAttachmentFromLi(li);
         }
-        var html = '<div style="padding:6px 12px;font-size:11px;color:var(--text2,#888);border-bottom:1px solid var(--border,#eee)">搜索 "' + escHtml(keyword) + '" — 找到 ' + data.total + ' 封</div>';
-        html += data.emails.map(function(e) {
-          var dateStr = '';
-          try { var d = new Date(e.date); dateStr = isNaN(d.getTime()) ? e.date : d.toLocaleDateString('zh-CN', { month:'2-digit', day:'2-digit' }); } catch(e) {}
-          var fromName = e.from ? e.from.replace(/<[^>]+>/g, '').trim() || e.from : '(未知)';
-          return '<div class="em-item" data-uid="' + e.uid + '" onclick="window.EM_open(' + e.uid + ')" style="padding:8px 12px;border-bottom:1px solid var(--border,#eee);cursor:pointer">'
-            + '<b style="font-size:12px">' + escHtml(fromName) + '</b>'
-            + '<span style="float:right;font-size:10px;color:var(--text3,#aaa)">' + escHtml(dateStr) + '</span>'
-            + '<div style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text2,#666)">' + escHtml(e.subject || '(无主题)') + '</div>'
-            + '</div>';
-        }).join('');
-        list.innerHTML = html;
-        setStatus(data.total + ' 封匹配');
-      })
-      .catch(function() { setStatus('搜索失败'); });
-  }
-
-  function back() {
-    var list = document.getElementById('em-list');
-    var detail = document.getElementById('em-detail');
-    if (detail) detail.style.display = 'none';
-    if (list) list.style.display = 'block';
-    setStatus('就绪');
-  }
-
-  function escHtml(s) {
-    if (s == null) return '';
-    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-  }
-
-  // ── 全局 ──
-  window.EM_refresh = refreshList;
-  window.EM_open = openEmail;
-  window.EM_back = back;
-  window.EM_search = search;
-  window.EM_compose = compose;
-  window.EM_send = send;
-
-  // ── 注册 ──
-  if (window.ACMSWin) {
-    if (window.ACMS && ACMS.registerPackage) {
-      ACMS.registerPackage('email-inbox', {
-        title: '收件箱', icon: '📬', category: '工具',
-        defaultSize: { w: 720, h: 560 },
-        loader: function(w) { render(w); }
       });
-    } else {
-      ACMSWin.registerViewLoader('email-inbox', render);
+    });
+    Array.prototype.forEach.call(menu.querySelectorAll('[data-action="download"]'), function (el) {
+      el.addEventListener('click', function () {
+        menu.remove();
+        self.downloadAttachmentFromLi(li);
+      });
+    });
+
+    function close() {
+      if (menu.parentNode) menu.parentNode.removeChild(menu);
+      document.removeEventListener('click', close);
+      document.removeEventListener('contextmenu', close);
     }
+    setTimeout(function () {
+      document.addEventListener('click', close);
+      document.addEventListener('contextmenu', close);
+    }, 0);
+
+    document.body.appendChild(menu);
+  };
+
+  // 触发附件下载（点击「下载」按钮或菜单的下载项时）
+  EmailApp.prototype.downloadAttachmentFromLi = function (li) {
+    var a = li.querySelector('a.em-btn-link');
+    if (!a) return;
+    // 复用现成的 <a> 链接 → target=_blank 触发下载
+    window.open(a.href, '_blank');
+  };
+
+  // CSS attribute selector 转义（处理文件名中可能出现的引号/反斜杠等）
+  function cssEscape(s) {
+    return String(s || '').replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"');
   }
 
-  // 启动器入口
-  window.openEmailInbox = function() {
-    if (window.ACMSWin) {
-      if (!ACMSWin.isActive()) ACMSWin.enable();
-      ACMSWin.open('email-inbox', { w: 720, h: 560, title: '📬 收件箱' });
+
+  // ── 应用入口：每个 ACMSWin 独立一个实例 ──
+  function EmailApp(windowRef) {
+    this.window = windowRef;
+    this.root = (windowRef && windowRef.$c) || null;
+    if (!this.root) throw new Error('email: ACMSWin root is required');
+
+    this.state = {
+      account: null,
+      mailboxes: [],
+      mailbox: 'INBOX',
+      emails: [],
+      total: 0,
+      offset: 0,
+      limit: 30,
+      selectedUid: null,
+      detail: null,
+      composerOpen: false,
+      composerData: null,
+      attachmentCount: 0,
+      attachmentBytes: 0,
+      loading: false,
+      searchKeyword: '',
+      draftTimer: null,
+      // 'idle' | 'sending'
+      sendInFlight: false,
+    };
+    this.templates = {};
+  }
+
+  EmailApp.prototype.init = function () {
+    var self = this;
+    this.render();
+    this.loadAccount()
+      .then(function () { return self.loadMailboxes(); })
+      .then(function () { return self.loadEmails(); })
+      .catch(function (err) {
+        if (err && err.code === 'IMAP_CONNECT_FAILED') return;
+        self.setStatus('初始化失败: ' + (err && err.message || '未知错误'), 'error');
+      });
+  };
+
+  EmailApp.prototype.render = function () {
+    this.root.innerHTML = [
+      '<div class="em-app" data-state="idle">',
+'  <aside class="em-side" aria-label="邮箱文件夹">',
+      '    <div class="em-side-head"><span>📬</span><b>邮件</b></div>',
+      '    <ul class="em-folders" data-role="folders"></ul>',
+      '  </aside>',
+      '  <section class="em-list" aria-label="邮件列表">',
+      '    <div class="em-list-head">',
+      '      <input type="search" class="em-input" data-role="search" placeholder="搜索主题、邮件地址、正文…" />',
+      '      <button type="button" class="em-btn" data-action="refresh" title="刷新">↻</button>',
+      // v0.74.1: 写信按钮移到邮件列表栏顶部（紧邻搜索框）— 之前在左侧底部，被邮件列表挡住一半
+      '      <button type="button" class="em-btn em-btn-primary em-btn-compose" data-action="compose" title="写新邮件">✉ 写信</button>',
+      '    </div>',
+      '    <div class="em-list-body" data-role="list"></div>',
+      '    <div class="em-list-foot" data-role="pager">',
+      '      <button type="button" class="em-btn" data-action="prev" disabled>‹ 上一页</button>',
+      '      <span data-role="pager-info">–</span>',
+      '      <button type="button" class="em-btn" data-action="next" disabled>下一页 ›</button>',
+      '    </div>',
+      '  </section>',
+      '  <main class="em-pane" data-role="pane" tabindex="0">',
+      '    <div class="em-pane-empty" data-role="pane-empty">',
+      '      <div class="em-pane-empty-emoji">📭</div>',
+      // 提示文案同步更新（写信按钮现在在列表上方）
+      '      <p>选择左侧邮件查看详情，或点击列表栏上方「✉ 写信」。</p>',
+      '    </div>',
+      '  </main>',
+      '  <div class="em-status" data-role="status" aria-live="polite">就绪</div>',
+      '</div>',
+    ].join('');
+    this.bindEvents();
+    this.setStatus('就绪');
+  };
+
+  EmailApp.prototype.bindEvents = function () {
+    var self = this;
+    var root = this.root;
+
+    root.addEventListener('click', function (event) {
+      var target = event.target.closest('[data-action]');
+      if (target) {
+        var action = target.getAttribute('data-action');
+        if (action === 'compose') return self.openComposer();
+        if (action === 'refresh') return self.refresh();
+        if (action === 'prev') return self.gotoPage(-1);
+        if (action === 'next') return self.gotoPage(1);
+        if (action === 'back-to-list') return self.closeDetail();
+        if (action === 'composer-discard') return self.discardComposer();
+        if (action === 'composer-send') return self.submitComposer();
+        if (action === 'composer-attach') return self.openAttachmentPicker();
+        if (action === 'composer-template') return self.applyComposerTemplate(target.getAttribute('data-template'));
+        if (action === 'composer-format') return self.toggleFormat(target.getAttribute('data-format'));
+        if (action === 'remove-attachment') {
+          var id = target.getAttribute('data-id');
+          return self.removeAttachment(id);
+        }
+        if (action === 'reply') return self.openComposer({ kind: 'reply' });
+        if (action === 'reply-all') return self.openComposer({ kind: 'reply-all' });
+        if (action === 'forward') return self.openComposer({ kind: 'forward' });
+        if (action === 'load-remote') return self.loadRemoteImages(target);
+        if (action === 'attachment-open') return self.pickAttachmentOpener(target);
+        return;
+      }
+      var folder = event.target.closest('[data-role="folder"]');
+      if (folder) return self.selectMailbox(folder.getAttribute('data-mailbox'));
+      var item = event.target.closest('[data-role="item"]');
+      if (item) return self.openEmail(parseInt(item.getAttribute('data-uid'), 10));
+    });
+
+    var search = root.querySelector('[data-role="search"]');
+    if (search) {
+      var debounce;
+      search.addEventListener('input', function () {
+        clearTimeout(debounce);
+        debounce = setTimeout(function () {
+          self.runSearch(search.value.trim());
+        }, 220);
+      });
+      search.addEventListener('keydown', function (event) {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          self.runSearch(search.value.trim());
+        } else if (event.key === 'Escape') {
+          search.value = '';
+          self.runSearch('');
+        }
+      });
+    }
+
+    root.addEventListener('keydown', function (event) {
+      if (!self.state.composerOpen) return;
+      if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        self.submitComposer();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        self.discardComposer();
+      }
+    });
+
+    root.addEventListener('dragover', function (event) {
+      if (!self.state.composerOpen) return;
+      if (event.dataTransfer && Array.prototype.indexOf.call(event.dataTransfer.types || [], 'Files') >= 0) {
+        event.preventDefault();
+        root.querySelector('.em-composer').classList.add('em-drop-active');
+      }
+    });
+    root.addEventListener('dragleave', function (event) {
+      if (!event.relatedTarget || !root.contains(event.relatedTarget)) {
+        var composer = root.querySelector('.em-composer');
+        if (composer) composer.classList.remove('em-drop-active');
+      }
+    });
+    root.addEventListener('drop', function (event) {
+      if (!self.state.composerOpen) return;
+      if (!event.dataTransfer || !event.dataTransfer.files) return;
+      event.preventDefault();
+      var composer = root.querySelector('.em-composer');
+      if (composer) composer.classList.remove('em-drop-active');
+      self.uploadFiles(event.dataTransfer.files);
+    });
+
+    if (this.window && typeof this.window.on === 'function') {
+      this.window.on('destroy', function () {
+        clearTimeout(self.state.draftTimer);
+        self.persistDraft(true);
+      });
     }
   };
-})(window);
+
+  EmailApp.prototype.setStatus = function (text, level) {
+    var el = this.root.querySelector('[data-role="status"]');
+    if (el) {
+      el.textContent = text || '';
+      el.dataset.level = level || 'info';
+    }
+  };
+
+  EmailApp.prototype.loadAccount = function () {
+    var self = this;
+    return apiFetch('GET', '/api/emails/account').then(function (account) {
+      self.state.account = account;
+    }).catch(function () {
+      self.state.account = { configured: false, email: '', name: '', limits: { recipients: 50, attachments: 10, attachmentBytes: 25 * 1024 * 1024 } };
+    });
+  };
+
+  EmailApp.prototype.loadMailboxes = function () {
+    var self = this;
+    return apiFetch('GET', '/api/emails/mailboxes').then(function (data) {
+      var mailboxes = (data && data.mailboxes) || [];
+      if (!mailboxes.length) {
+        mailboxes = [{ name: 'INBOX' }];
+      }
+      self.state.mailboxes = mailboxes;
+      if (!mailboxes.some(function (box) { return box.name === self.state.mailbox; })) {
+        self.state.mailbox = mailboxes[0].name;
+      }
+      self.renderFolders();
+    });
+  };
+
+  EmailApp.prototype.renderFolders = function () {
+    var list = this.root.querySelector('[data-role="folders"]');
+    if (!list) return;
+    var html = this.state.mailboxes.map(function (box) {
+      var label = box.name || 'INBOX';
+      var marker = box.flags && box.flags.indexOf('\\Noselect') >= 0 ? ' (只读)' : '';
+      return '<li class="em-folder" data-role="folder" data-mailbox="' + escAttr(label) + '">'
+        + '<span class="em-folder-icon">📁</span>'
+        + '<span class="em-folder-name">' + escHtml(label) + escHtml(marker) + '</span>'
+        + '</li>';
+    }).join('');
+    list.innerHTML = html;
+    this.highlightFolder();
+  };
+
+  EmailApp.prototype.highlightFolder = function () {
+    var nodes = this.root.querySelectorAll('[data-role="folder"]');
+    for (var i = 0; i < nodes.length; i++) {
+      var node = nodes[i];
+      if (node.getAttribute('data-mailbox') === this.state.mailbox) {
+        node.classList.add('em-folder-active');
+      } else {
+        node.classList.remove('em-folder-active');
+      }
+    }
+  };
+
+  EmailApp.prototype.selectMailbox = function (name) {
+    if (!name || name === this.state.mailbox) return;
+    this.state.mailbox = name;
+    this.state.offset = 0;
+    this.highlightFolder();
+    this.loadEmails();
+  };
+
+  EmailApp.prototype.loadEmails = function () {
+    var self = this;
+    if (self.state.loading) return;
+    self.state.loading = true;
+    self.setStatus('加载邮件…');
+    var query = {
+      mailbox: self.state.mailbox,
+      limit: self.state.limit,
+      offset: self.state.offset,
+    };
+    return apiFetch('GET', buildUrl('/api/emails', query))
+      .then(function (data) {
+        self.state.emails = (data && data.emails) || [];
+        self.state.total = (data && data.total) || 0;
+        self.renderList();
+        self.setStatus(self.state.total + ' 封邮件，显示 ' + self.state.emails.length + ' 封');
+      })
+      .catch(function (err) {
+        self.setStatus('加载失败: ' + err.message, 'error');
+        self.renderError(err);
+      })
+      .then(function () { self.state.loading = false; });
+  };
+
+  EmailApp.prototype.runSearch = function (keyword) {
+    var self = this;
+    self.state.searchKeyword = keyword;
+    if (!keyword) return self.loadEmails();
+    self.setStatus('搜索: ' + keyword);
+    return apiFetch('GET', buildUrl('/api/emails/search', { q: keyword, mailbox: self.state.mailbox, limit: 50 }))
+      .then(function (data) {
+        self.state.emails = (data && data.emails) || [];
+        self.state.total = (data && data.total) || self.state.emails.length;
+        self.state.offset = 0;
+        self.renderList();
+      })
+      .catch(function (err) {
+        self.setStatus('搜索失败: ' + err.message, 'error');
+      });
+  };
+
+  EmailApp.prototype.refresh = function () {
+    this.state.offset = 0;
+    if (this.state.searchKeyword) {
+      return this.runSearch(this.state.searchKeyword);
+    }
+    return this.loadEmails();
+  };
+
+  EmailApp.prototype.gotoPage = function (delta) {
+    var next = this.state.offset + delta * this.state.limit;
+    if (next < 0) next = 0;
+    if (next >= this.state.total) return;
+    this.state.offset = next;
+    this.loadEmails();
+  };
+
+  EmailApp.prototype.renderList = function () {
+    var body = this.root.querySelector('[data-role="list"]');
+    if (!body) return;
+    if (!this.state.emails.length) {
+      body.innerHTML = '<div class="em-empty">📭 当前邮箱没有邮件</div>';
+    } else {
+      body.innerHTML = this.state.emails.map(this.renderListItem, this).join('');
+    }
+    this.renderPager();
+  };
+
+  EmailApp.prototype.renderListItem = function (email) {
+    var initial = avatarLetter(email.from);
+    var subject = email.subject || '(无主题)';
+    var fromName = extractName(email.from) || formatAddress(email.from) || '(未知发件人)';
+    var dateStr = formatDate(email.date);
+    var flags = email.flags || [];
+    var read = flags.indexOf('\\Seen') >= 0;
+    var classes = ['em-item'];
+    if (!read) classes.push('em-item-unread');
+    if (email.hasAttachments) classes.push('em-item-has-att');
+    return [
+      '<article class="' + classes.join(' ') + '" data-role="item" data-uid="' + escAttr(email.uid) + '">',
+      '  <div class="em-avatar">' + escHtml(initial) + '</div>',
+      '  <div class="em-item-body">',
+      '    <div class="em-item-row"><b class="em-from">' + escHtml(fromName) + '</b>',
+      '      <span class="em-time">' + escHtml(dateStr) + '</span></div>',
+      '    <div class="em-subject">' + escHtml(subject) + '</div>',
+      '  </div>',
+      email.hasAttachments ? '  <span class="em-att-mark" title="含附件">📎</span>' : '',
+      '</article>',
+    ].join('');
+  };
+
+  EmailApp.prototype.renderPager = function () {
+    var pager = this.root.querySelector('[data-role="pager"]');
+    if (!pager) return;
+    var info = pager.querySelector('[data-role="pager-info"]');
+    var prev = pager.querySelector('[data-action="prev"]');
+    var next = pager.querySelector('[data-action="next"]');
+    if (this.state.total <= 0) {
+      info.textContent = '0 / 0';
+      prev.disabled = true;
+      next.disabled = true;
+      return;
+    }
+    var start = this.state.offset + 1;
+    var end = Math.min(this.state.offset + this.state.emails.length, this.state.total);
+    info.textContent = start + ' – ' + end + ' / ' + this.state.total;
+    prev.disabled = this.state.offset <= 0;
+    next.disabled = end >= this.state.total;
+  };
+
+  EmailApp.prototype.openEmail = function (uid) {
+    var self = this;
+    if (!uid) return;
+    self.state.selectedUid = uid;
+    self.setStatus('加载邮件…');
+    var pane = self.root.querySelector('[data-role="pane"]');
+    if (!pane) return;
+    pane.innerHTML = '<div class="em-loading">⏳ 加载中…</div>';
+    return apiFetch('GET', buildUrl('/api/emails/' + uid, { mailbox: self.state.mailbox }))
+      .then(function (email) {
+        self.state.detail = email;
+        self.renderDetail();
+        self.setStatus('邮件已加载');
+      })
+      .catch(function (err) {
+        pane.innerHTML = '<div class="em-error">❌ ' + escHtml(err.message) + '</div>';
+        self.setStatus('加载失败', 'error');
+      });
+  };
+
+  EmailApp.prototype.renderDetail = function () {
+    var pane = this.root.querySelector('[data-role="pane"]');
+    if (!pane) return;
+    var email = this.state.detail;
+    if (!email) return;
+    var fromDisplay = email.from || '';
+    var subject = email.subject || '(无主题)';
+    var dateStr = formatDate(email.date);
+    var bodyHtml = email.html
+      ? sanitizeEmailHtml(email.html)
+      : '<pre class="em-text-body">' + escHtml(email.text || '(无正文)') + '</pre>';
+
+var self = this;
+    var attachments = (email.attachments || []).map(function (att) {
+      var url = buildUrl('/api/emails/' + email.uid + '/attachment/' + encodeURIComponent(att.partID), {
+        mailbox: self_currentMailbox(self),
+        api_key: API_KEY,
+        name: att.name,
+        type: att.type,
+      });
+      var apps = (window.ACMSFileApps ? window.ACMSFileApps.getAppsForFile(att.name, att.type) : []);
+      var hasApp = apps.length > 0;
+      return '<li class="em-attachment" data-att-name="' + escAttr(att.name) + '" data-att-type="' + escAttr(att.type || '') + '" data-att-part="' + escAttr(att.partID) + '" data-att-size="' + escAttr(String(att.size || 0)) + '">'
+        + '<span class="em-attachment-icon">' + attachmentIcon(att.name, att.type) + '</span>'
+        + '<span class="em-attachment-name" title="' + escAttr(att.name) + '">' + escHtml(att.name) + '</span>'
+        + '<span class="em-attachment-size">' + escHtml(formatSize(att.size)) + '</span>'
+        + '<button type="button" class="em-btn em-btn-tiny" data-action="attachment-open" title="' + (hasApp ? '选择 ACMS 应用打开' : '未找到 ACMS 应用处理该类型') + '">📂 打开</button>'
+        + '<a class="em-btn em-btn-tiny em-btn-link" href="' + escAttr(url) + '" target="_blank" rel="noopener">下载</a>'
+        + '</li>';
+    }, this).join('');
+
+    function self_currentMailbox(app) { return app.state.mailbox; }
+
+    pane.innerHTML = [
+      '<header class="em-detail-head">',
+      '  <div class="em-detail-title">',
+      '    <h2>' + escHtml(subject) + '</h2>',
+      '    <div class="em-detail-actions">',
+      '      <button type="button" class="em-btn" data-action="back-to-list">← 返回</button>',
+      '      <button type="button" class="em-btn" data-action="reply">↩ 回复</button>',
+      '      <button type="button" class="em-btn" data-action="reply-all">↩ 全部回复</button>',
+      '      <button type="button" class="em-btn" data-action="forward">↪ 转发</button>',
+      '    </div>',
+      '  </div>',
+      '  <table class="em-meta">',
+      '    <tr><th>发件人</th><td>' + escHtml(fromDisplay) + '</td></tr>',
+      email.to ? '    <tr><th>收件人</th><td>' + escHtml(email.to) + '</td></tr>' : '',
+      email.cc ? '    <tr><th>抄送</th><td>' + escHtml(email.cc) + '</td></tr>' : '',
+      '    <tr><th>时间</th><td>' + escHtml(dateStr) + '</td></tr>',
+      '  </table>',
+      '</header>',
+      '<article class="em-body" data-role="body">' + bodyHtml + '</article>',
+      attachments ? '<section class="em-att-list"><h3>📎 附件 (' + email.attachments.length + ')</h3><ul>' + attachments + '</ul></section>' : '',
+    ].join('');
+
+    this.renderRemoteImagePrompt();
+  };
+
+  EmailApp.prototype.closeDetail = function () {
+    this.state.selectedUid = null;
+    this.state.detail = null;
+    var pane = this.root.querySelector('[data-role="pane"]');
+    if (!pane) return;
+    pane.innerHTML = [
+      '<div class="em-pane-empty" data-role="pane-empty">',
+      '  <div class="em-pane-empty-emoji">📭</div>',
+      '  <p>选择左侧邮件查看详情，或点击右上角写信。</p>',
+      '</div>',
+    ].join('');
+  };
+
+  EmailApp.prototype.renderRemoteImagePrompt = function () {
+    var body = this.root.querySelector('[data-role="body"]');
+    if (!body) return;
+    var imgs = body.querySelectorAll('img[src^="http"]');
+    if (!imgs.length) return;
+    var count = imgs.length;
+    var banner = document.createElement('div');
+    banner.className = 'em-remote-banner';
+    banner.innerHTML = '已隐藏 ' + count + ' 张远程图片以保护隐私。'
+      + '<button type="button" class="em-btn em-btn-tiny" data-action="load-remote">加载图片</button>';
+    body.insertBefore(banner, body.firstChild);
+    imgs.forEach(function (img) { img.dataset.srcRemote = img.getAttribute('src'); img.removeAttribute('src'); });
+  };
+
+  EmailApp.prototype.loadRemoteImages = function () {
+    var body = this.root.querySelector('[data-role="body"]');
+    if (!body) return;
+    var imgs = body.querySelectorAll('img[data-src-remote]');
+    imgs.forEach(function (img) { img.setAttribute('src', img.dataset.srcRemote); img.removeAttribute('data-src-remote'); });
+    var banner = body.querySelector('.em-remote-banner');
+    if (banner) banner.parentNode.removeChild(banner);
+  };
+
+  EmailApp.prototype.renderError = function (err) {
+    var body = this.root.querySelector('[data-role="list"]');
+    if (!body) return;
+    if (err && err.code === 'IMAP_CONNECT_FAILED') {
+      body.innerHTML = '<div class="em-error">❌ ' + escHtml(err.message) + '<br/>请确认 config.json 中 smtp 配置了正确的邮箱和密码。</div>';
+    } else {
+      body.innerHTML = '<div class="em-error">❌ ' + escHtml(err.message || '加载失败') + '</div>';
+    }
+  };
+
+  // ── 写信：草稿、模板、附件、HTML 切换、发送 ──
+  EmailApp.prototype.openComposer = function (options) {
+    var self = this;
+    self.state.composerOpen = true;
+    self.state.composerData = self.buildComposerData(options || {});
+    self.state.attachmentBytes = 0;
+    self.state.attachmentCount = 0;
+    self.renderComposer();
+    self.hydrateComposer();
+    self.scheduleDraftSave();
+  };
+
+  EmailApp.prototype.buildComposerData = function (options) {
+    var data = {
+      kind: options.kind || 'new',
+      to: '',
+      cc: '',
+      bcc: '',
+      replyTo: '',
+      subject: '',
+      body: '',
+      isHtml: false,
+      inReplyTo: '',
+      references: '',
+      file_ids: [],
+    };
+    if (this.state.account && this.state.account.email && (options.kind === 'reply' || options.kind === 'reply-all' || options.kind === 'forward')) {
+      data.replyTo = this.state.account.email;
+    }
+    if (options.kind === 'reply' || options.kind === 'reply-all' || options.kind === 'forward') {
+      var email = this.state.detail;
+      if (email) {
+        data.inReplyTo = email.messageId || '';
+        data.references = email.messageId || '';
+        var from = formatAddress(email.from);
+        var prefix = options.kind === 'forward' ? 'Fwd: ' : 'Re: ';
+        data.subject = email.subject && email.subject.indexOf(prefix) === 0 ? email.subject : prefix + (email.subject || '');
+        if (options.kind === 'reply') {
+          data.to = from;
+        } else if (options.kind === 'reply-all') {
+          data.to = from;
+          data.cc = email.cc || '';
+        }
+        if (options.kind === 'forward') {
+          data.body = '\n\n---------- Forwarded message ----------\n'
+            + 'From: ' + (email.from || '') + '\n'
+            + 'Date: ' + (email.date || '') + '\n'
+            + 'Subject: ' + (email.subject || '') + '\n'
+            + 'To: ' + (email.to || '') + '\n\n'
+            + (email.text || email.html || '');
+        } else {
+          var quote = (email.text || '').split('\n').map(function (line) { return '> ' + line; }).join('\n');
+          data.body = '\n\n' + (quote || '(无原文)') + '\n';
+        }
+      }
+    }
+    return data;
+  };
+
+  EmailApp.prototype.renderComposer = function () {
+    var pane = this.root.querySelector('[data-role="pane"]');
+    if (!pane) return;
+    var data = this.state.composerData || {};
+    pane.innerHTML = [
+      '<section class="em-composer" data-role="composer">',
+      '  <header class="em-composer-head">',
+      '    <h2>✉ 写邮件</h2>',
+      '    <div class="em-composer-actions">',
+      '      <button type="button" class="em-btn" data-action="composer-discard">取消</button>',
+      '      <button type="button" class="em-btn em-btn-primary" data-action="composer-send">发送</button>',
+      '    </div>',
+      '  </header>',
+      '  <div class="em-composer-body">',
+      '    <label class="em-field">',
+      '      <span>收件人 *</span>',
+      '      <input type="text" class="em-input" data-role="to" placeholder="a@example.com; b@example.com" value="' + escAttr(data.to || '') + '" />',
+      '    </label>',
+      '    <details class="em-field em-field-extra">',
+      '      <summary>抄送 / 密送 / 回复</summary>',
+      '      <label class="em-field"><span>抄送</span><input type="text" class="em-input" data-role="cc" placeholder="可选，多个分号分隔" value="' + escAttr(data.cc || '') + '" /></label>',
+      '      <label class="em-field"><span>密送</span><input type="text" class="em-input" data-role="bcc" placeholder="可选，多个分号分隔" value="' + escAttr(data.bcc || '') + '" /></label>',
+      '      <label class="em-field"><span>回复地址</span><input type="email" class="em-input" data-role="reply-to" placeholder="留空使用账号默认" value="' + escAttr(data.replyTo || '') + '" /></label>',
+      '    </details>',
+      '    <label class="em-field"><span>主题 *</span><input type="text" class="em-input" data-role="subject" placeholder="邮件主题" value="' + escAttr(data.subject || '') + '" /></label>',
+      '    <div class="em-toolbar">',
+      '      <div class="em-toolbar-group">',
+      '        <button type="button" class="em-btn em-btn-tiny" data-action="composer-template" data-template="blank">空白</button>',
+      '        <button type="button" class="em-btn em-btn-tiny" data-action="composer-template" data-template="greeting">问候</button>',
+      '        <button type="button" class="em-btn em-btn-tiny" data-action="composer-template" data-template="apology">致歉</button>',
+      '      </div>',
+      '      <div class="em-toolbar-group">',
+      '        <button type="button" class="em-btn em-btn-tiny" data-action="composer-format" data-format="bold"><b>B</b></button>',
+      '        <button type="button" class="em-btn em-btn-tiny" data-action="composer-format" data-format="italic"><i>I</i></button>',
+      '        <button type="button" class="em-btn em-btn-tiny" data-action="composer-format" data-format="link">🔗 链接</button>',
+      '        <button type="button" class="em-btn em-btn-tiny" data-action="composer-format" data-format="list">• 列表</button>',
+      '        <label class="em-toggle"><input type="checkbox" data-role="html-toggle"' + (data.isHtml ? ' checked' : '') + ' />富文本</label>',
+      '      </div>',
+      '      <div class="em-toolbar-group">',
+      '        <button type="button" class="em-btn em-btn-tiny" data-action="composer-attach">📎 添加附件</button>',
+      '        <input type="file" multiple class="em-file-input" data-role="file-input" hidden />',
+      '      </div>',
+      '    </div>',
+      '    <textarea class="em-textarea" data-role="body" rows="14" placeholder="邮件正文…">' + escHtml(data.body || '') + '</textarea>',
+      '    <ul class="em-att-chips" data-role="attachments"></ul>',
+      '    <div class="em-send-status" data-role="send-status" aria-live="polite"></div>',
+      '  </div>',
+      '</section>',
+    ].join('');
+
+    var fileInput = pane.querySelector('[data-role="file-input"]');
+    if (fileInput) {
+      var appSelf = this;
+      fileInput.addEventListener('change', function (event) {
+        appSelf.uploadFiles(event.target.files);
+        event.target.value = '';
+      });
+    }
+
+    var htmlToggle = pane.querySelector('[data-role="html-toggle"]');
+    if (htmlToggle) {
+      htmlToggle.addEventListener('change', function (event) {
+        var checked = event.target.checked;
+        var body = pane.querySelector('[data-role="body"]');
+        if (checked) {
+          body.classList.add('em-textarea-html');
+        } else {
+          body.classList.remove('em-textarea-html');
+        }
+        self_capture().state.composerData.isHtml = checked;
+        self_capture().scheduleDraftSave();
+      });
+    }
+
+    ['to', 'cc', 'bcc', 'reply-to', 'subject', 'body'].forEach(function (role) {
+      var input = pane.querySelector('[data-role="' + role + '"]');
+      if (input) {
+        input.addEventListener('input', self_capture().scheduleDraftSave.bind(self_capture()));
+      }
+    });
+  };
+
+  EmailApp.prototype.hydrateComposer = function () {
+    var data = this.state.composerData;
+    if (!data || !data.file_ids || !data.file_ids.length) return;
+    var self = this;
+    Promise.all(data.file_ids.map(function (id) {
+      return apiFetch('GET', buildUrl('/api/chat/upload/' + id + '/raw', { api_key: API_KEY }), null).then(function () { return { id: id }; }).catch(function () { return { id: id }; });
+    })).then(function (entries) {
+      var files = entries.map(function (entry) { return { id: entry.id, name: entry.id, size: 0 }; });
+      self.state.attachmentCount = files.length;
+      self.renderAttachments(files);
+    });
+  };
+
+  EmailApp.prototype.applyComposerTemplate = function (name) {
+    var templates = {
+      blank: '',
+      greeting: '你好，\n\n',
+      apology: '非常抱歉给您带来不便，针对这个问题我们已采取以下措施：\n\n1. \n2. \n\n如仍有疑问请随时回复。\n',
+    };
+    var body = this.root.querySelector('[data-role="body"]');
+    if (!body) return;
+    body.value = (body.value ? body.value + '\n\n' : '') + (templates[name] || '');
+    this.state.composerData.body = body.value;
+    this.scheduleDraftSave();
+  };
+
+  EmailApp.prototype.toggleFormat = function (format) {
+    var body = this.root.querySelector('[data-role="body"]');
+    if (!body) return;
+    var htmlToggle = this.root.querySelector('[data-role="html-toggle"]');
+    if (!htmlToggle.checked) htmlToggle.checked = true;
+    this.state.composerData.isHtml = true;
+    body.classList.add('em-textarea-html');
+    var start = body.selectionStart || 0;
+    var end = body.selectionEnd || 0;
+    var selected = body.value.slice(start, end) || (format === 'link' ? '链接文字' : format === 'list' ? '条目' : '文字');
+    var wrapped;
+    if (format === 'bold') wrapped = '<b>' + selected + '</b>';
+    else if (format === 'italic') wrapped = '<i>' + selected + '</i>';
+    else if (format === 'link') {
+      var url = root_prompt('链接地址：', 'https://');
+      if (!url) return;
+      wrapped = '<a href="' + escAttr(url) + '">' + selected + '</a>';
+    } else if (format === 'list') {
+      wrapped = '<ul><li>' + selected + '</li></ul>';
+    } else wrapped = selected;
+    body.value = body.value.slice(0, start) + wrapped + body.value.slice(end);
+    this.state.composerData.body = body.value;
+    this.scheduleDraftSave();
+  };
+
+  function root_prompt(msg, def) {
+    if (typeof root.showPrompt === 'function') return root.showPrompt(msg, def);
+    return root.prompt(msg, def);
+  }
+
+  EmailApp.prototype.openAttachmentPicker = function () {
+    var input = this.root.querySelector('[data-role="file-input"]');
+    if (input) input.click();
+  };
+
+  EmailApp.prototype.uploadFiles = function (fileList) {
+    var self = this;
+    var files = Array.prototype.slice.call(fileList || []);
+    if (!files.length) return;
+    var max = (self.state.account && self.state.account.limits && self.state.account.limits.attachments) || 10;
+    var maxBytes = (self.state.account && self.state.account.limits && self.state.account.limits.attachmentBytes) || (25 * 1024 * 1024);
+    var remain = max - self.state.attachmentCount;
+    if (remain <= 0) {
+      showToast('附件数量已达上限 ' + max, 'error');
+      return;
+    }
+    if (files.length > remain) {
+      files = files.slice(0, remain);
+      showToast('只会上传前 ' + remain + ' 个文件', 'info');
+    }
+    files.forEach(function (file) {
+      self.uploadOne(file, maxBytes);
+    });
+  };
+
+  EmailApp.prototype.uploadOne = function (file, maxBytes) {
+    var self = this;
+    if (file.size > maxBytes) {
+      showToast('附件 ' + file.name + ' 超过限制', 'error');
+      return;
+    }
+    var placeholder = { id: null, name: file.name, size: file.size, status: 'uploading' };
+    self.state.attachmentCount++;
+    self.state.attachmentBytes += file.size;
+    self.appendAttachment(placeholder);
+    var form = new FormData();
+    form.append('file', file, file.name);
+    fetch(buildUrl('/api/chat/upload', { api_key: API_KEY }), {
+      method: 'POST',
+      headers: { 'X-API-Key': API_KEY },
+      body: form,
+    }).then(function (r) { return r.json(); }).then(function (data) {
+      if (data && data.error) throw new Error(data.message || data.error);
+      var info = data && data.files ? data.files[0] : data;
+      placeholder.id = info.id;
+      placeholder.status = 'done';
+      placeholder.name = info.name || file.name;
+      placeholder.size = info.size || file.size;
+      self.state.composerData.file_ids.push(info.id);
+      self.refreshAttachment(placeholder);
+      self.scheduleDraftSave();
+    }).catch(function (err) {
+      placeholder.status = 'failed';
+      placeholder.error = err.message;
+      self.refreshAttachment(placeholder);
+      self.state.attachmentCount--;
+      self.state.attachmentBytes -= file.size;
+    });
+  };
+
+EmailApp.prototype.appendAttachment = function (item) {
+    var list = this.root.querySelector('[data-role="attachments"]');
+    if (!list) return;
+    var li = document.createElement('li');
+    li.className = 'em-att-chip em-att-' + item.status;
+    li.setAttribute('data-id', item.id || item.name);
+    li.setAttribute('data-att-name', item.name);
+    li.innerHTML = this.attachmentChipHtml(item);
+    list.appendChild(li);
+  };
+
+EmailApp.prototype.refreshAttachment = function (item) {
+    var list = this.root.querySelector('[data-role="attachments"]');
+    if (!list) return;
+    // 用 name 作为稳定 selector（upload 成功后 item.id 变成 UUID，跟 li 上的 data-id 不再一致）
+    var key = item.name || (item.id || '');
+    var li = list.querySelector('[data-att-name="' + cssEscape(key) + '"]');
+    if (li) {
+      li.className = 'em-att-chip em-att-' + item.status;
+      li.innerHTML = this.attachmentChipHtml(item);
+    }
+  };
+
+  EmailApp.prototype.attachmentChipHtml = function (item) {
+    var action = item.status === 'uploading'
+      ? '<span class="em-att-status">上传中…</span>'
+      : item.status === 'failed'
+        ? '<span class="em-att-status em-att-status-error">失败 ' + escHtml(item.error || '') + '</span>'
+        : '<button type="button" class="em-btn em-btn-tiny" data-action="remove-attachment" data-id="' + escAttr(item.id) + '">移除</button>';
+    return '<span class="em-att-name">' + escHtml(item.name) + '</span>'
+      + '<span class="em-att-size">' + escHtml(formatSize(item.size)) + '</span>'
+      + action;
+  };
+
+  EmailApp.prototype.removeAttachment = function (id) {
+    var data = this.state.composerData;
+    if (!data) return;
+    var idx = data.file_ids.indexOf(id);
+    if (idx >= 0) data.file_ids.splice(idx, 1);
+    var list = this.root.querySelector('[data-role="attachments"]');
+    if (list) {
+      var node = list.querySelector('[data-id="' + id + '"]');
+      if (node && node.parentNode) node.parentNode.removeChild(node);
+    }
+    this.state.attachmentCount = Math.max(0, this.state.attachmentCount - 1);
+    this.scheduleDraftSave();
+  };
+
+  EmailApp.prototype.renderAttachments = function (items) {
+    var list = this.root.querySelector('[data-role="attachments"]');
+    if (!list) return;
+    list.innerHTML = '';
+    items.forEach(this.appendAttachment, this);
+  };
+
+  EmailApp.prototype.scheduleDraftSave = function () {
+    var self = this;
+    clearTimeout(self.state.draftTimer);
+    self.state.draftTimer = setTimeout(function () { self.persistDraft(); }, 400);
+  };
+
+  EmailApp.prototype.readComposerInputs = function () {
+    var data = this.state.composerData || {};
+    var root = this.root;
+    function valueOf(role) {
+      var el = root.querySelector('[data-role="' + role + '"]');
+      return el ? el.value : '';
+    }
+    data.to = valueOf('to');
+    data.cc = valueOf('cc');
+    data.bcc = valueOf('bcc');
+    data.replyTo = valueOf('reply-to');
+    data.subject = valueOf('subject');
+    data.body = valueOf('body');
+    var htmlToggle = root.querySelector('[data-role="html-toggle"]');
+    if (htmlToggle) data.isHtml = htmlToggle.checked;
+    return data;
+  };
+
+  EmailApp.prototype.persistDraft = function (skipStorage) {
+    if (!this.state.composerOpen) return;
+    var data = this.readComposerInputs();
+    if (skipStorage) {
+      try { root.localStorage.removeItem(DRAFT_KEY); } catch (e) { /* ignore */ }
+      return;
+    }
+    try { root.localStorage.setItem(DRAFT_KEY, JSON.stringify({ savedAt: Date.now(), data: data })); } catch (e) { /* ignore */ }
+  };
+
+  EmailApp.prototype.loadDraft = function () {
+    try {
+      var raw = root.localStorage.getItem(DRAFT_KEY);
+      if (!raw) return null;
+      var parsed = JSON.parse(raw);
+      return parsed && parsed.data ? parsed.data : null;
+    } catch (e) { return null; }
+  };
+
+  EmailApp.prototype.discardComposer = function () {
+    var self = this;
+    showConfirm('确定放弃当前邮件？未发送的草稿将被清除。').then(function (ok) {
+      if (!ok) return;
+      self.state.composerOpen = false;
+      self.state.composerData = null;
+      try { root.localStorage.removeItem(DRAFT_KEY); } catch (e) { /* ignore */ }
+      self.closeDetail();
+    });
+  };
+
+  EmailApp.prototype.submitComposer = function () {
+    var self = this;
+    if (self.state.sendInFlight) return;
+    var data = self.readComposerInputs();
+    var status = self.root.querySelector('[data-role="send-status"]');
+    if (!data.to.trim()) {
+      status.innerHTML = '<span class="em-status-error">请输入收件人</span>';
+      return;
+    }
+    if (data.body.length > MAX_BODY_LENGTH && !data.isHtml) {
+      status.innerHTML = '<span class="em-status-error">正文不能超过 ' + MAX_BODY_LENGTH + ' 字符</span>';
+      return;
+    }
+    if (data.isHtml) {
+      data.body = sanitizeEmailHtml(data.body);
+    }
+    self.state.sendInFlight = true;
+    self.setStatus('发送中…');
+    status.innerHTML = '<span class="em-status-info">发送中…</span>';
+    var payload = {
+      to: data.to.trim(),
+      cc: data.cc.trim(),
+      bcc: data.bcc.trim(),
+      replyTo: data.replyTo.trim(),
+      subject: data.subject.trim(),
+      body: data.body,
+      isHtml: data.isHtml,
+      inReplyTo: data.inReplyTo,
+      references: data.references,
+      file_ids: data.file_ids,
+    };
+    apiFetch('POST', '/api/emails/send', payload).then(function (result) {
+      status.innerHTML = '<span class="em-status-success">✅ 已发送 ' + (result.rejected && result.rejected.length ? '（部分失败）' : '') + '</span>';
+      self.setStatus('已发送');
+      try { root.localStorage.removeItem(DRAFT_KEY); } catch (e) { /* ignore */ }
+      self.state.composerOpen = false;
+      self.state.composerData = null;
+      setTimeout(function () { self.refresh(); }, 800);
+    }).catch(function (err) {
+      status.innerHTML = '<span class="em-status-error">❌ ' + escHtml(err.message) + '</span>';
+      self.setStatus('发送失败', 'error');
+    }).then(function () { self.state.sendInFlight = false; });
+  };
+
+  function mount(windowRef) {
+    if (!windowRef || !windowRef.$c) return null;
+    var app = new EmailApp(windowRef);
+    app.init();
+    return app;
+  }
+
+  function entry(windowRef) { return mount(windowRef); }
+
+  if (root.ACMSWin) {
+    if (root.ACMS && root.ACMS.registerPackage) {
+      root.ACMS.registerPackage('email-inbox', {
+        title: '邮件', icon: '📬', category: '工具',
+        defaultSize: { w: 960, h: 640 },
+        loader: function (w) { entry(w); },
+      });
+    }
+    if (typeof root.ACMSWin.registerViewLoader === 'function') {
+      root.ACMSWin.registerViewLoader('email-inbox', function (w) { entry(w); });
+    }
+  }
+
+  root.openEmailInbox = function () {
+    if (!root.ACMSWin) return;
+    if (typeof root.ACMSWin.isActive === 'function' && !root.ACMSWin.isActive()) root.ACMSWin.enable();
+    root.ACMSWin.open('email-inbox', { w: 960, h: 640, title: '📬 邮件' });
+  };
+
+  root.EM = { open: openEmailInbox, mount: mount };
+})(typeof window !== 'undefined' ? window : globalThis);

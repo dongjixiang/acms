@@ -139,6 +139,12 @@ async function fetchUrlCore({ url, max_length = MAX_LENGTH_DEFAULT }) {
   // 1. SSRF check
   const safety = await checkUrlSafety(url);
   if (!safety.safe) {
+    // v0.74.1: 区分"真安全威胁"和"域名解析失败"——后者通常意味着 LLM 编造了一个 URL，
+    //   不应该用"安全检查失败"误导 LLM 以为是安全问题（之前会传染到 send_email 等独立工具）
+    const reason = String(safety.reason || '');
+    if (/^DNS 解析失败/.test(reason) || /^DNS 无返回结果/.test(reason)) {
+      return { error: `域名无法解析（${reason.split(':').slice(-1)[0].trim() || reason}）— 请确认 URL 是否正确，或跳过此 URL` };
+    }
     return { error: `安全检查失败: ${safety.reason}` };
   }
 
