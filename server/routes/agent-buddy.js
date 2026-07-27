@@ -16,8 +16,9 @@ const router = express.Router();
 const { callLLM } = require('../services/llm-adapter');
 const { execute: runtimeExec } = require('../services/agent-runtime');
 const modelStore = require('../stores/model-store');
-const buddySkill = require('../services/agent-buddy-skill');
-const buddyAction = require('../services/agent-buddy-action');
+var buddySkill = require('../services/agent-buddy-skill');
+var buddyAction = require('../services/agent-buddy-action');
+var toolRetriever = require('../services/tool-retriever');  // v0.74: 智能工具检索
 const eventBus = require('../services/event-bus');
 
 // P2: 订阅 Agent 事件，让小吉知道 task-agent 做了什么
@@ -333,9 +334,22 @@ router.post('/chat', async function(req, res) {
     }
 
     // 2. 拼 SKILL system prompt
+    var retrievedToolNames = [];
+    try {
+      // v0.74: 根据用户消息自动检索最匹配的工具
+      if (toolRetriever.status().ready) {
+        var retrieved = await toolRetriever.retrieve(message, 5);
+        retrievedToolNames = retrieved.map(function(r) { return r.name; });
+        console.log('[agent-buddy] retrieved tools:', JSON.stringify(retrievedToolNames), 'scores:', JSON.stringify(retrieved.map(function(r) { return r.score; })));
+      }
+    } catch (e) {
+      console.warn('[agent-buddy] tool retriever error:', e.message);
+    }
+
     var buddyCtx = {
       currentView: context.currentView || '_default',
       expandedCategories: previousCategories,
+      retrievedTools: retrievedToolNames,  // v0.74
       userName: user ? (user.displayName || user.username || '伙伴') : (context.userName || '伙伴'),
       userSummary: buildUserSummary(context) + actionHint + learnHint,
       personality: context.personality || '',
@@ -528,5 +542,55 @@ router.post('/chat', async function(req, res) {
     }
   }
 });
+
+// ── v0.74: Tool Retriever 管理 API ──────────────
+
+/** GET /api/agent-buddy/tool-retriever/status — 查看当前检索器状态 */
+router.get('/tool-retriever/status', function(req, res) {
+  return res.json(toolRetriever.status());
+});
+
+/** POST /api/agent-buddy/tool-retriever/mode — 切换检索模式 */
+router.post('/tool-retriever/mode', function(req, res) {
+  var newMode = req.body && req.body.mode;
+  if (newMode !== 'keyword' && newMode !== 'embedding' && newMode !== 'bge' && newMode !== 'jsembed') {
+    return res.status(400).json({ ok: false, error: 'mode must be "keyword", "bge", "jsembed", or "embedding"' });
+  }
+  var ok = toolRetriever.setMode(newMode);
+  return res.json({ ok: ok, mode: toolRetriever.getMode() });
+});
+
+/** POST /api/agent-buddy/tool-retriever/test — 测试检索效果 */
+router.post('/tool-retriever/test', async function(req, res) {
+  var query = req.body && req.body.query;
+  var topK = req.body && req.body.topK ? parseInt(req.body.topK) : 5;
+  if (!query) return res.status(400).json({ ok: false, error: 'query required' });
+  try {
+    var results = await toolRetriever.retrieve(query, topK);
+    return res.json({
+      ok: true,
+      mode: toolRetriever.getMode(),
+      query: query,
+      topK: topK,
+      toolsCount: toolRetriever.status().toolsCount,
+      results: results,
+    });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// 初始化 tool retriever（后台加载，不阻塞）
+try {
+  setTimeout(function() {
+    toolRetriever.init().then(function(s) {
+      console.log('[agent-buddy] 🔧 tool-retriever 就绪:', s.mode, (s.count || s.toolsCount || 0), 'tools');
+    }).catch(function(e) {
+      console.warn('[agent-buddy] tool-retriever init warning:', e.message);
+    });
+  }, 1000);
+} catch (e) {
+  console.warn('[agent-buddy] tool-retriever init error:', e.message);
+}
 
 module.exports = router;

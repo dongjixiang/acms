@@ -181,12 +181,14 @@ registerTool({
 registerTool({
   name: 'generate_pptx',
   description: '生成 PowerPoint (.pptx) 演示文稿。接收幻灯片数组，每页含标题和正文。'
-    + '示例: generate_pptx({title: "项目汇报", slides: [{title:"概述", content:"进展顺利"}]})',
+    + '示例: generate_pptx({title: "项目汇报", slides: [{title:"概述", content:"进展顺利"}]})'
+    + '【注意：参数是 slides（幻灯片数组），不是 instruction。instruction 是 document_gen 的参数，不要混用。'
+    + '即使从搜索结果生成 PPT，也必须自己组织 slides 内容，不能依赖系统自动整理。】',
   parameters: {
     type: 'object',
     properties: {
       title: { type: 'string', description: '演示文稿标题（必填）' },
-      slides: { type: 'array', description: '幻灯片数组，每页 {title, content}', items: { type: 'object', properties: { title: { type: 'string' }, content: { type: 'string' } } } },
+      slides: { type: 'array', description: '幻灯片数组，每页 {title, content, image_url?}', items: { type: 'object', properties: { title: { type: 'string' }, content: { type: 'string' }, image_url: { type: 'string', description: '可选：幻灯片配图 URL' } } } },
     },
     required: ['title', 'slides'],
   },
@@ -198,11 +200,49 @@ registerTool({
 
       var zip = new AdmZip();
       var totalSlides = slides.length + 1; // +1 封面
+      var imgIndex = 1; // 图片计数器
+
+      // 下载图片并保存到 zip 的 media/ 目录
+      async function downloadImage(url) {
+        if (!url) return null;
+        var imgId = 'rIdImg' + imgIndex;
+        var fileName = 'image' + imgIndex + '.jpg';
+        imgIndex++;
+
+        try {
+          // 用 fetch 或 http/https 下载
+          var http = url.startsWith('https') ? require('https') : require('http');
+          var buf = await new Promise(function(resolve, reject) {
+            http.get(url, function(resp) {
+              if (resp.statusCode >= 300 && resp.statusCode < 400 && resp.headers.location) {
+                // 重定向
+                http.get(resp.headers.location, function(r2) {
+                  var chunks = [];
+                  r2.on('data', function(c) { chunks.push(c); });
+                  r2.on('end', function() { resolve(Buffer.concat(chunks)); });
+                }).on('error', reject);
+              } else {
+                var chunks = [];
+                resp.on('data', function(c) { chunks.push(c); });
+                resp.on('end', function() { resolve(Buffer.concat(chunks)); });
+              }
+            }).on('error', reject);
+          });
+
+          if (buf.length < 100) return null;
+          zip.addFile('ppt/media/' + fileName, buf);
+          return { id: imgId, file: fileName, contentType: 'image/jpeg' };
+        } catch (e) {
+          console.warn('[generate_pptx] 图片下载失败:', url.slice(0, 60), e.message);
+          return null;
+        }
+      }
 
       // [Content_Types].xml
       var ctXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
         '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
         '<Default Extension="xml" ContentType="application/xml"/>' +
+        '<Default Extension="jpg" ContentType="image/jpeg"/>' +
         '<Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>' +
         '<Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/>' +
         '<Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/>' +
@@ -214,6 +254,24 @@ registerTool({
       zip.addFile('_rels/.rels', Buffer.from(
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/></Relationships>'
       ));
+
+      // 下载所有图片
+      var imgInfos = [];
+      for (var si = 0; si < slides.length; si++) {
+        var imgInfo = await downloadImage(slides[si].image_url);
+        imgInfos.push(imgInfo);
+      }
+
+      // 构建每页的 rels（图片关系）
+      function buildSlideRels(slideIndex, imgInfo) {
+        var rels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">';
+        rels += '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>';
+        if (imgInfo) {
+          rels += '<Relationship Id="' + imgInfo.id + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/' + imgInfo.file + '"/>';
+        }
+        rels += '</Relationships>';
+        return rels;
+      }
 
       var relsXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
         '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="slideMasters/slideMaster1.xml"/>';
@@ -230,27 +288,64 @@ registerTool({
       zip.addFile('ppt/slideLayouts/slideLayout1.xml', Buffer.from('<?xml version="1.0"?><p:sldLayout xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" type="blank"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/></p:nvGrpSpPr><p:grpSpPr/></p:nvGrpSpPr></p:spTree></p:cSld></p:sldLayout>'));
       zip.addFile('ppt/theme/theme1.xml', Buffer.from('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Default"><a:themeElements><a:clrScheme name="Default"><a:dk1><a:srgbClr val="000000"/></a:dk1><a:dk2><a:srgbClr val="333333"/></a:dk2><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1><a:accent1><a:srgbClr val="4472C4"/></a:accent1></a:clrScheme></a:themeElements></a:theme>'));
 
-      function makeSlideXml(sTitle, sContent, isCover) {
+      function makeSlideXml(sTitle, sContent, isCover, imgInfo) {
         var fontSize = isCover ? '4400' : '3600';
-        var titleY = isCover ? '10%' : '5%';
         var xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree>';
         xml += '<p:nvGrpSpPr><p:cNvPr id="1" name=""/></p:nvGrpSpPr><p:grpSpPr/>';
-        xml += '<p:sp><p:nvSpPr><p:cNvPr id="2" name="Title"/><p:nvSpPrType/></p:nvSpPr><p:spPr><a:xfrm><a:off x="914400" y="457200"/><a:ext cx="8229600" cy="' + fontSize + '"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></a:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr sz="' + (isCover ? '3600' : '2400') + '" b="1"/><a:t>' + escXml(sTitle) + '</a:t></a:r></a:p></p:txBody></p:sp>';
-        if (sContent) {
-          xml += '<p:sp><p:nvSpPr><p:cNvPr id="3" name="Content"/><p:nvSpPrType/></p:nvSpPr><p:spPr><a:xfrm><a:off x="914400" y="' + (isCover ? '35%' : '20%') + '"/><a:ext cx="8229600" cy="60%"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></a:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr sz="1600"/><a:t>' + escXml(sContent) + '</a:t></a:r></a:p></p:txBody></p:sp>';
+
+        // 如果有图片，先加图片（占右侧区域）
+        if (imgInfo) {
+          var imgW = 5000000; // ~5 inches
+          var imgH = 4000000;
+          var imgX = 5500000; // 右侧
+          var imgY = 1200000;
+          // 非封面：文字在左，图片在右
+          if (!isCover) {
+            imgX = 5500000;
+            imgY = 1200000;
+          } else {
+            // 封面：图片居中
+            imgX = 2500000;
+            imgY = 2000000;
+            imgW = 6000000;
+            imgH = 4000000;
+          }
+          xml += '<p:pic><p:nvPicPr><p:cNvPr id="4" name="Picture"/><p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr></p:nvPicPr><p:blipFill><a:blip r:embed="' + imgInfo.id + '" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/><a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr><a:xfrm><a:off x="' + imgX + '" y="' + imgY + '"/><a:ext cx="' + imgW + '" cy="' + imgH + '"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></a:spPr></p:pic>';
         }
+
+        // 标题
+        var titleX = imgInfo && !isCover ? '457200' : '914400';
+        var titleW = imgInfo && !isCover ? '4500000' : '8229600';
+        var titleSize = isCover ? '3600' : '2400';
+        xml += '<p:sp><p:nvSpPr><p:cNvPr id="2" name="Title"/><p:nvSpPrType/></p:nvSpPr><p:spPr><a:xfrm><a:off x="' + titleX + '" y="457200"/><a:ext cx="' + titleW + '" cy="' + fontSize + '"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></a:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr sz="' + titleSize + '" b="1"/><a:t>' + escXml(sTitle) + '</a:t></a:r></a:p></p:txBody></p:sp>';
+
+        // 正文
+        if (sContent) {
+          var contentX = imgInfo && !isCover ? '457200' : '914400';
+          var contentW = imgInfo && !isCover ? '4500000' : '8229600';
+          var contentY = imgInfo && !isCover ? '20%' : (isCover ? '35%' : '20%');
+          xml += '<p:sp><p:nvSpPr><p:cNvPr id="3" name="Content"/><p:nvSpPrType/></p:nvSpPr><p:spPr><a:xfrm><a:off x="' + contentX + '" y="' + contentY + '"/><a:ext cx="' + contentW + '" cy="60%"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></a:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr sz="1600"/><a:t>' + escXml(sContent) + '</a:t></a:r></a:p></p:txBody></p:sp>';
+        }
+
         xml += '</p:spTree></p:cSld></p:sld>';
         return xml;
       }
 
-      zip.addFile('ppt/slides/slide1.xml', Buffer.from(makeSlideXml(title, slides.length + ' 页', true)));
+      // 封面
+      zip.addFile('ppt/slides/slide1.xml', Buffer.from(makeSlideXml(title, slides.length + ' 页', true, null)));
+      zip.addFile('ppt/slides/_rels/slide1.xml.rels', Buffer.from(buildSlideRels(1, null)));
+
+      // 内容页
       slides.forEach(function(s, idx) {
-        zip.addFile('ppt/slides/slide' + (idx + 2) + '.xml', Buffer.from(makeSlideXml(s.title || '', s.content || '', false)));
+        var imgInfo = imgInfos[idx] || null;
+        zip.addFile('ppt/slides/slide' + (idx + 2) + '.xml', Buffer.from(makeSlideXml(s.title || '', s.content || '', false, imgInfo)));
+        zip.addFile('ppt/slides/_rels/slide' + (idx + 2) + '.xml.rels', Buffer.from(buildSlideRels(idx + 2, imgInfo)));
       });
 
       var buffer = zip.toBuffer();
       var file = saveFile('pptx', buffer);
-      return { ok: true, title: title, url: file.url, fileId: file.id, size: buffer.length, slides: slides.length, message: '演示文稿已生成' };
+      var imgCount = imgInfos.filter(function(i) { return i !== null; }).length;
+      return { ok: true, title: title, url: file.url, fileId: file.id, size: buffer.length, slides: slides.length, images: imgCount, message: '演示文稿已生成' };
     } catch (e) {
       return { ok: false, error: 'PPTX_FAILED', message: e.message };
     }

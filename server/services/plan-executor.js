@@ -363,7 +363,15 @@ async function runPlan(reqId, planDoc) {
 
   for (const step of planDoc.steps) {
     // 跳过已经标 skipped 的（前置失败导致）
-    if (step.status === 'skipped') continue;
+    if (step.status === 'skipped') {
+      console.log(`[plan-executor] ${reqId} 跳过步骤 ${step.id} (${step.tool}) — 前置失败导致跳过`);
+      continue;
+    }
+
+    console.log(`[plan-executor] ${reqId} ▶ 开始步骤 ${step.id}: ${step.tool}`, JSON.stringify({
+      depends_on: step.depends_on,
+      args: typeof step.args === 'object' && step.args !== null ? Object.keys(step.args) : step.args,
+    }));
 
     // 标记 running
     step.status = 'running';
@@ -416,6 +424,13 @@ async function runPlan(reqId, planDoc) {
       step.status = isOk ? 'done' : 'failed';
       step.result = result;
       step.finished_at = new Date().toISOString();
+      console.log(`[plan-executor] ${reqId} ✅ 完成步骤 ${step.id} (${step.tool}): status=${step.status}`, JSON.stringify({
+        ok: isOk,
+        keys: result ? Object.keys(result) : null,
+        url: result && result.url ? String(result.url).slice(0, 80) : null,
+        error: result && result.error || null,
+        message: result && result.message ? String(result.message).slice(0, 100) : null,
+      }));
       if (!isOk) {
         step.error = (result && (result.error || result.message)) || 'tool returned ok=false';
         anyFailed = true;

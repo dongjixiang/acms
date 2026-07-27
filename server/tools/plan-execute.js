@@ -48,7 +48,7 @@ registerTool({
     '- "生成 Word 文档 / 整理成 Word / 生成 docx / 整理成文档" → **document_gen**（v0.48 真 tool，会返回 .docx + .md + file_ids）' +
     '（备选：**generate_docx** — v0.62 复活，输入 Markdown 文本转 .docx，无 LLM 整理步骤；适合 LLM 自己已经写好 Markdown 内容的场景，**省一次 LLM 调用**）' +
     '- "生成 Excel 表格 / 生成 xlsx / 输出数据表" → **generate_xlsx**（v0.62 复活，输入 headers + rows 转 .xlsx）' +
-    '- "生成 PPT / 生成 PowerPoint / 生成幻灯片 / 整理成演示文稿" → **generate_pptx**（v0.62 复活，输入 slides 数组转 .pptx）' +
+    '- "生成 PPT / 生成 PowerPoint / 生成幻灯片 / 整理成演示文稿" → **generate_pptx**（v0.62 复活，输入 slides 数组转 .pptx。**注意参数是 slides 不是 instruction，必须自己准备 slides 内容**）' +
     '- "修改已有文档 / 改 Word / 改 docx / 编辑文档 / 更新文档" → **document_edit**（v0.62.4 输入 fileId + markdown 内容覆写文件）' +
     '- "发邮件/通知/把对话发邮件" → send_email（**file_ids 自动串联上游 document_gen / generate_image 等的产出**）\n' +
     '选错工具 = 那个步骤失败或返回空数据。**复合意图里 web_research vs web_search 二选一**：要"读起来通顺的赛况总结" 用 web_research；要"原始链接 + snippet 列表" 用 web_search。\n' +
@@ -175,6 +175,72 @@ registerTool({
         error: 'TOO_MANY_STEPS',
         message: 'plan 步骤数 ≤ 20（避免过度编排）',
       };
+    }
+
+    // ── v0.74: 规划校验 —— LLM 常漏步，自动补齐 ──
+    try {
+      var planTools = args.steps.map(function(s) { return s.tool; });
+      var userMsg = '';
+
+      // 从 requirement 拿用户原始消息
+      try {
+        var reqStore = require('../stores/requirement-store');
+        var req = reqStore.getById(reqId);
+        if (req && req.title) userMsg = req.title;
+      } catch (e) { /* reqStore 不可用 */ }
+
+      // 也尝试从 buddy_memory 拿最新用户消息
+      if (!userMsg) {
+        try {
+          var buddyDb = require('../services/buddy-memory');
+          var lastMsg = buddyDb.findOne('last_user_message');
+          if (lastMsg) userMsg = lastMsg;
+        } catch (e) { /* buddy_memory 不可用 */ }
+      }
+
+      var added = 0;
+
+      // 检查 1: 用户说"发邮件"/"send email"/"@邮箱" 但 plan 没有 send_email
+      var emailRe = /发邮件|send.*email|@\w+\.\w+|邮件到|\w+@\w+\.\w+/i;
+      if (emailRe.test(userMsg) && !planTools.includes('send_email')) {
+        args.steps.push({
+          tool: 'send_email',
+          args: { to: '', subject: '', body: '' },
+          depends_on: [args.steps[args.steps.length - 1].id || 's' + args.steps.length],
+        });
+        added++;
+        console.log('[plan_execute] ⚠️ 自动补上 send_email 步骤（用户提到发邮件但 LLM 漏了）');
+      }
+
+      // 检查 2: 用户说"PPT"/"演示"/"幻灯片" 但 plan 没有 generate_pptx
+      var pptRe = /ppt|演示|幻灯片|PowerPoint|pptx/i;
+      if (pptRe.test(userMsg) && !planTools.includes('generate_pptx')) {
+        args.steps.push({
+          tool: 'generate_pptx',
+          args: { title: '演示文稿', slides: [{ title: '内容', content: '请补充内容' }] },
+          depends_on: [],
+        });
+        added++;
+        console.log('[plan_execute] ⚠️ 自动补上 generate_pptx 步骤（用户提到PPT但 LLM 漏了）');
+      }
+
+      // 检查 3: 用户说"Excel"/"表格"/"xlsx" 但 plan 没有 generate_xlsx
+      var xlsxRe = /excel|表格|xlsx|电子表/i;
+      if (xlsxRe.test(userMsg) && !planTools.includes('generate_xlsx')) {
+        args.steps.push({
+          tool: 'generate_xlsx',
+          args: { title: '数据表', headers: ['项目', '数值'], rows: [['示例', '0']] },
+          depends_on: [],
+        });
+        added++;
+        console.log('[plan_execute] ⚠️ 自动补上 generate_xlsx 步骤（用户提到表格但 LLM 漏了）');
+      }
+
+      if (added > 0) {
+        console.log('[plan_execute] 共自动补齐', added, '个步骤');
+      }
+    } catch (e) {
+      console.warn('[plan_execute] 规划校验异常（不影响执行）:', e.message);
     }
 
     // 延迟 require 避免循环依赖（plan-executor.js require routes/chat-intent.js）

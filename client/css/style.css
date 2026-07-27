@@ -3932,6 +3932,20 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
   background: var(--bg3, #252540);
   color: var(--text, #e0e0f0);
 }
+.ap-mode-badge {
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+  margin-right: 4px;
+  border-radius: 3px;
+  user-select: none;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+.ap-mode-badge:hover {
+  opacity: 1;
+  background: var(--bg3, #252540);
+}
 
 /* Body */
 .ap-body {

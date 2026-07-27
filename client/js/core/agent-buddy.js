@@ -389,6 +389,7 @@
       '<div class="ap-header">' +
         '<span class="ap-avatar">◕‿◕</span>' +
         '<span class="ap-title">小吉</span>' +
+        '<span class="ap-mode-badge" id="ap-mode-badge" title="点我切换检索模式">🔍</span>' +
         '<button class="ap-close">✕</button>' +
       '</div>' +
       '<div class="ap-messages" id="ap-messages">' +
@@ -442,6 +443,9 @@
 
     // v0.62: 小吉专属拖拽 + 8 向缩放（不接 ACMSWin，独一无二的小吉窗口）
     _initPanelDragAndResize(_panelEl);
+
+    // v0.74: 检索模式切换（面板创建后才能找到 badge 元素）
+    _initToolRetrieverUI();
 
     return _panelEl;
   }
@@ -1526,6 +1530,62 @@
         }
       });
     });
+
+    // P2: Agent 事件通知 — 任务失败/完成时自动弹面板
+  }
+
+  /** 初始化检索模式切换 badge */
+  function _initToolRetrieverUI() {
+    var badge = document.getElementById('ap-mode-badge');
+    if (!badge) return;
+
+    // 查询当前模式并更新 UI
+    fetch('/api/agent-buddy/tool-retriever/status', { headers: getAuthHeaders() })
+      .then(function(r) { return r.json(); })
+      .then(function(s) {
+        _updateModeBadge(badge, s.mode);
+      })
+      .catch(function() { /* 静默 */ });
+
+    // 点击切换
+    badge.addEventListener('click', function(e) {
+      e.stopPropagation();
+      var current = badge.getAttribute('data-mode') || 'keyword';
+      var next = current === 'keyword' ? 'bge' : 'keyword';
+
+      fetch('/api/agent-buddy/tool-retriever/mode', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ mode: next }),
+      })
+      .then(function(r) { return r.json(); })
+      .then(function(result) {
+        if (result.ok || result.mode) {
+          _updateModeBadge(badge, result.mode || next);
+          // 在聊天流中提示切换成功
+          var container = document.querySelector('#ap-messages');
+          if (container) {
+            var div = document.createElement('div');
+            div.className = 'ap-msg ap-msg-buddy';
+            div.innerHTML = '<span class="ap-msg-text" style="font-size:12px;color:#999">🔧 已切换到 <strong>' + (result.mode || next) + '</strong> 检索模式</span>';
+            container.appendChild(div);
+            container.scrollTop = container.scrollHeight;
+          }
+        }
+      })
+      .catch(function() {});
+    });
+  }
+
+  function _updateModeBadge(badge, mode) {
+    badge.setAttribute('data-mode', mode);
+    if (mode === 'keyword') {
+      badge.textContent = '🔍';
+      badge.title = '关键词模式，点我切换';
+    } else {
+      badge.textContent = '🧠';
+      badge.title = '语义模式 (BGE)，点我切换';
+    }
   }
 
   // ── 暴露 API ──

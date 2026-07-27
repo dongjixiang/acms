@@ -1,13 +1,10 @@
-// ACMS Agent Buddy「小吉」SKILL 生成器（v0.61）
-// 核心设计：三层动态 prompt 拼装（按多多"按需加载、反应速度优先"原则）
-//   L0 永久层：身份 + 性格 + 通用行为准则 + 功能分类索引
+// ACMS Agent Buddy「小吉」SKILL 生成器（v0.74）
+// 核心设计：四层动态 prompt 拼装（L0 常驻 + L1 视图 + L2 扩载 + L3 智能检索）
+//   L0 永久层：5 个最常用工具（open_view / query_collection / web_search / send_email / _expand_tools）
 //   L1 视图层：按 currentView 注入 3-5 个最相关 tool（每次 chat 请求实时算）
-//   L2 扩载层：LLM 主动调 _expand_tools({category}) 触发，按 category 补 5-8 个 tool
-//
-// 关键约束：
-//   - 不一次性 inject 全量 35+ tool（浪费 token + LLM 注意力分散）
-//   - 服务端每次 chat 请求**动态拼** prompt，LLM 只看到当前相关的 5-10 个 tool
-//   - L0 层加 "我能做的分类索引"，让 LLM 知道可以 _expand_tools 扩载哪些类
+//   L2 扩载层：LLM 主动调 _expand_tools({category}) 触发，向后兼容
+//   L3 检索层（v0.74 新增）：自动根据用户消息匹配 top-5 工具，替换大部分 L2 扩载
+//     支持 keyword（零依赖默认）和 embedding（Python ONNX bge-small-zh）两种模式
 //
 // 调用方：routes/agent-buddy.js（chat 端点）
 // 依赖：tool-registry（已注册的所有 tool，包括 acms-internal.js）
@@ -15,6 +12,7 @@
 const toolRegistry = require('./tool-registry');
 const skillLoader = require('./skill-loader');
 const appToolsRegistry = require('./app-tools-registry');  // v0.66
+const toolRetriever = require('./tool-retriever');  // v0.74: 智能工具检索
 // L0 基础身份提示（永久常驻层）
 // ── L0 永久层（~500 tokens，常驻不卸载）──
 const L0_BASE = `你是「小吉」，ACMS 智能协同管理平台的系统助手。
@@ -25,19 +23,22 @@ const L0_BASE = `你是「小吉」，ACMS 智能协同管理平台的系统助�
 - 你不编造 ACMS 没有的功能，不知道就说"这个我还在学"
 - 你可以在回复末尾用【face:表情】切换表情（happy/thinking/caring/idea/sleepy/...）
 
-【你能在 ACMS 做的事（分类索引，按需扩载）】
-① 需求管理（idea→clarifying→approved→in_execution→done）：建/查/审批/改状态需求、添加澄清问题
-② 任务看板：建/查/认领/改状态/改进度任务，看板视图查询
-③ 缺陷管理（bugs）：建/查/分配/关闭缺陷
-④ 调研/搜索：联网搜资料（web_search）、综合多源调研（web_research）、抓 URL 内容
-⑤ 创作：生成图片（generate_image）、Word 文档（document_gen / generate_docx / document_edit）、Excel 表格（generate_xlsx）、PPT 演示（generate_pptx）、视频（play_video）、找歌（play_music）
-⑥ 通讯：发邮件给团队（send_email，前端有预览卡）
-| ⑦ 自动化：复合意图 plan_execute（多步骤任务编排）
-| ⑧ 系统能力：打开 ACMS 窗口（open_view）、高亮元素（highlight_element）、看统计数据
-| ⑨ 用户/Agent 管理：列出用户、看 Agent 任务清单
-| ⑩ 应用能力（v0.66 app-tools）：每个 ACMS 应用可暴露自己的工具给 AI 调用
-|    例：file-manager 暴露 file_search（在指定目录搜文件名）、image-editor 暴露 image_get_info 等
-|    调当前可见的 app-tool 直接调；要看完整 app-tool 列表，调 _expand_tools({category:'app'})
+【你在 ACMS 能做的主要事情（系统会自动为你匹配最合适的工具）】
+这些事不需要你记工具名——系统会根据用户的请求，自动检索最相关的工具给你：
+• 需求管理：建/查/审批/改状态需求、添加澄清问题
+• 任务看板：建/查/认领/改状态/改进度任务、看板视图查询
+• 缺陷管理：建/查/分配/关闭缺陷
+• 调研/搜索：联网搜资料（web_search）、综合多源调研（web_research）、抓 URL 内容
+• 创作：生成图片（generate_image）、Word 文档（generate_docx）、Excel 表格（generate_xlsx）、PPT 演示（generate_pptx）、视频/音乐播放
+• 通讯：发邮件给团队（send_email，有预览确认卡）
+• 自动化：复合意图编排（plan_execute）
+• 文档编辑：新建/修改 Word 文档（document_edit）
+• 系统能力：打开 ACMS 窗口、看统计数据、查用户/Agent
+
+【工具选择机制】
+- 「__VIEW__」视图匹配的工具已自动注入
+- 系统已根据你的意图检索了最相关的工具（见下方工具列表）
+- 如果需要的工具不在列表中，可以回复「把 X 工具给我」或继续描述需求，系统会自动补上
 
 【执行约束（重要）】
 - ACMS 业务数据的创建/修改/删除前，用中文告诉用户并等待确认；但图片/文档生成等可逆创作动作可直接执行
@@ -51,10 +52,11 @@ const L0_BASE = `你是「小吉」，ACMS 智能协同管理平台的系统助�
   例如：【learn:窗口-项目管理=launchProjects】、【learn:工具-搜索=web_search】
   下次我就不会犯同样的错了。不需要告诉用户你在记录。
 
-【工具按需扩载】
-我当前给你的工具是匹配「__VIEW__」视图的。如果用户要做别的事，调：
-  _expand_tools({category: "requirement|task|bug|agent|window|system|dashboard"})
-下一轮我会把该 category 的所有工具补给你。
+【工具选择说明】
+系统已根据当前用户的请求自动为你匹配了最合适的工具（见下方列表）。
+包含：__VIEW__ 视图相关工具 + 系统常备工具 + 语义检索匹配工具。
+如果这些不够用，可以调 _expand_tools({category: "..."}) 手动扩载某类工具。
+可扩载类别：requirement|task|bug|agent|window|system|dashboard|office|app
 
 【ACMS 数据全景·管家必读（v0.62 新增）】
 你是 ACMS 的管家，能用 query_collection 查任何业务 collection。下面是 15 个可读 collection 的速查：
@@ -98,10 +100,8 @@ const VIEW_TOOLS = {
   '_default':      ['list_my_work', 'open_view', 'get_dashboard_stats', 'search_requirements']
 };
 
-// L0 常驻工具（不受视图影响，永远在 SKILL prompt）
-// + chat 流工具（web_search / generate_image / play_music / play_video — 创作/搜索类，常驻避免漏调）
-// v0.62 新增 query_collection（管家通用查询·管家身份基础能力）
-const L0_TOOLS = ['open_view', 'highlight_element', '_expand_tools', 'query_collection', 'generate_image', 'send_email', 'plan_execute', 'web_search', 'play_music', 'play_video', 'search_history', 'delegate_subtasks'];
+// L0 常驻工具（最小集：最常用的 5 个，其他由 retriever 自动匹配）
+const L0_TOOLS = ['open_view', 'query_collection', 'web_search', 'send_email', '_expand_tools'];
 
 // ── L2 扩载层（按 LLM 主动 _expand_tools({category}) 触发）──
 const CATEGORY_TOOLS = {
@@ -112,6 +112,7 @@ const CATEGORY_TOOLS = {
   'window':      ['open_view', 'highlight_element', 'close_window'],
   'system':      ['list_users', 'get_my_profile', 'get_system_config', 'list_my_work'],
   'dashboard':   ['get_dashboard_stats', 'list_recent_events', 'get_project_health'],
+  'office':      ['generate_docx', 'generate_xlsx', 'generate_pptx', 'document_edit'],
 };
 
 // v0.66: L2 'app' category 动态加载所有 app-tool（前端应用通过 WS 暴露的能力）
@@ -142,6 +143,7 @@ function formatToolDescription(tool) {
  * @param {object} ctx - {
  *   currentView: 'kanban'|'requirements'|...,
  *   expandedCategories: ['requirement', ...],  // 用户/系统已扩载的 categories
+ *   retrievedTools: ['generate_pptx', ...],    // v0.74: 自动检索匹配的工具
  *   userSummary: '见过 N 次；聊过 M 个话题',
  *   personality: '我对此用户的印象',
  *   userName: '多多'
@@ -151,13 +153,15 @@ function formatToolDescription(tool) {
 function buildChatPrompt(ctx = {}) {
   const view = ctx.currentView || '_default';
   const l1ToolNames = VIEW_TOOLS[view] || VIEW_TOOLS['_default'];
+  // v0.74: 智能检索匹配的工具（替换大部分 L2 扩载）
+  const retrievedToolNames = ctx.retrievedTools || [];
   // v0.66: L2 'app' category 动态注入所有 app-tool（前端应用通过 WS 注册的能力）
   const expandedCategories = ctx.expandedCategories || [];
   const l2ToolNames = expandedCategories.flatMap(cat => {
     if (cat === 'app') return getAppCategoryTools();
     return CATEGORY_TOOLS[cat] || [];
   });
-  const allToolNames = [...new Set([...L0_TOOLS, ...l1ToolNames, ...l2ToolNames])];
+  const allToolNames = [...new Set([...L0_TOOLS, ...l1ToolNames, ...l2ToolNames, ...retrievedToolNames])];
 
   const toolDescs = allToolNames
     .map(name => formatToolDescription(toolRegistry.getTool(name)))
