@@ -672,19 +672,35 @@
           var c = imageEditor._graphics && imageEditor._graphics.getCanvas();
           if (!c) { resolve(window.imageEditorAPI.saveCanvasSnapshot(imageEditor)); return; }
           var cw = c.getWidth(), ch = c.getHeight();
+          // 限制最大尺寸防止 dataURL 过大
+          var MAX_SIZE = 1024;
+          if (cw > MAX_SIZE || ch > MAX_SIZE) {
+            var ratio = Math.min(MAX_SIZE / cw, MAX_SIZE / ch);
+            cw = Math.round(cw * ratio); ch = Math.round(ch * ratio);
+          }
           var img = new Image();
           img.onload = function() {
             try {
               var offscreen = document.createElement('canvas');
               offscreen.width = cw; offscreen.height = ch;
               var ctx = offscreen.getContext('2d');
+              // 上传图铺底（居中缩放裁剪）
               var scale = Math.max(cw / img.width, ch / img.height);
               var dx = (cw - img.width * scale) / 2, dy = (ch - img.height * scale) / 2;
               ctx.drawImage(img, dx, dy, img.width * scale, img.height * scale);
-              ctx.globalAlpha = 0.6;
+              // 画布当前内容半透明叠加
+              ctx.globalAlpha = 0.5;
               ctx.drawImage(c.getElement(), 0, 0, cw, ch);
               ctx.globalAlpha = 1;
-              resolve(offscreen.toDataURL('image/png'));
+              var dataUrl = offscreen.toDataURL('image/jpeg', 0.8);
+              // 验证 dataURL 有效
+              if (!dataUrl || dataUrl === 'data:,' || dataUrl.length < 100) {
+                console.warn('[AI] composite generated invalid dataURL, falling back');
+                resolve(window.imageEditorAPI.saveCanvasSnapshot(imageEditor));
+              } else {
+                console.log('[AI] composite dataURL size:', (dataUrl.length / 1024).toFixed(0) + 'KB');
+                resolve(dataUrl);
+              }
             } catch(e) { console.warn('[AI] composite draw:', e); resolve(window.imageEditorAPI.saveCanvasSnapshot(imageEditor)); }
           };
           img.onerror = function() { resolve(window.imageEditorAPI.saveCanvasSnapshot(imageEditor)); };
