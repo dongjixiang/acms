@@ -427,7 +427,8 @@
     var _aiResult = null;
     var _aiZoomLevel = 1;     // 手动跟踪 zoom 级别
     var _handActive = false;  // hand 模式激活标志（框选放大和 hand 互斥）
-    var _aiMode = 'describe'; // describe | enhance | generate | edit
+    var _aiMode = 'edit'; // describe | enhance | generate | edit
+    var _aiRefUpload = null; // 用户上传的参考图 dataURL（多图生图）
 
     // zoom 统一入口：设 fabric zoom + 同步 ZOOM 组件级别（hand 模式检查用）
     function doZoom(level) {
@@ -512,7 +513,6 @@
 
       aiPanel.innerHTML =
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
-          '<span style="font-weight:600">⚡ AI助手</span>' +
           '<div style="display:flex;align-items:center;gap:6px">' +
             tabsHtml +
             '<button onclick="toggleAIPanel()" style="padding:2px 8px;border:1px solid var(--border,#ddd);border-radius:3px;cursor:pointer;font-size:11px;background:transparent;color:var(--text2,#888)">✕</button>' +
@@ -586,7 +586,20 @@
       var hint = effectiveMode === 'edit' ? '输入修改意见（如"改成夜景"、"去背景电线"）' : '输入图片描述（如"一只橘猫在窗台"）';
       var placeholder = effectiveMode === 'edit' ? '改成夜景 / 加个月亮 / 去背景电线' : '一只橘猫在窗台，阳光透过窗帘';
 
-      contentEl.innerHTML =
+      var refThumb = '';
+      if (effectiveMode === 'edit') {
+        refThumb = '<div style="display:flex;gap:6px;margin-bottom:6px;align-items:center">' +
+          '<span style="font-size:11px;color:var(--text2,#888)">参考图：</span>' +
+          (_aiRefUpload
+            ? '<img src="' + _aiRefUpload + '" style="width:50px;height:50px;object-fit:cover;border-radius:3px;border:1px solid var(--accent,#0ea89d)">' +
+              '<button id="ai-remove-ref" style="padding:1px 6px;font-size:11px;border:1px solid var(--border,#ddd);border-radius:3px;cursor:pointer;background:transparent">✕</button>'
+            : '<span style="font-size:11px;color:var(--text2,#888)">（画布当前图）</span>') +
+          '<input type="file" id="ai-ref-upload-input" accept="image/png,image/jpeg,image/webp" style="display:none">' +
+          '<button id="ai-ref-upload-btn" style="padding:2px 8px;font-size:11px;border:1px solid var(--border,#ddd);border-radius:3px;cursor:pointer;background:transparent">📁 上传参考图</button>' +
+        '</div>';
+      }
+
+      contentEl.innerHTML = refThumb +
         '<div style="margin-bottom:6px;color:var(--text2,#888)">' + hint + '</div>' +
         '<textarea id="ai-prompt" placeholder="' + escHtml(placeholder) + '" style="width:100%;min-height:50px;padding:6px;border:1px solid var(--border,#ddd);border-radius:4px;font-size:12px;font-family:inherit;box-sizing:border-box;resize:vertical"></textarea>' +
         '<div style="display:flex;gap:6px;margin-top:6px;align-items:center">' +
@@ -599,6 +612,24 @@
 
       document.getElementById('ai-gen-btn').onclick = function() { runAIGenerate(effectiveMode === 'edit'); };
       document.getElementById('ai-undo-btn').onclick = aiUndo;
+      // 上传参考图
+      var uploadInput = document.getElementById('ai-ref-upload-input');
+      var uploadBtn = document.getElementById('ai-ref-upload-btn');
+      if (uploadInput && uploadBtn) {
+        uploadBtn.onclick = function() { uploadInput.click(); };
+        uploadInput.onchange = function() {
+          var f = uploadInput.files && uploadInput.files[0];
+          if (!f) return;
+          var r = new FileReader();
+          r.onload = function(ev) { _aiRefUpload = ev.target.result; renderAIPanel(); };
+          r.readAsDataURL(f);
+        };
+      }
+      // 移除参考图
+      var removeBtn = document.getElementById('ai-remove-ref');
+      if (removeBtn) {
+        removeBtn.onclick = function() { _aiRefUpload = null; renderAIPanel(); };
+      }
       updateAIUI();
       setTimeout(function() { var p = document.getElementById('ai-prompt'); if (p) p.focus(); }, 50);
     }
@@ -633,6 +664,35 @@
       while (_aiHistory.length > 10) _aiHistory.shift();
     }
 
+    // 多图生图：合成上传参考图 + 当前画布
+    function compositeRefWithCanvas() {
+      return new Promise(function(resolve) {
+        if (!_aiRefUpload || !imageEditor) { resolve(window.imageEditorAPI.saveCanvasSnapshot(imageEditor)); return; }
+        try {
+          var c = imageEditor._graphics && imageEditor._graphics.getCanvas();
+          if (!c) { resolve(window.imageEditorAPI.saveCanvasSnapshot(imageEditor)); return; }
+          var cw = c.getWidth(), ch = c.getHeight();
+          var img = new Image();
+          img.onload = function() {
+            try {
+              var offscreen = document.createElement('canvas');
+              offscreen.width = cw; offscreen.height = ch;
+              var ctx = offscreen.getContext('2d');
+              var scale = Math.max(cw / img.width, ch / img.height);
+              var dx = (cw - img.width * scale) / 2, dy = (ch - img.height * scale) / 2;
+              ctx.drawImage(img, dx, dy, img.width * scale, img.height * scale);
+              ctx.globalAlpha = 0.6;
+              ctx.drawImage(c.getElement(), 0, 0, cw, ch);
+              ctx.globalAlpha = 1;
+              resolve(offscreen.toDataURL('image/png'));
+            } catch(e) { console.warn('[AI] composite draw:', e); resolve(window.imageEditorAPI.saveCanvasSnapshot(imageEditor)); }
+          };
+          img.onerror = function() { resolve(window.imageEditorAPI.saveCanvasSnapshot(imageEditor)); };
+          img.src = _aiRefUpload;
+        } catch(e) { console.warn('[AI] compositeRef:', e); resolve(window.imageEditorAPI.saveCanvasSnapshot(imageEditor)); }
+      });
+    }
+
     async function runAIGenerate(isEdit) {
       if (_aiBusy || !imageEditor) return;
       var promptEl = document.getElementById('ai-prompt');
@@ -646,7 +706,14 @@
       statusEl.textContent = '⏳ 生成中...';
 
       var dataUrl = null;
-      if (isEdit) dataUrl = window.imageEditorAPI.saveCanvasSnapshot(imageEditor);
+      if (isEdit) {
+        if (_aiRefUpload) {
+          // 多图生图：把上传的参考图和当前画布合成一张作为 AI reference
+          dataUrl = await compositeRefWithCanvas();
+        } else {
+          dataUrl = window.imageEditorAPI.saveCanvasSnapshot(imageEditor);
+        }
+      }
 
       try {
         var result = dataUrl
