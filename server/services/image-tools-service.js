@@ -126,7 +126,7 @@ async function downloadAndSaveOne(apiKey, projectSlug, url, metadata) {
       }
     }
     var controller = new AbortController();
-    var timer = setTimeout(function () { controller.abort(); }, 60000);
+    var timer = setTimeout(function () { controller.abort(); }, 120000);
     var resp = await fetch(url, { signal: controller.signal });
     clearTimeout(timer);
     if (!resp.ok) return { ok: false, error: 'download_http_' + resp.status };
@@ -174,7 +174,7 @@ async function coreGenerate(opts) {
 
   // 并行调 N 次（agnes-image-2.0-flash 不支持 n>1）
   var callResults = await Promise.all(
-    Array.from({ length: n }, function () { return callAgnesImageOnce(apiKey, body, 30000); })
+    Array.from({ length: n }, function () { return callAgnesImageOnce(apiKey, body, 120000); })
   );
   var successUrls = callResults.filter(function (r) { return r.ok; }).map(function (r) { return r.url; });
   if (successUrls.length === 0) {
