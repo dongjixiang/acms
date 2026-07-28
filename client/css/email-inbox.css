@@ -85,20 +85,46 @@
 }
 .em-list-head .em-input { flex: 1; min-width: 0; }
 .em-list-head .em-btn-compose { white-space: nowrap; }
+/* v0.74.2: 滚动条改 12px + 始终可见的轨道（更"桌面"感） */
 .em-list-body {
   flex: 1;
   overflow-y: auto;
-  /* v0.74.1: 自定义滚动条，让用户能看到"可滚动"——之前默认 webkit scrollbar 隐藏 */
   scrollbar-width: thin;
-  scrollbar-color: var(--text3, #aaa) transparent;
+  scrollbar-color: var(--text3, #aaa) var(--bg3, rgba(0,0,0,0.04));
 }
-.em-list-body::-webkit-scrollbar { width: 8px; }
+.em-list-body::-webkit-scrollbar { width: 12px; }
 .em-list-body::-webkit-scrollbar-thumb {
   background: var(--text3, #aaa);
-  border-radius: 4px;
+  border-radius: 6px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
 }
-.em-list-body::-webkit-scrollbar-thumb:hover { background: var(--text2, #666); }
-.em-list-body::-webkit-scrollbar-track { background: transparent; }
+.em-list-body::-webkit-scrollbar-thumb:hover { background: var(--text2, #666); background-clip: padding-box; }
+.em-list-body::-webkit-scrollbar-track { background: var(--bg3, rgba(0,0,0,0.04)); }
+/* 底部渐变阴影，提示"下面还有内容"（em-list-body 父容器） */
+.em-list { position: relative; }
+.em-list::after {
+  content: '';
+  position: absolute;
+  left: 0; right: 12px; bottom: 0;
+  height: 18px;
+  pointer-events: none;
+  background: linear-gradient(to top, var(--bg, #fff) 0%, transparent 100%);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.em-list.has-more::after { opacity: 1; }
+/* 详情面板（em-pane）滚动条同步加宽 + 始终可见轨道 */
+.em-pane { scrollbar-width: thin; scrollbar-color: var(--text3, #aaa) var(--bg3, rgba(0,0,0,0.04)); }
+.em-pane::-webkit-scrollbar { width: 12px; }
+.em-pane::-webkit-scrollbar-thumb {
+  background: var(--text3, #aaa);
+  border-radius: 6px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+.em-pane::-webkit-scrollbar-thumb:hover { background: var(--text2, #666); background-clip: padding-box; }
+.em-pane::-webkit-scrollbar-track { background: var(--bg3, rgba(0,0,0,0.04)); }
 .em-list-foot {
   display: flex;
   align-items: center;
@@ -169,6 +195,79 @@
   align-self: center;
   font-size: 14px;
   color: var(--text3, #888);
+}
+/* v0.74.2: 邮件项 hover 操作条（删除 / 移动 / 标已读） */
+.em-item-actions {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 4px;
+  padding: 2px 6px;
+  background: var(--bg, #fff);
+  border: 1px solid var(--border, #e3e3e8);
+  border-radius: 6px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+  opacity: 0;
+  transition: opacity 0.12s;
+  z-index: 2;
+}
+.em-item:hover .em-item-actions,
+.em-item.em-item-actions-pinned .em-item-actions { opacity: 1; }
+.em-item-action {
+  background: transparent;
+  border: none;
+  color: var(--text2, #555);
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  line-height: 1;
+}
+.em-item-action:hover { background: var(--bg3, rgba(0, 0, 0, 0.06)); color: var(--text, #111); }
+.em-item-action.em-act-del:hover { background: rgba(220, 53, 69, 0.12); color: #c0392b; }
+.em-item-action.em-act-move:hover { background: rgba(14, 168, 157, 0.12); color: var(--accent, #0ea89d); }
+.em-item-action.em-act-read:hover { background: rgba(14, 168, 157, 0.12); color: var(--accent, #0ea89d); }
+.em-item.em-item-unread .em-act-read { color: var(--accent, #0ea89d); font-weight: 600; }
+.em-item-body { padding-right: 8px; } /* 给操作条留位，避免 hover 时遮挡时间戳 */
+/* v0.74.2: 移动邮件 — 文件夹选择弹层（与附件打开方式同款 cx 子菜单风格） */
+.em-move-menu {
+  position: fixed;
+  z-index: 100001;
+  min-width: 200px;
+  max-width: 320px;
+  max-height: 360px;
+  overflow-y: auto;
+  background: var(--bg, #fff);
+  border: 1px solid var(--border, #e3e3e8);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  padding: 4px 0;
+}
+.em-move-menu-head {
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--text3, #888);
+  border-bottom: 1px solid var(--border, #eee);
+  margin-bottom: 4px;
+}
+.em-move-menu-item {
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--text, #111);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.em-move-menu-item:hover { background: var(--bg2, #f5f5f7); }
+.em-move-menu-item.em-move-current { color: var(--text3, #888); cursor: default; font-style: italic; }
+.em-move-menu-empty {
+  padding: 12px;
+  font-size: 11px;
+  color: var(--text3, #888);
+  text-align: center;
 }
 .em-empty {
   padding: 40px 20px;

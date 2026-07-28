@@ -397,6 +397,104 @@
     window.open(a.href, '_blank');
   };
 
+  // v0.74.1: 客户端 RFC 2047 解码（兜底 server 端可能未解码的情况）
+  function decodeMimeWord(text) {
+    if (!text) return '';
+    var re = /=\?([^?]+)\?([BbQq])\?([^?]*?)\?=/g;
+    return String(text).replace(re, function(_m, charset, enc, data) {
+      try {
+        var encUpper = enc.toUpperCase();
+        var buf;
+        if (encUpper === 'B') {
+          buf = _atob(data);
+        } else {
+          var q = data.replace(/_/g, ' ').replace(/=([0-9A-Fa-f]{2})/g, function(_x, h) { return String.fromCharCode(parseInt(h, 16)); });
+          // Q encoding 单字节 = latin1 char
+          buf = _strToLatin1(q);
+        }
+        var cs = String(charset).toLowerCase().replace(/^["']|["']$/g, '');
+        if (cs === 'utf-8' || cs === 'utf8') {
+          try { return _decodeUtf8(buf); } catch (_) { return buf; }
+        }
+        if (cs === 'gb2312' || cs === 'gbk' || cs === 'gb18030') return _decodeGbk(buf);
+        if (cs === 'big5') return _decodeBig5(buf);
+        return buf;
+      } catch (e) { return _m; }
+    });
+  }
+  function _atob(b64) {
+    try { return atob(b64); } catch (e) {
+      // polyfill for older browsers (we don't expect this in ACMS, but safety)
+      var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+      var buffer = [];
+      var i = 0;
+      while (i < b64.length) {
+        var c1 = chars.indexOf(b64.charAt(i++));
+        var c2 = chars.indexOf(b64.charAt(i++));
+        var c3 = chars.indexOf(b64.charAt(i++));
+        var c4 = chars.indexOf(b64.charAt(i++));
+        buffer.push(String.fromCharCode((c1 << 2) | (c2 >> 4)));
+        if (c3 !== -1) buffer.push(String.fromCharCode(((c2 & 15) << 4) | (c3 >> 2)));
+        if (c4 !== -1) buffer.push(String.fromCharCode(((c3 & 3) << 6) | c4));
+      }
+      return buffer.join('');
+    }
+  }
+  function _strToLatin1(s) {
+    // 把 latin1 char 序列转成 UTF-8 字符串
+    try { return decodeURIComponent(escape(s)); } catch (e) { return s; }
+  }
+  function _decodeUtf8(latin1Str) {
+    // latin1Str 是 8-bit char 序列，按 utf-8 字节解码
+    var bytes = [];
+    for (var i = 0; i < latin1Str.length; i++) bytes.push(latin1Str.charCodeAt(i) & 0xff);
+    try { return new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array(bytes)); } catch (e) { return latin1Str; }
+  }
+  function _decodeGbk(latin1Str) {
+    var bytes = [];
+    for (var i = 0; i < latin1Str.length; i++) bytes.push(latin1Str.charCodeAt(i) & 0xff);
+    if (window.ACMSIconv && window.ACMSIconv.gbk) {
+      try { return window.ACMSIconv.gbk(bytes); } catch (e) {}
+    }
+    return _decodeUtf8(latin1Str); // 兜底 utf8
+  }
+  function _decodeBig5(latin1Str) {
+    if (window.ACMSIconv && window.ACMSIconv.big5) {
+      try { return window.ACMSIconv.big5(latin1Str); } catch (e) {}
+    }
+    return _decodeUtf8(latin1Str);
+  }
+  // 完整 header 解码（含 RFC 5322 多行折叠）
+  function decodeEmailHeader(s) {
+    if (!s) return '';
+    var folded = String(s).replace(/\r\n[ \t]+/g, '');
+    return decodeMimeWord(folded);
+  }
+
+  // v0.74.1: body 解码（兜底 server 端可能没按 Content-Transfer-Encoding 解码）
+  function decodeEmailBody(text, mime) {
+    if (!text) return '';
+    var s = String(text);
+    var trimmed = s.replace(/\s+/g, '');
+    // base64 检测：全是 base64 字符 + 长度合理（不要 % 4 限制，因为 atob 自动处理）
+    if (/^[A-Za-z0-9+/=]+$/.test(trimmed) && trimmed.length >= 16) {
+      try {
+        var decoded = _atob(trimmed);
+        var cs = String(mime || '').toLowerCase().replace(/^["']|["']$/g, '');
+        if (cs === 'gb2312' || cs === 'gbk' || cs === 'gb18030') return _decodeGbk(decoded);
+        return _decodeUtf8(decoded);
+      } catch (e) { return s; }
+    }
+    if (/=[0-9A-Fa-f]{2}/.test(s)) {
+      try {
+        var q = s.replace(/=([0-9A-Fa-f]{2})/g, function(_x, h) { return String.fromCharCode(parseInt(h, 16)); }).replace(/=_/g, ' ');
+        return _decodeUtf8(q);
+      } catch (e) { return s; }
+    }
+    return s;
+  }
+
+
   // CSS attribute selector 转义（处理文件名中可能出现的引号/反斜杠等）
   function cssEscape(s) {
     return String(s || '').replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"');
@@ -506,6 +604,10 @@
         if (action === 'forward') return self.openComposer({ kind: 'forward' });
         if (action === 'load-remote') return self.loadRemoteImages(target);
         if (action === 'attachment-open') return self.pickAttachmentOpener(target);
+        // v0.74.2: 列表项操作（删除 / 移动 / 标已读）
+        if (action === 'email-delete') return self.deleteEmail(target.getAttribute('data-uid'), target);
+        if (action === 'email-move') return self.pickMoveTarget(target.getAttribute('data-uid'), target);
+        if (action === 'email-toggle-read') return self.toggleRead(target);
         return;
       }
       var folder = event.target.closest('[data-role="folder"]');
@@ -656,6 +758,8 @@
       .then(function (data) {
         self.state.emails = (data && data.emails) || [];
         self.state.total = (data && data.total) || 0;
+        // v0.74.1: client-side RFC 2047 decode（兜底 server 端可能没解码）
+        self.state.emails.forEach(function (em) { em.subject = decodeEmailHeader(em.subject); em.from = decodeEmailHeader(em.from); });
         self.renderList();
         self.setStatus(self.state.total + ' 封邮件，显示 ' + self.state.emails.length + ' 封');
       })
@@ -676,6 +780,8 @@
         self.state.emails = (data && data.emails) || [];
         self.state.total = (data && data.total) || self.state.emails.length;
         self.state.offset = 0;
+        // v0.74.1: client-side RFC 2047 decode（兜底 server 端可能没解码）
+        self.state.emails.forEach(function (em) { em.subject = decodeEmailHeader(em.subject); em.from = decodeEmailHeader(em.from); });
         self.renderList();
       })
       .catch(function (err) {
@@ -708,6 +814,11 @@
       body.innerHTML = this.state.emails.map(this.renderListItem, this).join('');
     }
     this.renderPager();
+    // v0.74.2: 渲染后检查"还有更多"，给 .em-list 父容器加 has-more class
+    // 触发底部渐变阴影 + 滑到位后再算（onScroll 也算）
+    var self = this;
+    requestAnimationFrame(function () { self.updateListMoreHint(); });
+    body.onscroll = function () { self.updateListMoreHint(); };
   };
 
   EmailApp.prototype.renderListItem = function (email) {
@@ -720,6 +831,9 @@
     var classes = ['em-item'];
     if (!read) classes.push('em-item-unread');
     if (email.hasAttachments) classes.push('em-item-has-att');
+    // v0.74.2: hover 操作条（删除/移动/标已读）— 不占用布局空间，hover 时才显出
+    var readBtnLabel = read ? '已读' : '标已读';
+    var readBtnTitle = read ? '标记为未读' : '标记为已读';
     return [
       '<article class="' + classes.join(' ') + '" data-role="item" data-uid="' + escAttr(email.uid) + '">',
       '  <div class="em-avatar">' + escHtml(initial) + '</div>',
@@ -729,6 +843,11 @@
       '    <div class="em-subject">' + escHtml(subject) + '</div>',
       '  </div>',
       email.hasAttachments ? '  <span class="em-att-mark" title="含附件">📎</span>' : '',
+      '  <div class="em-item-actions" data-role="item-actions">',
+      '    <button type="button" class="em-item-action em-act-move" data-action="email-move" data-uid="' + escAttr(email.uid) + '" title="移动到文件夹">📁</button>',
+      '    <button type="button" class="em-item-action em-act-read" data-action="email-toggle-read" data-uid="' + escAttr(email.uid) + '" data-read="' + (read ? '1' : '0') + '" title="' + escAttr(readBtnTitle) + '">' + readBtnLabel + '</button>',
+      '    <button type="button" class="em-item-action em-act-del" data-action="email-delete" data-uid="' + escAttr(email.uid) + '" title="删除邮件">🗑</button>',
+      '  </div>',
       '</article>',
     ].join('');
   };
@@ -752,6 +871,181 @@
     next.disabled = end >= this.state.total;
   };
 
+  // v0.74.2: 列表项下方"还有更多"阴影提示（has-more 状态）
+  EmailApp.prototype.updateListMoreHint = function () {
+    var list = this.root.querySelector('.em-list');
+    if (!list) return;
+    var body = list.querySelector('.em-list-body');
+    if (!body) return;
+    var hasMore = body.scrollHeight > body.clientHeight + 4;
+    list.classList.toggle('has-more', hasMore);
+  };
+
+  // v0.74.2: 删除邮件（带二次确认 + 乐观更新）
+  EmailApp.prototype.deleteEmail = function (uid, btn) {
+    var self = this;
+    if (!uid) return;
+    var n = Number(uid);
+    if (!Number.isFinite(n) || n <= 0) return;
+    showConfirm('确定删除邮件 #' + n + '？此操作不可撤销。').then(function (ok) {
+      if (!ok) return;
+      self.setStatus('删除中…');
+      return apiFetch('DELETE', buildUrl('/api/emails/' + n, { mailbox: self.state.mailbox }))
+        .then(function (res) {
+          // 乐观更新：本地列表立即移除（避免再 round-trip 拉）
+          self.state.emails = self.state.emails.filter(function (em) { return Number(em.uid) !== n; });
+          self.state.total = Math.max(0, self.state.total - (res.removed || 1));
+          // 如果删的是当前打开的详情，关闭详情
+          if (self.state.selectedUid && Number(self.state.selectedUid) === n) {
+            self.state.selectedUid = null;
+            self.state.detail = null;
+            self.closeDetail();
+          }
+          self.renderList();
+          self.setStatus('已删除 ' + (res.removed || 1) + ' 封');
+          showToast('已删除 ' + (res.removed || 1) + ' 封邮件', 'success');
+        })
+        .catch(function (err) {
+          self.setStatus('删除失败: ' + err.message, 'error');
+          showToast('删除失败: ' + err.message, 'error');
+        });
+    });
+  };
+
+  // v0.74.2: 弹出"移动到..."文件夹选择器（仿附件打开方式 cx 子菜单）
+  EmailApp.prototype.pickMoveTarget = function (uid, btn) {
+    var self = this;
+    if (!uid) return;
+    var n = Number(uid);
+    if (!Number.isFinite(n) || n <= 0) return;
+
+    // 关已有
+    var existing = document.querySelectorAll('.em-move-menu');
+    existing.forEach(function (m) { m.remove(); });
+
+    var folders = (self.state.mailboxes || []).filter(function (b) {
+      // 过滤 \Noselect（不能接收邮件的元文件夹）
+      var flags = b.flags || [];
+      return flags.indexOf('\\Noselect') < 0;
+    });
+
+    var menu = document.createElement('div');
+    menu.className = 'em-move-menu';
+    var head = '<div class="em-move-menu-head">📁 移动到文件夹 · 邮件 #' + n + '</div>';
+    if (!folders.length) {
+      menu.innerHTML = head + '<div class="em-move-menu-empty">⚠ 未找到可用的目标文件夹</div>';
+    } else {
+      menu.innerHTML = head + folders.map(function (box) {
+        var name = box.name || '';
+        var isCurrent = name === self.state.mailbox;
+        return '<div class="em-move-menu-item' + (isCurrent ? ' em-move-current' : '') + '"'
+          + (isCurrent ? '' : ' data-target="' + escAttr(name) + '"')
+          + '>' + (isCurrent ? '✓ ' : '📂 ') + escHtml(name) + (isCurrent ? '（当前）' : '') + '</div>';
+      }).join('');
+    }
+
+    // 定位
+    var rect = btn.getBoundingClientRect();
+    var mw = 240, mh = 60 + folders.length * 28;
+    var left = rect.right + 4;
+    var top = rect.bottom + 4;
+    if (left + mw > window.innerWidth) left = Math.max(4, rect.left - mw - 4);
+    if (top + mh > window.innerHeight) top = Math.max(4, window.innerHeight - mh - 8);
+    menu.style.cssText = 'left:' + left + 'px;top:' + top + 'px';
+
+    function close() {
+      if (menu.parentNode) menu.parentNode.removeChild(menu);
+      document.removeEventListener('click', close);
+      document.removeEventListener('keydown', onKey);
+    }
+    function onKey(e) { if (e.key === 'Escape') close(); }
+
+    Array.prototype.forEach.call(menu.querySelectorAll('[data-target]'), function (el) {
+      el.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var target = el.getAttribute('data-target');
+        close();
+        self.moveEmail(n, target);
+      });
+    });
+
+    setTimeout(function () {
+      document.addEventListener('click', close);
+      document.addEventListener('keydown', onKey);
+    }, 0);
+    document.body.appendChild(menu);
+  };
+
+  // v0.74.2: 执行移动（调用后端 + 乐观更新）
+  EmailApp.prototype.moveEmail = function (uid, target) {
+    var self = this;
+    if (!uid || !target) return;
+    self.setStatus('移动到 ' + target + '…');
+    return apiFetch('POST', buildUrl('/api/emails/' + uid + '/move', { mailbox: self.state.mailbox }), { to: target })
+      .then(function (res) {
+        self.state.emails = self.state.emails.filter(function (em) { return Number(em.uid) !== Number(uid); });
+        self.state.total = Math.max(0, self.state.total - (res.removed || 1));
+        if (self.state.selectedUid && Number(self.state.selectedUid) === Number(uid)) {
+          self.state.selectedUid = null;
+          self.state.detail = null;
+          self.closeDetail();
+        }
+        self.renderList();
+        self.setStatus('已移动到 ' + target);
+        showToast('已移动 ' + (res.copied || 1) + ' 封到 ' + target, 'success');
+      })
+      .catch(function (err) {
+        self.setStatus('移动失败: ' + err.message, 'error');
+        showToast('移动失败: ' + err.message, 'error');
+      });
+  };
+
+  // v0.74.2: 切换已读/未读（乐观更新 + 后端落盘）
+  EmailApp.prototype.toggleRead = function (btn) {
+    var self = this;
+    if (!btn) return;
+    var uid = Number(btn.getAttribute('data-uid'));
+    if (!Number.isFinite(uid) || uid <= 0) return;
+    var wasRead = btn.getAttribute('data-read') === '1';
+    var willBeRead = !wasRead;
+    // 乐观更新：本地状态先改 + 按钮 label 立即变
+    var email = self.state.emails.find(function (em) { return Number(em.uid) === uid; });
+    if (email) {
+      var flags = email.flags || [];
+      if (willBeRead) {
+        if (flags.indexOf('\\Seen') < 0) flags.push('\\Seen');
+      } else {
+        flags = flags.filter(function (f) { return f !== '\\Seen'; });
+      }
+      email.flags = flags;
+    }
+    btn.setAttribute('data-read', willBeRead ? '1' : '0');
+    btn.textContent = willBeRead ? '已读' : '标已读';
+    btn.title = willBeRead ? '标记为未读' : '标记为已读';
+    if (email) self.renderList();
+    return apiFetch('POST', buildUrl('/api/emails/' + uid + '/read', { mailbox: self.state.mailbox }), { read: willBeRead })
+      .then(function () {
+        self.setStatus(willBeRead ? '已标为已读' : '已标为未读');
+      })
+      .catch(function (err) {
+        // 回滚
+        if (email) {
+          var flags2 = email.flags || [];
+          if (wasRead) {
+            if (flags2.indexOf('\\Seen') < 0) flags2.push('\\Seen');
+          } else {
+            flags2 = flags2.filter(function (f) { return f !== '\\Seen'; });
+          }
+          email.flags = flags2;
+        }
+        btn.setAttribute('data-read', wasRead ? '1' : '0');
+        btn.textContent = wasRead ? '已读' : '标已读';
+        if (email) self.renderList();
+        self.setStatus('标记失败: ' + err.message, 'error');
+        showToast('标记失败: ' + err.message, 'error');
+      });
+  };
+
   EmailApp.prototype.openEmail = function (uid) {
     var self = this;
     if (!uid) return;
@@ -763,6 +1057,14 @@
     return apiFetch('GET', buildUrl('/api/emails/' + uid, { mailbox: self.state.mailbox }))
       .then(function (email) {
         self.state.detail = email;
+        // v0.74.1: client-side RFC 2047 decode（兜底 server 端可能没解码）
+        email.subject = decodeEmailHeader(email.subject);
+        email.from = decodeEmailHeader(email.from);
+        email.to = decodeEmailHeader(email.to);
+        email.cc = decodeEmailHeader(email.cc);
+        if (Array.isArray(email.attachments)) {
+          email.attachments.forEach(function (att) { att.name = decodeEmailHeader(att.name); });
+        }
         self.renderDetail();
         self.setStatus('邮件已加载');
       })
@@ -780,9 +1082,12 @@
     var fromDisplay = email.from || '';
     var subject = email.subject || '(无主题)';
     var dateStr = formatDate(email.date);
-    var bodyHtml = email.html
-      ? sanitizeEmailHtml(email.html)
-      : '<pre class="em-text-body">' + escHtml(email.text || '(无正文)') + '</pre>';
+    // v0.74.1: client-side body decode（兜底 server 端可能没按 Content-Transfer-Encoding 解码）
+    var decodedText = decodeEmailBody(email.text, 'utf-8');
+    var decodedHtml = decodeEmailBody(email.html, 'utf-8');
+    var bodyHtml = decodedHtml
+      ? sanitizeEmailHtml(decodedHtml)
+      : '<pre class="em-text-body">' + escHtml(decodedText || '(无正文)') + '</pre>';
 
 var self = this;
     var attachments = (email.attachments || []).map(function (att) {

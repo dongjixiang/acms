@@ -101,6 +101,7 @@ function findPartInStruct(parts, partID) {
 }
 
 
+
 function createImapService(config) {
   config = config || {};
   const host = config.host || 'imap.263.net';
@@ -218,6 +219,8 @@ function createImapService(config) {
             stream.on('end', () => {
               const headerStr = decodeHeaderValue(body);
               email.subject = extractHeaderField(headerStr, 'subject') || '';
+              // v0.74.1 debug: 输出 decode 后的 subject
+              console.log('[IMAP-DBG] uid=' + email.uid + ' raw subject: ' + JSON.stringify(body.match(/Subject:[^\n]*/)?.[0] || '') + ' → decoded: ' + JSON.stringify(email.subject));
               email.from = extractHeaderField(headerStr, 'from') || '';
               email.date = extractHeaderField(headerStr, 'date') || '';
               email.messageId = extractHeaderField(headerStr, 'message-id') || '';
@@ -494,6 +497,84 @@ function createImapService(config) {
     return { emails, total: sorted.length, mailbox, keyword };
   }
 
+  // ── 删除邮件（标记 \Deleted + EXPUNGE；返回删除数） ──
+  function deleteMessages(uid, opts) {
+    opts = opts || {};
+    const mailbox = opts.mailbox || 'INBOX';
+    const uids = Array.isArray(uid) ? uid : [uid];
+    return new Promise((resolve, reject) => {
+      if (!_connected) return reject(new Error('NOT_CONNECTED'));
+      openBox(mailbox).then(() => {
+        _imap.addFlags(uids, ['\\Deleted'], (err) => {
+          if (err) return reject(err);
+          _imap.expunge(uids, (err2, removed) => {
+            if (err2) return reject(err2);
+            // 兼容 node-imap 不同版本：removed 可能为 undefined
+            resolve({ removed: Array.isArray(removed) ? removed.length : uids.length, mailbox, uids });
+          });
+        });
+      }).catch(reject);
+    });
+  }
+
+  // ── 移动邮件（UID COPY 到目标 + 源标记 \Deleted + EXPUNGE）──
+  // node-imap 的 moveMessages 在不同邮箱服务器（特别是 IMAP4rev1 老版本）兼容性差，
+  // 用「COPY + STORE + EXPUNGE」三步走更稳：
+  //   1. UID COPY uids → toMailbox （服务器端复制）
+  //   2. UID STORE uids +Flags \Deleted （标记源邮件删除）
+  //   3. UID EXPUNGE （物理删除已标记邮件）
+  function moveMessages(uid, fromMailbox, toMailbox) {
+    fromMailbox = fromMailbox || 'INBOX';
+    const uids = Array.isArray(uid) ? uid : [uid];
+    return new Promise((resolve, reject) => {
+      if (!_connected) return reject(new Error('NOT_CONNECTED'));
+      if (!toMailbox) return reject(new Error('MISSING_TARGET_MAILBOX'));
+      if (fromMailbox === toMailbox) return reject(new Error('SOURCE_EQUALS_TARGET'));
+
+      function copyStep() {
+        // UID COPY 用同一个 _imap 实例，库内部会把第一个参数当 uid
+        _imap.copy(uids, toMailbox, (err) => {
+          if (err) {
+            // 某些服务器 COPY 后不会自动 \Recent；用 try/catch 包裹避免 unwritable 报错
+            if (/try copying/.test(err.message || '')) return resolve({ copied: uids.length, toMailbox, fromMailbox, fallback: true });
+            return reject(err);
+          }
+          flagAndExpunge();
+        });
+      }
+
+      function flagAndExpunge() {
+        openBox(fromMailbox).then(() => {
+          _imap.addFlags(uids, ['\\Deleted'], (err) => {
+            if (err) return reject(err);
+            _imap.expunge(uids, (err2, removed) => {
+              if (err2) return reject(err2);
+              resolve({ copied: uids.length, removed: Array.isArray(removed) ? removed.length : uids.length, fromMailbox, toMailbox });
+            });
+          });
+        }).catch(reject);
+      }
+
+      openBox(fromMailbox).then(copyStep).catch(reject);
+    });
+  }
+
+  // ── 设置/清除标志（用于"标记已读"） ──
+  function setFlags(uid, flags, opts) {
+    opts = opts || {};
+    const mailbox = opts.mailbox || 'INBOX';
+    const mode = opts.mode === 'remove' ? 'del' : 'add';
+    const uids = Array.isArray(uid) ? uid : [uid];
+    return new Promise((resolve, reject) => {
+      if (!_connected) return reject(new Error('NOT_CONNECTED'));
+      openBox(mailbox).then(() => {
+        const cb = (err) => { if (err) return reject(err); resolve({ uid: uids, flags, mode, mailbox }); };
+        if (mode === 'add') _imap.addFlags(uids, flags, cb);
+        else _imap.delFlags(uids, flags, cb);
+      }).catch(reject);
+    });
+  }
+
   // ── 公开 API ──
   service.connect = connect;
   service.disconnect = disconnect;
@@ -502,6 +583,9 @@ function createImapService(config) {
   service.getEmail = getEmail;
   service.getAttachment = getAttachment;
   service.searchEmails = searchEmails;
+  service.deleteMessages = deleteMessages;
+  service.moveMessages = moveMessages;
+  service.setFlags = setFlags;
   service._getImap = () => _imap;
 
   return service;

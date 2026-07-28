@@ -144,4 +144,57 @@ router.get('/:uid/attachment/:partId', async (req, res) => {
   }
 });
 
+// DELETE /api/emails/:uid — 删除邮件（mailbox query 参数；uid 支持数字或逗号分隔批量）
+router.delete('/:uid', async (req, res) => {
+  try {
+    const raw = String(req.params.uid || '');
+    if (!raw) return res.status(400).json({ error: 'INVALID_UID', message: '邮件编号无效' });
+    // 支持批量：uid=123,124,125
+    const uids = raw.split(',').map(s => parseInt(s, 10)).filter(n => Number.isFinite(n) && n > 0);
+    if (!uids.length) return res.status(400).json({ error: 'INVALID_UID', message: '邮件编号无效' });
+    const result = await getImap().deleteMessages(uids, { mailbox: req.query.mailbox || 'INBOX' });
+    res.json({ success: true, ...result });
+  } catch (error) {
+    errorResponse(res, error, 'EMAIL_DELETE_FAILED');
+  }
+});
+
+// POST /api/emails/:uid/move — 移动邮件到目标文件夹
+// body: { to: "目标文件夹名" }
+router.post('/:uid/move', async (req, res) => {
+  try {
+    const raw = String(req.params.uid || '');
+    const to = String((req.body && req.body.to) || '').trim();
+    if (!raw) return res.status(400).json({ error: 'INVALID_UID', message: '邮件编号无效' });
+    if (!to) return res.status(400).json({ error: 'MISSING_TARGET', message: '请提供目标文件夹' });
+    const uids = raw.split(',').map(s => parseInt(s, 10)).filter(n => Number.isFinite(n) && n > 0);
+    if (!uids.length) return res.status(400).json({ error: 'INVALID_UID', message: '邮件编号无效' });
+    const from = String(req.query.mailbox || req.body.from || 'INBOX');
+    if (from === to) return res.status(400).json({ error: 'SAME_MAILBOX', message: '源和目标相同' });
+    const result = await getImap().moveMessages(uids, from, to);
+    res.json({ success: true, ...result });
+  } catch (error) {
+    errorResponse(res, error, 'EMAIL_MOVE_FAILED');
+  }
+});
+
+// POST /api/emails/:uid/read — 标记已读/未读
+// body: { read: true|false }；read=true 加 \Seen；read=false 去 \Seen
+router.post('/:uid/read', async (req, res) => {
+  try {
+    const raw = String(req.params.uid || '');
+    if (!raw) return res.status(400).json({ error: 'INVALID_UID', message: '邮件编号无效' });
+    const uids = raw.split(',').map(s => parseInt(s, 10)).filter(n => Number.isFinite(n) && n > 0);
+    if (!uids.length) return res.status(400).json({ error: 'INVALID_UID', message: '邮件编号无效' });
+    const read = req.body && req.body.read === false ? false : true;
+    const result = await getImap().setFlags(uids, ['\\Seen'], {
+      mailbox: req.query.mailbox || 'INBOX',
+      mode: read ? 'add' : 'remove',
+    });
+    res.json({ success: true, read, ...result });
+  } catch (error) {
+    errorResponse(res, error, 'EMAIL_SET_FLAG_FAILED');
+  }
+});
+
 module.exports = router;
