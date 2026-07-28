@@ -1,4 +1,35 @@
 // 系统管理视图 — 独立全屏页面
+//
+// v0.XX: ACMS 桌面 UI（ACMSWin 浮窗）会克隆 #view-admin 到 #aw-1，导致同一份 DOM
+//         树出现 2 次（page view + window）。getElementById 永远返回首个匹配（即 hidden 的
+//         page view），导致所有 admin 操作（模型编辑 / 生成器编辑 / Webhook 编辑 / 等）——
+//         数据写到了 hidden 那份里，用户在浮窗看不到任何变化，「编辑」看上去没反应。
+//
+// 根因修法：用 _byId(id) 替代 document.getElementById(id)，优先选 visible ancestor
+//   内的实例（offsetParent !== null + 不是 ancestors hidden 的子元素）。
+
+function _isVisible(el) {
+  // 检查祖先链中没有一个 display:none —— 但跳过 input[type=hidden]（即使它的 display 是 none，
+  //   hidden input 的可见性完全由祖先决定，反过来不应影响 _byId 选择）
+  let n = el.parentElement;
+  while (n && n !== document.body) {
+    const s = getComputedStyle(n);
+    if (s.display === 'none' || s.visibility === 'hidden') return false;
+    n = n.parentElement;
+  }
+  return true;
+}
+
+function _byId(id) {
+  // 1. 多个 DOM tree 中（page view hidden + 浮窗 visible）—— 优先 visible
+  const all = document.querySelectorAll('#' + (window.CSS && CSS.escape ? CSS.escape(id) : id));
+  for (const el of all) {
+    if (_isVisible(el)) return el;
+  }
+  // 2. fallback：首个匹配（保留旧行为，避免回归）
+  return all[0] || null;
+}
+
 async function loadAdminPage() {
   try {
     const status = await api('GET', '/admin/status');
@@ -18,7 +49,7 @@ async function loadAdminPage() {
     const memPct = memTotal > 0 ? Math.round(memUsed / memTotal * 100) : 0;
     const memCls = memPct > 80 ? 'stat-card-danger' : memPct > 60 ? 'stat-card-warning' : '';
 
-    document.getElementById('admin-content').innerHTML = `
+    _byId('admin-content').innerHTML = `
       <div class="settings-tabs" id="admin-tabs">
         <button class="tab-btn" data-tab="admin-tab-overview">📊 概览</button>
         <button class="tab-btn active" data-tab="admin-tab-models">🤖 模型</button>
@@ -295,7 +326,7 @@ async function loadAdminPage() {
             </div>
             <div class="form-actions">
               <button class="btn-primary" onclick="createWebhook()">💾 创建订阅</button>
-              <button class="btn-back" onclick="document.getElementById('wh-name').value='';document.getElementById('wh-url').value='';document.getElementById('wh-secret').value='';document.getElementById('wh-description').value='';document.querySelectorAll('#wh-events input').forEach(c=>c.checked=false);">取消</button>
+              <button class="btn-back" onclick="_byId('wh-name').value='';_byId('wh-url').value='';_byId('wh-secret').value='';_byId('wh-description').value='';document.querySelectorAll('#wh-events input').forEach(c=>c.checked=false);">取消</button>
             </div>
           </div>
         </details>
@@ -395,7 +426,7 @@ async function loadAdminPage() {
     loadAdminAppToolsStats();
     // v0.XX: 代理设置（高级 tab 内的卡片，hydrate UI + 后端配置）
     if (typeof loadProxySettings === 'function') loadProxySettings();
-  } catch (e) { document.getElementById('admin-content').innerHTML = `<div class="empty">加载失败: ${e.message}</div>`; }
+  } catch (e) { _byId('admin-content').innerHTML = `<div class="empty">加载失败: ${e.message}</div>`; }
 }
 
 // admin Tab 切换：scope 到 #admin-tabs + #admin-content（默认），也支持传入克隆窗口根节点
@@ -403,8 +434,8 @@ async function loadAdminPage() {
 //   当 admin HTML 被克隆进浮窗时（taskbar.js showAdminWindow），DOM 里会出现两份 #admin-tabs / #admin-content，
 //   共享同一份 handler 逻辑但只命中第一份，浮窗里的 tab 点不动。修复：传入 root 后仅 scope 到该 root。
 function setupAdminTabs(root) {
-  const tabBar = root ? root.querySelector('#admin-tabs') : document.getElementById('admin-tabs');
-  const adminRoot = root || document.getElementById('admin-content');
+  const tabBar = root ? root.querySelector('#admin-tabs') : _byId('admin-tabs');
+  const adminRoot = root || _byId('admin-content');
   if (!tabBar || !adminRoot) return;
   tabBar.querySelectorAll('.tab-btn').forEach(btn => {
     btn.onclick = () => {
@@ -495,7 +526,7 @@ function renderAdminAppTools(stats) {
 }
 
 async function loadAdminAppToolsStats(root) {
-  var el = root ? root.querySelector('#admin-app-tools-overview') : document.getElementById('admin-app-tools-overview');
+  var el = root ? root.querySelector('#admin-app-tools-overview') : _byId('admin-app-tools-overview');
   if (!el) return;
   try {
     var resp = await fetch('/api/ai-tools/app-tool-stats', { headers: { 'X-API-Key': 'dev-key-001' } });
@@ -517,10 +548,10 @@ function filterAdminEvents(query) {
 
 // v0.17f：Webhook 订阅 CRUD（复用 server/routes/webhooks.js 已有 REST API）
 async function createWebhook() {
-  const name = document.getElementById('wh-name').value.trim();
-  const url = document.getElementById('wh-url').value.trim();
-  const secret = document.getElementById('wh-secret').value.trim();
-  const description = document.getElementById('wh-description').value.trim();
+  const name = _byId('wh-name').value.trim();
+  const url = _byId('wh-url').value.trim();
+  const secret = _byId('wh-secret').value.trim();
+  const description = _byId('wh-description').value.trim();
   const events = Array.from(document.querySelectorAll('#wh-events input[type=checkbox]:checked')).map(c => c.value);
   if (!name || !url) return toast('名称和 URL 是必填项', 'error');
   if (events.length === 0) return toast('至少选一个事件类型', 'error');
@@ -588,14 +619,14 @@ async function editModel(id) {
     const models = await api('GET', '/models');
     const m = models.find(mm => mm.id === id);
     if (!m) return;
-    document.getElementById('model-edit-id').value = id;
-    document.getElementById('model-name').value = m.name;
-    document.getElementById('model-provider').value = m.provider;
-    document.getElementById('model-model').value = m.model;
-    document.getElementById('model-api').value = m.api || 'openai-chat';
-    document.getElementById('model-url').value = m.baseUrl || '';
-    document.getElementById('model-key').value = '';
-    document.getElementById('model-key').placeholder = '留空则不修改';
+    _byId('model-edit-id').value = id;
+    _byId('model-name').value = m.name;
+    _byId('model-provider').value = m.provider;
+    _byId('model-model').value = m.model;
+    _byId('model-api').value = m.api || 'openai-chat';
+    _byId('model-url').value = m.baseUrl || '';
+    _byId('model-key').value = '';
+    _byId('model-key').placeholder = '留空则不修改';
 
     // 填充能力复选框
     const caps = Array.isArray(m.capabilities) ? m.capabilities : (typeof m.capabilities === 'string' ? JSON.parse(m.capabilities) : ['text']);
@@ -603,38 +634,38 @@ async function editModel(id) {
       cb.checked = caps.includes(cb.value);
     });
     // v0.17d：编辑时自动展开折叠的表单
-    const formDetails = document.getElementById('model-form-details');
+    const formDetails = _byId('model-form-details');
     if (formDetails) formDetails.open = true;
   } catch(e) { toast('加载失败: '+e.message, 'error'); }
 }
 
 function resetModelForm() {
-  document.getElementById('model-edit-id').value = '';
-  document.getElementById('model-name').value = '';
-  document.getElementById('model-provider').value = '';
-  document.getElementById('model-model').value = '';
-  document.getElementById('model-api').value = 'openai-chat';
-  document.getElementById('model-url').value = '';
-  document.getElementById('model-key').value = '';
-  document.getElementById('model-key').placeholder = 'sk-...';
+  _byId('model-edit-id').value = '';
+  _byId('model-name').value = '';
+  _byId('model-provider').value = '';
+  _byId('model-model').value = '';
+  _byId('model-api').value = 'openai-chat';
+  _byId('model-url').value = '';
+  _byId('model-key').value = '';
+  _byId('model-key').placeholder = 'sk-...';
   // v0.17d：保存/取消后自动折叠表单
-  const formDetails = document.getElementById('model-form-details');
+  const formDetails = _byId('model-form-details');
   if (formDetails) formDetails.open = false;
 }
 
 async function saveModel() {
-  const id = document.getElementById('model-edit-id').value;
-  const name = document.getElementById('model-name').value.trim();
-  const provider = document.getElementById('model-provider').value.trim();
-  const model = document.getElementById('model-model').value.trim();
+  const id = _byId('model-edit-id').value;
+  const name = _byId('model-name').value.trim();
+  const provider = _byId('model-provider').value.trim();
+  const model = _byId('model-model').value.trim();
   if (!name || !provider || !model) return toast('请填写名称/供应商/模型', 'error');
 
   const body = {
     name, provider, model,
-    api: document.getElementById('model-api').value,
-    baseUrl: document.getElementById('model-url').value.trim(),
+    api: _byId('model-api').value,
+    baseUrl: _byId('model-url').value.trim(),
   };
-  const keyVal = document.getElementById('model-key').value;
+  const keyVal = _byId('model-key').value;
   if (keyVal) body.apiKey = keyVal;
 
   // 收集能力
@@ -716,57 +747,57 @@ async function editGenerator(id) {
     const gens = await api('GET', '/generate');
     const g = gens.find(gg => gg.id === id);
     if (!g) return toast('生成器不存在', 'error');
-    document.getElementById('gen-edit-id').value = id;
-    document.getElementById('gen-id').value = g.id;
-    document.getElementById('gen-id').disabled = true;
-    document.getElementById('gen-type').value = g.type;
-    document.getElementById('gen-provider').value = g.provider;
-    document.getElementById('gen-name').value = g.name;
+    _byId('gen-edit-id').value = id;
+    _byId('gen-id').value = g.id;
+    _byId('gen-id').disabled = true;
+    _byId('gen-type').value = g.type;
+    _byId('gen-provider').value = g.provider;
+    _byId('gen-name').value = g.name;
     const cfg = g.config || {};
-    document.getElementById('gen-url').value = cfg.baseUrl || '';
-    document.getElementById('gen-key').value = '';
-    document.getElementById('gen-key').placeholder = '留空则不修改';
-    document.getElementById('gen-model-ref').value = g.model_ref || '';
-    document.getElementById('gen-priority').value = cfg.priority || 99;
+    _byId('gen-url').value = cfg.baseUrl || '';
+    _byId('gen-key').value = '';
+    _byId('gen-key').placeholder = '留空则不修改';
+    _byId('gen-model-ref').value = g.model_ref || '';
+    _byId('gen-priority').value = cfg.priority || 99;
     // v0.17d：编辑时自动展开折叠的表单
-    const formDetails = document.getElementById('gen-form-details');
+    const formDetails = _byId('gen-form-details');
     if (formDetails) formDetails.open = true;
   } catch(e) { toast('加载失败: '+e.message, 'error'); }
 }
 
 function resetGenForm() {
-  document.getElementById('gen-edit-id').value = '';
-  document.getElementById('gen-id').value = '';
-  document.getElementById('gen-id').disabled = false;
-  document.getElementById('gen-type').value = 'image';
-  document.getElementById('gen-provider').value = 'minimax-image';
-  document.getElementById('gen-name').value = '';
-  document.getElementById('gen-url').value = '';
-  document.getElementById('gen-key').value = '';
-  document.getElementById('gen-key').placeholder = 'sk-...';
-  document.getElementById('gen-model-ref').value = '';
-  document.getElementById('gen-priority').value = 99;
+  _byId('gen-edit-id').value = '';
+  _byId('gen-id').value = '';
+  _byId('gen-id').disabled = false;
+  _byId('gen-type').value = 'image';
+  _byId('gen-provider').value = 'minimax-image';
+  _byId('gen-name').value = '';
+  _byId('gen-url').value = '';
+  _byId('gen-key').value = '';
+  _byId('gen-key').placeholder = 'sk-...';
+  _byId('gen-model-ref').value = '';
+  _byId('gen-priority').value = 99;
   // v0.17d：保存/取消后自动折叠表单
-  const formDetails = document.getElementById('gen-form-details');
+  const formDetails = _byId('gen-form-details');
   if (formDetails) formDetails.open = false;
 }
 
 async function saveGenerator() {
-  const editId = document.getElementById('gen-edit-id').value;
-  const id = document.getElementById('gen-id').value.trim();
-  const type = document.getElementById('gen-type').value;
-  const provider = document.getElementById('gen-provider').value;
-  const name = document.getElementById('gen-name').value.trim();
+  const editId = _byId('gen-edit-id').value;
+  const id = _byId('gen-id').value.trim();
+  const type = _byId('gen-type').value;
+  const provider = _byId('gen-provider').value;
+  const name = _byId('gen-name').value.trim();
   if (!id || !type || !provider || !name) return toast('请填写 ID/类型/Provider/名称', 'error');
 
   const config = {
-    baseUrl: document.getElementById('gen-url').value.trim() || undefined,
-    priority: parseInt(document.getElementById('gen-priority').value) || 99,
+    baseUrl: _byId('gen-url').value.trim() || undefined,
+    priority: parseInt(_byId('gen-priority').value) || 99,
   };
-  const keyVal = document.getElementById('gen-key').value;
+  const keyVal = _byId('gen-key').value;
   if (keyVal) config.apiKey = keyVal;
 
-  const modelRef = document.getElementById('gen-model-ref').value || '';
+  const modelRef = _byId('gen-model-ref').value || '';
 
   const body = { id, type, provider, name, config, modelRef };
 
@@ -805,7 +836,7 @@ async function setElicitorEnabled(checkbox) {
   const wantChecked = checkbox.checked;
   const original = !wantChecked;
   // 先视觉反馈（POST 成功后再定）
-  const label = document.getElementById('elicitor-enabled-label');
+  const label = _byId('elicitor-enabled-label');
   const track = checkbox.parentElement.querySelector('span');
   const knob = checkbox.parentElement.querySelectorAll('span')[1];
   if (label) label.textContent = wantChecked ? '已启用' : '已禁用';
@@ -828,14 +859,14 @@ async function setElicitorEnabled(checkbox) {
 
 // v0.19：Agnes AI Video API Key 配置
 async function saveAgnesKey() {
-  const input = document.getElementById('agnes-key-input');
+  const input = _byId('agnes-key-input');
   const key = input ? input.value.trim() : '';
   if (!key) return toast('请粘贴 Agnes AI API Key', 'error');
   try {
     const r = await api('POST', '/admin/agnes-key', { apiKey: key });
     if (r.error) return toast('保存失败: ' + (r.message || r.error), 'error');
     input.value = '';
-    const statusEl = document.getElementById('agnes-key-status');
+    const statusEl = _byId('agnes-key-status');
     if (statusEl) statusEl.textContent = '✅ 已配置';
     toast('🎬 Agnes API Key 已保存，立即生效', 'success');
   } catch (e) {
@@ -847,7 +878,7 @@ async function clearAgnesKey() {
   if (!(await showConfirm('确认清除 Agnes API Key？工具将无法生成视频。'))) return;
   try {
     await api('POST', '/admin/agnes-key', { apiKey: '' });
-    const statusEl = document.getElementById('agnes-key-status');
+    const statusEl = _byId('agnes-key-status');
     if (statusEl) statusEl.textContent = '❌ 未配置';
     toast('Agnes API Key 已清除', 'success');
     loadAdminPage();
@@ -861,7 +892,7 @@ async function clearAgnesKey() {
 // 加载"运营工具"tab 内的统计摘要（独立失败容忍，避免阻塞 admin 主流程）
 // ── 用户管理 ──
 async function loadUsers() {
-  var el = document.getElementById('user-list');
+  var el = _byId('user-list');
   if (!el) return;
   el.innerHTML = '<span style="color:var(--text2)">⏳ 加载中…</span>';
   try {
@@ -944,7 +975,7 @@ async function loadOpsTabStats(root) {
   //   主窗口用 document 查找；浮窗（taskbar showAdminWindow）需传入 w.$c
   var scope = root || document;
   function findEl(id) {
-    return root ? root.querySelector('#' + id) : document.getElementById(id);
+    return root ? root.querySelector('#' + id) : _byId(id);
   }
 
   // 想法池：取 /ideas/stats
@@ -1058,7 +1089,7 @@ function _captureAdminEntryContext() {
   const pages = ['view-workspace', 'view-admin', 'view-improvements'];
   let visibleView = null;
   for (const p of pages) {
-    const el = document.getElementById(p);
+    const el = _byId(p);
     if (el && getComputedStyle(el).display !== 'none') {
       visibleView = p;
       break;
