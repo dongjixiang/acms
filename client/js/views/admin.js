@@ -193,6 +193,8 @@ async function loadAdminPage() {
       <div class="tab-content" id="admin-tab-advanced">
         <h3>⚙️ 高级设置</h3>
         <p style="color:var(--text2);font-size:13px;margin:4px 0 8px">实验性 / 阶段性功能开关。DB 未配置时回退到环境变量 <code>ELICITOR_ENABLED</code></p>
+
+        <div id="proxy-settings-card"></div>
         <div class="config-row">
           <div>
             <strong>🎯 需求启发师 (Elicitor)</strong>
@@ -391,6 +393,8 @@ async function loadAdminPage() {
     loadOpsTabStats();
     // v0.66 PR4: 加载"App-Tools 使用统计"（admin 概览 tab，平台级）
     loadAdminAppToolsStats();
+    // v0.XX: 代理设置（高级 tab 内的卡片，hydrate UI + 后端配置）
+    if (typeof loadProxySettings === 'function') loadProxySettings();
   } catch (e) { document.getElementById('admin-content').innerHTML = `<div class="empty">加载失败: ${e.message}</div>`; }
 }
 

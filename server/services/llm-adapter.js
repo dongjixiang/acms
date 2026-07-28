@@ -4,6 +4,8 @@ const modelStore = require('../stores/model-store');
 const toolRegistry = require('./tool-registry');
 // v0.46: Hook 系统集成（PreToolUse / PostToolUse）— 让用户在不改 tool handler 的情况下注入自动化
 const { runPreHooks, runPostHooks } = require('./hook-registry');
+// v0.XX: 代理 Phase 1 — 统一出站 fetch（接管所有 LLM API 调用以支持代理设置）
+const { proxyFetch: fetch } = require('./proxy-fetch');
 
 // 默认请求超时（毫秒）
 const DEFAULT_TIMEOUT = 120000; // 120s

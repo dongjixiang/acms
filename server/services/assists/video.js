@@ -3,6 +3,8 @@
 //   支持：文生视频 / 图生视频 / 多图视频 / 关键帧动画
 //   异步任务：创建 → 前端轮询查进度 → 完成展示视频 URL
 //
+// v0.XX: 代理 Phase 1 — 统一出站 fetch（接管下载视频 URL 等出站调用）
+//
 // v0.22.24 fix: 多图视频/单图视频的图片源智能解析（端到端 P21 验证后修复）
 //   问题：前端剧本传来的 image_urls 是 /api/generate/assets/<id>/<path>（ACMS 本地相对路径）
 //         Agnes Video API 是外部服务，无法访问本地 server 的相对路径
@@ -27,6 +29,8 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const config = require('../../config');
+// v0.XX: 代理 Phase 1 — 统一出站 fetch
+const { proxyFetch: fetch } = require('../../services/proxy-fetch');
 
 // v0.22.20: 改用 config.workspaceRoot（之前 2 层 `..` 错位到 server/workspaces/，与 gen.js 读取路径不一致 → 404）
 const WORKSPACE_ROOT = config.workspaceRoot;

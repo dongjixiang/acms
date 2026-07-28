@@ -23,6 +23,8 @@
 
 const path = require('path');
 const fs = require('fs');
+// v0.XX: 代理 Phase 1 — 统一出站 fetch
+const { proxyFetch: fetch } = require('./proxy-fetch');
 const crypto = require('crypto');
 const config = require('../config');
 

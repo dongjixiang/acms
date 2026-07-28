@@ -9,6 +9,8 @@
 //   - 字段：requirement.assist_music（status / song / sources / verified）
 
 const reqStore = require('../../stores/requirement-store');
+// v0.XX: 代理 Phase 1 — 统一出站 fetch
+const { proxyFetch: fetch } = require('../../services/proxy-fetch');
 
 // 6 个免费平台搜索 URL 构造（无版权风险，纯跳转）
 const PLATFORM_TEMPLATES = [

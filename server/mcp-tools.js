@@ -4,6 +4,9 @@
 const ACMS_BASE = process.env.ACMS_URL || 'http://localhost:3300/api';
 const API_KEY = process.env.ACMS_API_KEY || 'dev-key-001';
 
+// v0.XX: 代理 Phase 1 — 统一出站 fetch
+const { proxyFetch: fetch } = require('./services/proxy-fetch');
+
 const headers = { 'Content-Type': 'application/json', 'X-API-Key': API_KEY };
 
 async function acmsCall(method, path, body = null) {

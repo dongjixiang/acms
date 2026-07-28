@@ -4,6 +4,8 @@ const genStore = require('../stores/gen-store');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+// v0.XX: 代理 Phase 1 — 统一出站 fetch（接管所有生成 API 调用以支持代理设置）
+const { proxyFetch: fetch } = require('./proxy-fetch');
 
 const WORKSPACE_ROOT = path.join(__dirname, '..', '..', 'workspaces');
 

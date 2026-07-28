@@ -21,6 +21,8 @@
 
 const cheerio = require('cheerio');
 const { checkUrlSafety } = require('../services/url-safety');
+// v0.XX: 代理 Phase 1 — 统一出站 fetch
+const { proxyFetch: fetch } = require('../services/proxy-fetch');
 
 const FETCH_TIMEOUT_MS = 30000;
 const MAX_LENGTH_DEFAULT = 5000;
