@@ -55,3 +55,9 @@ proxy.listen(port, () => {
   console.log(`[mock-proxy] listening on http://127.0.0.1:${port}`);
   console.log(`[mock-proxy] logs all CONNECT + GET, forwards to real upstream for transparency`);
 });
+
+// v0.XX: 关闭 stdin 监听，避免作为 background process 时被 EOF 直接 kill
+if (process.stdin.unref) process.stdin.unref();
+process.stdin.on('error', () => {});
+process.on('SIGTERM', () => process.exit(0));
+process.on('SIGHUP', () => process.exit(0));
