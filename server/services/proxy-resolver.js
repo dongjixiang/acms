@@ -55,8 +55,56 @@ function _normalize(cfg) {
     bypassLocal: cfg.bypassLocal !== false,
     sslBypass: Array.isArray(cfg.sslBypass) ? cfg.sslBypass.filter(x => typeof x === 'string') : [],
     respectEnv: cfg.respectEnv !== false,
+    // v0.XX Phase 2.A：SOCKS + Puppeteer 维度
+    //   - socks 默认允许（undici 7 ProxyAgent 原生 socks5://）
+    //   - allowSocks5 默认 true；false 时拒绝 socks/socks5 scheme（向后兼容）
+    allowSocks5: cfg.allowSocks5 !== false,
+    //   - puppeteer：{ enabled: bool, bypassLocal: bool }
+    //     - enabled: 同时让 puppeteer 启动加 --proxy-server
+    //     - bypassLocal: 同 HTTP 维度，bypass 本地/内网
+    puppeteer: (() => {
+      const p = cfg.puppeteer;
+      if (!p || typeof p !== 'object') return { enabled: false, bypassLocal: true };
+      return { enabled: !!p.enabled, bypassLocal: p.bypassLocal !== false };
+    })(),
   };
   return out;
+}
+
+// v0.XX Phase 2.A：proxy URI 合法性 + 协议白名单
+//   支持的协议：http:// https:// socks:// socks5://
+//   undici 7 ProxyAgent 原生支持前 3 个（CONNECT tunnel），socks4 不在 undici 白名单
+const ALLOWED_PROXY_PROTOCOLS = ['http:', 'https:', 'socks:', 'socks5:'];
+
+function isValidProxyUri(uri) {
+  if (typeof uri !== 'string' || uri.length === 0) return { ok: false, error: 'empty URI' };
+  let u;
+  try { u = new URL(uri); } catch (e) { return { ok: false, error: `非法 URL: ${e.message}` }; }
+  if (!ALLOWED_PROXY_PROTOCOLS.includes(u.protocol)) {
+    return { ok: false, error: `不支持的协议 ${u.protocol}（支持 ${ALLOWED_PROXY_PROTOCOLS.join(' ')}）` };
+  }
+  if (u.protocol === 'socks:' || u.protocol === 'socks5:') {
+    // 兼容 allowSocks5 配置（默认 true）
+  }
+  if (!u.hostname) return { ok: false, error: '缺少 hostname' };
+  return { ok: true, protocol: u.protocol.replace(':', ''), hostname: u.hostname };
+}
+
+function validateConfig(cfg) {
+  const errs = [];
+  if (cfg.default && cfg.default.length > 0) {
+    const r = isValidProxyUri(cfg.default);
+    if (!r.ok) errs.push({ field: 'default', error: r.error });
+  }
+  if (Array.isArray(cfg.rules)) {
+    cfg.rules.forEach((r, i) => {
+      if (r.via && r.via.length > 0 && r.via !== 'direct') {
+        const v = isValidProxyUri(r.via);
+        if (!v.ok) errs.push({ field: `rules[${i}].via`, error: v.error });
+      }
+    });
+  }
+  return errs;
 }
 
 function loadConfig(forceReload = false) {
@@ -183,6 +231,7 @@ function resolveProxy(urlStr, opts = {}) {
 
 module.exports = {
   DEFAULT_CONFIG,
+  ALLOWED_PROXY_PROTOCOLS,
   loadConfig,
   getConfig,
   setConfig,
@@ -190,4 +239,6 @@ module.exports = {
   resolveProxy,
   shouldBypassLocal,
   isSSLBypassHost,
+  isValidProxyUri,
+  validateConfig,
 };

@@ -79,19 +79,25 @@
             </div>
           </div>
 
-          <!-- 默认代理 + 行为开关 -->
+          <!-- 行为开关 -->
           <div style="margin-top:12px;display:grid;grid-template-columns:1fr;gap:8px">
             <div>
-              <div style="font-size:12px;color:var(--text2);margin-bottom:4px">兜底代理（没匹配到规则的 URL 走这里，留空=直连）</div>
-              <input type="text" id="proxy-default" value="${escHtml(c.default || '')}" placeholder="http://127.0.0.1:7890"
+              <div style="font-size:12px;color:var(--text2);margin-bottom:4px">兜底代理（没匹配到规则的 URL 走这里，留空=直连）<br><span style="opacity:0.7">支持协议：<code>http://</code> <code>https://</code> <code>socks5://</code></span></div>
+              <input type="text" id="proxy-default" value="${escHtml(c.default || '')}" placeholder="http://127.0.0.1:7890  或  socks5://127.0.0.1:1080"
                 style="width:100%;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px">
             </div>
-            <div style="display:flex;gap:18px;font-size:12px;color:var(--text2)">
+            <div style="display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:var(--text2)">
               <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
                 <input type="checkbox" id="proxy-bypass-local" ${c.bypassLocal !== false ? 'checked' : ''}> ✅ 绕过本地（127/10/192.168/172.16-31）
               </label>
               <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
                 <input type="checkbox" id="proxy-respect-env" ${c.respectEnv !== false ? 'checked' : ''}> 🌍 启动时读 <code>HTTPS_PROXY</code> 环境变量
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:500;color:var(--text)">
+                <input type="checkbox" id="proxy-puppeteer-enabled" ${(c.puppeteer && c.puppeteer.enabled) ? 'checked' : ''}> 🐶 Puppeteer 浏览器也使用此代理
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;${(c.puppeteer && c.puppeteer.enabled) ? '' : 'opacity:0.5;pointer-events:none'}" id="proxy-puppeteer-bypass-wrap">
+                <input type="checkbox" id="proxy-puppeteer-bypass-local" ${(c.puppeteer && c.puppeteer.bypassLocal !== false) ? 'checked' : ''}> 绕过本地（同上）
               </label>
             </div>
           </div>
@@ -179,6 +185,16 @@
           currentConfig.rules[idx][key] = input.value;
         };
       });
+
+      // v0.XX Phase 2.B: puppeteer 主 checkbox 联动 bypass-local 可见性
+      const ppEnable = cardEl.querySelector('#proxy-puppeteer-enabled');
+      const ppBypassWrap = cardEl.querySelector('#proxy-puppeteer-bypass-wrap');
+      if (ppEnable && ppBypassWrap) {
+        ppEnable.onchange = () => {
+          ppBypassWrap.style.opacity = ppEnable.checked ? '1' : '0.5';
+          ppBypassWrap.style.pointerEvents = ppEnable.checked ? '' : 'none';
+        };
+      }
     });
   }
 
@@ -232,6 +248,8 @@
     const defInput = document.getElementById('proxy-default');
     const bypassLocal = document.getElementById('proxy-bypass-local');
     const respectEnv = document.getElementById('proxy-respect-env');
+    const puppeteerEnabled = document.getElementById('proxy-puppeteer-enabled');
+    const puppeteerBypassLocal = document.getElementById('proxy-puppeteer-bypass-local');
     const cfg = {
       enabled: !!(document.getElementById('proxy-enabled-toggle') || {}).checked,
       default: defInput ? defInput.value.trim() : '',
@@ -239,10 +257,23 @@
       bypassLocal: bypassLocal ? bypassLocal.checked : true,
       sslBypass: currentConfig.sslBypass || [],
       respectEnv: respectEnv ? respectEnv.checked : true,
+      puppeteer: {
+        enabled: puppeteerEnabled ? puppeteerEnabled.checked : false,
+        bypassLocal: puppeteerBypassLocal ? puppeteerBypassLocal.checked : true,
+      },
     };
     try {
       const r = await api('PUT', '/proxy-settings', cfg);
-      if (r && r.error) return toast('保存失败: ' + (r.message || r.error), 'error');
+      if (r && r.error) {
+        // v0.XX Phase 2.A: 验证错误详细展示
+        if (r.error === 'INVALID_PROXY_URI' && r.errors) {
+          const msg = r.errors.map(e => `${e.field}: ${e.error}`).join('; ');
+          toast('保存失败（代理 URL 验证）: ' + msg, 'error');
+        } else {
+          toast('保存失败: ' + (r.message || r.error), 'error');
+        }
+        return;
+      }
       currentConfig = r.config || cfg;
       toast('✅ 代理设置已保存，立即生效', 'success');
     } catch (e) {

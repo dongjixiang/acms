@@ -11,9 +11,9 @@ const router = express.Router();
 const proxyResolver = require('../services/proxy-resolver');
 const proxyFetch = require('../services/proxy-fetch');
 
-// ─── 安全：白名单字段，避免 API 写入乱字段污染 config.json ──────────────
+// ─── 安全：白名单字段 + 协议白名单校验 ──────────────────────────────
 
-const ALLOWED_FIELDS = ['enabled', 'default', 'rules', 'bypassLocal', 'sslBypass', 'respectEnv'];
+const ALLOWED_FIELDS = ['enabled', 'default', 'rules', 'bypassLocal', 'sslBypass', 'respectEnv', 'allowSocks5', 'puppeteer'];
 
 function sanitize(body) {
   const out = {};
@@ -49,6 +49,11 @@ router.get('/', (req, res) => {
 
 router.put('/', (req, res) => {
   const sanitized = sanitize(req.body || {});
+  // v0.XX Phase 2.A: 验证 proxy URL 合法性（拒绝非允许协议）
+  const validationErrs = proxyResolver.validateConfig(sanitized);
+  if (validationErrs.length > 0) {
+    return res.status(400).json({ error: 'INVALID_PROXY_URI', errors: validationErrs });
+  }
   try {
     const saved = proxyResolver.setConfig(sanitized);
     // 清 dispatcher 缓存，让新规则立即生效

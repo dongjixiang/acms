@@ -135,6 +135,11 @@ class AppRuntimeService extends EventEmitter {
         `--app=${url}`,
         `--window-size=${Math.max(640, Number(w) || 1180)},${Math.max(480, Number(h) || 760)}`,
         '--no-first-run', '--no-default-browser-check', '--disable-extensions',
+        // v0.XX Phase 2.B: 注入代理启动参数（如 proxy.puppeteer.enabled）
+        ...((() => {
+          const { getPuppeteerLaunchArgs } = require('./puppeteer-proxy');
+          return getPuppeteerLaunchArgs([]);
+        })()),
       ],
       timeout: 30000,
     });

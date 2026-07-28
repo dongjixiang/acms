@@ -52,7 +52,7 @@ async function launchBrowser() {
   if (isValid) return _browser;
   if (_launching) return _launching;
 
-  _launching = (async () => {
+    _launching = (async () => {
     try {
       // 尝试 puppeteer 默认路径找 chrome.exe，如果缺文件则试 chrome-headless-shell
       const launchOpts = {
@@ -68,6 +68,13 @@ async function launchBrowser() {
         ],
         timeout: 30000,
       };
+
+      // v0.XX Phase 2.B: 注入代理启动参数（如果 proxy.puppeteer.enabled + 兜底 URL 存在）
+      const { getPuppeteerLaunchArgs } = require('./puppeteer-proxy');
+      launchOpts.args = getPuppeteerLaunchArgs(launchOpts.args);
+      if (process.env.ACMS_LOG_PROXY_ARGS) {
+        console.log('[browser-fetch] proxy args:', launchOpts.args.filter(a => /^--proxy/.test(a)));
+      }
 
       // 自动检测 chrome-headless-shell（当 chrome.exe 缺失时用）
       let exePath;
