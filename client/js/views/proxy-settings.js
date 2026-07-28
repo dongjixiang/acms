@@ -138,44 +138,47 @@
   // ── 卡片挂载 + 加载 ───────────────────────────────────────────────
 
   async function loadProxySettings() {
-    const cardEl = document.getElementById('proxy-settings-card');
-    if (!cardEl) return;  // 当前 admin tab 不可见时不渲染
+    const cards = Array.from(document.querySelectorAll('#proxy-settings-card'));
+    if (cards.length === 0) return;  // 当前没有可见 admin 视图（不渲染）
     try {
       const r = await api('GET', '/proxy-settings');
       if (r && r.config) currentConfig = r.config;
     } catch (e) {
       console.warn('[proxy-settings] load failed:', e.message);
     }
-    cardEl.innerHTML = renderCard();
-    // 绑定子元素（用 delegation，rule 行重复渲染也得有）
+    // 同时 hydrate 所有卡片（页面视图 + admin 浮窗 + 任何已克隆实例）
+    //   局部状态会随用户操作同步（currentConfig 是 module-level，单一来源）
+    cards.forEach(c => { c.innerHTML = renderCard(); });
     bindCardEvents();
   }
 
   function bindCardEvents() {
-    // 等所有 row render 完后挂上去
-    const cardEl = document.getElementById('proxy-settings-card');
-    if (!cardEl) return;
+    // 监听所有卡片（页面视图 + 浮窗里），共享同一份 currentConfig
+    const cards = Array.from(document.querySelectorAll('#proxy-settings-card'));
+    cards.forEach(cardEl => {
+      if (!cardEl) return;
 
-    cardEl.querySelectorAll('[data-rule-remove]').forEach(btn => {
-      btn.onclick = () => {
-        const idx = parseInt(btn.getAttribute('data-rule-remove'), 10);
-        removeProxyRule(idx);
-      };
-    });
-    cardEl.querySelectorAll('[data-ssl-remove]').forEach(btn => {
-      btn.onclick = () => {
-        const idx = parseInt(btn.getAttribute('data-ssl-remove'), 10);
-        removeSSLBypass(idx);
-      };
-    });
-    // rule match/via 输入实时更新本地 config
-    cardEl.querySelectorAll('.proxy-rule-row input').forEach(input => {
-      input.oninput = () => {
-        const idx = parseInt(input.getAttribute('data-idx'), 10);
-        const key = input.getAttribute('data-key');
-        if (!currentConfig.rules[idx]) return;
-        currentConfig.rules[idx][key] = input.value;
-      };
+      cardEl.querySelectorAll('[data-rule-remove]').forEach(btn => {
+        btn.onclick = () => {
+          const idx = parseInt(btn.getAttribute('data-rule-remove'), 10);
+          removeProxyRule(idx);
+        };
+      });
+      cardEl.querySelectorAll('[data-ssl-remove]').forEach(btn => {
+        btn.onclick = () => {
+          const idx = parseInt(btn.getAttribute('data-ssl-remove'), 10);
+          removeSSLBypass(idx);
+        };
+      });
+      // rule match/via 输入实时更新本地 config
+      cardEl.querySelectorAll('.proxy-rule-row input').forEach(input => {
+        input.oninput = () => {
+          const idx = parseInt(input.getAttribute('data-idx'), 10);
+          const key = input.getAttribute('data-key');
+          if (!currentConfig.rules[idx]) return;
+          currentConfig.rules[idx][key] = input.value;
+        };
+      });
     });
   }
 
@@ -194,15 +197,15 @@
   window.addProxyRule = function () {
     currentConfig.rules = currentConfig.rules || [];
     currentConfig.rules.push({ match: '', via: '' });
-    const cardEl = document.getElementById('proxy-settings-card');
-    if (cardEl) { cardEl.innerHTML = renderCard(); bindCardEvents(); }
+    Array.from(document.querySelectorAll('#proxy-settings-card')).forEach(c => { c.innerHTML = renderCard(); });
+    bindCardEvents();
   };
 
   window.removeProxyRule = function (idx) {
     if (!currentConfig.rules || !currentConfig.rules[idx]) return;
     currentConfig.rules.splice(idx, 1);
-    const cardEl = document.getElementById('proxy-settings-card');
-    if (cardEl) { cardEl.innerHTML = renderCard(); bindCardEvents(); }
+    Array.from(document.querySelectorAll('#proxy-settings-card')).forEach(c => { c.innerHTML = renderCard(); });
+    bindCardEvents();
   };
 
   window.addSSLBypass = function () {
@@ -213,15 +216,15 @@
     currentConfig.sslBypass = currentConfig.sslBypass || [];
     if (!currentConfig.sslBypass.includes(v)) currentConfig.sslBypass.push(v);
     input.value = '';
-    const cardEl = document.getElementById('proxy-settings-card');
-    if (cardEl) { cardEl.innerHTML = renderCard(); bindCardEvents(); }
+    Array.from(document.querySelectorAll('#proxy-settings-card')).forEach(c => { c.innerHTML = renderCard(); });
+    bindCardEvents();
   };
 
   window.removeSSLBypass = function (idx) {
     if (!currentConfig.sslBypass || !currentConfig.sslBypass[idx]) return;
     currentConfig.sslBypass.splice(idx, 1);
-    const cardEl = document.getElementById('proxy-settings-card');
-    if (cardEl) { cardEl.innerHTML = renderCard(); bindCardEvents(); }
+    Array.from(document.querySelectorAll('#proxy-settings-card')).forEach(c => { c.innerHTML = renderCard(); });
+    bindCardEvents();
   };
 
   window.saveProxyConfig = async function () {
@@ -267,8 +270,8 @@
     try {
       const r = await api('DELETE', '/proxy-settings');
       if (r && r.config) currentConfig = r.config;
-      const cardEl = document.getElementById('proxy-settings-card');
-      if (cardEl) { cardEl.innerHTML = renderCard(); bindCardEvents(); }
+      Array.from(document.querySelectorAll('#proxy-settings-card')).forEach(c => { c.innerHTML = renderCard(); });
+      bindCardEvents();
       toast('已重置为默认', 'success');
     } catch (e) {
       toast('重置失败: ' + e.message, 'error');

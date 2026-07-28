@@ -726,6 +726,10 @@ document.addEventListener('DOMContentLoaded', () => {
         // v0.62.3: 包 .view 容器，让 .acms-window .aw-content > .view { padding:12px 14px } 规则生效
         w.$c.innerHTML = '<div class="view active admin-window-view">' + src.innerHTML + '</div>';
         w.$c.style.display = '';
+        // v0.XX: 重新 hydrate proxy-settings 卡片（从 src.clone 出来的容器还是空 div）
+        if (typeof loadProxySettings === 'function') {
+          try { loadProxySettings(); } catch (e) { console.warn('proxy-settings hydrate in window failed:', e); }
+        }
         var header = w.$c.querySelector('.view-header');
         if (header) header.remove();
         (function(winRoot) {
