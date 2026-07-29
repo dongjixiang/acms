@@ -77,7 +77,7 @@ async function callAgnesImageOnce(apiKey, body, timeoutMs, attempt) {
   var controller = new AbortController();
   var timer = setTimeout(function () { controller.abort(); }, timeoutMs || 60000);
   try {
-    var resp = await fetch('https://apihub.agnes-ai.com/v1/images/generations', {
+    var resp = await fetch('https://api.agnes-ai.cn/v1/images/generations', {
       method: 'POST',
       headers: {
         'Authorization': 'Bearer ' + apiKey,

@@ -5,7 +5,8 @@
 const { http1Fetch } = require('./http1-fetch');
 const config = require('../config');
 
-const API_BASE = 'https://apihub.agnes-ai.com';
+// v0.XX: 域名 apihub.agnes-ai.com → api.agnes-ai.cn（对齐 LLM 模型 + 新 key）
+const API_BASE = 'https://api.agnes-ai.cn';
 
 /**
  * 读取 Agnes API Key

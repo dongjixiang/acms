@@ -81,7 +81,7 @@ async function callAgnesImageOnce(apiKey, body) {
   let lastErr = '';
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      const resp = await http1Fetch('https://apihub.agnes-ai.com/v1/images/generations', {
+      const resp = await http1Fetch('https://api.agnes-ai.cn/v1/images/generations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
         body: JSON.stringify(body),

@@ -227,7 +227,7 @@ async function generateMinimaxImage(projectSlug, provider, prompt, params) {
 }
 
 // ===== Agnes Image (agnes-image-2.0-flash) Provider =====
-// API: POST https://apihub.agnes-ai.com/v1/images/generations
+// API: POST https://api.agnes-ai.cn/v1/images/generations
 // 支持文生图 + 图生图（多图输入）
 // 使用共享的 Agnes API Key（同视频工具）
 function getAgnesApiKey() {
@@ -265,7 +265,7 @@ async function generateAgnesImage(projectSlug, provider, prompt, params) {
     body.extra_body.image = inputImages;
   }
 
-  const resp = await fetch('https://apihub.agnes-ai.com/v1/images/generations', {
+  const resp = await fetch('https://api.agnes-ai.cn/v1/images/generations', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
     body: JSON.stringify(body),
