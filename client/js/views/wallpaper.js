@@ -271,7 +271,7 @@
     /** 注册变化回调 */
     onChange: function(fn) {
       if (typeof fn === 'function') {
-        self._changeListeners.push(fn);
+        this._changeListeners.push(fn);   // v0.76: 改 this，避免引用未定义的 self 导致 push-on-undefined
       }
     },
 
