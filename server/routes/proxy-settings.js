@@ -116,8 +116,19 @@ router.get('/proxy-browse', async (req, res) => {
     
     let resp;
     if (proxyUri && cfg.enabled) {
-      // 走代理：通过 Squid HTTP 端口转发
-      resp = await proxyFetchViaHttpProxy(targetUrl, proxyUri);
+      var proxyType = proxyUri.split('://')[0];
+      if (proxyType === 'socks5' || proxyType === 'socks') {
+        // SOCKS5 代理走 proxyFetch（undici 的 ProxyAgent 支持 SOCKS）
+        try {
+          resp = await proxyFetch.proxyFetch(targetUrl);
+        } catch (e) {
+          console.warn('[proxy-browse] SOCKS5 proxyFetch 失败, 降级直连:', e.message);
+          resp = await simpleFetch(targetUrl);
+        }
+      } else {
+        // HTTP/HTTPS 代理走自定义隧道
+        resp = await proxyFetchViaHttpProxy(targetUrl, proxyUri);
+      }
     } else {
       // 直连
       resp = await simpleFetch(targetUrl);

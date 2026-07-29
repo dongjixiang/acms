@@ -8,6 +8,8 @@ function authMiddleware(req, res, next) {
       || req.path.startsWith('/client/')
       || req.path.startsWith('/api/generate/assets/')
       || req.path.startsWith('/api/auth/')    // 登录/注册接口公开
+      || req.path.startsWith('/api/proxy-settings/proxy-browse')  // v0.76: 浏览器代理浏览免鉴权
+      || req.path === '/api/proxy-settings'  // 浏览器读代理状态
       || /\/api\/chat\/upload\/[^/]+\/raw$/.test(req.path)
       || req.path === '/api/files/asset') return next();  // v0.73: workspace 资源文件（img 标签免鉴权加载）
 

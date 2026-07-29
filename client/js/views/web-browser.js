@@ -11,10 +11,9 @@
   var preview = null; // { sessionId, ws, ctx, scaleX, scaleY, dead, firstFrameTimer, reconnectTimer, queue, drawing, img }
   var _proxyEnabled = false;    // 服务端代理是否已启用
 
-  // ── 构建带 API Key 的代理 URL ──
+  // ── 构建代理 URL（免鉴权路径）──
   function proxyBrowseUrl(targetUrl) {
-    var apiKey = (window.ACMSConfig && window.ACMSConfig.apiKey) || 'dev-key-001';
-    return '/api/proxy-settings/proxy-browse?url=' + encodeURIComponent(targetUrl) + (apiKey ? '&api_key=' + encodeURIComponent(apiKey) : '');
+    return '/api/proxy-settings/proxy-browse?url=' + encodeURIComponent(targetUrl);
   }
 
   // ── 获取代理配置 ──
