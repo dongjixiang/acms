@@ -253,7 +253,8 @@ async function generateAgnesImage(projectSlug, provider, prompt, params) {
 
   const size = params.size || provider.config?.defaultParams?.size || '1024x1024';
   const body = {
-    model: 'agnes-image-2.0-flash',
+// v0.XX: agnes-image-2.0-flash → agnes-image-2.1-flash（中文站）
+    model: 'agnes-image-2.1-flash',
     prompt,
     size,
     extra_body: { response_format: 'url' },
@@ -300,7 +301,8 @@ async function generateAgnesImage(projectSlug, provider, prompt, params) {
     }
     return saveAsset(projectSlug, buffer, ext, mime, {
       prompt,
-      model: 'agnes-image-2.0-flash',
+  // v0.XX: agnes-image-2.0-flash → agnes-image-2.1-flash（中文站）
+    model: 'agnes-image-2.1-flash',
       size,
       img2img: inputImages.length > 0,
     });
@@ -310,7 +312,8 @@ async function generateAgnesImage(projectSlug, provider, prompt, params) {
   const buffer = Buffer.from(imageUrl, 'base64');
   return saveAsset(projectSlug, buffer, '.png', 'image/png', {
     prompt,
-    model: 'agnes-image-2.0-flash',
+// v0.XX: agnes-image-2.0-flash → agnes-image-2.1-flash（中文站）
+    model: 'agnes-image-2.1-flash',
     size,
     img2img: inputImages.length > 0,
   });

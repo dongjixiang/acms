@@ -164,7 +164,8 @@ async function coreGenerate(opts) {
   if (!apiKey) return { ok: false, error: 'AGNES_API_KEY_NOT_CONFIGURED', prompt };
 
   var body = {
-    model: 'agnes-image-2.0-flash',
+// v0.XX: agnes-image-2.0-flash → agnes-image-2.1-flash（中文站）
+    model: 'agnes-image-2.1-flash',
     prompt: prompt,
     size: size,
     extra_body: { response_format: 'url' },

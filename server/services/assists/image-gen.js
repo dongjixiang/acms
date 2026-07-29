@@ -276,7 +276,8 @@ async function runAssistJob(requirementId, opts = {}) {
     if (!apiKey) throw new Error('Agnes API Key 未配置');
 
     const body = {
-      model: 'agnes-image-2.0-flash',
+  // v0.XX: agnes-image-2.0-flash → agnes-image-2.1-flash（中文站）
+    model: 'agnes-image-2.1-flash',
       prompt,
       size,
       extra_body: { response_format: 'url' },
@@ -603,7 +604,8 @@ async function runAssistJobCore(requirementId, opts = {}) {
     if (!apiKey) return { ok: false, error: 'AGNES_API_KEY_NOT_CONFIGURED', prompt, file_ids: [] };
 
     const body = {
-      model: 'agnes-image-2.0-flash',
+  // v0.XX: agnes-image-2.0-flash → agnes-image-2.1-flash（中文站）
+    model: 'agnes-image-2.1-flash',
       prompt: agnesPrompt, size,
       extra_body: { response_format: 'url' },
     };
