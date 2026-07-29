@@ -32,37 +32,46 @@
       },
       null, // separator
       {
-        id: 'wallpaper',
-        label: '更换壁纸',
-        icon: '🖼',
+        // v0.75: 主题相关项合并到一个一级菜单，鼠标悬停出二级子菜单
+        id: 'theme',
+        label: '主题与外观',
+        icon: '🎨',
         children: [
-          { id: 'wp-presets', label: '选择预设', icon: '🎨', action: function() { openWallpaperDialog(); } },
-          null,
-          { id: 'wp-upload', label: '上传图片…', icon: '📁', action: function() { triggerWallpaperUpload(); } },
-          null,
-          { id: 'wp-reset', label: '恢复默认', icon: '🗑', action: function() { if (window.ACMSWallpaper) ACMSWallpaper.reset(); } },
+          {
+            id: 'wp-select',
+            label: '选择壁纸…',
+            icon: '🖼',
+            action: function() { openWallpaperDialog(); },
+          },
+          {
+            id: 'wp-style',
+            label: '壁纸缩放',
+            icon: '🔲',
+            children: function() {
+              var currentStyle = (window.ACMSWallpaper && ACMSWallpaper.getStyle()) || 'cover';
+              var styles = [
+                { id: 'cover',   label: '填充铺满', icon: currentStyle === 'cover'   ? '●' : '○' },
+                { id: 'contain', label: '适应',     icon: currentStyle === 'contain' ? '●' : '○' },
+                { id: 'fill',    label: '拉伸',     icon: currentStyle === 'fill'    ? '●' : '○' },
+              ];
+              return styles.map(function(s) {
+                return {
+                  id: 'ws-' + s.id,
+                  label: s.label,
+                  icon: s.icon,
+                  action: function() { if (window.ACMSWallpaper) ACMSWallpaper.setStyle(s.id); },
+                };
+              });
+            },
+          },
+          null, // separator
+          {
+            id: 'ds-theme',
+            label: '切换主题',
+            icon: '🎨',
+            action: function() { cycleTheme(); },
+          },
         ],
-      },
-      {
-        id: 'wallpaper-style',
-        label: '壁纸缩放',
-        icon: '🔲',
-        children: function() {
-          var currentStyle = (window.ACMSWallpaper && ACMSWallpaper.getStyle()) || 'cover';
-          var styles = [
-            { id: 'cover',   label: '填充铺满', icon: currentStyle === 'cover'   ? '●' : '○' },
-            { id: 'contain', label: '适应',     icon: currentStyle === 'contain' ? '●' : '○' },
-            { id: 'fill',    label: '拉伸',     icon: currentStyle === 'fill'    ? '●' : '○' },
-          ];
-          return styles.map(function(s) {
-            return {
-              id: 'ws-' + s.id,
-              label: s.label,
-              icon: s.icon,
-              action: function() { if (window.ACMSWallpaper) ACMSWallpaper.setStyle(s.id); },
-            };
-          });
-        },
       },
       null, // separator
       {
@@ -162,15 +171,6 @@
             window.openWebBrowser();
           }
         },
-      },
-      null, // separator
-      {
-        id: 'display-settings',
-        label: '显示设置',
-        icon: '⚙️',
-        children: [
-          { id: 'ds-theme', label: '切换主题', icon: '🎨', action: function() { cycleTheme(); } },
-        ],
       },
       null, // separator
       {
