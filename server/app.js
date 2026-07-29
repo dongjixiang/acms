@@ -241,6 +241,7 @@ app.use('/api/skills', require('./routes/skills'));
 app.use('/api/bugs', require('./routes/bugs'));
 app.use('/api/postmortem', require('./routes/postmortem'));
 app.use('/api/files', require('./routes/files'));
+app.use('/api/desktop-config', require('./routes/desktop-config'));  // v0.75: 桌面配置服务端同步（壁纸+图标位置等）
 
 // Webhook 服务初始化
 const eventBus = require('./services/event-bus');

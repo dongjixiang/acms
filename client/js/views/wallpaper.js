@@ -283,6 +283,22 @@
         try { fn(data); } catch(e) { console.warn('[ACMSWallpaper] onChange error:', e); }
       });
     },
+
+    /** v0.75: 从 localStorage 重新加载并应用（用于桌面同步 restore 后刷新 CSS） */
+    refreshFromLocalStorage: function() {
+      try {
+        var raw = localStorage.getItem(LS_KEY);
+        if (raw) {
+          currentWallpaper = JSON.parse(raw);
+        } else {
+          currentWallpaper = null;
+        }
+      } catch (e) {
+        currentWallpaper = null;
+      }
+      applyWallpaper(currentWallpaper);
+      // 不触发 _notifyChange（防止 restore 时反向写入）
+    },
   };
 
   // DOM 就绪后自动初始化
