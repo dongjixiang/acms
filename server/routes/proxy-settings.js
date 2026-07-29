@@ -126,7 +126,7 @@ router.get('/proxy-browse', async (req, res) => {
     // 透传关键头
     const passHeaders = ['content-type', 'content-length'];
     for (const h of passHeaders) {
-      const val = resp.headers.get(h);
+      const val = resp.headers && typeof resp.headers.get === 'function' ? resp.headers.get(h) : resp.headers?.[h];
       if (val) res.setHeader(h, val);
     }
     // 去掉 X-Frame-Options 和 CSP 限制（让 iframe 能加载）
@@ -155,98 +155,98 @@ async function proxyFetchViaHttpProxy(targetUrl, proxyUri) {
   const proxyPort = parseInt(proxy.port) || (proxyIsHttps ? 443 : 80);
 
   return new Promise((resolve, reject) => {
-    // 先连代理（HTTP 直连 / HTTPS 先 TLS）
+    // 先连代理（HTTP 直连 / HTTPS 先 TLS，TLS 失败时降级 HTTP）
     function connectToProxy(callback) {
-      function doConnect() {
-        if (proxyIsHttps) {
-          // HTTPS 代理：先建立 TLS 到代理
-          const tlsSocket = tls.connect({
-            host: proxyHost,
-            port: proxyPort,
-            rejectUnauthorized: false,
-          }, () => callback(tlsSocket));
-          tlsSocket.on('error', function(err) {
-            // TLS 连不上时降级到 HTTP 代理（5418 端口）
-            console.warn('[proxy-browse] TLS 连接失败, 尝试 HTTP 降级:', err.message);
-            var net = require('net');
-            var fallbackPort = (proxyPort === 5419 || proxyPort === 443) ? 5418 : proxyPort;
-            var sock = net.createConnection({ host: proxyHost, port: fallbackPort }, function() { callback(sock); });
-            sock.on('error', reject);
-          });
-        } else {
-        // HTTPS 代理：先建立 TLS 到代理
-        const tlsSocket = tls.connect({
-          host: proxyHost,
-          port: proxyPort,
-          rejectUnauthorized: false,
-          servername: proxyHost,
-        }, () => callback(tlsSocket));
-        tlsSocket.on('error', reject);
-      } else {
-        // HTTP 代理：直连 TCP
-        const net = require('net');
-        const sock = net.createConnection({
-          host: proxyHost,
-          port: proxyPort,
-        }, () => callback(sock));
-        sock.on('error', reject);
-        sock.setTimeout(15000, () => { sock.destroy(); reject(new Error('代理连接超时')); });
+      // 用本地 openssl 建立 TLS 隧道到 HTTPS 代理（Node.js TLS 在某些网络环境不可靠）
+      if (proxyIsHttps) {
+        var cp = require('child_process');
+        // 查找 openssl 可执行文件
+        var opensslBin = process.platform === 'win32' ? 'C:\\Program Files\\Git\\mingw64\\bin\\openssl.exe' : 'openssl';
+        try { require('fs').accessSync(opensslBin); } catch (e) { opensslBin = 'openssl'; }
+        var child = cp.spawn(opensslBin, [
+          's_client', '-connect', proxyHost + ':' + proxyPort,
+          '-quiet', '-servername', proxyHost
+        ], { stdio: ['pipe', 'pipe', 'pipe'] });
+        var connected = false;
+        var buf = '';
+        child.stdout.on('data', function (chunk) {
+          buf += chunk.toString();
+          if (!connected && buf.includes('---')) {
+            connected = true;
+            callback(child.stdin, child.stdout, child);
+          }
+        });
+        child.on('error', function (e) {
+          console.warn('[proxy-browse] openssl 失败, 降级 HTTP:', e.message);
+          var fb = (proxyPort === 5419 || proxyPort === 443) ? 5418 : proxyPort;
+          var sock = require('net').createConnection({ host: proxyHost, port: fb }, function () { callback(sock, sock); });
+          sock.on('error', reject);
+        });
+        // 超时保护
+        var tmr = setTimeout(function () {
+          if (!connected) { child.kill(); console.warn('[proxy-browse] openssl 超时, 降级 HTTP'); }
+        }, 10000);
+        child.on('exit', function () { clearTimeout(tmr); });
+        return;
       }
+      // HTTP 代理：直连 TCP
+      var sock = require('net').createConnection({ host: proxyHost, port: proxyPort }, function () { callback(sock, sock); });
+      sock.on('error', reject);
     }
 
-    connectToProxy((socket) => {
+    connectToProxy(function(writer, reader) {
       // 发送 CONNECT 请求
-      const connectReq = 'CONNECT ' + url.hostname + ':' + (url.port || (isHttps ? 443 : 80)) + ' HTTP/1.1\r\nHost: ' + url.hostname + '\r\n\r\n';
-      socket.write(connectReq);
+      var connectReq = 'CONNECT ' + url.hostname + ':' + (url.port || (isHttps ? 443 : 80)) + ' HTTP/1.1\r\nHost: ' + url.hostname + '\r\nProxy-Connection: Keep-Alive\r\n\r\n';
+      writer.write(connectReq);
 
-      let buf = '';
-      socket.on('data', chunk => {
+      var buf = '';
+      reader.on('data', function(chunk) {
         buf += chunk.toString();
-        if (buf.includes('\r\n\r\n')) {
-          const statusLine = buf.split('\r\n')[0];
-          const status = parseInt(statusLine.split(' ')[1]) || 502;
+        if (buf.indexOf('\r\n\r\n') >= 0) {
+          var statusLine = buf.split('\r\n')[0];
+          var status = parseInt(statusLine.split(' ')[1]) || 502;
           if (status !== 200) {
-            socket.destroy();
             return reject(new Error('代理 CONNECT 失败: ' + statusLine));
           }
-
-          // CONNECT 成功，现在 socket 已连通目标服务器
-          if (isHttps) {
-            // HTTPS 目标：通过代理隧道做 TLS 握手
-            const tlsSocket = tls.connect({
-              socket: socket,
-              servername: url.hostname,
-              rejectUnauthorized: false,
-            }, () => {
-              const reqPath = url.pathname + url.search || '/';
-              tlsSocket.write('GET ' + reqPath + ' HTTP/1.1\r\nHost: ' + url.hostname + '\r\nConnection: close\r\n\r\n');
-              let data = '';
-              tlsSocket.on('data', d => { data += d.toString(); });
-              tlsSocket.on('end', () => {
-                const hEnd = data.indexOf('\r\n\r\n');
-                if (hEnd < 0) return reject(new Error('无 HTTP 响应头'));
-                resolve({ status: parseInt(data.split('\r\n')[0].split(' ')[1]) || 502, headers: {}, text: () => Promise.resolve(data.substring(hEnd + 4)) });
-              });
-              tlsSocket.on('error', reject);
-            });
-            tlsSocket.on('error', reject);
-          } else {
-            // HTTP 目标：直接发 HTTP 请求
-            const reqPath = url.pathname + url.search || '/';
-            socket.write('GET ' + reqPath + ' HTTP/1.1\r\nHost: ' + url.hostname + '\r\nConnection: close\r\n\r\n');
-            let data = '';
-            socket.on('data', d => { data += d.toString(); });
-            socket.on('end', () => {
-              const hEnd = data.indexOf('\r\n\r\n');
-              if (hEnd < 0) return reject(new Error('无 HTTP 响应头'));
-              resolve({ status: parseInt(data.split('\r\n')[0].split(' ')[1]) || 502, headers: {}, text: () => Promise.resolve(data.substring(hEnd + 4)) });
-            });
-          }
+          // CONNECT 成功，通过隧道发 HTTP 请求
+          finishViaTunnel(isHttps, url, writer, reader, resolve, reject);
         }
       });
-      socket.on('error', reject);
+      reader.on('error', reject);
+      writer.on('error', reject);
     });
   });
+}
+
+// ─── 通过已建立的 CONNECT 隧道发 HTTP 请求 ───
+function finishViaTunnel(isHttps, url, writer, reader, resolve, reject) {
+  var reqPath = url.pathname + url.search || '/';
+  if (isHttps) {
+    // HTTPS 目标：通过隧道做 TLS 握手
+    var tls = require('tls');
+    var tlsSocket = tls.connect({ socket: reader, servername: url.hostname, rejectUnauthorized: false }, function () {
+      tlsSocket.write('GET ' + reqPath + ' HTTP/1.1\r\nHost: ' + url.hostname + '\r\nConnection: close\r\n\r\n');
+      var data = '';
+      tlsSocket.on('data', function (d) { data += d.toString(); });
+      tlsSocket.on('end', function () {
+        var h = data.indexOf('\r\n\r\n');
+        if (h < 0) return reject(new Error('无 HTTP 响应头'));
+        resolve({ status: parseInt(data.split('\r\n')[0].split(' ')[1]) || 502, headers: {}, text: function () { return Promise.resolve(data.substring(h + 4)); } });
+      });
+      tlsSocket.on('error', reject);
+    });
+    tlsSocket.on('error', reject);
+  } else {
+    // HTTP 目标：直接发请求
+    writer.write('GET ' + reqPath + ' HTTP/1.1\r\nHost: ' + url.hostname + '\r\nConnection: close\r\n\r\n');
+    var data = '';
+    reader.on('data', function (d) { data += d.toString(); });
+    reader.on('end', function () {
+      var h = data.indexOf('\r\n\r\n');
+      if (h < 0) return reject(new Error('无 HTTP 响应头'));
+      resolve({ status: parseInt(data.split('\r\n')[0].split(' ')[1]) || 502, headers: {}, text: function () { return Promise.resolve(data.substring(h + 4)); } });
+    });
+  }
 }
 
 // ─── 直连 HTTP/HTTPS ───
