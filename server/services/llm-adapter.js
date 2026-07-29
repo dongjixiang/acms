@@ -166,6 +166,22 @@ async function callOpenAI(model, messages, opts, apiKey, tools) {
     if (tools && tools.length > 0 && msg.tool_calls?.length > 0) {
       result.toolCalls = toolRegistry.extractToolCalls('openai-chat', data);
       result.finishReason = data.choices?.[0]?.finish_reason || 'tool_calls';
+    } else if (tools && tools.length > 0 && msg.content && (msg.content.indexOf('<|tool_begin|>') >= 0 || msg.content.indexOf('</|tool_begin|>') >= 0)) {
+      // v0.75: 某些模型用内联标签格式返回工具调用（非标准 OpenAI tool_calls）
+      //   格式: <|tool_begin|>tool_name<|tool_param_begin|>{"arg":"val"}<|tool_end|>
+      result.toolCalls = parseInlineToolCalls(msg.content);
+      result.finishReason = 'tool_calls';
+      result.content = '';  // 工具调用文本不进入对话气泡
+    } else if (tools && tools.length > 0 && data.choices?.[0]?.finish_reason === 'tool_calls') {
+      // v0.75: API 说 finish_reason=tool_calls 但 tool_calls 字段为空——dump 原始响应诊断
+      console.warn('[llm-adapter] v0.75 DEBUG: finish_reason=tool_calls but no tool_calls parsed', JSON.stringify({
+        finish_reason: data.choices?.[0]?.finish_reason,
+        hasToolCalls: !!msg.tool_calls,
+        toolCallsLen: msg.tool_calls?.length,
+        contentLen: (msg.content || '').length,
+        contentPreview: (msg.content || '').slice(0, 100),
+        keys: Object.keys(msg),
+      }));
     }
 
     return result;
@@ -414,6 +430,29 @@ class IterationBudget {
   get remaining() { return Math.max(0, this.maxTotal - this._used); }
 }
 
+// v0.75: 解析内联标签格式的工具调用
+//   某些模型用特殊 token 表示工具调用，非标准 OpenAI tool_calls 字段
+//   格式: <|tool_begin|>tool_name<|tool_param_begin|>{"arg":"val"}<|tool_end|>
+function parseInlineToolCalls(content) {
+  if (!content || typeof content !== 'string') return [];
+  var results = [];
+  var re = /<\/*?\|tool_begin\|>\s*(\w+)\s*<\|tool_param_begin\|>\s*(\{[\s\S]*?\})?\s*<\|tool_end\|>/g;
+  var match;
+  while ((match = re.exec(content)) !== null) {
+    var name = match[1];
+    var args = {};
+    if (match[2]) {
+      try { args = JSON.parse(match[2]); } catch (e) { args = { _raw: match[2] }; }
+    }
+    results.push({
+      id: 'inline_' + Date.now() + '_' + results.length,
+      name: name,
+      args: args,
+    });
+  }
+  return results;
+}
+
 // v0.33: 同 turn 静默去重（参考 Hermes _deduplicate_tool_calls:6078）
 //   LLM 经常同一 turn 调多次 read_file(path) — Hermes 静默去重，ACMS 之前跨轮警告治标
 //   这里去重"完全相同 (tool_name, args) JSON 字符串"的 call，只保留第一次
@@ -536,6 +575,11 @@ function detectStreamStall(result, messages) {
     '正在为您', '正在为你', '正在生成', '正在准备', '请稍等', '请稍后',
     // v0.73: 更多装睡模式
     '任务已提交', '正在创作', '请耐心等待', '已提交', '图片生成任务', '秒后完成', '消化一下', '让我想想', '我先看看',
+    // v0.75: 承诺-不调型 — LLM 说「我用 X 帮你」「马上帮你 X」但不调工具
+    '马上帮你', '我帮你', '帮你找', '帮你搜', '帮你查', '帮你写', '帮你画',
+    '我用 web_search', '我用 generate_image', '我用 send_email', '我用 play_music', '我用 query_collection',
+    '用 web_search 帮你', '用 generate_image 帮你', '用 play_music 帮你', '用 send_email 帮你',
+    '我给你', '让我给你', '我马上给你',
   ];
   const matched = stallPhrases.filter(p => content.includes(p));
   if (matched.length > 0) {
@@ -746,6 +790,19 @@ Round ${round + 1}/${maxRounds}。
         });
         continue;
       }
+      // v0.75: 承诺-不调型检测 — LLM 嘴上说「用 X 工具帮你」但不真调 → 自动构造 tool_call
+      const commitToolRe = /用 (generate_image|web_search|play_music|send_email|document_gen|plan_execute|query_collection|search_knowledge|search_history)/i;
+      const commitMatch = commitToolRe.exec(content);
+      if (commitMatch) {
+        const mentionedTool = commitMatch[1].toLowerCase();
+        console.warn(`[runToolLoop] v0.75 承诺-不调: round=${round + 1} LLM 提到「${mentionedTool}」但不调 → 重提示`);
+        messages.push({
+          role: 'user',
+          content: `[系统检测到你在回复中提到了「${mentionedTool}」但未实际调用。请立即调 ${mentionedTool} 工具来执行，不要继续用文字描述。]`,
+        });
+        continue;
+      }
+
       console.log(`[runToolLoop] round=${round + 1} LLM 返回最终答案 (no tool calls), content=${(result.content || '').length} chars`);
       if (toolCallHistory.length > 0) console.log(`[runToolLoop] 完整 tool call history:\n${toolCallHistory.map(h => `  r${h.round} ${h.tool}(${(h.args||'').slice(0, 100)})`).join('\n')}`);
       // v0.35: 最终答案回调

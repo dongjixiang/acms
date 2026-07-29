@@ -418,6 +418,7 @@ router.post('/chat', async function(req, res) {
         messages,
         toolNames,
         maxRounds: 8,
+        maxTokens: 4000,  // v0.75: 提高上限，避免 plan_execute 的 6 步骤 JSON 被截断
         context: sharedCtx,
         caller: 'agent-buddy',
       });

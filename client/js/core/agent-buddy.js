@@ -504,7 +504,34 @@
     return img.image_url_output || (img.options && img.options[0] && img.options[0].image_url_output) || '';
   }
 
+  // v0.75: 从 plan steps 中收集所有 generate_image step 的图片 URL（多图场景）
+  function stepImageUrls(state) {
+    var planSteps = state.plan && state.plan.steps || [];
+    var urls = [];
+    planSteps.forEach(function(step) {
+      if (step.tool !== 'generate_image' || step.status !== 'done') return;
+      var r = step.result;
+      if (!r) return;
+      // 优先 file_ids
+      if (Array.isArray(r.file_ids) && r.file_ids.length > 0) {
+        var fid = r.file_ids[0];
+        var id = typeof fid === 'string' ? fid : fid && fid.id;
+        if (id) { urls.push('/api/chat/upload/' + encodeURIComponent(id) + '/raw'); return; }
+      }
+      // asset_path（CORS-safe）
+      if (r.asset_path) { urls.push('/api/files/asset?path=' + encodeURIComponent(r.asset_path)); return; }
+      // CDN URL fallback
+      if (r.image_url_output) { urls.push(r.image_url_output); return; }
+    });
+    return urls;
+  }
+
   function isNonPlanTerminal(state) {
+    // v0.75: 有 plan 时走 plan 状态，不用单字段判断（避免第 1 张图做完就停轮询）
+    var plan = state && state.plan;
+    if (plan && Array.isArray(plan.steps) && plan.steps.length > 0) {
+      return ['done', 'failed', 'partial_failed'].indexOf(plan.status) >= 0;
+    }
     var img = state && state.assistImage;
     var imgSearch = state && state.assistImageSearch;
     var music = state && state.assistMusic;
@@ -579,8 +606,21 @@
       stepsHtml = '<div class="ap-action-empty">正在准备动作…</div>';
     }
 
-    var imageUrl = imagePreviewUrl(card.dataset.requirementId, state);
-    var imageHtml = imageUrl ? '<img class="ap-action-image" src="' + escHtml(imageUrl) + '" alt="生成图片" draggable="true" data-imgurl="' + escHtml(imageUrl) + '">' : '';
+    var planSteps = (state.plan && state.plan.steps || []);
+    var genImgSteps = planSteps.filter(function(s) { return s.tool === 'generate_image' && s.status === 'done'; });
+    var imageHtml = '';
+    if (genImgSteps.length > 1) {
+      // v0.75: 多图场景 — 从 plan steps 取每一张图
+      var imgUrls = stepImageUrls(state);
+      imageHtml = '<div class="ap-action-imggrid" style="grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:6px">'
+        + imgUrls.map(function(url) {
+            return '<div class="ap-action-imgitem" style="display:inline-block"><img src="' + escHtml(url) + '" alt="生成图片" draggable="true" data-imgurl="' + escHtml(url) + '" style="width:100%;max-height:180px;object-fit:cover;border-radius:6px;border:1px solid var(--border,rgba(0,0,0,.08))"></div>';
+          }).join('')
+        + '</div>';
+    } else {
+      var imageUrl = imagePreviewUrl(card.dataset.requirementId, state);
+      imageHtml = imageUrl ? '<img class="ap-action-image" src="' + escHtml(imageUrl) + '" alt="生成图片" draggable="true" data-imgurl="' + escHtml(imageUrl) + '">' : '';
+    }
     var musicHtml = '';
     if (music && music.status === 'done') {
       var musicCard = {
@@ -1439,6 +1479,10 @@
       if (!imgUrl) return;
       e.preventDefault();
       if (target.classList) target.classList.remove('drag-over');
+      // v0.75: CDN URL 转本地代理（tui-image-editor canvas 需要 CORS）
+      if (imgUrl.indexOf('platform-outputs.agnes-ai.space') >= 0 || (imgUrl.indexOf('://') >= 0 && imgUrl.indexOf('/api/') !== 0)) {
+        imgUrl = '/api/files/proxy-image?url=' + encodeURIComponent(imgUrl);
+      }
       // 直接拖到图片编辑器窗口 → 用 reloadImage
       if (target.classList.contains('oo-editor-img') || target.id === 'img-editor-mount') {
         if (typeof window.__activeImageEditorReload === 'function') {

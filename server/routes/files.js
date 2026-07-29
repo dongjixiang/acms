@@ -377,6 +377,32 @@ router.get('/asset', function(req, res) {
   res.sendFile(resolved);
 });
 
+// ===== PROXY-IMAGE /api/files/proxy-image =====
+// v0.75: 代理加载外部 CDN 图片（tui-image-editor canvas 需要 CORS）
+//   url 参数: 外部图片 URL
+//   返回图片内容 + CORS 头，供 image-editor 加载跨域图片
+router.get('/proxy-image', async function(req, res) {
+  var imageUrl = req.query.url || '';
+  if (!imageUrl) return res.status(400).json({ error: 'MISSING_URL' });
+  // 只允许图片 URL 扩展名
+  var lower = imageUrl.toLowerCase();
+  if (!/\.(png|jpg|jpeg|gif|webp|bmp|svg)(\?|$)/.test(lower)) return res.status(403).json({ error: 'NOT_IMAGE' });
+  try {
+    var resp = await fetch(imageUrl, { timeout: 15000 });
+    if (!resp.ok) return res.status(502).json({ error: 'FETCH_FAILED', status: resp.status });
+    var ab = await resp.arrayBuffer();
+    var buf = Buffer.from(ab);
+    var ct = resp.headers.get('content-type') || 'image/png';
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Access-Control-Allow-Methods', 'GET');
+    res.set('Access-Control-Allow-Headers', '*');
+    res.set('Content-Type', ct);
+    res.send(buf);
+  } catch (e) {
+    res.status(502).json({ error: 'FETCH_FAILED', message: e.message });
+  }
+});
+
 // ===== DRIVES /api/files/drives =====
 // 列出系统中的可用盘符（Windows）或根目录
 router.get('/drives', function(req, res) {

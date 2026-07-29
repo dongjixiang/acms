@@ -14,6 +14,28 @@ const { browserSearch, launchBrowser } = require('./browser-fetch');
 const SEARCH_TIMEOUT_MS = 10000;
 const MAX_RESULTS = 20;
 
+// ── 搜索缓存（5 分钟 TTL，与 web-research 一致）──
+const _searchCache = new Map();
+const SEARCH_CACHE_TTL = 5 * 60 * 1000;
+
+function getSearchCache(query, maxResults) {
+  const key = `${query}|${maxResults}`.toLowerCase().trim();
+  const cached = _searchCache.get(key);
+  if (cached && Date.now() - cached.ts < SEARCH_CACHE_TTL) return cached.data;
+  return null;
+}
+
+function setSearchCache(query, maxResults, data) {
+  const key = `${query}|${maxResults}`.toLowerCase().trim();
+  _searchCache.set(key, { data, ts: Date.now() });
+  if (_searchCache.size > 100) {
+    const now = Date.now();
+    for (const [k, v] of _searchCache) {
+      if (now - v.ts > SEARCH_CACHE_TTL) _searchCache.delete(k);
+    }
+  }
+}
+
 // 调试开关：设为 true 会把首次响应的前 500 字写入日志
 const DEBUG_DUMP_HTML = false;
 
@@ -166,106 +188,143 @@ async function searchWeb(query, options = {}) {
   const maxResults = Math.min(options.maxResults || MAX_RESULTS, 20);
   const encodedQuery = encodeURIComponent(query.trim());
 
+  // ── 缓存命中直接返回 ──
+  const cached = getSearchCache(query, maxResults);
+  if (cached) {
+    console.log(`[web-search] 缓存命中: "${query.slice(0, 50)}"`);
+    return { ...cached, _cached: true };
+  }
+
   try {
     if (apiKey) {
       // 模式 A：Bing Web Search API（需 Key）
       console.log('[web-search] 使用 Bing API 搜索');
       const data = await fetchBingApi(apiKey, encodedQuery, maxResults);
       const results = parseBingApiResults(data, maxResults);
-      if (results.length > 0) return { results, source: 'sogou-html' };
+      if (results.length > 0) {
+        const result = { results, source: 'bing-api' };
+        setSearchCache(query, maxResults, result);
+        return result;
+      }
     }
 
-    // 模式 B：浏览器 Puppeteer 搜索（v0.49 重排 + v0.50 提级 Baidu 为主路径）
-    //   优先级: baidu.com (中文主路径, 多多实测确认精准) → cn.bing.com (兜底+英文 query) → sogou (兜底,带 quality gate)
-    //   v0.50 调整原因: 之前 cn.bing 放前面是基于"快速"，但实测质量差 (ACMS puppeteer 拿的是"裸 SEO"，真浏览器才有体育 UI)
-    //   ACMS puppeteer 抓的内容和真浏览器不一样，所以选 baidu 当主路径 (它中文 SEO 质量好+返回纯链接/标题/摘要)
-    //   DDG/Brave/Wikipedia/ESPN 被 GFW 屏蔽(实测 5022ms 超时) — 跳过
-    try {
-      console.log('[web-search] 浏览器 Baidu 搜索: ' + query);
-      const r = await browserSearchBaidu(query, maxResults);
-      if (!r.error && r.results?.length > 0) {
-        console.log(`[web-search] Baidu 浏览器搜索: ${r.results.length} 条`);
-        // v0.50: 立即按 query 关键词相关性过滤（治"宽泛 query 拿到 8 条噪声 7 条"症状）
-        const filtered = filterByRelevance(r.results, query);
-        if (filtered.length > 0) {
-          console.log(`[web-search] Baidu 相关性过滤: ${r.results.length} → ${filtered.length} 条`);
-          return { results: filtered, source: 'baidu' };
-        }
-        console.warn('[web-search] Baidu 相关性过滤后为空, 兜底所有结果');
-        return { results: r.results, source: 'baidu' };
-      }
-      console.warn(`[web-search] Baidu 无结果或失败: ${r.error || 'empty'}`);
-    } catch (e) {
-      console.warn('[web-search] Baidu 抛错:', e.message);
-    }
-    try {
-      console.log('[web-search] 浏览器 BingCN 搜索: ' + query);
-      const r = await browserSearchBingCn(query, maxResults);
-      if (!r.error && r.results?.length > 0) {
-        console.log(`[web-search] BingCN 浏览器搜索: ${r.results.length} 条`);
-        const filtered = filterByRelevance(r.results, query);
-        // v0.66: 质量门 — 如果过滤后没结果，跳过
-        //   再加一关：过滤后的结果标题里必须包含 query 的 2-gram（如"张曼""曼玉"），否则说明全是无关结果
-        var hasBigram = false;
-        if (filtered.length > 0) {
-          var grams = extractKeyTokens(query);
-          for (var gi = 0; gi < filtered.length && !hasBigram; gi++) {
-            var t = (filtered[gi].title || '').toLowerCase();
-            for (var gj = 0; gj < grams.length && !hasBigram; gj++) {
-              if (t.includes(grams[gj].toLowerCase())) hasBigram = true;
-            }
-          }
-        }
-        if (filtered.length === 0 || !hasBigram) {
-          console.warn('[web-search] BingCN 结果不相关，引擎切换');
-        } else {
-          return { results: filtered, source: 'bingcn' };
-        }
-      }
-      console.warn(`[web-search] BingCN 无结果或失败: ${r.error || 'empty'}`);
-    } catch (e) {
-      console.warn('[web-search] BingCN 抛错:', e.message);
+    // ═══════════════════════════════════════════════════════════
+    // 模式 B：并行浏览器搜索（v0.76 — 替换原串行 Baidu→BingCN→Toutiao 瀑布）
+    //   Baidu / BingCN / Toutiao 三路并行，谁先出好结果用谁
+    //   全部失败时降级到 Sogou 浏览器 + Sogou HTML + Bing HTML
+    // ═══════════════════════════════════════════════════════════
+    console.log('[web-search] 并行浏览器搜索: ' + query);
+    const parallelResult = await parallelBrowserSearch(query, maxResults);
+    if (parallelResult) {
+      setSearchCache(query, maxResults, parallelResult);
+      return parallelResult;
     }
 
-    // 模式 C：头条搜索（v0.66 新增 — 无反爬，中文结果好）
-    try {
-      console.log('[web-search] 浏览器 Toutiao 搜索: ' + query);
-      const tr = await browserSearchToutiao(query, maxResults);
-      if (!tr.error && tr.results?.length > 0) {
-        console.log(`[web-search] Toutiao 浏览器搜索: ${tr.results.length} 条`);
-        const filtered = filterByRelevance(tr.results, query);
-        if (filtered.length > 0) return { results: filtered, source: 'toutiao' };
-      }
-      console.warn(`[web-search] Toutiao 无结果或失败: ${tr?.error || 'empty'}`);
-    } catch (e) {
-      console.warn('[web-search] Toutiao 抛错:', e.message);
-    }
-
-    // 模式 D：搜狗兜底（带 v0.49 quality gate，过滤元宝/抢购等 AD/竞价链接）
+    // 模式 C：搜狗兜底（带 quality gate，过滤元宝/抢购等 AD/竞价链接）
     console.log('[web-search] 浏览器 Sogou 兜底搜索: ' + query);
     const browserResults = await browserSearch(query, maxResults);
     if (!browserResults.error && browserResults.results?.length > 0) {
-      // sogou 自带 quality gate（title/url 黑名单），不过滤更严
       console.log(`[web-search] Sogou 浏览器搜索: ${browserResults.results.length} 条`);
-      return { results: browserResults.results, source: 'sogou' };
+      const result = { results: browserResults.results, source: 'sogou' };
+      setSearchCache(query, maxResults, result);
+      return result;
     }
 
-    // 模式 D：搜狗 HTML 解析（再降级，无浏览器）
+    // 模式 D：搜狗 HTML 解析（无浏览器降级）
     console.log('[web-search] 浏览器搜索失败，尝试搜狗 HTML 解析');
     const html = await fetchSogou(encodedQuery);
     let results = parseSogouResults(html, maxResults);
-    if (results.length > 0) return { results, source: 'sogou-html' };
+    if (results.length > 0) {
+      const result = { results, source: 'sogou-html' };
+      setSearchCache(query, maxResults, result);
+      return result;
+    }
 
-    // 模式 D：Bing 网页版 HTML 解析（最终降级）
+    // 模式 E：Bing 网页版 HTML 解析（最终降级）
     console.log('[web-search] 搜狗无结果，尝试 Bing 网页版');
     const bingHtml = await fetchBingHtml(encodedQuery);
     results = parseBingHtmlResults(bingHtml, maxResults);
-    if (results.length > 0) return { results, source: 'sogou-html' };
+    if (results.length > 0) {
+      const result = { results, source: 'bing-html' };
+      setSearchCache(query, maxResults, result);
+      return result;
+    }
 
-    return { error: '未找到相关结果', results: [] };
+    const failResult = { error: '未找到相关结果', results: [] };
+    setSearchCache(query, maxResults, failResult);
+    return failResult;
   } catch (e) {
     return { error: `搜索失败: ${e.message}`, results: [] };
   }
+}
+
+/**
+ * v0.76: 并行浏览器搜索 — Baidu / BingCN / Toutiao 三路并行
+ * 返回第一个有优质结果的引擎，或 null（全部失败）
+ */
+async function parallelBrowserSearch(query, maxResults) {
+  const engines = [
+    { name: 'baidu', fn: () => browserSearchBaidu(query, maxResults) },
+    { name: 'bingcn', fn: () => browserSearchBingCn(query, maxResults) },
+    { name: 'toutiao', fn: () => browserSearchToutiao(query, maxResults) },
+  ];
+
+  const settled = await Promise.allSettled(engines.map(e => e.fn()));
+
+  for (let i = 0; i < settled.length; i++) {
+    const r = settled[i];
+    if (r.status !== 'fulfilled') {
+      console.warn(`[web-search] ${engines[i].name} 抛错:`, r.reason?.message);
+      continue;
+    }
+    const res = r.value;
+    if (!res.results?.length) continue;
+
+    console.log(`[web-search] ${engines[i].name} 浏览器搜索: ${res.results.length} 条`);
+
+    if (engines[i].name === 'baidu') {
+      // Baidu 相关性过滤（原有逻辑）
+      const filtered = filterByRelevance(res.results, query);
+      if (filtered.length > 0) {
+        console.log(`[web-search] Baidu 相关性过滤: ${res.results.length} → ${filtered.length} 条`);
+        return { results: filtered, source: 'baidu' };
+      }
+      console.warn('[web-search] Baidu 相关性过滤后为空, 兜底所有结果');
+      return { results: res.results, source: 'baidu' };
+    }
+
+    if (engines[i].name === 'bingcn') {
+      // BingCN 质量门（原有逻辑）
+      var filtered = filterByRelevance(res.results, query);
+      var hasBigram = false;
+      if (filtered.length > 0) {
+        var grams = extractKeyTokens(query);
+        for (var gi = 0; gi < filtered.length && !hasBigram; gi++) {
+          var t = (filtered[gi].title || '').toLowerCase();
+          for (var gj = 0; gj < grams.length && !hasBigram; gj++) {
+            if (t.includes(grams[gj].toLowerCase())) hasBigram = true;
+          }
+        }
+      }
+      if (filtered.length > 0 && hasBigram) {
+        return { results: filtered, source: 'bingcn' };
+      }
+      console.warn('[web-search] BingCN 结果不相关，跳过');
+      continue;
+    }
+
+    if (engines[i].name === 'toutiao') {
+      // Toutiao 相关性过滤
+      var filtered = filterByRelevance(res.results, query);
+      if (filtered.length > 0) {
+        return { results: filtered, source: 'toutiao' };
+      }
+      console.warn('[web-search] Toutiao 相关性过滤后为空，跳过');
+      continue;
+    }
+  }
+
+  return null;
 }
 
 // ========================

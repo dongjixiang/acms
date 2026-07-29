@@ -239,9 +239,14 @@
     // v0.73: 暴露图片重载函数（供拖拽到已打开的编辑器窗口时使用）
     function reloadImage(url) {
       if (!imageEditor || !url) return;
-      console.log('[IMG-RELOAD] 重新加载图片:', url.slice(0, 80));
-      var name = url.split('/').pop() || 'image';
-      imageEditor.loadImageFromURL(url, name).then(function() {
+      // v0.75: CDN URL 走本地代理（tui-image-editor canvas 需要 CORS 头）
+      var imgUrl = url;
+      if (imgUrl.indexOf('platform-outputs.agnes-ai.space') >= 0 || imgUrl.indexOf('://') >= 0 && imgUrl.indexOf('/api/') !== 0) {
+        imgUrl = '/api/files/proxy-image?url=' + encodeURIComponent(imgUrl);
+      }
+      console.log('[IMG-RELOAD] 重新加载图片:', imgUrl.slice(0, 80));
+      var name = imgUrl.split('/').pop() || 'image';
+      imageEditor.loadImageFromURL(imgUrl, name).then(function() {
         console.log('[IMG-RELOAD] 加载成功');
         // 适应窗口
         setTimeout(function() {
@@ -672,8 +677,8 @@
           var c = imageEditor._graphics && imageEditor._graphics.getCanvas();
           if (!c) { resolve(window.imageEditorAPI.saveCanvasSnapshot(imageEditor)); return; }
           var cw = c.getWidth(), ch = c.getHeight();
-          // 限制最大尺寸防止 dataURL 过大
-          var MAX_SIZE = 1024;
+          // 限制最大尺寸防止 dataURL 过大，但保留足够细节
+          var MAX_SIZE = 2048;
           if (cw > MAX_SIZE || ch > MAX_SIZE) {
             var ratio = Math.min(MAX_SIZE / cw, MAX_SIZE / ch);
             cw = Math.round(cw * ratio); ch = Math.round(ch * ratio);
@@ -684,21 +689,19 @@
               var offscreen = document.createElement('canvas');
               offscreen.width = cw; offscreen.height = ch;
               var ctx = offscreen.getContext('2d');
-              // 上传图铺底（居中缩放裁剪）
+              // 上传图铺满背景（居中缩放裁剪填满）
               var scale = Math.max(cw / img.width, ch / img.height);
               var dx = (cw - img.width * scale) / 2, dy = (ch - img.height * scale) / 2;
               ctx.drawImage(img, dx, dy, img.width * scale, img.height * scale);
-              // 画布当前内容半透明叠加
-              ctx.globalAlpha = 0.5;
+              // 画布当前内容直接叠上去（不透明），让AI同时看到两者
               ctx.drawImage(c.getElement(), 0, 0, cw, ch);
-              ctx.globalAlpha = 1;
-              var dataUrl = offscreen.toDataURL('image/jpeg', 0.8);
-              // 验证 dataURL 有效
+              // 用 PNG 无损输出
+              var dataUrl = offscreen.toDataURL('image/png');
               if (!dataUrl || dataUrl === 'data:,' || dataUrl.length < 100) {
-                console.warn('[AI] composite generated invalid dataURL, falling back');
+                console.warn('[AI] composite invalid, fallback');
                 resolve(window.imageEditorAPI.saveCanvasSnapshot(imageEditor));
               } else {
-                console.log('[AI] composite dataURL size:', (dataUrl.length / 1024).toFixed(0) + 'KB');
+                console.log('[AI] composite PNG size:', (dataUrl.length / 1024).toFixed(0) + 'KB');
                 resolve(dataUrl);
               }
             } catch(e) { console.warn('[AI] composite draw:', e); resolve(window.imageEditorAPI.saveCanvasSnapshot(imageEditor)); }

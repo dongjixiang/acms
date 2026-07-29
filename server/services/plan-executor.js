@@ -436,6 +436,8 @@ async function runPlan(reqId, planDoc) {
         anyFailed = true;
       }
       updatePlanStepEntry(reqId, planDoc, step.id, step.status, result);
+      // v0.75: 每步完成后持久化 plan，让前端轮询能看到中间步骤状态和结果
+      reqStore.update(reqId, { plan: JSON.stringify(planDoc) });
 
       // 失败 → 下游依赖标 skipped + 立刻写 plan_warning system entry（治"用户焦虑等不到反馈"）
       //   不再让 plan_executor 默默失败 — 失败时显式推到 chat 流让用户/前端立刻看见

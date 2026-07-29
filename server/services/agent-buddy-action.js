@@ -119,6 +119,8 @@ function getActionToolNames(route, baseTools) {
     tools.clear();
     tools.add('plan_execute');
   } else if (route.mode === 'single_action') {
+    // v0.75: 清空所有基础工具，只保留这个 capability 需要的工具（结构性强制）
+    tools.clear();
     route.capabilities.forEach(capability => {
       if (capability === 'image_generation') tools.add('generate_image');
       if (capability === 'music_playback') tools.add('play_music');
@@ -148,7 +150,9 @@ function buildActionPrompt(route) {
 **生成图片时用户给了描述就直接调工具，严禁反问用户描述风格或特征；AI 自行补充细节或使用默认值。**
 **找歌/搜歌时只能调 play_music 工具，不能调 generate_image 或其他创作工具。**
 **注意区分：用户说“找图片“/ “搜图片“时是想要真实照片，不是 AI 生图，此时应调 web_search 而不是 generate_image。generate_image 只用于“画一张“/ “生成“/ “创作“等 AI 创作场景。**
-**调用 web_search 找图片时必须传 image_search=true 参数（如 web_search(query="莫文蔚写真", image_search=true)），这样才能取到缩略图。**`;
+**调用 web_search 找图片时必须传 image_search=true 参数（如 web_search(query="莫文蔚写真", image_search=true)），这样才能取到缩略图。**
+**⚠️ 说=做硬约束：如果在回复中提到了具体工具名（web_search / generate_image / send_email / play_music / query_collection），必须同时调用对应 tool_call。说「我用 X 帮你」但 tool_calls=0 = 装睡，系统检测到后会重提示强制执行。**
+`;
   }
   return shared + `
 这是单一动作，必须调用对应工具一次。若是 send_email，工具只准备预览并等待确认，严禁声称已发送。
@@ -156,7 +160,9 @@ function buildActionPrompt(route) {
 **生成图片时用户给了描述就直接调工具，严禁反问用户描述风格或特征；AI 自行补充细节或使用默认值。**
 **找歌/搜歌时只能调 play_music 工具，不能调 generate_image 或其他创作工具。**
 **注意区分：用户说“找图片“/ “搜图片“时是想要真实照片，不是 AI 生图，此时应调 web_search 而不是 generate_image。generate_image 只用于“画一张“/ “生成“/ “创作“等 AI 创作场景。**
-**调用 web_search 找图片时必须传 image_search=true 参数（如 web_search(query="莫文蔚写真", image_search=true)），这样才能取到缩略图。**`;
+**调用 web_search 找图片时必须传 image_search=true 参数（如 web_search(query="莫文蔚写真", image_search=true)），这样才能取到缩略图。**
+**⚠️ 说=做硬约束：如果在回复中提到了具体工具名（web_search / generate_image / send_email / play_music / query_collection），必须同时调用对应 tool_call。说「我用 X 帮你」但 tool_calls=0 = 装睡，系统检测到后会重提示强制执行。**
+`;
 }
 
 function snapshotActionState(requirementId) {
