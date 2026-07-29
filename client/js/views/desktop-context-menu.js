@@ -89,10 +89,10 @@
       },
       null, // separator
       {
-        id: 'sync-upload',
-        label: '☁ 立即同步到服务端',
+        // v0.75: 同步相关项合并到一个一级菜单，鼠标悬停出二级子菜单
+        id: 'sync',
+        label: '桌面同步',
         icon: function() {
-          // 显示最近同步状态：✅ 已同步 / ⏳ 同步中 / ✕ 失败
           if (!window.ACMSDesktopSync) return '☁';
           var s = window.ACMSDesktopSync.state;
           if (s.syncing) return '⏳';
@@ -100,35 +100,43 @@
           if (s.lastSyncAt) return '✅';
           return '☁';
         },
-        action: function() {
-          if (window.ACMSDesktopSync && typeof window.ACMSDesktopSync.uploadNow === 'function') {
-            window.ACMSDesktopSync.uploadNow();
-          } else {
-            if (typeof toast === 'function') toast('桌面同步模块未加载', 'error');
-          }
-        },
-      },
-      {
-        id: 'sync-download',
-        label: '↻ 从服务端恢复桌面',
-        icon: '📥',
-        action: function() {
-          if (window.ACMSDesktopSync && typeof window.ACMSDesktopSync.downloadNow === 'function') {
-            window.ACMSDesktopSync.downloadNow();
-          } else {
-            if (typeof toast === 'function') toast('桌面同步模块未加载', 'error');
-          }
-        },
-      },
-      {
-        id: 'sync-unbind',
-        label: '☁ 解绑云同步',
-        icon: '🗑',
-        action: function() {
-          if (window.ACMSDesktopSync && typeof window.ACMSDesktopSync.unbind === 'function') {
-            window.ACMSDesktopSync.unbind();
-          }
-        },
+        children: [
+          {
+            id: 'sync-upload',
+            label: '立即同步到服务端',
+            icon: '☁',
+            action: function() {
+              if (window.ACMSDesktopSync && typeof window.ACMSDesktopSync.uploadNow === 'function') {
+                window.ACMSDesktopSync.uploadNow();
+              } else {
+                if (typeof toast === 'function') toast('桌面同步模块未加载', 'error');
+              }
+            },
+          },
+          {
+            id: 'sync-download',
+            label: '从服务端恢复桌面',
+            icon: '↻',
+            action: function() {
+              if (window.ACMSDesktopSync && typeof window.ACMSDesktopSync.downloadNow === 'function') {
+                window.ACMSDesktopSync.downloadNow();
+              } else {
+                if (typeof toast === 'function') toast('桌面同步模块未加载', 'error');
+              }
+            },
+          },
+          null, // separator
+          {
+            id: 'sync-unbind',
+            label: '解绑云同步',
+            icon: '🗑',
+            action: function() {
+              if (window.ACMSDesktopSync && typeof window.ACMSDesktopSync.unbind === 'function') {
+                window.ACMSDesktopSync.unbind();
+              }
+            },
+          },
+        ],
       },
       null, // separator
       {
