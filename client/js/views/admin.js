@@ -49,7 +49,12 @@ async function loadAdminPage() {
     const memPct = memTotal > 0 ? Math.round(memUsed / memTotal * 100) : 0;
     const memCls = memPct > 80 ? 'stat-card-danger' : memPct > 60 ? 'stat-card-warning' : '';
 
-    _byId('admin-content').innerHTML = `
+    // loadAdminPage 是全量渲染入口，必须写 hidden 模板 (source of truth) 而非 visible 优先。
+    // 原因：admin 浮窗 loader 在 .then 里把 hidden #view-admin 的 innerHTML 克隆到 w.$c。
+    //       如果 _byId 选 visible 浮窗 copy 写入，hidden 模板仍是旧数据 →
+    //       下次 refreshView 克隆旧 hidden → 覆盖浮窗刚刚写的新数据（参见 setDefaultGenModel）。
+    //       改用 document.getElementById 直接拿 DOM 首个 = hidden 模板（DOM 顺序在浮窗之前）。
+    document.getElementById('admin-content').innerHTML = `
       <div class="settings-tabs" id="admin-tabs">
         <button class="tab-btn" data-tab="admin-tab-overview">📊 概览</button>
         <button class="tab-btn active" data-tab="admin-tab-models">🤖 模型</button>
@@ -426,7 +431,7 @@ async function loadAdminPage() {
     loadAdminAppToolsStats();
     // v0.XX: 代理设置（高级 tab 内的卡片，hydrate UI + 后端配置）
     if (typeof loadProxySettings === 'function') loadProxySettings();
-  } catch (e) { _byId('admin-content').innerHTML = `<div class="empty">加载失败: ${e.message}</div>`; }
+  } catch (e) { document.getElementById('admin-content').innerHTML = `<div class="empty">加载失败: ${e.message}</div>`; }
 }
 
 // admin Tab 切换：scope 到 #admin-tabs + #admin-content（默认），也支持传入克隆窗口根节点
