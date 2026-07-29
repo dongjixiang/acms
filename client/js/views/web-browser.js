@@ -6,9 +6,31 @@
   var historyStack = [];
   var currentUrl = '';
   var browsingWindow = null;
-  // v0.61：renderer ∈ { 'iframe', 'preview' }。preview 走内联 Canvas + appRuntime WS。
+  // v0.76: renderer ∈ { 'iframe', 'preview', 'proxy' }。proxy 走 /api/proxy-browse 服务端代理。
   var renderer = 'iframe';
   var preview = null; // { sessionId, ws, ctx, scaleX, scaleY, dead, firstFrameTimer, reconnectTimer, queue, drawing, img }
+  var _proxyEnabled = false;    // 服务端代理是否已启用
+
+  // ── 构建带 API Key 的代理 URL ──
+  function proxyBrowseUrl(targetUrl) {
+    var apiKey = (window.ACMSConfig && window.ACMSConfig.apiKey) || 'dev-key-001';
+    return '/api/proxy-settings/proxy-browse?url=' + encodeURIComponent(targetUrl) + (apiKey ? '&api_key=' + encodeURIComponent(apiKey) : '');
+  }
+
+  // ── 获取代理配置 ──
+  function fetchProxyConfig() {
+    var apiKey = (window.ACMSConfig && window.ACMSConfig.apiKey) || 'dev-key-001';
+    fetch('/api/proxy-settings', {
+      headers: { 'X-API-Key': apiKey },
+    }).then(function(r) { return r.json(); }).then(function(data) {
+      _proxyEnabled = data && data.config && data.config.enabled === true;
+      // 如果代理已启用且不是 preview 模式，切换为 proxy 模式
+      if (_proxyEnabled && renderer !== 'preview') {
+        renderer = 'proxy';
+        if (currentUrl && browsingWindow) render(browsingWindow);
+      }
+    }).catch(function() { _proxyEnabled = false; });
+  }
 
   function showPreviewFailure(msg) {
     var el = document.getElementById('wb-preview-failure');
@@ -243,7 +265,13 @@
     html += '<input id="wb-url" type="text" placeholder="输入 URL 或搜索…" value="' + escHtml(currentUrl) + '" style="flex:1;min-width:0;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text);font-size:12px;font-family:inherit;outline:none" onkeydown="if(event.key===\'Enter\')window.WB_go(this.value)">';
     html += '<button class="wb-btn" onclick="window.WB_go(document.getElementById(\'wb-url\').value)" title="前往">前往</button>';
     html += '<button class="wb-btn" onclick="window.WB_openExternal()" title="在系统浏览器中打开" style="font-size:14px">↗</button>';
-    // v0.61：远程预览（实验）切换 — 在当前浏览器窗口内联启动 remote preview，不再开新窗口
+    // v0.76: 代理模式指示 + 切换按钮
+    if (_proxyEnabled) {
+      html += '<span title="服务端代理已启用（通过 Squid 中转）" style="font-size:11px;padding:2px 8px;background:var(--green);color:#fff;border-radius:8px;flex-shrink:0;font-weight:500;display:flex;align-items:center;gap:2px">🔒 代理</span>';
+    } else {
+      html += '<button class="wb-btn" onclick="window.WB_toggleProxy()" title="通过服务端代理浏览（避开 GFW/跨域限制）" style="font-size:11px;padding:2px 6px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text2);cursor:pointer;flex-shrink:0">⚡ 直连</button>';
+    }
+    // v0.61：远程预览（实验）切换
     var previewBtnStyle = 'padding:4px 8px;border-radius:4px;border:1px solid ' + (renderer === 'preview' ? 'var(--accent);background:var(--accent);color:var(--window-bg)' : 'var(--border);background:transparent;color:var(--text2)') + ';cursor:pointer;font-size:13px';
     html += '<button class="wb-btn" id="wb-preview-toggle" onclick="window.WB_togglePreview()" title="在当前窗口用「远程预览（实验）」渲染当前 URL（绕过 X-Frame / CSP）" style="' + previewBtnStyle + '">🪟</button>';
     html += '</div>';
@@ -252,7 +280,7 @@
     html += '<div id="wb-container" style="flex:1;position:relative;background:#fff">';
     if (currentUrl) {
       if (renderer === 'preview') {
-        // v0.61：远程预览（实验）— 在当前浏览器窗口内联渲染，避免再开新窗口
+        // v0.61：远程预览（实验）— 在当前浏览器窗口内联渲染
         html += '<div id="wb-preview" style="position:absolute;inset:0;display:flex;flex-direction:column;background:#1e1e1e">'
           + '<canvas id="wb-remote-canvas" tabindex="0" style="flex:1;width:100%;height:100%;display:block;background:#fff;outline:none"></canvas>'
           + '<div id="wb-preview-failure" style="display:none;position:absolute;inset:0;background:rgba(20,20,20,0.92);color:#fff;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;text-align:center">'
@@ -264,6 +292,10 @@
           +   '</div>'
           + '</div>'
           + '</div>';
+      } else if (renderer === 'proxy') {
+        // v0.76: 代理模式 — 通过服务端代理抓取
+        var proxyUrl = proxyBrowseUrl(currentUrl);
+        html += '<iframe id="wb-iframe" src="' + escHtml(proxyUrl) + '" style="width:100%;height:100%;border:none" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>';
       } else {
         html += '<iframe id="wb-iframe" src="' + escHtml(currentUrl) + '" style="width:100%;height:100%;border:none" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" onerror="window.WB_showFallback()"></iframe>';
       }
@@ -309,6 +341,19 @@
     // v0.73: 清除跨域提示条（新导航重置状态）
     var oldHint = document.getElementById('wb-cross-hint');
     if (oldHint) oldHint.remove();
+
+    // v0.76: 代理模式 — 通过服务端代理抓取
+    if (_proxyEnabled) {
+      renderer = 'proxy';
+      var container = document.getElementById('wb-container');
+      if (container) {
+        var proxyUrl = proxyBrowseUrl(url);
+        container.innerHTML = '<iframe id="wb-iframe" src="' + escHtml(proxyUrl) + '" style="width:100%;height:100%;border:none" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>';
+      }
+      updateNavBtns();
+      setStatus('通过代理加载 ' + url + ' …');
+      return;
+    }
 
     var container = document.getElementById('wb-container');
     if (!container) return;
@@ -452,13 +497,39 @@
     if (!url) { setStatus('请先在地址栏输入 URL'); return; }
     if (renderer === 'preview') {
       stopRemotePreview();
-      renderer = 'iframe';
+      renderer = _proxyEnabled ? 'proxy' : 'iframe';
       if (browsingWindow) render(browsingWindow);
-      setStatus('已返回 iframe 预览');
+      setStatus(_proxyEnabled ? '已切换为代理模式' : '已返回 iframe 预览');
     } else {
       renderer = 'preview';
       if (browsingWindow) render(browsingWindow);
       startRemotePreview(url);
+    }
+  }
+
+  // v0.76: 手动切换代理模式
+  function toggleProxy() {
+    var url = (currentUrl || '').trim();
+    if (!url) {
+      _proxyEnabled = !_proxyEnabled;
+      setStatus(_proxyEnabled ? '代理已启用（下一个加载页面生效）' : '代理已禁用');
+      if (browsingWindow) render(browsingWindow);
+      return;
+    }
+    if (_proxyEnabled) {
+      // 从代理切回直连
+      _proxyEnabled = false;
+      renderer = 'iframe';
+      if (browsingWindow) render(browsingWindow);
+      go(url);
+      setStatus('已切换为直连模式');
+    } else {
+      // 启用代理
+      _proxyEnabled = true;
+      renderer = 'proxy';
+      if (browsingWindow) render(browsingWindow);
+      go(url);
+      setStatus('已切换为代理模式');
     }
   }
 
@@ -482,6 +553,7 @@
   window.WB_refresh = refresh;
   window.WB_openExternal = openExternal;
   window.WB_togglePreview = togglePreview;
+  window.WB_toggleProxy = toggleProxy;
   window.WB_backToIframe = backToIframe;
   window.WB_stopPreview = stopRemotePreview;
   window.WB_showFallback = showBlocked;
@@ -495,6 +567,8 @@
       if (!ACMSWin.isActive()) ACMSWin.enable();
       ACMSWin.open('web-browser', { w: 820, h: 560, title: '🌐 浏览器' });
     }
+    // v0.76: 获取代理配置
+    setTimeout(fetchProxyConfig, 100);
   };
 
   // ── 注册 viewLoader ──

@@ -103,4 +103,175 @@ router.delete('/', (req, res) => {
   }
 });
 
+// ─── GET /proxy-browse — 通过代理浏览网页（web-browser iframe 用）───
+// 用 Node 内置 http/https 模块直连 Squid（不依赖 undici ProxyAgent）
+router.get('/proxy-browse', async (req, res) => {
+  const targetUrl = req.query.url;
+  if (!targetUrl) return res.status(400).send('缺少 url 参数');
+
+  try {
+    const cfg = proxyResolver.getConfig();
+    const decision = proxyResolver.resolveProxy(targetUrl);
+    const proxyUri = decision && decision.proxy;
+    
+    let resp;
+    if (proxyUri && cfg.enabled) {
+      // 走代理：通过 Squid HTTP 端口转发
+      resp = await proxyFetchViaHttpProxy(targetUrl, proxyUri);
+    } else {
+      // 直连
+      resp = await simpleFetch(targetUrl);
+    }
+
+    // 透传关键头
+    const passHeaders = ['content-type', 'content-length'];
+    for (const h of passHeaders) {
+      const val = resp.headers.get(h);
+      if (val) res.setHeader(h, val);
+    }
+    // 去掉 X-Frame-Options 和 CSP 限制（让 iframe 能加载）
+    res.removeHeader('x-frame-options');
+    res.removeHeader('content-security-policy');
+
+    const body = typeof resp.text === 'function' ? await resp.text() : resp.body;
+    res.status(resp.status).send(body);
+  } catch (e) {
+    res.status(502).send(`代理请求失败: ${e.message}${e.cause ? ' (' + e.cause.message + ')' : ''}`);
+  }
+});
+
+// ─── 通过 HTTP 代理转发请求（不用 undici ProxyAgent）───
+async function proxyFetchViaHttpProxy(targetUrl, proxyUri) {
+  const http = require('http');
+  const https = require('https');
+  const tls = require('tls');
+  const net = require('net');
+  const url = new URL(targetUrl);
+  const proxy = new URL(proxyUri);
+  const isHttps = url.protocol === 'https:';
+  // 代理类型（HTTP 直连代理 / HTTPS 加密代理）
+  const proxyIsHttps = proxy.protocol === 'https:';
+  const proxyHost = proxy.hostname;
+  const proxyPort = parseInt(proxy.port) || (proxyIsHttps ? 443 : 80);
+
+  return new Promise((resolve, reject) => {
+    // 先连代理（HTTP 直连 / HTTPS 先 TLS）
+    function connectToProxy(callback) {
+      function doConnect() {
+        if (proxyIsHttps) {
+          // HTTPS 代理：先建立 TLS 到代理
+          const tlsSocket = tls.connect({
+            host: proxyHost,
+            port: proxyPort,
+            rejectUnauthorized: false,
+          }, () => callback(tlsSocket));
+          tlsSocket.on('error', function(err) {
+            // TLS 连不上时降级到 HTTP 代理（5418 端口）
+            console.warn('[proxy-browse] TLS 连接失败, 尝试 HTTP 降级:', err.message);
+            var net = require('net');
+            var fallbackPort = (proxyPort === 5419 || proxyPort === 443) ? 5418 : proxyPort;
+            var sock = net.createConnection({ host: proxyHost, port: fallbackPort }, function() { callback(sock); });
+            sock.on('error', reject);
+          });
+        } else {
+        // HTTPS 代理：先建立 TLS 到代理
+        const tlsSocket = tls.connect({
+          host: proxyHost,
+          port: proxyPort,
+          rejectUnauthorized: false,
+          servername: proxyHost,
+        }, () => callback(tlsSocket));
+        tlsSocket.on('error', reject);
+      } else {
+        // HTTP 代理：直连 TCP
+        const net = require('net');
+        const sock = net.createConnection({
+          host: proxyHost,
+          port: proxyPort,
+        }, () => callback(sock));
+        sock.on('error', reject);
+        sock.setTimeout(15000, () => { sock.destroy(); reject(new Error('代理连接超时')); });
+      }
+    }
+
+    connectToProxy((socket) => {
+      // 发送 CONNECT 请求
+      const connectReq = 'CONNECT ' + url.hostname + ':' + (url.port || (isHttps ? 443 : 80)) + ' HTTP/1.1\r\nHost: ' + url.hostname + '\r\n\r\n';
+      socket.write(connectReq);
+
+      let buf = '';
+      socket.on('data', chunk => {
+        buf += chunk.toString();
+        if (buf.includes('\r\n\r\n')) {
+          const statusLine = buf.split('\r\n')[0];
+          const status = parseInt(statusLine.split(' ')[1]) || 502;
+          if (status !== 200) {
+            socket.destroy();
+            return reject(new Error('代理 CONNECT 失败: ' + statusLine));
+          }
+
+          // CONNECT 成功，现在 socket 已连通目标服务器
+          if (isHttps) {
+            // HTTPS 目标：通过代理隧道做 TLS 握手
+            const tlsSocket = tls.connect({
+              socket: socket,
+              servername: url.hostname,
+              rejectUnauthorized: false,
+            }, () => {
+              const reqPath = url.pathname + url.search || '/';
+              tlsSocket.write('GET ' + reqPath + ' HTTP/1.1\r\nHost: ' + url.hostname + '\r\nConnection: close\r\n\r\n');
+              let data = '';
+              tlsSocket.on('data', d => { data += d.toString(); });
+              tlsSocket.on('end', () => {
+                const hEnd = data.indexOf('\r\n\r\n');
+                if (hEnd < 0) return reject(new Error('无 HTTP 响应头'));
+                resolve({ status: parseInt(data.split('\r\n')[0].split(' ')[1]) || 502, headers: {}, text: () => Promise.resolve(data.substring(hEnd + 4)) });
+              });
+              tlsSocket.on('error', reject);
+            });
+            tlsSocket.on('error', reject);
+          } else {
+            // HTTP 目标：直接发 HTTP 请求
+            const reqPath = url.pathname + url.search || '/';
+            socket.write('GET ' + reqPath + ' HTTP/1.1\r\nHost: ' + url.hostname + '\r\nConnection: close\r\n\r\n');
+            let data = '';
+            socket.on('data', d => { data += d.toString(); });
+            socket.on('end', () => {
+              const hEnd = data.indexOf('\r\n\r\n');
+              if (hEnd < 0) return reject(new Error('无 HTTP 响应头'));
+              resolve({ status: parseInt(data.split('\r\n')[0].split(' ')[1]) || 502, headers: {}, text: () => Promise.resolve(data.substring(hEnd + 4)) });
+            });
+          }
+        }
+      });
+      socket.on('error', reject);
+    });
+  });
+}
+
+// ─── 直连 HTTP/HTTPS ───
+async function simpleFetch(targetUrl) {
+  const url = require('url');
+  const http = require('http');
+  const https = require('https');
+  const parsed = new URL(targetUrl);
+  const mod = parsed.protocol === 'https:' ? https : http;
+
+  return new Promise((resolve, reject) => {
+    const req = mod.get(targetUrl, { timeout: 15000 }, (resp) => {
+      let data = '';
+      resp.on('data', chunk => { data += chunk; });
+      resp.on('end', () => {
+        resolve({
+          status: resp.statusCode,
+          headers: resp.headers,
+          text: () => Promise.resolve(data),
+        });
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('直连超时')); });
+  });
+}
+
 module.exports = router;
