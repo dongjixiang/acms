@@ -378,28 +378,70 @@ router.get('/asset', function(req, res) {
 });
 
 // ===== PROXY-IMAGE /api/files/proxy-image =====
-// v0.75: 代理加载外部 CDN 图片（tui-image-editor canvas 需要 CORS）
+// v0.75: 代理加载外部 CDN 图片（tui-image-editor canvas 需要 CORS 头）
 //   url 参数: 外部图片 URL
-//   返回图片内容 + CORS 头，供 image-editor 加载跨域图片
+//   v0.77: 改用响应 content-type 校验（取代 URL 扩展名白名单，兼容 ?参数式 CDN 图）
+//   防御：仅 http(s) + 拒内网/loopback + 50MB 大小上限
 router.get('/proxy-image', async function(req, res) {
   var imageUrl = req.query.url || '';
   if (!imageUrl) return res.status(400).json({ error: 'MISSING_URL' });
-  // 只允许图片 URL 扩展名
-  var lower = imageUrl.toLowerCase();
-  if (!/\.(png|jpg|jpeg|gif|webp|bmp|svg)(\?|$)/.test(lower)) return res.status(403).json({ error: 'NOT_IMAGE' });
+  // 协议 + URL 合法性
+  var parsed;
+  try { parsed = new URL(imageUrl); } catch (e) {
+    return res.status(400).json({ error: 'INVALID_URL' });
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return res.status(400).json({ error: 'INVALID_PROTOCOL' });
+  }
+  // SSRF 防御：拒绝本机/内网/loopback
+  var host = parsed.hostname;
+  var isPrivate = host === 'localhost'
+    || /^127\./.test(host)
+    || /^10\./.test(host)
+    || /^192\.168\./.test(host)
+    || /^172\.(1[6-9]|2[0-9]|3[01])\./.test(host)
+    || host === '::1'
+    || /^fc[0-9a-f]{2}:/i.test(host)
+    || /^fd[0-9a-f]{2}:/i.test(host);
+  if (isPrivate) return res.status(403).json({ error: 'BLOCKED_HOST' });
+  // AbortController 控制超时（15s）
+  var ac = new AbortController();
+  var tid = setTimeout(function() { ac.abort(); }, 15000);
   try {
-    var resp = await fetch(imageUrl, { timeout: 15000 });
+    var resp = await fetch(imageUrl, { signal: ac.signal, redirect: 'follow' });
     if (!resp.ok) return res.status(502).json({ error: 'FETCH_FAILED', status: resp.status });
-    var ab = await resp.arrayBuffer();
-    var buf = Buffer.from(ab);
-    var ct = resp.headers.get('content-type') || 'image/png';
+    // content-type 校验：必须是 image/*
+    var ct = (resp.headers.get('content-type') || '').toLowerCase().split(';')[0].trim();
+    if (!ct.startsWith('image/')) {
+      return res.status(403).json({ error: 'NOT_IMAGE', contentType: ct });
+    }
+    // 流式读取 + 50MB 大小上限
+    var maxBytes = 50 * 1024 * 1024;
+    var reader = resp.body.getReader();
+    var received = 0;
+    var chunks = [];
+    while (true) {
+      var r = await reader.read();
+      if (r.done) break;
+      received += r.value.length;
+      if (received > maxBytes) {
+        try { reader.cancel(); } catch (e) {}
+        return res.status(413).json({ error: 'TOO_LARGE' });
+      }
+      chunks.push(r.value);
+    }
+    clearTimeout(tid);
+    var buf = Buffer.concat(chunks.map(function(c) { return Buffer.from(c); }));
     res.set('Access-Control-Allow-Origin', '*');
     res.set('Access-Control-Allow-Methods', 'GET');
     res.set('Access-Control-Allow-Headers', '*');
     res.set('Content-Type', ct);
+    res.set('Content-Length', buf.length);
     res.send(buf);
   } catch (e) {
-    res.status(502).json({ error: 'FETCH_FAILED', message: e.message });
+    clearTimeout(tid);
+    var msg = (e && e.name === 'AbortError') ? 'TIMEOUT' : (e && e.message) || 'UNKNOWN';
+    res.status(502).json({ error: 'FETCH_FAILED', message: msg });
   }
 });
 
