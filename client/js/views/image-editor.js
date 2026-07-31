@@ -240,6 +240,70 @@
       });
     }
 
+    // v0.78: 统一图片加载入口 —— 根治 fabric6 getBoundingRect 含 viewport transform 的 buffer 污染
+    //   tui adjustCanvasDimension 用 canvasImage.getBoundingRect() 设置 canvas buffer 尺寸，
+    //   但 fabric 6 的 getBoundingRect() 默认返回「viewport 变换后的屏幕尺寸」：
+    //   若当前 zoom ≠ 1（fit/缩放后），buffer = 图片尺寸 × 当前zoom → 画布尺寸错误。
+    //   后果①：再打开另一张图，图显示不全/画布不重画；
+    //   后果②：AI 图生图送整 buffer → 图居中、四周透明/黑框。
+    //   修法：loadImageFromURL 前强制重置 viewport 为 identity，让 buffer = 图片实际尺寸；
+    //   加载完成后由 fitAndCenter 重新适配窗口（所有调用点都有 fitAndCenter）。
+    function loadImageSafe(url, name) {
+      if (!imageEditor) return Promise.resolve();
+      resetViewportBeforeLoad();
+      return imageEditor.loadImageFromURL(url, name);
+    }
+
+    // v0.78: loadImageFromFile 同样走 tui adjustCanvasDimension，加载前也要重置 viewport
+    function resetViewportBeforeLoad() {
+      try {
+        var c0 = imageEditor._graphics && imageEditor._graphics.getCanvas();
+        if (c0) {
+          c0.setViewportTransform([1, 0, 0, 1, 0, 0]);
+          c0.requestRenderAll();
+        }
+      } catch(e) {}
+    }
+
+    // v0.78: 裁剪 canvas 到图片实际区域（供 AI 送图，避免黑框）
+    //   canvasImage 是 tui setBackgroundImage 的背景图，对象坐标为 buffer 坐标，
+    //   居中放置（adjustCanvasDimension → centerObject），buffer 可能大于图片（透明边）。
+    //   返回 { dataUrl, width, height }，只含图片像素区域。
+    function cropCanvasToImage() {
+      try {
+        var c = imageEditor._graphics && imageEditor._graphics.getCanvas();
+        var img = (imageEditor._graphics && imageEditor._graphics.canvasImage) || null;
+        if (!c || !img || !img.width || !img.height) {
+          return { dataUrl: window.imageEditorAPI.saveCanvasSnapshot(imageEditor), width: 0, height: 0 };
+        }
+        var ox = img.originX === 'center' ? (img.left || 0) - img.width * (img.scaleX || 1) / 2 : (img.left || 0);
+        var oy = img.originY === 'center' ? (img.top || 0) - img.height * (img.scaleY || 1) / 2 : (img.top || 0);
+        var bw = Math.round(Math.abs(img.width * (img.scaleX || 1)));
+        var bh = Math.round(Math.abs(img.height * (img.scaleY || 1)));
+        // 保护：不超出 buffer 范围（旋转后 bounding box 可能出界）
+        var srcX = Math.max(0, Math.round(ox)), srcY = Math.max(0, Math.round(oy));
+        var maxW = c.getWidth() - srcX, maxH = c.getHeight() - srcY;
+        bw = Math.min(bw, maxW); bh = Math.min(bh, maxH);
+        if (bw <= 0 || bh <= 0) {
+          return { dataUrl: window.imageEditorAPI.saveCanvasSnapshot(imageEditor), width: 0, height: 0 };
+        }
+        var tmp = document.createElement('canvas');
+        tmp.width = bw; tmp.height = bh;
+        var tctx = tmp.getContext('2d');
+        // 深色画布背景 → 透明背景（避免黑底）
+        tctx.clearRect(0, 0, bw, bh);
+        tctx.drawImage(c.getElement(), srcX, srcY, bw, bh, 0, 0, bw, bh);
+        var dataUrl = tmp.toDataURL('image/png');
+        if (!dataUrl || dataUrl.length < 100) {
+          return { dataUrl: window.imageEditorAPI.saveCanvasSnapshot(imageEditor), width: 0, height: 0 };
+        }
+        return { dataUrl: dataUrl, width: bw, height: bh };
+      } catch(e) {
+        console.warn('[AI] cropCanvasToImage:', e);
+        return { dataUrl: window.imageEditorAPI.saveCanvasSnapshot(imageEditor), width: 0, height: 0 };
+      }
+    }
+
     // v0.73: 暴露图片重载函数（供拖拽到已打开的编辑器窗口时使用）
     // v0.78: 增加 name 参数（文件浏览器「打开方式」路径传文件名）；加载成功后同步窗口标题 + 清空旧图编辑状态
     function reloadImage(url, name) {
@@ -251,7 +315,7 @@
       }
       console.log('[IMG-RELOAD] 重新加载图片:', imgUrl.slice(0, 80), 'name:', name || '');
       var imgName = name || imgUrl.split('/').pop() || 'image';
-      imageEditor.loadImageFromURL(imgUrl, imgName).then(function() {
+      loadImageSafe(imgUrl, imgName).then(function() {
         console.log('[IMG-RELOAD] 加载成功');
         // 新图 = 新编辑会话：清空旧图的 undo 栈与 AI 快照历史
         try { if (typeof imageEditor.clearUndoStack === 'function') imageEditor.clearUndoStack(); } catch(e) {}
@@ -325,6 +389,7 @@
               if (imageEditor) {
                 // 方法1: 直接传 File 对象 (避免 dataURL 体积过大)
                 try {
+                  resetViewportBeforeLoad();
                   imageEditor.loadImageFromFile(file).then(function (result) {
                     toast('已加载 ' + file.name, 'success');
                     // 适应窗口 + 居中（v0.68）
@@ -335,7 +400,7 @@
                     console.warn('[ImageEditor] loadImageFromFile failed, trying dataURL', err);
                     var r2 = new FileReader();
                     r2.onload = function (ev) {
-                      imageEditor.loadImageFromURL(ev.target.result, file.name)
+                      loadImageSafe(ev.target.result, file.name)
                         .then(function () { toast('已加载 ' + file.name, 'success'); })
                         .catch(function (e2) { toast('加载失败: ' + e2.message, 'error'); });
                     };
@@ -350,6 +415,7 @@
                 var checkReady = setInterval(function () {
                   if (imageEditor) {
                     clearInterval(checkReady);
+                    resetViewportBeforeLoad();
                     imageEditor.loadImageFromFile(file)
                       .then(function (result) {
                         toast('已加载 ' + file.name, 'success');
@@ -373,7 +439,7 @@
             toast('已导出 ' + name, 'success');
             break;
           case 'reset-img':
-            if (imageEditor) imageEditor.loadImageFromURL(imageEditor.getCurrentImageUrl(), 'image');
+            if (imageEditor) loadImageSafe(imageEditor.getCurrentImageUrl(), 'image');
             break;
           // Filters
           case 'filter-grayscale': imageEditor.applyFilter('grayscale'); break;
@@ -800,11 +866,10 @@
     // v0.77: 返回 { dataUrl, width, height }，让 runAIGenerate 知道 output 目标尺寸
     function compositeRefWithCanvas() {
       return new Promise(function(resolve) {
-        // 无上传参考图：返回画布当前内容 + 画布尺寸
+        // 无上传参考图：返回画布当前内容 + 图片实际尺寸（v0.78: 裁剪到图片区域，不送整 buffer 防黑框）
         if (!_aiRefUpload || !imageEditor) {
-          var snap = window.imageEditorAPI.saveCanvasSnapshot(imageEditor);
-          var c0 = imageEditor && imageEditor._graphics && imageEditor._graphics.getCanvas();
-          resolve({ dataUrl: snap, width: c0 ? c0.getWidth() : 0, height: c0 ? c0.getHeight() : 0 });
+          var crop0 = cropCanvasToImage();
+          resolve({ dataUrl: crop0.dataUrl, width: crop0.width, height: crop0.height });
           return;
         }
         try {
@@ -814,7 +879,9 @@
             resolve({ dataUrl: snap2, width: 0, height: 0 });
             return;
           }
-          var cw = c.getWidth(), ch = c.getHeight();
+          // v0.78: 以图片实际区域为合成底（不是整 buffer）
+          var crop1 = cropCanvasToImage();
+          var cw = crop1.width || c.getWidth(), ch = crop1.height || c.getHeight();
           // 限制最大尺寸防止 dataURL 过大，但保留足够细节
           var MAX_SIZE = 2048;
           if (cw > MAX_SIZE || ch > MAX_SIZE) {
@@ -831,24 +898,34 @@
               var scale = Math.max(cw / img.width, ch / img.height);
               var dx = (cw - img.width * scale) / 2, dy = (ch - img.height * scale) / 2;
               ctx.drawImage(img, dx, dy, img.width * scale, img.height * scale);
-              // 画布当前内容直接叠上去（不透明），让AI同时看到两者
-              ctx.drawImage(c.getElement(), 0, 0, cw, ch);
-              // 用 PNG 无损输出
-              var dataUrl = offscreen.toDataURL('image/png');
-              if (!dataUrl || dataUrl === 'data:,' || dataUrl.length < 100) {
-                console.warn('[AI] composite invalid, fallback');
-                var snap3 = window.imageEditorAPI.saveCanvasSnapshot(imageEditor);
-                resolve({ dataUrl: snap3, width: cw, height: ch });
+              // 画布当前内容（裁剪到图片区域）直接叠上去（不透明），让AI同时看到两者
+              if (crop1.dataUrl && crop1.dataUrl.length > 100) {
+                var cur = new Image();
+                cur.onload = function() { try { ctx.drawImage(cur, 0, 0, cw, ch); finish(); } catch(e) { finish(); } };
+                cur.onerror = function() { finish(); };
+                cur.src = crop1.dataUrl;
               } else {
-                console.log('[AI] composite PNG size:', (dataUrl.length / 1024).toFixed(0) + 'KB');
-                // v0.77: 传出合成后的画布尺寸（实际 input 比例）
-                resolve({ dataUrl: dataUrl, width: cw, height: ch });
+                ctx.drawImage(c.getElement(), 0, 0, cw, ch);
+                finish();
               }
-            } catch(e) { console.warn('[AI] composite draw:', e); var snap4 = window.imageEditorAPI.saveCanvasSnapshot(imageEditor); resolve({ dataUrl: snap4, width: cw, height: ch }); }
+              function finish() {
+                // 用 PNG 无损输出
+                var dataUrl = offscreen.toDataURL('image/png');
+                if (!dataUrl || dataUrl === 'data:,' || dataUrl.length < 100) {
+                  console.warn('[AI] composite invalid, fallback');
+                  var snap3 = cropCanvasToImage();
+                  resolve({ dataUrl: snap3.dataUrl, width: snap3.width || cw, height: snap3.height || ch });
+                } else {
+                  console.log('[AI] composite PNG size:', (dataUrl.length / 1024).toFixed(0) + 'KB', cw + 'x' + ch);
+                  // v0.77: 传出合成后的画布尺寸（实际 input 比例）
+                  resolve({ dataUrl: dataUrl, width: cw, height: ch });
+                }
+              }
+            } catch(e) { console.warn('[AI] composite draw:', e); var snap4 = cropCanvasToImage(); resolve({ dataUrl: snap4.dataUrl, width: snap4.width || cw, height: snap4.height || ch }); }
           };
-          img.onerror = function() { var snap5 = window.imageEditorAPI.saveCanvasSnapshot(imageEditor); resolve({ dataUrl: snap5, width: cw, height: ch }); };
+          img.onerror = function() { var snap5 = cropCanvasToImage(); resolve({ dataUrl: snap5.dataUrl, width: snap5.width || cw, height: snap5.height || ch }); };
           img.src = _aiRefUpload;
-        } catch(e) { console.warn('[AI] compositeRef:', e); var snap6 = window.imageEditorAPI.saveCanvasSnapshot(imageEditor); resolve({ dataUrl: snap6, width: 0, height: 0 }); }
+        } catch(e) { console.warn('[AI] compositeRef:', e); var snap6 = cropCanvasToImage(); resolve({ dataUrl: snap6.dataUrl, width: snap6.width, height: snap6.height }); }
       });
     }
 
@@ -869,7 +946,7 @@
         // v0.77: compositeRefWithCanvas 现在返回 { dataUrl, width, height }，用于自动选 Agnes ratio 档位
         var ref = _aiRefUpload
           ? await compositeRefWithCanvas()
-          : { dataUrl: window.imageEditorAPI.saveCanvasSnapshot(imageEditor), width: 0, height: 0 };
+          : cropCanvasToImage();
         dataUrl = ref.dataUrl;
         targetW = ref.width;
         targetH = ref.height;
@@ -924,7 +1001,7 @@
       var loadUrl = opt.workspace_path
         ? '/api/files/asset?path=' + encodeURIComponent(opt.workspace_path)
         : opt.image_url_output;
-      imageEditor.loadImageFromURL(loadUrl, 'ai_' + (idx + 1) + '.png').then(function(result) {
+      loadImageSafe(loadUrl, 'ai_' + (idx + 1) + '.png').then(function(result) {
         // 等 tui 内部布局完成后 fit + 居中（v0.68）
         setTimeout(function() { try { fitAndCenter(); } catch(e) { console.warn('[AI] 缩放失败:', e); } }, 100);
       }).catch(function(e) { console.warn('[AI] 加载候选失败:', e); });
@@ -934,7 +1011,7 @@
       if (_aiHistory.length === 0) return;
       _aiHistory.pop();
       if (_aiHistory.length > 0) aiRestoreSnapshot(_aiHistory[_aiHistory.length - 1].dataUrl);
-      else imageEditor.loadImageFromURL('', 'blank').catch(function(){});
+      else loadImageSafe('', 'blank').catch(function(){});
       updateAIUI();
     }
 
@@ -947,7 +1024,7 @@
 
     function aiRestoreSnapshot(dataUrl) {
       if (!dataUrl) return;
-      imageEditor.loadImageFromURL(dataUrl, 'snapshot').then(function(result) {
+      loadImageSafe(dataUrl, 'snapshot').then(function(result) {
         // v0.68: fit + 居中
         setTimeout(function() { try { fitAndCenter(); } catch(e) { console.warn('[AI] 恢复快照缩放失败:', e); } }, 100);
       }).catch(function(e) { console.warn('[AI] 恢复快照失败:', e); });
