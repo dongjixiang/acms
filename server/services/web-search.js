@@ -12,7 +12,7 @@ const https = require('https');
 const { browserSearch, launchBrowser } = require('./browser-fetch');
 
 const SEARCH_TIMEOUT_MS = 10000;
-const MAX_RESULTS = 20;
+const MAX_RESULTS = 50;
 
 // ── 搜索缓存（5 分钟 TTL，与 web-research 一致）──
 const _searchCache = new Map();
@@ -185,7 +185,7 @@ async function searchWeb(query, options = {}) {
   }
 
   const apiKey = getBingApiKey();
-  const maxResults = Math.min(options.maxResults || MAX_RESULTS, 20);
+  const maxResults = Math.min(options.maxResults || MAX_RESULTS, 50);
   const encodedQuery = encodeURIComponent(query.trim());
 
   // ── 缓存命中直接返回 ──
@@ -210,11 +210,22 @@ async function searchWeb(query, options = {}) {
 
     // ═══════════════════════════════════════════════════════════
     // 模式 B：并行浏览器搜索（v0.76 — 替换原串行 Baidu→BingCN→Toutiao 瀑布）
-    //   Baidu / BingCN / Toutiao 三路并行，谁先出好结果用谁
-    //   全部失败时降级到 Sogou 浏览器 + Sogou HTML + Bing HTML
+    //   v0.77: maxResults > 8 时切换到 parallelMergeSearch 多源合并（dedup 后约 25-40 条）
+    //          maxResults <= 8 时保留原 parallelBrowserSearch 单源首选（向后兼容、低延迟）
+    //   全失败时降级到 Sogou 浏览器 + Sogou HTML + Bing HTML
     // ═══════════════════════════════════════════════════════════
     console.log('[web-search] 并行浏览器搜索: ' + query);
-    const parallelResult = await parallelBrowserSearch(query, maxResults);
+    let parallelResult = null;
+    if (maxResults > 8) {
+      parallelResult = await parallelMergeSearch(query, maxResults);
+      if (parallelResult) {
+        console.log(`[web-search] 多源合并命中: ${parallelResult.results.length} 条`);
+        setSearchCache(query, maxResults, parallelResult);
+        return parallelResult;
+      }
+      console.log('[web-search] 多源合并全失败，回退到单源首选');
+    }
+    parallelResult = await parallelBrowserSearch(query, maxResults);
     if (parallelResult) {
       setSearchCache(query, maxResults, parallelResult);
       return parallelResult;
@@ -325,6 +336,87 @@ async function parallelBrowserSearch(query, maxResults) {
   }
 
   return null;
+}
+
+// ========================
+// 模式 B-0 (v0.77): 多源并行 + 合并 + dedup (Baidu / BingCN / Toutiao / DDG)
+//   解决 schema 上限 50 但实际返 10-25 的差距
+//   调用方 maxResults > 8 才走这里；<= 8 用下面老的 parallelBrowserSearch 保留兼容
+// ========================
+
+function normalizeUrlKey(u) {
+  if (!u) return '';
+  try {
+    const url = new URL(u);
+    return (url.hostname.toLowerCase().replace(/^www\./, '') + url.pathname.replace(/\/$/, '')).toLowerCase();
+  } catch {
+    return String(u).toLowerCase().split('?')[0].split('#')[0];
+  }
+}
+
+function normalizeTitleKey(t) {
+  return String(t || '')
+    .toLowerCase()
+    .replace(/[\s\u3000]+/g, ' ')
+    .replace(/[^\w\u4e00-\u9fff]/g, '')
+    .trim()
+    .slice(0, 60);
+}
+
+async function parallelMergeSearch(query, maxResults) {
+  const engines = [
+    { name: 'baidu',   fn: () => browserSearchBaidu(query, maxResults) },
+    { name: 'bingcn',  fn: () => browserSearchBingCn(query, maxResults) },
+    { name: 'toutiao', fn: () => browserSearchToutiao(query, maxResults) },
+    { name: 'ddg',     fn: () => browserSearchDDG(query, maxResults) },
+  ];
+
+  const settled = await Promise.allSettled(engines.map((e) => e.fn()));
+
+  const seenUrl = new Set();
+  const seenTitle = new Set();
+  const merged = [];
+  const stats = {};
+
+  for (let i = 0; i < settled.length; i++) {
+    const r = settled[i];
+    const name = engines[i].name;
+    if (r.status !== 'fulfilled') {
+      stats[name] = `ERR(${r.reason?.message?.slice(0, 60) || 'unknown'})`;
+      console.warn(`[web-search] ${name} 抛错:`, r.reason?.message);
+      continue;
+    }
+    const res = r.value;
+    if (!res.results?.length) {
+      stats[name] = '0';
+      continue;
+    }
+    stats[name] = String(res.results.length);
+    console.log(`[web-search] ${name} 并行贡献: ${res.results.length} 条`);
+
+    const filtered = filterByRelevance(res.results, query);
+    let added = 0;
+    for (const item of filtered) {
+      const uKey = normalizeUrlKey(item.url);
+      const tKey = normalizeTitleKey(item.title);
+      if (!uKey && !tKey) continue;
+      if (seenUrl.has(uKey) || seenTitle.has(tKey)) continue;
+      seenUrl.add(uKey);
+      seenTitle.add(tKey);
+      merged.push({ ...item, _source: name });
+      added++;
+    }
+    if (added > 0) stats[name] = `${stats[name]}→${added}`;
+  }
+
+  console.log(`[web-search] parallelMerge 合并: ${Object.entries(stats).map(([k, v]) => `${k}:${v}`).join(' / ')} → 总 ${merged.length} 条 → 截 max=${maxResults}`);
+
+  if (merged.length === 0) return null;
+  return {
+    results: merged.slice(0, maxResults),
+    source: 'multi',
+    sources: engines.map((e) => e.name),
+  };
 }
 
 // ========================
@@ -524,7 +616,7 @@ function parseBingHtmlResults(html, maxResults) {
 //   实测：当前网络 cn.bing.com 500ms 内 200，FIFA 命中，质量好
 //   保留 playwright 单 browser 共享（launchBrowser 单例）
 // ========================
-async function browserSearchBingCn(query, maxResults = 8) {
+async function browserSearchBingCn(query, maxResults = 15) {
   let browser;
   try {
     browser = await launchBrowser();
@@ -603,10 +695,180 @@ async function browserSearchBingCn(query, maxResults = 8) {
 }
 
 // ========================
+// 模式 B-1.5 (v0.77): 浏览器 Puppeteer 抓 html.duckduckgo.com (DDG)
+//   复用 ACMS 现有 puppeteer-extra + stealth plugin，可过 DDG HTML 端点反爬
+//   适合：英文 / 海外 / 隐私敏感类 query（中文也走得通）
+//   单页 ~10 条。maxResults > 10 时用 POST form (s=10/20/30/40) 翻页拼到 maxResults
+//   （必须用 POST，DDG 不响应 ?s= GET 参数）
+// ========================
+async function browserSearchDDG(query, maxResults = 15) {
+  let browser;
+  try {
+    browser = await launchBrowser();
+  } catch (e) {
+    return { error: `浏览器启动失败: ${e.message}`, results: [] };
+  }
+
+  const cap = Math.min(maxResults, 50); // ACMS schema 上限就是 50
+  const pagesNeeded = Math.ceil(cap / 10);
+  const collected = [];
+  const seenUrl = new Set();
+  const collectOne = (item) => {
+    const uKey = (item.url || '').split('?')[0].split('#')[0];
+    if (!item.title || !uKey) return false;
+    if (seenUrl.has(uKey)) return false;
+    seenUrl.add(uKey);
+    collected.push(item);
+    return true;
+  };
+
+  // 解析结果 + 收集 Next form 数据（DDG 翻页关键）
+  // 用 Node 端定义函数直接传给 evaluate（避免 string 模板跨 context 序列化风险）
+  const PARSE_FN = function parseDDGPage() {
+    const containers = document.querySelectorAll('.result, .web-result');
+    const out = [];
+    for (const it of containers) {
+      if (it.classList.contains('result--ad')) continue;
+      if (it.closest('[class*="ad"], .ads-wrapper, .js-sidebar-ads')) continue;
+      const a = it.querySelector('a.result__a, a.result__title, h2.result__title a');
+      if (!a) continue;
+      let targetUrl = a.getAttribute('href') || '';
+      try {
+        const u = new URL(targetUrl, location.href);
+        const uddg = u.searchParams.get('uddg');
+        if (uddg) targetUrl = uddg;
+      } catch {}
+      const title = (a.textContent || '').trim();
+      const snip = it.querySelector('.result__snippet');
+      const snippet = snip ? (snip.textContent || '').trim() : '';
+      if (!title || !targetUrl || targetUrl === '/html/' || targetUrl.startsWith('/html?')) continue;
+      out.push({ title, url: targetUrl, snippet });
+    }
+    const forms = document.querySelectorAll('form[method="post"][action="/html/"]');
+    const nexts = [];
+    for (const f of forms) {
+      const sInp = f.querySelector('input[name="s"]');
+      if (!sInp) continue;
+      const data = {};
+      for (const inp of f.querySelectorAll('input')) {
+        if (inp.name) data[inp.name] = inp.value || '';
+      }
+      nexts.push({ s: sInp.value, data });
+    }
+    return { results: out, nexts };
+  };
+
+  // 用一个 page 跑全部（page reuse），其他 page 关闭
+  let page = null;
+  try {
+    page = await browser.newPage();
+    await page.setDefaultNavigationTimeout(20000);
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36');
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7' });
+
+    // ====== Page 1: GET ======
+    const url1 = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+    await page.goto(url1, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    await new Promise((r) => setTimeout(r, 1200));
+
+    const p1 = await page.evaluate(PARSE_FN);
+    let nexts = p1.nexts || [];
+    let targetS = '0';
+    for (const item of p1.results || []) {
+      collectOne(item);
+      if (collected.length >= cap) break;
+    }
+    console.log(`[web-search] DDG page 1/GET: +${p1.results?.length || 0} raw, ${collected.length}/${cap} collected, nexts=${nexts.map(n => n.s).join(',')}`);
+
+    // ====== Page 2-5: POST 表单翻页 ======
+    const PARSE_POST_FN = async function fetchAndParseNext(formData) {
+      try {
+        const res = await fetch('/html/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
+          body: new URLSearchParams(formData).toString(),
+        });
+        if (!res.ok) return { results: [], nexts: [] };
+        const html = await res.text();
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const containers = doc.querySelectorAll('.result, .web-result');
+        const BASE = 'https://html.duckduckgo.com/html/';
+        const out = [];
+        for (const it of containers) {
+          if (it.classList.contains('result--ad')) continue;
+          if (it.closest('[class*="ad"], .ads-wrapper, .js-sidebar-ads')) continue;
+          const a = it.querySelector('a.result__a, a.result__title, h2.result__title a');
+          if (!a) continue;
+          let targetUrl = a.getAttribute('href') || '';
+          // PAGE 2 DOMParser 没 window.location, 必须显式 base
+          try {
+            const u = new URL(targetUrl, BASE);
+            const uddg = u.searchParams.get('uddg');
+            if (uddg) targetUrl = uddg;
+          } catch {}
+          const title = (a.textContent || '').trim();
+          const snip = it.querySelector('.result__snippet');
+          const snippet = snip ? (snip.textContent || '').trim() : '';
+          if (!title || !targetUrl || targetUrl === '/html/' || targetUrl.startsWith('/html?')) continue;
+          out.push({ title, url: targetUrl, snippet });
+        }
+        // 抓下一页 next form（DDG 不严格按 s=10/20/30 链式，可能跳 s=25/40/50）
+        const nextForms = doc.querySelectorAll('form[method="post"][action="/html/"]');
+        const nexts = [];
+        for (const f of nextForms) {
+          const sInp = f.querySelector('input[name="s"]');
+          if (!sInp) continue;
+          const data = {};
+          for (const inp of f.querySelectorAll('input')) {
+            if (inp.name) data[inp.name] = inp.value || '';
+          }
+          nexts.push({ s: sInp.value, data });
+        }
+        return { results: out, nexts };
+      } catch (e) {
+        return { results: [], nexts: [] };
+      }
+    };
+
+    // DDG next form chain 是非线性的：s=10→25→?，不是等差 s=10/20/30。
+    // 用 nexts[0]（DDG 自己的 next 链第一个）持续往后翻。
+    for (let i = 1; i < pagesNeeded && collected.length < cap; i++) {
+      if (nexts.length === 0) {
+        console.log(`[web-search] DDG: 已无 next form，停在 ${collected.length} 条`);
+        break;
+      }
+      // 过滤掉 s='0'（回首页）和已知 cursor（避免死循环）
+      const forwardNexts = nexts.filter((n) => n.s !== '0' && parseInt(n.s, 10) > parseInt(targetS || '0', 10));
+      const f = forwardNexts[0] || nexts[0];
+      targetS = f.s;
+      const r = await page.evaluate(PARSE_POST_FN, f.data);
+      const pResults = r.results || [];
+      if (r.nexts && r.nexts.length > 0) {
+        nexts = r.nexts;
+      } else {
+        nexts = [];
+      }
+      for (const item of pResults) {
+        collectOne(item);
+        if (collected.length >= cap) break;
+      }
+      console.log(`[web-search] DDG page ${i + 1}/POST s=${f.s}: +${pResults.length} raw, ${collected.length}/${cap} collected, nexts now=${nexts.map(n => n.s).join(',')}`);
+    }
+  } catch (e) {
+    console.warn(`[web-search] DDG 整体异常: ${e.message?.slice(0, 100)}`);
+  } finally {
+    if (page) try { await page.close(); } catch {}
+  }
+
+  if (collected.length === 0) return { error: 'DDG 多页均未返回结果', results: [] };
+  return { results: collected.slice(0, cap) };
+}
+
+// ========================
 // 模式 B-2：浏览器 Puppeteer 抓 baidu.com (v0.49 中文 query 备选)
 //   实测：200/2s/FIFA 命中，作为中文检索兜底
 // ========================
-async function browserSearchBaidu(query, maxResults = 8) {
+async function browserSearchBaidu(query, maxResults = 15) {
   let browser;
   try {
     browser = await launchBrowser();
@@ -765,7 +1027,7 @@ async function browserSearchBaiduImage(query, maxResults = 9) {
 /**
  * 头条搜索 — 无反爬，中文搜索质量好
  */
-async function browserSearchToutiao(query, maxResults = 8) {
+async function browserSearchToutiao(query, maxResults = 15) {
   let browser;
   try {
     browser = await launchBrowser();
@@ -807,4 +1069,13 @@ async function browserSearchToutiao(query, maxResults = 8) {
 }
 
 
-module.exports = { searchWeb, browserSearchToutiao, browserSearchBingCn, browserSearchBaidu, browserSearchBaiduImage, filterByRelevance };
+module.exports = {
+  searchWeb,
+  parallelMergeSearch,
+  browserSearchToutiao,
+  browserSearchBingCn,
+  browserSearchBaidu,
+  browserSearchBaiduImage,
+  browserSearchDDG,
+  filterByRelevance,
+};

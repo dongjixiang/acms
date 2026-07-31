@@ -55,9 +55,9 @@ function resolveModelId(modelId) {
   return def?.id || null;
 }
 
-const DEFAULT_MAX_RESULTS = 20;
+const DEFAULT_MAX_RESULTS = 50;
 const DEFAULT_DEEP_FETCH = 10;
-const MAX_RESULTS_LIMIT = 20;
+const MAX_RESULTS_LIMIT = 50;
 const DEEP_FETCH_LIMIT = 10;
 const FETCH_BODY_LIMIT = 12000;
 const SYNTHESIS_EXCERPT_LIMIT = 8000;
@@ -326,7 +326,7 @@ async function extractKeywords(query, modelId) {
  * 网络调研（提取关键词 → 搜索 → 抓取 → 综合分析）
  * @param {object} args - snake_case 与 camelCase 均兼容
  *   - query: 调研问题（自然语言）
- *   - max_results/maxResults: 搜索返回条数（默认 20，上限 20）
+ *   - max_results/maxResults: 搜索返回条数（默认 50，上限 50）
  *   - deep_fetch/deepFetch: 自动抓取 URL 数（默认 10，上限 10，0 = 不抓正文）
  *   - model_id/modelId: 用于提取 + 综合分析的 LLM（默认用系统默认模型）
  */

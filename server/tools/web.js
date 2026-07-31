@@ -31,7 +31,7 @@ registerTool({
     type: 'object',
     properties: {
       query: { type: 'string', description: '搜索关键词或自然语言问题' },
-      max_results: { type: 'number', description: '最大返回结果数（1-20）', default: 5 },
+      max_results: { type: 'number', description: '最大返回结果数（1-50）', default: 5 },
     },
     required: ['query'],
   },
@@ -126,7 +126,7 @@ registerTool({
     type: 'object',
     properties: {
       query: { type: 'string', description: '搜索关键词（越精确越好）' },
-      max_results: { type: 'number', description: '最大返回结果数（默认 20，上限 20）', default: 20, minimum: 1, maximum: 20 },
+      max_results: { type: 'number', description: '最大返回结果数（默认 50，上限 50）', default: 50, minimum: 1, maximum: 50 },
     },
     required: ['query'],
   },
@@ -175,7 +175,7 @@ registerTool({
     type: 'object',
     properties: {
       query: { type: 'string', description: '调研问题或主题' },
-      max_results: { type: 'number', description: '搜索返回条数（默认 20，上限 20）', default: 20, minimum: 1, maximum: 20 },
+      max_results: { type: 'number', description: '搜索返回条数（默认 50，上限 50）', default: 50, minimum: 1, maximum: 50 },
       deep_fetch: { type: 'number', description: '自动抓取的 URL 数（默认 10，上限 10，0=不抓取只返回搜索结果）', default: 10, minimum: 0, maximum: 10 },
       model_id: { type: 'string', description: '综合分析用的 LLM（可选，默认用系统默认模型）' },
     },

@@ -1,11 +1,13 @@
-// ACMS Image Tools API (v0.66 PR1)
+// ACMS Image Tools API (v0.66 PR1 + v0.77 target dims)
 // 暴露 image-tools-service.coreGenerate 为 REST endpoint
 //   POST /api/image-tools/ai-generate    —— 文生图（无源图）
 //   POST /api/image-tools/ai-edit         —— 图生图（需要 referenceImage）
 //
 // 请求体:
-//   ai-generate: { prompt: string, n?: 1-6, size?: '1024x1024'|'1024x1792'|'1792x1024', projectSlug?: string }
-//   ai-edit:     { prompt: string, referenceImage: data:image/...;base64,XXX, n?, size?, projectSlug? }
+//   ai-generate: { prompt: string, n?: 1-6, size?: '1K'|'2K'|'3K'|'4K'|'1024x1024', projectSlug? }
+//   ai-edit:     { prompt, referenceImage, n?, size?, targetWidth?, targetHeight?, projectSlug? }
+//     v0.77: targetWidth + targetHeight → coreGenerate 自动选最近 ratio 档位 (1:1/3:4/4:3/3:2/2:3/16:9/9:16/21:9)
+//            并按像素总数选 size 档位 (1K/2K/3K/4K)。原图比例保持一致，分辨率按档位。
 //
 // 响应:
 //   { ok: true, prompt, size, n, options: [{image_url_output, asset_path, mime, size}], picked_idx: 0, project_slug, generated_at }
@@ -84,6 +86,8 @@ router.post('/ai-edit', async function (req, res) {
   var referenceImage = req.body && req.body.referenceImage;
   var n = req.body && req.body.n;
   var size = req.body && req.body.size;
+  var targetWidth = req.body && req.body.targetWidth;   // v0.77: 调用方传入的 input 宽（图生图时为原图宽）
+  var targetHeight = req.body && req.body.targetHeight;
   var projectSlug = req.body && req.body.projectSlug;
 
   if (!prompt || typeof prompt !== 'string') {
@@ -104,6 +108,8 @@ router.post('/ai-edit', async function (req, res) {
       referenceImage: referenceImage,
       n: n,
       size: size,
+      targetWidth: targetWidth,
+      targetHeight: targetHeight,
       projectSlug: projectSlug || ('user-' + userId),
     });
     return res.json(result);

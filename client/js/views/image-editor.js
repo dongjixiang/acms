@@ -670,12 +670,23 @@
     }
 
     // 多图生图：合成上传参考图 + 当前画布
+    // v0.77: 返回 { dataUrl, width, height }，让 runAIGenerate 知道 output 目标尺寸
     function compositeRefWithCanvas() {
       return new Promise(function(resolve) {
-        if (!_aiRefUpload || !imageEditor) { resolve(window.imageEditorAPI.saveCanvasSnapshot(imageEditor)); return; }
+        // 无上传参考图：返回画布当前内容 + 画布尺寸
+        if (!_aiRefUpload || !imageEditor) {
+          var snap = window.imageEditorAPI.saveCanvasSnapshot(imageEditor);
+          var c0 = imageEditor && imageEditor._graphics && imageEditor._graphics.getCanvas();
+          resolve({ dataUrl: snap, width: c0 ? c0.getWidth() : 0, height: c0 ? c0.getHeight() : 0 });
+          return;
+        }
         try {
           var c = imageEditor._graphics && imageEditor._graphics.getCanvas();
-          if (!c) { resolve(window.imageEditorAPI.saveCanvasSnapshot(imageEditor)); return; }
+          if (!c) {
+            var snap2 = window.imageEditorAPI.saveCanvasSnapshot(imageEditor);
+            resolve({ dataUrl: snap2, width: 0, height: 0 });
+            return;
+          }
           var cw = c.getWidth(), ch = c.getHeight();
           // 限制最大尺寸防止 dataURL 过大，但保留足够细节
           var MAX_SIZE = 2048;
@@ -699,16 +710,18 @@
               var dataUrl = offscreen.toDataURL('image/png');
               if (!dataUrl || dataUrl === 'data:,' || dataUrl.length < 100) {
                 console.warn('[AI] composite invalid, fallback');
-                resolve(window.imageEditorAPI.saveCanvasSnapshot(imageEditor));
+                var snap3 = window.imageEditorAPI.saveCanvasSnapshot(imageEditor);
+                resolve({ dataUrl: snap3, width: cw, height: ch });
               } else {
                 console.log('[AI] composite PNG size:', (dataUrl.length / 1024).toFixed(0) + 'KB');
-                resolve(dataUrl);
+                // v0.77: 传出合成后的画布尺寸（实际 input 比例）
+                resolve({ dataUrl: dataUrl, width: cw, height: ch });
               }
-            } catch(e) { console.warn('[AI] composite draw:', e); resolve(window.imageEditorAPI.saveCanvasSnapshot(imageEditor)); }
+            } catch(e) { console.warn('[AI] composite draw:', e); var snap4 = window.imageEditorAPI.saveCanvasSnapshot(imageEditor); resolve({ dataUrl: snap4, width: cw, height: ch }); }
           };
-          img.onerror = function() { resolve(window.imageEditorAPI.saveCanvasSnapshot(imageEditor)); };
+          img.onerror = function() { var snap5 = window.imageEditorAPI.saveCanvasSnapshot(imageEditor); resolve({ dataUrl: snap5, width: cw, height: ch }); };
           img.src = _aiRefUpload;
-        } catch(e) { console.warn('[AI] compositeRef:', e); resolve(window.imageEditorAPI.saveCanvasSnapshot(imageEditor)); }
+        } catch(e) { console.warn('[AI] compositeRef:', e); var snap6 = window.imageEditorAPI.saveCanvasSnapshot(imageEditor); resolve({ dataUrl: snap6, width: 0, height: 0 }); }
       });
     }
 
@@ -724,20 +737,26 @@
       updateAIUI();
       statusEl.textContent = '⏳ 生成中...';
 
-      var dataUrl = null;
+      var dataUrl = null, targetW = 0, targetH = 0;
       if (isEdit) {
-        if (_aiRefUpload) {
-          // 多图生图：把上传的参考图和当前画布合成一张作为 AI reference
-          dataUrl = await compositeRefWithCanvas();
-        } else {
-          dataUrl = window.imageEditorAPI.saveCanvasSnapshot(imageEditor);
-        }
+        // v0.77: compositeRefWithCanvas 现在返回 { dataUrl, width, height }，用于自动选 Agnes ratio 档位
+        var ref = _aiRefUpload
+          ? await compositeRefWithCanvas()
+          : { dataUrl: window.imageEditorAPI.saveCanvasSnapshot(imageEditor), width: 0, height: 0 };
+        dataUrl = ref.dataUrl;
+        targetW = ref.width;
+        targetH = ref.height;
       }
 
       try {
-        var result = dataUrl
-          ? await window.imageEditorAPI.aiEdit(prompt, dataUrl, 4)
-          : await window.imageEditorAPI.aiGenerate(prompt, 4);
+        var result;
+        if (dataUrl) {
+          // v0.77: 把 targetW/targetH 传给后端，让 coreGenerate 自动选最近 ratio 档位
+          //   （输出图比例 = 原图比例；分辨率按 input 像素总数选 1K/2K/3K/4K）
+          result = await window.imageEditorAPI.aiEdit(prompt, dataUrl, 4, { targetWidth: targetW, targetHeight: targetH });
+        } else {
+          result = await window.imageEditorAPI.aiGenerate(prompt, 4);
+        }
         if (!result || !result.ok) {
           statusEl.innerHTML = '<span style="color:#c00">❌ ' + escHtml((result && result.error ? result.error : '生成失败')) + '</span>';
           return;
@@ -1039,14 +1058,19 @@ function escHtml(s) {
     },
 
     // v0.66 PR2: AI 图生图（基于当前画布或传入 referenceImage）
+    // v0.77: opts.targetWidth/targetHeight 透传给后端 → coreGenerate 自动选 ratio 档位
     aiEdit: function(prompt, referenceImage, n, opts) {
       opts = opts || {};
       if (!prompt || !referenceImage) return Promise.resolve({ ok: false, error: 'INVALID_ARGS', message: '需要 prompt 和 referenceImage' });
       var count = n || 4;
+      var body = { prompt: prompt, referenceImage: referenceImage, n: count };
+      if (opts.size) body.size = opts.size;
+      if (opts.targetWidth) body.targetWidth = opts.targetWidth;
+      if (opts.targetHeight) body.targetHeight = opts.targetHeight;
       return fetch('/api/image-tools/ai-edit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-API-Key': (window.AK || 'dev-key-001') },
-        body: JSON.stringify({ prompt: prompt, referenceImage: referenceImage, n: count, size: opts.size || '1024x1024' }),
+        body: JSON.stringify(body),
       }).then(function(r) {
         if (!r.ok) return r.json().then(function(e) { throw new Error(e.message || 'HTTP ' + r.status); });
         return r.json();

@@ -5,9 +5,9 @@
 const { searchWeb } = require('../services/web-search');
 
 function normalizeSearchArgs(args = {}) {
-  const raw = Number(args.max_results ?? args.maxResults ?? 20);
-  if (!Number.isFinite(raw)) return 20;
-  return Math.min(20, Math.max(1, Math.trunc(raw)));
+  const raw = Number(args.max_results ?? args.maxResults ?? 50);
+  if (!Number.isFinite(raw)) return 50;
+  return Math.min(50, Math.max(1, Math.trunc(raw)));
 }
 
 /**

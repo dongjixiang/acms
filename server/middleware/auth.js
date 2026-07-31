@@ -11,7 +11,8 @@ function authMiddleware(req, res, next) {
       || req.path.startsWith('/api/proxy-settings/proxy-browse')  // v0.76: 浏览器代理浏览免鉴权
       || req.path === '/api/proxy-settings'  // 浏览器读代理状态
       || /\/api\/chat\/upload\/[^/]+\/raw$/.test(req.path)
-      || req.path === '/api/files/asset') return next();  // v0.73: workspace 资源文件（img 标签免鉴权加载）
+      || req.path === '/api/files/asset'        // v0.73: workspace 资源文件（img 标签免鉴权加载）
+      || req.path === '/api/files/proxy-image') return next();  // v0.77: CDN 图片代理（同源 <img> 标签免鉴权；同 /api/files/asset）
 
   // 1. 尝试 JWT token（Authorization: Bearer <token>）
   const authHeader = req.headers['authorization'];

@@ -32,3 +32,13 @@ test_export_result.docx
 test_md2docx.js
 tmp_brief.json
 export_示例.docx
+
+# v0.77: 兄弟 agent 调研 DDG 抓取的本地 probe 脚本（不入仓）
+scripts/probe-*.js
+scripts/test-merge-search.js
+
+# v0.77: WireGuard 备份目录（VPN 切换到 OpenVPN 后已清，含 client.conf/ovpn/msi，~8.9MB）
+wireguard/
+
+# v0.77: bge 嵌入模型目录（319MB,不入仓；运行期 .cache + 模型权重均本地生成）
+models/

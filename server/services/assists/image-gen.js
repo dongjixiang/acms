@@ -282,7 +282,11 @@ async function runAssistJob(requirementId, opts = {}) {
       size,
       extra_body: { response_format: 'url' },
     };
-    if (finalImage) body.image = [finalImage];
+    if (finalImage) {
+      // Agnes 2.1 Flash: image 必须在 extra_body.image 内（顶层会被忽略，退化为 t2i）
+      // 详见 image-tools-service.js 注释 + references/agnes-api-image-param.md
+      body.extra_body.image = [finalImage];
+    }
 
     // v0.22.8: 并行调 N 次 API（agnes-image-2.0-flash 不支持 n>1，只能 N 次单张）
     console.log(`[assist:image] ${requirementId} 开始生成 ${n} 张候选`);
@@ -609,7 +613,11 @@ async function runAssistJobCore(requirementId, opts = {}) {
       prompt: agnesPrompt, size,
       extra_body: { response_format: 'url' },
     };
-    if (finalImage) body.image = [finalImage];
+    if (finalImage) {
+      // Agnes 2.1 Flash: image 必须在 extra_body.image 内（顶层会被忽略，退化为 t2i）
+      // 详见 image-tools-service.js 注释 + references/agnes-api-image-param.md
+      body.extra_body.image = [finalImage];
+    }
 
     const callResults = await Promise.all(
       Array.from({ length: n }, () => callAgnesImageOnce(apiKey, body))
