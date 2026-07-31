@@ -241,17 +241,22 @@
     }
 
     // v0.73: 暴露图片重载函数（供拖拽到已打开的编辑器窗口时使用）
-    function reloadImage(url) {
+    // v0.78: 增加 name 参数（文件浏览器「打开方式」路径传文件名）；加载成功后同步窗口标题 + 清空旧图编辑状态
+    function reloadImage(url, name) {
       if (!imageEditor || !url) return;
       // v0.75: CDN URL 走本地代理（tui-image-editor canvas 需要 CORS 头）
       var imgUrl = url;
       if (imgUrl.indexOf('platform-outputs.agnes-ai.space') >= 0 || imgUrl.indexOf('://') >= 0 && imgUrl.indexOf('/api/') !== 0) {
         imgUrl = '/api/files/proxy-image?url=' + encodeURIComponent(imgUrl);
       }
-      console.log('[IMG-RELOAD] 重新加载图片:', imgUrl.slice(0, 80));
-      var name = imgUrl.split('/').pop() || 'image';
-      imageEditor.loadImageFromURL(imgUrl, name).then(function() {
+      console.log('[IMG-RELOAD] 重新加载图片:', imgUrl.slice(0, 80), 'name:', name || '');
+      var imgName = name || imgUrl.split('/').pop() || 'image';
+      imageEditor.loadImageFromURL(imgUrl, imgName).then(function() {
         console.log('[IMG-RELOAD] 加载成功');
+        // 新图 = 新编辑会话：清空旧图的 undo 栈与 AI 快照历史
+        try { if (typeof imageEditor.clearUndoStack === 'function') imageEditor.clearUndoStack(); } catch(e) {}
+        if (_aiHistory && _aiHistory.length) { _aiHistory = []; try { updateAIUI(); } catch(e) {} }
+        if (name && window.ACMSWin && ACMSWin.setTitle) ACMSWin.setTitle(w, name);
         // 适应窗口 + 居中（v0.68：fit + viewportCenterObject 替代单纯 zoomToPoint）
         setTimeout(function() {
           try { fitAndCenter(); } catch(e) {}

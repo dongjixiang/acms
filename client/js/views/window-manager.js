@@ -235,6 +235,15 @@
     // v0.73：复用已有窗口时，若有待加载的拖拽图片，通过 reloadImage 注入
     if (existing) {
       console.log('[WIN-DEBUG] 窗口已存在，复用:', viewName, 'instanceId:', opts.instanceId);
+      // v0.78：复用分支同样要消费 _fb_open_file（文件浏览器「打开方式」路径）
+      //   v0.73 只处理了 _dragImageUrl，漏了 _fb_open_file → 已打开编辑器时再打开另一张图，
+      //   画布停留在旧图。能力检测 existing.reloadImage（仅 image-editor 挂载），不硬编码 viewName。
+      var fb = window._fb_open_file;
+      if (fb && fb.src && typeof existing.reloadImage === 'function') {
+        window._fb_open_file = null;
+        console.log('[WIN-DEBUG] 复用窗口注入 _fb_open_file:', (fb.name || fb.src).slice(0, 80));
+        existing.reloadImage(fb.src, fb.name);
+      }
       if (window._dragImageUrl) {
         var url = window._dragImageUrl; window._dragImageUrl = null;
         console.log('[WIN-DEBUG] 检测到待加载拖拽图片:', url.slice(0, 80));
