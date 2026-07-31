@@ -8,7 +8,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>ACMS — 智能体协同管理系统</title>
-<link rel="stylesheet" href="/client/css/style.css?v=0.66.1">
+<link rel="stylesheet" href="/client/css/style.css?v=0.68.1">
 <link rel="stylesheet" href="/client/css/office-doc.css?v=0.62.7">
 <link rel="stylesheet" href="/client/lib/xterm.min.css">
 <script src="/client/lib/mermaid.min.js" defer></script>
@@ -664,7 +664,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- v0.62.7: 代码编辑器 (Monaco Editor + AI) -->
 <script src="/client/js/views/code-editor.js?v=0.62.7"></script>
 <!-- v0.62.7: 图片编辑器 (TOAST UI Image Editor + AI) -->
-<script src="/client/js/views/image-editor.js?v=0.66.3"></script>
+<script src="/client/js/views/image-editor.js?v=0.68.1"></script>
 <!-- v0.62.1: 块编辑器核心（schema + 转换器 + UI），PR 3 将接 office-word PKG -->
 <script src="/client/js/core/office-doc.js?v=0.62.1"></script>
 <script src="/client/js/core/office-doc-converter.js?v=0.62.1"></script>
@@ -688,6 +688,8 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- FitAddon 已内联到 terminal.js，不再需要 CDN -->
 <script src="/client/js/views/terminal.js"></script>
 <script src="/client/js/views/chat-session-list.js?v=0.55"></script>  <!-- v0.55 合并：chat-history + chat-recycle-bin 二合一，共享 render/mode 切换 -->
+<!-- v0.67: 桌面右上角透明全屏切换按钮（hover-show，被窗体覆盖时无效） -->
+<script src="/client/js/views/desktop-fullscreen-toggle.js?v=0.67"></script>
 <script>
 // v0.58：视图加载器注册 — 通过 ACMS.registerPackage 统一注册
 // 包注册系统自动同步到 ACMSWin.registerViewLoader + labels + 命令面板

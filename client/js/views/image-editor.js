@@ -218,6 +218,8 @@
         }
         // 安装默认框选放大（hand 关闭时拖拽=选择区域放大）
         setTimeout(function() { setupZoomDrag(); }, 500);
+        // v0.68: tui help-menu 渲染后注入 zoom display（确保按钮旁立即可见）
+        try { ensureZoomDisplay(); updateZoomDisplay(_aiZoomLevel || 1); } catch(e) {}
       }, 200);
 
       // 激活内置按钮事件 (initCanvas 里只在 loadImage.path 有值时才调用 activeMenuEvent)
@@ -230,6 +232,8 @@
       // 监听 tui 图片加载结果
       imageEditor.on('loadImage', function(result) {
         console.log('[IMG-LOADED] tui loadImage 完成:', result ? (result.newWidth+'x'+result.newHeight) : 'no result');
+        // v0.68: tui 重置 help-menu 时 zoom display 也可能被清，重新插入
+        try { ensureZoomDisplay(); updateZoomDisplay(_aiZoomLevel || 1); } catch(e) {}
       });
       imageEditor.on('error', function(err) {
         console.warn('[IMG-ERR] tui error:', err && err.message ? err.message : err);
@@ -248,16 +252,9 @@
       var name = imgUrl.split('/').pop() || 'image';
       imageEditor.loadImageFromURL(imgUrl, name).then(function() {
         console.log('[IMG-RELOAD] 加载成功');
-        // 适应窗口
+        // 适应窗口 + 居中（v0.68：fit + viewportCenterObject 替代单纯 zoomToPoint）
         setTimeout(function() {
-          try {
-            var rect = mountEl.getBoundingClientRect();
-            var img = imageEditor.getCanvasImage();
-            if (img) {
-              var zl = Math.min(rect.width / img.width, rect.height / img.height);
-              if (zl > 0) { doZoom(zl); }
-            }
-          } catch(e) {}
+          try { fitAndCenter(); } catch(e) {}
         }, 100);
       }).catch(function(e) {
         console.warn('[IMG-RELOAD] 加载失败:', e);
@@ -325,18 +322,8 @@
                 try {
                   imageEditor.loadImageFromFile(file).then(function (result) {
                     toast('已加载 ' + file.name, 'success');
-                    // 手动计算 zoom 适配窗口 (resizeEditor 会读取 cssMaxWidth=9999 导致编辑器溢出)
-                    try {
-                      var mountRect = mountEl.getBoundingClientRect();
-                      var cw = mountRect.width;
-                      var ch = mountRect.height;
-                      var iw = result.newWidth;
-                      var ih = result.newHeight;
-                      if (cw > 0 && ch > 0 && iw > 0 && ih > 0) {
-                          var zoomLevel = Math.min(cw / iw, ch / ih);
-                          doZoom(zoomLevel);
-                       }
-                    } catch(e) {}
+                    // 适应窗口 + 居中（v0.68）
+                    setTimeout(function() { try { fitAndCenter(); } catch(e) {} }, 100);
                   }).catch(function (err) {
                     console.log('[ImageEditor] loadImageFromFile FAILED:', err, 'file=', file.name);
                     // 方法2: 回退 dataURL
@@ -361,11 +348,8 @@
                     imageEditor.loadImageFromFile(file)
                       .then(function (result) {
                         toast('已加载 ' + file.name, 'success');
-                        try {
-                          var mRect = mountEl.getBoundingClientRect();
-                          var zl = Math.min(mRect.width / result.newWidth, mRect.height / result.newHeight);
-                          if (zl > 0) doZoom(zl);
-                        } catch(e) {}
+                        // 适应窗口 + 居中（v0.68）
+                        setTimeout(function() { try { fitAndCenter(); } catch(e) {} }, 100);
                       })
                       .catch(function () { /* ignore */ });
                   }
@@ -411,11 +395,8 @@
             break;
           case 'zoom-fit':
             if (imageEditor) {
-              var img = imageEditor.getCanvasImage();
-              if (img && img.width > 0 && img.height > 0) {
-                var rect = mountEl.getBoundingClientRect();
-                doZoom(Math.min(rect.width / img.width, rect.height / img.height));
-              }
+              // v0.68: fit + 居中（替代单纯 doZoom — 现在图始终在可视区中心）
+              fitAndCenter();
             }
             break;
           case 'zoom-100':
@@ -448,6 +429,146 @@
         var _zcomp = imageEditor._graphics && imageEditor._graphics.getComponent('zoom');
         if (_zcomp) _zcomp.zoomLevel = level;
       } catch(e) { console.warn('[ZOOM] doZoom:', e); }
+      updateZoomDisplay(level);
+    }
+
+    // v0.68: fit + center — 加载图片时用
+    //   1. 计算 fit zoom（按 mainEl 屏幕像素）
+    //   2. setZoom(level)
+    //   3. 手算 panX, panY 让 obj 视觉中心 = mainEl 屏幕中心（不用 viewportCenterObject —
+    //      tui canvas DOM 的 CSS max-height: 600 可能超过 mainEl 实际高度（502），
+    //      而 viewportCenterObject 用 drawing buffer center (500, 300) 当目标，结果偏下 ~50px）
+    //   4. requestRenderAll
+    //
+    // 关于 imageEditor.getCanvasImage() 不可用：
+    //   - tui 内部把 getCanvasImage 定义在 Component prototype，靠 mixin 到 ImageEditor.prototype
+    //   - 但 includeUI 模式下 invoker 包装后，prototype chain 上该方法不可枚举
+    //   - 直接用 imageEditor._graphics.canvasImage（Graphics 实例属性，line 57467 初始化）
+    function fitAndCenter() {
+      try {
+        var c = imageEditor._graphics && imageEditor._graphics.getCanvas();
+        if (!c) return;
+        var img = (imageEditor._graphics && imageEditor._graphics.canvasImage)
+                  || c.getActiveObject()
+                  || (c._objects && c._objects[0])
+                  || null;
+        if (!img || !img.width || !img.height) return;
+
+        // 主区 = 屏幕可视区
+        var mainEl = mountEl.querySelector('.tui-image-editor-main') || mountEl;
+        var mainRect = mainEl.getBoundingClientRect();
+
+        var level = Math.min(mainRect.width / img.width, mainRect.height / img.height);
+        if (!(level > 0)) return;
+
+        c.setZoom(level);
+
+        // 手算 panX / panY 让 obj 几何中心 屏幕位置 = main 中心 屏幕位置
+        //   fabric vpt 后: screen.x = canvasRect.left + (objDbuf.x * level + panX) * (canvasRect.width / c.width)
+        //   canvasRect.left 通常 == mainRect.left（canvas DOM 在 main 内 absolute left:0）
+        //   要: 屏幕 center = mainRect.left + mainRect.width/2
+        //   → panX = (mainRect.width / 2) * (c.width / canvasRect.width) - objCenterX * level
+        var canvasRect = c.upperCanvasEl.getBoundingClientRect();
+        if (canvasRect.width <= 0 || canvasRect.height <= 0) return;
+
+        // obj originX/originY 多数为 'left'/'top'（tui 创建 Image 默认）
+        var objCenterX = (img.left || 0) + img.width * (img.scaleX || 1) / 2;
+        var objCenterY = (img.top  || 0) + img.height * (img.scaleY || 1) / 2;
+
+        var panX = (mainRect.width  / 2) * (c.width  / canvasRect.width)  - objCenterX * level;
+        var panY = (mainRect.height / 2) * (c.height / canvasRect.height) - objCenterY * level;
+
+        c.setViewportTransform([level, 0, 0, level, panX, panY]);
+        c.requestRenderAll();
+
+        // 同步 tui ZOOM 组件（hand 模式检查 zoomLevel <= 1.0 时不响应拖动）
+        var zc = imageEditor._graphics.getComponent('zoom');
+        if (zc) zc.zoomLevel = level;
+
+        _aiZoomLevel = level;
+        updateZoomDisplay(level);
+      } catch(e) { console.warn('[ZOOM] fitAndCenter:', e); }
+    }
+
+    // v0.68.1: zoom input — 在 tui 内置工具栏 .tie-btn-zoomIn 按钮右边显示当前 %
+    //   - 通过在 .tui-image-editor-help-menu 内插入 <input class="ief-zoom-input">
+    //   - help-menu 整个 ul 容器 CSS 已变 bar，统一深色背景（v0.68.1）
+    //   - 所有 zoom 路径（doZoom / fitAndCenter / 框选放大 / 手势缩放）通过 updateZoomDisplay(level) 同步
+    //   - 用户编辑：input change → 把 pct/100 当 zoom level 调 doZoom；editing flag 防止 updateZoomDisplay 重置输入
+    var _zoomEditing = false;  // 用户编辑中不覆盖 input
+
+    function ensureZoomDisplay() {
+      if (!mountEl) return null;
+      var helpMenu = mountEl.querySelector('.tui-image-editor-help-menu');
+      if (!helpMenu) return null;
+      var existing = helpMenu.querySelector('.ief-zoom-input');
+      if (existing) return existing;
+      var input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'ief-zoom-input';
+      input.value = Math.round((_aiZoomLevel || 1) * 100) + '%';
+      input.title = '当前缩放比例（可手动修改）';
+      input.setAttribute('aria-label', '缩放比例');
+
+      // 绑定编辑事件
+      input.addEventListener('focus', function() { _zoomEditing = true; });
+      input.addEventListener('blur',  function() { _zoomEditing = false; });
+      // change 事件：blur 之前的最终值；input 事件：每次按键
+      input.addEventListener('change', function() { applyZoomFromInput(input); });
+      input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+        else if (e.key === 'Escape') { e.preventDefault(); input.blur(); }
+      });
+      // focus 全选 — 点一下就全选输入框
+      input.addEventListener('mouseup', function(e) {
+        // 让 click 选中 — 但 mouseup 默认是放 cursor，setTimeout delay 才能 select
+        e.preventDefault();
+        input.select();
+      });
+
+      // 插入到 .tie-btn-zoomIn 后面（"Zoom In 按钮的右边"）
+      var zoomInBtn = helpMenu.querySelector('.tie-btn-zoomIn');
+      if (zoomInBtn && zoomInBtn.parentNode === helpMenu) {
+        if (zoomInBtn.nextSibling) {
+          helpMenu.insertBefore(input, zoomInBtn.nextSibling);
+        } else {
+          helpMenu.appendChild(input);
+        }
+      } else {
+        var zoomOutBtn = helpMenu.querySelector('.tie-btn-zoomOut');
+        if (zoomOutBtn) helpMenu.insertBefore(input, zoomOutBtn);
+        else helpMenu.appendChild(input);
+      }
+      return input;
+    }
+
+    function applyZoomFromInput(input) {
+      if (!imageEditor) return;
+      var raw = (input.value || '').trim().replace(/%/g, '').replace(/x/gi, '');
+      var pct = parseFloat(raw);
+      if (!isFinite(pct) || pct <= 0) {
+        // 非法输入：恢复当前 zoom
+        input.value = Math.round((_aiZoomLevel || 1) * 100) + '%';
+        return;
+      }
+      // clamp 到 [10, 500]
+      pct = Math.max(10, Math.min(pct, 500));
+      var level = pct / 100;
+      _aiZoomLevel = level;
+      doZoom(level);  // doZoom → updateZoomDisplay → 但 _zoomEditing 在 blur 时已 false，所以安全覆盖
+    }
+
+    function updateZoomDisplay(level) {
+      if (typeof level !== 'number' || !isFinite(level)) return;
+      var pct = Math.round(level * 100);
+      var label = pct + '%';
+      var input = mountEl && mountEl.querySelector('.ief-zoom-input');
+      if (input) {
+        if (input.value !== label && !_zoomEditing) input.value = label;
+      } else {
+        // 第一次插入
+        ensureZoomDisplay();
+      }
     }
 
     // 默认框选放大：在画布拖拽=选择区域自动放大（hand 模式激活时不触发）
@@ -474,6 +595,7 @@
           c.requestRenderAll();
           var zc = imageEditor._graphics.getComponent('zoom');
           if (zc) zc.zoomLevel = _aiZoomLevel;
+          updateZoomDisplay(_aiZoomLevel);  // v0.68: 同步 zoom display
         });
       } catch(e) { console.warn('[ZOOM-DRAG] setup:', e); }
     }
@@ -798,22 +920,8 @@
         ? '/api/files/asset?path=' + encodeURIComponent(opt.workspace_path)
         : opt.image_url_output;
       imageEditor.loadImageFromURL(loadUrl, 'ai_' + (idx + 1) + '.png').then(function(result) {
-        // 等 tui 内部布局完成后缩放，确保图片完整可见
-        setTimeout(function() {
-          try {
-            var rect = mountEl.getBoundingClientRect();
-            var iw = result && result.newWidth;
-            var ih = result && result.newHeight;
-            if (!iw || !ih) {
-              var img = imageEditor.getCanvasImage();
-              if (img) { iw = img.width; ih = img.height; }
-            }
-            if (iw > 0 && ih > 0 && rect.width > 0 && rect.height > 0) {
-              var zl = Math.min(rect.width / iw, rect.height / ih);
-              if (zl > 0) { doZoom(zl); }
-            }
-          } catch(e) { console.warn('[AI] 缩放失败:', e); }
-        }, 100);
+        // 等 tui 内部布局完成后 fit + 居中（v0.68）
+        setTimeout(function() { try { fitAndCenter(); } catch(e) { console.warn('[AI] 缩放失败:', e); } }, 100);
       }).catch(function(e) { console.warn('[AI] 加载候选失败:', e); });
     }
 
@@ -835,21 +943,8 @@
     function aiRestoreSnapshot(dataUrl) {
       if (!dataUrl) return;
       imageEditor.loadImageFromURL(dataUrl, 'snapshot').then(function(result) {
-        setTimeout(function() {
-          try {
-            var rect = mountEl.getBoundingClientRect();
-            var iw = result && result.newWidth;
-            var ih = result && result.newHeight;
-            if (!iw || !ih) {
-              var img = imageEditor.getCanvasImage();
-              if (img) { iw = img.width; ih = img.height; }
-            }
-            if (iw > 0 && ih > 0 && rect.width > 0 && rect.height > 0) {
-              var zl = Math.min(rect.width / iw, rect.height / ih);
-              if (zl > 0) { doZoom(zl); }
-            }
-          } catch(e) { console.warn('[AI] 恢复快照缩放失败:', e); }
-        }, 100);
+        // v0.68: fit + 居中
+        setTimeout(function() { try { fitAndCenter(); } catch(e) { console.warn('[AI] 恢复快照缩放失败:', e); } }, 100);
       }).catch(function(e) { console.warn('[AI] 恢复快照失败:', e); });
     }
 
