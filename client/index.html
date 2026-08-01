@@ -1034,12 +1034,12 @@ document.addEventListener('DOMContentLoaded', () => {
       else w.$c.innerHTML = '<div style="padding:40px;text-align:center">加载中...</div>';
     }
   });
-  PKG('office-xlsx', {
-    title: 'Excel 表格', icon: '📊', category: '工具', defaultSize: { w: 1000, h: 600 },
-    loader: function(w) {
-      if (typeof openExcelEditor === 'function') openExcelEditor(w);
-      else w.$c.innerHTML = '<div style="padding:40px;text-align:center">加载中...</div>';
-    }
+  PKG('office-xlsx', {\
+    title: 'Excel 表格', icon: '📊', category: '工具', defaultSize: { w: 1000, h: 600 },\
+    loader: function(w, opts) {\
+      if (typeof openExcelEditor === 'function') openExcelEditor(w, opts && opts.fileId, opts && opts.fileName);\
+      else w.$c.innerHTML = '<div style=\"padding:40px;text-align:center\">加载中...</div>';\
+    }\
   });
   PKG('office-pptx', {
     title: 'PPT 演示', icon: '📽️', category: '工具', defaultSize: { w: 1000, h: 650 },
