@@ -953,5 +953,61 @@ function mountBlockEditor() {
     ], e.clientX, e.clientY);
   });
   }, 100); // 延迟等 DOM 就绪
+
+  // v0.68: 窗口复用时的文档重载
+  w.reloadDocument = function(fileId, fileName) {
+    if (!fileId) return;
+    console.log('[Word] reloadDocument', fileId, fileName);
+    // 清除当前内容
+    editorHost.innerHTML = '<div style="padding:40px;text-align:center;color:#888">⏳ 正在加载 ' + (fileName || fileId) + '...</div>';
+    // 加载新文档
+    fetch('/api/office/load/' + encodeURIComponent(fileId) + '?api_key=' + AK)
+      .then(function(r) { return r.json(); })
+      .then(function(resp) {
+        editorHost.innerHTML = '';
+        if (!resp.ok) {
+          editorHost.innerHTML = '<div style="padding:24px;color:#a00">❌ 加载失败：' + (resp.error || '未知') + '</div>';
+          return;
+        }
+        // 解析文本到 blocks
+        var newDoc = window.OfficeDoc.makeDocument({ title: fileName || 'untitled' });
+        function parseContentToBlocks(text) {
+          if (!text || !text.trim()) {
+            newDoc.blocks.push(window.OfficeDoc.paragraph(''));
+            return;
+          }
+          var lines = text.split('
+');
+          lines.forEach(function(line) {
+            var trimmed = line.trim();
+            if (!trimmed) return;
+            var h = trimmed.match(/^(#{1,6})\s+(.+)$/);
+            if (h) {
+              newDoc.blocks.push(window.OfficeDoc.heading(h[2], h[1].length));
+            } else {
+              newDoc.blocks.push(window.OfficeDoc.paragraph(trimmed));
+            }
+          });
+          if (newDoc.blocks.length === 0) {
+            newDoc.blocks.push(window.OfficeDoc.paragraph(''));
+          }
+        }
+        parseContentToBlocks(resp.text);
+        // 重新挂载编辑器
+        if (instance) {
+          instance.rerender();
+        } else {
+          instance = window.OfficeDocEditor.mountEditor(editorHost, newDoc, {
+            onChange: function() { setDirty(true); }
+          });
+        }
+        // 更新标题
+        var titleInput = host.querySelector('#word-title-input');
+        if (titleInput && fileName) titleInput.value = fileName;
+      })
+      .catch(function(e) {
+        editorHost.innerHTML = '<div style="padding:24px;color:#a00">❌ 网络错误：' + e.message + '</div>';
+      });
+  };
 }
 
