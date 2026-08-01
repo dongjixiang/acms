@@ -770,7 +770,7 @@ getDocument: function () { return state.doc; },
       },
       toggleInlineFormat: function (blockId, marker) {
         // 多段落支持：如果有选区则格式化所有选区内的块
-        return formatSelection(marker, function (b) {
+        return instance.formatSelection(marker, function (b) {
           b.attrs = b.attrs || {};
           b.attrs.formatting = b.attrs.formatting || {};
           var fmt = b.attrs.formatting;
