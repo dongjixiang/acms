@@ -1177,14 +1177,16 @@ function openExcelEditor(w, fileId, fileName) {
         }
       }
     }
-    // 渲染列头，合并相邻的
+    // 渲染列头，使用 headers 作为列标题
     var ci = 0;
     while (ci < maxCols) {
       var span = colHeaderSpan[ci] || 1;
       var filterArrow = autoFilterActive ? '<span class="xlsx-filter-arrow" title="自动筛选">▼</span>' : '';
       var thStyle = 'border:1px solid #ccc;background:var(--bg2);padding:4px 6px;min-width:80px;text-align:center;font-weight:600;position:sticky;top:0;z-index:2;cursor:pointer;user-select:none';
       if (span > 1) thStyle += ';min-width:' + (80 * span) + 'px';
-      h += '<th class="xlsx-col-header" data-col="' + ci + '" colspan="' + span + '" style="' + thStyle + '">' + colLetter(ci) + filterArrow + '</th>';
+      // 使用 headers 作为列标题，如果没有 headers 则用列字母
+      var colTitle = (data[0] && data[0][ci]) ? escHtml(data[0][ci]) : colLetter(ci);
+      h += '<th class="xlsx-col-header" data-col="' + ci + '" colspan="' + span + '" style="' + thStyle + '">' + colTitle + filterArrow + '</th>';
       ci += span;
     }
     h += '</tr>';
