@@ -2004,7 +2004,6 @@ function openExcelEditor(w, fileId, fileName) {
           var schemaData = JSON.parse(schemaStr);
           // v0.65: 检查 schemaData 是否有效
           if (!schemaData || !schemaData.sheets || !Array.isArray(schemaData.sheets) || schemaData.sheets.length === 0) {
-            console.warn('[Excel] Schema 数据为空，使用空白数据');
             sheets = [{ name: 'Sheet1', data: blankData() }];
             currentSheetIdx = 0;
             data = sheets[0].data;
@@ -2036,10 +2035,8 @@ function openExcelEditor(w, fileId, fileName) {
             if (w.$c.querySelector('#xlsx-title-input')) {
               w.$c.querySelector('#xlsx-title-input').value = fileName || resp.filename;
             }
-            console.log('[Excel] 数据已加载，总行数:', data.length, '总列数:', COLS);
           }
         } else {
-          console.warn('[Excel] 不是 SCHEMA 格式，使用空白数据');
           sheets = [{ name: 'Sheet1', data: blankData() }];
           currentSheetIdx = 0;
           data = sheets[0].data;
@@ -2051,7 +2048,6 @@ function openExcelEditor(w, fileId, fileName) {
         
       })
       .catch(function(e) {
-        console.error('[Excel] 加载失败:', e);
         w.$c.innerHTML = '<div style="padding:24px;text-align:center;color:#a00">❌ 加载失败：' + (e.message || '未知错误') + '<br>fileId: ' + _fileId + '</div>';
       });
   }
