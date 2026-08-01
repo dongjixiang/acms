@@ -1277,6 +1277,7 @@ function openExcelEditor(w, fileId, fileName) {
     h += '</div>';
     h += '</div>';
     h += '</div>';
+    console.log('[xlsx] renderTable 完成，数据行数:', data.length, '列数:', data[0] ? data[0].length : 0);
     w.$c.innerHTML = h;
 
     // v0.62.5: Ribbon 挂载 — 学 OO FileMenu.js 的 Home/Insert 结构
