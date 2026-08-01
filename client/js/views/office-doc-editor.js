@@ -140,9 +140,10 @@
     } else {
       content = escHtml(block.content || '');
     }
+    // 移除 contenteditable，由容器统一管理
     return '<' + tag + ' data-bid="' + block.id + '" data-btype="' + type + '"' +
       (style ? ' style="' + style + '"' : '') +
-      ' contenteditable="true" class="ode-ce">' + content + '</' + tag + '>';
+      ' class="ode-ce">' + content + '</' + tag + '>';
   }
 
   // ─── HTML → blocks array ───
@@ -480,6 +481,8 @@
     if (!container) throw new Error('office-doc-editor: container not found');
     container.innerHTML = '';
     container.classList.add('ode-editor-flow');
+    // 容器本身为 contenteditable，支持跨 block 选区
+    container.contentEditable = 'true';
     // 保留已有 flex 样式，只追加文档流样式
     container.style.padding = '40px 64px';
     container.style.maxWidth = '880px';
