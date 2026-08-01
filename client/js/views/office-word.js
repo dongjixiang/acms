@@ -176,23 +176,25 @@ function openWordEditor(w, fileId, fileName) {
           editorHost.innerHTML = '<div style="padding:24px;color:#a00">❌ 加载失败：' + (resp.error || '未知') + '<br>fileId: ' + fileId + '</div>';
           return;
         }
-        // v0.62.4: 简单转换 — 把提取的纯文本按行拆 paragraph（不做复杂 block 映射）
+        // 解析 blocks：从 resp.text 或 resp.content (base64) 恢复
         if (resp.text) {
-          var lines = resp.text.split('\n').filter(function (l) { return l.trim(); });
-          if (lines.length === 0) {
-            doc.blocks.push(window.OfficeDoc.paragraph(''));
-          } else {
-            lines.forEach(function (line) {
-              // 简单检测：# 开头 → heading
-              var h = line.match(/^(#{1,6})\s+(.+)$/);
-              if (h) {
-                doc.blocks.push(window.OfficeDoc.heading(h[2], h[1].length));
-              } else {
-                doc.blocks.push(window.OfficeDoc.paragraph(line));
-              }
-            });
-          }
+          // 尝试解析 markdown 格式（带 # 标题的纯文本）
+          var lines = resp.text.split('\n');
+          lines.forEach(function (line) {
+            var trimmed = line.trim();
+            if (!trimmed) return;
+            // heading 检测
+            var h = trimmed.match(/^(#{1,6})\s+(.+)$/);
+            if (h) {
+              doc.blocks.push(window.OfficeDoc.heading(h[2], h[1].length));
+            } else {
+              doc.blocks.push(window.OfficeDoc.paragraph(trimmed));
+            }
+          });
         } else {
+          doc.blocks.push(window.OfficeDoc.paragraph(''));
+        }
+        if (doc.blocks.length === 0) {
           doc.blocks.push(window.OfficeDoc.paragraph(''));
         }
         mountBlockEditor();
