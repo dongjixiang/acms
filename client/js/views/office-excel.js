@@ -2012,6 +2012,8 @@ function openExcelEditor(w, fileId, fileName) {
             sheets = [];
             schemaData.sheets.forEach(function(s) {
               var sheetData = [];
+              // 使用实际列数，而非默认 COLS
+              var actualCols = (s.headers && s.headers.length) || 8;
               if (s.rows && Array.isArray(s.rows)) {
                 // 添加标题行
                 if (s.headers && Array.isArray(s.headers)) {
@@ -2020,7 +2022,7 @@ function openExcelEditor(w, fileId, fileName) {
                 // 添加数据行
                 s.rows.forEach(function(row) {
                   var nr = [];
-                  for (var c = 0; c < COLS; c++) nr.push(row[c] !== undefined ? row[c] : '');
+                  for (var c = 0; c < actualCols; c++) nr.push(row[c] !== undefined ? row[c] : '');
                   sheetData.push(nr);
                 });
               }
