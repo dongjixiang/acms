@@ -1030,8 +1030,8 @@ document.addEventListener('DOMContentLoaded', () => {
   // v0.62 Office 编辑器
   PKG('office-word', {
     title: 'Word 文档', icon: '📝', category: '工具', defaultSize: { w: 900, h: 600 },
-    loader: function(w) {
-      if (typeof openWordEditor === 'function') openWordEditor(w);
+    loader: function(w, opts) {
+      if (typeof openWordEditor === 'function') openWordEditor(w, opts && opts.fileId, opts && opts.fileName);
       else w.$c.innerHTML = '<div style="padding:40px;text-align:center">加载中...</div>';
     }
   });
