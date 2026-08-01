@@ -123,7 +123,7 @@ router.get('/read/:fileId', function (req, res) {
 //   source=office (默认) → 读 server/public/office/<fileId>.<ext>
 //   source=chat           → 读 data/chat-uploads/<fileId>.<ext>
 // 返回：{ ok, filename, content (base64), type, text (plain text 提取) }
-router.get('/load/:fileId', function (req, res) {
+router.get('/load/:fileId', async function (req, res) {
   try {
     var fileId = req.params.fileId;
     var source = (req.query.source || 'office').toString();
@@ -151,22 +151,25 @@ router.get('/load/:fileId', function (req, res) {
           .replace(/\n{3,}/g, '\n\n')
           .trim();
       } catch (e) { text = '(docx 文本提取失败: ' + e.message + ')'; }
-    } else if (ext === 'xlsx' || ext === 'pptx') {
+    } else if (ext === 'xlsx') {
       // v0.63 Phase3: 优先读 .schema.json（结构化数据）
       var schemaFile = filePath.replace('.' + ext, '.schema.json');
       if (fs.existsSync(schemaFile)) {
         try {
           var schemaJson = JSON.parse(fs.readFileSync(schemaFile, 'utf8'));
           // 只有 schema 有实际数据才返回 SCHEMA 格式
-          if (schemaJson.data &&
-              (schemaJson.data.sheets && Array.isArray(schemaJson.data.sheets) ||
-               schemaJson.data.slides && Array.isArray(schemaJson.data.slides))) {
+          if (schemaJson.data && schemaJson.data.sheets && Array.isArray(schemaJson.data.sheets)) {
             text = 'SCHEMA:' + JSON.stringify(schemaJson.data);
           } else {
-            text = '(二进制 Excel 文件，编辑器将使用空白数据)';
+            // 无数据 schema，尝试从二进制解析
+            text = await parseXlsxToSchema(buf);
           }
         } catch (e) { text = '(schema 解析失败: ' + e.message + ')'; }
-      } else if (ext === 'pptx') {
+      } else {
+        // 无 schema 文件，尝试从二进制解析
+        text = await parseXlsxToSchema(buf);
+      }
+    } else if (ext === 'pptx') {
         // 无 schema：检测是否为旧版假 PPTX（JSON 格式）
         try {
           var strContent = buf.toString('utf8').trim();
@@ -558,3 +561,43 @@ async function writePptx(body) {
 }
 
 module.exports = router;
+
+// ─────────── 解析 xlsx 二进制为 schema ───────────
+async function parseXlsxToSchema(buf) {
+  try {
+    var workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(buf);
+    var sheets = [];
+    workbook.eachSheet(function (worksheet, sheetId) {
+      var headers = [];
+      var rows = [];
+      worksheet.eachRow(function (row, rowNumber) {
+        var vals = [];
+        row.eachCell(function (cell, colNumber) {
+          vals.push(cell.value !== null && cell.value !== undefined ? cell.value : '');
+        });
+        if (rowNumber === 1) {
+          headers = vals;
+        } else {
+          rows.push(vals);
+        }
+      });
+      sheets.push({
+        name: worksheet.name,
+        headers: headers,
+        rows: rows
+      });
+    });
+    if (sheets.length > 0) {
+      return 'SCHEMA:' + JSON.stringify({
+        type: 'xlsx',
+        sheets: sheets,
+        rows: sheets[0].rows.length,
+        cols: sheets[0].headers.length
+      });
+    }
+  } catch (e) {
+    return '(xlsx 解析失败: ' + e.message + ')';
+  }
+  return '(空 xlsx 文件)';
+}
