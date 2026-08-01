@@ -158,7 +158,9 @@ router.get('/load/:fileId', function (req, res) {
         try {
           var schemaJson = JSON.parse(fs.readFileSync(schemaFile, 'utf8'));
           // 只有 schema 有实际数据才返回 SCHEMA 格式
-          if (schemaJson.data && schemaJson.data.sheets && Array.isArray(schemaJson.data.sheets)) {
+          if (schemaJson.data &&
+              (schemaJson.data.sheets && Array.isArray(schemaJson.data.sheets) ||
+               schemaJson.data.slides && Array.isArray(schemaJson.data.slides))) {
             text = 'SCHEMA:' + JSON.stringify(schemaJson.data);
           } else {
             text = '(二进制 Excel 文件，编辑器将使用空白数据)';
