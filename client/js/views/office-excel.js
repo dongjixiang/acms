@@ -2051,7 +2051,8 @@ function openExcelEditor(w, fileId, fileName) {
           }
         }
         renderTable();
-        
+        console.log('[xlsx-editor] renderTable called after load, data.length:', data.length, 'data[0]:', data[0]);
+
       })
       .catch(function(e) {
         w.$c.innerHTML = '<div style="padding:24px;text-align:center;color:#a00">❌ 加载失败：' + (e.message || '未知错误') + '<br>fileId: ' + _fileId + '</div>';
