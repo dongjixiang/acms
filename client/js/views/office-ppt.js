@@ -76,13 +76,23 @@ function openPptEditor(w, fileId, fileName) {
             if (schemaData.slides && Array.isArray(schemaData.slides)) {
               // 规范化内容：纯文本 → HTML
               slides = schemaData.slides.map(function(s) {
-                return {
-                  title: normalizeContent(s.title),
-                  content: normalizeContent(s.content),
-                  layout: s.layout || 'content',
-                  transition: s.transition || { type: 'none', direction: 'from-right', duration: 500 },
-                  animations: s.animations || []
-                };
+                var contentHtml = normalizeContent(s.content);
+                // 如果有 images 字段，注入到内容开头
+                if (s.images && s.images.length > 0) {
+                  var imgHtml = '';
+                  s.images.forEach(function(img) {
+                    imgHtml += '<p><img src="' + img.src + '" style="max-width:100%;height:auto;margin:8px 0"></p>';
+                  });
+                  contentHtml = imgHtml + contentHtml;
+                }
+                return {\
+                  title: normalizeContent(s.title),\
+                  content: contentHtml,\
+                  layout: s.layout || 'content',\
+                  transition: s.transition || { type: 'none', direction: 'from-right', duration: 500 },\
+                  animations: s.animations || [],\
+                  images: s.images || []\
+                };\
               });
               cur = 0;
               toast('已加载 ' + (fileName || 'PPT') + '（' + slides.length + ' 页）', 'success');
