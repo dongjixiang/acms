@@ -3169,19 +3169,32 @@ function openPptEditor(w, fileId, fileName) {
                   active: function(){ return document.queryCommandState('underline'); } },
               ]},
               { title: '字号', buttons: [
-                { id: 'fs-12', label: '12', action: function(){ pptOps.setFontSize('1'); } },
-                { id: 'fs-14', label: '14', action: function(){ pptOps.setFontSize('2'); } },
-                { id: 'fs-16', label: '16', action: function(){ pptOps.setFontSize('3'); } },
-                { id: 'fs-18', label: '18', action: function(){ pptOps.setFontSize('4'); } },
-                { id: 'fs-24', label: '24', action: function(){ pptOps.setFontSize('5'); } },
-                { id: 'fs-32', label: '32', action: function(){ pptOps.setFontSize('6'); } },
-                { id: 'fs-48', label: '48', action: function(){ pptOps.setFontSize('7'); } },
+                { id: 'ppt-font-size', type: 'select', value: '3',
+                  options: [
+                    { value: '1', label: '10' }, { value: '2', label: '12' },
+                    { value: '3', label: '14' }, { value: '4', label: '16' },
+                    { value: '5', label: '18' }, { value: '6', label: '24' },
+                    { value: '7', label: '32' }, { value: '8', label: '48' },
+                  ],
+                  action: function(val){ pptOps.setFontSize(val); } },
               ]},
               { title: '字体', buttons: [
-                { id: 'ff-sans', label: 'Sans', action: function(){ pptOps.setFontFamily('Arial, Helvetica, sans-serif'); } },
-                { id: 'ff-serif', label: 'Serif', action: function(){ pptOps.setFontFamily('Georgia, Times New Roman, serif'); } },
-                { id: 'ff-mono', label: 'Mono', action: function(){ pptOps.setFontFamily('Consolas, Monaco, monospace'); } },
-                { id: 'ff-cn', label: '\u5b8b\u4f53', action: function(){ pptOps.setFontFamily('\u5b8b\u4f53, SimSun, serif'); } },
+                { id: 'ppt-font-family', type: 'select', value: 'sans',
+                  options: [
+                    { value: 'sans', label: 'Sans' },
+                    { value: 'serif', label: 'Serif' },
+                    { value: 'mono', label: 'Mono' },
+                    { value: 'cn', label: '宋体' },
+                  ],
+                  action: function(val) {
+                    var families = {
+                      'sans': 'Arial, Helvetica, sans-serif',
+                      'serif': 'Georgia, Times New Roman, serif',
+                      'mono': 'Consolas, Monaco, monospace',
+                      'cn': '宋体, SimSun, serif',
+                    };
+                    pptOps.setFontFamily(families[val] || 'sans');
+                  } },
               ]},
               { title: '颜色', buttons: [
                 { id: 'color-text', icon: '\ud83c\udfa8', label: '字体颜色',
@@ -3211,14 +3224,14 @@ function openPptEditor(w, fileId, fileName) {
             id: 'insert', label: '\u2795 Insert',
             groups: [
               { title: '插入', buttons: [
-                { id: 'ins-text', icon: '\ud83d\udcdd', label: '文本框', action: function(){
-                  slides[cur].content += (slides[cur].content ? '<p></p>' : '') + '<p>\u65b0\u6587\u672c\u6846</p>';
+                { id: 'ins-text', icon: '📝', label: '文本框', action: function(){
+                  slides[cur].content += (slides[cur].content ? '<p></p>' : '') + '<p>新文本框</p>';
                   markPptDirty();
                   render();
                   var contentEl = w.$c.querySelector('#ppt-content');
                   if (contentEl) { contentEl.focus(); }
                 } },
-                { id: 'ins-image', icon: '\ud83d\uddbc', label: '图片', action: function(){
+                { id: 'ins-image', icon: '🖼️', label: '图片', action: function(){
                   var input = document.createElement('input');
                   input.type = 'file';
                   input.accept = 'image/png,image/jpeg,image/gif,image/webp,image/svg+xml';
@@ -3235,10 +3248,54 @@ function openPptEditor(w, fileId, fileName) {
                   };
                   input.click();
                 } },
-                { id: 'ins-line', icon: '\u2500', label: '分隔线', action: function(){
+                { id: 'ins-line', icon: '─', label: '分隔线', action: function(){
                   slides[cur].content += '<hr style="border:none;border-top:1px solid #ccc;margin:16px 0">';
                   markPptDirty();
                   render();
+                } },
+                { id: 'ins-table', icon: '⊞', label: '表格', action: function(){
+                  var ribbonHost = w.$c.querySelector('#ppt-ribbon-host');
+                  if (window.ACMS && window.ACMS.TablePicker && ribbonHost) {
+                    window.ACMS.TablePicker.create(ribbonHost.querySelector('[data-btn-id="ins-table"]'), function (rows, cols) {
+                      var tableHtml = '<table style="border-collapse:collapse;width:100%;margin:12px 0">';
+                      // 表头
+                      tableHtml += '<thead><tr>';
+                      for (var ci = 0; ci < cols; ci++) {
+                        tableHtml += '<th style="border:1px solid #999;background:var(--office-accent-soft,#dde4ee);padding:8px;font-weight:600">列' + (ci + 1) + '</th>';
+                      }
+                      tableHtml += '</tr></thead>';
+                      // 表体
+                      tableHtml += '<tbody>';
+                      for (var ri = 0; ri < rows; ri++) {
+                        tableHtml += '<tr>';
+                        for (var ci2 = 0; ci2 < cols; ci2++) {
+                          tableHtml += '<td style="border:1px solid #ccc;padding:8px;min-width:80px"> </td>';
+                        }
+                        tableHtml += '</tr>';
+                      }
+                      tableHtml += '</tbody></table>';
+                      slides[cur].content += (slides[cur].content ? '<p></p>' : '') + tableHtml;
+                      markPptDirty();
+                      render();
+                      toast('已插入 ' + rows + '×' + cols + ' 表格', 'info');
+                    });
+                  } else {
+                    // Fallback: 直接插入 3x3 表格
+                    var tableHtml = '<table style="border-collapse:collapse;width:100%;margin:12px 0">';
+                    tableHtml += '<thead><tr>';
+                    for (var ci = 0; ci < 3; ci++) tableHtml += '<th style="border:1px solid #999;background:var(--office-accent-soft,#dde4ee);padding:8px;font-weight:600">列' + (ci + 1) + '</th>';
+                    tableHtml += '</tr></thead><tbody>';
+                    for (var ri = 0; ri < 3; ri++) {
+                      tableHtml += '<tr>';
+                      for (var ci2 = 0; ci2 < 3; ci2++) tableHtml += '<td style="border:1px solid #ccc;padding:8px;min-width:80px"> </td>';
+                      tableHtml += '</tr>';
+                    }
+                    tableHtml += '</tbody></table>';
+                    slides[cur].content += (slides[cur].content ? '<p></p>' : '') + tableHtml;
+                    markPptDirty();
+                    render();
+                    toast('已插入 3×3 表格', 'info');
+                  }
                 } },
               ]},
             ],
