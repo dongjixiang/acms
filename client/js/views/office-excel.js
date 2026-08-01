@@ -1189,10 +1189,12 @@ function openExcelEditor(w) {
         if (fmt.italic) style += ';font-style:italic';
         if (fmt.underline) style += ';text-decoration:underline';
         if (fmt.fill) style += ';background-color:' + fmt.fill;
+        if (fmt.highlight) style += ';background-color:' + fmt.highlight;
         if (fmt.color) style += ';color:' + fmt.color;
         if (fmt.align) style += ';text-align:' + fmt.align;
         if (fmt.valign) style += ';vertical-align:' + fmt.valign;
         if (fmt.wrap) style += ';white-space:pre-wrap;';
+        if (fmt.orientation) style += ';transform:rotate(' + fmt.orientation + 'deg);transform-origin:left top;';
         // v0.65: 边框
         var bk = ri + '-' + ci2;
         var bb = cellBorders[bk];
