@@ -6,6 +6,14 @@
 
   var MENU_ID = 'acms-desktop-context-menu';
 
+  // ── 游戏窗口通用入口 ──
+  function openGameWindow(gameId, w, h, title) {
+    if (window.ACMSWin) {
+      ACMSWin.open('game-' + gameId, { w: w, h: h, title: title });
+    }
+  }
+  window.openGameWindow = openGameWindow;
+
   // ── 菜单定义 ──
   var menuItems = [];
 
@@ -179,6 +187,38 @@
             window.openWebBrowser();
           }
         },
+      },
+      null, // separator
+      {
+        id: 'game-center',
+        label: '游戏中心',
+        icon: '🎮',
+        children: [
+          {
+            id: 'game-2048',
+            label: '2048',
+            icon: '🔢',
+            action: function() { openGameWindow('2048', 360, 480, '2048'); },
+          },
+          {
+            id: 'game-snake',
+            label: '贪吃蛇',
+            icon: '🐍',
+            action: function() { openGameWindow('snake', 420, 480, '贪吃蛇'); },
+          },
+          {
+            id: 'game-pong',
+            label: 'Pong',
+            icon: '🏓',
+            action: function() { openGameWindow('pong', 480, 380, 'Pong'); },
+          },
+          {
+            id: 'game-tetris',
+            label: '俄罗斯方块',
+            icon: '🧱',
+            action: function() { openGameWindow('tetris', 320, 500, '俄罗斯方块'); },
+          },
+        ],
       },
       null, // separator
       {
