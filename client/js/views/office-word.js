@@ -994,12 +994,12 @@ function mountBlockEditor() {
         parseContentToBlocks(resp.text);
         // 重新挂载编辑器
         if (instance) {
-          instance.rerender();
-        } else {
-          instance = window.OfficeDocEditor.mountEditor(editorHost, newDoc, {
-            onChange: function() { setDirty(true); }
-          });
+          // 销毁旧实例
+          instance.destroy && instance.destroy();
         }
+        instance = window.OfficeDocEditor.mountEditor(editorHost, newDoc, {
+          onChange: function() { setDirty(true); }
+        });
         // 更新标题
         var titleInput = host.querySelector('#word-title-input');
         if (titleInput && fileName) titleInput.value = fileName;
