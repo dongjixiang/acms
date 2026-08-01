@@ -445,11 +445,11 @@ function mountBlockEditor() {
         }).then(function (r) { return r.json(); }).then(function (r) {
           if (r.ok) {
             // 触发下载
-            var url = '/api/office/download/' + encodeURIComponent(r.fileId) + '/' + encodeURIComponent(r.name);
+            var url = '/api/office/download/' + encodeURIComponent(r.fileId) + '/' + encodeURIComponent(r.fileName);
             var a = document.createElement('a');
-            a.href = url; a.download = r.name;
+            a.href = url; a.download = r.fileName;
             document.body.appendChild(a); a.click(); document.body.removeChild(a);
-            toast('已下载 ' + r.name, 'success');
+            toast('已下载 ' + r.fileName, 'success');
           } else {
             toast('导出失败: ' + (r.error || '未知错误'), 'error');
           }

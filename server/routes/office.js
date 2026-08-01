@@ -54,12 +54,16 @@ router.post('/save', async function (req, res) {
       return res.status(400).json({ error: 'UNSUPPORTED_TYPE', type });
     }
 
-    // v0.63 Phase3: 写 JSON schema 供编辑器读取（有 data.slides 时才写）
+    // v0.63 Phase3: 写 JSON schema 供编辑器读取
     if (type === 'pptx' || type === 'xlsx') {
       const schemaData = body.data;
-      // 只有 schema 里有实际数据（slides 数组非空）才写文件，
+      // 检查是否有实际数据
+      const hasData = type === 'pptx'
+        ? (schemaData && schemaData.slides && Array.isArray(schemaData.slides) && schemaData.slides.length > 0)
+        : (schemaData && schemaData.sheets && Array.isArray(schemaData.sheets));
+      // 只有 schema 里有实际数据才写文件，
       // 避免文件浏览器传入二进制 base64 时生成空的 schema 导致 load 静默失败
-      if (schemaData && schemaData.slides && Array.isArray(schemaData.slides)) {
+      if (hasData) {
         const schemaFile = path.join(OFFICE_DIR, fileId + '.schema.json');
         fs.writeFileSync(schemaFile, JSON.stringify({ type: type, name: name, data: schemaData }));
       }
