@@ -154,15 +154,17 @@ function parsePptxToSchema(buf) {
       }
     });
     
-    // 提取图片
+    // 提取图片和表格
     var imgRefs = extractImages(slideFile, zip, imageMap);
-    
+    var tables = extractTables(slideObj);
+
     if (titleText || bodyText) {
       pptSlides.push({
         title: escHtml(titleText || '标题'),
         content: escHtml(bodyText || ''),
         layout: layout,
-        images: imgRefs
+        images: imgRefs,
+        tables: tables
       });
     }
   });
@@ -233,6 +235,77 @@ function extractImages(slideFile, zip, imageMap) {
   });
   
   return imgRefs;
+}
+
+function extractTables(slideObj) {
+  var tables = [];
+  var sld = slideObj['p:sld'];
+  if (!sld) return tables;
+  
+  var cSld = sld['p:cSld'];
+  if (!cSld) return tables;
+  
+  var spTree = cSld['p:spTree'];
+  if (!spTree) return tables;
+  
+  // 提取表格 (graphicFrame)
+  var graphicFrames = spTree['p:graphicFrame'] || [];
+  if (!Array.isArray(graphicFrames)) graphicFrames = [graphicFrames];
+  
+  graphicFrames.forEach(function(gf) {
+    var graphic = gf['a:graphic'];
+    if (!graphic) return;
+    
+    var graphicData = graphic['a:graphicData'];
+    if (!graphicData) return;
+    
+    var tbl = graphicData['a:tbl'];
+    if (!tbl) return;
+    
+    var tableData = { rows: [], cols: 0 };
+    
+    // 提取列数
+    var tblGrid = tbl['a:tblGrid'];
+    if (tblGrid) {
+      var gridCols = tblGrid['a:gridCol'] || [];
+      if (!Array.isArray(gridCols)) gridCols = [gridCols];
+      tableData.cols = gridCols.length;
+    }
+    
+    // 提取行数据
+    var rows = tbl['a:tr'] || [];
+    if (!Array.isArray(rows)) rows = [rows];
+    
+    rows.forEach(function(row) {
+      var cells = row['a:tc'] || [];
+      if (!Array.isArray(cells)) cells = [cells];
+      
+      var rowData = [];
+      cells.forEach(function(cell) {
+        var txBody = cell['a:txBody'];
+        var cellText = '';
+        if (txBody) {
+          var paragraphs = txBody['a:p'] || [];
+          if (!Array.isArray(paragraphs)) paragraphs = [paragraphs];
+          paragraphs.forEach(function(p) {
+            var runs = p['a:r'] || [];
+            if (!Array.isArray(runs)) runs = [runs];
+            runs.forEach(function(r) {
+              var t = r['a:t'];
+              if (t) cellText += t;
+            });
+          });
+        }
+        rowData.push(cellText);
+      });
+      
+      tableData.rows.push(rowData);
+    });
+    
+    tables.push(tableData);
+  });
+  
+  return tables;
 }
 
 router.post('/save', async function (req, res) {
@@ -405,8 +478,9 @@ async function parseXlsxToSchema(buf) {
       var rowCount = 0;
       sheet.eachRow(function(row, rowNumber) {
         if (rowNumber === 1) {
-          headers = row.cells.map(function(cell) {
-            return cell.value !== null && cell.value !== undefined ? String(cell.value) : '';
+          headers = [];
+          row.eachCell(function(cell, colNumber) {
+            headers.push(cell.value !== null && cell.value !== undefined ? String(cell.value) : '');
           });
         } else {
           var rowData = [];
