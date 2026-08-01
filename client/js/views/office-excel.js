@@ -1992,7 +1992,7 @@ function openExcelEditor(w, fileId, fileName) {
     // 显示加载状态
     w.$c.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text2)">⏳ 正在加载 ' + (fileName || 'Excel 文件') + '...</div>';
     console.log('[Excel] 开始加载文件:', _fileId, fileName);
-    fetch('/api/office/load/' + encodeURIComponent(_fileId))
+    fetch('/api/office/load/' + encodeURIComponent(_fileId) + '?api_key=dev-key-001')
       .then(function(r) { return r.json(); })
       .then(function(resp) {
         console.log('[Excel] 加载响应:', resp);
