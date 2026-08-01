@@ -50,7 +50,6 @@ function openPptEditor(w, fileId, fileName) {
           loadEl.innerHTML = '<div style="color:#a00">❌ 加载失败：' + (resp.error || '未知') + '</div>';
           return;
         }
-        loadEl.remove();
         if (resp.text && resp.text.indexOf('SCHEMA:') === 0) {
           try {
             var schemaData = JSON.parse(resp.text.slice(7));
@@ -67,6 +66,8 @@ function openPptEditor(w, fileId, fileName) {
               });
               cur = 0;
               toast('已加载 ' + (fileName || 'PPT') + '（' + slides.length + ' 页）', 'success');
+              loadEl.remove();
+              render();
             } else {
               // 有 schema 文件但没有 slides 数据（文件浏览器传入的二进制 PPTX）
               loadEl.innerHTML = '<div style="text-align:center;color:#888;font-size:14px;padding:20px">' +
@@ -74,19 +75,9 @@ function openPptEditor(w, fileId, fileName) {
                 '<div>该文件是二进制 PPTX 格式，编辑器暂不支持直接加载</div>' +
                 '<div style="margin-top:8px;font-size:12px;color:#aaa">请在 PPT 编辑器中创建，或先用其他工具导出为 ACMS 格式</div>' +
                 '</div>';
-              w.$c.appendChild(loadEl);
               return;
             }
-          } catch (e) { /* 降级用默认 */ }
-        } else if (resp.text && resp.text.indexOf('二进制文件') === 0) {
-          // 完全没有 schema 文件（文件浏览器传入的二进制 PPTX）
-          loadEl.innerHTML = '<div style="text-align:center;color:#888;font-size:14px;padding:20px">' +
-            '<div style="font-size:32px;margin-bottom:12px">📽️</div>' +
-            '<div>该文件是二进制 PPTX 格式，编辑器暂不支持直接加载</div>' +
-            '<div style="margin-top:8px;font-size:12px;color:#aaa">请在 PPT 编辑器中创建，或先用其他工具导出为 ACMS 格式</div>' +
-            '</div>';
-          w.$c.appendChild(loadEl);
-          return;
+          } catch (e) { /* 降级用默认 */ loadEl.remove(); render(); }
         } else if (resp.text && (resp.text.indexOf('PPTX 解析失败') >= 0 || resp.text.indexOf('二进制文件') >= 0)) {
           // PPTX 二进制格式无法提取（假 PPTX / 旧版 JSON 文件 / 损坏文件）
           loadEl.innerHTML = '<div style="text-align:center;color:#888;font-size:14px;padding:20px">' +
@@ -95,10 +86,12 @@ function openPptEditor(w, fileId, fileName) {
             '<div style="margin-top:8px;font-size:12px;color:#aaa">' + escHtml(resp.text) + '</div>' +
             '<div style="margin-top:8px;font-size:12px;color:#aaa">请在 PPT 编辑器中创建新演示文稿</div>' +
             '</div>';
-          w.$c.appendChild(loadEl);
           return;
+        } else {
+          // 无文本内容，用默认空页
+          loadEl.remove();
+          render();
         }
-        render();
       })
       .catch(function (e) {
         loadEl.innerHTML = '<div style="color:#a00">❌ 网络错误：' + e.message + '</div>';
