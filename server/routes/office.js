@@ -151,7 +151,7 @@ router.get('/load/:fileId', function (req, res) {
           .replace(/\n{3,}/g, '\n\n')
           .trim();
       } catch (e) { text = '(docx 文本提取失败: ' + e.message + ')'; }
-    } else if (ext === 'xlsx') {
+    } else if (ext === 'xlsx' || ext === 'pptx') {
       // v0.63 Phase3: 优先读 .schema.json（结构化数据）
       var schemaFile = filePath.replace('.' + ext, '.schema.json');
       if (fs.existsSync(schemaFile)) {
@@ -164,39 +164,12 @@ router.get('/load/:fileId', function (req, res) {
             text = '(二进制 Excel 文件，编辑器将使用空白数据)';
           }
         } catch (e) { text = '(schema 解析失败: ' + e.message + ')'; }
-      } else {
-        text = '(二进制 Excel 文件，编辑器将使用空白数据)';
-      }
-    } else if (ext === 'pptx') {
-      // v0.63 Phase3: 优先读 .schema.json（结构化数据）
-      var pptSchemaFile = filePath.replace('.' + ext, '.schema.json');
-      if (fs.existsSync(pptSchemaFile)) {
+      } else if (ext === 'pptx') {
+        // 无 schema：从二进制 PPTX 提取文本，生成近似 schema
         try {
-          var pptSchemaJson = JSON.parse(fs.readFileSync(pptSchemaFile, 'utf8'));
-          if (pptSchemaJson.data && pptSchemaJson.data.slides && Array.isArray(pptSchemaJson.data.slides)) {
-            text = 'SCHEMA:' + JSON.stringify(pptSchemaJson.data);
-          } else {
-            text = '(二进制 PPTX 文件，编辑器将使用空白数据)';
-          }
-        } catch (e) { text = '(ppt schema 解析失败: ' + e.message + ')'; }
-      } else {
-        // 无 schema：检测是否为旧版假 PPTX（JSON 格式）
-        try {
-          var strContent = buf.toString('utf8').trim();
-          if (strContent.indexOf('{') === 0) {
-            // 旧版假 PPTX（JSON 格式），尝试解析
-            var oldData = JSON.parse(strContent);
-            if (oldData.slides && Array.isArray(oldData.slides)) {
-              text = 'SCHEMA:' + JSON.stringify({ slides: oldData.slides });
-            } else {
-              text = '(旧版 PPT 格式，请重新保存)';
-            }
-          } else {
-            // 真正的 PPTX（ZIP 格式），从二进制提取文本
-            try {
-              var AdmZip = require('adm-zip');
-              var zip = new AdmZip(buf);
-              var presXml = zip.readAsText('ppt/presentation.xml');
+          var AdmZip = require('adm-zip');
+          var zip = new AdmZip(buf);
+          var presXml = zip.readAsText('ppt/presentation.xml');
           // 找所有 slide id → 文件名映射
           var slideIds = presXml.match(/<p:sldIdLst>([\s\S]*?)<\/p:sldIdLst>/);
           var ids = [];
@@ -269,8 +242,9 @@ router.get('/load/:fileId', function (req, res) {
             text = '(PPTX 文本提取失败，请手动创建)';
           }
         } catch (e) { text = '(PPTX 解析失败: ' + e.message + ')'; }
+      } else {
+        text = '(二进制文件，请使用专门的 Excel/PPT 编辑器打开)';
       }
-    } catch (e) { text = '(PPTX 解析失败: ' + e.message + ')'; }
     } else {
       text = buf.toString('utf8');
     }
