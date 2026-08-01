@@ -1245,7 +1245,7 @@ function openExcelEditor(w, fileId, fileName) {
     h += '</table></div>';
     // v0.62.5: 底部状态栏行（状态信息，名称框已移至公式栏 v0.63）
     h += '<div style="display:flex;align-items:center;background:var(--office-toolbar-bg);border-top:1px solid var(--office-divider);flex-shrink:0;height:28px">';
-    h += '<div id="xlsx-status" class="oo-statusbar" style="flex:1;border:none;background:transparent;padding:0 8px">A1 · 总 20 行 × 8 列</div>';
+    h += '<div id="xlsx-status" class="oo-statusbar" style="flex:1;border:none;background:transparent;padding:0 8px">A1 · 总 ' + data.length + ' 行 × ' + (data[0] ? data[0].length : 0) + ' 列</div>';
     h += '<button id="xlsx-freeze-btn" style="padding:2px 8px;font-size:11px;border:1px solid var(--office-divider);border-radius:3px;background:var(--bg,#fff);cursor:pointer;color:var(--text,#666);margin-right:4px" title="冻结首行">❄️ 冻结</button>';
     h += '</div>';
     // v0.62.5 PR-C: Sheet tabs (学 OO Spreadsheet 底部 sheet 切换条)
