@@ -1193,8 +1193,10 @@ function openExcelEditor(w, fileId, fileName) {
     }
     h += '</tr>';
     // 跳过第一行（headers），从第二行开始渲染数据
+    console.log('[xlsx-render] Starting data rows, data.length:', data.length, 'maxCols:', maxCols);
     for (var ri = 1; ri < data.length; ri++) {
       // v0.65: 检查当前行是否被上方合并区域占用（垂直合并中间行）
+      if (ri <= 3) console.log('[xlsx-render] Row', ri, 'data:', data[ri], 'len:', data[ri].length);
       var skipRow = false;
       for (var si = 0; si < mergedRanges.length; si++) {
         var sm = mergedRanges[si];
@@ -1278,7 +1280,9 @@ function openExcelEditor(w, fileId, fileName) {
     h += '</div>';
     h += '</div>';
     h += '</div>';
+    console.log('[xlsx-render] HTML generated, length:', h.length, 'first 500 chars:', h.slice(0, 500));
     w.$c.innerHTML = h;
+    console.log('[xlsx-render] DOM updated, innerHTML length:', w.$c.innerHTML.length);
 
     // v0.62.5: Ribbon 挂载 — 学 OO FileMenu.js 的 Home/Insert 结构
     if (window.ACMSRibbon) {
