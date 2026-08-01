@@ -61,7 +61,8 @@ function openPptEditor(w, fileId, fileName) {
         console.log('[PPT-DEBUG] fetch response ok:', r.ok, 'status:', r.status);
         return r.json();
       })
-        
+      .then(function (resp) {
+        console.log('[PPT-DEBUG] load response:', resp);
         if (!resp.ok) {
           loadEl.innerHTML = '<div style="color:#a00">❌ 加载失败：' + (resp.error || '未知') + '</div>';
           return;
