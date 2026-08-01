@@ -583,6 +583,27 @@
   pointer-events: none;
   z-index: 50;
 }
+.oo-editor .xlsx-cell.is-in-selection {
+  background: rgba(74,128,86,0.12) !important;
+}
+.oo-editor .xlsx-col-header.is-col-selected {
+  background: var(--office-accent-soft) !important;
+  color: var(--office-primary);
+}
+.oo-editor .xlsx-row-header.is-row-selected {
+  background: var(--office-accent-soft) !important;
+  color: var(--office-primary);
+}
+.oo-editor .xlsx-corner-th:hover {
+  background: var(--office-accent-soft) !important;
+  cursor: pointer;
+}
+.oo-editor .xlsx-col-header:hover {
+  background: var(--office-tab-hover-bg) !important;
+}
+.oo-editor .xlsx-row-header:hover {
+  background: var(--office-tab-hover-bg) !important;
+}
 .oo-editor .xlsx-sheet-add {
   background: transparent;
   border: 1px dashed transparent;
