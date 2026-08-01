@@ -1188,7 +1188,8 @@ function openExcelEditor(w, fileId, fileName) {
       ci += span;
     }
     h += '</tr>';
-    for (var ri = 0; ri < data.length; ri++) {
+    // 跳过第一行（headers），从第二行开始渲染数据
+    for (var ri = 1; ri < data.length; ri++) {
       // v0.65: 检查当前行是否被上方合并区域占用（垂直合并中间行）
       var skipRow = false;
       for (var si = 0; si < mergedRanges.length; si++) {
@@ -1202,7 +1203,7 @@ function openExcelEditor(w, fileId, fileName) {
         if (mergedRanges[i].r1 === ri) rowSpan = mergedRanges[i].r2 - ri + 1;
       }
       var rowAttrs = rowSpan > 1 ? ' rowspan="' + rowSpan + '"' : '';
-      h += '<tr><td class="xlsx-row-header" data-row="' + ri + '" style="border:1px solid #ccc;background:var(--bg2);padding:4px 6px;text-align:center;font-size:11px;color:var(--text2);cursor:pointer;user-select:none">' + (ri + 1) + '</td>';
+      h += '<tr><td class="xlsx-row-header" data-row="' + (ri - 1) + '" style="border:1px solid #ccc;background:var(--bg2);padding:4px 6px;text-align:center;font-size:11px;color:var(--text2);cursor:pointer;user-select:none">' + ri + '</td>';
       for (var ci2 = 0; ci2 < data[ri].length; ci2++) {
         if (skipCell(ri, ci2)) continue;
         // 检查是否需要 colspan
