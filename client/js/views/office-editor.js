@@ -1648,15 +1648,15 @@ function openExcelEditor(w) {
     h += '</div>';
     h += '</div>';
     // 表格区
-    h += '<div style="flex:1;overflow:auto;padding:4px">';
+    h += '<div id="xlsx-table-wrap" style="flex:1;overflow:auto;padding:4px">';
     h += '<table id="xlsx-table" style="border-collapse:collapse;width:100%;font-size:13px">';
-    h += '<tr><th style="border:1px solid #ccc;background:var(--bg2);padding:4px 6px;min-width:30px;text-align:center;font-weight:600;position:sticky;top:0;z-index:2">#</th>';
+    h += '<tr><th class="xlsx-corner-th" style="border:1px solid #ccc;background:var(--bg2);padding:4px 6px;min-width:30px;text-align:center;font-weight:600;position:sticky;top:0;left:0;z-index:3">#</th>';
     for (var ci = 0; ci < (data[0]||[]).length; ci++) {
-      h += '<th style="border:1px solid #ccc;background:var(--bg2);padding:4px 6px;min-width:80px;text-align:center;font-weight:600;position:sticky;top:0;z-index:2">' + colLetter(ci) + '</th>';
+      h += '<th class="xlsx-col-header" data-col="' + ci + '" style="border:1px solid #ccc;background:var(--bg2);padding:4px 6px;min-width:80px;text-align:center;font-weight:600;position:sticky;top:0;z-index:2;cursor:pointer;user-select:none">' + colLetter(ci) + '</th>';
     }
     h += '</tr>';
     for (var ri = 0; ri < data.length; ri++) {
-      h += '<tr><td style="border:1px solid #ccc;background:var(--bg2);padding:4px 6px;text-align:center;font-size:11px;color:var(--text2)">' + (ri + 1) + '</td>';
+      h += '<tr><td class="xlsx-row-header" data-row="' + ri + '" style="border:1px solid #ccc;background:var(--bg2);padding:4px 6px;text-align:center;font-size:11px;color:var(--text2);cursor:pointer;user-select:none">' + (ri + 1) + '</td>';
       for (var ci2 = 0; ci2 < data[ri].length; ci2++) {
         var cell = data[ri][ci2];
         var val = escHtml(cellStr(cell));
@@ -1824,11 +1824,21 @@ function openExcelEditor(w) {
     var cells = w.$c.querySelectorAll('.xlsx-cell');
     cells.forEach(function(el) {
       var r = parseInt(el.dataset.r), c = parseInt(el.dataset.c);
-      el.onfocus = function() {
+      el.onmousedown = function(e) {
+        // 点击时选中单个单元格（不拖拽）
+        if (e.target.classList.contains('xlsx-fill-handle')) return;
         sel.start = [r, c];
         sel.end = [r, c];
-        el.style.outline = '2px solid var(--accent)';
-        el.style.background = '#f0f8ff';
+        highlightSelection();
+        updateStatusBar();
+        updateNameBox();
+        updateFormulaBar();
+      };
+      el.onfocus = function() {
+        if (!sel.start || sel.start[0] !== r || sel.start[1] !== c) {
+          sel.start = [r, c];
+          sel.end = [r, c];
+        }
         updateStatusBar();
         updateNameBox();
         updateFormulaBar();
@@ -1848,6 +1858,120 @@ function openExcelEditor(w) {
         if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
       };
     });
+
+    // v0.64: 行/列头点击选中整行/整列
+    w.$c.querySelectorAll('.xlsx-col-header').forEach(function(th) {
+      th.onclick = function(e) {
+        e.stopPropagation();
+        var c = parseInt(this.dataset.col);
+        sel.start = [0, c];
+        sel.end = [data.length - 1, c];
+        highlightSelection();
+        updateStatusBar();
+        updateNameBox();
+        updateFormulaBar();
+      };
+    });
+    w.$c.querySelectorAll('.xlsx-row-header').forEach(function(td) {
+      td.onclick = function(e) {
+        e.stopPropagation();
+        var r = parseInt(this.dataset.row);
+        sel.start = [r, 0];
+        sel.end = [r, (data[0] || []).length - 1];
+        highlightSelection();
+        updateStatusBar();
+        updateNameBox();
+        updateFormulaBar();
+      };
+    });
+    // 左上角角块：选中全部
+    var cornerTh = w.$c.querySelector('.xlsx-corner-th');
+    if (cornerTh) {
+      cornerTh.onclick = function(e) {
+        e.stopPropagation();
+        sel.start = [0, 0];
+        sel.end = [data.length - 1, (data[0] || []).length - 1];
+        highlightSelection();
+        updateStatusBar();
+        updateNameBox();
+        updateFormulaBar();
+      };
+    }
+
+    // v0.64: 鼠标拖拽选区
+    var isDragSelecting = false;
+    var dragStartCell = null;
+    var tableWrap = w.$c.querySelector('#xlsx-table-wrap');
+    if (tableWrap) {
+      tableWrap.addEventListener('mousedown', function(e) {
+        var cell = e.target.closest('.xlsx-cell');
+        if (!cell || e.target.classList.contains('xlsx-fill-handle')) return;
+        // 只在左键且没有 modifier 时启动拖拽选区
+        if (e.button !== 0) return;
+        if (e.ctrlKey || e.metaKey || e.shiftKey) return;
+        isDragSelecting = true;
+        dragStartCell = {
+          r: parseInt(cell.dataset.r),
+          c: parseInt(cell.dataset.c)
+        };
+        sel.start = [dragStartCell.r, dragStartCell.c];
+        sel.end = [dragStartCell.r, dragStartCell.c];
+        highlightSelection();
+      });
+      document.addEventListener('mousemove', function(e) {
+        if (!isDragSelecting || !dragStartCell) return;
+        var cell = e.target.closest('.xlsx-cell');
+        if (!cell) {
+          // 鼠标移出表格区域，用 last cell
+          var lastCell = w.$c.querySelector('.xlsx-cell[data-r="' + (data.length - 1) + '"][data-c="' + ((data[0]||[]).length - 1) + '"]');
+          if (lastCell) {
+            sel.end = [lastCell.dataset.r, lastCell.dataset.c].map(Number);
+            highlightSelection();
+          }
+          return;
+        }
+        var r = parseInt(cell.dataset.r), c = parseInt(cell.dataset.c);
+        sel.end = [r, c];
+        highlightSelection();
+        updateStatusBar();
+        updateNameBox();
+      });
+      document.addEventListener('mouseup', function(e) {
+        if (!isDragSelecting) return;
+        isDragSelecting = false;
+        dragStartCell = null;
+      });
+    }
+
+    // ─── 高亮选区 ───
+    function highlightSelection() {
+      // 清除旧高亮
+      w.$c.querySelectorAll('.xlsx-cell.is-in-selection').forEach(function(el) {
+        el.classList.remove('is-in-selection');
+      });
+      if (!sel.start || !sel.end) return;
+      var r1 = Math.min(sel.start[0], sel.end[0]);
+      var c1 = Math.min(sel.start[1], sel.end[1]);
+      var r2 = Math.max(sel.start[0], sel.end[0]);
+      var c2 = Math.max(sel.start[1], sel.end[1]);
+      for (var r = r1; r <= r2; r++) {
+        for (var c = c1; c <= c2; c++) {
+          var el = w.$c.querySelector('.xlsx-cell[data-r="' + r + '"][data-c="' + c + '"]');
+          if (el) el.classList.add('is-in-selection');
+        }
+      }
+      // 高亮行头/列头
+      w.$c.querySelectorAll('.xlsx-col-header.is-col-selected').forEach(function(el) { el.classList.remove('is-col-selected'); });
+      w.$c.querySelectorAll('.xlsx-row-header.is-row-selected').forEach(function(el) { el.classList.remove('is-row-selected'); });
+      if (r1 === r2) {
+        var rh = w.$c.querySelector('.xlsx-row-header[data-row="' + r1 + '"]');
+        if (rh) rh.classList.add('is-row-selected');
+      }
+      if (c1 === c2) {
+        var ch = w.$c.querySelector('.xlsx-col-header[data-col="' + c1 + '"]');
+        if (ch) ch.classList.add('is-col-selected');
+      }
+    }
 
     // 名称框: 输入 cell 坐标跳转 (B2 → 选中 B2)
     var namebox = w.$c.querySelector('#xlsx-namebox');

@@ -205,7 +205,8 @@
         if (align || fontSize || fontFamily || fontWeight || fontStyle || textDecoration) {
           b.attrs.formatting = b.attrs.formatting || {};
           if (align) b.attrs.formatting.align = align;
-          if (fontSize) b.attrs.formatting.fontSize = fontSize;
+          // parseInt("18px") = 18, 确保存储为数字，blockToHTML 加 px 才不会出 18pxpx
+          if (fontSize) b.attrs.formatting.fontSize = parseInt(fontSize) || fontSize;
           if (fontFamily) b.attrs.formatting.fontFamily = fontFamily;
           if (fontWeight === 'bold' || fontWeight === '700') b.attrs.formatting.bold = true;
           if (fontStyle === 'italic') b.attrs.formatting.italic = true;
