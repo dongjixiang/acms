@@ -13,6 +13,7 @@ function openExcelEditor(w, fileId, fileName) {
   // v0.62.7: 文件来源: server(有fileId) / local(无fileId)
   var _isServerFile = !!fileId;
   var _fileId = fileId || null;
+  console.log('[xlsx-editor] openExcelEditor called', { fileId, fileName, _isServerFile, wWidth: w.$c.offsetWidth, wHeight: w.$c.offsetHeight });
 
   // v0.62.5: 多 sheet 数据结构（每个 sheet 独立 data 数组）
   var sheets = [];
@@ -1112,6 +1113,7 @@ function openExcelEditor(w, fileId, fileName) {
   }
 
   function renderTable() {
+    console.log('[xlsx-render] renderTable called, data.length:', data.length, 'data[0]:', data[0]);
     // v0.62.5: 容器套 .oo-editor oo-editor-xlsx class（让 Excel 墨绿色主题生效）
     var h = '<div class="oo-editor oo-editor-xlsx" style="display:flex;flex-direction:column;height:100%">';
     // OO 风格标题栏（v0.62.5: 简化 — 只留文件名 + 保存, 功能按钮移到 Ribbon）
@@ -1186,14 +1188,15 @@ function openExcelEditor(w, fileId, fileName) {
       if (span > 1) thStyle += ';min-width:' + (80 * span) + 'px';
       // 使用 headers 作为列标题，如果没有 headers 则用列字母
       var colTitle = (data[0] && data[0][ci]) ? escHtml(data[0][ci]) : colLetter(ci);
-      console.log('[xlsx] 渲染列头', ci, 'title:', colTitle, 'maxCols:', maxCols, 'data[0]:', data[0]);
       h += '<th class="xlsx-col-header" data-col="' + ci + '" colspan="' + span + '" style="' + thStyle + '">' + colTitle + filterArrow + '</th>';
       ci += span;
     }
     h += '</tr>';
     // 跳过第一行（headers），从第二行开始渲染数据
+    console.log('[xlsx-render] Starting data rows, data.length:', data.length, 'maxCols:', maxCols);
     for (var ri = 1; ri < data.length; ri++) {
       // v0.65: 检查当前行是否被上方合并区域占用（垂直合并中间行）
+      if (ri <= 3) console.log('[xlsx-render] Row', ri, 'data:', data[ri], 'len:', data[ri].length);
       var skipRow = false;
       for (var si = 0; si < mergedRanges.length; si++) {
         var sm = mergedRanges[si];
@@ -1277,8 +1280,9 @@ function openExcelEditor(w, fileId, fileName) {
     h += '</div>';
     h += '</div>';
     h += '</div>';
-    console.log('[xlsx] renderTable 完成，数据行数:', data.length, '列数:', data[0] ? data[0].length : 0);
+    console.log('[xlsx-render] HTML generated, length:', h.length, 'first 500 chars:', h.slice(0, 500));
     w.$c.innerHTML = h;
+    console.log('[xlsx-render] DOM updated, innerHTML length:', w.$c.innerHTML.length);
 
     // v0.62.5: Ribbon 挂载 — 学 OO FileMenu.js 的 Home/Insert 结构
     if (window.ACMSRibbon) {
@@ -2052,7 +2056,8 @@ function openExcelEditor(w, fileId, fileName) {
           }
         }
         renderTable();
-        
+        console.log('[xlsx-editor] renderTable called after load, data.length:', data.length, 'data[0]:', data[0]);
+
       })
       .catch(function(e) {
         w.$c.innerHTML = '<div style="padding:24px;text-align:center;color:#a00">❌ 加载失败：' + (e.message || '未知错误') + '<br>fileId: ' + _fileId + '</div>';
@@ -2062,5 +2067,15 @@ function openExcelEditor(w, fileId, fileName) {
   // 初始状态入 undo 栈
   setTimeout(function () { xlPushUndo(); }, 100);
   renderTable();
+}
+
+// 注册为 ACMSWin 视图加载器
+if (typeof ACMSWin !== 'undefined' && ACMSWin.registerViewLoader) {
+  ACMSWin.registerViewLoader('office-xlsx', function(w) {
+    var opts = arguments[1] || {};
+    console.log('[xlsx-loader] opts:', opts, 'fileId:', opts.fileId, 'fileName:', opts.fileName);
+    console.log('[xlsx-loader] w.id:', w.id, 'w.view:', w.view);
+    openExcelEditor(w, opts.fileId, opts.fileName);
+  });
 }
 

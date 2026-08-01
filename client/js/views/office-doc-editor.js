@@ -128,13 +128,22 @@
     if (fmt.bold) style += 'font-weight:bold;';
     if (fmt.italic) style += 'font-style:italic;';
     if (fmt.underline) style += 'text-decoration:underline;';
-    // inline formatting: paragraph/heading 内容含 <strong>/<em> 等标签，原样输出
-    var content = (type === 'paragraph' || type === 'heading')
-      ? (block.content || '')
-      : escHtml(block.content || '');
+    // inline formatting: 解析内联格式 JSON 为 HTML
+    var content;
+    if (type === 'paragraph' || type === 'heading') {
+      try {
+        var inlineParts = JSON.parse(block.content || '[]');
+        content = inlineToHTML(inlineParts);
+      } catch (e) {
+        content = escHtml(block.content || '');
+      }
+    } else {
+      content = escHtml(block.content || '');
+    }
+    // 移除 contenteditable，由容器统一管理
     return '<' + tag + ' data-bid="' + block.id + '" data-btype="' + type + '"' +
       (style ? ' style="' + style + '"' : '') +
-      ' contenteditable="true" class="ode-ce">' + content + '</' + tag + '>';
+      ' class="ode-ce">' + content + '</' + tag + '>';
   }
 
   // ─── HTML → blocks array ───
@@ -188,9 +197,8 @@
           if (m) b.attrs.id = 'fn-' + m[1];
         }
       } else {
-        // paragraph / heading：读 textContent 避免把上次 execCommand 残留的
-        // <strong>/<em> 标签作为纯文本存入 block.content（那些格式已用 CSS style 保存）
-        b.content = el.textContent || '';
+        // paragraph / heading：解析内联格式 HTML 为 JSON
+        b.content = JSON.stringify(parseInlineToJSON(el.innerHTML || ''));
         if (type === 'heading') {
           var lvl = getHeadingLevel(el);
           b.attrs.level = lvl;
@@ -473,6 +481,8 @@
     if (!container) throw new Error('office-doc-editor: container not found');
     container.innerHTML = '';
     container.classList.add('ode-editor-flow');
+    // 容器本身为 contenteditable，支持跨 block 选区
+    container.contentEditable = 'true';
     // 保留已有 flex 样式，只追加文档流样式
     container.style.padding = '40px 64px';
     container.style.maxWidth = '880px';
@@ -829,7 +839,56 @@ getDocument: function () { return state.doc; },
     };
   }
 
-  function escHtml(s) {
+  
+// ─── 内联格式 JSON ↔ HTML 转换 ───
+function inlineToHTML(inlineParts) {
+  if (!inlineParts || !Array.isArray(inlineParts)) return '';
+  var html = '';
+  for (var i = 0; i < inlineParts.length; i++) {
+    var part = inlineParts[i];
+    var text = escHtml(part.text || '');
+    if (part.bold && part.italic) {
+      html += '<strong><em>' + text + '</em></strong>';
+    } else if (part.bold) {
+      html += '<strong>' + text + '</strong>';
+    } else if (part.italic) {
+      html += '<em>' + text + '</em>';
+    } else {
+      html += text;
+    }
+  }
+  return html;
+}
+
+function parseInlineToJSON(html) {
+  if (!html) return [{ text: '', bold: false, italic: false }];
+  var temp = document.createElement('div');
+  temp.innerHTML = html;
+  
+  function walk(node) {
+    var parts = [];
+    for (var i = 0; i < node.childNodes.length; i++) {
+      var child = node.childNodes[i];
+      if (child.nodeType === Node.TEXT_NODE) {
+        parts.push({ text: child.textContent, bold: false, italic: false });
+      } else if (child.tagName === 'STRONG' || child.tagName === 'B') {
+        var inner = walk(child);
+        inner.forEach(function(p) { p.bold = true; parts.push(p); });
+      } else if (child.tagName === 'EM' || child.tagName === 'I') {
+        var inner = walk(child);
+        inner.forEach(function(p) { p.italic = true; parts.push(p); });
+      } else {
+        var inner = walk(child);
+        parts.push.apply(parts, inner);
+      }
+    }
+    return parts;
+  }
+  
+  return walk(temp);
+}
+
+function escHtml(s) {
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
   function escAttr(s) { return escHtml(String(s||'')).replace(/"/g,'&quot;'); }

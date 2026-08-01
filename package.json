@@ -9,6 +9,7 @@
     "test": "node scripts/verify-route-registration.js"
   },
   "dependencies": {
+    "@askjo/camofox-browser": "^1.13.0",
     "@office-open/docx": "^0.10.13",
     "adm-zip": "^0.5.17",
     "ajv": "^8.20.0",

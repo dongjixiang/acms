@@ -28,6 +28,23 @@ const PAGE_WAIT_SECONDS = 5;  // 等 JS 执行 + 反爬验证完成
 
 let _browser = null;
 let _launching = null;  // Promise，防并发启动
+let _lastActivity = Date.now();  // v0.78: 记录最后活动时间，用于持久化浏览器
+const BROWSER_IDLE_TIMEOUT_MS = 5 * 60 * 1000;  // 5 分钟无活动后关闭浏览器
+
+// v0.78: 浏览器活动保活定时器
+let _idleTimer = null;
+
+function resetIdleTimer() {
+  _lastActivity = Date.now();
+  if (_idleTimer) clearTimeout(_idleTimer);
+  _idleTimer = setTimeout(async () => {
+    if (_browser && Date.now() - _lastActivity > BROWSER_IDLE_TIMEOUT_MS) {
+      console.log('[browser-fetch] 浏览器空闲 5 分钟，关闭以释放资源');
+      try { await _browser.close(); } catch (e) {}
+      _browser = null;
+    }
+  }, 60000);  // 每分钟检查一次
+}
 
 async function launchBrowser() {
   // 检查 _browser 是否有效（typeof + try/catch 防御）
@@ -55,8 +72,13 @@ async function launchBrowser() {
     _launching = (async () => {
     try {
       // 尝试 puppeteer 默认路径找 chrome.exe，如果缺文件则试 chrome-headless-shell
+      // v0.78: 使用用户 Chrome profile（持久化 cookies/session），绕过百度等站的人机验证
+      const os = require('os');
+      const path = require('path');
+      const userDataDir = path.join(os.homedir(), 'AppData', 'Local', 'Google', 'Chrome', 'User Data');
+
       const launchOpts = {
-        headless: true,
+        headless: 'new',
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
@@ -65,6 +87,8 @@ async function launchBrowser() {
           '--disable-background-networking',
           '--disable-background-timer-throttling',
           '--disable-sync',
+          '--disable-blink-features=AutomationControlled',
+          `--user-data-dir=${userDataDir}`,
         ],
         timeout: 30000,
       };
@@ -106,6 +130,7 @@ const verDir = entries.find(d => d.isDirectory() && d.name.startsWith('win64-'))
       }
 
       _browser = await puppeteerExtra.launch(launchOpts);
+      resetIdleTimer();  // v0.78: 启动保活定时器
       return _browser;
     } finally {
       _launching = null;
@@ -123,6 +148,7 @@ const verDir = entries.find(d => d.isDirectory() && d.name.startsWith('win64-'))
 async function browserFetch(url) {
   let browser;
   try {
+    resetIdleTimer();  // v0.78: 每次活动重置定时器
     browser = await launchBrowser();
   } catch (e) {
     return { error: `浏览器启动失败: ${e.message}（需要 Chromium，首次 npm install 会自动下载）` };

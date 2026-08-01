@@ -996,7 +996,7 @@ registerTool({
     required: ['projectId', 'title', 'description']
   },
   async handler(args, ctx) {
-    const perm = checkPermission(ctx, args.projectId, ['user', 'admin']);
+    const perm = checkPermission(ctx, null, ['user', 'admin']);
     if (!perm.ok) return perm;
     try {
       const taskStore = require('../stores/task-store');
@@ -1060,7 +1060,7 @@ registerTool({
     required: ['projectId', 'title', 'description']
   },
   async handler(args, ctx) {
-    const perm = checkPermission(ctx, args.projectId, ['user', 'admin']);
+    const perm = checkPermission(ctx, null, ['user', 'admin']);
     if (!perm.ok) return perm;
     try {
       const bugService = require('../services/bug-service');
@@ -1236,25 +1236,25 @@ registerTool({
     required: ['projectId']
   },
   async handler(args, ctx) {
-    const perm = checkPermission(ctx, args.projectId);
+    const perm = checkPermission(ctx, null, ['user', 'admin']);
     if (!perm.ok) return perm;
     try {
       const projectStore = require('../stores/project-store');
       const taskStore = require('../stores/task-store');
       const collection = require('../db/connection').collection;
-      
+
       const project = projectStore.getById(args.projectId);
       if (!project) return { ok: false, error: 'NOT_FOUND', message: '项目不存在' };
-      
+
       const tasks = taskStore.list({ projectId: args.projectId, limit: 1000 });
       const bugs = collection('bugs').find(b => b.projectId === args.projectId && b.status !== 'closed');
-      
+
       const total = tasks.length;
       const completed = tasks.filter(t => t.status === 'done').length;
       const inProgress = tasks.filter(t => t.status === 'in_progress').length;
       const openBugs = bugs.length;
       const criticalBugs = bugs.filter(b => b.severity === 'critical').length;
-      
+
       return {
         ok: true,
         projectId: args.projectId,
