@@ -370,6 +370,60 @@ registerTool({
 // ════════════════════════════════════════════════
 
 registerTool({
+  name: 'list_projects',
+  description: '列出当前用户可见的所有项目（不含系统项目）。用于创建新需求/任务前确认目标项目。',
+  parameters: {
+    type: 'object',
+    properties: {}
+  },
+  async handler(args, ctx) {
+    try {
+      const projectStore = require('../stores/project-store');
+      const projects = projectStore.list().filter(p => !p.system_project);
+      return {
+        ok: true,
+        projects: projects.map(p => ({ id: p.id, name: p.name, slug: p.slug, owner: p.owner, status: p.status })),
+        summary: `共 ${projects.length} 个项目`
+      };
+    } catch (e) { return { ok: false, error: 'INTERNAL', message: e.message }; }
+  }
+});
+
+registerTool({
+  name: 'create_project',
+  description: '创建一个新的 ACMS 项目。创建后会自动初始化工作区（workspaces/<slug>/）和知识库。需要 user 或 admin 权限。',
+  parameters: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: '项目名称（必填，中文或英文）' },
+      slug: { type: 'string', description: '项目标识符（可选，默认用 name 转小写替换空格为下划线）' },
+      description: { type: 'string', description: '项目描述（可选）' }
+    },
+    required: ['name']
+  },
+  async handler(args, ctx) {
+    const perm = checkPermission(ctx, null, ['user', 'admin']);
+    if (!perm.ok) return perm;
+    try {
+      const projectStore = require('../stores/project-store');
+      const project = projectStore.create({
+        name: args.name,
+        slug: args.slug,
+        description: args.description || '',
+        owner: perm.user.id
+      });
+      return {
+        ok: true,
+        project: { id: project.id, name: project.name, slug: project.slug },
+        summary: `项目「${project.name}」已创建（ID: ${project.id}）`,
+        _action: 'open_view',
+        _actionArg: { view: 'projects', projectId: project.id }
+      };
+    } catch (e) { return { ok: false, error: 'CREATE_FAILED', message: e.message }; }
+  }
+});
+
+registerTool({
   name: 'create_requirement',
   description: '创建一个新需求。需要 PM 权限或 admin 权限。创建后会自动跑简报生成（非阻塞）。',
   parameters: {

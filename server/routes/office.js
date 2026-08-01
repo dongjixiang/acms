@@ -146,7 +146,8 @@ router.get('/load/:fileId', async function (req, res) {
         var docXml = zip.readAsText('word/document.xml');
         text = parseDocxToMarkdown(docXml);
       } catch (e) { text = '(docx 文本提取失败: ' + e.message + ')'; }
-    } else if (ext === 'xlsx') {
+    }
+} else if (ext === 'xlsx') {
       // v0.63 Phase3: 优先读 .schema.json（结构化数据）
       var schemaFile = filePath.replace('.' + ext, '.schema.json');
       if (fs.existsSync(schemaFile)) {
@@ -666,6 +667,7 @@ async function parseXlsxToSchema(buf) {
   }
   return '(空 xlsx 文件)';
 }
+
 // ─────────── docx 解析为带格式 markdown ───────────
 function parseDocxToMarkdown(xml) {
   var paragraphs = xml.match(/<w:p[^>]*>[\s\S]*?<\/w:p>/g) || [];
@@ -709,5 +711,5 @@ function parseDocxToMarkdown(xml) {
     else lines.push(trimmed);
   }
 
-  return lines.filter(function(l) { return l.trim(); }).join('\n\n');
+  return lines.filter(function(l) { return l.trim(); }).join('\n');
 }

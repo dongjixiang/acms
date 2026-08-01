@@ -1192,12 +1192,15 @@ function openExcelEditor(w, fileId, fileName) {
       if (span > 1) thStyle += ';min-width:' + (80 * span) + 'px';
       // 使用 headers 作为列标题，如果没有 headers 则用列字母
       var colTitle = (data[0] && data[0][ci]) ? escHtml(data[0][ci]) : colLetter(ci);
+      console.log('[xlsx] 渲染列头', ci, 'title:', colTitle, 'maxCols:', maxCols, 'data[0]:', data[0]);
       h += '<th class="xlsx-col-header" data-col="' + ci + '" colspan="' + span + '" style="' + thStyle + '">' + colTitle + filterArrow + '</th>';
       ci += span;
     }
     h += '</tr>';
     // 跳过第一行（headers），从第二行开始渲染数据
     for (var ri = 1; ri < data.length; ri++) {
+      // 调试日志
+      if (ri <= 3) console.log('[xlsx] 渲染数据行', ri, 'data:', data[ri]);
       // v0.65: 检查当前行是否被上方合并区域占用（垂直合并中间行）
       var skipRow = false;
       for (var si = 0; si < mergedRanges.length; si++) {

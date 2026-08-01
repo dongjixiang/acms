@@ -77,7 +77,7 @@ async function routeMessage(modelId, message, history = []) {
   const system = `你是 ACMS 小吉的动作路由器。只做分类，不调用工具，不制定开发计划。
 输出严格 JSON：
 {"mode":"conversation|single_action|conversational_action","confidence":0.0,"capabilities":[],"requires_confirmation":false,"reason":"..."}
-能力枚举：image_generation、image_search、music_playback、email_draft、email_send、web_research、document_generation。
+能力枚举：image_generation、image_search、music_playback、email_draft、email_send、web_research、document_generation、project_create。
 规则：
 - 纯问答/查询 ACMS 数据/闲聊 → conversation。
 - 一个明确工具动作 → single_action。
@@ -85,7 +85,8 @@ async function routeMessage(modelId, message, history = []) {
 - send email 是外部副作用，必须包含 email_draft + email_send，requires_confirmation=true。
 - 用户描述简短但动作明确时照常分类，不要因为缺少主题、数量等默认参数判无法理解。
 - **重要：mode 为 single_action 或 conversational_action 时，必须根据用户意图将相关能力填入 capabilities 数组，不要留空。**
-- **找图片/搜图片/查图片→ capabilities 含 image_search。生成图片/画图片/创作图片→ capabilities 含 image_generation。两者不同。**`;
+- **找图片/搜图片/查图片→ capabilities 含 image_search。生成图片/画图片/创作图片→ capabilities 含 image_generation。两者不同。**
+- **创建项目/新建项目→ capabilities 含 project_create。**`;
   const result = await callLLM(modelId, [
     { role: 'system', content: system },
     ...(historyText ? [{ role: 'user', content: `最近对话：\\n${historyText}` }] : []),
@@ -98,6 +99,12 @@ async function routeMessage(modelId, message, history = []) {
   if (searchImgRe.test(message) && route.mode !== 'conversation') {
     route.capabilities = ['image_search'];
     console.log('[agent-buddy-action] 关键词命中 image_search, 强制覆盖路由');
+  }
+  // v0.76: 关键词前置拦截 — 不管路由器 LLM 怎么分类，看到"创建项目/新建项目"就强制 project_create
+  const createProjectRe = /创建项目|新建项目|帮我建.*项目|创建.*项目|新建.*项目叫|新建.*项目名为/;
+  if (createProjectRe.test(message) && route.mode !== 'conversation') {
+    route.capabilities = ['project_create'];
+    console.log('[agent-buddy-action] 关键词命中 project_create, 强制覆盖路由');
   }
   // v0.73: "生成X然后发邮件"关键词拦截 — 强制 conversational_action + image_generation + email_send
   const emailAfterRe = /然后发邮件|再发邮件|发邮件给我|发邮件到|发邮件至|并发送邮件|且发邮件/;
@@ -128,6 +135,7 @@ function getActionToolNames(route, baseTools) {
       if (capability === 'web_research') { tools.add('web_search'); tools.add('web_research'); }
       if (capability === 'document_generation') tools.add('document_gen');
       if (capability === 'image_search') { tools.delete('generate_image'); tools.add('web_search'); }
+      if (capability === 'project_create') { tools.add('create_project'); tools.add('list_projects'); }
     });
   }
   return [...tools];
