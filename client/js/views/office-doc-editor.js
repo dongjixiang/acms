@@ -125,9 +125,10 @@
     if (fmt.align) style += 'text-align:' + fmt.align + ';';
     if (fmt.fontSize) style += 'font-size:' + fmt.fontSize + 'px;';
     if (fmt.fontFamily) style += 'font-family:' + fmt.fontFamily + ';';
-    // inline formatting: parseInline 已经在 office-doc.js 里定义，但这里直接显示带 markdown 的原始内容
-    // contenteditable 里显示 markdown 符号，由 parseInline 在导出时处理
-    var content = escHtml(block.content || '');
+    // inline formatting: paragraph/heading 内容含 <strong>/<em> 等标签，原样输出
+    var content = (type === 'paragraph' || type === 'heading')
+      ? (block.content || '')
+      : escHtml(block.content || '');
     return '<' + tag + ' data-bid="' + block.id + '" data-btype="' + type + '"' +
       (style ? ' style="' + style + '"' : '') +
       ' contenteditable="true" class="ode-ce">' + content + '</' + tag + '>';
@@ -184,8 +185,8 @@
           if (m) b.attrs.id = 'fn-' + m[1];
         }
       } else {
-        // paragraph / heading
-        b.content = el.textContent || '';
+        // paragraph / heading：用 innerHTML 保留 <strong>/<em> 等 inline 格式
+        b.content = el.innerHTML || '';
         if (type === 'heading') {
           var lvl = getHeadingLevel(el);
           b.attrs.level = lvl;

@@ -705,6 +705,13 @@
     }
 
     // 默认框选放大：在画布拖拽=选择区域自动放大（hand 模式激活时不触发）
+    //   v0.83 修复（2026-08-01）：
+    //     1. mr 改用 mainEl 而非 mountEl（mount 含 help-menu + controls toolbar，尺寸 ≠ 画布可视区）
+    //     2. zoom level = mainEl 屏幕像素 / 选区屏幕像素（选区屏幕像素 = fabric 像素 × current zoom）
+    //        旧公式 mr.width/w 把 mount 维度直接除以 fabric 像素，包含 toolbar 像素误差
+    //     3. 改用 setViewportTransform + 手算 panX/panY（跟 fitAndCenter 同算法）
+    //        zoomToPoint 仅保持指定点屏幕位置不变，但不让选区中心 = mainEl 中心 → 图偏到屏幕外
+    //        用户报告「图不知道跑到哪里去了」就是 pan 没校准所致
     function setupZoomDrag() {
       try {
         var c = imageEditor._graphics && imageEditor._graphics.getCanvas();
@@ -721,14 +728,38 @@
           var w = Math.abs(p.x - sx), h = Math.abs(p.y - sy);
           _sd = null;
           if (w < 10 || h < 10) return;
-          var mr = mountEl.getBoundingClientRect();
-          var cx = (sx + p.x) / 2, cy = (sy + p.y) / 2;
-          _aiZoomLevel = Math.max(Math.min(Math.min(mr.width / w, mr.height / h), 5), 0.1);
-          c.zoomToPoint({ x: cx, y: cy }, _aiZoomLevel);
+
+          // 主区 = 屏幕可视区（非 mount，因为 mount 含 help-menu / controls toolbar）
+          var mainEl = mountEl.querySelector('.tui-image-editor-main') || mountEl;
+          var mainRect = mainEl.getBoundingClientRect();
+
+          // zoom level = mainEl 屏幕像素 / 选区屏幕像素
+          //   选区屏幕像素 = 选区 fabric 像素 × 当前 viewport zoom
+          var currentZoom = c.getZoom() || 1;
+          var wScreen = w * currentZoom;
+          var hScreen = h * currentZoom;
+          var level = Math.max(Math.min(Math.min(mainRect.width / wScreen, mainRect.height / hScreen), 5), 0.1);
+
+          // 手动 pan：让选区中心（fabric 坐标）屏幕位置 = mainEl 屏幕中心
+          //   跟 fitAndCenter 同一算法（见 references/fit-and-center-formula.md）
+          var canvasRect = c.upperCanvasEl.getBoundingClientRect();
+          if (canvasRect.width <= 0 || canvasRect.height <= 0) {
+            // 退化路径：canvas DOM 还没布局，用 setZoom 而不算 pan
+            c.setZoom(level);
+          } else {
+            var objCenterX = sx + w / 2;
+            var objCenterY = sy + h / 2;
+            var panX = (mainRect.width / 2) * (c.width / canvasRect.width) - objCenterX * level;
+            var panY = (mainRect.height / 2) * (c.height / canvasRect.height) - objCenterY * level;
+            c.setViewportTransform([level, 0, 0, level, panX, panY]);
+          }
           c.requestRenderAll();
+
+          _aiZoomLevel = level;
+          // 同步 ZOOM 组件（hand 模式检查 zoomLevel 时需要，否则 hand 拖不动）
           var zc = imageEditor._graphics.getComponent('zoom');
-          if (zc) zc.zoomLevel = _aiZoomLevel;
-          updateZoomDisplay(_aiZoomLevel);  // v0.68: 同步 zoom display
+          if (zc) zc.zoomLevel = level;
+          updateZoomDisplay(level);
         });
       } catch(e) { console.warn('[ZOOM-DRAG] setup:', e); }
     }
