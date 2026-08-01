@@ -12,6 +12,7 @@
 function openPptEditor(w, fileId, fileName) {
   var _pptFileId = fileId || null;
   var _pptIsServerFile = !!fileId;
+  var _savedFileId = null; // 保存后返回的 fileId
 
   // v0.64: schema 改为 HTML 内容（title 和 content 都存 innerHTML）
   var slides = [{
@@ -357,7 +358,8 @@ function openPptEditor(w, fileId, fileName) {
     h += '<span id="ppt-modified-dot" class="oo-modified-dot" title="未修改"></span>';
     h += '</div>';
     h += '<div class="oo-titlebar-actions">';
-    h += '<button class="oo-titlebar-btn primary" id="ppt-save-btn">\ud83d\udcbe 保存</button>';
+    h += '<button class="oo-titlebar-btn" id="ppt-download-btn" title="下载 .pptx 文件" style="display:none">\\ud83d\\udce5 下载</button>';
+    h += '<button class="oo-titlebar-btn primary" id="ppt-save-btn">\\ud83d\\udcbe 保存</button>';
     h += '</div>';
     h += '</div>';
     // Ribbon
@@ -712,7 +714,6 @@ function openPptEditor(w, fileId, fileName) {
       bar.innerHTML = '<span>\u7b2c ' + (cur+1) + ' / ' + slides.length + ' \u9875</span><span>' + lbl + ' \u5e03\u5c40</span>';
     }
 
-    // ─── savePpt ───
     function savePpt() {
       // 保存前同步当前 slide 内容
       if (titleEl) slides[cur].title = titleEl.innerHTML;
@@ -721,14 +722,14 @@ function openPptEditor(w, fileId, fileName) {
       var p;
       if (typeof showPrompt === 'function') {
         p = Promise.resolve(showPrompt({
-          title: '\u4fdd\u5b58 PPT \u6f14\u793a',
-          message: '\u8f93\u5165\u6587\u4ef6\u540d\uff08.pptx \u540e\u7f00\u81ea\u52a0\uff09',
+          title: '保存 PPT 演示',
+          message: '输入文件名（.pptx 后缀自动加）',
           defaultValue: currentName.replace(/\.pptx$/i, ''),
           multiline: false,
           minLength: 1,
         }));
       } else {
-        p = Promise.resolve(prompt('\u6587\u4ef6\u540d\uff1a', '\u6f14\u793a.pptx') || '\u6f14\u793a.pptx');
+        p = Promise.resolve(prompt('文件名：', '演示.pptx') || '演示.pptx');
       }
       return p.then(function(name) {
         if (!name) return;
@@ -745,17 +746,34 @@ function openPptEditor(w, fileId, fileName) {
           }),
         }).then(function(r){ return r.json(); }).then(function(r){
           if (r.ok) {
-            toast('\u5df2\u4fdd\u5b58 \u2705 ' + name + ' (' + r.size + ' bytes)', 'success');
+            // 保存成功后记录 fileId，启用下载按钮
+            _savedFileId = r.fileId;
+            var dlBtn = w.$c.querySelector('#ppt-download-btn');
+            if (dlBtn) dlBtn.style.display = '';
+            toast('已保存 ✅ ' + name + ' (' + r.size + ' bytes)', 'success');
             var dot = w.$c.querySelector('#ppt-modified-dot');
-            if (dot) { dot.classList.remove('is-dirty'); dot.classList.add('is-saved'); dot.title = '\u5df2\u4fdd\u5b58'; setTimeout(function(){ dot.classList.remove('is-saved'); }, 1200); }
+            if (dot) { dot.classList.remove('is-dirty'); dot.classList.add('is-saved'); dot.title = '已保存'; setTimeout(function(){ dot.classList.remove('is-saved'); }, 1200); }
           }
-          else toast('\u4fdd\u5b58\u5931\u8d25: ' + (r.error || '\u672a\u77e5'), 'error');
-        }).catch(function(e){ toast('\u4fdd\u5b58\u5931\u8d25: ' + e.message, 'error'); });
+          else toast('保存失败: ' + (r.error || '未知'), 'error');
+        }).catch(function(e){ toast('保存失败: ' + e.message, 'error'); });
       });
+    }
+
+    // 下载 PPT 为 .pptx 文件
+    function downloadPptx(name) {
+      if (!name) name = (w.$c.querySelector('#ppt-title-input').value || '').trim() || '演示.pptx';
+      if (!name.toLowerCase().endsWith('.pptx')) name += '.pptx';
+      var url = '/api/office/download/' + encodeURIComponent(_savedFileId) + '/' + encodeURIComponent(name);
+      var a = document.createElement('a');
+      a.href = url; a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+      toast('已下载 ' + name, 'success');
     }
 
     var saveBtn = w.$c.querySelector('#ppt-save-btn');
     if (saveBtn) saveBtn.onclick = function () { savePpt(); };
+    var dlBtn = w.$c.querySelector('#ppt-download-btn');
+    if (dlBtn) dlBtn.onclick = function () { downloadPptx(); };
   }
 
   setTimeout(function () { pptPushUndo(); }, 100);
