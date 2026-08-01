@@ -85,14 +85,14 @@ function openPptEditor(w, fileId, fileName) {
                   });
                   contentHtml = imgHtml + contentHtml;
                 }
-                return {\
-                  title: normalizeContent(s.title),\
-                  content: contentHtml,\
-                  layout: s.layout || 'content',\
-                  transition: s.transition || { type: 'none', direction: 'from-right', duration: 500 },\
-                  animations: s.animations || [],\
-                  images: s.images || []\
-                };\
+                return {
+                  title: normalizeContent(s.title),
+                  content: contentHtml,
+                  layout: s.layout || 'content',
+                  transition: s.transition || { type: 'none', direction: 'from-right', duration: 500 },
+                  animations: s.animations || [],
+                  images: s.images || []
+                };
               });
               cur = 0;
               toast('已加载 ' + (fileName || 'PPT') + '（' + slides.length + ' 页）', 'success');
