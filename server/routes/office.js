@@ -287,7 +287,6 @@ router.get('/load/:fileId', async function (req, res) {
             } catch (e) { text = '(PPTX 解析失败: ' + e.message + ')'; }
           }
         } catch (e) { text = '(PPTX 解析失败: ' + e.message + ')'; }
-        }
       } else {
         text = buf.toString('utf8');
       }
