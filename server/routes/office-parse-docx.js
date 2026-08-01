@@ -36,8 +36,6 @@ function parseDocxToMarkdown(xml) {
     else if (style === 'Heading2') lines.push('## ' + trimmed);
     else if (style === 'Heading3') lines.push('### ' + trimmed);
     else if (style === 'Heading4') lines.push('#### ' + trimmed);
-    else if (style === 'Heading5') lines.push('##### ' + trimmed);
-    else if (style === 'Heading6') lines.push('###### ' + trimmed);
     else if (style === 'Code') lines.push('```\n' + trimmed + '\n```');
     else if (style === 'Quote') lines.push('> ' + trimmed);
     else lines.push(trimmed);
