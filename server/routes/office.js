@@ -167,11 +167,23 @@ router.get('/load/:fileId', function (req, res) {
           }
         } catch (e) { text = '(schema 解析失败: ' + e.message + ')'; }
       } else if (ext === 'pptx') {
-        // 无 schema：从二进制 PPTX 提取文本，生成近似 schema
+        // 无 schema：检测是否为旧版假 PPTX（JSON 格式）
         try {
-          var AdmZip = require('adm-zip');
-          var zip = new AdmZip(buf);
-          var presXml = zip.readAsText('ppt/presentation.xml');
+          var strContent = buf.toString('utf8').trim();
+          if (strContent.indexOf('{') === 0) {
+            // 旧版假 PPTX（JSON 格式），尝试解析
+            var oldData = JSON.parse(strContent);
+            if (oldData.slides && Array.isArray(oldData.slides)) {
+              text = 'SCHEMA:' + JSON.stringify({ slides: oldData.slides });
+            } else {
+              text = '(旧版 PPT 格式，请重新保存)';
+            }
+          } else {
+            // 真正的 PPTX（ZIP 格式），从二进制提取文本
+            try {
+              var AdmZip = require('adm-zip');
+              var zip = new AdmZip(buf);
+              var presXml = zip.readAsText('ppt/presentation.xml');
           // 找所有 slide id → 文件名映射
           var slideIds = presXml.match(/<p:sldIdLst>([\s\S]*?)<\/p:sldIdLst>/);
           var ids = [];
