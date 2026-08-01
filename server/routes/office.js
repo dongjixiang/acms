@@ -467,7 +467,6 @@ async function writePptx(body) {
   return Buffer.from('fake');
 }
 
-function parseDocxToBlocks(xml) { return []; }
 async function parseXlsxToSchema(buf) {
   try {
     var workbook = new ExcelJS.Workbook();
