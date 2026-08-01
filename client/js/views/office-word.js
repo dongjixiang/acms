@@ -204,7 +204,12 @@ function openWordEditor(w, fileId, fileName, content) {
           editorHost.innerHTML = '<div style="padding:24px;color:#a00">❌ 加载失败：' + (resp.error || '未知') + '<br>fileId: ' + fileId + '</div>';
           return;
         }
-        parseContentToBlocks(resp.text);
+        // 优先使用 blocks JSON（docx 直接格式），回退到 text markdown
+        if (resp.blocks && Array.isArray(resp.blocks)) {
+          doc.blocks = resp.blocks;
+        } else {
+          parseContentToBlocks(resp.text);
+        }
         mountBlockEditor();
       })
       .catch(function (e) {
