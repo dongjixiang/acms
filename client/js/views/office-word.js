@@ -425,23 +425,35 @@ function mountBlockEditor() {
         toast('已导出 ' + baseName + '.md', 'success');
       },
       exportDocx: function () {
-        if (typeof window.docx === 'undefined') {
-          toast('docx 包未加载，降级为 .md', 'warning');
-          return wordOps.exportMd();
-        }
+        // 方案 B：服务器端生成 docx，复用 /api/office/save + /api/office/download
+        var baseName = (titlebar.querySelector('#word-title-input').value || '未命名').replace(/\.docx$/i, '');
+        var name = baseName + '.docx';
         var d = instance.getDocument();
-        var p = window.OfficeDocConverter.blocksToDocxBuffer(d.blocks, window.docx);
-        if (!p) { toast('导出失败', 'error'); return; }
-        Promise.resolve(p).then(function (buf) {
-          var baseName = (titlebar.querySelector('#word-title-input').value || '未命名').replace(/\.docx$/i, '');
-          var blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
-          var url = URL.createObjectURL(blob);
-          var a = document.createElement('a');
-          a.href = url; a.download = baseName + '.docx';
-          document.body.appendChild(a); a.click(); document.body.removeChild(a);
-          URL.revokeObjectURL(url);
-          toast('已导出 ' + baseName + '.docx', 'success');
-        });
+        var payload = {
+          type: 'docx',
+          name: name,
+          data: {
+            title: d.meta.title,
+            blocks: d.blocks,
+            content: window.OfficeDocConverter.documentToMarkdown(d),
+          }
+        };
+        fetch('/api/office/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+          body: JSON.stringify(payload),
+        }).then(function (r) { return r.json(); }).then(function (r) {
+          if (r.ok) {
+            // 触发下载
+            var url = '/api/office/download/' + encodeURIComponent(r.fileId) + '/' + encodeURIComponent(r.name);
+            var a = document.createElement('a');
+            a.href = url; a.download = r.name;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            toast('已下载 ' + r.name, 'success');
+          } else {
+            toast('导出失败: ' + (r.error || '未知错误'), 'error');
+          }
+        }).catch(function (e) { toast('导出失败: ' + e.message, 'error'); });
       },
       // v0.62.6: Undo/Redo
       undo: function () { undo(); },
