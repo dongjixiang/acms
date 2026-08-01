@@ -151,7 +151,7 @@ router.get('/load/:fileId', function (req, res) {
           .replace(/\n{3,}/g, '\n\n')
           .trim();
       } catch (e) { text = '(docx 文本提取失败: ' + e.message + ')'; }
-    } else if (ext === 'xlsx' || ext === 'pptx') {
+    } else if (ext === 'xlsx') {
       // v0.63 Phase3: 优先读 .schema.json（结构化数据）
       var schemaFile = filePath.replace('.' + ext, '.schema.json');
       if (fs.existsSync(schemaFile)) {
@@ -164,7 +164,22 @@ router.get('/load/:fileId', function (req, res) {
             text = '(二进制 Excel 文件，编辑器将使用空白数据)';
           }
         } catch (e) { text = '(schema 解析失败: ' + e.message + ')'; }
-      } else if (ext === 'pptx') {
+      } else {
+        text = '(二进制 Excel 文件，编辑器将使用空白数据)';
+      }
+    } else if (ext === 'pptx') {
+      // v0.63 Phase3: 优先读 .schema.json（结构化数据）
+      var pptSchemaFile = filePath.replace('.' + ext, '.schema.json');
+      if (fs.existsSync(pptSchemaFile)) {
+        try {
+          var pptSchemaJson = JSON.parse(fs.readFileSync(pptSchemaFile, 'utf8'));
+          if (pptSchemaJson.data && pptSchemaJson.data.slides && Array.isArray(pptSchemaJson.data.slides)) {
+            text = 'SCHEMA:' + JSON.stringify(pptSchemaJson.data);
+          } else {
+            text = '(二进制 PPTX 文件，编辑器将使用空白数据)';
+          }
+        } catch (e) { text = '(ppt schema 解析失败: ' + e.message + ')'; }
+      } else {
         // 无 schema：检测是否为旧版假 PPTX（JSON 格式）
         try {
           var strContent = buf.toString('utf8').trim();
@@ -255,7 +270,6 @@ router.get('/load/:fileId', function (req, res) {
           }
         } catch (e) { text = '(PPTX 解析失败: ' + e.message + ')'; }
       }
-    } catch (e) { text = '(PPTX 解析失败: ' + e.message + ')'; }
     } else {
       text = buf.toString('utf8');
     }
