@@ -394,6 +394,43 @@ async function writePptx(body) {
 }
 
 function parseDocxToBlocks(xml) { return []; }
-async function parseXlsxToSchema(buf) { return ''; }
+async function parseXlsxToSchema(buf) {
+  try {
+    var workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(buf);
+    var sheets = [];
+    workbook.eachSheet(function(sheet, sheetId) {
+      var rows = [];
+      var headers = [];
+      var rowCount = 0;
+      sheet.eachRow(function(row, rowNumber) {
+        if (rowNumber === 1) {
+          headers = row.cells.map(function(cell) {
+            return cell.value !== null && cell.value !== undefined ? String(cell.value) : '';
+          });
+        } else {
+          var rowData = [];
+          for (var i = 0; i < headers.length; i++) {
+            var cell = row.getCell(i + 1);
+            rowData.push(cell.value !== null && cell.value !== undefined ? cell.value : '');
+          }
+          rows.push(rowData);
+          rowCount++;
+        }
+      });
+      if (rowCount > 0 || headers.length > 0) {
+        sheets.push({
+          name: sheet.name,
+          headers: headers,
+          rows: rows
+        });
+      }
+    });
+    return 'SCHEMA:' + JSON.stringify({ sheets: sheets });
+  } catch (e) {
+    console.error('[parseXlsxToSchema] error:', e.message);
+    return '';
+  }
+}
 
 module.exports = router;
