@@ -667,23 +667,25 @@ function openPptEditor(w, fileId, fileName) {
       wrap.style.height = oh + 'px';
       el.style.width = ow + 'px';
       el.style.height = oh + 'px';
-      wrap.appendChild(el);
-      // 8 个 resize handle
+      // 先把 wrap 的所有子元素建好（handle、label），此时 el 还不是 wrap 的子节点
       ['nw','n','ne','e','se','s','sw','w'].forEach(function(dir) {
         var h = document.createElement('div');
         h.className = 'ppt-resize-handle h-' + dir;
         h.dataset.dir = dir;
         wrap.appendChild(h);
       });
-      // 尺寸标签
       var label = document.createElement('div');
       label.className = 'ppt-size-label';
       label.textContent = ow + '×' + oh;
       wrap.appendChild(label);
-      // 用 placeholder 做桥梁：避免 wrap 同时是 el 的子节点和待插入节点导致 HierarchyRequestError
-      var ph = document.createTextNode('');
-      el.parentNode.insertBefore(ph, el);
-      el.parentNode.replaceChild(wrap, ph);
+      // 关键：先取出 el 的父节点和 nextSibling，然后 el.remove()，
+      // 再 appendChild el 到 wrap（此时 wrap 和 el 无 DOM 交集），
+      // 最后 insertBefore wrap 到原位置
+      var parent = el.parentNode;
+      var nextSib = el.nextSibling;
+      el.remove();
+      wrap.appendChild(el);
+      parent.insertBefore(wrap, nextSib);
       _pptResizeState = { wrap: wrap, target: el, label: label, startX: 0, startY: 0, startW: ow, startH: oh };
     }
 
