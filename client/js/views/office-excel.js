@@ -2032,10 +2032,13 @@ function openExcelEditor(w, fileId, fileName) {
             });
             currentSheetIdx = 0;
             data = sheets[0].data;
+            // 动态调整 ROWS 和 COLS
+            if (data.length > ROWS) ROWS = data.length;
+            if (data[0] && data[0].length > COLS) COLS = data[0].length;
             if (w.$c.querySelector('#xlsx-title-input')) {
               w.$c.querySelector('#xlsx-title-input').value = fileName || resp.filename;
             }
-            console.log('[Excel] 数据已加载，总行数:', data.length);
+            console.log('[Excel] 数据已加载，总行数:', data.length, '总列数:', COLS);
           }
         } else {
           console.warn('[Excel] 不是 SCHEMA 格式，使用空白数据');
