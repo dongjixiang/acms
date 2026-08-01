@@ -87,6 +87,16 @@ function openPptEditor(w, fileId, fileName) {
             '</div>';
           w.$c.appendChild(loadEl);
           return;
+        } else if (resp.text && (resp.text.indexOf('PPTX 解析失败') >= 0 || resp.text.indexOf('二进制文件') >= 0)) {
+          // PPTX 二进制格式无法提取（假 PPTX / 旧版 JSON 文件 / 损坏文件）
+          loadEl.innerHTML = '<div style="text-align:center;color:#888;font-size:14px;padding:20px">' +
+            '<div style="font-size:32px;margin-bottom:12px">📽️</div>' +
+            '<div>无法从该文件提取内容</div>' +
+            '<div style="margin-top:8px;font-size:12px;color:#aaa">' + escHtml(resp.text) + '</div>' +
+            '<div style="margin-top:8px;font-size:12px;color:#aaa">请在 PPT 编辑器中创建新演示文稿</div>' +
+            '</div>';
+          w.$c.appendChild(loadEl);
+          return;
         }
         render();
       })
