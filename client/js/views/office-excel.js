@@ -1179,7 +1179,7 @@ function openExcelEditor(w) {
       for (var i = 0; i < mergedRanges.length; i++) {
         if (mergedRanges[i].r1 === ri) rowSpan = mergedRanges[i].r2 - ri + 1;
       }
-      var rowAttrs = rowSpan > 1 ? ' rowspan="' + rowSpan + '"
+      var rowAttrs = rowSpan > 1 ? ' rowspan="' + rowSpan + '"' : '';
       h += '<tr><td class="xlsx-row-header" data-row="' + ri + '" style="border:1px solid #ccc;background:var(--bg2);padding:4px 6px;text-align:center;font-size:11px;color:var(--text2);cursor:pointer;user-select:none">' + (ri + 1) + '</td>';
       for (var ci2 = 0; ci2 < data[ri].length; ci2++) {
         if (skipCell(ri, ci2)) continue;
