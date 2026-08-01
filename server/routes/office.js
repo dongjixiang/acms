@@ -157,14 +157,31 @@ router.get('/load/:fileId', function (req, res) {
       if (fs.existsSync(schemaFile)) {
         try {
           var schemaJson = JSON.parse(fs.readFileSync(schemaFile, 'utf8'));
-          text = 'SCHEMA:' + JSON.stringify(schemaJson.data);
+          // 只有 schema 有实际数据才返回 SCHEMA 格式
+          if (schemaJson.data && schemaJson.data.sheets && Array.isArray(schemaJson.data.sheets)) {
+            text = 'SCHEMA:' + JSON.stringify(schemaJson.data);
+          } else {
+            text = '(二进制 Excel 文件，编辑器将使用空白数据)';
+          }
         } catch (e) { text = '(schema 解析失败: ' + e.message + ')'; }
-      } else if (ext === 'pptx') {
-        // 无 schema：从二进制 PPTX 提取文本，生成近似 schema
+      } else {
+        // 无 schema：检测是否为旧版假 PPTX（JSON 格式）
         try {
-          var AdmZip = require('adm-zip');
-          var zip = new AdmZip(buf);
-          var presXml = zip.readAsText('ppt/presentation.xml');
+          var strContent = buf.toString('utf8').trim();
+          if (strContent.indexOf('{') === 0) {
+            // 旧版假 PPTX（JSON 格式），尝试解析
+            var oldData = JSON.parse(strContent);
+            if (oldData.slides && Array.isArray(oldData.slides)) {
+              text = 'SCHEMA:' + JSON.stringify({ slides: oldData.slides });
+            } else {
+              text = '(旧版 PPT 格式，请重新保存)';
+            }
+          } else {
+            // 真正的 PPTX（ZIP 格式），从二进制提取文本
+            try {
+              var AdmZip = require('adm-zip');
+              var zip = new AdmZip(buf);
+              var presXml = zip.readAsText('ppt/presentation.xml');
           // 找所有 slide id → 文件名映射
           var slideIds = presXml.match(/<p:sldIdLst>([\s\S]*?)<\/p:sldIdLst>/);
           var ids = [];
@@ -237,9 +254,8 @@ router.get('/load/:fileId', function (req, res) {
             text = '(PPTX 文本提取失败，请手动创建)';
           }
         } catch (e) { text = '(PPTX 解析失败: ' + e.message + ')'; }
-      } else {
-        text = '(二进制文件，请使用专门的 Excel/PPT 编辑器打开)';
       }
+    } catch (e) { text = '(PPTX 解析失败: ' + e.message + ')'; }
     } else {
       text = buf.toString('utf8');
     }

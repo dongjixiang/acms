@@ -2002,9 +2002,15 @@ function openExcelEditor(w, fileId, fileName) {
           var schemaStr = resp.text.slice(7);
           console.log('[Excel] Schema 数据:', schemaStr.substring(0, 200));
           var schemaData = JSON.parse(schemaStr);
-          // 恢复 sheets
-          sheets = [];
-          if (schemaData.sheets && Array.isArray(schemaData.sheets) && schemaData.sheets.length > 0) {
+          // v0.65: 检查 schemaData 是否有效
+          if (!schemaData || !schemaData.sheets || !Array.isArray(schemaData.sheets) || schemaData.sheets.length === 0) {
+            console.warn('[Excel] Schema 数据为空，使用空白数据');
+            sheets = [{ name: 'Sheet1', data: blankData() }];
+            currentSheetIdx = 0;
+            data = sheets[0].data;
+          } else {
+            // 恢复 sheets
+            sheets = [];
             schemaData.sheets.forEach(function(s) {
               var sheetData = [];
               if (s.rows && Array.isArray(s.rows)) {
@@ -2028,11 +2034,6 @@ function openExcelEditor(w, fileId, fileName) {
               w.$c.querySelector('#xlsx-title-input').value = fileName || resp.filename;
             }
             console.log('[Excel] 数据已加载，总行数:', data.length);
-          } else {
-            console.warn('[Excel] Schema 中没有 sheets 数据');
-            sheets = [{ name: 'Sheet1', data: blankData() }];
-            currentSheetIdx = 0;
-            data = sheets[0].data;
           }
         } else {
           console.warn('[Excel] 不是 SCHEMA 格式，使用空白数据');
