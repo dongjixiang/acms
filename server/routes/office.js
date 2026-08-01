@@ -138,21 +138,20 @@ router.get('/load/:fileId', async function (req, res) {
     var buf = fs.readFileSync(filePath);
     var ext = (path.extname(match) || '').toLowerCase().replace(/^\./, '');
     var text = '';
-    // docx 提取纯文本（简单实现：解 zip 读 word/document.xml，提取 w:t 内容）
+    // docx 提取为 blocks
     if (ext === 'docx') {
       try {
         var AdmZip = require('adm-zip');
         var zip = new AdmZip(buf);
         var docXml = zip.readAsText('word/document.xml');
-        // 提取所有 <w:t>...</w:t> 内容，<w:p> 分段
-        text = docXml
-          .replace(/<\/w:p>/g, '\n')
-          .replace(/<[^>]+>/g, '')
-          .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&quot;/g, '"')
-          .replace(/\n{3,}/g, '\n\n')
-          .trim();
+        var parsedBlocks = parseDocxToBlocks(docXml);
+        if (parsedBlocks.length > 0) {
+          return res.json({ ok: true, blocks: parsedBlocks });
+        }
+        text = '';
       } catch (e) { text = '(docx 文本提取失败: ' + e.message + ')'; }
-    } else if (ext === 'xlsx') {
+    }
+} else if (ext === 'xlsx') {
       // v0.63 Phase3: 优先读 .schema.json（结构化数据）
       var schemaFile = filePath.replace('.' + ext, '.schema.json');
       if (fs.existsSync(schemaFile)) {
@@ -658,4 +657,138 @@ async function parseXlsxToSchema(buf) {
     return '(xlsx 解析失败: ' + e.message + ')';
   }
   return '(空 xlsx 文件)';
+}
+
+// ─────────── docx 解析为带格式 markdown ───────────
+function parseDocxToMarkdown(xml) {
+  var paragraphs = xml.match(/<w:p[^>]*>[\s\S]*?<\/w:p>/g) || [];
+  var lines = [];
+
+  for (var i = 0; i < paragraphs.length; i++) {
+    var p = paragraphs[i];
+    var styleMatch = p.match(/w:pStyle w:val="([^"]+)"/);
+    var style = styleMatch ? styleMatch[1] : '';
+    var runs = p.match(/<w:r[^>]*>[\s\S]*?<\/w:r>/g) || [];
+    var line = '';
+    var isBold = false;
+    var isItalic = false;
+
+    for (var j = 0; j < runs.length; j++) {
+      var run = runs[j];
+      var rPr = run.match(/<w:rPr>([\s\S]*?)<\/w:rPr>/);
+      if (rPr) {
+        if (/<w:b[^\/]*\/>/i.test(rPr[1])) isBold = true;
+        if (/<w:i[^\/]*\/>/i.test(rPr[1])) isItalic = true;
+      }
+      var textMatches = run.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) || [];
+      for (var k = 0; k < textMatches.length; k++) {
+        var text = textMatches[k].replace(/<[^>]+>/g, '');
+        var formatted = text;
+        if (isBold) formatted = '**' + formatted + '**';
+        if (isItalic) formatted = '*' + formatted + '*';
+        line += formatted;
+      }
+    }
+
+    var trimmed = line.trim();
+    if (!trimmed) continue;
+
+    if (style === 'Heading1' || style === 'Title') lines.push('# ' + trimmed);
+    else if (style === 'Heading2') lines.push('## ' + trimmed);
+    else if (style === 'Heading3') lines.push('### ' + trimmed);
+    else if (style === 'Heading4') lines.push('#### ' + trimmed);
+    else if (style === 'Code') lines.push('```\n' + trimmed + '\n```');
+    else if (style === 'Quote') lines.push('> ' + trimmed);
+    else lines.push(trimmed);
+  }
+
+  return lines.filter(function(l) { return l.trim(); }).join('\n');
+}
+
+// ─────────── docx 解析为 ACMS blocks ───────────
+function parseDocxToBlocks(xml) {
+  var paragraphs = xml.match(/<w:p[^>]*>[\s\S]*?<\/w:p>/g) || [];
+  var blocks = [];
+
+  for (var i = 0; i < paragraphs.length; i++) {
+    var p = paragraphs[i];
+    
+    // 检测段落样式
+    var styleMatch = p.match(/w:pStyle w:val="([^"]+)"/);
+    var style = styleMatch ? styleMatch[1] : '';
+    
+    // 提取所有 run（格式化文本段）
+    var runs = p.match(/<w:r[^>]*>[\s\S]*?<\/w:r>/g) || [];
+    
+    // 构建内联内容（支持粗体、斜体）
+    var inlineParts = [];
+    for (var j = 0; j < runs.length; j++) {
+      var run = runs[j];
+      var rPr = run.match(/<w:rPr>([\s\S]*?)<\/w:rPr>/);
+      var isBold = false, isItalic = false;
+      
+      if (rPr) {
+        if (/<w:b[^\/]*\/>/i.test(rPr[1])) isBold = true;
+        if (/<w:i[^\/]*\/>/i.test(rPr[1])) isItalic = true;
+      }
+      
+      var textMatches = run.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) || [];
+      var text = '';
+      for (var k = 0; k < textMatches.length; k++) {
+        text += textMatches[k].replace(/<[^>]+>/g, '');
+      }
+      
+      if (text) {
+        inlineParts.push({ text: text, bold: isBold, italic: isItalic });
+      }
+    }
+    
+    if (inlineParts.length === 0) continue;
+    
+    // 根据样式决定 block 类型
+    var blockType, attrs, content;
+    
+    if (style === 'Heading1' || style === 'Title') {
+      blockType = 'heading';
+      attrs = { level: 1 };
+    } else if (style === 'Heading2') {
+      blockType = 'heading';
+      attrs = { level: 2 };
+    } else if (style === 'Heading3') {
+      blockType = 'heading';
+      attrs = { level: 3 };
+    } else if (style === 'Heading4') {
+      blockType = 'heading';
+      attrs = { level: 4 };
+    } else if (style === 'Heading5') {
+      blockType = 'heading';
+      attrs = { level: 5 };
+    } else if (style === 'Heading6') {
+      blockType = 'heading';
+      attrs = { level: 6 };
+    } else if (style === 'Code') {
+      blockType = 'code';
+      attrs = { language: '' };
+    } else if (style === 'Quote') {
+      blockType = 'quote';
+      attrs = {};
+    } else if (style === 'ListBullet' || style === 'ListNumber') {
+      blockType = 'bulletList';
+      attrs = {};
+    } else {
+      blockType = 'paragraph';
+      attrs = {};
+    }
+    
+    // 构建 content（内联格式序列）
+    content = JSON.stringify(inlineParts);
+    
+    blocks.push({
+      type: blockType,
+      attrs: attrs,
+      content: content
+    });
+  }
+  
+  return blocks;
 }

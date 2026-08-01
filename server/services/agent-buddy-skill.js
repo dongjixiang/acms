@@ -105,14 +105,15 @@ const L0_TOOLS = ['open_view', 'query_collection', 'web_search', 'send_email', '
 
 // ── L2 扩载层（按 LLM 主动 _expand_tools({category}) 触发）──
 const CATEGORY_TOOLS = {
-  'requirement': ['create_requirement', 'update_requirement', 'approve_requirement', 'reject_requirement', 'transition_requirement_status', 'get_requirement_detail', 'search_requirements', 'add_clarification', 'list_requirements'],
+  'requirement': ['create_requirement', 'update_requirement', 'approve_requirement', 'reject_requirement', 'get_requirement_detail', 'search_requirements', 'add_clarification', 'list_requirements'],
   'task':        ['create_task', 'claim_task', 'update_task_status', 'update_task_progress', 'submit_task', 'search_tasks', 'list_my_tasks', 'list_board_tasks'],
-  'bug':         ['create_bug', 'update_bug', 'assign_bug', 'close_bug', 'search_bugs', 'list_bugs'],
+  'bug':         ['create_bug', 'close_bug', 'assign_bug', 'search_bugs', 'list_bugs'],
   'agent':       ['list_agents', 'get_agent_tasks', 'register_agent', 'update_agent_status'],
   'window':      ['open_view', 'highlight_element', 'close_window'],
   'system':      ['list_users', 'get_my_profile', 'get_system_config', 'list_my_work'],
   'dashboard':   ['get_dashboard_stats', 'list_recent_events', 'get_project_health'],
   'office':      ['generate_docx', 'generate_xlsx', 'generate_pptx', 'document_edit'],
+  'project':     ['list_projects', 'create_project'],
 };
 
 // v0.66: L2 'app' category 动态加载所有 app-tool（前端应用通过 WS 暴露的能力）

@@ -37,6 +37,7 @@ function openPptEditor(w, fileId, fileName) {
   }
 
   function loadPptFromServer() {
+    console.log('[PPT-DEBUG] loadPptFromServer called:', {fileId, fileName, AK: typeof AK});
     
     if (!fileId) {
       
@@ -55,6 +56,7 @@ function openPptEditor(w, fileId, fileName) {
       w.$c.appendChild(loadEl);
     }
     var loadUrl = '/api/office/load/' + encodeURIComponent(fileId) + '?api_key=' + (typeof AK !== 'undefined' ? AK : 'dev-key-001');
+    console.log('[PPT-DEBUG] fetching:', loadUrl);
     console.log('[PPT-DEBUG] fetch url:', loadUrl);
     fetch(loadUrl)
       .then(function (r) {

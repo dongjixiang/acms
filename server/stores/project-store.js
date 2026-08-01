@@ -4,9 +4,12 @@ const path = require('path');
 
 class ProjectStore {
   create({ name, slug, description = '', wikiVaultPath = '', wikiDocsPath = 'docs/', owner = 'system' }) {
-    const id = `proj_${slug || name.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+    // 生成英文 slug：转小写，中文转拼音或保留，非字母数字替换为下划线
+    // 简单方案：用 name 直接生成 slug，保留中文
+    const defaultSlug = slug || name.toLowerCase().replace(/\s+/g, '-');
+    const id = `proj_${defaultSlug.replace(/[^a-z0-9\u4e00-\u9fa5-]/g, '')}`;
     const now = new Date().toISOString();
-    const resolvedSlug = slug || name;
+    const resolvedSlug = defaultSlug;
     const defaultWikiPath = path.join(__dirname, '..', '..', 'workspaces', resolvedSlug, 'wiki');
     const project = { id, name, slug: resolvedSlug, description, owner, status: 'active', visibility: 'team',
       tech_stack: '{}', wiki_vault_path: wikiVaultPath || defaultWikiPath, wiki_docs_path: wikiDocsPath,

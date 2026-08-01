@@ -483,10 +483,10 @@
       fetch('/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK).then(function(r){return r.text();}).then(function(content){
         window._fb_open_file = {name:fn,content:content};
         ACMSWin.open('code-editor',{w:900,h:600,title:'💻 '+fn});
-      }).catch(function(){to('读取文件失败','error');});
+      }).catch(function(e){console.log('[FB-DEBUG] PPT error:', e); to('读取文件失败: '+(e&&e.message||''), 'error');});
     } else if(appName==='office-word'){
       // Word: 下载文件并保存到 office 目录，然后用 fileId 打开
-      fetch('/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK).then(function(r){return r.arrayBuffer();}).then(function(buf){
+      fetch('/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK).then(function(r){console.log('[FB-DEBUG] Files API response:', r.status, r.ok); return r.arrayBuffer();}).then(function(buf){
         var b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
         return fetch('/api/office/save', {
           method: 'POST',
@@ -501,14 +501,22 @@
         }
       }).catch(function(){to('读取文件失败','error');});
     } else if(appName==='office-pptx') {
-      // PPT: 直接从 office 目录加载（不经过 files API）
-      fetch('/api/office/load/'+encodeURIComponent(fp)+'?api_key='+AK).then(function(r){return r.json();}).then(function(resp){
-        if(resp.ok && resp.filename) {
-          ACMSWin.open('office-pptx', {w:1000, h:650, title: '📽️ '+fn, fileId: fp, fileName: fn});
+      console.log('[FB-DEBUG] Opening PPT:', JSON.stringify({appName, fp, fn, ext, AK}));
+      // PPT: 下载文件并保存到 office 目录，然后用 fileId 打开
+      fetch('/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK).then(function(r){return r.arrayBuffer();}).then(function(buf){
+        var b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+        return fetch('/api/office/save', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json','X-API-Key':'dev-key-001'},
+          body: JSON.stringify({type:'pptx', name: fn, content: b64}),
+        });
+      }).then(function(r){return r.json();}).then(function(resp){
+        if(resp.ok && resp.fileId) {
+          ACMSWin.open('office-pptx', {w:1000, h:650, title: '📽️ '+fn, fileId: resp.fileId, fileName: fn});
         } else {
-          to('打开失败: '+((resp && resp.error) || '未知错误'),'error');
+          to('打开失败: 保存到编辑器目录失败','error');
         }
-      }).catch(function(e){to('读取文件失败: '+(e.message||'''),'error');});
+      }).catch(function(){to('读取文件失败','error');});
     } else if(appName==='office-xlsx') {
       // Excel: 类似处理
       fetch('/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK).then(function(r){return r.arrayBuffer();}).then(function(buf){

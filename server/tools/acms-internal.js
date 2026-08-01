@@ -370,6 +370,60 @@ registerTool({
 // ════════════════════════════════════════════════
 
 registerTool({
+  name: 'list_projects',
+  description: '列出当前用户可见的所有项目（不含系统项目）。用于创建新需求/任务前确认目标项目。',
+  parameters: {
+    type: 'object',
+    properties: {}
+  },
+  async handler(args, ctx) {
+    try {
+      const projectStore = require('../stores/project-store');
+      const projects = projectStore.list().filter(p => !p.system_project);
+      return {
+        ok: true,
+        projects: projects.map(p => ({ id: p.id, name: p.name, slug: p.slug, owner: p.owner, status: p.status })),
+        summary: `共 ${projects.length} 个项目`
+      };
+    } catch (e) { return { ok: false, error: 'INTERNAL', message: e.message }; }
+  }
+});
+
+registerTool({
+  name: 'create_project',
+  description: '创建一个新的 ACMS 项目。创建后会自动初始化工作区（workspaces/<slug>/）和知识库。需要 user 或 admin 权限。',
+  parameters: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: '项目名称（必填，中文或英文）' },
+      slug: { type: 'string', description: '项目标识符（可选，默认用 name 转小写替换空格为下划线）' },
+      description: { type: 'string', description: '项目描述（可选）' }
+    },
+    required: ['name']
+  },
+  async handler(args, ctx) {
+    const perm = checkPermission(ctx, null, ['user', 'admin']);
+    if (!perm.ok) return perm;
+    try {
+      const projectStore = require('../stores/project-store');
+      const project = projectStore.create({
+        name: args.name,
+        slug: args.slug,
+        description: args.description || '',
+        owner: perm.user.id
+      });
+      return {
+        ok: true,
+        project: { id: project.id, name: project.name, slug: project.slug },
+        summary: `项目「${project.name}」已创建（ID: ${project.id}）`,
+        _action: 'open_view',
+        _actionArg: { view: 'projects', projectId: project.id }
+      };
+    } catch (e) { return { ok: false, error: 'CREATE_FAILED', message: e.message }; }
+  }
+});
+
+registerTool({
   name: 'create_requirement',
   description: '创建一个新需求。需要 PM 权限或 admin 权限。创建后会自动跑简报生成（非阻塞）。',
   parameters: {
@@ -922,4 +976,377 @@ registerTool({
   },
 });
 
-console.log('[tools/acms-internal] 注册完成:', '26 个 ACMS 内部操作工具（查询 12 + 写 8 + 系统 2 + meta 2 + 管家通用 1 + 历史搜索 1）');
+// ─── 新增：任务创建、缺陷管理 ───
+
+registerTool({
+  name: 'create_task',
+  description: '创建一个新的任务。需要指定项目名称、任务标题和描述。',
+  parameters: {
+    type: 'object',
+    properties: {
+      projectId: { type: 'string', description: '项目 ID（必填）' },
+      parentId: { type: 'string', description: '父需求 ID（可选，关联到需求）' },
+      title: { type: 'string', description: '任务标题（必填）' },
+      description: { type: 'string', description: '任务描述（必填）' },
+      type: { type: 'string', description: '任务类型：coding/design/qa/research（可选，默认 coding）' },
+      priority: { type: 'number', description: '优先级 1-5（可选，默认 3）' },
+      requiredSkills: { type: 'array', items: { type: 'string' }, description: '所需技能（可选）' },
+      estimatedHours: { type: 'number', description: '预估工时（可选）' },
+    },
+    required: ['projectId', 'title', 'description']
+  },
+  async handler(args, ctx) {
+    const perm = checkPermission(ctx, args.projectId, ['user', 'admin']);
+    if (!perm.ok) return perm;
+    try {
+      const taskStore = require('../stores/task-store');
+      const task = taskStore.create({
+        projectId: args.projectId,
+        parentId: args.parentId || '',
+        title: args.title,
+        description: args.description || '',
+        type: args.type || 'coding',
+        priority: args.priority || 3,
+        requiredSkills: args.requiredSkills || [],
+        estimatedHours: args.estimatedHours || 0,
+      });
+      return { ok: true, task, summary: `任务「${task.title}」已创建` };
+    } catch (e) { return { ok: false, error: 'CREATE_TASK_FAILED', message: e.message }; }
+  }
+});
+
+registerTool({
+  name: 'search_bugs',
+  description: '搜索缺陷。支持按项目、状态、严重程度搜索。',
+  parameters: {
+    type: 'object',
+    properties: {
+      projectId: { type: 'string', description: '项目 ID（可选）' },
+      status: { type: 'string', description: '状态：open/in_progress/resolved/closed（可选）' },
+      severity: { type: 'string', description: '严重程度：critical/major/minor（可选）' },
+      limit: { type: 'number', description: '返回数量限制（可选，默认 20）' },
+    },
+    required: []
+  },
+  async handler(args, ctx) {
+    const perm = checkPermission(ctx);
+    if (!perm.ok) return perm;
+    try {
+      const bugService = require('../services/bug-service');
+      const bugs = bugService.listBugs({
+        projectId: args.projectId,
+        status: args.status,
+        severity: args.severity,
+        limit: args.limit || 20,
+      });
+      return { ok: true, bugs, count: bugs.length };
+    } catch (e) { return { ok: false, error: 'SEARCH_BUGS_FAILED', message: e.message }; }
+  }
+});
+
+registerTool({
+  name: 'create_bug',
+  description: '创建一个新的缺陷。',
+  parameters: {
+    type: 'object',
+    properties: {
+      projectId: { type: 'string', description: '项目 ID（必填）' },
+      title: { type: 'string', description: '缺陷标题（必填）' },
+      description: { type: 'string', description: '缺陷描述（必填）' },
+      severity: { type: 'string', description: '严重程度：critical/major/minor（可选，默认 major）' },
+      sourceTaskId: { type: 'string', description: '来源任务 ID（可选）' },
+      linkedRequirementId: { type: 'string', description: '关联需求 ID（可选）' },
+    },
+    required: ['projectId', 'title', 'description']
+  },
+  async handler(args, ctx) {
+    const perm = checkPermission(ctx, args.projectId, ['user', 'admin']);
+    if (!perm.ok) return perm;
+    try {
+      const bugService = require('../services/bug-service');
+      const bug = bugService.createBugDirect(args.projectId, {
+        title: args.title,
+        description: args.description || '',
+        severity: args.severity || 'major',
+        source: 'manual',
+        sourceTaskId: args.sourceTaskId || '',
+        linkedRequirementId: args.linkedRequirementId || '',
+      });
+      return { ok: true, bug, summary: `缺陷「${bug.title}」已创建` };
+    } catch (e) { return { ok: false, error: 'CREATE_BUG_FAILED', message: e.message }; }
+  }
+});
+
+registerTool({
+  name: 'close_bug',
+  description: '关闭一个缺陷。',
+  parameters: {
+    type: 'object',
+    properties: {
+      bugId: { type: 'string', description: '缺陷 ID（必填）' },
+      note: { type: 'string', description: '关闭备注（可选）' },
+    },
+    required: ['bugId']
+  },
+  async handler(args, ctx) {
+    const perm = checkPermission(ctx);
+    if (!perm.ok) return perm;
+    try {
+      const collection = require('../db/connection').collection;
+      const now = new Date().toISOString();
+      const bug = collection('bugs').update(t => t.id === args.bugId, {
+        status: 'closed',
+        closed_at: now,
+        close_note: args.note || '',
+        updated_at: now,
+      });
+      if (!bug) return { ok: false, error: 'NOT_FOUND', message: '缺陷不存在' };
+      return { ok: true, bug, summary: `缺陷「${bug.title}」已关闭` };
+    } catch (e) { return { ok: false, error: 'CLOSE_BUG_FAILED', message: e.message }; }
+  }
+});
+
+registerTool({
+  name: 'assign_bug',
+  description: '指派一个缺陷给某个 Agent。',
+  parameters: {
+    type: 'object',
+    properties: {
+      bugId: { type: 'string', description: '缺陷 ID（必填）' },
+      agentId: { type: 'string', description: 'Agent ID（必填）' },
+      note: { type: 'string', description: '指派备注（可选）' },
+    },
+    required: ['bugId', 'agentId']
+  },
+  async handler(args, ctx) {
+    const perm = checkPermission(ctx);
+    if (!perm.ok) return perm;
+    try {
+      const collection = require('../db/connection').collection;
+      const now = new Date().toISOString();
+      const bug = collection('bugs').update(t => t.id === args.bugId, {
+        assigned_to: args.agentId,
+        assigned_at: now,
+        updated_at: now,
+      });
+      if (!bug) return { ok: false, error: 'NOT_FOUND', message: '缺陷不存在' };
+      return { ok: true, bug, summary: `缺陷「${bug.title}」已指派给 ${args.agentId}` };
+    } catch (e) { return { ok: false, error: 'ASSIGN_BUG_FAILED', message: e.message }; }
+  }
+});
+
+registerTool({
+  name: 'get_my_profile',
+  description: '获取当前用户的档案信息。',
+  parameters: {
+    type: 'object',
+    properties: {},
+    required: []
+  },
+  async handler(args, ctx) {
+    const perm = checkPermission(ctx);
+    if (!perm.ok) return perm;
+    return { ok: true, user: perm.user };
+  }
+});
+
+registerTool({
+  name: 'get_agent_tasks',
+  description: '获取某个 Agent 的任务列表。',
+  parameters: {
+    type: 'object',
+    properties: {
+      agentId: { type: 'string', description: 'Agent ID（必填）' },
+      status: { type: 'string', description: '状态过滤（可选）' },
+      limit: { type: 'number', description: '返回数量限制（可选，默认 20）' },
+    },
+    required: ['agentId']
+  },
+  async handler(args, ctx) {
+    const perm = checkPermission(ctx);
+    if (!perm.ok) return perm;
+    try {
+      const taskStore = require('../stores/task-store');
+      const tasks = taskStore.list({ assignedTo: args.agentId, status: args.status, limit: args.limit || 20 });
+      return { ok: true, tasks, count: tasks.length };
+    } catch (e) { return { ok: false, error: 'GET_AGENT_TASKS_FAILED', message: e.message }; }
+  }
+});
+
+registerTool({
+  name: 'register_agent',
+  description: '注册一个新的 Agent。',
+  parameters: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: 'Agent 名称（必填）' },
+      modelId: { type: 'string', description: '关联的模型 ID（可选）' },
+      role: { type: 'string', description: '角色：reviewer/executor/admin（可选，默认 reviewer）' },
+      capabilities: { type: 'array', items: { type: 'string' }, description: '能力列表（可选）' },
+    },
+    required: ['name']
+  },
+  async handler(args, ctx) {
+    const perm = checkPermission(ctx, null, ['admin']);
+    if (!perm.ok) return perm;
+    try {
+      const agentStore = require('../stores/agent-store');
+      const agent = agentStore.create({
+        name: args.name,
+        modelId: args.modelId || '',
+        role: args.role || 'reviewer',
+        capabilities: args.capabilities || [],
+      });
+      return { ok: true, agent, summary: `Agent「${agent.name}」已注册` };
+    } catch (e) { return { ok: false, error: 'REGISTER_AGENT_FAILED', message: e.message }; }
+  }
+});
+
+registerTool({
+  name: 'update_agent_status',
+  description: '更新 Agent 状态（online/offline）。',
+  parameters: {
+    type: 'object',
+    properties: {
+      agentId: { type: 'string', description: 'Agent ID（必填）' },
+      status: { type: 'string', description: '新状态：online/offline（必填）' },
+    },
+    required: ['agentId', 'status']
+  },
+  async handler(args, ctx) {
+    const perm = checkPermission(ctx, null, ['admin']);
+    if (!perm.ok) return perm;
+    try {
+      const agentStore = require('../stores/agent-store');
+      const agent = agentStore.updateStatus(args.agentId, args.status);
+      if (!agent) return { ok: false, error: 'NOT_FOUND', message: 'Agent 不存在' };
+      return { ok: true, agent, summary: `Agent「${agent.name}」状态已更新为 ${args.status}` };
+    } catch (e) { return { ok: false, error: 'UPDATE_AGENT_STATUS_FAILED', message: e.message }; }
+  }
+});
+
+registerTool({
+  name: 'get_project_health',
+  description: '获取项目的健康度统计（缺陷趋势、任务完成率、交付进度等）。',
+  parameters: {
+    type: 'object',
+    properties: {
+      projectId: { type: 'string', description: '项目 ID（必填）' },
+    },
+    required: ['projectId']
+  },
+  async handler(args, ctx) {
+    const perm = checkPermission(ctx, args.projectId);
+    if (!perm.ok) return perm;
+    try {
+      const projectStore = require('../stores/project-store');
+      const taskStore = require('../stores/task-store');
+      const collection = require('../db/connection').collection;
+      
+      const project = projectStore.getById(args.projectId);
+      if (!project) return { ok: false, error: 'NOT_FOUND', message: '项目不存在' };
+      
+      const tasks = taskStore.list({ projectId: args.projectId, limit: 1000 });
+      const bugs = collection('bugs').find(b => b.projectId === args.projectId && b.status !== 'closed');
+      
+      const total = tasks.length;
+      const completed = tasks.filter(t => t.status === 'done').length;
+      const inProgress = tasks.filter(t => t.status === 'in_progress').length;
+      const openBugs = bugs.length;
+      const criticalBugs = bugs.filter(b => b.severity === 'critical').length;
+      
+      return {
+        ok: true,
+        projectId: args.projectId,
+        projectName: project.name,
+        health: {
+          taskCompletionRate: total > 0 ? Math.round(completed / total * 100) : 0,
+          totalTasks: total,
+          completedTasks: completed,
+          inProgressTasks: inProgress,
+          openBugs: openBugs,
+          criticalBugs: criticalBugs,
+          overallScore: total > 0 ? Math.round((completed / total * 60 + Math.max(0, 40 - criticalBugs * 10))) : 0,
+        }
+      };
+    } catch (e) { return { ok: false, error: 'GET_HEALTH_FAILED', message: e.message }; }
+  }
+});
+
+registerTool({
+  name: 'close_window',
+  description: '关闭 ACMS 某个视图窗口。',
+  parameters: {
+    type: 'object',
+    properties: {
+      viewId: { type: 'string', description: '窗口 ID（可选，不传则关闭最近打开的窗口）' }
+    }
+  },
+  async handler(args, ctx) {
+    return {
+      ok: true,
+      _windowHint: args.viewId || 'last',
+      summary: `请在 final answer 末尾加【action:close_window:${args.viewId || 'last'}】，前端会关闭对应窗口`,
+      hintForLLM: `你调用了 close_window(${args.viewId || 'last'})。请在你的回复末尾加一行：\n\n【action:close_window:${args.viewId || 'last'}】\n\n前端会识别这个标记并关闭窗口。`
+    };
+  }
+});
+
+registerTool({
+  name: 'update_requirement',
+  description: '更新需求的基本信息（标题、描述、优先级等）。',
+  parameters: {
+    type: 'object',
+    properties: {
+      reqId: { type: 'string', description: '需求 ID（必填）' },
+      title: { type: 'string', description: '新标题（可选）' },
+      description: { type: 'string', description: '新描述（可选）' },
+      priority: { type: 'number', description: '新优先级（可选）' },
+      tags: { type: 'array', items: { type: 'string' }, description: '新标签（可选）' },
+    },
+    required: ['reqId']
+  },
+  async handler(args, ctx) {
+    const perm = checkPermission(ctx);
+    if (!perm.ok) return perm;
+    try {
+      const reqStore = require('../stores/requirement-store');
+      const updates = {};
+      if (args.title) updates.title = args.title;
+      if (args.description) updates.description = args.description;
+      if (args.priority) updates.priority = args.priority;
+      if (args.tags) updates.tags = args.tags;
+      const req = reqStore.update(args.reqId, updates);
+      if (!req) return { ok: false, error: 'NOT_FOUND', message: '需求不存在' };
+      return { ok: true, requirement: req, summary: `需求「${req.title}」已更新` };
+    } catch (e) { return { ok: false, error: 'UPDATE_REQ_FAILED', message: e.message }; }
+  }
+});
+
+registerTool({
+  name: 'get_system_config',
+  description: '获取系统配置信息。',
+  parameters: {
+    type: 'object',
+    properties: {},
+    required: []
+  },
+  async handler(args, ctx) {
+    const perm = checkPermission(ctx, null, ['admin']);
+    if (!perm.ok) return perm;
+    try {
+      const config = require('../../config.json');
+      return {
+        ok: true,
+        config: {
+          ai: config.ai,
+          auth: { apiKey: config.auth?.apiKey ? '[SET]' : '[NOT SET]' },
+          features: config.features || {},
+          tools: config.tools || {},
+        }
+      };
+    } catch (e) { return { ok: false, error: 'GET_CONFIG_FAILED', message: e.message }; }
+  }
+});
+
+console.log('[tools/acms-internal] 注册完成:', '42 个 ACMS 内部操作工具（查询 16 + 写 16 + 系统 6 + meta 2 + 管家通用 1 + 历史搜索 1）');
