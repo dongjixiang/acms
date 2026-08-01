@@ -487,7 +487,6 @@
     }
     startActionPolling(action.requirementId);
   }
-  }
 
   function actionStatusMeta(status) {
     var map = {
