@@ -675,65 +675,52 @@ async function parseXlsxToSchema(buf) {
 
 // ─────────── docx 解析为带格式 markdown ───────────
 function parseDocxToMarkdown(xml) {
-  // 提取所有段落
-  const paragraphs = xml.match(/<w:p[^>]*>[\s\S]*?<\/w:p>/g) || [];
-  const lines = [];
-  
-  for (const p of paragraphs) {
-    // 检测段落样式（标题级别）
-    const styleMatch = p.match(/w:pStyle w:val="([^"]+)"/);
-    const style = styleMatch ? styleMatch[1] : '';
-    
-    // 提取文本 run（保留格式）
-    const runs = p.match(/<w:r[^>]*>[\s\S]*?<\/w:r>/g) || [];
-    let line = '';
-    let isBold = false, isItalic = false;
-    
-    for (const run of runs) {
-      // 检测 run 级格式
-      const rPr = run.match(/<w:rPr>([\s\S]*?)<\/w:rPr>/);
+  var paragraphs = xml.match(/<w:p[^>]*>[\s\S]*?<\/w:p>/g) || [];
+  var lines = [];
+
+  for (var i = 0; i < paragraphs.length; i++) {
+    var p = paragraphs[i];
+    var styleMatch = p.match(/w:pStyle w:val="([^"]+)"/);
+    var style = styleMatch ? styleMatch[1] : '';
+    var runs = p.match(/<w:r[^>]*>[\s\S]*?<\/w:r>/g) || [];
+    var line = '';
+    var isBold = false;
+    var isItalic = false;
+
+    for (var j = 0; j < runs.length; j++) {
+      var run = runs[j];
+      var rPr = run.match(/<w:rPr>([\s\S]*?)<\/w:rPr>/);
       if (rPr) {
         if (/<w:b[^\/]*\/>/i.test(rPr[1])) isBold = true;
         if (/<w:i[^\/]*\/>/i.test(rPr[1])) isItalic = true;
       }
-      
-      // 提取文本
-      const textMatches = run.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) || [];
-      for (const t of textMatches) {
-        const text = t.replace(/<[^>]+>/g, '');
-        let formatted = text;
+      var textMatches = run.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) || [];
+      for (var k = 0; k < textMatches.length; k++) {
+        var text = textMatches[k].replace(/<[^>]+>/g, '');
+        var formatted = text;
         if (isBold) formatted = '**' + formatted + '**';
         if (isItalic) formatted = '*' + formatted + '*';
         line += formatted;
       }
     }
-    
-    // 根据样式添加 markdown 前缀
-    if (style === 'Heading1' || style === 'Title') {
-      lines.push('# ' + line.trim());
-    } else if (style === 'Heading2') {
-      lines.push('## ' + line.trim());
-    } else if (style === 'Heading3') {
-      lines.push('### ' + line.trim());
-    } else if (style === 'Heading4') {
-      lines.push('#### ' + line.trim());
-    } else if (style === 'Heading5') {
-      lines.push('##### ' + line.trim());
-    } else if (style === 'Heading6') {
-      lines.push('###### ' + line.trim());
-    } else if (style === 'Code') {
-      lines.push('```
-' + line.trim() + '
+
+    var trimmed = line.trim();
+    if (!trimmed) continue;
+
+    if (style === 'Heading1' || style === 'Title') lines.push('# ' + trimmed);
+    else if (style === 'Heading2') lines.push('## ' + trimmed);
+    else if (style === 'Heading3') lines.push('### ' + trimmed);
+    else if (style === 'Heading4') lines.push('#### ' + trimmed);
+    else if (style === 'Heading5') lines.push('##### ' + trimmed);
+    else if (style === 'Heading6') lines.push('###### ' + trimmed);
+    else if (style === 'Code') lines.push('```
+' + trimmed + '
 ```');
-    } else if (style === 'Quote') {
-      lines.push('> ' + line.trim());
-    } else {
-      lines.push(line.trim());
-    }
+    else if (style === 'Quote') lines.push('> ' + trimmed);
+    else lines.push(trimmed);
   }
-  
-  // 清理空行
-  return lines.filter(l => l.trim()).join('
+
+  return lines.filter(function(l) { return l.trim(); }).join('
 
 ');
 }
