@@ -1037,10 +1037,8 @@ document.addEventListener('DOMContentLoaded', () => {
   PKG('office-word', {
     title: 'Word 文档', icon: '📝', category: '工具', defaultSize: { w: 900, h: 600 },
     loader: function(w, opts) {
-      console.log('[WORD-DEBUG] PKG loader called with opts:', JSON.stringify(opts));
-      var f = window._fb_open_file; window._fb_open_file = null;
-      console.log('[WORD-DEBUG] _fb_open_file:', f ? f.name : null);
-      if (typeof openWordEditor === 'function') {
+            var f = window._fb_open_file; window._fb_open_file = null;
+            if (typeof openWordEditor === 'function') {
         openWordEditor(w, opts && opts.fileId, f ? f.name : null, f ? f.content : null);
       }
       else w.$c.innerHTML = '<div style="padding:40px;text-align:center">加载中...</div>';

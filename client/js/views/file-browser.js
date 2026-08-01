@@ -495,7 +495,6 @@
         });
       }).then(function(r){return r.json();}).then(function(resp){
         if(resp.ok && resp.fileId) {
-          console.log('[FB-DEBUG] Opening office-word with opts:', JSON.stringify({w:1000, h:700, title: '📝 '+fn, fileId: resp.fileId, fileName: fn}));
           ACMSWin.open('office-word', {w:1000, h:700, title: '📝 '+fn, fileId: resp.fileId, fileName: fn});
         } else {
           to('打开失败: 保存到编辑器目录失败','error');
