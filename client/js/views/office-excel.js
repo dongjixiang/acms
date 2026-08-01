@@ -344,6 +344,72 @@ function openExcelEditor(w) {
       renderTable();
       toast('已排序 ' + (r2 - r1 + 1) + ' 行 ' + (ascending ? '升序' : '降序'), 'success');
     },
+    // v0.65: 排序对话框 — 选列 + 方向
+    openSortDialog: function () {
+      if (!sel.start) return toast('请先选中数据区域', 'warning');
+      var r1 = Math.min(sel.start[0], sel.end[0]);
+      var c1 = Math.min(sel.start[1], sel.end[1]);
+      var c2 = Math.max(sel.start[1], sel.end[1]);
+      // 构建列选择
+      var colOpts = [];
+      for (var c = c1; c <= c2; c++) {
+        var header = cellStr(data[r1] && data[r1][c]);
+        colOpts.push({ value: c, label: (header || colLetter(c)) + ' (' + colLetter(c) + ')' });
+      }
+      if (colOpts.length === 0) return toast('没有数据列', 'warning');
+      var dlg = document.createElement('div');
+      dlg.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.4);z-index:100000;display:flex;align-items:center;justify-content:center;';
+      var box = document.createElement('div');
+      box.style.cssText = 'background:var(--bg,#fff);border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,0.2);padding:20px 24px;min-width:300px;';
+      box.innerHTML = '<h3 style="margin:0 0 16px;font-size:15px;color:var(--text,#333)">排序</h3>';
+      var sel = document.createElement('select');
+      sel.style.cssText = 'width:100%;padding:6px 8px;margin-bottom:10px;border:1px solid var(--office-divider);border-radius:4px;font-size:13px;';
+      colOpts.forEach(function(o){ var op = document.createElement('option'); op.value = o.value; op.textContent = o.label; sel.appendChild(op); });
+      var dir = document.createElement('select');
+      dir.style.cssText = 'width:100%;padding:6px 8px;margin-bottom:16px;border:1px solid var(--office-divider);border-radius:4px;font-size:13px;';
+      dir.innerHTML = '<option value="asc">升序 ↑</option><option value="desc">降序 ↓</option>';
+      var btns = document.createElement('div');
+      btns.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
+      var cancelBtn = document.createElement('button');
+      cancelBtn.textContent = '取消';
+      cancelBtn.style.cssText = 'padding:6px 16px;border:1px solid var(--office-divider);border-radius:4px;background:var(--bg,#fff);cursor:pointer;font-size:13px;';
+      var okBtn = document.createElement('button');
+      okBtn.textContent = '确定';
+      okBtn.style.cssText = 'padding:6px 16px;border:none;border-radius:4px;background:var(--office-primary);color:#fff;cursor:pointer;font-size:13px;';
+      btns.appendChild(cancelBtn);
+      btns.appendChild(okBtn);
+      box.appendChild(sel);
+      box.appendChild(dir);
+      box.appendChild(btns);
+      dlg.appendChild(box);
+      document.body.appendChild(dlg);
+      // 事件
+      cancelBtn.onclick = function(){ document.body.removeChild(dlg); };
+      dlg.onclick = function(e){ if(e.target === dlg) document.body.removeChild(dlg); };
+      okBtn.onclick = function(){
+        document.body.removeChild(dlg);
+        var sortCol = parseInt(sel.value);
+        var ascending = dir.value === 'asc';
+        // 排序 r1+1 到 r2 行（跳过标题行 r1）
+        var sortR1 = r1, sortR2 = Math.max(r1 + 1, r2);
+        var rows = [];
+        for (var ri = sortR1; ri <= sortR2; ri++) {
+          rows.push({ idx: ri, cells: data[ri].slice() });
+        }
+        rows.sort(function(a, b) {
+          var va = parseFloat(cellStr(a.cells[sortCol])), vb = parseFloat(cellStr(b.cells[sortCol]));
+          if (!isNaN(va) && !isNaN(vb)) return ascending ? va - vb : vb - va;
+          var sa = cellStr(a.cells[sortCol] || ''), sb = cellStr(b.cells[sortCol] || '');
+          return ascending ? sa.localeCompare(sb) : sb.localeCompare(sa);
+        });
+        rows.forEach(function(row, i) {
+          for (var c = 0; c < COLS; c++) data[sortR1 + i][c] = row.cells[c] || '';
+        });
+        markDirty();
+        renderTable();
+        toast('已按 ' + colLetter(sortCol) + ' ' + (ascending ? '升序' : '降序'), 'success');
+      };
+    },
     toggleFilter: function () {
       // v0.65: 增强为 AutoFilter — 带下拉箭头的列筛选
       autoFilterActive = !autoFilterActive;
@@ -1292,6 +1358,7 @@ function openExcelEditor(w) {
               { title: '排序', buttons: [
                 { id: 'sort-asc',  icon: '⬆️', label: '升序', action: function(){ ops.sortRange(true); } },
                 { id: 'sort-desc', icon: '⬇️', label: '降序', action: function(){ ops.sortRange(false); } },
+                { id: 'sort-dialog', icon: '📋', label: '排序选项', action: ops.openSortDialog },
               ]},
               { title: '筛选', buttons: [
                 { id: 'toggle-filter', icon: '🔍', label: '自动筛选', action: ops.toggleFilter },
