@@ -256,9 +256,11 @@ router.get('/load/:fileId', function (req, res) {
             text = '(PPTX 文本提取失败，请手动创建)';
           }
         } catch (e) { text = '(PPTX 解析失败: ' + e.message + ')'; }
-      } else {
-        text = '(二进制文件，请使用专门的 Excel/PPT 编辑器打开)';
       }
+    } catch (e) { text = '(PPTX 解析失败: ' + e.message + ')'; }
+    } else {
+      text = '(二进制文件，请使用专门的 Excel/PPT 编辑器打开)';
+    }
     } else {
       text = buf.toString('utf8');
     }
