@@ -477,8 +477,16 @@
     card.dataset.mode = action.mode || 'conversational_action';
     if (!existing) container.appendChild(card);
     updateActionCard(card, action.status || {}, action);
-    container.scrollTop = container.scrollHeight;
+    // v0.76: 如果 tool 返回了 _action（如 enter_project），执行前端动作
+    if (action._action && action._action.enterProject) {
+      setTimeout(function() {
+        if (typeof enterProject === 'function') {
+          enterProject({ id: action._action.enterProject, name: action._action.enterProject.replace('proj_', '') });
+        }
+      }, 800);
+    }
     startActionPolling(action.requirementId);
+  }
   }
 
   function actionStatusMeta(status) {
