@@ -1084,3 +1084,11 @@ function insertFormulaWithArgs(fnName, args) {
 
 // ─── 注册全局函数供 PKG 调用 =====
 window.openPptEditor = openPptEditor;
+
+// 注册为 ACMSWin 视图加载器
+if (typeof ACMSWin !== 'undefined' && ACMSWin.registerViewLoader) {
+  ACMSWin.registerViewLoader('office-pptx', function(w) {
+    var opts = arguments[1] || {};
+    openPptEditor(w, opts.fileId, opts.fileName);
+  });
+}
