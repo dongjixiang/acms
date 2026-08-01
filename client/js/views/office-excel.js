@@ -1228,6 +1228,8 @@ function openExcelEditor(w, fileId, fileName) {
         var colSpanAttr = colSpan > 1 ? ' colspan="' + colSpan + '"' : '';
         var cell = data[ri][ci2];
         var val = escHtml(cellStr(cell));
+        // 调试：显示第一列值
+        if (ri <= 3 && ci2 <= 1) console.log('[xlsx] 单元格', ri, ci2, '值:', val, '原始:', cell);
         var fmt = cellFmt(cell);
         var style = 'outline:none;min-height:20px;padding:2px';
         if (fmt.bold) style += ';font-weight:bold';
