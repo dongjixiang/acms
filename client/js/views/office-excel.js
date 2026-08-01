@@ -1991,20 +1991,20 @@ function openExcelEditor(w, fileId, fileName) {
   if (_isServerFile && _fileId) {
     // 显示加载状态
     w.$c.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text2)">⏳ 正在加载 ' + (fileName || 'Excel 文件') + '...</div>';
+    console.log('[Excel] 开始加载文件:', _fileId, fileName);
     fetch('/api/office/load/' + encodeURIComponent(_fileId))
       .then(function(r) { return r.json(); })
       .then(function(resp) {
+        console.log('[Excel] 加载响应:', resp);
         if (!resp.ok) throw new Error(resp.error || '加载失败');
         // 解析 content (base64)
-        var binary = atob(resp.content);
-        var bytes = new Uint8Array(binary.length);
-        for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        // 尝试解析为 schema JSON
         if (resp.text && resp.text.startsWith('SCHEMA:')) {
-          var schemaData = JSON.parse(resp.text.slice(7));
+          var schemaStr = resp.text.slice(7);
+          console.log('[Excel] Schema 数据:', schemaStr.substring(0, 200));
+          var schemaData = JSON.parse(schemaStr);
           // 恢复 sheets
           sheets = [];
-          if (schemaData.sheets && Array.isArray(schemaData.sheets)) {
+          if (schemaData.sheets && Array.isArray(schemaData.sheets) && schemaData.sheets.length > 0) {
             schemaData.sheets.forEach(function(s) {
               var sheetData = [];
               if (s.rows && Array.isArray(s.rows)) {
@@ -2015,21 +2015,27 @@ function openExcelEditor(w, fileId, fileName) {
                 // 添加数据行
                 s.rows.forEach(function(row) {
                   var nr = [];
-                  for (var c = 0; c < COLS; c++) nr.push(row[c] || '');
+                  for (var c = 0; c < COLS; c++) nr.push(row[c] !== undefined ? row[c] : '');
                   sheetData.push(nr);
                 });
               }
+              console.log('[Excel] 添加 sheet:', s.name, '行数:', sheetData.length);
               sheets.push({ name: s.name || 'Sheet' + (sheets.length + 1), data: sheetData });
             });
-          }
-          currentSheetIdx = 0;
-          data = sheets[0].data;
-          if (w.$c.querySelector('#xlsx-title-input')) {
-            w.$c.querySelector('#xlsx-title-input').value = fileName || resp.filename;
+            currentSheetIdx = 0;
+            data = sheets[0].data;
+            if (w.$c.querySelector('#xlsx-title-input')) {
+              w.$c.querySelector('#xlsx-title-input').value = fileName || resp.filename;
+            }
+            console.log('[Excel] 数据已加载，总行数:', data.length);
+          } else {
+            console.warn('[Excel] Schema 中没有 sheets 数据');
+            sheets = [{ name: 'Sheet1', data: blankData() }];
+            currentSheetIdx = 0;
+            data = sheets[0].data;
           }
         } else {
-          // 二进制 xlsx，尝试从 text 字段解析
-          // 这里保持空白数据，用户可以编辑后保存
+          console.warn('[Excel] 不是 SCHEMA 格式，使用空白数据');
           sheets = [{ name: 'Sheet1', data: blankData() }];
           currentSheetIdx = 0;
           data = sheets[0].data;
@@ -2038,6 +2044,7 @@ function openExcelEditor(w, fileId, fileName) {
           }
         }
         renderTable();
+        console.log('[Excel] 表格已渲染');
       })
       .catch(function(e) {
         console.error('[Excel] 加载失败:', e);
