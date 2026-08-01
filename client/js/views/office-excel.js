@@ -1192,6 +1192,7 @@ function openExcelEditor(w, fileId, fileName) {
       if (span > 1) thStyle += ';min-width:' + (80 * span) + 'px';
       // 使用 headers 作为列标题，如果没有 headers 则用列字母
       var colTitle = (data[0] && data[0][ci]) ? escHtml(data[0][ci]) : colLetter(ci);
+      console.log('[xlsx] 渲染列头', ci, 'title:', colTitle, 'maxCols:', maxCols, 'data[0]:', data[0]);
       h += '<th class="xlsx-col-header" data-col="' + ci + '" colspan="' + span + '" style="' + thStyle + '">' + colTitle + filterArrow + '</th>';
       ci += span;
     }

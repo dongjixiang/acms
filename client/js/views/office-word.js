@@ -1,6 +1,7 @@
 // ACMS Word 编辑器 — 依赖 office-common.js (escHtml, showCtxMenu)
 
 function openWordEditor(w, fileId, fileName, content) {
+  var AK = window.AK || "dev-key-001";
   console.log('[Word] openWordEditor called', { fileId, fileName, contentLen: content ? content.length : 0, wcW: w.$c.offsetWidth, wcH: w.$c.offsetHeight });
   // 容器 = 整个 PKG 内容区，套 .oo-editor 类（让主题色生效）
   w.$c.innerHTML = '<div class="oo-editor oo-editor-word" style="height:100%;display:flex;flex-direction:column"></div>';
