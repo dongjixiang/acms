@@ -138,21 +138,15 @@ router.get('/load/:fileId', async function (req, res) {
     var buf = fs.readFileSync(filePath);
     var ext = (path.extname(match) || '').toLowerCase().replace(/^\./, '');
     var text = '';
-    // docx 提取纯文本（简单实现：解 zip 读 word/document.xml，提取 w:t 内容）
+        // docx 提取带格式文本
     if (ext === 'docx') {
       try {
         var AdmZip = require('adm-zip');
         var zip = new AdmZip(buf);
         var docXml = zip.readAsText('word/document.xml');
-        // 提取所有 <w:t>...</w:t> 内容，<w:p> 分段
-        text = docXml
-          .replace(/<\/w:p>/g, '\n')
-          .replace(/<[^>]+>/g, '')
-          .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&quot;/g, '"')
-          .replace(/\n{3,}/g, '\n\n')
-          .trim();
+        text = parseDocxToMarkdown(docXml);
       } catch (e) { text = '(docx 文本提取失败: ' + e.message + ')'; }
-    } else if (ext === 'xlsx') {
+    } else if (ext === 'xlsx') { else if (ext === 'xlsx') { {
       // v0.63 Phase3: 优先读 .schema.json（结构化数据）
       var schemaFile = filePath.replace('.' + ext, '.schema.json');
       if (fs.existsSync(schemaFile)) {
@@ -713,9 +707,7 @@ function parseDocxToMarkdown(xml) {
     else if (style === 'Heading4') lines.push('#### ' + trimmed);
     else if (style === 'Heading5') lines.push('##### ' + trimmed);
     else if (style === 'Heading6') lines.push('###### ' + trimmed);
-    else if (style === 'Code') lines.push('```
-' + trimmed + '
-```');
+    else if (style === 'Code') lines.push('```\n' + trimmed + '\n```');
     else if (style === 'Quote') lines.push('> ' + trimmed);
     else lines.push(trimmed);
   }
