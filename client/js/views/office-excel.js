@@ -6,8 +6,13 @@
 // v0.62.3: 底部状态栏（位置 / 选中范围 / sum / avg / count）
 // 升级：showPrompt 替代 prompt() / 保存 payload 改 sheets[] 数组（PR 1 兼容）
 // v0.62.5 PR-C: 多 sheet 支持 — sheets[] 数组 + currentSheetIdx + 底部 Sheet tabs
-function openExcelEditor(w) {
+// v0.65: 支持 fileId/fileName 参数从服务器加载文件
+function openExcelEditor(w, fileId, fileName) {
   var ROWS = 20, COLS = 8;
+
+  // v0.62.7: 文件来源: server(有fileId) / local(无fileId)
+  var _isServerFile = !!fileId;
+  var _fileId = fileId || null;
 
   // v0.62.5: 多 sheet 数据结构（每个 sheet 独立 data 数组）
   var sheets = [];
@@ -1978,8 +1983,66 @@ function openExcelEditor(w) {
       a.href = url; a.download = baseName + '.csv';
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      toast('已导出 ' + baseName + '.csv', 'success');
+    toast('已导出 ' + baseName + '.csv', 'success');
     };
+  }
+
+  // v0.65: 从服务器加载文件
+  if (_isServerFile && _fileId) {
+    // 显示加载状态
+    w.$c.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text2)">⏳ 正在加载 ' + (fileName || 'Excel 文件') + '...</div>';
+    fetch('/api/office/load/' + encodeURIComponent(_fileId))
+      .then(function(r) { return r.json(); })
+      .then(function(resp) {
+        if (!resp.ok) throw new Error(resp.error || '加载失败');
+        // 解析 content (base64)
+        var binary = atob(resp.content);
+        var bytes = new Uint8Array(binary.length);
+        for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        // 尝试解析为 schema JSON
+        if (resp.text && resp.text.startsWith('SCHEMA:')) {
+          var schemaData = JSON.parse(resp.text.slice(7));
+          // 恢复 sheets
+          sheets = [];
+          if (schemaData.sheets && Array.isArray(schemaData.sheets)) {
+            schemaData.sheets.forEach(function(s) {
+              var sheetData = [];
+              if (s.rows && Array.isArray(s.rows)) {
+                // 添加标题行
+                if (s.headers && Array.isArray(s.headers)) {
+                  sheetData.push(s.headers);
+                }
+                // 添加数据行
+                s.rows.forEach(function(row) {
+                  var nr = [];
+                  for (var c = 0; c < COLS; c++) nr.push(row[c] || '');
+                  sheetData.push(nr);
+                });
+              }
+              sheets.push({ name: s.name || 'Sheet' + (sheets.length + 1), data: sheetData });
+            });
+          }
+          currentSheetIdx = 0;
+          data = sheets[0].data;
+          if (w.$c.querySelector('#xlsx-title-input')) {
+            w.$c.querySelector('#xlsx-title-input').value = fileName || resp.filename;
+          }
+        } else {
+          // 二进制 xlsx，尝试从 text 字段解析
+          // 这里保持空白数据，用户可以编辑后保存
+          sheets = [{ name: 'Sheet1', data: blankData() }];
+          currentSheetIdx = 0;
+          data = sheets[0].data;
+          if (w.$c.querySelector('#xlsx-title-input')) {
+            w.$c.querySelector('#xlsx-title-input').value = fileName || '已加载.xlsx';
+          }
+        }
+        renderTable();
+      })
+      .catch(function(e) {
+        console.error('[Excel] 加载失败:', e);
+        w.$c.innerHTML = '<div style="padding:24px;text-align:center;color:#a00">❌ 加载失败：' + (e.message || '未知错误') + '<br>fileId: ' + _fileId + '</div>';
+      });
   }
 
   // 初始状态入 undo 栈
