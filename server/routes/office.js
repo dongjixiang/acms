@@ -230,22 +230,7 @@ function blockToParagraph(b, D) {
 
   let runs;
   if (hasBlockFmt) {
-    // 解析文本，然后给每个 run 添加块级格式
-    runs = parseInlineFormatting(text, D);
-    runs = runs.map(function(r) {
-      // 确保保留原有 text，再添加块级格式
-      const opts = Object.assign({ text: r.text || '' }, r);
-      if (fmt.bold) opts.bold = true;
-      if (fmt.italic) opts.italics = true;
-      if (fmt.underline) opts.underline = {};
-      if (fmt.fontSize) opts.size = fmt.fontSize * 2;
-      if (fmt.fontFamily) {
-        if (fmt.fontFamily === 'mono') opts.font = 'Consolas';
-        else if (fmt.fontFamily === 'serif') opts.font = 'Georgia';
-        else opts.font = 'Calibri';
-      }
-      return new TextRun(opts);
-    });
+    runs = parseInlineFormatting(text, D, fmt);
   } else {
     runs = parseInlineFormatting(text, D);
   }
@@ -277,7 +262,7 @@ function blockToParagraph(b, D) {
   return new Paragraph(paraOpts);
 }
 
-function parseInlineFormatting(text, D) {
+function parseInlineFormatting(text, D, blockFmt) {
   // 极简 markdown 行内：支持 **bold**、*italic*、`code`
   const { TextRun } = D;
   const runs = [];
@@ -286,21 +271,67 @@ function parseInlineFormatting(text, D) {
   let m;
   while ((m = re.exec(text)) !== null) {
     if (m.index > last) {
-      runs.push(new TextRun({ text: text.slice(last, m.index) }));
+      runs.push({ text: text.slice(last, m.index) });
     }
     const token = m[0];
+    let opts = { text: '' };
     if (token.startsWith('**')) {
-      runs.push(new TextRun({ text: token.slice(2, -2), bold: true }));
+      opts.text = token.slice(2, -2);
+      opts.bold = true;
     } else if (token.startsWith('`')) {
-      runs.push(new TextRun({ text: token.slice(1, -1), font: 'Consolas' }));
+      opts.text = token.slice(1, -1);
+      opts.font = 'Consolas';
     } else {
-      runs.push(new TextRun({ text: token.slice(1, -1), italics: true }));
+      opts.text = token.slice(1, -1);
+      opts.italics = true;
     }
+    // 应用块级格式
+    if (blockFmt) {
+      if (blockFmt.bold) opts.bold = true;
+      if (blockFmt.italic) opts.italics = true;
+      if (blockFmt.underline) opts.underline = {};
+      if (blockFmt.fontSize) opts.size = blockFmt.fontSize * 2;
+      if (blockFmt.fontFamily) {
+        if (blockFmt.fontFamily === 'mono') opts.font = 'Consolas';
+        else if (blockFmt.fontFamily === 'serif') opts.font = 'Georgia';
+        else opts.font = 'Calibri';
+      }
+    }
+    runs.push(opts);
     last = re.lastIndex;
   }
-  if (last < text.length) runs.push(new TextRun({ text: text.slice(last) }));
-  if (runs.length === 0) runs.push(new TextRun({ text }));
-  return runs;
+  if (last < text.length) {
+    const opts = { text: text.slice(last) };
+    if (blockFmt) {
+      if (blockFmt.bold) opts.bold = true;
+      if (blockFmt.italic) opts.italics = true;
+      if (blockFmt.underline) opts.underline = {};
+      if (blockFmt.fontSize) opts.size = blockFmt.fontSize * 2;
+      if (blockFmt.fontFamily) {
+        if (blockFmt.fontFamily === 'mono') opts.font = 'Consolas';
+        else if (blockFmt.fontFamily === 'serif') opts.font = 'Georgia';
+        else opts.font = 'Calibri';
+      }
+    }
+    runs.push(opts);
+  }
+  if (runs.length === 0) {
+    const opts = { text: text };
+    if (blockFmt) {
+      if (blockFmt.bold) opts.bold = true;
+      if (blockFmt.italic) opts.italics = true;
+      if (blockFmt.underline) opts.underline = {};
+      if (blockFmt.fontSize) opts.size = blockFmt.fontSize * 2;
+      if (blockFmt.fontFamily) {
+        if (blockFmt.fontFamily === 'mono') opts.font = 'Consolas';
+        else if (blockFmt.fontFamily === 'serif') opts.font = 'Georgia';
+        else opts.font = 'Calibri';
+      }
+    }
+    runs.push(opts);
+  }
+  // 转换为 TextRun 实例
+  return runs.map(function(r) { return new TextRun(r); });
 }
 
 function markdownToParagraphs(md, D) {
