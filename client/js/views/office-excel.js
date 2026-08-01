@@ -2065,7 +2065,8 @@ function openExcelEditor(w, fileId, fileName) {
 // 注册为 ACMSWin 视图加载器
 if (typeof ACMSWin !== 'undefined' && ACMSWin.registerViewLoader) {
   ACMSWin.registerViewLoader('office-xlsx', function(w) {
-    openExcelEditor(w, w.opts?.fileId, w.opts?.fileName);
+    var opts = arguments[1] || {};
+    openExcelEditor(w, opts.fileId, opts.fileName);
   });
 }
 

@@ -1088,6 +1088,7 @@ window.openPptEditor = openPptEditor;
 // 注册为 ACMSWin 视图加载器
 if (typeof ACMSWin !== 'undefined' && ACMSWin.registerViewLoader) {
   ACMSWin.registerViewLoader('office-pptx', function(w) {
-    openPptEditor(w, w.opts?.fileId, w.opts?.fileName);
+    var opts = arguments[1] || {};
+    openPptEditor(w, opts.fileId, opts.fileName);
   });
 }
