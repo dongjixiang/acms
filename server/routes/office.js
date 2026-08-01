@@ -164,7 +164,7 @@ router.get('/load/:fileId', function (req, res) {
             text = '(二进制 Excel 文件，编辑器将使用空白数据)';
           }
         } catch (e) { text = '(schema 解析失败: ' + e.message + ')'; }
-      } else {
+      } else if (ext === 'pptx') {
         // 无 schema：检测是否为旧版假 PPTX（JSON 格式）
         try {
           var strContent = buf.toString('utf8').trim();
