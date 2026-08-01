@@ -1039,7 +1039,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loader: function(w, opts) {
             var f = window._fb_open_file; window._fb_open_file = null;
             if (typeof openWordEditor === 'function') {
-        openWordEditor(w, opts && opts.fileId, f ? f.name : null, f ? f.content : null);
+        openWordEditor(w, opts && opts.fileId, (opts && opts.fileName) || (f ? f.name : null), f ? f.content : null);
       }
       else w.$c.innerHTML = '<div style="padding:40px;text-align:center">加载中...</div>';
     }
