@@ -483,10 +483,10 @@
       fetch('/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK).then(function(r){return r.text();}).then(function(content){
         window._fb_open_file = {name:fn,content:content};
         ACMSWin.open('code-editor',{w:900,h:600,title:'💻 '+fn});
-      }).catch(function(){to('读取文件失败','error');});
+      }).catch(function(e){console.log('[FB-DEBUG] PPT error:', e); to('读取文件失败: '+(e&&e.message||''), 'error');});
     } else if(appName==='office-word'){
       // Word: 下载文件并保存到 office 目录，然后用 fileId 打开
-      fetch('/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK).then(function(r){return r.arrayBuffer();}).then(function(buf){
+      fetch('/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK).then(function(r){console.log('[FB-DEBUG] Files API response:', r.status, r.ok); return r.arrayBuffer();}).then(function(buf){
         var b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
         return fetch('/api/office/save', {
           method: 'POST',
@@ -501,6 +501,7 @@
         }
       }).catch(function(){to('读取文件失败','error');});
     } else if(appName==='office-pptx') {
+      console.log('[FB-DEBUG] Opening PPT:', JSON.stringify({appName, fp, fn, ext, AK}));
       // PPT: 下载文件并保存到 office 目录，然后用 fileId 打开
       fetch('/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK).then(function(r){return r.arrayBuffer();}).then(function(buf){
         var b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
