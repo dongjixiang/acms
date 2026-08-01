@@ -1199,6 +1199,8 @@ function openExcelEditor(w, fileId, fileName) {
     h += '</tr>';
     // 跳过第一行（headers），从第二行开始渲染数据
     for (var ri = 1; ri < data.length; ri++) {
+      // 调试日志
+      if (ri <= 3) console.log('[xlsx] 渲染数据行', ri, 'data:', data[ri]);
       // v0.65: 检查当前行是否被上方合并区域占用（垂直合并中间行）
       var skipRow = false;
       for (var si = 0; si < mergedRanges.length; si++) {
