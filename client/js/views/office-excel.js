@@ -1991,16 +1991,16 @@ function openExcelEditor(w, fileId, fileName) {
   if (_isServerFile && _fileId) {
     // 显示加载状态
     w.$c.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text2)">⏳ 正在加载 ' + (fileName || 'Excel 文件') + '...</div>';
-    console.log('[Excel] 开始加载文件:', _fileId, fileName);
+    
     fetch('/api/office/load/' + encodeURIComponent(_fileId) + '?api_key=dev-key-001')
       .then(function(r) { return r.json(); })
       .then(function(resp) {
-        console.log('[Excel] 加载响应:', resp);
+        
         if (!resp.ok) throw new Error(resp.error || '加载失败');
         // 解析 content (base64)
         if (resp.text && resp.text.startsWith('SCHEMA:')) {
           var schemaStr = resp.text.slice(7);
-          console.log('[Excel] Schema 数据:', schemaStr.substring(0, 200));
+          
           var schemaData = JSON.parse(schemaStr);
           // v0.65: 检查 schemaData 是否有效
           if (!schemaData || !schemaData.sheets || !Array.isArray(schemaData.sheets) || schemaData.sheets.length === 0) {
@@ -2025,7 +2025,7 @@ function openExcelEditor(w, fileId, fileName) {
                   sheetData.push(nr);
                 });
               }
-              console.log('[Excel] 添加 sheet:', s.name, '行数:', sheetData.length);
+              
               sheets.push({ name: s.name || 'Sheet' + (sheets.length + 1), data: sheetData });
             });
             currentSheetIdx = 0;
@@ -2045,7 +2045,7 @@ function openExcelEditor(w, fileId, fileName) {
           }
         }
         renderTable();
-        console.log('[Excel] 表格已渲染');
+        
       })
       .catch(function(e) {
         console.error('[Excel] 加载失败:', e);

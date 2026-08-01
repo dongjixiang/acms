@@ -37,42 +37,42 @@ function openPptEditor(w, fileId, fileName) {
   }
 
   function loadPptFromServer() {
-    console.log('[PPT-DEBUG] loadPptFromServer called, fileId:', fileId, 'fileName:', fileName);
+    
     if (!fileId) {
-      console.log('[PPT-DEBUG] no fileId, using default');
+      
       return;
     }
     render();
     var loadEl = document.createElement('div');
     loadEl.style.cssText = 'display:flex;align-items:center;justify-content:center;height:100%;color:#888;font-size:14px';
     loadEl.textContent = '⏳ 正在加载 ' + (fileName || 'PPT') + '...';
-    console.log('[PPT-DEBUG] loadEl created, container:', w.$c);
+    
     var editorEl = w.$c.querySelector('.oo-editor-pptx');
-    console.log('[PPT-DEBUG] editorEl:', editorEl);
+    
     if (editorEl) {
       editorEl.replaceWith(loadEl);
     } else {
       w.$c.appendChild(loadEl);
     }
     var loadUrl = '/api/office/load/' + encodeURIComponent(fileId) + '?api_key=' + (typeof AK !== 'undefined' ? AK : 'dev-key-001');
-    console.log('[PPT-DEBUG] fetch url:', loadUrl);
+    
     fetch(loadUrl)
       .then(function (r) {
-        console.log('[PPT-DEBUG] fetch response ok:', r.ok, 'status:', r.status);
+        
         return r.json();
       })
       .then(function (resp) {
-        console.log('[PPT-DEBUG] load response:', resp);
+        
         if (!resp.ok) {
           loadEl.innerHTML = '<div style="color:#a00">❌ 加载失败：' + (resp.error || '未知') + '</div>';
           return;
         }
-        console.log('[PPT-DEBUG] resp.text length:', resp.text ? resp.text.length : 'undefined');
-        console.log('[PPT-DEBUG] resp.text preview:', resp.text ? resp.text.slice(0, 100) : 'undefined');
+        
+        
         if (resp.text && resp.text.indexOf('SCHEMA:') === 0) {
           try {
             var schemaData = JSON.parse(resp.text.slice(7));
-            console.log('[PPT-DEBUG] schemaData.slides:', schemaData.slides ? schemaData.slides.length : 'undefined');
+            
             if (schemaData.slides && Array.isArray(schemaData.slides)) {
               // 规范化内容：纯文本 → HTML
               slides = schemaData.slides.map(function(s) {
@@ -390,7 +390,7 @@ function openPptEditor(w, fileId, fileName) {
 
   // ─── render() ───
   function render() {
-    console.log('[PPT-DEBUG] render called, slides.length:', slides.length, 'cur:', cur);
+    
     var h = '<div class="oo-editor oo-editor-pptx" style="display:flex;flex-direction:column;height:100%">';
     // 标题栏
     h += '<div class="oo-titlebar">';
