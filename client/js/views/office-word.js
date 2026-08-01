@@ -530,7 +530,7 @@ function mountBlockEditor() {
                 { id: 'italic',    icon: 'I',   label: '斜体', action: function(){ wordOps.toggleInline('italic'); } },
                 { id: 'underline', icon: 'U',   label: '下划线', action: function(){ wordOps.toggleInline('underline'); } },
                 { id: 'inline-code', icon: '</>', label: '代码', action: function(){ wordOps.toggleInline('code'); } },
-                { id: 'format-painter', icon: '🖌', label: '格式刷', action: function(){ var cur = instance.getCurrentBlockId(); if (!cur) return toast('请先选中要复制格式的段落', 'warning'); wordOps.activateFormatPainter(cur); } },
+                { id: 'format-painter', icon: '🖌', label: '格式刷', action: function(){ var cur = instance.getCurrentBlockId(); if (!cur) return toast('请先选中要复制格式的段落', 'warning'); instance.activateFormatPainter(cur); } },
               ]},
               { title: '字号', buttons: [
                 { id: 'font-size', type: 'select', value: '16',
