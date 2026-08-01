@@ -253,6 +253,11 @@
           window.__activeImageEditorReload(url);
         }
       }
+      // v0.68: 复用 office 编辑器窗口时重载文档
+      if (typeof existing.reloadDocument === 'function' && opts.fileId) {
+        console.log('[WIN-DEBUG] 复用窗口重载文档:', opts.fileId, opts.fileName);
+        existing.reloadDocument(opts.fileId, opts.fileName);
+      }
       if (existing.st.min) toggleMin(existing);
       focus(existing);
       return existing;
