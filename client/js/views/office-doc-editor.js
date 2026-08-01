@@ -430,6 +430,14 @@
       state.doc.blocks.push(OfficeDoc.paragraph(''));
     }
 
+    // 记录上次编辑器内光标所在的 blockId，用于 ribbon 按钮失焦时回退
+    var lastFocusedBlockId = null;
+    function _updateLastFocused() {
+      var d = getCurrentBlockData();
+      if (d) lastFocusedBlockId = d.id;
+    }
+    container.addEventListener('focusin', _updateLastFocused);
+
     // 最初渲染
     var html = state.doc.blocks.map(blockToHTML).join('\n');
     console.log('[FlowEditor] HTML rendered', { htmlLen: html.length, htmlPreview: html.slice(0, 200) });
@@ -591,7 +599,7 @@ getDocument: function () { return state.doc; },
       })(),
       getCurrentBlockId: function () {
         var d = getCurrentBlockData();
-        return d ? d.id : null;
+        return d ? d.id : lastFocusedBlockId;
       },
       getCurrentBlock: function () {
         var d = getCurrentBlockData();
