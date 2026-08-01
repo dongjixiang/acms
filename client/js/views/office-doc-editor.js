@@ -24,6 +24,7 @@
     divider:      { tag: 'hr',     cls: 'ode-hr' },
     image:        { tag: 'figure', cls: 'ode-figure' },
     table:        { tag: 'div',    cls: 'ode-table' },
+    footnote:     { tag: 'div',    cls: 'ode-footnote' },
   };
 
   // ─── Tag → Block type reverse map ───
@@ -102,6 +103,13 @@
       return '<blockquote data-bid="' + block.id + '" data-btype="quote" style="margin:4px 0;padding:4px 16px;border-left:3px solid var(--office-primary,#446995);color:var(--text2,#666)">' +
         '<p contenteditable="true" class="ode-ce" style="outline:none;margin:0">' + escHtml(block.content||'') + '</p></blockquote>';
     }
+    if (type === 'footnote') {
+      var fnId = (block.attrs && block.attrs.id) || block.id;
+      return '<div data-bid="' + block.id + '" data-btype="footnote" class="ode-footnote" style="margin:8px 0;padding:8px 12px;background:var(--office-xlsx-soft,#d8e8df);border-radius:4px;font-size:12px;color:var(--text2,#666)">' +
+        '<sup style="color:var(--office-primary,#446995);font-weight:600;margin-right:6px">[' + fnId.replace('fn-','') + ']</sup>' +
+        '<span contenteditable="true" class="ode-ce" style="outline:none">' + escHtml(block.content||'') + '</span>' +
+        '</div>';
+    }
 
     // paragraph / heading
     var info = BLOCK_TAGS[type] || BLOCK_TAGS.paragraph;
@@ -167,6 +175,14 @@
       } else if (type === 'code' || type === 'quote') {
         var ceEl = el.querySelector('.ode-ce') || el;
         b.content = ceEl.textContent || '';
+      } else if (type === 'footnote') {
+        var ceEl2 = el.querySelector('.ode-ce');
+        b.content = ceEl2 ? ceEl2.textContent || '' : (el.textContent || '').replace(/^\[\d+\]\s*/, '');
+        var sup = el.querySelector('sup');
+        if (sup) {
+          var m = sup.textContent.match(/\[(\d+)\]/);
+          if (m) b.attrs.id = 'fn-' + m[1];
+        }
       } else {
         // paragraph / heading
         b.content = el.textContent || '';

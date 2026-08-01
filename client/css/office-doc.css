@@ -366,3 +366,43 @@
 .ode-bubble button:active {
   background: rgba(255,255,255,0.35) !important;
 }
+
+/* ─── v0.63 Phase2: Footnote ─── */
+.ode-footnote {
+  margin: 8px 0;
+  padding: 8px 12px;
+  background: var(--office-xlsx-soft, #d8e8df);
+  border-radius: 4px;
+  font-size: 13px;
+  color: var(--text2, #666);
+  line-height: 1.5;
+}
+.ode-footnote sup {
+  color: var(--office-primary, #446995);
+  font-weight: 600;
+  margin-right: 6px;
+  cursor: default;
+  user-select: none;
+}
+.ode-footnote .ode-ce {
+  outline: none;
+  cursor: text;
+}
+.ode-footnote .ode-ce:empty::before {
+  content: '双击编辑脚注内容…';
+  color: var(--text2, #aaa);
+  pointer-events: none;
+}
+.ode-footnote-ref {
+  color: var(--office-primary, #446995);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 600;
+  user-select: none;
+  margin: 0 2px;
+  border-bottom: 1px dashed var(--office-primary, #446995);
+}
+.ode-footnote-ref:hover {
+  background: rgba(68,105,149,0.1);
+  border-radius: 2px;
+}

@@ -325,6 +325,17 @@ function mountBlockEditor() {
 // v0.62.5: Word Ribbon 操作集合（学 OO FileMenu.js 的 Home/Insert/Format 结构）
     // PR-W2: 加 inline format toggle + block formatting setter
     var wordOps = {
+      // v0.63 Phase2: 预设样式库（学 OO Styles 面板 — 每个样式 = type + formatting）
+      _stylePresets: {
+        'Normal':    { type: 'paragraph',    blockAttrs: {},                        formatting: {} },
+        'Title':     { type: 'heading',       blockAttrs: { level: 1 },              formatting: { fontSize: 28, align: 'center', fontFamily: 'serif' } },
+        'Subtitle':  { type: 'heading',       blockAttrs: { level: 2 },              formatting: { fontSize: 18, align: 'center', color: '#666', fontFamily: 'sans' } },
+        'Heading 1': { type: 'heading',       blockAttrs: { level: 1 },              formatting: { fontSize: 22, align: 'left', fontFamily: 'serif' } },
+        'Heading 2': { type: 'heading',       blockAttrs: { level: 2 },              formatting: { fontSize: 18, align: 'left', fontFamily: 'serif' } },
+        'Heading 3': { type: 'heading',       blockAttrs: { level: 3 },              formatting: { fontSize: 16, align: 'left', fontFamily: 'serif' } },
+        'Quote':     { type: 'quote',         blockAttrs: {},                        formatting: {} },
+        'Code':      { type: 'code',          blockAttrs: {},                        formatting: {} },
+      },
       setType: function (type, attrs) {
         var cur = instance.getCurrentBlockId();
         if (cur) instance.changeBlockType(cur, type);
@@ -360,6 +371,92 @@ function mountBlockEditor() {
         var cur = instance.getCurrentBlockId();
         if (!cur) return;
         instance.setBlockFormatting(cur, { fontFamily: family });
+      },
+      // v0.63 Phase2: 应用预设样式（类型 + formatting 一次性设置）
+      applyStyle: function (styleName) {
+        var preset = wordOps._stylePresets[styleName];
+        if (!preset) return;
+        var cur = instance.getCurrentBlockId();
+        if (cur) {
+          instance.changeBlockType(cur, preset.type, preset.blockAttrs);
+          instance.setBlockFormatting(cur, preset.formatting);
+        } else {
+          instance.addBlock(preset.type, preset.blockAttrs, '');
+          instance.setBlockFormatting(instance.getCurrentBlockId(), preset.formatting);
+        }
+      },
+      // v0.63 Phase2: 脚注
+      _footnoteCounter: 0,
+      insertFootnote: function () {
+        var cur = instance.getCurrentBlockId();
+        if (!cur) return toast('请先把光标放在正文块中', 'warning');
+        var doc = instance.getDocument();
+        var block = doc.blocks.find(function(b){ return b.id === cur; });
+        if (!block || block.type !== 'paragraph') return toast('请在段落中插入脚注', 'warning');
+        wordOps._footnoteCounter++;
+        var fnId = 'fn-' + wordOps._footnoteCounter;
+        var fnNum = wordOps._footnoteCounter;
+        // 在光标处插入上标标记（用 contenteditable 选区操作）
+        var sel = window.getSelection();
+        if (sel.rangeCount && !sel.isCollapsed) {
+          var range = sel.getRangeAt(0);
+          var sup = document.createElement('sup');
+          sup.className = 'ode-footnote-ref';
+          sup.style.cssText = 'color:var(--office-primary,#446995);cursor:pointer;font-size:10px';
+          sup.textContent = '[' + fnNum + ']';
+          sup.title = '脚注 ' + fnNum + '：点击跳转到注释（双击编辑）';
+          sup.ondblclick = function(e) {
+            e.preventDefault();
+            var newContent = prompt('编辑脚注内容：', '');
+            if (newContent !== null) {
+              var targetBlock = doc.blocks.find(function(b){ return b.id === fnId; });
+              if (targetBlock) { targetBlock.content = newContent; instance.rerender(); }
+            }
+          };
+          range.deleteContents();
+          range.insertNode(sup);
+          range.collapse(false);
+          sel.removeAllRanges();
+          sel.addRange(range);
+          // 在段落后插入脚注块
+          var idx = doc.blocks.indexOf(block);
+          doc.blocks.splice(idx + 1, 0, OfficeDoc.makeBlock('footnote', { id: fnId }, '点击脚注标记双击编辑...'));
+          instance.rerender();
+          setDirty(true);
+          toast('已插入脚注 [' + fnNum + ']', 'success');
+        }
+      },
+      // v0.63 Phase2: 生成目录
+      generateTOC: function () {
+        var doc = instance.getDocument();
+        var tocBlocks = [];
+        doc.blocks.forEach(function (b) {
+          if (b.type === 'heading' && (b.attrs && b.attrs.level) && b.attrs.level <= 3 && b.content) {
+            tocBlocks.push({ level: b.attrs.level, content: b.content, id: b.id });
+          }
+        });
+        if (!tocBlocks.length) return toast('没有找到标题块，无法生成目录', 'warning');
+        var cur = instance.getCurrentBlockId();
+        var insertAt = cur ? (doc.blocks.findIndex(function(b){ return b.id === cur; }) + 1) : 0;
+        // 在当前位置插入 TOC 块（如果是第一个块则插入到开头）
+        if (insertAt === 0 && doc.blocks[0] && doc.blocks[0].type !== 'heading') {
+          insertAt = 1;
+        }
+        // 创建 TOC 块
+        var tocContent = '## 目录\n\n';
+        tocBlocks.forEach(function (item) {
+          var indent = '  '.repeat(item.level - 1);
+          tocContent += indent + '- ' + item.content + '\n';
+        });
+        // 在 insertAt 位置插入 TOC block
+        var tocBlock = OfficeDoc.makeBlock('heading', { level: 2 }, '目录');
+        doc.blocks.splice(insertAt, 0, tocBlock);
+        // 在 tocBlock 后插入一个 paragraph 包含目录内容
+        var tocPara = OfficeDoc.makeBlock('paragraph', {}, tocContent);
+        doc.blocks.splice(insertAt + 1, 0, tocPara);
+        instance.rerender();
+        setDirty(true);
+        toast('已生成目录（' + tocBlocks.length + ' 个标题）', 'success');
       },
       exportMd: function () {
         var d = instance.getDocument();
@@ -478,13 +575,21 @@ function mountBlockEditor() {
                 { id: 'align-right',   icon: '➡', label: '右',   action: function(){ wordOps.setAlign('right'); } },
                 { id: 'align-justify', icon: '☰', label: '两端', action: function(){ wordOps.setAlign('justify'); } },
               ]},
-              { title: '样式', buttons: [
-                { id: 'h1',     icon: 'H1',     label: '标题1',  action: function(){ wordOps.setType('heading', {level:1}); } },
-                { id: 'h2',     icon: 'H2',     label: '标题2',  action: function(){ wordOps.setType('heading', {level:2}); } },
-                { id: 'h3',     icon: 'H3',     label: '标题3',  action: function(){ wordOps.setType('heading', {level:3}); } },
-                { id: 'para',   icon: '¶',      label: '正文',   action: function(){ wordOps.setType('paragraph'); } },
-                { id: 'quote',  icon: '❝',      label: '引用',   action: function(){ wordOps.setType('quote'); } },
-                { id: 'code',   icon: '</>',    label: '代码',   action: function(){ wordOps.setType('code'); } },
+              { title: '样式库', buttons: [
+                { id: 'style-normal',  icon: '¶',  label: '正文', large: true,
+                  action: function(){ wordOps.applyStyle('Normal'); } },
+                { id: 'style-title',   icon: 'T',  label: '标题', large: true,
+                  action: function(){ wordOps.applyStyle('Title'); } },
+                { id: 'style-h1',      icon: 'H1', label: '标题1', large: true,
+                  action: function(){ wordOps.applyStyle('Heading 1'); } },
+                { id: 'style-h2',      icon: 'H2', label: '标题2', large: true,
+                  action: function(){ wordOps.applyStyle('Heading 2'); } },
+                { id: 'style-h3',      icon: 'H3', label: '标题3', large: true,
+                  action: function(){ wordOps.applyStyle('Heading 3'); } },
+                { id: 'style-quote',   icon: '❝', label: '引用', large: true,
+                  action: function(){ wordOps.applyStyle('Quote'); } },
+                { id: 'style-code',    icon: '</>', label: '代码', large: true,
+                  action: function(){ wordOps.applyStyle('Code'); } },
               ]},
               { title: '列表', buttons: [
                 { id: 'bullet',  icon: '•',   label: '项目',   action: function(){ wordOps.setType('bulletList'); } },
@@ -566,6 +671,18 @@ function mountBlockEditor() {
               ]},
               { title: '操作', buttons: [
                 { id: 'del-block', icon: '🗑', label: '删块', action: wordOps.deleteCurrent },
+              ]},
+            ],
+          },
+          {
+            id: 'references', label: '📑 References',
+            groups: [
+              { title: '引用', buttons: [
+                { id: 'insert-fn', icon: '📝', label: '脚注', large: true, action: wordOps.insertFootnote },
+                { id: 'gen-toc',   icon: '📋', label: '生成目录', large: true, action: wordOps.generateTOC },
+              ]},
+              { title: '分页', buttons: [
+                { id: 'ref-page-break', icon: '➖', label: '分页符', action: wordOps.insertPageBreak },
               ]},
             ],
           },
