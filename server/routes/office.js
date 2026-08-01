@@ -505,4 +505,6 @@ async function parseXlsxToSchema(buf) {
     console.error('[parseXlsxToSchema] error:', e.message);
     return '';
   }
+}
+
 module.exports = router;
