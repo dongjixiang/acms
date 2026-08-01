@@ -262,9 +262,6 @@ router.get('/load/:fileId', async function (req, res) {
       }
     } catch (e) { text = '(PPTX 解析失败: ' + e.message + ')'; }
     } else {
-      text = '(二进制文件，请使用专门的 Excel/PPT 编辑器打开)';
-    }
-    } else {
       text = buf.toString('utf8');
     }
     res.json({
