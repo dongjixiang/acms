@@ -9,6 +9,7 @@
 // v0.65: 支持 fileId/fileName 参数从服务器加载文件
 function openExcelEditor(w, fileId, fileName) {
   console.log('[Excel] openExcelEditor called, fileId:', fileId, 'fileName:', fileName);
+  console.log('[Excel] window.$c:', w.$c);
   var ROWS = 20, COLS = 8;
 
   // v0.62.7: 文件来源: server(有fileId) / local(无fileId)
