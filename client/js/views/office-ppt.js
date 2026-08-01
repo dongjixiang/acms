@@ -36,6 +36,24 @@ function openPptEditor(w, fileId, fileName) {
     }).join('\n');
   }
 
+  // ─── 表格渲染 ───
+  function renderTableHtml(tbl) {
+    if (!tbl || !tbl.rows || tbl.rows.length === 0) return '';
+    var html = '<table style="border-collapse:collapse;width:100%;margin:12px 0;border:1px solid #ddd">';
+    tbl.rows.forEach(function(row, ri) {
+      html += '<tr>';
+      row.forEach(function(cell, ci) {
+        var isHeader = ri === 0;
+        var style = 'border:1px solid #ddd;padding:8px;';
+        if (isHeader) style += 'background:#f5f5f5;font-weight:bold;';
+        html += '<td style="' + style + '">' + escHtml(cell) + '</td>';
+      });
+      html += '</tr>';
+    });
+    html += '</table>';
+    return html;
+  }
+
   function loadPptFromServer() {
     console.log('[PPT-DEBUG] loadPptFromServer called:', {fileId, fileName, AK: typeof AK});
     
@@ -87,13 +105,22 @@ function openPptEditor(w, fileId, fileName) {
                   });
                   contentHtml = imgHtml + contentHtml;
                 }
+                // 如果有 tables 字段，注入表格 HTML
+                if (s.tables && s.tables.length > 0) {
+                  var tableHtml = '';
+                  s.tables.forEach(function(tbl) {
+                    tableHtml += renderTableHtml(tbl);
+                  });
+                  contentHtml = tableHtml + contentHtml;
+                }
                 return {
                   title: normalizeContent(s.title),
                   content: contentHtml,
                   layout: s.layout || 'content',
                   transition: s.transition || { type: 'none', direction: 'from-right', duration: 500 },
                   animations: s.animations || [],
-                  images: s.images || []
+                  images: s.images || [],
+                  tables: s.tables || []
                 };
               });
               cur = 0;
