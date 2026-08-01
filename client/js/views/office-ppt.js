@@ -55,15 +55,12 @@ function openPptEditor(w, fileId, fileName) {
       w.$c.appendChild(loadEl);
     }
     var loadUrl = '/api/office/load/' + encodeURIComponent(fileId) + '?api_key=' + (typeof AK !== 'undefined' ? AK : 'dev-key-001');
-    
-    var loadUrl = '/api/office/load/' + encodeURIComponent(fileId) + '?api_key=' + (typeof AK !== 'undefined' ? AK : 'dev-key-001');
     console.log('[PPT-DEBUG] fetch url:', loadUrl);
     fetch(loadUrl)
       .then(function (r) {
         console.log('[PPT-DEBUG] fetch response ok:', r.ok, 'status:', r.status);
         return r.json();
       })
-      .then(function (resp) {
         
         if (!resp.ok) {
           loadEl.innerHTML = '<div style="color:#a00">❌ 加载失败：' + (resp.error || '未知') + '</div>';
