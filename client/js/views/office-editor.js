@@ -940,6 +940,40 @@ function openExcelEditor(w) {
     return !isNaN(n) && isFinite(n);
   }
 
+  // ─── 单元格数据辅助函数（v0.63 Phase1: 统一 cell 数据结构）───
+  // cell 格式: '' | '文本' | {v: 值} | {v: 值, b: {bold, italic, underline, fill, color, numFmt}}
+  function cellStr(cell) {
+    if (typeof cell === 'string') return cell;
+    if (cell && typeof cell === 'object') return String(cell.v !== undefined ? cell.v : '');
+    return '';
+  }
+  function cellVal(cell) {
+    if (typeof cell === 'string') { var n = parseFloat(cell); return !isNaN(n) && isFinite(n) ? n : cell; }
+    if (cell && typeof cell === 'object') return cell.v !== undefined ? cell.v : '';
+    return '';
+  }
+  function cellFmt(cell) {
+    if (!cell || typeof cell !== 'object') return {};
+    return cell.b || {};
+  }
+  function setCellFmt(r, c, fmt) {
+    if (!data[r]) data[r] = [];
+    var cell = data[r][c];
+    if (typeof cell !== 'object') data[r][c] = { v: cell || '' };
+    if (!data[r][c].b) data[r][c].b = {};
+    Object.assign(data[r][c].b, fmt);
+  }
+  function applyCellStyle(r, c) {
+    var el = w.$c.querySelector('.xlsx-cell[data-r="' + r + '"][data-c="' + c + '"]');
+    if (!el) return;
+    var fmt = cellFmt(data[r][c]);
+    el.style.fontWeight = fmt.bold ? 'bold' : '';
+    el.style.fontStyle = fmt.italic ? 'italic' : '';
+    el.style.textDecoration = fmt.underline ? 'underline' : '';
+    el.style.backgroundColor = fmt.fill || '';
+    el.style.color = fmt.color || '';
+  }
+
   // v0.62.5: Excel 标题栏独立的 dirty 跟踪
   var isDirty = false;
 
@@ -1160,9 +1194,66 @@ function openExcelEditor(w) {
     // v0.62.6: Undo/Redo
     undo: function () { xlUndo(); },
     redo: function () { xlRedo(); },
-    toggleBold: function () { toggleCellFmt('b'); },
-    toggleItalic: function () { toggleCellFmt('i'); },
-    toggleUnderline: function () { toggleCellFmt('u'); },
+    toggleBold: function () {
+      if (!sel.start) return;
+      var r = sel.start[0], c = sel.start[1];
+      var fmt = cellFmt(data[r][c]);
+      fmt.bold = !fmt.bold;
+      setCellFmt(r, c, fmt);
+      applyCellStyle(r, c);
+      markDirty();
+    },
+    toggleItalic: function () {
+      if (!sel.start) return;
+      var r = sel.start[0], c = sel.start[1];
+      var fmt = cellFmt(data[r][c]);
+      fmt.italic = !fmt.italic;
+      setCellFmt(r, c, fmt);
+      applyCellStyle(r, c);
+      markDirty();
+    },
+    toggleUnderline: function () {
+      if (!sel.start) return;
+      var r = sel.start[0], c = sel.start[1];
+      var fmt = cellFmt(data[r][c]);
+      fmt.underline = !fmt.underline;
+      setCellFmt(r, c, fmt);
+      applyCellStyle(r, c);
+      markDirty();
+    },
+    // v0.63 Phase1: 格式操作
+    setFillColor: function (color) {
+      if (!sel.start) return;
+      var r = sel.start[0], c = sel.start[1];
+      setCellFmt(r, c, { fill: color });
+      applyCellStyle(r, c);
+      markDirty();
+    },
+    setTextColor: function (color) {
+      if (!sel.start) return;
+      var r = sel.start[0], c = sel.start[1];
+      setCellFmt(r, c, { color: color });
+      applyCellStyle(r, c);
+      markDirty();
+    },
+    setNumFmt: function (fmt) {
+      if (!sel.start) return;
+      var r = sel.start[0], c = sel.start[1];
+      var cell = data[r][c];
+      var v = cellStr(cell);
+      var display = v;
+      if (isNum(v)) {
+        if (fmt === 'number') display = parseFloat(v).toFixed(2);
+        else if (fmt === 'currency') display = '¥' + parseFloat(v).toFixed(2);
+        else if (fmt === 'percent') display = (parseFloat(v) * 100).toFixed(1) + '%';
+      }
+      setCellFmt(r, c, { numFmt: fmt });
+      // 更新显示
+      var el = w.$c.querySelector('.xlsx-cell[data-r="' + r + '"][data-c="' + c + '"]');
+      if (el) el.textContent = display;
+      updateFormulaBar();
+      markDirty();
+    },
     // v0.62.7: Layout
     setXlMargin: function (size) {
       var tbl = w.$c.querySelector('#xlsx-table');
@@ -1237,6 +1328,14 @@ function openExcelEditor(w) {
     box.value = colLetter(c) + (r + 1);
   }
 
+  // v0.63 Phase1: 公式栏同步
+  function updateFormulaBar() {
+    var fx = w.$c.querySelector('#xlsx-fx-input');
+    if (!fx || !sel.start) return;
+    var r = sel.start[0], c = sel.start[1];
+    fx.value = cellStr(data[r] && data[r][c]);
+  }
+
   function renderTable() {
     // v0.62.5: 容器套 .oo-editor oo-editor-xlsx class（让 Excel 墨绿色主题生效）
     var h = '<div class="oo-editor oo-editor-xlsx" style="display:flex;flex-direction:column;height:100%">';
@@ -1254,6 +1353,12 @@ function openExcelEditor(w) {
     h += '</div>';
     // v0.62.5: Ribbon 工具栏（学 OO TabBar.js + FileMenu.js）
     h += '<div id="xlsx-ribbon-host" style="flex-shrink:0"></div>';
+    // v0.63 Phase1: 公式栏（学 OO valueField — 始终显示当前选中 cell 内容）
+    h += '<div id="xlsx-formula-bar" style="display:flex;align-items:center;flex-shrink:0;height:26px;background:var(--office-paper-bg);border-bottom:1px solid var(--office-divider);padding:0 4px;gap:4px">';
+    h += '<input id="xlsx-namebox" class="oo-statusbar-namebox" placeholder="A1" style="width:70px;height:20px;font-size:12px;margin:0" title="当前选中单元格（输入跳转）">';
+    h += '<span style="font-size:11px;color:var(--text2,#888);padding:0 4px">fx</span>';
+    h += '<input id="xlsx-fx-input" type="text" style="flex:1;height:20px;font-size:12px;font-family:monospace;border:1px solid var(--office-divider);border-radius:2px;padding:0 6px;background:var(--bg,#fff);color:var(--text,#333);outline:none" placeholder="单元格内容或公式">';
+    h += '</div>';
     // 表格区
     h += '<div style="flex:1;overflow:auto;padding:4px">';
     h += '<table id="xlsx-table" style="border-collapse:collapse;width:100%;font-size:13px">';
@@ -1265,16 +1370,23 @@ function openExcelEditor(w) {
     for (var ri = 0; ri < data.length; ri++) {
       h += '<tr><td style="border:1px solid #ccc;background:var(--bg2);padding:4px 6px;text-align:center;font-size:11px;color:var(--text2)">' + (ri + 1) + '</td>';
       for (var ci2 = 0; ci2 < data[ri].length; ci2++) {
-        var val = escHtml(String(data[ri][ci2]));
-        h += '<td style="border:1px solid #ccc;padding:2px 4px;min-width:80px"><div class="xlsx-cell" contenteditable style="outline:none;min-height:20px;padding:2px" data-r="' + ri + '" data-c="' + ci2 + '">' + val + '</div></td>';
+        var cell = data[ri][ci2];
+        var val = escHtml(cellStr(cell));
+        var fmt = cellFmt(cell);
+        var style = 'outline:none;min-height:20px;padding:2px';
+        if (fmt.bold) style += ';font-weight:bold';
+        if (fmt.italic) style += ';font-style:italic';
+        if (fmt.underline) style += ';text-decoration:underline';
+        if (fmt.fill) style += ';background-color:' + fmt.fill;
+        if (fmt.color) style += ';color:' + fmt.color;
+        h += '<td style="border:1px solid #ccc;padding:2px 4px;min-width:80px"><div class="xlsx-cell" contenteditable style="' + style + '" data-r="' + ri + '" data-c="' + ci2 + '">' + val + '</div></td>';
       }
       h += '</tr>';
     }
     h += '</table></div>';
-    // v0.62.5: 底部状态栏行（含名称框 + 状态信息）
+    // v0.62.5: 底部状态栏行（状态信息，名称框已移至公式栏 v0.63）
     h += '<div style="display:flex;align-items:center;background:var(--office-toolbar-bg);border-top:1px solid var(--office-divider);flex-shrink:0;height:28px">';
-    h += '<input id="xlsx-namebox" class="oo-statusbar-namebox" placeholder="A1" title="当前选中单元格（输入跳转）" style="margin:0 4px 0 8px">';
-    h += '<div id="xlsx-status" class="oo-statusbar" style="flex:1;border:none;background:transparent">A1 · 总 20 行 × 8 列</div>';
+    h += '<div id="xlsx-status" class="oo-statusbar" style="flex:1;border:none;background:transparent;padding:0 8px">A1 · 总 20 行 × 8 列</div>';
     h += '</div>';
     // v0.62.5 PR-C: Sheet tabs (学 OO Spreadsheet 底部 sheet 切换条)
     h += '<div id="xlsx-sheets">';
@@ -1308,6 +1420,31 @@ function openExcelEditor(w) {
                 { id: 'bold',      icon: 'B',   label: '粗体', action: ops.toggleBold },
                 { id: 'italic',    icon: 'I',   label: '斜体', action: ops.toggleItalic },
                 { id: 'underline', icon: 'U',   label: '下划线', action: ops.toggleUnderline },
+              ]},
+              { title: '格式', buttons: [
+                { id: 'fill-cc',   icon: '🎨', label: '背景',
+                  action: function(){
+                    var picker = document.createElement('input');
+                    picker.type = 'color'; picker.value = '#ffff00';
+                    picker.onchange = function(){ ops.setFillColor(this.value); };
+                    picker.click();
+                  } },
+                { id: 'text-cc',   icon: 'A',   label: '字色',
+                  action: function(){
+                    var picker = document.createElement('input');
+                    picker.type = 'color'; picker.value = '#000000';
+                    picker.onchange = function(){ ops.setTextColor(this.value); };
+                    picker.click();
+                  } },
+                { id: 'numfmt',    icon: '#',   label: '数字格式', type: 'select', value: 'general',
+                  options: [
+                    { value: 'general', label: '常规' },
+                    { value: 'number',  label: '数字(2位)' },
+                    { value: 'currency',label: '货币' },
+                    { value: 'percent', label: '百分比' },
+                  ],
+                  action: function(v){ ops.setNumFmt(v); },
+                },
               ]},
               { title: '行列', buttons: [
                 { id: 'add-row',   icon: '➕', label: '加行', action: ops.addRow },
@@ -1388,15 +1525,18 @@ function openExcelEditor(w) {
         el.style.background = '#f0f8ff';
         updateStatusBar();
         updateNameBox();
+        updateFormulaBar();
       };
       el.onblur = function() {
         el.style.outline = 'none';
         el.style.background = '';
         var newVal = el.textContent;
-        if (cellStr(data[r][c]) !== newVal) {
+        var oldVal = cellStr(data[r][c]);
+        if (oldVal !== newVal) {
           data[r][c] = { v: newVal };
           markDirty();
         }
+        updateFormulaBar();
       };
       el.onkeydown = function(e) {
         if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
@@ -1420,7 +1560,32 @@ function openExcelEditor(w) {
       cellEl.focus();
       namebox.blur();
     };
-updateNameBox();
+    updateNameBox();
+
+    // v0.63 Phase1: 公式栏事件绑定（fx 输入框 ↔ 选中 cell 双向同步）
+    var fxInput = w.$c.querySelector('#xlsx-fx-input');
+    if (fxInput) {
+      fxInput.addEventListener('focus', function () {
+        if (sel.start) updateFormulaBar();
+      });
+      fxInput.addEventListener('blur', function () {
+        if (!sel.start) return;
+        var r = sel.start[0], c = sel.start[1];
+        var newV = this.value;
+        var oldV = cellStr(data[r] && data[r][c]);
+        if (oldV !== newV) {
+          data[r][c] = { v: newV };
+          markDirty();
+          // 同步 cell DOM
+          var cellEl = w.$c.querySelector('.xlsx-cell[data-r="' + r + '"][data-c="' + c + '"]');
+          if (cellEl) cellEl.textContent = newV;
+        }
+      });
+      fxInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); this.blur(); }
+        if (e.key === 'Escape') { this.blur(); updateFormulaBar(); }
+      });
+    }
 
     // v0.62.5 PR-C: Sheet tabs 事件绑定
     w.$c.querySelectorAll('.xlsx-sheet-tab').forEach(function (tab) {
