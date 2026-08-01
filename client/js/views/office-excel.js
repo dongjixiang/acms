@@ -1477,7 +1477,7 @@ function openExcelEditor(w, fileId, fileName) {
         }
         e.stopPropagation();
         var c = parseInt(this.dataset.col);
-        sel.start = [0, c];
+        sel.start = [1, c];
         sel.end = [data.length - 1, c];
         highlightSelection();
         updateStatusBar();
