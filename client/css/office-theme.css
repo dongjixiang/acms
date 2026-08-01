@@ -647,6 +647,45 @@
   border-radius: 4px;
 }
 
+/* v0.64: contenteditable 编辑区样式 */
+.ppt-editor-content {
+  background: transparent;
+  min-height: 40px;
+  outline: none;
+  border-radius: 2px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.ppt-editor-content:focus {
+  border-color: var(--office-primary, #b75b44) !important;
+  box-shadow: 0 0 0 2px rgba(183, 91, 68, 0.15);
+}
+.ppt-editor-content:empty:before {
+  content: attr(placeholder);
+  color: #aaa;
+  pointer-events: none;
+}
+.ppt-editor-content h1, .ppt-editor-content h2, .ppt-editor-content h3 {
+  margin: 0 0 8px 0;
+  line-height: 1.3;
+}
+.ppt-editor-content p {
+  margin: 0 0 8px 0;
+}
+.ppt-editor-content img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+}
+.ppt-editor-content ul, .ppt-editor-content ol {
+  margin: 0 0 8px 20px;
+  padding: 0;
+}
+.ppt-editor-content hr {
+  border: none;
+  border-top: 1px solid #ddd;
+  margin: 16px 0;
+}
+
 /* ════════════ PPT Transitions (学 OO Transitions.js 设计模式) ════════════ */
 /* AGPL 安全: 全部自写 CSS keyframes, 不复制 OO 源码 */
 

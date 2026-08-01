@@ -1691,7 +1691,7 @@ function openExcelEditor(w) {
     h += '<button id="xlsx-add-sheet" class="xlsx-sheet-add" title="新建 Sheet">+</button>';
     h += '</div>';
     // v0.64: 公式选择器对话框（学 OO FormulaDialog.js）
-    h += '<div id="xlsx-formula-dialog" style="display:none">';
+    h += '<div id="xlsx-formula-dialog" style="display:none;position:absolute;top:0;left:0;z-index:10000;">';
     h += '<div class="xfd-search"><input id="xfd-search-input" type="text" placeholder="搜索函数..."></div>';
     h += '<div class="xfd-body">';
     h += '<div id="xfd-category-list" class="xfd-category-list"></div>';
@@ -2261,17 +2261,39 @@ function openExcelEditor(w) {
 // 新增：布局下拉（cover / content / blank）影响编辑区视觉
 // 保留：缩略图侧边栏 / 标题+正文编辑 / +添加页 / 删除 / 保存
 // 升级：showPrompt 替代 prompt()
+// ACMS PPT 编辑器 v0.64 — 富文本编辑 + 字体格式
+// 对标 OnlyOffice PPT Home tab 字体控制组
+// 核心改进：contenteditable div + execCommand + HTML schema
+
 function openPptEditor(w, fileId, fileName) {
-  // v0.63 Phase3: 支持加载已有 PPT（从 fileId 读 schema）
   var _pptFileId = fileId || null;
   var _pptIsServerFile = !!fileId;
 
-  var slides = [{ title: 'PPT 标题', content: '第一页正文\n支持多行\n- 项目 A\n- 项目 B', layout: 'content', transition: { type: 'none', direction: 'from-right', duration: 500 }, animations: [] }];
+  // v0.64: schema 改为 HTML 内容（title 和 content 都存 innerHTML）
+  var slides = [{
+    title: '<h1 style="font-size:28px;color:#333">PPT 标题</h1>',
+    content: '<p style="font-size:16px;color:#555">第一页正文</p><p style="font-size:16px;color:#555">支持<b>粗体</b>、<i>斜体</i>、<u>下划线</u></p><p style="font-size:16px;color:#555">- 项目 A</p><p style="font-size:16px;color:#555">- 项目 B</p>',
+    layout: 'content',
+    transition: { type: 'none', direction: 'from-right', duration: 500 },
+    animations: []
+  }];
   var cur = 0;
+
+  // ─── HTML 内容兼容旧纯文本 schema ───
+  function normalizeContent(raw) {
+    if (typeof raw !== 'string') return '';
+    // 已经是 HTML（含标签）→ 直接返回
+    if (raw.indexOf('<') === 0 || raw.indexOf('&lt;') >= 0 || raw.indexOf('&amp;') >= 0) return raw;
+    // 纯文本 → 转 HTML（保留换行，转义特殊字符）
+    return raw.split('\n').map(function(line) {
+      if (line.trim() === '') return '<p></p>';
+      return '<p>' + escHtml(line) + '</p>';
+    }).join('\n');
+  }
 
   function loadPptFromServer() {
     if (!fileId) return;
-    render(); // 先渲染空编辑器
+    render();
     var loadEl = document.createElement('div');
     loadEl.style.cssText = 'display:flex;align-items:center;justify-content:center;height:100%;color:#888;font-size:14px';
     loadEl.textContent = '⏳ 正在加载 ' + (fileName || 'PPT') + '...';
@@ -2284,12 +2306,20 @@ function openPptEditor(w, fileId, fileName) {
           return;
         }
         loadEl.remove();
-        // v0.63: 检查是否有 SCHEMA 数据
         if (resp.text && resp.text.indexOf('SCHEMA:') === 0) {
           try {
             var schemaData = JSON.parse(resp.text.slice(7));
             if (schemaData.slides && Array.isArray(schemaData.slides)) {
-              slides = schemaData.slides;
+              // 规范化内容：纯文本 → HTML
+              slides = schemaData.slides.map(function(s) {
+                return {
+                  title: normalizeContent(s.title),
+                  content: normalizeContent(s.content),
+                  layout: s.layout || 'content',
+                  transition: s.transition || { type: 'none', direction: 'from-right', duration: 500 },
+                  animations: s.animations || []
+                };
+              });
               cur = 0;
               toast('已加载 ' + (fileName || 'PPT') + '（' + slides.length + ' 页）', 'success');
             }
@@ -2307,29 +2337,36 @@ function openPptEditor(w, fileId, fileName) {
   } else {
     render();
   }
+
+  // ─── applyLayout：适配 contenteditable div ───
   function applyLayout(layout, titleEl, contentEl) {
+    if (!titleEl || !contentEl) return;
+    titleEl.style.cssText = 'width:100%;font-weight:600;border:none;outline:none;border-bottom:2px solid #e0e0e0;margin-bottom:16px;padding:8px 4px;background:transparent;font-family:inherit;min-height:40px';
+    contentEl.style.cssText = 'width:100%;flex:1;min-height:200px;border:none;outline:none;font-size:15px;line-height:1.7;padding:8px 4px;background:transparent;resize:vertical;font-family:inherit;min-height:150px';
     if (layout === 'cover') {
-      titleEl.style.fontSize = '36px';
-      titleEl.style.textAlign = 'center';
-      titleEl.placeholder = '封面标题';
+      titleEl.style.cssText += 'font-size:36px;text-align:center;border-bottom:none;margin-bottom:8px;min-height:50px';
       contentEl.placeholder = '副标题（可选）';
     } else if (layout === 'blank') {
-      titleEl.style.fontSize = '20px';
-      titleEl.style.textAlign = 'left';
-      titleEl.placeholder = '（空白页可只放图）';
+      titleEl.style.cssText += 'font-size:20px;border-bottom:none;margin-bottom:8px;min-height:30px';
+      titleEl.style.display = 'none'; // 空白布局隐藏标题
       contentEl.placeholder = '正文或图片说明';
     } else { // content
-      titleEl.style.fontSize = '22px';
-      titleEl.style.textAlign = 'left';
-      titleEl.placeholder = '幻灯片标题';
+      titleEl.style.cssText += 'font-size:22px;border-bottom:2px solid #e0e0e0;margin-bottom:16px;min-height:40px';
+      titleEl.style.display = '';
       contentEl.placeholder = '正文内容（支持换行）';
     }
   }
 
-  // v0.62.5: PPT 操作函数集合（Ribbon + 标题栏共用）
+  // ─── pptOps ───
   var pptOps = {
     addSlide: function () {
-      slides.push({ title: '新页面', content: '', layout: 'content', transition: { type: 'none', direction: 'from-right', duration: 500 }, animations: [] });
+      slides.push({
+        title: '<h1 style="font-size:28px;color:#333">新页面</h1>',
+        content: '<p style="font-size:16px;color:#555">新页面正文</p>',
+        layout: 'content',
+        transition: { type: 'none', direction: 'from-right', duration: 500 },
+        animations: []
+      });
       cur = slides.length - 1;
       markPptDirty();
       render();
@@ -2344,13 +2381,11 @@ function openPptEditor(w, fileId, fileName) {
     setLayout: function (layout) {
       slides[cur].layout = layout;
       markPptDirty();
-      // 不重新 render — 只更新当前 slide 的视觉 + 缩略图 + 状态栏
       var titleEl = w.$c.querySelector('#ppt-title');
       var contentEl = w.$c.querySelector('#ppt-content');
       if (titleEl && contentEl) applyLayout(layout, titleEl, contentEl);
       updateThumb();
       updateStatus();
-      // 同步 Ribbon Design tab 的激活状态
       if (window._pptRibbon) {
         window._pptRibbon.setButtonActive('design', 'layout-' + layout, true);
         ['content','cover','blank'].forEach(function (l) {
@@ -2370,7 +2405,6 @@ function openPptEditor(w, fileId, fileName) {
       if (opts.direction) s.transition.direction = opts.direction;
       if (opts.duration) s.transition.duration = opts.duration;
       markPptDirty();
-      // 同步 Ribbon Transition tab 激活状态
       if (window._pptRibbon) {
         ['none','fade','push','wipe','dissolve','zoom'].forEach(function(t){
           window._pptRibbon.setButtonActive('transit', 'transit-' + t, t === s.transition.type);
@@ -2389,7 +2423,7 @@ function openPptEditor(w, fileId, fileName) {
       markPptDirty();
       if (typeof toast === 'function') toast('已应用到全部 ' + slides.length + ' 页', 'success');
     },
-    // ─── Animations (学 OO Animation.js) ───
+    // ─── Animations ───
     _animState: { target: 'title', type: 'fade', trigger: 'onClick', duration: 500 },
     _getAnim: function () {
       var s = slides[cur];
@@ -2404,7 +2438,6 @@ function openPptEditor(w, fileId, fileName) {
     },
     setAnimEffect: function (type) {
       pptOps._animState.type = type;
-      // Add/update animation for current target
       var anims = pptOps._getAnim();
       var target = pptOps._animState.target;
       var existing = null;
@@ -2425,7 +2458,6 @@ function openPptEditor(w, fileId, fileName) {
     },
     setAnimDuration: function (duration) {
       pptOps._animState.duration = duration;
-      // Update existing animations
       var anims = pptOps._getAnim();
       anims.forEach(function(a){ if (a.target === pptOps._animState.target) a.duration = duration; });
       markPptDirty();
@@ -2452,12 +2484,11 @@ function openPptEditor(w, fileId, fileName) {
           var a = (s.animations || []).find(function(x){ return x.target === target; });
           return a || { type: 'fade', duration: 500, trigger: 'onClick' };
         }
+        var titleHtml = s.title ? '<div class="ppt-sls-title" style="animation:ppt-elem-' + (animFor('title').type) + ' ' + (animFor('title').duration) + 'ms ease">' + s.title + '</div>' : '';
+        var contentHtml = s.content ? '<div class="ppt-slideshow-content" style="animation:ppt-elem-' + (animFor('content').type) + ' ' + (animFor('content').duration) + 'ms ease">' + s.content + '</div>' : '';
         overlay.innerHTML =
           '<div class="ppt-slideshow-slide ' + layoutClass + '" style="animation:ppt-trans-' + trans.type + ' ' + trans.duration + 'ms ease">' +
-            '<div class="ppt-slideshow-slide-inner">' +
-              (s.title ? '<h1 class="ppt-sls-title" style="animation:ppt-elem-' + (animFor('title').type) + ' ' + (animFor('title').duration) + 'ms ease">' + escHtml(s.title) + '</h1>' : '') +
-              (s.content ? '<div class="ppt-slideshow-content" style="animation:ppt-elem-' + (animFor('content').type) + ' ' + (animFor('content').duration) + 'ms ease">' + escHtml(s.content).replace(/\\n/g, '<br>') + '</div>' : '') +
-            '</div>' +
+            '<div class="ppt-slideshow-slide-inner">' + titleHtml + contentHtml + '</div>' +
             '<div class="ppt-slideshow-nav">' +
               '<button id="ppt-sls-prev" class="ppt-sls-nav-btn" ' + (idx <= 0 ? 'disabled' : '') + '>\u25C0</button>' +
               '<span class="ppt-sls-page">' + (idx+1) + ' / ' + slides.length + '</span>' +
@@ -2485,17 +2516,64 @@ function openPptEditor(w, fileId, fileName) {
       document.addEventListener('keydown', onKey);
       renderSlide(slideIdx);
     },
-    // v0.62.6: Undo/Redo
     undo: function () { pptUndo(); },
     redo: function () { pptRedo(); },
+    // ─── v0.64: 字体格式操作 ───
+    execFormat: function (cmd, value) {
+      document.execCommand(cmd, false, value || null);
+      // 同步到 schema（contenteditable 的 input 事件已处理）
+      syncCurrentSlide();
+    },
+    setFontSize: function (size) {
+      document.execCommand('fontSize', false, size); // 1-7
+      syncCurrentSlide();
+    },
+    setFontFamily: function (family) {
+      document.execCommand('fontName', false, family);
+      syncCurrentSlide();
+    },
+    setFontColor: function (color) {
+      document.execCommand('foreColor', false, color);
+      syncCurrentSlide();
+    },
+    setAlign: function (align) {
+      var cmd = align === 'left' ? 'justifyLeft' : (align === 'center' ? 'justifyCenter' : (align === 'right' ? 'justifyRight' : 'justifyFull'));
+      document.execCommand(cmd, false, null);
+      syncCurrentSlide();
+    },
+    // 应用格式到选区（用于按钮激活状态同步）
+    getSelectedFormat: function () {
+      var sel = window.getSelection();
+      if (!sel || sel.isCollapsed) return {};
+      var fmt = {};
+      fmt.bold = document.queryCommandState('bold');
+      fmt.italic = document.queryCommandState('italic');
+      fmt.underline = document.queryCommandState('underline');
+      var fontSize = document.queryCommandValue('fontSize');
+      if (fontSize) fmt.fontSize = fontSize;
+      var fontName = document.queryCommandValue('fontName');
+      if (fontName) fmt.fontName = fontName.replace(/"/g, '');
+      var foreColor = document.queryCommandValue('foreColor');
+      if (foreColor) fmt.foreColor = foreColor;
+      return fmt;
+    }
   };
+
+  function syncCurrentSlide() {
+    var titleEl = w.$c.querySelector('#ppt-title');
+    var contentEl = w.$c.querySelector('#ppt-content');
+    if (titleEl) slides[cur].title = titleEl.innerHTML;
+    if (contentEl) slides[cur].content = contentEl.innerHTML;
+    updateThumb();
+    markPptDirty();
+  }
 
   function markPptDirty() {
     var dot = w.$c.querySelector('#ppt-modified-dot');
     if (dot) { dot.classList.add('is-dirty'); dot.classList.remove('is-saved'); dot.title = '已修改未保存'; }
   }
 
-  // v0.62.6: PPT Undo/Redo
+  // ─── Undo/Redo ───
   var pptUndoStack = [];
   var pptRedoStack = [];
   function pptSnapshot() { return JSON.parse(JSON.stringify({ slides: slides, cur: cur })); }
@@ -2513,7 +2591,6 @@ function openPptEditor(w, fileId, fileName) {
   function pptUndo() {
     if (pptUndoStack.length < 2) return;
     pptRedoStack.push(pptSnapshot());
-    var s = pptUndoStack.pop();
     pptRestoreState(pptUndoStack[pptUndoStack.length - 1]);
     markPptDirty();
   }
@@ -2525,42 +2602,43 @@ function openPptEditor(w, fileId, fileName) {
     markPptDirty();
   }
 
+  // ─── render() ───
   function render() {
-    // v0.62.5: 容器套 .oo-editor oo-editor-pptx class（让 PPT 棕红色主题生效）
     var h = '<div class="oo-editor oo-editor-pptx" style="display:flex;flex-direction:column;height:100%">';
-    // OO 风格标题栏（v0.62.5: 简化 — 只留文件名 + 保存, 功能按钮全部移到 Ribbon）
+    // 标题栏
     h += '<div class="oo-titlebar">';
-    h += '<span class="oo-titlebar-icon">📽️</span>';
+    h += '<span class="oo-titlebar-icon">\ud83d\udcfa</span>';
     h += '<div class="oo-titlebar-name">';
     h += '<input id="ppt-title-input" value="' + escHtml(fileName || '未命名.pptx') + '" placeholder="未命名.pptx">';
     h += '<span id="ppt-modified-dot" class="oo-modified-dot" title="未修改"></span>';
     h += '</div>';
     h += '<div class="oo-titlebar-actions">';
-    h += '<button class="oo-titlebar-btn primary" id="ppt-save-btn">💾 保存</button>';
+    h += '<button class="oo-titlebar-btn primary" id="ppt-save-btn">\ud83d\udcbe 保存</button>';
     h += '</div>';
     h += '</div>';
-    // v0.62.5: Ribbon 工具栏（学 OO TabBar.js）
+    // Ribbon
     h += '<div id="ppt-ribbon-host" style="flex-shrink:0"></div>';
-    // 缩略图栏（OO 风格）
+    // 缩略图栏
     h += '<div id="ppt-thumbs" style="display:flex;gap:8px;padding:10px;background:var(--office-toolbar-bg);border-bottom:1px solid var(--office-divider);overflow-x:auto;flex-shrink:0">';
     slides.forEach(function(s, i) {
-      var layoutTag = s.layout === 'cover' ? '📄' : (s.layout === 'blank' ? '⬜' : '📃');
+      var layoutTag = s.layout === 'cover' ? '\ud83d\udcc4' : (s.layout === 'blank' ? '\u2b1c' : '\ud83d\udcc3');
       var activeCls = i === cur ? ' is-active' : '';
       h += '<div class="ppt-thumb' + activeCls + '" data-i="' + i + '" draggable="true">';
       h += '<div class="ppt-thumb-icon">' + layoutTag + '</div>';
-      h += '<div class="ppt-thumb-title">' + escHtml((s.title||'无标题').slice(0, 10)) + '</div>';
+      h += '<div class="ppt-thumb-title">' + escHtml((s.title || '').replace(/<[^>]+>/g, '').slice(0, 10)) + '</div>';
       h += '<div class="ppt-thumb-page">' + (i+1) + '/' + slides.length + '</div>';
       h += '</div>';
     });
     h += '</div>';
-    // 编辑区（OO 风格 — slide 卡片样式）
+    // 编辑区
     var s = slides[cur] || { title: '', content: '', layout: 'content' };
     h += '<div style="flex:1;padding:20px;overflow:auto;display:flex;justify-content:center">';
     h += '<div class="ppt-slide-paper" style="max-width:800px;width:100%;padding:40px;display:flex;flex-direction:column">';
-    h += '<input id="ppt-title" value="' + escHtml(s.title) + '" style="width:100%;font-weight:600;border:none;outline:none;border-bottom:2px solid #e0e0e0;margin-bottom:16px;padding:8px 4px;background:transparent;font-family:inherit" placeholder="幻灯片标题">';
-    h += '<textarea id="ppt-content" style="width:100%;flex:1;min-height:250px;border:none;outline:none;font-size:15px;line-height:1.7;padding:8px 4px;background:transparent;resize:vertical;font-family:inherit" placeholder="正文内容（支持换行）">' + escHtml(s.content) + '</textarea>';
+    // v0.64: contenteditable div 替代 input/textarea
+    h += '<div id="ppt-title" class="ppt-editor-content" contenteditable="true" style="width:100%;font-weight:600;border:none;outline:none;border-bottom:2px solid #e0e0e0;margin-bottom:16px;padding:8px 4px;background:transparent;font-family:inherit;min-height:40px">' + (s.title || '') + '</div>';
+    h += '<div id="ppt-content" class="ppt-editor-content" contenteditable="true" style="width:100%;flex:1;min-height:250px;border:none;outline:none;font-size:15px;line-height:1.7;padding:8px 4px;background:transparent;resize:vertical;font-family:inherit">' + (s.content || '') + '</div>';
     h += '</div></div>';
-    // v0.62.5: 底部状态栏（OO 风格）
+    // 状态栏
     h += '<div id="ppt-status" class="oo-statusbar" style="justify-content:space-between">';
     h += '<span>第 ' + (cur+1) + ' / ' + slides.length + ' 页</span>';
     h += '<span>' + (s.layout === 'cover' ? '封面' : (s.layout === 'blank' ? '空白' : '内容页')) + ' 布局</span>';
@@ -2569,37 +2647,84 @@ function openPptEditor(w, fileId, fileName) {
 
     w.$c.innerHTML = h;
 
-    // v0.62.5: Ribbon 挂载（Home / Insert / Design 三 tab）
+    // ─── v0.64: Ribbon（新增 Home tab 字体格式组）──
     if (window.ACMSRibbon) {
       window._pptRibbon = window.ACMSRibbon.create(w.$c.querySelector('#ppt-ribbon-host'), {
         tabs: [
           {
-            id: 'home', label: '🏠 Home',
+            id: 'home', label: '\ud83c\udfe0 Home',
             groups: [
               { title: '历史', buttons: [
-                { id: 'undo', icon: '↩', label: '撤销', action: pptOps.undo },
-                { id: 'redo', icon: '↪', label: '重做', action: pptOps.redo },
+                { id: 'undo', icon: '\u21a9', label: '撤销', action: pptOps.undo },
+                { id: 'redo', icon: '\u21aa', label: '重做', action: pptOps.redo },
               ]},
               { title: '幻灯片', buttons: [
-                { id: 'add-slide', icon: '➕', label: '添加', action: pptOps.addSlide },
-                { id: 'del-slide', icon: '➖', label: '删除', action: pptOps.delSlide },
+                { id: 'add-slide', icon: '\u2795', label: '添加', action: pptOps.addSlide },
+                { id: 'del-slide', icon: '\u2796', label: '删除', action: pptOps.delSlide },
               ]},
-
+              // v0.64: 字体格式组（对标 OO Home tab）
+              { title: '字体', buttons: [
+                { id: 'fmt-bold', icon: 'B', label: '粗体', large: true,
+                  action: function(){ pptOps.execFormat('bold'); },
+                  active: function(){ return document.queryCommandState('bold'); } },
+                { id: 'fmt-italic', icon: 'I', label: '斜体', large: true,
+                  action: function(){ pptOps.execFormat('italic'); },
+                  active: function(){ return document.queryCommandState('italic'); } },
+                { id: 'fmt-underline', icon: 'U', label: '下划线', large: true,
+                  action: function(){ pptOps.execFormat('underline'); },
+                  active: function(){ return document.queryCommandState('underline'); } },
+              ]},
+              { title: '字号', buttons: [
+                { id: 'fs-12', label: '12', action: function(){ pptOps.setFontSize('1'); } },
+                { id: 'fs-14', label: '14', action: function(){ pptOps.setFontSize('2'); } },
+                { id: 'fs-16', label: '16', action: function(){ pptOps.setFontSize('3'); } },
+                { id: 'fs-18', label: '18', action: function(){ pptOps.setFontSize('4'); } },
+                { id: 'fs-24', label: '24', action: function(){ pptOps.setFontSize('5'); } },
+                { id: 'fs-32', label: '32', action: function(){ pptOps.setFontSize('6'); } },
+                { id: 'fs-48', label: '48', action: function(){ pptOps.setFontSize('7'); } },
+              ]},
+              { title: '字体', buttons: [
+                { id: 'ff-sans', label: 'Sans', action: function(){ pptOps.setFontFamily('Arial, Helvetica, sans-serif'); } },
+                { id: 'ff-serif', label: 'Serif', action: function(){ pptOps.setFontFamily('Georgia, Times New Roman, serif'); } },
+                { id: 'ff-mono', label: 'Mono', action: function(){ pptOps.setFontFamily('Consolas, Monaco, monospace'); } },
+                { id: 'ff-cn', label: '\u5b8b\u4f53', action: function(){ pptOps.setFontFamily('\u5b8b\u4f53, SimSun, serif'); } },
+              ]},
+              { title: '颜色', buttons: [
+                { id: 'color-text', icon: '\ud83c\udfa8', label: '字体颜色',
+                  action: function(){
+                    var picker = document.createElement('input');
+                    picker.type = 'color'; picker.value = '#000000';
+                    picker.onchange = function(){ pptOps.setFontColor(this.value); };
+                    picker.click();
+                  } },
+                { id: 'color-bg', icon: '\ud83d\udd8c', label: '背景颜色',
+                  action: function(){
+                    var picker = document.createElement('input');
+                    picker.type = 'color'; picker.value = '#ffffff';
+                    picker.onchange = function(){ pptOps.execFormat('hiliteColor', this.value); };
+                    picker.click();
+                  } },
+              ]},
+              { title: '对齐', buttons: [
+                { id: 'align-left', icon: '\u250c', label: '左对齐', action: function(){ pptOps.setAlign('left'); } },
+                { id: 'align-center', icon: '\u2500', label: '居中', action: function(){ pptOps.setAlign('center'); } },
+                { id: 'align-right', icon: '\u2510', label: '右对齐', action: function(){ pptOps.setAlign('right'); } },
+                { id: 'align-justify', icon: '\u2500', label: '两端对齐', action: function(){ pptOps.setAlign('justify'); } },
+              ]},
             ],
           },
           {
-            id: 'insert', label: '➕ Insert',
+            id: 'insert', label: '\u2795 Insert',
             groups: [
               { title: '插入', buttons: [
-                { id: 'ins-text',  icon: '📝', label: '文本框', action: function(){
-                  slides[cur].content += (slides[cur].content ? '\n\n' : '') + '新文本框内容';
+                { id: 'ins-text', icon: '\ud83d\udcdd', label: '文本框', action: function(){
+                  slides[cur].content += (slides[cur].content ? '<p></p>' : '') + '<p>\u65b0\u6587\u672c\u6846</p>';
                   markPptDirty();
                   render();
-                  // 聚焦到文本框
                   var contentEl = w.$c.querySelector('#ppt-content');
-                  if (contentEl) { contentEl.focus(); contentEl.selectionStart = contentEl.value.length; }
+                  if (contentEl) { contentEl.focus(); }
                 } },
-                { id: 'ins-image', icon: '🖼️', label: '图片',   action: function(){
+                { id: 'ins-image', icon: '\ud83d\uddbc', label: '图片', action: function(){
                   var input = document.createElement('input');
                   input.type = 'file';
                   input.accept = 'image/png,image/jpeg,image/gif,image/webp,image/svg+xml';
@@ -2608,8 +2733,7 @@ function openPptEditor(w, fileId, fileName) {
                     if (!file) return;
                     var reader = new FileReader();
                     reader.onload = function (e) {
-                      // 在当前 slide 内容追加图片标记
-                      slides[cur].content += (slides[cur].content ? '\n\n' : '') + '![' + file.name + '](' + e.target.result + ')';
+                      slides[cur].content += (slides[cur].content ? '<p></p>' : '') + '<img src="' + e.target.result + '" style="max-width:100%;height:auto">';
                       markPptDirty();
                       render();
                     };
@@ -2617,95 +2741,76 @@ function openPptEditor(w, fileId, fileName) {
                   };
                   input.click();
                 } },
-                { id: 'ins-shape', icon: '⬜', label: '形状',   action: function(){
-                  var shapes = ['⬜ 方框', '● 圆', '▲ 三角', '◆ 菱形', '⭐ 星'];
-                  if (typeof showPrompt === 'function') {
-                    showPrompt({
-                      title: '选择形状',
-                      message: '输入形状类型:',
-                      multiline: false,
-                      minLength: 1,
-                      buttons: shapes.map(function(s){ return { text: s, value: s.split(' ')[1] }; }),
-                    }).then(function(shape){
-                      if (!shape || shape === '__cancel__') return;
-                      slides[cur].content += (slides[cur].content ? '\n\n' : '') + '[' + shape + ']';
-                      markPptDirty();
-                      render();
-                    });
-                  } else {
-                    var shape = prompt('选择形状 (方框/圆/三角/菱形/星):', '方框');
-                    if (shape) {
-                      slides[cur].content += (slides[cur].content ? '\n\n' : '') + '[' + shape + ']';
-                      markPptDirty();
-                      render();
-                    }
-                  }
+                { id: 'ins-line', icon: '\u2500', label: '分隔线', action: function(){
+                  slides[cur].content += '<hr style="border:none;border-top:1px solid #ccc;margin:16px 0">';
+                  markPptDirty();
+                  render();
                 } },
               ]},
             ],
           },
           {
-            id: 'design', label: '🎨 Design',
+            id: 'design', label: '\ud83c\udfa8 Design',
             groups: [
               { title: '布局', buttons: [
-                { id: 'layout-content', icon: '📃', label: '内容', large: true,
+                { id: 'layout-content', icon: '\ud83d\udcc3', label: '内容', large: true,
                   action: function(){ pptOps.setLayout('content'); }, active: s.layout === 'content' },
-                { id: 'layout-cover',   icon: '📄', label: '封面', large: true,
-                  action: function(){ pptOps.setLayout('cover'); },   active: s.layout === 'cover' },
-                { id: 'layout-blank',   icon: '⬜', label: '空白', large: true,
-                  action: function(){ pptOps.setLayout('blank'); },   active: s.layout === 'blank' },
+                { id: 'layout-cover', icon: '\ud83d\udcc4', label: '封面', large: true,
+                  action: function(){ pptOps.setLayout('cover'); }, active: s.layout === 'cover' },
+                { id: 'layout-blank', icon: '\u2b1c', label: '空白', large: true,
+                  action: function(){ pptOps.setLayout('blank'); }, active: s.layout === 'blank' },
               ]},
             ],
           },
           {
-            id: 'transit', label: '🎬 Transitions',
+            id: 'transit', label: '\ud83c\udfac Transitions',
             groups: [
               { title: '效果', buttons: [
-                { id: 'transit-none',    icon: '🚫', label: '无',     action: function(){ pptOps.setTransition({ type: 'none' }); } },
-                { id: 'transit-fade',    icon: '🌫️', label: '淡入',  action: function(){ pptOps.setTransition({ type: 'fade' }); } },
-                { id: 'transit-push',    icon: '👉', label: '推动',  action: function(){ pptOps.setTransition({ type: 'push' }); } },
-                { id: 'transit-wipe',    icon: '🧹', label: '擦除',  action: function(){ pptOps.setTransition({ type: 'wipe' }); } },
-                { id: 'transit-dissolve',icon: '💧', label: '溶解',  action: function(){ pptOps.setTransition({ type: 'dissolve' }); } },
-                { id: 'transit-zoom',    icon: '🔍', label: '缩放',  action: function(){ pptOps.setTransition({ type: 'zoom' }); } },
+                { id: 'transit-none', icon: '\ud83d\udeab', label: '无', action: function(){ pptOps.setTransition({ type: 'none' }); } },
+                { id: 'transit-fade', icon: '\ud83c\udf2b\ufe0f', label: '淡入', action: function(){ pptOps.setTransition({ type: 'fade' }); } },
+                { id: 'transit-push', icon: '\ud83d\udc49', label: '推动', action: function(){ pptOps.setTransition({ type: 'push' }); } },
+                { id: 'transit-wipe', icon: '\ud83e\uddf9', label: '擦除', action: function(){ pptOps.setTransition({ type: 'wipe' }); } },
+                { id: 'transit-dissolve',icon: '\ud83d\udca7', label: '溶解', action: function(){ pptOps.setTransition({ type: 'dissolve' }); } },
+                { id: 'transit-zoom', icon: '\ud83d\udd0d', label: '缩放', action: function(){ pptOps.setTransition({ type: 'zoom' }); } },
               ]},
               { title: '方向', buttons: [
-                { id: 'dir-right', icon: '→', label: '右', action: function(){ pptOps.setTransition({ direction: 'from-right' }); } },
-                { id: 'dir-left',  icon: '←', label: '左', action: function(){ pptOps.setTransition({ direction: 'from-left' }); } },
-                { id: 'dir-top',   icon: '↑', label: '上', action: function(){ pptOps.setTransition({ direction: 'from-top' }); } },
-                { id: 'dir-bottom',icon: '↓', label: '下', action: function(){ pptOps.setTransition({ direction: 'from-bottom' }); } },
+                { id: 'dir-right', icon: '\u2192', label: '右', action: function(){ pptOps.setTransition({ direction: 'from-right' }); } },
+                { id: 'dir-left', icon: '\u2190', label: '左', action: function(){ pptOps.setTransition({ direction: 'from-left' }); } },
+                { id: 'dir-top', icon: '\u2191', label: '上', action: function(){ pptOps.setTransition({ direction: 'from-top' }); } },
+                { id: 'dir-bottom',icon: '\u2193', label: '下', action: function(){ pptOps.setTransition({ direction: 'from-bottom' }); } },
               ]},
               { title: '时长', buttons: [
-                { id: 'dur-fast', icon: '⚡', label: '快',  action: function(){ pptOps.setTransition({ duration: 300 }); } },
-                { id: 'dur-med',  icon: '⏸️', label: '中',  action: function(){ pptOps.setTransition({ duration: 500 }); }, active: true },
-                { id: 'dur-slow', icon: '🐢', label: '慢',  action: function(){ pptOps.setTransition({ duration: 1000 }); } },
+                { id: 'dur-fast', icon: '\u26a1', label: '快', action: function(){ pptOps.setTransition({ duration: 300 }); } },
+                { id: 'dur-med', icon: '\u23f8\ufe0f', label: '中', action: function(){ pptOps.setTransition({ duration: 500 }); }, active: true },
+                { id: 'dur-slow', icon: '\ud83d\udc22', label: '慢', action: function(){ pptOps.setTransition({ duration: 1000 }); } },
               ]},
               { title: '操作', buttons: [
-                { id: 'apply-all', icon: '📋', label: '应用到全部', action: pptOps.applyToAll },
-                { id: 'slideshow', icon: '▶️', label: '开始放映', large: true, action: pptOps.startSlideshow },
+                { id: 'apply-all', icon: '\ud83d\udccb', label: '应用到全部', action: pptOps.applyToAll },
+                { id: 'slideshow', icon: '\u25b6\ufe0f', label: '开始放映', large: true, action: pptOps.startSlideshow },
               ]},
             ],
           },
           {
-            id: 'animate', label: '💫 Animations',
+            id: 'animate', label: '\ud83d\udcab Animations',
             groups: [
               { title: '目标', buttons: [
-                { id: 'anim-title',   icon: '📝', label: '标题',   action: function(){ pptOps.setAnimTarget('title'); } },
-                { id: 'anim-content', icon: '📄', label: '正文',   action: function(){ pptOps.setAnimTarget('content'); } },
+                { id: 'anim-title', icon: '\ud83d\udcdd', label: '标题', action: function(){ pptOps.setAnimTarget('title'); } },
+                { id: 'anim-content', icon: '\ud83d\udcc4', label: '正文', action: function(){ pptOps.setAnimTarget('content'); } },
               ]},
               { title: '效果', buttons: [
-                { id: 'anim-fade',    icon: '🌫️', label: '淡入',  action: function(){ pptOps.setAnimEffect('fade'); } },
-                { id: 'anim-fly',     icon: '✈️',  label: '飞入',  action: function(){ pptOps.setAnimEffect('fly-in'); } },
-                { id: 'anim-zoom',    icon: '🔍', label: '缩放',  action: function(){ pptOps.setAnimEffect('zoom'); } },
-                { id: 'anim-bounce',  icon: '🌀', label: '弹入',  action: function(){ pptOps.setAnimEffect('bounce'); } },
+                { id: 'anim-fade', icon: '\ud83c\udf2b\ufe0f', label: '淡入', action: function(){ pptOps.setAnimEffect('fade'); } },
+                { id: 'anim-fly', icon: '\u2708\ufe0f', label: '飞入', action: function(){ pptOps.setAnimEffect('fly-in'); } },
+                { id: 'anim-zoom', icon: '\ud83d\udd0d', label: '缩放', action: function(){ pptOps.setAnimEffect('zoom'); } },
+                { id: 'anim-bounce', icon: '\ud83d\udc51', label: '弹入', action: function(){ pptOps.setAnimEffect('bounce'); } },
               ]},
               { title: '触发', buttons: [
-                { id: 'trig-click', icon: '👆', label: '点击', action: function(){ pptOps.setAnimTrigger('onClick'); }, active: true },
-                { id: 'trig-auto',  icon: '⏩', label: '自动', action: function(){ pptOps.setAnimTrigger('auto'); } },
+                { id: 'trig-click', icon: '\ud83d\udc46', label: '点击', action: function(){ pptOps.setAnimTrigger('onClick'); }, active: true },
+                { id: 'trig-auto', icon: '\u23f5', label: '自动', action: function(){ pptOps.setAnimTrigger('auto'); } },
               ]},
               { title: '时长', buttons: [
-                { id: 'anim-dur-fast', icon: '⚡', label: '快', action: function(){ pptOps.setAnimDuration(300); } },
-                { id: 'anim-dur-med',  icon: '⏸️', label: '中', action: function(){ pptOps.setAnimDuration(500); }, active: true },
-                { id: 'anim-dur-slow', icon: '🐢', label: '慢', action: function(){ pptOps.setAnimDuration(1000); } },
+                { id: 'anim-dur-fast', icon: '\u26a1', label: '快', action: function(){ pptOps.setAnimDuration(300); } },
+                { id: 'anim-dur-med', icon: '\u23f8\ufe0f', label: '中', action: function(){ pptOps.setAnimDuration(500); }, active: true },
+                { id: 'anim-dur-slow', icon: '\ud83d\udc22', label: '慢', action: function(){ pptOps.setAnimDuration(1000); } },
               ]},
             ],
           },
@@ -2714,21 +2819,26 @@ function openPptEditor(w, fileId, fileName) {
       });
     }
 
-    // 编辑同步
+    // ─── v0.64: 编辑同步（contenteditable div）──
     var titleEl = w.$c.querySelector('#ppt-title');
     var contentEl = w.$c.querySelector('#ppt-content');
     applyLayout(s.layout, titleEl, contentEl);
-    titleEl.oninput = function() { slides[cur].title = this.value; updateThumb(); markPptDirty(); };
-    contentEl.oninput = function() { slides[cur].content = this.value; markPptDirty(); };
+    if (s.layout === 'blank') {
+      titleEl.style.display = 'none';
+    }
+    // v0.64: input 事件同步到 schema
+    titleEl.oninput = function() { slides[cur].title = this.innerHTML; updateThumb(); markPptDirty(); };
+    contentEl.oninput = function() { slides[cur].content = this.innerHTML; markPptDirty(); };
+    // v0.64: 点击缩略图时同步当前 slide
     var dragSrcIdx = -1;
     w.$c.querySelectorAll('.ppt-thumb').forEach(function(el) {
       el.onclick = function() {
-        if (titleEl) slides[cur].title = titleEl.value;
-        if (contentEl) slides[cur].content = contentEl.value;
+        if (titleEl) slides[cur].title = titleEl.innerHTML;
+        if (contentEl) slides[cur].content = contentEl.innerHTML;
         cur = parseInt(this.dataset.i);
         render();
       };
-      // v0.62.6: PPT 拖拽排序 (HTML5 Drag & Drop)
+      // 拖拽排序
       el.ondragstart = function (e) {
         dragSrcIdx = parseInt(this.dataset.i);
         e.dataTransfer.effectAllowed = 'move';
@@ -2754,36 +2864,35 @@ function openPptEditor(w, fileId, fileName) {
         var fromIdx = dragSrcIdx;
         var toIdx = parseInt(this.dataset.i);
         if (fromIdx === toIdx) return;
-        // 移动 slides 数组
         var item = slides.splice(fromIdx, 1)[0];
         slides.splice(toIdx, 0, item);
         cur = toIdx;
         markPptDirty();
         render();
       };
-      // v0.62.6: PPT 缩略图右键菜单
+      // 缩略图右键菜单
       el.oncontextmenu = function (e) {
         e.preventDefault();
         e.stopPropagation();
         var idx = parseInt(this.dataset.i);
         showCtxMenu([
-          { label: '\u2795 \u65B0\u5EFA\u5E7B\u706F\u7247', action: function () {
-            slides.splice(idx + 1, 0, { title: '\u65B0\u9875\u9762', content: '', layout: 'content', transition: { type: 'none', direction: 'from-right', duration: 500 } });
+          { label: '\u2795 \u65b0\u5efa\u5e7b\u706f\u7247', action: function () {
+            slides.splice(idx + 1, 0, { title: '<h1 style="font-size:28px;color:#333">\u65b0\u9875\u9762</h1>', content: '<p>\u65b0\u9875\u9762\u6b63\u6587</p>', layout: 'content', transition: { type: 'none', direction: 'from-right', duration: 500 }, animations: [] });
             cur = idx + 1; markPptDirty(); render();
           }},
-          { label: '📋 复制幻灯片', action: function () {
+          { label: '\ud83d\udccb \u590d\u5236\u5e7b\u706f\u7247', action: function () {
             var copy = JSON.parse(JSON.stringify(slides[idx]));
             slides.splice(idx + 1, 0, copy);
             cur = idx + 1; markPptDirty(); render();
           }},
           { label: '\u2716 \u5220\u9664', action: function () {
-            if (slides.length <= 1) return toast('\u81F3\u5C11\u4FDD\u7559\u4E00\u9875', 'warning');
+            if (slides.length <= 1) return toast('\u81f3\u5c11\u4fdd\u7559\u4e00\u9875', 'warning');
             slides.splice(idx, 1);
             if (cur >= slides.length) cur = slides.length - 1;
             markPptDirty(); render();
           }},
           '-',
-          { label: '\u53D6\u6D88', action: function () {} },
+          { label: '\u53d6\u6d88', action: function () {} },
         ], e.clientX, e.clientY);
       };
     });
@@ -2792,30 +2901,33 @@ function openPptEditor(w, fileId, fileName) {
       var thumbs = w.$c.querySelectorAll('.ppt-thumb');
       if (thumbs[cur]) {
         var t = thumbs[cur].querySelector('div:nth-child(2)');
-        if (t) t.textContent = (slides[cur].title || '无标题').slice(0, 10);
+        if (t) t.textContent = (slides[cur].title || '').replace(/<[^>]+>/g, '').slice(0, 10);
       }
     }
-function updateStatus() {
+    function updateStatus() {
       var bar = w.$c.querySelector('#ppt-status');
       if (!bar) return;
-      var lbl = slides[cur].layout === 'cover' ? '封面' : (slides[cur].layout === 'blank' ? '空白' : '内容页');
-      bar.innerHTML = '<span>第 ' + (cur+1) + ' / ' + slides.length + ' 页</span><span>' + lbl + ' 布局</span>';
+      var lbl = slides[cur].layout === 'cover' ? '\u5c01\u9762' : (slides[cur].layout === 'blank' ? '\u7a7a\u767d' : '\u5185\u5bb9\u9875');
+      bar.innerHTML = '<span>\u7b2c ' + (cur+1) + ' / ' + slides.length + ' \u9875</span><span>' + lbl + ' \u5e03\u5c40</span>';
     }
 
-    // v0.62.5: PPT 保存函数（Ribbon "保存" 按钮 + 标题栏 "保存" 按钮共用）
+    // ─── savePpt ───
     function savePpt() {
+      // 保存前同步当前 slide 内容
+      if (titleEl) slides[cur].title = titleEl.innerHTML;
+      if (contentEl) slides[cur].content = contentEl.innerHTML;
       var currentName = (w.$c.querySelector('#ppt-title-input').value || '').trim() || '演示';
       var p;
       if (typeof showPrompt === 'function') {
         p = Promise.resolve(showPrompt({
-          title: '保存 PPT 演示',
-          message: '输入文件名（.pptx 后缀自动加）',
+          title: '\u4fdd\u5b58 PPT \u6f14\u793a',
+          message: '\u8f93\u5165\u6587\u4ef6\u540d\uff08.pptx \u540e\u7f00\u81ea\u52a0\uff09',
           defaultValue: currentName.replace(/\.pptx$/i, ''),
           multiline: false,
           minLength: 1,
         }));
       } else {
-        p = Promise.resolve(prompt('文件名：', '演示.pptx') || '演示.pptx');
+        p = Promise.resolve(prompt('\u6587\u4ef6\u540d\uff1a', '\u6f14\u793a.pptx') || '\u6f14\u793a.pptx');
       }
       return p.then(function(name) {
         if (!name) return;
@@ -2832,27 +2944,141 @@ function updateStatus() {
           }),
         }).then(function(r){ return r.json(); }).then(function(r){
           if (r.ok) {
-            toast('已保存 ✅ ' + name + ' (' + r.size + ' bytes)', 'success');
+            toast('\u5df2\u4fdd\u5b58 \u2705 ' + name + ' (' + r.size + ' bytes)', 'success');
             var dot = w.$c.querySelector('#ppt-modified-dot');
-            if (dot) { dot.classList.remove('is-dirty'); dot.classList.add('is-saved'); dot.title = '已保存'; setTimeout(function(){ dot.classList.remove('is-saved'); }, 1200); }
+            if (dot) { dot.classList.remove('is-dirty'); dot.classList.add('is-saved'); dot.title = '\u5df2\u4fdd\u5b58'; setTimeout(function(){ dot.classList.remove('is-saved'); }, 1200); }
           }
-          else toast('保存失败: ' + (r.error || '未知'), 'error');
-        }).catch(function(e){ toast('保存失败: ' + e.message, 'error'); });
+          else toast('\u4fdd\u5b58\u5931\u8d25: ' + (r.error || '\u672a\u77e5'), 'error');
+        }).catch(function(e){ toast('\u4fdd\u5b58\u5931\u8d25: ' + e.message, 'error'); });
       });
     }
 
-    // 标题栏 "保存" 按钮 — 调 savePpt（v0.62.5 重构）
     var saveBtn = w.$c.querySelector('#ppt-save-btn');
     if (saveBtn) saveBtn.onclick = function () { savePpt(); };
   }
 
-  // 初始状态入 undo 栈
   setTimeout(function () { pptPushUndo(); }, 100);
-  // fileId 存在时 loadPptFromServer 内部调 render()，否则这里渲染空编辑器
   if (!fileId) render();
 }
 
-// ===== 注册全局函数供 PKG 调用 =====
+// ─── v0.64: 公式选择器函数库（学 OO FormulaDialog.js）───
+var XLSX_FORMULAS = [
+  // 数学
+  { cat: '数学', fn: 'SUM', args: 'number1, [number2], ...', desc: '对所有参数求和' },
+  { cat: '数学', fn: 'AVERAGE', args: 'number1, [number2], ...', desc: '计算平均值' },
+  { cat: '数学', fn: 'COUNT', args: 'value1, [value2], ...', desc: '统计数字个数' },
+  { cat: '数学', fn: 'COUNTA', args: 'value1, [value2], ...', desc: '统计非空单元格数' },
+  { cat: '数学', fn: 'MAX', args: 'number1, [number2], ...', desc: '返回最大值' },
+  { cat: '数学', fn: 'MIN', args: 'number1, [number2], ...', desc: '返回最小值' },
+  { cat: '数学', fn: 'ROUND', args: 'number, decimals', desc: '四舍五入到指定位数' },
+  { cat: '数学', fn: 'ABS', args: 'number', desc: '返回绝对值' },
+  { cat: '数学', fn: 'SQRT', args: 'number', desc: '返回平方根' },
+  { cat: '数学', fn: 'POWER', args: 'number, power', desc: '返回数字的幂' },
+  // 逻辑
+  { cat: '逻辑', fn: 'IF', args: 'condition, value_if_true, [value_if_false]', desc: '条件判断' },
+  { cat: '逻辑', fn: 'AND', args: 'condition1, [condition2], ...', desc: '所有条件为真返回真' },
+  { cat: '逻辑', fn: 'OR', args: 'condition1, [condition2], ...', desc: '任一条件为真返回真' },
+  // 文本
+  { cat: '文本', fn: 'LEFT', args: 'text, num_chars', desc: '从左侧提取字符' },
+  { cat: '文本', fn: 'RIGHT', args: 'text, num_chars', desc: '从右侧提取字符' },
+  { cat: '文本', fn: 'MID', args: 'text, start, num_chars', desc: '从中间提取字符' },
+  { cat: '文本', fn: 'LEN', args: 'text', desc: '返回字符串长度' },
+  { cat: '文本', fn: 'UPPER', args: 'text', desc: '转为大写' },
+  { cat: '文本', fn: 'LOWER', args: 'text', desc: '转为小写' },
+  { cat: '文本', fn: 'TRIM', args: 'text', desc: '去除首尾空格' },
+  // 日期
+  { cat: '日期', fn: 'TODAY', args: '', desc: '返回当前日期' },
+  { cat: '日期', fn: 'NOW', args: '', desc: '返回当前日期时间' },
+  { cat: '日期', fn: 'YEAR', args: 'serial_number', desc: '返回年份' },
+  { cat: '日期', fn: 'MONTH', args: 'serial_number', desc: '返回月份' },
+  { cat: '日期', fn: 'DAY', args: 'serial_number', desc: '返回日期' },
+  // 统计
+  { cat: '统计', fn: 'COUNTIF', args: 'range, criteria', desc: '条件计数' },
+  { cat: '统计', fn: 'SUMIF', args: 'range, criteria, [sum_range]', desc: '条件求和' },
+  { cat: '统计', fn: 'AVERAGEIF', args: 'range, criteria, [average_range]', desc: '条件平均值' },
+  // 查找
+  { cat: '查找', fn: 'VLOOKUP', args: 'lookup_value, table_array, col_index, [range_lookup]', desc: '垂直查找' },
+  { cat: '查找', fn: 'HLOOKUP', args: 'lookup_value, table_array, row_index, [range_lookup]', desc: '水平查找' },
+];
+var XLSX_FORMULA_CATS = [];
+(function() {
+  var catMap = {};
+  XLSX_FORMULAS.forEach(function(f) {
+    if (!catMap[f.cat]) catMap[f.cat] = [];
+    catMap[f.cat].push(f);
+  });
+  XLSX_FORMULA_CATS = Object.keys(catMap).map(function(c) { return { name: c, funcs: catMap[c] }; });
+})();
+
+function renderFormulaCategories(filter) {
+  var catList = w.$c.querySelector('#xfd-category-list');
+  var funcList = w.$c.querySelector('#xfd-function-list');
+  if (!catList || !funcList) return;
+  // 过滤函数
+  var filtered = filter ? XLSX_FORMULAS.filter(function(f) {
+    return f.fn.toLowerCase().indexOf(filter.toLowerCase()) !== -1 ||
+           f.desc.indexOf(filter) !== -1;
+  }) : XLSX_FORMULAS;
+  // 按分类分组
+  var catMap = {};
+  filtered.forEach(function(f) {
+    if (!catMap[f.cat]) catMap[f.cat] = [];
+    catMap[f.cat].push(f);
+  });
+  var cats = Object.keys(catMap);
+  // 渲染分类列表
+  catList.innerHTML = cats.map(function(c, i) {
+    return '<div class="xfd-category-item' + (i === 0 ? ' is-active' : '') + '" data-cat="' + c + '">' + c + '</div>';
+  }).join('');
+  // 默认选中第一个分类
+  if (cats.length > 0) {
+    renderFuncList(catMap[cats[0]], cats[0]);
+  }
+  // 分类点击
+  catList.querySelectorAll('.xfd-category-item').forEach(function(el) {
+    el.onclick = function() {
+      catList.querySelectorAll('.xfd-category-item').forEach(function(e) { e.classList.remove('is-active'); });
+      this.classList.add('is-active');
+      renderFuncList(catMap[this.dataset.cat], this.dataset.cat);
+    };
+  });
+  function renderFuncList(funcs, catName) {
+    funcList.innerHTML = funcs.map(function(f, i) {
+      return '<div class="xfd-func-item" data-fn="' + f.fn + '" data-args="' + f.args + '">' +
+        '<div class="xfd-func-name">' + f.fn + '</div>' +
+        '<div class="xfd-func-args">(' + f.args + ')</div>' +
+        '<div class="xfd-func-desc">' + f.desc + '</div>' +
+        '</div>';
+    }).join('');
+    funcList.querySelectorAll('.xfd-func-item').forEach(function(el) {
+      el.onclick = function() {
+        funcList.querySelectorAll('.xfd-func-item').forEach(function(e) { e.classList.remove('is-active'); });
+        this.classList.add('is-active');
+        var preview = w.$c.querySelector('#xfd-preview');
+        if (preview) preview.textContent = this.dataset.fn + '(' + this.dataset.args + ') — ' + (XLSX_FORMULAS.find(function(f){return f.fn===this.dataset.fn;})||{}).desc || '';
+      };
+    });
+  }
+}
+
+function filterFormulaFunctions(query) {
+  renderFormulaCategories(query);
+}
+
+function insertFormulaWithArgs(fnName, args) {
+  if (!sel.start) return toast('请先选中单元格', 'warning');
+  var r = sel.start[0], c = sel.start[1];
+  var formula = '=' + fnName + '(' + args + ')';
+  data[r][c] = formula;
+  markDirty();
+  // 同步显示
+  var cellEl = w.$c.querySelector('.xlsx-cell[data-r="' + r + '"][data-c="' + c + '"]');
+  if (cellEl) cellEl.textContent = formula;
+  updateFormulaBar();
+  toast('已插入 ' + fnName, 'success');
+}
+
+// ─── 注册全局函数供 PKG 调用 =====
 window.openWordEditor = openWordEditor;
 window.openExcelEditor = openExcelEditor;
 window.openPptEditor = openPptEditor;
