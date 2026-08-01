@@ -2332,12 +2332,6 @@ function openPptEditor(w, fileId, fileName) {
       });
   }
 
-  if (fileId) {
-    loadPptFromServer();
-  } else {
-    render();
-  }
-
   // ─── applyLayout：适配 contenteditable div ───
   function applyLayout(layout, titleEl, contentEl) {
     if (!titleEl || !contentEl) return;
@@ -2600,6 +2594,12 @@ function openPptEditor(w, fileId, fileName) {
     var s = pptRedoStack.pop();
     pptRestoreState(s);
     markPptDirty();
+  }
+
+  if (fileId) {
+    loadPptFromServer();
+  } else {
+    render();
   }
 
   // ─── render() ───

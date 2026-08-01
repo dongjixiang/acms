@@ -319,6 +319,7 @@
     syncBlocks(container, state.doc);
     // 重新查询当前块（syncBlocks 可能改变了 blocks 数组，原 blockData.idx 可能失效）
     var currentBlockData = getBlockData(container, sel.focusNode);
+    var curIdx = currentBlockData ? currentBlockData.idx : 0;
     var curBlock = currentBlockData
       ? state.doc.blocks[currentBlockData.idx]
       : (lastFocusedBlockId ? state.doc.blocks.find(function(b) { return b.id === lastFocusedBlockId; }) : null);
