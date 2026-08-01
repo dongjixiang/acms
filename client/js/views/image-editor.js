@@ -229,6 +229,14 @@
         }, 300);
       }
 
+      // v0.79 debug: URL 加 ?aiDebug=1 时暴露 IE 给 image-editor-debug.js 使用
+      //   默认关闭，prod 不感知；类似 console.log 风格的小诊断钩子
+      try {
+        if (window.location && window.location.search && window.location.search.indexOf('aiDebug=1') >= 0) {
+          window.imageEditorAPI.__ie = imageEditor;
+        }
+      } catch(e){}
+
       // 监听 tui 图片加载结果（注意：实测 tui 3.15.3 无 'loadImage' 事件可 fire，
       //   此回调基本不触发——初始化 fit 由下方就绪轮询兜底，reload 由 loadImageSafe.then 兜底）
       imageEditor.on('loadImage', function(result) {
@@ -287,43 +295,58 @@
       } catch(e) {}
     }
 
-    // v0.78: 裁剪 canvas 到图片实际区域（供 AI 送图，避免黑框）
-    //   canvasImage 是 tui setBackgroundImage 的背景图，对象坐标为 buffer 坐标，
-    //   居中放置（adjustCanvasDimension → centerObject），buffer 可能大于图片（透明边）。
-    //   返回 { dataUrl, width, height }，只含图片像素区域。
+    // v0.79: 送图给 AI 用 canvasImage._element 的原图 1:1 像素
+    //   根因：tui 用 canvas.setBackgroundImage 把图作为 fabric 背景层；
+    //         fabric Canvas.toDataURL() 序列化时**不包含 BackgroundImage**，
+    //         输出空 buffer → LLM 看到 95% 黑/透明（原 image-editor-debug.js 实测
+    //         dark_percent=95.20%, alpha_avg=12）。
+    //   修法：直接读 canvasImage._element（fabric Image 持有的 HTMLImageElement，
+    //         其 src 是用户原图 URL，1:1 像素、零缩放、完全绕开 fabric viewport /
+    //         buffer / BackgroundImage 序列化复杂性）。
+    //   fallback 链：canvasImage._element → fabric.toCanvasElement() 含 BG →
+    //   saveCanvasSnapshot 兜底（用户编辑后的画布，crop + 绘图文）。
+    //   返回 { dataUrl, width, height }。
     function cropCanvasToImage() {
       try {
-        var c = imageEditor._graphics && imageEditor._graphics.getCanvas();
-        var img = (imageEditor._graphics && imageEditor._graphics.canvasImage) || null;
-        if (!c || !img || !img.width || !img.height) {
-          return { dataUrl: window.imageEditorAPI.saveCanvasSnapshot(imageEditor), width: 0, height: 0 };
+        var ie = imageEditor;
+        var img = ie._graphics && ie._graphics.canvasImage;
+        if (!img || !img.width || !img.height) {
+          return { dataUrl: window.imageEditorAPI.saveCanvasSnapshot(ie), width: 0, height: 0 };
         }
-        var ox = img.originX === 'center' ? (img.left || 0) - img.width * (img.scaleX || 1) / 2 : (img.left || 0);
-        var oy = img.originY === 'center' ? (img.top || 0) - img.height * (img.scaleY || 1) / 2 : (img.top || 0);
-        var bw = Math.round(Math.abs(img.width * (img.scaleX || 1)));
-        var bh = Math.round(Math.abs(img.height * (img.scaleY || 1)));
-        // 保护：不超出 buffer 范围（旋转后 bounding box 可能出界）
-        var srcX = Math.max(0, Math.round(ox)), srcY = Math.max(0, Math.round(oy));
-        var maxW = c.getWidth() - srcX, maxH = c.getHeight() - srcY;
-        bw = Math.min(bw, maxW); bh = Math.min(bh, maxH);
-        if (bw <= 0 || bh <= 0) {
-          return { dataUrl: window.imageEditorAPI.saveCanvasSnapshot(imageEditor), width: 0, height: 0 };
+
+        // 主路径：HTMLImageElement._element → 用户原始图 1:1 像素
+        var htmlImg = (img.getElement && img.getElement()) || img._element || null;
+        if (htmlImg && (htmlImg.tagName === 'IMG') && htmlImg.naturalWidth) {
+          var w = img.width, h = img.height;
+          var tmp = document.createElement('canvas');
+          tmp.width = w; tmp.height = h;
+          var tctx = tmp.getContext('2d');
+          tctx.clearRect(0, 0, w, h);
+          tctx.drawImage(htmlImg, 0, 0, w, h);
+          var dataUrl = tmp.toDataURL('image/png');
+          if (dataUrl && dataUrl.length > 100) {
+            return { dataUrl: dataUrl, width: w, height: h };
+          }
         }
-        var tmp = document.createElement('canvas');
-        tmp.width = bw; tmp.height = bh;
-        var tctx = tmp.getContext('2d');
-        // 深色画布背景 → 透明背景（避免黑底）
-        tctx.clearRect(0, 0, bw, bh);
-        tctx.drawImage(c.getElement(), srcX, srcY, bw, bh, 0, 0, bw, bh);
-        var dataUrl = tmp.toDataURL('image/png');
-        if (!dataUrl || dataUrl.length < 100) {
-          return { dataUrl: window.imageEditorAPI.saveCanvasSnapshot(imageEditor), width: 0, height: 0 };
+
+        // fallback 1：fabric 6 toCanvasElement (multiplier=1, 含 backgroundImage)
+        var c = ie._graphics && ie._graphics.getCanvas();
+        if (c) {
+          var canvasEl = (typeof c.toCanvasElement === 'function')
+            ? c.toCanvasElement(1)
+            : (c.lowerCanvasEl || c.getElement());
+          if (canvasEl) {
+            var fb = canvasEl.toDataURL('image/png');
+            if (fb && fb.length > 100) {
+              return { dataUrl: fb, width: img.width, height: img.height };
+            }
+          }
         }
-        return { dataUrl: dataUrl, width: bw, height: bh };
       } catch(e) {
         console.warn('[AI] cropCanvasToImage:', e);
-        return { dataUrl: window.imageEditorAPI.saveCanvasSnapshot(imageEditor), width: 0, height: 0 };
       }
+      // fallback 2：整 buffer（用户编辑后的画布状态最完整，可能有 shapes/text 覆盖）
+      return { dataUrl: window.imageEditorAPI.saveCanvasSnapshot(imageEditor), width: 0, height: 0 };
     }
 
     // v0.73: 暴露图片重载函数（供拖拽到已打开的编辑器窗口时使用）
