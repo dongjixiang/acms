@@ -1030,5 +1030,4 @@ function insertFormulaWithArgs(fnName, args) {
 
 // ─── 注册全局函数供 PKG 调用 =====
 window.openWordEditor = openWordEditor;
-window.openExcelEditor = openExcelEditor;
 window.openPptEditor = openPptEditor;
