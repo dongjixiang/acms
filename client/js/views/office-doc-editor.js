@@ -188,8 +188,9 @@
           if (m) b.attrs.id = 'fn-' + m[1];
         }
       } else {
-        // paragraph / heading：用 innerHTML 保留 <strong>/<em> 等 inline 格式
-        b.content = el.innerHTML || '';
+        // paragraph / heading：读 textContent 避免把上次 execCommand 残留的
+        // <strong>/<em> 标签作为纯文本存入 block.content（那些格式已用 CSS style 保存）
+        b.content = el.textContent || '';
         if (type === 'heading') {
           var lvl = getHeadingLevel(el);
           b.attrs.level = lvl;
@@ -201,9 +202,6 @@
         var fontWeight = el.style.fontWeight;
         var fontStyle = el.style.fontStyle;
         var textDecoration = el.style.textDecoration;
-        if (fontSize || fontWeight || fontStyle || textDecoration) {
-          console.log('[parseEditorDOM] READ:', { fontSize: fontSize, fontWeight: fontWeight, fontStyle: fontStyle, textDecoration: textDecoration });
-        }
         if (align || fontSize || fontFamily || fontWeight || fontStyle || textDecoration) {
           b.attrs.formatting = b.attrs.formatting || {};
           if (align) b.attrs.formatting.align = align;
@@ -318,11 +316,12 @@
     if (!blockData) return;
 
     e.preventDefault();
-    console.log('[handleEnter] BEFORE sync: curBlock.fmt=', JSON.stringify(curBlock.attrs?.formatting));
     syncBlocks(container, state.doc);
-    console.log('[handleEnter] AFTER sync: curBlock.fmt=', JSON.stringify(curBlock.attrs?.formatting));
-    var curIdx = blockData.idx;
-    var curBlock = state.doc.blocks[curIdx];
+    // 重新查询当前块（syncBlocks 可能改变了 blocks 数组，原 blockData.idx 可能失效）
+    var currentBlockData = getBlockData(container, sel.focusNode);
+    var curBlock = currentBlockData
+      ? state.doc.blocks[currentBlockData.idx]
+      : (lastFocusedBlockId ? state.doc.blocks.find(function(b) { return b.id === lastFocusedBlockId; }) : null);
     if (!curBlock) return;
 
     // 分裂当前 block：光标前的内容留在当前 block，光标后的内容去新 block
@@ -339,7 +338,7 @@
     // 新 block 类型：heading → 变 paragraph；其它保持同类型
     var newType = curBlock.type;
     var newAttrs = {};
-    // 继承当前 block 的格式 (字号/对齐/字体)
+    // 继承当前 block 的格式 (字号/对齐/字体/bold/italic/underline)
     if (curBlock.attrs && curBlock.attrs.formatting) {
       newAttrs.formatting = JSON.parse(JSON.stringify(curBlock.attrs.formatting));
     }
@@ -717,8 +716,12 @@ getDocument: function () { return state.doc; },
                    : (marker === 'underline') ? 'underline' : null;
         if (toggle) {
           fmt[toggle] = !fmt[toggle];
-          console.log('[toggleInline]', marker, '->', fmt[toggle], 'fmt=', JSON.stringify(fmt));
           fullRender(container, state.doc);
+          // 重新聚焦到原块，确保下次操作不丢失焦点
+          setTimeout(function () {
+            var el = container.querySelector('[data-bid="' + blockId + '"]');
+            if (el) { var ce = el.querySelector('.ode-ce') || el; if (ce && ce.isContentEditable) ce.focus(); }
+          }, 0);
           notifyChange(state);
           return true;
         }
@@ -747,6 +750,12 @@ getDocument: function () { return state.doc; },
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
   function escAttr(s) { return escHtml(String(s||'')).replace(/"/g,'&quot;'); }
+  //  stripping HTML tags from innerHTML — used to clean content before storing
+  function stripHtml(html) {
+    var tmp = document.createElement('div');
+    tmp.innerHTML = html;
+    return tmp.textContent || tmp.innerText || '';
+  }
 
   root.OfficeDocEditor = root.OfficeDocEditor || {};
   root.OfficeDocEditor.mountEditor = mountEditor;
