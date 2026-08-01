@@ -489,7 +489,39 @@
         window._fb_open_file = {name:fn,content:content};
         ACMSWin.open('office-word',{w:1000,h:700,title:'📝 '+fn});
       }).catch(function(){to('读取文件失败','error');});
-    } else if(appName==='web-browser'){
+    } else if(appName==='office-pptx') {
+      // PPT: 下载文件并保存到 office 目录，然后用 fileId 打开
+      fetch('/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK).then(function(r){return r.arrayBuffer();}).then(function(buf){
+        var b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+        return fetch('/api/office/save', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json','X-API-Key':'dev-key-001'},
+          body: JSON.stringify({type:'pptx', name: fn, content: b64}),
+        });
+      }).then(function(r){return r.json();}).then(function(resp){
+        if(resp.ok && resp.fileId) {
+          ACMSWin.open('office-pptx',{w:1000,h:650,title:'📽️ '+fn}, {fileId: resp.fileId, fileName: fn});
+        } else {
+          to('打开失败: 保存到编辑器目录失败','error');
+        }
+      }).catch(function(){to('读取文件失败','error');});
+    } else if(appName==='office-xlsx') {
+      // Excel: 类似处理
+      fetch('/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK).then(function(r){return r.arrayBuffer();}).then(function(buf){
+        var b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+        return fetch('/api/office/save', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json','X-API-Key':'dev-key-001'},
+          body: JSON.stringify({type:'xlsx', name: fn, content: b64}),
+        });
+      }).then(function(r){return r.json();}).then(function(resp){
+        if(resp.ok && resp.fileId) {
+          ACMSWin.open('office-xlsx',{w:1000,h:600,title:'📊 '+fn}, {fileId: resp.fileId, fileName: fn});
+        } else {
+          to('打开失败: 保存到编辑器目录失败','error');
+        }
+      }).catch(function(){to('读取文件失败','error');});
+    } else if(appName==='web-browser') {
       // 浏览器：fetch HTML 内容用 srcdoc 渲染（保证正确渲染而非显示源码）
       var fileUrl='/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK;
       fetch(fileUrl).then(function(r){return r.text();}).then(function(html){

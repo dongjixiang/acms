@@ -358,8 +358,8 @@ function openPptEditor(w, fileId, fileName) {
     h += '<span id="ppt-modified-dot" class="oo-modified-dot" title="未修改"></span>';
     h += '</div>';
     h += '<div class="oo-titlebar-actions">';
-    h += '<button class="oo-titlebar-btn" id="ppt-download-btn" title="下载 .pptx 文件" style="display:none">\\ud83d\\udce5 下载</button>';
-    h += '<button class="oo-titlebar-btn primary" id="ppt-save-btn">\\ud83d\\udcbe 保存</button>';
+    h += '<button class="oo-titlebar-btn" id="ppt-download-btn" title="下载 .pptx 文件" style="display:none">\ud83d\udce5 下载</button>';
+    h += '<button class="oo-titlebar-btn primary" id="ppt-save-btn">\ud83d\udcbe 保存</button>';
     h += '</div>';
     h += '</div>';
     // Ribbon

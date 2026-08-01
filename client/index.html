@@ -1045,8 +1045,8 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   PKG('office-pptx', {
     title: 'PPT 演示', icon: '📽️', category: '工具', defaultSize: { w: 1000, h: 650 },
-    loader: function(w) {
-      if (typeof openPptEditor === 'function') openPptEditor(w);
+    loader: function(w, opts) {
+      if (typeof openPptEditor === 'function') openPptEditor(w, opts && opts.fileId, opts && opts.fileName);
       else w.$c.innerHTML = '<div style="padding:40px;text-align:center">加载中...</div>';
     }
   });
