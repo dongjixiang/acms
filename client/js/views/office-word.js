@@ -1,7 +1,7 @@
 // ACMS Word 编辑器 — 依赖 office-common.js (escHtml, showCtxMenu)
 
-function openWordEditor(w, fileId, fileName) {
-  console.log('[Word] openWordEditor called', { fileId, fileName, wcW: w.$c.offsetWidth, wcH: w.$c.offsetHeight });
+function openWordEditor(w, fileId, fileName, content) {
+  console.log('[Word] openWordEditor called', { fileId, fileName, contentLen: content ? content.length : 0, wcW: w.$c.offsetWidth, wcH: w.$c.offsetHeight });
   // 容器 = 整个 PKG 内容区，套 .oo-editor 类（让主题色生效）
   w.$c.innerHTML = '<div class="oo-editor oo-editor-word" style="height:100%;display:flex;flex-direction:column"></div>';
   var host = w.$c.querySelector('.oo-editor');
@@ -163,10 +163,38 @@ function openWordEditor(w, fileId, fileName) {
   var _isServerFile = !!fileId;
   var _fileId = fileId || null;
 
-  // 初始化 doc（空或从 fileId 加载）
+  // 初始化 doc（空/从 content/从 fileId 加载）
   var doc = window.OfficeDoc.makeDocument({ title: fileName || 'untitled' });
-  if (fileId) {
-    // 显示 loading
+
+  function parseContentToBlocks(text) {
+    if (!text || !text.trim()) {
+      doc.blocks.push(window.OfficeDoc.paragraph(''));
+      return;
+    }
+    var lines = text.split('
+');
+    lines.forEach(function (line) {
+      var trimmed = line.trim();
+      if (!trimmed) return;
+      // heading 检测
+      var h = trimmed.match(/^(#{1,6})\s+(.+)$/);
+      if (h) {
+        doc.blocks.push(window.OfficeDoc.heading(h[2], h[1].length));
+      } else {
+        doc.blocks.push(window.OfficeDoc.paragraph(trimmed));
+      }
+    });
+    if (doc.blocks.length === 0) {
+      doc.blocks.push(window.OfficeDoc.paragraph(''));
+    }
+  }
+
+  if (content) {
+    // 从文件浏览器打开：直接解析 markdown 内容
+    parseContentToBlocks(content);
+    mountBlockEditor();
+  } else if (fileId) {
+    // 从服务器打开：加载 schema
     editorHost.innerHTML = '<div style="padding:40px;text-align:center;color:#888">⏳ 正在加载 ' + fileName + '...</div>';
     fetch('/api/office/load/' + encodeURIComponent(fileId))
       .then(function (r) { return r.json(); })
@@ -176,35 +204,17 @@ function openWordEditor(w, fileId, fileName) {
           editorHost.innerHTML = '<div style="padding:24px;color:#a00">❌ 加载失败：' + (resp.error || '未知') + '<br>fileId: ' + fileId + '</div>';
           return;
         }
-        // 解析 blocks：从 resp.text 或 resp.content (base64) 恢复
-        if (resp.text) {
-          // 尝试解析 markdown 格式（带 # 标题的纯文本）
-          var lines = resp.text.split('\n');
-          lines.forEach(function (line) {
-            var trimmed = line.trim();
-            if (!trimmed) return;
-            // heading 检测
-            var h = trimmed.match(/^(#{1,6})\s+(.+)$/);
-            if (h) {
-              doc.blocks.push(window.OfficeDoc.heading(h[2], h[1].length));
-            } else {
-              doc.blocks.push(window.OfficeDoc.paragraph(trimmed));
-            }
-          });
-        } else {
-          doc.blocks.push(window.OfficeDoc.paragraph(''));
-        }
-        if (doc.blocks.length === 0) {
-          doc.blocks.push(window.OfficeDoc.paragraph(''));
-        }
+        parseContentToBlocks(resp.text);
         mountBlockEditor();
       })
       .catch(function (e) {
         editorHost.innerHTML = '<div style="padding:24px;color:#a00">❌ 网络错误：' + e.message + '</div>';
       });
   } else {
+    // 新建空文档
     mountBlockEditor();
   }
+
 
 function mountBlockEditor() {
   console.log('[Word] mountBlockEditor called, OfficeDocEditor=', typeof window.OfficeDocEditor);

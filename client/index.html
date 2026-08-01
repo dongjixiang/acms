@@ -1031,7 +1031,10 @@ document.addEventListener('DOMContentLoaded', () => {
   PKG('office-word', {
     title: 'Word 文档', icon: '📝', category: '工具', defaultSize: { w: 900, h: 600 },
     loader: function(w, opts) {
-      if (typeof openWordEditor === 'function') openWordEditor(w, opts && opts.fileId, opts && opts.fileName);
+      var f = window._fb_open_file; window._fb_open_file = null;
+      if (typeof openWordEditor === 'function') {
+        openWordEditor(w, opts && opts.fileId, f ? f.name : null, f ? f.content : null);
+      }
       else w.$c.innerHTML = '<div style="padding:40px;text-align:center">加载中...</div>';
     }
   });
