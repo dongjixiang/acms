@@ -680,7 +680,10 @@ function openPptEditor(w, fileId, fileName) {
       label.className = 'ppt-size-label';
       label.textContent = ow + '×' + oh;
       wrap.appendChild(label);
-      el.parentNode.replaceChild(wrap, el);
+      // 用 placeholder 做桥梁：避免 wrap 同时是 el 的子节点和待插入节点导致 HierarchyRequestError
+      var ph = document.createTextNode('');
+      el.parentNode.insertBefore(ph, el);
+      el.parentNode.replaceChild(wrap, ph);
       _pptResizeState = { wrap: wrap, target: el, label: label, startX: 0, startY: 0, startW: ow, startH: oh };
     }
 
