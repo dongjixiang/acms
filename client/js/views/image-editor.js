@@ -608,8 +608,8 @@
         var objCenterX = (img.left || 0) + img.width * (img.scaleX || 1) / 2;
         var objCenterY = (img.top  || 0) + img.height * (img.scaleY || 1) / 2;
 
-        var panX = (mainRect.width  / 2) * (c.width  / canvasRect.width)  - objCenterX * level;
-        var panY = (mainRect.height / 2) * (c.height / canvasRect.height) - objCenterY * level;
+        var panX = (canvasRect.width  / 2) - objCenterX * level;
+        var panY = (canvasRect.height / 2) - objCenterY * level;
 
         c.setViewportTransform([level, 0, 0, level, panX, panY]);
         c.requestRenderAll();
@@ -749,8 +749,13 @@
           } else {
             var objCenterX = sx + w / 2;
             var objCenterY = sy + h / 2;
-            var panX = (mainRect.width / 2) * (c.width / canvasRect.width) - objCenterX * level;
-            var panY = (mainRect.height / 2) * (c.height / canvasRect.height) - objCenterY * level;
+            // v0.83 fix: 用 canvasRect.{width,height}/2（不是 mainRect.{width,height}/2）
+            //   tui canvas DOM 在 main 内居中（左右各有 (mainRect.width - canvasRect.width)/2 边距）
+            //   fabric 6 setZoom/setViewportTransform 不改 canvas DOM CSS size，
+            //   canvasRect.width 固定，obj 屏幕中心 = canvasRect.left + (obj.x * level + panX) * (canvasRect.width / c.width)
+            //   实测 mainRect=998, canvasRect=800 → 用 mainRect/2 会让图偏右 ~99px
+            var panX = (canvasRect.width / 2) - objCenterX * level;
+            var panY = (canvasRect.height / 2) - objCenterY * level;
             c.setViewportTransform([level, 0, 0, level, panX, panY]);
           }
           c.requestRenderAll();
