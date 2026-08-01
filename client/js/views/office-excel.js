@@ -1167,11 +1167,19 @@ function openExcelEditor(w) {
     }
     h += '</tr>';
     for (var ri = 0; ri < data.length; ri++) {
+      // v0.65: 检查当前行是否被上方合并区域占用（垂直合并中间行）
+      var skipRow = false;
+      for (var si = 0; si < mergedRanges.length; si++) {
+        var sm = mergedRanges[si];
+        if (ri > sm.r1 && ri <= sm.r2) { skipRow = true; break; }
+      }
+      if (skipRow) continue;
+      // 计算当前行的 rowspan
       var rowSpan = 1;
       for (var i = 0; i < mergedRanges.length; i++) {
         if (mergedRanges[i].r1 === ri) rowSpan = mergedRanges[i].r2 - ri + 1;
       }
-      var rowAttrs = rowSpan > 1 ? ' rowspan="' + rowSpan + '"' : '';
+      var rowAttrs = rowSpan > 1 ? ' rowspan="' + rowSpan + '"
       h += '<tr><td class="xlsx-row-header" data-row="' + ri + '" style="border:1px solid #ccc;background:var(--bg2);padding:4px 6px;text-align:center;font-size:11px;color:var(--text2);cursor:pointer;user-select:none">' + (ri + 1) + '</td>';
       for (var ci2 = 0; ci2 < data[ri].length; ci2++) {
         if (skipCell(ri, ci2)) continue;
