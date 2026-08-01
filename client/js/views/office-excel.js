@@ -13,6 +13,7 @@ function openExcelEditor(w, fileId, fileName) {
   // v0.62.7: 文件来源: server(有fileId) / local(无fileId)
   var _isServerFile = !!fileId;
   var _fileId = fileId || null;
+  console.log('[xlsx-editor] openExcelEditor called', { fileId, fileName, _isServerFile, wWidth: w.$c.offsetWidth, wHeight: w.$c.offsetHeight });
 
   // v0.62.5: 多 sheet 数据结构（每个 sheet 独立 data 数组）
   var sheets = [];
@@ -2066,6 +2067,8 @@ function openExcelEditor(w, fileId, fileName) {
 if (typeof ACMSWin !== 'undefined' && ACMSWin.registerViewLoader) {
   ACMSWin.registerViewLoader('office-xlsx', function(w) {
     var opts = arguments[1] || {};
+    console.log('[xlsx-loader] opts:', opts, 'fileId:', opts.fileId, 'fileName:', opts.fileName);
+    console.log('[xlsx-loader] w.id:', w.id, 'w.view:', w.view);
     openExcelEditor(w, opts.fileId, opts.fileName);
   });
 }
