@@ -516,7 +516,15 @@
         return r.arrayBuffer();
       }).then(function(buf){
         console.log('[FB-DEBUG] Buffer size:', buf.byteLength);
-        var b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+        // 分块处理大文件，避免栈溢出
+        var bytes = new Uint8Array(buf);
+        var b64 = '';
+        var chunkSize = 8192;
+        for (var i = 0; i < bytes.length; i += chunkSize) {
+          var chunk = bytes.subarray(i, i + chunkSize);
+          b64 += String.fromCharCode.apply(null, chunk);
+        }
+        b64 = btoa(b64);
         return fetch('/api/office/save', {
           method: 'POST',
           headers: {'Content-Type':'application/json','X-API-Key':'dev-key-001'},
