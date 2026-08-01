@@ -5,6 +5,7 @@ const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const ExcelJS = require('exceljs');
 const { XMLParser } = require('fast-xml-parser');
+const { parseDocxToBlocks } = require('./office-parse-docx');
 
 function escHtml(s) {
   return String(s)
