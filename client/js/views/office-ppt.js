@@ -1032,4 +1032,3 @@ function insertFormulaWithArgs(fnName, args) {
 window.openWordEditor = openWordEditor;
 window.openExcelEditor = openExcelEditor;
 window.openPptEditor = openPptEditor;
-
