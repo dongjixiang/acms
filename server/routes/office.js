@@ -151,7 +151,7 @@ router.get('/load/:fileId', async function (req, res) {
         text = '';
       } catch (e) { text = '(docx 文本提取失败: ' + e.message + ')'; }
     }
-} else if (ext === 'xlsx') {
+    else if (ext === 'xlsx') {
       // v0.63 Phase3: 优先读 .schema.json（结构化数据）
       var schemaFile = filePath.replace('.' + ext, '.schema.json');
       if (fs.existsSync(schemaFile)) {
