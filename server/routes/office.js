@@ -54,19 +54,19 @@ router.post('/save', async function (req, res) {
       return res.status(400).json({ error: 'UNSUPPORTED_TYPE', type });
     }
 
-    // v0.63 Phase3: 同时写一份 JSON schema 供编辑器读取（pptx/xlsx 用）
+    // v0.63 Phase3: 写 JSON schema 供编辑器读取（有 data.slides 时才写）
     if (type === 'pptx' || type === 'xlsx') {
-      const schemaFile = path.join(OFFICE_DIR, fileId + '.schema.json');
-      const schema = {
-        type: type,
-        name: name,
-        data: body.data,
-      };
-      fs.writeFileSync(schemaFile, JSON.stringify(schema));
+      const schemaData = body.data;
+      // 只有 schema 里有实际数据（slides 数组非空）才写文件，
+      // 避免文件浏览器传入二进制 base64 时生成空的 schema 导致 load 静默失败
+      if (schemaData && schemaData.slides && Array.isArray(schemaData.slides)) {
+        const schemaFile = path.join(OFFICE_DIR, fileId + '.schema.json');
+        fs.writeFileSync(schemaFile, JSON.stringify({ type: type, name: name, data: schemaData }));
+      }
     }
 
     // v0.63 Phase3: 如果前端传了 schema（直接从编辑器 save 来的），存 schema
-    if (body._schema) {
+    if (body._schema && body._schema.data && body._schema.data.slides) {
       const schemaFile = path.join(OFFICE_DIR, fileId + '.schema.json');
       fs.writeFileSync(schemaFile, JSON.stringify(body._schema));
     }
@@ -145,6 +145,84 @@ router.get('/load/:fileId', function (req, res) {
           var schemaJson = JSON.parse(fs.readFileSync(schemaFile, 'utf8'));
           text = 'SCHEMA:' + JSON.stringify(schemaJson.data);
         } catch (e) { text = '(schema 解析失败: ' + e.message + ')'; }
+      } else if (ext === 'pptx') {
+        // 无 schema：从二进制 PPTX 提取文本，生成近似 schema
+        try {
+          var AdmZip = require('adm-zip');
+          var zip = new AdmZip(buf);
+          var presXml = zip.readAsText('ppt/presentation.xml');
+          // 找所有 slide id → 文件名映射
+          var slideIds = presXml.match(/<p:sldIdLst>([\s\S]*?)<\/p:sldIdLst>/);
+          var ids = [];
+          if (slideIds) {
+            var idMatches = slideIds[1].match(/<p:sldId[^>]*\sr:id="rId(\d+)"/g);
+            if (idMatches) ids = idMatches.map(function(m) { var n = m.match(/rId(\d+)/); return n ? parseInt(n[1]) : null; }).filter(Boolean);
+          }
+          // 找 rels 映射 rId → 文件名
+          var relsXml = zip.readAsText('ppt/_rels/presentation.xml.rels') || '';
+          var relMap = {};
+          var relMatches = relsXml.match(/<Relationship[^>]*Id="(rId\d+)"[^>]*Target="([^"]*)"/g);
+          if (relMatches) relMatches.forEach(function(r) {
+            var id = r.match(/Id="(rId\d+)"/);
+            var target = r.match(/Target="([^"]+)"/);
+            if (id && target) relMap[id[1]] = target[1];
+          });
+          // 解析每页幻灯片
+          var pptSlides = [];
+          ids.forEach(function(rid) {
+            var slideFile = relMap['rId' + rid];
+            if (!slideFile) return;
+            var slideXml = zip.readAsText('ppt/' + slideFile);
+            if (!slideXml) return;
+            // 提取标题和正文占位符文本
+            var titleText = '';
+            var bodyText = '';
+            var layout = 'content';
+            // 匹配 p:ph 占位符
+            var phMatches = slideXml.match(/<p:sp><p:nvSpPr><p:cNvPr[^>]*name="([^"]*)"[^>]*\/><\/p:nvSpPr>([\s\S]*?)<\/p:sp>/g) || [];
+            phMatches.forEach(function(sp) {
+              var nameMatch = sp.match(/p:cNvPr[^>]*name="([^"]*)"/);
+              var name = nameMatch ? nameMatch[1] : '';
+              var phMatch = sp.match(/<p:ph[^>]*type="([^"]*)"/);
+              var phType = phMatch ? phMatch[1] : '';
+              var innerText = sp.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+              if (phType === 'title' || name.indexOf('标题') >= 0 || name.indexOf('Title') >= 0) {
+                titleText = innerText;
+                layout = 'cover';
+              } else if (phType === 'body' || name.indexOf('正文') >= 0 || name.indexOf('Content') >= 0) {
+                bodyText = innerText;
+                layout = 'content';
+              } else if (!phType && !name) {
+                // 普通形状文本
+                if (bodyText) bodyText += '\n' + innerText;
+                else bodyText = innerText;
+              }
+            });
+            // 也提取不带 ph 标记的纯文本（fallback）
+            if (!titleText && !bodyText) {
+              var allText = slideXml.match(/<a:t>([^<]*)<\/a:t>/g) || [];
+              allText.forEach(function(t) {
+                var txt = t.replace(/<\/?a:t>/g, '');
+                if (txt.trim()) {
+                  if (!titleText) titleText = txt;
+                  else bodyText += '\n' + txt;
+                }
+              });
+            }
+            if (titleText || bodyText) {
+              pptSlides.push({
+                title: '<h1 style="font-size:28px;color:#333">' + escHtml(titleText || '标题') + '</h1>',
+                content: '<p style="font-size:16px;color:#555">' + escHtml(bodyText || '') + '</p>',
+                layout: layout
+              });
+            }
+          });
+          if (pptSlides.length > 0) {
+            text = 'SCHEMA:' + JSON.stringify({ slides: pptSlides });
+          } else {
+            text = '(PPTX 文本提取失败，请手动创建)';
+          }
+        } catch (e) { text = '(PPTX 解析失败: ' + e.message + ')'; }
       } else {
         text = '(二进制文件，请使用专门的 Excel/PPT 编辑器打开)';
       }

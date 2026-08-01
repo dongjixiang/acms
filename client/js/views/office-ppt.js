@@ -67,8 +67,26 @@ function openPptEditor(w, fileId, fileName) {
               });
               cur = 0;
               toast('已加载 ' + (fileName || 'PPT') + '（' + slides.length + ' 页）', 'success');
+            } else {
+              // 有 schema 文件但没有 slides 数据（文件浏览器传入的二进制 PPTX）
+              loadEl.innerHTML = '<div style="text-align:center;color:#888;font-size:14px;padding:20px">' +
+                '<div style="font-size:32px;margin-bottom:12px">📽️</div>' +
+                '<div>该文件是二进制 PPTX 格式，编辑器暂不支持直接加载</div>' +
+                '<div style="margin-top:8px;font-size:12px;color:#aaa">请在 PPT 编辑器中创建，或先用其他工具导出为 ACMS 格式</div>' +
+                '</div>';
+              w.$c.appendChild(loadEl);
+              return;
             }
           } catch (e) { /* 降级用默认 */ }
+        } else if (resp.text && resp.text.indexOf('二进制文件') === 0) {
+          // 完全没有 schema 文件（文件浏览器传入的二进制 PPTX）
+          loadEl.innerHTML = '<div style="text-align:center;color:#888;font-size:14px;padding:20px">' +
+            '<div style="font-size:32px;margin-bottom:12px">📽️</div>' +
+            '<div>该文件是二进制 PPTX 格式，编辑器暂不支持直接加载</div>' +
+            '<div style="margin-top:8px;font-size:12px;color:#aaa">请在 PPT 编辑器中创建，或先用其他工具导出为 ACMS 格式</div>' +
+            '</div>';
+          w.$c.appendChild(loadEl);
+          return;
         }
         render();
       })
