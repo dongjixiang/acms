@@ -8,6 +8,7 @@
 // v0.62.5 PR-C: 多 sheet 支持 — sheets[] 数组 + currentSheetIdx + 底部 Sheet tabs
 // v0.65: 支持 fileId/fileName 参数从服务器加载文件
 function openExcelEditor(w, fileId, fileName) {
+  console.log('[Excel] openExcelEditor called, fileId:', fileId, 'fileName:', fileName);
   var ROWS = 20, COLS = 8;
 
   // v0.62.7: 文件来源: server(有fileId) / local(无fileId)
