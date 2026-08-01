@@ -210,6 +210,9 @@
           if (fontStyle === 'italic') b.attrs.formatting.italic = true;
           if (textDecoration && textDecoration.indexOf('underline') >= 0) b.attrs.formatting.underline = true;
         }
+        if (fontSize || fontWeight || fontStyle || textDecoration) {
+          console.log('[parseEditorDOM] READ fontSize=', fontSize, 'fontWeight=', fontWeight, 'fontStyle=', fontStyle, 'textDecoration=', textDecoration, 'fmt=', JSON.stringify(b.attrs?.formatting));
+        }
       }
       blocks.push(b);
     }
@@ -319,6 +322,8 @@
     var curIdx = blockData.idx;
     var curBlock = state.doc.blocks[curIdx];
     if (!curBlock) return;
+
+    console.log('[handleEnter] curBlock:', JSON.stringify({type:curBlock.type, content:curBlock.content?.slice(0,20), fmt:curBlock.attrs?.formatting}));
 
     // 分裂当前 block：光标前的内容留在当前 block，光标后的内容去新 block
     var focusNode = sel.focusNode;
