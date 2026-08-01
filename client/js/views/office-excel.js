@@ -1161,9 +1161,26 @@ function openExcelEditor(w) {
     h += '<tr><th class="xlsx-corner-th" style="border:1px solid #ccc;background:var(--bg2);padding:4px 6px;min-width:30px;text-align:center;font-weight:600;position:sticky;top:0;left:0;z-index:3">#</th>';
     var maxCols = 0;
     for (var ri0 = 0; ri0 < data.length; ri0++) { if ((data[ri0]||[]).length > maxCols) maxCols = data[ri0].length; }
-    for (var ci = 0; ci < maxCols; ci++) {
+    // v0.65: 计算列头的 colspan（基于第一行的合并区域）
+    var colHeaderSpan = [];
+    for (var ci = 0; ci < maxCols; ci++) { colHeaderSpan[ci] = 1; }
+    for (var mi = 0; mi < mergedRanges.length; mi++) {
+      var mr = mergedRanges[mi];
+      if (mr.r1 === 0) { // 只在第一行处理列头合并
+        for (var cc = mr.c1; cc <= mr.c2; cc++) {
+          if (cc < maxCols) colHeaderSpan[cc] = mr.c2 - mr.c1 + 1;
+        }
+      }
+    }
+    // 渲染列头，合并相邻的
+    var ci = 0;
+    while (ci < maxCols) {
+      var span = colHeaderSpan[ci] || 1;
       var filterArrow = autoFilterActive ? '<span class="xlsx-filter-arrow" title="自动筛选">▼</span>' : '';
-      h += '<th class="xlsx-col-header" data-col="' + ci + '" style="border:1px solid #ccc;background:var(--bg2);padding:4px 6px;min-width:80px;text-align:center;font-weight:600;position:sticky;top:0;z-index:2;cursor:pointer;user-select:none">' + colLetter(ci) + filterArrow + '</th>';
+      var thStyle = 'border:1px solid #ccc;background:var(--bg2);padding:4px 6px;min-width:80px;text-align:center;font-weight:600;position:sticky;top:0;z-index:2;cursor:pointer;user-select:none';
+      if (span > 1) thStyle += ';min-width:' + (80 * span) + 'px';
+      h += '<th class="xlsx-col-header" data-col="' + ci + '" colspan="' + span + '" style="' + thStyle + '">' + colLetter(ci) + filterArrow + '</th>';
+      ci += span;
     }
     h += '</tr>';
     for (var ri = 0; ri < data.length; ri++) {
