@@ -233,7 +233,8 @@ function blockToParagraph(b, D) {
     // 解析文本，然后给每个 run 添加块级格式
     runs = parseInlineFormatting(text, D);
     runs = runs.map(function(r) {
-      const opts = Object.assign({}, r);
+      // 确保保留原有 text，再添加块级格式
+      const opts = Object.assign({ text: r.text || '' }, r);
       if (fmt.bold) opts.bold = true;
       if (fmt.italic) opts.italics = true;
       if (fmt.underline) opts.underline = {};
