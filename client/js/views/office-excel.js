@@ -170,7 +170,7 @@ function openExcelEditor(w, fileId, fileName) {
     var bar = w.$c.querySelector('#xlsx-status');
     if (!bar) return;
     if (!sel.start || !sel.end) {
-      bar.textContent = 'A1 · 总 ' + data.length + ' 行 × ' + (data[0]||[]).length + ' 列';
+      bar.textContent = 'A1 · 总 ' + (data.length - 1) + ' 行 × ' + (data[0]||[]).length + ' 列';
       return;
     }
     var r1 = Math.min(sel.start[0], sel.end[0]);
@@ -1163,6 +1163,12 @@ function openExcelEditor(w, fileId, fileName) {
       }
       return false;
     };
+    // 调试日志
+    console.log('[xlsx] data.length:', data.length);
+    console.log('[xlsx] data[0]:', data[0]);
+    console.log('[xlsx] data[1]:', data[1]);
+    console.log('[xlsx] maxCols:', maxCols);
+    
     h += '<tr><th class="xlsx-corner-th" style="border:1px solid #ccc;background:var(--bg2);padding:4px 6px;min-width:30px;text-align:center;font-weight:600;position:sticky;top:0;left:0;z-index:3">#</th>';
     var maxCols = 0;
     for (var ri0 = 0; ri0 < data.length; ri0++) { if ((data[ri0]||[]).length > maxCols) maxCols = data[ri0].length; }
@@ -1177,14 +1183,17 @@ function openExcelEditor(w, fileId, fileName) {
         }
       }
     }
-    // 渲染列头，合并相邻的
+    // 渲染列头，使用 headers 作为列标题
     var ci = 0;
     while (ci < maxCols) {
       var span = colHeaderSpan[ci] || 1;
       var filterArrow = autoFilterActive ? '<span class="xlsx-filter-arrow" title="自动筛选">▼</span>' : '';
       var thStyle = 'border:1px solid #ccc;background:var(--bg2);padding:4px 6px;min-width:80px;text-align:center;font-weight:600;position:sticky;top:0;z-index:2;cursor:pointer;user-select:none';
       if (span > 1) thStyle += ';min-width:' + (80 * span) + 'px';
-      h += '<th class="xlsx-col-header" data-col="' + ci + '" colspan="' + span + '" style="' + thStyle + '">' + colLetter(ci) + filterArrow + '</th>';
+      // 使用 headers 作为列标题，如果没有 headers 则用列字母
+      var colTitle = (data[0] && data[0][ci]) ? escHtml(data[0][ci]) : colLetter(ci);
+      console.log('[xlsx] 渲染列头', ci, 'title:', colTitle, 'maxCols:', maxCols, 'data[0]:', data[0]);
+      h += '<th class="xlsx-col-header" data-col="' + ci + '" colspan="' + span + '" style="' + thStyle + '">' + colTitle + filterArrow + '</th>';
       ci += span;
     }
     h += '</tr>';
@@ -1246,7 +1255,7 @@ function openExcelEditor(w, fileId, fileName) {
     h += '</table></div>';
     // v0.62.5: 底部状态栏行（状态信息，名称框已移至公式栏 v0.63）
     h += '<div style="display:flex;align-items:center;background:var(--office-toolbar-bg);border-top:1px solid var(--office-divider);flex-shrink:0;height:28px">';
-    h += '<div id="xlsx-status" class="oo-statusbar" style="flex:1;border:none;background:transparent;padding:0 8px">A1 · 总 ' + data.length + ' 行 × ' + (data[0] ? data[0].length : 0) + ' 列</div>';
+    h += '<div id="xlsx-status" class="oo-statusbar" style="flex:1;border:none;background:transparent;padding:0 8px">A1 · 总 ' + (data.length - 1) + ' 行 × ' + (data[0] ? data[0].length : 0) + ' 列</div>';
     h += '<button id="xlsx-freeze-btn" style="padding:2px 8px;font-size:11px;border:1px solid var(--office-divider);border-radius:3px;background:var(--bg,#fff);cursor:pointer;color:var(--text,#666);margin-right:4px" title="冻结首行">❄️ 冻结</button>';
     h += '</div>';
     // v0.62.5 PR-C: Sheet tabs (学 OO Spreadsheet 底部 sheet 切换条)
@@ -1477,7 +1486,7 @@ function openExcelEditor(w, fileId, fileName) {
         }
         e.stopPropagation();
         var c = parseInt(this.dataset.col);
-        sel.start = [0, c];
+        sel.start = [1, c];
         sel.end = [data.length - 1, c];
         highlightSelection();
         updateStatusBar();

@@ -668,7 +668,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- v0.64: Office 编辑器拆分为 Word/Excel/PPT 三个模块（必须在 core 之后） -->
 <script src="/client/js/views/office-common.js?v=0.64.0"></script>
 <script src="/client/js/views/office-word.js?v=0.64.0"></script>
-<script src="/client/js/views/office-excel.js?v=0.65.3"></script>
+<script src="/client/js/views/office-excel.js?v=0.65.6"></script>
 <script src="/client/js/views/office-ppt.js?v=0.66.5"></script>
 <script src="/client/js/views/office-editor.js?v=0.64.0"></script>
 <!-- v0.62.7: 代码编辑器 (Monaco Editor + AI) -->
@@ -1039,7 +1039,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loader: function(w, opts) {
             var f = window._fb_open_file; window._fb_open_file = null;
             if (typeof openWordEditor === 'function') {
-        openWordEditor(w, opts && opts.fileId, f ? f.name : null, f ? f.content : null);
+        openWordEditor(w, opts && opts.fileId, (opts && opts.fileName) || (f ? f.name : null), f ? f.content : null);
       }
       else w.$c.innerHTML = '<div style="padding:40px;text-align:center">加载中...</div>';
     }

@@ -1,6 +1,7 @@
 // ACMS Word 编辑器 — 依赖 office-common.js (escHtml, showCtxMenu)
 
 function openWordEditor(w, fileId, fileName, content) {
+  var AK = window.AK || "dev-key-001";
   console.log('[Word] openWordEditor called', { fileId, fileName, contentLen: content ? content.length : 0, wcW: w.$c.offsetWidth, wcH: w.$c.offsetHeight });
   // 容器 = 整个 PKG 内容区，套 .oo-editor 类（让主题色生效）
   w.$c.innerHTML = '<div class="oo-editor oo-editor-word" style="height:100%;display:flex;flex-direction:column"></div>';
@@ -976,8 +977,7 @@ function mountBlockEditor() {
             newDoc.blocks.push(window.OfficeDoc.paragraph(''));
             return;
           }
-          var lines = text.split('
-');
+          var lines = text.split('\n');
           lines.forEach(function(line) {
             var trimmed = line.trim();
             if (!trimmed) return;
@@ -995,12 +995,12 @@ function mountBlockEditor() {
         parseContentToBlocks(resp.text);
         // 重新挂载编辑器
         if (instance) {
-          instance.rerender();
-        } else {
-          instance = window.OfficeDocEditor.mountEditor(editorHost, newDoc, {
-            onChange: function() { setDirty(true); }
-          });
+          // 销毁旧实例
+          instance.destroy && instance.destroy();
         }
+        instance = window.OfficeDocEditor.mountEditor(editorHost, newDoc, {
+          onChange: function() { setDirty(true); }
+        });
         // 更新标题
         var titleInput = host.querySelector('#word-title-input');
         if (titleInput && fileName) titleInput.value = fileName;
