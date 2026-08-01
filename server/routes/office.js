@@ -171,19 +171,6 @@ router.get('/load/:fileId', async function (req, res) {
         text = await parseXlsxToSchema(buf);
       }
     } else if (ext === 'pptx') {
-      // v0.67: 优先读 .schema.json（结构化数据）
-      var schemaFile = filePath.replace('.' + ext, '.schema.json');
-      if (fs.existsSync(schemaFile)) {
-        try {
-          var schemaJson = JSON.parse(fs.readFileSync(schemaFile, 'utf8'));
-          if (schemaJson.data && schemaJson.data.slides && Array.isArray(schemaJson.data.slides)) {
-            text = 'SCHEMA:' + JSON.stringify(schemaJson.data);
-          } else {
-            // 无数据 schema，尝试从二进制解析
-            text = await parsePptxToSchema(buf);
-          }
-        } catch (e) { text = '(schema 解析失败: ' + e.message + ')'; }
-      } else {
         // 无 schema：检测是否为旧版假 PPTX（JSON 格式）
         try {
           var strContent = buf.toString('utf8').trim();
