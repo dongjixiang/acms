@@ -33,6 +33,7 @@ router.post('/save', async function (req, res) {
     const fileName = fileId + '.' + type;
     const filePath = path.join(OFFICE_DIR, fileName);
 
+    // v0.63: 写原始 OOXML
     // 1) 前端直传 base64 内容（最直接）
     if (body.content && typeof body.content === 'string') {
       const buf = Buffer.from(body.content, 'base64');
@@ -51,6 +52,23 @@ router.post('/save', async function (req, res) {
       fs.writeFileSync(filePath, buffer);
     } else {
       return res.status(400).json({ error: 'UNSUPPORTED_TYPE', type });
+    }
+
+    // v0.63 Phase3: 同时写一份 JSON schema 供编辑器读取（pptx/xlsx 用）
+    if (type === 'pptx' || type === 'xlsx') {
+      const schemaFile = path.join(OFFICE_DIR, fileId + '.schema.json');
+      const schema = {
+        type: type,
+        name: name,
+        data: body.data,
+      };
+      fs.writeFileSync(schemaFile, JSON.stringify(schema));
+    }
+
+    // v0.63 Phase3: 如果前端传了 schema（直接从编辑器 save 来的），存 schema
+    if (body._schema) {
+      const schemaFile = path.join(OFFICE_DIR, fileId + '.schema.json');
+      fs.writeFileSync(schemaFile, JSON.stringify(body._schema));
     }
 
     res.json({
@@ -120,7 +138,16 @@ router.get('/load/:fileId', function (req, res) {
           .trim();
       } catch (e) { text = '(docx 文本提取失败: ' + e.message + ')'; }
     } else if (ext === 'xlsx' || ext === 'pptx') {
-      text = '(二进制文件，请使用专门的 Excel/PPT 编辑器打开)';
+      // v0.63 Phase3: 优先读 .schema.json（结构化数据）
+      var schemaFile = filePath.replace('.' + ext, '.schema.json');
+      if (fs.existsSync(schemaFile)) {
+        try {
+          var schemaJson = JSON.parse(fs.readFileSync(schemaFile, 'utf8'));
+          text = 'SCHEMA:' + JSON.stringify(schemaJson.data);
+        } catch (e) { text = '(schema 解析失败: ' + e.message + ')'; }
+      } else {
+        text = '(二进制文件，请使用专门的 Excel/PPT 编辑器打开)';
+      }
     } else {
       text = buf.toString('utf8');
     }

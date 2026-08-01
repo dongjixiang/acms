@@ -1829,11 +1829,52 @@ function openExcelEditor(w) {
 // 新增：布局下拉（cover / content / blank）影响编辑区视觉
 // 保留：缩略图侧边栏 / 标题+正文编辑 / +添加页 / 删除 / 保存
 // 升级：showPrompt 替代 prompt()
-function openPptEditor(w) {
+function openPptEditor(w, fileId, fileName) {
+  // v0.63 Phase3: 支持加载已有 PPT（从 fileId 读 schema）
+  var _pptFileId = fileId || null;
+  var _pptIsServerFile = !!fileId;
+
   var slides = [{ title: 'PPT 标题', content: '第一页正文\n支持多行\n- 项目 A\n- 项目 B', layout: 'content', transition: { type: 'none', direction: 'from-right', duration: 500 }, animations: [] }];
   var cur = 0;
 
-  // 布局下拉变化时改 placeholder + 字号
+  function loadPptFromServer() {
+    if (!fileId) return;
+    render(); // 先渲染空编辑器
+    var loadEl = document.createElement('div');
+    loadEl.style.cssText = 'display:flex;align-items:center;justify-content:center;height:100%;color:#888;font-size:14px';
+    loadEl.textContent = '⏳ 正在加载 ' + (fileName || 'PPT') + '...';
+    w.$c.querySelector('.oo-editor-pptx')?.replaceWith(loadEl);
+    fetch('/api/office/load/' + encodeURIComponent(fileId))
+      .then(function (r) { return r.json(); })
+      .then(function (resp) {
+        if (!resp.ok) {
+          loadEl.innerHTML = '<div style="color:#a00">❌ 加载失败：' + (resp.error || '未知') + '</div>';
+          return;
+        }
+        loadEl.remove();
+        // v0.63: 检查是否有 SCHEMA 数据
+        if (resp.text && resp.text.indexOf('SCHEMA:') === 0) {
+          try {
+            var schemaData = JSON.parse(resp.text.slice(7));
+            if (schemaData.slides && Array.isArray(schemaData.slides)) {
+              slides = schemaData.slides;
+              cur = 0;
+              toast('已加载 ' + (fileName || 'PPT') + '（' + slides.length + ' 页）', 'success');
+            }
+          } catch (e) { /* 降级用默认 */ }
+        }
+        render();
+      })
+      .catch(function (e) {
+        loadEl.innerHTML = '<div style="color:#a00">❌ 网络错误：' + e.message + '</div>';
+      });
+  }
+
+  if (fileId) {
+    loadPptFromServer();
+  } else {
+    render();
+  }
   function applyLayout(layout, titleEl, contentEl) {
     if (layout === 'cover') {
       titleEl.style.fontSize = '36px';
@@ -2059,7 +2100,7 @@ function openPptEditor(w) {
     h += '<div class="oo-titlebar">';
     h += '<span class="oo-titlebar-icon">📽️</span>';
     h += '<div class="oo-titlebar-name">';
-    h += '<input id="ppt-title-input" value="未命名.pptx" placeholder="未命名.pptx">';
+    h += '<input id="ppt-title-input" value="' + escHtml(fileName || '未命名.pptx') + '" placeholder="未命名.pptx">';
     h += '<span id="ppt-modified-dot" class="oo-modified-dot" title="未修改"></span>';
     h += '</div>';
     h += '<div class="oo-titlebar-actions">';
@@ -2351,7 +2392,12 @@ function updateStatus() {
         return fetch('/api/office/save', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
-          body: JSON.stringify({ type: 'pptx', name: name, data: { title: name.replace(/\.pptx$/, ''), slides: slides } }),
+          body: JSON.stringify({
+            type: 'pptx',
+            name: name,
+            data: { title: name.replace(/\.pptx$/, ''), slides: slides },
+            _schema: { type: 'pptx', name: name, data: { slides: slides } },
+          }),
         }).then(function(r){ return r.json(); }).then(function(r){
           if (r.ok) {
             toast('已保存 ✅ ' + name + ' (' + r.size + ' bytes)', 'success');
@@ -2370,7 +2416,8 @@ function updateStatus() {
 
   // 初始状态入 undo 栈
   setTimeout(function () { pptPushUndo(); }, 100);
-  render();
+  // fileId 存在时 loadPptFromServer 内部调 render()，否则这里渲染空编辑器
+  if (!fileId) render();
 }
 
 // ===== 注册全局函数供 PKG 调用 =====
