@@ -62,12 +62,12 @@
       var ta = block.attrs || {};
       var hdrs = ta.headers || [];
       var rows = ta.rows || [];
-      var html = '<table data-bid="' + block.id + '" data-btype="table" style="border-collapse:collapse;width:100%"><thead><tr>';
-      hdrs.forEach(function (h) { html += '<th style="border:1px solid #ccc;padding:6px;background:var(--bg2,#f5f5f5);font-weight:600">' + escHtml(h) + '</th>'; });
+      var html = '<table data-bid="' + block.id + '" data-btype="table" style="border-collapse:collapse;width:100%;min-width:200px"><thead><tr>';
+      hdrs.forEach(function (h) { html += '<th class="ode-cell" contenteditable="true" style="border:1px solid #ccc;padding:6px;background:var(--bg2,#f5f5f7);font-weight:600;outline:none;min-width:60px">' + escHtml(h) + '</th>'; });
       html += '</tr></thead><tbody>';
       rows.forEach(function (row) {
         html += '<tr>';
-        row.forEach(function (cell) { html += '<td style="border:1px solid #ccc;padding:6px">' + escHtml(cell) + '</td>'; });
+        row.forEach(function (cell) { html += '<td class="ode-cell" contenteditable="true" style="border:1px solid #ccc;padding:6px;outline:none;min-width:60px">' + escHtml(cell) + '</td>'; });
         html += '</tr>';
       });
       html += '</tbody></table>';
@@ -190,11 +190,15 @@
           var lvl = getHeadingLevel(el);
           b.attrs.level = lvl;
         }
-        // formatting from inline style
+        // formatting from inline style (align / fontSize / fontFamily)
         var align = el.style.textAlign;
-        if (align) {
+        var fontSize = el.style.fontSize;
+        var fontFamily = el.style.fontFamily;
+        if (align || fontSize || fontFamily) {
           b.attrs.formatting = b.attrs.formatting || {};
-          b.attrs.formatting.align = align;
+          if (align) b.attrs.formatting.align = align;
+          if (fontSize) b.attrs.formatting.fontSize = fontSize;
+          if (fontFamily) b.attrs.formatting.fontFamily = fontFamily;
         }
       }
       blocks.push(b);
@@ -391,8 +395,13 @@
 
   // ─── 处理 input 事件（同步内容到 blocks） ───
   function handleInput(container, state) {
-    syncBlocks(container, state.doc);
-    notifyChange(state);
+    var cell = document.activeElement;
+    if (cell && cell.classList.contains('ode-cell')) {
+      setTimeout(function () { syncBlocks(container, state.doc); notifyChange(state); }, 0);
+    } else {
+      syncBlocks(container, state.doc);
+      notifyChange(state);
+    }
   }
 
   // ════════════════════════════════════════════
@@ -440,7 +449,14 @@
     });
 
     container.addEventListener('input', function () {
-      handleInput(container, state);
+      // 如果是 table cell 里的输入，延迟到 DOM 稳定后再 sync（防止 input event 在浏览器写入前触发）
+      var cell = document.activeElement;
+      if (cell && cell.classList.contains('ode-cell')) {
+        setTimeout(function () { syncBlocks(container, state.doc); notifyChange(state); }, 0);
+      } else {
+        syncBlocks(container, state.doc);
+        notifyChange(state);
+      }
     });
 
     // ─── Instance API（向后兼容） ───
