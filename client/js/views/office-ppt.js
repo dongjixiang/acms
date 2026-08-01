@@ -54,7 +54,9 @@ function openPptEditor(w, fileId, fileName) {
     } else {
       w.$c.appendChild(loadEl);
     }
-    fetch('/api/office/load/' + encodeURIComponent(fileId))
+    var loadUrl = '/api/office/load/' + encodeURIComponent(fileId) + '?api_key=' + (typeof AK !== 'undefined' ? AK : 'dev-key-001');
+    console.log('[PPT-DEBUG] fetch url:', loadUrl);
+    fetch(loadUrl)
       .then(function (r) {
         console.log('[PPT-DEBUG] fetch response ok:', r.ok, 'status:', r.status);
         return r.json();
@@ -1069,5 +1071,4 @@ function insertFormulaWithArgs(fnName, args) {
 }
 
 // ─── 注册全局函数供 PKG 调用 =====
-window.openWordEditor = openWordEditor;
 window.openPptEditor = openPptEditor;
