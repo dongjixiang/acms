@@ -345,6 +345,7 @@
 
     // 无注册加载器 → 标准 DOM 克隆（从 #view-{name} 隐藏模板）
     var src = document.getElementById('view-' + w.view);
+    console.log('[loadContent] view:', w.view, 'src:', src ? 'found' : 'NOT FOUND', 'loader:', viewLoaders[w.view] ? 'registered' : 'none');
     if (src) {
       var loadFn = window['load' + w.view.charAt(0).toUpperCase() + w.view.slice(1)];
       if (typeof loadFn === 'function') {
