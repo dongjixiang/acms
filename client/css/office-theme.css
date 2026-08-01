@@ -721,6 +721,7 @@
   max-width: 100%;
   height: auto;
   border-radius: 4px;
+  cursor: pointer;
 }
 .ppt-editor-content ul, .ppt-editor-content ol {
   margin: 0 0 8px 20px;
@@ -730,6 +731,50 @@
   border: none;
   border-top: 1px solid #ddd;
   margin: 16px 0;
+}
+
+/* v0.66: 图片/表格选择 + resize */
+.ppt-obj-wrap {
+  display: inline-block;
+  position: relative;
+  cursor: move;
+  outline: 2px solid var(--office-primary, #b75b44);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+.ppt-obj-wrap img,
+.ppt-obj-wrap table {
+  display: block;
+  max-width: none;
+}
+.ppt-obj-wrap .ppt-resize-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background: #fff;
+  border: 2px solid var(--office-primary, #b75b44);
+  border-radius: 50%;
+  z-index: 10;
+}
+.ppt-obj-wrap .h-nw { top: -6px; left: -6px; cursor: nw-resize; }
+.ppt-obj-wrap .h-ne { top: -6px; right: -6px; cursor: ne-resize; }
+.ppt-obj-wrap .h-sw { bottom: -6px; left: -6px; cursor: sw-resize; }
+.ppt-obj-wrap .h-se { bottom: -6px; right: -6px; cursor: se-resize; }
+.ppt-obj-wrap .h-n  { top: -6px; left: 50%; transform: translateX(-50%); cursor: n-resize; }
+.ppt-obj-wrap .h-s  { bottom: -6px; left: 50%; transform: translateX(-50%); cursor: s-resize; }
+.ppt-obj-wrap .h-w  { top: 50%; left: -6px; transform: translateY(-50%); cursor: w-resize; }
+.ppt-obj-wrap .h-e  { top: 50%; right: -6px; transform: translateY(-50%); cursor: e-resize; }
+.ppt-obj-wrap .ppt-size-label {
+  position: absolute;
+  bottom: -22px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  color: var(--text2, #888);
+  white-space: nowrap;
+  pointer-events: none;
+  background: var(--bg, #fff);
+  padding: 0 3px;
 }
 
 /* ════════════ PPT Transitions (学 OO Transitions.js 设计模式) ════════════ */

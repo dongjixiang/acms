@@ -632,6 +632,132 @@ function openPptEditor(w, fileId, fileName) {
     // v0.64: input 事件同步到 schema
     titleEl.oninput = function() { slides[cur].title = this.innerHTML; updateThumb(); markPptDirty(); };
     contentEl.oninput = function() { slides[cur].content = this.innerHTML; markPptDirty(); };
+
+    // ─── v0.66: 图片/表格 resize 机制 ───
+    var _pptResizeState = null; // { wrap, target, handle, startX, startY, startW, startH, startLeft, startTop }
+
+    function _pptDeselect() {
+      if (!_pptResizeState) return;
+      var wrap = _pptResizeState.wrap;
+      if (!wrap || !wrap.parentNode) { _pptResizeState = null; return; }
+      // unwrap: 把元素提出来，保留内联样式
+      var el = wrap.firstChild;
+      if (el) {
+        // 保留 width/height 到元素自身 style
+        var w = wrap.style.width;
+        var h = wrap.style.height;
+        if (w) el.style.width = w;
+        if (h) el.style.height = h;
+        wrap.parentNode.replaceChild(el, wrap);
+      } else {
+        wrap.remove();
+      }
+      _pptResizeState = null;
+    }
+
+    function _pptCreateWrap(el) {
+      // 移除已有 wrap（如果重复点击）
+      _pptDeselect();
+      var wrap = document.createElement('div');
+      wrap.className = 'ppt-obj-wrap';
+      // 初始尺寸来自元素
+      var ow = el.offsetWidth || 200;
+      var oh = el.offsetHeight || 150;
+      wrap.style.width = ow + 'px';
+      wrap.style.height = oh + 'px';
+      el.style.width = ow + 'px';
+      el.style.height = oh + 'px';
+      wrap.appendChild(el);
+      // 8 个 resize handle
+      ['nw','n','ne','e','se','s','sw','w'].forEach(function(dir) {
+        var h = document.createElement('div');
+        h.className = 'ppt-resize-handle h-' + dir;
+        h.dataset.dir = dir;
+        wrap.appendChild(h);
+      });
+      // 尺寸标签
+      var label = document.createElement('div');
+      label.className = 'ppt-size-label';
+      label.textContent = ow + '×' + oh;
+      wrap.appendChild(label);
+      el.parentNode.replaceChild(wrap, el);
+      _pptResizeState = { wrap: wrap, target: el, label: label, startX: 0, startY: 0, startW: ow, startH: oh };
+    }
+
+    if (contentEl) {
+      contentEl.addEventListener('mousedown', function (e) {
+        // 如果点的是 resize handle，不处理（让 handle 的 mousedown 处理）
+        if (e.target.classList.contains('ppt-resize-handle')) return;
+        // 如果点的是 wrap 内部但非 img/table，deselect
+        var target = e.target;
+        var isImg = target.tagName === 'IMG';
+        var isTable = target.tagName === 'TABLE';
+        // 检查是否在 wrap 内（但点的是 wrap 本身或文字）
+        var wrap = target.closest('.ppt-obj-wrap');
+        if (wrap) {
+          // 点的是 wrap 内的文字区域 → deselect
+          if (!isImg && !isTable) {
+            _pptDeselect();
+            return;
+          }
+        }
+        if (isImg || isTable) {
+          e.preventDefault();
+          _pptCreateWrap(target);
+        } else {
+          _pptDeselect();
+        }
+      });
+
+      // handle mousedown → 开始 resize
+      contentEl.addEventListener('mousedown', function (e) {
+        var handle = e.target.closest('.ppt-resize-handle');
+        if (!handle || !_pptResizeState || _pptResizeState.wrap !== handle.closest('.ppt-obj-wrap')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        var s = _pptResizeState;
+        var wrap = s.wrap;
+        var el = s.target;
+        var dir = handle.dataset.dir;
+        var rect = wrap.getBoundingClientRect();
+        s.startX = e.clientX;
+        s.startY = e.clientY;
+        s.startW = rect.width;
+        s.startH = rect.height;
+        s.startLeft = rect.left;
+        s.startTop = rect.top;
+
+        function onMove(ev) {
+          ev.preventDefault();
+          var dx = ev.clientX - s.startX;
+          var dy = ev.clientY - s.startY;
+          var newW = s.startW, newH = s.startH;
+          if (dir.indexOf('e') !== -1) newW = Math.max(40, s.startW + dx);
+          if (dir.indexOf('w') !== -1) { newW = Math.max(40, s.startW - dx); }
+          if (dir.indexOf('s') !== -1) newH = Math.max(20, s.startH + dy);
+          if (dir.indexOf('n') !== -1) { newH = Math.max(20, s.startH - dy); }
+          wrap.style.width = newW + 'px';
+          wrap.style.height = newH + 'px';
+          el.style.width = newW + 'px';
+          el.style.height = newH + 'px';
+          s.label.textContent = Math.round(newW) + '×' + Math.round(newH);
+        }
+        function onUp() {
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+          markPptDirty();
+        }
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+      });
+
+      // 点击外部 → deselect
+      document.addEventListener('mousedown', function (e) {
+        if (!contentEl.contains(e.target) && !_pptResizeState) return;
+        if (contentEl.contains(e.target)) return;
+        _pptDeselect();
+      });
+    }
     // v0.64: 点击缩略图时同步当前 slide
     var dragSrcIdx = -1;
     w.$c.querySelectorAll('.ppt-thumb').forEach(function(el) {
