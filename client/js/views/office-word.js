@@ -1016,3 +1016,10 @@ function mountBlockEditor() {
   };
 }
 
+// 注册为 ACMSWin 视图加载器
+if (typeof ACMSWin !== 'undefined' && ACMSWin.registerViewLoader) {
+  ACMSWin.registerViewLoader('office-word', function(w) {
+    openWordEditor(w, w.opts?.fileId, w.opts?.fileName, w.opts?.content);
+  });
+}
+
