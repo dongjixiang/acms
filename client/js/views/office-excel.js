@@ -1163,12 +1163,6 @@ function openExcelEditor(w, fileId, fileName) {
       }
       return false;
     };
-    // 调试日志
-    console.log('[xlsx] data.length:', data.length);
-    console.log('[xlsx] data[0]:', data[0]);
-    console.log('[xlsx] data[1]:', data[1]);
-    console.log('[xlsx] maxCols:', maxCols);
-    
     h += '<tr><th class="xlsx-corner-th" style="border:1px solid #ccc;background:var(--bg2);padding:4px 6px;min-width:30px;text-align:center;font-weight:600;position:sticky;top:0;left:0;z-index:3">#</th>';
     var maxCols = 0;
     for (var ri0 = 0; ri0 < data.length; ri0++) { if ((data[ri0]||[]).length > maxCols) maxCols = data[ri0].length; }
@@ -1199,8 +1193,6 @@ function openExcelEditor(w, fileId, fileName) {
     h += '</tr>';
     // 跳过第一行（headers），从第二行开始渲染数据
     for (var ri = 1; ri < data.length; ri++) {
-      // 调试日志
-      if (ri <= 3) console.log('[xlsx] 渲染数据行', ri, 'data:', data[ri]);
       // v0.65: 检查当前行是否被上方合并区域占用（垂直合并中间行）
       var skipRow = false;
       for (var si = 0; si < mergedRanges.length; si++) {
@@ -1228,8 +1220,6 @@ function openExcelEditor(w, fileId, fileName) {
         var colSpanAttr = colSpan > 1 ? ' colspan="' + colSpan + '"' : '';
         var cell = data[ri][ci2];
         var val = escHtml(cellStr(cell));
-        // 调试：显示第一列值
-        if (ri <= 3 && ci2 <= 1) console.log('[xlsx] 单元格', ri, ci2, '值:', val, '原始:', cell);
         var fmt = cellFmt(cell);
         var style = 'outline:none;min-height:20px;padding:2px';
         if (fmt.bold) style += ';font-weight:bold';
