@@ -859,6 +859,107 @@ function openExcelEditor(w) {
       renderTable();
       markDirty();
     },
+    // ─── v0.65: 文字旋转 ───
+    setOrientation: function(deg) {
+      if (!sel.start) return;
+      var r1 = Math.min(sel.start[0], sel.end[0]);
+      var c1 = Math.min(sel.start[1], sel.end[1]);
+      var r2 = Math.max(sel.start[0], sel.end[0]);
+      var c2 = Math.max(sel.start[1], sel.end[1]);
+      for (var r = r1; r <= r2; r++) {
+        for (var c = c1; c <= c2; c++) {
+          setCellFmt(r, c, { orient: deg });
+        }
+      }
+      reapplyCellStyles(r1, c1, r2, c2);
+      markDirty();
+      toast('文字旋转 ' + deg + '°', 'info');
+    },
+    // ─── v0.65: 条件格式（简单高亮）───
+    condFormatGreaterThan: function() {
+      if (!sel.start) return toast('请先选中区域', 'warning');
+      var r1 = Math.min(sel.start[0], sel.end[0]);
+      var c1 = Math.min(sel.start[1], sel.end[1]);
+      var r2 = Math.max(sel.start[0], sel.end[0]);
+      var c2 = Math.max(sel.start[1], sel.end[1]);
+      var threshold = prompt('条件格式 — 显示大于该值的单元格（输入数字）:', '0');
+      if (threshold === null) return;
+      var t = parseFloat(threshold);
+      if (isNaN(t)) return toast('无效数字', 'warning');
+      var count = 0;
+      for (var r = r1; r <= r2; r++) {
+        for (var c = c1; c <= c2; c++) {
+          var n = parseFloat(cellStr(data[r][c]));
+          if (!isNaN(n) && n > t) {
+            setCellFmt(r, c, { highlight: '#fff3cd' }); // 浅黄背景
+            count++;
+          }
+        }
+      }
+      markDirty();
+      renderTable();
+      toast('高亮 ' + count + ' 个大于 ' + t + ' 的单元格', 'success');
+    },
+    condFormatClear: function() {
+      if (!sel.start) return;
+      var r1 = Math.min(sel.start[0], sel.end[0]);
+      var c1 = Math.min(sel.start[1], sel.end[1]);
+      var r2 = Math.max(sel.start[0], sel.end[0]);
+      var c2 = Math.max(sel.start[1], sel.end[1]);
+      for (var r = r1; r <= r2; r++) {
+        for (var c = c1; c <= c2; c++) {
+          setCellFmt(r, c, { highlight: null });
+        }
+      }
+      markDirty();
+      renderTable();
+      toast('已清除条件格式', 'info');
+    },
+    // ─── v0.65: 移除重复值 ───
+    removeDuplicates: function() {
+      if (!sel.start) return toast('请先选中数据区域（含标题行）', 'warning');
+      var r1 = Math.min(sel.start[0], sel.end[0]);
+      var c1 = Math.min(sel.start[1], sel.end[1]);
+      var r2 = Math.max(sel.start[0], sel.end[0]);
+      var c2 = Math.max(sel.start[1], sel.end[1]);
+      if (r2 <= r1) return toast('请选择多行数据', 'warning');
+      // 标记重复行（从 r1+1 开始，第一行 r1 是标题）
+      var firstSeen = {};
+      var toDelete = {};
+      var removed = 0;
+      for (var r = r1 + 1; r <= r2; r++) {
+        var key = [];
+        for (var c = c1; c <= c2; c++) key.push(cellStr(data[r][c]));
+        var k = key.join('\t');
+        if (firstSeen[k]) {
+          toDelete[r] = true;
+          removed++;
+        } else {
+          firstSeen[k] = true;
+        }
+      }
+      if (removed === 0) return toast('没有重复行', 'info');
+      // 重建 data，删除重复行
+      var result = [];
+      for (var r = 0; r < data.length; r++) {
+        if (r >= r1 + 1 && r <= r2 && toDelete[r]) continue;
+        result.push(data[r]);
+      }
+      // 填充空行保持结构
+      while (result.length < data.length) {
+        var nr = [];
+        for (var c = 0; c < COLS; c++) nr.push('');
+        result.push(nr);
+      }
+      for (var r = 0; r < result.length; r++) {
+        for (var c = 0; c < COLS; c++) {
+          data[r][c] = result[r][c];
+        }
+      }
+      markDirty();
+      renderTable();
+      toast('已移除 ' + removed + ' 行重复值', 'success');
+    },
   };
 
   // ─── v0.65: 辅助函数：重应用样式到选区 ───
@@ -1106,12 +1207,19 @@ function openExcelEditor(w) {
                   ],
                   action: function(v){ ops.setNumFmt(v); },
                 },
+                { id: 'cond-gt',   icon: '⚡', label: '高亮>',
+                  action: ops.condFormatGreaterThan,
+                },
+                { id: 'cond-clr',  icon: '🗑️', label: '清除高亮', action: ops.condFormatClear },
               ]},
               { title: '对齐', buttons: [
                 { id: 'align-l', icon: '≡', label: '左', action: function(){ ops.setAlign('left'); } },
                 { id: 'align-c', icon: '≡', label: '中', action: function(){ ops.setAlign('center'); } },
                 { id: 'align-r', icon: '≡', label: '右', action: function(){ ops.setAlign('right'); } },
                 { id: 'wrap',    icon: '↩', label: '换行', action: ops.toggleWrap },
+                { id: 'orient-90',  icon: '↕', label: '竖排', action: function(){ ops.setOrientation(90); } },
+                { id: 'orient-45',  icon: '↗', label: '45°',  action: function(){ ops.setOrientation(45); } },
+                { id: 'orient-reset', icon: '↔', label: '水平', action: function(){ ops.setOrientation(0); } },
               ]},
               { title: '合并', buttons: [
                 { id: 'merge',   icon: '⊞', label: '合并', action: ops.mergeCells },
@@ -1178,7 +1286,11 @@ function openExcelEditor(w) {
                 { id: 'sort-desc', icon: '⬇️', label: '降序', action: function(){ ops.sortRange(false); } },
               ]},
               { title: '筛选', buttons: [
-                { id: 'toggle-filter', icon: '🔍', label: '筛选', action: ops.toggleFilter },
+                { id: 'toggle-filter', icon: '🔍', label: '自动筛选', action: ops.toggleFilter },
+                { id: 'clear-filter',  icon: '⊘',  label: '清除筛选', action: ops.clearAutoFilter },
+              ]},
+              { title: '数据', buttons: [
+                { id: 'rem-dup', icon: '✂️', label: '去重', action: ops.removeDuplicates },
               ]},
             ],
           },
