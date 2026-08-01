@@ -1151,7 +1151,10 @@ function openExcelEditor(w) {
     var skipCell = function(r, c) {
       for (var i = 0; i < mergedRanges.length; i++) {
         var m = mergedRanges[i];
-        if (r > m.r1 || (r === m.r1 && c > m.c1)) return true;
+        // 在合并区域内，但不是起始单元格才跳过
+        if (r >= m.r1 && r <= m.r2 && c >= m.c1 && c <= m.c2) {
+          if (!(r === m.r1 && c === m.c1)) return true;
+        }
       }
       return false;
     };
