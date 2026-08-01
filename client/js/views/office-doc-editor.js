@@ -125,6 +125,9 @@
     if (fmt.align) style += 'text-align:' + fmt.align + ';';
     if (fmt.fontSize) style += 'font-size:' + fmt.fontSize + 'px;';
     if (fmt.fontFamily) style += 'font-family:' + fmt.fontFamily + ';';
+    if (fmt.bold) style += 'font-weight:bold;';
+    if (fmt.italic) style += 'font-style:italic;';
+    if (fmt.underline) style += 'text-decoration:underline;';
     // inline formatting: paragraph/heading 内容含 <strong>/<em> 等标签，原样输出
     var content = (type === 'paragraph' || type === 'heading')
       ? (block.content || '')
@@ -191,15 +194,21 @@
           var lvl = getHeadingLevel(el);
           b.attrs.level = lvl;
         }
-        // formatting from inline style (align / fontSize / fontFamily)
+        // formatting from inline style (align / fontSize / fontFamily / bold / italic / underline)
         var align = el.style.textAlign;
         var fontSize = el.style.fontSize;
         var fontFamily = el.style.fontFamily;
-        if (align || fontSize || fontFamily) {
+        var fontWeight = el.style.fontWeight;
+        var fontStyle = el.style.fontStyle;
+        var textDecoration = el.style.textDecoration;
+        if (align || fontSize || fontFamily || fontWeight || fontStyle || textDecoration) {
           b.attrs.formatting = b.attrs.formatting || {};
           if (align) b.attrs.formatting.align = align;
           if (fontSize) b.attrs.formatting.fontSize = fontSize;
           if (fontFamily) b.attrs.formatting.fontFamily = fontFamily;
+          if (fontWeight === 'bold' || fontWeight === '700') b.attrs.formatting.bold = true;
+          if (fontStyle === 'italic') b.attrs.formatting.italic = true;
+          if (textDecoration && textDecoration.indexOf('underline') >= 0) b.attrs.formatting.underline = true;
         }
       }
       blocks.push(b);
@@ -692,34 +701,34 @@ getDocument: function () { return state.doc; },
         return true;
       },
       toggleInlineFormat: function (blockId, marker) {
-        // 保留：选区格式 — 用 document.execCommand 原生支持
-        // 如果 blockId 为 null 或未指定，对当前选区操作
-        var sel = window.getSelection();
-        if (sel.rangeCount && !sel.isCollapsed) {
-          // 有选区 → 原生格式
-          var cmd = (marker === 'bold') ? 'bold'
-                  : (marker === 'italic') ? 'italic'
-                  : (marker === 'underline') ? 'underline'
-                  : null;
-          if (cmd) { document.execCommand(cmd); return true; }
-        }
-        // 兜底：整块切换 markdown 语法
+        // 块级格式：用 CSS style 写回 block.attrs.formatting，blockToHTML 原样输出
         var b = state.doc.blocks.find(function (x) { return x.id === blockId; });
-        if (!b || !b.content) return false;
-        var content = b.content;
-        var m;
-        if (marker === 'bold') m = /^\*\*(.*)\*\*$/.exec(content);
-        else if (marker === 'italic') m = /^\*(.*)\*$/.exec(content);
-        else if (marker === 'underline') m = /^__(.*)__$/.exec(content);
-        else if (marker === 'code') m = /^`(.*)`$/.exec(content);
-        if (m) b.content = m[1];
-        else {
-          var pair = marker === 'bold' ? ['**', '**'] : marker === 'italic' ? ['*', '*'] : marker === 'underline' ? ['__', '__'] : ['`', '`'];
-          b.content = pair[0] + content + pair[1];
+        if (!b) return false;
+        b.attrs = b.attrs || {};
+        b.attrs.formatting = b.attrs.formatting || {};
+        var fmt = b.attrs.formatting;
+        var toggle = (marker === 'bold') ? 'bold'
+                   : (marker === 'italic') ? 'italic'
+                   : (marker === 'underline') ? 'underline' : null;
+        if (toggle) {
+          fmt[toggle] = !fmt[toggle];
+          fullRender(container, state.doc);
+          notifyChange(state);
+          return true;
         }
-        fullRender(container, state.doc);
-        notifyChange(state);
-        return true;
+        // code: 整块切换 markdown 反引号（保留旧逻辑）
+        var content = b.content;
+        if (marker === 'code') {
+          if (content.indexOf('`') === 0 && content.lastIndexOf('`') === content.length - 1) {
+            b.content = content.slice(1, -1);
+          } else {
+            b.content = '`' + content + '`';
+          }
+          fullRender(container, state.doc);
+          notifyChange(state);
+          return true;
+        }
+        return false;
       },
       rerender: function () {
         syncBlocks(container, state.doc);
