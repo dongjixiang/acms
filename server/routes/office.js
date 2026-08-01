@@ -98,7 +98,9 @@ function parsePptxToSchema(buf) {
   // 5. 解析每页幻灯片
   var pptSlides = [];
   
-  slideIds.forEach(function(rid) {
+  console.log('[PPT-DEBUG] Starting slide iteration, slideIds:', slideIds);
+  slideIds.forEach(function(rid, idx) {
+    console.log('[PPT-DEBUG] Processing slide', idx, 'rid:', rid);
     var slideFile = relMap[rid];
     if (!slideFile) {
       console.log('[PPT-DEBUG] No slideFile for rid:', rid);
