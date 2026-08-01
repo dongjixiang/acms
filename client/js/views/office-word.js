@@ -195,7 +195,7 @@ function openWordEditor(w, fileId, fileName, content) {
   } else if (fileId) {
     // 从服务器打开：加载 schema
     editorHost.innerHTML = '<div style="padding:40px;text-align:center;color:#888">⏳ 正在加载 ' + fileName + '...</div>';
-    fetch('/api/office/load/' + encodeURIComponent(fileId))
+    fetch('/api/office/load/' + encodeURIComponent(fileId) + '?api_key=' + AK)
       .then(function (r) { return r.json(); })
       .then(function (resp) {
         editorHost.innerHTML = '';

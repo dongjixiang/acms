@@ -8,8 +8,6 @@
 // v0.62.5 PR-C: 多 sheet 支持 — sheets[] 数组 + currentSheetIdx + 底部 Sheet tabs
 // v0.65: 支持 fileId/fileName 参数从服务器加载文件
 function openExcelEditor(w, fileId, fileName) {
-  console.log('[Excel] openExcelEditor called, fileId:', fileId, 'fileName:', fileName);
-  console.log('[Excel] window.$c:', w.$c);
   var ROWS = 20, COLS = 8;
 
   // v0.62.7: 文件来源: server(有fileId) / local(无fileId)
@@ -2006,7 +2004,6 @@ function openExcelEditor(w, fileId, fileName) {
           var schemaData = JSON.parse(schemaStr);
           // v0.65: 检查 schemaData 是否有效
           if (!schemaData || !schemaData.sheets || !Array.isArray(schemaData.sheets) || schemaData.sheets.length === 0) {
-            console.warn('[Excel] Schema 数据为空，使用空白数据');
             sheets = [{ name: 'Sheet1', data: blankData() }];
             currentSheetIdx = 0;
             data = sheets[0].data;
@@ -2015,6 +2012,8 @@ function openExcelEditor(w, fileId, fileName) {
             sheets = [];
             schemaData.sheets.forEach(function(s) {
               var sheetData = [];
+              // 使用实际列数，而非默认 COLS
+              var actualCols = (s.headers && s.headers.length) || 8;
               if (s.rows && Array.isArray(s.rows)) {
                 // 添加标题行
                 if (s.headers && Array.isArray(s.headers)) {
@@ -2023,7 +2022,7 @@ function openExcelEditor(w, fileId, fileName) {
                 // 添加数据行
                 s.rows.forEach(function(row) {
                   var nr = [];
-                  for (var c = 0; c < COLS; c++) nr.push(row[c] !== undefined ? row[c] : '');
+                  for (var c = 0; c < actualCols; c++) nr.push(row[c] !== undefined ? row[c] : '');
                   sheetData.push(nr);
                 });
               }
@@ -2032,13 +2031,14 @@ function openExcelEditor(w, fileId, fileName) {
             });
             currentSheetIdx = 0;
             data = sheets[0].data;
+            // 动态调整 ROWS 和 COLS
+            if (data.length > ROWS) ROWS = data.length;
+            if (data[0] && data[0].length > COLS) COLS = data[0].length;
             if (w.$c.querySelector('#xlsx-title-input')) {
               w.$c.querySelector('#xlsx-title-input').value = fileName || resp.filename;
             }
-            console.log('[Excel] 数据已加载，总行数:', data.length);
           }
         } else {
-          console.warn('[Excel] 不是 SCHEMA 格式，使用空白数据');
           sheets = [{ name: 'Sheet1', data: blankData() }];
           currentSheetIdx = 0;
           data = sheets[0].data;
@@ -2050,7 +2050,6 @@ function openExcelEditor(w, fileId, fileName) {
         
       })
       .catch(function(e) {
-        console.error('[Excel] 加载失败:', e);
         w.$c.innerHTML = '<div style="padding:24px;text-align:center;color:#a00">❌ 加载失败：' + (e.message || '未知错误') + '<br>fileId: ' + _fileId + '</div>';
       });
   }
