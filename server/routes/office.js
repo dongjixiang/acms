@@ -223,31 +223,53 @@ async function writeDocx(body) {
 function blockToParagraph(b, D) {
   const { Paragraph, TextRun, HeadingLevel, AlignmentType } = D;
   const text = String(b.content || b.text || '');
+  const fmt = b.attrs?.formatting || {};
   const runs = parseInlineFormatting(text, D);
 
-  if (b.type === 'heading') {
-    const lv = Math.min(Math.max(b.level || 1, 1), 6);
-    const hl = [null, HeadingLevel.HEADING_1, HeadingLevel.HEADING_2, HeadingLevel.HEADING_3,
-                HeadingLevel.HEADING_4, HeadingLevel.HEADING_5, HeadingLevel.HEADING_6][lv];
-    return new Paragraph({ heading: hl, children: runs, spacing: { before: 200, after: 100 } });
-  }
-  if (b.type === 'bulletList' || b.type === 'bullet') {
-    return new Paragraph({ bullet: { level: 0 }, children: runs, spacing: { after: 60 } });
-  }
-  if (b.type === 'orderedList' || b.type === 'ordered') {
-    return new Paragraph({ numbering: { reference: 'default-numbering', level: 0 }, children: runs, spacing: { after: 60 } });
-  }
-  if (b.type === 'quote' || b.type === 'blockquote') {
-    return new Paragraph({ indent: { left: 720 }, children: runs, spacing: { after: 120 } });
-  }
-  if (b.type === 'code' || b.type === 'codeBlock') {
-    return new Paragraph({
-      children: runs.map((r) => new TextRun({ text: r.text || '', font: 'Consolas' })),
-      spacing: { after: 100 },
+  // 应用块级格式到所有 runs
+  if (fmt.bold || fmt.italic || fmt.underline) {
+    runs.forEach(function (r) {
+      r.bold = r.bold || fmt.bold;
+      r.italics = r.italics || fmt.italic;
+      if (fmt.underline) r.underline = {};
     });
   }
-  // 默认 paragraph
-  return new Paragraph({ children: runs, spacing: { after: 80 } });
+  if (fmt.fontSize) {
+    runs.forEach(function (r) {
+      r.size = fmt.fontSize * 2; // docx 用 half-points
+    });
+  }
+  if (fmt.fontFamily) {
+    runs.forEach(function (r) {
+      r.font = fmt.fontFamily === 'mono' ? 'Consolas' : fmt.fontFamily === 'serif' ? 'Georgia' : 'Calibri';
+    });
+  }
+
+  const paraOpts = { children: runs, spacing: { after: 80 } };
+  if (fmt.align) paraOpts.alignment = { type: fmt.align };
+
+  if (b.type === 'heading') {
+    const lv = Math.min(Math.max(b.attrs?.level || 1, 1), 6);
+    const hl = [null, HeadingLevel.HEADING_1, HeadingLevel.HEADING_2, HeadingLevel.HEADING_3,
+                HeadingLevel.HEADING_4, HeadingLevel.HEADING_5, HeadingLevel.HEADING_6][lv];
+    return new Paragraph(Object.assign(paraOpts, { heading: hl, spacing: { before: 200, after: 100 } }));
+  }
+  if (b.type === 'bulletList' || b.type === 'bullet') {
+    return new Paragraph(Object.assign(paraOpts, { bullet: { level: 0 }, spacing: { after: 60 } }));
+  }
+  if (b.type === 'orderedList' || b.type === 'ordered') {
+    return new Paragraph(Object.assign(paraOpts, { numbering: { reference: 'default-numbering', level: 0 }, spacing: { after: 60 } }));
+  }
+  if (b.type === 'quote' || b.type === 'blockquote') {
+    return new Paragraph(Object.assign(paraOpts, { indent: { left: 720 }, spacing: { after: 120 } }));
+  }
+  if (b.type === 'code' || b.type === 'codeBlock') {
+    return new Paragraph(Object.assign(paraOpts, {
+      children: runs.map(function (r) { return new TextRun(Object.assign({}, r, { font: 'Consolas' })); }),
+      spacing: { after: 100 },
+    }));
+  }
+  return new Paragraph(paraOpts);
 }
 
 function parseInlineFormatting(text, D) {
