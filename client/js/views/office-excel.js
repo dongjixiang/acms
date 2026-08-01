@@ -108,7 +108,7 @@ function openExcelEditor(w) {
     el.style.fontWeight = fmt.bold ? 'bold' : '';
     el.style.fontStyle = fmt.italic ? 'italic' : '';
     el.style.textDecoration = fmt.underline ? 'underline' : '';
-    el.style.backgroundColor = fmt.fill || '';
+    el.style.backgroundColor = (fmt.highlight || fmt.fill) || '';
     el.style.color = fmt.color || '';
     // v0.65: 水平对齐
     if (fmt.align) {
@@ -124,6 +124,14 @@ function openExcelEditor(w) {
     }
     // v0.65: 换行
     el.style.whiteSpace = fmt.wrap ? 'pre-wrap' : 'normal';
+    // v0.65: 文字旋转
+    if (fmt.orientation) {
+      el.style.transform = 'rotate(' + fmt.orientation + 'deg)';
+      el.style.transformOrigin = 'left top';
+    } else {
+      el.style.transform = '';
+      el.style.transformOrigin = '';
+    }
     // v0.65: 边框
     var key = r + '-' + c;
     var b = cellBorders[key];
