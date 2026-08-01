@@ -224,25 +224,29 @@ function blockToParagraph(b, D) {
   const { Paragraph, TextRun, HeadingLevel, AlignmentType } = D;
   const text = String(b.content || b.text || '');
   const fmt = b.attrs?.formatting || {};
-  const runs = parseInlineFormatting(text, D);
 
-  // 应用块级格式到所有 runs
-  if (fmt.bold || fmt.italic || fmt.underline) {
-    runs.forEach(function (r) {
-      r.bold = r.bold || fmt.bold;
-      r.italics = r.italics || fmt.italic;
-      if (fmt.underline) r.underline = {};
+  // 如果有块级格式，给所有 runs 添加格式
+  const hasBlockFmt = fmt.bold || fmt.italic || fmt.underline || fmt.fontSize || fmt.fontFamily;
+
+  let runs;
+  if (hasBlockFmt) {
+    // 解析文本，然后给每个 run 添加块级格式
+    runs = parseInlineFormatting(text, D);
+    runs = runs.map(function(r) {
+      const opts = Object.assign({}, r);
+      if (fmt.bold) opts.bold = true;
+      if (fmt.italic) opts.italics = true;
+      if (fmt.underline) opts.underline = {};
+      if (fmt.fontSize) opts.size = fmt.fontSize * 2;
+      if (fmt.fontFamily) {
+        if (fmt.fontFamily === 'mono') opts.font = 'Consolas';
+        else if (fmt.fontFamily === 'serif') opts.font = 'Georgia';
+        else opts.font = 'Calibri';
+      }
+      return new TextRun(opts);
     });
-  }
-  if (fmt.fontSize) {
-    runs.forEach(function (r) {
-      r.size = fmt.fontSize * 2; // docx 用 half-points
-    });
-  }
-  if (fmt.fontFamily) {
-    runs.forEach(function (r) {
-      r.font = fmt.fontFamily === 'mono' ? 'Consolas' : fmt.fontFamily === 'serif' ? 'Georgia' : 'Calibri';
-    });
+  } else {
+    runs = parseInlineFormatting(text, D);
   }
 
   const paraOpts = { children: runs, spacing: { after: 80 } };
