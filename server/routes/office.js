@@ -8,6 +8,16 @@
 //     - 走 docx/exceljs/pptxgenjs 标准 schema（content 或 data 二选一）
 //     - 旧前端传 { html, text } 字符串也能兼容（fallback 到 generate_docx 走 markdown）
 //   响应: { ok, fileId, fileName, path, size }
+
+// 简易 HTML 转义（服务端 PPTX 文本提取用）
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 const express = require('express');
 const router = express.Router();
 const path = require('path');
