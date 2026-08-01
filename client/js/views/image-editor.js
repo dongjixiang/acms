@@ -229,7 +229,8 @@
         }, 300);
       }
 
-      // 监听 tui 图片加载结果
+      // 监听 tui 图片加载结果（注意：实测 tui 3.15.3 无 'loadImage' 事件可 fire，
+      //   此回调基本不触发——初始化 fit 由下方就绪轮询兜底，reload 由 loadImageSafe.then 兜底）
       imageEditor.on('loadImage', function(result) {
         console.log('[IMG-LOADED] tui loadImage 完成:', result ? (result.newWidth+'x'+result.newHeight) : 'no result');
         // v0.68: tui 重置 help-menu 时 zoom display 也可能被清，重新插入
@@ -238,6 +239,27 @@
       imageEditor.on('error', function(err) {
         console.warn('[IMG-ERR] tui error:', err && err.message ? err.message : err);
       });
+
+      // v0.79: 初始化路径 fit + 居中（就绪轮询兜底）
+      //   includeUI loadImage.path 是 tui 内部异步加载，无 'loadImage' 事件可监听；
+      //   且容器（.tui-image-editor，display:inline-block）宽度 = canvas buffer 尺寸，
+      //   大图会溢出 main 视口（wrap overflow:auto）→ viewport 保持 zoom 1 时
+      //   main 只显示图左上角（拖图到图片应用「只展现最左边一部分」）。
+      //   轮询 canvasImage 就绪后 fit 一次（幂等，reload 路径由 loadImageSafe.then 独立兜底）。
+      var _initFitDone = false;
+      var _initFitTimer = setInterval(function() {
+        try {
+          if (_initFitDone || !imageEditor) return;
+          var _fitImg = imageEditor._graphics && imageEditor._graphics.canvasImage;
+          if (_fitImg && _fitImg.width && _fitImg.height) {
+            _initFitDone = true;
+            clearInterval(_initFitTimer);
+            setTimeout(function() { try { fitAndCenter(); } catch(e) {} }, 80);
+          }
+        } catch(e) {}
+      }, 250);
+      // 15s 兜底：无论如何停止轮询，避免窗口常驻泄漏
+      setTimeout(function() { clearInterval(_initFitTimer); }, 15000);
     }
 
     // v0.78: 统一图片加载入口 —— 根治 fabric6 getBoundingRect 含 viewport transform 的 buffer 污染
@@ -531,6 +553,23 @@
 
         var level = Math.min(mainRect.width / img.width, mainRect.height / img.height);
         if (!(level > 0)) return;
+        // v0.80: 小图不放大。tui canvas buffer = 图片原始尺寸，viewport zoom > 1 时
+        //   图渲染尺寸超出 buffer → 被 buffer 裁剪（300x200 图 fit 2.51 倍只显示左上角）。
+        //   fit 语义 = 完整显示：图比窗口小时保持 100% 居中；放大留给 zoom-in 按钮。
+        if (level > 1) level = 1;
+
+        // v0.80: level = 1（小图 100%）时图占满 buffer（centerObject 后居中），
+        //   容器（.tui-image-editor inline-block）在 main 内 text-align:center 居中 →
+        //   viewport 保持 identity 即可（panX/panY = 0），任何 pan 都会把图推出 buffer。
+        if (level >= 1) {
+          c.setViewportTransform([1, 0, 0, 1, 0, 0]);
+          c.requestRenderAll();
+          var zc1 = imageEditor._graphics.getComponent('zoom');
+          if (zc1) zc1.zoomLevel = 1;
+          _aiZoomLevel = 1;
+          updateZoomDisplay(1);
+          return;
+        }
 
         c.setZoom(level);
 
