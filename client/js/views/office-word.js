@@ -171,7 +171,7 @@ function openWordEditor(w, fileId, fileName, content) {
       doc.blocks.push(window.OfficeDoc.paragraph(''));
       return;
     }
-    var lines = text.split('\n');
+    var lines = text.split('\n'););
     lines.forEach(function (line) {
       var trimmed = line.trim();
       if (!trimmed) return;
@@ -976,8 +976,7 @@ function mountBlockEditor() {
             newDoc.blocks.push(window.OfficeDoc.paragraph(''));
             return;
           }
-          var lines = text.split('
-');
+          var lines = text.split('\n');
           lines.forEach(function(line) {
             var trimmed = line.trim();
             if (!trimmed) return;
