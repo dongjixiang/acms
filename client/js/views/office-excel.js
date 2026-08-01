@@ -1113,6 +1113,7 @@ function openExcelEditor(w, fileId, fileName) {
   }
 
   function renderTable() {
+    console.log('[xlsx-render] renderTable called, data.length:', data.length, 'data[0]:', data[0]);
     // v0.62.5: 容器套 .oo-editor oo-editor-xlsx class（让 Excel 墨绿色主题生效）
     var h = '<div class="oo-editor oo-editor-xlsx" style="display:flex;flex-direction:column;height:100%">';
     // OO 风格标题栏（v0.62.5: 简化 — 只留文件名 + 保存, 功能按钮移到 Ribbon）
