@@ -183,85 +183,111 @@ router.get('/load/:fileId', async function (req, res) {
               text = '(旧版 PPT 格式，请重新保存)';
             }
           } else {
-            // 真正的 PPTX（ZIP 格式），从二进制提取文本
+            // 真正的 PPTX（ZIP 格式），从二进制提取文本和图像
             try {
               var AdmZip = require('adm-zip');
               var zip = new AdmZip(buf);
               var presXml = zip.readAsText('ppt/presentation.xml');
-          // 找所有 slide id → 文件名映射
-          var slideIds = presXml.match(/<p:sldIdLst>([\s\S]*?)<\/p:sldIdLst>/);
-          var ids = [];
-          if (slideIds) {
-            var idMatches = slideIds[1].match(/<p:sldId[^>]*\sr:id="rId(\d+)"/g);
-            if (idMatches) ids = idMatches.map(function(m) { var n = m.match(/rId(\d+)/); return n ? parseInt(n[1]) : null; }).filter(Boolean);
-          }
-          // 找 rels 映射 rId → 文件名
-          var relsXml = zip.readAsText('ppt/_rels/presentation.xml.rels') || '';
-          var relMap = {};
-          var relMatches = relsXml.match(/<Relationship[^>]*Id="(rId\d+)"[^>]*Target="([^"]*)"/g);
-          if (relMatches) relMatches.forEach(function(r) {
-            var id = r.match(/Id="(rId\d+)"/);
-            var target = r.match(/Target="([^"]+)"/);
-            if (id && target) relMap[id[1]] = target[1];
-          });
-          // 解析每页幻灯片
-          var pptSlides = [];
-          ids.forEach(function(rid) {
-            var slideFile = relMap['rId' + rid];
-            if (!slideFile) return;
-            var slideXml = zip.readAsText('ppt/' + slideFile);
-            if (!slideXml) return;
-            // 提取标题和正文占位符文本
-            var titleText = '';
-            var bodyText = '';
-            var layout = 'content';
-            // 匹配 p:ph 占位符
-            var phMatches = slideXml.match(/<p:sp><p:nvSpPr><p:cNvPr[^>]*name="([^"]*)"[^>]*\/><\/p:nvSpPr>([\s\S]*?)<\/p:sp>/g) || [];
-            phMatches.forEach(function(sp) {
-              var nameMatch = sp.match(/p:cNvPr[^>]*name="([^"]*)"/);
-              var name = nameMatch ? nameMatch[1] : '';
-              var phMatch = sp.match(/<p:ph[^>]*type="([^"]*)"/);
-              var phType = phMatch ? phMatch[1] : '';
-              var innerText = sp.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-              if (phType === 'title' || name.indexOf('标题') >= 0 || name.indexOf('Title') >= 0) {
-                titleText = innerText;
-                layout = 'cover';
-              } else if (phType === 'body' || name.indexOf('正文') >= 0 || name.indexOf('Content') >= 0) {
-                bodyText = innerText;
-                layout = 'content';
-              } else if (!phType && !name) {
-                // 普通形状文本
-                if (bodyText) bodyText += '\n' + innerText;
-                else bodyText = innerText;
+              // 提取所有图片（base64）
+              var imageMap = {};
+              var imageFiles = zip.getEntries().filter(function(e) {
+                return e.entryName.match(/^ppt\/media\//) && e.entryName.match(/\.(png|jpg|jpeg|gif|bmp)$/i);
+              });
+              imageFiles.forEach(function(img) {
+                var imgBuf = img.getData();
+                var ext = img.entryName.replace(/.*\./, '').toLowerCase();
+                var mimeType = { png: 'image/png', jpg: 'image/jpeg', gif: 'image/gif', bmp: 'image/bmp' }[ext] || 'image/png';
+                imageMap[img.entryName] = 'data:' + mimeType + ';base64,' + imgBuf.toString('base64');
+              });
+              // 找所有 slide id → 文件名映射
+              var slideIds = presXml.match(/<p:sldIdLst>([\s\S]*?)<\/p:sldIdLst>/);
+              var ids = [];
+              if (slideIds) {
+                var idMatches = slideIds[1].match(/<p:sldId[^>]*\sr:id="rId(\d+)"/g);
+                if (idMatches) ids = idMatches.map(function(m) { var n = m.match(/rId(\d+)/); return n ? parseInt(n[1]) : null; }).filter(Boolean);
               }
-            });
-            // 也提取不带 ph 标记的纯文本（fallback）
-            if (!titleText && !bodyText) {
-              var allText = slideXml.match(/<a:t>([^<]*)<\/a:t>/g) || [];
-              allText.forEach(function(t) {
-                var txt = t.replace(/<\/?a:t>/g, '');
-                if (txt.trim()) {
-                  if (!titleText) titleText = txt;
-                  else bodyText += '\n' + txt;
+              // 找 rels 映射 rId → 文件名
+              var relsXml = zip.readAsText('ppt/_rels/presentation.xml.rels') || '';
+              var relMap = {};
+              var relMatches = relsXml.match(/<Relationship[^>]*Id="(rId\d+)"[^>]*Target="([^"]*)"/g);
+              if (relMatches) relMatches.forEach(function(r) {
+                var id = r.match(/Id="(rId\d+)"/);
+                var target = r.match(/Target="([^"]*)"/);
+                if (id && target) relMap[id[1]] = target[1];
+              });
+              // 解析每页幻灯片
+              var pptSlides = [];
+              ids.forEach(function(rid) {
+                var slideFile = relMap['rId' + rid];
+                if (!slideFile) return;
+                var slideXml = zip.readAsText('ppt/' + slideFile);
+                if (!slideXml) return;
+                // 提取标题和正文占位符文本
+                var titleText = '';
+                var bodyText = '';
+                var layout = 'content';
+                // 匹配 p:ph 占位符
+                var phMatches = slideXml.match(/<p:sp><p:nvSpPr><p:cNvPr[^>]*name="([^"]*)"[^>]*\/><\/p:nvSpPr>([\s\S]*?)<\/p:sp>/g) || [];
+                phMatches.forEach(function(sp) {
+                  var nameMatch = sp.match(/p:cNvPr[^>]*name="([^"]*)"/);
+                  var name = nameMatch ? nameMatch[1] : '';
+                  var phMatch = sp.match(/<p:ph[^>]*type="([^"]*)"/);
+                  var phType = phMatch ? phMatch[1] : '';
+                  var innerText = sp.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+                  if (phType === 'title' || name.indexOf('标题') >= 0 || name.indexOf('Title') >= 0) {
+                    titleText = innerText;
+                    layout = 'cover';
+                  } else if (phType === 'body' || name.indexOf('正文') >= 0 || name.indexOf('Content') >= 0) {
+                    bodyText = innerText;
+                    layout = 'content';
+                  } else if (!phType && !name) {
+                    // 普通形状文本
+                    if (bodyText) bodyText += '\n' + innerText;
+                    else bodyText = innerText;
+                  }
+                });
+                // 也提取不带 ph 标记的纯文本（fallback）
+                if (!titleText && !bodyText) {
+                  var allText = slideXml.match(/<a:t>([^<]*)<\/a:t>/g) || [];
+                  allText.forEach(function(t) {
+                    var txt = t.replace(/<\/?a:t>/g, '');
+                    if (txt.trim()) {
+                      if (!titleText) titleText = txt;
+                      else bodyText += '\n' + txt;
+                    }
+                  });
+                }
+                // 提取图片引用
+                var slideRels = zip.readAsText('ppt/slides/_rels/' + slideFile + '.rels') || '';
+                var imgRefs = [];
+                var imgMatches = slideRels.match(/<Relationship[^>]*Id="(rId\d+)"[^>]*Target="(.*?\.(png|jpg|jpeg|gif|bmp))"/gi) || [];
+                imgMatches.forEach(function(m) {
+                  var rid = m.match(/Id="(rId\d+)"/);
+                  var target = m.match(/Target="([^"]*)"/);
+                  if (rid && target) {
+                    var imgEntry = 'ppt/media/' + target[1].replace(/.*\//, '');
+                    if (imageMap[imgEntry]) {
+                      imgRefs.push({ rid: rid[1], src: imageMap[imgEntry] });
+                    }
+                  }
+                });
+                if (titleText || bodyText) {
+                  pptSlides.push({
+                    title: escHtml(titleText || '标题'),
+                    content: escHtml(bodyText || ''),
+                    layout: layout,
+                    images: imgRefs
+                  });
                 }
               });
-            }
-            if (titleText || bodyText) {
-              pptSlides.push({
-                title: '<h1 style="font-size:28px;color:#333">' + escHtml(titleText || '标题') + '</h1>',
-                content: '<p style="font-size:16px;color:#555">' + escHtml(bodyText || '') + '</p>',
-                layout: layout
-              });
-            }
-          });
-          if (pptSlides.length > 0) {
-            text = 'SCHEMA:' + JSON.stringify({ slides: pptSlides });
-          } else {
-            text = '(PPTX 文本提取失败，请手动创建)';
+              if (pptSlides.length > 0) {
+                text = 'SCHEMA:' + JSON.stringify({ slides: pptSlides });
+              } else {
+                text = '(PPTX 文本提取失败，请手动创建)';
+              }
+            } catch (e) { text = '(PPTX 解析失败: ' + e.message + ')'; }
           }
         } catch (e) { text = '(PPTX 解析失败: ' + e.message + ')'; }
-      }
-    } catch (e) { text = '(PPTX 解析失败: ' + e.message + ')'; }
     } else {
       text = buf.toString('utf8');
     }
@@ -539,18 +565,51 @@ async function writePptx(body) {
   for (const s of slides) {
     const sl = pres.addSlide();
     sl.background = { color: 'FFFFFF' };
-    sl.addText(s.title || '', {
+    // 标题
+    var titleText = '';
+    try {
+      titleText = (s.title || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    } catch(e) { titleText = ''; }
+    sl.addText(titleText || '', {
       x: 0.5, y: 0.4, w: 9, h: 0.8,
       fontSize: 24, bold: true, color: '1A1A1A',
     });
-    if (s.content) {
-      // content 可能是字符串，也可能是 bullets 数组
-      const lines = Array.isArray(s.content)
-        ? s.content
-        : String(s.content).split('\n').filter(Boolean);
-      sl.addText(lines.map((l) => ({ text: l, options: { bullet: true } })), {
+    // 内容
+    var contentHtml = s.content || '';
+    // 先渲染图片
+    if (s.images && s.images.length > 0) {
+      var imgHtml = '';
+      s.images.forEach(function(img) {
+        imgHtml += '<img src="' + img.src + '" style="max-width:400px;height:auto;margin:8px 0">';
+      });
+      contentHtml = imgHtml + contentHtml;
+    }
+    // 解析HTML内容
+    var lines = [];
+    // 简单解析：提取所有文本段落
+    var tempDiv = contentHtml.replace(/<img[^>]*src="([^"]*)"[^>]*>/gi, '[IMG:$1]');
+    var tempDiv2 = tempDiv.replace(/<[^>]+>/g, '\n');
+    lines = tempDiv2.split('\n').filter(function(l) { return l.trim(); });
+    if (lines.length > 0) {
+      sl.addText(lines.map(function(l) { return { text: l, options: { bullet: true } }; }), {
         x: 0.6, y: 1.4, w: 8.8, h: 5.5,
         fontSize: 16, color: '333333', paraSpaceAfter: 6,
+      });
+    }
+    // 添加图片
+    if (s.images && s.images.length > 0) {
+      var imgX = 7.5;
+      var imgY = 1.5;
+      s.images.forEach(function(img, idx) {
+        try {
+          sl.addImage({
+            data: img.src.split(',')[1],
+            x: imgX,
+            y: imgY + idx * 1.5,
+            w: 2,
+            h: 1.5
+          });
+        } catch(e) { /* 忽略图片添加错误 */ }
       });
     }
   }
