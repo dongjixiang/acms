@@ -1090,6 +1090,34 @@ function openExcelEditor(w) {
     el.style.textDecoration = fmt.underline ? 'underline' : '';
     el.style.backgroundColor = fmt.fill || '';
     el.style.color = fmt.color || '';
+    // v0.65: 水平对齐
+    if (fmt.align) {
+      el.style.textAlign = fmt.align;
+    } else {
+      el.style.textAlign = '';
+    }
+    // v0.65: 垂直对齐
+    if (fmt.valign) {
+      el.style.verticalAlign = fmt.valign;
+    } else {
+      el.style.verticalAlign = '';
+    }
+    // v0.65: 换行
+    el.style.whiteSpace = fmt.wrap ? 'pre-wrap' : 'normal';
+    // v0.65: 边框
+    var key = r + '-' + c;
+    var b = cellBorders[key];
+    if (b) {
+      el.style.borderTop = b.top ? '1px solid ' + b.top : '';
+      el.style.borderBottom = b.bottom ? '1px solid ' + b.bottom : '';
+      el.style.borderLeft = b.left ? '1px solid ' + b.left : '';
+      el.style.borderRight = b.right ? '1px solid ' + b.right : '';
+    } else {
+      el.style.borderTop = '';
+      el.style.borderBottom = '';
+      el.style.borderLeft = '';
+      el.style.borderRight = '';
+    }
   }
 
   // v0.62.5: Excel 标题栏独立的 dirty 跟踪
@@ -1924,14 +1952,40 @@ function openExcelEditor(w) {
     // 表格区
     h += '<div id="xlsx-table-wrap" style="flex:1;overflow:auto;padding:4px">';
     h += '<table id="xlsx-table" style="border-collapse:collapse;width:100%;font-size:13px">';
+    // v0.65: 构建合并单元格映射（跳过已在合并区域内的非起始单元格）
+    var skipCell = function(r, c) {
+      for (var i = 0; i < mergedRanges.length; i++) {
+        var m = mergedRanges[i];
+        if (r > m.r1 || (r === m.r1 && c > m.c1)) return true;
+      }
+      return false;
+    };
     h += '<tr><th class="xlsx-corner-th" style="border:1px solid #ccc;background:var(--bg2);padding:4px 6px;min-width:30px;text-align:center;font-weight:600;position:sticky;top:0;left:0;z-index:3">#</th>';
-    for (var ci = 0; ci < (data[0]||[]).length; ci++) {
-      h += '<th class="xlsx-col-header" data-col="' + ci + '" style="border:1px solid #ccc;background:var(--bg2);padding:4px 6px;min-width:80px;text-align:center;font-weight:600;position:sticky;top:0;z-index:2;cursor:pointer;user-select:none">' + colLetter(ci) + '</th>';
+    var maxCols = 0;
+    for (var ri0 = 0; ri0 < data.length; ri0++) { if ((data[ri0]||[]).length > maxCols) maxCols = data[ri0].length; }
+    for (var ci = 0; ci < maxCols; ci++) {
+      var filterArrow = autoFilterActive ? '<span class="xlsx-filter-arrow" title="自动筛选">▼</span>' : '';
+      h += '<th class="xlsx-col-header" data-col="' + ci + '" style="border:1px solid #ccc;background:var(--bg2);padding:4px 6px;min-width:80px;text-align:center;font-weight:600;position:sticky;top:0;z-index:2;cursor:pointer;user-select:none">' + colLetter(ci) + filterArrow + '</th>';
     }
     h += '</tr>';
     for (var ri = 0; ri < data.length; ri++) {
+      var rowSpan = 1;
+      for (var i = 0; i < mergedRanges.length; i++) {
+        if (mergedRanges[i].r1 === ri) rowSpan = mergedRanges[i].r2 - ri + 1;
+      }
+      var rowAttrs = rowSpan > 1 ? ' rowspan="' + rowSpan + '"' : '';
       h += '<tr><td class="xlsx-row-header" data-row="' + ri + '" style="border:1px solid #ccc;background:var(--bg2);padding:4px 6px;text-align:center;font-size:11px;color:var(--text2);cursor:pointer;user-select:none">' + (ri + 1) + '</td>';
       for (var ci2 = 0; ci2 < data[ri].length; ci2++) {
+        if (skipCell(ri, ci2)) continue;
+        // 检查是否需要 colspan
+        var colSpan = 1;
+        for (var j = 0; j < mergedRanges.length; j++) {
+          if (mergedRanges[j].r1 === ri && mergedRanges[j].c1 === ci2) {
+            colSpan = mergedRanges[j].c2 - ci2 + 1;
+            break;
+          }
+        }
+        var colSpanAttr = colSpan > 1 ? ' colspan="' + colSpan + '"' : '';
         var cell = data[ri][ci2];
         var val = escHtml(cellStr(cell));
         var fmt = cellFmt(cell);
@@ -1941,7 +1995,20 @@ function openExcelEditor(w) {
         if (fmt.underline) style += ';text-decoration:underline';
         if (fmt.fill) style += ';background-color:' + fmt.fill;
         if (fmt.color) style += ';color:' + fmt.color;
-        h += '<td style="border:1px solid #ccc;padding:2px 4px;min-width:80px"><div class="xlsx-cell" contenteditable style="' + style + '" data-r="' + ri + '" data-c="' + ci2 + '">' + val + '</div></td>';
+        if (fmt.align) style += ';text-align:' + fmt.align;
+        if (fmt.valign) style += ';vertical-align:' + fmt.valign;
+        if (fmt.wrap) style += ';white-space:pre-wrap;';
+        // v0.65: 边框
+        var bk = ri + '-' + ci2;
+        var bb = cellBorders[bk];
+        if (bb) {
+          if (bb.top) style += ';border-top:1px solid ' + bb.top;
+          if (bb.bottom) style += ';border-bottom:1px solid ' + bb.bottom;
+          if (bb.left) style += ';border-left:1px solid ' + bb.left;
+          if (bb.right) style += ';border-right:1px solid ' + bb.right;
+        }
+        h += '<td style="border:1px solid #ccc;padding:2px 4px;min-width:80px"' + colSpanAttr + rowAttrs + '>' +
+          '<div class="xlsx-cell" contenteditable style="' + style + '" data-r="' + ri + '" data-c="' + ci2 + '">' + val + '</div></td>';
       }
       h += '</tr>';
     }
@@ -2153,9 +2220,18 @@ function openExcelEditor(w) {
       };
     });
 
-    // v0.64: 行/列头点击选中整行/整列
+    // v0.64: 行/列头点击选中整行/整列 + 自动筛选箭头
     w.$c.querySelectorAll('.xlsx-col-header').forEach(function(th) {
       th.onclick = function(e) {
+        // 检查是否点击了筛选箭头
+        if (e.target.classList.contains('xlsx-filter-arrow') || e.target.closest('.xlsx-filter-arrow')) {
+          e.stopPropagation();
+          var colIdx = parseInt(this.dataset.col);
+          if (autoFilterActive) {
+            ops.openFilterDropdown(colIdx);
+          }
+          return;
+        }
         e.stopPropagation();
         var c = parseInt(this.dataset.col);
         sel.start = [0, c];
