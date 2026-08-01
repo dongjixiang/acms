@@ -1093,6 +1093,8 @@ function openExcelEditor(w) {
 
   // v0.62.5: Excel 标题栏独立的 dirty 跟踪
   var isDirty = false;
+  // v0.64: 冻结状态
+  var freezeRow = -1; // -1 = 无冻结, 0 = 冻结首行
 
   function updateStatusBar() {
     var bar = w.$c.querySelector('#xlsx-status');
@@ -1308,6 +1310,160 @@ function openExcelEditor(w) {
         }
       });
     },
+    // ─── v0.64: 查找/替换 ───
+    openSearch: function () {
+      var bar = w.$c.querySelector('#xlsx-search-bar');
+      if (!bar) return;
+      var isOpen = bar.classList.contains('is-open');
+      bar.classList.toggle('is-open', !isOpen);
+      if (!isOpen && bar.querySelector('#xlsx-search-input')) {
+        bar.querySelector('#xlsx-search-input').focus();
+      }
+    },
+    closeSearch: function () {
+      var bar = w.$c.querySelector('#xlsx-search-bar');
+      if (bar) bar.classList.remove('is-open');
+      // 清除高亮
+      w.$c.querySelectorAll('.xlsx-cell.is-search-match').forEach(function(el) {
+        el.classList.remove('is-search-match');
+        el.style.background = '';
+      });
+    },
+    toggleReplace: function () {
+      var row = w.$c.querySelector('#xlsx-replace-row');
+      if (row) row.classList.toggle('is-open');
+    },
+    doSearch: function (query) {
+      if (!query || query.length === 0) {
+        w.$c.querySelectorAll('.xlsx-cell.is-search-match').forEach(function(el) {
+          el.classList.remove('is-search-match');
+          el.style.background = '';
+        });
+        var countEl = w.$c.querySelector('#xlsx-search-count');
+        if (countEl) countEl.textContent = '0/0';
+        return;
+      }
+      // 清除之前高亮
+      w.$c.querySelectorAll('.xlsx-cell.is-search-match').forEach(function(el) {
+        el.classList.remove('is-search-match');
+        el.style.background = '';
+      });
+      var cells = w.$c.querySelectorAll('.xlsx-cell');
+      var matches = [];
+      cells.forEach(function(el) {
+        var text = el.textContent.trim();
+        if (text.indexOf(query) !== -1) {
+          el.classList.add('is-search-match');
+          el.style.background = 'rgba(255,235,59,0.3)';
+          matches.push(el);
+        }
+      });
+      var countEl = w.$c.querySelector('#xlsx-search-count');
+      if (countEl) countEl.textContent = matches.length + ' 个结果';
+      // 默认高亮第一个
+      if (matches.length > 0) {
+        window._excelSearchMatches = matches;
+        window._excelSearchIdx = 0;
+        matches[0].scrollIntoView({ block: 'center', behavior: 'smooth' });
+      } else {
+        window._excelSearchMatches = [];
+        window._excelSearchIdx = -1;
+      }
+    },
+    searchNext: function () {
+      var matches = window._excelSearchMatches || [];
+      if (matches.length === 0) return;
+      var idx = (window._excelSearchIdx + 1) % matches.length;
+      window._excelSearchIdx = idx;
+      matches[idx].scrollIntoView({ block: 'center', behavior: 'smooth' });
+      matches[idx].focus();
+    },
+    searchPrev: function () {
+      var matches = window._excelSearchMatches || [];
+      if (matches.length === 0) return;
+      var idx = (window._excelSearchIdx - 1 + matches.length) % matches.length;
+      window._excelSearchIdx = idx;
+      matches[idx].scrollIntoView({ block: 'center', behavior: 'smooth' });
+      matches[idx].focus();
+    },
+    doReplace: function (newVal) {
+      if (window._excelSearchIdx < 0 || !window._excelSearchMatches) return;
+      var el = window._excelSearchMatches[window._excelSearchIdx];
+      if (!el) return;
+      var r = parseInt(el.dataset.r), c = parseInt(el.dataset.c);
+      data[r][c] = newVal;
+      markDirty();
+      el.textContent = newVal;
+      this.doSearch(w.$c.querySelector('#xlsx-search-input')?.value || '');
+    },
+    doReplaceAll: function (newVal) {
+      var query = w.$c.querySelector('#xlsx-search-input')?.value || '';
+      if (!query) return;
+      var cells = w.$c.querySelectorAll('.xlsx-cell');
+      var count = 0;
+      cells.forEach(function(el) {
+        var text = el.textContent.trim();
+        if (text.indexOf(query) !== -1) {
+          var r = parseInt(el.dataset.r), c = parseInt(el.dataset.c);
+          data[r][c] = newVal;
+          el.textContent = newVal;
+          count++;
+        }
+      });
+      markDirty();
+      toast('已替换 ' + count + ' 处', 'success');
+      this.doSearch(query);
+    },
+    // ─── v0.64: 冻结窗格 ───
+    toggleFreeze: function () {
+      if (freezeRow === -1) {
+        freezeRow = 0;
+        toast('已冻结首行', 'info');
+      } else {
+        freezeRow = -1;
+        toast('已取消冻结', 'info');
+      }
+      // 更新按钮状态
+      var btn = w.$c.querySelector('#xlsx-freeze-btn');
+      if (btn) {
+        btn.style.background = freezeRow >= 0 ? 'var(--office-accent-soft)' : '';
+        btn.style.color = freezeRow >= 0 ? 'var(--office-primary)' : '';
+      }
+      // 重新渲染表格以应用冻结
+      var table = w.$c.querySelector('#xlsx-table');
+      if (table) {
+        var rows = table.querySelectorAll('tr');
+        rows.forEach(function(tr, i) {
+          if (i === 0) {
+            tr.classList.toggle('xlsx-row-frozen', freezeRow >= 0);
+          }
+        });
+      }
+      // 显示/隐藏冻结指示器
+      var indicator = w.$c.querySelector('#xlsx-freeze-indicator');
+      if (indicator) indicator.classList.toggle('is-show', freezeRow >= 0);
+      markDirty();
+    },
+    // ─── v0.64: 填充柄 ───
+    openFormulaDialog: function () {
+      if (!sel.start) return toast('请先选中单元格', 'warning');
+      // 显示/隐藏公式对话框
+      var dialog = w.$c.querySelector('#xlsx-formula-dialog');
+      if (dialog) {
+        dialog.classList.toggle('is-open');
+        if (dialog.classList.contains('is-open')) {
+          // 定位到公式栏下方
+          var fb = w.$c.querySelector('#xlsx-formula-bar');
+          if (fb) {
+            var rect = fb.getBoundingClientRect();
+            dialog.style.top = (rect.bottom + 4) + 'px';
+            dialog.style.left = rect.left + 'px';
+          }
+          // 初始化类别列表
+          renderFormulaCategories();
+        }
+      }
+    },
     // v0.62.6: Undo/Redo
     undo: function () { xlUndo(); },
     redo: function () { xlRedo(); },
@@ -1471,10 +1627,25 @@ function openExcelEditor(w) {
     // v0.62.5: Ribbon 工具栏（学 OO TabBar.js + FileMenu.js）
     h += '<div id="xlsx-ribbon-host" style="flex-shrink:0"></div>';
     // v0.63 Phase1: 公式栏（学 OO valueField — 始终显示当前选中 cell 内容）
-    h += '<div id="xlsx-formula-bar" style="display:flex;align-items:center;flex-shrink:0;height:26px;background:var(--office-paper-bg);border-bottom:1px solid var(--office-divider);padding:0 4px;gap:4px">';
+    h += '<div id="xlsx-formula-bar" style="display:flex;align-items:center;flex-shrink:0;height:26px;background:var(--office-paper-bg);border-bottom:1px solid var(--office-divider);padding:0 4px;gap:4px;position:relative">';
     h += '<input id="xlsx-namebox" class="oo-statusbar-namebox" placeholder="A1" style="width:70px;height:20px;font-size:12px;margin:0" title="当前选中单元格（输入跳转）">';
     h += '<span style="font-size:11px;color:var(--text2,#888);padding:0 4px">fx</span>';
     h += '<input id="xlsx-fx-input" type="text" style="flex:1;height:20px;font-size:12px;font-family:monospace;border:1px solid var(--office-divider);border-radius:2px;padding:0 6px;background:var(--bg,#fff);color:var(--text,#333);outline:none" placeholder="单元格内容或公式">';
+    h += '<button id="xlsx-fx-btn" style="width:20px;height:20px;border:1px solid var(--office-divider);border-radius:2px;background:var(--bg2,#f5f5f7);cursor:pointer;font-size:10px;color:var(--text2,#888);flex-shrink:0" title="公式选择器">ƒ</button>';
+    h += '</div>';
+    // v0.64: 查找/替换栏（学 OO SearchBar.js）
+    h += '<div id="xlsx-search-bar">';
+    h += '<input id="xlsx-search-input" type="search" placeholder="查找..." autocomplete="off">';
+    h += '<span id="xlsx-search-count" class="xlsx-search-count">0/0</span>';
+    h += '<button id="xlsx-search-prev" class="oo-searchbar-btn" title="上一个">▲</button>';
+    h += '<button id="xlsx-search-next" class="oo-searchbar-btn" title="下一个">▼</button>';
+    h += '<button id="xlsx-search-replace" class="oo-searchbar-btn" title="替换">⇥</button>';
+    h += '<button id="xlsx-search-close" class="oo-searchbar-btn" title="关闭 (Esc)">✕</button>';
+    h += '<div id="xlsx-replace-row" class="xlsx-replace-row">';
+    h += '<input id="xlsx-replace-input" type="text" placeholder="替换为...">';
+    h += '<button id="xlsx-replace-one" class="oo-searchbar-btn">替换</button>';
+    h += '<button id="xlsx-replace-all" class="oo-searchbar-btn">全部替换</button>';
+    h += '</div>';
     h += '</div>';
     // 表格区
     h += '<div style="flex:1;overflow:auto;padding:4px">';
@@ -1504,6 +1675,7 @@ function openExcelEditor(w) {
     // v0.62.5: 底部状态栏行（状态信息，名称框已移至公式栏 v0.63）
     h += '<div style="display:flex;align-items:center;background:var(--office-toolbar-bg);border-top:1px solid var(--office-divider);flex-shrink:0;height:28px">';
     h += '<div id="xlsx-status" class="oo-statusbar" style="flex:1;border:none;background:transparent;padding:0 8px">A1 · 总 20 行 × 8 列</div>';
+    h += '<button id="xlsx-freeze-btn" style="padding:2px 8px;font-size:11px;border:1px solid var(--office-divider);border-radius:3px;background:var(--bg,#fff);cursor:pointer;color:var(--text,#666);margin-right:4px" title="冻结首行">❄️ 冻结</button>';
     h += '</div>';
     // v0.62.5 PR-C: Sheet tabs (学 OO Spreadsheet 底部 sheet 切换条)
     h += '<div id="xlsx-sheets">';
@@ -1517,6 +1689,17 @@ function openExcelEditor(w) {
       h += '</div>';
     });
     h += '<button id="xlsx-add-sheet" class="xlsx-sheet-add" title="新建 Sheet">+</button>';
+    h += '</div>';
+    // v0.64: 公式选择器对话框（学 OO FormulaDialog.js）
+    h += '<div id="xlsx-formula-dialog" style="display:none">';
+    h += '<div class="xfd-search"><input id="xfd-search-input" type="text" placeholder="搜索函数..."></div>';
+    h += '<div class="xfd-body">';
+    h += '<div id="xfd-category-list" class="xfd-category-list"></div>';
+    h += '<div id="xfd-function-list" class="xfd-function-list"></div>';
+    h += '</div>';
+    h += '<div id="xfd-preview" class="xfd-preview">选中函数查看详情</div>';
+    h += '<div class="xfd-footer"><button id="xfd-cancel">取消</button><button id="xfd-ok" class="xfd-ok">插入</button></div>';
+    h += '</div>';
     h += '</div>';
     h += '</div>';
     w.$c.innerHTML = h;
@@ -1568,6 +1751,12 @@ function openExcelEditor(w) {
                 { id: 'add-col',   icon: '➕', label: '加列', action: ops.addCol },
                 { id: 'del-row',   icon: '➖', label: '删行', action: ops.deleteRow },
                 { id: 'del-col',   icon: '➖', label: '删列', action: ops.deleteCol },
+              ]},
+              { title: '查找', buttons: [
+                { id: 'search', icon: '🔍', label: '查找替换', action: ops.openSearch },
+              ]},
+              { title: '视图', buttons: [
+                { id: 'freeze', icon: '❄️', label: '冻结首行', action: ops.toggleFreeze },
               ]},
 
             ],
@@ -1738,6 +1927,249 @@ function openExcelEditor(w) {
     });
     var addSheetBtn = w.$c.querySelector('#xlsx-add-sheet');
     if (addSheetBtn) addSheetBtn.onclick = function () { addSheet(); };
+
+    // v0.64: 查找/替换栏事件绑定
+    var searchBar = w.$c.querySelector('#xlsx-search-bar');
+    var searchInput = w.$c.querySelector('#xlsx-search-input');
+    var searchCount = w.$c.querySelector('#xlsx-search-count');
+    if (searchInput) {
+      searchInput.addEventListener('input', function () {
+        ops.doSearch(this.value);
+      });
+      searchInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); ops.searchNext(); }
+        if (e.key === 'Escape') { ops.closeSearch(); }
+      });
+    }
+    var searchPrevBtn = w.$c.querySelector('#xlsx-search-prev');
+    if (searchPrevBtn) searchPrevBtn.onclick = function () { ops.searchPrev(); };
+    var searchNextBtn = w.$c.querySelector('#xlsx-search-next');
+    if (searchNextBtn) searchNextBtn.onclick = function () { ops.searchNext(); };
+    var searchReplaceBtn = w.$c.querySelector('#xlsx-search-replace');
+    if (searchReplaceBtn) searchReplaceBtn.onclick = function () { ops.toggleReplace(); };
+    var searchCloseBtn = w.$c.querySelector('#xlsx-search-close');
+    if (searchCloseBtn) searchCloseBtn.onclick = function () { ops.closeSearch(); };
+    var replaceInput = w.$c.querySelector('#xlsx-replace-input');
+    if (replaceInput) {
+      replaceInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); ops.doReplace(this.value); }
+      });
+    }
+    var replaceOneBtn = w.$c.querySelector('#xlsx-replace-one');
+    if (replaceOneBtn) replaceOneBtn.onclick = function () { ops.doReplace(replaceInput?.value || ''); };
+    var replaceAllBtn = w.$c.querySelector('#xlsx-replace-all');
+    if (replaceAllBtn) replaceAllBtn.onclick = function () { ops.doReplaceAll(replaceInput?.value || ''); };
+
+    // v0.64: 冻结按钮事件
+    var freezeBtn = w.$c.querySelector('#xlsx-freeze-btn');
+    if (freezeBtn) freezeBtn.onclick = function () { ops.toggleFreeze(); };
+
+    // v0.64: 公式对话框事件
+    var fxBtn = w.$c.querySelector('#xlsx-fx-btn');
+    if (fxBtn) fxBtn.onclick = function (e) { e.stopPropagation(); ops.openFormulaDialog(); };
+    var formulaDialog = w.$c.querySelector('#xlsx-formula-dialog');
+    if (formulaDialog) {
+      formulaDialog.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+      var xfdCancel = w.$c.querySelector('#xfd-cancel');
+      if (xfdCancel) xfdCancel.onclick = function () { formulaDialog.classList.remove('is-open'); };
+      var xfdOk = w.$c.querySelector('#xfd-ok');
+      if (xfdOk) xfdOk.onclick = function () {
+        var selected = w.$c.querySelector('.xfd-func-item.is-active');
+        if (selected) {
+          var fnName = selected.dataset.fn;
+          var args = selected.dataset.args || '';
+          insertFormulaWithArgs(fnName, args);
+          formulaDialog.classList.remove('is-open');
+        }
+      };
+      var xfdSearchInput = w.$c.querySelector('#xfd-search-input');
+      if (xfdSearchInput) {
+        xfdSearchInput.addEventListener('input', function () {
+          filterFormulaFunctions(this.value);
+        });
+      }
+    }
+    // 点击外部关闭公式对话框
+    document.addEventListener('mousedown', function (e) {
+      if (formulaDialog && formulaDialog.classList.contains('is-open') &&
+          !formulaDialog.contains(e.target) && e.target !== fxBtn) {
+        formulaDialog.classList.remove('is-open');
+      }
+    });
+
+    // v0.64: 填充柄 (Fill Handle)
+    var fillHandle = null;
+    var fillPreview = null;
+    var isDraggingFill = false;
+    function updateFillHandle() {
+      // 移除旧的填充柄
+      if (fillHandle) { fillHandle.remove(); fillHandle = null; }
+      if (fillPreview) { fillPreview.remove(); fillPreview = null; }
+      if (!sel.start) return;
+      var r = sel.start[0], c = sel.start[1];
+      var cellEl = w.$c.querySelector('.xlsx-cell[data-r=\"' + r + '\"][data-c=\"' + c + '\"]');
+      if (!cellEl) return;
+      // 添加填充柄
+      fillHandle = document.createElement('div');
+      fillHandle.className = 'xlsx-fill-handle';
+      cellEl.classList.add('is-selected');
+      cellEl.appendChild(fillHandle);
+      // 拖拽逻辑
+      fillHandle.onmousedown = function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        isDraggingFill = true;
+        var startX = e.clientX, startY = e.clientY;
+        var startR = r, startC = c;
+        var selData = getSelectionData();
+        function onMove(ev) {
+          if (!isDraggingFill) return;
+          // 计算目标 cell
+          var table = w.$c.querySelector('#xlsx-table');
+          var cellHeight = cellEl.offsetHeight || 24;
+          var cellWidth = cellEl.offsetWidth || 80;
+          var dRow = Math.round((ev.clientY - startY) / cellHeight);
+          var dCol = Math.round((ev.clientX - startX) / cellWidth);
+          var endR = Math.max(0, Math.min(data.length - 1, startR + dRow));
+          var endC = Math.max(0, Math.min((data[0]||[]).length - 1, startC + dCol));
+          // 清除旧预览
+          if (fillPreview) { fillPreview.remove(); fillPreview = null; cellEl.classList.remove('is-selected'); }
+          if (dRow === 0 && dCol === 0) return;
+          // 绘制预览框
+          var rect = cellEl.getBoundingClientRect();
+          fillPreview = document.createElement('div');
+          fillPreview.className = 'xlsx-fill-preview';
+          // 计算预览位置（相对于表格容器）
+          var tableRect = table.getBoundingClientRect();
+          var previewTop = rect.top - tableRect.top;
+          var previewLeft = rect.left - tableRect.left;
+          var previewHeight = Math.abs(dRow) * cellHeight;
+          var previewWidth = Math.abs(dCol) * cellWidth;
+          if (dRow < 0) previewTop -= previewHeight;
+          if (dCol < 0) previewLeft -= previewWidth;
+          fillPreview.style.cssText = 'position:absolute;top:' + previewTop + 'px;left:' + previewLeft + 'px;width:' + previewWidth + 'px;height:' + previewHeight + 'px;';
+          table.appendChild(fillPreview);
+          // 高亮目标区域
+          highlightFillTarget(startR, startC, endR, endC);
+        }
+        function onUp(ev) {
+          if (!isDraggingFill) return;
+          isDraggingFill = false;
+          if (fillPreview) { fillPreview.remove(); fillPreview = null; }
+          cellEl.classList.remove('is-selected');
+          // 执行填充
+          var dRow = Math.round((ev.clientY - startY) / cellHeight);
+          var dCol = Math.round((ev.clientX - startX) / cellWidth);
+          if (dRow !== 0 || dCol !== 0) {
+            fillFromSelection(startR, startC, startR + dRow, startC + dCol, selData);
+            markDirty();
+            renderTable();
+          }
+        }
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+      };
+    }
+    function getSelectionData() {
+      if (!sel.start || !sel.end) return null;
+      var r1 = Math.min(sel.start[0], sel.end[0]);
+      var c1 = Math.min(sel.start[1], sel.end[1]);
+      var r2 = Math.max(sel.start[0], sel.end[0]);
+      var c2 = Math.max(sel.start[1], sel.end[1]);
+      var result = [];
+      for (var r = r1; r <= r2; r++) {
+        var row = [];
+        for (var c = c1; c <= c2; c++) {
+          row.push(cellStr(data[r] && data[r][c]));
+        }
+        result.push(row);
+      }
+      return { data: result, startR: r1, startC: c1, endR: r2, endC: c2 };
+    }
+    function fillFromSelection(srcR, srcC, dstR, dstC, selData) {
+      if (!selData) return;
+      var dr = dstR - srcR, dc = dstC - srcC;
+      var h = selData.data.length, w = selData.data[0].length;
+      // 确定填充方向
+      if (Math.abs(dr) >= Math.abs(dc)) {
+        // 垂直填充
+        for (var i = 1; i <= dr; i++) {
+          var tr = srcR + i;
+          if (tr >= data.length) break;
+          for (var j = 0; j < w; j++) {
+            var sc = srcC + j;
+            if (sc < (data[0]||[]).length) {
+              data[tr][sc] = fillPattern(selData.data[i % h][j], selData.data[(i % h - 1 + h) % h][j], i);
+            }
+          }
+        }
+      } else {
+        // 水平填充
+        for (var i = 1; i <= dc; i++) {
+          var tc = srcC + i;
+          if (tc >= (data[0]||[]).length) break;
+          for (var j = 0; j < h; j++) {
+            var sr = srcR + j;
+            if (sr < data.length) {
+              data[sr][tc] = fillPattern(selData.data[j][i % w], selData.data[j][(i % w - 1 + w) % w], i);
+            }
+          }
+        }
+      }
+    }
+    function fillPattern(current, previous, offset) {
+      // 尝试数字序列
+      var cn = parseFloat(current), pn = parseFloat(previous);
+      if (!isNaN(cn) && !isNaN(pn) && isFinite(cn) && isFinite(pn)) {
+        var diff = cn - pn;
+        if (diff !== 0 || cn === 0) {
+          var next = cn + diff;
+          // 如果是整数序列，保持整数
+          if (Number.isInteger(diff) && Number.isInteger(cn)) return String(Math.round(next));
+          return String(parseFloat(next.toFixed(4)));
+        }
+      }
+      // 尝试日期序列
+      var dateMatch = current.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
+      if (dateMatch && previous) {
+        var pd = previous.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
+        if (pd) {
+          var d1 = new Date(current), d2 = new Date(previous);
+          var diffDays = (d1 - d2) / (1000 * 60 * 60 * 24);
+          if (!isNaN(diffDays) && isFinite(diffDays)) {
+            var newDate = new Date(d1.getTime() + diffDays * offset * 1000);
+            return newDate.toISOString().slice(0, 10);
+          }
+        }
+      }
+      // 文字+数字后缀: Item1, Item2 → Item3
+      var textMatch = current.match(/^(.*?)(\d+)$/);
+      if (textMatch && previous) {
+        var prevMatch = previous.match(/^(.*?)(\d+)$/);
+        if (prevMatch && textMatch[1] === prevMatch[1]) {
+          var num = parseInt(textMatch[2]) + offset;
+          return textMatch[1] + num;
+        }
+      }
+      return current;
+    }
+    function highlightFillTarget(r1, c1, r2, c2) {
+      // 暂时高亮目标区域
+      for (var r = Math.min(r1,r2); r <= Math.max(r1,r2); r++) {
+        for (var c = Math.min(c1,c2); c <= Math.max(c1,c2); c++) {
+          var el = w.$c.querySelector('.xlsx-cell[data-r=\"' + r + '\"][data-c=\"' + c + '\"]');
+          if (el && !(r === r1 && c === c1)) el.style.background = 'rgba(74,128,86,0.15)';
+        }
+      }
+    }
+    // 选中变化时更新填充柄
+    var origOnFocus = null;
+    // 在 renderTable 的单元格事件之后添加填充柄更新
+    var origRenderTable = renderTable;
+    renderTable = function () {
+      origRenderTable();
+      updateFillHandle();
+    };
 
     // v0.62.6: Excel 右键菜单
     w.$c.addEventListener('contextmenu', function (e) {

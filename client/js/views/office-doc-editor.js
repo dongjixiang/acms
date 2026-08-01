@@ -201,6 +201,9 @@
         var fontWeight = el.style.fontWeight;
         var fontStyle = el.style.fontStyle;
         var textDecoration = el.style.textDecoration;
+        if (fontSize || fontWeight || fontStyle || textDecoration) {
+          console.log('[parseEditorDOM] READ:', { fontSize: fontSize, fontWeight: fontWeight, fontStyle: fontStyle, textDecoration: textDecoration });
+        }
         if (align || fontSize || fontFamily || fontWeight || fontStyle || textDecoration) {
           b.attrs.formatting = b.attrs.formatting || {};
           if (align) b.attrs.formatting.align = align;
@@ -209,9 +212,6 @@
           if (fontWeight === 'bold' || fontWeight === '700') b.attrs.formatting.bold = true;
           if (fontStyle === 'italic') b.attrs.formatting.italic = true;
           if (textDecoration && textDecoration.indexOf('underline') >= 0) b.attrs.formatting.underline = true;
-        }
-        if (fontSize || fontWeight || fontStyle || textDecoration) {
-          console.log('[parseEditorDOM] READ fontSize=', fontSize, 'fontWeight=', fontWeight, 'fontStyle=', fontStyle, 'textDecoration=', textDecoration, 'fmt=', JSON.stringify(b.attrs?.formatting));
         }
       }
       blocks.push(b);
@@ -318,12 +318,12 @@
     if (!blockData) return;
 
     e.preventDefault();
+    console.log('[handleEnter] BEFORE sync: curBlock.fmt=', JSON.stringify(curBlock.attrs?.formatting));
     syncBlocks(container, state.doc);
+    console.log('[handleEnter] AFTER sync: curBlock.fmt=', JSON.stringify(curBlock.attrs?.formatting));
     var curIdx = blockData.idx;
     var curBlock = state.doc.blocks[curIdx];
     if (!curBlock) return;
-
-    console.log('[handleEnter] curBlock:', JSON.stringify({type:curBlock.type, content:curBlock.content?.slice(0,20), fmt:curBlock.attrs?.formatting}));
 
     // 分裂当前 block：光标前的内容留在当前 block，光标后的内容去新 block
     var focusNode = sel.focusNode;
@@ -717,6 +717,7 @@ getDocument: function () { return state.doc; },
                    : (marker === 'underline') ? 'underline' : null;
         if (toggle) {
           fmt[toggle] = !fmt[toggle];
+          console.log('[toggleInline]', marker, '->', fmt[toggle], 'fmt=', JSON.stringify(fmt));
           fullRender(container, state.doc);
           notifyChange(state);
           return true;
