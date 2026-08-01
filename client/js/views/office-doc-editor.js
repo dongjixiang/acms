@@ -483,6 +483,27 @@
       }
     });
 
+    // 格式刷：点击 block 应用格式刷格式
+    var fmtPainterActive = false;
+    container.addEventListener('click', function (e) {
+      if (!fmtPainterActive) return;
+      var blockEl = e.target.closest('[data-bid]');
+      if (!blockEl) return;
+      var blockId = blockEl.dataset.bid;
+      if (wordOps.applyFormatPainter(blockId)) {
+        toast('格式已应用', 'success');
+        // 格式刷保持激活，可连续使用，按 ESC 退出
+      }
+    });
+    // ESC 退出格式刷模式
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && fmtPainterActive) {
+        fmtPainterActive = false;
+        var btn = container.querySelector('[data-fmt-painter]');
+        if (btn) btn.classList.remove('active');
+      }
+    });
+
     // ─── Instance API（向后兼容） ───
 
     function getCurrentBlockData() {
@@ -706,40 +727,98 @@ getDocument: function () { return state.doc; },
         notifyChange(state);
         return true;
       },
-      toggleInlineFormat: function (blockId, marker) {
-        // 块级格式：用 CSS style 写回 block.attrs.formatting，blockToHTML 原样输出
-        var b = state.doc.blocks.find(function (x) { return x.id === blockId; });
-        if (!b) return false;
-        b.attrs = b.attrs || {};
-        b.attrs.formatting = b.attrs.formatting || {};
-        var fmt = b.attrs.formatting;
-        var toggle = (marker === 'bold') ? 'bold'
-                   : (marker === 'italic') ? 'italic'
-                   : (marker === 'underline') ? 'underline' : null;
-        if (toggle) {
-          fmt[toggle] = !fmt[toggle];
-          fullRender(container, state.doc);
-          // 重新聚焦到原块，确保下次操作不丢失焦点
-          setTimeout(function () {
-            var el = container.querySelector('[data-bid="' + blockId + '"]');
-            if (el) { var ce = el.querySelector('.ode-ce') || el; if (ce && ce.isContentEditable) ce.focus(); }
-          }, 0);
-          notifyChange(state);
-          return true;
-        }
-        // code: 整块切换 markdown 反引号（保留旧逻辑）
-        var content = b.content;
-        if (marker === 'code') {
-          if (content.indexOf('`') === 0 && content.lastIndexOf('`') === content.length - 1) {
-            b.content = content.slice(1, -1);
-          } else {
-            b.content = '`' + content + '`';
+      // v0.64: 格式化选区内的所有 block（支持多行选区）
+      formatSelection: function (marker, singleBlockFn) {
+        var sel = window.getSelection();
+        if (sel.rangeCount && !sel.isCollapsed) {
+          var range = sel.getRangeAt(0);
+          var startBlock = getBlockData(container, range.startContainer);
+          var endBlock = getBlockData(container, range.endContainer);
+          if (!startBlock || !endBlock) return false;
+          var startIdx = startBlock.idx;
+          var endIdx = endBlock.idx;
+          if (startIdx > endIdx) { var tmp = startIdx; startIdx = endIdx; endIdx = tmp; }
+          var affectedIds = [];
+          for (var i = startIdx; i <= endIdx; i++) {
+            var block = state.doc.blocks[i];
+            if (block && singleBlockFn(block)) affectedIds.push(block.id);
           }
           fullRender(container, state.doc);
+          // 恢复选区
+          setTimeout(function () {
+            var newStart = container.querySelector('[data-bid="' + startBlock.id + '"]');
+            var newEnd = container.querySelector('[data-bid="' + endBlock.id + '"]');
+            if (newStart && newEnd) {
+              var newRange = document.createRange();
+              var startCe = newStart.querySelector('.ode-ce') || newStart;
+              var endCe = newEnd.querySelector('.ode-ce') || newEnd;
+              newRange.setStart(startCe, 0);
+              newRange.setEnd(endCe, endCe.textContent.length);
+              sel.removeAllRanges();
+              sel.addRange(newRange);
+            }
+          }, 0);
           notifyChange(state);
-          return true;
+          return affectedIds.length > 0;
         }
-        return false;
+        // 无选区 → 单块操作
+        var cur = instance.getCurrentBlockId();
+        if (!cur) return false;
+        var b = state.doc.blocks.find(function (x) { return x.id === cur; });
+        if (!b) return false;
+        return singleBlockFn(b);
+      },
+      toggleInlineFormat: function (blockId, marker) {
+        // 多段落支持：如果有选区则格式化所有选区内的块
+        return instance.formatSelection(marker, function (b) {
+          b.attrs = b.attrs || {};
+          b.attrs.formatting = b.attrs.formatting || {};
+          var fmt = b.attrs.formatting;
+          var toggle = (marker === 'bold') ? 'bold'
+                     : (marker === 'italic') ? 'italic'
+                     : (marker === 'underline') ? 'underline' : null;
+          if (toggle) {
+            fmt[toggle] = !fmt[toggle];
+            return true;
+          }
+          // code: 整块切换 markdown 反引号
+          if (marker === 'code') {
+            var content = b.content;
+            if (content.indexOf('`') === 0 && content.lastIndexOf('`') === content.length - 1) {
+              b.content = content.slice(1, -1);
+            } else {
+              b.content = '`' + content + '`';
+            }
+            return true;
+          }
+          return false;
+        });
+      },
+      // v0.64: 格式刷
+      _formatPainter: null, // { blockId, formatting }
+      activateFormatPainter: function (blockId) {
+        var b = state.doc.blocks.find(function (x) { return x.id === blockId; });
+        if (!b) return false;
+        this._formatPainter = {
+          blockId: blockId,
+          formatting: b.attrs && b.attrs.formatting ? JSON.parse(JSON.stringify(b.attrs.formatting)) : {}
+        };
+        // 视觉反馈：高亮格式刷按钮
+        var btn = container.querySelector('[data-fmt-painter]');
+        if (btn) btn.classList.add('active');
+        toast('格式刷已激活，点击目标段落应用格式', 'info');
+        return true;
+      },
+      applyFormatPainter: function (targetBlockId) {
+        if (!this._formatPainter) return false;
+        var target = state.doc.blocks.find(function (x) { return x.id === targetBlockId; });
+        if (!target) return false;
+        target.attrs = target.attrs || {};
+        target.attrs.formatting = Object.assign({}, this._formatPainter.formatting);
+        fullRender(container, state.doc);
+        // 保持格式刷激活状态，可连续应用
+        notifyChange(state);
+        return true;
       },
       rerender: function () {
         syncBlocks(container, state.doc);
