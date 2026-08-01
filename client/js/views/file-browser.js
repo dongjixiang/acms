@@ -487,7 +487,15 @@
     } else if(appName==='office-word'){
       // Word: 下载文件并保存到 office 目录，然后用 fileId 打开
       fetch('/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK).then(function(r){console.log('[FB-DEBUG] Files API response:', r.status, r.ok); return r.arrayBuffer();}).then(function(buf){
-        var b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+        // 分块处理大文件，避免栈溢出
+        var bytes = new Uint8Array(buf);
+        var b64 = '';
+        var chunkSize = 8192;
+        for (var i = 0; i < bytes.length; i += chunkSize) {
+          var chunk = bytes.subarray(i, i + chunkSize);
+          b64 += String.fromCharCode.apply(null, chunk);
+        }
+        b64 = btoa(b64);
         return fetch('/api/office/save', {
           method: 'POST',
           headers: {'Content-Type':'application/json','X-API-Key':'dev-key-001'},
