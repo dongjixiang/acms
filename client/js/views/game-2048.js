@@ -6,9 +6,11 @@
   var SIZE = 4;
   var cellSize = 80, gap = 8;
   var canvas, ctx, animFrame;
+  var _w = null;
 
   function init(w) {
     if (w.dead) return;
+    _w = w;
     grid = newArray(SIZE, 0);
     score = 0; won = false; over = false;
     spawn(); spawn();
@@ -42,7 +44,7 @@
     if (JSON.stringify(grid) !== old) {
       spawn();
       checkState();
-      render(w);
+      render(_w);
     }
   }
 
@@ -204,7 +206,7 @@
       if (map[e.key]) { e.preventDefault(); move(map[e.key]); }
     };
     document.addEventListener('keydown', handler);
-    w._keyHandler = handler;
+    _w._keyHandler = handler;
   }
 
   window._game2048Move = function(dir) { move(dir); };
