@@ -1096,6 +1096,14 @@ function openExcelEditor(w) {
   var isDirty = false;
   // v0.64: 冻结状态
   var freezeRow = -1; // -1 = 无冻结, 0 = 冻结首行
+  // v0.65: AutoFilter 状态
+  var autoFilterActive = false;
+  var autoFilterCol = -1; // 当前打开下拉的列
+  var activeFilterMenu = null;
+  // v0.65: 合并单元格
+  var mergedRanges = []; // [{r1,c1,r2,c2}, ...]
+  // v0.65: 边框
+  var cellBorders = {}; // "r-c" -> {top,bottom,left,right} 颜色
 
   function updateStatusBar() {
     var bar = w.$c.querySelector('#xlsx-status');
@@ -1281,35 +1289,162 @@ function openExcelEditor(w) {
       toast('已排序 ' + (r2 - r1 + 1) + ' 行 ' + (ascending ? '升序' : '降序'), 'success');
     },
     toggleFilter: function () {
-      // 简单筛选: 在当前选中的列上方添加/移除筛选行 (首行变成 filter row)
-      if (!sel.start) return toast('请先选中一个单元格', 'warning');
-      var filterRow = 0; // 默认第0行为筛选标题行
-      if (window._excelFilterActive) {
-        // 关闭筛选 — 恢复所有行显示
-        window._excelFilterActive = false;
-        toast('筛选已关闭', 'info');
-        renderTable();
+      // v0.65: 增强为 AutoFilter — 带下拉箭头的列筛选
+      autoFilterActive = !autoFilterActive;
+      if (autoFilterActive) {
+        toast('自动筛选已开启 — 点击列头 ▼ 筛选', 'info');
       } else {
-        window._excelFilterActive = true;
-        toast('筛选已开启 — 点击筛选行值筛选', 'info');
-        renderTable();
+        // 清除所有筛选状态
+        window._excelFilterActive = false;
+        // 恢复所有行
+        w.$c.querySelectorAll('#xlsx-table tr').forEach(function(tr){ tr.style.display = ''; });
+        toast('自动筛选已关闭', 'info');
+      }
+      renderTable();
+    },
+    clearAutoFilter: function () {
+      autoFilterActive = false;
+      window._excelFilterActive = false;
+      w.$c.querySelectorAll('#xlsx-table tr').forEach(function(tr){ tr.style.display = ''; });
+      toast('筛选已清除', 'info');
+      renderTable();
+    },
+    openFilterDropdown: function (colIdx) {
+      if (!autoFilterActive) return;
+      // 获取该列所有唯一值（跳过第一行标题行）
+      var uniqueVals = [];
+      var allVals = [];
+      for (var r = 0; r < data.length; r++) {
+        var v = cellStr(data[r] && data[r][colIdx]);
+        allVals.push(v);
+        if (uniqueVals.indexOf(v) === -1) uniqueVals.push(v);
+      }
+      // 关闭之前的
+      closeFilterMenu();
+      // 创建下拉菜单
+      var menu = document.createElement('div');
+      menu.className = 'xlsx-filter-menu';
+      menu.style.cssText = 'position:absolute;z-index:99999;background:var(--bg,#fff);border:1px solid var(--office-divider);border-radius:4px;box-shadow:0 4px 16px rgba(0,0,0,0.15);min-width:160px;max-height:300px;overflow-y:auto;padding:4px 0;';
+      // 全选/全不选
+      var allBtn = document.createElement('button');
+      allBtn.style.cssText = 'display:block;width:100%;padding:6px 12px;border:none;background:var(--office-accent-soft);text-align:left;font-size:12px;cursor:pointer;color:var(--office-primary);font-weight:600;';
+      allBtn.textContent = '✅ 全选';
+      allBtn.onclick = function() {
+        menu.querySelectorAll('.xlsx-filter-item input').forEach(function(cb){ cb.checked = true; });
+        applyAutoFilter(colIdx, null); // null = 全选
+      };
+      menu.appendChild(allBtn);
+      // 分隔线
+      var sep = document.createElement('hr');
+      sep.style.cssText = 'margin:4px 0;border:none;border-top:1px solid var(--office-divider);';
+      menu.appendChild(sep);
+      // 值列表
+      uniqueVals.forEach(function(val) {
+        var item = document.createElement('label');
+        item.style.cssText = 'display:flex;align-items:center;gap:8px;padding:5px 12px;cursor:pointer;font-size:12px;color:var(--text,#333);';
+        item.onmouseenter = function(){ this.style.background = 'var(--office-tab-hover-bg)'; };
+        item.onmouseleave = function(){ this.style.background = ''; };
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = true;
+        cb.style.cursor = 'pointer';
+        cb.onchange = function() {
+          var allChecked = true;
+          menu.querySelectorAll('.xlsx-filter-item input').forEach(function(c){ if(!c.checked) allChecked=false; });
+          allBtn.textContent = allChecked ? '✅ 全选' : '☐ 部分选中';
+        };
+        var span = document.createElement('span');
+        span.textContent = val === '' ? '(空白)' : val;
+        span.style.overflow = 'hidden';
+        span.style.textOverflow = 'ellipsis';
+        span.style.whiteSpace = 'nowrap';
+        span.style.maxWidth = '110px';
+        item.appendChild(cb);
+        item.appendChild(span);
+        menu.appendChild(item);
+      });
+      // 应用/清除按钮
+      var btnRow = document.createElement('div');
+      btnRow.style.cssText = 'display:flex;gap:4px;padding:6px 8px;border-top:1px solid var(--office-divider);';
+      var applyBtn = document.createElement('button');
+      applyBtn.style.cssText = 'flex:1;padding:4px;font-size:12px;border:1px solid var(--office-divider);border-radius:3px;background:var(--office-primary);color:#fff;cursor:pointer;';
+      applyBtn.textContent = '确定';
+      applyBtn.onclick = function() {
+        var checkedVals = [];
+        menu.querySelectorAll('.xlsx-filter-item input:checked').forEach(function(cb, i) {
+          checkedVals.push(uniqueVals[i]);
+        });
+        applyAutoFilter(colIdx, checkedVals.length === uniqueVals.length ? null : checkedVals);
+        closeFilterMenu();
+      };
+      var clearBtn = document.createElement('button');
+      clearBtn.style.cssText = 'flex:1;padding:4px;font-size:12px;border:1px solid var(--office-divider);border-radius:3px;background:var(--bg,#fff);cursor:pointer;';
+      clearBtn.textContent = '清除';
+      clearBtn.onclick = function() {
+        applyAutoFilter(colIdx, null);
+        closeFilterMenu();
+      };
+      btnRow.appendChild(clearBtn);
+      btnRow.appendChild(applyBtn);
+      menu.appendChild(btnRow);
+      document.body.appendChild(menu);
+      activeFilterMenu = menu;
+      // 定位：列头下方
+      var th = w.$c.querySelector('.xlsx-col-header[data-col="' + colIdx + '"]');
+      if (th) {
+        var rect = th.getBoundingClientRect();
+        menu.style.left = rect.left + 'px';
+        menu.style.top = (rect.bottom + 4) + 'px';
+      }
+      // 点击外部关闭
+      setTimeout(function() {
+        document.addEventListener('mousedown', function handler(e) {
+          if (!menu.contains(e.target) && e.target !== th) {
+            closeFilterMenu();
+            document.removeEventListener('mousedown', handler);
+          }
+        });
+      }, 0);
+    },
+    closeFilterMenu: function() {
+      if (activeFilterMenu) {
+        document.body.removeChild(activeFilterMenu);
+        activeFilterMenu = null;
       }
     },
-    applyFilter: function (colIdx, value) {
-      if (!window._excelFilterActive) return;
-      var cells = w.$c.querySelectorAll('.xlsx-cell');
-      cells.forEach(function(el) {
-        var c = parseInt(el.dataset.c);
-        if (c === colIdx) {
-          var td = el.parentNode;
-          var tr = td.parentNode;
-          if (value === '' || el.textContent.trim() === value) {
-            tr.style.display = '';
-          } else {
-            tr.style.display = 'none';
+    applyAutoFilter: function(colIdx, keepVals) {
+      // keepVals: null = 显示全部, [] = 不显示任何, [vals] = 只显示这些
+      var rows = w.$c.querySelectorAll('#xlsx-table tr');
+      rows.forEach(function(tr, idx) {
+        if (idx === 0) return; // 表头行不隐藏
+        var show = true;
+        if (keepVals !== null && keepVals.length > 0) {
+          var cell = tr.querySelector('.xlsx-cell[data-c="' + colIdx + '"]');
+          if (cell) {
+            show = keepVals.indexOf(cell.textContent.trim()) !== -1;
           }
         }
+        tr.style.display = show ? '' : 'none';
       });
+      // 更新列头筛选指示器
+      updateFilterIndicator(colIdx, keepVals);
+      toast(keepVals === null ? '筛选已清除' : '已筛选 ' + keepVals.length + ' 项', 'info');
+    },
+    updateFilterIndicator: function(colIdx, keepVals) {
+      var th = w.$c.querySelector('.xlsx-col-header[data-col="' + colIdx + '"]');
+      if (!th) return;
+      var badge = th.querySelector('.xlsx-filter-badge');
+      if (keepVals === null || keepVals === undefined) {
+        if (badge) badge.remove();
+      } else if (keepVals.length > 0) {
+        if (!badge) {
+          badge = document.createElement('span');
+          badge.className = 'xlsx-filter-badge';
+          th.appendChild(badge);
+        }
+        badge.textContent = keepVals.length;
+        badge.title = '已筛选 ' + keepVals.length + ' 项';
+      }
     },
     // ─── v0.64: 查找/替换 ───
     openSearch: function () {
@@ -1547,7 +1682,145 @@ function openExcelEditor(w) {
         ['portrait','landscape'].forEach(function(o){ window.__xlRibbon.setButtonActive('layout', 'xl-orient-' + o, o === orient); });
       }
     },
+    // ─── v0.65: 对齐方式 ───
+    setAlign: function(dir) {
+      if (!sel.start) return;
+      var r1 = Math.min(sel.start[0], sel.end[0]);
+      var c1 = Math.min(sel.start[1], sel.end[1]);
+      var r2 = Math.max(sel.start[0], sel.end[0]);
+      var c2 = Math.max(sel.start[1], sel.end[1]);
+      for (var r = r1; r <= r2; r++) {
+        for (var c = c1; c <= c2; c++) {
+          setCellFmt(r, c, { align: dir });
+        }
+      }
+      reapplyCellStyles(r1, c1, r2, c2);
+      markDirty();
+    },
+    setValign: function(dir) {
+      if (!sel.start) return;
+      var r1 = Math.min(sel.start[0], sel.end[0]);
+      var c1 = Math.min(sel.start[1], sel.end[1]);
+      var r2 = Math.max(sel.start[0], sel.end[0]);
+      var c2 = Math.max(sel.start[1], sel.end[1]);
+      for (var r = r1; r <= r2; r++) {
+        for (var c = c1; c <= c2; c++) {
+          setCellFmt(r, c, { valign: dir });
+        }
+      }
+      reapplyCellStyles(r1, c1, r2, c2);
+      markDirty();
+    },
+    toggleWrap: function () {
+      if (!sel.start) return;
+      var r1 = Math.min(sel.start[0], sel.end[0]);
+      var c1 = Math.min(sel.start[1], sel.end[1]);
+      var r2 = Math.max(sel.start[0], sel.end[0]);
+      var c2 = Math.max(sel.start[1], sel.end[1]);
+      for (var r = r1; r <= r2; r++) {
+        for (var c = c1; c <= c2; c++) {
+          var fmt = cellFmt(data[r] && data[r][c]);
+          fmt.wrap = !fmt.wrap;
+          setCellFmt(r, c, fmt);
+        }
+      }
+      reapplyCellStyles(r1, c1, r2, c2);
+      markDirty();
+    },
+    // ─── v0.65: 合并单元格 ───
+    mergeCells: function () {
+      if (!sel.start || !sel.end) return toast('请先选中一个区域', 'warning');
+      var r1 = Math.min(sel.start[0], sel.end[0]);
+      var c1 = Math.min(sel.start[1], sel.end[1]);
+      var r2 = Math.max(sel.start[0], sel.end[0]);
+      var c2 = Math.max(sel.start[1], sel.end[1]);
+      if (r1 === r2 && c1 === c2) return toast('合并单个单元格无意义', 'warning');
+      // 检查是否已有重叠的合并区域
+      for (var i = 0; i < mergedRanges.length; i++) {
+        var m = mergedRanges[i];
+        if (!(r2 < m.r1 || r1 > m.r2 || c2 < m.c1 || c1 > m.c2)) {
+          return toast('所选区域与已有合并区域重叠', 'warning');
+        }
+      }
+      // 清除目标区域内已有的合并
+      mergedRanges = mergedRanges.filter(function(m) {
+        return !(r2 < m.r1 || r1 > m.r2 || c2 < m.c1 || c1 > m.c2);
+      });
+      mergedRanges.push({ r1: r1, c1: c1, r2: r2, c2: c2 });
+      markDirty();
+      renderTable();
+      toast('已合并 ' + (r2-r1+1) + '×' + (c2-c1+1) + ' 单元格', 'success');
+    },
+    unmergeCells: function () {
+      if (!sel.start) return toast('请先选中合并区域中的单元格', 'warning');
+      var r = sel.start[0], c = sel.start[1];
+      mergedRanges = mergedRanges.filter(function(m) {
+        return !(r >= m.r1 && r <= m.r2 && c >= m.c1 && c <= m.c2);
+      });
+      markDirty();
+      renderTable();
+      toast('已取消合并', 'success');
+    },
+    // ─── v0.65: 边框 ───
+    setBorder: function(side, color) {
+      if (!sel.start) return;
+      var r1 = Math.min(sel.start[0], sel.end[0]);
+      var c1 = Math.min(sel.start[1], sel.end[1]);
+      var r2 = Math.max(sel.start[0], sel.end[0]);
+      var c2 = Math.max(sel.start[1], sel.end[1]);
+      for (var r = r1; r <= r2; r++) {
+        for (var c = c1; c <= c2; c++) {
+          var key = r + '-' + c;
+          if (!cellBorders[key]) cellBorders[key] = {};
+          cellBorders[key][side] = color || '#333333';
+        }
+      }
+      renderTable();
+      markDirty();
+    },
+    setAllBorders: function(color) {
+      if (!sel.start) return;
+      var r1 = Math.min(sel.start[0], sel.end[0]);
+      var c1 = Math.min(sel.start[1], sel.end[1]);
+      var r2 = Math.max(sel.start[0], sel.end[0]);
+      var c2 = Math.max(sel.start[1], sel.end[1]);
+      for (var r = r1; r <= r2; r++) {
+        for (var c = c1; c <= c2; c++) {
+          var key = r + '-' + c;
+          if (!cellBorders[key]) cellBorders[key] = {};
+          cellBorders[key].top = color || '#333333';
+          cellBorders[key].bottom = color || '#333333';
+          cellBorders[key].left = color || '#333333';
+          cellBorders[key].right = color || '#333333';
+        }
+      }
+      renderTable();
+      markDirty();
+    },
+    clearBorders: function () {
+      if (!sel.start) return;
+      var r1 = Math.min(sel.start[0], sel.end[0]);
+      var c1 = Math.min(sel.start[1], sel.end[1]);
+      var r2 = Math.max(sel.start[0], sel.end[0]);
+      var c2 = Math.max(sel.start[1], sel.end[1]);
+      for (var r = r1; r <= r2; r++) {
+        for (var c = c1; c <= c2; c++) {
+          delete cellBorders[r + '-' + c];
+        }
+      }
+      renderTable();
+      markDirty();
+    },
   };
+
+  // ─── v0.65: 辅助函数：重应用样式到选区 ───
+  function reapplyCellStyles(r1, c1, r2, c2) {
+    for (var r = r1; r <= r2; r++) {
+      for (var c = c1; c <= c2; c++) {
+        applyCellStyle(r, c);
+      }
+    }
+  }
 
   function markDirty() {
     isDirty = true;
@@ -1746,6 +2019,26 @@ function openExcelEditor(w) {
                   ],
                   action: function(v){ ops.setNumFmt(v); },
                 },
+              ]},
+              { title: '对齐', buttons: [
+                { id: 'align-l', icon: '≡', label: '左', action: function(){ ops.setAlign('left'); } },
+                { id: 'align-c', icon: '≡', label: '中', action: function(){ ops.setAlign('center'); } },
+                { id: 'align-r', icon: '≡', label: '右', action: function(){ ops.setAlign('right'); } },
+                { id: 'wrap',    icon: '↩', label: '换行', action: ops.toggleWrap },
+              ]},
+              { title: '合并', buttons: [
+                { id: 'merge',   icon: '⊞', label: '合并', action: ops.mergeCells },
+                { id: 'unmerge', icon: '⊟', label: '拆分', action: ops.unmergeCells },
+              ]},
+              { title: '边框', buttons: [
+                { id: 'border-all', icon: '▣', label: '全部',
+                  action: function(){
+                    var picker = document.createElement('input');
+                    picker.type = 'color'; picker.value = '#333333';
+                    picker.onchange = function(){ ops.setAllBorders(this.value); };
+                    picker.click();
+                  } },
+                { id: 'border-clear', icon: '⊘', label: '无', action: ops.clearBorders },
               ]},
               { title: '行列', buttons: [
                 { id: 'add-row',   icon: '➕', label: '加行', action: ops.addRow },
