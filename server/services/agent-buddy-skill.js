@@ -113,6 +113,7 @@ const CATEGORY_TOOLS = {
   'system':      ['list_users', 'get_my_profile', 'get_system_config', 'list_my_work'],
   'dashboard':   ['get_dashboard_stats', 'list_recent_events', 'get_project_health'],
   'office':      ['generate_docx', 'generate_xlsx', 'generate_pptx', 'document_edit'],
+  'project':     ['list_projects', 'create_project'],
 };
 
 // v0.66: L2 'app' category 动态加载所有 app-tool（前端应用通过 WS 暴露的能力）
