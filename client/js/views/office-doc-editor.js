@@ -420,6 +420,49 @@
     }
   }
 
+  // ─── 格式化选区内的所有 block（多段落支持）───
+  // 独立函数，不依赖 instance，在 mountEditor 内部被调用
+  function _formatSelection(marker, singleBlockFn) {
+    var sel = window.getSelection();
+    if (sel.rangeCount && !sel.isCollapsed) {
+      var range = sel.getRangeAt(0);
+      var startBlock = getBlockData(container, range.startContainer);
+      var endBlock = getBlockData(container, range.endContainer);
+      if (!startBlock || !endBlock) return false;
+      var startIdx = startBlock.idx;
+      var endIdx = endBlock.idx;
+      if (startIdx > endIdx) { var tmp = startIdx; startIdx = endIdx; endIdx = tmp; }
+      var affectedIds = [];
+      for (var i = startIdx; i <= endIdx; i++) {
+        var block = state.doc.blocks[i];
+        if (block && singleBlockFn(block)) affectedIds.push(block.id);
+      }
+      fullRender(container, state.doc);
+      // 恢复选区
+      setTimeout(function () {
+        var newStart = container.querySelector('[data-bid="' + startBlock.id + '"]');
+        var newEnd = container.querySelector('[data-bid="' + endBlock.id + '"]');
+        if (newStart && newEnd) {
+          var newRange = document.createRange();
+          var startCe = newStart.querySelector('.ode-ce') || newStart;
+          var endCe = newEnd.querySelector('.ode-ce') || newEnd;
+          newRange.setStart(startCe, 0);
+          newRange.setEnd(endCe, endCe.textContent.length);
+          sel.removeAllRanges();
+          sel.addRange(newRange);
+        }
+      }, 0);
+      notifyChange(state);
+      return affectedIds.length > 0;
+    }
+    // 无选区 → 单块操作
+    var cur = getCurrentBlockId();
+    if (!cur) return false;
+    var b = state.doc.blocks.find(function (x) { return x.id === cur; });
+    if (!b) return false;
+    return singleBlockFn(b);
+  }
+
   // ════════════════════════════════════════════
   // 主入口
   // ════════════════════════════════════════════
@@ -727,50 +770,9 @@ getDocument: function () { return state.doc; },
         notifyChange(state);
         return true;
       },
-      // v0.64: 格式化选区内的所有 block（支持多行选区）
-      formatSelection: function (marker, singleBlockFn) {
-        var sel = window.getSelection();
-        if (sel.rangeCount && !sel.isCollapsed) {
-          var range = sel.getRangeAt(0);
-          var startBlock = getBlockData(container, range.startContainer);
-          var endBlock = getBlockData(container, range.endContainer);
-          if (!startBlock || !endBlock) return false;
-          var startIdx = startBlock.idx;
-          var endIdx = endBlock.idx;
-          if (startIdx > endIdx) { var tmp = startIdx; startIdx = endIdx; endIdx = tmp; }
-          var affectedIds = [];
-          for (var i = startIdx; i <= endIdx; i++) {
-            var block = state.doc.blocks[i];
-            if (block && singleBlockFn(block)) affectedIds.push(block.id);
-          }
-          fullRender(container, state.doc);
-          // 恢复选区
-          setTimeout(function () {
-            var newStart = container.querySelector('[data-bid="' + startBlock.id + '"]');
-            var newEnd = container.querySelector('[data-bid="' + endBlock.id + '"]');
-            if (newStart && newEnd) {
-              var newRange = document.createRange();
-              var startCe = newStart.querySelector('.ode-ce') || newStart;
-              var endCe = newEnd.querySelector('.ode-ce') || newEnd;
-              newRange.setStart(startCe, 0);
-              newRange.setEnd(endCe, endCe.textContent.length);
-              sel.removeAllRanges();
-              sel.addRange(newRange);
-            }
-          }, 0);
-          notifyChange(state);
-          return affectedIds.length > 0;
-        }
-        // 无选区 → 单块操作
-        var cur = instance.getCurrentBlockId();
-        if (!cur) return false;
-        var b = state.doc.blocks.find(function (x) { return x.id === cur; });
-        if (!b) return false;
-        return singleBlockFn(b);
-      },
       toggleInlineFormat: function (blockId, marker) {
         // 多段落支持：如果有选区则格式化所有选区内的块
-        return instance.formatSelection(marker, function (b) {
+        return _formatSelection(marker, function (b) {
           b.attrs = b.attrs || {};
           b.attrs.formatting = b.attrs.formatting || {};
           var fmt = b.attrs.formatting;
