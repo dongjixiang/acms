@@ -55,8 +55,13 @@ async function launchBrowser() {
     _launching = (async () => {
     try {
       // 尝试 puppeteer 默认路径找 chrome.exe，如果缺文件则试 chrome-headless-shell
+      // v0.78: 使用用户 Chrome profile（持久化 cookies/session），绕过百度等站的人机验证
+      const os = require('os');
+      const path = require('path');
+      const userDataDir = path.join(os.homedir(), 'AppData', 'Local', 'Google', 'Chrome', 'User Data');
+
       const launchOpts = {
-        headless: true,
+        headless: 'new',
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
@@ -65,6 +70,8 @@ async function launchBrowser() {
           '--disable-background-networking',
           '--disable-background-timer-throttling',
           '--disable-sync',
+          '--disable-blink-features=AutomationControlled',
+          `--user-data-dir=${userDataDir}`,
         ],
         timeout: 30000,
       };

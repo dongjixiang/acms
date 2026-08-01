@@ -216,11 +216,20 @@ async function fetchUrlCore({ url, max_length = MAX_LENGTH_DEFAULT }) {
   // v0.52: HTTP 200 不代表正文可用。Next.js/SPA/赛事页常返回静态壳，真实数据要等 JS 渲染。
   // 旧逻辑只在 HTTP 非 2xx 时走浏览器，导致 FIFA 官方赛果页 200 + 正文为空时静默失败。
   // 正文为空，或正文很短且 HTML 明显是脚本驱动页面时，用现有 browserFetch 再取渲染后文本。
+
+  // v0.78: 新增安全验证检测 — 百度/知乎等站返回 200 但内容是人机验证页面
+  // 检测到验证关键词 → 立即 fallback 到 puppeteer（跳过内容提取）
+  const SECURITY_CHECK_KEYWORDS = [
+    '百度安全验证', '请通过安全验证', '验证页面', '人机验证',
+    'BIOC_OPTIONS', 'seccaptcha', 'bioc-static',
+  ];
+  const isSecurityCheck = SECURITY_CHECK_KEYWORDS.some(kw => html.includes(kw));
+
   const scriptCount = (html.match(/<script\b/gi) || []).length;
-  const looksDynamic = /__NEXT_DATA__|__NUXT__|data-reactroot|webpack|application\/ld\+json/i.test(html)
+  const looksDynamic = /__NEXT_DATA__|__NUXT__|data-reactroot|webpack|application\/ld+json/i.test(html)
     || scriptCount >= 8;
   const shouldBrowserRetry = !resp?.browserFallback
-    && (!fullContent || (fullContent.length < 500 && looksDynamic));
+    && (isSecurityCheck || !fullContent || (fullContent.length < 500 && looksDynamic));
 
   if (shouldBrowserRetry) {
     const browserResp = await tryBrowserFallback(url);
