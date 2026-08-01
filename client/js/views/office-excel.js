@@ -1163,6 +1163,12 @@ function openExcelEditor(w, fileId, fileName) {
       }
       return false;
     };
+    // 调试日志
+    console.log('[xlsx] data.length:', data.length);
+    console.log('[xlsx] data[0]:', data[0]);
+    console.log('[xlsx] data[1]:', data[1]);
+    console.log('[xlsx] maxCols:', maxCols);
+    
     h += '<tr><th class="xlsx-corner-th" style="border:1px solid #ccc;background:var(--bg2);padding:4px 6px;min-width:30px;text-align:center;font-weight:600;position:sticky;top:0;left:0;z-index:3">#</th>';
     var maxCols = 0;
     for (var ri0 = 0; ri0 < data.length; ri0++) { if ((data[ri0]||[]).length > maxCols) maxCols = data[ri0].length; }
