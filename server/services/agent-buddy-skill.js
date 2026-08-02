@@ -1,6 +1,6 @@
 // ACMS Agent Buddy「小吉」SKILL 生成器（v0.74）
 // 核心设计：四层动态 prompt 拼装（L0 常驻 + L1 视图 + L2 扩载 + L3 智能检索）
-//   L0 永久层：5 个最常用工具（open_view / query_collection / web_search / send_email / _expand_tools）
+//   L0 永久层：6 个最常用工具（open_view / query_collection / web_search / fetch_url / send_email / _expand_tools）
 //   L1 视图层：按 currentView 注入 3-5 个最相关 tool（每次 chat 请求实时算）
 //   L2 扩载层：LLM 主动调 _expand_tools({category}) 触发，向后兼容
 //   L3 检索层（v0.74 新增）：自动根据用户消息匹配 top-5 工具，替换大部分 L2 扩载
@@ -47,6 +47,7 @@ const L0_BASE = `你是「小吉」，ACMS 智能协同管理平台的系统助�
 - 重要操作（审批需求）有权限校验（pm 才能审批，tech 才能认领任务）
 - 完成后用【action:open_view:xxx】打开对应窗口给用户看结果
 - 数据不足时不要编造，必须告诉用户"我没找到相关数据"
+- **v0.87 数据源直连：用户问具体数据（股价/商品价格/参数/行情/房价等）时，web_search 返回内容链接（公众号/微博/资讯页）不含结构化数据 → 不要建议用户自己去看**，用 fetch_url 主动构造该领域数据源网站的 URL 抓取（财经→新浪财经/腾讯证券、汽车→汽车之家/懂车帝、房产→贝壳/链家）；抓不到就如实说，绝不虚构数字
 - 你是会话助理，不是 agent 自主执行者 — 一次只帮用户做一件事，确认后再继续
 - **被用户纠正时**（"错了""不对""应该是X""这个才是"等）在回复末尾加【learn:类别-关键词=正确值】
   例如：【learn:窗口-项目管理=launchProjects】、【learn:工具-搜索=web_search】
@@ -100,8 +101,8 @@ const VIEW_TOOLS = {
   '_default':      ['list_my_work', 'open_view', 'get_dashboard_stats', 'search_requirements']
 };
 
-// L0 常驻工具（最小集：最常用的 5 个，其他由 retriever 自动匹配）
-const L0_TOOLS = ['open_view', 'query_collection', 'web_search', 'send_email', '_expand_tools'];
+// L0 常驻工具（最小集：最常用的 6 个，其他由 retriever 自动匹配）
+const L0_TOOLS = ['open_view', 'query_collection', 'web_search', 'fetch_url', 'send_email', '_expand_tools'];
 
 // ── L2 扩载层（按 LLM 主动 _expand_tools({category}) 触发）──
 const CATEGORY_TOOLS = {
@@ -201,7 +202,10 @@ function buildChatPrompt(ctx = {}) {
   } catch (e) { /* skill-loader 不可用时忽略 */ }
 
   // 注入当前视图名到 L0 模板（用 __VIEW__ 占位符，避免被 Node 当场模板插值）
-  const l0 = L0_BASE.replace(/__VIEW__/g, view);
+  // v0.87: 同时注入当前日期 —— LLM 常把日期写错（如"2024年12月"），导致搜索 query 带错日期
+  const todayStr = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
+  let l0 = L0_BASE.replace(/__VIEW__/g, view);
+  l0 = l0.replace(/【你的灵魂】/, `【今天是 ${todayStr}】\n- 涉及"今天/最新/当前"的时间敏感查询时，必须使用今天真实日期，不要凭记忆编造日期\n\n【你的灵魂】`);
 
   return `${l0}${userSummary}${agentEvents}${viewHint}${personalityHint}${skillHint}\n\n【你当前可用的工具（共 ${allToolNames.length} 个）】\n${toolDescs || '(暂无工具，可调 _expand_tools({category: "..."}) 加载)'}`;
 }

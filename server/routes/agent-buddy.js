@@ -113,6 +113,89 @@ router.delete('/memory/:key', function(req, res) {
   } catch(e) { res.status(500).json({ error: 'INTERNAL', message: e.message }); }
 });
 
+// v0.79: 聊天历史存储 API
+// POST /api/agent-buddy/chat-history — 保存消息 { role, text }
+router.post('/chat-history', function(req, res) {
+  var userId = req.user ? (req.user.id || req.user.userId) : null;
+  if (!userId) return res.status(401).json({ error: 'UNAUTHORIZED' });
+  
+  var body = req.body || {};
+  var role = body.role === 'user' ? 'user' : 'buddy';
+  var text = (body.text || '').trim();
+  if (!text) return res.json({ ok: true });
+  
+  try {
+    var historySvc = require('../services/buddy-chat-history');
+    var msg = historySvc.appendMessage(userId, role, text, body.meta);
+    res.json({ ok: true, id: msg && msg.id });
+  } catch(e) {
+    res.status(500).json({ error: 'INTERNAL', message: e.message });
+  }
+});
+
+// GET /api/agent-buddy/chat-history — 获取历史消息
+router.get('/chat-history', function(req, res) {
+  var userId = req.user ? (req.user.id || req.user.userId) : null;
+  if (!userId) return res.status(401).json({ error: 'UNAUTHORIZED' });
+  
+  try {
+    var historySvc = require('../services/buddy-chat-history');
+    var limit = req.query.limit ? parseInt(req.query.limit) : 20;
+    var messages = historySvc.getHistory(userId, limit);
+    var summary = historySvc.getSummary(userId);
+    res.json({ ok: true, messages: messages, summary: summary });
+  } catch(e) {
+    res.status(500).json({ error: 'INTERNAL', message: e.message });
+  }
+});
+
+// POST /api/agent-buddy/chat-history/summarize — 手动触发摘要生成
+router.post('/chat-history/summarize', async function(req, res) {
+  var userId = req.user ? (req.user.id || req.user.userId) : null;
+  if (!userId) return res.status(401).json({ error: 'UNAUTHORIZED' });
+  
+  try {
+    var historySvc = require('../services/buddy-chat-history');
+    var llmAdapter = require('../services/llm-adapter');
+    var modelStore = require('../stores/model-store');
+    
+    var summaryData = await historySvc.generateSummary(userId, llmAdapter);
+    if (!summaryData) {
+      return res.json({ ok: true, summarized: false, reason: '消息不足' });
+    }
+    
+    // 调用 LLM 生成摘要
+    var model = modelStore.getDefaultGenModel();
+    if (!model) {
+      return res.status(503).json({ error: '模型未配置' });
+    }
+    
+    var result = await llmAdapter.callLLM(model.id, [
+      { role: 'system', content: summaryData.prompt },
+      { role: 'user', content: '请为以上对话生成摘要' }
+    ], { maxTokens: 300, temperature: 0.3 });
+    
+    var summaryText = typeof result === 'string' ? result : (result && result.content) || '';
+    
+    // 解析 JSON
+    var summary = null;
+    try {
+      var jsonMatch = summaryText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) summary = JSON.parse(jsonMatch[0]);
+    } catch(e) {}
+    
+    if (summary) {
+      summary.messageCount = summaryData.history.length;
+      historySvc.saveSummary(userId, summary);
+      res.json({ ok: true, summarized: true, summary: summary });
+    } else {
+      res.json({ ok: true, summarized: false, raw: summaryText });
+    }
+  } catch(e) {
+    res.status(500).json({ error: 'INTERNAL', message: e.message });
+  }
+});
+
 // 计算当前 chat 应该暴露哪些 tool（与 SKILL prompt 中列出的逐一对应）
 function computeToolNames(currentView, expandedCategories) {
   const view = currentView || '_default';
@@ -333,6 +416,55 @@ router.post('/chat', async function(req, res) {
       }
     }
 
+    // v0.79: 读取历史摘要（跨会话上下文）
+    var chatHistory = [];
+    var chatSummary = null;
+    if (userId) {
+      try {
+        var historySvc = require('../services/buddy-chat-history');
+        chatHistory = historySvc.getHistory(userId, 10); // 最近 10 条原始消息
+        chatSummary = historySvc.getSummary(userId);
+        // 检查是否需要生成新摘要
+        if (chatHistory.length >= historySvc.SUMMARY_INTERVAL && historySvc.shouldSummarize(userId)) {
+          // 异步生成摘要（不阻塞主响应）
+          setImmediate(function() {
+            historySvc.generateSummary(userId).then(function(summaryData) {
+              if (summaryData) {
+                var modelStore = require('../stores/model-store');
+                var llmAdapter = require('../services/llm-adapter');
+                var model = modelStore.getDefaultGenModel();
+                if (model) {
+                  llmAdapter.callLLM(model.id, [
+                    { role: 'system', content: summaryData.prompt },
+                    { role: 'user', content: '请生成摘要' }
+                  ], { maxTokens: 300, temperature: 0.3 })
+                    .then(function(result) {
+                      var summaryText = typeof result === 'string' ? result : (result && result.content) || '';
+                      var summary = null;
+                      try {
+                        var jsonMatch = summaryText.match(/\{[\s\S]*\}/);
+                        if (jsonMatch) summary = JSON.parse(jsonMatch[0]);
+                      } catch(e) {}
+                      if (summary) {
+                        summary.messageCount = summaryData.history.length;
+                        historySvc.saveSummary(userId, summary);
+                        console.log('[buddy-history] 摘要已生成并保存');
+                      }
+                    })
+                    .catch(function(e) { console.warn('[buddy-history] 摘要生成失败:', e.message); });
+                }
+              }
+            }).catch(function(e) { console.warn('[buddy-history] generateSummary 失败:', e.message); });
+          });
+        }
+      } catch(e) {
+        console.warn('[buddy-history] 加载历史失败:', e.message);
+      }
+    }
+    var historyHint = chatSummary
+      ? '；历史摘要：' + chatSummary.text
+      : '';
+
     // 2. 拼 SKILL system prompt
     var retrievedToolNames = [];
     try {
@@ -351,7 +483,7 @@ router.post('/chat', async function(req, res) {
       expandedCategories: previousCategories,
       retrievedTools: retrievedToolNames,  // v0.74
       userName: user ? (user.displayName || user.username || '伙伴') : (context.userName || '伙伴'),
-      userSummary: buildUserSummary(context) + actionHint + learnHint,
+      userSummary: buildUserSummary(context) + actionHint + learnHint + historyHint,
       personality: context.personality || '',
       // P2: 注入近期 Agent 事件
       agentEvents: _recentAgentEvents.slice(-3).map(function(ev) {
@@ -359,6 +491,8 @@ router.post('/chat', async function(req, res) {
         var s = (ev.payload && ev.payload.summary) || (ev.payload && ev.payload.error) || '';
         return t + ': ' + s.slice(0, 120);
       }),
+      // v0.79: 注入历史摘要
+      chatSummary: chatSummary,
     };
     var systemPrompt = buddySkill.buildChatPrompt(buddyCtx);
 
@@ -386,15 +520,25 @@ router.post('/chat', async function(req, res) {
     console.log('[agent-buddy DEBUG] hasSkills:', hasSkills, 'toolNames[0]:', toolNames[0], 'getTool result:', toolNames.length > 0 ? !!require('../services/tool-registry').getTool(toolNames[0]) : 'N/A');
 
     // 4. 构建 messages（含对话历史）
+    // v0.79: 过滤掉空 content 的 user/buddy 历史消息 — 上游 OpenAI 严格模式把空 user 视为不存在
+    //   Agnes AI 等代理报 "No user query found in messages" 即此原因
     var messages = [
       { role: 'system', content: systemPrompt }
     ];
     var history = context.history || [];
     history.forEach(function(h) {
-      if (h.role === 'user' || h.role === 'buddy') {
-        messages.push({ role: h.role === 'buddy' ? 'assistant' : 'user', content: h.text });
+      var text = (h && h.text != null) ? String(h.text) : '';
+      if (!text.trim()) return;  // 跳过空消息
+      if (h.role === 'user') {
+        messages.push({ role: 'user', content: text });
+      } else if (h.role === 'buddy') {
+        messages.push({ role: 'assistant', content: text });
       }
     });
+    // v0.79: 校验当前 user message 非空（空消息直接返回 400 给前端，不浪费 LLM 调用）
+    if (!message || !message.trim()) {
+      return res.status(400).json({ error: 'EMPTY_MESSAGE', message: '消息内容不能为空' });
+    }
     messages.push({ role: 'user', content: message });
 
     // 5. 共享 ctx（_expand_tools handler 写 expandedCategories 到引用外传）
@@ -411,26 +555,32 @@ router.post('/chat', async function(req, res) {
 
     // 6. 跑 runToolLoop（LLM 可以调 tool）
     var runtimeResult;
-    if (hasSkills) {
-      console.log('[agent-buddy DEBUG] 开始 runToolLoop, model:', model.id, 'toolNames:', JSON.stringify(toolNames));
-      runtimeResult = await runtimeExec({
-        modelId: model.id,
-        messages,
-        toolNames,
-        maxRounds: 8,
-        maxTokens: 4000,  // v0.75: 提高上限，避免 plan_execute 的 6 步骤 JSON 被截断
-        context: sharedCtx,
-        caller: 'agent-buddy',
-      });
-      console.log('[agent-buddy DEBUG] runToolLoop 完成, content:', (runtimeResult.content || '').slice(0, 100));
-    } else {
-      // 无 tools 时退回到常规 callLLM
-      var result = await callLLM(model.id, messages, {
-        maxTokens: 500,
-        temperature: 0.8,
-        caller: 'agent-buddy',
-      });
-      runtimeResult = { content: typeof result === 'string' ? result : (result?.content || '') };
+    try {
+      if (hasSkills) {
+        console.log('[agent-buddy DEBUG] 开始 runToolLoop, model:', model.id, 'toolNames:', JSON.stringify(toolNames));
+        runtimeResult = await runtimeExec({
+          modelId: model.id,
+          messages,
+          toolNames,
+          maxRounds: 8,
+          maxTokens: 4000,  // v0.75: 提高上限，避免 plan_execute 的 6 步骤 JSON 被截断
+          context: sharedCtx,
+          caller: 'agent-buddy',
+        });
+        console.log('[agent-buddy DEBUG] runToolLoop 完成, content:', (runtimeResult.content || '').slice(0, 100));
+      } else {
+        // 无 tools 时退回到常规 callLLM
+        var result = await callLLM(model.id, messages, {
+          maxTokens: 500,
+          temperature: 0.8,
+          caller: 'agent-buddy',
+        });
+        runtimeResult = { content: typeof result === 'string' ? result : (result?.content || '') };
+      }
+    } catch (loopErr) {
+      // tool loop 超时或错误，给出友好提示
+      console.warn('[agent-buddy] tool loop 异常:', loopErr.message);
+      runtimeResult = { content: '我思考得有点久，可能任务太复杂了。您能再简单说说吗？' };
     }
 
     // 7. 持久化新的 expandedCategories
@@ -488,6 +638,17 @@ router.post('/chat', async function(req, res) {
       }
     }
 
+    // v0.79: 保存聊天历史到服务端
+    if (userId && message && reply) {
+      try {
+        var historySvc = require('../services/buddy-chat-history');
+        historySvc.appendMessage(userId, 'user', message);
+        historySvc.appendMessage(userId, 'buddy', reply);
+      } catch(e) {
+        console.warn('[buddy-history] 保存历史失败:', e.message);
+      }
+    }
+
     // v0.66: 流式输出 — 当 query stream=1 时，reply 文本分块 SSE 推送，最后发 action JSON
     var isStream = req.query && req.query.stream === '1';
     if (isStream) {
@@ -521,6 +682,13 @@ router.post('/chat', async function(req, res) {
       }
       if (!res.writableEnded) res.end();
     } else {
+      // v0.79: 标记 plan_status='done'，让 fetch_url 等无 assist_* 字段的 single_action 也能停轮询
+      if (actionRequirement) {
+        try {
+          const reqStore = require('../stores/requirement-store');
+          reqStore.update(actionRequirement.id, { plan_status: 'done' });
+        } catch (e) { /* 非关键，不阻断响应 */ }
+      }
       return res.json({
         reply: reply,
         action: actionRequirement ? {
@@ -554,11 +722,32 @@ router.get('/tool-retriever/status', function(req, res) {
 /** POST /api/agent-buddy/tool-retriever/mode — 切换检索模式 */
 router.post('/tool-retriever/mode', function(req, res) {
   var newMode = req.body && req.body.mode;
-  if (newMode !== 'keyword' && newMode !== 'embedding' && newMode !== 'bge' && newMode !== 'jsembed') {
-    return res.status(400).json({ ok: false, error: 'mode must be "keyword", "bge", "jsembed", or "embedding"' });
+  if (newMode !== 'keyword' && newMode !== 'embedding' && newMode !== 'bge') {
+    return res.status(400).json({ ok: false, error: 'mode must be "keyword", "bge", or "embedding"' });
   }
   var ok = toolRetriever.setMode(newMode);
   return res.json({ ok: ok, mode: toolRetriever.getMode() });
+});
+
+/** GET /api/agent-buddy/suggestion — 获取主动建议（v0.80） */
+router.get('/suggestion', async function(req, res) {
+  var userId = req.user ? (req.user.id || req.user.userId) : 'system';
+  
+  try {
+    var suggestionSvc = require('../services/agent-buddy-suggestion');
+    
+    if (!suggestionSvc.shouldGenerate(userId)) {
+      return res.json({ ok: true, suggestions: [], reason: '建议生成冷却中' });
+    }
+    
+    var result = await suggestionSvc.generateSuggestions(userId);
+    suggestionSvc.recordSuggestionGen(userId);
+    
+    return res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[agent-buddy] 建议生成失败:', e);
+    return res.json({ ok: false, error: e.message, suggestions: [] });
+  }
 });
 
 /** POST /api/agent-buddy/tool-retriever/test — 测试检索效果 */

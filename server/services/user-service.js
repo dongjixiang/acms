@@ -145,7 +145,8 @@ function getUserFromToken(token) {
     return { id: payload.userId, username: payload.username, displayName: '游客', role: 'guest', workspaceRole: 'pm', isGuest: true };
   }
   const users = collection('users');
-  return users.findOne(u => u.id === payload.userId) || null;
+  const user = users.findOne(u => u.id === payload.userId);
+  return user ? sanitize(user) : null;  // v0.79: 补 sanitize 确保老用户有 workspaceRole
 }
 
 // 通过 ID 获取用户
@@ -162,6 +163,49 @@ function getUserById(userId) {
 function listUsers() {
   const users = collection('users');
   return users.all().map(sanitize);
+}
+
+// 更新用户信息（仅改名/改角色/改 workspaceRole）
+function updateUser(userId, updates) {
+  const users = collection('users');
+  const user = users.findOne(u => u.id === userId);
+  if (!user) return { error: 'USER_NOT_FOUND', message: '用户不存在' };
+  if (user.role === 'guest' || user.isGuest) {
+    return { error: 'CANNOT_UPDATE_GUEST', message: '游客账号不可修改' };
+  }
+  if (updates.displayName !== undefined) user.displayName = String(updates.displayName).trim() || user.displayName;
+  if (updates.role !== undefined && ['admin', 'user'].includes(updates.role)) user.role = updates.role;
+  if (updates.workspaceRole !== undefined && WORKSPACE_ROLES.has(updates.workspaceRole)) {
+    user.workspaceRole = updates.workspaceRole;
+  }
+  users.update(u => u.id === userId, user);
+  return { user: sanitize(user), message: '用户已更新' };
+}
+
+// 删除用户（软删除：只标记，不物理删除，防止误删）
+function deleteUser(userId) {
+  const users = collection('users');
+  const user = users.findOne(u => u.id === userId);
+  if (!user) return { error: 'USER_NOT_FOUND', message: '用户不存在' };
+  if (user.role === 'guest' || user.isGuest) {
+    return { error: 'CANNOT_DELETE_GUEST', message: '游客账号无法删除' };
+  }
+  users.remove(u => u.id === userId);
+  return { message: '用户已删除' };
+}
+
+// 按 ID 重置密码
+function resetPasswordById(userId, newPassword) {
+  const users = collection('users');
+  const user = users.findOne(u => u.id === userId);
+  if (!user) return { error: 'USER_NOT_FOUND', message: '用户不存在' };
+  if (user.role === 'guest' || user.isGuest) {
+    return { error: 'GUEST_NOT_RESETTABLE', message: '游客账号无需重置密码' };
+  }
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.pbkdf2Sync(newPassword, salt, 1000, 64, 'sha512').toString('hex');
+  users.update(u => u.id === userId, { passwordHash: hash, salt });
+  return { message: '密码已重置' };
 }
 
 // 创建默认 admin 账户（首次启动时调用）
@@ -190,7 +234,10 @@ function ensureDefaultAdmin() {
 function sanitize(user) {
   if (!user) return null;
   const { passwordHash, salt, ...safe } = user;
+  // v0.79: 老用户没 workspaceRole 字段时默认 'pm'（保持向后兼容）
+  //   多多/admin/早期注册用户都没有此字段，导致 create_requirement 等工具报"你是 guest"
+  if (!safe.workspaceRole) safe.workspaceRole = 'pm';
   return safe;
 }
 
-module.exports = { register, login, guestLogin, changePassword, resetPassword, getUserFromToken, getUserById, listUsers, verifyToken, ensureDefaultAdmin };
+module.exports = { register, login, guestLogin, changePassword, resetPassword, getUserFromToken, getUserById, listUsers, verifyToken, ensureDefaultAdmin, updateUser, deleteUser, resetPasswordById };

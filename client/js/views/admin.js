@@ -425,6 +425,7 @@ async function loadAdminPage() {
 </div>
     `;
     setupAdminTabs();
+    setupUsersTab();
     // 加载"运营工具"tab 的统计（异步）
     loadOpsTabStats();
     // v0.66 PR4: 加载"App-Tools 使用统计"（admin 概览 tab，平台级）
@@ -894,7 +895,6 @@ async function clearAgnesKey() {
 
 // ═══ 运营工具 Tab 辅助（想法池 + 自我改进快捷入口，从 header 移到此） ═══
 
-// 加载"运营工具"tab 内的统计摘要（独立失败容忍，避免阻塞 admin 主流程）
 // ── 用户管理 ──
 async function loadUsers() {
   var el = _byId('user-list');
@@ -910,70 +910,302 @@ async function loadUsers() {
       el.innerHTML = '<div style="color:var(--accent2);padding:12px">⚠️ ' + (data.message || '无权访问') + '</div>';
       return;
     }
-    var users = data.users || [];
+    var users = (data.users || []).filter(function(u) { return !u.isGuest && u.role !== 'guest'; });
+    var currentUser = localStorage.getItem('acms-username') || '';
     if (!users.length) {
       el.innerHTML = '<div style="color:var(--text2);padding:12px">📭 暂无用户</div>';
       return;
     }
-    var html = '<table style="width:100%;border-collapse:collapse">' +
-      '<thead><tr style="color:var(--text2);font-size:11px;text-transform:uppercase;border-bottom:1px solid var(--border)">' +
-      '<th style="padding:6px 8px;text-align:left">用户名</th>' +
-      '<th style="padding:6px 8px;text-align:left">显示名</th>' +
-      '<th style="padding:6px 8px;text-align:left">角色</th>' +
-      '<th style="padding:6px 8px;text-align:left">创建时间</th>' +
-      '<th style="padding:6px 8px;text-align:left">最后登录</th>' +
-      '</tr></thead><tbody>';
+    var html = '<table style="width:100%;border-collapse:collapse;font-size:13px">';
+    html += '<thead><tr style="color:var(--text2);font-size:11px;text-transform:uppercase;border-bottom:1px solid var(--border)">';
+    html += '<th style="padding:8px;text-align:left">用户名</th>';
+    html += '<th style="padding:8px;text-align:left">显示名</th>';
+    html += '<th style="padding:8px;text-align:left">类型</th>';
+    html += '<th style="padding:8px;text-align:left">workspace</th>';
+    html += '<th style="padding:8px;text-align:left">创建时间</th>';
+    html += '<th style="padding:8px;text-align:left">最后登录</th>';
+    html += '<th style="padding:8px;text-align:right">操作</th>';
+    html += '</tr></thead><tbody>';
     for (var i = 0; i < users.length; i++) {
       var u = users[i];
-      html += '<tr style="border-bottom:1px solid var(--bg3)">' +
-        '<td style="padding:8px">' + escHtml(u.username) + '</td>' +
-        '<td style="padding:8px">' + escHtml(u.displayName || '') + '</td>' +
-        '<td style="padding:8px"><span class="badge" style="background:color-mix(in srgb, var(--accent) 15%, transparent);color:var(--accent);padding:2px 8px;border-radius:4px;font-size:11px">' + escHtml(u.role) + '</span></td>' +
-        '<td style="padding:8px;font-size:12px;color:var(--text2)">' + (u.createdAt ? u.createdAt.slice(0, 10) : '-') + '</td>' +
-        '<td style="padding:8px;font-size:12px;color:var(--text2)">' + (u.lastLogin ? u.lastLogin.slice(0, 10) : '-') + '</td>' +
-        '</tr>';
+      var isSelf = u.username === currentUser;
+      var roleBadge = u.role === 'admin'
+        ? '<span style="background:rgba(239,68,68,0.15);color:#ef4444;padding:2px 8px;border-radius:4px;font-size:11px">管理员</span>'
+        : '<span style="background:rgba(59,130,246,0.15);color:#3b82f6;padding:2px 8px;border-radius:4px;font-size:11px">普通用户</span>';
+      var wsBadge = u.workspaceRole === 'tech' ? 'tech' : (u.workspaceRole === 'design' ? 'design' : 'pm');
+      var wsColor = u.workspaceRole === 'tech' ? '#3b82f6' : (u.workspaceRole === 'design' ? '#a855f7' : '#6b7280');
+      var created = u.createdAt ? new Date(u.createdAt).toLocaleString('zh-CN', { hour12: false }).slice(0, 16) : '-';
+      var lastLogin = u.lastLogin ? new Date(u.lastLogin).toLocaleString('zh-CN', { hour12: false }).slice(0, 16) : '从未登录';
+      html += '<tr style="border-bottom:1px solid var(--bg3)">';
+      html += '<td style="padding:8px;font-weight:500">' + escHtml(u.username) + (isSelf ? ' <span style="color:var(--text2);font-size:10px">(你)</span>' : '') + '</td>';
+      html += '<td style="padding:8px">' + escHtml(u.displayName || '') + '</td>';
+      html += '<td style="padding:8px">' + roleBadge + '</td>';
+      html += '<td style="padding:8px"><span style="color:' + wsColor + ';font-size:11px">' + escHtml(wsBadge) + '</span></td>';
+      html += '<td style="padding:8px;font-size:12px;color:var(--text2)">' + escHtml(created) + '</td>';
+      html += '<td style="padding:8px;font-size:12px;color:var(--text2)">' + escHtml(lastLogin) + '</td>';
+      html += '<td style="padding:8px;text-align:right">';
+      html += '<button onclick="showEditUserDialog(\'' + u.id + '\',\'' + escHtml(u.username) + '\',\'' + escHtml(u.displayName || '') + '\',\'' + u.role + '\',\'' + (u.workspaceRole || 'pm') + '\')" style="background:var(--bg3);border:1px solid var(--border);color:var(--text1);padding:3px 8px;border-radius:4px;font-size:11px;cursor:pointer;margin-right:4px">编辑</button>';
+      if (!isSelf) {
+        html += '<button onclick="showResetPasswordDialog(\'' + u.id + '\',\'' + escHtml(u.username) + '\')" style="background:var(--bg3);border:1px solid var(--border);color:var(--text1);padding:3px 8px;border-radius:4px;font-size:11px;cursor:pointer;margin-right:4px">重置密码</button>';
+        html += '<button onclick="confirmDeleteUser(\'' + u.id + '\',\'' + escHtml(u.username) + '\')" style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:#ef4444;padding:3px 8px;border-radius:4px;font-size:11px;cursor:pointer">删除</button>';
+      }
+      html += '</td></tr>';
     }
     html += '</tbody></table>';
     el.innerHTML = html;
   } catch(e) {
-    el.innerHTML = '<div style="color:var(--accent2);padding:12px">⚠️ 加载失败: ' + e.message + '</div>';
+    el.innerHTML = '<div style="color:var(--accent2);padding:12px">⚠️ 加载失败: ' + escHtml(e.message) + '</div>';
   }
 }
 
 function showCreateUserDialog() {
-  // 简单 prompt 式创建（后续可改成内联表单）
-  var username = prompt('请输入新用户名：');
-  if (!username || !username.trim()) return;
-  var password = prompt('请输入密码（至少4位）：');
-  if (!password || password.length < 4) { alert('密码至少4位'); return; }
-  var displayName = prompt('请输入显示名称（可选）：') || username.trim();
-
-  api('POST', '/auth/register', { username: username.trim(), password: password, displayName: displayName })
-    .then(function(data) {
-      alert('✅ 用户 ' + data.user.displayName + ' 创建成功');
+  openUserForm(null, function(data) {
+    api('POST', '/auth/register', {
+      username: data.username,
+      password: data.password,
+      displayName: data.displayName,
+      role: data.role,
+      workspaceRole: data.workspaceRole,
+    })
+    .then(function(r) {
+      toast('✅ 用户 ' + r.user.displayName + ' 创建成功', 'success');
       loadUsers();
     })
     .catch(function(err) {
-      alert('❌ 创建失败: ' + (err.data ? err.data.message : err.message));
+      toast('❌ 创建失败: ' + (err.data ? err.data.message : err.message), 'error');
+    });
+  });
+}
+
+function showEditUserDialog(userId, username, displayName, role, workspaceRole) {
+  openUserForm({ id: userId, username: username, displayName: displayName, role: role, workspaceRole: workspaceRole || 'pm' }, function(data) {
+    api('PUT', '/auth/users/' + userId, {
+      displayName: data.displayName,
+      role: data.role,
+      workspaceRole: data.workspaceRole,
+    })
+    .then(function(r) {
+      toast('✅ 用户 ' + r.user.displayName + ' 已更新', 'success');
+      loadUsers();
+    })
+    .catch(function(err) {
+      toast('❌ 更新失败: ' + (err.data ? err.data.message : err.message), 'error');
+    });
+  });
+}
+
+function showResetPasswordDialog(userId, username) {
+  var overlay = document.createElement('div');
+  overlay.className = 'confirm-overlay';
+  overlay.innerHTML =
+    '<div class="user-form-dialog ufd-reset-pwd">' +
+      '<div class="ufd-header">' +
+        '<h3>🔑 重置密码 — ' + escHtml(username) + '</h3>' +
+        '<span class="ufd-close" id="ufd-rp-close">✕</span>' +
+      '</div>' +
+      '<div class="ufd-body">' +
+        '<div class="ufd-field">' +
+          '<label>新密码<span class="ufd-req">*</span></label>' +
+          '<input type="password" id="ufd-rp-new" placeholder="至少4位" autocomplete="new-password" />' +
+          '<div class="ufd-error" id="ufd-rp-err-new"></div>' +
+        '</div>' +
+        '<div class="ufd-divider"></div>' +
+        '<div class="ufd-field">' +
+          '<label>确认密码<span class="ufd-req">*</span></label>' +
+          '<input type="password" id="ufd-rp-confirm" placeholder="再次输入" autocomplete="new-password" />' +
+          '<div class="ufd-error" id="ufd-rp-err-confirm"></div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="ufd-footer">' +
+        '<button class="btn-back" id="ufd-rp-cancel">取消</button>' +
+        '<button class="btn-primary" id="ufd-rp-submit">确认重置</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+
+  var newPwd = overlay.querySelector('#ufd-rp-new');
+  var confirmPwd = overlay.querySelector('#ufd-rp-confirm');
+  var errNew = overlay.querySelector('#ufd-rp-err-new');
+  var errConfirm = overlay.querySelector('#ufd-rp-err-confirm');
+  var submitBtn = overlay.querySelector('#ufd-rp-submit');
+
+  function clearErr(el) { el.textContent = ''; };
+  function showErr(el, msg) { el.textContent = msg; };
+
+  newPwd.addEventListener('input', function() {
+    clearErr(errNew);
+    if (confirmPwd.value) {
+      if (confirmPwd.value !== newPwd.value) showErr(errConfirm, '两次密码不一致');
+      else clearErr(errConfirm);
+    }
+  });
+  confirmPwd.addEventListener('input', function() {
+    clearErr(errConfirm);
+    if (confirmPwd.value !== newPwd.value) showErr(errConfirm, '两次密码不一致');
+  });
+
+  overlay.querySelector('#ufd-rp-close').onclick = function() { overlay.remove(); };
+  overlay.querySelector('#ufd-rp-cancel').onclick = function() { overlay.remove(); };
+  overlay.addEventListener('click', function(e) { if (e.target === overlay) overlay.remove(); });
+  document.addEventListener('keydown', function onKey(e) {
+    if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', onKey); }
+  });
+
+  submitBtn.onclick = function() {
+    var np = newPwd.value.trim();
+    var cp = confirmPwd.value.trim();
+    var valid = true;
+    if (!np || np.length < 4) { showErr(errNew, '密码至少4位'); valid = false; } else clearErr(errNew);
+    if (np !== cp) { showErr(errConfirm, '两次密码不一致'); valid = false; } else clearErr(errConfirm);
+    if (!valid) return;
+    api('POST', '/auth/users/' + userId + '/reset-password', { newPassword: np })
+      .then(function() {
+        toast('✅ 用户 ' + username + ' 密码已重置', 'success');
+        overlay.remove();
+      })
+      .catch(function(err) {
+        toast('❌ 重置失败: ' + (err.data ? err.data.message : err.message), 'error');
+      });
+  };
+  setTimeout(function() { newPwd.focus(); }, 50);
+}
+
+function openUserForm(editData, onSubmit) {
+  var overlay = document.createElement('div');
+  overlay.className = 'confirm-overlay';
+  var isEdit = !!editData;
+  var title = isEdit ? '✏️ 编辑用户 — ' + escHtml(editData.username) : '➕ 创建用户';
+  var submitLabel = isEdit ? '保存' : '创建';
+
+  overlay.innerHTML =
+    '<div class="user-form-dialog">' +
+      '<div class="ufd-header">' +
+        '<h3>' + title + '</h3>' +
+        '<span class="ufd-close" id="ufd-close">✕</span>' +
+      '</div>' +
+      '<div class="ufd-body">' +
+        '<div class="ufd-field">' +
+          '<label>用户名<span class="ufd-req">*</span></label>' +
+          '<input type="text" id="ufd-username" placeholder="英文/数字，4-20位" ' + (isEdit ? 'disabled' : '') +
+            ' value="' + escAttr(editData ? editData.username : '') + '" maxlength="20" />' +
+          '<div class="ufd-hint">' + (isEdit ? '用户名不可修改' : '用于登录，创建后不可更改') + '</div>' +
+          '<div class="ufd-error" id="ufd-err-username"></div>' +
+        '</div>' +
+        (isEdit ? '' :
+        '<div class="ufd-field">' +
+          '<label>密码<span class="ufd-req">*</span></label>' +
+          '<input type="password" id="ufd-password" placeholder="至少4位" autocomplete="new-password" maxlength="50" />' +
+          '<div class="ufd-error" id="ufd-err-password"></div>' +
+        '</div>') +
+        '<div class="ufd-field">' +
+          '<label>显示名称<span class="ufd-req">*</span></label>' +
+          '<input type="text" id="ufd-display" placeholder="用户可见的名字" maxlength="50" ' +
+            'value="' + escAttr(editData ? editData.displayName || '' : '') + '" />' +
+          '<div class="ufd-error" id="ufd-err-display"></div>' +
+        '</div>' +
+        '<div class="ufd-divider"></div>' +
+        '<div class="form-row">' +
+          '<div class="ufd-field">' +
+            '<label>账号类型</label>' +
+            '<select id="ufd-role">' +
+              '<option value="user"' + (editData && editData.role === 'user' ? ' selected' : '') + '>普通用户</option>' +
+              '<option value="admin"' + (editData && editData.role === 'admin' ? ' selected' : '') + '>管理员</option>' +
+            '</select>' +
+          '</div>' +
+          '<div class="ufd-field">' +
+            '<label>工作角色</label>' +
+            '<select id="ufd-workspace">' +
+              '<option value="pm"' + (!editData || editData.workspaceRole === 'pm' ? ' selected' : '') + '>PM</option>' +
+              '<option value="tech"' + (editData && editData.workspaceRole === 'tech' ? ' selected' : '') + '>Tech</option>' +
+              '<option value="design"' + (editData && editData.workspaceRole === 'design' ? ' selected' : '') + '>Design</option>' +
+            '</select>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="ufd-footer">' +
+        '<button class="btn-back" id="ufd-cancel">取消</button>' +
+        '<button class="btn-primary" id="ufd-submit">' + submitLabel + '</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+
+  var usernameEl = overlay.querySelector('#ufd-username');
+  var passwordEl = overlay.querySelector('#ufd-password');
+  var displayEl = overlay.querySelector('#ufd-display');
+  var roleEl = overlay.querySelector('#ufd-role');
+  var wsEl = overlay.querySelector('#ufd-workspace');
+  var errUsername = overlay.querySelector('#ufd-err-username');
+  var errPassword = overlay.querySelector('#ufd-err-password');
+  var errDisplay = overlay.querySelector('#ufd-err-display');
+  var submitBtn = overlay.querySelector('#ufd-submit');
+
+  function clearErr(el) { el.textContent = ''; };
+  function showErr(el, msg) { el.textContent = msg; };
+
+  overlay.querySelector('#ufd-close').onclick = function() { overlay.remove(); };
+  overlay.querySelector('#ufd-cancel').onclick = function() { overlay.remove(); };
+  overlay.addEventListener('click', function(e) { if (e.target === overlay) overlay.remove(); });
+  document.addEventListener('keydown', function onKey(e) {
+    if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', onKey); }
+  });
+
+  submitBtn.onclick = function() {
+    var username = usernameEl.value.trim();
+    var password = passwordEl.value;
+    var displayName = displayEl.value.trim();
+    var role = roleEl.value;
+    var workspaceRole = wsEl.value;
+    var valid = true;
+
+    if (!username || username.length < 2) { showErr(errUsername, '用户名至少2位'); valid = false; }
+    else if (!/^[a-zA-Z0-9_]+$/.test(username)) { showErr(errUsername, '只允许英文/数字/下划线'); valid = false; }
+    else clearErr(errUsername);
+
+    if (!isEdit) {
+      if (!password || password.length < 4) { showErr(errPassword, '密码至少4位'); valid = false; }
+      else clearErr(errPassword);
+    }
+
+    if (!displayName) { showErr(errDisplay, '显示名称不能为空'); valid = false; }
+    else clearErr(errDisplay);
+
+    if (!valid) return;
+
+    var data = { username: username, displayName: displayName, role: role, workspaceRole: workspaceRole };
+    if (!isEdit) data.password = password;
+    onSubmit(data);
+    overlay.remove();
+  };
+
+  setTimeout(function() { usernameEl.focus(); }, 50);
+}
+
+function confirmDeleteUser(userId, username) {
+  showConfirm('确认删除用户「' + username + '」？此操作不可恢复。')
+    .then(function(confirmed) {
+      if (!confirmed) return;
+      api('DELETE', '/auth/users/' + userId)
+        .then(function(data) {
+          toast('✅ 用户 ' + username + ' 已删除', 'success');
+          loadUsers();
+        })
+        .catch(function(err) {
+          toast('❌ 删除失败: ' + (err.data ? err.data.message : err.message), 'error');
+        });
     });
 }
 
 // 触发加载用户列表（当用户切到该 tab 时）
-function setupUsersTab() {
-  var tab = document.querySelector('#admin-tabs .tab-btn[data-tab="admin-tab-users"]');
+function setupUsersTab(root) {
+  var tabBar = root ? root.querySelector('#admin-tabs') : _byId('admin-tabs');
+  if (!tabBar) return;
+  var tab = tabBar.querySelector('.tab-btn[data-tab="admin-tab-users"]');
   if (tab) {
     tab.addEventListener('click', function() {
       setTimeout(loadUsers, 100);
     });
   }
 }
-
-// 在 loadAdminPage 末尾调用 setupUsersTab
-var origSetupAdminTabs = setupAdminTabs;
-setupAdminTabs = function(root) {
-  origSetupAdminTabs(root);
-  setupUsersTab();
-};
 
 async function loadOpsTabStats(root) {
   // v0.66 PR4 fix: 支持 root scope（与 loadAdminAppToolsStats 一致）

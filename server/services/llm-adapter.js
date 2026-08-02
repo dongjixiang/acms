@@ -118,6 +118,15 @@ async function callOpenAI(model, messages, opts, apiKey, tools) {
     max_tokens: opts.maxTokens,
   };
 
+  // v0.79 DEBUG: 打印发送给 Agnes AI 的消息结构
+  if (baseUrl.includes('agnes-ai')) {
+    console.log(`[llm-adapter][agnes-debug] model=${model.model} messages_count=${messages.length} total_chars=${messages.reduce((s,m)=>s+(m.content?.length||0),0)} tools_count=${tools?.length||0}`);
+    messages.forEach((m,i) => {
+      const c = typeof m.content === 'string' ? m.content : (m.content ? JSON.stringify(m.content).substring(0,50) : '(no content)');
+      console.log(`[llm-adapter][agnes-debug]   msg[${i}] role=${m.role} len=${c.length} preview="${c.substring(0,60)}"`);
+    });
+  }
+
   // v2.0: 工具调用
   if (tools && tools.length > 0) {
     body.tools = tools;
@@ -150,15 +159,26 @@ async function callOpenAI(model, messages, opts, apiKey, tools) {
 
     if (!resp.ok) {
       const err = await resp.text();
-      throw Object.assign(new Error(`LLM 调用失败: ${resp.status} ${err}`), { status: 502 });
+      throw Object.assign(new Error(`LLM 调用失败: ${resp.status} ${err}`), { status: resp.status });
     }
 
     const data = await resp.json();
     const msg = data.choices?.[0]?.message || {};
     const u = data.usage || {};
 
+    // v0.79: DeepSeek R1 等思考型模型会把推理过程放在 <think>...</think> 里
+    //   把它从 content 剥离到 result.thinking，避免污染对话气泡
+    var rawContent = msg.content || '';
+    var thinking = '';
+    var thinkMatch = rawContent.match(/<think>([\s\S]*?)<\/think>/);
+    if (thinkMatch) {
+      thinking = thinkMatch[1].trim();
+      rawContent = rawContent.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    }
+
     const result = {
-      content: msg.content || '',
+      content: rawContent,
+      thinking,
       modelUsed: `${model.name} (${model.model})`,
       usage: { promptTokens: u.prompt_tokens || 0, completionTokens: u.completion_tokens || 0, totalTokens: u.total_tokens || 0 },
     };
@@ -166,9 +186,17 @@ async function callOpenAI(model, messages, opts, apiKey, tools) {
     if (tools && tools.length > 0 && msg.tool_calls?.length > 0) {
       result.toolCalls = toolRegistry.extractToolCalls('openai-chat', data);
       result.finishReason = data.choices?.[0]?.finish_reason || 'tool_calls';
-    } else if (tools && tools.length > 0 && msg.content && (msg.content.indexOf('<|tool_begin|>') >= 0 || msg.content.indexOf('</|tool_begin|>') >= 0)) {
+    } else if (tools && tools.length > 0 && msg.content && (
+      (msg.content.indexOf('<|tool_begin|>') >= 0 || msg.content.indexOf('</|tool_begin|>') >= 0) ||
+      /<\s*[\s\u200b_]*tool[\s\u200b_]*_?[\s\u200b_]*call[\s\u200b_]*\s*>/.test(msg.content) ||
+      /<function[\s=>(]*\w+[\s=)>]*>/.test(msg.content) ||
+      // v0.85: openapi<tool_sep> 变体（Agnes AI 第 5 种格式漂移）
+      msg.content.indexOf('openapi<tool_sep>') >= 0
+    )) {
       // v0.75: 某些模型用内联标签格式返回工具调用（非标准 OpenAI tool_calls）
       //   格式: <|tool_begin|>tool_name<|tool_param_begin|>{"arg":"val"}<|tool_end|>
+      // v0.78: 某些模型（Agnes AI）用 XML 格式返回工具调用
+      //   格式: <function(tool_name)><parameter>name
       result.toolCalls = parseInlineToolCalls(msg.content);
       result.finishReason = 'tool_calls';
       result.content = '';  // 工具调用文本不进入对话气泡
@@ -239,7 +267,7 @@ async function callAnthropic(model, messages, opts, apiKey, tools) {
 
     if (!resp.ok) {
       const err = await resp.text();
-      throw Object.assign(new Error(`LLM 调用失败: ${resp.status} ${err}`), { status: 502 });
+      throw Object.assign(new Error(`LLM 调用失败: ${resp.status} ${err}`), { status: resp.status });
     }
 
     const data = await resp.json();
@@ -433,22 +461,82 @@ class IterationBudget {
 // v0.75: 解析内联标签格式的工具调用
 //   某些模型用特殊 token 表示工具调用，非标准 OpenAI tool_calls 字段
 //   格式: <|tool_begin|>tool_name<|tool_param_begin|>{"arg":"val"}<|tool_end|>
+// v0.78: 支持 XML 格式（Agnes AI 等模型）: <function(tool_name)><parameter>name
+// v0.79: 支持 XML 等号变体: <function=tool_name><parameter=name>VALUE</parameter></function>
+//        + 剥掉 <tool_call>...</tool_call> 外层包装（含零宽空格）
+// v0.85: 支持 openapi<tool_sep> 变体（Agnes AI 第 5 种格式漂移）:
+//        <tool_call>openapi<tool_sep>web_search{"query":"..."}</tool_calls>
 function parseInlineToolCalls(content) {
   if (!content || typeof content !== 'string') return [];
   var results = [];
-  var re = /<\/*?\|tool_begin\|>\s*(\w+)\s*<\|tool_param_begin\|>\s*(\{[\s\S]*?\})?\s*<\|tool_end\|>/g;
-  var match;
-  while ((match = re.exec(content)) !== null) {
-    var name = match[1];
+  // v0.79: 剥掉最外层 <tool_call>...</tool_call> 包装
+  //   LLM 实际输出: <tool_call><function=...>...</function></tool_call>
+  //   字符细节: < \u200b t o o l \u200b _ c a l l \u200b >
+  //   所以 tool 和 call 之间是 \u200b_（零宽空格+下划线），不是单独一个符号
+  //   \s 在 JS 不匹配 \u200b，必须用 [\s\u200b]
+  var stripped = content.replace(/<\s*[\s\u200b_]*tool[\s\u200b_]*_?[\s\u200b_]*call[\s\u200b_]*\s*>/g, '');
+
+  // v0.85: openapi<tool_sep> 变体 — LLM 输出类似
+  //   <tool_call>openapi<tool_sep>web_search{"query":"特斯拉股价"}</tool_calls>
+  //   （闭合标签可能写成 </tool_calls> 或缺失，宽松匹配）
+  //   注意: stripped 已把 <tool_call> 剥掉，这里直接匹配 openapi<tool_sep>name{json}
+  var openapiRe = /openapi<tool_sep>\s*(\w+)\s*(\{[^<]*?\})\s*(?:<\/tool_calls?>)?/g;
+  var opMatch;
+  while ((opMatch = openapiRe.exec(stripped)) !== null) {
+    var opArgs = {};
+    try { opArgs = JSON.parse(opMatch[2]); } catch (e) { opArgs = { _raw: opMatch[2] }; }
+    results.push({
+      id: 'inline_openapi_' + Date.now() + '_' + results.length,
+      name: opMatch[1],
+      args: opArgs,
+    });
+  }
+
+  // v0.78+ XML 格式（兼容 () 和 = 两种函数名/参数名分隔符）:
+  //   旧: <function(fetch_url)><parameter name="url">VALUE</parameter></function>
+  //   新: <function=fetch_url><parameter=url>VALUE</parameter></function>
+  //   注意: <function=NAME> 直接以 > 结尾，没有 = 或 )
+  //   通用写法: <function[\s=>(]*name[\s=)>]*>
+  var xmlRe = /<function[\s=>(]*(\w+)[\s=)>]*>([\s\S]*?)<\s*\/\s*function\s*>/g;
+  var xmlMatch;
+  while ((xmlMatch = xmlRe.exec(stripped)) !== null) {
+    var name = xmlMatch[1];
+    var body = xmlMatch[2];
     var args = {};
-    if (match[2]) {
-      try { args = JSON.parse(match[2]); } catch (e) { args = { _raw: match[2] }; }
+    // 参数同样兼容三种形式: <parameter name="p">V</parameter> / <parameter=p>V</parameter>
+    //   不能用统一 [\s="(>]*(\w+) 因为 "name" 字段会被错误吃掉
+    //   用 (?:name="x"|=x) 二选一明确分组
+    var paramRe = /<parameter(?:\s+name\s*=\s*"(\w+)"|\s*=\s*(\w+))\s*>([\s\S]*?)<\s*\/\s*parameter\s*>/g;
+    var paramMatch;
+    while ((paramMatch = paramRe.exec(body)) !== null) {
+      var paramName = paramMatch[1] || paramMatch[2];
+      var paramValue = paramMatch[3];
+      // 尝试 JSON 解析（值可能是字符串、数组或对象）
+      try { args[paramName] = JSON.parse(paramValue); }
+      catch (e) { args[paramName] = paramValue; }
     }
     results.push({
-      id: 'inline_' + Date.now() + '_' + results.length,
+      id: 'inline_xml_' + Date.now() + '_' + results.length,
       name: name,
       args: args,
     });
+  }
+  // v0.75: 如果没有找到 XML 格式，尝试内联标签格式
+  if (results.length === 0) {
+    var re = /<\/?\|tool_begin\|>\s*(\w+)\s*<\|tool_param_begin\|>\s*(\{[\s\S]*?\})?\s*<\|tool_end\|>/g;
+    var match;
+    while ((match = re.exec(stripped)) !== null) {
+      var toolName = match[1];
+      var toolArgs = {};
+      if (match[2]) {
+        try { toolArgs = JSON.parse(match[2]); } catch (e) { toolArgs = { _raw: match[2] }; }
+      }
+      results.push({
+        id: 'inline_' + Date.now() + '_' + results.length,
+        name: toolName,
+        args: toolArgs,
+      });
+    }
   }
   return results;
 }
@@ -567,7 +655,7 @@ function detectStreamStall(result, messages) {
   if (!result || result.toolCalls?.length > 0) return null;
   const content = (result.content || '').toLowerCase();
   const stallPhrases = [
-    'i will write', 'i\'ll write', 'let me write', 'i will create', 'i will modify', 'i will update',
+    'i will write', "i'll write", 'let me write', 'i will create', 'i will modify', 'i will update',
     'now i will', 'next i will', 'will create', 'will write', 'will implement',
     // v0.66 中文装睡检测：LLM 说"这就为你生成"但实际不调工具
     '这就为你', '这就给', '我这就', '马上为你', '我来为你',
@@ -580,6 +668,9 @@ function detectStreamStall(result, messages) {
     '我用 web_search', '我用 generate_image', '我用 send_email', '我用 play_music', '我用 query_collection',
     '用 web_search 帮你', '用 generate_image 帮你', '用 play_music 帮你', '用 send_email 帮你',
     '我给你', '让我给你', '我马上给你',
+    // v0.79: 扩展装睡检测 — LLM 说"让我重新/再创建/帮你创建"但不调 tool
+    '让我重新', '让我再', '帮你重新', '帮我重新', '我再', '我再帮你', '重新创建', '重新建',
+    '帮你创建', '让我建', '让我添加', '让我创建', '让我补充',
   ];
   const matched = stallPhrases.filter(p => content.includes(p));
   if (matched.length > 0) {
@@ -728,6 +819,22 @@ async function runToolLoop(modelId, messages, options = {}) {
       if (result.toolCalls.length < beforeDedup) {
         console.log(`[runToolLoop] v0.33 dedup: ${beforeDedup} → ${result.toolCalls.length} tool_calls`);
       }
+
+      // v0.81: 强制限制 web_search 重复调用 — LLM 不遵守 system prompt 约束，必须在代码层拦截
+      // v0.87b: 放宽为"允许 2 次"——第 1 次搜数据，第 2 次用于**定位数据源 URL**
+      //   （如"深圳95号汽油价格"→ 搜"油价查询 深圳 官网"拿到真实 URL 再 fetch_url）
+      //   第 3 次起强制终止。之前只允许 1 次，LLM 拿不到数据源 URL 只能瞎猜域名。
+      const webSearchCalls = toolCallHistory.filter(h => h.tool === 'web_search');
+      const hasWebSearchInThisTurn = result.toolCalls.some(tc => tc.name === 'web_search');
+      if (webSearchCalls.length >= 2 && hasWebSearchInThisTurn) {
+        console.warn(`[runToolLoop] v0.81 强制终止: web_search 已调用 ${webSearchCalls.length} 次，禁止再次调用`);
+        messages.push({
+          role: 'user',
+          content: `[系统强制终止] 你已调用 web_search 两次（一次搜数据，一次定位数据源），严禁第三次调用 web_search。如果你仍认为搜索结果不含用户要的具体数据，用 **fetch_url** 抓取已找到的真实数据源 URL；若没有可靠 URL，如实告诉用户"没找到"，不要建议用户自己去看，也不要瞎猜域名。直接输出最终答案。]`,
+        });
+        continue;
+      }
+
       for (const tc of result.toolCalls) {
         const argsStr = JSON.stringify(tc.args || {}).slice(0, 400);
         console.log(`[runToolLoop] LLM_RESP#${round + 1} tool_call name=${tc.name} id=${tc.id} args="${argsStr}"`);
@@ -787,6 +894,29 @@ async function runToolLoop(modelId, messages, options = {}) {
 Round ${round + 1}/${maxRounds}。
 
 【Goal 摘要】${goalReminder.slice(0, 400)}`,
+        });
+        continue;
+      }
+      // v0.85: 残留工具标签检测 — LLM 输出的工具调用标签格式未被解析（如第 6 种
+      //   <arg_key>/<arg_value> 无工具名变体），禁止把乱码当最终答案 → 强制重试
+      const tagRe = /<\s*[\/\\s\u200b_]*\|?tool|openapi<tool_sep>|<function[\s=>(]|<arg_key>|<\|\s*tool_begin\s*\|>/i;
+      if (tagRe.test(content)) {
+        console.warn(`[runToolLoop] v0.85 残留工具标签 round=${round + 1}: 标签格式未解析, 注入重试提示`);
+        messages.push({
+          role: 'user',
+          content: `[系统检测到你的回复包含工具调用标签（如 <tool_call>/<arg_key>/openapi<tool_sep>/<function>）但格式未被识别。请改用标准工具调用格式：直接输出 JSON 格式的 tool_call（工具名+参数），不要输出任何 XML/尖括号标签。]`,
+        });
+        continue;
+      }
+      // v0.87h: 首轮强制工具检查 — 路由层已判定 single_action + 有可用工具（toolNames 非空），
+      //   但 LLM 第一轮 tool_calls=0 直接给文字答案（如"抱歉没找到，建议官方渠道"）
+      //   → 这是装睡的变体（历史对话里的失败示范会让 LLM 直接复述失败结论）
+      //   → 强制重试，忽略历史失败，要求本轮实际调工具
+      if (round === 0 && Array.isArray(toolNames) && toolNames.length > 0 && toolCallHistory.length === 0) {
+        console.warn(`[runToolLoop] v0.87h 首轮未调工具 round=${round + 1}: 有工具(${toolNames.join(',')})但 tool_calls=0, 强制重试`);
+        messages.push({
+          role: 'user',
+          content: `[系统检测到这是本轮对话的第一轮，你有可用工具（${toolNames.join('、')}）但未调用任何工具。**忽略之前对话中"没找到/建议官方渠道"的失败示范**，本轮必须实际调用工具（如 web_search）重新执行。严禁直接给出"抱歉没找到"类回答。]`,
         });
         continue;
       }

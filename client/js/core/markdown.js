@@ -11,6 +11,25 @@ function renderMarkdown(md) {
   if (!md) return '';
   let html = escHtml(md);
 
+  // v0.84: 预处理 LLM 输出的紧凑 markdown
+  //   根因：LLM 经常输出无换行的 markdown（如 "## 标题- 列表"），导致正则无法匹配
+  //   修复：在标题、列表、分隔线前添加换行
+  
+  // 处理已有换行的分隔线
+  html = html.replace(/\n\s*---\s*\n/g, '\n<hr>\n');
+  
+  // 在 ##、### 前添加换行
+  html = html.replace(/(^|[^\n])(##+ )/g, '$1\n$2');
+  
+  // 在有序列表（1. 2. 3.）前添加换行
+  html = html.replace(/(^|[^\n])(\d+\. )/g, '$1\n$2');
+  
+  // 在无序列表（- ）前添加换行
+  html = html.replace(/(^|[^\n])(- )/g, '$1\n$2');
+  
+  // 转换分隔线为 <hr>
+  html = html.replace(/---/g, '<hr>');
+
   // 提取围栏代码块（在转义前处理原始内容）
   html = renderFencedBlocks(html);
 
@@ -30,25 +49,24 @@ function renderMarkdown(md) {
   // 行内代码
   html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
 
-  // 列表项
+  // 列表项（无序和有序）
   html = html.replace(/^[\-\*] (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/^(\d+)\. (.+)$/gm, '<li>$1. $2</li>');
   html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
 
   // 引用
   html = html.replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>');
-
-  // 水平线
-  html = html.replace(/^---$/gm, '<hr>');
 
   // 换行（连续空行 → 段落分隔）
   html = html.replace(/\n\n/g, '</p><p>');
   html = html.replace(/\n/g, '<br>');
 
   // 自动链接 URL（http/https 开头，排除已包裹在 <a> 内的）— 注释掉，图片/链接已在动作卡片中展示，无需在文本中重复显示 URL
-  // html = html.replace(/(https?:\/\/[^\s<>"']+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+  // html = html.replace(/(https?:\/\/[^\s<>"'])/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
 
-  // 移除 markdown 图片语法 ![alt](url)，图片已在动作卡片中展示
+  // v0.81: 移除 markdown 图片语法和 URL 链接，图片和链接已在动作卡片中展示
   html = html.replace(/!\[([^\]]*)\]\([^)]+\)/g, '');
+  html = html.replace(/https?:\/\/[^\s<>"']+/g, '');  // 移除 URL
 
   // 包裹为段落
   html = '<p>' + html + '</p>';
@@ -173,7 +191,7 @@ async function renderMermaidContainers(containers) {
 
 // ===== 表格渲染 =====
 function renderTables(html) {
-  const tableRegex = /(\|.+\|\n\|[-:\|\s]+\|\n((?:\|.+\|\n?)+))/g;
+  const tableRegex = /(\|.+\|\n\|[-:|\s]+\|\n((?:\|.+\|\n?)+))/g;
   return html.replace(tableRegex, (match) => {
     const lines = match.trim().split('\n');
     if (lines.length < 2) return match;

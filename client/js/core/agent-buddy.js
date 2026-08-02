@@ -46,20 +46,29 @@
   // ── 内部状态 ──
 
   var FACES = {
-    happy:     { face: '◕‿◕', css: 'fc-happy',     label: '开心' },
-    thinking:  { face: '◔_◔', css: 'fc-thinking',  label: '思考' },
-    surprised: { face: '⊙_⊙', css: 'fc-surprised', label: '惊讶' },
-    excited:   { face: '≧◡≦', css: 'fc-excited',   label: '兴奋' },
-    caring:    { face: '◕︵◕', css: 'fc-caring',    label: '担心' },
-    awkward:   { face: '◕▽◕', css: 'fc-awkward',   label: '尴尬' },
-    sleepy:    { face: '◕_◕', css: 'fc-sleepy',    label: '困了' },
-    confused:  { face: '◔_◕', css: 'fc-confused',  label: '疑惑' },
-    lol:       { face: '≧▽≦', css: 'fc-lol',       label: '大笑' },
-    love:      { face: '♥‿♥', css: 'fc-love',      label: '喜欢' },
-    wink:      { face: '◕‿◕', css: 'fc-wink',      label: '眨眼' },
-    determined:{ face: '◕_◕', css: 'fc-determined',label: '认真' },
-    idea:      { face: '◕‿◕', css: 'fc-idea',      label: '有主意' },
-    content:   { face: '◕‿◕', css: 'fc-content',   label: '安心' },
+    happy:     { face: '◕‿◕', css: 'fc-happy',      label: '开心' },
+    thinking:  { face: '◔_◔', css: 'fc-thinking',   label: '思考' },
+    surprised: { face: '⊙_⊙', css: 'fc-surprised',  label: '惊讶' },
+    excited:   { face: '≧◡≦', css: 'fc-excited',    label: '兴奋' },
+    caring:    { face: '◕︵◕', css: 'fc-caring',     label: '担心' },
+    awkward:   { face: '◕▽◕', css: 'fc-awkward',    label: '尴尬' },
+    sleepy:    { face: '◕_◕', css: 'fc-sleepy',     label: '困了' },
+    confused:  { face: '◔_◕', css: 'fc-confused',   label: '疑惑' },
+    lol:       { face: '≧▽≦', css: 'fc-lol',        label: '大笑' },
+    love:      { face: '♥‿♥', css: 'fc-love',       label: '喜欢' },
+    wink:      { face: '◕‿◕', css: 'fc-wink',       label: '眨眼' },
+    determined:{ face: '◕_◕', css: 'fc-determined', label: '认真' },
+    idea:      { face: '◕‿◕', css: 'fc-idea',       label: '有主意' },
+    content:   { face: '◕‿◕', css: 'fc-content',    label: '安心' },
+    // v0.79: 场景化表情
+    success:   { face: '◕‿◕✨', css: 'fc-success',   label: '成功' },  // 工具调用成功
+    error:     { face: '◕‿◕💥', css: 'fc-error',     label: '失败' },  // 工具调用失败
+    searching: { face: '◔‿◔', css: 'fc-searching',   label: '搜索' },  // 搜索中
+    creating:  { face: '⚒‿⚒', css: 'fc-creating',   label: '创作' },  // 生成内容
+    working:   { face: '◕‿◕⚙', css: 'fc-working',    label: '工作中' }, // 执行中
+    waiting:   { face: '◕_◕', css: 'fc-waiting',     label: '等待' },   // 等待确认
+    celebrate: { face: '🎉‿🎉', css: 'fc-celebrate',  label: '庆祝' },  // 任务完成
+    worried:   { face: '◕︶◕', css: 'fc-worried',     label: '担心' },   // 异常检测
   };
 
   var _score = 0;
@@ -79,6 +88,10 @@
   var _proactiveCooldown = 0;      // 主动弹出冷却时间戳
   var _proactiveTimer = null;      // 主动检查定时器
   var _knownPackages = [];         // [{ name, title, icon, category }]
+  var _streamSpeed = 30;           // v0.80: 流式速度（ms/块）
+  var _streamPaused = false;       // v0.80: 流式暂停状态
+  var _streamDone = false;         // v0.80: 流式完成状态
+  var _streamAbortController = null; // v0.80: 流式中止控制器
 
   // ── L1：用户记忆（小吉知道什么）──
 
@@ -390,6 +403,8 @@
         '<span class="ap-avatar">◕‿◕</span>' +
         '<span class="ap-title">小吉</span>' +
         '<span class="ap-mode-badge" id="ap-mode-badge" title="点我切换检索模式">🔍</span>' +
+        '<button class="ap-stream-btn" id="ap-stream-pause" title="暂停/继续流式">⏸</button>' +
+        '<button class="ap-stream-btn" id="ap-stream-speed" title="调节速度">⚡</button>' +
         '<button class="ap-close">✕</button>' +
       '</div>' +
       '<div class="ap-messages" id="ap-messages">' +
@@ -432,6 +447,61 @@
       sendBtn.addEventListener('click', function(e) {
         e.stopPropagation();
         doSend();
+      });
+    }
+
+    // v0.80: 流式控制按钮
+    var pauseBtn = _panelEl.querySelector('#ap-stream-pause');
+    var speedBtn = _panelEl.querySelector('#ap-stream-speed');
+
+    // 暴露给全局供按钮调用
+    window.buddyStreamPause = function() {
+      _streamPaused = true;
+    };
+    window.buddyStreamResume = function() {
+      _streamPaused = false;
+    };
+    window.buddyStreamSetSpeed = function(speed) {
+      _streamSpeed = Math.max(10, Math.min(100, speed));
+    };
+    window.buddyStreamStop = function() {
+      if (_streamAbortController) {
+        _streamAbortController.abort();
+      }
+      _streamDone = true;
+      _streamPaused = false;
+      if (pauseBtn) {
+        pauseBtn.textContent = '⏸';
+        pauseBtn.title = '暂停流式';
+      }
+    };
+
+    if (pauseBtn) {
+      pauseBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        if (_streamPaused) {
+          window.buddyStreamResume();
+          _streamPaused = false;
+          pauseBtn.textContent = '⏸';
+          pauseBtn.title = '暂停流式';
+        } else {
+          window.buddyStreamPause();
+          _streamPaused = true;
+          pauseBtn.textContent = '▶';
+          pauseBtn.title = '继续流式';
+        }
+      });
+    }
+    if (speedBtn) {
+      var speeds = [10, 20, 30, 50, 100];
+      var speedIndex = 2; // 默认 30ms
+      speedBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        speedIndex = (speedIndex + 1) % speeds.length;
+        var ms = speeds[speedIndex];
+        window.buddyStreamSetSpeed(ms);
+        speedBtn.title = '速度: ' + ms + 'ms';
+        speedBtn.textContent = ms <= 20 ? '⚡' : ms <= 50 ? '🔥' : '🐢';
       });
     }
 
@@ -485,6 +555,25 @@
         }
       }, 800);
     }
+    // v0.79: 处理 _action: 'enter_project'（create_project / create_requirement 返回）
+    if (action._action === 'enter_project' && action._actionArg) {
+      setTimeout(function() {
+        var projId = action._actionArg.projectId;
+        var projName = action._actionArg.projectName || projId.replace('proj_', '');
+        var openView = action._actionArg.openView;
+        if (typeof enterProject === 'function') {
+          enterProject({ id: projId, name: projName });
+          // 如果需要打开特定视图，延迟后再打开
+          if (openView) {
+            setTimeout(function() {
+              if (window.ACMSWin && ACMSWin.open) {
+                ACMSWin.open(openView);
+              }
+            }, 500);
+          }
+        }
+      }, 800);
+    }
     startActionPolling(action.requirementId);
   }
 
@@ -533,12 +622,15 @@
     return urls;
   }
 
-  function isNonPlanTerminal(state) {
-    // v0.75: 有 plan 时走 plan 状态，不用单字段判断（避免第 1 张图做完就停轮询）
-    var plan = state && state.plan;
-    if (plan && Array.isArray(plan.steps) && plan.steps.length > 0) {
-      return ['done', 'failed', 'partial_failed'].indexOf(plan.status) >= 0;
-    }
+function isNonPlanTerminal(state) {
+  // v0.79: 顶层 planStatus='done' 表示 LLM tool loop 已完成（无 plan 的 single_action 模式）
+  //   例: fetch_url 这种信息获取型工具，结果不写 assist_* 字段
+  //   但 action card 不能永远显示"正在准备动作…"，必须认 planStatus
+  if (state && state.planStatus === 'done') return true;
+  var plan = state && state.plan;
+  if (plan && Array.isArray(plan.steps) && plan.steps.length > 0) {
+    return ['done', 'failed', 'partial_failed'].indexOf(plan.status) >= 0;
+  }
     var img = state && state.assistImage;
     var imgSearch = state && state.assistImageSearch;
     var music = state && state.assistMusic;
@@ -664,7 +756,32 @@
               + '<img src="' + thumb + '" alt="' + title + '" loading="lazy" draggable="true" data-imgurl="' + thumb + '"></a>';
           }).join('')
         + '</div>';
-    }var pending = state.pendingEmail;
+    }
+
+    // v0.79: 工具调用详情摘要
+    var toolSummaryHtml = '';
+    if (steps.length > 0) {
+      var toolDetails = steps.map(function(step) {
+        var statusIcon = step.status === 'done' ? '✓' : (step.status === 'failed' ? '✗' : '◌');
+        var toolName = step.tool || 'unknown';
+        var resultSummary = '';
+        if (step.result) {
+          var r = step.result;
+          if (r.asset_path) resultSummary = '→ ' + r.asset_path.split('/').pop();
+          else if (r.file_ids && r.file_ids.length > 0) resultSummary = '→ ' + r.file_ids.length + ' 个文件';
+          else if (r.url) resultSummary = '→ ' + r.url.slice(0, 40) + (r.url.length > 40 ? '...' : '');
+          else resultSummary = '→ ok';
+        }
+        return '<div class="ap-tool-detail">'
+          + '<span class="ap-tool-status">' + statusIcon + '</span>'
+          + '<span class="ap-tool-name">' + escHtml(toolName) + '</span>'
+          + '<span class="ap-tool-result">' + escHtml(resultSummary) + '</span>'
+          + '</div>';
+      }).join('');
+      toolSummaryHtml = '<div class="ap-tool-summary">' + toolDetails + '</div>';
+    }
+
+    var pending = state.pendingEmail;
     var emailHtml = '';
     if (pending) {
       var attachments = Array.isArray(pending.attachments) ? pending.attachments : [];
@@ -683,10 +800,27 @@
 
     var terminal = ['done', 'failed'].indexOf(plan.status) >= 0
       || isNonPlanTerminal(state);
+
+    // v0.79: 进度条
+    var progressHtml = '';
+    if (steps.length > 0) {
+      var doneCount = steps.filter(function(s) { return s.status === 'done'; }).length;
+      var failCount = steps.filter(function(s) { return s.status === 'failed'; }).length;
+      var total = steps.length;
+      var pct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
+      var statusText = failCount > 0 ? '部分失败 (' + failCount + ')' : (doneCount === total ? '完成' : '进行中');
+      progressHtml = '<div class="ap-action-progress">'
+        + '<div class="ap-action-progress-bar" style="width:' + pct + '%"></div>'
+        + '<div class="ap-action-progress-info">' + doneCount + '/' + total + ' 步骤完成 · ' + statusText + '</div>'
+        + '</div>';
+    }
+
     card.innerHTML = '<div class="ap-action-head"><span>⚡</span><b>' + escHtml(summary) + '</b>'
       + '<span class="ap-action-mode">' + escHtml(mode) + '</span></div>'
+      + progressHtml
       + '<div class="ap-action-steps">' + stepsHtml + '</div>' + imageHtml + musicHtml + imgSearchHtml + emailHtml
       + '<button class="ap-action-trace" data-action="toggle-trace">▼ 查看执行详情</button>'
+      + toolSummaryHtml
       + '<div class="ap-action-trace-body" hidden>' + escHtml(JSON.stringify({ planStatus: state.planStatus, plan: plan, assistImage: img, assistMusic: music, assistEmail: email }, null, 2)) + '</div>';
 
     var sendBtn = card.querySelector('[data-action="send-email"]');
@@ -698,6 +832,10 @@
       body.hidden = !body.hidden;
       traceBtn.textContent = body.hidden ? '▼ 查看执行详情' : '▲ 收起执行详情';
     };
+
+    // v0.79: 根据行动状态自动设置表情
+    updateFaceForAction(state, plan);
+
     if (terminal && _actionPollers[card.dataset.requirementId]) {
       clearInterval(_actionPollers[card.dataset.requirementId]);
       delete _actionPollers[card.dataset.requirementId];
@@ -732,16 +870,52 @@
   function sendActionEmail(requirementId, card, button) {
     button.disabled = true;
     button.textContent = '发送中…';
+    setFace('working');  // v0.79: 发送邮件时设置表情
     fetch('/api/agent-buddy/action/' + encodeURIComponent(requirementId) + '/send-email', {
       method: 'POST', headers: getAuthHeaders(), body: '{}'
     }).then(function(r) { return r.json(); }).then(function(data) {
       if (data && data.state) updateActionCard(card, data.state, { mode: 'conversational_action' });
       if (!data || !data.ok) throw new Error(data && (data.message || data.error) || '发送失败');
+      setFace('success');  // v0.79: 发送成功
     }).catch(function(e) {
       button.disabled = false;
       button.textContent = '重试发送';
       renderMessage('邮件没有发出去：' + e.message);
+      setFace('error');  // v0.79: 发送失败
     });
+  }
+
+  // v0.79: 根据行动状态自动设置表情
+  function updateFaceForAction(state, plan) {
+    if (!state || !plan) return;
+    var steps = Array.isArray(plan.steps) ? plan.steps : [];
+    var hasRunning = steps.some(function(s) { return s.status === 'running' || s.status === 'pending'; });
+    var hasFailed = steps.some(function(s) { return s.status === 'failed'; });
+    var allDone = steps.length > 0 && steps.every(function(s) { return s.status === 'done'; });
+    var planStatus = state.planStatus;
+
+    if (hasFailed) {
+      setFace('error');
+    } else if (allDone && planStatus === 'done') {
+      setFace('celebrate');
+    } else if (hasRunning) {
+      // 根据当前执行的工具类型设置表情
+      var currentStep = steps.find(function(s) { return s.status === 'running'; });
+      if (currentStep) {
+        var tool = currentStep.tool || '';
+        if (tool.indexOf('search') >= 0 || tool.indexOf('web_') >= 0) {
+          setFace('searching');
+        } else if (tool.indexOf('generate') >= 0 || tool.indexOf('image') >= 0) {
+          setFace('creating');
+        } else {
+          setFace('working');
+        }
+      } else {
+        setFace('working');
+      }
+    } else if (planStatus === 'done') {
+      setFace('success');
+    }
   }
 
   // ════════════════════════════════════════════════════════════
@@ -896,17 +1070,68 @@
   // ── 对话记忆 ──
 
   function saveChatMemory(userMsg, buddyReply) {
+    // v0.79: 拒绝空消息 — 否则会污染 history 导致上游 API 报 "No user query found in messages"
+    var u = (userMsg == null ? '' : String(userMsg));
+    var b = (buddyReply == null ? '' : String(buddyReply));
+    if (!u.trim() && !b.trim()) return;
+
     var mem = _userMemory.chatMemory || [];
-    mem.push({ role: 'user', text: userMsg.slice(0, 200) });
-    mem.push({ role: 'buddy', text: buddyReply.slice(0, 200) });
+    if (u.trim()) mem.push({ role: 'user', text: u.slice(0, 200) });
+    if (b.trim()) mem.push({ role: 'buddy', text: b.slice(0, 200) });
     if (mem.length > 10) mem.splice(0, mem.length - 10);
     _userMemory.chatMemory = mem;
     saveMemory();
+
+    // v0.79: 同步到服务端（fire-and-forget）
+    syncChatToServer(userMsg, buddyReply);
 
     // 每 4 轮对话（8 条消息）触发一次性格总结
     if (mem.length >= 8 && mem.length % 8 < 2) {
       updatePersonality();
     }
+  }
+
+  // v0.79: 同步聊天到服务端
+  function syncChatToServer(userMsg, buddyReply) {
+    try {
+      var headers = getAuthHeaders();
+      headers['Content-Type'] = 'application/json';
+      // v0.79: 拒绝空消息 — 否则会污染 history 导致上游 API 报 "No user query found in messages"
+      var u = userMsg == null ? '' : String(userMsg);
+      var b = buddyReply == null ? '' : String(buddyReply);
+      if (u.trim()) {
+        fetch('/api/agent-buddy/chat-history', {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify({ role: 'user', text: u }),
+        }).catch(function() {});
+      }
+      if (b.trim()) {
+        // 发送小吉回复（延迟一点，避免并发问题）
+        setTimeout(function() {
+          fetch('/api/agent-buddy/chat-history', {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify({ role: 'buddy', text: b }),
+          }).catch(function() {});
+        }, 100);
+      }
+    } catch(e) {}
+  }
+
+  // v0.79: 加载历史摘要（启动时调用一次）
+  function loadChatHistorySummary() {
+    fetch('/api/agent-buddy/chat-history', {
+      headers: getAuthHeaders(),
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.ok && data.summary) {
+        _userMemory.chatSummary = data.summary;
+        saveMemory();
+      }
+    })
+    .catch(function() {});
   }
 
   // ── 性格总结 ──
@@ -959,6 +1184,11 @@
       }
     } else if (type === 'highlight') {
       highlightElement(param);
+    } else if (type === 'enter_project') {
+      // v0.79: 切换到指定项目并打开视图
+      if (typeof enterProject === 'function') {
+        enterProject({ id: param, name: param.replace('proj_', '') });
+      }
     }
   }
 
@@ -998,100 +1228,144 @@
       personality: _userMemory.personality || undefined,
     };
 
-    // 调后端（v0.66: 支持流式 SSE）
+    // 调后端（v0.66: 支持流式 SSE，v0.80: 暂停/继续/速度调节/错误重试）
     var isStreaming = true;
     var streamUrl = '/api/agent-buddy/chat?stream=1';
-    fetch(streamUrl, {
-      method: 'POST',
-        headers: getAuthHeaders(),
-      body: JSON.stringify({ message: text, context: context }),
-    })
-    .then(function(r) {
-      if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || '请求失败'); });
-      // v0.66: 流式读取 SSE
-      var reader = r.body.getReader();
-      var decoder = new TextDecoder();
-      var accumulated = '';
-      var streamDone = false;
-      var actionData = null;
+    var streamSpeed = _streamSpeed;  // 使用模块级变量
+    var streamPaused = _streamPaused;
+    var streamDone = false;          // 局部变量，避免与模块级冲突
+    var accumulated = '';            // v0.80: 提升作用域，供 finalizeStream 使用
+    var actionData = null;           // v0.80: 提升作用域，供 finalizeStream 使用
+    var streamAbortController = null;
+    var streamRetryCount = 0;
+    var MAX_RETRY = 3;
 
-      function processStream() {
-        reader.read().then(function(result) {
-          if (result.done) {
-            streamDone = true;
-            finalizeStream();
-            return;
-          }
-          var text = decoder.decode(result.value, { stream: true });
-          // 解析 SSE 事件
-          var lines = text.split('\n');
-          for (var li = 0; li < lines.length; li++) {
-            var line = lines[li].trim();
-            if (!line || !line.startsWith('data: ')) continue;
-            try {
-              var evt = JSON.parse(line.slice(6));
-              if (evt.type === 'text') {
-                accumulated += evt.chunk || '';
-                updateStreamMessage(accumulated);
-              } else if (evt.type === 'action') {
-                actionData = evt;
-              }
-            } catch(e) { /* 跳过解析失败的 SSE 行 */ }
-          }
-          processStream();
-        }).catch(function(err) {
+    function startStream(retryMsg) {
+      streamAbortController = new AbortController();
+      var signal = streamAbortController.signal;
+
+      fetch(streamUrl, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ message: text, context: context }),
+        signal: signal,
+      })
+      .then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || '请求失败'); });
+        return handleStream(r);
+      })
+      .catch(function(err) {
+        if (err.name === 'AbortError') return;  // 用户主动取消
+        if (streamRetryCount < MAX_RETRY && !streamDone) {
+          streamRetryCount++;
+          console.warn('[buddy-stream] 读取错误，重试 ' + streamRetryCount + '/' + MAX_RETRY + ':', err.message);
+          setTimeout(startStream, 1000);  // 1 秒后重试
+        } else {
           console.warn('[buddy-stream] 读取错误:', err);
           streamDone = true;
+          _streamDone = true;
           finalizeStream();
-        });
-      }
-
-      function updateStreamMessage(text) {
-        removeThinking();
-        // 清除所有标记后展示纯文本
-        var cleanText = text.replace(/【face:\w+】/g, '').replace(/【action:[^:]+:[^】]+】/g, '').trim();
-        var mdFn = typeof renderMarkdown === 'function' ? renderMarkdown : function(t) { return escHtml(t); };
-        var container = document.querySelector('#ap-messages');
-        if (!container) return;
-        var msgEl = document.getElementById('ap-stream-msg');
-        if (!msgEl) {
-          msgEl = document.createElement('div');
-          msgEl.id = 'ap-stream-msg';
-          msgEl.className = 'ap-msg ap-msg-buddy';
-          container.appendChild(msgEl);
         }
-        msgEl.innerHTML = '<span class="ap-msg-text">' + mdFn(cleanText) + '<span class="ap-cursor">|</span></span>';
-        container.scrollTop = container.scrollHeight;
-      }
+      });
+    }
 
-      function finalizeStream() {
-        removeThinking();
-        var raw = accumulated || '嗯… 我没听清，能再说一遍吗？';
-        // 移除流式消息元素（带光标）
-        var msgEl = document.getElementById('ap-stream-msg');
-        if (msgEl) msgEl.remove();
-        // 从回复中提取并执行动作和表情标记
-        executeActions(raw);
-        var faceMatch = raw.match(/【face:(\w+)】/);
-        if (faceMatch) setFace(faceMatch[1]);
-        // 清除所有标记后展示纯文本
-        var reply = raw.replace(/【[^】]+】/g, '').trim();
-        renderMessage(reply);
-        if (actionData && actionData.action && actionData.action.requirementId) renderActionCard(actionData.action);
-        _chatHistory.push({ role: 'buddy', text: reply });
-        addScore('toast-fire');
-        // 保存到长期记忆
-        saveChatMemory(text, reply);
+    function handleStream(r) {
+      var reader = r.body.getReader();
+      var decoder = new TextDecoder();
+      // accumulated 和 actionData 已在 sendMessage 作用域声明，这里不再重复声明
+      streamDone = false;
+      _streamDone = false;
+      var lastProcessTime = Date.now();
+
+      function processStream() {
+        if (streamDone || streamPaused) return;
+
+        var timeout = streamSpeed - (Date.now() - lastProcessTime);
+        if (timeout < 0) timeout = 0;
+
+        setTimeout(function() {
+          if (streamDone || streamPaused) return;
+
+          reader.read().then(function(result) {
+            if (result.done) {
+              streamDone = true;
+              finalizeStream();
+              return;
+            }
+            lastProcessTime = Date.now();
+            var text = decoder.decode(result.value, { stream: true });
+            // 解析 SSE 事件
+            var lines = text.split('\n');
+            for (var li = 0; li < lines.length; li++) {
+              var line = lines[li].trim();
+              if (!line || !line.startsWith('data: ')) continue;
+              try {
+                var evt = JSON.parse(line.slice(6));
+                if (evt.type === 'text') {
+                  accumulated += evt.chunk || '';
+                  updateStreamMessage(accumulated);
+                } else if (evt.type === 'action') {
+                  actionData = evt;
+                } else if (evt.type === 'speed') {
+                  // 后端请求改变速度
+                  streamSpeed = Math.max(10, Math.min(100, evt.speed || 30));
+                }
+              } catch(e) { /* 跳过解析失败的 SSE 行 */ }
+            }
+            processStream();
+          }).catch(function(err) {
+            if (err.name === 'AbortError') return;
+            console.warn('[buddy-stream] 读取错误:', err);
+            streamDone = true;
+            finalizeStream();
+          });
+        }, timeout);
       }
 
       processStream();
-    })
-    .catch(function(err) {
+    }
+
+    function updateStreamMessage(text) {
       removeThinking();
-      renderMessage('我网络开小差了… 你再跟我说一遍？');
-      _chatHistory.push({ role: 'buddy', text: '（网络异常）' });
-      saveChatMemory(text, '（网络异常）');
-    });
+      var cleanText = text.replace(/【face:\w+】/g, '').replace(/【action:[^:]+:[^】]+】/g, '').trim();
+      var mdFn = typeof renderMarkdown === 'function' ? renderMarkdown : function(t) { return escHtml(t); };
+      var container = document.querySelector('#ap-messages');
+      if (!container) return;
+
+      // 使用固定元素，避免流式结束后再创建新气泡
+      var msgEl = document.getElementById('ap-stream-bubble');
+      if (!msgEl) {
+        msgEl = document.createElement('div');
+        msgEl.id = 'ap-stream-bubble';
+        msgEl.className = 'ap-msg ap-msg-buddy';
+        container.appendChild(msgEl);
+      }
+      msgEl.innerHTML = '<span class="ap-msg-text">' + mdFn(cleanText) + '<span class="ap-cursor">|</span></span>';
+      container.scrollTop = container.scrollHeight;
+    }
+
+    function finalizeStream() {
+      removeThinking();
+      var raw = accumulated || '嗯… 我没听清，能再说一遍吗？';
+      // 移除流式标记，保留气泡
+      var msgEl = document.getElementById('ap-stream-bubble');
+      if (msgEl) {
+        var cleanText = raw.replace(/【face:\w+】/g, '').replace(/【action:[^:]+:[^】]+】/g, '').trim();
+        var mdFn = typeof renderMarkdown === 'function' ? renderMarkdown : function(t) { return escHtml(t); };
+        msgEl.innerHTML = '<span class="ap-msg-text">' + mdFn(cleanText) + '</span>';
+        msgEl.id = '';  // 移除临时 ID，变成普通气泡
+      }
+      executeActions(raw);
+      var faceMatch = raw.match(/【face:(\w+)】/);
+      if (faceMatch) setFace(faceMatch[1]);
+      var reply = raw.replace(/【[^】]+】/g, '').trim();
+      if (actionData && actionData.action && actionData.action.requirementId) renderActionCard(actionData.action);
+      _chatHistory.push({ role: 'buddy', text: reply });
+      addScore('toast-fire');
+      saveChatMemory(text, reply);
+    }
+
+    startStream();
   }
 
   function renderScoreBar() {

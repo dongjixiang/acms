@@ -413,9 +413,7 @@ async function retrieve(query, topK = DEFAULT_TOP_K) {
   if (mode === 'embedding' || mode === 'bge') {
     return bgeSearch(query, topK);
   }
-  if (mode === 'jsembed') {
-    return jsEmbeddingSearch(query, topK);
-  }
+  // jsmebed 模式已移除（效果差，v0.79）
   return keywordSearch(query, topK);
 }
 
@@ -423,7 +421,8 @@ async function retrieve(query, topK = DEFAULT_TOP_K) {
  * 切换检索模式
  */
 function setMode(newMode) {
-  if (newMode !== 'keyword' && newMode !== 'embedding' && newMode !== 'bge' && newMode !== 'jsembed') {
+  // v0.79: 移除 jsmebed 模式（效果差）
+  if (newMode !== 'keyword' && newMode !== 'embedding' && newMode !== 'bge') {
     console.warn(`[tool-retriever] Unknown mode: ${newMode}, using keyword`);
     return false;
   }
@@ -432,9 +431,6 @@ function setMode(newMode) {
   if (newMode === 'embedding' || newMode === 'bge') {
     // 如果 BGE 还未加载，后台加载
     if (!_bgeReady) initBgeAsync();
-  }
-  if (newMode === 'jsembed') {
-    if (!_toolVectors) _toolVectors = buildToolVectors();
   }
   return true;
 }

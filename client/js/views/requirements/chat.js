@@ -517,9 +517,20 @@ function renderSearchResultBubble(text) {
   let o = null;
   try { o = JSON.parse(text || ''); } catch { return null; }
   if (!o || !o.query) return null;
+  // v0.81: 图片搜索时不显示 search_result 文字气泡（图片已在动作卡片中展示）
+  const isImageSearch = /图片|照片|写真|壁纸|头像|海报|截图|相片|图集|靓照|艺术照/.test(o.query);
+  if (isImageSearch) return '';
+  // v0.81: 过滤 formatted 中的 URL 行，只保留标题和摘要
+  let formatted = (o.formatted || '');
+  if (formatted) {
+    formatted = formatted
+      .replace(/^\s*https?:\/\/[^\s]+\s*$/gm, '')  // 移除纯 URL 行
+      .replace(/\n\s*\n/g, '\n')  // 移除空行
+      .trim();
+  }
   return `<div class="card-system search-result-card">
       <div class="card-system-head">🔍 搜索"${escHtml(o.query)}" · ${o.count || 0} 条结果</div>
-      <div class="card-system-body">${renderMarkdown(o.formatted || '')}</div>
+      <div class="card-system-body">${renderMarkdown(formatted || '')}</div>
     </div>`;
 }
 

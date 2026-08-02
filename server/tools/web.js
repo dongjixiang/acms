@@ -63,10 +63,18 @@ const { fetchUrlCore } = require('./url-fetch');
 registerTool({
   name: 'fetch_url',
   description: '抓取**单个完整 URL** 的网页内容，提取正文转 markdown。'
+    + '\n\n【场景1】用户消息含完整 URL 链接（如 https://example.com/article.html）时使用。'
+    + '\n\n【场景2 · v0.87 数据源直连】当用户问**具体数据**（股价/商品价格/参数/行情/房价等），'
+    + '且 web_search 返回的都是内容链接（公众号/微博/资讯页）不含结构化数据时——'
+    + '**不要建议用户自己去看**，而是主动构造该领域数据源网站的 URL 用本工具直接抓取：'
+    + '\n  - 财经/股价: https://finance.sina.com.cn/ 或 https://gu.qq.com/ 或 https://quote.eastmoney.com/'
+    + '\n  - 汽车价格: https://www.autohome.com.cn/ 或 https://www.dongchedi.com/'
+    + '\n  - 房产: https://www.beike.com/ 或 https://bj.lianjia.com/'
+    + '\n  - 通用: 用 web_search 先找到该主题的权威站点，再抓其页面'
+    + '\n【⚠️ 严禁编造 URL】URL 必须真实存在。抓取失败返回错误时，如实说明，不要虚构内容。'
     + '\n\n【⚠️ 严格使用条件】只接受**完整 http(s):// 起始的 URL**，不是搜索关键词、不是主题、不是问题。'
     + '要"搜索/查一下/调研"请用 **web_search** 或 **web_research**（用 query 参数）。'
     + '要"查实时信息/查时间"请用 **get_current_time**。'
-    + '\n\n用户消息含完整 URL 链接（如 https://example.com/article.html）时使用。'
     + '\n\n【⚠️ 严禁】用 fetch_url 验证收件人邮箱域名 — send_email 工具独立工作，不需要你预先验证收件人域名。'
     + '如果你不确定某个 URL 是否真实存在，**直接调对应的工具**（如 send_email）即可，让服务端处理失败。'
     + '\n\n返回：标题 + 正文摘要（默认 5000 字以内，max_length 可调）。'
@@ -118,15 +126,29 @@ function writeChatEntryForTool(reqId, source, payload) {
 
 registerTool({
   name: 'web_search',
-  description: '联网搜索最新信息。'
-    + '【严格使用条件】仅当用户**显式**询问外部世界的事实、事件、数据（如"2026 世界杯排名"、"最近 AI 行业新闻"），或**显式**要求"搜一下/查一下"时使用。'
-    + '用户描述产品功能、场景、想法、需求时**严禁**调用。'
-    + '返回 1-8 条结果的标题+摘要+URL。',
+  description: `【用途】联网搜索最新信息、事实、数据
+【适用】用户明确说"搜一下"/"查一下"/"XX是什么"/"最近XX事件"
+【禁用】用户描述产品功能、场景、想法、需求时严禁调用
+【返回】1-40条结果（标题+摘要+URL），默认40条
+【参数】
+  - query: 搜索关键词（必填，越精确越好）
+  - max_results: 结果数量（1-40，默认40）
+【query 构造规则（v0.87c）】
+  - 用**简洁自然的关键词**，不要堆砌同义词和日期（如"深圳95号汽油价格 今日油价 2026年8月"会让引擎理解偏，应写"深圳95号汽油当日价格"）
+  - 问具体数据（价格/行情）时，query 直接含实体+数据词（如"茅台股价""深圳95号汽油价格"），简洁才精准
+【示例】
+  - ✅ 正确："帮我搜一下2026年世界杯足球赛冠军是谁"
+  - ❌ 错误："帮我做一个世界杯相关的功能页面"
+【v0.87 数据源衔接】若用户要的是**具体数据**（股价/商品价格/参数/行情/房价），
+  而搜索结果只返回内容链接（公众号/微博/资讯页）不含结构化数据时——
+  不要建议用户自己去看，先**再搜 1 次定位数据源 URL**（如"XX价格 查询 官网"），
+  拿到真实 URL 后用 **fetch_url** 抓取。**严禁凭记忆瞎猜域名**（如乱编
+  oilxxx.com），URL 必须来自搜索结果。`,
   parameters: {
     type: 'object',
     properties: {
-      query: { type: 'string', description: '搜索关键词（越精确越好）' },
-      max_results: { type: 'number', description: '最大返回结果数（默认 50，上限 50）', default: 50, minimum: 1, maximum: 50 },
+      query: { type: 'string', description: '搜索关键词（必填，中文或英文）' },
+      max_results: { type: 'number', description: '最大返回结果数（1-40，默认40）', default: 40, minimum: 1, maximum: 40 },
     },
     required: ['query'],
   },
@@ -155,7 +177,9 @@ registerTool({
       }
     }
     // v0.73: 图片搜索时只展示图片，不写文字搜索结果到聊天流
-    if (ctx.reqId && !result.error && Array.isArray(result.results) && result.results.length > 0 && !isImageSearch) {
+    // v0.81: 同时检查 query 中是否包含图片关键词，防止 LLM 未传 image_search=true 时写入文字结果
+    const shouldShowTextResults = !isImageSearch;
+    if (ctx.reqId && !result.error && Array.isArray(result.results) && result.results.length > 0 && shouldShowTextResults) {
       writeChatEntryForTool(ctx.reqId, 'search_result', {
         type: 'search_result', query: args.query, count: result.count, formatted: result.formatted, results: result.results,
       });
@@ -167,16 +191,21 @@ registerTool({
 // v0.15：综合网络调研（webResearch 已在文件顶部 require 过）
 registerTool({
   name: 'web_research',
-  description: '综合网络调研：搜索互联网 + 自动抓取 Top N 链接正文 + LLM 综合分析，返回结构化答案（含引用来源）。'
-    + '【严格使用条件】仅当用户**显式**要求以下场景时使用：'
-    + '1) 调研/分析一个产品/行业/公司；2) 深度对比多个产品/方案；3) 总结某个主题/事件的最新进展。'
-    + '【严禁】用户描述产品功能/场景/需求/想法时调用。',
+  description: `【用途】深度综合调研（搜索+抓取+LLM综合分析）
+【适用】用户明确要求：1)调研产品/行业/公司 2)深度对比多个方案 3)总结某主题最新进展
+【禁用】用户描述产品功能、场景、需求时严禁调用
+【返回】结构化答案（含引用来源）
+【参数】
+  - query: 调研问题或主题（必填）
+  - max_results: 搜索条数（1-40，默认40）
+  - deep_fetch: 自动抓取URL数（0-10，默认10；0=只搜索不抓取）
+  - model_id: 分析用LLM（可选，默认用系统默认模型）`,
   parameters: {
     type: 'object',
     properties: {
-      query: { type: 'string', description: '调研问题或主题' },
-      max_results: { type: 'number', description: '搜索返回条数（默认 50，上限 50）', default: 50, minimum: 1, maximum: 50 },
-      deep_fetch: { type: 'number', description: '自动抓取的 URL 数（默认 10，上限 10，0=不抓取只返回搜索结果）', default: 10, minimum: 0, maximum: 10 },
+      query: { type: 'string', description: '调研问题或主题（必填）' },
+      max_results: { type: 'number', description: '搜索返回条数（1-40，默认40）', default: 40, minimum: 1, maximum: 40 },
+      deep_fetch: { type: 'number', description: '自动抓取的 URL 数（0-10，默认10；0=不抓取只返回搜索结果）', default: 10, minimum: 0, maximum: 10 },
       model_id: { type: 'string', description: '综合分析用的 LLM（可选，默认用系统默认模型）' },
     },
     required: ['query'],

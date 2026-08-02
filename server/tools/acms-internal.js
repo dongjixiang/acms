@@ -416,8 +416,10 @@ registerTool({
         ok: true,
         project: { id: project.id, name: project.name, slug: project.slug },
         summary: `项目「${project.name}」已创建（ID: ${project.id}）`,
-        _action: 'open_view',
-        _actionArg: { view: 'projects', projectId: project.id }
+        // v0.79: 返回 enter_project 类型 action，让前端切换当前项目 + 打开项目列表
+        _action: 'enter_project',
+        _actionArg: { projectId: project.id, projectName: project.name, openView: 'projects' },
+        hintForLLM: `请在 final answer 末尾加【action:enter_project:${project.id}】，前端会自动切换到该项目并打开项目列表窗口`
       };
     } catch (e) { return { ok: false, error: 'CREATE_FAILED', message: e.message }; }
   }
@@ -451,7 +453,7 @@ registerTool({
         owner: perm.user.id,
         createdBy: perm.user.id
       });
-      return { ok: true, requirement: simplifyReq(req), summary: `需求「${req.title}」已创建（ID: ${req.id}）`, _action: 'open_view:detail', _actionArg: { reqId: req.id } };
+      return { ok: true, requirement: simplifyReq(req), summary: `需求「${req.title}」已创建（ID: ${req.id}）`, _action: 'enter_project', _actionArg: { projectId: args.projectId, openView: 'requirements' }, hintForLLM: `请在 final answer 末尾加【action:enter_project:${args.projectId}】，前端会自动切换到该项目并打开需求列表窗口` };
     } catch (e) { return { ok: false, error: 'CREATE_FAILED', message: e.message }; }
   }
 });
@@ -673,6 +675,28 @@ registerTool({
     return {
       ok: true,
       hintForLLM: `请在 final answer 末尾加【action:highlight:${args.elementId}】，前端会高亮该元素 3 秒`
+    };
+  }
+});
+
+registerTool({
+  name: 'switch_project',
+  description: '切换到 ACMS 某个项目并打开其视图。用于在项目间导航或创建项目后自动进入。',
+  parameters: {
+    type: 'object',
+    properties: {
+      projectId: { type: 'string', description: '项目 ID（必填，如 proj_xxx）' },
+      view: { type: 'string', description: '进入项目后要打开的视图（可选）：dashboard/requirements/kanban/bugs/chat' }
+    },
+    required: ['projectId']
+  },
+  async handler(args, ctx) {
+    if (!args.projectId) return { ok: false, error: 'MISSING_PROJECT_ID' };
+    return {
+      ok: true,
+      _action: 'enter_project',
+      _actionArg: { projectId: args.projectId, openView: args.view || 'dashboard' },
+      summary: `已切换到项目「${args.projectId}」${args.view ? '，打开 ' + args.view + ' 视图' : ''}`
     };
   }
 });

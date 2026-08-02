@@ -248,7 +248,7 @@ registerTool({
     const result = await planExecutor.executePlan(reqId, {
       summary: args.summary || '',
       steps: args.steps,
-    });
+    }, ctx);  // v0.79: 透传 ctx（含 user）让 plan-executor 内的 tool handler 能做权限检查
     return result;
   },
 });

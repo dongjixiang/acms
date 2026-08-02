@@ -100,7 +100,7 @@ router.get('/me', (req, res) => {
   res.json({ user });
 });
 
-// 列出所有用户（仅管理员）
+// 列出所有用户（仅管理员）—— 必须在 /users/:id 之前注册
 router.get('/users', (req, res) => {
   const authHeader = req.headers['authorization'];
   const user = authHeader ? userService.getUserFromToken(authHeader.slice(7)) : null;
@@ -108,6 +108,77 @@ router.get('/users', (req, res) => {
     return res.status(403).json({ error: 'FORBIDDEN', message: '仅管理员可查看用户列表' });
   }
   res.json({ users: userService.listUsers() });
+});
+
+// 获取单个用户（仅管理员）
+router.get('/users/:id', (req, res) => {
+  const authHeader = req.headers['authorization'];
+  const user = authHeader ? userService.getUserFromToken(authHeader.slice(7)) : null;
+  if (!user || user.role !== 'admin') {
+    return res.status(403).json({ error: 'FORBIDDEN', message: '仅管理员可查看' });
+  }
+  const target = userService.getUserById(req.params.id);
+  if (!target) return res.status(404).json({ error: 'USER_NOT_FOUND', message: '用户不存在' });
+  res.json({ user: target });
+});
+
+// 编辑用户（仅管理员）
+router.put('/users/:id', (req, res) => {
+  const authHeader = req.headers['authorization'];
+  const operator = authHeader ? userService.getUserFromToken(authHeader.slice(7)) : null;
+  if (!operator || operator.role !== 'admin') {
+    return res.status(403).json({ error: 'FORBIDDEN', message: '仅管理员可操作' });
+  }
+  const { displayName, role, workspaceRole } = req.body || {};
+  if (role && role !== 'admin' && role !== 'user') {
+    return res.status(400).json({ error: 'INVALID_ROLE', message: '角色必须是 admin 或 user' });
+  }
+  if (workspaceRole && !['pm', 'tech', 'design'].includes(workspaceRole)) {
+    return res.status(400).json({ error: 'INVALID_WORKSPACE_ROLE', message: '用户类型必须是 pm/tech/design' });
+  }
+  const result = userService.updateUser(req.params.id, { displayName, role, workspaceRole });
+  if (result.error) {
+    const status = result.error === 'USER_NOT_FOUND' ? 404 : 400;
+    return res.status(status).json({ error: result.error, message: result.message });
+  }
+  res.json({ user: result.user, message: result.message || '更新成功' });
+});
+
+// 删除用户（仅管理员，不能删自己）
+router.delete('/users/:id', (req, res) => {
+  const authHeader = req.headers['authorization'];
+  const operator = authHeader ? userService.getUserFromToken(authHeader.slice(7)) : null;
+  if (!operator || operator.role !== 'admin') {
+    return res.status(403).json({ error: 'FORBIDDEN', message: '仅管理员可操作' });
+  }
+  if (operator.id === req.params.id) {
+    return res.status(400).json({ error: 'CANNOT_DELETE_SELF', message: '不能删除自己' });
+  }
+  const result = userService.deleteUser(req.params.id);
+  if (result.error) {
+    const status = result.error === 'USER_NOT_FOUND' ? 404 : 400;
+    return res.status(status).json({ error: result.error, message: result.message });
+  }
+  res.json({ message: result.message });
+});
+
+// 重置密码（仅管理员）
+router.post('/users/:id/reset-password', (req, res) => {
+  const authHeader = req.headers['authorization'];
+  const operator = authHeader ? userService.getUserFromToken(authHeader.slice(7)) : null;
+  if (!operator || operator.role !== 'admin') {
+    return res.status(403).json({ error: 'FORBIDDEN', message: '仅管理员可操作' });
+  }
+  const { newPassword } = req.body || {};
+  if (!newPassword || newPassword.length < 4) {
+    return res.status(400).json({ error: 'WEAK_PASSWORD', message: '密码至少4位' });
+  }
+  const result = userService.resetPasswordById(req.params.id, newPassword);
+  if (result.error) {
+    const status = result.error === 'USER_NOT_FOUND' ? 404 : 400;
+    return res.status(status).json({ error: result.error, message: result.message });
+  }
+  res.json({ message: result.message });
 });
 
 module.exports = router;

@@ -32,7 +32,8 @@ function authMiddleware(req, res, next) {
   if (apiKey) {
     if (config.apiKeys.includes(apiKey)) {
       // API Key 用户标记为 system 身份
-      req.user = { id: 'system', username: 'system', displayName: '系统', role: 'admin' };
+      // v0.79: 补 workspaceRole='pm'，否则 create_requirement 等工具报 FORBIDDEN
+      req.user = { id: 'system', username: 'system', displayName: '系统', role: 'admin', workspaceRole: 'pm' };
       req.userId = 'system';
       return next();
     }

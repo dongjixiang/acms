@@ -10,9 +10,155 @@
 
 const https = require('https');
 const { browserSearch, launchBrowser } = require('./browser-fetch');
+// v0.80: agent-browser 冗余 fallback（当 puppeteer 引擎全失败时使用）
+const { searchBingCn: agentBrowserSearchBingCn } = require('./agent-browser-fetch');
 
 const SEARCH_TIMEOUT_MS = 10000;
-const MAX_RESULTS = 50;
+const MAX_RESULTS = 40;
+// v0.84: 并发 race 整体硬超时（所有源同时启动，12s 内谁先通过质量门谁赢）
+const SEARCH_RACE_TIMEOUT_MS = 12000;
+
+// v0.84: firstNonEmpty — 多个已启动的 promise 并发，第一个返回非空结果的胜出
+//   其余 promise 不阻塞（各自内部有超时，后台自然结束）
+function firstNonEmpty(promises, timeoutMs) {
+  return new Promise((resolve) => {
+    let done = false;
+    const timer = setTimeout(() => {
+      if (!done) { done = true; resolve(null); }
+    }, timeoutMs);
+    for (const p of promises) {
+      p.then((r) => {
+        if (done) return;
+        if (r && Array.isArray(r.results) && r.results.length > 0) {
+          done = true;
+          clearTimeout(timer);
+          resolve(r);
+        }
+      }).catch(() => { /* 单个源失败不影响其他 */ });
+    }
+  });
+}
+
+// v0.87g: 两阶段结果收集（用户要求）——
+//   阶段1: 等高可信源（ab-bingcn）settle，收集**此时已完成**的其他源结果，合并返回
+//   阶段2: 若阶段1 结果不足（空或太少），等待所有源都结束（Promise.allSettled），
+//          合并全部结果做最终返回
+//   调用方通过 checkQuality 判断阶段1 是否够用
+async function collectWithPriority(promises, priorityIdx, extraWaitMs, timeoutMs, checkQuality) {
+  // 阶段1: 等高可信源 settle + 已完成的源
+  const stage1 = await new Promise((resolve) => {
+    let settled = false;
+    const seenUrl = new Set();
+    const seenTitle = new Set();
+    const merged = [];
+    const addAll = (r, source) => {
+      if (!r || !Array.isArray(r.results)) return;
+      for (const item of r.results) {
+        const uKey = normalizeUrlKey(item.url);
+        const tKey = normalizeTitleKey(item.title);
+        if (!uKey && !tKey) continue;
+        if (seenUrl.has(uKey) || seenTitle.has(tKey)) continue;
+        seenUrl.add(uKey);
+        seenTitle.add(tKey);
+        merged.push({ ...item, _source: source });
+      }
+    };
+
+    const timer = setTimeout(() => {
+      if (!settled) { settled = true; resolve({ merged, seenUrl, seenTitle }); }
+    }, timeoutMs);
+
+    // 其他源：并发收集（先到的先进）
+    for (let i = 0; i < promises.length; i++) {
+      if (i === priorityIdx) continue;
+      promises[i].then((r) => {
+        if (settled) return;
+        addAll(r, r && r.source ? r.source : 'other');
+      }).catch(() => {});
+    }
+
+    // 高可信源：必须等它 settle，结果排最前
+    const p = promises[priorityIdx];
+    if (p) {
+      p.then((r) => {
+        if (settled) return;
+        if (r && Array.isArray(r.results) && r.results.length > 0) {
+          // 高可信源插到最前（先收集的 other 结果往后挪）
+          addAll(r, r.source || 'ab-bingcn');
+          // 重新排序：ab-bingcn 排最前
+          merged.sort((a, b) => (a._source === 'ab-bingcn' ? -1 : b._source === 'ab-bingcn' ? 1 : 0));
+        }
+        setTimeout(() => {
+          if (!settled) { settled = true; clearTimeout(timer); resolve({ merged, seenUrl, seenTitle }); }
+        }, extraWaitMs);
+      }).catch(() => {
+        setTimeout(() => {
+          if (!settled) { settled = true; clearTimeout(timer); resolve({ merged, seenUrl, seenTitle }); }
+        }, extraWaitMs);
+      });
+    } else {
+      setTimeout(() => {
+        if (!settled) { settled = true; clearTimeout(timer); resolve({ merged, seenUrl, seenTitle }); }
+      }, extraWaitMs);
+    }
+  });
+
+  const result1 = stage1.merged.length > 0 ? { results: stage1.merged, source: 'multi', _stage: 1 } : null;
+
+  // 阶段1 够用 → 直接返回
+  if (result1 && (!checkQuality || checkQuality(result1.results))) {
+    return result1;
+  }
+
+  // 阶段2: 不够 → 等所有源都结束，合并全部
+  console.log(`[web-search] collectWithPriority 阶段1 不足 (${stage1.merged.length}条)，等所有源结束后合并`);
+  const settledAll = await Promise.allSettled(promises);
+  const seenUrl = stage1.seenUrl;
+  const seenTitle = stage1.seenTitle;
+  const merged = [...stage1.merged];  // 保留阶段1 已有的（含 ab-bingcn 前置排序）
+  const addAll2 = (r, source) => {
+    if (!r || !Array.isArray(r.results)) return;
+    for (const item of r.results) {
+      const uKey = normalizeUrlKey(item.url);
+      const tKey = normalizeTitleKey(item.title);
+      if (!uKey && !tKey) continue;
+      if (seenUrl.has(uKey) || seenTitle.has(tKey)) continue;
+      seenUrl.add(uKey);
+      seenTitle.add(tKey);
+      merged.push({ ...item, _source: source });
+    }
+  };
+  settledAll.forEach((s, idx) => {
+    if (s.status === 'fulfilled' && s.value) {
+      addAll2(s.value, promises[idx] && promises[idx]._srcName || ('source' + idx));
+    }
+  });
+  return merged.length > 0 ? { results: merged, source: 'multi', _stage: 2 } : null;
+}
+
+// v0.84: 引擎包装 — 过滤 + 质量门，不过则视为空（让 firstNonEmpty 继续等下一个源）
+function wrapEngine(name, promise, query) {
+  return Promise.resolve(promise)
+    .then((res) => {
+      if (!res || !Array.isArray(res.results) || res.results.length === 0) {
+        return { results: [], source: name };
+      }
+      let filtered = filterByRelevance(res.results, query);
+      if (name === 'bingcn') {
+        const grams = extractKeyTokens(query);
+        const hasBigram = filtered.some((r) => {
+          const t = (r.title || '').toLowerCase();
+          return grams.some((g) => t.includes(g.toLowerCase()));
+        });
+        if (!hasBigram) {
+          console.warn('[web-search] race bingcn 质量门未过(标题无2-gram), 视为空');
+          return { results: [], source: name };
+        }
+      }
+      return { results: filtered, source: name };
+    })
+    .catch(() => ({ results: [], source: name }));
+}
 
 // ── 搜索缓存（5 分钟 TTL，与 web-research 一致）──
 const _searchCache = new Map();
@@ -56,7 +202,21 @@ function getBingApiKey() {
 // 共享：清理 URL 末尾的多余标点（markdown 链接闭合、中文括号等）
 function cleanUrl(u) {
   if (!u || typeof u !== 'string') return u;
-  return u.replace(/[\)\]）】」』.,;:!?。，；：！？]+$/, '');
+  return u.replace(/[\\)\\]）】」』.,;:!?。，；：！？]+$/, '');
+}
+
+// v0.84: 共享 AD/垃圾结果黑名单（bingcn / baidu / sogou 解析共用）
+const TITLE_BAN_RE = /(看看元宝|抢购|限时|钜惠|特惠|landing-?page|redirect-?page|推广链接|^推广$|^赞助$|^广告$)/i;
+const URL_BAN_RE = /(landing-?page|tridChannel|html5\.qq\.com\/landingpage|tencent\.com\/evt\/dl|yuanbao\.tencent\.com|so\.html5\.qq)/i;
+function isBadResult(title, url) {
+  return (
+    !title ||
+    title.length < 4 ||
+    TITLE_BAN_RE.test(title) ||
+    URL_BAN_RE.test(url) ||
+    url.includes('bing.com/') ||
+    url.includes('microsoft.com/')
+  );
 }
 
 // 共享：解码 sogou 重定向链接
@@ -126,6 +286,14 @@ function filterByRelevance(results, query) {
     return strong.slice(0, MAX_RESULTS);
   }
 
+  // v0.87c: 全 0 分且 query 有实体词 → 返回空（结果与 query 完全无关，让 race 等下一个源）
+  //   治"toutiao 对任何 query 返回热榜新闻，0 分命中却降级保留 → 垃圾赢 race"。
+  //   宽泛 query（tokens < 2，如"最新新闻"）不适用——本身无实体词可匹配。
+  if (tokens.length >= 2) {
+    console.log(`[web-search] filterByRelevance 全 0 分 (tokens=${tokens.length}), 返回空等待下一源`);
+    return [];
+  }
+
   // 都没有强匹配 — 降级过滤：至少去掉明显无关的结果（如单字字典页）
   if (results.length <= 3) return results;  // 结果太少不滤
   const filtered = results.filter(function(r) {
@@ -173,6 +341,92 @@ function extractKeyTokens(query) {
   return Array.from(tokens);
 }
 
+// ─────────────────────────────────────────────────────────────
+// v0.83: 宽泛新闻意图检测 + 头条热榜直连（治"今天最新新闻"类垃圾结果）
+//   根因：宽泛 query 全是 stopword → 搜索引擎返回日历网/首页垃圾 →
+//         LLM 拿垃圾编造新闻。解法：意图命中且无实体词时直接读热榜，
+//         不经过搜索引擎。
+// ─────────────────────────────────────────────────────────────
+
+const NEWS_INTENT_RE = /新闻|最新|热点|头条|要闻|时政|大事|消息|时讯|速递|今天.*(发生|有啥|什么)|看.*新闻/;
+// 有分类词 → 用户要特定领域（科技/财经…），热榜是综合榜，不适用
+const NEWS_CATEGORY_RE = /科技|财经|体育|娱乐|军事|国际|国内|社会|健康|教育|游戏|汽车|房产|股市|数码|文化|旅游/;
+
+function isVagueNewsQuery(query) {
+  const q = String(query || '').trim();
+  if (!NEWS_INTENT_RE.test(q)) return false;
+  if (NEWS_CATEGORY_RE.test(q)) return false;          // 分类需求 → 正常搜索
+  if (/[a-zA-Z0-9]/.test(q)) return false;             // 有实体（2026/世界杯）→ 正常搜索
+  const chinese = q.replace(/[^一-鿿]/g, '');
+  if (chinese.length > 12) return false;               // 太长 → 可能有具体主题
+  return true;
+}
+
+async function fetchToutiaoHotBoard(maxResults = 20) {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    const resp = await fetch('https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc', {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+      },
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!resp.ok) return { error: `HTTP ${resp.status}`, results: [] };
+    const data = await resp.json();
+    const items = Array.isArray(data?.data) ? data.data : [];
+    const results = items
+      .map((it) => ({
+        title: String(it.Title || it.title || '').slice(0, 200),
+        url: String(it.Url || it.url || ''),
+        snippet: `热度 ${it.HotValue ?? it.hot_value ?? ''}`.slice(0, 300),
+        hotValue: it.HotValue ?? it.hot_value ?? 0,
+      }))
+      .filter((r) => r.title)
+      .slice(0, maxResults);
+    if (results.length === 0) return { error: '热榜为空', results: [] };
+    return { results, source: 'toutiao-hot' };
+  } catch (e) {
+    return { error: `头条热榜失败: ${e.message}`, results: [] };
+  }
+}
+
+// v0.87j: query 规范化 — 治"LLM 生成堆砌词 query 导致引擎理解偏"
+//   实测（2026-08-02 Bing CN）:
+//     "深圳95号汽油价格"       → ❌ 深圳百科（价格太泛命中地名）
+//     "深圳95号汽油当日价格"   → ✅ 油价站（当日价格指向价格查询页）
+//     "深圳油价 95号"          → ❌ 深圳百科
+// v0.87j: 冗余词清洗——必须覆盖 LLM 常见的堆砌词（含日期年份、官网，否则残留会让 Bing 理解偏）
+//   实测: "深圳95号汽油价格 2026年8月" 只删价格词 → "深圳95号汽油 2026年8月 当日价格"（日期残留→Bing 理解偏）
+//        "深圳95号汽油价格 查询官网" → "深圳95号汽油 官网 当日价格"（官网残留）
+const QUERY_REDUNDANT_RE = /实时|查询|官网|今日|今天|最新|多少钱|价格是多少|什么价格|是多少钱|多少钱一|每升|最新价格|今日价格|20\d{2}年\d{1,2}月\d{1,2}日|20\d{2}年\d{1,2}月|\d{4}年\d{1,2}月/g;
+const PRICE_INTENT_RE = /价格|多少钱|行情|油价|金价|股价|房价|报价|多少钱一/;
+// v0.87j: 价格词删除需防跨界——"汽油价格"里"油+价"组"油价"（位置6）比"价格"（位置7）更早匹配。
+//   用 lookbehind 排除跨界: "汽油"+"价格"的"油价"前面是"汽"→不删; "黄金"+"价格"的"金价"前面是"黄"→不删;
+//   "股票"+"价格"的"股价"前面是"票"→不删。这样"价格"正常删，保留产品实体（汽油/黄金/股票）。
+const PRICE_NOUN_RE = /价格|(?<!汽)油价|(?<!黄)金价|(?<!票)股价|房价|行情|报价/g;
+
+function simplifyQuery(query) {
+  const q = String(query || '').trim();
+  if (!q) return q;
+
+  let cleaned = q.replace(QUERY_REDUNDANT_RE, '').replace(/\s+/g, ' ').trim();
+  if (cleaned.length < 4) cleaned = q;  // 保护：清洗太狠用原 query
+
+  // 价格意图 + 无"当日/今日价格"措辞 → 规范化为 "实体 当日价格"
+  if (PRICE_INTENT_RE.test(cleaned) && !/当日价格|今日价格/.test(cleaned)) {
+    const entity = cleaned.replace(PRICE_NOUN_RE, '').replace(/\s+/g, ' ').trim();
+    if (entity.length >= 2) {
+      const normalized = entity + ' 当日价格';
+      console.log(`[web-search] query 规范化: "${cleaned}" → "${normalized}"`);
+      return normalized;
+    }
+  }
+  return cleaned;
+}
+
 /**
  * v0.49 网页搜索主函数：多搜索引擎优先级串联
  * @param {string} query - 搜索关键词
@@ -184,9 +438,17 @@ async function searchWeb(query, options = {}) {
     return { error: '搜索关键词必填', results: [] };
   }
 
+  // v0.87i: 入口统一简化 query（治 LLM 堆砌词）
+  const originalQuery = query;
+  query = simplifyQuery(query);
+  if (query !== originalQuery) {
+    console.log(`[web-search] query 简化: "${originalQuery}" → "${query}"`);
+  }
+
   const apiKey = getBingApiKey();
-  const maxResults = Math.min(options.maxResults || MAX_RESULTS, 50);
+  const maxResults = Math.min(options.maxResults || MAX_RESULTS, 40);
   const encodedQuery = encodeURIComponent(query.trim());
+  const tStart = Date.now();  // v0.84: race 耗时统计
 
   // ── 缓存命中直接返回 ──
   const cached = getSearchCache(query, maxResults);
@@ -196,6 +458,18 @@ async function searchWeb(query, options = {}) {
   }
 
   try {
+    // v0.83: 宽泛新闻意图 → 头条热榜直连（不搜搜索引擎）
+    if (isVagueNewsQuery(query)) {
+      console.log('[web-search] 宽泛新闻意图, 走头条热榜: ' + query);
+      const hot = await fetchToutiaoHotBoard(maxResults);
+      if (hot.results.length > 0) {
+        const result = { results: hot.results, source: 'toutiao-hot' };
+        setSearchCache(query, maxResults, result);
+        return result;
+      }
+      console.warn('[web-search] 热榜失败, 降级到搜索引擎: ' + (hot.error || ''));
+    }
+
     if (apiKey) {
       // 模式 A：Bing Web Search API（需 Key）
       console.log('[web-search] 使用 Bing API 搜索');
@@ -208,55 +482,73 @@ async function searchWeb(query, options = {}) {
       }
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // 模式 B：并行浏览器搜索（v0.76 — 替换原串行 Baidu→BingCN→Toutiao 瀑布）
-    //   v0.77: maxResults > 8 时切换到 parallelMergeSearch 多源合并（dedup 后约 25-40 条）
-    //          maxResults <= 8 时保留原 parallelBrowserSearch 单源首选（向后兼容、低延迟）
-    //   全失败时降级到 Sogou 浏览器 + Sogou HTML + Bing HTML
-    // ═══════════════════════════════════════════════════════════
-    console.log('[web-search] 并行浏览器搜索: ' + query);
-    let parallelResult = null;
-    if (maxResults > 8) {
-      parallelResult = await parallelMergeSearch(query, maxResults);
-      if (parallelResult) {
-        console.log(`[web-search] 多源合并命中: ${parallelResult.results.length} 条`);
-        setSearchCache(query, maxResults, parallelResult);
-        return parallelResult;
-      }
-      console.log('[web-search] 多源合并全失败，回退到单源首选');
+    // ── v0.84: 分层并发 race，先到先得 ──
+    //   层1（高质量，优先）: bing-api / bingcn / toutiao / baidu / ddg（puppeteer 真实浏览器）
+    //     8s 窗口内第一个通过质量门的非空结果立即返回。
+    //   层2（HTTP 快源，降级）: sogou-html / bing-html —— 纯 HTTP 1s 返回，但质量差，
+    //     若让它们参与层1 竞争会永远赢（puppeteer 天然 3-5s），所以只在层1 全废后用。
+    //   兜底: 热榜（v0.83）。
+    const highSources = [];
+    if (apiKey) {
+      highSources.push(
+        wrapEngine('bing-api', fetchBingApi(apiKey, encodedQuery, maxResults).then((data) => {
+          return { results: parseBingApiResults(data, maxResults) };
+        }), query)
+      );
     }
-    parallelResult = await parallelBrowserSearch(query, maxResults);
-    if (parallelResult) {
-      setSearchCache(query, maxResults, parallelResult);
-      return parallelResult;
-    }
+    highSources.push(
+      wrapEngine('bingcn',  browserSearchBingCn(query, maxResults), query),
+      wrapEngine('toutiao', browserSearchToutiao(query, maxResults), query),
+      wrapEngine('baidu',   browserSearchBaidu(query, maxResults), query),
+      wrapEngine('ddg',     browserSearchDDG(query, maxResults), query),
+      // v0.87c: ab-bingcn 加入层1 —— agent-browser（真实 Chromium）能过 puppeteer 被限的
+      //   BingCN 反爬，之前因 parseBingCnA11yTree URL 提取 bug 永远 0 条（已修），且不在 race 里
+      wrapEngine('ab-bingcn', agentBrowserSearchBingCn(query, maxResults), query),
+    );
+    const lowSources = [
+      wrapEngine('sogou-html', fetchSogou(encodedQuery).then((html) => ({ results: parseSogouResults(html, maxResults) })), query),
+      wrapEngine('bing-html',  fetchBingHtml(encodedQuery).then((html) => ({ results: parseBingHtmlResults(html, maxResults) })), query),
+    ];
 
-    // 模式 C：搜狗兜底（带 quality gate，过滤元宝/抢购等 AD/竞价链接）
-    console.log('[web-search] 浏览器 Sogou 兜底搜索: ' + query);
-    const browserResults = await browserSearch(query, maxResults);
-    if (!browserResults.error && browserResults.results?.length > 0) {
-      console.log(`[web-search] Sogou 浏览器搜索: ${browserResults.results.length} 条`);
-      const result = { results: browserResults.results, source: 'sogou' };
+    // 层1: 高质量源竞争（v0.87g 两阶段）
+    //   阶段1: 并发执行，等 ab-bingcn（高可信源）settle + 2s 收集已完成源 → 合并返回
+    //   阶段2: 若阶段1 不足（ab-bingcn 结果 < 3 条 或 总数 < 3），等所有源结束合并最终返回
+    //   高可信源结果排最前（_source: 'ab-bingcn'），LLM 能区分并优先参考
+    const abIdx = highSources.length - 1;  // ab-bingcn 是最后一个
+    // 给每个源 promise 附加来源名（阶段2 合并用）
+    highSources.forEach((p, i) => {
+      if (!p._srcName) p._srcName = i === abIdx ? 'ab-bingcn' : ('src' + i);
+    });
+    const checkQuality = (results) => {
+      const abCount = results.filter(r => r._source === 'ab-bingcn').length;
+      return abCount >= 3;  // 高可信源 >=3 条 → 阶段1 够用
+    };
+    const winner1 = await collectWithPriority(highSources, abIdx, 2000, 30000, checkQuality);
+    if (winner1 && winner1.results.length > 0) {
+      const result = { results: winner1.results, source: winner1.source };
+      if (winner1._stage) result._stage = winner1._stage;
+      console.log(`[web-search] race层1 胜出: ${winner1.source} ${winner1.results.length} 条 (${Date.now() - tStart}ms, stage=${winner1._stage || 1})`);
       setSearchCache(query, maxResults, result);
       return result;
     }
 
-    // 模式 D：搜狗 HTML 解析（无浏览器降级）
-    console.log('[web-search] 浏览器搜索失败，尝试搜狗 HTML 解析');
-    const html = await fetchSogou(encodedQuery);
-    let results = parseSogouResults(html, maxResults);
-    if (results.length > 0) {
-      const result = { results, source: 'sogou-html' };
+    // 层2: HTTP 快源（此时它们大概率已返回，再等 2s）
+    console.warn(`[web-search] race层1 全部失败/超时(${SEARCH_RACE_TIMEOUT_MS}ms)，降级 HTTP 快源`);
+    const winner2 = await firstNonEmpty(lowSources, 2000);
+    if (winner2 && winner2.results.length > 0) {
+      const result = { results: winner2.results, source: winner2.source };
+      console.log(`[web-search] race层2 胜出: ${winner2.source} ${winner2.results.length} 条 (${Date.now() - tStart}ms)`);
       setSearchCache(query, maxResults, result);
       return result;
     }
 
-    // 模式 E：Bing 网页版 HTML 解析（最终降级）
-    console.log('[web-search] 搜狗无结果，尝试 Bing 网页版');
-    const bingHtml = await fetchBingHtml(encodedQuery);
-    results = parseBingHtmlResults(bingHtml, maxResults);
-    if (results.length > 0) {
-      const result = { results, source: 'bing-html' };
+    // ── v0.83: 全失败 → 热榜兜底 ──
+    //   场景：任意 query（不只新闻意图）搜索引擎返回空/垃圾时，
+    //   用头条热榜真实数据兜底，用户至少拿到可用的新闻列表。
+    console.warn(`[web-search] 全链路失败，热榜兜底 (${Date.now() - tStart}ms)`);
+    const hotFallback = await fetchToutiaoHotBoard(maxResults);
+    if (hotFallback.results.length > 0) {
+      const result = { ...hotFallback, _fallback: true };
       setSearchCache(query, maxResults, result);
       return result;
     }
@@ -369,6 +661,8 @@ async function parallelMergeSearch(query, maxResults) {
     { name: 'bingcn',  fn: () => browserSearchBingCn(query, maxResults) },
     { name: 'toutiao', fn: () => browserSearchToutiao(query, maxResults) },
     { name: 'ddg',     fn: () => browserSearchDDG(query, maxResults) },
+    // v0.80: agent-browser 冗余 fallback（puppeteer 全失败时启用）
+    { name: 'ab-bingcn', fn: () => agentBrowserSearchBingCn(query, maxResults) },
   ];
 
   const settled = await Promise.allSettled(engines.map((e) => e.fn()));
@@ -395,6 +689,22 @@ async function parallelMergeSearch(query, maxResults) {
     console.log(`[web-search] ${name} 并行贡献: ${res.results.length} 条`);
 
     const filtered = filterByRelevance(res.results, query);
+
+    // v0.83: bingcn 质量门对齐（parallelBrowserSearch 已有，parallelMerge 漏了）
+    //   宽泛/人名 query 时 bingcn 返回日历网/字典页垃圾，标题不含 query 的
+    //   2-gram → 跳过，避免垃圾进合并污染结果。
+    if (name === 'bingcn') {
+      const grams = extractKeyTokens(query);
+      const hasBigram = filtered.some((r) => {
+        const t = (r.title || '').toLowerCase();
+        return grams.some((g) => t.includes(g.toLowerCase()));
+      });
+      if (!hasBigram) {
+        console.warn('[web-search] parallelMerge bingcn 质量门未过(标题无2-gram), 跳过');
+        continue;
+      }
+    }
+
     let added = 0;
     for (const item of filtered) {
       const uKey = normalizeUrlKey(item.url);
@@ -494,6 +804,8 @@ function parseSogouResults(html, maxResults) {
     // 解码 sogou 重定向 + 清理末尾标点
     url = resolveSogouLink(url);
     if (url.includes('sogou.com') || url.includes('bing.com') || url.includes('microsoft.com')) return;
+    // v0.84: 广告/垃圾黑名单（元宝/抢购/推广…，与 bingcn/baidu 对齐）
+    if (isBadResult(title.replace(/<[^>]+>/g, '').trim(), url)) return;
     if (url.startsWith('http')) {
       seenUrls.add(url);
       results.push({
@@ -709,7 +1021,7 @@ async function browserSearchDDG(query, maxResults = 15) {
     return { error: `浏览器启动失败: ${e.message}`, results: [] };
   }
 
-  const cap = Math.min(maxResults, 50); // ACMS schema 上限就是 50
+  const cap = Math.min(maxResults, 40); // ACMS 单网站上限 40 条
   const pagesNeeded = Math.ceil(cap / 10);
   const collected = [];
   const seenUrl = new Set();
@@ -1023,6 +1335,55 @@ async function browserSearchBaiduImage(query, maxResults = 9) {
   }
 }
 
+/**
+ * DDG 图片搜索 — 备用方案，当百度失败时使用
+ */
+async function browserSearchDDGImage(query, maxResults = 9) {
+  let browser;
+  try {
+    browser = await launchBrowser();
+  } catch (e) {
+    return { error: `浏览器启动失败: ${e.message}`, images: [] };
+  }
+  let page = null;
+  try {
+    page = await browser.newPage();
+    await page.setDefaultNavigationTimeout(30000);
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36');
+
+    // DDG 图片搜索 URL
+    const url = `https://duckduckgo.com/?iax=images&ia=${encodeURIComponent(query)}`;
+    await page.goto(url, { waitUntil: 'networkidle0', timeout: 30000 });
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    const images = await page.evaluate((max) => {
+      const items = [];
+      const seen = new Set();
+      // DDG 图片结果在 a.vqd-4x 链接中，src 在 img 标签
+      const links = document.querySelectorAll('a.vqd-4x, a.react-image');
+      for (const a of links) {
+        if (items.length >= max) break;
+        const img = a.querySelector('img');
+        if (!img) continue;
+        const src = img.src || img.getAttribute('data-src') || '';
+        if (!src || seen.has(src)) continue;
+        seen.add(src);
+        // 尝试获取原始尺寸图片
+        const origUrl = a.href || src;
+        items.push({ thumb: src, url: origUrl, title: '' });
+      }
+      return items;
+    }, maxResults);
+
+    console.log(`[web-search] DDG 图片搜索: ${images.length} 张`);
+    return { images, query };
+  } catch (e) {
+    return { error: `DDG 图片搜索失败: ${e.message}`, images: [] };
+  } finally {
+    if (page) { try { await page.close(); } catch {} }
+  }
+}
+
 
 /**
  * 头条搜索 — 无反爬，中文搜索质量好
@@ -1042,8 +1403,10 @@ async function browserSearchToutiao(query, maxResults = 15) {
     await page.setExtraHTTPHeaders({ 'Accept-Language': 'zh-CN,zh;q=0.9' });
 
     const url = 'https://www.toutiao.com/search/?keyword=' + encodeURIComponent(query);
-    await page.goto(url, { waitUntil: 'networkidle0', timeout: 30000 });
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    // v0.84: networkidle0 → domcontentloaded（头条 JS 多，等网络空闲要 ~10s，
+    //   搜索结果 DOM 在 domcontentloaded 已可用，race 场景下省 5-8s）
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await new Promise(resolve => setTimeout(resolve, 1500));
 
     const results = await page.evaluate((max) => {
       const items = [];
@@ -1076,6 +1439,10 @@ module.exports = {
   browserSearchBingCn,
   browserSearchBaidu,
   browserSearchBaiduImage,
+  browserSearchDDGImage,
   browserSearchDDG,
   filterByRelevance,
+  // v0.83
+  isVagueNewsQuery,
+  fetchToutiaoHotBoard,
 };

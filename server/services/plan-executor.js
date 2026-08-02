@@ -20,7 +20,7 @@ const { appendChatEntry } = require('../routes/chat-intent');
  * @param {object} plan - { summary, steps: [{id, tool, args, depends_on?}] }
  * @returns {Promise<{ok, plan_id?, error?}>}
  */
-async function executePlan(reqId, plan) {
+async function executePlan(reqId, plan, userCtx = null) {
   const planId = `plan_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
 
   // 1. 校验 + 拓扑排序
@@ -81,7 +81,7 @@ async function executePlan(reqId, plan) {
 
   // 4. 异步跑（fire-and-forget，handler 立即返回让 LLM 继续）
   setImmediate(() => {
-    runPlan(reqId, planDoc).catch((e) => {
+    runPlan(reqId, planDoc, userCtx).catch((e) => {
       console.error(`[plan-executor] ${planId} runPlan crashed:`, e.message);
       writeSystemEntry(reqId, {
         role: 'system',
@@ -357,7 +357,8 @@ function injectUpstreamFileIds(step, planDoc) {
 /**
  * 实际跑 plan（异步）
  */
-async function runPlan(reqId, planDoc) {
+async function runPlan(reqId, planDoc, userCtx) {
+  // v0.79: 透传 userCtx 到 tool handler ctx.user，让 create_requirement 等权限检查能拿到用户
   const startTime = Date.now();
   let anyFailed = false;
 
@@ -413,10 +414,13 @@ async function runPlan(reqId, planDoc) {
         };
       } else {
         const tool = getTool(step.tool);
+        // v0.79: 传 ctx.user 给 tool handler，否则权限检查 (create_requirement 等) 报 NO_USER/FORBIDDEN
+        //   ctx 来源: plan-executor 调用者传入的 userCtx（agent-buddy / task-agent / 等）
         result = await tool.handler(effectiveArgs, {
           reqId,
           sync: SYNC_TOOLS.has(step.tool),    // 同步工具才传 true
           planDoc,                              // 让 handler 读 plan context (e.g. send_email 据此拒绝全局兜底)
+          user: userCtx?.user,                  // 透传用户上下文，权限检查用
         });
       }
 

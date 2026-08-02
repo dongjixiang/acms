@@ -60,16 +60,26 @@ function extractJson(text) {
 function normalizeRoute(raw) {
   const value = raw && typeof raw === 'object' ? raw : {};
   const mode = ACTION_MODES.has(value.mode) ? value.mode : 'conversation';
+  // v0.85: 白名单与 router prompt 能力枚举对齐（之前漏了 web_search/web_fetch/project_create/create_task
+  //   → "特斯拉股票今日价格"等不命中关键词拦截的消息，capabilities 被滤成空 → 无工具 → LLM 乱码）
   const capabilities = Array.isArray(value.capabilities)
-    ? value.capabilities.filter(x => ['image_generation', 'image_search', 'music_playback', 'email_draft', 'email_send', 'web_research', 'document_generation'].includes(x))
+    ? value.capabilities.filter(x => ['image_generation', 'image_search', 'music_playback', 'email_draft', 'email_send', 'web_search', 'web_research', 'document_generation', 'project_create', 'create_task', 'web_fetch'].includes(x))
     : [];
-  return {
+  const normalized = {
     mode,
     confidence: Math.max(0, Math.min(1, Number(value.confidence) || 0)),
     capabilities: [...new Set(capabilities)],
     requires_confirmation: value.requires_confirmation !== false && capabilities.includes('email_send'),
     reason: String(value.reason || '').slice(0, 300),
   };
+  // v0.85 防御: single_action / conversational_action 但 capabilities 空 → 降级 conversation
+  //   否则 getActionToolNames 清空工具 → LLM 无 schema 可调 → 输出乱码标签格式
+  //   conversation 模式有 L0 常驻工具（web_search 等），LLM 仍能自己决定调工具
+  if (normalized.mode !== 'conversation' && normalized.capabilities.length === 0) {
+    console.warn(`[agent-buddy-action] ${normalized.mode} 但 capabilities 为空 → 降级 conversation (msg: ${String(value.reason || '').slice(0, 60)})`);
+    normalized.mode = 'conversation';
+  }
+  return normalized;
 }
 
 async function routeMessage(modelId, message, history = []) {
@@ -77,7 +87,7 @@ async function routeMessage(modelId, message, history = []) {
   const system = `你是 ACMS 小吉的动作路由器。只做分类，不调用工具，不制定开发计划。
 输出严格 JSON：
 {"mode":"conversation|single_action|conversational_action","confidence":0.0,"capabilities":[],"requires_confirmation":false,"reason":"..."}
-能力枚举：image_generation、image_search、music_playback、email_draft、email_send、web_research、document_generation、project_create。
+能力枚举：image_generation、image_search、music_playback、email_draft、email_send、web_search、web_research、document_generation、project_create、web_fetch。
 规则：
 - 纯问答/查询 ACMS 数据/闲聊 → conversation。
 - 一个明确工具动作 → single_action。
@@ -86,7 +96,9 @@ async function routeMessage(modelId, message, history = []) {
 - 用户描述简短但动作明确时照常分类，不要因为缺少主题、数量等默认参数判无法理解。
 - **重要：mode 为 single_action 或 conversational_action 时，必须根据用户意图将相关能力填入 capabilities 数组，不要留空。**
 - **找图片/搜图片/查图片→ capabilities 含 image_search。生成图片/画图片/创作图片→ capabilities 含 image_generation。两者不同。**
-- **创建项目/新建项目→ capabilities 含 project_create。**`;
+- **创建项目/新建项目→ capabilities 含 project_create。**
+- **用户消息包含 http/https URL 时，必须分类为 single_action 并填入 web_fetch 能力（抓取网页内容），不要分类为 conversation。**
+- **用户说"看新闻"/"查新闻"/"搜新闻"/"最新消息"/"今天有什么新闻"等→ capabilities 含 web_search。**`;
   const result = await callLLM(modelId, [
     { role: 'system', content: system },
     ...(historyText ? [{ role: 'user', content: `最近对话：\\n${historyText}` }] : []),
@@ -101,10 +113,23 @@ async function routeMessage(modelId, message, history = []) {
     console.log('[agent-buddy-action] 关键词命中 image_search, 强制覆盖路由');
   }
   // v0.76: 关键词前置拦截 — 不管路由器 LLM 怎么分类，看到"创建项目/新建项目"就强制 project_create
-  const createProjectRe = /创建项目|新建项目|帮我建.*项目|创建.*项目|新建.*项目叫|新建.*项目名为/;
+  // v0.79: 扩展正则匹配"项目...创建"倒序（如"项目还没帮我创建呢"），支持"创"简写
+  const createProjectRe = /创.*项目|项目.*创|新建.*项目|新建.*叫|帮我建.*项目/;
   if (createProjectRe.test(message) && route.mode !== 'conversation') {
     route.capabilities = ['project_create'];
     console.log('[agent-buddy-action] 关键词命中 project_create, 强制覆盖路由');
+  }
+  // v0.79: 关键词前置拦截 — 看到"创建任务/创建开发任务"就强制 task 相关工具
+  const createTaskRe = /创.*任务|任务.*创建|建.*任务|新建.*任务/;
+  if (createTaskRe.test(message) && route.mode !== 'conversation') {
+    route.capabilities = ['create_task'];
+    console.log('[agent-buddy-action] 关键词命中 create_task, 强制覆盖路由');
+  }
+  // v0.79: 关键词前置拦截 — 看到"看新闻/查新闻/最新消息"就强制 web_search
+  const newsSearchRe = /看新闻|查新闻|搜新闻|最新消息|今天.*新闻|有什么新闻|新闻.*今天/;
+  if (newsSearchRe.test(message) && route.mode !== 'conversation') {
+    route.capabilities = ['web_search'];
+    console.log('[agent-buddy-action] 关键词命中 web_search, 强制覆盖路由');
   }
   // v0.73: "生成X然后发邮件"关键词拦截 — 强制 conversational_action + image_generation + email_send
   const emailAfterRe = /然后发邮件|再发邮件|发邮件给我|发邮件到|发邮件至|并发送邮件|且发邮件/;
@@ -115,6 +140,17 @@ async function routeMessage(modelId, message, history = []) {
     if (!route.capabilities.includes('email_draft')) route.capabilities.push('email_draft');
     route.requires_confirmation = true;
     console.log('[agent-buddy-action] 关键词命中 生成+发邮件, 强制 conversational_action');
+  }
+  // v0.79: URL 检测 — 用户消息含完整 http(s) URL 时强制 web_fetch（直接抓取而非搜索）
+  //   注意：即使用户消息被 LLM 分类为 conversation，只要含 URL 就强制 web_fetch
+  const urlRe = /https?:\/\/[^\s<>"')\],;]+/;
+  if (urlRe.test(message)) {
+    if (route.mode === 'conversation') {
+      route.mode = 'single_action';
+      route.confidence = 0.95;
+    }
+    if (!route.capabilities.includes('web_fetch')) route.capabilities.push('web_fetch');
+    console.log('[agent-buddy-action] URL 命中 web_fetch, 强制覆盖路由');
   }
   return route;
 }
@@ -133,9 +169,14 @@ function getActionToolNames(route, baseTools) {
       if (capability === 'music_playback') tools.add('play_music');
       if (capability === 'email_send' || capability === 'email_draft') tools.add('send_email');
       if (capability === 'web_research') { tools.add('web_search'); tools.add('web_research'); }
+      if (capability === 'web_search') { tools.add('web_search'); tools.add('fetch_url'); }
+      // v0.87: web_search 同时注入 fetch_url —— 搜索返回内容链接（公众号/微博）而
+      //   不含结构化数据（价格/行情/参数）时，LLM 可无缝衔接 fetch_url 直接抓数据源网站
+      //   （新浪财经/汽车之家/贝壳等），而不是建议用户自己去看
       if (capability === 'document_generation') tools.add('document_gen');
       if (capability === 'image_search') { tools.delete('generate_image'); tools.add('web_search'); }
       if (capability === 'project_create') { tools.add('create_project'); tools.add('list_projects'); }
+      if (capability === 'web_fetch') { tools.add('fetch_url'); }
     });
   }
   return [...tools];
@@ -160,6 +201,9 @@ function buildActionPrompt(route) {
 **注意区分：用户说“找图片“/ “搜图片“时是想要真实照片，不是 AI 生图，此时应调 web_search 而不是 generate_image。generate_image 只用于“画一张“/ “生成“/ “创作“等 AI 创作场景。**
 **调用 web_search 找图片时必须传 image_search=true 参数（如 web_search(query="莫文蔚写真", image_search=true)），这样才能取到缩略图。**
 **⚠️ 说=做硬约束：如果在回复中提到了具体工具名（web_search / generate_image / send_email / play_music / query_collection），必须同时调用对应 tool_call。说「我用 X 帮你」但 tool_calls=0 = 装睡，系统检测到后会重提示强制执行。**
+**⚠️ 首轮必须调用工具：第一轮回复必须包含 tool_call，严禁先回复文字再调工具。如果任务需要工具，首轮直接调用。**
+**⚠️ 结果导向硬约束：web_search 工具调用后，优先基于返回结果撰写回复。若结果不含用户要的具体数据（价格/行情/参数），**可再调 1 次 web_search 定位数据源 URL**（如搜"XX价格 官网/查询"），然后用 fetch_url 抓取；严禁第 3 次调 web_search。**
+**⚠️ 禁止循环调用：web_search 最多 2 次（1 次搜数据 + 1 次定位数据源 URL），第 3 次会被系统强制终止。**
 `;
   }
   return shared + `
@@ -170,6 +214,9 @@ function buildActionPrompt(route) {
 **注意区分：用户说“找图片“/ “搜图片“时是想要真实照片，不是 AI 生图，此时应调 web_search 而不是 generate_image。generate_image 只用于“画一张“/ “生成“/ “创作“等 AI 创作场景。**
 **调用 web_search 找图片时必须传 image_search=true 参数（如 web_search(query="莫文蔚写真", image_search=true)），这样才能取到缩略图。**
 **⚠️ 说=做硬约束：如果在回复中提到了具体工具名（web_search / generate_image / send_email / play_music / query_collection），必须同时调用对应 tool_call。说「我用 X 帮你」但 tool_calls=0 = 装睡，系统检测到后会重提示强制执行。**
+**⚠️ 首轮必须调用工具：第一轮回复必须包含 tool_call，严禁先回复文字再调工具。如果任务需要工具，首轮直接调用。**
+**⚠️ 结果导向硬约束：web_search 工具调用后，优先基于返回结果撰写回复。若结果不含用户要的具体数据（价格/行情/参数），**可再调 1 次 web_search 定位数据源 URL**（如搜"XX价格 官网/查询"），然后用 fetch_url 抓取；严禁第 3 次调 web_search。**
+**⚠️ 禁止循环调用：web_search 最多 2 次（1 次搜数据 + 1 次定位数据源 URL），第 3 次会被系统强制终止。**
 `;
 }
 

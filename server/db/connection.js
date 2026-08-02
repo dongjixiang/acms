@@ -20,6 +20,8 @@ const KNOWN_COLLECTIONS = [
   'chat_sessions', 'chat_messages',
   // v0.61 Agent Buddy「小吉」后端记忆（替代 localStorage，跨设备持久化）
   'buddy_memory',
+  // v0.79 Agent Buddy 聊天历史（持久化 + 自动摘要）
+  'buddy_chat_history',
 ];
 
 // === 初始化 ===

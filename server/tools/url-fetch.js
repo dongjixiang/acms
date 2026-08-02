@@ -173,24 +173,17 @@ async function fetchUrlCore({ url, max_length = MAX_LENGTH_DEFAULT }) {
     return { error: `fetch 失败: ${e.message}` };
   }
 
-  // 3. 获取 HTML 内容（fetch 成功 → 直接读；403 等失败 → fallback 到 curl）
+  // 3. 获取 HTML 内容（fetch 成功 → 直接读；403 等失败 → fallback 到 curl/agent-browser）
   let html;
   if (!resp.ok) {
-    // v0.14：失败 → fallback 到 curl（TLS 指纹绕过简单 WAF）
-    const curlResp = await tryCurlFallback(url);
-    if (curlResp && curlResp.ok) {
-      html = curlResp.text;
+    // v0.78: HTTP 失败 → 优先尝试 agent-browser（curl 跳过以节省时间）
+    const browserResp = await tryAgentBrowserFallback(url);
+    if (browserResp && browserResp.ok) {
+      html = browserResp.text;
+      resp = { ok: true, browserFallback: browserResp, url: browserResp.finalUrl };
     } else {
-      // v0.14：curl 也失败（或被反爬验证拦截）→ fallback 到 puppeteer 浏览器
-      const browserResp = await tryBrowserFallback(url);
-      if (browserResp && browserResp.ok) {
-        html = browserResp.text;
-        resp = { ok: true, browserFallback: browserResp };
-      } else {
-        const curlErr = curlResp?.error ? `curl: ${curlResp.error}` : 'curl: 无内容';
-        const browserErr = browserResp?.error ? `浏览器: ${browserResp.error}` : '浏览器: 无内容';
-        return { error: `抓取失败（HTTP ${resp.status}）— ${curlErr} | ${browserErr}` };
-      }
+      const browserErr = browserResp?.error ? `浏览器: ${browserResp.error}` : '浏览器: 无内容';
+      return { error: `抓取失败（HTTP ${resp.status}）— ${browserErr}` };
     }
   } else {
     // 内容类型检查
@@ -208,6 +201,11 @@ async function fetchUrlCore({ url, max_length = MAX_LENGTH_DEFAULT }) {
     || $('meta[name="twitter:title"]').attr('content')
     || '';
 
+  // v0.78: 如果 title 为空且走了 browser fallback，从 browserResp 获取 title
+  if (!title && resp?.browserFallback?.title) {
+    title = resp.browserFallback.title;
+  }
+
   // 6. 提取正文
   const container = findMainContent($) || $('body').get(0);
   if (!container) return { error: '未找到正文容器' };
@@ -218,21 +216,21 @@ async function fetchUrlCore({ url, max_length = MAX_LENGTH_DEFAULT }) {
   // 正文为空，或正文很短且 HTML 明显是脚本驱动页面时，用现有 browserFetch 再取渲染后文本。
 
   // v0.78: 新增安全验证检测 — 百度/知乎等站返回 200 但内容是人机验证页面
-  // 检测到验证关键词 → 立即 fallback 到 puppeteer（跳过内容提取）
+  // 检测到验证关键词 → 立即 fallback 到 agent-browser（跳过内容提取）
   const SECURITY_CHECK_KEYWORDS = [
     '百度安全验证', '请通过安全验证', '验证页面', '人机验证',
     'BIOC_OPTIONS', 'seccaptcha', 'bioc-static',
   ];
   const isSecurityCheck = SECURITY_CHECK_KEYWORDS.some(kw => html.includes(kw));
 
-  const scriptCount = (html.match(/<script\b/gi) || []).length;
-  const looksDynamic = /__NEXT_DATA__|__NUXT__|data-reactroot|webpack|application\/ld+json/i.test(html)
+  const scriptCount = (html.match(/<script\\b/gi) || []).length;
+  const looksDynamic = /__NEXT_DATA__|__NUXT__|data-reactroot|webpack|application\/ld\+json/i.test(html)
     || scriptCount >= 8;
   const shouldBrowserRetry = !resp?.browserFallback
     && (isSecurityCheck || !fullContent || (fullContent.length < 500 && looksDynamic));
 
   if (shouldBrowserRetry) {
-    const browserResp = await tryBrowserFallback(url);
+    const browserResp = await tryAgentBrowserFallback(url);
     const renderedText = (browserResp?.text || '').trim();
     if (browserResp?.ok && renderedText.length > Math.max(fullContent.length * 2, 200)) {
       fullContent = renderedText;
@@ -242,6 +240,18 @@ async function fetchUrlCore({ url, max_length = MAX_LENGTH_DEFAULT }) {
         url: browserResp.finalUrl || resp?.url || url,
         browserFallback: browserResp,
       };
+    }
+  }
+
+  // v0.78: 如果 title 为空，尝试从 snapshot 提取（agent-browser 返回的是文本，不含 <title>）
+  if (!title && resp?.browserFallback?.snapshot) {
+    // 尝试从 snapshot 第一行提取
+    const snapshotLines = resp.browserFallback.snapshot.split('\n');
+    for (const line of snapshotLines) {
+      if (line.trim() && !line.startsWith('-') && line.length > 3 && line.length < 100) {
+        title = line.trim();
+        break;
+      }
     }
   }
 
@@ -290,28 +300,36 @@ const { exec } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
 
-// v0.14：当 curl fallback 也遇到反爬验证时（百度安全验证等需 JS 执行），fallback 到 puppeteer
-let _browserFetchModule = null;
+// v0.78: 当 curl fallback 也遇到反爬验证时（百度安全验证等需 JS 执行），fallback 到 agent-browser
+// agent-browser CLI 内置反检测，比 puppeteer-extra + stealth 更有效
+let _agentBrowserFetchModule = null;
 
-async function getBrowserFetch() {
-  if (!_browserFetchModule) {
+async function getAgentBrowserFetch() {
+  if (!_agentBrowserFetchModule) {
     try {
-      _browserFetchModule = require('../services/browser-fetch');
+      _agentBrowserFetchModule = require('../services/agent-browser-fetch');
     } catch (e) {
       return null;
     }
   }
-  return _browserFetchModule;
+  return _agentBrowserFetchModule;
 }
 
-async function tryBrowserFallback(url) {
-  const bf = await getBrowserFetch();
-  if (!bf) return null;
+async function tryAgentBrowserFallback(url) {
+  const ab = await getAgentBrowserFetch();
+  if (!ab) return null;
   try {
-    const result = await bf.browserFetch(url);
-    if (result.error) return null;
-    if (!result.text || result.text.length < 50) return null;
-    return { text: result.text, status: 200, ok: true, title: result.title, finalUrl: result.finalUrl, screenshot: result.screenshot, rawHtml: result.html, screenshotFormat: 'base64' };
+    const result = await ab.fetchPage(url, { waitMs: 3000 });
+    if (ab.isBaiduSecurityCheck(result.snapshot)) return null;
+    return {
+      text: result.snapshot,
+      status: 200,
+      ok: true,
+      title: result.title,
+      finalUrl: result.url,
+      screenshot: null,
+      rawHtml: null,
+    };
   } catch (e) {
     return null;
   }

@@ -88,6 +88,7 @@ function openExcelEditor(w, fileId, fileName) {
   // cell 格式: '' | '文本' | {v: 值} | {v: 值, b: {bold, italic, underline, fill, color, numFmt}}
   function cellStr(cell) {
     if (typeof cell === 'string') return cell;
+    if (typeof cell === 'number') return String(cell);
     if (cell && typeof cell === 'object') return String(cell.v !== undefined ? cell.v : '');
     return '';
   }
