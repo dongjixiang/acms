@@ -546,6 +546,9 @@ router.post('/chat', async function(req, res) {
       user: user || {},
       apiKey: req.headers['x-api-key'],
       userToken: req.headers['authorization'],
+      // v0.88: 当前项目 ID（前端传 currentProjectId，代码执行域定位 workspace 用）
+      //   未传时回退：查用户当前项目（兼容无前端场景，如 curl 测试）
+      projectId: context.currentProjectId || null,
       // 图片/邮件/plan 工具必须使用真实 requirement id；普通问答保留兼容标识。
       reqId: actionRequirement ? actionRequirement.id : ('buddy:' + (userId || 'anonymous')),
       actionMode: actionRoute.mode,

@@ -1219,6 +1219,8 @@ function isNonPlanTerminal(state) {
 
     var context = {
       currentView: _currentView || undefined,
+      // v0.88: 当前项目 ID（代码执行域需要定位 workspace）
+      currentProjectId: (window.App && App.currentProjectId) || undefined,
       loginCount: _userMemory.loginCount || 0,
       totalQuestions: _userMemory.totalQuestions || 0,
       knownViews: (_userMemory.knownViews || []).slice(-8),

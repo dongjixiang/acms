@@ -62,8 +62,9 @@ function normalizeRoute(raw) {
   const mode = ACTION_MODES.has(value.mode) ? value.mode : 'conversation';
   // v0.85: 白名单与 router prompt 能力枚举对齐（之前漏了 web_search/web_fetch/project_create/create_task
   //   → "特斯拉股票今日价格"等不命中关键词拦截的消息，capabilities 被滤成空 → 无工具 → LLM 乱码）
+  // v0.88: 加 code_execution —— 小吉执行域（改代码/修 bug/跑命令等意图）
   const capabilities = Array.isArray(value.capabilities)
-    ? value.capabilities.filter(x => ['image_generation', 'image_search', 'music_playback', 'email_draft', 'email_send', 'web_search', 'web_research', 'document_generation', 'project_create', 'create_task', 'web_fetch'].includes(x))
+    ? value.capabilities.filter(x => ['image_generation', 'image_search', 'music_playback', 'email_draft', 'email_send', 'web_search', 'web_research', 'document_generation', 'project_create', 'create_task', 'web_fetch', 'code_execution'].includes(x))
     : [];
   const normalized = {
     mode,
@@ -87,7 +88,7 @@ async function routeMessage(modelId, message, history = []) {
   const system = `你是 ACMS 小吉的动作路由器。只做分类，不调用工具，不制定开发计划。
 输出严格 JSON：
 {"mode":"conversation|single_action|conversational_action","confidence":0.0,"capabilities":[],"requires_confirmation":false,"reason":"..."}
-能力枚举：image_generation、image_search、music_playback、email_draft、email_send、web_search、web_research、document_generation、project_create、web_fetch。
+能力枚举：image_generation、image_search、music_playback、email_draft、email_send、web_search、web_research、document_generation、project_create、web_fetch、code_execution。
 规则：
 - 纯问答/查询 ACMS 数据/闲聊 → conversation。
 - 一个明确工具动作 → single_action。
@@ -98,7 +99,8 @@ async function routeMessage(modelId, message, history = []) {
 - **找图片/搜图片/查图片→ capabilities 含 image_search。生成图片/画图片/创作图片→ capabilities 含 image_generation。两者不同。**
 - **创建项目/新建项目→ capabilities 含 project_create。**
 - **用户消息包含 http/https URL 时，必须分类为 single_action 并填入 web_fetch 能力（抓取网页内容），不要分类为 conversation。**
-- **用户说"看新闻"/"查新闻"/"搜新闻"/"最新消息"/"今天有什么新闻"等→ capabilities 含 web_search。**`;
+- **用户说"看新闻"/"查新闻"/"搜新闻"/"最新消息"/"今天有什么新闻"等→ capabilities 含 web_search。**
+- **v0.88 用户要求改代码/写代码/修bug/实现功能/读文件/跑命令/查看项目代码/调试 等代码执行意图 → capabilities 含 code_execution。**`;
   const result = await callLLM(modelId, [
     { role: 'system', content: system },
     ...(historyText ? [{ role: 'user', content: `最近对话：\\n${historyText}` }] : []),
@@ -152,6 +154,18 @@ async function routeMessage(modelId, message, history = []) {
     if (!route.capabilities.includes('web_fetch')) route.capabilities.push('web_fetch');
     console.log('[agent-buddy-action] URL 命中 web_fetch, 强制覆盖路由');
   }
+  // v0.88: 关键词前置拦截 — 代码执行意图（改代码/修bug/实现功能/读文件/跑命令）
+  //   code_execution 意图 = 需要在项目 workspace 里读写文件/跑命令/git
+  //   命中后把 code_execution 加进 capabilities（不覆盖已有，可叠加 web_search 等）
+  const codeExecRe = /改代码|写代码|修[一这]?[个]?bug|修[一这]?[个]?缺陷|实现[一这]?[个]?功能|新增.*功能|读文件|看.*代码|跑[个一]?命令|执行命令|调试|查看项目|改文件|写文件|重构|代码审查|看下.*代码/;
+  if (codeExecRe.test(message) && !route.capabilities.includes('code_execution')) {
+    if (route.mode === 'conversation') {
+      route.mode = 'single_action';
+      route.confidence = 0.9;
+    }
+    route.capabilities.push('code_execution');
+    console.log('[agent-buddy-action] 关键词命中 code_execution, 强制覆盖路由');
+  }
   return route;
 }
 
@@ -177,6 +191,13 @@ function getActionToolNames(route, baseTools) {
       if (capability === 'image_search') { tools.delete('generate_image'); tools.add('web_search'); }
       if (capability === 'project_create') { tools.add('create_project'); tools.add('list_projects'); }
       if (capability === 'web_fetch') { tools.add('fetch_url'); }
+      // v0.88: code_execution —— 注入代码执行池（读/写/跑命令/git）
+      //   从 listPool 取真实注册的工具（防 P81/P97 漏 require 复发）
+      if (capability === 'code_execution') {
+        require('../services/tool-registry').listPool('code_execution').forEach(function(n) { tools.add(n); });
+        // 委派通道：小吉可把子任务派给专业子 agent（Orchestrator-Worker）
+        tools.add('delegate_subtasks');
+      }
     });
   }
   return [...tools];

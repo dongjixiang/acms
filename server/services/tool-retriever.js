@@ -358,16 +358,31 @@ async function bgeSearch(query, topK) {
  */
 async function init() {
   tools = [];
+  // v0.88: 域词典（agent_* 描述是英文，中文检索捞不出执行工具 → 注入中文意图词）
+  let domainTerms = {};
+  try {
+    const { DOMAIN_TERMS } = require('./tool-pools');
+    domainTerms = DOMAIN_TERMS || {};
+  } catch (e) { /* tool-pools 不可用时忽略 */ }
+
   const registryTools = toolRegistry.listTools() || [];
   registryTools.forEach(t => {
     if (!t || !t.name) return;
     const desc = t.description || '';
     const params = (t.parameters && t.parameters.properties) || {};
     const paramStr = Object.keys(params).join(' ');
+    // v0.88: 附加中文意图词（按 pool domain 匹配）
+    let intentTerms = '';
+    try {
+      const pool = toolRegistry.getToolPool(t.name);
+      if (pool && pool.domain && domainTerms[pool.domain]) {
+        intentTerms = ' ' + domainTerms[pool.domain].join(' ');
+      }
+    } catch (e) { /* 忽略 */ }
     tools.push({
       name: t.name,
       description: desc,
-      fulltext: `${t.name} ${desc} ${paramStr}`,
+      fulltext: `${t.name} ${desc} ${paramStr} ${intentTerms}`,
     });
   });
 

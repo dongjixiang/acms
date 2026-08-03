@@ -13,7 +13,73 @@ function registerTool(def) {
     description: def.description || '',
     parameters: def.parameters || { type: 'object', properties: {} },
     handler: def.handler,
+    // v0.88: 工具池元数据（契约先定，引擎后建）
+    //   domain: 能力域 fs/git/exec/web/db/office/acms/media/agent/system
+    //   risk:   风险级 read/write/exec/restricted
+    //   由 registerTool 显式声明，或由 tool-pools 的 POOL_DEFAULTS 兜底补全
+    pool: normalizePool(def.pool),
   });
+}
+
+// v0.88: 池元数据归一化（校验合法值，非法域/风险降级默认）
+const VALID_DOMAINS = new Set(['fs', 'git', 'exec', 'web', 'db', 'office', 'acms', 'media', 'agent', 'system', 'app']);
+const VALID_RISKS = new Set(['read', 'write', 'exec', 'restricted']);
+function normalizePool(pool) {
+  if (!pool || typeof pool !== 'object') return null;
+  const domain = VALID_DOMAINS.has(pool.domain) ? pool.domain : null;
+  const risk = VALID_RISKS.has(pool.risk) ? pool.risk : null;
+  if (!domain && !risk) return null;
+  return { domain: domain || 'system', risk: risk || 'read' };
+}
+
+// v0.88: 读取某工具的池元数据（显式声明 > POOL_DEFAULTS 兜底）
+function getToolPool(name) {
+  const t = registry.get(name);
+  if (t && t.pool) return t.pool;
+  try {
+    const { POOL_DEFAULTS } = require('./tool-pools');
+    const def = POOL_DEFAULTS[name];
+    if (def) return normalizePool(def);
+  } catch (e) { /* tool-pools 不可用时静默 */ }
+  return null;
+}
+
+// v0.88: 池查询（引擎后建，当前为手写映射 + 校验）
+//   返回池内工具名数组；只返回真实注册的工具（防 P81/P97 漏 require 复发）
+function listPool(poolName) {
+  try {
+    const { POOLS } = require('./tool-pools');
+    const names = POOLS[poolName] || [];
+    return names.filter(n => getTool(n) !== null);
+  } catch (e) {
+    console.warn('[tool-registry] listPool 失败:', e.message);
+    return [];
+  }
+}
+
+// v0.88: 列出所有池名
+function listPoolNames() {
+  try {
+    const { POOLS } = require('./tool-pools');
+    return Object.keys(POOLS);
+  } catch (e) {
+    return [];
+  }
+}
+
+// v0.88: 校验所有池内工具真实存在 + 有 pool 元数据（供测试/CI）
+function validatePools() {
+  const { POOLS, POOL_DEFAULTS } = require('./tool-pools');
+  const problems = [];
+  for (const [poolName, names] of Object.entries(POOLS)) {
+    for (const n of names) {
+      if (!registry.has(n)) problems.push(`[${poolName}] ${n} 未注册`);
+      if (!POOL_DEFAULTS[n] && !(registry.get(n) && registry.get(n).pool)) {
+        problems.push(`[${poolName}] ${n} 缺 pool 元数据`);
+      }
+    }
+  }
+  return problems;
 }
 
 function getTool(name) {
@@ -221,6 +287,8 @@ async function execute(name, args, ctx = {}) {
 module.exports = {
   registerTool, getTool, listTools, toProviderFormat, extractToolCalls, makeToolResult, execute,
   getToolStats, resetToolStats,
+  // v0.88: 工具池
+  getToolPool, listPool, listPoolNames, validatePools,
   // v0.66 PR4: app-tool 统计（透传 app-tools-registry.getStats）
   getAppToolStats: function() { return appToolsRegistry.getStats(); },
   resetAppToolStats: function() { return appToolsRegistry.resetStats(); },

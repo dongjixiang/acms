@@ -47,6 +47,8 @@ require('./acms-internal');
 // v0.73: plan-execute.js / send-email.js 从未被 require → plan_execute 找不到 send_email
 require('./plan-execute');
 require('./send-email');
+// v0.88: delegate_subtasks 从 task-agent.js 抽出独立注册（任何入口可见，小吉可委派）
+require('./delegate-subtasks');
 
 console.log('[tools] 内建工具注册完成:', listBuiltinTools().join(', '));
 function listBuiltinTools() { return require('../services/tool-registry').listTools().map(t => t.name); }

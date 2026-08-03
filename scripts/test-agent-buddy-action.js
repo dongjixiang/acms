@@ -1,4 +1,6 @@
 const assert = require('assert');
+// v0.88: code_execution 池注入依赖工具注册（listPool 只返回真实注册的工具）
+require('../server/tools/index.js');
 const action = require('../server/services/agent-buddy-action');
 
 function testNormalizeRoute() {
@@ -29,14 +31,37 @@ function testJsonExtraction() {
 }
 
 function testDynamicTools() {
+  // v0.73 P96: conversational_action 结构性强制只给 plan_execute（tools.clear()）
   const tools = action.getActionToolNames({
     mode: 'conversational_action',
     capabilities: ['image_generation', 'email_draft', 'email_send'],
   }, ['query_collection']);
-  assert(tools.includes('plan_execute'));
-  assert(tools.includes('generate_image'));
-  assert(tools.includes('send_email'));
-  assert(tools.includes('query_collection'));
+  assert.deepEqual(tools, ['plan_execute'], 'conversational_action 只暴露 plan_execute');
+}
+
+function testCodeExecutionTools() {
+  // v0.88: code_execution 注入执行池 + 委派通道
+  const tools = action.getActionToolNames({
+    mode: 'single_action',
+    capabilities: ['code_execution'],
+  }, []);
+  assert(tools.includes('agent_read_file'), '含读文件');
+  assert(tools.includes('agent_write_file'), '含写文件');
+  assert(tools.includes('agent_exec_command'), '含跑命令');
+  assert(tools.includes('agent_git_commit'), '含 git 提交');
+  assert(tools.includes('delegate_subtasks'), '含委派通道');
+}
+
+function testCodeExecKeyword() {
+  // v0.88: 关键词前置拦截 — 不需要真实 LLM，直接测正则路径（通过 normalizeRoute + routeMessage 的拦截逻辑）
+  //   routeMessage 会调 LLM，这里只验证关键词正则本身
+  const re = /改代码|写代码|修[一这]?[个]?bug|修[一这]?[个]?缺陷|实现[一这]?[个]?功能|新增.*功能|读文件|看.*代码|跑[个一]?命令|执行命令|调试|查看项目|改文件|写文件|重构|代码审查|看下.*代码/;
+  assert(re.test('帮我修这个bug'), '修bug');
+  assert(re.test('把这段代码重构一下'), '重构代码');
+  assert(re.test('帮我跑个命令测试'), '跑命令');
+  assert(re.test('新增一个登录功能'), '新增功能');
+  assert(!re.test('帮我查一下需求'), '查需求不应命中');
+  assert(!re.test('今天有什么新闻'), '新闻不应命中');
 }
 
 function testPromptSafety() {
@@ -63,6 +88,6 @@ function testActionCardStateShape() {
   assert.equal(state.pendingEmail.type, 'pending_send_email');
 }
 
-[testNormalizeRoute, testMalformedRouteFallsBack, testJsonExtraction, testDynamicTools, testPromptSafety, testActionCardStateShape].forEach(fn => fn());
-console.log('✅ agent-buddy conversational-action tests passed (5 groups)');
+[testNormalizeRoute, testMalformedRouteFallsBack, testJsonExtraction, testDynamicTools, testCodeExecutionTools, testCodeExecKeyword, testPromptSafety, testActionCardStateShape].forEach(fn => fn());
+console.log('✅ agent-buddy conversational-action tests passed (' + 8 + ' groups)');
 process.exit(0);
