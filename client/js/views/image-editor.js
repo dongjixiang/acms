@@ -218,6 +218,8 @@
         }
         // 安装默认框选放大（hand 关闭时拖拽=选择区域放大）
         setTimeout(function() { setupZoomDrag(); }, 500);
+        // v0.85: 窗口 resize 后重新 fit + 居中
+        watchMainResize();
         // v0.68: tui help-menu 渲染后注入 zoom display（确保按钮旁立即可见）
         try { ensureZoomDisplay(); updateZoomDisplay(_aiZoomLevel || 1); } catch(e) {}
       }, 200);
@@ -262,7 +264,7 @@
           if (_fitImg && _fitImg.width && _fitImg.height) {
             _initFitDone = true;
             clearInterval(_initFitTimer);
-            setTimeout(function() { try { fitAndCenter(); } catch(e) {} }, 80);
+            fitAndCenterWhenReady();
           }
         } catch(e) {}
       }, 250);
@@ -367,9 +369,7 @@
         if (_aiHistory && _aiHistory.length) { _aiHistory = []; try { updateAIUI(); } catch(e) {} }
         if (name && window.ACMSWin && ACMSWin.setTitle) ACMSWin.setTitle(w, name);
         // 适应窗口 + 居中（v0.68：fit + viewportCenterObject 替代单纯 zoomToPoint）
-        setTimeout(function() {
-          try { fitAndCenter(); } catch(e) {}
-        }, 100);
+        fitAndCenterWhenReady();
       }).catch(function(e) {
         console.warn('[IMG-RELOAD] 加载失败:', e);
       });
@@ -438,7 +438,7 @@
                   imageEditor.loadImageFromFile(file).then(function (result) {
                     toast('已加载 ' + file.name, 'success');
                     // 适应窗口 + 居中（v0.68）
-                    setTimeout(function() { try { fitAndCenter(); } catch(e) {} }, 100);
+                    fitAndCenterWhenReady();
                   }).catch(function (err) {
                     console.log('[ImageEditor] loadImageFromFile FAILED:', err, 'file=', file.name);
                     // 方法2: 回退 dataURL
@@ -465,7 +465,7 @@
                       .then(function (result) {
                         toast('已加载 ' + file.name, 'success');
                         // 适应窗口 + 居中（v0.68）
-                        setTimeout(function() { try { fitAndCenter(); } catch(e) {} }, 100);
+                        fitAndCenterWhenReady();
                       })
                       .catch(function () { /* ignore */ });
                   }
@@ -581,9 +581,10 @@
         //   fit 语义 = 完整显示：图比窗口小时保持 100% 居中；放大留给 zoom-in 按钮。
         if (level > 1) level = 1;
 
-        // v0.80: level = 1（小图 100%）时图占满 buffer（centerObject 后居中），
-        //   容器（.tui-image-editor inline-block）在 main 内 text-align:center 居中 →
-        //   viewport 保持 identity 即可（panX/panY = 0），任何 pan 都会把图推出 buffer。
+        // v0.80: level = 1（小图 100%）时图占满 buffer（left/top = 0），
+        //   viewport 保持 identity 即可（panX/panY = 0）——任何 pan 都会把内容
+        //   推出 canvas 元素显示范围（canvas DOM = buffer 尺寸，见下方 v0.85 说明）。
+        //   v0.85: 视觉居中由 centerCanvasDomInMain() 负责（canvas DOM 平移，不是 vpt pan）。
         if (level >= 1) {
           c.setViewportTransform([1, 0, 0, 1, 0, 0]);
           c.requestRenderAll();
@@ -591,25 +592,36 @@
           if (zc1) zc1.zoomLevel = 1;
           _aiZoomLevel = 1;
           updateZoomDisplay(1);
+          centerCanvasDomInMain();
           return;
         }
 
         c.setZoom(level);
 
-        // 手算 panX / panY 让 obj 几何中心 屏幕位置 = main 中心 屏幕位置
-        //   fabric vpt 后: screen.x = canvasRect.left + (objDbuf.x * level + panX) * (canvasRect.width / c.width)
-        //   canvasRect.left 通常 == mainRect.left（canvas DOM 在 main 内 absolute left:0）
-        //   要: 屏幕 center = mainRect.left + mainRect.width/2
-        //   → panX = (mainRect.width / 2) * (c.width / canvasRect.width) - objCenterX * level
-        var canvasRect = c.upperCanvasEl.getBoundingClientRect();
-        if (canvasRect.width <= 0 || canvasRect.height <= 0) return;
+        // 手算 panX / panY 让 obj 几何中心 落在 **canvas DOM 中心**（buffer 中心）。
+        //   fabric vpt 后: DOM.x = (objBufferX * level + panX) * (canvasDOM.width / c.width)
+        //   要图中心 → canvas DOM 中心: DOM.x = canvasDOM.width / 2
+        //   → (objCenterX * level + panX) * (canvasDOM.width / c.width) = canvasDOM.width / 2
+        //   → panX = c.width / 2 - objCenterX * level   ← 用 buffer 宽度（c.width），不是 DOM 宽度！
+        //
+        //   ⚠️ v0.85 关键认知：这里的目标只能是「canvas DOM 中心」，**不能**是 main 视口中心。
+        //   tui 的 canvas DOM 尺寸 = buffer = 原图尺寸（如 1024x1024），远大于 main 视口
+        //   （998x502），且实测 position:absolute 贴 main 左上角（text-align:center 对
+        //   absolute 无效，table-cell 垂直居中也未生效）。若用 c.width/2 当目标中心
+        //   （v0.84 写法）图中心 = buffer 中心 = canvas DOM 中心，但 canvas DOM 中心 ≠
+        //   main 视口中心（垂直差 (1024-502)/2 = 261px）→ 图中心被推到 main 底部之外，
+        //   用户只看到图的上半部分（v0.84 实测 vpt=[0.49,...,260.9,260.9] → 图中心屏幕
+        //   y=685 > main 底部 675 ❌）。
+        //   正确做法：pan 目标 = canvas DOM 中心（保持图在 buffer 中心），然后
+        //   centerCanvasDomInMain() 把 canvas DOM 整体平移到 main 视口中心 →
+        //   图中心 = canvas DOM 中心 = main 视口中心 ✅。
 
-        // obj originX/originY 多数为 'left'/'top'（tui 创建 Image 默认）
+        // obj originX/originY 多数为 'left'/'top'（tui 创建 Image 默认，实测 left=0/top=0）
         var objCenterX = (img.left || 0) + img.width * (img.scaleX || 1) / 2;
         var objCenterY = (img.top  || 0) + img.height * (img.scaleY || 1) / 2;
 
-        var panX = (canvasRect.width  / 2) - objCenterX * level;
-        var panY = (canvasRect.height / 2) - objCenterY * level;
+        var panX = (c.width  / 2) - objCenterX * level;
+        var panY = (c.height / 2) - objCenterY * level;
 
         c.setViewportTransform([level, 0, 0, level, panX, panY]);
         c.requestRenderAll();
@@ -620,7 +632,83 @@
 
         _aiZoomLevel = level;
         updateZoomDisplay(level);
+        centerCanvasDomInMain();
       } catch(e) { console.warn('[ZOOM] fitAndCenter:', e); }
+    }
+
+    // v0.85: 把 .tui-image-editor（canvas 容器，inline-block）整体平移到 main 视口中心。
+    //   背景：tui canvas DOM 尺寸 = buffer = 原图尺寸，且 absolute 贴 main 左上角。
+    //   图在 buffer 中由 vpt 缩放居中后，只要 canvas DOM 居中于 main，图就视觉居中于 main。
+    //   用 transform 平移（不依赖 position/text-align/table-cell 等 tui CSS 结构），
+    //   fabric 的 getPointer 基于 getBoundingClientRect()，平移后鼠标坐标自动正确。
+    //   注意：小图（canvas DOM < main）时也必须居中，否则图在左上角（v0.84 未覆盖）。
+    function centerCanvasDomInMain() {
+      try {
+        if (!mountEl) return;
+        var editorEl = mountEl.querySelector('.tui-image-editor');
+        if (!editorEl) return;
+        var mainEl = mountEl.querySelector('.tui-image-editor-main') || mountEl;
+        var mr = mainEl.getBoundingClientRect();
+        // ⚠️ getBoundingClientRect() 包含 transform：必须先清除再量原始位置，
+        //   否则 dx/dy 基于已平移的 rect 恒为 0，transform 永不更新（小图→大图/大图→小图失效）。
+        //   同一 task 内改回 transform，浏览器不会绘制中间态，无闪烁。
+        var prev = editorEl.style.transform;
+        editorEl.style.transform = 'none';
+        var er = editorEl.getBoundingClientRect();
+        editorEl.style.transform = prev;
+        if (mr.width <= 0 || mr.height <= 0 || er.width <= 0 || er.height <= 0) return;
+        var dx = Math.round(mr.left + mr.width / 2 - er.left - er.width / 2);
+        var dy = Math.round(mr.top + mr.height / 2 - er.top - er.height / 2);
+        if (dx === 0 && dy === 0) { editorEl.style.transform = 'none'; return; }
+        editorEl.style.transform = 'translate(' + dx + 'px,' + dy + 'px)';
+      } catch(e) { console.warn('[ZOOM] centerCanvasDomInMain:', e); }
+    }
+
+    // v0.85: 窗口 resize 后 main 视口尺寸变化 → 重新 fit + 居中
+    function watchMainResize() {
+      try {
+        if (!mountEl || typeof ResizeObserver === 'undefined') return;
+        var mainEl = mountEl.querySelector('.tui-image-editor-main');
+        if (!mainEl) return;
+        var ro = new ResizeObserver(function(entries) {
+          for (var i = 0; i < entries.length; i++) {
+            var r = entries[i].contentRect;
+            if (r.width > 0 && r.height > 0) {
+              fitAndCenterWhenReady(8);
+            }
+          }
+        });
+        ro.observe(mainEl);
+      } catch(e) { console.warn('[ZOOM] watchMainResize:', e); }
+    }
+
+    // 图片重载后 tui 的 Promise 完成并不等于 canvas DOM/layout 已稳定。
+    // 只延迟 100ms 会出现：缩放已执行，但基于旧 canvasRect 计算 pan，图片不在可视区中心。
+    // 等待图片对象和 canvas 尺寸都就绪，并跨几个 animation frame 重算，覆盖拖拽重载路径。
+    function fitAndCenterWhenReady(maxAttempts) {
+      var attempts = 0;
+      var limit = typeof maxAttempts === 'number' ? maxAttempts : 24;
+      function retry() {
+        if (!imageEditor || attempts++ >= limit) return;
+        var img = imageEditor._graphics && imageEditor._graphics.canvasImage;
+        var canvas = imageEditor._graphics && imageEditor._graphics.getCanvas();
+        var upper = canvas && canvas.upperCanvasEl;
+        if (img && img.width && img.height && upper) {
+          var rect = upper.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            try { fitAndCenter(); } catch(e) { console.warn('[ZOOM] fit ready:', e); }
+            // tui 可能在本帧之后才完成 canvas buffer/CSS 尺寸调整，再校正两帧。
+            if (attempts < 4) {
+              requestAnimationFrame(function() {
+                requestAnimationFrame(retry);
+              });
+            }
+            return;
+          }
+        }
+        setTimeout(retry, 50);
+      }
+      retry();
     }
 
     // v0.68.1: zoom input — 在 tui 内置工具栏 .tie-btn-zoomIn 按钮右边显示当前 %
@@ -1101,7 +1189,7 @@
         : opt.image_url_output;
       loadImageSafe(loadUrl, 'ai_' + (idx + 1) + '.png').then(function(result) {
         // 等 tui 内部布局完成后 fit + 居中（v0.68）
-        setTimeout(function() { try { fitAndCenter(); } catch(e) { console.warn('[AI] 缩放失败:', e); } }, 100);
+        fitAndCenterWhenReady();
       }).catch(function(e) { console.warn('[AI] 加载候选失败:', e); });
     }
 
@@ -1124,7 +1212,7 @@
       if (!dataUrl) return;
       loadImageSafe(dataUrl, 'snapshot').then(function(result) {
         // v0.68: fit + 居中
-        setTimeout(function() { try { fitAndCenter(); } catch(e) { console.warn('[AI] 恢复快照缩放失败:', e); } }, 100);
+        fitAndCenterWhenReady();
       }).catch(function(e) { console.warn('[AI] 恢复快照失败:', e); });
     }
 
