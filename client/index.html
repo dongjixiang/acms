@@ -8,7 +8,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>ACMS — 智能体协同管理系统</title>
-<link rel="stylesheet" href="/client/css/style.css?v=0.85.1">
+<link rel="stylesheet" href="/client/css/style.css?v=0.85.2">
 <link rel="stylesheet" href="/client/css/office-doc.css?v=0.62.7">
 <link rel="stylesheet" href="/client/lib/xterm.min.css">
 <script src="/client/lib/mermaid.min.js" defer></script>
@@ -559,7 +559,7 @@ document.addEventListener('DOMContentLoaded', () => {
     </div>
     <div class="tray-item clickable" id="tb-theme-btn" title="切换主题">🎨</div>
     <div class="tray-item clickable" id="tb-notif-btn" title="通知">🔔 <span id="tb-notif-count" style="display:none;background:var(--accent2);color:#fff;border-radius:99px;padding:0 5px;font-size:10px;min-width:16px;text-align:center;">0</span></div>
-    <div class="tray-item" id="tb-ime-btn" title="输入法状态（composition 自动检测）"><span id="tb-ime-label">EN</span></div>
+    <div class="tray-item" id="tb-ime-btn" title="输入法状态（自动检测）"><span id="tb-ime-debug" class="ime-debug-dot"></span><span id="tb-ime-label">EN</span></div>
     <div id="tb-clock" style="font-size:11px;color:var(--text2);padding:0 4px"></div>
   </div>
 </div>
@@ -646,7 +646,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- v0.55：桌面图标容器（右下角固定，垂直堆叠，由 ACMSWin.registerDesktopIcon 注册） -->
 <div id="desktop-icons" onclick="event.stopPropagation()"></div>
 
-<script src="/client/js/views/taskbar.js?v=0.85.1"></script>
+<script src="/client/js/views/taskbar.js?v=0.85.2"></script>
 <script src="/client/js/views/window-manager.js?v=0.60"></script>
 
 <!-- v0.58：核心基础设施 — package-registry 必须在所有视图之前加载，command-palette/notification-center 紧随其后 -->

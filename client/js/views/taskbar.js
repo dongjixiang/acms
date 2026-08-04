@@ -18,14 +18,49 @@
   }
 
   // ── 输入法状态指示器（v0.85.1）──
-  // 监听 compositionstart/end，标记是否正在 IME 输入。
-  // 中文/拼音等带 IME 的输入会触发 composition 事件；纯英文输入不触发 → 默认 EN。
+  // 4 路监听 + 调试可视化：
+  //   1) compositionstart / end — 主要路径
+  //   2) keydown + isComposing / keyCode 229 — 补漏（Firefox 等不触发 compositionstart 的浏览器）
+  //   3) input + inputType 'insertCompositionText' — IME 上屏信号
+  //   4) blur 兜底 — 失焦归位 EN
+  // dot 颜色：灰=无事件、闪绿=刚收到 IME 相关事件、暗红=看到 keyCode 229 但 composition 没起
+  // 详细诊断信息写到 title 属性里，鼠标悬停可看
   function initImeIndicator() {
     var label = document.getElementById('tb-ime-label');
     var btn = document.getElementById('tb-ime-btn');
+    var debugDot = document.getElementById('tb-ime-debug');
     if (!label || !btn) return;
 
-    function setIme(zh) {
+    var counts = { compositionstart: 0, compositionend: 0, keydown229: 0, inputComposing: 0, blur: 0 };
+    var lastEvent = 'none';
+    var imeOn = false;
+
+    function updateTitle() {
+      btn.title = '输入法检测 | last: ' + lastEvent +
+                  ' | on: ' + imeOn +
+                  ' | cs:' + counts.compositionstart +
+                  ' ce:' + counts.compositionend +
+                  ' k229:' + counts.keydown229 +
+                  ' inC:' + counts.inputComposing +
+                  ' blur:' + counts.blur;
+    }
+    updateTitle();
+
+    function flash(color) {
+      if (!debugDot) return;
+      debugDot.classList.remove('flash');
+      void debugDot.offsetWidth; // force reflow
+      debugDot.classList.add('flash');
+      if (color) debugDot.style.background = color;
+      setTimeout(function() {
+        debugDot.classList.remove('flash');
+        debugDot.style.background = '';
+      }, 350);
+    }
+
+    function setIme(zh, source) {
+      var prev = imeOn;
+      imeOn = !!zh;
       if (zh) {
         label.textContent = '中';
         btn.classList.add('ime-zh');
@@ -33,20 +68,57 @@
         label.textContent = 'EN';
         btn.classList.remove('ime-zh');
       }
+      if (prev !== imeOn) flash('#4ecdc4');
+      updateTitle();
     }
 
-    // 捕获阶段，捕获所有 input/textarea/contenteditable 上的 IME 事件
-    document.addEventListener('compositionstart', function() {
-      setIme(true);
+    function bump(name, ev) {
+      counts[name] = (counts[name] || 0) + 1;
+      lastEvent = name + (ev && ev.type ? ('(' + ev.type + ')') : '');
+      flash();
+      updateTitle();
+    }
+
+    // 路 1：composition 事件（capture phase 全文档拦截）
+    document.addEventListener('compositionstart', function(e) {
+      bump('compositionstart', e);
+      setIme(true, 'compositionstart');
     }, true);
-    document.addEventListener('compositionend', function() {
-      setIme(false);
+    document.addEventListener('compositionend', function(e) {
+      bump('compositionend', e);
+      setIme(false, 'compositionend');
     }, true);
 
-    // 兜底：从 input 切走或窗口失焦时，如果仍 mark 为 IME 状态，归位 EN
-    document.addEventListener('blur', function() {
-      setIme(false);
+    // 路 2：keydown 监听 — Firefox/部分浏览器对某些 IME 不触发 compositionstart，
+    // 但 keyCode 229（KeyCode 'Processing'）表示这一键被 IME 拦截了 → 也算 IME 激活
+    document.addEventListener('keydown', function(e) {
+      if (e.isComposing || e.keyCode === 229 || e.which === 229) {
+        bump('keydown229', e);
+        setIme(true, 'keydown229');
+      }
     }, true);
+
+    // 路 3：input 事件 — inputType 'insertCompositionText' 是 IME 上屏中的强信号
+    document.addEventListener('input', function(e) {
+      if (e.inputType === 'insertCompositionText' || e.isComposing) {
+        bump('inputComposing', e);
+        setIme(true, 'input');
+      }
+    }, true);
+
+    // 路 4：blur 兜底 — 失焦归 EN
+    document.addEventListener('blur', function(e) {
+      if (imeOn) {
+        bump('blur', e);
+        setIme(false, 'blur');
+      }
+    }, true);
+
+    // 暴露诊断到 console 便于排查
+    window.__acmsImeDebug = function() {
+      console.log('[IME Debug]', { imeOn: imeOn, lastEvent: lastEvent, counts: counts });
+      return { imeOn: imeOn, lastEvent: lastEvent, counts: counts };
+    };
   }
 
   // ── 项目切换 Pill ──

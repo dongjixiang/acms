@@ -3754,18 +3754,36 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
 
 /* v0.85.1：输入法状态指示器 */
 #tb-ime-btn {
-  min-width: 32px;
+  min-width: 40px;
   justify-content: center;
   padding: 3px 8px;
   font-weight: 600;
   letter-spacing: 0.5px;
   cursor: default;
+  gap: 4px;
 }
 #tb-ime-btn.ime-zh { color: var(--accent, #4ecdc4); }
 #tb-ime-btn.ime-zh #tb-ime-label::before {
   content: "🈶";
   margin-right: 3px;
   font-size: 10px;
+}
+.ime-debug-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--text2, #666);
+  display: inline-block;
+  flex-shrink: 0;
+  transition: background 0.1s;
+  opacity: 0.4;
+}
+.ime-debug-dot.flash {
+  background: var(--green, #6bff6b);
+  opacity: 1;
+  box-shadow: 0 0 4px var(--green, #6bff6b);
+}
+.ime-debug-dot.dark {
+  background: var(--accent2, #ff5e5e);
+  opacity: 0.8;
 }
 
 /* 启动菜单 */
