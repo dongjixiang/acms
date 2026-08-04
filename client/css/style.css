@@ -3752,6 +3752,22 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
 .tray-dot.pulse { animation: tb-pulse 1.5s ease-in-out infinite; }
 @keyframes tb-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 
+/* v0.85.1：输入法状态指示器 */
+#tb-ime-btn {
+  min-width: 32px;
+  justify-content: center;
+  padding: 3px 8px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  cursor: default;
+}
+#tb-ime-btn.ime-zh { color: var(--accent, #4ecdc4); }
+#tb-ime-btn.ime-zh #tb-ime-label::before {
+  content: "🈶";
+  margin-right: 3px;
+  font-size: 10px;
+}
+
 /* 启动菜单 */
 #launcher-menu {
   display: none;

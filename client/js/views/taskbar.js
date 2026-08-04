@@ -12,8 +12,41 @@
     setInterval(pollTaskbar, 30000);  // 每 30s 刷新状态
     bindEvents();
     initProjectPill();
+    initImeIndicator();  // v0.85.1：绑定 composition 事件监测输入法
     // v0.55：启动时拉回收站 badge + 历史列表缓存
     if (typeof refreshRecycleBinCount === 'function') refreshRecycleBinCount();
+  }
+
+  // ── 输入法状态指示器（v0.85.1）──
+  // 监听 compositionstart/end，标记是否正在 IME 输入。
+  // 中文/拼音等带 IME 的输入会触发 composition 事件；纯英文输入不触发 → 默认 EN。
+  function initImeIndicator() {
+    var label = document.getElementById('tb-ime-label');
+    var btn = document.getElementById('tb-ime-btn');
+    if (!label || !btn) return;
+
+    function setIme(zh) {
+      if (zh) {
+        label.textContent = '中';
+        btn.classList.add('ime-zh');
+      } else {
+        label.textContent = 'EN';
+        btn.classList.remove('ime-zh');
+      }
+    }
+
+    // 捕获阶段，捕获所有 input/textarea/contenteditable 上的 IME 事件
+    document.addEventListener('compositionstart', function() {
+      setIme(true);
+    }, true);
+    document.addEventListener('compositionend', function() {
+      setIme(false);
+    }, true);
+
+    // 兜底：从 input 切走或窗口失焦时，如果仍 mark 为 IME 状态，归位 EN
+    document.addEventListener('blur', function() {
+      setIme(false);
+    }, true);
   }
 
   // ── 项目切换 Pill ──
