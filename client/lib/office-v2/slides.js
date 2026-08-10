@@ -2,9 +2,7 @@
 // 功能：创建/编辑幻灯片、插入文本/图片/表格、保存为 .pptx、打开 .pptx
 // 导出：mountSlides(targetId) -> { reveal, editor, destroy }
 
-// ESM export（bridge 用 dynamic import 加载）
-export function mountSlides(targetId) {
-// AdmZip 通过 script 标签加载，全局变量 AdmZip
+// ── PPTX 解析（前端 AdmZip）────────────────────────────────────────────
 function parsePptxToSchema(buf) {
   var zip = new AdmZip(buf);
   var imageMap = {};
@@ -246,7 +244,7 @@ function buildPptxGenJS(slides) {
 }
 
 // ── 编辑器主函数 ──────────────────────────────────────────────────────
-function mountSlides(targetId) {
+export function mountSlides(targetId) {
   var REVEAL_CDN = 'https://cdn.jsdelivr.net/npm/reveal.js@4.5.0';
   var CSS_URL = REVEAL_CDN + '/dist/reveal.css';
   var THEME_URL = REVEAL_CDN + '/dist/theme/black.css';
