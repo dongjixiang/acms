@@ -12,6 +12,8 @@ const https = require('https');
 const { browserSearch, launchBrowser } = require('./browser-fetch');
 // v0.80: agent-browser 冗余 fallback（当 puppeteer 引擎全失败时使用）
 const { searchBingCn: agentBrowserSearchBingCn } = require('./agent-browser-fetch');
+// v0.89: 成功经验持久化（让 web_search 成功路径能跨 session 复用）
+const successTracker = require('./search-success-tracker');
 
 const SEARCH_TIMEOUT_MS = 10000;
 const MAX_RESULTS = 40;
@@ -465,6 +467,7 @@ async function searchWeb(query, options = {}) {
       if (hot.results.length > 0) {
         const result = { results: hot.results, source: 'toutiao-hot' };
         setSearchCache(query, maxResults, result);
+        successTracker.recordSearchSuccess(originalQuery, query, 'toutiao-hot', hot.results);
         return result;
       }
       console.warn('[web-search] 热榜失败, 降级到搜索引擎: ' + (hot.error || ''));
@@ -478,6 +481,7 @@ async function searchWeb(query, options = {}) {
       if (results.length > 0) {
         const result = { results, source: 'bing-api' };
         setSearchCache(query, maxResults, result);
+        successTracker.recordSearchSuccess(originalQuery, query, 'bing-api', results);
         return result;
       }
     }
@@ -529,6 +533,7 @@ async function searchWeb(query, options = {}) {
       if (winner1._stage) result._stage = winner1._stage;
       console.log(`[web-search] race层1 胜出: ${winner1.source} ${winner1.results.length} 条 (${Date.now() - tStart}ms, stage=${winner1._stage || 1})`);
       setSearchCache(query, maxResults, result);
+      successTracker.recordSearchSuccess(originalQuery, query, winner1.source, winner1.results);
       return result;
     }
 
@@ -539,6 +544,7 @@ async function searchWeb(query, options = {}) {
       const result = { results: winner2.results, source: winner2.source };
       console.log(`[web-search] race层2 胜出: ${winner2.source} ${winner2.results.length} 条 (${Date.now() - tStart}ms)`);
       setSearchCache(query, maxResults, result);
+      successTracker.recordSearchSuccess(originalQuery, query, winner2.source, winner2.results);
       return result;
     }
 

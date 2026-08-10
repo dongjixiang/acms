@@ -11,28 +11,14 @@ const config = require('../config');
 
 registerTool({
   name: 'send_email',
-  description: '帮用户发送一封邮件(收件人/主题/正文提取自用户消息 + 对话历史)。'
-    + '当用户表达"发邮件给 X""给 X 发个通知""转发对话给 X""把这段内容发给 X""把刚才生成的图片发邮件给 X"等明确邮件发送意图时使用。'
-    + '**附件自动匹配(attach_keywords)**:根据关键词(如"海边美女散步图片")在 REQ 历史生成内容(图片/视频/文档)里匹配最相关的 asset 作为附件。'
-    + '**默认行为**:不传或传空数组时,自动附带最近生成的 1 个 asset(用户在 REQ 里刚生成的图片/视频/文档)。'
-    + '**想不附任何附件**:传 `["none"]` 或 `["无附件"]`(明确告诉系统"无附件")。'
-    + '**想附多张**:传多个关键词(如 ["海边散步图","咖啡馆图"])匹配多个 asset,按相关度排序。'
-    + '**音乐源是 URL 没有本地文件**,会作为链接追加到正文(不会作为附件)。'
-    + '**注意**:这是 B 方案的安全设计 — handler 不会真发邮件,只是把邮件信息写到聊天流让用户在预览卡确认。'
-    + '**严禁**对"是否需要提醒/通知/总结"等非明确发邮件意图调用本工具;**严禁**用户没提供收件人地址时胡乱编造邮箱。'
-    + '返回 ok=true 表示邮件已准备,前端会弹预览卡让用户确认;ok=false 表示参数缺失或不合法,需 LLM 提示用户补充。'
-    + '\n\n'
-    + '【🔥 v0.50 新规 — 复合意图下游 send_email body 必须引用上游数据】\n'
-    + '当 send_email 是在 plan_execute 编排里作为某个上游 step（web_search / web_research / generate_image / document_gen）的下游时（取决于 depends_on），\n'
-    + '你**必须**在 args.body / args.subject 里用 ${...} 模板引用上游真实数据，否则邮件正文会凭空编写：\n'
-    + '  ❌ 错误：body = "Please find attached the latest World Cup promotional image."（纯空话，无任何来自上游 step 的数据）\n'
-    + '  ✅ 正确：body = "世界杯赛况概要：${s1.formatted}\\n\\n海报附件 ID：${s2.file_ids.0.id}..."（含上游 web_research 综合 + 上游生成的图 file_id）\n'
-    + '\n'
-    + '注：plan-executor 对 generate_image / document_gen 会自动注入上游 ${s1.formatted} 作为 prefix 兜底；\n'
-    + '但**send_email body 不自动注入**（邮件正文是发给用户读的，拼接 prefix 会污染纯度）——\n'
-    + '所以你必须显式写 ${...} 引用上游 step result，否则邮件将是空话。这是 v0.50 关键约束。'
-    + '\n\n'
-    + '【重要】这是 fire-and-forget 异步任务,调用一次即可,不要重复调用。',
+  description: '帮用户发送邮件（B 方案安全设计）。handler 不真发邮件，只是写待发送邮件到聊天流让用户预览确认。\n'
+    + '【何时用】用户说"发邮件给 X"/"通知 X"/"转发对话给 X"等明确邮件意图\n'
+    + '【参数】to/subject/body 必填；attach_keywords 可选（默认附 REQ 最近 1 个 asset；["none"] = 不附；多个关键词匹配多 asset；音乐源 URL 追加到正文）\n'
+    + '【何时不用】"是否需要提醒/通知/总结"等模糊意图 → 严禁编造收件人邮箱\n'
+    + '【v0.50 复合意图下游约束】在 plan_execute 里作为下游时，body 必须用 ${s1.formatted} / ${s2.file_ids.0.id} 引用上游真实数据\n'
+    + '  ❌ "Please find attached the latest image"（纯空话）\n'
+    + '  ✅ "赛况：${s1.formatted}\\n\\n附件 ID：${s2.file_ids.0.id}"（含上游数据）\n'
+    + '【返回】ok=true = 邮件已准备，前端弹预览卡等待用户点确认；ok=false = 参数缺失或不合法；严禁声称邮件已发送。',
   parameters: {
     type: 'object',
     properties: {

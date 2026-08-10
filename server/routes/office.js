@@ -6,6 +6,8 @@ const { v4: uuidv4 } = require('uuid');
 const ExcelJS = require('exceljs');
 const { XMLParser } = require('fast-xml-parser');
 const { parseDocxToBlocks } = require('./office-parse-docx');
+const docxLib = require('docx');
+const { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, AlignmentType, BorderStyle } = docxLib;
 
 function escHtml(s) {
   return String(s)
@@ -373,7 +375,19 @@ router.get('/load/:fileId', async function (req, res) {
       ? path.join(__dirname, '..', '..', 'data', 'chat-uploads')
       : OFFICE_DIR;
     var files = fs.readdirSync(baseDir);
-    var match = files.find(function (f) { return f === fileId || f.startsWith(fileId + '.') || f.startsWith(fileId); });
+    // 优先匹配主文件 (xlsx/docx/pptx)，避免匹配到 .schema.json
+    var mainExt = ['xlsx', 'docx', 'pptx'];
+    var match = files.find(function (f) {
+      if (f === fileId) return true;
+      for (var i = 0; i < mainExt.length; i++) {
+        if (f === fileId + '.' + mainExt[i]) return true;
+      }
+      return false;
+    });
+    // fallback: 匹配任意 fileId.*
+    if (!match) {
+      match = files.find(function (f) { return f.startsWith(fileId + '.'); });
+    }
     if (!match) return res.status(404).json({ error: 'FILE_NOT_FOUND', fileId: fileId, source: source });
     var filePath = path.join(baseDir, match);
     var buf = fs.readFileSync(filePath);
@@ -452,14 +466,186 @@ router.get('/download/:fileId/:name', function (req, res) {
   res.sendFile(path.join(OFFICE_DIR, match));
 });
 
+function parseInlineFormatting(content) {
+  // content is JSON string from frontend: '[{"text":"...","bold":false,"italic":false}]'
+  // or plain text
+  try {
+    var parts = JSON.parse(content);
+    if (Array.isArray(parts)) {
+      return parts.map(function(p) {
+        return new TextRun({
+          text: p.text,
+          bold: p.bold || false,
+          italics: p.italic || false,
+          font: 'Microsoft YaHei',
+          size: 22
+        });
+      });
+    }
+  } catch (e) {
+    // not JSON, treat as plain text
+  }
+  return [new TextRun({ text: content || '', font: 'Microsoft YaHei', size: 22 })];
+}
+
+function blockToDocxChildren(block) {
+  var children = [];
+  var fmt = (block.attrs && block.attrs.formatting) || {};
+
+  if (block.type === 'heading') {
+    var level = (block.attrs && block.attrs.level) || 1;
+    var headingLevel = [HeadingLevel.HEADING_1, HeadingLevel.HEADING_2, HeadingLevel.HEADING_3,
+                        HeadingLevel.HEADING_4, HeadingLevel.HEADING_5, HeadingLevel.HEADING_6][level - 1] || HeadingLevel.HEADING_1;
+    var runs = parseInlineFormatting(block.content);
+    if (fmt.bold) runs.forEach(function(r) { r.bold = true; });
+    if (fmt.italic) runs.forEach(function(r) { r.italics = true; });
+    children.push(new Paragraph({
+      heading: headingLevel,
+      spacing: { before: 300, after: 150 },
+      children: runs
+    }));
+  } else if (block.type === 'code') {
+    var codeLines = (block.content || '').split('\n');
+    var codeRuns = codeLines.map(function(line, idx) {
+      return new TextRun({ text: (idx > 0 ? '\n' : '') + line, font: 'Consolas', size: 18, color: '444444' });
+    });
+    children.push(new Paragraph({
+      spacing: { before: 100, after: 100 },
+      shading: { type: docxLib.ShadingType.CLEAR, fill: 'F5F5F5' },
+      indent: { left: 300 },
+      children: codeRuns
+    }));
+  } else if (block.type === 'quote') {
+    var quoteRuns = parseInlineFormatting(block.content);
+    children.push(new Paragraph({
+      indent: { left: 400 },
+      spacing: { before: 60, after: 60 },
+      shading: { type: docxLib.ShadingType.CLEAR, fill: 'F0F4FF' },
+      children: quoteRuns
+    }));
+  } else if (block.type === 'bulletList') {
+    var items = (block.content || '').split('\n').filter(function(s) { return s.trim(); });
+    if (!items.length) items = [''];
+    items.forEach(function(item) {
+      var runs = parseInlineFormatting(item);
+      children.push(new Paragraph({
+        spacing: { after: 60 },
+        indent: { left: 400, hanging: 200 },
+        children: [new TextRun({ text: '•  ', size: 22 }), ...runs]
+      }));
+    });
+  } else if (block.type === 'orderedList') {
+    var items2 = (block.content || '').split('\n').filter(function(s) { return s.trim(); });
+    if (!items2.length) items2 = [''];
+    items2.forEach(function(item, idx) {
+      var runs = parseInlineFormatting(item);
+      children.push(new Paragraph({
+        spacing: { after: 60 },
+        indent: { left: 400, hanging: 200 },
+        children: [new TextRun({ text: (idx + 1) + '. ', size: 22 }), ...runs]
+      }));
+    });
+  } else if (block.type === 'table') {
+    var ta = block.attrs || {};
+    var headers = ta.headers || [];
+    var rows = ta.rows || [];
+    var tableRows = [];
+    if (headers.length > 0) {
+      tableRows.push(new TableRow({
+        children: headers.map(function(h) {
+          return new TableCell({
+            children: [new Paragraph({ children: [new TextRun({ text: h, bold: true, size: 22 })] })],
+            shading: { type: docxLib.ShadingType.CLEAR, fill: 'E8E8E8' }
+          });
+        })
+      }));
+    }
+    rows.forEach(function(rowData) {
+      tableRows.push(new TableRow({
+        children: rowData.map(function(cellText) {
+          return new TableCell({
+            children: [new Paragraph({ children: [new TextRun({ text: cellText || '', size: 22 })] })]
+          });
+        })
+      }));
+    });
+    children.push(new Table({
+      rows: tableRows,
+      width: { size: 100, type: WidthType.PERCENTAGE }
+    }));
+  } else if (block.type === 'divider') {
+    children.push(new Paragraph({
+      spacing: { before: 200, after: 200 },
+      borders: { bottom: { style: BorderStyle.SINGLE, size: 6, color: '999999' } }
+    }));
+  } else {
+    // paragraph, todo, footnote, etc.
+    var paraRuns = parseInlineFormatting(block.content);
+    if (fmt.bold) paraRuns.forEach(function(r) { r.bold = true; });
+    if (fmt.italic) paraRuns.forEach(function(r) { r.italics = true; });
+    if (fmt.underline) paraRuns.forEach(function(r) { r.underline = {}; });
+    children.push(new Paragraph({
+      spacing: { after: 120 },
+      alignment: fmt.align || AlignmentType.LEFT,
+      children: paraRuns
+    }));
+  }
+  return children;
+}
+
 async function writeDocx(body) {
-  // TODO: implement
-  return Buffer.from('fake');
+  var data = body.data || {};
+  var blocks = data.blocks || [];
+  var title = data.title || '未命名文档';
+
+  var docChildren = [];
+  blocks.forEach(function(block) {
+    var children = blockToDocxChildren(block);
+    docChildren = docChildren.concat(children);
+  });
+
+  if (docChildren.length === 0) {
+    docChildren.push(new Paragraph({ children: [new TextRun({ text: '', font: 'Microsoft YaHei', size: 22 })] }));
+  }
+
+  var doc = new Document({
+    title: title,
+    description: 'ACMS 导出',
+    styles: {
+      default: {
+        document: {
+          run: { font: 'Microsoft YaHei', size: 22 }
+        }
+      }
+    },
+    sections: [{
+      properties: {},
+      children: docChildren
+    }]
+  });
+
+  return await Packer.toBuffer(doc);
 }
 
 async function writeXlsx(body) {
-  // TODO: implement
-  return Buffer.from('fake');
+  const workbook = new ExcelJS.Workbook();
+  const sheets = (body.data && body.data.sheets) || [];
+  for (const sheetMeta of sheets) {
+    const ws = workbook.addWorksheet(sheetMeta.name || 'Sheet');
+    const headers = sheetMeta.headers || [];
+    const rows = sheetMeta.rows || [];
+    if (headers.length > 0) {
+      ws.addRow(headers).eachCell(cell => { cell.font = { bold: true }; });
+    }
+    for (const rowData of rows) {
+      ws.addRow(rowData);
+    }
+  }
+  if (workbook.worksheets.length === 0) {
+    const ws = workbook.addWorksheet('Sheet1');
+    ws.addRow(['', '']);
+  }
+  return await workbook.xlsx.writeBuffer();
 }
 
 async function writePptx(body) {

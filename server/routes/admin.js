@@ -112,6 +112,44 @@ router.post('/elicitor-enabled', (req, res) => {
   res.json({ success: true, enabled: newVal });
 });
 
+// v0.X：需求自动放弃配置（开关 + 天数）
+//   走 system_configs 表：admin UI 实时切换，无需重启服务
+router.get('/auto-abandon-config', (req, res) => {
+  const sm = require('../services/state-machine');
+  res.json(sm.getAutoAbandonConfig());
+});
+
+router.post('/auto-abandon-config', (req, res) => {
+  const { enabled, days } = req.body;
+  const sysConfigs = collection('system_configs');
+  const now = new Date().toISOString();
+
+  // days 必须 1-365 整数
+  const intDays = parseInt(days, 10);
+  if (!intDays || intDays < 1 || intDays > 365) {
+    return res.status(400).json({ error: 'INVALID_DAYS', message: '天数必须为 1-365 之间的整数' });
+  }
+
+  // 写 enabled（布尔归一化）
+  const boolVal = !!enabled;
+  const existingEnabled = sysConfigs.findOne(c => c.key === 'auto_abandon_enabled');
+  if (existingEnabled) {
+    sysConfigs.update(c => c.key === 'auto_abandon_enabled', { ...existingEnabled, value: boolVal, updated_at: now });
+  } else {
+    sysConfigs.insert({ key: 'auto_abandon_enabled', value: boolVal, created_at: now, updated_at: now });
+  }
+
+  // 写 days
+  const existingDays = sysConfigs.findOne(c => c.key === 'auto_abandon_days');
+  if (existingDays) {
+    sysConfigs.update(c => c.key === 'auto_abandon_days', { ...existingDays, value: intDays, updated_at: now });
+  } else {
+    sysConfigs.insert({ key: 'auto_abandon_days', value: intDays, created_at: now, updated_at: now });
+  }
+
+  res.json({ success: true, enabled: boolVal, days: intDays });
+});
+
 // Agnes AI API Key 配置（管理界面读写）
 const AGNES_CONFIG_KEY = 'agnes_api_key';
 router.get('/agnes-key', (req, res) => {

@@ -203,9 +203,23 @@ function getActionToolNames(route, baseTools) {
   return [...tools];
 }
 
+// 装睡防御硬约束 — single/conversational 两段共用（避免重复 ~600 字符）
+const STALL_HARD_CONSTRAINTS = `
+【装睡防御硬约束】
+- 严重警告：回复中只有文字描述不调工具 = 装睡，系统强制重试；必须实际调用工具，不能只说"已提交""请等待"
+- 生成图片时用户给了描述就直接调，严禁反问风格；AI 自行补充细节或默认值
+- 找歌/搜歌只能调 play_music，不能调 generate_image 或其他创作工具
+- 区分："找图片"/"搜图片"=搜真实照片（用 web_search + image_search=true），不是 AI 生图（用 generate_image）
+- ⚠️ 说=做：提到工具名（web_search/generate_image/send_email/play_music/query_collection）必须同时调 tool_call，否则系统重提示强制执行
+- ⚠️ 首轮必须调：严禁先回复文字再调，任务需要工具时首轮直接调
+- ⚠️ 结果导向：web_search 调用后立即基于结果撰写；若不含具体数据（价格/行情/参数）可再调 1 次 web_search 定位数据源 URL（如"XX价格 官网/查询"），然后用 fetch_url 抓取；严禁第 3 次调 web_search
+- ⚠️ 禁止循环：web_search 最多 2 次（1 次搜数据 + 1 次定位数据源 URL），第 3 次系统强制终止`;
+
 function buildActionPrompt(route) {
   if (route.mode === 'conversation') return '';
-  const shared = `\n\n【小吉动作路由】
+  const shared = `
+
+【小吉动作路由】
 - 执行模式：${route.mode}
 - 所需能力：${route.capabilities.join(', ') || 'none'}
 - 路由置信度：${route.confidence}
@@ -213,31 +227,13 @@ function buildActionPrompt(route) {
 - 当前 reqId 是小吉隐藏动作容器，可安全用于 generate_image / plan_execute / send_email。`;
   if (route.mode === 'conversational_action') {
     return shared + `
-这是复合聊天动作。必须调用 plan_execute 一次完成全部步骤，不要逐个直接调用，也不要输出“正在做”而不调工具。
-**严重警告：你的回复中如果只有文字描述而不调用对应工具，系统会判定为“装睡”并强制重试。必须实际调用工具，不能只说“已提交”“请等待”之类的空话。**
-图片→邮件示例：s1 generate_image；s2 send_email depends_on=["s1"]。s2 不手填 file_ids，系统会从 s1 精确注入附件。
-邮件发送工具只创建 pending_send_email 预览，不会真正发送；必须等待用户确认后才发送，严禁声称“邮件已发送”。
-**生成图片时用户给了描述就直接调工具，严禁反问用户描述风格或特征；AI 自行补充细节或使用默认值。**
-**找歌/搜歌时只能调 play_music 工具，不能调 generate_image 或其他创作工具。**
-**注意区分：用户说“找图片“/ “搜图片“时是想要真实照片，不是 AI 生图，此时应调 web_search 而不是 generate_image。generate_image 只用于“画一张“/ “生成“/ “创作“等 AI 创作场景。**
-**调用 web_search 找图片时必须传 image_search=true 参数（如 web_search(query="莫文蔚写真", image_search=true)），这样才能取到缩略图。**
-**⚠️ 说=做硬约束：如果在回复中提到了具体工具名（web_search / generate_image / send_email / play_music / query_collection），必须同时调用对应 tool_call。说「我用 X 帮你」但 tool_calls=0 = 装睡，系统检测到后会重提示强制执行。**
-**⚠️ 首轮必须调用工具：第一轮回复必须包含 tool_call，严禁先回复文字再调工具。如果任务需要工具，首轮直接调用。**
-**⚠️ 结果导向硬约束：web_search 工具调用后，优先基于返回结果撰写回复。若结果不含用户要的具体数据（价格/行情/参数），**可再调 1 次 web_search 定位数据源 URL**（如搜"XX价格 官网/查询"），然后用 fetch_url 抓取；严禁第 3 次调 web_search。**
-**⚠️ 禁止循环调用：web_search 最多 2 次（1 次搜数据 + 1 次定位数据源 URL），第 3 次会被系统强制终止。**
+【复合聊天动作】必须调用 plan_execute 一次完成全部步骤，不要逐个直接调用，也不要输出"正在做"而不调工具。
+- 示例：s1 generate_image；s2 send_email depends_on=["s1"]。s2 不手填 file_ids，系统会从 s1 精确注入附件。
+- send_email 只创建 pending_send_email 预览，不会真正发送；必须等待用户确认后才发送，严禁声称"邮件已发送"。` + STALL_HARD_CONSTRAINTS + `
 `;
   }
   return shared + `
-这是单一动作，必须调用对应工具一次。若是 send_email，工具只准备预览并等待确认，严禁声称已发送。
-**严重警告：你的回复中如果只有文字描述而不调用对应工具，系统会判定为“装睡”并强制重试。必须实际调用工具，不能只说“已提交”“请等待”之类的空话。**
-**生成图片时用户给了描述就直接调工具，严禁反问用户描述风格或特征；AI 自行补充细节或使用默认值。**
-**找歌/搜歌时只能调 play_music 工具，不能调 generate_image 或其他创作工具。**
-**注意区分：用户说“找图片“/ “搜图片“时是想要真实照片，不是 AI 生图，此时应调 web_search 而不是 generate_image。generate_image 只用于“画一张“/ “生成“/ “创作“等 AI 创作场景。**
-**调用 web_search 找图片时必须传 image_search=true 参数（如 web_search(query="莫文蔚写真", image_search=true)），这样才能取到缩略图。**
-**⚠️ 说=做硬约束：如果在回复中提到了具体工具名（web_search / generate_image / send_email / play_music / query_collection），必须同时调用对应 tool_call。说「我用 X 帮你」但 tool_calls=0 = 装睡，系统检测到后会重提示强制执行。**
-**⚠️ 首轮必须调用工具：第一轮回复必须包含 tool_call，严禁先回复文字再调工具。如果任务需要工具，首轮直接调用。**
-**⚠️ 结果导向硬约束：web_search 工具调用后，优先基于返回结果撰写回复。若结果不含用户要的具体数据（价格/行情/参数），**可再调 1 次 web_search 定位数据源 URL**（如搜"XX价格 官网/查询"），然后用 fetch_url 抓取；严禁第 3 次调 web_search。**
-**⚠️ 禁止循环调用：web_search 最多 2 次（1 次搜数据 + 1 次定位数据源 URL），第 3 次会被系统强制终止。**
+【单一动作】必须调用对应工具一次。若是 send_email，工具只准备预览并等待确认，严禁声称已发送。` + STALL_HARD_CONSTRAINTS + `
 `;
 }
 

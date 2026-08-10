@@ -493,6 +493,8 @@ router.post('/chat', async function(req, res) {
       }),
       // v0.79: 注入历史摘要
       chatSummary: chatSummary,
+      // v0.89: 成功经验追踪器需要原 message 查相关案例
+      message: message,
     };
     var systemPrompt = buddySkill.buildChatPrompt(buddyCtx);
 
@@ -554,6 +556,7 @@ router.post('/chat', async function(req, res) {
       actionMode: actionRoute.mode,
       actionRoute: actionRoute,
       expandedCategories: previousCategories.slice(),  // 初始复制
+      message: message,  // v0.89: 给 tool handler 关联原 query（成功经验追踪用）
     };
 
     // 6. 跑 runToolLoop（LLM 可以调 tool）

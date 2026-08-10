@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>ACMS Office V2 Bridge 集成测试</title>
+<style>
+  body { font-family: monospace; padding: 20px; background: #1a1a1a; color: #e0e0e0; }
+  .log { background: #000; padding: 10px; border-radius: 4px; max-height: 400px; overflow-y: auto; }
+  .log-line { padding: 2px 0; }
+  .log-ok { color: #4ade80; }
+  .log-err { color: #f87171; }
+  .log-info { color: #60a5fa; }
+  h2 { color: #fbbf24; margin-top: 30px; }
+  button { background: #333; color: #fff; border: 1px solid #555; padding: 8px 16px; margin: 4px; cursor: pointer; }
+  button:hover { background: #444; }
+</style>
+</head>
+<body>
+<h1>🧪 ACMS Office V2 Bridge 集成测试</h1>
+
+<h2>1) Bridge 加载</h2>
+<div class="log" id="log1"></div>
+<h2>2) OfficeV2 API</h2>
+<div class="log" id="log2"></div>
+<h2>3) Prefetch 行为</h2>
+<div class="log" id="log3"></div>
+<h2>4) 手动 open + close（验 dispose）</h2>
+<button onclick="openWord()">open office-v2-word (新名)</button>
+<button onclick="openWordLegacy()">open office-word (旧名，应走 v2)</button>
+<button onclick="openExcel()">open office-v2-excel</button>
+<button onclick="openExcelLegacy()">open office-xlsx (旧名，应走 v2)</button>
+<button onclick="openSlidesLegacy()">open office-pptx (旧名，应走 v2)</button>
+<button onclick="closeAll()">closeAll</button>
+<button onclick="checkInstances()">checkInstances</button>
+<div class="log" id="log4"></div>
+
+<!-- 模拟 ACMSWin 注册中心 -->
+<script>
+window.ACMSWin = (function () {
+  var loaders = {};
+  var openWindows = [];
+  return {
+    registerViewLoader: function (name, fn) {
+      loaders[name] = fn;
+      log('log1', '[ACMSWin] registerViewLoader: ' + name, 'info');
+    },
+    open: function (name, opts) {
+      var w = {
+        $c: document.createElement('div'),
+        title: opts.title,
+        onClose: null,
+        close: function () {
+          log('log4', '[win] close() called, invoking onClose', 'info');
+          if (typeof w.onClose === 'function') w.onClose();
+          var idx = openWindows.indexOf(w);
+          if (idx >= 0) openWindows.splice(idx, 1);
+        },
+      };
+      document.body.appendChild(w.$c);
+      openWindows.push(w);
+      log('log1', '[ACMSWin] open: ' + name + ' (title=' + opts.title + ', fileId=' + opts.fileId + ')', 'info');
+      var loader = loaders[name];
+      if (!loader) { log('log4', '[ACMSWin] no loader for ' + name, 'err'); return null; }
+      // Simulate ACMSWin's (w, opts) calling convention
+      var result = loader(w, opts);
+      if (result && result.then) result.catch(function (e) { log('log4', '[ACMSWin] loader promise rejected: ' + e.message, 'err'); });
+      return w;
+    },
+    listOpen: function () { return openWindows; },
+  };
+})();
+
+function log(id, msg, kind) {
+  var el = document.getElementById(id);
+  var line = document.createElement('div');
+  line.className = 'log-line log-' + (kind || 'info');
+  line.textContent = '[' + new Date().toISOString().substr(11, 8) + '] ' + msg;
+  el.appendChild(line);
+}
+</script>
+
+<!-- 加载 bridge -->
+<script src="/client/js/views/office-v2-bridge.js?v=0.91.0"></script>
+
+<script>
+// 1) Bridge 加载验证
+log('log1', 'Bridge loaded: ' + (typeof window.OfficeV2), window.OfficeV2 ? 'ok' : 'err');
+log('log1', 'ACMSWin available: ' + (typeof window.ACMSWin), window.ACMSWin ? 'ok' : 'err');
+
+// 2) OfficeV2 API
+if (window.OfficeV2) {
+  log('log2', 'OfficeV2.open function: ' + (typeof window.OfficeV2.open), 'ok');
+  log('log2', 'OfficeV2.listInstances: ' + (typeof window.OfficeV2.listInstances), 'ok');
+  log('log2', 'OfficeV2.getState: ' + (typeof window.OfficeV2.getState), 'ok');
+  log('log2', 'OfficeV2.warmUp: ' + (typeof window.OfficeV2.warmUp), 'ok');
+  log('log2', 'Initial instance count: ' + OfficeV2.listInstances().length, 'ok');
+  log('log2', 'Initial prefetched state: ' + JSON.stringify(OfficeV2.getState().prefetched), 'ok');
+}
+
+// 3) 观察 prefetch（setTimeout 3s/8s）
+log('log3', 'Prefetch monitoring started (3s for main, 8s for engines)');
+setTimeout(function () {
+  log('log3', 'After 3.5s: ' + JSON.stringify(OfficeV2.getState().prefetched), 'ok');
+}, 3500);
+setTimeout(function () {
+  log('log3', 'After 8.5s: ' + JSON.stringify(OfficeV2.getState().prefetched), 'ok');
+}, 8500);
+
+// 4) 手动 open + close
+function openWord() {
+  log('log4', '--- opening office-v2-word ---', 'info');
+  var w = OfficeV2.open('word', 'demo-doc-1', 'test.docx');
+  if (w) {
+    setTimeout(function () {
+      log('log4', 'Word editor mounted: ' + (w.$c && w.$c.innerHTML.length > 100), w.$c ? 'ok' : 'err');
+      log('log4', 'onClose registered: ' + (typeof w.onClose), typeof w.onClose === 'function' ? 'ok' : 'err');
+      log('log4', 'Instance count: ' + OfficeV2.listInstances().length, 'ok');
+    }, 2500);
+  }
+}
+function openExcel() {
+  log('log4', '--- opening office-v2-excel ---', 'info');
+  var w = OfficeV2.open('excel', 'demo-xls-1', 'test.xlsx');
+  if (w) {
+    setTimeout(function () {
+      log('log4', 'Excel mounted: ' + (w.$c && w.$c.innerHTML.length > 100), w.$c ? 'ok' : 'err');
+      log('log4', 'Instance count: ' + OfficeV2.listInstances().length, 'ok');
+    }, 5000);
+  }
+}
+function openWordLegacy() {
+  log('log4', '--- opening office-word (旧名，验证覆盖) ---', 'info');
+  if (!window.ACMSWin) return log('log4', 'no ACMSWin', 'err');
+  var w = ACMSWin.open('office-word', { w: 900, h: 600, title: 'legacy-word-test', fileId: 'legacy-word-1', fileName: 'legacy.docx' });
+  if (w) {
+    setTimeout(function () {
+      log('log4', 'Legacy-name Word mounted (Tiptap?): ' + (w.$c && w.$c.innerHTML.indexOf('tiptap-toolbar') !== -1 ? '✓ TIPTAP' : '✗ old'), w.$c ? 'ok' : 'err');
+      log('log4', 'Instance count: ' + OfficeV2.listInstances().length, 'ok');
+    }, 2500);
+  }
+}
+function openExcelLegacy() {
+  log('log4', '--- opening office-xlsx (旧名) ---', 'info');
+  if (!window.ACMSWin) return log('log4', 'no ACMSWin', 'err');
+  var w = ACMSWin.open('office-xlsx', { w: 900, h: 600, title: 'legacy-xlsx-test', fileId: 'legacy-xls-1', fileName: 'legacy.xlsx' });
+  if (w) {
+    setTimeout(function () {
+      log('log4', 'Legacy Excel mounted (Univer?): ' + (w.$c && w.$c.innerHTML.indexOf('univer') !== -1 ? '✓ UNIVER' : '✗ old'), w.$c ? 'ok' : 'err');
+    }, 5000);
+  }
+}
+function openSlidesLegacy() {
+  log('log4', '--- opening office-pptx (旧名) ---', 'info');
+  if (!window.ACMSWin) return log('log4', 'no ACMSWin', 'err');
+  var w = ACMSWin.open('office-pptx', { w: 900, h: 600, title: 'legacy-pptx-test', fileId: 'legacy-ppt-1', fileName: 'legacy.pptx' });
+  if (w) {
+    setTimeout(function () {
+      log('log4', 'Legacy Slides mounted (Reveal?): ' + (w.$c && w.$c.innerHTML.indexOf('reveal') !== -1 ? '✓ REVEAL' : '✗ old'), w.$c ? 'ok' : 'err');
+    }, 2000);
+  }
+}
+function closeAll() {
+  log('log4', '--- closing all open windows ---', 'info');
+  var wins = ACMSWin.listOpen();
+  log('log4', 'Windows to close: ' + wins.length, 'info');
+  wins.forEach(function (w) { w.close(); });
+  setTimeout(function () {
+    log('log4', 'After closeAll, instance count: ' + OfficeV2.listInstances().length, 'ok');
+    log('log4', 'Open windows: ' + ACMSWin.listOpen().length, 'ok');
+  }, 200);
+}
+function checkInstances() {
+  log('log4', '--- checkInstances ---', 'info');
+  log('log4', 'Live instances: ' + JSON.stringify(OfficeV2.listInstances()), 'ok');
+  log('log4', 'prefetched: ' + JSON.stringify(OfficeV2.getState().prefetched), 'ok');
+  log('log4', 'moduleCache keys: ' + Object.keys(OfficeV2.getState().moduleCache).join(','), 'ok');
+}
+</script>
+</body>
+</html>

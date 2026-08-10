@@ -1,4 +1,6 @@
 // 需求状态机
+const { collection } = require('../db/connection');
+
 const VALID_TRANSITIONS = {
   idea: ['clarifying', 'abandoned'],
   clarifying: ['review', 'abandoned'],
@@ -42,8 +44,29 @@ const GATE_CONDITIONS = {
   },
 };
 
-// 年龄检查: 7 天未活动的 clarifying 需求自动放弃
-const ABANDON_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+// 年龄检查: N 天未活动的 idea/clarifying 需求自动放弃
+//   配置项走 system_configs 表（admin UI 实时切换）：
+//     - auto_abandon_enabled  (bool, 默认 true)
+//     - auto_abandon_days     (int  1-365, 默认 7)
+const DEFAULT_ABANDON_DAYS = 7;
+const SYSTEM_CONFIG_KEY_ENABLED = 'auto_abandon_enabled';
+const SYSTEM_CONFIG_KEY_DAYS = 'auto_abandon_days';
+
+function getAutoAbandonConfig() {
+  try {
+    const cfgs = collection('system_configs');
+    const enabledCfg = cfgs.findOne(c => c.key === SYSTEM_CONFIG_KEY_ENABLED);
+    const daysCfg = cfgs.findOne(c => c.key === SYSTEM_CONFIG_KEY_DAYS);
+    // 默认开启 + 7 天（与历史行为一致，向后兼容）
+    const enabled = enabledCfg
+      ? (enabledCfg.value === true || enabledCfg.value === 'true' || enabledCfg.value === 1 || enabledCfg.value === '1')
+      : true;
+    const days = daysCfg ? (parseInt(daysCfg.value, 10) || DEFAULT_ABANDON_DAYS) : DEFAULT_ABANDON_DAYS;
+    return { enabled, days };
+  } catch (e) {
+    return { enabled: true, days: DEFAULT_ABANDON_DAYS };
+  }
+}
 
 function canTransition(currentStatus, targetStatus) {
   const allowed = VALID_TRANSITIONS[currentStatus] || [];
@@ -62,9 +85,11 @@ function getNextStatuses(currentStatus) {
 }
 
 function shouldAutoAbandon(requirement) {
+  const cfg = getAutoAbandonConfig();
+  if (!cfg.enabled) return false;
   if (requirement.status !== 'clarifying' && requirement.status !== 'idea') return false;
   const updatedAt = new Date(requirement.updated_at).getTime();
-  return (Date.now() - updatedAt) > ABANDON_AFTER_MS;
+  return (Date.now() - updatedAt) > cfg.days * 24 * 60 * 60 * 1000;
 }
 
-module.exports = { canTransition, getGateErrors, getNextStatuses, shouldAutoAbandon, VALID_TRANSITIONS };
+module.exports = { canTransition, getGateErrors, getNextStatuses, shouldAutoAbandon, getAutoAbandonConfig, VALID_TRANSITIONS };

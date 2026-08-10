@@ -23,27 +23,15 @@ const L0_BASE = `你是「小吉」，ACMS 智能协同管理平台的系统助�
 - 你不编造 ACMS 没有的功能，不知道就说"这个我还在学"
 - 你可以在回复末尾用【face:表情】切换表情（happy/thinking/caring/idea/sleepy/...）
 
-【你在 ACMS 能做的主要事情（系统会自动为你匹配最合适的工具）】
-这些事不需要你记工具名——系统会根据用户的请求，自动检索最相关的工具给你：
-• 需求管理：建/查/审批/改状态需求、添加澄清问题
-• 任务看板：建/查/认领/改状态/改进度任务、看板视图查询
-• 缺陷管理：建/查/分配/关闭缺陷
-• 调研/搜索：联网搜资料（web_search）、综合多源调研（web_research）、抓 URL 内容
-• 创作：生成图片（generate_image）、Word 文档（generate_docx）、Excel 表格（generate_xlsx）、PPT 演示（generate_pptx）、视频/音乐播放
-• 通讯：发邮件给团队（send_email，有预览确认卡）
-• 自动化：复合意图编排（plan_execute）
-• 文档编辑：新建/修改 Word 文档（document_edit）
-• 系统能力：打开 ACMS 窗口、看统计数据、查用户/Agent
-
-【工具选择机制】
-- 「__VIEW__」视图匹配的工具已自动注入
-- 系统已根据你的意图检索了最相关的工具（见下方工具列表）
-- 如果需要的工具不在列表中，可以回复「把 X 工具给我」或继续描述需求，系统会自动补上
+【工具选择】
+系统已根据当前用户请求自动匹配最合适的工具（见下方工具列表）——无需记工具名。
+包含：当前视图相关工具 + 系统常备工具 + 语义检索匹配工具。
+不够用就调 _expand_tools({category: "..."}) 手动扩载，可扩载类别：requirement | task | bug | agent | window | system | dashboard | office | app
 
 【执行约束（重要）】
 - ACMS 业务数据的创建/修改/删除前，用中文告诉用户并等待确认；但图片/文档生成等可逆创作动作可直接执行
-- 复合聊天动作（如“生成图片后发邮件”）必须用 plan_execute 连续执行上游步骤；不要弹 plan 审批，也不要逐个漏调
-- send_email 永远只准备邮件预览，真正发送由用户点击“确认发送”；严禁声称邮件已发送
+- 复合聊天动作（如"生成图片后发邮件"）必须用 plan_execute 连续执行上游步骤；不要弹 plan 审批，也不要逐个漏调
+- send_email 永远只准备邮件预览，真正发送由用户点击"确认发送"；严禁声称邮件已发送
 - 重要操作（审批需求）有权限校验（pm 才能审批，tech 才能认领任务）
 - 完成后用【action:open_view:xxx】打开对应窗口给用户看结果
 - 数据不足时不要编造，必须告诉用户"我没找到相关数据"
@@ -53,35 +41,15 @@ const L0_BASE = `你是「小吉」，ACMS 智能协同管理平台的系统助�
   例如：【learn:窗口-项目管理=launchProjects】、【learn:工具-搜索=web_search】
   下次我就不会犯同样的错了。不需要告诉用户你在记录。
 
-【工具选择说明】
-系统已根据当前用户的请求自动为你匹配了最合适的工具（见下方列表）。
-包含：__VIEW__ 视图相关工具 + 系统常备工具 + 语义检索匹配工具。
-如果这些不够用，可以调 _expand_tools({category: "..."}) 手动扩载某类工具。
-可扩载类别：requirement|task|bug|agent|window|system|dashboard|office|app
-
-【ACMS 数据全景·管家必读（v0.62 新增）】
-你是 ACMS 的管家，能用 query_collection 查任何业务 collection。下面是 15 个可读 collection 的速查：
-- projects: 项目（id / name / slug / status / owner / system_project）——「项目」「产品」问这个
-- project_members: 项目成员（project_id / member_id / member_role）
-- project_environments: 项目环境（project_id / name / type / config）
-- requirements: 需求（id / project_id / title / status / type / priority）——「需求」「PRD」问这个
-- clarification_threads: 需求澄清对话（id / requirement_id / status）
-- tasks: 任务（id / project_id / status / type / assigned_to / parent_id）——「任务」「TODO」问这个
-- agents: 已注册 agent（id / name / type / status / roles）——「agent」「机器人」问这个
-- events: 系统事件流（type / actor / target / project_id / ts）——「最近发生了什么」问这个
-- users: 用户（id / username / displayName / role / workspaceRole）——「团队」「谁」问这个
-- webhooks: webhook 配置（id / name / url / events / active）
-- knowledge_files: 知识库文件（id / project_id / path / title / type）——「文档」「知识」问这个
-- requirement_knowledge: 需求与知识库关联（id / requirement_id / file_id）
-- llm_models: AI 模型配置（id / name / provider / model）
-- skills: ACMS 技能（id / name / category / description）
-- generators: 生成器（id / name / type / description）
+【ACMS 管家·query_collection 速查】
+你是 ACMS 的管家，能用 query_collection 查任何业务 collection。
 
 管家原则：
 - 任何"X 有多少""Y 的列表""Z 的状态"问题 → 直接用 query_collection（不必 _expand_tools）
 - 6 个高敏感集合明确禁止查：buddy_memory / chat_sessions / chat_messages / system_configs / project_configs / project_repos
-- query_collection 返回会自动附 total（全集数）+ recent_7d（7 天内新增）+ returned_count，你直接告诉用户这三个数字
-- 敏感字段（password/token/apiKey 等）已自动脱敏，不必提醒用户`;
+- 返回会附 total（全集数）+ recent_7d（7 天内新增）+ returned_count，告诉用户这三个数字
+- 敏感字段（password/token/apiKey 等）已自动脱敏
+- 具体 collection 列表（如 projects / requirements / tasks / agents / events 等）见 query_collection 工具 schema`;
 
 // ── L1 视图层（按 currentView 注入 3-5 个 tool）──
 // key=视图名（与 ACMSWin.registerViewLoader 的 name 对应），value=最相关 tool 名数组
@@ -127,18 +95,8 @@ function getAppCategoryTools() {
   }
 }
 
-// 把 tool def 序列化成 LLM 友好的 description
-function formatToolDescription(tool) {
-  if (!tool) return '';
-  const params = (tool.parameters && tool.parameters.properties) || {};
-  const required = (tool.parameters && tool.parameters.required) || [];
-  const paramLines = Object.entries(params).map(([name, def]) => {
-    const req = required.includes(name) ? '【必填】' : '【可选】';
-    const desc = def.description || def.type || '';
-    return `  - ${name} ${req}: ${desc}`;
-  }).join('\n');
-  return `【${tool.name}】\n  ${tool.description}\n  参数:\n${paramLines || '  (无参数)'}`;
-}
+// B2 优化后已不需要 formatToolDescription（详细 schema 走 body.tools）
+// 保留占位以防外部 import 引用（实际已无引用）
 
 /**
  * 构建 chat system prompt（每次请求动态拼装）
@@ -162,13 +120,24 @@ function buildChatPrompt(ctx = {}) {
   const l2ToolNames = expandedCategories.flatMap(cat => {
     if (cat === 'app') return getAppCategoryTools();
     return CATEGORY_TOOLS[cat] || [];
-  });
+    });
   const allToolNames = [...new Set([...L0_TOOLS, ...l1ToolNames, ...l2ToolNames, ...retrievedToolNames])];
 
-  const toolDescs = allToolNames
-    .map(name => formatToolDescription(toolRegistry.getTool(name)))
+  // B2 优化：LLM 通过 body.tools 已经能拿到完整 schema（OpenAI/Anthropic 工具调用 API）
+  // system prompt 里再贴一遍 description 是冗余——改用工具名 + 短简介（取 description 第一行）
+  // 保留目的是让 LLM 知道「当前可用工具白名单」（避免 LLM 调 schema 之外的工具）
+  const toolIndex = allToolNames
+    .map(name => {
+      const tool = toolRegistry.getTool(name);
+      if (!tool) return null;
+      // 取 description 第一行作为简介（多数工具 description 第一句是"何时用"或工具名）
+      const firstLine = (tool.description || '').split('\n')[0].trim();
+      // 砍掉 markdown 标记 ** 强化符号，让 LLM 看干净文本
+      const cleanLine = firstLine.replace(/\*\*/g, '').slice(0, 60);
+      return `  - ${name}: ${cleanLine}`;
+    })
     .filter(Boolean)
-    .join('\n\n');
+    .join('\n');
 
   // 视图层提示（让 LLM 知道为什么这些 tool 在这里）
   const viewHint = (view && view !== '_default')
@@ -201,13 +170,28 @@ function buildChatPrompt(ctx = {}) {
     }
   } catch (e) { /* skill-loader 不可用时忽略 */ }
 
+  // v0.89: 成功经验继承（让 web_search 走过的成功路径能跨 session 复用）
+  //   从 system_configs.search_success_log 检索 top-3 相关案例，注入 prompt 提示 LLM
+  //   token 预算：3 条 × ~80 字符 = ~150 tokens
+  let successHint = '';
+  try {
+    if (ctx.message && typeof ctx.message === 'string' && ctx.message.length >= 4) {
+      var tracker = require('./search-success-tracker');
+      var hints = tracker.getRelevantSuccesses(ctx.message, 3);
+      if (hints && hints.length > 0) {
+        successHint = '\n\n【上次类似查询成功经验（可参考复用）】\n' + hints.map(function(h) { return '  - ' + h; }).join('\n');
+      }
+    }
+  } catch (e) { /* tracker 不可用时静默忽略 */ }
+
   // 注入当前视图名到 L0 模板（用 __VIEW__ 占位符，避免被 Node 当场模板插值）
   // v0.87: 同时注入当前日期 —— LLM 常把日期写错（如"2024年12月"），导致搜索 query 带错日期
   const todayStr = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
   let l0 = L0_BASE.replace(/__VIEW__/g, view);
   l0 = l0.replace(/【你的灵魂】/, `【今天是 ${todayStr}】\n- 涉及"今天/最新/当前"的时间敏感查询时，必须使用今天真实日期，不要凭记忆编造日期\n\n【你的灵魂】`);
 
-  return `${l0}${userSummary}${agentEvents}${viewHint}${personalityHint}${skillHint}\n\n【你当前可用的工具（共 ${allToolNames.length} 个）】\n${toolDescs || '(暂无工具，可调 _expand_tools({category: "..."}) 加载)'}`;
+  // B2 优化：详细 schema 已通过 body.tools 传给 LLM API；system prompt 只列工具白名单 + 短简介
+  return `${l0}${userSummary}${agentEvents}${viewHint}${personalityHint}${skillHint}${successHint}\n\n【你当前可用的工具（共 ${allToolNames.length} 个）— 详细 schema 在 API 层 body.tools 里】\n${toolIndex || '(暂无工具，可调 _expand_tools({category: "..."}) 加载)'}`;
 }
 
 /**

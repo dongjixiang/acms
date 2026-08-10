@@ -60,35 +60,31 @@ registerTool({
 });
 
 const { fetchUrlCore } = require('./url-fetch');
+const successTracker = require('../services/search-success-tracker');
 registerTool({
   name: 'fetch_url',
-  description: '抓取**单个完整 URL** 的网页内容，提取正文转 markdown。'
-    + '\n\n【场景1】用户消息含完整 URL 链接（如 https://example.com/article.html）时使用。'
-    + '\n\n【场景2 · v0.87 数据源直连】当用户问**具体数据**（股价/商品价格/参数/行情/房价等），'
-    + '且 web_search 返回的都是内容链接（公众号/微博/资讯页）不含结构化数据时——'
-    + '**不要建议用户自己去看**，而是主动构造该领域数据源网站的 URL 用本工具直接抓取：'
-    + '\n  - 财经/股价: https://finance.sina.com.cn/ 或 https://gu.qq.com/ 或 https://quote.eastmoney.com/'
-    + '\n  - 汽车价格: https://www.autohome.com.cn/ 或 https://www.dongchedi.com/'
-    + '\n  - 房产: https://www.beike.com/ 或 https://bj.lianjia.com/'
-    + '\n  - 通用: 用 web_search 先找到该主题的权威站点，再抓其页面'
-    + '\n【⚠️ 严禁编造 URL】URL 必须真实存在。抓取失败返回错误时，如实说明，不要虚构内容。'
-    + '\n\n【⚠️ 严格使用条件】只接受**完整 http(s):// 起始的 URL**，不是搜索关键词、不是主题、不是问题。'
-    + '要"搜索/查一下/调研"请用 **web_search** 或 **web_research**（用 query 参数）。'
-    + '要"查实时信息/查时间"请用 **get_current_time**。'
-    + '\n\n【⚠️ 严禁】用 fetch_url 验证收件人邮箱域名 — send_email 工具独立工作，不需要你预先验证收件人域名。'
-    + '如果你不确定某个 URL 是否真实存在，**直接调对应的工具**（如 send_email）即可，让服务端处理失败。'
-    + '\n\n返回：标题 + 正文摘要（默认 5000 字以内，max_length 可调）。'
-    + '已做 SSRF 防护（拒绝内网 URL），超时 30s。',
+  description: '抓取单个完整 URL 网页内容转 markdown。\n'
+    + '【何时用】\n'
+    + '  • 用户消息含完整 URL（如 https://...）→ 抓那个链接\n'
+    + '  • 问具体数据（股价/价格/行情/参数/房价）且 web_search 只返回内容链接（公众号/微博/资讯页）无结构化数据时 → 主动构造数据源 URL 抓取（财经→finance.sina.com.cn / gu.qq.com / quote.eastmoney.com；汽车→autohome.com.cn / dongchedi.com；房产→beike.com / bj.lianjia.com）\n'
+    + '【严禁】编造 URL（抓不到如实说）；用 fetch_url 验证邮箱域名（让 send_email 自己处理失败）\n'
+    + '【何时不用】搜索/查资料/调研 → 用 web_search 或 web_research；查时间 → 用 get_current_time\n'
+    + '【返回】标题+正文（默认 5000 字，max_length 可调），已做 SSRF 防护（拒绝内网 URL），超时 30s。',
   parameters: {
     type: 'object',
     properties: {
-      url: { type: 'string', description: '完整 URL（必须以 http:// 或 https:// 开头，**不是搜索 query**）' },
+      url: { type: 'string', description: '完整 URL（必须以 http:// 或 https:// 开头，不是搜索 query）' },
       max_length: { type: 'number', description: '最大字符数（默认 5000）', default: 5000 },
     },
     required: ['url'],
   },
-  async handler(args) {
-    return await fetchUrlCore(args);
+  async handler(args, ctx = {}) {
+    const result = await fetchUrlCore(args);
+    // v0.89: 记录成功经验（让下次类似 query 能复用这个 URL 模板）
+    if (result && !result.error && result.url) {
+      try { successTracker.recordFetchSuccess(result.url, ctx.message || ''); } catch (_) {}
+    }
+    return result;
   },
 });
 

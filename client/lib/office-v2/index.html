@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Office POC — Univer + Tiptap + Reveal.js</title>
+<link rel="stylesheet" href="/dist/main.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">📄 Office POC</div>
+    <div class="meta">Univer (Excel) + Tiptap (Word) + Reveal (PPT) — code-split chunks，按需加载</div>
+  </header>
+  <nav class="tabs" role="tablist">
+    <button class="tab" data-tab="word"   role="tab" aria-selected="true">📝 文档 <span class="tag">Tiptap</span></button>
+    <button class="tab" data-tab="excel"  role="tab" aria-selected="false">📊 表格 <span class="tag">Univer</span></button>
+    <button class="tab" data-tab="slides" role="tab" aria-selected="false">🎞 演示 <span class="tag">Reveal</span></button>
+  </nav>
+  <main>
+    <section class="pane" data-pane="word">
+      <div class="pane-head">富文本 — 块结构、撤销/重做、加粗/斜体/标题/列表/代码/链接/图片/表格</div>
+      <div id="word-editor" class="editor-host"></div>
+    </section>
+    <section class="pane" data-pane="excel" hidden>
+      <div class="pane-head">类 Excel — 公式、筛选、冻结、合并、格式刷（Univer preset 默认功能）</div>
+      <div id="excel-editor" class="editor-host" style="height: calc(100vh - 160px);"></div>
+    </section>
+    <section class="pane" data-pane="slides" hidden>
+      <div class="pane-head">HTML 演示文稿 — 方向键翻页，Esc 看缩略图</div>
+      <div class="reveal"><div class="slides"></div></div>
+    </section>
+  </main>
+  <script type="module" src="/dist/main.js"></script>
+</body>
+</html>

@@ -38,6 +38,7 @@ async function loadAdminPage() {
     const generators = await api('GET', '/generate');
     const defaultGen = await api('GET', '/admin/default-gen-model');
     const elicitorState = await api('GET', '/admin/elicitor-enabled');
+    const autoAbandonState = await api('GET', '/admin/auto-abandon-config');  // v0.X：自动放弃配置
     const webhooks = await api('GET', '/webhooks');  // v0.17f：事件 webhook 订阅列表
     const agnesKeyState = await api('GET', '/admin/agnes-key');  // v0.19：Agnes AI Video Key 状态
 
@@ -245,6 +246,26 @@ async function loadAdminPage() {
               <span style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:${elicitorState.enabled ? 'var(--green)' : 'var(--border)'};border-radius:22px;transition:0.2s"></span>
               <span style="position:absolute;cursor:pointer;height:18px;width:18px;left:${elicitorState.enabled ? '22px' : '2px'};top:2px;background:#fff;border-radius:50%;transition:0.2s"></span>
             </label>
+          </div>
+        </div>
+                <!-- v0.X: 需求自动放弃配置（开关 + 天数） -->
+        <div class="config-row" style="margin-top:16px;border-top:1px solid var(--border);padding-top:16px">
+          <div>
+            <strong>🗑 需求自动放弃</strong>
+            <div style="font-size:11px;margin-top:3px;color:var(--text2)">
+              长时间未活动的 <code>idea</code> / <code>clarifying</code> 需求自动转为「已放弃」状态。<br>
+              每 10 分钟扫描一次（见 <code>server/index.js:100</code>）。未配置时默认开启 + 7 天。
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+            <span id="auto-abandon-state-label" style="font-size:13px;color:${autoAbandonState.enabled ? 'var(--green)' : 'var(--text2)'}">${autoAbandonState.enabled ? '已启用' : '已禁用'}</span>
+            <label style="position:relative;display:inline-block;width:42px;height:22px;cursor:pointer">
+              <input type="checkbox" id="auto-abandon-toggle" ${autoAbandonState.enabled ? 'checked' : ''} onchange="setAutoAbandonEnabled(this)" style="opacity:0;width:0;height:0">
+              <span id="auto-abandon-track" style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:${autoAbandonState.enabled ? 'var(--green)' : 'var(--border)'};border-radius:22px;transition:0.2s"></span>
+              <span id="auto-abandon-knob" style="position:absolute;cursor:pointer;height:18px;width:18px;left:${autoAbandonState.enabled ? '22px' : '2px'};top:2px;background:#fff;border-radius:50%;transition:0.2s"></span>
+            </label>
+            <input type="number" id="auto-abandon-days-input" value="${autoAbandonState.days}" min="1" max="365" onchange="saveAutoAbandonDays(this)" style="width:64px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;text-align:center">
+            <span style="font-size:12px;color:var(--text2)">天</span>
           </div>
         </div>
         <!-- v0.19：Agnes AI Video API Key 配置 -->
@@ -862,6 +883,53 @@ async function setElicitorEnabled(checkbox) {
     toast('设置失败: '+e.message, 'error');
   }
 }
+
+// v0.X：保存需求自动放弃配置（开关 + 天数）
+// v0.X：需求自动放弃 — toggle 实时切换（参考 elicitor 模式）
+async function setAutoAbandonEnabled(checkbox) {
+  const wantChecked = checkbox.checked;
+  const original = !wantChecked;
+  // 立即视觉反馈（POST 成功后再定）
+  const label = _byId('auto-abandon-state-label');
+  const track = _byId('auto-abandon-track');
+  const knob = _byId('auto-abandon-knob');
+  if (label) { label.textContent = wantChecked ? '已启用' : '已禁用'; label.style.color = wantChecked ? 'var(--green)' : 'var(--text2)'; }
+  if (track) track.style.background = wantChecked ? 'var(--green)' : 'var(--border)';
+  if (knob) knob.style.left = wantChecked ? '22px' : '2px';
+
+  const days = parseInt(_byId('auto-abandon-days-input')?.value, 10) || 7;
+
+  try {
+    await api('POST', '/admin/auto-abandon-config', { enabled: wantChecked, days });
+    toast(wantChecked ? '需求自动放弃已启用' : '需求自动放弃已禁用', 'success');
+  } catch(e) {
+    // 失败回滚视觉
+    checkbox.checked = original;
+    if (label) { label.textContent = original ? '已启用' : '已禁用'; label.style.color = original ? 'var(--green)' : 'var(--text2)'; }
+    if (track) track.style.background = original ? 'var(--green)' : 'var(--border)';
+    if (knob) knob.style.left = original ? '22px' : '2px';
+    toast('设置失败: ' + e.message, 'error');
+  }
+}
+
+// v0.X：需求自动放弃 — 天数 input onchange 保存
+async function saveAutoAbandonDays(input) {
+  const days = parseInt(input.value, 10);
+  if (!days || days < 1 || days > 365) {
+    toast('天数必须在 1-365 之间', 'error');
+    // 恢复旧值（从初始 value 拿）
+    input.value = input.defaultValue || 7;
+    return;
+  }
+  const enabled = _byId('auto-abandon-toggle')?.checked;
+  try {
+    await api('POST', '/admin/auto-abandon-config', { enabled, days });
+    toast(`已保存：${days} 天后自动放弃`, 'success');
+  } catch(e) {
+    toast('保存失败: ' + e.message, 'error');
+  }
+}
+
 
 // v0.19：Agnes AI Video API Key 配置
 async function saveAgnesKey() {
