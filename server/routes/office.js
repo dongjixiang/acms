@@ -8,6 +8,13 @@ const { XMLParser } = require('fast-xml-parser');
 const { parseDocxToBlocks } = require('./office-parse-docx');
 const docxLib = require('docx');
 const { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, AlignmentType, BorderStyle } = docxLib;
+const PptxGenJS = require('pptxgenjs');
+const multer = require('multer');
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 },
+});
 
 function escHtml(s) {
   return String(s)
@@ -649,8 +656,42 @@ async function writeXlsx(body) {
 }
 
 async function writePptx(body) {
-  // TODO: implement
-  return Buffer.from('fake');
+  var pptx = new PptxGenJS();
+  pptx.layout = 'LAYOUT_16x9';
+  var slides = body.data && body.data.slides ? body.data.slides : [];
+  slides.forEach(function(slide) {
+    var pptSlide = pptx.addSlide();
+    pptSlide.background = { color: 'FFFFFF' };
+    if (slide.title) {
+      var opts = { x: 0.5, y: slide.layout === 'cover' ? 2 : 0.3, w: 9, h: 1, fontSize: slide.layout === 'cover' ? 36 : 22, bold: true };
+      if (slide.layout === 'cover') opts.align = 'center';
+      pptSlide.addText(String(slide.title).replace(/<[^>]+>/g, ''), opts);
+    }
+    if (slide.content) {
+      var content = String(slide.content).replace(/<[^>]+>/g, '').replace(/\n/g, '\n');
+      if (content.trim()) {
+        pptSlide.addText(content, { x: 0.5, y: slide.layout === 'cover' ? 3.5 : 1.3, w: 9, h: 4, fontSize: 16 });
+      }
+    }
+    if (slide.images && slide.images.length > 0) {
+      slide.images.forEach(function(img, i) {
+        if (img.src && img.src.indexOf('data:') === 0) {
+          pptSlide.addImage({ data: img.src, x: 1, y: 1.5, w: 4, h: 3 });
+        }
+      });
+    }
+    if (slide.tables && slide.tables.length > 0) {
+      slide.tables.forEach(function(tbl) {
+        if (!tbl.rows || tbl.rows.length === 0) return;
+        var rows = tbl.rows.map(function(row) {
+          return row.map(function(cell) { return { text: String(cell || ''), options: {} }; });
+        });
+        pptSlide.addTable(rows, { x: 0.5, y: 4.5, w: 9, fontFace: 'Arial', fontSize: 10 });
+      });
+    }
+  });
+  var buf = await pptx.stream({ outputType: 'nodebuffer' });
+  return buf;
 }
 
 async function parseXlsxToSchema(buf) {
@@ -692,5 +733,42 @@ async function parseXlsxToSchema(buf) {
     return '';
   }
 }
+
+// ── 上传解析：POST /api/office/upload ──
+router.post('/upload', upload.single('file'), async function (req, res) {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'NO_FILE' });
+    const buf = req.file.buffer;
+    const ext = (req.file.originalname.match(/\.(xlsx?|xls|csv)$/i) || [''])[0].replace('.', '').toLowerCase();
+    if (ext === 'csv') {
+      // CSV: 按行分割，逗号分隔
+      const text = buf.toString('utf8');
+      const lines = text.split(/\r?\n/).filter(l => l.trim());
+      const sheets = [
+        {
+          name: 'Sheet1',
+          headers: lines[0] ? lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, '')) : [],
+          rows: lines.slice(1).map(l => l.split(',').map(c => c.trim().replace(/^"|"$/g, '')))
+        }
+      ];
+      return res.json({ ok: true, fileId: uuidv4(), fileName: req.file.originalname, sheets });
+    }
+    // xlsx/xls
+    const text = await parseXlsxToSchema(buf);
+    if (!text.startsWith('SCHEMA:')) return res.status(500).json({ error: 'PARSE_FAILED' });
+    const schemaData = JSON.parse(text.slice(7));
+    const fileId = uuidv4();
+    // 保存解析后的 schema
+    const schemaFile = path.join(OFFICE_DIR, fileId + '.schema.json');
+    fs.writeFileSync(schemaFile, JSON.stringify({ type: 'xlsx', name: req.file.originalname, data: schemaData }));
+    // 同时保存原始文件
+    const fileName = fileId + '.' + (ext || 'xlsx');
+    fs.writeFileSync(path.join(OFFICE_DIR, fileName), buf);
+    return res.json({ ok: true, fileId, fileName, sheets: schemaData.sheets });
+  } catch (e) {
+    console.error('[office/upload] error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
 
 module.exports = router;

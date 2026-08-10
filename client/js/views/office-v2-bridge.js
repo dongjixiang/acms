@@ -159,25 +159,32 @@
 
       // ── Excel 工具栏事件 ──
       if (kind === 'excel' && w && w.$c) {
-        // 保存：用 Univer workbook API 读取数据 → POST /api/office/save
+        // 保存：用 Univer API 读取所有 sheet 数据 → POST /api/office/save
         var saveBtn = w.$c.querySelector('#xlsx-v2-save-btn');
         if (saveBtn) {
           saveBtn.onclick = function () {
             if (!editor) return toast('编辑器未就绪', 'error');
             try {
-              if (!editor.getWorkbook) return toast('无法读取编辑器数据', 'error');
-              var wb = editor.getWorkbook();
+              var wb = editor.getWorkbook && editor.getWorkbook();
+              if (!wb) return toast('无法读取编辑器数据', 'error');
               var sheetsData = [];
-              wb.eachSheet(function (sheet, sheetId) {
+              var sheets = wb.getSheets && wb.getSheets();
+              if (!sheets) return toast('无法读取工作表', 'error');
+              sheets.forEach(function (sheet) {
+                var sheetName = sheet.getSheetName ? sheet.getSheetName() : 'Sheet';
+                var maxRows = sheet.getMaxRows ? sheet.getMaxRows() : 0;
+                var maxCols = sheet.getMaxColumns ? sheet.getMaxColumns() : 0;
+                if (maxRows === 0) return;
                 var rows = [];
-                sheet.eachRow(function (row, ri) {
+                for (var r = 1; r <= maxRows; r++) {
                   var rowData = [];
-                  row.eachCell(function (cell, ci) {
-                    rowData.push(cell.value !== null && cell.value !== undefined ? cell.value : '');
-                  });
+                  for (var c = 1; c <= maxCols; c++) {
+                    var cell = sheet.getCell(r, c);
+                    rowData.push(cell !== null && cell !== undefined ? cell.v : '');
+                  }
                   rows.push(rowData);
-                });
-                if (rows.length > 0) sheetsData.push({ name: sheet.name, data: rows });
+                }
+                if (rows.length > 0) sheetsData.push({ name: sheetName, data: rows });
               });
               var payload = { type: 'xlsx', name: fileName, data: { sheets: sheetsData } };
               fetch('/api/office/save?api_key=dev-key-001', {
@@ -209,42 +216,13 @@
             }
           };
         }
-        // 下载：用 Univer 内置 xlsx 导出
+        // 下载：通过 /api/office/download 获取服务器上的文件
         var downloadBtn = w.$c.querySelector('#xlsx-v2-download-btn');
         if (downloadBtn) {
           downloadBtn.onclick = function () {
-            if (!editor) return toast('编辑器未就绪', 'error');
-            try {
-              if (!editor.getWorkbook) return toast('无法读取编辑器数据', 'error');
-              // Univer 提供 exportAsXlsx() 方法返回 Blob
-              if (typeof editor.exportAsXlsx === 'function') {
-                editor.exportAsXlsx().then(function (blob) {
-                  if (!blob || blob.size === 0) return toast('导出失败', 'error');
-                  var url = URL.createObjectURL(blob);
-                  var a = document.createElement('a');
-                  a.href = url; a.download = (fileName || 'export').replace(/\.xlsx$/i, '') + '.xlsx';
-                  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-                  URL.revokeObjectURL(url);
-                  toast('已下载 ' + a.download, 'success');
-                }).catch(function (e) { toast('导出失败: ' + e.message, 'error'); });
-              } else if (typeof editor.downloadXlsx === 'function') {
-                var blob = editor.downloadXlsx();
-                if (blob && blob.size > 0) {
-                  var url = URL.createObjectURL(blob);
-                  var a = document.createElement('a');
-                  a.href = url; a.download = (fileName || 'export').replace(/\.xlsx$/i, '') + '.xlsx';
-                  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-                  URL.revokeObjectURL(url);
-                  toast('已下载', 'success');
-                } else {
-                  toast('导出失败，请用"保存"存到服务器后下载', 'warning');
-                }
-              } else {
-                toast('当前 Univer 版本不支持直接下载，请先保存再下载', 'warning');
-              }
-            } catch (e) {
-              toast('下载失败: ' + e.message, 'error');
-            }
+            if (!fileId) return toast('请先点击"保存"按钮存到服务器，然后再下载', 'warning');
+            var url = '/api/office/download/' + encodeURIComponent(fileId) + '/' + encodeURIComponent(fileName);
+            window.open(url, '_blank');
           };
         }
         // 打开本地文件
@@ -259,19 +237,51 @@
               if (!file) return;
               var reader = new FileReader();
               reader.onload = function (ev) {
-                var buf = new Uint8Array(ev.target.result);
-                if (editor && typeof editor.loadWorkbook === 'function') {
-                  editor.loadWorkbook(buf).then(function () {
-                    toast('已打开 ' + file.name, 'success');
+                var buf = ev.target.result;
+                // 用后端 API 解析文件
+                var fd = new FormData();
+                fd.append('file', new Blob([buf]), file.name);
+                fetch('/api/office/upload?api_key=dev-key-001', {
+                  method: 'POST',
+                  body: fd
+                }).then(function (r) { return r.json(); }).then(function (r) {
+                  if (r.ok && r.sheets) {
+                    toast('已解析 ' + file.name + '，点击"保存"存入服务器', 'success');
                     var fnEl = w.$c.querySelector('#xlsx-v2-filename');
                     if (fnEl) fnEl.textContent = file.name;
                     fileName = file.name;
-                  }).catch(function (err) {
-                    toast('打开失败: ' + (err.message || '未知'), 'error');
-                  });
-                } else {
-                  toast('编辑器未就绪，请刷新后重试', 'error');
-                }
+                    fileId = r.fileId;
+                    // 将数据写入 Univer
+                    if (editor && editor.getWorkbook) {
+                      var wb = editor.getWorkbook();
+                      // 清空现有 sheet
+                      while (wb.getSheets && wb.getSheets().length > 0) {
+                        wb.deleteSheet(wb.getSheets()[0].getSheetId());
+                      }
+                      r.sheets.forEach(function (s, idx) {
+                        var ws = wb.create(s.name || 'Sheet' + (idx + 1), 100, 26);
+                        var headers = s.headers || [];
+                        var rows = s.rows || [];
+                        if (headers.length > 0) {
+                          var hRow = ws.getRow(1);
+                          headers.forEach(function (h, ci) {
+                            hRow.getCell(ci + 1).value = h;
+                          });
+                        }
+                        rows.forEach(function (rowData, ri) {
+                          var row = ws.getRow(ri + (headers.length > 0 ? 2 : 1));
+                          rowData.forEach(function (v, ci) {
+                            row.getCell(ci + 1).value = v;
+                          });
+                        });
+                      });
+                    }
+                  } else {
+                    toast('文件解析失败: ' + (r.error || '未知'), 'error');
+                  }
+                }).catch(function (err) {
+                  toast('上传失败: ' + err.message, 'error');
+                });
               };
               reader.readAsArrayBuffer(file);
             };
