@@ -513,6 +513,18 @@ router.post('/chat', async function(req, res) {
       }));
     }
 
+    // v0.94 (P5): office_edit 是前端动作（浏览器持有文档 DOM，server 看不到文档内容）。
+    //   server 只做意图路由：把用户指令 + 推断的文档类型放进 _action.officeV3，
+    //   前端收到后组装文档摘要 → /api/agent-buddy/office-action 生成精确参数 → 执行 + 动作卡。
+    var officeAction = null;
+    if (actionRoute.capabilities.includes('office_edit')) {
+      officeAction = {
+        kind: guessOfficeKind(message),
+        instruction: message,
+      };
+      console.log('[agent-buddy] office_edit 前端动作:', JSON.stringify(officeAction));
+    }
+
     // 3. 算 toolNames（与 SKILL prompt 一一对应）
     var toolNames = computeToolNames(context.currentView, previousCategories);
     toolNames = buddyAction.getActionToolNames(actionRoute, toolNames);
@@ -562,7 +574,10 @@ router.post('/chat', async function(req, res) {
     // 6. 跑 runToolLoop（LLM 可以调 tool）
     var runtimeResult;
     try {
-      if (hasSkills) {
+      if (officeAction) {
+        // P5: office_edit 不走 tool-loop，reply 由前端动作卡接管（生成器端点负责精确参数）
+        runtimeResult = { content: '好的，我来帮你编辑' + (officeAction.kind === 'word' ? ' Word 文档' : officeAction.kind === 'xlsx' ? ' Excel 表格' : ' PPT 演示文稿') + '。' };
+      } else if (hasSkills) {
         console.log('[agent-buddy DEBUG] 开始 runToolLoop, model:', model.id, 'toolNames:', JSON.stringify(toolNames));
         runtimeResult = await runtimeExec({
           modelId: model.id,
@@ -683,6 +698,7 @@ router.post('/chat', async function(req, res) {
             requires_confirmation: actionRoute.requires_confirmation,
             requirementId: actionRequirement.id,
             status: buddyAction.snapshotActionState(actionRequirement.id),
+            _action: officeAction ? { officeV3: officeAction } : undefined,
           } : null,
         }) + '\n\n');
       }
@@ -704,6 +720,7 @@ router.post('/chat', async function(req, res) {
           requires_confirmation: actionRoute.requires_confirmation,
           requirementId: actionRequirement.id,
           status: buddyAction.snapshotActionState(actionRequirement.id),
+          _action: officeAction ? { officeV3: officeAction } : undefined,
         } : null,
       });
     }
@@ -715,6 +732,128 @@ router.post('/chat', async function(req, res) {
         reply: '我刚才有点卡住了，您能不能再说一遍？' + (e.message ? ' (错误: ' + e.message + ')' : '')
       });
     }
+  }
+});
+
+// ── v0.94 (P5): Office V3 编辑动作生成器 ──────────────
+
+/** 从用户指令推断 Office 文档类型（word/xlsx/slides） */
+function guessOfficeKind(message) {
+  // 单元格地址模式：把B2改成 / 将E7改为 / B2填 等（避免 P5 这类产品名误判——要求后面紧跟编辑动词）
+  if (/(把|将)?[A-Z]{1,2}\d{1,3}(改成|改为|修改|更新|设置|填|加上|清除)/.test(message)) return 'xlsx';
+  if (/excel|xlsx|表格|sheet|工作簿|单元格|行|列|数据/.test(message)) return 'xlsx';
+  if (/ppt|pptx|幻灯片|演示文稿|slides/.test(message)) return 'slides';
+  return 'word';
+}
+
+/**
+ * 确定性提取用户指令中明确给出的新文本（防止 LLM 编造/改写）。
+ * 命中"改成：XXX / 改为XXX / 替换为XXX / 换成XXX"等模式 → 返回新文本。
+ * 提取失败返回 null（此时才依赖 LLM 的 newText 生成）。
+ */
+function extractExplicitNewText(instruction) {
+  const text = String(instruction || '');
+  // 带引号优先：改成"XXX" / 改为'XXX'
+  let m = text.match(/(?:改成|改为|替换为|换成|更新为|修改为|加上)[:：]?\s*["“']([^"”']{1,80})["”']/);
+  if (m && m[1] && m[1].trim()) return m[1].trim();
+  // 无引号：改成：XXX（到句号/分号/逗号/换行截止）
+  m = text.match(/(?:改成|改为|替换为|换成|更新为|修改为)[:：]?\s*([^。；;\n，,]{1,80})/);
+  if (m && m[1] && m[1].trim()) return m[1].trim();
+  return null;
+}
+
+/** POST /api/agent-buddy/office-action — 前端组装文档摘要后调用，LLM 生成精确编辑动作
+ *  body: { kind:'word'|'slides'|'xlsx', docContext:{...}, instruction:'用户指令' }
+ *  resp: { ok:true, action:{ kind, op, ... } } 或 { ok:false, error }
+ */
+router.post('/office-action', async function(req, res) {
+  try {
+    var body = req.body || {};
+    var kind = body.kind === 'xlsx' || body.kind === 'slides' ? body.kind : 'word';
+    var instruction = String(body.instruction || '').slice(0, 600);
+    var docContext = body.docContext || null;
+    if (!instruction) return res.json({ ok: false, error: '缺少 instruction' });
+    if (!docContext) return res.json({ ok: false, error: '缺少 docContext（前端需先组装文档摘要）' });
+
+    var modelStore = require('../stores/model-store');
+    var llmAdapter = require('../services/llm-adapter');
+    var model = modelStore.getDefaultGenModel();
+    if (!model) return res.json({ ok: false, error: '未配置生成模型' });
+
+    // 确定性提取用户明确给出的新文本（防 LLM 编造）
+    var fixedNewText = extractExplicitNewText(instruction);
+    var fixedHint = fixedNewText
+      ? '\n用户明确要求写入的新文本/值是：' + JSON.stringify(fixedNewText) + '。newText/value/formula 字段必须逐字等于它，严禁改写。'
+      : '';
+
+    var docPrompt = '';
+    if (kind === 'word') {
+      docPrompt = '文档是 Word（按段落 block 组织，blockIdx 从 0 开始）：\n'
+        + (docContext.blocks || []).map(function(b) { return '[' + b.i + '] ' + String(b.text || '').slice(0, 120); }).join('\n');
+    } else if (kind === 'slides') {
+      docPrompt = '文档是 PPT（当前第 ' + (docContext.slideIdx != null ? docContext.slideIdx : 0) + ' 页的文本框，textBoxIdx 从 0 开始）：\n'
+        + (docContext.texts || []).map(function(t) { return '[' + t.i + '] ' + String(t.text || '').slice(0, 120); }).join('\n');
+    } else {
+      docPrompt = '文档是 Excel（sheetId 形如 sheet1/sheet2，单元格地址形如 A1）：\n'
+        + (docContext.sheets || []).map(function(s) {
+          var rows = (s.rows || []).map(function(r) { return r.map(function(c) { return c == null ? '' : c; }).join('|'); }).join('\n');
+          return 'sheetId=' + s.id + ' name=' + s.name + ':\n' + rows;
+        }).join('\n---\n');
+    }
+
+    var system = '你是 Office 文档编辑动作生成器。根据用户指令和文档摘要，输出严格 JSON 动作，不要输出其他文字。\n'
+      + '文档类型 word 的动作格式：{"op":"proposeEdit","blockIdx":N,"newText":"修改后的完整段落文本"}\n'
+      + '文档类型 slides 的动作格式：{"op":"proposeEdit","textBoxIdx":N,"newText":"修改后的完整文本框文本"}\n'
+      + '文档类型 xlsx 的动作格式：{"op":"propose","summary":"一句话说明","operations":[{"op":"set_cell","sheetId":"sheet1","address":"A1","value":"..."}]}\n'
+      + 'xlsx 支持的 op：set_cell（写值）、set_formula（写公式，value 换成 formula 字段）、clear_cell、rename_sheet（address 换成 newName）、add_sheet（name 字段）、delete_sheet、set_range（批量写，cells 字段 {"A1":"v"}）、sort_range（range+key）、add_chart（range+kind）。\n'
+      + '规则：\n'
+      + '- blockIdx/textBoxIdx/sheetId/address 必须从文档摘要中选取真实存在的，禁止编造。\n'
+      + '- **如果用户指令明确给出了新文本（例如"改成：XXX"/"改为XXX"），newText/value 必须逐字采用用户给的新文本（只去掉"改成/改为"等引导词），严禁自行改写或发挥。**\n'
+      + '- 用户没有给出新文本、只说了意图（如"把标题加粗"）而文档摘要无法支撑该格式操作时 → 输出 {"op":"none","error":"简短原因"}。\n'
+      + '- 用户没指定具体位置时，选择最贴近指令语义的段落/单元格。\n'
+      + '示例（word）：文档摘要：[0] 产品周报 / [1] 本周完成三个功能。指令：把第1段改成：本周完成五个功能。输出：{"op":"proposeEdit","blockIdx":1,"newText":"本周完成五个功能"}。\n'
+      + '示例（xlsx）：sheet1 有 A1:D4。指令：把 D4 改成 SUM 公式。输出：{"op":"propose","summary":"设置合计公式","operations":[{"op":"set_formula","sheetId":"sheet1","address":"D4","formula":"=SUM(D2:D3)"}]}。\n'
+      + fixedHint + '\n';
+
+    var result = await llmAdapter.callLLM(model.id, [
+      { role: 'system', content: system },
+      { role: 'user', content: '文档摘要：\n' + docPrompt + '\n\n用户指令：' + instruction },
+    ], { maxTokens: 700, temperature: 0.1, caller: 'agent-buddy-office-action' });
+
+    var content = typeof result === 'string' ? result : (result && result.content) || '';
+    console.log('[office-action] LLM 原始输出 >>>', JSON.stringify(content).slice(0, 500));
+    var action = null;
+    try {
+      var start = content.indexOf('{');
+      var end = content.lastIndexOf('}');
+      if (start >= 0 && end > start) action = JSON.parse(content.slice(start, end + 1));
+    } catch (e) {
+      console.warn('[office-action] LLM 输出非 JSON:', content.slice(0, 200));
+    }
+    if (!action || !action.op) {
+      return res.json({ ok: false, error: '无法生成编辑动作：' + String(content || 'LLM 无输出').slice(0, 200) });
+    }
+    // 确定性覆盖：用户明确给的新文本优先于 LLM 生成（防编造）
+    if (fixedNewText) {
+      if (action.newText != null) action.newText = fixedNewText;
+      if (action.value != null) action.value = fixedNewText;
+      if (action.op === 'set_formula' && action.formula != null) action.formula = fixedNewText;
+      if (action.operations && Array.isArray(action.operations)) {
+        action.operations.forEach(function(op) {
+          if (op.newText != null) op.newText = fixedNewText;
+          if (op.value != null) op.value = fixedNewText;
+          if (op.op === 'set_formula' && op.formula != null) op.formula = fixedNewText;
+        });
+      }
+    }
+    action.kind = kind;
+    if (action.op === 'none') {
+      return res.json({ ok: false, error: action.error || '无法匹配文档内容' });
+    }
+    return res.json({ ok: true, action: action });
+  } catch (e) {
+    console.error('[office-action] 错误:', e.message);
+    return res.json({ ok: false, error: e.message });
   }
 });
 

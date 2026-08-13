@@ -331,6 +331,10 @@
             if (resp.text && resp.text.startsWith('SCHEMA:')) {
               var schemaData = JSON.parse(resp.text.slice(7));
               applySchemaToUniver(editor, schemaData);
+              // P5: 同步到 XlsxAI（小吉 xlsx 编辑的快照/Undo 基础）
+              if (typeof window.XlsxAI !== 'undefined' && window.XlsxAI.loadSchema) {
+                window.XlsxAI.loadSchema(schemaData, editor, fileId, fileName);
+              }
             }
           })
           .catch(function (err) {

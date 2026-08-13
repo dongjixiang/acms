@@ -574,7 +574,181 @@
         }
       }, 800);
     }
+    // v0.94 (P5): 处理 _action.officeV3（Office V3 文档编辑：Word/PPT/Excel）
+    if (action._action && action._action.officeV3) {
+      setTimeout(function() { runOfficeV3Action(action._action.officeV3, action.requirementId); }, 600);
+    }
     startActionPolling(action.requirementId);
+  }
+
+  // v0.94 (P5): 执行 Office V3 编辑动作并渲染结果卡（auto-applied + [撤销]）
+  //   oa 两种形态：
+  //   1) 意图模式 { kind, instruction }（server 路由产出，参数需前端组装文档摘要后调生成器）
+  //   2) 精确模式 { kind, op, blockIdx/newText/operations }（生成器或外部调用产出，直接执行）
+  function runOfficeV3Action(oa, requirementId) {
+    if (typeof window.OfficeV3 === 'undefined' || !window.OfficeV3.runAction) {
+      showOfficeV3Result('❌ Office V3 未加载（请刷新后重试）', null, requirementId);
+      return;
+    }
+    if (oa && oa.instruction) {
+      // 意图模式：组装当前文档摘要 → /api/agent-buddy/office-action 生成精确参数 → 执行
+      var ctx = buildOfficeDocContext(oa.kind);
+      if (!ctx) {
+        showOfficeV3Result('❌ 没有打开的 ' + officeKindName(oa.kind) + ' 文档，请先在 Office 中打开要编辑的文件', null, requirementId);
+        return;
+      }
+      showOfficeV3Result('⏳ 小吉正在分析文档…', null, requirementId);
+      fetch('/api/agent-buddy/office-action', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ kind: ctx.kind, docContext: ctx.doc, instruction: oa.instruction })
+      })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (!data || !data.ok || !data.action) {
+            showOfficeV3Result('❌ ' + ((data && data.error) || '生成编辑动作失败'), null, requirementId);
+            return;
+          }
+          try {
+            var res = window.OfficeV3.runAction(data.action);
+            if (res && res.ok) {
+              showOfficeV3Result('✅ ' + (res.summary || '已应用'), res, requirementId);
+            } else {
+              showOfficeV3Result('❌ ' + ((res && res.error) || '执行失败'), null, requirementId);
+            }
+          } catch (err) {
+            showOfficeV3Result('❌ ' + err.message, null, requirementId);
+          }
+        })
+        .catch(function(err) {
+          showOfficeV3Result('❌ ' + err.message, null, requirementId);
+        });
+      return;
+    }
+    // 精确模式：直接执行
+    try {
+      var res2 = window.OfficeV3.runAction(oa || {});
+      if (res2 && res2.ok) {
+        showOfficeV3Result('✅ ' + (res2.summary || '已应用'), res2, requirementId);
+      } else {
+        showOfficeV3Result('❌ ' + ((res2 && res2.error) || '执行失败'), null, requirementId);
+      }
+    } catch (err) {
+      showOfficeV3Result('❌ ' + err.message, null, requirementId);
+    }
+  }
+
+  // 组装当前打开的 OfficeV3 文档摘要（供生成器 LLM 定位编辑目标）
+  // 返回 { kind, doc }；kind 为实际找到的实例类型（可能不同于请求 kind，用于兜底）
+  function buildOfficeDocContext(kind) {
+    var targetKind = kind;
+    var st = window.OfficeV3.getState && window.OfficeV3.getState();
+    var instances = (st && st.instances) || {};
+    var keys = Object.keys(instances);
+    if (kind === 'xlsx') {
+      if (typeof window.XlsxAI !== 'undefined' && window.XlsxAI.getSnapshot) {
+        var snap = window.XlsxAI.getSnapshot();
+        if (snap && snap.sheets && snap.sheets.length) {
+          var sheets = snap.sheets.slice(0, 5).map(function(s) {
+            var rows = [];
+            for (var r = 1; r <= 12; r++) {
+              var row = [];
+              for (var c = 0; c < 10; c++) {
+                var addr = String.fromCharCode(65 + c) + r;
+                var cell = s.cells[addr];
+                row.push(cell ? (cell.v != null ? cell.v : (cell.f || '')) : '');
+              }
+              rows.push(row);
+            }
+            return { id: s.id, name: s.name, rows: rows };
+          });
+          return { kind: 'xlsx', doc: { sheets: sheets } };
+        }
+      }
+    }
+    // word / slides：优先指定 kind，找不到则用任意已打开文档兜底
+    var ed = null;
+    for (var i = 0; i < keys.length; i++) {
+      var e = instances[keys[i]].editor;
+      if (e && e.kind === targetKind) { ed = e; break; }
+    }
+    if (!ed) {
+      for (var j = 0; j < keys.length; j++) {
+        var e2 = instances[keys[j]].editor;
+        if (e2 && (e2.kind === 'word' || e2.kind === 'slides' || e2.kind === 'xlsx')) { ed = e2; break; }
+      }
+    }
+    if (!ed) return null;
+    if (ed.kind === 'word') {
+      var blocks = (ed.parsed && ed.parsed.blocks || []).slice(0, 40).map(function(b, idx) {
+        return { i: idx, text: (b.runs || []).map(function(r) { return r.text || ''; }).join('') };
+      });
+      return { kind: 'word', doc: { blocks: blocks } };
+    }
+    if (ed.kind === 'slides' && ed.opened && ed.opened.deck) {
+      var slide = ed.opened.deck.slides[ed.slideIdx] || {};
+      var els = (slide.elements || []).filter(function(el) { return el.text; });
+      var texts = els.slice(0, 20).map(function(el, idx) {
+        return { i: idx, text: (el.text.paragraphs || []).map(function(p) {
+          return (p.runs || []).map(function(r) { return r.text || ''; }).join('');
+        }).join('\n') };
+      });
+      return { kind: 'slides', doc: { slideIdx: ed.slideIdx, texts: texts } };
+    }
+    if (ed.kind === 'xlsx' && typeof window.XlsxAI !== 'undefined' && window.XlsxAI.getSnapshot) {
+      var snap2 = window.XlsxAI.getSnapshot();
+      if (snap2 && snap2.sheets && snap2.sheets.length) {
+        var sheets2 = snap2.sheets.slice(0, 5).map(function(s) {
+          var rows = [];
+          for (var r = 1; r <= 12; r++) {
+            var row = [];
+            for (var c = 0; c < 10; c++) {
+              var addr = String.fromCharCode(65 + c) + r;
+              var cell = s.cells[addr];
+              row.push(cell ? (cell.v != null ? cell.v : (cell.f || '')) : '');
+            }
+            rows.push(row);
+          }
+          return { id: s.id, name: s.name, rows: rows };
+        });
+        return { kind: 'xlsx', doc: { sheets: sheets2 } };
+      }
+    }
+    return null;
+  }
+
+  function officeKindName(kind) {
+    return kind === 'xlsx' ? 'Excel' : kind === 'slides' ? 'PPT' : 'Word';
+  }
+
+  function showOfficeV3Result(text, res, requirementId) {
+    var container = document.querySelector('#ap-messages');
+    if (!container) return;
+    // 同 requirementId 复用同一张卡（⏳ 分析中 → ✅ 结果 原位更新，不叠卡）
+    var div = null;
+    if (requirementId) {
+      div = container.querySelector('.ap-office-result[data-requirement-id="' + requirementId + '"]');
+    }
+    if (!div) {
+      div = document.createElement('div');
+      div.className = 'ap-action-card ap-office-result';
+      div.dataset.requirementId = requirementId || '';
+      container.appendChild(div);
+    }
+    var undoBtn = (res && typeof res.undo === 'function')
+      ? '<button class="ap-btn ap-office-undo">↩ 撤销</button>' : '';
+    div.innerHTML = '<div class="ap-office-result-head">📄 Office V3</div>'
+      + '<div class="ap-office-result-body">' + escHtml(text) + '</div>'
+      + (undoBtn ? '<div class="ap-office-result-actions">' + undoBtn + '</div>' : '');
+    container.scrollTop = container.scrollHeight;
+    var btn = div.querySelector('.ap-office-undo');
+    if (btn) btn.addEventListener('click', function () {
+      var r;
+      try { r = res.undo(); } catch (e) { r = { ok: false, error: e.message }; }
+      var body = div.querySelector('.ap-office-result-body');
+      if (body) body.textContent = (r && r.ok) ? '↩ 已撤销' : ('↩ ' + ((r && r.error) || '撤销失败'));
+      btn.disabled = true;
+    });
   }
 
   function actionStatusMeta(status) {
@@ -635,10 +809,12 @@ function isNonPlanTerminal(state) {
     var imgSearch = state && state.assistImageSearch;
     var music = state && state.assistMusic;
     var email = state && state.assistEmail;
+    var video = state && state.assistVideo;
     return (img && ['done', 'failed'].indexOf(img.status) >= 0)
         || (imgSearch && Array.isArray(imgSearch.images) && imgSearch.images.length > 0)
         || (music && ['done', 'failed'].indexOf(music.status) >= 0)
-        || (email && ['done', 'failed'].indexOf(email.status) >= 0);
+        || (email && ['done', 'failed'].indexOf(email.status) >= 0)
+        || (video && ['done', 'failed'].indexOf(video.status) >= 0);
   }
 
   function updateActionCard(card, state, action) {
@@ -653,6 +829,7 @@ function isNonPlanTerminal(state) {
     var imgSearch = state && state.assistImageSearch;
     var music = state && state.assistMusic;
     var email = state && state.assistEmail;
+    var video = state && state.assistVideo;
     var stepsHtml;
     if (steps.length) {
       stepsHtml = steps.map(function(step) {
@@ -798,6 +975,31 @@ function isNonPlanTerminal(state) {
       emailHtml = '<div class="ap-action-result ap-result-failed">! 邮件发送失败：' + escHtml(email.error || '未知错误') + '</div>';
     }
 
+    // video: 视频生成卡片
+    var videoHtml = '';
+    if (video) {
+      if (video.status === 'done' && video.video_url) {
+        videoHtml = '<div class="ap-action-video">'
+          + '<video controls style="width:100%;max-width:360px;border-radius:6px;margin:4px 0;background:#000" src="' + escHtml(video.video_url) + '"></video>'
+          + '<div style="margin-top:4px"><a href="' + escHtml(video.video_url) + '" target="_blank" rel="noopener" style="font-size:12px;color:var(--primary,#3b82f6)">🔗 打开原视频</a></div>'
+          + '</div>';
+      } else if (video.status === 'failed') {
+        videoHtml = '<div class="ap-action-result ap-result-failed">! 视频生成失败：' + escHtml(video.error || '未知错误') + '</div>';
+      } else if (video.status === 'done' && !video.video_url) {
+        videoHtml = '<div class="ap-action-step ap-step-running">'
+          + '<span class="ap-action-step-icon">◌</span>'
+          + '<span class="ap-action-step-label">生成视频</span>'
+          + '<span class="ap-action-step-state">生成中…（预计 60-300 秒）</span>'
+          + '</div>';
+      } else {
+        videoHtml = '<div class="ap-action-step ap-step-pending">'
+          + '<span class="ap-action-step-icon">○</span>'
+          + '<span class="ap-action-step-label">生成视频</span>'
+          + '<span class="ap-action-step-state">等待中…</span>'
+          + '</div>';
+      }
+    }
+
     var terminal = ['done', 'failed'].indexOf(plan.status) >= 0
       || isNonPlanTerminal(state);
 
@@ -818,10 +1020,10 @@ function isNonPlanTerminal(state) {
     card.innerHTML = '<div class="ap-action-head"><span>⚡</span><b>' + escHtml(summary) + '</b>'
       + '<span class="ap-action-mode">' + escHtml(mode) + '</span></div>'
       + progressHtml
-      + '<div class="ap-action-steps">' + stepsHtml + '</div>' + imageHtml + musicHtml + imgSearchHtml + emailHtml
+      + '<div class="ap-action-steps">' + stepsHtml + '</div>' + imageHtml + musicHtml + imgSearchHtml + emailHtml + videoHtml
       + '<button class="ap-action-trace" data-action="toggle-trace">▼ 查看执行详情</button>'
       + toolSummaryHtml
-      + '<div class="ap-action-trace-body" hidden>' + escHtml(JSON.stringify({ planStatus: state.planStatus, plan: plan, assistImage: img, assistMusic: music, assistEmail: email }, null, 2)) + '</div>';
+      + '<div class="ap-action-trace-body" hidden>' + escHtml(JSON.stringify({ planStatus: state.planStatus, plan: plan, assistImage: img, assistMusic: music, assistEmail: email, assistVideo: video }, null, 2)) + '</div>';
 
     var sendBtn = card.querySelector('[data-action="send-email"]');
     if (sendBtn) sendBtn.onclick = function(e) { e.stopPropagation(); sendActionEmail(card.dataset.requirementId, card, sendBtn); };

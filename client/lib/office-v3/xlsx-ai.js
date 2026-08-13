@@ -604,7 +604,7 @@
           summary: summary || (operations.length + ' 个操作'),
           changes: result.changes.length,
           synced: synced,
-          undo: function () { window.XlsxAI.undo(); },
+          undo: function () { return window.XlsxAI.undo(); },
         };
       } catch (e) {
         return { ok: false, error: e.message };

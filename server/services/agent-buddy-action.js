@@ -63,8 +63,9 @@ function normalizeRoute(raw) {
   // v0.85: 白名单与 router prompt 能力枚举对齐（之前漏了 web_search/web_fetch/project_create/create_task
   //   → "特斯拉股票今日价格"等不命中关键词拦截的消息，capabilities 被滤成空 → 无工具 → LLM 乱码）
   // v0.88: 加 code_execution —— 小吉执行域（改代码/修 bug/跑命令等意图）
+  // v0.94 (P5): 加 office_edit —— 修改已打开的 Office 文档（Word/Excel/PPT）
   const capabilities = Array.isArray(value.capabilities)
-    ? value.capabilities.filter(x => ['image_generation', 'image_search', 'music_playback', 'email_draft', 'email_send', 'web_search', 'web_research', 'document_generation', 'project_create', 'create_task', 'web_fetch', 'code_execution'].includes(x))
+    ? value.capabilities.filter(x => ['image_generation', 'image_search', 'music_playback', 'email_draft', 'email_send', 'web_search', 'web_research', 'document_generation', 'project_create', 'create_task', 'web_fetch', 'code_execution', 'video_generation', 'office_edit'].includes(x))
     : [];
   const normalized = {
     mode,
@@ -88,7 +89,7 @@ async function routeMessage(modelId, message, history = []) {
   const system = `你是 ACMS 小吉的动作路由器。只做分类，不调用工具，不制定开发计划。
 输出严格 JSON：
 {"mode":"conversation|single_action|conversational_action","confidence":0.0,"capabilities":[],"requires_confirmation":false,"reason":"..."}
-能力枚举：image_generation、image_search、music_playback、email_draft、email_send、web_search、web_research、document_generation、project_create、web_fetch、code_execution。
+能力枚举：image_generation、image_search、music_playback、email_draft、email_send、web_search、web_research、document_generation、project_create、web_fetch、code_execution、video_generation、office_edit。
 规则：
 - 纯问答/查询 ACMS 数据/闲聊 → conversation。
 - 一个明确工具动作 → single_action。
@@ -100,7 +101,8 @@ async function routeMessage(modelId, message, history = []) {
 - **创建项目/新建项目→ capabilities 含 project_create。**
 - **用户消息包含 http/https URL 时，必须分类为 single_action 并填入 web_fetch 能力（抓取网页内容），不要分类为 conversation。**
 - **用户说"看新闻"/"查新闻"/"搜新闻"/"最新消息"/"今天有什么新闻"等→ capabilities 含 web_search。**
-- **v0.88 用户要求改代码/写代码/修bug/实现功能/读文件/跑命令/查看项目代码/调试 等代码执行意图 → capabilities 含 code_execution。**`;
+- **v0.88 用户要求改代码/写代码/修bug/实现功能/读文件/跑命令/查看项目代码/调试 等代码执行意图 → capabilities 含 code_execution。**
+- **v0.94 (P5) 用户要求修改/编辑/调整已打开的 Office 文档（Word 文档/Excel 表格/PPT 演示）的内容、格式、数据 → capabilities 含 office_edit。注意区分：生成一份全新文档 → document_generation；修改当前已打开的文档 → office_edit。**`;
   const result = await callLLM(modelId, [
     { role: 'system', content: system },
     ...(historyText ? [{ role: 'user', content: `最近对话：\\n${historyText}` }] : []),
@@ -166,6 +168,28 @@ async function routeMessage(modelId, message, history = []) {
     route.capabilities.push('code_execution');
     console.log('[agent-buddy-action] 关键词命中 code_execution, 强制覆盖路由');
   }
+  // video_generation 关键词拦截 — 用户说"生成视频"/"做一个视频"/"画一段视频"等
+  const videoGenRe = /生成.*视频|做.*视频|画.*视频|创作.*视频|帮我.*视频|给我.*视频|视频.*生成|拍.*视频/;
+  if (videoGenRe.test(message) && !route.capabilities.includes('video_generation')) {
+    if (route.mode === 'conversation') {
+      route.mode = 'single_action';
+      route.confidence = 0.9;
+    }
+    route.capabilities.push('video_generation');
+    console.log('[agent-buddy-action] 关键词命中 video_generation, 强制覆盖路由');
+  }
+  // v0.94 (P5): 关键词前置拦截 — 修改已打开 Office 文档意图（改/编辑 Word/Excel/PPT）
+  //   与 document_generation 区分：生成新文档不命中；"改/编辑/调整 + 文档类型词"命中
+  const officeEditRe = /(改|编辑|调整|修改|更新|把).*(文档|word|excel|表格|xlsx|ppt|幻灯片|演示文稿|演示文件|文件里的|文件内)/;
+  const officeEditRe2 = /(文档|表格|幻灯片|演示文稿).*(改成|改为|加上|删除|更新|修改|更新为|改成)/;
+  if ((officeEditRe.test(message) || officeEditRe2.test(message)) && !route.capabilities.includes('office_edit')) {
+    if (route.mode === 'conversation') {
+      route.mode = 'single_action';
+      route.confidence = 0.9;
+    }
+    route.capabilities.push('office_edit');
+    console.log('[agent-buddy-action] 关键词命中 office_edit, 强制覆盖路由');
+  }
   return route;
 }
 
@@ -188,6 +212,7 @@ function getActionToolNames(route, baseTools) {
       //   不含结构化数据（价格/行情/参数）时，LLM 可无缝衔接 fetch_url 直接抓数据源网站
       //   （新浪财经/汽车之家/贝壳等），而不是建议用户自己去看
       if (capability === 'document_generation') tools.add('document_gen');
+      if (capability === 'video_generation') { tools.add('play_video'); tools.add('agnes_generate_video'); tools.add('agnes_query_video'); }
       if (capability === 'image_search') { tools.delete('generate_image'); tools.add('web_search'); }
       if (capability === 'project_create') { tools.add('create_project'); tools.add('list_projects'); }
       if (capability === 'web_fetch') { tools.add('fetch_url'); }
@@ -210,7 +235,7 @@ const STALL_HARD_CONSTRAINTS = `
 - 生成图片时用户给了描述就直接调，严禁反问风格；AI 自行补充细节或默认值
 - 找歌/搜歌只能调 play_music，不能调 generate_image 或其他创作工具
 - 区分："找图片"/"搜图片"=搜真实照片（用 web_search + image_search=true），不是 AI 生图（用 generate_image）
-- ⚠️ 说=做：提到工具名（web_search/generate_image/send_email/play_music/query_collection）必须同时调 tool_call，否则系统重提示强制执行
+- ⚠️ 说=做：提到工具名（web_search/generate_image/send_email/play_music/query_collection/play_video/agnes_generate_video）必须同时调 tool_call，否则系统重提示强制执行
 - ⚠️ 首轮必须调：严禁先回复文字再调，任务需要工具时首轮直接调
 - ⚠️ 结果导向：web_search 调用后立即基于结果撰写；若不含具体数据（价格/行情/参数）可再调 1 次 web_search 定位数据源 URL（如"XX价格 官网/查询"），然后用 fetch_url 抓取；严禁第 3 次调 web_search
 - ⚠️ 禁止循环：web_search 最多 2 次（1 次搜数据 + 1 次定位数据源 URL），第 3 次系统强制终止`;
@@ -224,7 +249,7 @@ function buildActionPrompt(route) {
 - 所需能力：${route.capabilities.join(', ') || 'none'}
 - 路由置信度：${route.confidence}
 - 路由原因：${route.reason || '用户明确要求执行动作'}
-- 当前 reqId 是小吉隐藏动作容器，可安全用于 generate_image / plan_execute / send_email。`;
+- 当前 reqId 是小吉隐藏动作容器，可安全用于 generate_image / plan_execute / send_email / play_video。`;
   if (route.mode === 'conversational_action') {
     return shared + `
 【复合聊天动作】必须调用 plan_execute 一次完成全部步骤，不要逐个直接调用，也不要输出"正在做"而不调工具。

@@ -244,6 +244,26 @@
             return acc;
           }, {});
         },
+        // P5：AI 编辑入口 — 修改当前页第 textBoxIdx 个文本框的全部文本
+        proposeEdit: function (textBoxIdx, newText) {
+          if (!editor.opened) return { ok: false, error: '文档未加载' };
+          var deck = editor.opened.deck;
+          var slide = deck.slides[editor.slideIdx];
+          var textEls = slide.elements.filter(function (el) { return el.type === 'text' || el.type === 'shape'; });
+          var el = textEls[textBoxIdx];
+          if (!el || !el.text) return { ok: false, error: '文本框不存在: ' + textBoxIdx };
+          var origPara = el.text.paragraphs[0] || {};
+          el.text.paragraphs = [{
+            runs: [{ text: String(newText) }],
+            align: origPara.align,
+            lineHeight: origPara.lineHeight,
+            lineExact: origPara.lineExact,
+          }];
+          el.dirty = true;
+          editor.dirtyEls.add(el.id);
+          renderCurrentSlide();
+          return { ok: true, textBoxIdx: textBoxIdx, newText: String(newText) };
+        },
       };
 
       function setStatus(msg) { if (statusEl) statusEl.textContent = msg; }
@@ -480,6 +500,9 @@
         setStatus('加载中…');
         loadRemoteFile(fileId2, fileName2);
       };
+      // P5: 注册到 state.instances（小吉/工具 API 定位用；word loader 已有）
+      var key = fileId || ('__v3slides__' + Date.now());
+      state.instances[key] = { editor: editor };
       return editor;
     };
   }
@@ -499,7 +522,7 @@
       var fileId = args.fileId;
       var fileName = args.fileName || 'untitled.docx';
       var isRemoteFile = !!fileId;
-      var targetId = (fileId || 'new-' + Date.now()).replace(/-/g, '');
+      var targetId = (fileId || 'new-' + Date.now()).replace(/[^a-zA-Z0-9]/g, '');
 
       if (!w || !w.$c) return null;
       var fnSafe = esc(fileName);
@@ -535,6 +558,19 @@
             if (state.instances[k].editor !== editor) acc[k] = state.instances[k];
             return acc;
           }, {});
+        },
+        // P5：AI 编辑入口 — 修改指定 block 的文本（DOM 同步 + dirty）
+        proposeEdit: function (blockIdx, newText) {
+          var entry = editor.blockEls[blockIdx];
+          if (!entry) return { ok: false, error: 'block 不存在: ' + blockIdx };
+          var inner = entry.el.querySelector('.v3-para-inner') || entry.el;
+          // 保留第一个 run 的格式，替换文本
+          var firstRun = (entry.block.runs || [])[0] || {};
+          inner.innerHTML = runToHtml(Object.assign({}, firstRun, { text: String(newText) }));
+          editor.dirty.add(blockIdx);
+          entry.el.classList.add('v3-dirty');
+          setStatus(editor.dirty.size + ' 段已修改');
+          return { ok: true, blockIdx: blockIdx, newText: String(newText) };
         },
       };
 
@@ -767,5 +803,59 @@
     listInstances: function () { return Object.keys(state.instances); },
     getState: function () { return state; },
     warmUp: function () { schedulePrefetch(); },
+    // P5：小吉统一动作入口 — 找到目标实例并执行编辑
+    // action: { kind:'word'|'slides'|'xlsx', fileId?, op, args }
+    runAction: function (action) {
+      if (!action || !action.kind) return { ok: false, error: '缺少 kind' };
+      try {
+        if (action.kind === 'xlsx') {
+          if (typeof window.XlsxAI === 'undefined' || !window.XlsxAI.getSnapshot()) {
+            return { ok: false, error: '工作簿未加载（请先打开 Excel 文件）' };
+          }
+          if (action.op === 'propose') {
+            return window.XlsxAI.propose(action.operations || [], action.summary || '小吉编辑');
+          }
+          if (action.op === 'undo') return window.XlsxAI.undo();
+          if (action.op === 'redo') return window.XlsxAI.redo();
+          return { ok: false, error: '未知 xlsx 操作: ' + action.op };
+        }
+        // word / slides：按 fileId 或 kind 找实例
+        var inst = null;
+        var keys = Object.keys(state.instances);
+        if (action.fileId && state.instances[action.fileId]) {
+          inst = state.instances[action.fileId];
+        } else {
+          for (var i = 0; i < keys.length; i++) {
+            var e = state.instances[keys[i]].editor;
+            if (e && e.kind === action.kind) { inst = state.instances[keys[i]]; break; }
+          }
+        }
+        if (!inst || !inst.editor) return { ok: false, error: '没有打开的 ' + action.kind + ' 编辑器' };
+        var ed = inst.editor;
+        if (action.op === 'proposeEdit') {
+          var idx = ed.kind === 'slides' ? action.textBoxIdx : action.blockIdx;
+          var r = ed.proposeEdit(idx, action.newText);
+          if (!r.ok) return r;
+          return {
+            ok: true,
+            summary: action.summary || (action.kind === 'word'
+              ? '已修改第 ' + action.blockIdx + ' 段'
+              : '已修改文本框 ' + (action.textBoxIdx != null ? action.textBoxIdx : '')),
+            pendingSave: ed.dirty && ed.dirty.size > 0 || ed.dirtyEls && ed.dirtyEls.size > 0,
+            undo: function () { /* 无快照栈：标记为待人工撤销，回滚用会话级 journal 后置 */ return { ok: true, note: '文本编辑请用 Ctrl+Z' }; },
+          };
+        }
+        if (action.op === 'save') {
+          // 触发保存：word/slides 各自的保存流程
+          var saveBtn = document.querySelector('#' + (ed.domId || '') + ' .v3-tb-save') ||
+                        (ed._saveEl || null);
+          if (saveBtn) { saveBtn.click(); return { ok: true, summary: '已触发保存' }; }
+          return { ok: false, error: '未找到保存按钮' };
+        }
+        return { ok: false, error: '未知操作: ' + action.op };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    },
   };
 })();
