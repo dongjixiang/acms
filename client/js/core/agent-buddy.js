@@ -670,12 +670,12 @@
     var ed = null;
     for (var i = 0; i < keys.length; i++) {
       var e = instances[keys[i]].editor;
-      if (e && e.kind === targetKind) { ed = e; break; }
+      if (e && (e.kind === targetKind || (targetKind === 'word' && e.kind === 'word-ui'))) { ed = e; break; }
     }
     if (!ed) {
       for (var j = 0; j < keys.length; j++) {
         var e2 = instances[keys[j]].editor;
-        if (e2 && (e2.kind === 'word' || e2.kind === 'slides' || e2.kind === 'xlsx')) { ed = e2; break; }
+        if (e2 && (e2.kind === 'word' || e2.kind === 'word-ui' || e2.kind === 'slides' || e2.kind === 'xlsx')) { ed = e2; break; }
       }
     }
     if (!ed) return null;
@@ -684,6 +684,26 @@
         return { i: idx, text: (b.runs || []).map(function(r) { return r.text || ''; }).join('') };
       });
       return { kind: 'word', doc: { blocks: blocks } };
+    }
+    // P132: GenOffice Word UI（iframe 内 Tiptap）——摘要从 Tiptap doc 收集
+    if (ed.kind === 'word-ui' && ed.iframe) {
+      try {
+        var gwin = ed.iframe.contentWindow;
+        var gdoc = gwin && gwin.document ? gwin.document.querySelector('[contenteditable="true"]') : null;
+        var gedit = gdoc && gdoc.editor;
+        if (gedit) {
+          var gblocks = [];
+          gedit.state.doc.content.forEach(function (node) {
+            var n = node.type.name;
+            if (n === 'docParagraph' || n === 'docHeading' || n === 'docListItem') {
+              gblocks.push({ i: gblocks.length, text: node.textContent.slice(0, 120) });
+            }
+          });
+          if (gblocks.length) return { kind: 'word', doc: { blocks: gblocks.slice(0, 40) } };
+        }
+      } catch (e) {
+        console.warn('[agent-buddy] GenOffice word 摘要失败:', e.message);
+      }
     }
     if (ed.kind === 'slides' && ed.opened && ed.opened.deck) {
       var slide = ed.opened.deck.slides[ed.slideIdx] || {};

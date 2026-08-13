@@ -522,8 +522,42 @@
     try { return localStorage.getItem('office-v3-word-ui') !== '0'; } catch (e) { return true; }
   }
 
+  // GenOffice Word UI：替换第 blockIdx 段文本（Tiptap commands）
+  // 段落类节点 = docParagraph/docHeading/docListItem（与 buildOfficeDocContext 摘要索引一致，跳过表格）
+  function genOfficeProposeEdit(frame, blockIdx, newText) {
+    try {
+      var win = frame && frame.contentWindow;
+      var docEl = win && win.document ? win.document.querySelector('[contenteditable="true"]') : null;
+      var editor = docEl && docEl.editor;
+      if (!editor) return { ok: false, error: '编辑器未就绪' };
+      var paras = [];
+      editor.state.doc.content.forEach(function (node, offset) {
+        var n = node.type.name;
+        if (n === 'docParagraph' || n === 'docHeading' || n === 'docListItem') {
+          paras.push({ node: node, offset: offset });
+        }
+      });
+      var target = paras[blockIdx];
+      if (!target) return { ok: false, error: '段落不存在: ' + blockIdx };
+      var fromPos = target.offset + 1;
+      var toPos = target.offset + target.node.nodeSize - 1;
+      editor.chain()
+        .setTextSelection({ from: fromPos, to: toPos })
+        .insertContent(String(newText))
+        .run();
+      return { ok: true, blockIdx: blockIdx, newText: String(newText) };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
   // 加载 GenOffice Word UI：iframe 完全隔离（不污染 ACMS 全局样式）
   async function loadGenOfficeWord(w, fileId, fileName) {
+    // 清理旧 word-ui 实例（reload 换文件后旧 key 残留会误导 runAction 定位）
+    Object.keys(state.instances).forEach(function (k) {
+      var e = state.instances[k].editor;
+      if (e && e.kind === 'word-ui') delete state.instances[k];
+    });
     // 复用窗口时先卸载旧 iframe 内容
     var oldFrame = w.$c.querySelector('iframe.v3-genoffice-frame');
     if (oldFrame) {
@@ -560,6 +594,9 @@
       try { if (frame.contentWindow && frame.contentWindow.__unmount) frame.contentWindow.__unmount(); } catch (e) { /* ignore */ }
       frame.remove();
     };
+    // 注册到 state.instances（runAction / buildOfficeDocContext 定位用）
+    var key = fileId || ('__v3genword__' + Date.now());
+    state.instances[key] = { editor: { kind: 'word-ui', fileId: fileId, fileName: fileName, iframe: frame } };
     return { kind: 'word-ui', fileId: fileId, fileName: fileName, iframe: frame };
   }
 
@@ -902,7 +939,7 @@
           if (action.op === 'redo') return window.XlsxAI.redo();
           return { ok: false, error: '未知 xlsx 操作: ' + action.op };
         }
-        // word / slides：按 fileId 或 kind 找实例
+        // word / slides：按 fileId 或 kind 找实例（word 请求命中 GenOffice word-ui 实例）
         var inst = null;
         var keys = Object.keys(state.instances);
         if (action.fileId && state.instances[action.fileId]) {
@@ -910,12 +947,23 @@
         } else {
           for (var i = 0; i < keys.length; i++) {
             var e = state.instances[keys[i]].editor;
-            if (e && e.kind === action.kind) { inst = state.instances[keys[i]]; break; }
+            if (e && (e.kind === action.kind || (action.kind === 'word' && e.kind === 'word-ui'))) { inst = state.instances[keys[i]]; break; }
           }
         }
         if (!inst || !inst.editor) return { ok: false, error: '没有打开的 ' + action.kind + ' 编辑器' };
         var ed = inst.editor;
         if (action.op === 'proposeEdit') {
+          // GenOffice Word UI（iframe 内 Tiptap）：走 commands 替换段落
+          if (ed.kind === 'word-ui') {
+            var g = genOfficeProposeEdit(ed.iframe, action.blockIdx, action.newText);
+            if (!g.ok) return g;
+            return {
+              ok: true,
+              summary: action.summary || '已修改第 ' + action.blockIdx + ' 段',
+              pendingSave: true,
+              undo: function () { return { ok: true, note: '文本编辑请用 Ctrl+Z' }; },
+            };
+          }
           var idx = ed.kind === 'slides' ? action.textBoxIdx : action.blockIdx;
           var r = ed.proposeEdit(idx, action.newText);
           if (!r.ok) return r;
