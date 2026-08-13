@@ -4,6 +4,11 @@
 (function () {
   'use strict';
 
+  // ── HTML 转义（独立文件自备，不依赖 bridge） ──
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
   // ── 地址工具（对齐 GenOffice cell-address.ts 语义） ──
   function colLabel(n) { // 0→A, 25→Z, 26→AA
     var s = '';
@@ -65,7 +70,7 @@
             else cells[addr] = { v: v };
           });
         });
-        return { id: 'sheet' + (si + 1), name: s.name || 'Sheet' + (si + 1), cells: cells, styles: {} };
+        return { id: 'sheet' + (si + 1), name: s.name || 'Sheet' + (si + 1), cells: cells, styles: {}, visuals: [] };
       }),
     };
   }
@@ -142,7 +147,7 @@
     return {
       revision: snap.revision + 1,
       sheets: snap.sheets.map(function (s) {
-        return { id: s.id, name: s.name, cells: Object.assign({}, s.cells), styles: Object.assign({}, s.styles) };
+        return { id: s.id, name: s.name, cells: Object.assign({}, s.cells), styles: Object.assign({}, s.styles), visuals: (s.visuals || []).map(function (v) { return Object.assign({}, v); }) };
       }),
     };
   }
@@ -274,6 +279,70 @@
           next.sheets = next.sheets.filter(function (x) { return x.id !== op.sheetId; });
           break;
         }
+        case 'add_chart': {
+          var s11 = findSheet(next, op.sheetId);
+          // 从 range 提取数据（内存 cells → 二维数组）
+          var r11 = parseRange(op.range);
+          var grid = [];
+          for (var rr2 = r11.startRow; rr2 <= r11.endRow; rr2++) {
+            var rowArr = [];
+            for (var cc2 = r11.startCol; cc2 <= r11.endCol; cc2++) {
+              var cell11 = s11.cells[formatAddress(rr2, cc2)];
+              rowArr.push(cell11 ? (cell11.f ? cell11.f : cell11.v) : null);
+            }
+            grid.push(rowArr);
+          }
+          var parsed = chartDataFromValues(grid);
+          if (!parsed) throw new Error('图表数据无效: ' + op.range);
+          var kind = op.kind || recommendChartKind(parsed);
+          var visual = {
+            id: 'chart' + Date.now(),
+            type: 'chart',
+            kind: kind,
+            title: op.title || '图表',
+            range: op.range,
+            sheetId: op.sheetId,
+            x: op.x !== undefined ? op.x : 0.6,
+            y: op.y !== undefined ? op.y : 0.4,
+            w: op.w || 420,
+            h: op.h || 260,
+            data: { categories: parsed.categories, series: parsed.series },
+          };
+          s11.visuals = s11.visuals || [];
+          s11.visuals.push(visual);
+          changes.push({ sheetId: op.sheetId, address: op.range, before: null, after: visual });
+          break;
+        }
+        case 'edit_chart': {
+          var s12 = findSheet(next, op.sheetId);
+          var vis = (s12.visuals || []).find(function (v) { return v.id === op.visualId; });
+          if (!vis) throw new Error('图表不存在: ' + op.visualId);
+          if (op.title !== undefined) vis.title = op.title;
+          if (op.kind !== undefined) vis.kind = op.kind;
+          if (op.range !== undefined && op.range !== vis.range) {
+            // 换数据源：重新提取
+            var r12 = parseRange(op.range);
+            var grid2 = [];
+            for (var rr3 = r12.startRow; rr3 <= r12.endRow; rr3++) {
+              var rowArr2 = [];
+              for (var cc3 = r12.startCol; cc3 <= r12.endCol; cc3++) {
+                var cell12 = s12.cells[formatAddress(rr3, cc3)];
+                rowArr2.push(cell12 ? (cell12.f ? cell12.f : cell12.v) : null);
+              }
+              grid2.push(rowArr2);
+            }
+            var parsed2 = chartDataFromValues(grid2);
+            if (!parsed2) throw new Error('图表数据无效: ' + op.range);
+            vis.range = op.range;
+            vis.data = { categories: parsed2.categories, series: parsed2.series };
+          }
+          break;
+        }
+        case 'delete_visual': {
+          var s13 = findSheet(next, op.sheetId);
+          s13.visuals = (s13.visuals || []).filter(function (v) { return v.id !== op.visualId; });
+          break;
+        }
         default:
           throw new Error('不支持的操作: ' + op.op);
       }
@@ -342,15 +411,154 @@
     sheet.styles = newStyles;
   }
 
+  // ── 图表（P4b）：数据提取 + 推荐 + SVG 渲染（移植自 GenOffice chart-visual/chart-recommend 核心） ──
+  function isNumericV(v) {
+    return typeof v === 'number' || (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)));
+  }
+  function toNumberV(v) {
+    return typeof v === 'number' ? v : isNumericV(v) ? Number(String(v).trim()) : 0;
+  }
+  // 二维数组 → ParsedChartData {categories, series:[{name, values}], hasHeaderRow, hasCategoryColumn}
+  function chartDataFromValues(source) {
+    var firstRow = source[0];
+    if (!firstRow || !firstRow.length) return null;
+    var isBlank = function (v) { return v === null || v === undefined || v === ''; };
+    var width = firstRow.length;
+    var hasLabelHeader = source.length > 1 && firstRow.some(function (v, i) { return (width === 1 || i > 0) && !isBlank(v) && !isNumericV(v); });
+    var hasCrossTab = source.length > 1 && width > 1 && isBlank(firstRow[0]) && firstRow.every(function (v, i) { return i === 0 || !isBlank(v); });
+    var hasHeaderRow = hasLabelHeader || hasCrossTab;
+    var body = (hasHeaderRow ? source.slice(1) : source).slice(0, 500);
+    if (!body.length) return null;
+    var hasCategoryColumn = width > 1 && (hasCrossTab || body.some(function (r) { return !isBlank(r[0]) && !isNumericV(r[0]); }));
+    var categories = body.map(function (row, i) { return hasCategoryColumn ? String(row[0] === null || row[0] === undefined ? '' : row[0]) : String(i + 1); });
+    var series = [];
+    for (var col = hasCategoryColumn ? 1 : 0; col < width; col++) {
+      if (!body.some(function (r) { return isNumericV(r[col]); })) continue;
+      var header = hasHeaderRow ? firstRow[col] : null;
+      series.push({
+        name: isBlank(header) ? 'Series ' + (series.length + 1) : String(header),
+        values: body.map(function (r) { return toNumberV(r[col]); }),
+      });
+      if (series.length >= 12) break;
+    }
+    return series.length ? { categories: categories, series: series, hasHeaderRow: hasHeaderRow, hasCategoryColumn: hasCategoryColumn } : null;
+  }
+
+  // 推荐图表类型（简化版）：≥2 series → column；分类是时间 → line；单 series 且分类≤8 → pie；否则 column
+  function recommendChartKind(parsed) {
+    if (!parsed) return 'column';
+    if (parsed.series.length > 2) return 'column';
+    if (parsed.series.length === 1 && parsed.categories.length <= 8) return 'pie';
+    if (parsed.categories.length >= 6) return 'line';
+    return 'column';
+  }
+
+  // SVG 渲染：parsed + kind → SVG 字符串（自绘，column/bar/line/pie）
+  function chartToSvg(parsed, kind, title) {
+    var W = 400, H = 240, padL = 50, padR = 16, padT = 30, padB = 36;
+    var plotW = W - padL - padR, plotH = H - padT - padB;
+    var cats = parsed.categories, series = parsed.series;
+    var allVals = [];
+    series.forEach(function (s) { s.values.forEach(function (v) { if (v !== null && v !== undefined) allVals.push(v); }); });
+    var maxV = Math.max.apply(null, allVals.concat([1]));
+    var minV = Math.min.apply(null, allVals.concat([0]));
+    minV = Math.min(minV, 0);
+    var span = maxV - minV || 1;
+    var X = function (i) { return padL + (i + 0.5) * (plotW / cats.length); };
+    var Y = function (v) { return padT + plotH - ((v - minV) / span) * plotH; };
+    var colors = ['#4472C4', '#ED7D31', '#A5A5A5', '#FFC000', '#5B9BD5', '#70AD47', '#264478', '#C55A11'];
+    var parts = [];
+    parts.push('<svg xmlns="http://www.w3.org/2000/svg" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '">');
+    // 背景 + 网格
+    parts.push('<rect x="' + padL + '" y="' + padT + '" width="' + plotW + '" height="' + plotH + '" fill="#fff"/>');
+    for (var gi = 0; gi <= 4; gi++) {
+      var gy = padT + plotH - (gi / 4) * plotH;
+      parts.push('<line x1="' + padL + '" y1="' + gy + '" x2="' + (padL + plotW) + '" y2="' + gy + '" stroke="#eee" stroke-width="1"/>');
+      var gv = minV + (span * gi) / 4;
+      parts.push('<text x="' + (padL - 6) + '" y="' + (gy + 4) + '" text-anchor="end" font-size="10" fill="#888">' + Math.round(gv * 100) / 100 + '</text>');
+    }
+    // 标题
+    if (title) parts.push('<text x="' + (W / 2) + '" y="18" text-anchor="middle" font-size="13" font-weight="700" fill="#333">' + esc(title) + '</text>');
+    var kind2 = kind === 'bar' ? 'column' : kind;
+    if (kind2 === 'pie') {
+      // 饼图：单 series
+      var vals = series[0] ? series[0].values : [];
+      var total = vals.reduce(function (s, v) { return s + Math.max(v, 0); }, 0) || 1;
+      var cx = W / 2 - 20, cy = padT + plotH / 2, R = Math.min(plotW, plotH) / 2 - 10;
+      var angle = -90;
+      vals.forEach(function (v, i) {
+        var sweep = (Math.max(v, 0) / total) * 360;
+        var a1 = (angle * Math.PI) / 180, a2 = ((angle + sweep) * Math.PI) / 180;
+        var x1 = cx + R * Math.cos(a1), y1 = cy + R * Math.sin(a1);
+        var x2 = cx + R * Math.cos(a2), y2 = cy + R * Math.sin(a2);
+        var large = sweep > 180 ? 1 : 0;
+        parts.push('<path d="M' + cx + ',' + cy + ' L' + x1 + ',' + y1 + ' A' + R + ',' + R + ' 0 ' + large + ' 1 ' + x2 + ',' + y2 + ' Z" fill="' + colors[i % colors.length] + '"/>');
+        // 图例
+        parts.push('<rect x="' + (W - 90) + '" y="' + (padT + i * 16) + '" width="10" height="10" fill="' + colors[i % colors.length] + '"/>');
+        var label = (cats[i] || ('项' + (i + 1))) + ' ' + Math.round((Math.max(v, 0) / total) * 100) + '%';
+        parts.push('<text x="' + (W - 76) + '" y="' + (padT + i * 16 + 9) + '" font-size="10" fill="#444">' + esc(label) + '</text>');
+        angle += sweep;
+      });
+    } else {
+      // column/line：分组柱状
+      var nS = series.length;
+      var groupW = plotW / cats.length;
+      var barW = Math.min(groupW / (nS + 1), 36);
+      series.forEach(function (s, si) {
+        var color = colors[si % colors.length];
+        var linePts = [];
+        s.values.forEach(function (v, ci) {
+          if (v === null || v === undefined) return;
+          var bx = X(ci) - (groupW * (nS - 1)) / 2 + si * barW - barW / 2;
+          var by = Y(v), bh = padT + plotH - by;
+          parts.push('<rect x="' + bx + '" y="' + by + '" width="' + barW + '" height="' + Math.max(bh, 0) + '" fill="' + color + '" opacity="0.9"/>');
+          linePts.push(X(ci) + ',' + by);
+        });
+        if (kind === 'line' || kind2 === 'line') {
+          parts.push('<polyline points="' + linePts.join(' ') + '" fill="none" stroke="' + color + '" stroke-width="2"/>');
+        }
+      });
+      // 分类轴标签
+      cats.forEach(function (c, i) {
+        var show = cats.length <= 12 || i % Math.ceil(cats.length / 12) === 0;
+        if (show) parts.push('<text x="' + X(i) + '" y="' + (H - 14) + '" text-anchor="middle" font-size="9" fill="#888">' + esc(String(c).slice(0, 8)) + '</text>');
+      });
+      // 图例
+      series.forEach(function (s, si) {
+        parts.push('<rect x="' + (padL + si * 90) + '" y="' + (H - 22) + '" width="10" height="10" fill="' + colors[si % colors.length] + '"/>');
+        parts.push('<text x="' + (padL + si * 90 + 13) + '" y="' + (H - 13) + '" font-size="9" fill="#444">' + esc(s.name) + '</text>');
+      });
+    }
+    parts.push('</svg>');
+    return parts.join('');
+  }
+
   // ── 会话状态（单工作簿） ──
   var session = {
     snapshot: null,       // WorkbookSnapshot
     editor: null,         // Univer editor 实例（UI 同步目标）
+    containerEl: null,    // 图表 SVG overlay 容器（Excel 窗口 DOM）
     undoStack: [],        // 快照栈
     redoStack: [],
     fileId: null,
     fileName: null,
   };
+
+  // 渲染所有图表到容器（P4b：SVG overlay）
+  function renderCharts(container) {
+    if (!container) container = session.containerEl;
+    if (!container || !session.snapshot) return;
+    var sheets = session.snapshot.sheets;
+    var html = '';
+    sheets.forEach(function (s) {
+      (s.visuals || []).forEach(function (v) {
+        if (!v.data) return;
+        var svg = chartToSvg(v.data, v.kind, v.title);
+        html += '<div class="xlsx-ai-chart" data-visual="' + v.id + '" style="position:absolute;left:' + (v.x * 100) + '%;top:' + (v.y * 100) + '%;width:' + v.w + 'px;height:' + v.h + 'px;background:#fff;border:1px solid #d0d0d8;border-radius:4px;box-shadow:0 1px 4px rgba(0,0,0,.08);z-index:50;">' + svg + '<div style="position:absolute;top:2px;right:4px;font-size:10px;color:#aaa;cursor:pointer" title="删除图表" onclick="window.XlsxAI.deleteVisual(\'' + v.id + '\')">✕</div></div>';
+      });
+    });
+    container.innerHTML = html;
+  }
 
   function getSheetIdByName(name) {
     var s = session.snapshot.sheets.find(function (x) { return x.name === name; });
@@ -366,13 +574,15 @@
   // ── 对外 API ──
   window.XlsxAI = {
     // 载入 schema（打开文件后/首次）
-    loadSchema: function (schemaData, editor, fileId, fileName) {
+    loadSchema: function (schemaData, editor, fileId, fileName, containerEl) {
       session.snapshot = snapshotFromSchema(schemaData);
       session.editor = editor || null;
+      session.containerEl = containerEl || null;
       session.fileId = fileId || null;
       session.fileName = fileName || 'untitled.xlsx';
       session.undoStack = [];
       session.redoStack = [];
+      renderCharts();
       return session.snapshot;
     },
     getSnapshot: function () { return session.snapshot; },
@@ -388,6 +598,7 @@
         pushUndo(before);
         var schema = schemaFromSnapshot(result.snapshot);
         var synced = session.editor ? window.applySchemaToUniver(session.editor, schema) : true;
+        renderCharts();
         return {
           ok: true,
           summary: summary || (operations.length + ' 个操作'),
@@ -409,6 +620,7 @@
       session.redoStack.push(session.snapshot);
       session.snapshot = session.undoStack.pop();
       if (session.editor) window.applySchemaToUniver(session.editor, schemaFromSnapshot(session.snapshot));
+      renderCharts();
       return { ok: true };
     },
     redo: function () {
@@ -416,8 +628,22 @@
       session.undoStack.push(session.snapshot);
       session.snapshot = session.redoStack.pop();
       if (session.editor) window.applySchemaToUniver(session.editor, schemaFromSnapshot(session.snapshot));
+      renderCharts();
       return { ok: true };
     },
+    // 删除图表（SVG overlay 的 ✕ 按钮调用）
+    deleteVisual: function (visualId) {
+      var snap = session.snapshot;
+      if (!snap) return { ok: false, error: '未加载工作簿' };
+      var sheet = snap.sheets.find(function (s) { return (s.visuals || []).some(function (v) { return v.id === visualId; }); });
+      if (!sheet) return { ok: false, error: '图表不存在' };
+      return window.XlsxAI.propose([{ op: 'delete_visual', sheetId: sheet.id, visualId: visualId }], '删除图表');
+    },
+    // 图表工具（小吉/P5 用）
+    chartDataFromValues: chartDataFromValues,
+    recommendChartKind: recommendChartKind,
+    chartToSvg: chartToSvg,
+    renderCharts: function (container) { renderCharts(container); },
     // 保存：schema → POST /api/office/save（writeXlsx 通道）
     save: async function () {
       if (!session.snapshot) return { ok: false, error: '未加载工作簿' };
