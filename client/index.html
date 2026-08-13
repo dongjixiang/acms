@@ -12,7 +12,7 @@
 <link rel="stylesheet" href="/client/css/office-doc.css?v=0.62.7">
 <link rel="stylesheet" href="/client/lib/xterm.min.css">
 <script src="/client/lib/mermaid.min.js" defer></script>
-<!-- PPT 编辑器依赖：AdmZip（PPTX解析）+ PptxGenJS（PPTX导出） -->
+<!-- PPT 编辑器依赖：PptxGenJS（PPTX导出+内置JSZip解析） -->
 <script src="/client/lib/pptxgenjs.js"></script>
 <script>
 // Mermaid 配置（跟随主题，脚本加载后初始化）
@@ -675,7 +675,9 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/office-ppt.js?v=0.66.19"></script>
 <script src="/client/js/views/office-editor.js?v=0.64.0"></script>
 <!-- v0.91.3: Office V2 bridge (Univer + Tiptap + Reveal, code-split, prefetch + dispose) -->
-<script src="/client/js/views/office-v2-bridge.js?v=0.91.4"></script>
+<script src="/client/js/views/office-v2-bridge.js?v=0.92.2"></script>
+<!-- v0.93: Office V3 bridge (GenOffice docx engine, 中文一等公民, P1 Word; PPT/Excel P2/P3) -->
+<script src="/client/js/views/office-v3-bridge.js?v=0.93.1"></script>
 <!-- v0.62.7: 代码编辑器 (Monaco Editor + AI) -->
 <script src="/client/js/views/code-editor.js?v=0.62.7"></script>
 <!-- v0.62.7: 图片编辑器 (TOAST UI Image Editor + AI) -->
@@ -697,7 +699,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- xterm.js — 终端窗口依赖 -->
 <script src="/client/lib/xterm.min.js"></script>
 <!-- FitAddon 已内联到 terminal.js，不再需要 CDN -->
-<script src="/client/js/views/terminal.js"></script>
+<script src="/client/js/views/terminal.js?v=0.92"></script>
 <script src="/client/js/views/chat-session-list.js?v=0.55"></script>  <!-- v0.55 合并：chat-history + chat-recycle-bin 二合一，共享 render/mode 切换 -->
 <!-- v0.67: 桌面右上角透明全屏切换按钮（hover-show，被窗体覆盖时无效） -->
 <script src="/client/js/views/desktop-fullscreen-toggle.js?v=0.67"></script>
