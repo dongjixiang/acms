@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>GenOffice Slides Host</title>
+<link rel="stylesheet" href="/client/lib/office-v3/slides-ui/acms-office-slides-ui.css?v=9">
+<style>html,body{margin:0;padding:0;height:100%;overflow:hidden;}#root{height:100vh;}</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+  // iframe console 转发到主窗口（调试）
+  ;['log', 'error', 'warn'].forEach(function (lv) {
+    var orig = console[lv];
+    console[lv] = function () {
+      var parts = Array.prototype.map.call(arguments, function (x) {
+        if (typeof x === 'string') return x;
+        try { return JSON.stringify(x); } catch (e) { return String(x); }
+      });
+      try { parent.postMessage({ type: 'iframe-console', level: lv, msg: parts.join(' ').slice(0, 300) }, '*'); } catch (e) {}
+      orig.apply(console, arguments);
+    };
+  });
+  // process polyfill（slides-main-browser 依赖）
+  if (!window.process) {
+    window.process = {
+      env: { NODE_ENV: 'production' },
+      platform: 'win32',
+      arch: 'x64',
+      versions: {},
+      nextTick: function (fn) { setTimeout(fn, 0); },
+      cwd: function () { return '/'; },
+    };
+  }
+  // Buffer polyfill（slides-main-browser 依赖 Node Buffer）
+  if (!window.Buffer) {
+    // jszip/引擎会调 Buffer.from(name).toString('utf8')——给 Uint8Array 补 utf8 toString
+    if (typeof Uint8Array.prototype.toString === 'function') {
+      var origU8ToString = Uint8Array.prototype.toString;
+      Uint8Array.prototype.toString = function (enc) {
+        if (enc === 'utf8' || enc === 'utf-8') {
+          try { return new TextDecoder('utf-8').decode(this); } catch (e) { return origU8ToString.call(this); }
+        }
+        return origU8ToString.call(this);
+      };
+    }
+    window.Buffer = {
+      from: function (data, enc) {
+        if (typeof data === 'string') {
+          var s = enc === 'base64' ? atob(data) : data;
+          var u8 = new Uint8Array(s.length);
+          for (var i = 0; i < s.length; i++) u8[i] = s.charCodeAt(i);
+          return u8;
+        }
+        if (data instanceof Uint8Array) return data;
+        if (Array.isArray(data)) return new Uint8Array(data);
+        return new Uint8Array(data || 0);
+      },
+      alloc: function (n) { return new Uint8Array(n); },
+      isBuffer: function () { return false; },
+      concat: function (arr) {
+        var total = 0, i;
+        for (i = 0; i < arr.length; i++) total += arr[i].length;
+        var out = new Uint8Array(total), off = 0;
+        for (i = 0; i < arr.length; i++) { out.set(arr[i], off); off += arr[i].length; }
+        return out;
+      },
+    };
+  }
+</script>
+<script type="module">
+  // iframe host：由父窗口（ACMS office-v3-bridge）调用 __init/__unmount
+  let mod = null
+  let rootEl = null
+
+  window.__init = async function (opts) {
+    opts = opts || {}
+    try {
+      if (!mod) mod = await import('/client/lib/office-v3/slides-ui/office-slides-ui.js?v=9')
+      if (rootEl && mod.unmountSlidesUI) {
+        try { mod.unmountSlidesUI(rootEl) } catch (e) {}
+      }
+      rootEl = document.getElementById('root')
+      rootEl.innerHTML = ''
+      // 清旧 pending，避免坏数据残留
+      if (window.__slidesEditor) window.__slidesEditor.setPendingBytes(null)
+      let bin = null
+      if (opts.fileId) {
+        const dlName = encodeURIComponent(opts.fileName || 'document.pptx')
+        const resp = await fetch('/api/office/download/' + encodeURIComponent(opts.fileId) + '/' + dlName + '?api_key=' + (opts.apiKey || 'dev-key-001'))
+        if (!resp.ok) throw new Error('下载文件失败 HTTP ' + resp.status)
+        bin = new Uint8Array(await resp.arrayBuffer())
+        console.log('[slides-host] download ok:', bin.length, 'B, magic:', String.fromCharCode(bin[0], bin[1]))
+      }
+      mod.mountSlidesUI(rootEl, {
+        fileId: opts.fileId || undefined,
+        fileName: opts.fileName || 'untitled.pptx',
+        apiKey: opts.apiKey || 'dev-key-001',
+        buffer: bin || undefined,
+      })
+      return { ok: true }
+    } catch (e) {
+      console.error('[genoffice-slides-host] __init 失败:', e)
+      return { ok: false, error: e.message }
+    }
+  }
+
+  window.__unmount = function () {
+    try {
+      if (rootEl && mod && mod.unmountSlidesUI) mod.unmountSlidesUI(rootEl)
+    } catch (e) {}
+    rootEl = null
+  }
+
+  window.__ready = true
+</script>
+</body>
+</html>

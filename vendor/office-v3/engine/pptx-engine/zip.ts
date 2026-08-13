@@ -35,7 +35,9 @@ export class PackageArchive {
 
   static async open(bytes: Uint8Array): Promise<PackageArchive> {
     const originalHash = createHash('sha256').update(bytes).digest('hex')
-    const zip = await JSZip.loadAsync(bytes)
+    // 浏览器兼容：jszip 3.x 不直接接受 Uint8Array（Node 版因 Buffer 兼容掩盖），转 ArrayBuffer
+    const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+    const zip = await JSZip.loadAsync(ab)
     const entries = new Map<string, Uint8Array>()
     const names = Object.keys(zip.files)
     for (const name of names) {
@@ -54,7 +56,8 @@ export class PackageArchive {
   readText(path: string): string | null {
     const bytes = this.entries.get(path)
     if (!bytes) return null
-    return Buffer.from(bytes).toString('utf8')
+    // 浏览器兼容：不用 Node Buffer（TextDecoder 全局可用）
+    return new TextDecoder().decode(bytes)
   }
 
   readBytes(path: string): Uint8Array | null {

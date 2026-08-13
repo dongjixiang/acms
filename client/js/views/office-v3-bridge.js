@@ -198,7 +198,95 @@
   }
 
   // ── 视图加载器（ACMSWin.open 入口） ──
+  // P132: GenOffice Slides UI（Konva 全套菜单）优先；失败/禁用回退自渲染 v3
+  function slidesGenEnabled() {
+    try { return localStorage.getItem('office-v3-slides-ui') !== '0'; } catch (e) { return true; }
+  }
+
+  // 加载 GenOffice Slides UI：iframe 完全隔离（不污染 ACMS 全局样式）
+  async function loadGenOfficeSlides(w, fileId, fileName) {
+    // 清理旧 slides-ui 实例
+    Object.keys(state.instances).forEach(function (k) {
+      var e = state.instances[k].editor;
+      if (e && e.kind === 'slides-ui') delete state.instances[k];
+    });
+    var oldFrame = w.$c.querySelector('iframe.v3-genoffice-frame');
+    if (oldFrame) {
+      try { if (oldFrame.contentWindow && oldFrame.contentWindow.__unmount) oldFrame.contentWindow.__unmount(); } catch (e) { /* ignore */ }
+      oldFrame.remove();
+    }
+    w.$c.innerHTML = '';
+    var frame = document.createElement('iframe');
+    frame.className = 'v3-genoffice-frame';
+    frame.style.cssText = 'width:100%;height:100%;border:0;display:block;';
+    frame.src = BASE + 'slides-ui/host.html?v=10';
+    w.$c.appendChild(frame);
+
+    function initFrame() {
+      var win = frame.contentWindow;
+      if (!win || typeof win.__init !== 'function') return;
+      win.__init({ fileId: fileId || undefined, fileName: fileName || 'untitled.pptx', apiKey: API_KEY })
+        .then(function (r) {
+          if (r && !r.ok) console.warn('[office-v3] GenOffice slides host init 失败:', r.error);
+        })
+        .catch(function (e) { console.warn('[office-v3] GenOffice slides host init 异常:', e.message); });
+    }
+    frame.addEventListener('load', initFrame);
+    setTimeout(function () {
+      if (frame.contentWindow && frame.contentWindow.__ready === true) initFrame();
+    }, 500);
+
+    w.onClose = function () {
+      try { if (frame.contentWindow && frame.contentWindow.__unmount) frame.contentWindow.__unmount(); } catch (e) { /* ignore */ }
+      frame.remove();
+    };
+    var key = fileId || ('__v3genslides__' + Date.now());
+    state.instances[key] = { editor: { kind: 'slides-ui', fileId: fileId, fileName: fileName, iframe: frame } };
+    return { kind: 'slides-ui', fileId: fileId, fileName: fileName, iframe: frame };
+  }
+
+  // P132: slides 调度器——GenOffice 优先，禁用/失败回退自渲染
   function makeSlidesLoader() {
+    return async function loader(w, opts) {
+      opts = opts || {};
+      var args = arguments[1] || opts;
+      var fileId = args.fileId;
+      var fileName = args.fileName || 'untitled.pptx';
+      if (!w || !w.$c) return null;
+
+      var useGen = slidesGenEnabled();
+      var win = null;
+      if (useGen) {
+        try {
+          win = await loadGenOfficeSlides(w, fileId, fileName);
+        } catch (err) {
+          console.warn('[office-v3] GenOffice Slides UI 加载失败，回退自渲染:', err.message);
+          useGen = false;
+        }
+      }
+      if (!useGen) {
+        win = await makeSlidesSelfLoader()(w, opts);
+      }
+      w.reloadDocument = function (fid, fname) {
+        if (!fid) return;
+        console.info('[office-v3] slides reloadDocument:', fid, fname);
+        if (slidesGenEnabled()) {
+          loadGenOfficeSlides(w, fid, fname).catch(function (e) {
+            console.warn('[office-v3] GenOffice slides reload 失败，回退自渲染:', e.message);
+            w.$c.innerHTML = '';
+            makeSlidesSelfLoader()(w, { fileId: fid, fileName: fname });
+          });
+        } else {
+          w.$c.innerHTML = '';
+          makeSlidesSelfLoader()(w, { fileId: fid, fileName: fname });
+        }
+      };
+      return win;
+    };
+  }
+
+  // 自渲染 v3（原 makeSlidesLoader 主体）
+  function makeSlidesSelfLoader() {
     return async function loader(w, opts) {
       opts = opts || {};
       var args = arguments[1] || opts;
