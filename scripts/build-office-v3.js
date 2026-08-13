@@ -11,6 +11,25 @@ const OUT = path.join(ROOT, 'client', 'lib', 'office-v3');
 const TMP = path.join(ROOT, '.build', 'office-v3');
 
 const nodeExternals = ['node:fs', 'node:crypto', 'node:zlib', 'node:stream', 'node:stream/promises', 'node:path', 'node:buffer'];
+// node:* → 浏览器 stub 的绝对路径（正斜杠 Windows 格式，Node 可解析）
+const STUBS = path.join(ROOT, 'vendor', 'office-v3', 'browser-stubs.ts').replace(/\\/g, '/');
+
+// 全局 Buffer polyfill（pptx-engine 直接用全局 Buffer.from/alloc/concat，仅 utf8 场景）
+// 关键陷阱（2026-08-13 实测）：
+//   - isBuffer 必须返回 false！否则 JSZip 把 Uint8Array 当 Buffer（nodebuffer 语义），文件名被转成数字串
+//   - Buffer.from(bytes).toString('utf8') 需要真实 utf8 解码（Uint8Array.toString 是逗号串）
+const BUFFER_POLYFILL = `var Buffer=(function(){var te=new TextEncoder(),td=new TextDecoder('utf-8');
+function Buf(a){return a instanceof Uint8Array?a:new Uint8Array(a)}
+function mk(b){b.toString=function(){return td.decode(b)};return b}
+Buf.from=function(d,e){if(typeof d==='string')return te.encode(d);
+if(d instanceof ArrayBuffer)return mk(new Uint8Array(d));
+if(ArrayBuffer.isView(d))return mk(new Uint8Array(d.buffer,d.byteOffset,d.byteLength));
+if(Array.isArray(d))return mk(Uint8Array.from(d));return mk(new Uint8Array(0))};
+Buf.alloc=function(n){return new Uint8Array(n)};
+Buf.isBuffer=function(x){return false};
+Buf.concat=function(l){var t=l.reduce(function(s,b){return s+b.length},0),o=new Uint8Array(t),i=0;
+l.forEach(function(b){o.set(b,i);i+=b.length});return o};
+return Buf})();`;
 
 function log(msg) { console.log('[build-office-v3]', msg); }
 
@@ -61,16 +80,34 @@ async function buildWordEngine() {
 
 async function buildSlidesEngine() {
   log('building slides-engine.js ...');
-  const renderSrc = preparePptxRender();
+  preparePptxRender();
+  // 入口：合并 pptx-engine（openPptx/savePptx）+ pptx-render（buildRenderSlide）
+  const entry = path.join(TMP, 'slides-entry.ts');
+  fs.writeFileSync(
+    entry,
+    "export * from './pptx-engine/src/index'\n" +
+      "export * from './pptx-render/index'\n",
+  );
   await build({
-    entryPoints: [path.join(renderSrc, 'index.ts')],
+    entryPoints: [entry],
     outfile: path.join(OUT, 'slides-engine.js'),
     bundle: true,
     minify: true,
     format: 'esm',
     platform: 'browser',
     target: ['es2020'],
-    external: nodeExternals,
+    // node:* → 浏览器 stub（不能 external：会残留 import 语句导致浏览器加载失败）
+    alias: {
+      'node:fs': STUBS,
+      'node:crypto': STUBS,
+      'node:zlib': STUBS,
+      'node:stream': STUBS,
+      'node:stream/promises': STUBS,
+    },
+    // 全局 Buffer polyfill（引擎直接用全局 Buffer.from/alloc/concat，非 import）
+    banner: {
+      js: BUFFER_POLYFILL,
+    },
     logLevel: 'warning',
   });
   const sz = fs.statSync(path.join(OUT, 'slides-engine.js')).size;

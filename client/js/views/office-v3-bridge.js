@@ -36,7 +36,13 @@
       '.v3-table td,.v3-table th{border:1px solid #999;padding:4px 8px;font-size:12pt;}' +
       '.v3-passthrough{border:1px dashed #bbb;background:#f7f7f8;color:#777;padding:8px 12px;border-radius:4px;margin:8px 0;font-size:13px;}' +
       '.v3-img img{max-width:100%;}' +
-      '.v3-error{padding:20px;color:#a00;font-size:13px;}';
+      '.v3-error{padding:20px;color:#a00;font-size:13px;}' +
+      '.v3-slides-stage{flex:1;overflow:auto;display:flex;align-items:flex-start;justify-content:center;padding:24px;background:#e8e9ee;}' +
+      '.v3-slide-canvas{position:relative;box-shadow:0 2px 12px rgba(0,0,0,.18);flex-shrink:0;overflow:hidden;}' +
+      '.v3-slide-shape{position:absolute;overflow:hidden;}' +
+      '.v3-slide-textbox{position:relative;width:100%;height:100%;overflow:hidden;}' +
+      '.v3-slide-para{position:absolute;left:0;right:0;outline:none;min-height:1em;line-height:1.25;white-space:pre-wrap;}' +
+      '.v3-slide-para:focus{box-shadow:inset 0 0 0 1px var(--office-accent,#1f6feb);}';
     document.head.appendChild(style);
   }
   injectCss();
@@ -189,6 +195,283 @@
 
   function paraText(el) {
     return (el.querySelector('.v3-para-inner') || el).textContent;
+  }
+
+  // ── 视图加载器（ACMSWin.open 入口） ──
+  function makeSlidesLoader() {
+    return async function loader(w, opts) {
+      opts = opts || {};
+      var args = arguments[1] || opts;
+      var fileId = args.fileId;
+      var fileName = args.fileName || 'untitled.pptx';
+      var isRemoteFile = !!fileId;
+
+      if (!w || !w.$c) return null;
+      var fnSafe = esc(fileName);
+      w.$c.innerHTML =
+        '<div class="v3-root">' +
+        '  <div class="v3-toolbar">' +
+        '    <span class="v3-tb-title">📽️</span>' +
+        '    <span class="v3-tb-file" title="' + fnSafe + '">' + fnSafe + '</span>' +
+        '    <button class="v3-tb-btn" id="v3-slides-prev">◀</button>' +
+        '    <span class="v3-tb-status" id="v3-slides-pageno" style="margin-left:0">1 / 1</span>' +
+        '    <button class="v3-tb-btn" id="v3-slides-next">▶</button>' +
+        '    <button class="v3-tb-btn" id="v3-slides-save">💾 保存</button>' +
+        '    <button class="v3-tb-btn" id="v3-slides-download">⬇ 下载</button>' +
+        '    <span class="v3-tb-status" id="v3-slides-status">加载中…</span>' +
+        '  </div>' +
+        '  <div class="v3-slides-stage" id="v3-slides-stage"></div>' +
+        '</div>';
+
+      var stage = w.$c.querySelector('#v3-slides-stage');
+      var statusEl = w.$c.querySelector('#v3-slides-status');
+      var pageNoEl = w.$c.querySelector('#v3-slides-pageno');
+      var saveBtn = w.$c.querySelector('#v3-slides-save');
+      var dlBtn = w.$c.querySelector('#v3-slides-download');
+      var prevBtn = w.$c.querySelector('#v3-slides-prev');
+      var nextBtn = w.$c.querySelector('#v3-slides-next');
+
+      var editor = {
+        kind: 'slides',
+        fileId: fileId,
+        fileName: fileName,
+        opened: null,      // {deck, archive}
+        slideIdx: 0,
+        dirtyEls: new Set(),
+        destroy: function () {
+          state.instances = Object.keys(state.instances).reduce(function (acc, k) {
+            if (state.instances[k].editor !== editor) acc[k] = state.instances[k];
+            return acc;
+          }, {});
+        },
+      };
+
+      function setStatus(msg) { if (statusEl) statusEl.textContent = msg; }
+
+      // 渲染当前页：RenderSlide → DOM
+      function renderCurrentSlide() {
+        if (!editor.opened) return;
+        var engine = state.moduleCache.slides;
+        var deck = editor.opened.deck;
+        var slide = deck.slides[editor.slideIdx];
+        stage.innerHTML = '';
+        pageNoEl.textContent = (editor.slideIdx + 1) + ' / ' + deck.slides.length;
+
+        var rs = engine.buildRenderSlide(slide, deck.size, { fitWidthPx: 960, slideNo: editor.slideIdx + 1 });
+        var fitScale = Math.min((stage.clientWidth || 900) / rs.widthPx, (stage.clientHeight || 520) / rs.heightPx);
+        if (fitScale <= 0 || !isFinite(fitScale)) fitScale = 1;
+        var S = fitScale;
+
+        var canvas = document.createElement('div');
+        canvas.className = 'v3-slide-canvas';
+        canvas.style.width = Math.round(rs.widthPx * S) + 'px';
+        canvas.style.height = Math.round(rs.heightPx * S) + 'px';
+        if (rs.background && rs.background.kind === 'solid') {
+          canvas.style.background = rs.background.color;
+        } else {
+          canvas.style.background = '#fff';
+        }
+        stage.appendChild(canvas);
+
+        (rs.nodes || []).forEach(function (node) {
+          if (node.type === 'group') return;  // P2 简化：组跳过
+          if (node.type === 'table' || node.type === 'chart' || node.type === 'chip') return;  // P2 简化：非文本节点跳过
+          var b = node.box;
+          var el = document.createElement('div');
+          el.className = 'v3-slide-shape';
+          el.style.left = Math.round(b.x * S) + 'px';
+          el.style.top = Math.round(b.y * S) + 'px';
+          el.style.width = Math.round(b.w * S) + 'px';
+          el.style.height = Math.round(b.h * S) + 'px';
+          if (node.fill && node.fill.kind === 'solid') el.style.background = node.fill.color;
+          if (node.presetGeometry && node.presetGeometry !== 'rect') {
+            // 基础几何近似：ellipse → 圆角
+            if (/ellipse|roundRect/i.test(node.presetGeometry)) el.style.borderRadius = '50%';
+          }
+
+          if (node.text && node.text.lines && node.text.lines.length) {
+            var textBox = document.createElement('div');
+            textBox.className = 'v3-slide-textbox';
+            textBox.dataset.sourceId = node.sourceId;
+            // 按段落分组（paraStart 标记），每段一个 contenteditable
+            var paraEl = null;
+            node.text.lines.forEach(function (line) {
+              if (line.paraStart || !paraEl) {
+                paraEl = document.createElement('div');
+                paraEl.className = 'v3-slide-para';
+                paraEl.contentEditable = 'true';
+                paraEl.dataset.sourceId = node.sourceId;
+                paraEl.style.top = Math.round(line.top * S) + 'px';
+                if (line.align) paraEl.style.textAlign = line.align;
+                if (line.marLPx) paraEl.style.paddingLeft = Math.round(line.marLPx * S) + 'px';
+                textBox.appendChild(paraEl);
+              }
+              var run = line.runs[0] || { text: '', fontFamily: 'Arial', fontSizePx: 18, color: '#000' };
+              paraEl.style.fontFamily = "'" + (run.fontFamily || 'Arial') + "'";
+              paraEl.style.fontSize = Math.round((run.fontSizePx || 18) * S) + 'px';
+              paraEl.style.color = run.color || '#000';
+              if (run.bold) paraEl.style.fontWeight = '700';
+              if (run.italic) paraEl.style.fontStyle = 'italic';
+              // 行文本拼接（含 run 级 span 格式）
+              var lineText = line.runs.map(function (g) {
+                var t = esc(g.text || '');
+                var st = '';
+                if (g.bold) st += 'font-weight:700;';
+                if (g.italic) st += 'font-style:italic;';
+                if (g.underline) st += 'text-decoration:underline;';
+                if (g.color && g.color !== run.color) st += 'color:' + g.color + ';';
+                return st ? '<span style="' + st + '">' + t + '</span>' : t;
+              }).join('');
+              paraEl.innerHTML += lineText;
+              paraEl.appendChild(document.createTextNode('\n'));
+            });
+            el.appendChild(textBox);
+          }
+          canvas.appendChild(el);
+        });
+      }
+
+      function collectParaRuns(paraEl) {
+        // 从 contenteditable 段落收集 runs（复用 word 的 span 样式逻辑）
+        var runs = [];
+        (function walk(node) {
+          if (node.nodeType === Node.TEXT_NODE) {
+            if (node.textContent && node.textContent !== '\n') runs.push({ text: node.textContent.replace(/\n$/, '') });
+            return;
+          }
+          if (node.nodeType !== Node.ELEMENT_NODE) return;
+          if (node.tagName === 'SPAN' && node.getAttribute('style')) {
+            var st = node.style;
+            var run = { text: node.textContent };
+            if (st.fontWeight === '700' || st.fontWeight === 'bold') run.bold = true;
+            if (st.fontStyle === 'italic') run.italic = true;
+            if (st.textDecoration.indexOf('underline') !== -1) run.underline = true;
+            if (st.color && st.color !== 'rgb(0, 0, 0)') run.color = st.color;
+            var ff = st.fontFamily && st.fontFamily.match(/^'([^']+)'$/);
+            if (ff) run.font = ff[1];
+            runs.push(run);
+            return;
+          }
+          for (var i = 0; i < node.childNodes.length; i++) walk(node.childNodes[i]);
+        })(paraEl);
+        // 合并相邻纯文本 run
+        var merged = [];
+        runs.forEach(function (r) {
+          if (merged.length && !merged[merged.length - 1].font && !r.font &&
+              merged[merged.length - 1].bold === r.bold && merged[merged.length - 1].italic === r.italic) {
+            merged[merged.length - 1].text += r.text;
+          } else {
+            merged.push(r);
+          }
+        });
+        return merged;
+      }
+
+      // 编辑回写：DOM 段落 → 更新对应 TextElement.text.paragraphs → dirty
+      function writeBackEdits() {
+        if (!editor.opened) return;
+        var deck = editor.opened.deck;
+        var slide = deck.slides[editor.slideIdx];
+        var bySource = {};
+        slide.elements.forEach(function (el, i) { bySource[el.id] = { el: el, i: i }; });
+
+        var paras = stage.querySelectorAll('.v3-slide-para');
+        paras.forEach(function (paraEl) {
+          var sid = paraEl.dataset.sourceId;
+          var hit = bySource[sid];
+          if (!hit || !hit.el.text) return;
+          var el = hit.el;
+          var runs = collectParaRuns(paraEl);
+          if (!runs.length) return;
+          // 替换整个 text 为单段落（保留段落级属性：对齐等从原第一段继承）
+          var origPara = el.text.paragraphs[0] || {};
+          el.text.paragraphs = [{
+            runs: runs,
+            align: origPara.align,
+            lineHeight: origPara.lineHeight,
+            lineExact: origPara.lineExact,
+            spaceBefore: origPara.spaceBefore,
+            spaceAfter: origPara.spaceAfter,
+            bullet: origPara.bullet,
+          }];
+          el.dirty = true;
+          editor.dirtyEls.add(el.id);
+        });
+      }
+
+      // 保存：writeBack → savePptx → base64 → POST
+      saveBtn.onclick = async function () {
+        if (!editor.opened) return toast('文档未加载', 'error');
+        setStatus('保存中…');
+        try {
+          writeBackEdits();
+          var engine = state.moduleCache.slides;
+          var out = await engine.savePptx(editor.opened);
+          var b64 = bytesToBase64(out);
+          var resp = await fetch('/api/office/save?api_key=' + API_KEY, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'pptx', name: editor.fileName, content: b64 }),
+          });
+          var r = await resp.json();
+          if (r.ok) {
+            editor.fileId = r.fileId;
+            editor.fileName = r.fileName;
+            editor.dirtyEls.clear();
+            setStatus('✅ 已保存 ' + r.fileName + ' (' + r.size + ' bytes)');
+            toast('已保存 ✅ ' + r.fileName, 'success');
+          } else {
+            setStatus('❌ 保存失败: ' + (r.error || '未知'));
+            toast('保存失败: ' + (r.error || '未知'), 'error');
+          }
+        } catch (e) {
+          console.error('[office-v3] slides save error:', e);
+          setStatus('❌ 保存失败: ' + e.message);
+          toast('保存失败: ' + e.message, 'error');
+        }
+      };
+
+      dlBtn.onclick = function () {
+        if (!editor.fileId) return toast('请先保存再下载', 'warning');
+        window.open('/api/office/download/' + encodeURIComponent(editor.fileId) + '/' + encodeURIComponent(editor.fileName), '_blank');
+      };
+
+      prevBtn.onclick = function () {
+        if (!editor.opened) return;
+        if (editor.slideIdx > 0) { editor.slideIdx--; renderCurrentSlide(); }
+      };
+      nextBtn.onclick = function () {
+        if (!editor.opened) return;
+        if (editor.slideIdx < editor.opened.deck.slides.length - 1) { editor.slideIdx++; renderCurrentSlide(); }
+      };
+      window.addEventListener('resize', function () { if (editor.opened && editor.slideIdx === editor.slideIdx) renderCurrentSlide(); });
+
+      // 加载远程文件
+      if (isRemoteFile) {
+        try {
+          var dlName = encodeURIComponent(fileName || 'document.pptx');
+          var resp = await fetch('/api/office/download/' + encodeURIComponent(fileId) + '/' + dlName + '?api_key=' + API_KEY);
+          if (!resp.ok) throw new Error('下载文件失败 HTTP ' + resp.status);
+          var bin = new Uint8Array(await resp.arrayBuffer());
+          if (!state.moduleCache.slides) await loadSlidesEngine();
+          var engine = state.moduleCache.slides;
+          editor.opened = await engine.openPptx(bin);
+          renderCurrentSlide();
+          setStatus('✅ ' + editor.opened.deck.slides.length + ' 页，点击文本框直接编辑');
+        } catch (err) {
+          console.error('[office-v3] slides load failed:', err);
+          stage.innerHTML = '<div class="v3-error">❌ 加载失败：' + esc(err.message) + '</div>';
+        }
+      }
+      return editor;
+    };
+  }
+
+  async function loadSlidesEngine() {
+    if (state.moduleCache.slides) return state.moduleCache.slides;
+    var mod = await import(BASE + 'slides-engine.js');
+    state.moduleCache.slides = mod;
+    return mod;
   }
 
   // ── 视图加载器（ACMSWin.open 入口） ──
@@ -429,8 +712,10 @@
       return;
     }
     ACMSWin.registerViewLoader('office-v3-word', makeWordLoader());
+    ACMSWin.registerViewLoader('office-v3-slides', makeSlidesLoader());
     ACMSWin.registerViewLoader('office-word', makeWordLoader());  // 覆盖旧名（P119 模式）
-    console.info('[office-v3] word loader registered (office-v3-word + 覆盖 office-word)');
+    ACMSWin.registerViewLoader('office-pptx', makeSlidesLoader());  // 覆盖旧名
+    console.info('[office-v3] word + slides loaders registered (office-v3-* + 覆盖 office-word/office-pptx)');
   }
 
   if (document.readyState === 'loading') {
