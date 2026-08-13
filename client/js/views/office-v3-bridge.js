@@ -447,22 +447,39 @@
       window.addEventListener('resize', function () { if (editor.opened && editor.slideIdx === editor.slideIdx) renderCurrentSlide(); });
 
       // 加载远程文件
-      if (isRemoteFile) {
+      async function loadRemoteFile(fileId2, fileName2) {
         try {
-          var dlName = encodeURIComponent(fileName || 'document.pptx');
-          var resp = await fetch('/api/office/download/' + encodeURIComponent(fileId) + '/' + dlName + '?api_key=' + API_KEY);
+          var dlName = encodeURIComponent(fileName2 || 'document.pptx');
+          var resp = await fetch('/api/office/download/' + encodeURIComponent(fileId2) + '/' + dlName + '?api_key=' + API_KEY);
           if (!resp.ok) throw new Error('下载文件失败 HTTP ' + resp.status);
           var bin = new Uint8Array(await resp.arrayBuffer());
           if (!state.moduleCache.slides) await loadSlidesEngine();
           var engine = state.moduleCache.slides;
           editor.opened = await engine.openPptx(bin);
+          editor.fileId = fileId2;
+          editor.fileName = fileName2;
+          editor.slideIdx = 0;
           renderCurrentSlide();
+          var fnEl = w.$c.querySelector('.v3-tb-file');
+          if (fnEl) fnEl.textContent = fileName2;
           setStatus('✅ ' + editor.opened.deck.slides.length + ' 页，点击文本框直接编辑');
         } catch (err) {
           console.error('[office-v3] slides load failed:', err);
           stage.innerHTML = '<div class="v3-error">❌ 加载失败：' + esc(err.message) + '</div>';
         }
       }
+
+      if (isRemoteFile) {
+        await loadRemoteFile(fileId, fileName);
+      }
+
+      // 窗口复用（P3）
+      w.reloadDocument = function (fileId2, fileName2) {
+        if (!fileId2) return;
+        console.info('[office-v3] slides reloadDocument:', fileId2, fileName2);
+        setStatus('加载中…');
+        loadRemoteFile(fileId2, fileName2);
+      };
       return editor;
     };
   }
@@ -652,27 +669,43 @@
 
       // 加载远程文件（文件浏览器打开）
       // 用 /api/office/download 拿原始字节（load 的 docx 分支只返回 blocks JSON，无 content）
-      if (isRemoteFile) {
+      async function loadRemoteFile(fileId2, fileName2) {
         try {
-          var dlName = encodeURIComponent(fileName || 'document.docx');
-          var resp = await fetch('/api/office/download/' + encodeURIComponent(fileId) + '/' + dlName + '?api_key=' + API_KEY);
+          var dlName = encodeURIComponent(fileName2 || 'document.docx');
+          var resp = await fetch('/api/office/download/' + encodeURIComponent(fileId2) + '/' + dlName + '?api_key=' + API_KEY);
           if (!resp.ok) throw new Error('下载文件失败 HTTP ' + resp.status);
           var bin = new Uint8Array(await resp.arrayBuffer());
           var engine = await loadWordEngine();
           var parsed = await engine.parseDocx(bin);
           editor.parsed = parsed;
+          editor.fileId = fileId2;
+          editor.fileName = fileName2;
           renderBlocks(parsed.blocks);
           var zhCount = (parsed.blocks || []).reduce(function (n, b) {
             return n + (b.runs || []).filter(function (r) { return /[\u4e00-\u9fff]/.test(r.text || ''); }).length;
           }, 0);
+          var fnEl = w.$c.querySelector('.v3-tb-file');
+          if (fnEl) fnEl.textContent = fileName2;
           setStatus('✅ ' + (parsed.blocks || []).length + ' 块 / ' + zhCount + ' 中文 run');
         } catch (err) {
           console.error('[office-v3] load failed:', err);
           page.innerHTML = '<div class="v3-error">❌ 加载失败：' + esc(err.message) + '</div>';
         }
+      }
+
+      if (isRemoteFile) {
+        await loadRemoteFile(fileId, fileName);
       } else {
         setStatus('新文档（未加载）');
       }
+
+      // 窗口复用（P3：window-manager 复用已有窗口时调用 w.reloadDocument）
+      w.reloadDocument = function (fileId2, fileName2) {
+        if (!fileId2) return;
+        console.info('[office-v3] reloadDocument:', fileId2, fileName2);
+        setStatus('加载中…');
+        loadRemoteFile(fileId2, fileName2);
+      };
 
       var key = fileId || ('__v3word__' + Date.now());
       state.instances[key] = { editor: editor };
