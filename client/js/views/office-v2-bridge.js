@@ -117,6 +117,7 @@
       var fileId = args.fileId;
       var fileName = args.fileName || 'untitled';
       var isRemoteFile = !!fileId;
+      var targetId = (fileId || 'new-' + Date.now()).replace(/-/g, '');
 
       // ── Excel 专用：顶部工具栏 HTML ──
       if (kind === 'excel' && w && w.$c) {
@@ -146,7 +147,7 @@
         var fnName = 'mount' + (kind === 'word' ? 'Word' : kind === 'excel' ? 'Excel' : 'Slides');
         mountFn = mod[fnName];
         if (typeof mountFn !== 'function') throw new Error(fnName + ' not exported from ' + kind + '.js');
-        editor = mountFn(targetId);
+        editor = mountFn(targetId, opts);
       } catch (err) {
         console.error('[office-v2] load failed:', err);
         if (w && w.$c) {
@@ -165,7 +166,11 @@
           saveBtn.onclick = function () {
             if (!editor) return toast('编辑器未就绪', 'error');
             try {
-              var wb = editor.getWorkbook && editor.getWorkbook();
+              // v0.93 修复：getWorkbook() 必须传 unitId（P124）；type 2 = SHEET
+              var sheetUnit = editor._univerInstanceService && editor._univerInstanceService.getCurrentUnitOfType
+                ? editor._univerInstanceService.getCurrentUnitOfType(2)
+                : null;
+              var wb = sheetUnit ? editor.getWorkbook(sheetUnit.getUnitId()) : null;
               if (!wb) return toast('无法读取编辑器数据', 'error');
               var sheetsData = [];
               var sheets = wb.getSheets && wb.getSheets();
@@ -252,29 +257,56 @@
                     fileName = file.name;
                     fileId = r.fileId;
                     // 将数据写入 Univer
-                    if (editor && editor.getWorkbook) {
-                      var wb = editor.getWorkbook();
-                      // 清空现有 sheet
-                      while (wb.getSheets && wb.getSheets().length > 0) {
-                        wb.deleteSheet(wb.getSheets()[0].getSheetId());
+                    // mountExcel 返回 univerAPI 实例
+                    console.log('[xlsx-v2] editor type:', typeof editor, 'keys:', editor ? Object.keys(editor).slice(0, 10) : 'null');
+                    console.log('[xlsx-v2] getWorkbook:', typeof editor.getWorkbook, editor.getWorkbook);
+                    if (editor) {
+                      console.log('[xlsx-v2] editor methods:', Object.getOwnPropertyNames(Object.getPrototypeOf(editor)).filter(function(k) { return typeof editor[k] === 'function'; }).slice(0, 20));
+                    }
+                    // getWorkbook 需要传入 unitId，改用 _univerInstanceService
+                    if (editor && editor._univerInstanceService) {
+                      var univerInstanceService = editor._univerInstanceService;
+                      var sheets = univerInstanceService.getUnitTypes && univerInstanceService.getUnitTypes();
+                      console.log('[xlsx-v2] unit types:', sheets);
+                      // 获取第一个 sheet 的 unitId
+                      var sheetUnitId = null;
+                      if (univerInstanceService.getCurrentUnitOfType) {
+                        var sheet = univerInstanceService.getCurrentUnitOfType(2 /* UNIVER_SHEET, v0.93 修复枚举 */);
+                        if (sheet) sheetUnitId = sheet.getUnitId();
                       }
-                      r.sheets.forEach(function (s, idx) {
-                        var ws = wb.create(s.name || 'Sheet' + (idx + 1), 100, 26);
-                        var headers = s.headers || [];
-                        var rows = s.rows || [];
-                        if (headers.length > 0) {
-                          var hRow = ws.getRow(1);
-                          headers.forEach(function (h, ci) {
-                            hRow.getCell(ci + 1).value = h;
-                          });
+                      console.log('[xlsx-v2] sheet unitId:', sheetUnitId);
+                      if (sheetUnitId) {
+                        var wb = editor.getWorkbook(sheetUnitId);
+                        if (!wb) return toast('无法获取工作簿', 'error');
+                        // 清空现有 sheet
+                        while (wb.getSheetCount() > 0) {
+                          wb.removeSheetByIndex(0);
                         }
-                        rows.forEach(function (rowData, ri) {
-                          var row = ws.getRow(ri + (headers.length > 0 ? 2 : 1));
-                          rowData.forEach(function (v, ci) {
-                            row.getCell(ci + 1).value = v;
-                          });
+                        // 写入每个 sheet
+                        r.sheets.forEach(function (s, idx) {
+                          var sheetName = s.name || 'Sheet' + (idx + 1);
+                          var headers = s.headers || [];
+                          var rows = s.rows || [];
+                          var ws = wb.createSheet(sheetName);
+                          // 写入数据
+                          if (headers.length > 0 || rows.length > 0) {
+                            var data = headers.concat(rows.map(function (r) { return headers.length > 0 ? r : r; }));
+                            if (data.length > 0) {
+                              var maxCols = data[0] ? data[0].length : 0;
+                              var range = ws.getRange(0, 0, data.length - 1, maxCols - 1);
+                              range.setValues(data);
+                            }
+                          }
                         });
-                      });
+                        toast('已加载 ' + r.sheets.length + ' 个工作表', 'success');
+                      } else {
+                        console.warn('[xlsx-v2] no sheet unitId found');
+                        toast('无法获取工作表', 'error');
+                      }
+                    } else {
+                      console.warn('[xlsx-v2] editor._univerInstanceService not available:', editor);
+                      console.warn('[xlsx-v2] editor type:', typeof editor);
+                      console.warn('[xlsx-v2] editor keys:', editor ? Object.keys(editor) : 'N/A');
                     }
                   } else {
                     toast('文件解析失败: ' + (r.error || '未知'), 'error');
@@ -298,37 +330,7 @@
             if (!resp.ok) throw new Error(resp.error || '加载失败');
             if (resp.text && resp.text.startsWith('SCHEMA:')) {
               var schemaData = JSON.parse(resp.text.slice(7));
-              if (schemaData && schemaData.sheets && schemaData.sheets.length > 0 && editor && editor.applyChanges) {
-                // 将 schema 数据写入 Univer
-                var wb = editor.getWorkbook && editor.getWorkbook();
-                if (wb) {
-                  // 清空现有 sheet，创建新 sheet
-                  while (wb.getSheetCount() > 0) {
-                    var firstSheet = wb.getSheetByIndex(0);
-                    wb.removeSheetByIndex(0);
-                  }
-                  schemaData.sheets.forEach(function (s, idx) {
-                    var ws = wb.createSheet(s.name || 'Sheet' + (idx + 1));
-                    var headers = s.headers || [];
-                    var rows = s.rows || [];
-                    // 写 headers
-                    if (headers.length > 0) {
-                      var hRow = ws.getRow(1);
-                      headers.forEach(function (h, ci) {
-                        hRow.getCell(ci + 1).value = h;
-                      });
-                    }
-                    // 写数据行
-                    rows.forEach(function (rowData, ri) {
-                      var row = ws.getRow(ri + (headers.length > 0 ? 2 : 1));
-                      rowData.forEach(function (v, ci) {
-                        row.getCell(ci + 1).value = v;
-                      });
-                    });
-                  });
-                  toast('已加载 ' + resp.filename, 'success');
-                }
-              }
+              applySchemaToUniver(editor, schemaData);
             }
           })
           .catch(function (err) {
@@ -396,6 +398,70 @@
   }
 
   // ── 工具 API：给 LLM 或外部代码手动触发加载 ──
+  // v0.93: applySchemaToUniver 抽成全局工具（P4a xlsx-ai 复用：AI 改 schema 后同步 UI）
+  window.applySchemaToUniver = function (editor, schemaData) {
+    if (!schemaData || !schemaData.sheets || schemaData.sheets.length === 0 || !editor || !editor._univerInstanceService) {
+      console.warn('[xlsx-v2] applySchemaToUniver: 无效参数');
+      return false;
+    }
+    try {
+      var univerInstanceService = editor._univerInstanceService;
+      var sheetUnitId = null;
+      if (univerInstanceService.getCurrentUnitOfType) {
+        // v0.93 修复：Univer 0.25.1 枚举 2=SHEET（1=DOC），原代码用 1 导致拿不到 sheet unit
+        var sheet = univerInstanceService.getCurrentUnitOfType(2 /* UNIVER_SHEET */);
+        if (sheet) sheetUnitId = sheet.getUnitId();
+      }
+      if (!sheetUnitId) {
+        console.warn('[xlsx-v2] applySchemaToUniver: 无 sheet unit');
+        return false;
+      }
+      var wb = editor.getWorkbook(sheetUnitId);
+      if (!wb) {
+        console.warn('[xlsx-v2] applySchemaToUniver: 无 workbook');
+        return false;
+      }
+      // v0.93 重写：复用第一个 sheet + setValues 覆盖写入
+      // （Univer 0.25 facade 无 removeSheetByIndex/createSheet；原 v2 load 代码 API 不匹配从未工作）
+      schemaData.sheets.forEach(function (s, idx) {
+        var sheetName = s.name || 'Sheet' + (idx + 1);
+        var headers = s.headers || [];
+        var rows = s.rows || [];
+        var sheetsArr = typeof wb.getSheets === 'function' ? wb.getSheets() : [];
+        var ws = null;
+        if (sheetsArr.length > idx) {
+          ws = sheetsArr[idx];
+        } else if (sheetsArr.length > 0) {
+          ws = sheetsArr[0];
+        }
+        if (!ws) return;
+        if (typeof ws.setSheetName === 'function') {
+          try { ws.setSheetName(sheetName); } catch (e) { /* 改名失败不影响数据 */ }
+        }
+        if (headers.length > 0 || rows.length > 0) {
+          var data = headers.concat(rows);
+          if (data.length > 0) {
+            var maxCols = data.reduce(function (mx, row) { return Math.max(mx, row ? row.length : 0); }, 0);
+            if (maxCols > 0) {
+              var range = ws.getRange(0, 0, data.length - 1, maxCols - 1);
+              if (range && typeof range.setValues === 'function') {
+                range.setValues(data);
+              } else {
+                console.warn('[xlsx-v2] applySchemaToUniver: ws.getRange/setValues 不可用');
+                return false;
+              }
+            }
+          }
+        }
+      });
+      if (typeof toast === 'function') toast('已加载 ' + schemaData.sheets.length + ' 个工作表', 'success');
+      return true;
+    } catch (e) {
+      console.warn('[xlsx-v2] applySchemaToUniver error:', e);
+      return false;
+    }
+  };
+
   window.OfficeV2 = {
     open: function (kind, fileId, fileName) {
       if (!window.ACMSWin) return console.warn('[office-v2] no ACMSWin');
