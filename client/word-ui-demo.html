@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Word UI Demo (GenOffice Tiptap)</title>
+<link rel="stylesheet" href="/client/lib/office-v3/word-ui/acms-office-word-ui.css?v=20">
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#e6e6e6; }
+  #root { height:100vh; }
+  #status { position:fixed; top:8px; right:12px; z-index:9999; font:12px monospace; color:#555; background:rgba(255,255,255,.85); padding:4px 8px; border-radius:4px; }
+</style>
+</head>
+<body>
+<div id="status">加载中…</div>
+<div id="root"></div>
+<script type="module">
+  const status = document.getElementById('status');
+  async function boot() {
+    try {
+      const fileId = 'test-zh.docx';
+      const resp = await fetch('/api/office/download/' + fileId + '/' + fileId + '?api_key=dev-key-001');
+      if (!resp.ok) throw new Error('download HTTP ' + resp.status);
+      const bin = new Uint8Array(await resp.arrayBuffer());
+      status.textContent = '下载 ' + bin.length + 'B，挂载中…';
+      const mod = await import('/client/lib/office-v3/word-ui/office-word-ui.js?v=20');
+      const root = document.getElementById('root');
+      mod.mountWordUI(root, { fileId, fileName: fileId, apiKey: 'dev-key-001', buffer: bin });
+      status.textContent = '✅ 已挂载 ' + fileId + '（' + bin.length + 'B）';
+    } catch (e) {
+      status.textContent = '❌ ' + e.message;
+      console.error(e);
+    }
+  }
+  boot();
+</script>
+</body>
+</html>

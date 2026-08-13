@@ -1,0 +1,30 @@
+{
+  "name": "acms-office-word-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ACMS vendored GenOffice Word UI (apps/docs renderer) — Tiptap 3.28 + React 19, browser build",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite"
+  },
+  "dependencies": {
+    "@tiptap/core": "^3.28.0",
+    "@tiptap/extensions": "^3.28.0",
+    "@tiptap/pm": "^3.28.0",
+    "@tiptap/react": "^3.28.0",
+    "opentype.js": "^2.0.0",
+    "jszip": "^3.10.1",
+    "fast-xml-parser": "^5.3.4",
+    "marked": "^17.0.6",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.0.4",
+    "vite": "^7.3.1",
+    "typescript": "^5.9.3"
+  }
+}

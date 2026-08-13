@@ -1,0 +1,18 @@
+// ACMS stub: @genoffice/agent-core — AI AgentLoop 由小吉接管，这里只保类型/空实现
+// 让 AiPanel 编译通过并渲染空壳（A3 阶段对接小吉动作卡）
+export interface AgentImage { url: string; alt?: string }
+export interface AgentSkill { name: string; description: string; run: (args: any) => Promise<any> }
+export interface AgentTransport { send: (msg: any) => void; onMessage: (cb: (msg: any) => void) => void }
+
+export class AgentLoop {
+  constructor(_opts: any) {}
+  start() { return Promise.resolve() }
+  stop() {}
+  send(_msg: any) {}
+}
+
+export function composeSkills(..._skills: AgentSkill[]): AgentSkill[] { return [] }
+
+export function createIpcTransport(_opts?: any): AgentTransport {
+  return { send() {}, onMessage() {} }
+}

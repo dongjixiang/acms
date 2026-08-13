@@ -515,7 +515,86 @@
   }
 
   // ── 视图加载器（ACMSWin.open 入口） ──
+  // P132: GenOffice Word UI（Tiptap 全套菜单）优先；失败/禁用回退自渲染 v3
+
+  // GenOffice UI 开关：localStorage office-v3-word-ui=0 禁用；默认启用
+  function genOfficeEnabled() {
+    try { return localStorage.getItem('office-v3-word-ui') !== '0'; } catch (e) { return true; }
+  }
+
+  // 加载 GenOffice Word UI：下载原始字节 → mountWordUI（React root）
+  async function loadGenOfficeWord(w, fileId, fileName) {
+    var mod = await import(BASE + 'word-ui/office-word-ui.js');
+    var bin = null;
+    if (fileId) {
+      var dlName = encodeURIComponent(fileName || 'document.docx');
+      var resp = await fetch('/api/office/download/' + encodeURIComponent(fileId) + '/' + dlName + '?api_key=' + API_KEY);
+      if (!resp.ok) throw new Error('下载文件失败 HTTP ' + resp.status);
+      bin = new Uint8Array(await resp.arrayBuffer());
+    }
+    // 复用窗口时先卸载旧 root
+    var oldRoot = w.$c.querySelector('.v3-genoffice-root');
+    if (oldRoot && mod.unmountWordUI) {
+      try { mod.unmountWordUI(oldRoot); } catch (e) { /* ignore */ }
+    }
+    w.$c.innerHTML = '';
+    var root = document.createElement('div');
+    root.className = 'v3-genoffice-root';
+    root.style.cssText = 'width:100%;height:100%;overflow:auto;';
+    w.$c.appendChild(root);
+    mod.mountWordUI(root, { fileId: fileId || undefined, fileName: fileName, apiKey: API_KEY, buffer: bin || undefined });
+
+    // 窗口复用：重新加载新文件（调度层统一处理，见 makeWordLoader）
+    // 窗口关闭：卸载 React root
+    w.onClose = function () {
+      try { if (mod.unmountWordUI) mod.unmountWordUI(root); } catch (e) { /* ignore */ }
+    };
+    return { kind: 'word-ui', fileId: fileId, fileName: fileName };
+  }
+
+  // P132: 调度器——GenOffice UI 优先，禁用/失败回退自渲染 v3
   function makeWordLoader() {
+    return async function loader(w, opts) {
+      opts = opts || {};
+      var args = arguments[1] || opts;
+      var fileId = args.fileId;
+      var fileName = args.fileName || 'untitled.docx';
+      if (!w || !w.$c) return null;
+
+      var useGen = genOfficeEnabled();
+      var win = null;
+      if (useGen) {
+        try {
+          win = await loadGenOfficeWord(w, fileId, fileName);
+        } catch (err) {
+          console.warn('[office-v3] GenOffice Word UI 加载失败，回退自渲染:', err.message);
+          useGen = false;
+        }
+      }
+      if (!useGen) {
+        win = await makeWordSelfLoader()(w, opts);
+      }
+      // 窗口复用统一入口：重新检查开关
+      w.reloadDocument = function (fid, fname) {
+        if (!fid) return;
+        console.info('[office-v3] word reloadDocument:', fid, fname);
+        if (genOfficeEnabled()) {
+          loadGenOfficeWord(w, fid, fname).catch(function (e) {
+            console.warn('[office-v3] GenOffice reload 失败，回退自渲染:', e.message);
+            w.$c.innerHTML = '';
+            makeWordSelfLoader()(w, { fileId: fid, fileName: fname });
+          });
+        } else {
+          w.$c.innerHTML = '';
+          makeWordSelfLoader()(w, { fileId: fid, fileName: fname });
+        }
+      };
+      return win;
+    };
+  }
+
+  // 自渲染 v3（原 makeWordLoader 主体）
+  function makeWordSelfLoader() {
     return async function loader(w, opts) {
       opts = opts || {};
       var args = arguments[1] || opts;
@@ -523,8 +602,6 @@
       var fileName = args.fileName || 'untitled.docx';
       var isRemoteFile = !!fileId;
       var targetId = (fileId || 'new-' + Date.now()).replace(/[^a-zA-Z0-9]/g, '');
-
-      if (!w || !w.$c) return null;
       var fnSafe = esc(fileName);
       w.$c.innerHTML =
         '<div class="v3-root">' +
