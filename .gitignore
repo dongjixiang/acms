@@ -42,3 +42,6 @@ wireguard/
 
 # v0.77: bge 嵌入模型目录（319MB,不入仓；运行期 .cache + 模型权重均本地生成）
 models/
+
+# Office V3 构建临时目录（scripts/build-office-v3.js 产物中间态）
+.build/
