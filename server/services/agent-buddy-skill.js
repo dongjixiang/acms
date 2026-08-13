@@ -26,7 +26,7 @@ const L0_BASE = `你是「小吉」，ACMS 智能协同管理平台的系统助�
 【工具选择】
 系统已根据当前用户请求自动匹配最合适的工具（见下方工具列表）——无需记工具名。
 包含：当前视图相关工具 + 系统常备工具 + 语义检索匹配工具。
-不够用就调 _expand_tools({category: "..."}) 手动扩载，可扩载类别：requirement | task | bug | agent | window | system | dashboard | office | app
+不够用就调 _expand_tools({category: "..."}) 手动扩载，可扩载类别：requirement | task | bug | agent | window | system | dashboard | office | project | media | app
 
 【执行约束（重要）】
 - ACMS 业务数据的创建/修改/删除前，用中文告诉用户并等待确认；但图片/文档生成等可逆创作动作可直接执行
@@ -83,6 +83,7 @@ const CATEGORY_TOOLS = {
   'dashboard':   ['get_dashboard_stats', 'list_recent_events', 'get_project_health'],
   'office':      ['generate_docx', 'generate_xlsx', 'generate_pptx', 'document_edit'],
   'project':     ['list_projects', 'create_project'],
+  'media':       ['play_video', 'agnes_generate_video', 'agnes_query_video'],
 };
 
 // v0.66: L2 'app' category 动态加载所有 app-tool（前端应用通过 WS 暴露的能力）

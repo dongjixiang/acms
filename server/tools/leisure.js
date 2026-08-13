@@ -59,8 +59,8 @@ registerTool({
   description: '用视频生成辅助工具创建视频任务。'
     + '当用户表达"生成视频 X""做一个视频""给我生成一段视频""画一个视频"等视频生成意图时使用。'
     + '需要从用户消息中提取视频主题/描述作为 prompt。'
-    + '返回 ok=true 表示已触发异步生成（通常 60-300 秒），完成后用户看到视频卡片。'
-    + '【重要】这是 fire-and-forget 异步任务，**调用一次即可，不要重复调用**。',
+    + '调用后立即返回结果：ok=true 表示任务已创建（60-300秒后出视频卡片）；ok=false 表示创建失败（如 API Key 失效），需把 error 内容如实告知用户，严禁假装已提交。'
+    + '【重要】只调一次，不要重复调用。',
   parameters: {
     type: 'object',
     properties: {
@@ -76,18 +76,18 @@ registerTool({
     try {
       const videoSvc = require('../services/assists/video');
       console.log(`[tool:play_video] ${reqId} prompt="${args.prompt.slice(0, 80)}"`);
-      setImmediate(() => {
-        videoSvc.runAssistJob(reqId, { prompt: args.prompt, duration: args.duration })
-          .catch(e => console.error(`[tool:play_video] runAssistJob failed:`, e.message));
-      });
+      // v0.92: 同步 await 一次，让 API Key 失效等错误能直接返回 ok=false
+      //   之前用 setImmediate 异步 → handler 永远返回 ok=true → LLM 拿到 ok=true
+      //   后台实际 failed → 下一轮 LLM 又说"已提交"但 tool_calls=0 → stall 循环
+      await videoSvc.runAssistJob(reqId, { prompt: args.prompt, duration: args.duration });
       return {
         ok: true,
-        message: `正在为你生成视频「${args.prompt.slice(0, 30)}...」，预计 60-300 秒完成，完成后显示视频卡片。`,
+        message: `视频生成任务已创建，预计 60-300 秒完成，完成后显示视频卡片。`,
         prompt: args.prompt,
         reqId,
       };
     } catch (e) {
-      return { ok: false, error: e.message };
+      return { ok: false, error: e.message, message: `视频生成失败: ${e.message}` };
     }
   },
 });

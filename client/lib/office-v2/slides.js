@@ -2,17 +2,22 @@
 // 功能：创建/编辑幻灯片、插入文本/图片/表格、保存为 .pptx、打开 .pptx
 // 导出：mountSlides(targetId) -> { reveal, editor, destroy }
 
-// ── PPTX 解析（前端 AdmZip）────────────────────────────────────────────
-function parsePptxToSchema(buf) {
-  var zip = new AdmZip(buf);
+// ── PPTX 解析（前端 JSZip）────────────────────────────────────────────
+// 使用 pptxgenjs 内置的 JSZip，全局变量 JSZip
+async function parsePptxToSchema(buf) {
+  var zip = new JSZip(buf);
   var imageMap = {};
-  zip.getEntries().forEach(function(e) {
-    if (e.entryName.match(/^ppt\/media\//) && /\.(png|jpg|jpeg|gif|bmp)$/i.test(e.entryName)) {
-      var ext = e.entryName.replace(/.*\./, '').toLowerCase();
+  var imgPromises = [];
+  Object.keys(zip.files).forEach(function(entryName) {
+    if (entryName.match(/^ppt\/media\//) && /\.(png|jpg|jpeg|gif|bmp)$/i.test(entryName)) {
+      var ext = entryName.replace(/.*\./, '').toLowerCase();
       var mime = {png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',bmp:'image/bmp'}[ext] || 'image/png';
-      imageMap[e.entryName] = 'data:' + mime + ';base64,' + e.getData().toString('base64');
+      imgPromises.push(zip.file(entryName).async('base64').then(function(b64) {
+        imageMap[entryName] = 'data:' + mime + ';base64,' + b64;
+      }));
     }
   });
+  await Promise.all(imgPromises);
 
   var presXml = zip.readAsText('ppt/presentation.xml');
   var presObj = parseXml(presXml);
@@ -151,7 +156,7 @@ function parsePptxToSchema(buf) {
     }
   });
 
-  return slides.length > 0 ? JSON.stringify({ slides: slides }) : null;
+  return slides.length > 0 ? Promise.resolve('SCHEMA:' + JSON.stringify({ slides: slides })) : Promise.resolve(null);
 }
 
 function parseXml(str) {
@@ -244,11 +249,22 @@ function buildPptxGenJS(slides) {
 }
 
 // ── 编辑器主函数 ──────────────────────────────────────────────────────
-export function mountSlides(targetId) {
+// targetId: bridge 传入（slides 模式下可能为 undefined/null）
+// bridge 对 slides 的 DOM 初始化：w.$c.innerHTML = '<div class="reveal">...'\
+// 我们的 render() 直接操作 w.$c 或其子元素
+function mountSlides(targetId, opts) {
+  opts = opts || {};
+  var fileName = opts.fileName || '';
+  // 直接取 w.$c（bridge 创建的窗口容器）
+  var $c = document.querySelector('.reveal');
+  if (!$c) {
+    console.error('[ppt-editor] 无法找到 .reveal 容器');
+    return null;
+  }
   var REVEAL_CDN = 'https://cdn.jsdelivr.net/npm/reveal.js@4.5.0';
   var CSS_URL = REVEAL_CDN + '/dist/reveal.css';
   var THEME_URL = REVEAL_CDN + '/dist/theme/black.css';
-  var JS_URL = REVEAL_CDN + '/js/reveal.js';
+  var JS_URL = REVEAL_CDN + '/dist/reveal.js';
 
   // 1. 加载 Reveal.js CSS
   var cssLoaded = false;
@@ -267,15 +283,18 @@ export function mountSlides(targetId) {
     placeholder.className = 'reveal';
     placeholder.style.display = 'none';
     document.body.appendChild(placeholder);
-    link.onload = theme.onload = function() {
-      cssLoaded = true;
-      document.body.removeChild(placeholder);
+    var cssDone = false;
+    function cssReady() {
+      if (cssDone) return;
+      cssDone = true;
+      if (placeholder.parentNode) placeholder.parentNode.removeChild(placeholder);
       cb();
-    };
+    }
+    link.onload = theme.onload = cssReady;
     link.onerror = theme.onerror = function() {
-      // 降级：内联最小样式
-      cssLoaded = true;
-      document.body.removeChild(placeholder);
+      if (cssDone) return;
+      cssDone = true;
+      if (placeholder.parentNode) placeholder.parentNode.removeChild(placeholder);
       injectMinimalRevealCss();
       cb();
     };
@@ -345,13 +364,12 @@ export function mountSlides(targetId) {
     render();
   }
 
-  // 4. 渲染
+  // 4. 渲染（直接操作 $c，保留 .reveal shell）
   function render() {
-    var container = document.getElementById(targetId);
-    if (!container) return;
-
+    // $c 就是 .reveal 元素（bridge 创建）
+    // 我们重建完整 shell 并写入 $c（替换 reveal shell + 我们的编辑器 shell）
     // 保存当前 slide 内容
-    var activeSection = container.querySelector('.reveal .slides section.present');
+    var activeSection = $c.querySelector('.slides section.present');
     if (activeSection) {
       var titleEl = activeSection.querySelector('.slide-title');
       var contentEl = activeSection.querySelector('.slide-content');
@@ -474,10 +492,13 @@ export function mountSlides(targetId) {
 
     html += '</div></div></div>'; // end shell
 
-    container.innerHTML = html;
+    $c.innerHTML = html;
+
+    // 绑定事件
+    var shell = $c;
 
     // 绑定缩略图点击
-    container.querySelectorAll('.ppt-thumb').forEach(function(el) {
+    $c.querySelectorAll('.ppt-thumb').forEach(function(el) {
       el.addEventListener('click', function(e) {
         if (e.target.classList.contains('ppt-thumb-del') || e.target.classList.contains('ppt-thumb-copy')) return;
         var idx = parseInt(el.dataset.i);
@@ -489,7 +510,7 @@ export function mountSlides(targetId) {
     });
 
     // 绑定删除/复制
-    container.querySelectorAll('.ppt-thumb-del').forEach(function(el) {
+    $c.querySelectorAll('.ppt-thumb-del').forEach(function(el) {
       el.addEventListener('click', function(e) {
         e.stopPropagation();
         var idx = parseInt(el.dataset.i);
@@ -500,7 +521,7 @@ export function mountSlides(targetId) {
         render();
       });
     });
-    container.querySelectorAll('.ppt-thumb-copy').forEach(function(el) {
+    $c.querySelectorAll('.ppt-thumb-copy').forEach(function(el) {
       el.addEventListener('click', function(e) {
         e.stopPropagation();
         var idx = parseInt(el.dataset.i);
@@ -514,7 +535,7 @@ export function mountSlides(targetId) {
 
     // 拖拽排序
     var dragSrcIdx = -1;
-    container.querySelectorAll('.ppt-thumb').forEach(function(el) {
+    $c.querySelectorAll('.ppt-thumb').forEach(function(el) {
       el.addEventListener('dragstart', function(e) {
         dragSrcIdx = parseInt(el.dataset.i);
         e.dataTransfer.effectAllowed = 'move';
@@ -526,7 +547,7 @@ export function mountSlides(targetId) {
       el.addEventListener('dragover', function(e) {
         e.preventDefault();
         e.dataTransfer.dropEffect = 'move';
-        container.querySelectorAll('.ppt-thumb').forEach(function(t) { t.style.borderColor = ''; });
+        $c.querySelectorAll('.ppt-thumb').forEach(function(t) { t.style.borderColor = ''; });
         el.style.borderColor = 'var(--office-primary,#446995)';
       });
       el.addEventListener('dragleave', function() {
@@ -545,7 +566,7 @@ export function mountSlides(targetId) {
     });
 
     // 工具栏按钮
-    var layoutSel = container.querySelector('#' + targetId + '-layout');
+    var layoutSel = $c.querySelector('#' + targetId + '-layout');
     if (layoutSel) {
       layoutSel.onchange = function() {
         saveUndo();
@@ -554,19 +575,19 @@ export function mountSlides(targetId) {
       };
     }
 
-    var boldBtn = container.querySelector('#' + targetId + '-fmt-bold');
+    var boldBtn = $c.querySelector('#' + targetId + '-fmt-bold');
     if (boldBtn) boldBtn.onclick = function() { document.execCommand('bold'); };
-    var italicBtn = container.querySelector('#' + targetId + '-fmt-italic');
+    var italicBtn = $c.querySelector('#' + targetId + '-fmt-italic');
     if (italicBtn) italicBtn.onclick = function() { document.execCommand('italic'); };
-    var underlineBtn = container.querySelector('#' + targetId + '-fmt-underline');
+    var underlineBtn = $c.querySelector('#' + targetId + '-fmt-underline');
     if (underlineBtn) underlineBtn.onclick = function() { document.execCommand('underline'); };
 
-    var colorInput = container.querySelector('#' + targetId + '-color');
+    var colorInput = $c.querySelector('#' + targetId + '-color');
     if (colorInput) {
       colorInput.onchange = function() { document.execCommand('foreColor', false, this.value); };
     }
 
-    var fontSizeSel = container.querySelector('#' + targetId + '-font-size');
+    var fontSizeSel = $c.querySelector('#' + targetId + '-font-size');
     if (fontSizeSel) {
       fontSizeSel.onchange = function() {
         document.execCommand('fontSize', false, '7');
@@ -581,7 +602,7 @@ export function mountSlides(targetId) {
       };
     }
 
-    var addBtn = container.querySelector('#' + targetId + '-add-slide');
+    var addBtn = $c.querySelector('#' + targetId + '-add-slide');
     if (addBtn) {
       addBtn.onclick = function() {
         saveUndo();
@@ -597,12 +618,12 @@ export function mountSlides(targetId) {
       };
     }
 
-    var undoBtn = container.querySelector('#' + targetId + '-undo');
+    var undoBtn = $c.querySelector('#' + targetId + '-undo');
     if (undoBtn) undoBtn.onclick = undo;
-    var redoBtn = container.querySelector('#' + targetId + '-redo');
+    var redoBtn = $c.querySelector('#' + targetId + '-redo');
     if (redoBtn) redoBtn.onclick = redo;
 
-    var openBtn = container.querySelector('#' + targetId + '-open-pptx');
+    var openBtn = $c.querySelector('#' + targetId + '-open-pptx');
     if (openBtn) {
       openBtn.onclick = function() {
         var input = document.createElement('input');
@@ -612,9 +633,9 @@ export function mountSlides(targetId) {
           var file = e.target.files[0];
           if (!file) return;
           var reader = new FileReader();
-          reader.onload = function(ev) {
+          reader.onload = async function(ev) {
             try {
-              var schema = parsePptxToSchema(ev.target.result);
+              var schema = await parsePptxToSchema(ev.target.result);
               if (schema) {
                 saveUndo();
                 var data = JSON.parse(schema);
@@ -635,11 +656,11 @@ export function mountSlides(targetId) {
       };
     }
 
-    var saveBtn = container.querySelector('#' + targetId + '-save');
+    var saveBtn = $c.querySelector('#' + targetId + '-save');
     if (saveBtn) {
       saveBtn.onclick = function() {
         saveCurrentSlide(container);
-        var name = (container.querySelector('#' + targetId + '-title').value || '演示').trim();
+        var name = ($c.querySelector('#' + targetId + '-title').value || '演示').trim();
         if (!name.toLowerCase().endsWith('.pptx')) name += '.pptx';
         var body = {
           type: 'pptx',
@@ -662,11 +683,11 @@ export function mountSlides(targetId) {
       };
     }
 
-    var downloadBtn = container.querySelector('#' + targetId + '-download');
+    var downloadBtn = $c.querySelector('#' + targetId + '-download');
     if (downloadBtn) {
       downloadBtn.onclick = function() {
         saveCurrentSlide(container);
-        var name = (container.querySelector('#' + targetId + '-title').value || '演示').trim();
+        var name = ($c.querySelector('#' + targetId + '-title').value || '演示').trim();
         if (!name.toLowerCase().endsWith('.pptx')) name += '.pptx';
         try {
           var pptx = buildPptxGenJS(slides);
@@ -679,18 +700,18 @@ export function mountSlides(targetId) {
       };
     }
 
-    var insertImgBtn = container.querySelector('#' + targetId + '-insert-img');
+    var insertImgBtn = $c.querySelector('#' + targetId + '-insert-img');
     if (insertImgBtn) {
       insertImgBtn.onclick = function() {
         var url = prompt('请输入图片 URL：');
         if (!url) return;
         saveUndo();
         var imgHtml = '<img src="' + escHtml(url) + '" style="max-width:100%;max-height:250px;display:block;margin:8px 0;" data-rid="user-inserted">';
-        var contentEl = container.querySelector('.reveal .slides section[data-slide-idx="' + cur + '"] .slide-images');
+        var contentEl = $c.querySelector('.slides section[data-slide-idx="' + cur + '"] .slide-images');
         if (contentEl) {
           contentEl.insertAdjacentHTML('beforeend', imgHtml);
         } else {
-          var section = container.querySelector('.reveal .slides section[data-slide-idx="' + cur + '"]');
+          var section = $c.querySelector(` .slides section[data-slide-idx='${cur}'] `);
           if (section) {
             var div = document.createElement('div');
             div.className = 'slide-images';
@@ -703,7 +724,7 @@ export function mountSlides(targetId) {
       };
     }
 
-    var insertTblBtn = container.querySelector('#' + targetId + '-insert-table');
+    var insertTblBtn = $c.querySelector('#' + targetId + '-insert-table');
     if (insertTblBtn) {
       insertTblBtn.onclick = function() {
         var rows = parseInt(prompt('表格行数（含表头）：', '3'));
@@ -720,7 +741,7 @@ export function mountSlides(targetId) {
           tblHtml += '</tr>';
         }
         tblHtml += '</table>';
-        var section = container.querySelector('.reveal .slides section[data-slide-idx="' + cur + '"]');
+        var section = $c.querySelector(` .slides section[data-slide-idx='${cur}'] `);
         if (section) {
           var div = document.createElement('div');
           div.className = 'slide-tables';
@@ -760,8 +781,8 @@ export function mountSlides(targetId) {
     });
   }
 
-  function saveCurrentSlide(container) {
-    var section = container.querySelector('.reveal .slides section[data-slide-idx="' + cur + '"]');
+  function saveCurrentSlide() {
+    var section = $c.querySelector(` .slides section[data-slide-idx='${cur}'] `);
     if (!section) return;
     var titleEl = section.querySelector('.slide-title');
     var contentEl = section.querySelector('.slide-content');
@@ -856,7 +877,7 @@ export function mountSlides(targetId) {
             }
           } else if (e.key === 'f' || e.key === 'F') {
             e.preventDefault();
-            var section = document.querySelector('.reveal .slides section.present');
+            var section = $c.querySelector('.slides section.present');
             if (section && section.requestFullscreen) section.requestFullscreen();
           } else if (e.key === 'Escape') {
             // 退出全屏
@@ -883,6 +904,7 @@ export function mountSlides(targetId) {
 }
 
 // 暴露给 bridge（UMD 模式：ESM 环境下 export 被 tree-shake，bridge 通过 window 访问）
+export { mountSlides };
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { mountSlides: mountSlides };
 } else {

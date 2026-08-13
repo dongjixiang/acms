@@ -310,6 +310,157 @@
 
       term.open(containerEl);
 
+      // ── 主动接管粘贴快捷键（不依赖 helper textarea 焦点 + 浏览器派 paste 事件） ──
+      // 背景：xterm 5.3.0 默认等浏览器把 paste 事件派给 .xterm-helper-textarea，
+      //   但在 ACMSWin 浮动窗口嵌套场景下，拖拽 / 缩放 / 切别的应用回来后，
+      //   焦点经常跑出 helper textarea，浏览器 paste 事件会派给别的元素，导致 Ctrl+V 不灵。
+      // 修法：在 capture 阶段 keydown 截 Ctrl+V/Cmd+V/Shift+Insert，自己读剪贴板 → term.paste，
+      //   完全跳过浏览器 paste 事件派发逻辑，焦点在不在 helper textarea 都不影响。
+      containerEl.addEventListener('keydown', function(e) {
+        var k = (e.key || '').toLowerCase();
+        var isPaste = ((e.ctrlKey || e.metaKey) && !e.altKey && k === 'v') ||
+                      (e.shiftKey && k === 'insert');
+        if (!isPaste) return;
+        e.preventDefault();   // 阻止浏览器派 paste 事件到 helper textarea，避免双触发
+        e.stopPropagation();
+        if (!navigator.clipboard || !navigator.clipboard.readText) return;
+        navigator.clipboard.readText().then(function(text) {
+          if (text) term.paste(text);
+        }).catch(function() {
+          // 旧浏览器/非 secure context 兜底：让浏览器原始 paste 路径生效
+          var ta = containerEl.querySelector('.xterm-helper-textarea');
+          if (ta) ta.focus();
+        });
+      }, true);
+
+      // ── 右键：完全自己接管，显示 ACMS 风格菜单 ──
+      // 背景：xterm 5.3.0 默认让浏览器原生 contextmenu 弹菜单，「粘贴」项实际触发的是
+      //   把系统剪贴板 paste 给焦点元素（helper textarea）。但在 ACMSWin 嵌套场景下：
+      //   · 右键菜单弹出时焦点常跑出 helper textarea
+      //   · xterm 的 rightClickHandler 会先 t.value=s.selectionText + t.select() 改写
+      //     helper textarea 内容（空 selectionText → 清空 textarea），导致浏览器后续 paste
+      //     没有目标 / 数据被错覆盖
+      //   · 多个 contextmenu 拦截器（desktop-context-menu.js 等）增加不确定性
+      // 修法：自己接管，不再依赖浏览器原生菜单 + xterm rightClickHandler：
+      //   · 阻止浏览器原生 contextmenu 弹（preventDefault）
+      //   · 用 stopImmediatePropagation 阻断 xterm 的 rightClickHandler
+      //   · 显示一个迷你菜单（含粘贴/复制/全选），点击直接走 clipboard API + term API
+      containerEl.addEventListener('contextmenu', function(e) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        showTermContextMenu(e.clientX, e.clientY);
+      }, true);
+
+      // ── 自定义右键菜单 ──
+      function showTermContextMenu(x, y) {
+        // 移除旧的（如果有）
+        var old = document.getElementById('__term_ctx_menu__');
+        if (old) old.remove();
+
+        var hasSelection = !!term.getSelection();
+        var items = [
+          {
+            label: '📋 粘贴',
+            enabled: !!(navigator.clipboard && navigator.clipboard.readText),
+            run: function() {
+              return navigator.clipboard.readText().then(function(text) {
+                if (text) term.paste(text);
+              }).catch(function() {
+                // 兜底：把 helper textarea 内容替换（macOS/旧浏览器）后让浏览器派 paste
+                var ta = containerEl.querySelector('.xterm-helper-textarea');
+                if (ta) ta.focus();
+              });
+            },
+          },
+          {
+            label: '📄 复制选中',
+            enabled: hasSelection,
+            run: function() {
+              var s = term.getSelection();
+              if (!s) return Promise.resolve();
+              if (navigator.clipboard && navigator.clipboard.writeText) {
+                return navigator.clipboard.writeText(s);
+              }
+              // 兜底：用临时 textarea + execCommand
+              var ta = document.createElement('textarea');
+              ta.value = s;
+              ta.style.position = 'fixed';
+              ta.style.left = '-1000px';
+              document.body.appendChild(ta);
+              ta.select();
+              try { document.execCommand('copy'); } catch (e) {}
+              document.body.removeChild(ta);
+              return Promise.resolve();
+            },
+          },
+          {
+            label: '✳  全选',
+            enabled: true,
+            run: function() {
+              term.selectAll();
+              return Promise.resolve();
+            },
+          },
+        ];
+
+        var menu = document.createElement('div');
+        menu.id = '__term_ctx_menu__';
+        menu.style.cssText = 'position:fixed;left:' + x + 'px;top:' + y + 'px;z-index:999999;' +
+          'background:var(--bg2,#252526);color:var(--text,#d4d4d4);' +
+          'border:1px solid var(--border,#444);border-radius:6px;padding:4px;' +
+          'box-shadow:0 6px 20px rgba(0,0,0,.5);font-size:13px;min-width:140px;' +
+          'font-family:system-ui,-apple-system,sans-serif';
+
+        items.forEach(function(it) {
+          var d = document.createElement('div');
+          d.textContent = it.label;
+          d.style.cssText = 'padding:7px 14px;cursor:' + (it.enabled ? 'pointer' : 'default') + ';border-radius:4px;' +
+            (it.enabled ? '' : 'opacity:0.4;');
+          if (it.enabled) {
+            d.addEventListener('mouseenter', function() { d.style.background = 'var(--accent,#007acc)'; d.style.color = '#fff'; });
+            d.addEventListener('mouseleave', function() { d.style.background = ''; d.style.color = ''; });
+            d.addEventListener('click', function(ev) {
+              ev.stopPropagation();
+              menu.remove();
+              closeGlobalListeners();
+              Promise.resolve(it.run()).catch(function() {});
+            });
+          }
+          menu.appendChild(d);
+        });
+
+        document.body.appendChild(menu);
+
+        // 防溢出：右/下越界时翻转
+        try {
+          var r = menu.getBoundingClientRect();
+          if (r.right > window.innerWidth) menu.style.left = Math.max(4, window.innerWidth - r.width - 4) + 'px';
+          if (r.bottom > window.innerHeight) menu.style.top = Math.max(4, window.innerHeight - r.height - 4) + 'px';
+        } catch (e) {}
+
+        // 点其他位置关闭
+        function closeHandler(ev) {
+          if (!menu.contains(ev.target)) { closeMenu(); }
+        }
+        function escHandler(ev) {
+          if (ev.key === 'Escape') closeMenu();
+        }
+        function closeMenu() {
+          menu.remove();
+          closeGlobalListeners();
+        }
+        function closeGlobalListeners() {
+          document.removeEventListener('click', closeHandler);
+          document.removeEventListener('contextmenu', closeHandler);
+          document.removeEventListener('keydown', escHandler);
+        }
+        setTimeout(function() {
+          document.addEventListener('click', closeHandler);
+          document.addEventListener('contextmenu', closeHandler);
+          document.addEventListener('keydown', escHandler);
+        }, 0);
+      }
+
       // ── 内联 FitAddon 功能（CDN 的 ESM/UMD 不稳定，直接实现） ──
       function fitTerminal() {
         if (!term || !term.element || !term.element.parentElement) return;

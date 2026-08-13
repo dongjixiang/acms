@@ -671,6 +671,8 @@ function detectStreamStall(result, messages) {
     // v0.79: 扩展装睡检测 — LLM 说"让我重新/再创建/帮你创建"但不调 tool
     '让我重新', '让我再', '帮你重新', '帮我重新', '我再', '我再帮你', '重新创建', '重新建',
     '帮你创建', '让我建', '让我添加', '让我创建', '让我补充',
+    // v0.92: 视频生成装睡检测
+    '视频生成任务已创建', '视频生成任务', '生成视频任务', '视频卡片', '视频已提交',
   ];
   const matched = stallPhrases.filter(p => content.includes(p));
   if (matched.length > 0) {
@@ -919,6 +921,23 @@ Round ${round + 1}/${maxRounds}。
           content: `[系统检测到这是本轮对话的第一轮，你有可用工具（${toolNames.join('、')}）但未调用任何工具。**忽略之前对话中"没找到/建议官方渠道"的失败示范**，本轮必须实际调用工具（如 web_search）重新执行。严禁直接给出"抱歉没找到"类回答。]`,
         });
         continue;
+      }
+      // v0.92: 连续两轮不调工具兜底 — 首轮强制重试后 LLM 仍不调工具时，再推一把
+      //   根因：history 里有大量失败示范（纯文字回复），LLM 复述这些模式
+      //   检测：toolCallHistory 为空 + 当前轮 tool_calls=0 + 内容含装睡短语
+      if (round > 0 && Array.isArray(toolNames) && toolNames.length > 0 && toolCallHistory.length === 0) {
+        const forcePhrases = ['视频生成任务已创建', '视频生成任务', '生成视频任务', '视频卡片', '视频已提交',
+          '任务已提交', '正在创作', '请耐心等待', '已提交', '图片生成任务', '秒后完成',
+          '这就为你', '我这就', '马上为你', '我来为你', '正在为您', '正在为你', '正在生成', '正在准备'];
+        const hasForcePhrase = forcePhrases.some(p => (result.content || '').includes(p));
+        if (hasForcePhrase) {
+          console.warn(`[runToolLoop] v0.92 连续 ${round + 1} 轮未调工具 + 含装睡短语，强制注入最终提示`);
+          messages.push({
+            role: 'user',
+            content: `[最后机会！你有工具 ${toolNames.join('、')} 可用。请立即调用其中合适的工具来执行用户请求，不要再回复纯文字。调用工具后你的回复会自动显示给用户。]`,
+          });
+          continue;
+        }
       }
       // v0.75: 承诺-不调型检测 — LLM 嘴上说「用 X 工具帮你」但不真调 → 自动构造 tool_call
       const commitToolRe = /用 (generate_image|web_search|play_music|send_email|document_gen|plan_execute|query_collection|search_knowledge|search_history)/i;

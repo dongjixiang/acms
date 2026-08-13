@@ -4,17 +4,101 @@ var path = require('path');
 var fs = require('fs');
 
 var WORKSPACE_ROOT = path.resolve(__dirname, '..', '..', 'workspaces');
+// 前端约定的 workspace 入口（iP() 返回的非 admin 起始路径）
+var WORKSPACE_CLIENT_ROOT = '/workspaces';
 
 // Windows 上把 /d → D:\ 等盘符路径转换成真实路径
 // path.resolve('/d') 在 Windows 上会解析成 C:\d，必须手动处理
+// 注意：返回的形式必须是 D:\xxx（D: + 一个 \ + 子路径），不能 D:\\xxx，也不能 D:
+//   /c       → C:\
+//   /c/Users → C:\Users
+//   /c/foo/bar → C:\foo\bar
 function resolveDrivePath(reqPath) {
   if (process.platform === 'win32' && reqPath) {
     var m = reqPath.match(/^\/([a-zA-Z])(?:\/|$)/);
     if (m) {
-      return m[1].toUpperCase() + ':\\' + reqPath.slice(2).replace(/\//g, '\\');
+      var rest = reqPath.slice(2).replace(/\//g, '\\');
+      if (rest === '') rest = '\\';
+      else if (rest[0] !== '\\') rest = '\\' + rest;
+      return m[1].toUpperCase() + ':' + rest;
     }
   }
   return null;
+}
+
+// 把绝对文件系统路径转成前端约定的 MSYS 风格路径
+//   WORKSPACE_ROOT 及其子 → /workspaces[/子路径] （仅非 admin）
+//   D:\xxx                  → /d/xxx  （admin 和非 admin 通用）
+//   其他/失败               → 原值（让调用方判断）
+// 关键设计：admin 视角下不把 C:\...\workspaces\foo 重写成 /workspaces/foo
+//   原 admin 凭盘符进入 workspace 子树时，前端 curPath 是 /c/...\workspaces\foo，
+//   路径处理（bc/jn）按 MSYS 盘符风格工作，保持一致。
+function toClientPath(p, isAdmin) {
+  if (!p) return p;
+  if (process.platform !== 'win32') return p;
+  // 关键：先判 workspace（因为 workspace 物理上也是 D:\xxx 形式，会被盘符正则匹配到）
+  //   non-admin：workspace 子树 → /workspaces[/子路径]
+  //   admin   ：跳过 workspace 分支（落到下面盘符分支，保留 /c/... 盘符风格）
+  if (!isAdmin) {
+    if (p === WORKSPACE_ROOT) return WORKSPACE_CLIENT_ROOT;
+    var wsPrefix = WORKSPACE_ROOT + path.sep;
+    if (p.startsWith(wsPrefix)) {
+      var rel = p.slice(wsPrefix.length).replace(/\\/g, '/');
+      return WORKSPACE_CLIENT_ROOT + '/' + rel;
+    }
+  }
+  // 盘符根 (D:\) 或盘符子路径 (D:\xxx) → /d 或 /d/xxx
+  var m = p.match(/^([A-Z]):\\(.*)/);
+  if (m) return '/' + m[1].toLowerCase() + (m[2] ? '/' + m[2].replace(/\\/g, '/') : '');
+  return p;
+}
+
+// 统一的安全路径解析：返回 { safePath, isAdmin }
+//   - admin: /d/foo → D:\foo；/workspaces[/foo] 也支持（防御性，admin 通过 FB_nv('/workspaces') 走 fallback 不会踩盘符根路径坑）
+//   - 非 admin: 只接受以 /workspaces/ 开头的 MSYS 路径；其他 → null（403）
+// 关键修复：原本 path.resolve(WORKSPACE_ROOT, '/workspaces/foo') 在 Windows 上会被
+//   path.win32.resolve 解读为「盘符根相对路径」覆盖 WORKSPACE_ROOT，导致解析到错的目录。
+//   修复方式：先剥前导 / 再用 path.join 拼接到 WORKSPACE_ROOT。admin 兜底同样补掉盘符坑。
+function resolveSafePath(req, reqPath) {
+  var isAdmin = req.user && req.user.role === 'admin';
+  if (isAdmin) {
+    var dp = resolveDrivePath(reqPath);
+    if (dp) return { safePath: dp, isAdmin: true };
+    // admin 防御性也支持 /workspaces 入口（避免 fallback 走 path.resolve 踩盘符坑）
+    var rawAdm = (reqPath == null) ? '' : String(reqPath);
+    if (rawAdm === '' || rawAdm === '/') {
+      // admin 访问系统根 —— 走 path.resolve，但前面已经确认 dp 为 null，说明 reqPath 不是盘符形式
+      return { safePath: path.resolve(reqPath || '/'), isAdmin: true };
+    }
+    if (rawAdm === WORKSPACE_CLIENT_ROOT || rawAdm === WORKSPACE_CLIENT_ROOT + '/') {
+      return { safePath: WORKSPACE_ROOT, isAdmin: true };
+    }
+    if (rawAdm.startsWith(WORKSPACE_CLIENT_ROOT + '/')) {
+      var relAdm = rawAdm.slice(WORKSPACE_CLIENT_ROOT.length + 1).replace(/\//g, path.sep);
+      var wsAdm = path.join(WORKSPACE_ROOT, relAdm);
+      if (!wsAdm.startsWith(WORKSPACE_ROOT)) return null;
+      return { safePath: wsAdm, isAdmin: true };
+    }
+    // 其他非盘符路径 —— fallback：path.resolve（admin 选定的合法路径，已超出常规命名空间）
+    return { safePath: path.resolve(reqPath || '/'), isAdmin: true };
+  }
+  // 非 admin：要求以前端的 /workspaces 入口开头（兼容空 = 入口本身）
+  var raw = (reqPath == null) ? '' : String(reqPath);
+  var rel;
+  if (raw === '' || raw === '/') {
+    rel = '';
+  } else if (raw === WORKSPACE_CLIENT_ROOT || raw === WORKSPACE_CLIENT_ROOT + '/') {
+    rel = '';
+  } else if (raw.startsWith(WORKSPACE_CLIENT_ROOT + '/')) {
+    // /workspaces/foo/bar → foo\bar
+    rel = raw.slice(WORKSPACE_CLIENT_ROOT.length + 1).replace(/\//g, path.sep);
+  } else {
+    // 不在 workspace 命名空间，拒绝
+    return null;
+  }
+  var safePath = rel ? path.join(WORKSPACE_ROOT, rel) : WORKSPACE_ROOT;
+  if (!safePath.startsWith(WORKSPACE_ROOT)) return null;
+  return { safePath: safePath, isAdmin: false };
 }
 
 /**
@@ -22,48 +106,35 @@ function resolveDrivePath(reqPath) {
  */
 router.get('/', function(req, res) {
   var reqPath = req.query.path || '';
-  var isAdmin = req.user && req.user.role === 'admin';
-  
+
   // raw=1: 直接返回文件内容（供 img 标签预览）
   if (req.query.raw === '1') {
-    var r;
-    if (isAdmin) {
-      var dp = resolveDrivePath(reqPath);
-      r = dp || path.resolve(reqPath || '/');
-    } else {
-      var resolved = path.resolve(WORKSPACE_ROOT, reqPath || '');
-      if (!resolved.startsWith(WORKSPACE_ROOT)) return res.status(403).json({ error: 'FORBIDDEN' });
-      r = resolved;
-    }
+    var resolvedRaw = resolveSafePath(req, reqPath);
+    if (!resolvedRaw) return res.status(403).json({ error: 'FORBIDDEN', message: '\u6743\u9650\u4e0d\u8db3' });
+    var r = resolvedRaw.safePath;
     if (!fs.existsSync(r)) return res.status(404).json({ error: 'NOT_FOUND' });
-    var st = fs.statSync(r);
-    if (st.isDirectory()) return res.status(400).json({ error: 'IS_DIR' });
+    var stRaw = fs.statSync(r);
+    if (stRaw.isDirectory()) return res.status(400).json({ error: 'IS_DIR' });
     res.sendFile(r);
     return;
   }
-  
-  var safePath;
-  if (isAdmin) {
-    var dp = resolveDrivePath(reqPath);
-    console.log('[Files DEBUG] path=/d test:', JSON.stringify({reqPath: reqPath, dp: dp, resolved: dp || path.resolve(reqPath || '/')}));
-    safePath = dp || path.resolve(reqPath || '/');
-  } else {
-    var resolved = path.resolve(WORKSPACE_ROOT, reqPath || '');
-    if (!resolved.startsWith(WORKSPACE_ROOT)) {
-      return res.status(403).json({ error: 'FORBIDDEN', message: '\u6743\u9650\u4e0d\u8db3' });
-    }
-    safePath = resolved;
+
+  var resolved = resolveSafePath(req, reqPath);
+  if (!resolved) {
+    return res.status(403).json({ error: 'FORBIDDEN', message: '\u6743\u9650\u4e0d\u8db3' });
   }
-  
+  var safePath = resolved.safePath;
+  var isAdmin = resolved.isAdmin;
+
   if (!fs.existsSync(safePath)) {
     return res.status(404).json({ error: 'NOT_FOUND', message: '\u8def\u5f84\u4e0d\u5b58\u5728' });
   }
-  
+
   var stat = fs.statSync(safePath);
   if (!stat.isDirectory()) {
     return res.status(400).json({ error: 'NOT_DIR', message: '\u4e0d\u662f\u76ee\u5f55' });
   }
-  
+
   try {
     var entries = fs.readdirSync(safePath, { withFileTypes: true });
     var result = entries
@@ -86,10 +157,14 @@ router.get('/', function(req, res) {
         if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
         return a.name.localeCompare(b.name);
       });
-    
+
+    // 计算上级路径：走到 WORKSPACE_ROOT 时不返回上级（前端不显示「.. 上级」项）
+    // 返回前端约定用 MSYS 风格（/workspaces/foo 或 /c/Users/...）
+    // admin 视角下保持盘符风格不重写 workspace 子树
+    var parentFs = (safePath === WORKSPACE_ROOT) ? null : path.dirname(safePath);
     res.json({
-      currentPath: safePath,
-      parentPath: isAdmin ? path.dirname(safePath) : (safePath !== WORKSPACE_ROOT ? path.dirname(safePath) : null),
+      currentPath: toClientPath(safePath, isAdmin),
+      parentPath: parentFs ? toClientPath(parentFs, isAdmin) : null,
       entries: result,
       isAdmin: isAdmin,
     });
@@ -102,19 +177,12 @@ router.get('/', function(req, res) {
 router.get('/info', function(req, res) {
   var reqPath = req.query.path;
   if (!reqPath) return res.status(400).json({ error: 'MISSING_PATH' });
-  var isAdmin = req.user && req.user.role === 'admin';
-  var safePath;
-  if (isAdmin) {
-    var dp = resolveDrivePath(reqPath);
-    safePath = dp || path.resolve(reqPath);
-  } else {
-    var resolved = path.resolve(WORKSPACE_ROOT, reqPath);
-    if (!resolved.startsWith(WORKSPACE_ROOT)) return res.status(403).json({ error: 'FORBIDDEN' });
-    safePath = resolved;
-  }
+  var resolved = resolveSafePath(req, reqPath);
+  if (!resolved) return res.status(403).json({ error: 'FORBIDDEN' });
+  var safePath = resolved.safePath;
   if (!fs.existsSync(safePath)) return res.status(404).json({ error: 'NOT_FOUND' });
   var st = fs.statSync(safePath);
-  res.json({ name: path.basename(safePath), type: st.isDirectory() ? 'dir' : 'file', size: st.size, mtime: st.mtime.toISOString(), isImage: /\\.(png|jpg|jpeg|gif|svg|webp|bmp)$/i.test(safePath) });
+  res.json({ name: path.basename(safePath), type: st.isDirectory() ? 'dir' : 'file', size: st.size, mtime: st.mtime.toISOString(), isImage: /\\\.(png|jpg|jpeg|gif|svg|webp|bmp)$/i.test(safePath) });
 });
 
 function getFileIcon(name) {
@@ -132,19 +200,6 @@ function getFileIcon(name) {
 }
 
 // ===== Helper functions =====
-
-function resolveSafePath(req, reqPath) {
-  var isAdmin = req.user && req.user.role === 'admin';
-  if (isAdmin) {
-    var dp = resolveDrivePath(reqPath);
-    return { safePath: dp || path.resolve(reqPath || '/'), isAdmin: true };
-  }
-  var resolved = path.resolve(WORKSPACE_ROOT, reqPath || '');
-  if (!resolved.startsWith(WORKSPACE_ROOT)) {
-    return null;
-  }
-  return { safePath: resolved, isAdmin: false };
-}
 
 function buildEntry(fullPath, entryName) {
   var st;
