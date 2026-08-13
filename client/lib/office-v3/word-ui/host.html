@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>GenOffice Word Host</title>
+<link rel="stylesheet" href="/client/lib/office-v3/word-ui/acms-office-word-ui.css?v=20">
+<style>html,body{margin:0;padding:0;height:100%;overflow:hidden;}#root{height:100vh;}</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="module">
+  // iframe host：由父窗口（ACMS office-v3-bridge）调用 __init/__unmount
+  let mod = null
+  let rootEl = null
+
+  window.__init = async function (opts) {
+    opts = opts || {}
+    try {
+      if (!mod) mod = await import('/client/lib/office-v3/word-ui/office-word-ui.js?v=20')
+      // 卸载旧实例
+      if (rootEl && mod.unmountWordUI) {
+        try { mod.unmountWordUI(rootEl) } catch (e) {}
+      }
+      rootEl = document.getElementById('root')
+      rootEl.innerHTML = ''
+      let bin = null
+      if (opts.fileId) {
+        const dlName = encodeURIComponent(opts.fileName || 'document.docx')
+        const resp = await fetch('/api/office/download/' + encodeURIComponent(opts.fileId) + '/' + dlName + '?api_key=' + (opts.apiKey || 'dev-key-001'))
+        if (!resp.ok) throw new Error('下载文件失败 HTTP ' + resp.status)
+        bin = new Uint8Array(await resp.arrayBuffer())
+      }
+      mod.mountWordUI(rootEl, {
+        fileId: opts.fileId || undefined,
+        fileName: opts.fileName || 'untitled.docx',
+        apiKey: opts.apiKey || 'dev-key-001',
+        buffer: bin || undefined,
+      })
+      return { ok: true }
+    } catch (e) {
+      console.error('[genoffice-host] __init 失败:', e)
+      return { ok: false, error: e.message }
+    }
+  }
+
+  window.__unmount = function () {
+    try {
+      if (rootEl && mod && mod.unmountWordUI) mod.unmountWordUI(rootEl)
+    } catch (e) {}
+    rootEl = null
+  }
+
+  // 父窗口 ready 后由 bridge 主动调用 __init
+  window.__ready = true
+</script>
+</body>
+</html>

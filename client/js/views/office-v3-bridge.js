@@ -522,34 +522,45 @@
     try { return localStorage.getItem('office-v3-word-ui') !== '0'; } catch (e) { return true; }
   }
 
-  // 加载 GenOffice Word UI：下载原始字节 → mountWordUI（React root）
+  // 加载 GenOffice Word UI：iframe 完全隔离（不污染 ACMS 全局样式）
   async function loadGenOfficeWord(w, fileId, fileName) {
-    var mod = await import(BASE + 'word-ui/office-word-ui.js');
-    var bin = null;
-    if (fileId) {
-      var dlName = encodeURIComponent(fileName || 'document.docx');
-      var resp = await fetch('/api/office/download/' + encodeURIComponent(fileId) + '/' + dlName + '?api_key=' + API_KEY);
-      if (!resp.ok) throw new Error('下载文件失败 HTTP ' + resp.status);
-      bin = new Uint8Array(await resp.arrayBuffer());
-    }
-    // 复用窗口时先卸载旧 root
-    var oldRoot = w.$c.querySelector('.v3-genoffice-root');
-    if (oldRoot && mod.unmountWordUI) {
-      try { mod.unmountWordUI(oldRoot); } catch (e) { /* ignore */ }
+    // 复用窗口时先卸载旧 iframe 内容
+    var oldFrame = w.$c.querySelector('iframe.v3-genoffice-frame');
+    if (oldFrame) {
+      try { if (oldFrame.contentWindow && oldFrame.contentWindow.__unmount) oldFrame.contentWindow.__unmount(); } catch (e) { /* ignore */ }
+      oldFrame.remove();
     }
     w.$c.innerHTML = '';
-    var root = document.createElement('div');
-    root.className = 'v3-genoffice-root';
-    root.style.cssText = 'width:100%;height:100%;overflow:auto;';
-    w.$c.appendChild(root);
-    mod.mountWordUI(root, { fileId: fileId || undefined, fileName: fileName, apiKey: API_KEY, buffer: bin || undefined });
+    var frame = document.createElement('iframe');
+    frame.className = 'v3-genoffice-frame';
+    frame.style.cssText = 'width:100%;height:100%;border:0;display:block;';
+    frame.src = BASE + 'word-ui/host.html';
+    w.$c.appendChild(frame);
+
+    function initFrame() {
+      var win = frame.contentWindow;
+      if (!win || typeof win.__init !== 'function') return;
+      win.__init({ fileId: fileId || undefined, fileName: fileName || 'untitled.docx', apiKey: API_KEY })
+        .then(function (r) {
+          if (r && !r.ok) console.warn('[office-v3] GenOffice host init 失败:', r.error);
+        })
+        .catch(function (e) { console.warn('[office-v3] GenOffice host init 异常:', e.message); });
+    }
+    frame.addEventListener('load', initFrame);
+    // 防御：若 load 已触发（缓存）而监听器没捕获
+    setTimeout(function () {
+      if (frame.contentWindow && frame.contentWindow.__ready && frame.contentWindow.__ready === true) {
+        initFrame();
+      }
+    }, 500);
 
     // 窗口复用：重新加载新文件（调度层统一处理，见 makeWordLoader）
-    // 窗口关闭：卸载 React root
+    // 窗口关闭：卸载 iframe
     w.onClose = function () {
-      try { if (mod.unmountWordUI) mod.unmountWordUI(root); } catch (e) { /* ignore */ }
+      try { if (frame.contentWindow && frame.contentWindow.__unmount) frame.contentWindow.__unmount(); } catch (e) { /* ignore */ }
+      frame.remove();
     };
-    return { kind: 'word-ui', fileId: fileId, fileName: fileName };
+    return { kind: 'word-ui', fileId: fileId, fileName: fileName, iframe: frame };
   }
 
   // P132: 调度器——GenOffice UI 优先，禁用/失败回退自渲染 v3
@@ -812,13 +823,8 @@
         setStatus('新文档（未加载）');
       }
 
-      // 窗口复用（P3：window-manager 复用已有窗口时调用 w.reloadDocument）
-      w.reloadDocument = function (fileId2, fileName2) {
-        if (!fileId2) return;
-        console.info('[office-v3] reloadDocument:', fileId2, fileName2);
-        setStatus('加载中…');
-        loadRemoteFile(fileId2, fileName2);
-      };
+      // 窗口复用（P3）——由 makeWordLoader 调度层统一处理（P132：需重查 GenOffice 开关）
+      // 这里不覆盖 w.reloadDocument，避免自渲染版覆盖调度版
 
       var key = fileId || ('__v3word__' + Date.now());
       state.instances[key] = { editor: editor };
