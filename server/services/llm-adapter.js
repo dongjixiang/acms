@@ -914,7 +914,9 @@ Round ${round + 1}/${maxRounds}。
       //   但 LLM 第一轮 tool_calls=0 直接给文字答案（如"抱歉没找到，建议官方渠道"）
       //   → 这是装睡的变体（历史对话里的失败示范会让 LLM 直接复述失败结论）
       //   → 强制重试，忽略历史失败，要求本轮实际调工具
-      if (round === 0 && Array.isArray(toolNames) && toolNames.length > 0 && toolCallHistory.length === 0) {
+      //   ⚠️ 闲聊模式（conversation）跳过：用户说"在干嘛/你好/早上好"等不需要调工具
+      const isConversationMode = options && options.actionMode === 'conversation';
+      if (round === 0 && Array.isArray(toolNames) && toolNames.length > 0 && toolCallHistory.length === 0 && !isConversationMode) {
         console.warn(`[runToolLoop] v0.87h 首轮未调工具 round=${round + 1}: 有工具(${toolNames.join(',')})但 tool_calls=0, 强制重试`);
         messages.push({
           role: 'user',

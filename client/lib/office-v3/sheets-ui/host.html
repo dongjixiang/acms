@@ -69,7 +69,7 @@
   window.__init = async function (opts) {
     opts = opts || {}
     try {
-      if (!mod) mod = await import('/client/lib/office-v3/sheets-ui/office-sheets-ui.js?v=10')
+      if (!mod) mod = await import('/client/lib/office-v3/sheets-ui/office-sheets-ui.js?v=11')
       if (rootEl && mod.unmountSheetsUI) {
         try { mod.unmountSheetsUI(rootEl) } catch (e) {}
       }

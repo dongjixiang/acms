@@ -1,4 +1,4 @@
-import { m as e } from "./adapter-CjJLC1Cz.js";
+import { m as e } from "./adapter-ZM6D6zwJ.js";
 const t = { "sheets-table": {
   columnPrefix: "列",
   tablePrefix: "表格",

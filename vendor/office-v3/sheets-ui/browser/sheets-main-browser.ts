@@ -12,6 +12,9 @@ import {
   readBasicWorkbook,
   inventoryXlsx,
   applyCellEditsToXlsx,
+  planCellEditsToXlsx,
+  assembleWithJsZip,
+  createBufferEntrySource,
   type CellEdit,
   type SheetStructuralOps,
 } from '../gateway/xlsx-gateway'
@@ -391,12 +394,68 @@ async function writeWorkbookToBrowser(
     formulaValuesBySheet.set(sheetName, list)
   }
   const formulaValues = [...formulaValuesBySheet].map(([sheetName, cells]) => ({ sheetName, cells }))
+  // 视觉对象/表格/透视（P4b-2：从原 writeWorkbookTo 完整移植，落盘不再降级）
+  const visualAdditions = request.visualAdditions.map((addition) => ({
+    sheetName: resolveSheetName(addition.sheetId),
+    anchor: addition.anchor,
+    chart: addition.chart,
+    shape: addition.shape,
+    image: addition.image,
+  }))
+  const tableAdditions = request.tableAdditions.map((table) => ({
+    sheetName: resolveSheetName(table.sheetId),
+    area: table.area,
+    name: table.name,
+    columnNames: table.columnNames,
+    style: table.style,
+    bandedRows: table.bandedRows,
+  }))
+  const pivotAdditions = request.pivotAdditions.map((pivot) => ({
+    sheetName: resolveSheetName(pivot.sheetId),
+    sourceSheetName: resolveSheetName(pivot.sourceSheetId),
+    sourceArea: pivot.sourceArea,
+    location: pivot.location,
+    name: pivot.name,
+    fieldNames: pivot.fieldNames,
+    rowFieldIndices: pivot.rowFieldIndices,
+    columnFieldIndex: pivot.columnFieldIndex,
+    pageFieldIndices: pivot.pageFieldIndices,
+    rowItems: pivot.rowItems,
+    rowLevelItems: pivot.rowLevelItems,
+    rowLines: pivot.rowLines,
+    columnItems: pivot.columnItems,
+    columnFieldIndices: pivot.columnFieldIndices,
+    colLevelItems: pivot.colLevelItems,
+    colLines: pivot.colLines,
+    groupings: pivot.groupings,
+    filters: pivot.filters,
+    rowHiddenItems: pivot.rowHiddenItems,
+    colHiddenItems: pivot.colHiddenItems,
+    values: pivot.values,
+  }))
+  const sparklineAdditions = request.sparklineAdditions.map(({ sheetId, ...group }) => ({
+    sheetName: resolveSheetName(sheetId),
+    ...group,
+  }))
+  const pivotRefreshUpdates = request.pivotRefreshUpdates.map((update) => ({
+    cachePath: update.cachePath,
+    sheetName: resolveSheetName(update.sheetId),
+    newOutputRef: update.newOutputRef,
+    ...(update.relayout === undefined
+      ? {}
+      : {
+          relayout: (({ sheetId: _sheetId, sourceSheetId, ...rest }) => ({
+            ...rest,
+            sourceSheetName: resolveSheetName(sourceSheetId),
+          }))(update.relayout),
+        }),
+  }))
 
-  // 浏览器版：纯 JS 保存（视觉/表格/透视落盘降级跳过——P4b-2 backlog）
+  // 浏览器版：纯 JS 保存（planCellEditsToXlsx 完整参数 + assembleWithJsZip 内存重打包）
   const source = memReadBytes(session.path)
   if (!source) throw new Error(`Workbook bytes missing: ${session.path}`)
-  const mutation = await applyCellEditsToXlsx(
-    source,
+  const plan = await planCellEditsToXlsx(
+    await createBufferEntrySource(source),
     edits,
     structuralOps,
     request.chartEdits,
@@ -407,10 +466,18 @@ async function writeWorkbookToBrowser(
     dvStates,
     sheetProtections,
     request.definedNamesState,
+    visualAdditions,
     pageSetupStates,
     noteStates,
+    tableAdditions,
+    pivotAdditions,
+    request.pivotCacheRefreshPaths,
+    pivotRefreshUpdates,
+    request.visualEdits,
+    sparklineAdditions,
     formulaValues,
   )
+  const mutation = await assembleWithJsZip(source, plan)
   memWriteBytes(targetPath, mutation.buffer)
   if (saveBytesHook) {
     // 传真实文件名（保存到服务器用），非内存路径

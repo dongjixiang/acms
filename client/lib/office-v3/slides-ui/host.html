@@ -73,56 +73,65 @@
   let mod = null
   let rootEl = null
 
+  // 状态写到 rootEl 的 data-* 属性，父窗口直接读 DOM 跨 navigation 持久
+  function report(stage, msg) {
+    try {
+      if (!rootEl) rootEl = document.getElementById('root')
+      if (rootEl) {
+        rootEl.setAttribute('data-host-stage', String(stage))
+        rootEl.setAttribute('data-host-msg', String(msg || '').slice(0, 250))
+        rootEl.setAttribute('data-host-time', new Date().toISOString())
+      }
+      parent.postMessage({ type: 'slides-host', stage: stage, msg: msg }, '*')
+    } catch (e) {}
+  }
+
   window.__init = async function (opts) {
     opts = opts || {}
-    function report(msg) {
-      try { parent.postMessage({ type: 'slides-host', msg: msg }, '*') } catch (e) {}
-    }
     try {
-      report('__init called: fileId=' + (opts.fileId || 'null') + ' fileName=' + (opts.fileName || 'null'))
+      report('init_start', 'fileId=' + (opts.fileId || 'null') + ' fileName=' + (opts.fileName || 'null'))
       if (!mod) mod = await import('/client/lib/office-v3/slides-ui/office-slides-ui.js?v=9')
-      report('mod loaded')
+      report('mod_loaded', 'mod has mountSlidesUI=' + (typeof mod.mountSlidesUI))
       if (rootEl && mod.unmountSlidesUI) {
-        try { mod.unmountSlidesUI(rootEl) } catch (e) {}
+        try { mod.unmountSlidesUI(rootEl) } catch (e) { report('unmount_err', e.message) }
       }
       rootEl = document.getElementById('root')
       rootEl.innerHTML = ''
-      // 【关键修复】不要在这里清空 pendingBytes（之前的 setPendingBytes(null) 会在 mountSlidesUI
-      // 之前清空，React App 启动后 useEffect 调 consumePendingOpen 时已是 null → 走 bootBlank）
-      // motes: 第二次 init 时若旧 React App 已存在 consumesRef 也会 race
       let bin = null
       if (opts.fileId) {
         const dlName = encodeURIComponent(opts.fileName || 'document.pptx')
         const url = '/api/office/download/' + encodeURIComponent(opts.fileId) + '/' + dlName + '?api_key=' + (opts.apiKey || 'dev-key-001')
-        report('fetching: ' + url)
+        report('fetch_start', url)
         const resp = await fetch(url)
-        report('download response: ok=' + resp.ok + ' status=' + resp.status + ' ct=' + resp.headers.get('content-type'))
-        if (!resp.ok) throw new Error('下载文件失败 HTTP ' + resp.status)
+        report('fetch_resp', 'ok=' + resp.ok + ' status=' + resp.status + ' ct=' + (resp.headers.get('content-type') || 'null'))
+        if (!resp.ok) throw new Error('下载 HTTP ' + resp.status)
         bin = new Uint8Array(await resp.arrayBuffer())
-        report('download ok: ' + bin.length + 'B magic=' + String.fromCharCode(bin[0], bin[1], bin[2], bin[3]))
+        report('fetch_ok', bin.length + 'B magic=' + String.fromCharCode(bin[0], bin[1], bin[2], bin[3]))
       }
+      // 关键：mountSlidesUI 内部 installSlidesApiBridge + setPendingBytes(bin) + createRoot.render(<App/>)
+      // React App 启动后 useEffect 跑 consumePendingOpen 读 pendingBytes（已被 set）
       mod.mountSlidesUI(rootEl, {
         fileId: opts.fileId || undefined,
         fileName: opts.fileName || 'untitled.pptx',
         apiKey: opts.apiKey || 'dev-key-001',
         buffer: bin || undefined,
       })
-      report('mountSlidesUI done, pendingBytes set to ' + (bin ? bin.length + 'B' : 'null'))
-      // 关键修复：React App 启动异步消费 pendingBytes，但有时启动顺序对不上。
-      // 给 React 200ms 启动窗口后再设一次，mountSlidesUI 内部的 setPendingBytes 是同步覆盖
-      // 这里重复保险一次，确保 React App 启动后能读到
+      report('mount_done', 'pendingBytes=' + (bin ? bin.length + 'B' : 'null') + ' hasEditor=' + !!window.__slidesEditor)
+      // 兜底：React App 启动是 async，多次 setPendingBytes 防止 race
       if (bin && window.__slidesEditor) {
-        setTimeout(function() {
+        let n = 0
+        const iv = setInterval(function () {
           try {
             window.__slidesEditor.setPendingBytes(bin)
-            report('delayed setPendingBytes (200ms): ' + bin.length + 'B')
-          } catch (e) { report('delayed setPendingBytes err: ' + e.message) }
-        }, 200)
+            n++
+            if (n >= 10) { clearInterval(iv); report('retry_done', 'setPendingBytes x10') }
+          } catch (e) { clearInterval(iv); report('retry_err', e.message) }
+        }, 100)
       }
       return { ok: true }
     } catch (e) {
       console.error('[genoffice-slides-host] __init 失败:', e)
-      report('__init FAILED: ' + e.message)
+      report('failed', e.message)
       return { ok: false, error: e.message }
     }
   }

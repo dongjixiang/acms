@@ -73,6 +73,7 @@ async function execute(opts = {}) {
     maxRounds: opts.maxRounds ?? 10,
     caller: opts.caller || 'runtime',
     onProgress: opts.onProgress,
+    actionMode: opts.actionMode,  // v0.95: 闲聊模式跳过首轮强制工具检查
   };
   if (opts.maxTokens != null) loopOpts.maxTokens = opts.maxTokens;
   if (opts.temperature != null) loopOpts.temperature = opts.temperature;

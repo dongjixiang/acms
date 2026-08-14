@@ -1,4 +1,4 @@
-import { m as e } from "./adapter-CjJLC1Cz.js";
+import { m as e } from "./adapter-ZM6D6zwJ.js";
 const a = { "sheets-conditional-formatting-ui": {
   title: "条件格式",
   menu: {

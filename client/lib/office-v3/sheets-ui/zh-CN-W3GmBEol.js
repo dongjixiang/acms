@@ -1,4 +1,4 @@
-import { m as e } from "./adapter-CjJLC1Cz.js";
+import { m as e } from "./adapter-ZM6D6zwJ.js";
 const t = { "drawing-ui": {
   "image-cropper": { error: "无法裁剪非图片元素" },
   "image-panel": {
