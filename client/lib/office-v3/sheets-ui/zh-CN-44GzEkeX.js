@@ -1,4 +1,4 @@
-import { m as r } from "./adapter-CxoDAYCK.js";
+import { m as r } from "./adapter-CjJLC1Cz.js";
 const e = { "sheets-sort-ui": {
   general: {
     sort: "排序",

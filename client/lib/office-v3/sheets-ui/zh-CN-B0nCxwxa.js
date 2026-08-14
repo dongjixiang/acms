@@ -1,4 +1,4 @@
-import { m as e } from "./adapter-CxoDAYCK.js";
+import { m as e } from "./adapter-CjJLC1Cz.js";
 const a = { "data-validation": {
   operators: {
     between: "介于",

@@ -1,4 +1,4 @@
-import { m as e } from "./adapter-CxoDAYCK.js";
+import { m as e } from "./adapter-CjJLC1Cz.js";
 const o = { "sheets-note-ui": {
   note: { placeholder: "在此输入" },
   rightClick: {

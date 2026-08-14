@@ -87,8 +87,9 @@
       }
       rootEl = document.getElementById('root')
       rootEl.innerHTML = ''
-      // 清旧 pending，避免坏数据残留
-      if (window.__slidesEditor) window.__slidesEditor.setPendingBytes(null)
+      // 【关键修复】不要在这里清空 pendingBytes（之前的 setPendingBytes(null) 会在 mountSlidesUI
+      // 之前清空，React App 启动后 useEffect 调 consumePendingOpen 时已是 null → 走 bootBlank）
+      // motes: 第二次 init 时若旧 React App 已存在 consumesRef 也会 race
       let bin = null
       if (opts.fileId) {
         const dlName = encodeURIComponent(opts.fileName || 'document.pptx')

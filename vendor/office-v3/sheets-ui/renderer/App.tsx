@@ -2199,6 +2199,19 @@ export function App(): React.JSX.Element {
       ]
       setAttachments([])
     }
+    // ACMS 小吉桥：Excel AI 面板 → 小吉 office-action 生成器（优先于 stub AgentLoop）
+    const acmsBridge = (window as any).__acmsOfficeAction
+    if (acmsBridge) {
+      acmsBridge(instruction, sentAtts, {
+        appendChat,
+        setMessage,
+        setAiBusy,
+        propose: proposeOperations,
+        apply: autoApplySafePlan,
+        persistChatMessage,
+      })
+      return
+    }
     // real LLM configured → let the agent read context and propose operations;
     // otherwise fall back to the local, deterministic regex planner
     // (kept for offline use and for the fixed micro-DSL it still supports).

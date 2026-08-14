@@ -1,4 +1,4 @@
-import { m as t } from "./adapter-CxoDAYCK.js";
+import { m as t } from "./adapter-CjJLC1Cz.js";
 const e = { design: {
   Confirm: {
     cancel: "取消",

@@ -1,4 +1,4 @@
-import { m as e } from "./adapter-CxoDAYCK.js";
+import { m as e } from "./adapter-CjJLC1Cz.js";
 const l = { "find-replace": {
   toolbar: "查找替换",
   shortcut: {
