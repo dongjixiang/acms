@@ -463,7 +463,14 @@ router.get('/load/:fileId', async function (req, res) {
 
 router.get('/download/:fileId/:name', function (req, res) {
   const files = fs.readdirSync(OFFICE_DIR);
-  const match = files.find((f) => f.startsWith(req.params.fileId));
+  const fileId = req.params.fileId;
+  const name = req.params.name;
+  // 修复 v0.95: startsWith 会误匹配同前缀不同扩展名（如 test-zh.docx vs test-zh.pptx）
+  // 优先精确匹配 fileId.ext（覆盖常规场景），再 fallback 到 fileId.* 含扩展名
+  const wantedExt = (name.split('.').pop() || '').toLowerCase();
+  let match = files.find(function (f) { return f === fileId + '.' + wantedExt; });
+  if (!match) match = files.find(function (f) { return f.startsWith(fileId + '.') && (f.endsWith('.' + wantedExt) || !wantedExt); });
+  if (!match) match = files.find(function (f) { return f === fileId; });
   if (!match) return res.status(404).json({ error: 'FILE_NOT_FOUND' });
 
   const ext = path.extname(match).slice(1);

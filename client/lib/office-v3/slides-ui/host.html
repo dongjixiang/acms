@@ -75,8 +75,13 @@
 
   window.__init = async function (opts) {
     opts = opts || {}
+    function report(msg) {
+      try { parent.postMessage({ type: 'slides-host', msg: msg }, '*') } catch (e) {}
+    }
     try {
+      report('__init called: fileId=' + (opts.fileId || 'null') + ' fileName=' + (opts.fileName || 'null'))
       if (!mod) mod = await import('/client/lib/office-v3/slides-ui/office-slides-ui.js?v=9')
+      report('mod loaded')
       if (rootEl && mod.unmountSlidesUI) {
         try { mod.unmountSlidesUI(rootEl) } catch (e) {}
       }
@@ -87,10 +92,13 @@
       let bin = null
       if (opts.fileId) {
         const dlName = encodeURIComponent(opts.fileName || 'document.pptx')
-        const resp = await fetch('/api/office/download/' + encodeURIComponent(opts.fileId) + '/' + dlName + '?api_key=' + (opts.apiKey || 'dev-key-001'))
+        const url = '/api/office/download/' + encodeURIComponent(opts.fileId) + '/' + dlName + '?api_key=' + (opts.apiKey || 'dev-key-001')
+        report('fetching: ' + url)
+        const resp = await fetch(url)
+        report('download response: ok=' + resp.ok + ' status=' + resp.status + ' ct=' + resp.headers.get('content-type'))
         if (!resp.ok) throw new Error('下载文件失败 HTTP ' + resp.status)
         bin = new Uint8Array(await resp.arrayBuffer())
-        console.log('[slides-host] download ok:', bin.length, 'B, magic:', String.fromCharCode(bin[0], bin[1]))
+        report('download ok: ' + bin.length + 'B magic=' + String.fromCharCode(bin[0], bin[1], bin[2], bin[3]))
       }
       mod.mountSlidesUI(rootEl, {
         fileId: opts.fileId || undefined,
@@ -98,9 +106,22 @@
         apiKey: opts.apiKey || 'dev-key-001',
         buffer: bin || undefined,
       })
+      report('mountSlidesUI done, pendingBytes set to ' + (bin ? bin.length + 'B' : 'null'))
+      // 关键修复：React App 启动异步消费 pendingBytes，但有时启动顺序对不上。
+      // 给 React 200ms 启动窗口后再设一次，mountSlidesUI 内部的 setPendingBytes 是同步覆盖
+      // 这里重复保险一次，确保 React App 启动后能读到
+      if (bin && window.__slidesEditor) {
+        setTimeout(function() {
+          try {
+            window.__slidesEditor.setPendingBytes(bin)
+            report('delayed setPendingBytes (200ms): ' + bin.length + 'B')
+          } catch (e) { report('delayed setPendingBytes err: ' + e.message) }
+        }, 200)
+      }
       return { ok: true }
     } catch (e) {
       console.error('[genoffice-slides-host] __init 失败:', e)
+      report('__init FAILED: ' + e.message)
       return { ok: false, error: e.message }
     }
   }

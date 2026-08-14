@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>GenOffice Word Host</title>
-<link rel="stylesheet" href="/client/lib/office-v3/word-ui/acms-office-word-ui.css?v=20">
+<link rel="stylesheet" href="/client/lib/office-v3/word-ui/acms-office-word-ui.css?v=0.95.4">
 <style>html,body{margin:0;padding:0;height:100%;overflow:hidden;}#root{height:100vh;}</style>
 </head>
 <body>
@@ -16,7 +16,7 @@
   window.__init = async function (opts) {
     opts = opts || {}
     try {
-      if (!mod) mod = await import('/client/lib/office-v3/word-ui/office-word-ui.js?v=20')
+      if (!mod) mod = await import('/client/lib/office-v3/word-ui/office-word-ui.js?v=0.95.4')
       // 卸载旧实例
       if (rootEl && mod.unmountWordUI) {
         try { mod.unmountWordUI(rootEl) } catch (e) {}

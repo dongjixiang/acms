@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>GenOffice Sheets Host</title>
+<link rel="stylesheet" href="/client/lib/office-v3/sheets-ui/acms-office-sheets-ui.css?v=1">
+<style>html,body{margin:0;padding:0;height:100%;overflow:hidden;}#root{height:100vh;}</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+  // iframe console 转发到主窗口（调试）
+  ;['log', 'error', 'warn'].forEach(function (lv) {
+    var orig = console[lv];
+    console[lv] = function () {
+      var parts = Array.prototype.map.call(arguments, function (x) {
+        if (typeof x === 'string') return x;
+        try { return JSON.stringify(x); } catch (e) { return String(x); }
+      });
+      try { parent.postMessage({ type: 'iframe-console', level: lv, msg: parts.join(' ').slice(0, 500) }, '*'); } catch (e) {}
+      orig.apply(console, arguments);
+    };
+  });
+  // process polyfill
+  if (!window.process) {
+    window.process = {
+      env: { NODE_ENV: 'production' },
+      platform: 'win32',
+      arch: 'x64',
+      versions: {},
+      nextTick: function (fn) { setTimeout(fn, 0); },
+      cwd: function () { return '/'; },
+    };
+  }
+  // Buffer polyfill（jszip/引擎可能引用 Node Buffer）
+  if (typeof window.Buffer === 'undefined') {
+    var TextDecoderU8 = window.TextDecoder;
+    var u8ToString = Uint8Array.prototype.toString;
+    Uint8Array.prototype.toString = function (enc) {
+      if (enc === 'utf8' || enc === 'utf-8' || enc === undefined) {
+        try { return new TextDecoderU8().decode(this); } catch (e) { return u8ToString.call(this); }
+      }
+      return u8ToString.call(this);
+    };
+    var BufferPoly = function (arg) {
+      if (typeof arg === 'string') return new TextEncoder().encode(arg);
+      if (arg instanceof Uint8Array) return arg;
+      if (typeof arg === 'number') return new Uint8Array(arg);
+      return new Uint8Array(0);
+    };
+    BufferPoly.from = function (arg) { return BufferPoly(arg); };
+    BufferPoly.alloc = function (n) { return new Uint8Array(n); };
+    BufferPoly.concat = function (list) {
+      var total = list.reduce(function (s, x) { return s + x.length; }, 0);
+      var out = new Uint8Array(total);
+      var off = 0;
+      list.forEach(function (x) { out.set(x, off); off += x.length; });
+      return out;
+    };
+    BufferPoly.isBuffer = function (x) { return x instanceof Uint8Array && x._isACMSBuffer === true; };
+    window.Buffer = BufferPoly;
+  }
+</script>
+<script type="module">
+  // iframe host：由父窗口（ACMS office-v3-bridge）调用 __init/__unmount
+  let mod = null
+  let rootEl = null
+
+  window.__init = async function (opts) {
+    opts = opts || {}
+    try {
+      if (!mod) mod = await import('/client/lib/office-v3/sheets-ui/office-sheets-ui.js?v=9')
+      if (rootEl && mod.unmountSheetsUI) {
+        try { mod.unmountSheetsUI(rootEl) } catch (e) {}
+      }
+      rootEl = document.getElementById('root')
+      rootEl.innerHTML = ''
+      let bin = null
+      if (opts.fileId) {
+        const dlName = encodeURIComponent(opts.fileName || '工作簿.xlsx')
+        const resp = await fetch('/api/office/download/' + encodeURIComponent(opts.fileId) + '/' + dlName + '?api_key=' + (opts.apiKey || 'dev-key-001'))
+        if (!resp.ok) throw new Error('下载文件失败 HTTP ' + resp.status)
+        bin = new Uint8Array(await resp.arrayBuffer())
+      }
+      mod.mountSheetsUI(rootEl, {
+        fileId: opts.fileId || undefined,
+        fileName: opts.fileName || '工作簿.xlsx',
+        apiKey: opts.apiKey || 'dev-key-001',
+        buffer: bin || undefined,
+      })
+      return { ok: true }
+    } catch (e) {
+      console.error('[genoffice-sheets-host] __init 失败:', e)
+      return { ok: false, error: e.message }
+    }
+  }
+
+  window.__unmount = function () {
+    try {
+      if (rootEl && mod && mod.unmountSheetsUI) mod.unmountSheetsUI(rootEl)
+    } catch (e) {}
+    rootEl = null
+  }
+
+  window.__ready = true
+</script>
+</body>
+</html>

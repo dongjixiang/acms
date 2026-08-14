@@ -219,7 +219,7 @@
     var frame = document.createElement('iframe');
     frame.className = 'v3-genoffice-frame';
     frame.style.cssText = 'width:100%;height:100%;border:0;display:block;';
-    frame.src = BASE + 'slides-ui/host.html?v=10';
+    frame.src = BASE + 'slides-ui/host.html?v=11';
     w.$c.appendChild(frame);
 
     function initFrame() {
@@ -279,6 +279,96 @@
         } else {
           w.$c.innerHTML = '';
           makeSlidesSelfLoader()(w, { fileId: fid, fileName: fname });
+        }
+      };
+      return win;
+    };
+  }
+
+  // P132: GenOffice Excel UI（Univer 0.25.1 presets 全套菜单）优先；失败回退 v2
+  function excelGenEnabled() {
+    try { return localStorage.getItem('office-v3-sheets-ui') !== '0'; } catch (e) { return true; }
+  }
+
+  // 加载 GenOffice Sheets UI：iframe 完全隔离（不污染 ACMS 全局样式）
+  async function loadGenOfficeExcel(w, fileId, fileName) {
+    // 清理旧 sheets-ui 实例（reload 换文件后旧 key 残留会误导 runAction 定位）
+    Object.keys(state.instances).forEach(function (k) {
+      var e = state.instances[k].editor;
+      if (e && e.kind === 'sheets-ui') delete state.instances[k];
+    });
+    var oldFrame = w.$c.querySelector('iframe.v3-genoffice-frame');
+    if (oldFrame) {
+      try { if (oldFrame.contentWindow && oldFrame.contentWindow.__unmount) oldFrame.contentWindow.__unmount(); } catch (e) { /* ignore */ }
+      oldFrame.remove();
+    }
+    w.$c.innerHTML = '';
+    var frame = document.createElement('iframe');
+    frame.className = 'v3-genoffice-frame';
+    frame.style.cssText = 'width:100%;height:100%;border:0;display:block;';
+    frame.src = BASE + 'sheets-ui/host.html?v=9';
+    w.$c.appendChild(frame);
+
+    function initFrame() {
+      var win = frame.contentWindow;
+      if (!win || typeof win.__init !== 'function') return;
+      win.__init({ fileId: fileId || undefined, fileName: fileName || '工作簿.xlsx', apiKey: API_KEY })
+        .then(function (r) {
+          if (r && !r.ok) console.warn('[office-v3] GenOffice sheets host init 失败:', r.error);
+        })
+        .catch(function (e) { console.warn('[office-v3] GenOffice sheets host init 异常:', e.message); });
+    }
+    frame.addEventListener('load', initFrame);
+    setTimeout(function () {
+      if (frame.contentWindow && frame.contentWindow.__ready === true) initFrame();
+    }, 500);
+
+    w.onClose = function () {
+      try { if (frame.contentWindow && frame.contentWindow.__unmount) frame.contentWindow.__unmount(); } catch (e) { /* ignore */ }
+      frame.remove();
+    };
+    var key = fileId || ('__v3genxlsx__' + Date.now());
+    state.instances[key] = { editor: { kind: 'sheets-ui', fileId: fileId, fileName: fileName, iframe: frame } };
+    return { kind: 'sheets-ui', fileId: fileId, fileName: fileName, iframe: frame };
+  }
+
+  // Excel 调度器：GenOffice UI 优先，失败回退 legacy v2 loader（Univer 裸引擎）
+  function makeExcelLoader(legacyLoader) {
+    return async function loader(w, opts) {
+      opts = opts || {};
+      var args = arguments[1] || opts;
+      var fileId = args.fileId;
+      var fileName = args.fileName || '工作簿.xlsx';
+      if (!w || !w.$c) return null;
+      var useGen = excelGenEnabled();
+      var win = null;
+      if (useGen) {
+        try {
+          win = await loadGenOfficeExcel(w, fileId, fileName);
+        } catch (err) {
+          console.warn('[office-v3] GenOffice Sheets UI 加载失败，回退 v2:', err.message);
+          useGen = false;
+        }
+      }
+      if (!useGen) {
+        if (legacyLoader) {
+          win = await legacyLoader(w, opts);
+        } else {
+          w.$c.innerHTML = '<div style="padding:20px;color:#a00;font-size:13px">Excel 编辑器不可用（GenOffice UI 失败且无 v2 回退）。可设置 localStorage office-v3-sheets-ui=0 后刷新恢复 v2。</div>';
+        }
+      }
+      w.reloadDocument = function (fid, fname) {
+        if (!fid) return;
+        console.info('[office-v3] excel reloadDocument:', fid, fname);
+        if (excelGenEnabled()) {
+          loadGenOfficeExcel(w, fid, fname).catch(function (e) {
+            console.warn('[office-v3] GenOffice excel reload 失败，回退 v2:', e.message);
+            w.$c.innerHTML = '';
+            if (legacyLoader) legacyLoader(w, { fileId: fid, fileName: fname });
+          });
+        } else {
+          w.$c.innerHTML = '';
+          if (legacyLoader) legacyLoader(w, { fileId: fid, fileName: fname });
         }
       };
       return win;
@@ -659,12 +749,83 @@
     frame.src = BASE + 'word-ui/host.html';
     w.$c.appendChild(frame);
 
+    function patchOpenDocx(win) {
+      // GenOffice desktop shim 的 openDocx() 默认返回 null（ Electron IPC stub ）
+      // 浏览器环境需要注入真实文件选择逻辑
+      if (!win) return;
+      // 用闭包标记是否已 patch（防止重复 patch 报错）
+      var patched = false;
+
+      function doPatch() {
+        if (!win.desktop || typeof win.desktop.openDocx !== 'function') {
+          // desktop 还没就绪，继续等
+          return false;
+        }
+        // 检查是否已经被我们的 patch 覆盖过（通过标记判断）
+        if (win.desktop.__acmsPatched) {
+          return true; // 已经是我们的 patch
+        }
+        try {
+          win.desktop.openDocx = function () {
+            return new Promise(function (resolve) {
+              var inp = document.createElement('input');
+              inp.type = 'file';
+              inp.accept = '.docx';
+              inp.onchange = function (ev2) {
+                var file = ev2.target && ev2.target.files && ev2.target.files[0];
+                if (!file) { resolve(null); return; }
+                var reader = new FileReader();
+                reader.onload = function (e2) {
+                  resolve({ name: file.name, data: new Uint8Array(e2.target.result) });
+                };
+                reader.onerror = function () { resolve(null); };
+                reader.readAsArrayBuffer(file);
+              };
+              inp.click();
+            });
+          };
+          win.desktop.__acmsPatched = true;
+          patched = true;
+          console.info('[office-v3] patched desktop.openDocx for browser file pick');
+          return true;
+        } catch (e2) {
+          console.warn('[office-v3] patchOpenDocx failed:', e2.message);
+          return false;
+        }
+      }
+
+      function tryPatch() {
+        if (doPatch()) return; // patch 成功
+        // desktop 还没就绪或被重建，继续监测
+        var lastPatchCheck = Date.now();
+        var interval = setInterval(function () {
+          if (win.desktop && !win.desktop.__acmsPatched) {
+            // desktop 被重建了（GenOffice mountWordUI 重新创建），重新 patch
+            if (doPatch()) {
+              clearInterval(interval);
+              console.info('[office-v3] re-patched desktop.openDocx after rebuild');
+            }
+          } else if (win.desktop && win.desktop.__acmsPatched) {
+            // 仍然 patched，没问题
+          }
+          // 最多监测 10 秒后停止
+          if (Date.now() - lastPatchCheck > 10000) {
+            clearInterval(interval);
+          }
+        }, 500);
+      }
+      tryPatch();
+    }
+
     function initFrame() {
       var win = frame.contentWindow;
       if (!win || typeof win.__init !== 'function') return;
+      patchOpenDocx(win);
       win.__init({ fileId: fileId || undefined, fileName: fileName || 'untitled.docx', apiKey: API_KEY })
         .then(function (r) {
           if (r && !r.ok) console.warn('[office-v3] GenOffice host init 失败:', r.error);
+          // mount 完成后 re-patch：GenOffice 每次 mountWordUI 会重建 window.desktop，覆盖之前的 patch
+          setTimeout(function () { patchOpenDocx(win); }, 500);
         })
         .catch(function (e) { console.warn('[office-v3] GenOffice host init 异常:', e.message); });
     }
@@ -988,11 +1149,23 @@
       console.warn('[office-v3] DISABLED by localStorage office-v3-disabled=1');
       return;
     }
-    ACMSWin.registerViewLoader('office-v3-word', makeWordLoader());
-    ACMSWin.registerViewLoader('office-v3-slides', makeSlidesLoader());
-    ACMSWin.registerViewLoader('office-word', makeWordLoader());  // 覆盖旧名（P119 模式）
-    ACMSWin.registerViewLoader('office-pptx', makeSlidesLoader());  // 覆盖旧名
-    console.info('[office-v3] word + slides loaders registered (office-v3-* + 覆盖 office-word/office-pptx)');
+    // Excel：保存 v2 loader 引用（覆盖前），GenOffice UI 优先，失败回退 v2
+    var legacyExcelLoader = null;
+    try { legacyExcelLoader = ACMSWin._getLoader('office-xlsx'); } catch (e) { /* ignore */ }
+    ACMSWin.registerViewLoader('office-v3-xlsx', makeExcelLoader(legacyExcelLoader));
+    ACMSWin.registerViewLoader('office-xlsx', makeExcelLoader(legacyExcelLoader));  // 覆盖旧名（P119 模式）
+
+    // Word：GenOffice UI 优先，失败回退自渲染 v3（P119 覆盖旧名）
+    var wordLoader = makeWordLoader();
+    ACMSWin.registerViewLoader('office-v3-word', wordLoader);
+    ACMSWin.registerViewLoader('office-word', wordLoader);  // 覆盖 office-v2-bridge 的注册
+
+    // Slides：自渲染 v3
+    var slidesLoader = makeSlidesLoader();
+    ACMSWin.registerViewLoader('office-v3-slides', slidesLoader);
+    ACMSWin.registerViewLoader('office-pptx', slidesLoader);  // 覆盖 office-v2-bridge 的注册
+
+    console.info('[office-v3] word + slides + excel loaders registered (覆盖 office-word/office-pptx/office-xlsx)');
   }
 
   if (document.readyState === 'loading') {
@@ -1017,6 +1190,43 @@
       if (!action || !action.kind) return { ok: false, error: '缺少 kind' };
       try {
         if (action.kind === 'xlsx') {
+          // GenOffice sheets-ui 优先（iframe 内 __sheetsAI）
+          var sheetsInst = null;
+          var keys2 = Object.keys(state.instances);
+          for (var i2 = 0; i2 < keys2.length; i2++) {
+            var e2 = state.instances[keys2[i2]].editor;
+            if (e2 && e2.kind === 'sheets-ui') { sheetsInst = state.instances[keys2[i2]]; break; }
+          }
+          var sheetsWin = sheetsInst && sheetsInst.editor && sheetsInst.editor.iframe && sheetsInst.editor.iframe.contentWindow;
+          var sheetsAI = sheetsWin && sheetsWin.__sheetsAI;
+          if (sheetsAI) {
+            if (action.op === 'propose') {
+              try {
+                var pr = sheetsAI.propose(action.operations || [], action.summary || '小吉编辑');
+                if (!pr || !pr.ok) return { ok: false, error: (pr && pr.error) || '生成计划失败' };
+                // GenOffice 语义：立即应用 + [撤销]（对齐 AiChatPanel auto-applied）
+                var ap2 = sheetsAI.applyPlan(pr.plan);
+                if (ap2 && ap2.error) return { ok: false, error: ap2.error };
+                return { ok: true, plan: pr.plan, summary: action.summary || '已应用 ' + (action.operations || []).length + ' 个操作', undo: function () { try { sheetsAI.undo(); return { ok: true }; } catch (err) { return { ok: false, error: err.message }; } } };
+              } catch (err) {
+                return { ok: false, error: err.message };
+              }
+            }
+            if (action.op === 'applyPlan' && action.plan) {
+              try {
+                var ap = sheetsAI.applyPlan(action.plan);
+                if (ap && ap.error) return { ok: false, error: ap.error };
+                return { ok: true, summary: '已应用', undo: function () { try { sheetsAI.undo(); return { ok: true }; } catch (err) { return { ok: false, error: err.message }; } } };
+              } catch (err) {
+                return { ok: false, error: err.message };
+              }
+            }
+            if (action.op === 'undo') {
+              try { sheetsAI.undo(); return { ok: true, summary: '已撤销' }; } catch (err) { return { ok: false, error: err.message }; }
+            }
+            return { ok: false, error: '未知 xlsx 操作: ' + action.op };
+          }
+          // 回退 v2 XlsxAI
           if (typeof window.XlsxAI === 'undefined' || !window.XlsxAI.getSnapshot()) {
             return { ok: false, error: '工作簿未加载（请先打开 Excel 文件）' };
           }

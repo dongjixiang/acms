@@ -1,0 +1,40 @@
+{
+  "name": "acms-office-sheets-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ACMS vendored GenOffice Sheets UI (apps/sheets renderer) — Univer 0.25.1 + React 19, browser build",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite"
+  },
+  "dependencies": {
+    "@fluentui/react-icons": "^2.0.316",
+    "@univerjs/core": "^0.25.1",
+    "@univerjs/data-validation": "^0.25.1",
+    "@univerjs/engine-render": "^0.25.1",
+    "@univerjs/preset-sheets-conditional-formatting": "^0.25.1",
+    "@univerjs/preset-sheets-core": "^0.25.1",
+    "@univerjs/preset-sheets-data-validation": "^0.25.1",
+    "@univerjs/preset-sheets-drawing": "^0.25.1",
+    "@univerjs/preset-sheets-filter": "^0.25.1",
+    "@univerjs/preset-sheets-find-replace": "^0.25.1",
+    "@univerjs/preset-sheets-note": "^0.25.1",
+    "@univerjs/preset-sheets-sort": "^0.25.1",
+    "@univerjs/preset-sheets-table": "^0.25.1",
+    "@univerjs/sheets-filter": "^0.25.1",
+    "@univerjs/themes": "^0.25.1",
+    "fast-xml-parser": "^5.3.4",
+    "jszip": "^3.10.1",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.0.4",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1"
+  }
+}

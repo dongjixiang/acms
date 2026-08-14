@@ -646,6 +646,25 @@
     var instances = (st && st.instances) || {};
     var keys = Object.keys(instances);
     if (kind === 'xlsx') {
+      // GenOffice sheets-ui 优先（iframe 内 __sheetsDebug.snapshot 读打开时解析的 cells）
+      var st2 = window.OfficeV3.getState && window.OfficeV3.getState();
+      var insts2 = (st2 && st2.instances) || {};
+      var k2 = Object.keys(insts2);
+      for (var j2 = 0; j2 < k2.length; j2++) {
+        var ed2 = insts2[k2[j2]].editor;
+        if (ed2 && ed2.kind === 'sheets-ui' && ed2.iframe && ed2.iframe.contentWindow) {
+          var sWin = ed2.iframe.contentWindow;
+          if (sWin.__sheetsDebug && typeof sWin.__sheetsDebug.snapshot === 'function') {
+            var sids = sWin.__sheetsDebug.listSessions();
+            if (sids && sids.length) {
+              var snap = sWin.__sheetsDebug.snapshot(sids[0], 5, 12, 10);
+              if (snap && snap.sheets && snap.sheets.length) {
+                return { kind: 'xlsx', doc: { sheets: snap.sheets } };
+              }
+            }
+          }
+        }
+      }
       if (typeof window.XlsxAI !== 'undefined' && window.XlsxAI.getSnapshot) {
         var snap = window.XlsxAI.getSnapshot();
         if (snap && snap.sheets && snap.sheets.length) {
