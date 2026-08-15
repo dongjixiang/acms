@@ -583,10 +583,16 @@ router.post('/chat', async function(req, res) {
         var _ssePush = null;
         if (isStream) {
           _ssePush = function(round, maxRounds, msg) {
-            try { res.write('data: ' + JSON.stringify({ type: 'progress', round: round, total: maxRounds, msg: msg }) + '\n\n'); } catch(e) {}
+            try {
+              var line = 'data: ' + JSON.stringify({ type: 'progress', round: round, total: maxRounds, msg: msg }) + '\n\n';
+              res.write(line);
+            } catch(e) {}
           };
           // 启动时立即推一条，告诉前端"我在跑"
-          try { res.write('data: ' + JSON.stringify({ type: 'progress', round: 0, total: 8, msg: '🔍 思考中…' }) + '\n\n'); } catch(e) {}
+          try {
+            var initLine = 'data: ' + JSON.stringify({ type: 'progress', round: 0, total: 8, msg: '🔍 思考中…' }) + '\n\n';
+            res.write(initLine);
+          } catch(e) {}
         }
         runtimeResult = await runtimeExec({
           modelId: model.id,
@@ -690,6 +696,8 @@ router.post('/chat', async function(req, res) {
         'Connection': 'keep-alive',
         'X-Accel-Buffering': 'no',
       });
+      // v0.96: 立即 flush，确保后续进度事件不会被缓冲
+      if (typeof res.flush === 'function') res.flush();
       // 分块推送 reply 文本（每块 3-6 字，模拟流式）
       var chunks = reply.match(/.{1,6}/g) || [reply || ''];
       for (var si = 0; si < chunks.length; si++) {
