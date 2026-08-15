@@ -1308,6 +1308,33 @@ function isNonPlanTerminal(state) {
     if (el) el.remove();
   }
 
+  // v0.96: 操作日志条 — 展示小吉后台执行的工具调用，缓解等待焦虑
+  var _opLogEntries = [];
+  function renderOpLog(msg) {
+    var container = document.querySelector('#ap-messages');
+    if (!container) return;
+    // 移除旧的 thinking 占位（如果有）
+    var thinkEl = document.getElementById('ap-msg-thinking');
+    if (thinkEl) thinkEl.remove();
+    // 去重：相同消息不重复追加
+    var last = _opLogEntries[_opLogEntries.length - 1];
+    if (last === msg) return;
+    _opLogEntries.push(msg);
+    var div = document.createElement('div');
+    div.className = 'ap-op-log';
+    div.textContent = msg;
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+    // 流式结束后清理（finalizeStream 里会清除）
+    div.dataset.t = Date.now();
+  }
+
+  function clearOpLogs() {
+    _opLogEntries = [];
+    var els = document.querySelectorAll('.ap-op-log');
+    els.forEach(function(el) { el.remove(); });
+  }
+
   // ── 对话记忆 ──
 
   function saveChatMemory(userMsg, buddyReply) {
@@ -1552,6 +1579,9 @@ function isNonPlanTerminal(state) {
                 } else if (evt.type === 'speed') {
                   // 后端请求改变速度
                   streamSpeed = Math.max(10, Math.min(100, evt.speed || 30));
+                } else if (evt.type === 'progress') {
+                  // v0.96: 工具调用进度推送 — 在聊天区追加操作日志条
+                  renderOpLog(evt.msg);
                 }
               } catch(e) { /* 跳过解析失败的 SSE 行 */ }
             }
@@ -1570,6 +1600,7 @@ function isNonPlanTerminal(state) {
 
     function updateStreamMessage(text) {
       removeThinking();
+      clearOpLogs();  // v0.96: 开始流式输出时清除操作日志，让位给最终回复气泡
       var cleanText = text.replace(/【face:\w+】/g, '').replace(/【action:[^:]+:[^】]+】/g, '').trim();
       var mdFn = typeof renderMarkdown === 'function' ? renderMarkdown : function(t) { return escHtml(t); };
       var container = document.querySelector('#ap-messages');
@@ -1589,6 +1620,7 @@ function isNonPlanTerminal(state) {
 
     function finalizeStream() {
       removeThinking();
+      clearOpLogs();  // v0.96: 流式结束，清除操作日志条
       var raw = accumulated || '嗯… 我没听清，能再说一遍吗？';
       // 移除流式标记，保留气泡
       var msgEl = document.getElementById('ap-stream-bubble');

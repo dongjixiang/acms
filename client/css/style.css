@@ -4210,6 +4210,20 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
   animation: ap-think-pulse 1.2s ease-in-out infinite;
 }
 
+/* v0.96: 操作日志条 — 小吉后台执行的实时反馈 */
+.ap-op-log {
+  font-size: 11px;
+  color: var(--text2, #9090a0);
+  background: var(--bg3, #252540);
+  border: 1px solid var(--border, rgba(78,205,196,0.08));
+  border-radius: 4px;
+  padding: 3px 10px;
+  margin: 2px 0;
+  line-height: 1.4;
+  animation: ap-fade-in 0.15s ease;
+  max-width: 90%;
+}
+
 /* —— 输入行 —— */
 .ap-input-row {
   display: flex;

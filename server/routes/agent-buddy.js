@@ -579,6 +579,13 @@ router.post('/chat', async function(req, res) {
         runtimeResult = { content: '好的，我来帮你编辑' + (officeAction.kind === 'word' ? ' Word 文档' : officeAction.kind === 'xlsx' ? ' Excel 表格' : ' PPT 演示文稿') + '。' };
       } else if (hasSkills) {
         console.log('[agent-buddy DEBUG] 开始 runToolLoop, model:', model.id, 'toolNames:', JSON.stringify(toolNames));
+        // v0.96: SSE 进度推送 — 把每轮工具调用通过 SSE 推给前端，缓解等待焦虑
+        var _ssePush = null;
+        if (isStream && res.write) {
+          _ssePush = function(round, maxRounds, msg) {
+            try { res.write('data: ' + JSON.stringify({ type: 'progress', round: round, total: maxRounds, msg: msg }) + '\n\n'); } catch(e) {}
+          };
+        }
         runtimeResult = await runtimeExec({
           modelId: model.id,
           messages,
@@ -587,6 +594,8 @@ router.post('/chat', async function(req, res) {
           maxTokens: 4000,  // v0.75: 提高上限，避免 plan_execute 的 6 步骤 JSON 被截断
           context: sharedCtx,
           caller: 'agent-buddy',
+          actionMode: actionRoute.mode,
+          onProgress: _ssePush,
         });
         console.log('[agent-buddy DEBUG] runToolLoop 完成, content:', (runtimeResult.content || '').slice(0, 100));
       } else {

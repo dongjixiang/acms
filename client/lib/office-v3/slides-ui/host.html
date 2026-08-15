@@ -90,7 +90,7 @@
     opts = opts || {}
     try {
       report('init_start', 'fileId=' + (opts.fileId || 'null') + ' fileName=' + (opts.fileName || 'null'))
-      if (!mod) mod = await import('/client/lib/office-v3/slides-ui/office-slides-ui.js?v=9')
+      if (!mod) mod = await import('/client/lib/office-v3/slides-ui/office-slides-ui.js?v=10')
       report('mod_loaded', 'mod has mountSlidesUI=' + (typeof mod.mountSlidesUI))
       if (rootEl && mod.unmountSlidesUI) {
         try { mod.unmountSlidesUI(rootEl) } catch (e) { report('unmount_err', e.message) }
