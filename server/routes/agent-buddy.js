@@ -587,6 +587,7 @@ router.post('/chat', async function(req, res) {
           _ssePush = function(round, maxRounds, msg) {
             // v0.96: 过滤掉"正在生成任务总结…"这类兜底消息——闲聊时 toolCallHistory 为空，推出来没意义
             if (msg.indexOf('正在生成任务总结') >= 0) return;
+            if (msg.indexOf('调用工具:') < 0) return;  // 只有真正调工具时才推
             try {
               var line = 'data: ' + JSON.stringify({ type: 'progress', round: round, total: maxRounds, msg: msg }) + '\n\n';
               res.write(line);
@@ -698,11 +699,6 @@ router.post('/chat', async function(req, res) {
       });
       // v0.96: 立即 flush，确保后续进度事件不会被缓冲
       if (typeof res.flush === 'function') res.flush();
-      // v0.96: 保底推一条"思考中…"，让用户立即看到反馈（LLM 响应慢时）
-      try {
-        console.log('[agent-buddy] SSE progress init: 思考中…');
-        res.write('data: ' + JSON.stringify({ type: 'progress', round: 0, total: 8, msg: '🔍 思考中…' }) + '\n\n');
-      } catch(e) { console.log('[agent-buddy] SSE progress init error:', e.message); }
       // 分块推送 reply 文本（每块 3-6 字，模拟流式）
       var chunks = reply.match(/.{1,6}/g) || [reply || ''];
       for (var si = 0; si < chunks.length; si++) {

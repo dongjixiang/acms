@@ -1325,8 +1325,12 @@ function isNonPlanTerminal(state) {
     div.textContent = msg;
     container.appendChild(div);
     container.scrollTop = container.scrollHeight;
-    // 流式结束后清理（finalizeStream 里会清除）
-    div.dataset.t = Date.now();
+    // 每条显示 4 秒后自动移除，避免长期挂着
+    setTimeout(function() {
+      if (div.parentNode) div.remove();
+      var idx = _opLogEntries.indexOf(msg);
+      if (idx >= 0) _opLogEntries.splice(idx, 1);
+    }, 4000);
   }
 
   function clearOpLogs() {

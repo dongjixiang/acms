@@ -138,6 +138,9 @@
           } catch (e) { clearInterval(iv); report('retry_err', e.message) }
         }, 100)
       }
+      // 浏览器 shim：拦截 'openPptx'/'open'/'slides:open'，走原生 <input type="file"> 选文件后
+      // 喂给 setPendingBytes + consume-pending-open（Electron stub dialog.showOpenDialog 永远返回 canceled）
+      patchBrowserFileOpen()
       return { ok: true }
     } catch (e) {
       console.error('[genoffice-slides-host] __init 失败:', e)
@@ -151,6 +154,107 @@
       if (rootEl && mod && mod.unmountSlidesUI) mod.unmountSlidesUI(rootEl)
     } catch (e) {}
     rootEl = null
+  }
+
+  // ── 浏览器文件打开 shim（拦截 'openPptx' / 'open' / 'slides:open'） ──
+  // GenOffice Slides 主进程 stub 的 dialog.showOpenDialog 永远返回 canceled，
+  // 导致 Ribbon「打开…」按钮点了不弹窗。这里 wrap __slidesEditor.call 走浏览器原生
+  // <input type="file">，读字节后喂给 setPendingBytes + consume-pending-open（已在浏览器跑通）
+  function patchBrowserFileOpen() {
+    if (!window.__slidesEditor || window.__slidesEditor.__browserOpenPatched) return
+    const ed = window.__slidesEditor
+    const PPTX_ACCEPT = '.pptx,.ppt,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.ms-powerpoint'
+    const IMAGE_ACCEPT = 'image/*'
+
+    function pickFile(accept) {
+      return new Promise(function (resolve) {
+        try {
+          const inp = document.createElement('input')
+          inp.type = 'file'
+          if (accept) inp.accept = accept
+          inp.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0;'
+          document.body.appendChild(inp)
+          let settled = false
+          function done(file) {
+            if (settled) return
+            settled = true
+            try { inp.remove() } catch (e) {}
+            resolve(file || null)
+          }
+          inp.addEventListener('change', function () {
+            const f = inp.files && inp.files[0]
+            done(f)
+          })
+          // 用户取消（modern browser 关闭 dialog 不触发 change，靠 focus/timeout 兜底）
+          setTimeout(function () { done(null) }, 10 * 60 * 1000)
+          inp.click()
+        } catch (e) {
+          console.warn('[slides-host] pickFile failed:', e)
+          resolve(null)
+        }
+      })
+    }
+
+    // fitWidthPx 探测：bridge 暴露的 __slidesEditor 没存这个，renderer's useCallback 里硬编码 1280
+    // （app-constants.ts FIT_WIDTH），保守取 1280 与 PPT 编辑层一致
+    const DEFAULT_FIT_WIDTH = 1280
+
+    const originalCall = ed.call.bind(ed)
+    ed.call = async function (channel, ...rest) {
+      const ch = channel
+      // 文件打开：PPTX
+      if (ch === 'openPptx' || ch === 'open' || ch === 'slides:open' || ch === 'slides:open-pptx') {
+        try {
+          const fitWidthPx = (rest && rest[0]) || DEFAULT_FIT_WIDTH
+          const file = await pickFile(PPTX_ACCEPT)
+          if (!file) { report('user_cancel', 'no file picked'); return null }
+          const bytes = new Uint8Array(await file.arrayBuffer())
+          report('browser_picked', file.name + ' ' + bytes.length + 'B')
+          ed.setPendingBytes(bytes)
+          // 走已有链路 consume-pending-open → openBytes → openPptx → 返回 {path, slides, size, defaultFont}
+          return await originalCall('slides:consume-pending-open', fitWidthPx)
+        } catch (e) {
+          report('browser_open_err', e.message || String(e))
+          console.error('[slides-host] browser file open failed:', e)
+          return null
+        }
+      }
+      // 打开路径（双击文件关联等）：浏览器无路径概念，转走文件选择
+      if (ch === 'openPath' || ch === 'slides:open-path') {
+        try {
+          const fitWidthPx = (rest && rest[1]) || DEFAULT_FIT_WIDTH
+          const file = await pickFile(PPTX_ACCEPT)
+          if (!file) { report('user_cancel', 'no file picked (open-path)'); return null }
+          const bytes = new Uint8Array(await file.arrayBuffer())
+          report('browser_picked', file.name + ' ' + bytes.length + 'B (open-path)')
+          ed.setPendingBytes(bytes)
+          return await originalCall('slides:consume-pending-open', fitWidthPx)
+        } catch (e) {
+          report('browser_open_err', e.message || String(e))
+          return null
+        }
+      }
+      // 图片插入（图标/图片填充）：用图片 accept
+      if (ch === 'pickImage' || ch === 'insertImage' || ch === 'slides:pick-image' || ch === 'slides:insert-image') {
+        try {
+          const file = await pickFile(IMAGE_ACCEPT)
+          if (!file) { report('user_cancel', 'no image picked'); return null }
+          const bytes = new Uint8Array(await file.arrayBuffer())
+          const ext = (file.name.split('.').pop() || 'png').toLowerCase()
+          report('browser_image_picked', file.name + ' ' + bytes.length + 'B ext=' + ext)
+          // 图片插入语义跟 PPT 文件打开不一样，不能污染 pendingBytes（pendingBytes 是 PPT 打开通道）。
+          // 返回 null 让 renderer 走它自己的 fallback（如粘贴板图片 / 本地缓存），
+          // 完整图片插入支持需要单独的 IPC 通道 + 后端接收，暂不在本修复范围。
+          return null
+        } catch (e) {
+          report('browser_image_err', e.message || String(e))
+          return null
+        }
+      }
+      return originalCall(ch, ...rest)
+    }
+    ed.__browserOpenPatched = true
+    report('patched', 'browser file open shim installed')
   }
 
   window.__ready = true
