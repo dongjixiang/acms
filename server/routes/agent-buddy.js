@@ -580,19 +580,19 @@ router.post('/chat', async function(req, res) {
       } else if (hasSkills) {
         console.log('[agent-buddy DEBUG] 开始 runToolLoop, model:', model.id, 'toolNames:', JSON.stringify(toolNames));
         // v0.96: SSE 进度推送 — 把每轮工具调用通过 SSE 推给前端，缓解等待焦虑
+        // 注意：isStream 在下面 line 691 才赋值，这里用内联判断
         var _ssePush = null;
-        if (isStream) {
+        var _isStream = req.query && req.query.stream === '1';
+        if (_isStream) {
           _ssePush = function(round, maxRounds, msg) {
+            // v0.96: 过滤掉"正在生成任务总结…"这类兜底消息——闲聊时 toolCallHistory 为空，推出来没意义
+            if (msg.indexOf('正在生成任务总结') >= 0) return;
             try {
               var line = 'data: ' + JSON.stringify({ type: 'progress', round: round, total: maxRounds, msg: msg }) + '\n\n';
               res.write(line);
             } catch(e) {}
           };
-          // 启动时立即推一条，告诉前端"我在跑"
-          try {
-            var initLine = 'data: ' + JSON.stringify({ type: 'progress', round: 0, total: 8, msg: '🔍 思考中…' }) + '\n\n';
-            res.write(initLine);
-          } catch(e) {}
+          // 启动时立即推一条，告诉前端"我在跑"（writeHead 在下面 line 693 才调用）
         }
         runtimeResult = await runtimeExec({
           modelId: model.id,
@@ -698,6 +698,11 @@ router.post('/chat', async function(req, res) {
       });
       // v0.96: 立即 flush，确保后续进度事件不会被缓冲
       if (typeof res.flush === 'function') res.flush();
+      // v0.96: 保底推一条"思考中…"，让用户立即看到反馈（LLM 响应慢时）
+      try {
+        console.log('[agent-buddy] SSE progress init: 思考中…');
+        res.write('data: ' + JSON.stringify({ type: 'progress', round: 0, total: 8, msg: '🔍 思考中…' }) + '\n\n');
+      } catch(e) { console.log('[agent-buddy] SSE progress init error:', e.message); }
       // 分块推送 reply 文本（每块 3-6 字，模拟流式）
       var chunks = reply.match(/.{1,6}/g) || [reply || ''];
       for (var si = 0; si < chunks.length; si++) {
