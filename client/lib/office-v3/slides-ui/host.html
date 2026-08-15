@@ -35,11 +35,21 @@
   // Buffer polyfill（slides-main-browser 依赖 Node Buffer）
   if (!window.Buffer) {
     // jszip/引擎会调 Buffer.from(name).toString('utf8')——给 Uint8Array 补 utf8 toString
+    // P138: 还要补 base64（media resolver 用 Buffer.from(bytes).toString('base64') 生成 dataUrl；
+    // 缺 base64 分支 → 落回原生 toString → "137,80,78,71,..." 逗号分隔字节 → 图片 dataUrl 损坏 → 图标空白）
     if (typeof Uint8Array.prototype.toString === 'function') {
       var origU8ToString = Uint8Array.prototype.toString;
       Uint8Array.prototype.toString = function (enc) {
         if (enc === 'utf8' || enc === 'utf-8') {
           try { return new TextDecoder('utf-8').decode(this); } catch (e) { return origU8ToString.call(this); }
+        }
+        if (enc === 'base64') {
+          // 分块 String.fromCharCode，避免大图 (>=0x8000 字节) 栈溢出
+          var CHUNK = 0x8000, s = '';
+          for (var i = 0; i < this.length; i += CHUNK) {
+            s += String.fromCharCode.apply(null, this.subarray(i, i + CHUNK));
+          }
+          return btoa(s);
         }
         return origU8ToString.call(this);
       };

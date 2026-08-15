@@ -581,10 +581,12 @@ router.post('/chat', async function(req, res) {
         console.log('[agent-buddy DEBUG] 开始 runToolLoop, model:', model.id, 'toolNames:', JSON.stringify(toolNames));
         // v0.96: SSE 进度推送 — 把每轮工具调用通过 SSE 推给前端，缓解等待焦虑
         var _ssePush = null;
-        if (isStream && res.write) {
+        if (isStream) {
           _ssePush = function(round, maxRounds, msg) {
             try { res.write('data: ' + JSON.stringify({ type: 'progress', round: round, total: maxRounds, msg: msg }) + '\n\n'); } catch(e) {}
           };
+          // 启动时立即推一条，告诉前端"我在跑"
+          try { res.write('data: ' + JSON.stringify({ type: 'progress', round: 0, total: 8, msg: '🔍 思考中…' }) + '\n\n'); } catch(e) {}
         }
         runtimeResult = await runtimeExec({
           modelId: model.id,

@@ -40,6 +40,14 @@
       if (enc === 'utf8' || enc === 'utf-8' || enc === undefined) {
         try { return new TextDecoderU8().decode(this); } catch (e) { return u8ToString.call(this); }
       }
+      if (enc === 'base64') {
+        // P138: 补 base64 分支（media resolver / save 链路用 Buffer.from(bytes).toString('base64')）
+        var CHUNK = 0x8000, s = '';
+        for (var i = 0; i < this.length; i += CHUNK) {
+          s += String.fromCharCode.apply(null, this.subarray(i, i + CHUNK));
+        }
+        return btoa(s);
+      }
       return u8ToString.call(this);
     };
     var BufferPoly = function (arg) {

@@ -1600,7 +1600,7 @@ function isNonPlanTerminal(state) {
 
     function updateStreamMessage(text) {
       removeThinking();
-      clearOpLogs();  // v0.96: 开始流式输出时清除操作日志，让位给最终回复气泡
+      // v0.96: 不清除 op logs — 让操作日志条保留在流式文字上方，等 finalizeStream 再清
       var cleanText = text.replace(/【face:\w+】/g, '').replace(/【action:[^:]+:[^】]+】/g, '').trim();
       var mdFn = typeof renderMarkdown === 'function' ? renderMarkdown : function(t) { return escHtml(t); };
       var container = document.querySelector('#ap-messages');
