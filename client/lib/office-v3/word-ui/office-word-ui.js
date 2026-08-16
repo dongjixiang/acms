@@ -80579,13 +80579,6 @@ function wj(e) {
     return h.class += " doc-protected-sectbreak", ["div", h, ["span", { class: "doc-sectbreak-label" }, fe("editorSectionBreak")]];
   if (!r && !s && (n === "Auto TOC (updates when opened in Word)" || n === "Field end marker"))
     return h.class += " doc-protected-sectbreak", ["div", h, ["span", { class: "doc-sectbreak-label" }, String(n)]];
-  // 加载中的占位状态
-  if (t === "image" && e.attrs?.genImage?.loading) {
-    h.class += " doc-protected-loading";
-    const { imageWidthPx: w, imageHeightPx: k } = e.attrs;
-    let T = `width:${Number(w || 320)}px;height:${Number(k || 200)}px;background:#f5f5f5;border:1px dashed #ccc;display:flex;align-items:center;justify-content:center;`;
-    return ["div", h, ["span", { style: T }, "⟳ 生成中..."]];
-  }
   if (t === "image" && (i || (e.attrs?.genImage && (e.attrs.genImage.dataUrl || e.attrs.genImage.base64)))) {
     const imgSrc = i || (e.attrs?.genImage && (e.attrs.genImage.dataUrl || e.attrs.genImage.base64));
     const {
@@ -80681,6 +80674,13 @@ function wj(e) {
   const f = e.attrs.diagramDisplay;
   if (f?.shapes?.length)
     return h.class += " doc-protected-diagram", f.floating ? h.class += " doc-protected-floating" : (f.offsetXEmu != null || f.offsetYEmu != null) && (h.style = `transform:translate(${Number(f.offsetXEmu ?? 0) / gs}px,${Number(f.offsetYEmu ?? 0) / gs}px)`), ["div", h, hp(fe("editorMoveImage")), fR(f)];
+  // 加载中的占位状态（必须在 brokenImage 之前检查）
+  if (t === "image" && e.attrs?.genImage?.loading) {
+    h.class += " doc-protected-loading";
+    const { imageWidthPx: w, imageHeightPx: k } = e.attrs;
+    let T = `width:${Number(w || 320)}px;height:${Number(k || 200)}px;background:#f5f5f5;border:1px dashed #ccc;display:flex;align-items:center;justify-content:center;`;
+    return ["div", h, ["span", { style: T }, "⟳ 生成中..."]];
+  }
   if (e.attrs.brokenImage) {
     h.class += " doc-protected-broken-img";
     const { imageWidthPx: w, imageHeightPx: k, imageAlign: x } = e.attrs;
