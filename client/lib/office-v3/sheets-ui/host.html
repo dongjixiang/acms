@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>GenOffice Sheets Host</title>
-<link rel="stylesheet" href="/client/lib/office-v3/sheets-ui/acms-office-sheets-ui.css?v=25">
+<link rel="stylesheet" href="/client/lib/office-v3/sheets-ui/acms-office-sheets-ui.css?v=26">
 <style>
   html,body{margin:0;padding:0;height:100%;overflow:hidden;}
   /* P140: ACMS 顶部小工具条（GenOffice Sheets UI 不带「打开…」按钮） */
@@ -26,6 +26,8 @@
 <body>
 <div class="acms-sheets-toolbar">
   <button data-role="open-file" title="从本地选择 .xlsx 文件打开">📂 打开…</button>
+  <button data-role="save-file" title="把当前工作簿另存为新 xlsx 文件（Ctrl+S）">💾 保存</button>
+  <span data-role="dirty-flag" style="display:none;font-size:11px;color:#c33;">● 未保存</span>
   <div class="sep"></div>
   <div class="name" data-role="file-name">未打开文件</div>
 </div>
@@ -99,7 +101,7 @@
   window.__init = async function (opts) {
     opts = opts || {}
     try {
-      if (!mod) mod = await import('/client/lib/office-v3/sheets-ui/office-sheets-ui.js?v=12')
+      if (!mod) mod = await import('/client/lib/office-v3/sheets-ui/office-sheets-ui.js?v=13')
       if (rootEl && mod.unmountSheetsUI) {
         try { mod.unmountSheetsUI(rootEl) } catch (e) {}
       }
@@ -227,9 +229,143 @@
         _openBtn.disabled = false;
       }
     });
-  }
+  });
 
-  // 让外部（bridge / 上层）可以更新顶部文件名显示
+  // ── ACMS 补丁 (v0.97.2)：前端补全 Excel 保存链路 ──────────────────────────────
+  // 背景：GenOffice sheets-ui bundle 自身不暴露 saveXlsx；内部 desktopApi.saveWorkbookEdits
+  //       是 Electron IPC stub（仅桌面版可用），浏览器下永远失败——applyPlan 写入 Univer 内存
+  //       后没有任何方式把数据持久化。后端 /api/office/save 完整可用（接收 data:{sheets:[...]}），
+  //       只需要前端从 Univer 提取当前工作簿内容 + POST 即可。
+  // 实现：
+  //   1) 工具栏"💾 保存"按钮 + Ctrl+S 拦截 → 调 saveXlsxNow()
+  //   2) saveXlsxNow() 从 univerAPI 提取所有 sheet 的 name/headers/rows，调后端另存为新文件
+  //   3) setDirtyFlag / clearDirtyFlag 通过 MutationObserver + applyPlan 触发，状态栏"● 未保存"
+  var _saveBtn = document.querySelector('[data-role="save-file"]');
+  var _dirtyFlag = document.querySelector('[data-role="dirty-flag"]');
+  var _hasUnsavedChanges = false;
+  function setDirtyFlag() {
+    _hasUnsavedChanges = true;
+    if (_dirtyFlag) _dirtyFlag.style.display = '';
+  }
+  function clearDirtyFlag() {
+    _hasUnsavedChanges = false;
+    if (_dirtyFlag) _dirtyFlag.style.display = 'none';
+  }
+  function notifyDirtyToParent() {
+    try { parent.postMessage({ type: 'acms-office-dirty', dirty: _hasUnsavedChanges }, '*'); } catch (e) {}
+  }
+  function showToast(msg, isError) {
+    try {
+      var tip = document.createElement('div');
+      tip.textContent = msg;
+      tip.style.cssText = 'position:fixed;top:50px;left:50%;transform:translateX(-50%);' +
+        'padding:8px 16px;border-radius:4px;font-size:13px;z-index:99999;' +
+        'background:' + (isError ? '#fee' : '#efe') + ';color:' + (isError ? '#c33' : '#363') + ';' +
+        'border:1px solid ' + (isError ? '#fcc' : '#cec') + ';box-shadow:0 2px 8px rgba(0,0,0,.1);';
+      document.body.appendChild(tip);
+      setTimeout(function () { try { tip.remove(); } catch (e) {} }, 2500);
+    } catch (e) {}
+  }
+  // 从当前 Univer 工作簿提取所有 sheet 数据 → 后端 writeXlsx 期望的 {name,headers,rows} 结构
+  function extractWorkbookData() {
+    var api = window.univerAPI || (window.__sheetsDebug && window.__sheetsDebug.univerAPI);
+    if (!api) throw new Error('univerAPI 未挂载');
+    var wb = api.getActiveWorkbook();
+    if (!wb) throw new Error('当前没有打开的工作簿');
+    var sheetsOut = [];
+    var sheets = wb.getSheets() || [];
+    for (var i = 0; i < sheets.length; i++) {
+      var sheet = sheets[i];
+      var name = sheet.getSheetName();
+      var maxRow = sheet.getMaxRows();
+      var maxCol = sheet.getMaxColumns();
+      // getRange(startRow, startCol, endRow, endCol) —— Univer 是包含上下界
+      var values;
+      try {
+        values = sheet.getRange(0, 0, Math.max(0, maxRow - 1), Math.max(0, maxCol - 1)).getValues() || [];
+      } catch (e) {
+        values = [];
+      }
+      var headers = (values[0] || []).map(function (v) {
+        return v == null ? '' : String(v);
+      });
+      var rows = [];
+      for (var r = 1; r < values.length; r++) {
+        var rowArr = values[r] || [];
+        var isEmpty = rowArr.every(function (c) { return c == null || c === ''; });
+        if (!isEmpty) rows.push(rowArr.map(function (c) {
+          return c == null ? '' : String(c);
+        }));
+      }
+      sheetsOut.push({ name: name, headers: headers, rows: rows });
+    }
+    return { sheets: sheetsOut };
+  }
+  // 核心：另存当前工作簿为新文件
+  var _saving = false;
+  async function saveXlsxNow() {
+    if (_saving) return;
+    _saving = true;
+    if (_saveBtn) _saveBtn.disabled = true;
+    try {
+      var apiKey = (window.__acmsApiKey) || 'dev-key-001';
+      var data = extractWorkbookData();
+      if (!data.sheets.length) {
+        showToast('❌ 工作簿为空，无可保存内容', true);
+        return;
+      }
+      // 文件名：原文件名-时间戳.xlsx（避免覆盖原文件 = 方案1"另存新文件"）
+      var origName = (window.__acmsFileName) || '工作簿.xlsx';
+      var baseName = origName.replace(/\.xlsx?$/i, '');
+      var newName = baseName + '-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '.xlsx';
+      showToast('⏳ 正在保存…', false);
+      var resp = await fetch('/api/office/save?api_key=' + apiKey, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'xlsx', name: newName, data: data }),
+      });
+      var r = await resp.json();
+      if (r && r.ok) {
+        clearDirtyFlag();
+        notifyDirtyToParent();
+        showToast('✅ 已保存 ' + newName + '（' + data.sheets.length + ' 个 sheet）', false);
+        console.log('[sheets-host] save ok:', r);
+      } else {
+        showToast('❌ 保存失败：' + ((r && r.error) || '未知错误'), true);
+        console.error('[sheets-host] save failed:', r);
+      }
+    } catch (e) {
+      showToast('❌ 保存异常：' + (e.message || String(e)), true);
+      console.error('[sheets-host] save exception:', e);
+    } finally {
+      _saving = false;
+      if (_saveBtn) _saveBtn.disabled = false;
+    }
+  }
+  if (_saveBtn) {
+    _saveBtn.addEventListener('click', function () { saveXlsxNow(); });
+  }
+  // Ctrl+S / Cmd+S 全局拦截 → 保存（Univer 内部默认 Ctrl+S 会触发 desktopApi 静默失败，先 preventDefault 阻断）
+  document.addEventListener('keydown', function (e) {
+    var isSave = (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 's' || e.key === 'S');
+    if (!isSave) return;
+    e.preventDefault();
+    e.stopPropagation();
+    saveXlsxNow();
+  }, true);
+  // 暴露给 host.html 外部（AI runner.applyPlan 完成后调 markDirty）
+  window.__markDirty = function () {
+    setDirtyFlag();
+    notifyDirtyToParent();
+  };
+  window.__clearDirty = function () {
+    clearDirtyFlag();
+    notifyDirtyToParent();
+  };
+  console.info('[sheets-host] v0.97.2 save-as-xlsx 补丁已装载（另存新文件）');
+}
+
+// 让外部（bridge / 上层）可以更新顶部文件名显示
   window.__setFileNameLabel = setFileNameLabel;
 
   // ── ACMS 补丁 (v0.96.x)：patch sheets-ui ACMS AI runner → ACMS Buddy ──────
@@ -416,6 +552,8 @@
             var r = await window.parent.OfficeV3.runAction(data.action);
             if (r && r.ok) {
               summary = (data.action.summary || 'AI 已应用编辑') + '（已写入 Excel）';
+              // v0.97.2: AI 写入成功 → 标记 dirty（提示用户保存）
+              try { window.__markDirty && window.__markDirty(); } catch (e) {}
             } else {
               errMsg = (r && r.error) || 'Excel 应用失败';
             }
