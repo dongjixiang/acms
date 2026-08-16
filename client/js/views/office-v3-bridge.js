@@ -870,6 +870,7 @@
         });
       }
       return p.then(function (dataUrl) {
+        console.log('[IMG-DEBUG] genOfficeGenerateImage: dataUrl length=', dataUrl.length, 'mime=', opt.mime);
         var node = {
           type: 'docProtected',
           attrs: {
@@ -882,7 +883,23 @@
             genImage: { dataUrl: dataUrl, mime: opt.mime || 'image/png' }
           }
         };
+        console.log('[IMG-DEBUG] inserting node, genImage.dataUrl length=', node.attrs.genImage.dataUrl.length);
         editor.chain().focus().insertContentAt(insertPos, node).run();
+        // 验证插入后的状态
+        setTimeout(() => {
+          const doc = editor.state.doc;
+          doc.content.forEach((child, offset) => {
+            if (child.type.name === 'docProtected' && child.attrs.blockType === 'image') {
+              console.log('[IMG-DEBUG] after insert, found image node at', offset, ':', {
+                hasImage: !!child.attrs.imageDataUrl,
+                imgLen: (child.attrs.imageDataUrl || '').length,
+                hasGenImg: !!child.attrs.genImage,
+                genImgLen: (child.attrs.genImage?.dataUrl || '').length,
+                label: child.attrs.label
+              });
+            }
+          });
+        }, 100);
         return { ok: true, inserted: true, atPos: insertPos, imgSize: opt.size };
       });
     }).catch(function (err) {

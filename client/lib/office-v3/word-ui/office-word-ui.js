@@ -80463,7 +80463,17 @@ const Lie = vn.create({
       ];
       return {
         dom: i,
-        update: (f) => f.type.name !== "docProtected" ? !1 : f.eq(r) ? (r = f, !0) : s && $ie(f.attrs, r.attrs, "textboxes") ? (r = f, s.sync(f.attrs.textboxes), !0) : !1,
+        update: (f) => {
+    if (f.type.name === "docProtected" && f.attrs.blockType === "image") {
+      console.log('[IMG-DEBUG] nodeView update, new attrs:', {
+        hasImage: !!f.attrs.imageDataUrl,
+        imgLen: (f.attrs.imageDataUrl || '').length,
+        hasGenImg: !!f.attrs.genImage,
+        genImgLen: (f.attrs.genImage?.dataUrl || '').length
+      });
+    }
+    return f.type.name !== "docProtected" ? !1 : f.eq(r) ? (r = f, !0) : s && $ie(f.attrs, r.attrs, "textboxes") ? (r = f, s.sync(f.attrs.textboxes), !0) : !1;
+  },
         // cell edits live in the DOM until committed on focusout; never re-parse
         ignoreMutation: () => !0,
         stopEvent: (f) => {
@@ -80516,6 +80526,16 @@ function fR(e) {
   ];
 }
 function wj(e) {
+  if (e.type.name === 'docProtected' && e.attrs.blockType === 'image') {
+    console.log('[IMG-DEBUG] wj() called, attrs:', {
+      blockType: e.attrs.blockType,
+      hasImage: !!e.attrs.imageDataUrl,
+      imgLen: (e.attrs.imageDataUrl || '').length,
+      hasGenImg: !!e.attrs.genImage,
+      genImgLen: (e.attrs.genImage?.dataUrl || '').length,
+      label: e.attrs.label
+    });
+  }
   const {
     blockType: t,
     label: n,
