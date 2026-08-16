@@ -595,19 +595,10 @@ document.addEventListener('DOMContentLoaded', () => {
       </div>
     </div>
   </div>
-  <!-- v0.61：辅助工具 hover 子菜单（生图/音乐/搜索/文档/邮件/视频 + 应用类：文件浏览/浏览器/微信/终端） -->
+  <!-- v0.97：辅助工具 hover 子菜单（应用类：文件浏览/浏览器/微信/终端 + Office/代码/图片） -->
   <div class="launcher-item launcher-has-submenu" id="launcher-tools" onmouseenter="onToolLauncherHover()" onmouseleave="onToolLauncherLeave()">
     <span class="li-icon">🛠️</span><span class="li-label">辅助工具</span><span class="li-arrow">▸</span>
     <div class="launcher-submenu" id="launcher-tools-submenu">
-      <div class="launcher-section-title">AI 工具</div>
-      <div class="launcher-item" onclick="launchAssistTool('generate_image','生图')"><span class="li-icon">🎨</span><span class="li-label">生图</span></div>
-      <div class="launcher-item" onclick="launchAssistTool('play_music','音乐')"><span class="li-icon">🎵</span><span class="li-label">音乐</span></div>
-      <div class="launcher-item" onclick="launchAssistTool('web_search','搜索')"><span class="li-icon">🔍</span><span class="li-label">搜索</span></div>
-      <div class="launcher-item" onclick="launchAssistTool('web_research','调研')"><span class="li-icon">🔬</span><span class="li-label">调研</span></div>
-      <div class="launcher-item" onclick="launchAssistTool('document_gen','文档')"><span class="li-icon">📄</span><span class="li-label">文档</span></div>
-      <div class="launcher-item" onclick="launchAssistTool('send_email','邮件')"><span class="li-icon">📧</span><span class="li-label">邮件</span></div>
-      <div class="launcher-item" onclick="launchAssistTool('play_video','视频')"><span class="li-icon">🎬</span><span class="li-label">视频</span></div>
-      <div class="launcher-divider"></div>
       <div class="launcher-item" onclick="launchView('office-word')"><span class="li-icon">📝</span><span class="li-label">Word</span></div>
       <div class="launcher-item" onclick="launchView('office-xlsx')"><span class="li-icon">📊</span><span class="li-label">Excel</span></div>
       <div class="launcher-item" onclick="launchView('office-pptx')"><span class="li-icon">📽️</span><span class="li-label">PPT</span></div>
@@ -615,7 +606,6 @@ document.addEventListener('DOMContentLoaded', () => {
       <div class="launcher-item" onclick="launchView('image-editor')"><span class="li-icon">🖼️</span><span class="li-label">图片</span></div>
       <div class="launcher-item" onclick="window.openEmailInbox()"><span class="li-icon">📬</span><span class="li-label">收件箱</span></div>
       <div class="divider"></div>
-      <div class="launcher-section-title">应用</div>
       <div class="launcher-item" onclick="launchView('file-manager')"><span class="li-icon">🗂️</span><span class="li-label">文件浏览器</span></div>
       <div class="launcher-item" onclick="launchView('web-browser')"><span class="li-icon">🌐</span><span class="li-label">浏览器</span></div>
       <div class="launcher-item" onclick="launchWeChat()" title="打开微信网页版"><span class="li-icon">💚</span><span class="li-label">微信</span></div>
@@ -648,7 +638,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- v0.55：桌面图标容器（右下角固定，垂直堆叠，由 ACMSWin.registerDesktopIcon 注册） -->
 <div id="desktop-icons" onclick="event.stopPropagation()"></div>
 
-<script src="/client/js/views/taskbar.js?v=0.85.2"></script>
+<script src="/client/js/views/taskbar.js?v=0.85.3"></script>
 <script src="/client/js/views/window-manager.js?v=0.60"></script>
 
 <!-- v0.58：核心基础设施 — package-registry 必须在所有视图之前加载，command-palette/notification-center 紧随其后 -->
@@ -656,7 +646,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/core/app-tools-runtime.js?v=0.66"></script>
 <script src="/client/js/core/command-palette.js?v=0.58.4"></script>
 <script src="/client/js/core/notification-center.js?v=0.58"></script>
-<script src="/client/js/core/agent-buddy.js?v=0.96.1"></script>
+<script src="/client/js/core/agent-buddy.js?v=0.96.2"></script>
 <!-- v0.62.5: Office 编辑器 OO 风格主题 + 标题栏 (学 colors-table-classic.less + FileMenu.js) -->
 <link rel="stylesheet" href="/client/css/office-theme.css?v=0.66.0">
 <!-- v0.62.5: Ribbon TabBar 组件（学 OO TabBar.js API, 简化重写）— 必须在 office-editor.js 之前 -->
@@ -677,7 +667,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- v0.91.3: Office V2 bridge (Univer + Tiptap + Reveal, code-split, prefetch + dispose) -->
 <script src="/client/js/views/office-v2-bridge.js?v=0.92.7"></script>
 <!-- v0.93: Office V3 bridge (GenOffice docx engine, 中文一等公民, P1 Word; PPT/Excel P2/P3) -->
-<script src="/client/js/views/office-v3-bridge.js?v=0.95.18"></script>
+<script src="/client/js/views/office-v3-bridge.js?v=0.96.4"></script>
 <!-- v0.93: sheets AI 核心（P4a：workbook DSL + Undo + 保存） -->
 <script src="/client/lib/office-v3/xlsx-ai.js?v=0.93.4"></script>
 <!-- v0.62.7: 代码编辑器 (Monaco Editor + AI) -->

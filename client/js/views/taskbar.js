@@ -725,16 +725,9 @@ window.launchAdmin = function() {
   window.onToolLauncherHover = function() { /* CSS :hover 自动处理 */ };
   window.onToolLauncherLeave = function() { /* CSS :hover 自动处理 */ };
 
-  // v0.61: 辅助工具子菜单点击 — 开 assist-free 浮动窗口并传递 method
-  window.launchAssistTool = function(method, title) {
-    closeLauncher();
-    if (window.ACMSWin) {
-      if (!ACMSWin.isActive()) ACMSWin.enable();
-      ACMSWin.open('assist-free', { method: method, title: title || '辅助工具' });
-    } else if (typeof showWorkspaceView === 'function') {
-      showWorkspaceView('assist-free');
-    }
-  };
+  // v0.97: launchAssistTool 已废弃（AI 工具从辅助工具菜单移除，收敛到小吉对话）
+  // 保留空函数防止其他页面内联 onclick 引用报错
+  window.launchAssistTool = function() {};
 
 function renderLauncherChatList(sessions) {
     var listEl = document.getElementById('launcher-chat-list');
