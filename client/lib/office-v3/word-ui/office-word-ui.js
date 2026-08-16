@@ -80704,7 +80704,7 @@ function wj(e) {
     });
   }
   // 加载中的占位状态（必须在 brokenImage 之前检查）
-  if (t === "image" && e.attrs?.imageDataUrl === 'data:image/png;base64,LOADING_PLACEHOLDER') {
+  if (t === "image" && e.attrs?.genImage?.loading) {
     h.class += " doc-protected-loading";
     const { imageWidthPx: w, imageHeightPx: k } = e.attrs;
     let T = `width:${Number(w || 320)}px;height:${Number(k || 200)}px;background:#f5f5f5;border:1px dashed #ccc;display:flex;align-items:center;justify-content:center;`;
@@ -90429,6 +90429,23 @@ function Kse() {
   }, [u, T]), K.useEffect(() => {
     if (Ya) return;
     const oe = window.setInterval(() => {
+      // 保存前清除所有 loading 状态的 AI 插图节点
+      const editor = yi.current?.editor;
+      if (editor) {
+        const doc = editor.state.doc;
+        const positions = [];
+        doc.content.forEach((child, offset) => {
+          if (child.type.name === 'docProtected' && child.attrs.blockType === 'image' && child.attrs.genImage?.loading) {
+            positions.push(offset);
+          }
+        });
+        if (positions.length > 0) {
+          console.log('[IMG-AUTO] clearing', positions.length, 'loading nodes before auto-save');
+          positions.forEach(pos => {
+            editor.chain().focus().deleteRange({ from: pos, to: pos + 1 }).run();
+          });
+        }
+      }
       hse(yi.current);
     }, 3e4);
     return () => window.clearInterval(oe);
