@@ -880,7 +880,7 @@
             previewText: 'AI 插图: ' + prompt.slice(0, 40),
             imageWidthPx: 320,
             imageHeightPx: null,
-            genImage: { dataUrl: dataUrl, mime: opt.mime || 'image/png' }
+            genImage: { dataUrl: dataUrl, base64: dataUrl.split(',')[1], mime: opt.mime || 'image/png' }
           }
         };
         console.log('[IMG-DEBUG] inserting node, genImage.dataUrl length=', node.attrs.genImage.dataUrl.length);
