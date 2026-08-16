@@ -40,6 +40,8 @@ class AgentCaller {
     // 获取目标 agent 的 domain
     const toAgentInfo = agentStore.getById(toAgentId);
     const domain = toAgentInfo?.domain || 'general';
+    console.log(`[Caller] dispatching to domain=${domain} (toAgentId=${toAgentId})`);
+    console.log(`[Caller] registry.dispatch type:`, typeof registry.dispatch);
     const result = await registry.dispatch(domain, request.instruction, {
       ...request.context,
       __meta: {

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>GenOffice Slides Host</title>
-<link rel="stylesheet" href="/client/lib/office-v3/slides-ui/acms-office-slides-ui.css?v=10">
+<link rel="stylesheet" href="/client/lib/office-v3/slides-ui/acms-office-slides-ui.css?v=11">
 <style>html,body{margin:0;padding:0;height:100%;overflow:hidden;}#root{height:100vh;}</style>
 </head>
 <body>
@@ -100,7 +100,7 @@
     opts = opts || {}
     try {
       report('init_start', 'fileId=' + (opts.fileId || 'null') + ' fileName=' + (opts.fileName || 'null'))
-      if (!mod) mod = await import('/client/lib/office-v3/slides-ui/office-slides-ui.js?v=16')
+      if (!mod) mod = await import('/client/lib/office-v3/slides-ui/office-slides-ui.js?v=17')
       report('mod_loaded', 'mod has mountSlidesUI=' + (typeof mod.mountSlidesUI))
       if (rootEl && mod.unmountSlidesUI) {
         try { mod.unmountSlidesUI(rootEl) } catch (e) { report('unmount_err', e.message) }
@@ -437,11 +437,27 @@
             _aiInflight.delete(requestId);
           };
         }
-        // 其他属性透传给原 slidesApi（包括 getLayouts / getSections / masterOpen / setNotes 等）
-        return _origSlidesApi[prop];
+        // 其他属性透传给原 slidesApi，但要把 bundle 内部'用但未注册'的 channel 异常兜底
+        //（v0.97.x：bundle 内调 setAutoSavePref / getAiSettings / getRecentFiles 等，
+        //          原 QS 没注册，Electron 主进程才注册——浏览器下必须 no-op，不能 throw）
+        var origVal = _origSlidesApi[prop];
+        if (typeof origVal === 'function') {
+          return function () {
+            try {
+              return origVal.apply(this, arguments);
+            } catch (e) {
+              if (e && String(e.message || '').indexOf('未知 channel') >= 0) {
+                console.warn('[acms-ppt-ai] 跳过未注册 channel:', prop);
+                return Promise.resolve(null);
+              }
+              throw e;
+            }
+          };
+        }
+        return origVal;
       }
     });
-    console.info('[acms-ppt-ai] patchSlidesAi 已激活（aiStream→ACMS Buddy html-deck）');
+    console.info('[acms-ppt-ai] patchSlidesAi 已激活（aiStream→ACMS Buddy html-deck + 未注册 channel 兜底）');
   }
 
   window.__ready = true

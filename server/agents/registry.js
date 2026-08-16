@@ -1,7 +1,8 @@
 // Agent Registry — 按 domain 路由到对应 Agent
 // 启动时扫描 server/agents/expert-*.js 自动注册
 const agentStore = require('../stores/agent-store');
-const caller = require('./caller');
+// 延迟加载 caller 避免循环依赖
+function getCaller() { return require('./caller'); }
 
 class AgentRegistry {
   constructor() {
@@ -72,7 +73,7 @@ class AgentRegistry {
     }
 
     // 设置调用上下文
-    caller.setCurrentAgent(agent.id);
+    getCaller().setCurrentAgent(agent.id);
 
     try {
       // 用 Agent 绑定的 model 执行
@@ -89,7 +90,7 @@ class AgentRegistry {
 
       return result;
     } finally {
-      caller.setCurrentAgent(null);
+      getCaller().setCurrentAgent(null);
     }
   }
 
