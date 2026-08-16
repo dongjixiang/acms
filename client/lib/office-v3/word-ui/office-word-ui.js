@@ -80704,7 +80704,7 @@ function wj(e) {
     });
   }
   // 加载中的占位状态（必须在 brokenImage 之前检查）
-  if (t === "image" && e.attrs?.genImage?.loading) {
+  if (t === "image" && e.attrs?.imageDataUrl === 'data:image/png;base64,LOADING_PLACEHOLDER') {
     h.class += " doc-protected-loading";
     const { imageWidthPx: w, imageHeightPx: k } = e.attrs;
     let T = `width:${Number(w || 320)}px;height:${Number(k || 200)}px;background:#f5f5f5;border:1px dashed #ccc;display:flex;align-items:center;justify-content:center;`;

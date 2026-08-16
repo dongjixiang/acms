@@ -860,7 +860,10 @@
     var prompt = String(action.prompt || '').trim();
     if (!prompt) return Promise.resolve({ ok: false, error: '缺少插图描述 prompt' });
     var insertPos = genOfficeSelectionInsertPos(win);
-    if (insertPos < 0) return Promise.resolve({ ok: false, error: '未检测到选中区域，请先选中文字' });
+    // v0.97: 无选区时（如"写文章+配图"全文生成任务），插入到文档末尾
+    if (insertPos < 0) {
+      insertPos = editor.state.doc.content.size;
+    }
     // 收集已有的 AI 插图作为风格参考（最多 2 张）
     var recentImages = genOfficeCollectRecentImages(editor, 2);
     console.log('[IMG-DEBUG] recentImages count:', recentImages.length);
@@ -869,17 +872,16 @@
       body.referenceImage = recentImages[recentImages.length - 1];
       console.log('[IMG-DEBUG] using reference image, length:', body.referenceImage.length);
     }
-    // 插入占位节点显示"生成中..."
+    // 插入占位节点显示"生成中..."（用特殊标记的 imageDataUrl 标识 loading 状态）
     var placeholderNode = {
       type: 'docProtected',
       attrs: {
         blockType: 'image',
-        imageDataUrl: null,
+        imageDataUrl: 'data:image/png;base64,LOADING_PLACEHOLDER',
         label: 'AI 插图',
         previewText: '正在生成插图...',
         imageWidthPx: 320,
-        imageHeightPx: 200,
-        genImage: { loading: true, mime: 'image/png' }
+        imageHeightPx: 200
       }
     };
     editor.chain().focus().insertContentAt(insertPos, placeholderNode).run();
@@ -913,12 +915,11 @@
           type: 'docProtected',
           attrs: {
             blockType: 'image',
-            imageDataUrl: null,
+            imageDataUrl: dataUrl,
             label: 'AI 插图',
             previewText: 'AI 插图: ' + prompt.slice(0, 40),
             imageWidthPx: 320,
-            imageHeightPx: null,
-            genImage: { dataUrl: dataUrl, base64: dataUrl.split(',')[1], mime: opt.mime || 'image/png' }
+            imageHeightPx: null
           }
         };
         console.log('[IMG-DEBUG] image generated, dataUrl length=', node.attrs.genImage.dataUrl.length);
@@ -929,13 +930,13 @@
         doc.content.forEach(function (child, offset) {
           if (targetPos >= 0) return;
           if (child.type.name === 'docProtected' && child.attrs.blockType === 'image') {
+            var isPlaceholder = child.attrs.imageDataUrl === 'data:image/png;base64,LOADING_PLACEHOLDER';
             console.log('[IMG-DEBUG] found image node at', offset, ':', {
-              hasLoading: !!(child.attrs.genImage && child.attrs.genImage.loading),
-              hasDataUrl: !!(child.attrs.genImage && child.attrs.genImage.dataUrl),
-              hasBase64: !!(child.attrs.genImage && child.attrs.genImage.base64),
+              isPlaceholder: isPlaceholder,
+              imgLen: (child.attrs.imageDataUrl || '').length,
               label: child.attrs.label
             });
-            if (child.attrs.genImage && child.attrs.genImage.loading) {
+            if (isPlaceholder) {
               targetPos = offset;
               foundNode = child;
             }
@@ -1805,13 +1806,13 @@
           }
           return { ok: false, error: '当前编辑器不支持 insertAfterSelection' };
         }
-        // v0.96.9: generateImage — 根据选中文字生成插图并插入到选中区域之后（异步）
+        // v0.96.9/v0.97: generateImage — 根据 prompt 生成插图并插入（有选区插到选区后，无选区插到文档末尾）
         // ⚠️ 返回 Promise：调用方（host.html runner/右键菜单、agent-buddy.js）需 await / Promise.resolve
         if (action.op === 'generateImage') {
           if (ed.kind === 'word-ui') {
             return genOfficeGenerateImage(ed.iframe, action).then(function (gi) {
               if (gi && gi.ok) {
-                return { ok: true, summary: action.summary || '已生成插图并插入到选中文字之后', pendingSave: true };
+                return { ok: true, summary: action.summary || '已生成插图并插入', pendingSave: true };
               }
               return { ok: false, error: (gi && gi.error) || '插图生成失败' };
             });
