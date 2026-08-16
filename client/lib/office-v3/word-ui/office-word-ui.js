@@ -80674,6 +80674,22 @@ function wj(e) {
   const f = e.attrs.diagramDisplay;
   if (f?.shapes?.length)
     return h.class += " doc-protected-diagram", f.floating ? h.class += " doc-protected-floating" : (f.offsetXEmu != null || f.offsetYEmu != null) && (h.style = `transform:translate(${Number(f.offsetXEmu ?? 0) / gs}px,${Number(f.offsetYEmu ?? 0) / gs}px)`), ["div", h, hp(fe("editorMoveImage")), fR(f)];
+  // [IMG-DEBUG] 详细日志
+  if (e.type.name === 'docProtected' && e.attrs.blockType === 'image') {
+    console.log('[IMG-DEBUG] wj() rendering image node:', {
+      blockType: e.attrs.blockType,
+      hasImage: !!e.attrs.imageDataUrl,
+      imgLen: (e.attrs.imageDataUrl || '').length,
+      hasGenImg: !!e.attrs.genImage,
+      genImgKeys: e.attrs.genImage ? Object.keys(e.attrs.genImage) : [],
+      genImgLoading: e.attrs.genImage?.loading,
+      genImgDataUrlLen: (e.attrs.genImage?.dataUrl || '').length,
+      genImgBase64Len: (e.attrs.genImage?.base64 || '').length,
+      brokenImage: e.attrs.brokenImage,
+      label: e.attrs.label,
+      previewText: e.attrs.previewText
+    });
+  }
   // 加载中的占位状态（必须在 brokenImage 之前检查）
   if (t === "image" && e.attrs?.genImage?.loading) {
     h.class += " doc-protected-loading";

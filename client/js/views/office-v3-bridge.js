@@ -883,6 +883,7 @@
       }
     };
     editor.chain().focus().insertContentAt(insertPos, placeholderNode).run();
+    console.log('[IMG-DEBUG] placeholder inserted at', insertPos, 'loading:', placeholderNode.attrs.genImage.loading);
     // 调 ACMS 生图服务（与 office-action 同款鉴权）
     return fetch('/api/image-tools/ai-generate?api_key=dev-key-001', {
       method: 'POST',
@@ -920,16 +921,27 @@
             genImage: { dataUrl: dataUrl, base64: dataUrl.split(',')[1], mime: opt.mime || 'image/png' }
           }
         };
-        console.log('[IMG-DEBUG] inserting node, genImage.dataUrl length=', node.attrs.genImage.dataUrl.length);
+        console.log('[IMG-DEBUG] image generated, dataUrl length=', node.attrs.genImage.dataUrl.length);
         // 替换占位节点（找到 loading 状态的节点并替换）
         var doc = editor.state.doc;
         var targetPos = -1;
+        var foundNode = null;
         doc.content.forEach(function (child, offset) {
           if (targetPos >= 0) return;
-          if (child.type.name === 'docProtected' && child.attrs.blockType === 'image' && child.attrs.genImage && child.attrs.genImage.loading) {
-            targetPos = offset;
+          if (child.type.name === 'docProtected' && child.attrs.blockType === 'image') {
+            console.log('[IMG-DEBUG] found image node at', offset, ':', {
+              hasLoading: !!(child.attrs.genImage && child.attrs.genImage.loading),
+              hasDataUrl: !!(child.attrs.genImage && child.attrs.genImage.dataUrl),
+              hasBase64: !!(child.attrs.genImage && child.attrs.genImage.base64),
+              label: child.attrs.label
+            });
+            if (child.attrs.genImage && child.attrs.genImage.loading) {
+              targetPos = offset;
+              foundNode = child;
+            }
           }
         });
+        console.log('[IMG-DEBUG] targetPos for replacement:', targetPos, 'foundNode:', !!foundNode);
         if (targetPos >= 0) {
           // 删除旧节点，插入新节点
           var nodeSize = child.nodeSize;
