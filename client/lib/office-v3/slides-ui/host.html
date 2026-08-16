@@ -149,6 +149,7 @@
       //       把请求代理到 ACMS Buddy /api/agent-buddy/office-action mode='html-deck'，
       //       流式响应通过本地事件分发器推回 bundle 的 onAiStream callback。
       patchSlidesAi()
+      mockCloudApis()
       return { ok: true }
     } catch (e) {
       console.error('[genoffice-slides-host] __init 失败:', e)
@@ -474,6 +475,53 @@
       }
     });
     console.info('[acms-ppt-ai] patchSlidesAi 已激活（aiStream→ACMS Buddy html-deck + 未注册 channel 兜底）');
+  }
+
+  // ── 浏览器 mock：cloudGeneratePage / cloudGenStatus / htmlToPptx ──
+  // bundle 的 AI 美化/生成走云端路径，浏览器下必须 mock 这三个 API
+  // 策略：cloudGenStatus 返回 enabled:true → bundle 通过检查 → generatePageCloud 返回失败 →
+  //       bundle 走 fallback 到 generateFromHtml（需要 htmlToPptx 可用）
+  function mockCloudApis() {
+    var origSlidesApi = window.slidesApi;
+    if (!origSlidesApi) return;
+    // cloudGenStatus: 返回 enabled:true，让 bundle 不 early-exit
+    origSlidesApi.cloudGenStatus = function() { return Promise.resolve({ enabled: true }); };
+    // cloudGeneratePage: 返回失败，触发 bundle 走 fallback 到 generateFromHtml 路径
+    origSlidesApi.cloudGeneratePage = function() { return Promise.resolve({ ok: false, error: 'cloud not available, using fallback' }); };
+    // htmlToPptx: 核心！bundle 调这个把 LLM 返回的 HTML 转成 pptx
+    // 走 ACMS Buddy /api/agent-buddy/office-action mode='html-deck' 拿 HTML
+    // 然后包装成 bundle 期望的 {slides:[...], appendedFrom, ok} 格式
+    origSlidesApi.htmlToPptx = async function(htmls, insertMode, fitWidthPx, optIndex, optSignal) {
+      console.info('[acms-ppt-ai] htmlToPptx 调用:', Array.isArray(htmls) ? htmls.length : 1, '页, mode:', insertMode);
+      var apiKey = window.__acmsApiKey || 'dev-key-001';
+      // 先把 HTML 拼成用户可见的指令（bundle 传的是 raw HTML 字符串数组）
+      var instruction = '将以下HTML内容生成/更新PPT幻灯片\n' + htmls.map(function(h, i) { return '--- 第' + (i+1) + '页 ---\n' + h.slice(0, 2000); }).join('\n\n');
+      var r = await fetch('/api/agent-buddy/office-action?api_key=' + apiKey, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'slides',
+          mode: 'html-deck',
+          instruction: instruction,
+          requestId: 'html-to-pptx-' + Date.now()
+        })
+      });
+      var data = await r.json();
+      if (!data || !data.ok || !data.html) {
+        console.warn('[acms-ppt-ai] htmlToPptx LLM 失败:', data && data.error);
+        return { ok: false, error: (data && data.error) || 'htmlToPptx LLM failed' };
+      }
+      // 把 LLM 返回的 HTML 包装成 bundle 期望的 slides 格式
+      // bundle 的 generateFromHtml 期望 {slides:[{html}], appendedFrom:N}
+      console.info('[acms-ppt-ai] htmlToPptx 成功, HTML长度:', data.html.length);
+      return {
+        ok: true,
+        slides: [{ html: data.html }],
+        appendedFrom: 0,
+        size: { cx: 1280, cy: 720 }
+      };
+    };
+    console.info('[acms-ppt-ai] mockCloudApis 已安装');
   }
 
   window.__ready = true

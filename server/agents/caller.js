@@ -53,26 +53,34 @@ class AgentCaller {
         }
       });
       console.log(`[Caller] dispatch result:`, result);
+
+      // 记录调用日志（必须在 return 之前！P：原先 return 提前导致 logCall 是死代码）
+      this.logCall({
+        callId: this.lastCallId,
+        fromAgent: fromId,
+        toAgent: toAgentId,
+        instruction: request.instruction?.slice(0, 200),
+        purpose: request.purpose,
+        result: { ok: result?.ok, error: result?.error },
+        latency: Date.now() - start
+      });
+
       return result;
     } catch (e) {
       console.error(`[Caller] dispatch error:`, e.message, e.stack);
+      // 失败也记录日志（含错误信息）
+      this.logCall({
+        callId: this.lastCallId,
+        fromAgent: fromId,
+        toAgent: toAgentId,
+        instruction: request.instruction?.slice(0, 200),
+        purpose: request.purpose,
+        result: { ok: false, error: e.message },
+        error: e.message,
+        latency: Date.now() - start
+      });
       throw e;
     }
-
-    const latency = Date.now() - start;
-
-    // 记录调用日志
-    this.logCall({
-      callId: this.lastCallId,
-      fromAgent: fromId,
-      toAgent: toAgentId,
-      instruction: request.instruction?.slice(0, 200),
-      purpose: request.purpose,
-      result: { ok: result?.ok, error: result?.error },
-      latency
-    });
-
-    return result;
   }
 
   checkPermission(fromId, toId) {

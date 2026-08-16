@@ -1430,15 +1430,14 @@ function navigateToAdmin() {
 
 // admin 页面"返回"按钮 — 按入口上下文还原
 
-// 进入 Agent Registry 管理页
+// 进入智能体管理页
 function navigateToAgentAdmin() {
-  showView('view-agent-admin');
-  if (typeof loadAgentAdminPage === 'function') loadAgentAdminPage();
+  ACMSWin.open('agent-admin');
 }
 
-// Agent Registry 页面"返回"按钮
+// 智能体管理页面"返回"按钮（如果需要）
 function backFromAgentAdmin() {
-  showView('view-admin');
+  // 不再需要，因为是用独立窗口打开的
 }
 
 function backFromAdmin() {

@@ -38,16 +38,10 @@ document.addEventListener('DOMContentLoaded', () => {
     </div>
   </main>
 
-  <!-- ====== Agent Registry 管理（独立页面） ====== -->
-  <main id="view-agent-admin" class="view-main" style="display:none">
-    <div class="projects-page">
-      <div class="view-header" style="display:flex;align-items:center;gap:12px">
-        <button class="btn-back" onclick="backFromAgentAdmin()">← 返回</button>
-        <h2>🤖 Agent Registry</h2>
-      </div>
-      <div id="agent-admin-content"></div>
-    </div>
-  </main>
+  <!-- ====== 智能体管理 ====== -->
+  <div id="view-agent-admin" style="display:none;height:100%;overflow:auto;background:var(--bg,#fafafa)">
+    <div id="agent-admin-content" style="padding:24px"></div>
+  </div>
 
   <!-- ====== 自我改进（独立页面；入口在 admin → 🛠 运营工具） ====== -->
   <main id="view-improvements" class="view-main" style="display:none">
@@ -547,6 +541,8 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/settings.js"></script>
 <script src="/client/js/views/reports.js?v=0.22.4"></script>
 <script src="/client/js/views/admin.js?v=0.64"></script>
+<!-- Agent Registry 管理页面 -->
+<script src="/client/js/views/agent-admin.js?v=0.2.2"></script>
 <!-- v0.XX: 代理设置（admin 高级 tab 内嵌卡片） -->
 <script src="/client/js/views/proxy-settings.js"></script>
 <script src="/client/js/views/improvements.js"></script>
@@ -590,6 +586,7 @@ document.addEventListener('DOMContentLoaded', () => {
   <div class="launcher-section-title">导航</div>
   <div class="launcher-item" onclick="launchProjects()"><span class="li-icon">📊</span><span class="li-label">项目管理</span></div>
   <div class="launcher-item" onclick="launchAdmin()"><span class="li-icon">🔧</span><span class="li-label">系统管理</span></div>
+  <div class="launcher-item" onclick="ACMSWin.open('agent-admin')"><span class="li-icon">🤖</span><span class="li-label">智能体管理</span></div>
   <!-- v0.55：💬 对话 hover 子菜单（新建 + 最近历史 + 打开历史/回收站） -->
   <div class="launcher-item launcher-has-submenu" id="launcher-chat" onmouseenter="onChatLauncherHover()" onmouseleave="onChatLauncherLeave()">
     <span class="li-icon">💬</span><span class="li-label">对话</span><span class="li-arrow">▸</span>
@@ -786,6 +783,33 @@ document.addEventListener('DOMContentLoaded', () => {
           loadOpsTabStats(w.$c);
         }
       });
+    }
+  });
+
+  // 智能体管理（独立窗口，与系统管理并列；模板 = client/views/agent-admin.html 自带样式）
+  PKG('agent-admin', {
+    title: '智能体管理', icon: '🤖', category: '系统', defaultSize: { w: 960, h: 640 },
+    loader: function(w) {
+      if (typeof loadAgentAdminPage !== 'function') {
+        if (!w.dead) w.$c.innerHTML = '<div style="padding:40px;text-align:center;color:var(--accent2)">智能体管理不可用</div>';
+        return;
+      }
+      // v0.2: fetch 独立模板（含 <style> 块 + #agent-admin-content 容器），不再克隆 index.html 空壳 div
+      return fetch('/client/views/agent-admin.html')
+        .then(function(r) { return r.text(); })
+        .then(function(tpl) {
+          if (w.dead) return;
+          w.$c.innerHTML = tpl;
+          var box = w.$c.querySelector('#view-agent-admin');
+          if (box) box.style.display = '';
+          w.$c.style.display = '';
+          return loadAgentAdminPage();
+        })
+        .catch(function(e) {
+          console.error('agent-admin template fetch failed:', e);
+          if (w.dead) return;
+          w.$c.innerHTML = '<div style="padding:40px;text-align:center;color:var(--accent2)">智能体管理模板加载失败</div>';
+        });
     }
   });
 

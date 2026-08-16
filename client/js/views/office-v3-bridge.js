@@ -219,7 +219,7 @@
     var frame = document.createElement('iframe');
     frame.className = 'v3-genoffice-frame';
     frame.style.cssText = 'width:100%;height:100%;border:0;display:block;';
-    frame.src = BASE + 'slides-ui/host.html?v=19';
+    frame.src = BASE + 'slides-ui/host.html?v=22';
     w.$c.appendChild(frame);
 
     function initFrame() {
@@ -2049,7 +2049,7 @@
         }
         // v0.96.9/v0.97: generateImage — 根据 prompt 生成插图并插入（有选区插到选区后，无选区插到文档末尾）
         // ⚠️ 返回 Promise：调用方（host.html runner/右键菜单、agent-buddy.js）需 await / Promise.resolve
-        if (action.op === 'generateImage') {
+        if (action.op === 'generateImage' || action.op === 'genImageRequest') {
           if (ed.kind === 'word-ui') {
             return genOfficeGenerateImage(ed.iframe, action).then(function (gi) {
               if (gi && gi.ok) {

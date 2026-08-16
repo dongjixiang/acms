@@ -26,8 +26,19 @@ class ToolStore {
 
   /** 删除工具 */
   delete(id) {
-    // 同时清掉 agent_tools 里的映射
-    collection('agent_tools').remove(at => at.tool_id === id);
+    // 级联：从所有 agent 的 bound_tools 里移除该工具（实际绑定存在 agents.bound_tools JSON）
+    // 注意：agent_tools 表是非 doc 结构（id, agent_id, tool_id, params_schema），
+    //       collection('agent_tools').remove() 会假定 doc 列 → no such column: doc（P 陷阱）
+    try {
+      const agents = collection('agents').all();
+      for (const a of agents) {
+        const tools = JSON.parse(a.bound_tools || '[]');
+        const next = tools.filter(t => t.id !== id);
+        if (next.length !== tools.length) {
+          collection('agents').update(x => x.id === a.id, { bound_tools: JSON.stringify(next) });
+        }
+      }
+    } catch (e) { console.error('[tool-store] cascade unbind failed:', e.message); }
     return collection('tools').remove(t => t.id === id) > 0;
   }
 

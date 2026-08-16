@@ -22,19 +22,58 @@ const caller = require('../agents/caller');
 /** GET /api/agents */
 router.get('/', function (req, res) {
   const agents = agentStore.list();
-  // 关联 tool 名称
+  // 关联 tool 名称（可绑定 store + 运行时 registry 两边都查）
   const tools = toolStore.list();
   const toolMap = new Map(tools.map(t => [t.id, t.name]));
+  let runtimeToolMap = new Map();
+  try {
+    require('../tools/index');
+    const tr = require('../services/tool-registry');
+    runtimeToolMap = new Map(tr.listTools().map(t => [t.name, t.name]));
+  } catch (e) { /* runtime registry 不可用时静默 */ }
+  // 按 id 去重（历史脏数据：同 id 可能有多条），保留最新一条
+  const seen = new Set();
+  const unique = [];
+  for (const a of agents) {
+    if (seen.has(a.id)) continue;
+    seen.add(a.id);
+    unique.push(a);
+  }
   res.json({
     ok: true,
-    agents: agents.map(a => ({
+    agents: unique.map(a => ({
       ...a,
-      boundTools: JSON.parse(a.bound_tools || '[]').map(tid => ({
-        id: tid,
-        name: toolMap.get(tid) || tid
-      }))
+      boundTools: JSON.parse(a.bound_tools || '[]').map(bt => {
+        // bound_tools 元素可能是 {id, params} 对象或纯字符串 id（兼容两种）
+        const tid = typeof bt === 'string' ? bt : (bt && bt.id);
+        if (!tid) return null;
+        return {
+          id: tid,
+          name: toolMap.get(tid) || runtimeToolMap.get(tid) || tid,
+          isRuntime: !toolMap.has(tid) && runtimeToolMap.has(tid)
+        };
+      }).filter(Boolean),
+      allowedToCall: parseJsonArray(a.allowed_to_call)
     }))
   });
+});
+
+function parseJsonArray(s) {
+  try { const v = JSON.parse(s || '[]'); return Array.isArray(v) ? v : []; }
+  catch (e) { return []; }
+}
+
+// ── 调用日志 ────────────────────────────────────────────
+// 注意：必须注册在 /:id 之前（P105：参数化路由会吞掉静态路径）
+
+/** GET /api/agents/calls */
+router.get('/calls', function (req, res) {
+  const { limit = 50, fromAgent, toAgent } = req.query;
+  const all = collection('agent_calls').all().reverse();
+  let calls = all;
+  if (fromAgent) calls = calls.filter(c => c.fromAgent === fromAgent);
+  if (toAgent) calls = calls.filter(c => c.toAgent === toAgent);
+  res.json({ ok: true, calls: calls.slice(0, parseInt(limit)) });
 });
 
 /** POST /api/agents */
@@ -119,7 +158,9 @@ router.get('/:id/tools', function (req, res) {
   if (!agent) return res.status(404).json({ ok: false, error: 'Agent 不存在' });
 
   const boundTools = JSON.parse(agent.bound_tools || '[]');
-  const tools = toolStore.getByIds(boundTools);
+  // bound_tools 元素可能是 {id, params} 对象或纯字符串 id（兼容两种）
+  const ids = boundTools.map(bt => typeof bt === 'string' ? bt : (bt && bt.id)).filter(Boolean);
+  const tools = toolStore.getByIds(ids);
   res.json({ ok: true, tools });
 });
 
@@ -128,8 +169,16 @@ router.post('/:id/tools', function (req, res) {
   const { toolId, paramsSchema } = req.body;
   if (!toolId) return res.json({ ok: false, error: 'toolId 必填' });
 
+  // 可绑定 store 或运行时 registry 任一存在即可绑定
   const tool = toolStore.getById(toolId);
-  if (!tool) return res.status(404).json({ ok: false, error: '工具不存在' });
+  if (!tool) {
+    let rt = null;
+    try {
+      require('../tools/index');
+      rt = require('../services/tool-registry').getTool(toolId);
+    } catch (e) { /* 静默 */ }
+    if (!rt) return res.status(404).json({ ok: false, error: '工具不存在（可绑定 store 和运行时 registry 都无此 id）' });
+  }
 
   agentStore.addTool(req.params.id, toolId, paramsSchema || {});
   res.json({ ok: true });
@@ -159,18 +208,6 @@ router.post('/:id/call', async function (req, res) {
   } catch (e) {
     res.json({ ok: false, error: e.message });
   }
-});
-
-// ── 调用日志 ────────────────────────────────────────────
-
-/** GET /api/agent-calls */
-router.get('/calls', function (req, res) {
-  const { limit = 50, fromAgent, toAgent } = req.query;
-  const all = collection('agent_calls').all().reverse();
-  let calls = all;
-  if (fromAgent) calls = calls.filter(c => c.fromAgent === fromAgent);
-  if (toAgent) calls = calls.filter(c => c.toAgent === toAgent);
-  res.json({ ok: true, calls: calls.slice(0, parseInt(limit)) });
 });
 
 module.exports = router;
