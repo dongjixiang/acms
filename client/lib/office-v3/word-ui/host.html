@@ -455,15 +455,31 @@
           };
           subMenu.appendChild(btn);
         });
-        // 鼠标悬停显示子菜单
+        // 鼠标悬停显示子菜单（带延迟避免抖动）
+        var subMenuTimer = null;
         aiMenuItem.onmouseenter = function () {
+          clearTimeout(subMenuTimer);
           var rect = aiMenuItem.getBoundingClientRect();
           subMenu.style.display = 'block';
           subMenu.style.left = rect.right + 'px';
           subMenu.style.top = rect.top + 'px';
         };
-        aiMenuItem.onmouseleave = function () {
-          subMenu.style.display = 'none';
+        aiMenuItem.onmouseleave = function (e) {
+          // 如果鼠标移到了子菜单上，不隐藏
+          if (subMenu.contains(e.relatedTarget)) return;
+          subMenuTimer = setTimeout(function () {
+            subMenu.style.display = 'none';
+          }, 150);
+        };
+        subMenu.onmouseenter = function () {
+          clearTimeout(subMenuTimer);
+        };
+        subMenu.onmouseleave = function (e) {
+          // 如果鼠标移回主菜单项，不隐藏
+          if (aiMenuItem.contains(e.relatedTarget)) return;
+          subMenuTimer = setTimeout(function () {
+            subMenu.style.display = 'none';
+          }, 150);
         };
         // 点击关闭子菜单
         aiMenuItem.onclick = function (e) {
