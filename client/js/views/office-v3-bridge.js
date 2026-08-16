@@ -879,7 +879,7 @@
         previewText: '正在生成插图...',
         imageWidthPx: 320,
         imageHeightPx: 200,
-        genImage: { dataUrl: null, loading: true, mime: 'image/png' }
+        genImage: { loading: true, mime: 'image/png' }
       }
     };
     editor.chain().focus().insertContentAt(insertPos, placeholderNode).run();
@@ -921,17 +921,18 @@
           }
         };
         console.log('[IMG-DEBUG] inserting node, genImage.dataUrl length=', node.attrs.genImage.dataUrl.length);
-        // 替换占位节点
+        // 替换占位节点（找到 loading 状态的节点并替换）
         var doc = editor.state.doc;
         var targetPos = -1;
         doc.content.forEach(function (child, offset) {
           if (targetPos >= 0) return;
-          if (child.type.name === 'docProtected' && child.attrs.genImage && child.attrs.genImage.loading) {
+          if (child.type.name === 'docProtected' && child.attrs.blockType === 'image' && child.attrs.genImage && child.attrs.genImage.loading) {
             targetPos = offset;
           }
         });
         if (targetPos >= 0) {
-          editor.chain().focus().insertContentAt(targetPos, node).run();
+          // 删除旧节点，插入新节点
+          editor.chain().focus().deleteRange({ from: targetPos, to: targetPos + child.nodeSize }).insertContentAt(targetPos, node).run();
         } else {
           editor.chain().focus().insertContentAt(insertPos, node).run();
         }
