@@ -458,26 +458,10 @@
 
   function setupAcmsAiButton() {
     try {
-      // 1. **不隐藏** GenSpark 按钮 — 用户能点开 AI 面板
-      // 2. patch runner（如果还没 patch）
+      // 1. patch runner（让侧边 AI 面板走 ACMS Buddy）
       patchACMSAiRunner();
       // 2.5 v0.96.9b: 挂原生右键菜单 AI 项注入器（不拦截原生菜单，追加 AI 动作）
       bindAcmsContextMenu();
-      // 3. 注入 ACMS AI 浮动按钮（同时保留 GenSpark UI）
-      if (document.getElementById('acms-ai-btn')) return;
-      var btn = document.createElement('button');
-      btn.id = 'acms-ai-btn';
-      btn.innerHTML = '🤖 ACMS AI';
-      btn.title = 'ACMS AI 助手（让小吉帮你写/改文档）';
-      btn.style.cssText = 'position:fixed;top:56px;right:18px;z-index:99999;padding:8px 14px;background:#1976d2;color:#fff;border:1px solid #1565c0;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;box-shadow:0 2px 8px rgba(0,0,0,.2);font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;transition:background .15s;';
-      btn.onmouseenter = function() { btn.style.background = '#1565c0'; };
-      btn.onmouseleave = function() { btn.style.background = '#1976d2'; };
-      btn.onclick = function(e) {
-        e.preventDefault();
-        e.stopPropagation();
-        openAcmsBuddy();
-      };
-      document.body.appendChild(btn);
     } catch(err) {
       console.warn('[acms-host] setupAcmsAiButton err:', err);
     }
@@ -521,11 +505,6 @@
     if (window.__acmsCtxMenuObserver) { window.__acmsCtxMenuObserver.disconnect(); window.__acmsCtxMenuObserver = null; }
     var old = document.getElementById('acms-ai-btn');
     if (old) old.remove();
-    // 还原被隐藏的 GenSpark 按钮
-    document.querySelectorAll('[data-acms-orig-display]').forEach(function(b) {
-      b.style.display = b.getAttribute('data-acms-orig-display') || '';
-      b.removeAttribute('data-acms-orig-display');
-    });
   }
 
   window.__init = async function (opts) {
