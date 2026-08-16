@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>GenOffice Word Host</title>
-<link rel="stylesheet" href="/client/lib/office-v3/word-ui/acms-office-word-ui.css?v=0.95.4">
+<link rel="stylesheet" href="/client/lib/office-v3/word-ui/acms-office-word-ui.css?v=0.96.8">
 <style>html,body{margin:0;padding:0;height:100%;overflow:hidden;}#root{height:100vh;}</style>
 </head>
 <body>
@@ -12,11 +12,526 @@
   // iframe host：由父窗口（ACMS office-v3-bridge）调用 __init/__unmount
   let mod = null
   let rootEl = null
+  let acmsAiPatchInterval = null
+
+  // ── ACMS 补丁 (v0.96.3)：替换 GenSpark 内嵌 AI 按钮 → ACMS AI 入口 ──────
+  //   调研发现 (2026-08-15)：
+  //   1. GenSpark 是 GenOffice bundle 内嵌的 GenSpark UI 框架（ribbon + 面板 React state + 消息流 + 命令协议）
+  //      框架齐全，但 bundle 里的 chat runner 类 `class DX { constructor(t){} ... }` 是空 stub，
+  //      transport `zX()` 也返回 `{ send(){}, onMessage(){} }` —— **整个 AI 调用层空跑**。
+  //   2. H 函数（按钮 click handler）走完 state 设置后调 `ut.run(...)`，ut 是 DX 实例，
+  //      没有 run 方法 → Promise reject → busy=true 卡死 → "思考中" 永远。
+  //   3. 用户希望：保留 GenSpark UI，只把大模型那块换成 ACMS Buddy（office_edit 链路已通）。
+  //   修法（v0.96.3）：不劫持 click、不接管 React state、不动 prompt 模板。
+  //   **通过 React fiber 找到 Gee 组件 + et runner ref，给 runner 补全 run/busy/cancel/reset 方法**。
+  //   我们的 run 方法：调 ACMS Buddy office-action + 应用到 Word + 更新聊天消息列表。
+  //   GenSpark 自身的 UI（按钮、面板、消息流、思考中动效）继续原样运行，只是背后的"大脑"换了。
+  //   GenOffice React re-mount 会重建 DOM，所以补丁要做成轮询（参考 word-open-patch-2026-08-14）。
+  function openAcmsBuddy() {
+    try {
+      var parentACMS = window.parent && window.parent.ACMS;
+      if (parentACMS && parentACMS.Buddy) {
+        if (typeof parentACMS.Buddy.setView === 'function') {
+          parentACMS.Buddy.setView('office-v3-word');
+        }
+        if (typeof parentACMS.Buddy.togglePanel === 'function') {
+          parentACMS.Buddy.togglePanel();
+          return true;
+        }
+      }
+      console.warn('[acms-host]] GenSpark 按钮 → 调起 ACMS Buddy');
+      console.warn('[acms-host] parent.ACMS.Buddy 未就绪');
+    } catch(err) {
+      console.warn('[acms-host] openAcmsBuddy err:', err);
+    }
+    return false;
+  }
+
+  // 通过 React fiber 找 Gee 组件（AI 面板），定位 chat state setter + runner ref
+  function findGeeFiber(rootEl) {
+    // 找任何一个有 React fiber 的 AI panel 元素
+    var candidates = rootEl.querySelectorAll('.ai-panel-header, .ai-panel-title, .ai-header-btn, [class*="ai-panel-"]');
+    for (var i = 0; i < candidates.length; i++) {
+      var el = candidates[i];
+      var fiberKey = Object.keys(el).find(function(k) { return k.indexOf('__reactFiber') === 0; });
+      if (!fiberKey) continue;
+      var f = el[fiberKey];
+      // walk up to find Gee component
+      while (f) {
+        if (f.type && typeof f.type === 'function' && f.type.name === 'Gee') return f;
+        f = f.return;
+      }
+    }
+    return null;
+  }
+
+  // 从 Gee 的 hook 链里按声明顺序找特定 hook
+  function getHookAtIndex(fiber, idx) {
+    var hook = fiber.memoizedState;
+    for (var i = 0; i < idx && hook; i++) {
+      hook = hook.next;
+    }
+    return hook;
+  }
+
+  // patch runner + 绑全局方便后续 runner 重建后重新 patch
+  function patchACMS AIRunner() {
+    var rootEl = document.getElementById('root');
+    if (!rootEl) return false;
+    var fiber = findGeeFiber(rootEl);
+    if (!fiber) return false;
+
+    // Gee 组件 hooks（React 19 实测结构，2026-08-15 浏览器验证）：
+    //   useState → memoizedState = 值本身；setter = hook.queue.dispatch（不是 [value,setter] 数组！）
+    //   useRef   → memoizedState = { current: ... }
+    // hook 0: 输入框文本 (string)     hook 1: busy (false)
+    // hook 3: 聊天消息 ([])           hook 4: 附件 ([])
+    // hook 39: et runner ref（DX 实例：空对象 + start/stop/send 方法）
+    var hook = fiber.memoizedState;
+    var etRef = null;
+    var chatSetter = null;
+    var busySetter = null;
+    var seenEmptyArraySetters = 0;
+    while (hook) {
+      var ms = hook.memoizedState;
+      var q = hook.queue;
+      // useState：React 19 值本身 + queue.dispatch 才是 setter
+      if (q && typeof q.dispatch === 'function') {
+        if (ms === false && !busySetter) {
+          busySetter = q.dispatch;  // hook 1: busy 状态
+        }
+        if (Array.isArray(ms) && ms.length === 0) {
+          seenEmptyArraySetters++;
+          // 第一个 [] 是 chat messages (hook 3)，第二个是 attachments (hook 4)
+          if (seenEmptyArraySetters === 1 && !chatSetter) chatSetter = q.dispatch;
+        }
+      }
+      // useRef: object with .current — et 的 current 是 DX 实例
+      // 特征：空对象 + 有 start/stop/send 方法（constructor 是 DX class，不是 Object！）
+      if (ms && typeof ms === 'object' && 'current' in ms && !Array.isArray(ms)) {
+        var c = ms.current;
+        if (c && typeof c === 'object' && !Array.isArray(c) &&
+            typeof c.start === 'function' && typeof c.stop === 'function' && typeof c.send === 'function') {
+          etRef = ms;
+          break;
+        }
+      }
+      hook = hook.next;
+    }
+
+    if (!etRef || !etRef.current) {
+      if (!window.__acmsWarnedNoRunner) {
+        window.__acmsWarnedNoRunner = true;
+        console.warn('[acms-host] 没找到 et runner ref（panel 可能还没渲染）');
+      }
+      return false;
+    }
+    var runner = etRef.current;
+    if (runner.__acmsPatched) return true;  // 幂等：同一 runner 不重复 patch
+    window.__acmsEtRef = etRef;
+    window.__acmsChatSetter = chatSetter;
+    window.__acmsBusySetter = busySetter;
+
+    // v0.96.8b: 选区缓存——用户在面板输入指令时编辑器失焦，实时读 selection 会拿到 empty。
+    // 监听 selectionUpdate 把最近的非空选区缓存到 window.__acmsSelCache，runner.run 时回退用。
+    // （对齐 GenOffice 开源实现：DX runner 内部同样缓存 selection scope）
+    try {
+      var ce0 = document.querySelector('[contenteditable="true"]');
+      var ed0 = ce0 && (ce0.editor || ce0._tiptapEditor);
+      if (ed0 && !ed0.__acmsSelWatched) {
+        ed0.__acmsSelWatched = true;
+        ed0.on('selectionUpdate', function () {
+          try {
+            var s = ed0.state.selection;
+            if (s && !s.empty) {
+              window.__acmsSelCache = { from: s.from, to: s.to, at: Date.now() };
+            }
+          } catch (e) { /* ignore */ }
+        });
+        // 初始捕获一次（可能面板打开前已选中）
+        try {
+          var s0 = ed0.state.selection;
+          if (s0 && !s0.empty) window.__acmsSelCache = { from: s0.from, to: s0.to, at: Date.now() };
+        } catch (e) { /* ignore */ }
+        console.info('[acms-host] ✅ selection 缓存监听已挂载');
+      }
+    } catch (e) {
+      console.warn('[acms-host] 挂 selection 监听失败:', e.message);
+    }
+
+    // 给 runner 补全方法
+    runner._busy = false;
+    Object.defineProperty(runner, 'busy', {
+      get: function() { return runner._busy; },
+      set: function(v) { runner._busy = v; },
+      configurable: true
+    });
+
+    runner.run = async function(message, attachments) {
+      runner._busy = true;
+      if (busySetter) try { busySetter(true); } catch(_) {}
+      console.info('[acms-host] GenSpark 消息 → ACMS Buddy:', message);
+
+      // 构造 docContext（从 Tiptap editor 抽 blocks，带格式信息供排版/润色）
+      // v0.96.8: 支持选区——选中部分文字后，润色/排版/翻译只作用于选中的 blocks
+      // v0.96.9: 抽取为公共函数 buildAcmsDocContext（runner 与右键菜单共用），
+      //          新增 textStyle（字号/颜色/字体/高亮）聚合 + selectionText（选中文字原文）
+      var ctx = buildAcmsDocContext();
+      var docContext = ctx ? ctx.doc : { blocks: [] };
+      var selBlockIdx = ctx ? ctx.selBlockIdx : [];
+
+      // 有选区时在 instruction 里显式声明（对齐开源实现：rewrite-style requests apply to the selection）
+      var finalInstruction = message;
+      if (selBlockIdx.length) {
+        finalInstruction = message + '\n【用户已选中以下段落（blockIdx=' + selBlockIdx.join(',') + '），只修改选中的段落，不要动其他内容】';
+        console.info('[acms-host] 选区 blocks:', selBlockIdx.join(','));
+      }
+
+      // 调 ACMS Buddy office-action
+      var summary = '';
+      var errMsg = null;
+      try {
+        var resp = await fetch('/api/agent-buddy/office-action?api_key=dev-key-001', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+          body: JSON.stringify({ kind: 'word', instruction: finalInstruction, docContext: docContext })
+        });
+        var data = await resp.json();
+        if (data && data.ok && data.action) {
+          summary = data.action.summary || 'AI 已应用编辑';
+          // 应用到 Word — 入口是父窗口 OfficeV3.runAction（agent-buddy.js 同款）
+          // ⚠️ 不要用 parent.ACMS.Buddy.runAction（Buddy 上没有这个方法，实测不存在）
+          // ⚠️ v0.96.9: generateImage 返回 Promise，统一 await
+          if (window.parent.OfficeV3 && typeof window.parent.OfficeV3.runAction === 'function') {
+            var r = await window.parent.OfficeV3.runAction(data.action);
+            if (r && r.ok) {
+              summary = (data.action.summary || 'AI 已应用编辑') + '（已写入 Word）';
+            } else {
+              errMsg = (r && r.error) || 'Word 应用失败';
+            }
+          } else {
+            errMsg = 'parent.OfficeV3.runAction 不可用';
+          }
+        } else {
+          errMsg = (data && data.error) || 'office-action 返回失败';
+        }
+      } catch (e) {
+        errMsg = '请求失败: ' + e.message;
+        console.warn('[acms-host] office-action 异常:', e);
+      }
+
+      // 更新聊天消息列表 — 把最后那条 streaming assistant message 替换成完成提示
+      if (chatSetter) {
+        try {
+          chatSetter(function(prev) {
+            var next = prev.slice();
+            for (var i = next.length - 1; i >= 0; i--) {
+              if (next[i].role === 'assistant' && next[i].streaming) {
+                next[i] = {
+                  ...next[i],
+                  streaming: false,
+                  text: errMsg ? ('❌ ' + errMsg) : ('✅ ' + summary)
+                };
+                break;
+              }
+            }
+            return next;
+          });
+        } catch (e) { console.warn('[acms-host] 更新聊天消息失败:', e.message); }
+      }
+
+      runner._busy = false;
+      if (busySetter) try { busySetter(false); } catch(_) {}
+    };
+
+    runner.cancel = function() {
+      runner._busy = false;
+      if (busySetter) try { busySetter(false); } catch(_) {}
+    };
+
+    runner.reset = function() {
+      runner._busy = false;
+    };
+
+    runner.__acmsPatched = true;
+    console.info('[acms-host] ✅ GenSpark runner patched → ACMS Buddy 接管');
+    return true;
+  }
+
+  // ── v0.96.9: 公共 docContext 抽取（runner.run 与右键菜单共用）──
+  // 返回 { doc, selBlockIdx }；doc.blocks 带格式信息（type/level/kind/align/indentFirstLine/marks/textStyle），
+  // doc.selectionText = 选中区域精确文本（供 LLM 润色/总结/插图）；选区实时读，失焦回退 __acmsSelCache
+  function buildAcmsDocContext() {
+    var docContext = { blocks: [] };
+    var selBlockIdx = [];
+    try {
+      var ce = document.querySelector('[contenteditable="true"]');
+      if (ce && ce.editor && ce.editor.state && ce.editor.state.doc) {
+        var blockIdx = 0;
+        var sel = ce.editor.state.selection;
+        var selFrom = -1, selTo = -1;
+        if (sel && !sel.empty) { selFrom = sel.from; selTo = sel.to; }
+        else if (window.__acmsSelCache) { selFrom = window.__acmsSelCache.from; selTo = window.__acmsSelCache.to; }
+        ce.editor.state.doc.content.forEach(function(node, nodeOffset) {
+          var n = node.type.name;
+          if (n === 'docParagraph' || n === 'docHeading' || n === 'docListItem') {
+            var b = { i: blockIdx, text: node.textContent.slice(0, 200), type: n };
+            var attrs = node.attrs || {};
+            if (n === 'docHeading') b.level = attrs.level != null ? attrs.level : 1;
+            if (n === 'docListItem') b.kind = attrs.kind || 'bullet';
+            if (attrs.align) b.align = attrs.align;
+            if (attrs.indentFirstLine) b.indentFirstLine = attrs.indentFirstLine;
+            var hasM = { bold: false, italic: false, underline: false, strike: false };
+            var textStyle = null;
+            node.content && node.content.forEach(function (tn) {
+              if (!tn.marks) return;
+              tn.marks.forEach(function (m) {
+                var mn = m.type && m.type.name;
+                if (mn === 'bold') hasM.bold = true;
+                else if (mn === 'italic') hasM.italic = true;
+                else if (mn === 'underline') hasM.underline = true;
+                else if (mn === 'strike') hasM.strike = true;
+                else if (mn === 'docTextStyle') {
+                  // v0.96.9: docTextStyle 聚合（字号/颜色/字体/高亮）——排版指令需要感知
+                  var ta = m.attrs || {};
+                  textStyle = textStyle || {};
+                  if (ta.sizeHalfPoints != null) textStyle.sizeHalfPoints = ta.sizeHalfPoints;
+                  if (ta.color) textStyle.color = ta.color;
+                  if (ta.font) textStyle.font = ta.font;
+                  if (ta.highlight) textStyle.highlight = ta.highlight;
+                }
+              });
+            });
+            if (hasM.bold || hasM.italic || hasM.underline || hasM.strike) b.marks = hasM;
+            if (textStyle) b.textStyle = textStyle;
+            // 选区覆盖检测：block 的 [offset, offset+nodeSize] 与选区 [from,to] 有交集即视为选中
+            if (selFrom >= 0 && selTo > selFrom) {
+              var nStart = nodeOffset;
+              var nEnd = nodeOffset + node.nodeSize;
+              if (nEnd > selFrom && nStart < selTo) {
+                b.selected = true;
+                selBlockIdx.push(blockIdx);
+              }
+            }
+            docContext.blocks.push(b);
+            blockIdx++;
+          }
+        });
+        docContext.selBlockIdx = selBlockIdx;
+        // v0.96.9: 选中文字原文（精确字符级，供润色/总结/插图生成器）
+        if (selFrom >= 0 && selTo > selFrom) {
+          try {
+            var selText = ce.editor.state.doc.textBetween(selFrom, selTo, '\n');
+            if (selText) docContext.selectionText = selText.slice(0, 500);
+          } catch (e) { /* ignore */ }
+        }
+      }
+    } catch (e) { console.warn('[acms-host] 抽 docContext 失败:', e.message); }
+    return { doc: docContext, selBlockIdx: selBlockIdx };
+  }
+
+  // ── v0.96.9b: 右键 AI 动作（润色/排版/总结/生成插图）──
+  // 注：v0.96.9 曾用自定义菜单替换原生右键菜单，用户指出应保留原生菜单、只在其上添加 AI 选项。
+  // v0.96.9b 改为：不拦截原生右键（.ctx-menu 照常弹出），往菜单末尾注入 AI 动作项。
+
+  // 右键动作执行（润色/排版/总结/生成插图）——与 runner.run 同构：instruction → office-action → OfficeV3.runAction
+  async function acmsRunSelectionAction(type) {
+    var ctx = buildAcmsDocContext();
+    if (!ctx || !ctx.selBlockIdx || !ctx.selBlockIdx.length) {
+      showAcmsToast('⚠️ 请先在文档中选中文字', 'warn');
+      return;
+    }
+    var instruction = '';
+    if (type === 'polish') instruction = '对选中的文字进行润色，使表达更清晰、流畅、专业。把润色结果插入到选中区域之后（不修改原文）。';
+    else if (type === 'format') instruction = '整理选中段落的排版（标题层级、列表、加粗斜体下划线、字号、字体、颜色、高亮、对齐、缩进、行距等），只调整格式，不要改动任何文字内容。';
+    else if (type === 'summarize') instruction = '总结选中的文字，生成简洁的摘要，插入到选中区域之后（不修改原文）。';
+    else if (type === 'image') instruction = '根据选中的文字生成一张插图（配图），用于文生图。';
+    else return;
+    showAcmsToast('⏳ 正在处理…', 'info');
+    try {
+      var resp = await fetch('/api/agent-buddy/office-action?api_key=dev-key-001', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+        body: JSON.stringify({ kind: 'word', instruction: instruction, docContext: ctx.doc })
+      });
+      var data = await resp.json();
+      if (!data || !data.ok || !data.action) {
+        showAcmsToast('❌ ' + ((data && data.error) || '生成失败'), 'error');
+        return;
+      }
+      var action = data.action;
+      var r = await window.parent.OfficeV3.runAction(action);
+      if (r && r.ok) {
+        showAcmsToast('✅ ' + (action.summary || r.summary || '完成'), 'ok');
+      } else {
+        showAcmsToast('❌ ' + ((r && r.error) || '执行失败'), 'error');
+      }
+    } catch (e) {
+      showAcmsToast('❌ ' + e.message, 'error');
+      console.warn('[acms-host] 右键动作异常:', e);
+    }
+  }
+
+  function showAcmsToast(msg, kind) {
+    var el = document.getElementById('acms-toast');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'acms-toast';
+      el.style.cssText = 'position:fixed;left:50%;bottom:40px;transform:translateX(-50%);z-index:999999;padding:10px 18px;border-radius:8px;font-size:13px;font-weight:500;box-shadow:0 4px 16px rgba(0,0,0,.25);font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;max-width:70%;transition:opacity .25s;';
+      document.body.appendChild(el);
+    }
+    var bg = kind === 'ok' ? '#2e7d32' : kind === 'error' ? '#c62828' : kind === 'warn' ? '#ef6c00' : '#1565c0';
+    el.style.background = bg;
+    el.style.color = '#fff';
+    el.textContent = msg;
+    el.style.opacity = '1';
+    el.style.display = 'block';
+    clearTimeout(el.__t);
+    el.__t = setTimeout(function() { el.style.opacity = '0'; setTimeout(function() { el.style.display = 'none'; }, 300); }, 2600);
+  }
+
+  // v0.96.9b: 往 GenOffice 原生右键菜单（.ctx-menu）注入 AI 动作项
+  // 不拦截原生右键——剪切/复制/粘贴/字体等菜单项照常可用，AI 动作追加在菜单末尾
+  function bindAcmsContextMenu() {
+    if (window.__acmsCtxMenuBound) return;
+    window.__acmsCtxMenuBound = true;
+
+    function injectAiMenuItems() {
+      try {
+        var menu = document.querySelector('.ctx-menu');
+        if (!menu) return;
+        // 幂等：已注入则跳过（React 重渲染冲掉后，下次右键会重新注入）
+        if (menu.querySelector('[data-acms-ai]')) return;
+        var sep = document.createElement('div');
+        sep.className = 'ctx-sep';
+        sep.setAttribute('data-acms-ai', 'sep');
+        menu.appendChild(sep);
+        var items = [
+          { key: 'polish', label: '✨ 润色' },
+          { key: 'format', label: '📐 排版' },
+          { key: 'summarize', label: '📝 总结' },
+          { key: 'image', label: '🎨 生成插图' }
+        ];
+        items.forEach(function (it) {
+          var btn = document.createElement('button');
+          btn.className = 'ctx-item';
+          btn.setAttribute('data-acms-ai', it.key);
+          var lbl = document.createElement('span');
+          lbl.className = 'ctx-label';
+          lbl.textContent = it.label;
+          var key = document.createElement('span');
+          key.className = 'ctx-key';
+          key.textContent = 'AI';
+          btn.appendChild(lbl);
+          btn.appendChild(key);
+          // 不 stopPropagation：让 GenOffice 自己的点击关闭逻辑关闭菜单；
+          // 选区有 __acmsSelCache 兜底（右键时已缓存），菜单关闭不会丢选区
+          btn.onclick = function (e) {
+            e.preventDefault();
+            acmsRunSelectionAction(it.key);
+          };
+          menu.appendChild(btn);
+        });
+        console.info('[acms-host] ✅ AI 动作已注入原生右键菜单');
+      } catch (e) {
+        console.warn('[acms-host] 注入右键菜单失败:', e.message);
+      }
+    }
+
+    // 每次右键后注入（菜单渲染完成时 .ctx-menu 已就位）
+    document.addEventListener('contextmenu', function () {
+      setTimeout(injectAiMenuItems, 200);
+    }, true);
+    // MutationObserver 兜底：React 重渲染冲掉注入项后自动补回
+    var obs = new MutationObserver(function () {
+      try {
+        var menu = document.querySelector('.ctx-menu');
+        if (menu && menu.querySelectorAll('.ctx-item').length && !menu.querySelector('[data-acms-ai]')) {
+          injectAiMenuItems();
+        }
+      } catch (e) { /* ignore */ }
+    });
+    obs.observe(document.body, { childList: true, subtree: true });
+    window.__acmsCtxMenuObserver = obs;
+    console.info('[acms-host] ✅ 原生右键菜单 AI 项注入器已挂载（润色/排版/总结/生成插图）');
+  }
+
+  function setupAcmsAiButton() {
+    try {
+      // 1. **不隐藏** GenSpark 按钮 — 用户能点开 AI 面板
+      // 2. patch runner（如果还没 patch）
+      patchACMS AIRunner();
+      // 2.5 v0.96.9b: 挂原生右键菜单 AI 项注入器（不拦截原生菜单，追加 AI 动作）
+      bindAcmsContextMenu();
+      // 3. 注入 ACMS AI 浮动按钮（同时保留 GenSpark UI）
+      if (document.getElementById('acms-ai-btn')) return;
+      var btn = document.createElement('button');
+      btn.id = 'acms-ai-btn';
+      btn.innerHTML = '🤖 ACMS AI';
+      btn.title = 'ACMS AI 助手（让小吉帮你写/改文档）';
+      btn.style.cssText = 'position:fixed;top:56px;right:18px;z-index:99999;padding:8px 14px;background:#1976d2;color:#fff;border:1px solid #1565c0;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;box-shadow:0 2px 8px rgba(0,0,0,.2);font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;transition:background .15s;';
+      btn.onmouseenter = function() { btn.style.background = '#1565c0'; };
+      btn.onmouseleave = function() { btn.style.background = '#1976d2'; };
+      btn.onclick = function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        openAcmsBuddy();
+      };
+      document.body.appendChild(btn);
+    } catch(err) {
+      console.warn('[acms-host] setupAcmsAiButton err:', err);
+    }
+  }
+  function startAcmsAiPatchLoop() {
+    if (acmsAiPatchInterval) return;
+    // 等 ACMS Buddy ready 再注入按钮（避免点的时候 parent.ACMS.Buddy 还没加载）
+    function tryInject() {
+      if (window.parent && window.parent.ACMS && window.parent.ACMS.Buddy) {
+        setupAcmsAiButton();
+        acmsAiPatchInterval = setInterval(setupAcmsAiButton, 1200);
+        setTimeout(function() {
+          if (acmsAiPatchInterval) { clearInterval(acmsAiPatchInterval); acmsAiPatchInterval = null; }
+        }, 30000);
+        // MutationObserver: AI 面板出现时立即 patch（避免 1.2s 轮询延迟导致首次点击 ut.run 未 patch）
+        if (!window.__acmsAiPanelObserver) {
+          window.__acmsAiPanelObserver = new MutationObserver(function(muts) {
+            for (var i = 0; i < muts.length; i++) {
+                  var added = muts[i].addedNodes;
+                  for (var j = 0; j < added.length; j++) {
+                    var n = added[j];
+                    if (n && n.querySelectorAll && n.querySelector('.ai-panel-header')) {
+                      // AI 面板刚出现 — 立即 patch
+                      patchACMS AIRunner();
+                      break;
+                    }
+                  }
+                }
+          });
+          window.__acmsAiPanelObserver.observe(document.body, { childList: true, subtree: true });
+        }
+      } else {
+        setTimeout(tryInject, 400);
+      }
+    }
+    tryInject();
+  }
+  function stopAcmsAiPatchLoop() {
+    if (acmsAiPatchInterval) { clearInterval(acmsAiPatchInterval); acmsAiPatchInterval = null; }
+    if (window.__acmsAiPanelObserver) { window.__acmsAiPanelObserver.disconnect(); window.__acmsAiPanelObserver = null; }
+    if (window.__acmsCtxMenuObserver) { window.__acmsCtxMenuObserver.disconnect(); window.__acmsCtxMenuObserver = null; }
+    var old = document.getElementById('acms-ai-btn');
+    if (old) old.remove();
+    // 还原被隐藏的 GenSpark 按钮
+    document.querySelectorAll('[data-acms-orig-display]').forEach(function(b) {
+      b.style.display = b.getAttribute('data-acms-orig-display') || '';
+      b.removeAttribute('data-acms-orig-display');
+    });
+  }
 
   window.__init = async function (opts) {
     opts = opts || {}
     try {
-      if (!mod) mod = await import('/client/lib/office-v3/word-ui/office-word-ui.js?v=0.95.4')
+      if (!mod) mod = await import('/client/lib/office-v3/word-ui/office-word-ui.js?v=0.96.9b')
       // 卸载旧实例
       if (rootEl && mod.unmountWordUI) {
         try { mod.unmountWordUI(rootEl) } catch (e) {}
@@ -36,6 +551,8 @@
         apiKey: opts.apiKey || 'dev-key-001',
         buffer: bin || undefined,
       })
+      // ACMS 补丁：等 React 渲染完后注入 ACMS AI 按钮 + 隐藏 ACMS AI
+      setTimeout(startAcmsAiPatchLoop, 800)
       return { ok: true }
     } catch (e) {
       console.error('[genoffice-host] __init 失败:', e)
@@ -44,6 +561,7 @@
   }
 
   window.__unmount = function () {
+    stopAcmsAiPatchLoop()
     try {
       if (rootEl && mod && mod.unmountWordUI) mod.unmountWordUI(rootEl)
     } catch (e) {}

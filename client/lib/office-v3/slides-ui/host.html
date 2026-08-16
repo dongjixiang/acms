@@ -100,7 +100,7 @@
     opts = opts || {}
     try {
       report('init_start', 'fileId=' + (opts.fileId || 'null') + ' fileName=' + (opts.fileName || 'null'))
-      if (!mod) mod = await import('/client/lib/office-v3/slides-ui/office-slides-ui.js?v=10')
+      if (!mod) mod = await import('/client/lib/office-v3/slides-ui/office-slides-ui.js?v=15')
       report('mod_loaded', 'mod has mountSlidesUI=' + (typeof mod.mountSlidesUI))
       if (rootEl && mod.unmountSlidesUI) {
         try { mod.unmountSlidesUI(rootEl) } catch (e) { report('unmount_err', e.message) }
@@ -165,6 +165,7 @@
     const ed = window.__slidesEditor
     const PPTX_ACCEPT = '.pptx,.ppt,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.ms-powerpoint'
     const IMAGE_ACCEPT = 'image/*'
+    const MODEL3D_ACCEPT = '.glb,.gltf,.obj'
 
     function pickFile(accept) {
       return new Promise(function (resolve) {
@@ -201,7 +202,13 @@
 
     const originalCall = ed.call.bind(ed)
     ed.call = async function (channel, ...rest) {
-      const ch = channel
+      // API 名称映射：CamelCase → snake_case（GenOffice API 桥接）
+      const ch = channel === 'addSmartArt' ? 'slides:add-smartart' :
+                 channel === 'insertModel3d' ? 'slides:insert-model3d' :
+                 channel === 'addChart' ? 'slides:add-chart' :
+                 channel === 'addElement' ? 'slides:add-element' :
+                 channel === 'addTable' ? 'slides:add-table' :
+                 channel
       // 文件打开：PPTX
       if (ch === 'openPptx' || ch === 'open' || ch === 'slides:open' || ch === 'slides:open-pptx') {
         try {
@@ -250,6 +257,41 @@
           report('browser_image_err', e.message || String(e))
           return null
         }
+      }
+      // 3D 模型插入：GLB/GLTF/OBJ 文件选择 → 写 fake dialog + fake fs → 走 originalCall
+      // Vb() stub 已 patch 支持 globalThis._slidesFakeDialog
+      // pp() stub 已 patch 支持 globalThis._slidesFakeFiles
+      if (ch === 'slides:insert-model3d') {
+        try {
+          const file = await pickFile(MODEL3D_ACCEPT)
+          if (!file) { report('user_cancel', 'no 3D model picked'); return null }
+          const bytes = new Uint8Array(await file.arrayBuffer())
+          const ext = (file.name.split('.').pop() || 'glb').toLowerCase()
+          const fakePath = '/tmp/fake-3d-model.' + ext
+          if (!globalThis._slidesFakeDialog) globalThis._slidesFakeDialog = {}
+          globalThis._slidesFakeDialog.path = fakePath
+          if (!globalThis._slidesFakeFiles) globalThis._slidesFakeFiles = {}
+          globalThis._slidesFakeFiles[fakePath] = bytes
+          report('browser_model3d_picked', file.name + ' ' + bytes.length + 'B ext=' + ext)
+          const result = await originalCall(ch, rest[0], rest[1])
+          // 清理 fake state
+          delete globalThis._slidesFakeDialog
+          delete globalThis._slidesFakeFiles[fakePath]
+          return result
+        } catch (e) {
+          report('browser_model3d_err', e.message || String(e))
+          console.error('[slides-host] 3D model insert failed:', e)
+          return null
+        }
+      }
+      // save-as / pick-export-dir / pick-export-pdf-path：浏览器无写文件 API，暂不支持
+      if (ch === 'slides:save-as' || ch === 'slides:pick-export-dir' || ch === 'slides:pick-export-pdf-path') {
+        report('not_supported', ch + ' not supported in browser')
+        return ch === 'slides:save-as' ? { ok: false, error: 'browser_no_saveas' } : null
+      }
+      // edit-image-fill：图片替换，暂不支持
+      if (ch === 'slides:edit-image-fill') {
+        return null
       }
       return originalCall(ch, ...rest)
     }

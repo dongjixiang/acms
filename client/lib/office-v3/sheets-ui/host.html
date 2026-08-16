@@ -3,10 +3,32 @@
 <head>
 <meta charset="UTF-8">
 <title>GenOffice Sheets Host</title>
-<link rel="stylesheet" href="/client/lib/office-v3/sheets-ui/acms-office-sheets-ui.css?v=1">
-<style>html,body{margin:0;padding:0;height:100%;overflow:hidden;}#root{height:100vh;}</style>
+<link rel="stylesheet" href="/client/lib/office-v3/sheets-ui/acms-office-sheets-ui.css?v=18">
+<style>
+  html,body{margin:0;padding:0;height:100%;overflow:hidden;}
+  /* P140: ACMS 顶部小工具条（GenOffice Sheets UI 不带「打开…」按钮） */
+  .acms-sheets-toolbar{
+    height:32px;display:flex;align-items:center;gap:8px;
+    padding:0 12px;background:#f5f5f7;border-bottom:1px solid #d8d8de;
+    flex-shrink:0;
+  }
+  .acms-sheets-toolbar button{
+    font-size:12px;padding:4px 12px;border:1px solid #ccc;border-radius:4px;
+    background:#fff;cursor:pointer;color:#333;
+  }
+  .acms-sheets-toolbar button:hover{background:#eaecef;}
+  .acms-sheets-toolbar button:disabled{opacity:.5;cursor:wait;}
+  .acms-sheets-toolbar .sep{width:1px;height:18px;background:#d8d8de;margin:0 4px;}
+  .acms-sheets-toolbar .name{font-size:12px;color:#666;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  #root{height:calc(100vh - 32px);}
+</style>
 </head>
 <body>
+<div class="acms-sheets-toolbar">
+  <button data-role="open-file" title="从本地选择 .xlsx 文件打开">📂 打开…</button>
+  <div class="sep"></div>
+  <div class="name" data-role="file-name">未打开文件</div>
+</div>
 <div id="root"></div>
 <script>
   // iframe console 转发到主窗口（调试）
@@ -77,7 +99,7 @@
   window.__init = async function (opts) {
     opts = opts || {}
     try {
-      if (!mod) mod = await import('/client/lib/office-v3/sheets-ui/office-sheets-ui.js?v=11')
+      if (!mod) mod = await import('/client/lib/office-v3/sheets-ui/office-sheets-ui.js?v=12')
       if (rootEl && mod.unmountSheetsUI) {
         try { mod.unmountSheetsUI(rootEl) } catch (e) {}
       }
@@ -96,6 +118,19 @@
         apiKey: opts.apiKey || 'dev-key-001',
         buffer: bin || undefined,
       })
+      // P144: 浏览器 stub 的 ai:get-settings 返回 {provider:"acms"} 没有 providers 字段，
+      // Lu() 读 Be.providers[Be.provider] → undefined['acms'] → 每次按键报错。
+      // window.desktopApi 是 mountSheetsUI 内部才赋值的，必须 mount 后 patch。
+      // React useEffect 异步执行，mount 后同步 patch 来得及（Lu 在 onKeyDown 里调用）。
+      try {
+        if (window.desktopApi && !window.desktopApi.__acmsSettingsPatched) {
+          window.desktopApi.getAiSettings = function () {
+            return Promise.resolve({ provider: 'acms', apiKey: '', model: '', providers: { acms: { model: '' } } });
+          };
+          window.desktopApi.__acmsSettingsPatched = true;
+        }
+      } catch (e) { /* ignore */ }
+      if (window.__setFileNameLabel) window.__setFileNameLabel(opts.fileName || (bin ? '工作簿.xlsx' : '未打开文件'))
       return { ok: true }
     } catch (e) {
       console.error('[genoffice-sheets-host] __init 失败:', e)
@@ -109,6 +144,305 @@
     } catch (e) {}
     rootEl = null
   }
+
+  // P140: ACMS 顶部「打开…」按钮（GenOffice Sheets UI 本身没有 Open 入口）
+  // 流程：浏览器 file picker → POST /api/office/save 上传 → 拿 fileId → 重新跑 __init 替换工作簿
+  function bytesToBase64(bytes) {
+    var bs = new Uint8Array(bytes);
+    var chunks = [];
+    var CH = 0x8000;
+    for (var i = 0; i < bs.length; i += CH) {
+      chunks.push(String.fromCharCode.apply(null, bs.subarray(i, i + CH)));
+    }
+    return btoa(chunks.join(''));
+  }
+  function setFileNameLabel(name) {
+    var el = document.querySelector('[data-role="file-name"]');
+    if (el) el.textContent = name || '未打开文件';
+  }
+  function pickFile() {
+    return new Promise(function (resolve) {
+      try {
+        var inp = document.createElement('input');
+        inp.type = 'file';
+        inp.accept = '.xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel';
+        inp.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0;';
+        document.body.appendChild(inp);
+        var settled = false;
+        function done(file) {
+          if (settled) return;
+          settled = true;
+          try { inp.remove(); } catch (e) {}
+          resolve(file || null);
+        }
+        inp.addEventListener('change', function () {
+          var f = inp.files && inp.files[0];
+          done(f);
+        });
+        // 用户取消 modern browser 关闭 dialog 不触发 change，靠 timeout 兜底
+        setTimeout(function () { done(null); }, 10 * 60 * 1000);
+        inp.click();
+      } catch (e) {
+        console.warn('[sheets-host] pickFile failed:', e);
+        resolve(null);
+      }
+    });
+  }
+  // 上传本地 xlsx → 拿 fileId
+  async function uploadXlsx(file, apiKey) {
+    var b64 = bytesToBase64(await file.arrayBuffer());
+    var resp = await fetch('/api/office/save?api_key=' + (apiKey || 'dev-key-001'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'xlsx', name: file.name || '工作簿.xlsx', content: b64 }),
+    });
+    var r = await resp.json();
+    return r; // { ok, fileId?, error? }
+  }
+
+  // wire up the open-file button
+  var _openBtn = document.querySelector('[data-role="open-file"]');
+  if (_openBtn) {
+    _openBtn.addEventListener('click', async function () {
+      var apiKey = (window.__acmsApiKey) || 'dev-key-001';
+      _openBtn.disabled = true;
+      try {
+        var file = await pickFile();
+        if (!file) return;
+        setFileNameLabel('上传中… ' + file.name);
+        var r = await uploadXlsx(file, apiKey);
+        if (!r || !r.ok) {
+          setFileNameLabel('上传失败：' + ((r && r.error) || '未知'));
+          alert('上传失败：' + ((r && r.error) || '未知'));
+          return;
+        }
+        // 重新跑 __init 替换工作簿（__init 内部会 unmountSheetsUI + 清空 root + mount）
+        await window.__init({ fileId: r.fileId, fileName: file.name, apiKey: apiKey });
+        // 通知父窗口 ACMSWin 更新标题
+        try { parent.postMessage({ type: 'acms-office-open', fileId: r.fileId, fileName: file.name }, '*'); } catch (e) {}
+      } catch (e) {
+        console.error('[sheets-host] open file failed:', e);
+        setFileNameLabel('打开失败：' + (e.message || String(e)));
+      } finally {
+        _openBtn.disabled = false;
+      }
+    });
+  }
+
+  // 让外部（bridge / 上层）可以更新顶部文件名显示
+  window.__setFileNameLabel = setFileNameLabel;
+
+  // ── ACMS 补丁 (v0.96.x)：patch sheets-ui ACMS AI runner → ACMS Buddy ──────
+  // 与 word-ui/host.html 的 patchACMS AIRunner 同款思路：
+  //   sheets-ui 里 _Rn (line 331502) 是空 stub runner（和 Word 的 DX 同构）
+  //   bo = useRef(null) (line 362203) 是 runner ref
+  //   Pd(text, files) (line 362320) 是发送函数，调 pt.run(text, files)
+  //   Wr = useState(!1) 的 setter（busy），Ri = useState([]) 的 setter（消息）
+  //   面板 DOM class：.ai-panel-header / .ai-panel-title / .ai-header-btn
+  function findAiPanelFiber(rootEl) {
+    // 参照 Word 的 findGeeFiber：从 AI 面板 DOM 元素上溯整条 return 链，
+    // 找持有 bo runner ref（useRef.current 是 _Rn 实例：空对象 + start/stop/send）的组件。
+    // ⚠️ 不要停在第一个函数组件（nIn 是表现层，bo ref 在上层 OLn/ll 容器组件里）
+    // ⚠️ OLn 有 80+ hooks，bo ref 在 hook 76（2026-08-16 实测），guard 必须 > 80
+    var candidates = rootEl.querySelectorAll('.ai-panel-header, .ai-panel-title, .ai-header-btn, [class*="ai-panel-"]');
+    for (var i = 0; i < candidates.length; i++) {
+      var el = candidates[i];
+      var fiberKey = Object.keys(el).find(function(k) { return k.indexOf('__reactFiber') === 0; });
+      if (!fiberKey) continue;
+      var fiber = el[fiberKey];
+      while (fiber) {
+        if (fiber.tag === 0 || fiber.tag === 1) {
+          // 检查该函数组件的 hook 链里是否有 _Rn 特征 ref
+          var hook = fiber.memoizedState;
+          var guard = 0;
+          while (hook && guard < 100) {
+            var ms = hook.memoizedState;
+            if (ms && typeof ms === 'object' && 'current' in ms && !Array.isArray(ms)) {
+              var c = ms.current;
+              if (c && typeof c === 'object' && !Array.isArray(c) &&
+                  typeof c.start === 'function' && typeof c.stop === 'function' && typeof c.send === 'function') {
+                return fiber;
+              }
+            }
+            hook = hook.next;
+            guard++;
+          }
+        }
+        fiber = fiber.return;
+      }
+    }
+    return null;
+  }
+
+  function patchSheetsRunner() {
+    if (window.__acmsSheetsPatched) return true;
+    var rootEl = document.getElementById('root');
+    if (!rootEl) return false;
+    var fiber = findAiPanelFiber(rootEl);
+    if (!fiber) return false;
+
+    // React 19: useState setter 在 hook.queue.dispatch，memoizedState 是值本身
+    // 找 bo ref（useRef(null)，current 是 _Rn stub 实例 = 空对象 + start/stop/send）
+    // 找 Wr setter（useState(!1) = busy，唯一初始值 false 的 dispatch）
+    // 找 Ri setter（useState([]) 第一个 [] = 消息列表）
+    var hook = fiber.memoizedState;
+    var boRef = null, busySetter = null, chatSetter = null;
+    var seenEmptyArr = 0;
+    while (hook) {
+      var ms = hook.memoizedState;
+      var q = hook.queue;
+      // useState（React 19）
+      if (q && typeof q.dispatch === 'function') {
+        if (ms === false && !busySetter) { busySetter = q.dispatch; }
+        if (Array.isArray(ms) && ms.length === 0) {
+          seenEmptyArr++;
+          if (seenEmptyArr === 1 && !chatSetter) chatSetter = q.dispatch;
+        }
+      }
+      // useRef: 找 current 是 _Rn stub 实例的特征（空对象 + start/stop/send）
+      if (ms && typeof ms === 'object' && 'current' in ms && !Array.isArray(ms)) {
+        var c = ms.current;
+        if (c && typeof c === 'object' && !Array.isArray(c) &&
+            typeof c.start === 'function' && typeof c.stop === 'function' && typeof c.send === 'function') {
+          boRef = ms;
+          break;
+        }
+      }
+      hook = hook.next;
+    }
+
+    if (!boRef || !boRef.current) {
+      console.warn('[acms-host-sheets] 没找到 bo runner ref（panel 可能还没渲染）');
+      return false;
+    }
+    var runner = boRef.current;
+    if (runner.__acmsPatched) return true;  // 幂等
+
+    runner._busy = false;
+    Object.defineProperty(runner, 'busy', {
+      get: function() { return runner._busy; },
+      set: function(v) { runner._busy = v; },
+      configurable: true
+    });
+
+    runner.run = async function(message, attachments) {
+      runner._busy = true;
+      if (busySetter) try { busySetter(true); } catch(_) {}
+      console.info('[acms-host-sheets] ACMS AI 消息 → ACMS Buddy:', message);
+
+      // 组装 docContext：sheets-ui 的 desktopApi.readWorkbookRange 在浏览器是 stub，
+      // 不能用来读单元格内容。改用 __sheetsAI.getWorkbookInfo() 拿 sheet 列表，
+      // docContext 只含 sheet 元信息，LLM 根据指令推断操作（由 bridge __sheetsAI.propose 执行）。
+      var workbookInfo = null;
+      try { workbookInfo = window.__sheetsAI && window.__sheetsAI.getWorkbookInfo(); } catch(e) {}
+      var docContext = {
+        sheets: (workbookInfo && workbookInfo.sheets || []).map(function(s) {
+          return { id: s.id, name: s.name };
+        })
+      };
+
+      var summary = '', errMsg = null;
+      try {
+        var resp = await fetch('/api/agent-buddy/office-action?api_key=dev-key-001', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+          body: JSON.stringify({ kind: 'xlsx', instruction: message, docContext: docContext })
+        });
+        var data = await resp.json();
+        if (data && data.ok && data.action) {
+          summary = data.action.summary || 'AI 已应用编辑';
+          if (window.parent.OfficeV3 && typeof window.parent.OfficeV3.runAction === 'function') {
+            var r = await window.parent.OfficeV3.runAction(data.action);
+            if (r && r.ok) {
+              summary = (data.action.summary || 'AI 已应用编辑') + '（已写入 Excel）';
+            } else {
+              errMsg = (r && r.error) || 'Excel 应用失败';
+            }
+          } else {
+            errMsg = 'parent.OfficeV3.runAction 不可用';
+          }
+        } else {
+          errMsg = (data && data.error) || 'office-action 返回失败';
+        }
+      } catch (e) {
+        errMsg = '请求失败: ' + e.message;
+        console.warn('[acms-host-sheets] office-action 异常:', e);
+      }
+
+      // 更新聊天消息：把最后一条 streaming assistant 换成完成提示
+      if (chatSetter) {
+        try {
+          chatSetter(function(prev) {
+            var next = prev.slice();
+            for (var i = next.length - 1; i >= 0; i--) {
+              if (next[i].role === 'assistant' && next[i].streaming) {
+                next[i] = {
+                  ...next[i],
+                  streaming: false,
+                  text: errMsg ? ('❌ ' + errMsg) : ('✅ ' + summary)
+                };
+                break;
+              }
+            }
+            return next;
+          });
+        } catch (e) { console.warn('[acms-host-sheets] 更新聊天消息失败:', e.message); }
+      }
+
+      runner._busy = false;
+      if (busySetter) try { busySetter(false); } catch(_) {}
+    };
+
+    runner.cancel = function() {
+      runner._busy = false;
+      if (busySetter) try { busySetter(false); } catch(_) {}
+    };
+    runner.reset = function() { runner._busy = false; };
+
+    window.__acmsSheetsPatched = true;
+    console.info('[acms-host-sheets] ✅ ACMS AI runner patched → ACMS Buddy 接管');
+    return true;
+  }
+
+  function setupAcmsAiPatchLoop() {
+    if (window.__acmsSheetsPatchInterval) return;
+    function tryInject() {
+      if (window.parent && window.parent.ACMS && window.parent.ACMS.Buddy) {
+        patchSheetsRunner();
+        window.__acmsSheetsPatchInterval = setInterval(patchSheetsRunner, 1200);
+        setTimeout(function() {
+          if (window.__acmsSheetsPatchInterval) { clearInterval(window.__acmsSheetsPatchInterval); window.__acmsSheetsPatchInterval = null; }
+        }, 30000);
+        // MutationObserver：AI 面板渲染完立即 patch，避免 1.2s 轮询延迟
+        if (!window.__acmsSheetsPanelObserver) {
+          window.__acmsSheetsPanelObserver = new MutationObserver(function(muts) {
+            for (var i = 0; i < muts.length; i++) {
+              var added = muts[i].addedNodes;
+              for (var j = 0; j < added.length; j++) {
+                var n = added[j];
+                if (n && n.nodeType === 1 && n.querySelector && n.querySelector('.ai-panel-header')) {
+                  patchSheetsRunner();
+                  break;
+                }
+              }
+            }
+          });
+          window.__acmsSheetsPanelObserver.observe(document.body, { childList: true, subtree: true });
+        }
+      } else {
+        setTimeout(tryInject, 400);
+      }
+    }
+    tryInject();
+  }
+
+  // 在 __init 完成后启动 patch 轮询
+  var _origInit = window.__init;
+  window.__init = async function (opts) {
+    var result = await _origInit(opts);
+    setTimeout(setupAcmsAiPatchLoop, 800);
+    return result;
+  };
 
   window.__ready = true
 </script>
