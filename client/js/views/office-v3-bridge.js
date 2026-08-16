@@ -869,6 +869,20 @@
       body.referenceImage = recentImages[recentImages.length - 1];
       console.log('[IMG-DEBUG] using reference image, length:', body.referenceImage.length);
     }
+    // 插入占位节点显示"生成中..."
+    var placeholderNode = {
+      type: 'docProtected',
+      attrs: {
+        blockType: 'image',
+        imageDataUrl: null,
+        label: 'AI 插图',
+        previewText: '正在生成插图...',
+        imageWidthPx: 320,
+        imageHeightPx: 200,
+        genImage: { dataUrl: null, loading: true, mime: 'image/png' }
+      }
+    };
+    editor.chain().focus().insertContentAt(insertPos, placeholderNode).run();
     // 调 ACMS 生图服务（与 office-action 同款鉴权）
     return fetch('/api/image-tools/ai-generate?api_key=dev-key-001', {
       method: 'POST',
@@ -907,7 +921,20 @@
           }
         };
         console.log('[IMG-DEBUG] inserting node, genImage.dataUrl length=', node.attrs.genImage.dataUrl.length);
-        editor.chain().focus().insertContentAt(insertPos, node).run();
+        // 替换占位节点
+        var doc = editor.state.doc;
+        var targetPos = -1;
+        doc.content.forEach(function (child, offset) {
+          if (targetPos >= 0) return;
+          if (child.type.name === 'docProtected' && child.attrs.genImage && child.attrs.genImage.loading) {
+            targetPos = offset;
+          }
+        });
+        if (targetPos >= 0) {
+          editor.chain().focus().insertContentAt(targetPos, node).run();
+        } else {
+          editor.chain().focus().insertContentAt(insertPos, node).run();
+        }
         // 验证插入后的状态
         setTimeout(() => {
           const doc = editor.state.doc;

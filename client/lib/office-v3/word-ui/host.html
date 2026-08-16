@@ -402,36 +402,76 @@
         if (!menu) return;
         // 幂等：已注入则跳过（React 重渲染冲掉后，下次右键会重新注入）
         if (menu.querySelector('[data-acms-ai]')) return;
+        // 添加 AI 二级菜单项
         var sep = document.createElement('div');
         sep.className = 'ctx-sep';
         sep.setAttribute('data-acms-ai', 'sep');
         menu.appendChild(sep);
-        var items = [
+        // 创建"AI 助手"子菜单
+        var aiMenuItem = document.createElement('button');
+        aiMenuItem.className = 'ctx-item';
+        aiMenuItem.setAttribute('data-acms-ai', 'ai-submenu');
+        var aiLbl = document.createElement('span');
+        aiLbl.className = 'ctx-label';
+        aiLbl.textContent = '🤖 AI 助手';
+        var aiKey = document.createElement('span');
+        aiKey.className = 'ctx-key';
+        aiKey.textContent = '▸';
+        aiMenuItem.appendChild(aiLbl);
+        aiMenuItem.appendChild(aiKey);
+        menu.appendChild(aiMenuItem);
+        // 创建子菜单容器
+        var subMenu = document.createElement('div');
+        subMenu.className = 'ctx-submenu';
+        subMenu.setAttribute('data-acms-ai', 'submenu');
+        subMenu.style.display = 'none';
+        subMenu.style.position = 'absolute';
+        subMenu.style.left = '100%';
+        subMenu.style.top = '0';
+        subMenu.style.background = getComputedStyle(document.body).backgroundColor || '#fff';
+        subMenu.style.border = '1px solid #ddd';
+        subMenu.style.padding = '4px 0';
+        subMenu.style.zIndex = '10000';
+        document.body.appendChild(subMenu);
+        var subItems = [
           { key: 'polish', label: '✨ 润色' },
           { key: 'format', label: '📐 排版' },
           { key: 'summarize', label: '📝 总结' },
           { key: 'image', label: '🎨 生成插图' }
         ];
-        items.forEach(function (it) {
+        subItems.forEach(function (it) {
           var btn = document.createElement('button');
           btn.className = 'ctx-item';
           btn.setAttribute('data-acms-ai', it.key);
           var lbl = document.createElement('span');
           lbl.className = 'ctx-label';
           lbl.textContent = it.label;
-          var key = document.createElement('span');
-          key.className = 'ctx-key';
-          key.textContent = 'AI';
           btn.appendChild(lbl);
-          btn.appendChild(key);
-          // 不 stopPropagation：让 GenOffice 自己的点击关闭逻辑关闭菜单；
-          // 选区有 __acmsSelCache 兜底（右键时已缓存），菜单关闭不会丢选区
           btn.onclick = function (e) {
             e.preventDefault();
+            e.stopPropagation();
+            subMenu.style.display = 'none';
             acmsRunSelectionAction(it.key);
           };
-          menu.appendChild(btn);
+          subMenu.appendChild(btn);
         });
+        // 鼠标悬停显示子菜单
+        aiMenuItem.onmouseenter = function () {
+          var rect = aiMenuItem.getBoundingClientRect();
+          subMenu.style.display = 'block';
+          subMenu.style.left = rect.right + 'px';
+          subMenu.style.top = rect.top + 'px';
+        };
+        aiMenuItem.onmouseleave = function () {
+          subMenu.style.display = 'none';
+        };
+        // 点击关闭子菜单
+        aiMenuItem.onclick = function (e) {
+          e.preventDefault();
+          if (subMenu.style.display === 'block') {
+            subMenu.style.display = 'none';
+          }
+        };
         console.info('[acms-host] ✅ AI 动作已注入原生右键菜单');
       } catch (e) {
         console.warn('[acms-host] 注入右键菜单失败:', e.message);
