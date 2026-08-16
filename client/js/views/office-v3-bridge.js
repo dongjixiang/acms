@@ -861,11 +861,19 @@
     if (!prompt) return Promise.resolve({ ok: false, error: '缺少插图描述 prompt' });
     var insertPos = genOfficeSelectionInsertPos(win);
     if (insertPos < 0) return Promise.resolve({ ok: false, error: '未检测到选中区域，请先选中文字' });
+    // 收集已有的 AI 插图作为风格参考（最多 2 张）
+    var recentImages = genOfficeCollectRecentImages(editor, 2);
+    console.log('[IMG-DEBUG] recentImages count:', recentImages.length);
+    var body = { prompt: prompt, n: 1, size: '1024x1024' };
+    if (recentImages.length > 0) {
+      body.referenceImage = recentImages[recentImages.length - 1];
+      console.log('[IMG-DEBUG] using reference image, length:', body.referenceImage.length);
+    }
     // 调 ACMS 生图服务（与 office-action 同款鉴权）
     return fetch('/api/image-tools/ai-generate?api_key=dev-key-001', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
-      body: JSON.stringify({ prompt: prompt, n: 1, size: '1024x1024' })
+      body: JSON.stringify(body)
     }).then(function (r) { return r.json(); }).then(function (data) {
       if (!data || !data.ok || !data.options || !data.options.length) {
         return { ok: false, error: (data && data.error) || '生图失败' };
