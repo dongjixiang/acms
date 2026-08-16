@@ -1,194 +1,176 @@
-// 智能体 API 路由 — 增强版
+// Agent 管理 API
+// GET/POST /api/agents — 列表/新建
+// GET/PUT/DELETE /api/agents/:id — 详情/更新/删除
+// GET /api/agents/:id/tools — 已绑定工具
+// POST /api/agents/:id/tools — 绑定工具
+// DELETE /api/agents/:id/tools/:toolId — 解绑工具
+// POST /api/agents/:id/call — 测试委托调用
+// GET /api/agent-calls — 调用日志
+// GET/POST /api/tools — 工具 CRUD
+
 const express = require('express');
 const router = express.Router();
+const { collection } = require('../db/connection');
 const agentStore = require('../stores/agent-store');
-const taskStore = require('../stores/task-store');
-const reqStore = require('../stores/requirement-store');
-const projectStore = require('../stores/project-store');
-const wikiService = require('../services/wiki-service');
-const eventBus = require('../services/event-bus');
+const toolStore = require('../stores/tool-store');
+const registry = require('../agents/registry');
+const caller = require('../agents/caller');
 
-// ===== 注册/管理 =====
+// ── Agent CRUD ─────────────────────────────────────────
+// 注意：此 router 挂载在 /api/agents，所以路径不包含 /agents 前缀
 
-router.post('/register', (req, res) => {
-  const { id, name, type, roles, skills, endpoint } = req.body;
-  if (!id || !name) return res.status(400).json({ error: 'MISSING_FIELDS', message: 'id 和 name 是必填项' });
-  const agent = agentStore.register({ id, name, type, roles, skills, endpoint, authToken: req.headers['x-api-key'] || '' });
-  eventBus.emit('agent.registered', { actor: { id, type: 'agent', name }, target: { type: 'agent', id }, payload: { agent } });
-  res.status(201).json(agent);
+/** GET /api/agents */
+router.get('/', function (req, res) {
+  const agents = agentStore.list();
+  // 关联 tool 名称
+  const tools = toolStore.list();
+  const toolMap = new Map(tools.map(t => [t.id, t.name]));
+  res.json({
+    ok: true,
+    agents: agents.map(a => ({
+      ...a,
+      boundTools: JSON.parse(a.bound_tools || '[]').map(tid => ({
+        id: tid,
+        name: toolMap.get(tid) || tid
+      }))
+    }))
+  });
 });
 
-router.get('/', (req, res) => {
-  res.json(agentStore.list({ status: req.query.status, type: req.query.type }));
+/** POST /api/agents */
+router.post('/', function (req, res) {
+  const { id, name, role, domain, modelId, systemPrompt, allowedToCall } = req.body;
+  if (!id || !name) return res.json({ ok: false, error: 'id 和 name 必填' });
+
+  const agent = agentStore.register({
+    id, name, role: role || 'worker', domain: domain || 'general',
+    modelId: modelId || '', systemPrompt: systemPrompt || '',
+    allowedToCall: allowedToCall || []
+  });
+  res.json({ ok: true, agent });
 });
 
-router.patch('/:id/status', (req, res) => {
-  const agent = agentStore.updateStatus(req.params.id, req.body.status);
-  if (!agent) return res.status(404).json({ error: 'AGENT_NOT_FOUND' });
-  res.json(agent);
-});
-
-// ===== 智能体专属任务视图 =====
-
-// 我的任务（已认领+进行中+待审核）
-router.get('/:id/tasks', (req, res) => {
+/** GET /api/agents/:id */
+router.get('/:id', function (req, res) {
   const agent = agentStore.getById(req.params.id);
-  if (!agent) return res.status(404).json({ error: 'AGENT_NOT_FOUND' });
-  const assigned = taskStore.list({ assignedTo: req.params.id, limit: 200 });
-  const roles = JSON.parse(agent.roles || '[]');
-  // 如果智能体有 reviewer 角色，也返回待审核任务
-  let reviewTasks = [];
-  if (roles.includes('reviewer')) {
-    reviewTasks = taskStore.list({ status: 'review', limit: 50 });
-  }
-  res.json({ agent: { id: agent.id, name: agent.name, type: agent.type, roles }, assigned, reviewQueue: reviewTasks });
+  if (!agent) return res.status(404).json({ ok: false, error: 'Agent 不存在' });
+  res.json({ ok: true, agent });
 });
 
-// 任务上下文注入（智能体认领任务时获取完整上下文）— 分层注入
-// ?layer=0    默认，仅 Layer 0: 任务目标 + 前置接口签名 + 产出签名 + 验收命令
-// ?layer=0,1  Layer 0 + 依赖契约详情 + 涉及文件清单
-// ?layer=0,1,2  全量: Layer 0+1 + wiki_context + 父需求 SRS
-router.get('/:id/context/:taskId', (req, res) => {
-  const task = taskStore.getById(req.params.taskId);
-  if (!task) return res.status(404).json({ error: 'TASK_NOT_FOUND' });
-
-  const contextService = require('../services/context-service');
-  const layerParam = req.query.layer || '0';
-  const layers = layerParam.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
-  const maxLayer = layers.length > 0 ? Math.max(...layers) : 0;
-
-  // 解析 depends_contract
-  const dependsContract = JSON.parse(task.depends_contract || '[]');
-
-  // 解析父需求
-  let parentRequirement = null;
-  if (task.parent_id) {
-    const parent = reqStore.getById(task.parent_id);
-    if (parent) {
-      const srs = JSON.parse(parent.srs || '{}');
-      parentRequirement = {
-        id: parent.id, title: parent.title,
-        description: parent.description || '',
-        summary: srs.summary || parent.description?.substring(0, 200) || '',
-        acceptanceCriteria: srs.acceptanceCriteria || [],
-        wikiPath: parent.wiki_path || '',
-      };
-    }
-  }
-
-  // 按层级构建上下文
-  let context;
-  if (maxLayer >= 2) {
-    context = contextService.buildLayer2(task, dependsContract, parentRequirement);
-  } else if (maxLayer >= 1) {
-    context = contextService.buildLayer1(task, dependsContract);
-  } else {
-    context = contextService.buildLayer0(task, dependsContract);
-  }
-
-  // 注入项目环境信息 (所有层级都带，因为很小)
-  if (task.project_id) {
-    const project = projectStore.getById(task.project_id);
-    if (project) {
-      context.project = {
-        id: project.id, name: project.name,
-        environments: projectStore.getEnvironments(task.project_id).map(e => ({ name: e.name, url: e.url })),
-        repos: projectStore.getRepos(task.project_id).map(r => ({ name: r.name, url: r.url, defaultBranch: r.default_branch })),
-      };
-    }
-  }
-
-  // 附加上下文大小信息（帮助 Agent 决策是否请求更高 layer）
-  context._estimatedChars = contextService.estimateChars(context);
-  context._availableLayers = {
-    0: contextService.estimateChars(contextService.buildLayer0(task, dependsContract)),
-    1: contextService.estimateChars(contextService.buildLayer1(task, dependsContract)),
-    2: contextService.estimateChars(contextService.buildLayer2(task, dependsContract, parentRequirement)),
-  };
-
-  res.json(context);
-});
-
-// ===== 技能匹配 =====
-
-router.get('/:id/match-tasks', (req, res) => {
+/** PUT /api/agents/:id */
+router.put('/:id', function (req, res) {
   const agent = agentStore.getById(req.params.id);
-  if (!agent) return res.status(404).json({ error: 'AGENT_NOT_FOUND' });
+  if (!agent) return res.status(404).json({ ok: false, error: 'Agent 不存在' });
 
-  const allTasks = taskStore.list({ status: 'backlog', limit: 100 });
-  const skills = JSON.parse(agent.skills || '{}');
-  const matches = [];
+  const { name, role, domain, modelId, systemPrompt, allowedToCall, status } = req.body;
+  const updates = {};
+  if (name !== undefined) updates.name = name;
+  if (role !== undefined) updates.role = role;
+  if (domain !== undefined) updates.domain = domain;
+  if (modelId !== undefined) updates.model_id = modelId;
+  if (systemPrompt !== undefined) updates.system_prompt = systemPrompt;
+  if (allowedToCall !== undefined) updates.allowed_to_call = JSON.stringify(allowedToCall);
+  if (status !== undefined) updates.status = status;
 
-  for (const task of allTasks) {
-    const required = JSON.parse(task.required_skills || '{}');
-    if (Object.keys(required).length === 0) {
-      matches.push({ taskId: task.id, title: task.title, score: 1, matchNote: '无技能要求，通用任务' });
-      continue;
-    }
-    let score = 0, matched = 0;
-    for (const [skill, level] of Object.entries(required)) {
-      const al = skills[skill] || 0;
-      if (al >= level) { score += al - level + 1; matched++; }
-      else { score -= (level - al) * 2; }
-    }
-    if (matched === Object.keys(required).length) score += 5;
-    if (score > 0) matches.push({ taskId: task.id, title: task.title, score: Math.round(score * 10) / 10, requiredSkills: required, type: task.type, priority: task.priority });
-  }
-
-  matches.sort((a, b) => b.score - a.score);
-  res.json(matches.slice(0, 10));
+  agentStore.update(req.params.id, updates);
+  res.json({ ok: true, agent: agentStore.getById(req.params.id) });
 });
 
-// ===== 事件通知 =====
+/** DELETE /api/agents/:id */
+router.delete('/:id', function (req, res) {
+  const ok = agentStore.remove(req.params.id);
+  res.json({ ok, deleted: ok });
+});
 
-// 智能体订阅事件（WebSocket 处理）
-router.post('/:id/subscribe', (req, res) => {
+// ── Tool CRUD (挂载在 /api/agents，路径为 /tools/*) ───────────────────────────
+
+/** GET /api/tools */
+router.get('/tools', function (req, res) {
+  const tools = toolStore.list({ category: req.query.category });
+  res.json({ ok: true, tools });
+});
+
+/** POST /api/tools */
+router.post('/tools', function (req, res) {
+  const { id, name, description, category, handlerPath, paramsSchema } = req.body;
+  if (!id || !name) return res.json({ ok: false, error: 'id 和 name 必填' });
+  const tool = toolStore.register({ id, name, description, category, handlerPath, paramsSchema });
+  res.json({ ok: true, tool });
+});
+
+/** PUT /api/tools/:id */
+router.put('/tools/:id', function (req, res) {
+  const tool = toolStore.update(req.params.id, req.body);
+  if (!tool) return res.status(404).json({ ok: false, error: '工具不存在' });
+  res.json({ ok: true, tool });
+});
+
+/** DELETE /api/tools/:id */
+router.delete('/tools/:id', function (req, res) {
+  const ok = toolStore.delete(req.params.id);
+  res.json({ ok, deleted: ok });
+});
+
+// ── Agent-Tool 映射 ─────────────────────────────────────
+
+/** GET /api/agents/:id/tools */
+router.get('/:id/tools', function (req, res) {
   const agent = agentStore.getById(req.params.id);
-  if (!agent) return res.status(404).json({ error: 'AGENT_NOT_FOUND' });
+  if (!agent) return res.status(404).json({ ok: false, error: 'Agent 不存在' });
 
-  const roles = JSON.parse(agent.roles || '[]');
-  const subscriptions = [];
-
-  // 按角色自动订阅相关事件
-  if (roles.includes('analyst')) {
-    subscriptions.push('requirement.created');
-  }
-  if (roles.includes('planner')) {
-    subscriptions.push('requirement.approved');
-    subscriptions.push('requirement.decomposed');
-  }
-  if (roles.includes('executor')) {
-    subscriptions.push('task.created');
-  }
-  if (roles.includes('reviewer')) {
-    subscriptions.push('task.submitted');
-  }
-
-  res.json({ agentId: req.params.id, roles, subscriptions });
+  const boundTools = JSON.parse(agent.bound_tools || '[]');
+  const tools = toolStore.getByIds(boundTools);
+  res.json({ ok: true, tools });
 });
 
-// 获取最近通知
-router.get('/:id/notifications', (req, res) => {
-  const agent = agentStore.getById(req.params.id);
-  if (!agent) return res.status(404).json({ error: 'AGENT_NOT_FOUND' });
+/** POST /api/agents/:id/tools */
+router.post('/:id/tools', function (req, res) {
+  const { toolId, paramsSchema } = req.body;
+  if (!toolId) return res.json({ ok: false, error: 'toolId 必填' });
 
-  const roles = JSON.parse(agent.roles || '[]');
-  const relevantTypes = [];
-  if (roles.includes('analyst')) relevantTypes.push('requirement.created');
-  if (roles.includes('planner')) relevantTypes.push('requirement.approved');
-  if (roles.includes('executor')) relevantTypes.push('task.created');
-  if (roles.includes('reviewer')) relevantTypes.push('task.submitted');
+  const tool = toolStore.getById(toolId);
+  if (!tool) return res.status(404).json({ ok: false, error: '工具不存在' });
 
-  const events = eventBus.query({ limit: 20 }).filter(e => relevantTypes.includes(e.type));
-  res.json(events);
+  agentStore.addTool(req.params.id, toolId, paramsSchema || {});
+  res.json({ ok: true });
 });
 
-// ===== 统计 =====
-router.get('/:id/stats', (req, res, next) => {
+/** DELETE /api/agents/:id/tools/:toolId */
+router.delete('/:id/tools/:toolId', function (req, res) {
+  agentStore.removeTool(req.params.id, req.params.toolId);
+  res.json({ ok: true });
+});
+
+// ── 委托调用测试 ────────────────────────────────────────
+
+/** POST /api/agents/:id/call */
+router.post('/:id/call', async function (req, res) {
+  const { toAgentId, instruction, context } = req.body;
+  if (!toAgentId || !instruction) {
+    return res.json({ ok: false, error: 'toAgentId 和 instruction 必填' });
+  }
+
   try {
-    const statsService = require('../services/agent-stats-service');
-    res.json(statsService.getStats(req.params.id));
-  } catch (e) { next(e); }
+    // 设置调用上下文
+    caller.setCurrentAgent(req.params.id);
+    // 使用 caller 进行委托调用（内部会处理 domain 查找和权限检查）
+    const result = await caller.call(toAgentId, { instruction, context }, { calledBy: [req.params.id] });
+    res.json({ ok: true, result });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// ── 调用日志 ────────────────────────────────────────────
+
+/** GET /api/agent-calls */
+router.get('/calls', function (req, res) {
+  const { limit = 50, fromAgent, toAgent } = req.query;
+  const all = collection('agent_calls').all().reverse();
+  let calls = all;
+  if (fromAgent) calls = calls.filter(c => c.fromAgent === fromAgent);
+  if (toAgent) calls = calls.filter(c => c.toAgent === toAgent);
+  res.json({ ok: true, calls: calls.slice(0, parseInt(limit)) });
 });
 
 module.exports = router;

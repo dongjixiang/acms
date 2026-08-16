@@ -227,6 +227,7 @@ app.use('/api/projects', require('./routes/projects'));
 app.use('/api/requirements', require('./routes/requirements'));
 app.use('/api/tasks', require('./routes/tasks'));
 app.use('/api/agents', require('./routes/agents'));
+app.use('/api/tools', require('./routes/tools'));
 app.use('/api/wiki', require('./routes/wiki'));
 app.use('/api/changes', require('./routes/changes'));
 app.use('/api/admin', require('./routes/admin'));

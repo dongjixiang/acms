@@ -822,6 +822,84 @@ function repairJsonQuotes(str) {
   return out;
 }
 
+/**
+ * POST /api/agent-buddy/office-action mode='html-deck' — PPT AI 专用路径
+ *
+ * 背景：GenOffice slides-ui bundle 的 AI 面板期望 LLM 输出完整 deck HTML（每页一个
+ *       <section class="slide">），bundle 自己有 HTML→pptx 流水线（generateFromHtml）。
+ *       范式跟 word/xlsx 的"动作 JSON op"完全不同，单独走一条路径。
+ *
+ * 输入：{ kind:'slides', mode:'html-deck', docContext:{...}, instruction:'用户指令', settings:{...} }
+ * 输出：{ ok:true, html:'<section class="slide">...</section>...' }
+ */
+async function handleOfficeHtmlDeck(req, res, body) {
+  var instruction = String(body.instruction || '').slice(0, 2000);
+  var docContext = body.docContext || {};
+  if (!instruction) return res.json({ ok: false, error: '缺少 instruction' });
+
+  var modelStore = require('../stores/model-store');
+  var llmAdapter = require('../services/llm-adapter');
+  var model = modelStore.getDefaultGenModel();
+  if (!model) return res.json({ ok: false, error: '未配置生成模型' });
+
+  // 当前 deck 上下文（slides 数量 + 大致内容）
+  var deckSummary = '';
+  if (Array.isArray(docContext.slides) && docContext.slides.length) {
+    deckSummary = '当前 deck 共 ' + docContext.slides.length + ' 页：\n'
+      + docContext.slides.map(function (s, i) {
+        var title = s.title ? (' 标题="' + String(s.title).slice(0, 60) + '"') : '';
+        var body = s.body ? (' 内容="' + String(s.body).slice(0, 120) + '"') : '';
+        var note = s.notes ? (' 备注="' + String(s.notes).slice(0, 80) + '"') : '';
+        return '[第' + (i + 1) + '页]' + title + body + note;
+      }).join('\n');
+  } else {
+    deckSummary = '当前 deck 为空（新文档）';
+  }
+
+  // 系统 prompt：让 LLM 输出严格 HTML deck（bundle 期望的格式）
+  var systemPrompt = '你是 PPT deck HTML 生成器。根据用户指令和当前 deck 摘要，输出完整 deck 的 HTML。\n\n'
+    + '【严格输出格式】\n'
+    + '- 整个 deck 用一个根元素 <div class="deck"> 包裹\n'
+    + '- 每页幻灯片是一个 <section class="slide">，里面包含多个块元素（h1/h2/h3/p/ul/ol/blockquote 等）\n'
+    + '- 标题用 <h1>（页标题）或 <h2>（副标题）\n'
+    + '- 正文段落用 <p>\n'
+    + '- 列表用 <ul><li>...</li></ul> 或 <ol><li>...</li></ol>\n'
+    + '- 关键数据用 <strong> 或 <em> 强调\n'
+    + '- **不要**输出任何 HTML 之外的文字（不要"以下是..."、"好的..."、代码块围栏 ```html``` 等）\n'
+    + '- **不要**输出 <html>/<head>/<body> 这种外层结构——只输出 deck 内容\n'
+    + '- **不要**输出 <style>/<script>\n\n'
+    + '【编辑模式 vs 新建模式】\n'
+    + '- 用户说"创建/生成/写一个XX主题的PPT" → 输出全新 deck（覆盖现有）\n'
+    + '- 用户说"美化/改进/润色/修改当前的PPT" → 输出基于现有 deck 的修订版本（保留原结构，只改内容）\n'
+    + '- 用户说"在第N页加一段" → 输出完整 deck 但在第N页追加指定内容\n\n'
+    + '【质量要求】\n'
+    + '- 每页 3-8 个块元素（标题 + 2-6 个内容块）\n'
+    + '- 内容真实可信，不要空洞套话（"在这个时代..."、"让我们一起..."）\n'
+    + '- 总页数 5-15（除非用户指定）\n'
+    + '- 中文输出，配少量英文术语（IT/商业/技术类内容常见）';
+
+  var userMsg = '当前 deck 摘要：\n' + deckSummary + '\n\n用户指令：' + instruction;
+
+  try {
+    var result = await llmAdapter.callLLM(model.id, [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userMsg }
+    ], { maxTokens: 8000, temperature: 0.7, caller: 'agent-buddy-office-html-deck' });
+
+    var html = typeof result === 'string' ? result : (result && result.content) || '';
+    if (!html.trim()) {
+      return res.json({ ok: false, error: 'LLM 未返回 HTML 内容' });
+    }
+    // 简单清洗：去掉外层 ```html``` 围栏（部分模型会包）
+    html = html.replace(/^\s*```html?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+    console.log('[office-html-deck] 生成 HTML 长度:', html.length, '预览:', html.slice(0, 200));
+    return res.json({ ok: true, html: html });
+  } catch (e) {
+    console.error('[office-html-deck] LLM 异常:', e.message);
+    return res.json({ ok: false, error: 'AI 处理失败：' + (e.message || String(e)) });
+  }
+}
+
 /** POST /api/agent-buddy/office-action — 前端组装文档摘要后调用，LLM 生成精确编辑动作
  *  body: { kind:'word'|'slides'|'xlsx', docContext:{...}, instruction:'用户指令' }
  *  resp: { ok:true, action:{ kind, op, ... } } 或 { ok:false, error }
@@ -829,6 +907,12 @@ function repairJsonQuotes(str) {
 router.post('/office-action', async function(req, res) {
   try {
     var body = req.body || {};
+    var mode = body.mode || 'action-json';
+    // v0.97.x: PPT AI HTML-deck 模式（slides-ui bundle 期望 LLM 输出完整 deck HTML，
+    //          而不是 JSON 动作 op——范式跟 word/xlsx 完全不同，单独走一条路径）
+    if (mode === 'html-deck') {
+      return await handleOfficeHtmlDeck(req, res, body);
+    }
     var kind = body.kind === 'xlsx' || body.kind === 'slides' ? body.kind : 'word';
     var instruction = String(body.instruction || '').slice(0, 600);
     var docContext = body.docContext || null;

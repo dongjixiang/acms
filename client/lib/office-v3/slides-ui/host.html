@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>GenOffice Slides Host</title>
-<link rel="stylesheet" href="/client/lib/office-v3/slides-ui/acms-office-slides-ui.css?v=9">
+<link rel="stylesheet" href="/client/lib/office-v3/slides-ui/acms-office-slides-ui.css?v=10">
 <style>html,body{margin:0;padding:0;height:100%;overflow:hidden;}#root{height:100vh;}</style>
 </head>
 <body>
@@ -100,7 +100,7 @@
     opts = opts || {}
     try {
       report('init_start', 'fileId=' + (opts.fileId || 'null') + ' fileName=' + (opts.fileName || 'null'))
-      if (!mod) mod = await import('/client/lib/office-v3/slides-ui/office-slides-ui.js?v=15')
+      if (!mod) mod = await import('/client/lib/office-v3/slides-ui/office-slides-ui.js?v=16')
       report('mod_loaded', 'mod has mountSlidesUI=' + (typeof mod.mountSlidesUI))
       if (rootEl && mod.unmountSlidesUI) {
         try { mod.unmountSlidesUI(rootEl) } catch (e) { report('unmount_err', e.message) }
@@ -141,6 +141,14 @@
       // 浏览器 shim：拦截 'openPptx'/'open'/'slides:open'，走原生 <input type="file"> 选文件后
       // 喂给 setPendingBytes + consume-pending-open（Electron stub dialog.showOpenDialog 永远返回 canceled）
       patchBrowserFileOpen()
+      // ── ACMS 补丁 (v0.97.x)：前端补全 PPT AI 链路 ──────────────────────────────
+      // 背景：GenOffice slides-ui bundle 内有完整 AI UI（4 个 ribbon 按钮 + chat 面板），
+      //       但 slidesApi.aiStream/onAiStream 完全没接——bundle 的 QS handlers 里没有
+      //       slides:ai-stream，slidesApi.on* 全是 no-op stub（"r.startsWith("on") ? () => () => {}"）。
+      //       修法：覆盖 slidesApi Proxy + 注入 aiStream/onAiStream 真实实现，
+      //       把请求代理到 ACMS Buddy /api/agent-buddy/office-action mode='html-deck'，
+      //       流式响应通过本地事件分发器推回 bundle 的 onAiStream callback。
+      patchSlidesAi()
       return { ok: true }
     } catch (e) {
       console.error('[genoffice-slides-host] __init 失败:', e)
@@ -297,6 +305,143 @@
     }
     ed.__browserOpenPatched = true
     report('patched', 'browser file open shim installed')
+  }
+
+  // ── ACMS 补丁 (v0.97.x)：PPT AI 链路 ──────────────────────────────
+  // 见 __init 末尾注释。覆盖 window.slidesApi Proxy，让 aiStream/onAiStream 走 ACMS Buddy。
+  function patchSlidesAi() {
+    if (!window.slidesApi || window.__acmsSlidesAiPatched) return;
+    window.__acmsSlidesAiPatched = true;
+
+    var _origSlidesApi = window.slidesApi;
+    var _aiStreamListeners = new Set();
+    var _aiInflight = new Map();  // requestId → { abortCtl }
+
+    function dispatchAiStream(msg) {
+      _aiStreamListeners.forEach(function (cb) {
+        try { cb(msg); } catch (e) { console.error('[acms-ppt-ai] listener err', e); }
+      });
+    }
+
+    // 提取当前 deck 上下文（slides 元信息 + 每页文字概要）
+    async function buildSlidesDocContext() {
+      var ctx = { slides: [], deckSize: 0, currentIdx: 0 };
+      try {
+        // getRenderSlides 拿所有 slides 的渲染数据（含 paragraphs 文字）
+        var allSlides = await window.__slidesEditor.call('get-render-slides');
+        if (Array.isArray(allSlides)) {
+          ctx.deckSize = allSlides.length;
+          ctx.slides = allSlides.map(function (s, i) {
+            var title = '', body = '', notes = '';
+            try {
+              // 从 slide.nodes 提取文字
+              if (s && s.nodes) {
+                for (var j = 0; j < s.nodes.length; j++) {
+                  var n = s.nodes[j];
+                  if (n && n.text) {
+                    if (!title && n.kind === 'title') title = String(n.text).slice(0, 80);
+                    else body += (body ? ' ' : '') + String(n.text).slice(0, 60);
+                  }
+                }
+              }
+            } catch (e) {}
+            return { i: i, title: title, body: body.slice(0, 200), notes: notes };
+          });
+        }
+      } catch (e) {
+        console.warn('[acms-ppt-ai] buildSlidesDocContext 拿不到 slides:', e.message);
+      }
+      try {
+        var notes = await window.__slidesEditor.call('get-notes');
+        if (Array.isArray(notes)) {
+          notes.forEach(function (nt, i) {
+            if (ctx.slides[i]) ctx.slides[i].notes = String(nt || '').slice(0, 100);
+          });
+        }
+      } catch (e) {}
+      return ctx;
+    }
+
+    window.slidesApi = new Proxy({}, {
+      get: function (target, prop) {
+        if (prop === 'aiStream') {
+          return async function (payload) {
+            var requestId = payload && payload.requestId;
+            var instruction = (payload && payload.messages && payload.messages[0] && payload.messages[0].text) || '';
+            // 关键：替换 bundle 写死的 anthropic/claude-opus-4-7 settings 为 ACMS 默认 LLM
+            var acmsSettings = null;
+            try { acmsSettings = await _origSlidesApi.getAiSettings(); } catch (e) {}
+            var slidesCtx = await buildSlidesDocContext();
+            var apiKey = window.__acmsApiKey || 'dev-key-001';
+            var abortCtl = new AbortController();
+            _aiInflight.set(requestId, { abortCtl: abortCtl });
+            console.info('[acms-ppt-ai] 调 Buddy html-deck:', instruction.slice(0, 50));
+            try {
+              var r = await fetch('/api/agent-buddy/office-action?api_key=' + apiKey, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  kind: 'slides',
+                  mode: 'html-deck',
+                  docContext: slidesCtx,
+                  instruction: instruction,
+                  settings: acmsSettings,
+                  requestId: requestId
+                }),
+                signal: abortCtl.signal
+              });
+              var data = await r.json();
+              if (!data || !data.ok) {
+                dispatchAiStream({
+                  requestId: requestId,
+                  type: 'error',
+                  error: (data && data.error) || 'AI 处理失败'
+                });
+                return;
+              }
+              var html = (data && data.html) || '';
+              console.info('[acms-ppt-ai] 收到 HTML，长度:', html.length);
+              // bundle 期望 LLM 返回 text（不一定是 HTML，bundle 自己 generateFromHtml 会解析）
+              // 我们把 HTML 直接当 text 推过去，bundle 会把整个 text 作为 deck HTML 喂给 generateFromHtml
+              if (html) {
+                dispatchAiStream({ requestId: requestId, type: 'delta', text: html });
+              }
+              dispatchAiStream({ requestId: requestId, type: 'done' });
+            } catch (e) {
+              if (e && e.name === 'AbortError') {
+                dispatchAiStream({ requestId: requestId, type: 'error', error: '已取消', errKind: 'stopped' });
+              } else {
+                dispatchAiStream({
+                  requestId: requestId,
+                  type: 'error',
+                  error: (e && e.message) || String(e),
+                  errKind: 'request_failed'
+                });
+              }
+            } finally {
+              _aiInflight.delete(requestId);
+            }
+          };
+        }
+        if (prop === 'onAiStream') {
+          return function (cb) {
+            _aiStreamListeners.add(cb);
+            // 返回取消订阅函数（bundle 原 stub 返回 () => () => {}，现在返回真 unsub）
+            return function () { _aiStreamListeners.delete(cb); };
+          };
+        }
+        if (prop === 'aiStreamCancel') {
+          return function (requestId) {
+            var info = _aiInflight.get(requestId);
+            if (info && info.abortCtl) info.abortCtl.abort();
+            _aiInflight.delete(requestId);
+          };
+        }
+        // 其他属性透传给原 slidesApi（包括 getLayouts / getSections / masterOpen / setNotes 等）
+        return _origSlidesApi[prop];
+      }
+    });
+    console.info('[acms-ppt-ai] patchSlidesAi 已激活（aiStream→ACMS Buddy html-deck）');
   }
 
   window.__ready = true

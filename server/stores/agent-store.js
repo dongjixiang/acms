@@ -1,56 +1,79 @@
-// 智能体数据存储 (JSON 版)
+// Agent 数据存储
 const { collection } = require('../db/connection');
 
 class AgentStore {
-  register({ id, name, type = 'general', roles = [], skills = {}, endpoint = '', authToken = '' }) {
+  /** 注册/更新 Agent */
+  register({ id, name, role = 'worker', domain = 'general', modelId = '', systemPrompt = '', allowedToCall = [] }) {
     const now = new Date().toISOString();
     const existing = collection('agents').findOne(a => a.id === id);
+    const doc = {
+      id, name, role, domain, modelId, systemPrompt,
+      allowed_to_call: JSON.stringify(allowedToCall),
+      bound_tools: '[]',
+      status: 'online',
+      registered_at: existing?.registered_at || now,
+      last_seen_at: now
+    };
     if (existing) {
-      collection('agents').update(a => a.id === id, {
-        name, type, roles: JSON.stringify(roles), skills: JSON.stringify(skills),
-        status: 'online', endpoint, auth_token: authToken, last_seen_at: now
-      });
+      // 合并：保留旧字段，更新新字段
+      Object.assign(existing, doc);
+      collection('agents').update(a => a.id === id, existing);
     } else {
-      collection('agents').insert({
-        id, name, type, roles: JSON.stringify(roles), skills: JSON.stringify(skills),
-        status: 'online', max_concurrent_tasks: 3, current_tasks: '[]',
-        stats: '{}', domain_roles: '[]', tech_tags: '[]',
-        endpoint, auth_token: authToken, registered_at: now, last_seen_at: now
-      });
+      collection('agents').insert(doc);
     }
     return this.getById(id);
   }
 
+  /** 更新 Agent 字段 */
+  update(id, updates) {
+    const agent = this.getById(id);
+    if (!agent) return null;
+    if (updates.allowedToCall !== undefined) updates.allowed_to_call = JSON.stringify(updates.allowedToCall);
+    if (updates.boundTools !== undefined) updates.bound_tools = JSON.stringify(updates.boundTools);
+    Object.assign(agent, updates, { last_seen_at: new Date().toISOString() });
+    collection('agents').update(a => a.id === id, agent);
+    return agent;
+  }
+
+  /** 删除 Agent */
+  remove(id) {
+    return collection('agents').remove(a => a.id === id) > 0;
+  }
+
   getById(id) { return collection('agents').findOne(a => a.id === id) || null; }
 
-  list({ status, type } = {}) {
+  list({ status, role, domain } = {}) {
     let agents = collection('agents').all();
     if (status) agents = agents.filter(a => a.status === status);
-    if (type) agents = agents.filter(a => a.type === type);
+    if (role) agents = agents.filter(a => a.role === role);
+    if (domain) agents = agents.filter(a => a.domain === domain);
     return agents.sort((a, b) => new Date(b.last_seen_at) - new Date(a.last_seen_at));
   }
 
-  updateStatus(id, status) {
-    const now = new Date().toISOString();
-    return collection('agents').update(a => a.id === id, { status, last_seen_at: now });
+  /** 给 Agent 绑定工具 */
+  addTool(agentId, toolId, paramsSchema = {}) {
+    const agent = this.getById(agentId);
+    if (!agent) return false;
+    const tools = JSON.parse(agent.bound_tools || '[]');
+    if (tools.find(t => t.id === toolId)) return true; // 已绑定
+    tools.push({ id: toolId, params: paramsSchema });
+    agent.bound_tools = JSON.stringify(tools);
+    collection('agents').update(a => a.id === agentId, agent);
+    return true;
   }
 
-  matchSkills(requiredSkills) {
-    const agents = this.list({ status: 'online' });
-    const results = [];
-    for (const agent of agents) {
-      const skills = JSON.parse(agent.skills || '{}');
-      let score = 0;
-      let matched = 0;
-      for (const [skill, required] of Object.entries(requiredSkills || {})) {
-        const level = skills[skill] || 0;
-        if (level >= required) { score += level - required + 1; matched++; }
-        else { score -= (required - level) * 2; }
-      }
-      if (matched === Object.keys(requiredSkills || {}).length) score += 5;
-      if (score > 0) results.push({ agentId: agent.id, name: agent.name, type: agent.type, score: Math.round(score * 10) / 10 });
-    }
-    return results.sort((a, b) => b.score - a.score);
+  /** 解绑工具 */
+  removeTool(agentId, toolId) {
+    const agent = this.getById(agentId);
+    if (!agent) return false;
+    const tools = (JSON.parse(agent.bound_tools || '[]')).filter(t => t.id !== toolId);
+    agent.bound_tools = JSON.stringify(tools);
+    collection('agents').update(a => a.id === agentId, agent);
+    return true;
+  }
+
+  updateStatus(id, status) {
+    return this.update(id, { status });
   }
 }
 

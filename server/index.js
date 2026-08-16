@@ -131,11 +131,11 @@ try {
   const sysAgent = agentStore.register({
     id: 'agent-acms-self',
     name: 'ACMS-Self (系统)',
-    type: 'system',
-    roles: ['executor'],
-    skills: { coding: 10, testing: 8, design: 8, writing: 8 },  // 全能
-    endpoint: 'internal',
-    authToken: 'dev-key-001',
+    role: 'orchestrator',
+    domain: 'system',
+    modelId: '',
+    systemPrompt: '',
+    allowedToCall: [],
   });
   console.log(`[ACMS-Self] 已注册: ${sysAgent.name} (id=${sysAgent.id})`);
 
@@ -143,6 +143,70 @@ try {
   require('./services/auto-execute-dispatcher').init();
 } catch (e) {
   console.error('[ACMS-Self] 注册失败:', e.message);
+}
+
+// v0.97: Agent Registry — 扫描并注册 Expert Agents
+try {
+  const agentRegistry = require('./agents/registry');
+  const toolStore = require('./stores/tool-store');
+  const modelStore = require('./stores/model-store');
+
+  // 默认工具注册
+  const defaultTools = [
+    { id: 'genImage', name: 'AI生图', category: 'image', description: '调用 AGNES AI 文生图 API', handlerPath: 'server/tools/gen-image.js' },
+    { id: 'appendAll', name: '追加文本', category: 'word', description: '在文档末尾追加文本内容', handlerPath: 'server/tools/append-all.js' },
+    { id: 'formatText', name: '文本格式化', category: 'word', description: '调整文本格式（字体/字号/颜色等）', handlerPath: 'server/tools/format-text.js' },
+    { id: 'webSearch', name: '网络搜索', category: 'search', description: '搜索网络获取信息', handlerPath: 'server/tools/web-search.js' },
+    { id: 'summarize', name: '文本摘要', category: 'general', description: '对长文本进行摘要总结', handlerPath: 'server/tools/summarize.js' },
+  ];
+
+  for (const t of defaultTools) {
+    const existing = toolStore.getById(t.id);
+    if (!existing) {
+      toolStore.register(t);
+      console.log(`[AgentRegistry] 工具已注册: ${t.id}`);
+    }
+  }
+
+  // 注册 Expert Agents
+  console.log('[AgentRegistry] 开始加载 Expert Agents...');
+  const experts = [
+    require('./agents/expert-word'),
+    require('./agents/expert-image'),
+    require('./agents/expert-search'),
+  ];
+  console.log(`[AgentRegistry] 加载了 ${experts.length} 个专家模块`);
+
+  for (const exp of experts) {
+    console.log(`[AgentRegistry] 注册: ${exp.id} (${exp.name}) domain=${exp.domain}`);
+    agentRegistry.register(exp);
+    // 绑定默认工具
+    const curAgentStore = require('./stores/agent-store');
+    const agent = curAgentStore.getById(exp.id);
+    if (agent && exp.domain === 'word') {
+      ['appendAll', 'formatText', 'genImage'].forEach(tid => toolStore.addTool(exp.id, tid));
+    } else if (agent && exp.domain === 'image') {
+      toolStore.addTool(exp.id, 'genImage');
+    } else if (agent && exp.domain === 'search') {
+      toolStore.addTool(exp.id, 'webSearch');
+      toolStore.addTool(exp.id, 'summarize');
+    }
+  }
+
+  // 确保小吉是编排者，可以调用所有专家
+  const curAgentStore2 = require('./stores/agent-store');
+  const xiaoji = curAgentStore2.getById('agent-xiaoji');
+  if (xiaoji) {
+    curAgentStore2.update('agent-xiaoji', {
+      role: 'orchestrator',
+      allowedToCall: ['agent-word-expert', 'agent-image-expert', 'agent-search-expert']
+    });
+    console.log('[AgentRegistry] 小吉已配置为编排者');
+  }
+
+  console.log('[AgentRegistry] 启动完成 ✅');
+} catch (e) {
+  console.error('[AgentRegistry] 初始化失败:', e.message);
 }
 
 // v0.46: 注册内置 hooks（PostToolUse: auto-typescheck-on-write + track-tool-stats）
