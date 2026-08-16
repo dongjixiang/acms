@@ -75,7 +75,7 @@
   }
 
   // patch runner + 绑全局方便后续 runner 重建后重新 patch
-  function patchACMS AIRunner() {
+  function patchACMSAiRunner() {
     var rootEl = document.getElementById('root');
     if (!rootEl) return false;
     var fiber = findGeeFiber(rootEl);
@@ -460,7 +460,7 @@
     try {
       // 1. **不隐藏** GenSpark 按钮 — 用户能点开 AI 面板
       // 2. patch runner（如果还没 patch）
-      patchACMS AIRunner();
+      patchACMSAiRunner();
       // 2.5 v0.96.9b: 挂原生右键菜单 AI 项注入器（不拦截原生菜单，追加 AI 动作）
       bindAcmsContextMenu();
       // 3. 注入 ACMS AI 浮动按钮（同时保留 GenSpark UI）
@@ -501,7 +501,7 @@
                     var n = added[j];
                     if (n && n.querySelectorAll && n.querySelector('.ai-panel-header')) {
                       // AI 面板刚出现 — 立即 patch
-                      patchACMS AIRunner();
+                      patchACMSAiRunner();
                       break;
                     }
                   }
