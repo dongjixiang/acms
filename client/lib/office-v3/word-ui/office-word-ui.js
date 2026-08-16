@@ -80560,7 +80560,7 @@ function wj(e) {
   if (!r && !s && (n === "Auto TOC (updates when opened in Word)" || n === "Field end marker"))
     return h.class += " doc-protected-sectbreak", ["div", h, ["span", { class: "doc-sectbreak-label" }, String(n)]];
   if (t === "image" && (i || (e.attrs?.genImage && e.attrs.genImage.dataUrl))) {
-    if (!i && e.attrs?.genImage?.dataUrl) i = e.attrs.genImage.dataUrl;
+    const imgSrc = i || (e.attrs?.genImage && e.attrs.genImage.dataUrl);
     const {
       imageWidthPx: w,
       imageHeightPx: k,
@@ -80579,7 +80579,7 @@ function wj(e) {
       (I !== 0 || O !== 0) && (C = `transform:translate(${I.toFixed(1)}px,${O.toFixed(1)}px)`);
     }
     const M = {
-      src: String(i),
+      src: String(imgSrc),
       class: "doc-protected-img"
     };
     w && (M.style = `width:${Number(w)}px;` + (k ? `height:${Number(k)}px` : "height:auto"));
