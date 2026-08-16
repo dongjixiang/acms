@@ -531,7 +531,7 @@
   window.__init = async function (opts) {
     opts = opts || {}
     try {
-      if (!mod) mod = await import('/client/lib/office-v3/word-ui/office-word-ui.js?v=0.96.9b')
+      if (!mod) mod = await import('/client/lib/office-v3/word-ui/office-word-ui.js?v=0.96.9c')
       // 卸载旧实例
       if (rootEl && mod.unmountWordUI) {
         try { mod.unmountWordUI(rootEl) } catch (e) {}
