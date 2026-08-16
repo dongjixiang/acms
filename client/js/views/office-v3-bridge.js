@@ -306,12 +306,15 @@
     var frame = document.createElement('iframe');
     frame.className = 'v3-genoffice-frame';
     frame.style.cssText = 'width:100%;height:100%;border:0;display:block;';
-    frame.src = BASE + 'sheets-ui/host.html?v=12';
+    frame.src = BASE + 'sheets-ui/host.html?v=23';
     w.$c.appendChild(frame);
 
+    var _frameInitDone = false;
     function initFrame() {
+      if (_frameInitDone) return;  // P144: load 事件 + setTimeout 兜底会各调一次，二次 __init 会 unmount 掉第一个 Univer → Injector disposed 竞态
       var win = frame.contentWindow;
       if (!win || typeof win.__init !== 'function') return;
+      _frameInitDone = true;
       win.__init({ fileId: fileId || undefined, fileName: fileName || '工作簿.xlsx', apiKey: API_KEY })
         .then(function (r) {
           if (r && !r.ok) console.warn('[office-v3] GenOffice sheets host init 失败:', r.error);
@@ -729,6 +732,389 @@
     }
   }
 
+  // GenOffice Word UI：在文档末尾追加新内容（v0.96.2 P138）
+  // 把 \\n\\n 分隔的多段文本用 ProseMirror docParagraph 节点插入到 doc 末尾
+  function genOfficeAppendAll(frame, newText) {
+    try {
+      var win = frame && frame.contentWindow;
+      var docEl = win && win.document ? win.document.querySelector('[contenteditable="true"]') : null;
+      var editor = docEl && docEl.editor;
+      if (!editor) return { ok: false, error: '编辑器未就绪' };
+      var text = String(newText || '').trim();
+      if (!text) return { ok: false, error: '没有要追加的内容' };
+      // 在文档末尾（doc.content.size）插入多个段落，用 \\n\\n 切分
+      var paragraphs = text.split(/\n\s*\n/).map(function (p) { return p.trim(); }).filter(Boolean);
+      var docSize = editor.state.doc.content.size;
+      // 先把光标移到文档末尾
+      editor.commands.focus('end');
+      // 如果文档末尾不是段落结尾，补一个换行（避免粘连到最后一个段落的 run）
+      // 简单做法：直接 insertContent 多个段落（Tiptap 自动按 docParagraph 解析）
+      var content = paragraphs.map(function (p) {
+        return { type: 'docParagraph', content: [{ type: 'text', text: p }] };
+      });
+      editor.chain()
+        .insertContentAt(docSize, content)
+        .run();
+      return { ok: true, appended: paragraphs.length, chars: text.length };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
+  // GenOffice Word UI：在第 blockIdx 段之后插入新段落（v0.96.2 P138）
+  function genOfficeInsertAfter(frame, blockIdx, newText) {
+    try {
+      var win = frame && frame.contentWindow;
+      var docEl = win && win.document ? win.document.querySelector('[contenteditable="true"]') : null;
+      var editor = docEl && docEl.editor;
+      if (!editor) return { ok: false, error: '编辑器未就绪' };
+      var text = String(newText || '').trim();
+      if (!text) return { ok: false, error: '没有要插入的内容' };
+      var paras = [];
+      editor.state.doc.content.forEach(function (node, offset) {
+        var n = node.type.name;
+        if (n === 'docParagraph' || n === 'docHeading' || n === 'docListItem') {
+          paras.push({ node: node, offset: offset });
+        }
+      });
+      var target = paras[blockIdx];
+      if (!target) return { ok: false, error: '段落不存在: ' + blockIdx };
+      // 插入位置 = 目标段落结束位置（offset + nodeSize）
+      var insertPos = target.offset + target.node.nodeSize;
+      var paragraphs = text.split(/\n\s*\n/).map(function (p) { return p.trim(); }).filter(Boolean);
+      var content = paragraphs.map(function (p) {
+        return { type: 'docParagraph', content: [{ type: 'text', text: p }] };
+      });
+      editor.chain()
+        .insertContentAt(insertPos, content)
+        .run();
+      return { ok: true, afterBlock: blockIdx, appended: paragraphs.length };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
+  // v0.96.9: 返回选中区域结束位置（ProseMirror 字符 pos）；无选区返回 -1
+  // 实时 selection 优先，失焦时回退 iframe 内 host.html 缓存的最近非空选区（__acmsSelCache）
+  function genOfficeSelectionInsertPos(win) {
+    try {
+      var docEl = win.document.querySelector('[contenteditable="true"]');
+      var editor = docEl && docEl.editor;
+      if (!editor) return -1;
+      var sel = editor.state.selection;
+      if (sel && !sel.empty && sel.to != null) return sel.to;
+      var cache = win.__acmsSelCache;
+      if (cache && cache.to != null) return cache.to;
+      return -1;
+    } catch (e) {
+      return -1;
+    }
+  }
+
+  // v0.96.9: 把新文本插入到用户选中区域之后（原文保留，用户自行对比取舍）
+  // 润色/总结/改写结果走这个 op（insertAfterSelection）
+  function genOfficeInsertAtSelection(frame, newText) {
+    try {
+      var win = frame && frame.contentWindow;
+      var docEl = win && win.document ? win.document.querySelector('[contenteditable="true"]') : null;
+      var editor = docEl && docEl.editor;
+      if (!editor) return { ok: false, error: '编辑器未就绪' };
+      var text = String(newText || '').trim();
+      if (!text) return { ok: false, error: '没有要插入的内容' };
+      var insertPos = genOfficeSelectionInsertPos(win);
+      if (insertPos < 0) return { ok: false, error: '未检测到选中区域，请先选中文字' };
+      var paragraphs = text.split(/\n\s*\n/).map(function (p) { return p.trim(); }).filter(Boolean);
+      var content = paragraphs.map(function (p) {
+        return { type: 'docParagraph', content: [{ type: 'text', text: p }] };
+      });
+      editor.chain().focus().insertContentAt(insertPos, content).run();
+      return { ok: true, inserted: paragraphs.length, atPos: insertPos };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
+  // v0.96.9: 根据选中文字生成插图并插入到选中区域之后（异步，返回 Promise）
+  // action: { op:'generateImage', prompt, summary? }
+  // 链路：ACMS 生图服务 /api/image-tools/ai-generate（AGNES）→ dataUrl → docProtected 图片节点
+  function genOfficeGenerateImage(frame, action) {
+    var win = frame && frame.contentWindow;
+    var docEl = win && win.document ? win.document.querySelector('[contenteditable="true"]') : null;
+    var editor = docEl && docEl.editor;
+    if (!editor) return Promise.resolve({ ok: false, error: '编辑器未就绪' });
+    var prompt = String(action.prompt || '').trim();
+    if (!prompt) return Promise.resolve({ ok: false, error: '缺少插图描述 prompt' });
+    var insertPos = genOfficeSelectionInsertPos(win);
+    if (insertPos < 0) return Promise.resolve({ ok: false, error: '未检测到选中区域，请先选中文字' });
+    // 调 ACMS 生图服务（与 office-action 同款鉴权）
+    return fetch('/api/image-tools/ai-generate?api_key=dev-key-001', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+      body: JSON.stringify({ prompt: prompt, n: 1, size: '1024x1024' })
+    }).then(function (r) { return r.json(); }).then(function (data) {
+      if (!data || !data.ok || !data.options || !data.options.length) {
+        return { ok: false, error: (data && data.error) || '生图失败' };
+      }
+      var opt = data.options[0];
+      var imgData = opt.dataUrl || opt.image_url_output;
+      if (!imgData) return { ok: false, error: '生图返回缺少图片数据' };
+      var p = Promise.resolve(imgData);
+      // 非 data URI（http URL，如 CDN）→ 前端 fetch 转 base64（CDN 一般开 CORS）
+      if (imgData.indexOf('data:') !== 0) {
+        p = fetch(imgData).then(function (r2) { return r2.blob(); }).then(function (blob) {
+          return new Promise(function (resolve) {
+            var fr = new FileReader();
+            fr.onload = function () { resolve(fr.result); };
+            fr.readAsDataURL(blob);
+          });
+        });
+      }
+      return p.then(function (dataUrl) {
+        var node = {
+          type: 'docProtected',
+          attrs: {
+            blockType: 'image',
+            imageDataUrl: null,
+            label: 'AI 插图',
+            previewText: 'AI 插图: ' + prompt.slice(0, 40),
+            imageWidthPx: 320,
+            imageHeightPx: null,
+            genImage: { dataUrl: dataUrl, mime: opt.mime || 'image/png' }
+          }
+        };
+        editor.chain().focus().insertContentAt(insertPos, node).run();
+        return { ok: true, inserted: true, atPos: insertPos, imgSize: opt.size };
+      });
+    }).catch(function (err) {
+      return { ok: false, error: err.message };
+    });
+  }
+
+  // 收集 word 文档的段落节点（docParagraph/docHeading/docListItem），与 buildOfficeDocContext 索引一致
+  function genOfficeBlockList(editor) {
+    var paras = [];
+    editor.state.doc.content.forEach(function (node, offset) {
+      var n = node.type.name;
+      if (n === 'docParagraph' || n === 'docHeading' || n === 'docListItem') {
+        paras.push({ node: node, offset: offset });
+      }
+    });
+    return paras;
+  }
+
+  // GenOffice Word UI：批量替换多个段落文本（v0.96.7，润色全文/改写多处）
+  // operations: [{ blockIdx, newText }] — 每段独立事务，逐段重新定位（前面替换不改变段落数）
+  function genOfficeProposeEdits(frame, operations) {
+    try {
+      var win = frame && frame.contentWindow;
+      var docEl = win && win.document ? win.document.querySelector('[contenteditable="true"]') : null;
+      var editor = docEl && docEl.editor;
+      if (!editor) return { ok: false, error: '编辑器未就绪' };
+      var ops = Array.isArray(operations) ? operations : [];
+      if (!ops.length) return { ok: false, error: '没有要执行的替换操作' };
+      var done = 0, errors = [];
+      ops.forEach(function (op) {
+        var blockIdx = op.blockIdx;
+        var newText = String(op.newText != null ? op.newText : '').trim();
+        if (!newText) { errors.push('第' + blockIdx + '段新文本为空'); return; }
+        var paras = genOfficeBlockList(editor);
+        var target = paras[blockIdx];
+        if (!target) { errors.push('段落不存在: ' + blockIdx); return; }
+        var fromPos = target.offset + 1;
+        var toPos = target.offset + target.node.nodeSize - 1;
+        editor.chain()
+          .setTextSelection({ from: fromPos, to: toPos })
+          .insertContent(String(newText))
+          .run();
+        done++;
+      });
+      return { ok: true, replaced: done, errors: errors };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
+  // GenOffice Word UI：批量格式调整（v0.96.7，排版：标题层级/列表/加粗斜体/对齐/缩进）
+  // operations: [{ blockIdx, format: { heading:0|1..9, bold, italic, strike, align, indentFirstLine, kind:'bullet'|'numbered'|'none' } }]
+  // 只改格式不改文字；未提及字段保持原样；非法值跳过该字段并汇总
+  function genOfficeFormatOps(frame, operations) {
+    try {
+      var win = frame && frame.contentWindow;
+      var docEl = win && win.document ? win.document.querySelector('[contenteditable="true"]') : null;
+      var editor = docEl && docEl.editor;
+      if (!editor) return { ok: false, error: '编辑器未就绪' };
+      var ops = Array.isArray(operations) ? operations : [];
+      if (!ops.length) return { ok: false, error: '没有要执行的格式操作' };
+      var done = 0, errors = [];
+      ops.forEach(function (op) {
+        var blockIdx = op.blockIdx;
+        var fmt = op.format || {};
+        var paras = genOfficeBlockList(editor);
+        var target = paras[blockIdx];
+        if (!target) { errors.push('段落不存在: ' + blockIdx); return; }
+        var fromPos = target.offset + 1;
+        var toPos = target.offset + target.node.nodeSize - 1;
+        var chain = editor.chain().setTextSelection({ from: fromPos, to: toPos });
+        var changed = false;
+        // 1) 先属性（用当前节点类型名），再结构（setNode 可能改类型）
+        if (fmt.align != null) {
+          chain.updateAttributes(target.node.type.name, { align: String(fmt.align) });
+          changed = true;
+        }
+        if (fmt.indentFirstLine != null) {
+          var ifl = parseInt(fmt.indentFirstLine, 10);
+          if (!isNaN(ifl) && ifl >= 0) {
+            chain.updateAttributes(target.node.type.name, { indentFirstLine: ifl });
+            changed = true;
+          } else errors.push('第' + blockIdx + '段 indentFirstLine 非法: ' + fmt.indentFirstLine);
+        }
+        // v0.96.9: 段落级属性扩展（左右缩进/行距/段前段后/段落底纹）
+        if (fmt.indentLeft != null) {
+          var ilf = parseInt(fmt.indentLeft, 10);
+          if (!isNaN(ilf) && ilf >= 0) { chain.updateAttributes(target.node.type.name, { indentLeft: ilf }); changed = true; }
+          else errors.push('第' + blockIdx + '段 indentLeft 非法: ' + fmt.indentLeft);
+        }
+        if (fmt.indentRight != null) {
+          var irf = parseInt(fmt.indentRight, 10);
+          if (!isNaN(irf) && irf >= 0) { chain.updateAttributes(target.node.type.name, { indentRight: irf }); changed = true; }
+          else errors.push('第' + blockIdx + '段 indentRight 非法: ' + fmt.indentRight);
+        }
+        if (fmt.lineSpacing != null) {
+          var lsf = parseFloat(fmt.lineSpacing);
+          if (!isNaN(lsf) && lsf > 0) { chain.updateAttributes(target.node.type.name, { lineSpacing: lsf }); changed = true; }
+          else errors.push('第' + blockIdx + '段 lineSpacing 非法: ' + fmt.lineSpacing);
+        }
+        if (fmt.spaceBefore != null) {
+          var sbf = parseInt(fmt.spaceBefore, 10);
+          if (!isNaN(sbf) && sbf >= 0) { chain.updateAttributes(target.node.type.name, { spaceBefore: sbf }); changed = true; }
+          else errors.push('第' + blockIdx + '段 spaceBefore 非法: ' + fmt.spaceBefore);
+        }
+        if (fmt.spaceAfter != null) {
+          var saf = parseInt(fmt.spaceAfter, 10);
+          if (!isNaN(saf) && saf >= 0) { chain.updateAttributes(target.node.type.name, { spaceAfter: saf }); changed = true; }
+          else errors.push('第' + blockIdx + '段 spaceAfter 非法: ' + fmt.spaceAfter);
+        }
+        if (fmt.shadingFill != null) {
+          var shf = String(fmt.shadingFill).replace(/^#/, '');
+          if (/^[0-9a-fA-F]{6}$/.test(shf)) { chain.updateAttributes(target.node.type.name, { shadingFill: shf }); changed = true; }
+          else errors.push('第' + blockIdx + '段 shadingFill 非法: ' + fmt.shadingFill);
+        }
+        // 2) 字符 marks（true=加，false=去）
+        if (fmt.bold === true) { chain.setMark('bold'); changed = true; }
+        else if (fmt.bold === false) { chain.unsetMark('bold'); changed = true; }
+        if (fmt.italic === true) { chain.setMark('italic'); changed = true; }
+        else if (fmt.italic === false) { chain.unsetMark('italic'); changed = true; }
+        if (fmt.strike === true) { chain.setMark('strike'); changed = true; }
+        else if (fmt.strike === false) { chain.unsetMark('strike'); changed = true; }
+        if (fmt.underline === true) { chain.setMark('underline'); changed = true; }
+        else if (fmt.underline === false) { chain.unsetMark('underline'); changed = true; }
+        // v0.96.9: docTextStyle 字符级属性（字号/字体/颜色/高亮/字符底纹/上下标/大写）
+        if (fmt.sizeHalfPoints != null) {
+          var szf = parseInt(fmt.sizeHalfPoints, 10);
+          if (!isNaN(szf) && szf >= 10 && szf <= 400) { chain.setMark('docTextStyle', { sizeHalfPoints: szf }); changed = true; }
+          else errors.push('第' + blockIdx + '段 sizeHalfPoints 非法: ' + fmt.sizeHalfPoints + '（范围 10-400 半磅）');
+        }
+        if (fmt.font != null) {
+          var fnf = String(fmt.font).trim().slice(0, 50);
+          if (fnf) { chain.setMark('docTextStyle', { font: fnf }); changed = true; }
+          else errors.push('第' + blockIdx + '段 font 非法: ' + fmt.font);
+        }
+        if (fmt.color != null) {
+          var colf = String(fmt.color).replace(/^#/, '');
+          if (/^[0-9a-fA-F]{6}$/.test(colf)) { chain.setMark('docTextStyle', { color: colf }); changed = true; }
+          else errors.push('第' + blockIdx + '段 color 非法: ' + fmt.color + '（需十六进制无#）');
+        }
+        if (fmt.highlight != null) {
+          var hlf = String(fmt.highlight).replace(/^#/, '');
+          if (/^[0-9a-fA-F]{6}$/.test(hlf)) { chain.setMark('docTextStyle', { highlight: hlf }); changed = true; }
+          else errors.push('第' + blockIdx + '段 highlight 非法: ' + fmt.highlight);
+        }
+        if (fmt.shading != null) {
+          var shg = String(fmt.shading).replace(/^#/, '');
+          if (/^[0-9a-fA-F]{6}$/.test(shg)) { chain.setMark('docTextStyle', { shading: shg }); changed = true; }
+          else errors.push('第' + blockIdx + '段 shading 非法: ' + fmt.shading);
+        }
+        if (fmt.vertAlign != null) {
+          if (fmt.vertAlign === 'superscript' || fmt.vertAlign === 'subscript') { chain.setMark('docTextStyle', { vertAlign: fmt.vertAlign }); changed = true; }
+          else errors.push('第' + blockIdx + '段 vertAlign 非法: ' + fmt.vertAlign + '（需 superscript/subscript）');
+        }
+        if (fmt.caps != null) {
+          if (fmt.caps === 'all' || fmt.caps === 'small') { chain.setMark('docTextStyle', { caps: fmt.caps }); changed = true; }
+          else errors.push('第' + blockIdx + '段 caps 非法: ' + fmt.caps + '（需 all/small）');
+        }
+        // 3) 结构：标题层级 / 列表类型
+        if (fmt.heading != null) {
+          var lvl = parseInt(fmt.heading, 10);
+          if (lvl === 0) { chain.setNode('docParagraph'); changed = true; }
+          else if (lvl >= 1 && lvl <= 9) { chain.setNode('docHeading', { level: lvl }); changed = true; }
+          else errors.push('第' + blockIdx + '段 heading 非法: ' + fmt.heading);
+        }
+        if (fmt.kind != null) {
+          if (fmt.kind === 'none') { chain.setNode('docParagraph'); changed = true; }
+          else if (fmt.kind === 'bullet' || fmt.kind === 'numbered') { chain.setNode('docListItem', { kind: fmt.kind }); changed = true; }
+          else errors.push('第' + blockIdx + '段 kind 非法: ' + fmt.kind);
+        }
+        if (changed) { chain.run(); done++; }
+      });
+      return { ok: true, formatted: done, errors: errors };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
+  // v0.96.8: GenOffice Slides UI — 插入 SmartArt
+  // action: { op:'addSmartart', slideIndex, layout, items, xPx?, yPx?, wPx?, hPx?, fitWidthPx? }
+  // layout: 'list'|'process'|'cycle'|'hierarchy'|'pyramid'|'matrix'|'venn'
+  // items: string[] (至少 2 项)
+  function genOfficeAddSmartart(frame, action) {
+    try {
+      var win = frame && frame.contentWindow;
+      if (!win || !win.slidesApi) return { ok: false, error: 'Slides editor 未就绪' };
+      var slideIndex = action.slideIndex != null ? parseInt(action.slideIndex) : 0;
+      var layout = String(action.layout || 'process');
+      var items = Array.isArray(action.items) ? action.items.filter(function (t) { return t && String(t).trim(); }) : [];
+      if (items.length < 2) return { ok: false, error: 'SmartArt 至少需要 2 个文本项' };
+      
+      // 使用 window.slidesApi.addSmartArt() API（GenOffice 原生接口）
+      return win.slidesApi.addSmartArt({
+        slideIndex: slideIndex,
+        layout: layout,
+        items: items
+      });
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
+  // v0.96.8: GenOffice Slides UI — 插入 3D 模型
+  // action: { op:'insertModel3d', slideIndex, fileBase64, ext, name? }
+  // 浏览器环境：通过 host.html 的 slides:insert-model3d 通道
+  function genOfficeInsertModel3d(frame, action) {
+    try {
+      var win = frame && frame.contentWindow;
+      if (!win || !win.__slidesEditor) return { ok: false, error: 'Slides editor 未就绪' };
+      var ed = win.__slidesEditor;
+      if (!action.fileBase64) return { ok: false, error: '缺少 fileBase64' };
+      // 通过 host.html 已 patch 的 slides:insert-model3d 通道
+      // 需要先写 fake state（host.html 的 patchBrowserFileOpen 会读取）
+      var bytes = base64ToBytes(action.fileBase64);
+      var ext = String(action.ext || 'glb').toLowerCase();
+      var fakePath = '/tmp/fake-3d-model.' + ext;
+      if (!win._slidesFakeFiles) win._slidesFakeFiles = {};
+      if (!win._slidesFakeDialog) win._slidesFakeDialog = {};
+      win._slidesFakeFiles[fakePath] = bytes;
+      win._slidesFakeDialog.path = fakePath;
+      // 调用 original handler
+      var result = ed.call('slides:insert-model3d', { sender: { id: 'acms-buddy' }, slideIndex: action.slideIndex || 0 });
+      // 清理 fake state
+      delete win._slidesFakeFiles[fakePath];
+      delete win._slidesFakeDialog;
+      return result;
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
   // 加载 GenOffice Word UI：iframe 完全隔离（不污染 ACMS 全局样式）
   async function loadGenOfficeWord(w, fileId, fileName) {
     // 清理旧 word-ui 实例（reload 换文件后旧 key 残留会误导 runAction 定位）
@@ -746,7 +1132,7 @@
     var frame = document.createElement('iframe');
     frame.className = 'v3-genoffice-frame';
     frame.style.cssText = 'width:100%;height:100%;border:0;display:block;';
-    frame.src = BASE + 'word-ui/host.html';
+    frame.src = BASE + 'word-ui/host.html?v=0.96.9b';
     w.$c.appendChild(frame);
 
     function patchOpenDocx(win) {
@@ -1245,11 +1631,139 @@
         } else {
           for (var i = 0; i < keys.length; i++) {
             var e = state.instances[keys[i]].editor;
-            if (e && (e.kind === action.kind || (action.kind === 'word' && e.kind === 'word-ui'))) { inst = state.instances[keys[i]]; break; }
+            if (e && (e.kind === action.kind || (action.kind === 'word' && e.kind === 'word-ui') || (action.kind === 'slides' && e.kind === 'slides-ui'))) { inst = state.instances[keys[i]]; break; }
           }
         }
         if (!inst || !inst.editor) return { ok: false, error: '没有打开的 ' + action.kind + ' 编辑器' };
         var ed = inst.editor;
+        // v0.96.2 (P138): appendAll — 在文档末尾追加新内容（word/slides）
+        if (action.op === 'appendAll') {
+          if (ed.kind === 'word-ui') {
+            var ag = genOfficeAppendAll(ed.iframe, action.newText);
+            if (!ag.ok) return ag;
+            return {
+              ok: true,
+              summary: action.summary || '已追加 ' + (ag.appended || 1) + ' 段到文档末尾',
+              pendingSave: true,
+              undo: function () { return { ok: true, note: '文本编辑请用 Ctrl+Z' }; },
+            };
+          }
+          // slides: 直接操作 opened.deck（参考 proposeEdit 的写法）
+          if (ed.kind === 'slides' && ed.opened && ed.opened.deck) {
+            try {
+              var deck = ed.opened.deck;
+              var slide = deck.slides[ed.slideIdx] || deck.slides[0];
+              if (!slide || !slide.elements) return { ok: false, error: '当前幻灯片无效' };
+              // 在末尾追加一个文本元素（textBox）
+              var txt = String(action.newText || '').trim();
+              if (!txt) return { ok: false, error: '没有要追加的内容' };
+              slide.elements.push({ type: 'text', text: { paragraphs: [{ runs: [{ text: txt }] }] } });
+              ed.dirtyEls && ed.dirtyEls.add(slide);
+              return {
+                ok: true,
+                summary: action.summary || '已追加文本到幻灯片末尾',
+                pendingSave: ed.dirtyEls && ed.dirtyEls.size > 0,
+                undo: function () { return { ok: true, note: '请用 Ctrl+Z' }; },
+              };
+            } catch (err) {
+              return { ok: false, error: err.message };
+            }
+          }
+          return { ok: false, error: '当前编辑器不支持 appendAll' };
+        }
+        // v0.96.2 (P138): insertAfter — 在指定 blockIdx 段之后插入新段落（word/slides）
+        if (action.op === 'insertAfter') {
+          if (ed.kind === 'word-ui') {
+            var ig = genOfficeInsertAfter(ed.iframe, action.blockIdx, action.newText);
+            if (!ig.ok) return ig;
+            return {
+              ok: true,
+              summary: action.summary || '已在第 ' + action.blockIdx + ' 段后插入 ' + (ig.appended || 1) + ' 段',
+              pendingSave: true,
+              undo: function () { return { ok: true, note: '文本编辑请用 Ctrl+Z' }; },
+            };
+          }
+          // slides: 在第 textBoxIdx 个文本框之后插入新文本框
+          if (ed.kind === 'slides' && ed.opened && ed.opened.deck) {
+            try {
+              var deck2 = ed.opened.deck;
+              var slide2 = deck2.slides[ed.slideIdx] || deck2.slides[0];
+              if (!slide2 || !slide2.elements) return { ok: false, error: '当前幻灯片无效' };
+              var txt2 = String(action.newText || '').trim();
+              if (!txt2) return { ok: false, error: '没有要插入的内容' };
+              var textBoxes = slide2.elements.filter(function (el) { return el.text; });
+              var idx2 = action.textBoxIdx != null ? action.textBoxIdx : (typeof action.blockIdx === 'number' ? action.blockIdx : textBoxes.length - 1);
+              // 按 textBoxes 索引定位插入点
+              var insertAt = idx2 + 1;
+              slide2.elements.splice(insertAt, 0, { type: 'text', text: { paragraphs: [{ runs: [{ text: txt2 }] }] } });
+              ed.dirtyEls && ed.dirtyEls.add(slide2);
+              return {
+                ok: true,
+                summary: action.summary || '已在文本框 ' + idx2 + ' 后插入',
+                pendingSave: ed.dirtyEls && ed.dirtyEls.size > 0,
+                undo: function () { return { ok: true, note: '请用 Ctrl+Z' }; },
+              };
+            } catch (err) {
+              return { ok: false, error: err.message };
+            }
+          }
+          return { ok: false, error: '当前编辑器不支持 insertAfter' };
+        }
+        // v0.96.9: insertAfterSelection — 把新文本插入到用户选中区域之后（润色/总结/改写，原文保留）
+        if (action.op === 'insertAfterSelection') {
+          if (ed.kind === 'word-ui') {
+            var isg = genOfficeInsertAtSelection(ed.iframe, action.newText);
+            if (!isg.ok) return isg;
+            return {
+              ok: true,
+              summary: action.summary || '已插入到选中文字之后',
+              pendingSave: true,
+              undo: function () { return { ok: true, note: '文本编辑请用 Ctrl+Z' }; },
+            };
+          }
+          return { ok: false, error: '当前编辑器不支持 insertAfterSelection' };
+        }
+        // v0.96.9: generateImage — 根据选中文字生成插图并插入到选中区域之后（异步）
+        // ⚠️ 返回 Promise：调用方（host.html runner/右键菜单、agent-buddy.js）需 await / Promise.resolve
+        if (action.op === 'generateImage') {
+          if (ed.kind === 'word-ui') {
+            return genOfficeGenerateImage(ed.iframe, action).then(function (gi) {
+              if (gi && gi.ok) {
+                return { ok: true, summary: action.summary || '已生成插图并插入到选中文字之后', pendingSave: true };
+              }
+              return { ok: false, error: (gi && gi.error) || '插图生成失败' };
+            });
+          }
+          return Promise.resolve({ ok: false, error: '当前编辑器不支持 generateImage' });
+        }
+        if (action.op === 'proposeEdits') {
+          // v0.96.7: 批量替换多个段落（润色全文/改写多处）
+          if (ed.kind === 'word-ui') {
+            var pe = genOfficeProposeEdits(ed.iframe, action.operations);
+            if (!pe.ok) return pe;
+            return {
+              ok: true,
+              summary: action.summary || '已润色 ' + (pe.replaced || 0) + ' 段' + (pe.errors && pe.errors.length ? '（' + pe.errors.length + ' 段跳过）' : ''),
+              pendingSave: true,
+              undo: function () { return { ok: true, note: '文本编辑请用 Ctrl+Z' }; },
+            };
+          }
+          return { ok: false, error: '当前编辑器不支持 proposeEdits' };
+        }
+        if (action.op === 'formatOps') {
+          // v0.96.7: 批量格式调整（排版：标题层级/列表/加粗斜体/对齐/缩进）
+          if (ed.kind === 'word-ui') {
+            var fo = genOfficeFormatOps(ed.iframe, action.operations);
+            if (!fo.ok) return fo;
+            return {
+              ok: true,
+              summary: action.summary || '已调整 ' + (fo.formatted || 0) + ' 段格式' + (fo.errors && fo.errors.length ? '（' + fo.errors.length + ' 段跳过）' : ''),
+              pendingSave: true,
+              undo: function () { return { ok: true, note: '格式编辑请用 Ctrl+Z' }; },
+            };
+          }
+          return { ok: false, error: '当前编辑器不支持 formatOps' };
+        }
         if (action.op === 'proposeEdit') {
           // GenOffice Word UI（iframe 内 Tiptap）：走 commands 替换段落
           if (ed.kind === 'word-ui') {
@@ -1280,6 +1794,24 @@
                         (ed._saveEl || null);
           if (saveBtn) { saveBtn.click(); return { ok: true, summary: '已触发保存' }; }
           return { ok: false, error: '未找到保存按钮' };
+        }
+        // v0.96.8: addSmartart — 在幻灯片上插入 SmartArt（直接调 GenOffice IPC）
+        if (action.op === 'addSmartart') {
+          if (ed.kind === 'slides-ui') {
+            var sa = genOfficeAddSmartart(ed.iframe, action);
+            if (!sa.ok) return sa;
+            return { ok: true, summary: action.summary || '已插入 SmartArt', pendingSave: true };
+          }
+          return { ok: false, error: '当前编辑器不支持 addSmartart（需 GenOffice Slides UI）' };
+        }
+        // v0.96.8: insertModel3d — 在幻灯片上插入 3D 模型（直接调 GenOffice IPC）
+        if (action.op === 'insertModel3d') {
+          if (ed.kind === 'slides-ui') {
+            var m3d = genOfficeInsertModel3d(ed.iframe, action);
+            if (!m3d.ok) return m3d;
+            return { ok: true, summary: action.summary || '已插入 3D 模型', pendingSave: true };
+          }
+          return { ok: false, error: '当前编辑器不支持 insertModel3d（需 GenOffice Slides UI）' };
         }
         return { ok: false, error: '未知操作: ' + action.op };
       } catch (err) {

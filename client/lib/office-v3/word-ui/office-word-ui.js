@@ -80559,7 +80559,8 @@ function wj(e) {
     return h.class += " doc-protected-sectbreak", ["div", h, ["span", { class: "doc-sectbreak-label" }, fe("editorSectionBreak")]];
   if (!r && !s && (n === "Auto TOC (updates when opened in Word)" || n === "Field end marker"))
     return h.class += " doc-protected-sectbreak", ["div", h, ["span", { class: "doc-sectbreak-label" }, String(n)]];
-  if (t === "image" && i) {
+  if (t === "image" && (i || (e.attrs?.genImage && e.attrs.genImage.dataUrl))) {
+    if (!i && e.attrs?.genImage?.dataUrl) i = e.attrs.genImage.dataUrl;
     const {
       imageWidthPx: w,
       imageHeightPx: k,
