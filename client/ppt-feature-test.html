@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>PPT 3D模型 + SmartArt 测试</title>
+<style>
+body { font-family: system-ui; margin: 20px; background: #f5f5f5; }
+.card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+h1 { color: #333; }
+h2 { color: #555; font-size: 16px; margin-top: 0; }
+.status { padding: 8px 12px; border-radius: 4px; margin: 8px 0; font-size: 13px; }
+.status.ok { background: #d4edda; color: #155724; }
+.status.err { background: #f8d7da; color: #721c24; }
+.status.warn { background: #fff3cd; color: #856404; }
+button { padding: 8px 16px; border: 1px solid #ddd; border-radius: 4px; background: white; cursor: pointer; margin: 4px; }
+button:hover { background: #f0f0f0; }
+pre { background: #f8f9fa; padding: 12px; border-radius: 4px; font-size: 12px; overflow-x: auto; max-height: 300px; overflow-y: auto; }
+</style>
+</head>
+<body>
+<h1>PPT 3D模型 + SmartArt 功能测试</h1>
+
+<div class="card">
+  <h2>1. host.html 补丁检查</h2>
+  <button onclick="checkHostPatch()">检查 3D模型 拦截器</button>
+  <button onclick="checkSmartArtHandler()">检查 SmartArt handler</button>
+  <div id="patch-status"></div>
+  <pre id="patch-response"></pre>
+</div>
+
+<div class="card">
+  <h2>2. Bundle Stub 验证</h2>
+  <button onclick="checkStubs()">检查 Vb/pp stub</button>
+  <div id="stub-status"></div>
+  <pre id="stub-response"></pre>
+</div>
+
+<div class="card">
+  <h2>3. 后端 API 测试</h2>
+  <button onclick="testOfficeAction()">测试 office-action (SmartArt)</button>
+  <button onclick="testOfficeAction3D()">测试 office-action (3D模型)</button>
+  <div id="api-status"></div>
+  <pre id="api-response"></pre>
+</div>
+
+<div class="card">
+  <h2>4. 控制台日志</h2>
+  <button onclick="clearLogs()">清空</button>
+  <button onclick="exportLogs()">导出</button>
+  <pre id="logs" style="height: 200px; overflow-y: auto;"></pre>
+</div>
+
+<script>
+const LOGS = [];
+function log(msg) {
+  const time = new Date().toLocaleTimeString();
+  LOGS.push(`[${time}] ${msg}`);
+  document.getElementById('logs').textContent = LOGS.join('\n');
+  console.log(msg);
+}
+
+async function checkHostPatch() {
+  const status = document.getElementById('patch-status');
+  const response = document.getElementById('patch-response');
+  try {
+    const res = await fetch('/client/lib/office-v3/slides-ui/host.html?v=' + Date.now());
+    const text = await res.text();
+    const hasModel3d = text.includes('slides:insert-model3d');
+    const hasFakeDialog = text.includes('_slidesFakeDialog');
+    const hasFakeFiles = text.includes('_slidesFakeFiles');
+    
+    status.className = 'status ' + (hasModel3d && hasFakeDialog && hasFakeFiles ? 'ok' : 'err');
+    status.textContent = hasModel3d && hasFakeDialog && hasFakeFiles 
+      ? '✅ 3D模型补丁完整' 
+      : '❌ 补丁缺失';
+    response.textContent = `insert-model3d: ${hasModel3d}\n_fakeDialog: ${hasFakeDialog}\n_fakeFiles: ${hasFakeFiles}`;
+    log('host patch: ' + (hasModel3d && hasFakeDialog && hasFakeFiles ? 'OK' : 'FAIL'));
+  } catch (e) {
+    status.className = 'status err';
+    status.textContent = '❌ 读取失败: ' + e.message;
+  }
+}
+
+async function checkSmartArtHandler() {
+  const status = document.getElementById('patch-status');
+  const response = document.getElementById('patch-response');
+  try {
+    const res = await fetch('/client/lib/office-v3/slides-ui/office-slides-ui.js?v=' + Date.now());
+    const text = await res.text();
+    const hasHandler = text.includes('"slides:add-smartart"');
+    const hasOH = text.includes('OH(u.opened, l.slideIndex');
+    
+    status.className = 'status ' + (hasHandler ? 'ok' : 'err');
+    status.textContent = hasHandler ? '✅ SmartArt handler 存在' : '❌ handler 缺失';
+    response.textContent = `add-smartart handler: ${hasHandler}\nOH() builder: ${hasOH}`;
+    log('SmartArt handler: ' + (hasHandler ? 'OK' : 'MISSING'));
+  } catch (e) {
+    status.className = 'status err';
+    status.textContent = '❌ 读取失败';
+  }
+}
+
+async function checkStubs() {
+  const status = document.getElementById('stub-status');
+  const response = document.getElementById('stub-response');
+  try {
+    const res = await fetch('/client/lib/office-v3/slides-ui/office-slides-ui.js?v=' + Date.now());
+    const text = await res.text();
+    
+    const hasVb = text.includes('Vb = async (opts) =>');
+    const hasFakeDialogCheck = text.includes('globalThis._slidesFakeDialog');
+    const hasPp = text.includes('pp = async (p) =>');
+    const hasFakeFilesCheck = text.includes('globalThis._slidesFakeFiles');
+    
+    const allOk = hasVb && hasFakeDialogCheck && hasPp && hasFakeFilesCheck;
+    status.className = 'status ' + (allOk ? 'ok' : 'warn');
+    status.textContent = allOk ? '✅ stubs 已patch' : '⚠️ stubs 部分缺失';
+    response.textContent = `Vb (dialog): ${hasVb} ${hasFakeDialogCheck ? '+fakeDialog' : '-fakeDialog'}\npp (readFile): ${hasPp} ${hasFakeFilesCheck ? '+fakeFiles' : '-fakeFiles'}`;
+    log('stubs check: ' + (allOk ? 'OK' : 'PARTIAL'));
+  } catch (e) {
+    status.className = 'status err';
+    status.textContent = '❌ 读取失败';
+  }
+}
+
+async function testOfficeAction() {
+  const status = document.getElementById('api-status');
+  const response = document.getElementById('api-response');
+  try {
+    const res = await fetch('/api/agent-buddy/office-action', {
+      method: 'POST',
+      headers: { 'X-API-Key': 'dev-key-001', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'slides',
+        instruction: '在幻灯片上添加一个SmartArt流程图，包含三个步骤：开始、处理、结束',
+        docContext: { slideIndex: 0, texts: [{ i: 0, text: '测试幻灯片' }] }
+      })
+    });
+    const data = await res.json();
+    status.className = 'status ' + (data.ok ? 'ok' : 'err');
+    status.textContent = data.ok ? '✅ API 正常' : '❌ API 错误';
+    response.textContent = JSON.stringify(data, null, 2);
+    log('office-action: ' + (data.ok ? 'OK' : 'FAIL - ' + data.error));
+  } catch (e) {
+    status.className = 'status err';
+    status.textContent = '❌ 请求失败';
+    response.textContent = e.message;
+    log('office-action error: ' + e.message);
+  }
+}
+
+async function testOfficeAction3D() {
+  const status = document.getElementById('api-status');
+  const response = document.getElementById('api-response');
+  try {
+    const res = await fetch('/api/agent-buddy/office-action', {
+      method: 'POST',
+      headers: { 'X-API-Key': 'dev-key-001', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'slides',
+        instruction: '在幻灯片上插入一个3D模型',
+        docContext: { slideIndex: 0, texts: [{ i: 0, text: '测试幻灯片' }] }
+      })
+    });
+    const data = await res.json();
+    status.className = 'status ' + (data.ok ? 'ok' : 'err');
+    status.textContent = data.ok ? '✅ API 正常' : '❌ API 错误';
+    response.textContent = JSON.stringify(data, null, 2);
+    log('office-action-3d: ' + (data.ok ? 'OK' : 'FAIL - ' + data.error));
+  } catch (e) {
+    status.className = 'status err';
+    status.textContent = '❌ 请求失败';
+    response.textContent = e.message;
+  }
+}
+
+function clearLogs() {
+  LOGS.length = 0;
+  document.getElementById('logs').textContent = '';
+}
+
+function exportLogs() {
+  const blob = new Blob([LOGS.join('\n')], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'ppt-test-logs.txt';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// 自动检查
+window.onload = () => {
+  log('页面加载完成');
+  setTimeout(checkHostPatch, 500);
+  setTimeout(checkSmartArtHandler, 1000);
+  setTimeout(checkStubs, 1500);
+};
+</script>
+</body>
+</html>

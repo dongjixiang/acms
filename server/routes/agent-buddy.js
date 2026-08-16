@@ -500,7 +500,12 @@ router.post('/chat', async function(req, res) {
 
     // 2.5 conversational-action：单轮 LLM 路由，只决定即时聊天动作模式。
     // Router 无工具；真正执行仍走下面统一 runtime/tool-loop。
-    var actionRoute = await buddyAction.routeMessage(model.id, message, context.history || []);
+    // v0.96.2 (P138 修复 + office_edit 语义): 把 currentView/fileName 注入 router，让 LLM 知道前端打开了什么
+    //   才能区分「在打开的 Word 里写」(office_edit) vs 「生成新文档」(document_generation)
+    var actionRoute = await buddyAction.routeMessage(model.id, message, context.history || [], {
+      currentView: context.currentView || '',
+      fileName: context.fileName || context.openFileName || '',
+    });
     var actionRequirement = null;
     if (actionRoute.mode !== 'conversation') {
       actionRequirement = buddyAction.getOrCreateActionRequirement(userId || 'anonymous');
@@ -579,21 +584,18 @@ router.post('/chat', async function(req, res) {
         runtimeResult = { content: '好的，我来帮你编辑' + (officeAction.kind === 'word' ? ' Word 文档' : officeAction.kind === 'xlsx' ? ' Excel 表格' : ' PPT 演示文稿') + '。' };
       } else if (hasSkills) {
         console.log('[agent-buddy DEBUG] 开始 runToolLoop, model:', model.id, 'toolNames:', JSON.stringify(toolNames));
-        // v0.96: SSE 进度推送 — 把每轮工具调用通过 SSE 推给前端，缓解等待焦虑
-        // 注意：isStream 在下面 line 691 才赋值，这里用内联判断
-        var _ssePush = null;
+        // v0.96: SSE 进度推送 — 直接写（headers 未发送时），同时缓冲一份等 writeHead 后补发
+        var _sseBuffer = null;
         var _isStream = req.query && req.query.stream === '1';
         if (_isStream) {
+          _sseBuffer = [];
           _ssePush = function(round, maxRounds, msg) {
-            // v0.96: 过滤掉"正在生成任务总结…"这类兜底消息——闲聊时 toolCallHistory 为空，推出来没意义
             if (msg.indexOf('正在生成任务总结') >= 0) return;
-            if (msg.indexOf('调用工具:') < 0) return;  // 只有真正调工具时才推
-            try {
-              var line = 'data: ' + JSON.stringify({ type: 'progress', round: round, total: maxRounds, msg: msg }) + '\n\n';
-              res.write(line);
-            } catch(e) {}
+            if (msg.indexOf('调用工具:') < 0) return;
+            var line = 'data: ' + JSON.stringify({ type: 'progress', round: round, total: maxRounds, msg: msg }) + '\n\n';
+            _sseBuffer.push(line);
+            console.log('[agent-buddy] SSE progress buffered:', msg.slice(0, 80));
           };
-          // 启动时立即推一条，告诉前端"我在跑"（writeHead 在下面 line 693 才调用）
         }
         runtimeResult = await runtimeExec({
           modelId: model.id,
@@ -699,6 +701,16 @@ router.post('/chat', async function(req, res) {
       });
       // v0.96: 立即 flush，确保后续进度事件不会被缓冲
       if (typeof res.flush === 'function') res.flush();
+      // v0.96: flush 缓冲的 progress 事件（在 writeHead 之后）
+      if (_sseBuffer && _sseBuffer.length > 0) {
+        console.log('[agent-buddy] Flushing', _sseBuffer.length, 'progress events');
+        for (var pi = 0; pi < _sseBuffer.length; pi++) {
+          try { res.write(_sseBuffer[pi]); } catch(e) { console.log('[agent-buddy] progress write error:', e.message); break; }
+        }
+        _sseBuffer = null;
+      } else {
+        console.log('[agent-buddy] No progress events to flush (buffer empty)');
+      }
       // 分块推送 reply 文本（每块 3-6 字，模拟流式）
       var chunks = reply.match(/.{1,6}/g) || [reply || ''];
       for (var si = 0; si < chunks.length; si++) {
@@ -782,6 +794,34 @@ function extractExplicitNewText(instruction) {
   return null;
 }
 
+// 修复 LLM 输出的 JSON：字符串值内未转义的 ASCII 引号 → \"（状态机扫描）
+// LLM 常把文档原文里的 " 直接复制进 newText/value，不转义，导致 JSON.parse 失败
+function repairJsonQuotes(str) {
+  var out = '';
+  var inString = false;
+  var escaped = false;
+  for (var i = 0; i < str.length; i++) {
+    var ch = str[i];
+    if (inString) {
+      if (escaped) { out += ch; escaped = false; continue; }
+      if (ch === '\\') { out += ch; escaped = true; continue; }
+      if (ch === '"') {
+        // 字符串值内的裸引号：检查后面是否紧跟结构符（, } ] : 空白）——key 结束引号后是 ':'，值结束引号后是 , } ] 空白
+        var next = i + 1 < str.length ? str[i + 1] : '';
+        var isCloser = /[\s,}\]\[:]/.test(next) || next === '';
+        if (isCloser) { out += '"'; inString = false; }  // 正常字符串结束
+        else out += '\\"';  // 裸引号 → 转义
+        continue;
+      }
+      out += ch;
+    } else {
+      if (ch === '"') { inString = true; out += ch; }
+      else out += ch;
+    }
+  }
+  return out;
+}
+
 /** POST /api/agent-buddy/office-action — 前端组装文档摘要后调用，LLM 生成精确编辑动作
  *  body: { kind:'word'|'slides'|'xlsx', docContext:{...}, instruction:'用户指令' }
  *  resp: { ok:true, action:{ kind, op, ... } } 或 { ok:false, error }
@@ -808,8 +848,38 @@ router.post('/office-action', async function(req, res) {
 
     var docPrompt = '';
     if (kind === 'word') {
-      docPrompt = '文档是 Word（按段落 block 组织，blockIdx 从 0 开始）：\n'
-        + (docContext.blocks || []).map(function(b) { return '[' + b.i + '] ' + String(b.text || '').slice(0, 120); }).join('\n');
+      docPrompt = '文档是 Word（按段落 block 组织，blockIdx 从 0 开始；格式标注：type=段落类型 docParagraph|docHeading|docListItem，level=标题级别，kind=列表类型 bullet|numbered，marks=段内字符格式，size=字号（半磅，24=12pt），color=文字颜色（十六进制无#），font=字体名，highlight=高亮，align=对齐方式，indentFirstLine=首行缩进）：\n'
+        + (docContext.blocks || []).map(function(b) {
+            var fmt = [];
+            if (b.type) fmt.push('type=' + b.type);
+            if (b.level != null) fmt.push('level=' + b.level);
+            if (b.kind) fmt.push('kind=' + b.kind);
+            if (b.align) fmt.push('align=' + b.align);
+            if (b.indentFirstLine != null) fmt.push('indentFirstLine=' + b.indentFirstLine);
+            if (b.marks) {
+              var ms = [];
+              if (b.marks.bold) ms.push('bold');
+              if (b.marks.italic) ms.push('italic');
+              if (b.marks.underline) ms.push('underline');
+              if (b.marks.strike) ms.push('strike');
+              if (ms.length) fmt.push('marks=' + ms.join('+'));
+            }
+            // v0.96.9: docTextStyle 聚合（字号/颜色/字体/高亮）——LLM 排版时能感知并修改
+            if (b.textStyle) {
+              if (b.textStyle.sizeHalfPoints != null) fmt.push('size=' + b.textStyle.sizeHalfPoints);
+              if (b.textStyle.color) fmt.push('color=' + b.textStyle.color);
+              if (b.textStyle.font) fmt.push('font=' + b.textStyle.font);
+              if (b.textStyle.highlight) fmt.push('highlight=' + b.textStyle.highlight);
+            }
+            // 防 JSON 破坏：文本里的 ASCII 引号统一转成中文引号（LLM 复制出来不会破坏 JSON）
+            var safeText = String(b.text || '').replace(/"/g, '\u201C').replace(/\\/g, '/');
+            var selMark = b.selected ? '[已选中]' : '';
+            return '[' + b.i + ']' + selMark + (fmt.length ? '(' + fmt.join(',') + ')' : '') + ' ' + safeText.slice(0, 120);
+          }).join('\n');
+      // v0.96.9: 选中文字原文——润色/总结/插图生成器必须基于它精确处理（不能只靠 block 摘要）
+      if (docContext.selectionText) {
+        docPrompt += '\n【用户选中的文字原文】' + String(docContext.selectionText).slice(0, 500).replace(/"/g, '\u201C').replace(/\\/g, '/');
+      }
     } else if (kind === 'slides') {
       docPrompt = '文档是 PPT（当前第 ' + (docContext.slideIdx != null ? docContext.slideIdx : 0) + ' 页的文本框，textBoxIdx 从 0 开始）：\n'
         + (docContext.texts || []).map(function(t) { return '[' + t.i + '] ' + String(t.text || '').slice(0, 120); }).join('\n');
@@ -821,37 +891,108 @@ router.post('/office-action', async function(req, res) {
         }).join('\n---\n');
     }
 
-    var system = '你是 Office 文档编辑动作生成器。根据用户指令和文档摘要，输出严格 JSON 动作，不要输出其他文字。\n'
-      + '文档类型 word 的动作格式：{"op":"proposeEdit","blockIdx":N,"newText":"修改后的完整段落文本"}\n'
-      + '文档类型 slides 的动作格式：{"op":"proposeEdit","textBoxIdx":N,"newText":"修改后的完整文本框文本"}\n'
-      + '文档类型 xlsx 的动作格式：{"op":"propose","summary":"一句话说明","operations":[{"op":"set_cell","sheetId":"sheet1","address":"A1","value":"..."}]}\n'
-      + 'xlsx 支持的 op：set_cell（写值）、set_formula（写公式，value 换成 formula 字段）、clear_cell、rename_sheet（address 换成 newName）、add_sheet（name 字段）、delete_sheet、set_range（批量写，cells 字段 {"A1":"v"}）、sort_range（range+key）、add_chart（range+kind）。\n'
-      + '规则：\n'
-      + '- blockIdx/textBoxIdx/sheetId/address 必须从文档摘要中选取真实存在的，禁止编造。\n'
+    var system = '你是 Office 文档编辑动作生成器。根据用户指令和文档摘要，输出严格 JSON 动作，不要输出其他文字。\\n'
+      + '【动作 op 类型】\\n'
+      + '- proposeEdit（word/slides）：替换指定位置的现有文本。格式 {"op":"proposeEdit","blockIdx":N,"newText":"..."} 或 {"op":"proposeEdit","textBoxIdx":N,"newText":"..."}\\n'
+      + '- proposeEdits（word/slides，v0.96.7）：批量替换多个段落的文本（用于润色全文/改写多处）。格式 {"op":"proposeEdits","operations":[{"blockIdx":N,"newText":"..."},...]}。每段 newText 必须是润色改写后的完整新文本，保持原意。\\n'
+      + '- appendAll（word/slides）：在文档末尾追加新内容（不替换现有文本）。格式 {"op":"appendAll","newText":"完整要追加的内容"}。多个段落用 \\n\\n 分隔。\\n'
+      + '- insertAfter（word/slides）：在某段后插入新段落。格式 {"op":"insertAfter","blockIdx":N,"newText":"完整的新段落文本"}。\\n'
+      + '- formatOps（word，v0.96.7/v0.96.9）：批量格式调整（只改格式不改文字）。格式 {"op":"formatOps","operations":[{"blockIdx":N,"format":{...}}]}。format 支持的字段：heading（0=转正文，1..9=标题级别）、kind（"bullet"|"numbered"|"none"）、bold/italic/strike/underline（true/false）、sizeHalfPoints（字号，半磅：24=12pt，22=11pt，28=14pt，44=22pt二号）、font（字体名，如"宋体"/"微软雅黑"/"楷体"）、color（文字颜色，十六进制无#，如 FF0000）、highlight（高亮，十六进制无#或颜色名，如 FFFF00/yellow）、align（"left"|"center"|"right"|"justify"）、indentFirstLine/indentLeft/indentRight（缩进，整数）、lineSpacing（行距，数值）、spaceBefore/spaceAfter（段前段后间距，整数）、shadingFill（段落底纹，十六进制无#）。未提及的字段保持原样。\\n'
+      + '- insertAfterSelection（word，v0.96.9）：把新文本插入到用户选中区域之后（**原文保留不动**，用户自行对比取舍）。用于\"对选中文字润色/总结/改写/翻译\"类指令。格式 {"op":"insertAfterSelection","newText":"润色/总结/改写后的完整文本","summary":"一句话说明"}。newText 只针对【用户选中的文字原文】，不要包含未选中的内容。\\n'
+      + '- generateImage（word，v0.96.9）：根据选中的文字生成一张插图的绘画描述 prompt（用于文生图）。格式 {"op":"generateImage","prompt":"详细的插图绘画描述（中文，描述画面主体/风格/构图/氛围）","summary":"一句话说明"}。\\n'
+      + '- addSmartart（slides，v0.96.8）：在幻灯片上插入 SmartArt 图形。格式 {"op":"addSmartart","slideIndex":N,"layout":"process","items":["第一项","第二项","第三项"],"summary":"一句话说明"}。layout 可选值：list/process/cycle/hierarchy/pyramid/matrix/venn。items 至少 2 项。\\n'
+      + '- propose（xlsx）：批量操作。格式 {"op":"propose","summary":"一句话说明","operations":[{"op":"set_cell",...}]}\n'
+      + 'xlsx 支持的 op：set_cell、set_formula（value 换成 formula）、clear_cell、rename_sheet、add_sheet、delete_sheet、set_range、sort_range、add_chart。\n'
+      + '【xlsx 格式硬规则 — v0.97 极重要】\n'
+      + '- set_cell 的 value 只能是原始值（字符串/数字/布尔/null），**严禁**传对象。\n'
+      + '- 写公式**必须**用 set_formula op：{"op":"set_formula","sheetId":"sheet-1","address":"E7","formula":"=C7*D7"}。\n'
+      + '- **严禁**写成 {"op":"set_cell","address":"E7","value":{"formula":"=C7*D7"}} 或 {"op":"set_cell","address":"E7","formula":"=C7*D7"}——这两种都会校验失败。\n'
+      + '- 示例：{"op":"set_formula","sheetId":"sheet-1","address":"E2","formula":"=C2*D2"}\n'
+      + '【语义决策规则 — 极重要】\n'
+      + '- **选区优先（v0.96.8/v0.96.9）**：文档摘要中标了 [已选中] 的 block 是用户选中的内容。用户指令含"润色/翻译/改写/排版/修改"等编辑意图且存在 [已选中] 标记时 → 只对 [已选中] 的 block 生成操作（proposeEdit/proposeEdits/formatOps 的 blockIdx 只能选 [已选中] 的），**严禁修改未选中的 block**。\\n'
+      + '- **选中区域插入（v0.96.9）**：文档摘要含【用户选中的文字原文】且指令是"对选中的文字润色/总结/改写/翻译" → 输出 insertAfterSelection（newText 是针对选中文字的润色/总结/改写结果，**插入到选中区域之后，不修改不删除原文**）。"对选中内容生成插图/配图/插画" → 输出 generateImage。无选区时按以下规则全文操作。\\n'
+      + '- 用户说「写一篇 XXX/作文/文章/内容/段落」且未指定位置时 → 优先用 appendAll（追加到文档末尾），除非文档明确要求替换某段。\n'
+      + '- 用户说「改/编辑/替换/更新 + 第N段/第N个 + 成 XXX」 → proposeEdit（blockIdx/textBoxIdx 指向目标）。\n'
+      + '- 用户说「润色全文/使表达更清晰流畅/改写全文/优化全文/通顺一些」 → proposeEdits（对每个需要润色的段落输出润色后的完整新文本，保持结构和原意；不需要改的段不要列出）。\n'
+      + '- 用户说「整理排版/排版/修正标题层级/统一列表/去除加粗斜体/首行缩进/格式调整」 → formatOps（只输出格式字段，不改动任何文字内容）。标题层级：正文用 heading=0，各级标题用 heading=1..9（按文档结构和用户意图）。\n'
+      + '- 用户说「在第N段后面加一段 XXX/在...之后插入」 → insertAfter（blockIdx=N）。\n'
+      + '- 用户只给了内容（「写一篇春天的作文」）没指定位置/动作 → appendAll（避免破坏现有内容）。\n'
+      + '- 用户说「清空/覆盖整篇文档/重写全部」 → appendAll（追加新版本到末尾，前端会让用户决定是否清空；不要输出"重写整篇"类型 op）。\n'
+      + '【其他规则】\n'
+      + '- blockIdx/textBoxIdx/sheetId/address 必须从文档摘要中选取真实存在的，禁止编造。appendAll/insertAfter 不要带 blockIdx（除非 insertAfter 必须带）。\n'
       + '- **如果用户指令明确给出了新文本（例如"改成：XXX"/"改为XXX"），newText/value 必须逐字采用用户给的新文本（只去掉"改成/改为"等引导词），严禁自行改写或发挥。**\n'
-      + '- 用户没有给出新文本、只说了意图（如"把标题加粗"）而文档摘要无法支撑该格式操作时 → 输出 {"op":"none","error":"简短原因"}。\n'
-      + '- 用户没指定具体位置时，选择最贴近指令语义的段落/单元格。\n'
-      + '示例（word）：文档摘要：[0] 产品周报 / [1] 本周完成三个功能。指令：把第1段改成：本周完成五个功能。输出：{"op":"proposeEdit","blockIdx":1,"newText":"本周完成五个功能"}。\n'
-      + '示例（xlsx）：sheet1 有 A1:D4。指令：把 D4 改成 SUM 公式。输出：{"op":"propose","summary":"设置合计公式","operations":[{"op":"set_formula","sheetId":"sheet1","address":"D4","formula":"=SUM(D2:D3)"}]}。\n'
+      + '- 用户没有给出新文本、文档摘要无法支撑任何动作时 → 输出 {"op":"none","error":"简短原因"}。**只有这一种情况才输出 none；润色和排版有专门 op，不要用 none 拒绝。**\n'
+      + '【示例】\n'
+      + '- word 例 1（替换）：文档摘要：[0] 产品周报 / [1] 本周完成三个功能。指令：把第1段改成：本周完成五个功能。输出：{"op":"proposeEdit","blockIdx":1,"newText":"本周完成五个功能"}。\n'
+      + '- word 例 2（追加，v0.96.2）：文档摘要：[0] 产品周报。指令：帮我写一篇春天的作文。输出：{"op":"appendAll","newText":"春天来了，柳树发芽..."}。\n'
+      + '- word 例 3（插入）：文档摘要：[0] 引言 / [1] 正文 / [2] 结论。指令：在正文后面加一段：实验数据表明...。输出：{"op":"insertAfter","blockIdx":1,"newText":"实验数据表明..."}。\n'
+      + '- word 例 4（润色全文，v0.96.7）：文档摘要：[0](type=docParagraph) 今天天气很好 / [1](type=docParagraph) 我们去了公园。指令：润色全文。输出：{"op":"proposeEdits","operations":[{"blockIdx":0,"newText":"今天天气格外晴朗，阳光明媚。"},{"blockIdx":1,"newText":"我们一同前往公园散步。"}]}。\n'
+      + '- word 例 5（排版，v0.96.7）：文档摘要：[0](type=docParagraph,marks=bold) 第一章 背景 / [1](type=docParagraph) 正文内容。指令：整理排版，把第一段设为一级标题、去掉加粗。输出：{"op":"formatOps","operations":[{"blockIdx":0,"format":{"heading":1,"bold":false}}]}。\n'
+      + '- word 例 6（选区润色，v0.96.9）：文档摘要：[0][已选中](type=docParagraph) 我们完成了多个项目 / 【用户选中的文字原文】我们完成了多个项目。指令：润色选中的文字。输出：{"op":"insertAfterSelection","newText":"我们顺利推进并交付了多个重要项目。","summary":"已生成润色版本，插入到选中文字之后"}。\n'
+      + '- word 例 7（选区总结，v0.96.9）：文档摘要含【用户选中的文字原文】。指令：总结选中的文字。输出：{"op":"insertAfterSelection","newText":"摘要：本段主要说明项目推进与交付情况。","summary":"已生成摘要，插入到选中文字之后"}。\n'
+      + '- word 例 8（选区插图，v0.96.9）：文档摘要含【用户选中的文字原文】。指令：根据选中的文字生成插图。输出：{"op":"generateImage","prompt":"一幅水墨风格插图，描绘春日的柳树与湖面，意境清新，留白构图","summary":"已根据选中文字生成插图描述"}。\n'
+      + '- word 例 9（字号排版，v0.96.9）：文档摘要：[0](type=docHeading) 第一章 背景。指令：把选中的标题设为二号字并加粗。输出：{"op":"formatOps","operations":[{"blockIdx":0,"format":{"sizeHalfPoints":44,"bold":true}}]}（二号=22pt=44半磅）。\n'
+      + '- xlsx：sheet1 有 A1:D4。指令：把 D4 改成 SUM 公式。输出：{"op":"propose","summary":"设置合计公式","operations":[{"op":"set_formula","sheetId":"sheet1","address":"D4","formula":"=SUM(D2:D3)"}]}。\n'
       + fixedHint + '\n';
 
     var result = await llmAdapter.callLLM(model.id, [
       { role: 'system', content: system },
       { role: 'user', content: '文档摘要：\n' + docPrompt + '\n\n用户指令：' + instruction },
-    ], { maxTokens: 700, temperature: 0.1, caller: 'agent-buddy-office-action' });
+    ], { maxTokens: 3000, temperature: 0.1, caller: 'agent-buddy-office-action' });
 
     var content = typeof result === 'string' ? result : (result && result.content) || '';
-    console.log('[office-action] LLM 原始输出 >>>', JSON.stringify(content).slice(0, 500));
+    console.log('[office-action] LLM 原始输出 >>>', JSON.stringify(content).slice(0, 2000));
     var action = null;
+    // JSON 容错解析：LLM 可能输出被截断（maxTokens 不够）或字符串值含未转义引号
     try {
       var start = content.indexOf('{');
       var end = content.lastIndexOf('}');
-      if (start >= 0 && end > start) action = JSON.parse(content.slice(start, end + 1));
+      if (start >= 0 && end > start) {
+        var jsonStr = content.slice(start, end + 1);
+        try {
+          action = JSON.parse(jsonStr);
+        } catch (e1) {
+          // 修复 1：字符串值内的裸引号转义（LLM 常把文档里的 " 原样复制进 newText，不转义）
+          var repaired = repairJsonQuotes(jsonStr);
+          try { action = JSON.parse(repaired); }
+          catch (e2) {
+            // 修复 2：截断修复——去掉末尾不完整片段重试
+            var fixed = null;
+            var cutStr = jsonStr;
+            for (var t = 0; t < 4; t++) {
+              var cutEnd = cutStr.lastIndexOf('}');
+              if (cutEnd <= 0) break;
+              cutStr = cutStr.slice(0, cutEnd + 1);
+              try { fixed = JSON.parse(cutStr); break; } catch (e3) { /* 继续回退 */ }
+              cutStr = cutStr.slice(0, cutEnd);
+            }
+            if (fixed) action = fixed;
+            else console.warn('[office-action] LLM 输出非 JSON:', content.slice(0, 200));
+          }
+        }
+      }
     } catch (e) {
-      console.warn('[office-action] LLM 输出非 JSON:', content.slice(0, 200));
+      console.warn('[office-action] 解析异常:', e.message);
     }
     if (!action || !action.op) {
       return res.json({ ok: false, error: '无法生成编辑动作：' + String(content || 'LLM 无输出').slice(0, 200) });
+    }
+    // proposeEdits/formatOps 过滤空 operation（newText 为空或 format 为空）
+    if ((action.op === 'proposeEdits' || action.op === 'formatOps') && Array.isArray(action.operations)) {
+      action.operations = action.operations.filter(function (op) {
+        if (action.op === 'proposeEdits') return op && String(op.newText || '').trim() !== '';
+        return op && op.format && Object.keys(op.format).length > 0;
+      });
+      if (!action.operations.length) {
+        return res.json({ ok: false, error: '生成的编辑动作为空（LLM 未给出需要修改的内容）' });
+      }
+    }
+    // v0.96.9: insertAfterSelection / generateImage 非空校验
+    if (action.op === 'insertAfterSelection' && !String(action.newText || '').trim()) {
+      return res.json({ ok: false, error: '生成的插入内容为空（LLM 未给出润色/总结结果）' });
+    }
+    if (action.op === 'generateImage' && !String(action.prompt || '').trim()) {
+      return res.json({ ok: false, error: '生成的插图描述为空' });
     }
     // 确定性覆盖：用户明确给的新文本优先于 LLM 生成（防编造）
     if (fixedNewText) {

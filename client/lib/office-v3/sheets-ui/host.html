@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>GenOffice Sheets Host</title>
-<link rel="stylesheet" href="/client/lib/office-v3/sheets-ui/acms-office-sheets-ui.css?v=18">
+<link rel="stylesheet" href="/client/lib/office-v3/sheets-ui/acms-office-sheets-ui.css?v=24">
 <style>
   html,body{margin:0;padding:0;height:100%;overflow:hidden;}
   /* P140: ACMS 顶部小工具条（GenOffice Sheets UI 不带「打开…」按钮） */
@@ -331,26 +331,67 @@
       console.info('[acms-host-sheets] ACMS AI 消息 → ACMS Buddy:', message);
 
       // 组装 docContext：sheets-ui 的 desktopApi.readWorkbookRange 在浏览器是 stub，
-      // 不能用来读单元格内容。改用 __sheetsAI.getWorkbookInfo() 拿 sheet 列表，
-      // docContext 只含 sheet 元信息，LLM 根据指令推断操作（由 bridge __sheetsAI.propose 执行）。
+      // 不能用来读单元格内容。改用 __sheetsDebug.snapshot 拿真实单元格数据（含 rows），
+      // docContext 带 rows 供 LLM 参考现有内容（否则"填充测试数据"类指令无内容可依 → LLM 拒答）。
       var workbookInfo = null;
+      var sheetRows = [];
+      try {
+        var sess = window.__sheetsDebug && window.__sheetsDebug.listSessions();
+        if (sess && sess.length) {
+          var snap = window.__sheetsDebug.snapshot(sess[0], 5, 30, 12);
+          if (snap && snap.sheets) sheetRows = snap.sheets;
+        }
+      } catch(e) {}
       try { workbookInfo = window.__sheetsAI && window.__sheetsAI.getWorkbookInfo(); } catch(e) {}
       var docContext = {
-        sheets: (workbookInfo && workbookInfo.sheets || []).map(function(s) {
-          return { id: s.id, name: s.name };
+        sheets: (sheetRows.length ? sheetRows : (workbookInfo && workbookInfo.sheets || [])).map(function(s) {
+          return { id: s.id, name: s.name, rows: s.rows || undefined };
         })
       };
 
       var summary = '', errMsg = null;
+      var controller = null;
       try {
+        // v0.97: LLM 处理要 20-40s（curl 实测 27s），fetch 无超时会无限"思考中"。
+        // AbortController 90s 超时 → 明确报错回显而不是永远转圈。
+        controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+        var timeoutId = null;
+        if (controller) {
+          timeoutId = setTimeout(function () { try { controller.abort(); } catch (e) {} }, 90000);
+        }
         var resp = await fetch('/api/agent-buddy/office-action?api_key=dev-key-001', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
-          body: JSON.stringify({ kind: 'xlsx', instruction: message, docContext: docContext })
+          body: JSON.stringify({ kind: 'xlsx', instruction: message, docContext: docContext }),
+          signal: controller ? controller.signal : undefined
         });
+        if (timeoutId) clearTimeout(timeoutId);
         var data = await resp.json();
         if (data && data.ok && data.action) {
           summary = data.action.summary || 'AI 已应用编辑';
+          // v0.97: 归一化 LLM 常犯的公式格式错误（zod 校验会因 value 是对象而失败）：
+          // ① {"op":"set_cell","value":{"formula":"=C2*D2"}} → set_formula
+          // ② {"op":"set_cell","formula":"=C2*D2"}（没 value）→ set_formula
+          if (data.action.operations && Array.isArray(data.action.operations)) {
+            data.action.operations = data.action.operations.map(function(op) {
+              if (!op || !op.op) return op;
+              if (op.op === 'set_cell') {
+                var f = null;
+                if (op.value && typeof op.value === 'object' && !Array.isArray(op.value) && typeof op.value.formula === 'string') f = op.value.formula;
+                else if (typeof op.formula === 'string') f = op.formula;
+                if (f) {
+                  var clean = { op: 'set_formula', sheetId: op.sheetId, address: op.address, formula: f };
+                  if (op.expectedFormula) clean.expectedFormula = op.expectedFormula;
+                  return clean;
+                }
+                // 兜底：set_cell 的 value 是对象但不是公式（zod 只收 string/number/boolean/null）
+                if (op.value && typeof op.value === 'object' && !Array.isArray(op.value)) {
+                  try { op.value = JSON.stringify(op.value); } catch (e) { op.value = String(op.value); }
+                }
+              }
+              return op;
+            });
+          }
           if (window.parent.OfficeV3 && typeof window.parent.OfficeV3.runAction === 'function') {
             var r = await window.parent.OfficeV3.runAction(data.action);
             if (r && r.ok) {
@@ -365,32 +406,19 @@
           errMsg = (data && data.error) || 'office-action 返回失败';
         }
       } catch (e) {
-        errMsg = '请求失败: ' + e.message;
+        if (e && e.name === 'AbortError') {
+          errMsg = 'AI 处理超时（90 秒），请重试或简化指令';
+        } else {
+          errMsg = '请求失败: ' + (e && e.message ? e.message : String(e));
+        }
         console.warn('[acms-host-sheets] office-action 异常:', e);
       }
 
-      // 更新聊天消息：把最后一条 streaming assistant 换成完成提示
-      if (chatSetter) {
-        try {
-          chatSetter(function(prev) {
-            var next = prev.slice();
-            for (var i = next.length - 1; i >= 0; i--) {
-              if (next[i].role === 'assistant' && next[i].streaming) {
-                next[i] = {
-                  ...next[i],
-                  streaming: false,
-                  text: errMsg ? ('❌ ' + errMsg) : ('✅ ' + summary)
-                };
-                break;
-              }
-            }
-            return next;
-          });
-        } catch (e) { console.warn('[acms-host-sheets] 更新聊天消息失败:', e.message); }
-      }
-
+      // ⚠️ v0.97: 不用 chatSetter 替换 streaming（OLn 有多个 useState([])，seenEmptyArr===1 找错 setter → 聊天区永远卡"思考中"）。
+      // 返回 {summary, errMsg} 给 __acmsOfficeAction 覆盖层，由它用 api.appendChat 追加完成消息（adapter 内置版同款、已验证能显示）。
       runner._busy = false;
       if (busySetter) try { busySetter(false); } catch(_) {}
+      return { summary: summary, errMsg: errMsg };
     };
 
     runner.cancel = function() {
@@ -398,6 +426,52 @@
       if (busySetter) try { busySetter(false); } catch(_) {}
     };
     runner.reset = function() { runner._busy = false; };
+
+    // P144: GenOffice 面板发送优先走 window.__acmsOfficeAction（adapter 内置 ACMS 桥），
+    // 它直接 listSessions() 拿快照——用户刚打开工作簿就用 AI 时 session 还没注册（workbook:select 异步）
+    // → 空数组 → 抛「工作簿未加载」。覆盖它：复用已 patch 的 runner.run（走 ACMS Buddy office-action），
+    // 且 session 未就绪时轮询等待，避免时序竞态。
+    // ⚠️ v0.97: 必须像 adapter 内置版一样先 appendChat({role:'assistant', streaming:true})——
+    // runner.run 的回显靠 chatSetter 找这条 streaming 消息替换成 ✅/❌，不加则面板永远无回复。
+    window.__acmsOfficeAction = function (message, attachments, api) {
+      if (window.__acmsOfficeActionRunning) return;  // 防重复入（双击发送/React 重渲染）
+      window.__acmsOfficeActionRunning = true;
+      try {
+        if (api && api.setAiBusy) api.setAiBusy(true);
+        if (api && api.appendChat) api.appendChat({ role: 'assistant', text: '', tools: [], streaming: true });
+      } catch (e) {}
+      var doRun = function () {
+        return runner.run(message, attachments || []).then(function (res) {
+          // v0.97: 用 api.appendChat 追加完成消息（adapter 内置版同款回显，不依赖 chatSetter）
+          var text = (res && res.errMsg) ? ('❌ ' + res.errMsg) : ('✅ ' + ((res && res.summary) || 'AI 已应用编辑'));
+          try {
+            if (api && api.appendChat) api.appendChat({ role: 'assistant', text: text, tools: [], isError: !!(res && res.errMsg) });
+            if (api && api.persistChatMessage) api.persistChatMessage('assistant', text);
+          } catch (e2) {}
+          window.__acmsOfficeActionRunning = false;
+          if (api && api.setAiBusy) { try { api.setAiBusy(false); } catch (e) {} }
+        }).catch(function (e3) {
+          var text = '❌ ' + ((e3 && e3.message) ? e3.message : 'AI 调用异常');
+          try {
+            if (api && api.appendChat) api.appendChat({ role: 'assistant', text: text, tools: [], isError: true });
+          } catch (e4) {}
+          window.__acmsOfficeActionRunning = false;
+          if (api && api.setAiBusy) { try { api.setAiBusy(false); } catch (e) {} }
+        });
+      };
+      // 等待 session 就绪（最多 8s，200ms 间隔）
+      var waited = 0;
+      var tick = function () {
+        try {
+          var s = window.__sheetsDebug && window.__sheetsDebug.listSessions();
+          if (s && s.length > 0) { doRun(); return; }
+        } catch (e) {}
+        waited += 200;
+        if (waited < 8000) setTimeout(tick, 200);
+        else doRun();  // 超时也跑，让 Buddy 侧报具体错误
+      };
+      tick();
+    };
 
     window.__acmsSheetsPatched = true;
     console.info('[acms-host-sheets] ✅ ACMS AI runner patched → ACMS Buddy 接管');

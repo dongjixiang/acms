@@ -306,7 +306,7 @@
     var frame = document.createElement('iframe');
     frame.className = 'v3-genoffice-frame';
     frame.style.cssText = 'width:100%;height:100%;border:0;display:block;';
-    frame.src = BASE + 'sheets-ui/host.html?v=23';
+    frame.src = BASE + 'sheets-ui/host.html?v=24';
     w.$c.appendChild(frame);
 
     var _frameInitDone = false;

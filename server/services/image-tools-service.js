@@ -130,7 +130,7 @@ async function downloadAndSaveOne(apiKey, projectSlug, url, metadata) {
         var mime = matches[1];
         var buf = Buffer.from(matches[2], 'base64');
         var ext = inferExtFromMime(mime);
-        return resolve({ ok: true, url: url, asset_path: saveImageAsset(projectSlug, buf, ext, mime, metadata).relPath, mime: mime, size: buf.length });
+        return resolve({ ok: true, url: url, asset_path: saveImageAsset(projectSlug, buf, ext, mime, metadata).relPath, mime: mime, size: buf.length, dataUrl: 'data:' + mime + ';base64,' + buf.toString('base64') });
       }
     }
     var tmpFile = path.join(require('os').tmpdir(), 'acms-dl-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
@@ -161,6 +161,7 @@ async function downloadAndSaveOne(apiKey, projectSlug, url, metadata) {
         return resolve({
           ok: true, url: url, asset_path: saved.relPath, mime: mime, size: saved.size,
           file_name: saved.fileName, abs_path: saved.absPath,
+          dataUrl: 'data:' + mime + ';base64,' + buffer.toString('base64'),
         });
       } catch (e) {
         try { fs.unlinkSync(tmpFile); } catch (e2) {}
@@ -274,6 +275,7 @@ async function coreGenerate(opts) {
       workspace_path: r.asset_path,
       mime: r.mime,
       size: r.size,
+      dataUrl: r.dataUrl || null,
     };
   });
 

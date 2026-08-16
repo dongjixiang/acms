@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>SmartArt + 3D 模型测试</title>
+<style>
+body { font-family: system-ui; margin: 20px; background: #f5f5f5; }
+.card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+h1 { color: #333; }
+button { padding: 10px 20px; border: 1px solid #ddd; border-radius: 4px; background: white; cursor: pointer; margin: 4px; font-size: 14px; }
+button:hover { background: #f0f0f0; }
+pre { background: #f8f9fa; padding: 12px; border-radius: 4px; font-size: 12px; overflow-x: auto; }
+.status { padding: 8px 12px; border-radius: 4px; margin: 8px 0; font-size: 13px; }
+.status.ok { background: #d4edda; color: #155724; }
+.status.err { background: #f8d7da; color: #721c24; }
+</style>
+</head>
+<body>
+<h1>SmartArt + 3D 模型直接测试</h1>
+<p>注意：此测试需要先在 ACMS 中打开一个 PPT 文档（GenOffice Slides UI），否则 editor 未就绪。</p>
+
+<div class="card">
+  <h2>测试 addSmartart 动作</h2>
+  <button onclick="testAddSmartart()">测试添加 SmartArt</button>
+  <div id="smartart-status"></div>
+  <pre id="smartart-response"></pre>
+</div>
+
+<div class="card">
+  <h2>测试 insertModel3d 动作</h2>
+  <button onclick="testInsertModel3d()">测试插入 3D 模型</button>
+  <div id="model3d-status"></div>
+  <pre id="model3d-response"></pre>
+</div>
+
+<div class="card">
+  <h2>当前 OfficeV3 状态</h2>
+  <pre id="state-response"></pre>
+</div>
+
+<script>
+function log(msg) {
+  console.log(msg);
+  alert(msg);
+}
+
+async function testAddSmartart() {
+  const status = document.getElementById('smartart-status');
+  const response = document.getElementById('smartart-response');
+  
+  if (typeof window.OfficeV3 === 'undefined') {
+    status.className = 'status err';
+    status.textContent = '❌ OfficeV3 未加载';
+    response.textContent = '请在 ACMS 主界面中打开 PPT 文档后再测试';
+    return;
+  }
+  
+  const action = {
+    op: 'addSmartart',
+    kind: 'slides',
+    slideIndex: 0,
+    layout: 'process',
+    items: ['开始', '处理', '结束'],
+    summary: '插入流程图为：开始→处理→结束'
+  };
+  
+  try {
+    const result = window.OfficeV3.runAction(action);
+    status.className = 'status ' + (result.ok ? 'ok' : 'err');
+    status.textContent = result.ok ? '✅ 执行成功' : '❌ 执行失败';
+    response.textContent = JSON.stringify(result, null, 2);
+  } catch (e) {
+    status.className = 'status err';
+    status.textContent = '❌ 异常';
+    response.textContent = e.message;
+  }
+}
+
+async function testInsertModel3d() {
+  const status = document.getElementById('model3d-status');
+  const response = document.getElementById('model3d-response');
+  
+  if (typeof window.OfficeV3 === 'undefined') {
+    status.className = 'status err';
+    status.textContent = '❌ OfficeV3 未加载';
+    response.textContent = '请在 ACMS 主界面中打开 PPT 文档后再测试';
+    return;
+  }
+  
+  // 创建一个最小的 GLB 文件 (20 bytes)
+  const glbBytes = new Uint8Array([
+    0x47, 0x4C, 0x42, 0x01, 0x00, 0x00, 0x00, 0x00,  // GLTF header
+    0x0C, 0x00, 0x00, 0x00, 0x4A, 0x53, 0x4F, 0x4E,  // JSON chunk
+    0x00, 0x00, 0x00, 0x00
+  ]);
+  const base64 = btoa(String.fromCharCode(...glbBytes));
+  
+  const action = {
+    op: 'insertModel3d',
+    kind: 'slides',
+    slideIndex: 0,
+    fileBase64: base64,
+    ext: 'glb',
+    summary: '插入测试 3D 模型'
+  };
+  
+  try {
+    const result = window.OfficeV3.runAction(action);
+    status.className = 'status ' + (result.ok ? 'ok' : 'err');
+    status.textContent = result.ok ? '✅ 执行成功' : '❌ 执行失败';
+    response.textContent = JSON.stringify(result, null, 2);
+  } catch (e) {
+    status.className = 'status err';
+    status.textContent = '❌ 异常';
+    response.textContent = e.message;
+  }
+}
+
+// 显示当前状态
+window.onload = () => {
+  const stateEl = document.getElementById('state-response');
+  if (typeof window.OfficeV3 !== 'undefined') {
+    stateEl.textContent = JSON.stringify(window.OfficeV3.getState ? window.OfficeV3.getState() : '无 getState', null, 2);
+  } else {
+    stateEl.textContent = 'OfficeV3 未加载（需要在 ACMS 中打开 PPT）';
+  }
+};
+</script>
+</body>
+</html>

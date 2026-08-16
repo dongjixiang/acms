@@ -45,3 +45,7 @@ models/
 
 # Office V3 构建临时目录（scripts/build-office-v3.js 产物中间态）
 .build/
+
+# 用户生成/上传的办公文件（不入仓）
+server/public/office/
+server/public/generate/assets/

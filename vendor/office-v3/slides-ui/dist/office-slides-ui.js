@@ -80624,7 +80624,9 @@ function b0(e) {
   return Array.isArray(e) ? e.map(It) : e ? [It(e)] : [];
 }
 function nu(e) {
-  return e.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return e.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/[-￿]/g, function (c) {
+    return "&#x" + c.charCodeAt(0).toString(16).toUpperCase() + ";";
+  });
 }
 function Wt(e) {
   return nu(e).replace(/"/g, "&quot;");

@@ -86,12 +86,6 @@ declare global {
 }
 
 export function mountSheetsUI(container: HTMLElement, opts: MountSheetsUIOptions = {}): void {
-  // ── 诊断：React 打包状态（GenOffice 白屏定位用）──
-  try {
-    console.error('[sheets-ui] DIAG React:', typeof React, 'useRef:', typeof (React && React.useRef), 'keys:', React ? Object.keys(React as object).slice(0, 8).join(',') : 'null')
-  } catch (e: any) {
-    console.error('[sheets-ui] DIAG React check failed:', e && e.message)
-  }
   installScreenTips()
   setModuleLang('zh')
   document.documentElement.removeAttribute('data-theme')

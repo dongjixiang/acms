@@ -318,11 +318,14 @@ const FONT_STACK: Record<string, string> = {
   dengxian: "DengXian, 'Microsoft YaHei', 'PingFang SC', sans-serif",
   // Western: consistent with the main-process metrics alias chain (calibri→Carlito→Arial etc.),
   // otherwise metrics use Arial while drawing falls back to the system default font, misaligning word spacing/line breaks.
-  calibri: 'Calibri, Carlito, Arial, sans-serif',
-  'calibri light': "'Calibri Light', Carlito, Arial, sans-serif",
-  helvetica: 'Helvetica, Arial, sans-serif',
-  'helvetica neue': "'Helvetica Neue', Helvetica, Arial, sans-serif",
-  cambria: 'Cambria, Georgia, serif',
+  // 追加 CJK 兜底：很多 PPT 用 Calibri 写中文（混排），若不加 Microsoft YaHei / PingFang SC，
+  // canvas fillText 找不到中文字形会画成 '?'。把 CJK 字体放在 Western 之后、sans-serif/serif 之前，
+  // browser CSS 字体回退会按顺序找——Calibri/Carlito/Arial 没有 CJK glyph → 落到 Microsoft YaHei。
+  calibri: "Calibri, Carlito, Arial, 'Microsoft YaHei', 'PingFang SC', 'Noto Sans SC', sans-serif",
+  'calibri light': "'Calibri Light', Carlito, Arial, 'Microsoft YaHei', 'PingFang SC', sans-serif",
+  helvetica: "Helvetica, Arial, 'Microsoft YaHei', 'PingFang SC', sans-serif",
+  'helvetica neue': "'Helvetica Neue', Helvetica, Arial, 'Microsoft YaHei', 'PingFang SC', sans-serif",
+  cambria: "Cambria, Georgia, SimSun, 'Songti SC', serif",
   // Japanese (win family names <-> mac Hiragino back each other up; Japanese fonts first, then Chinese fallback, so kanji don't render with Chinese glyph shapes)
   'yu gothic': JA_SANS,
   游ゴシック: "'游ゴシック', " + JA_SANS,

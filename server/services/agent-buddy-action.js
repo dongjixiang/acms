@@ -84,13 +84,23 @@ function normalizeRoute(raw) {
   return normalized;
 }
 
-async function routeMessage(modelId, message, history = []) {
+async function routeMessage(modelId, message, history = [], ctx = {}) {
   const historyText = (history || []).slice(-4).map(h => `${h.role}: ${String(h.text || '').slice(0, 180)}`).join('\\n');
+  // v0.96.2 (P138 修复 + office_edit 语义): 注入当前前端视图/打开的文件名，让 router 能区分
+  //   「在打开的 Word 里写」（office_edit）vs 「生成新文档」（document_generation）
+  const currentView = String(ctx.currentView || '').trim();
+  const openFileName = String(ctx.fileName || ctx.openFileName || '').trim();
+  const officeEditHint = (currentView && /office[-_]v3[-_](word|excel|xlsx|slides|pptx|ppt)/i.test(currentView))
+    ? `\n【关键上下文】当前前端打开了 ${currentView}${openFileName ? '（文件：' + openFileName + '）' : ''}。\n` +
+      `- 用户说「写/创作/生成/加 + 内容/作文/文章/段落/章节 + （在文档里/到文档/给文档）」或任何涉及**该文档**的写作/追加/补全意图 → capabilities 必须包含 office_edit（不要归类为 document_generation）。\n` +
+      `- 用户只说「写一篇 XXX」无明确文档词，但当前已打开了该类文档（word/word-ui → Word），意图是在文档里写 → office_edit；只在**没有任何文档打开**时才归 document_generation。\n` +
+      `- 用户明确说「生成新文档/导出/新建文件」且没指明要写进打开的文档 → document_generation。\n`
+    : '';
   const system = `你是 ACMS 小吉的动作路由器。只做分类，不调用工具，不制定开发计划。
 输出严格 JSON：
 {"mode":"conversation|single_action|conversational_action","confidence":0.0,"capabilities":[],"requires_confirmation":false,"reason":"..."}
 能力枚举：image_generation、image_search、music_playback、email_draft、email_send、web_search、web_research、document_generation、project_create、web_fetch、code_execution、video_generation、office_edit。
-规则：
+${officeEditHint}规则：
 - 纯问答/查询 ACMS 数据/闲聊 → conversation。
 - 一个明确工具动作 → single_action。
 - 两个及以上有依赖的动作（如生成图片后发邮件）→ conversational_action。
@@ -189,6 +199,24 @@ async function routeMessage(modelId, message, history = []) {
     }
     route.capabilities.push('office_edit');
     console.log('[agent-buddy-action] 关键词命中 office_edit, 强制覆盖路由');
+  }
+  // v0.96.2 (P138 修复): 当前已打开 Office 文档 + 用户说「写/创作/生成/做 + 作文/文章/内容/段落/章节/...
+  //   标题/简介/总结/描述」 → office_edit（不是 document_generation）。
+  //   v0.96 之前: 「帮我写一篇春天的作文」被归到 document_generation → 生成新 .docx 附件而非写进打开的 Word。
+  //   触发条件: 当前前端打开 office 视图（currentView 来自 ctx）+ 消息含「写作动词 + 写作名词」组合。
+  const isOfficeView = currentView && /office[-_]v3[-_]?(word|excel|xlsx|slides|pptx|ppt)?/i.test(currentView);
+  const writeVerbRe = /写|创作|起草|拟|编|生成|做|产出|补充|加(一段|一篇|一些|几段|一个)|续写|扩写|改写/;
+  const writeNounRe = /作文|文章|内容|段落|章节|标题|简介|介绍|总结|描述|文案|报告|总结|读后感|日记|小说|诗歌|故事|脚本|大纲|提纲/;
+  if (isOfficeView && writeVerbRe.test(message) && writeNounRe.test(message) && !route.capabilities.includes('office_edit')) {
+    if (route.mode === 'conversation') {
+      route.mode = 'single_action';
+      route.confidence = 0.92;
+    }
+    route.capabilities.push('office_edit');
+    // 如果 router 误归到 document_generation，移除去重（避免 document_gen tool 跑）
+    const idx = route.capabilities.indexOf('document_generation');
+    if (idx >= 0) route.capabilities.splice(idx, 1);
+    console.log('[agent-buddy-action] 关键上下文+写作动词命中 office_edit, 强制覆盖路由（移除 document_generation）');
   }
   return route;
 }

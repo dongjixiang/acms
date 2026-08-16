@@ -610,12 +610,16 @@
             return;
           }
           try {
-            var res = window.OfficeV3.runAction(data.action);
-            if (res && res.ok) {
-              showOfficeV3Result('✅ ' + (res.summary || '已应用'), res, requirementId);
-            } else {
-              showOfficeV3Result('❌ ' + ((res && res.error) || '执行失败'), null, requirementId);
-            }
+            // v0.96.9: generateImage 返回 Promise，统一 Promise.resolve 处理
+            Promise.resolve(window.OfficeV3.runAction(data.action)).then(function (res) {
+              if (res && res.ok) {
+                showOfficeV3Result('✅ ' + (res.summary || '已应用'), res, requirementId);
+              } else {
+                showOfficeV3Result('❌ ' + ((res && res.error) || '执行失败'), null, requirementId);
+              }
+            }).catch(function (err2) {
+              showOfficeV3Result('❌ ' + err2.message, null, requirementId);
+            });
           } catch (err) {
             showOfficeV3Result('❌ ' + err.message, null, requirementId);
           }
@@ -712,13 +716,59 @@
         var gedit = gdoc && gdoc.editor;
         if (gedit) {
           var gblocks = [];
-          gedit.state.doc.content.forEach(function (node) {
+          // v0.96.8: 选区支持——读编辑器 selection，标注选中的 block
+          var gsel = gedit.state.selection;
+          var gFrom = gsel && !gsel.empty ? gsel.from : -1;
+          var gTo = gsel && !gsel.empty ? gsel.to : -1;
+          gedit.state.doc.content.forEach(function (node, nodeOffset) {
             var n = node.type.name;
             if (n === 'docParagraph' || n === 'docHeading' || n === 'docListItem') {
-              gblocks.push({ i: gblocks.length, text: node.textContent.slice(0, 120) });
+              var b = { i: gblocks.length, text: node.textContent.slice(0, 200), type: n };
+              var attrs = node.attrs || {};
+              if (n === 'docHeading') b.level = attrs.level != null ? attrs.level : 1;
+              if (n === 'docListItem') b.kind = attrs.kind || 'bullet';
+              if (attrs.align) b.align = attrs.align;
+              if (attrs.indentFirstLine) b.indentFirstLine = attrs.indentFirstLine;
+              // 段内 marks 聚合（整段是否有加粗/斜体/下划线/删除线）
+              var hasM = { bold: false, italic: false, underline: false, strike: false };
+              var gTextStyle = null;
+              node.content && node.content.forEach(function (tn) {
+                if (!tn.marks) return;
+                tn.marks.forEach(function (m) {
+                  var mn = m.type && m.type.name;
+                  if (mn === 'bold') hasM.bold = true;
+                  else if (mn === 'italic') hasM.italic = true;
+                  else if (mn === 'underline') hasM.underline = true;
+                  else if (mn === 'strike') hasM.strike = true;
+                  else if (mn === 'docTextStyle') {
+                    // v0.96.9: docTextStyle 聚合（字号/颜色/字体/高亮）——排版指令需要感知
+                    var gta = m.attrs || {};
+                    gTextStyle = gTextStyle || {};
+                    if (gta.sizeHalfPoints != null) gTextStyle.sizeHalfPoints = gta.sizeHalfPoints;
+                    if (gta.color) gTextStyle.color = gta.color;
+                    if (gta.font) gTextStyle.font = gta.font;
+                    if (gta.highlight) gTextStyle.highlight = gta.highlight;
+                  }
+                });
+              });
+              if (hasM.bold || hasM.italic || hasM.underline || hasM.strike) b.marks = hasM;
+              if (gTextStyle) b.textStyle = gTextStyle;
+              // 选区覆盖检测：block [offset, offset+nodeSize] 与选区 [from,to] 有交集即选中
+              if (gFrom >= 0 && gTo > gFrom) {
+                var gEnd = nodeOffset + node.nodeSize;
+                if (gEnd > gFrom && nodeOffset < gTo) b.selected = true;
+              }
+              gblocks.push(b);
             }
           });
-          if (gblocks.length) return { kind: 'word', doc: { blocks: gblocks.slice(0, 40) } };
+          // v0.96.9: 选中文字原文（精确字符级）
+          var gSelText = '';
+          if (gFrom >= 0 && gTo > gFrom) {
+            try { gSelText = gedit.state.doc.textBetween(gFrom, gTo, '\n'); } catch (e) { /* ignore */ }
+          }
+          var gdoc = { blocks: gblocks.slice(0, 40) };
+          if (gSelText) gdoc.selectionText = gSelText.slice(0, 500);
+          if (gblocks.length) return { kind: 'word', doc: gdoc };
         }
       } catch (e) {
         console.warn('[agent-buddy] GenOffice word 摘要失败:', e.message);
