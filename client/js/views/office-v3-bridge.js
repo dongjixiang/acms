@@ -932,7 +932,9 @@
         });
         if (targetPos >= 0) {
           // 删除旧节点，插入新节点
-          editor.chain().focus().deleteRange({ from: targetPos, to: targetPos + child.nodeSize }).insertContentAt(targetPos, node).run();
+          var nodeSize = child.nodeSize;
+          editor.chain().focus().deleteRange({ from: targetPos, to: targetPos + nodeSize }).run();
+          editor.chain().focus().insertContentAt(targetPos, node).run();
         } else {
           editor.chain().focus().insertContentAt(insertPos, node).run();
         }
