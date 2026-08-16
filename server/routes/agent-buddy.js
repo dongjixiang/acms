@@ -884,11 +884,13 @@ router.post('/office-action', async function(req, res) {
       docPrompt = '文档是 PPT（当前第 ' + (docContext.slideIdx != null ? docContext.slideIdx : 0) + ' 页的文本框，textBoxIdx 从 0 开始）：\n'
         + (docContext.texts || []).map(function(t) { return '[' + t.i + '] ' + String(t.text || '').slice(0, 120); }).join('\n');
     } else {
-      docPrompt = '文档是 Excel（sheetId 形如 sheet1/sheet2，单元格地址形如 A1）：\n'
+      docPrompt = '文档是 Excel：\n'
         + (docContext.sheets || []).map(function(s) {
-          var rows = (s.rows || []).map(function(r) { return r.map(function(c) { return c == null ? '' : c; }).join('|'); }).join('\n');
-          return 'sheetId=' + s.id + ' name=' + s.name + ':\n' + rows;
-        }).join('\n---\n');
+          var rows = (s.rows || []).map(function(r) { return r.map(function(c) { return c == null ? '' : c; }).join('|'); }).join('\\n');
+          return 'sheetId=' + s.id + ' name=' + s.name + ':\\n' + rows;
+        }).join('\\n---\\n');
+      // v0.97: sheetId 必须以文档摘要中给出的为准（如 sheet-1），严禁自造（如 sheet1）
+      docPrompt += '\\n【sheetId 硬规则】operations 里的 sheetId 必须原样使用文档摘要中 sheetId= 后的值（例如 sheet-1），**严禁**自造/猜测/省略连字符。若摘要没有任何 sheet 信息则回复 {"op":"none","error":"工作簿尚未就绪，请稍后重试"}。';
     }
 
     var system = '你是 Office 文档编辑动作生成器。根据用户指令和文档摘要，输出严格 JSON 动作，不要输出其他文字。\\n'

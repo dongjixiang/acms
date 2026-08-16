@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>GenOffice Sheets Host</title>
-<link rel="stylesheet" href="/client/lib/office-v3/sheets-ui/acms-office-sheets-ui.css?v=24">
+<link rel="stylesheet" href="/client/lib/office-v3/sheets-ui/acms-office-sheets-ui.css?v=25">
 <style>
   html,body{margin:0;padding:0;height:100%;overflow:hidden;}
   /* P140: ACMS 顶部小工具条（GenOffice Sheets UI 不带「打开…」按钮） */
@@ -373,8 +373,28 @@
           // ① {"op":"set_cell","value":{"formula":"=C2*D2"}} → set_formula
           // ② {"op":"set_cell","formula":"=C2*D2"}（没 value）→ set_formula
           if (data.action.operations && Array.isArray(data.action.operations)) {
+            // v0.97: sheetId 归一化——LLM 常自造 sheet1/sheet2（或漏连字符），
+            // 真实 sheetId 以 snapshot 为准（sheet-1 等）。不匹配则替换成第一个真实 id。
+            var realSheets = [];
+            try {
+              var ss2 = window.__sheetsDebug && window.__sheetsDebug.listSessions();
+              if (ss2 && ss2.length) {
+                var sn2 = window.__sheetsDebug.snapshot(ss2[0], 5, 30, 12);
+                if (sn2 && sn2.sheets) realSheets = sn2.sheets.map(function(x){ return x.id; });
+              }
+              if (!realSheets.length) {
+                var wbi = window.__sheetsAI && window.__sheetsAI.getWorkbookInfo();
+                if (wbi && wbi.sheets) realSheets = wbi.sheets.map(function(x){ return x.id; });
+              }
+            } catch (e) {}
+            var firstReal = realSheets.length ? realSheets[0] : null;
             data.action.operations = data.action.operations.map(function(op) {
               if (!op || !op.op) return op;
+              if (firstReal && op.sheetId && realSheets.indexOf(op.sheetId) === -1) {
+                console.warn('[acms-host-sheets] sheetId 归一化:', op.sheetId, '→', firstReal);
+                op.sheetId = firstReal;
+              }
+              if (!op.sheetId && firstReal) op.sheetId = firstReal;
               if (op.op === 'set_cell') {
                 var f = null;
                 if (op.value && typeof op.value === 'object' && !Array.isArray(op.value) && typeof op.value.formula === 'string') f = op.value.formula;
