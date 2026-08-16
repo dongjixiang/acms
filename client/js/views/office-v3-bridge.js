@@ -837,6 +837,21 @@
   // v0.96.9: 根据选中文字生成插图并插入到选中区域之后（异步，返回 Promise）
   // action: { op:'generateImage', prompt, summary? }
   // 链路：ACMS 生图服务 /api/image-tools/ai-generate（AGNES）→ dataUrl → docProtected 图片节点
+  // 收集文档中已有的 AI 插图（最多 maxCount 张）作为风格参考
+  function genOfficeCollectRecentImages(editor, maxCount) {
+    var images = [];
+    editor.state.doc.content.forEach(function (child) {
+      if (images.length >= (maxCount || 2)) return;
+      if (child.type.name === 'docProtected' && child.attrs.blockType === 'image') {
+        var gi = child.attrs.genImage;
+        if (gi && (gi.dataUrl || gi.base64)) {
+          var dataUrl = gi.dataUrl || ('data:image/png;base64,' + gi.base64);
+          images.push(dataUrl);
+        }
+      }
+    });
+    return images;
+  }
   function genOfficeGenerateImage(frame, action) {
     var win = frame && frame.contentWindow;
     var docEl = win && win.document ? win.document.querySelector('[contenteditable="true"]') : null;
