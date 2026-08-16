@@ -80469,8 +80469,16 @@ const Lie = vn.create({
         hasImage: !!f.attrs.imageDataUrl,
         imgLen: (f.attrs.imageDataUrl || '').length,
         hasGenImg: !!f.attrs.genImage,
-        genImgLen: (f.attrs.genImage?.dataUrl || '').length
+        genImgLen: (f.attrs.genImage?.dataUrl || '').length,
+        genImgLoading: f.attrs.genImage?.loading
       });
+      // 修复：如果 genImage 丢失但有 imageDataUrl，自动重建 genImage
+      if (!f.attrs.genImage && f.attrs.imageDataUrl && f.attrs.imageDataUrl.length > 100) {
+        console.log('[IMG-DEBUG] restoring genImage from imageDataUrl');
+        r = f;
+        // 不能在 update 里直接修改 attrs，需要返回 true 让编辑器重新渲染
+        return !0;
+      }
     }
     return f.type.name !== "docProtected" ? !1 : f.eq(r) ? (r = f, !0) : s && $ie(f.attrs, r.attrs, "textboxes") ? (r = f, s.sync(f.attrs.textboxes), !0) : !1;
   },
@@ -80676,6 +80684,11 @@ function wj(e) {
     return h.class += " doc-protected-diagram", f.floating ? h.class += " doc-protected-floating" : (f.offsetXEmu != null || f.offsetYEmu != null) && (h.style = `transform:translate(${Number(f.offsetXEmu ?? 0) / gs}px,${Number(f.offsetYEmu ?? 0) / gs}px)`), ["div", h, hp(fe("editorMoveImage")), fR(f)];
   // [IMG-DEBUG] 详细日志
   if (e.type.name === 'docProtected' && e.attrs.blockType === 'image') {
+    // 修复：如果 genImage 丢失但有 imageDataUrl，自动重建
+    if (!e.attrs.genImage && e.attrs.imageDataUrl && e.attrs.imageDataUrl.length > 100) {
+      console.log('[IMG-DEBUG] restoring genImage from imageDataUrl (len=', e.attrs.imageDataUrl.length, ')');
+      e.attrs.genImage = { dataUrl: e.attrs.imageDataUrl, base64: e.attrs.imageDataUrl.split(',')[1], mime: 'image/png' };
+    }
     console.log('[IMG-DEBUG] wj() rendering image node:', {
       blockType: e.attrs.blockType,
       hasImage: !!e.attrs.imageDataUrl,
