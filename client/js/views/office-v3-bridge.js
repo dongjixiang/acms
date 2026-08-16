@@ -864,6 +864,20 @@
     if (insertPos < 0) {
       insertPos = editor.state.doc.content.size;
     }
+    // 清理文档中所有 loading 状态的占位节点（防止保存时带入）
+    var doc = editor.state.doc;
+    var positionsToRemove = [];
+    doc.content.forEach(function (child, offset) {
+      if (child.type.name === 'docProtected' && child.attrs.blockType === 'image' && child.attrs.genImage && child.attrs.genImage.loading) {
+        positionsToRemove.push(offset);
+      }
+    });
+    if (positionsToRemove.length > 0) {
+      console.log('[IMG-DEBUG] cleaning', positionsToRemove.length, 'loading placeholders before save');
+      positionsToRemove.forEach(function (pos) {
+        editor.chain().focus().deleteRange({ from: pos, to: pos + 1 }).run();
+      });
+    }
     // 收集已有的 AI 插图作为风格参考（最多 2 张）
     var recentImages = genOfficeCollectRecentImages(editor, 2);
     console.log('[IMG-DEBUG] recentImages count:', recentImages.length);
@@ -872,16 +886,17 @@
       body.referenceImage = recentImages[recentImages.length - 1];
       console.log('[IMG-DEBUG] using reference image, length:', body.referenceImage.length);
     }
-    // 插入占位节点显示"生成中..."（用特殊标记的 imageDataUrl 标识 loading 状态）
+    // 插入占位节点显示"生成中..."
     var placeholderNode = {
       type: 'docProtected',
       attrs: {
         blockType: 'image',
-        imageDataUrl: 'data:image/png;base64,LOADING_PLACEHOLDER',
+        imageDataUrl: null,
         label: 'AI 插图',
         previewText: '正在生成插图...',
         imageWidthPx: 320,
-        imageHeightPx: 200
+        imageHeightPx: 200,
+        genImage: { loading: true, mime: 'image/png' }
       }
     };
     editor.chain().focus().insertContentAt(insertPos, placeholderNode).run();
@@ -915,11 +930,12 @@
           type: 'docProtected',
           attrs: {
             blockType: 'image',
-            imageDataUrl: dataUrl,
+            imageDataUrl: null,
             label: 'AI 插图',
             previewText: 'AI 插图: ' + prompt.slice(0, 40),
             imageWidthPx: 320,
-            imageHeightPx: null
+            imageHeightPx: null,
+            genImage: { dataUrl: dataUrl, base64: dataUrl.split(',')[1], mime: opt.mime || 'image/png' }
           }
         };
         console.log('[IMG-DEBUG] image generated, dataUrl length=', node.attrs.genImage.dataUrl.length);
@@ -930,9 +946,10 @@
         doc.content.forEach(function (child, offset) {
           if (targetPos >= 0) return;
           if (child.type.name === 'docProtected' && child.attrs.blockType === 'image') {
-            var isPlaceholder = child.attrs.imageDataUrl === 'data:image/png;base64,LOADING_PLACEHOLDER';
+            var isPlaceholder = !!(child.attrs.genImage && child.attrs.genImage.loading);
             console.log('[IMG-DEBUG] found image node at', offset, ':', {
               isPlaceholder: isPlaceholder,
+              hasLoading: !!child.attrs.genImage?.loading,
               imgLen: (child.attrs.imageDataUrl || '').length,
               label: child.attrs.label
             });
