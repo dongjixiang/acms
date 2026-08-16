@@ -394,6 +394,14 @@ async function loadAdminPage() {
           管理 ACMS 自身的反馈渠道：随手记录想法、跟进自动生成的改进报告。所有按钮都与下面"完整看板"双向同步。
         </p>
 
+        <!-- v0.97: Agent Registry 快捷入口 -->
+        <div style="margin-bottom:16px">
+          <button class="btn-primary" onclick="navigateToAgentAdmin()" style="font-size:13px">
+            🤖 Agent Registry 管理
+          </button>
+          <span style="font-size:11px;color:var(--text2);margin-left:8px">管理编排型/执行型 Agent、工具和委托关系</span>
+        </div>
+
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:16px;margin-top:8px">
           <!-- 想法池 -->
           <div class="panel-form" style="display:flex;flex-direction:column;gap:10px">
@@ -1421,6 +1429,18 @@ function navigateToAdmin() {
 }
 
 // admin 页面"返回"按钮 — 按入口上下文还原
+
+// 进入 Agent Registry 管理页
+function navigateToAgentAdmin() {
+  showView('view-agent-admin');
+  if (typeof loadAgentAdminPage === 'function') loadAgentAdminPage();
+}
+
+// Agent Registry 页面"返回"按钮
+function backFromAgentAdmin() {
+  showView('view-admin');
+}
+
 function backFromAdmin() {
   const ctx = _adminEntryContext;
   _adminEntryContext = null;

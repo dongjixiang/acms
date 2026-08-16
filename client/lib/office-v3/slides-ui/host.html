@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>GenOffice Slides Host</title>
-<link rel="stylesheet" href="/client/lib/office-v3/slides-ui/acms-office-slides-ui.css?v=11">
+<link rel="stylesheet" href="/client/lib/office-v3/slides-ui/acms-office-slides-ui.css?v=12">
 <style>html,body{margin:0;padding:0;height:100%;overflow:hidden;}#root{height:100vh;}</style>
 </head>
 <body>
@@ -100,7 +100,7 @@
     opts = opts || {}
     try {
       report('init_start', 'fileId=' + (opts.fileId || 'null') + ' fileName=' + (opts.fileName || 'null'))
-      if (!mod) mod = await import('/client/lib/office-v3/slides-ui/office-slides-ui.js?v=17')
+      if (!mod) mod = await import('/client/lib/office-v3/slides-ui/office-slides-ui.js?v=18')
       report('mod_loaded', 'mod has mountSlidesUI=' + (typeof mod.mountSlidesUI))
       if (rootEl && mod.unmountSlidesUI) {
         try { mod.unmountSlidesUI(rootEl) } catch (e) { report('unmount_err', e.message) }

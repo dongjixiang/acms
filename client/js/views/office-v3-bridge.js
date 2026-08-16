@@ -219,7 +219,7 @@
     var frame = document.createElement('iframe');
     frame.className = 'v3-genoffice-frame';
     frame.style.cssText = 'width:100%;height:100%;border:0;display:block;';
-    frame.src = BASE + 'slides-ui/host.html?v=18';
+    frame.src = BASE + 'slides-ui/host.html?v=19';
     w.$c.appendChild(frame);
 
     function initFrame() {
