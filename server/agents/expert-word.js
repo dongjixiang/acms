@@ -25,9 +25,11 @@ const SYSTEM_PROMPT = `你是 ACMS 的 Word 文档专家。根据用户指令操
 输出严格 JSON，不要输出其他文字。`;
 
 async function handle({ instruction, context, modelId, caller, agentId }) {
-  // 1. 获取模型
-  const model = modelId ? modelStore.getById(modelId) : modelStore.getDefaultGenModel();
-  if (!model) return { ok: false, error: '模型未配置' };
+  console.log(`[word-expert] handle called with instruction:`, instruction?.slice(0, 50));
+  try {
+    // 1. 获取模型
+    const model = modelId ? modelStore.getById(modelId) : modelStore.getDefaultGenModel();
+    if (!model) return { ok: false, error: '模型未配置' };
 
   // 2. 组装 docContext
   const docContext = context?.docContext || { blocks: [], selectionText: '' };
@@ -36,7 +38,7 @@ async function handle({ instruction, context, modelId, caller, agentId }) {
   const result = await llmAdapter.callLLM(model.id, [
     { role: 'system', content: SYSTEM_PROMPT },
     { role: 'user', content: `文档摘要：\n${JSON.stringify(docContext).slice(0, 2000)}\n\n用户指令：${instruction}` }
-  ], { maxTokens: 2000, temperature: 0.1, caller: 'word-expert' });
+  ], { maxTokens: 2000, temperature: 0.1 });
 
   const content = typeof result === 'string' ? result : (result?.content || '');
   console.log(`[word-expert] LLM output:`, content.slice(0, 500));
@@ -48,13 +50,18 @@ async function handle({ instruction, context, modelId, caller, agentId }) {
   // 5. 检查是否需要配图
   const textLen = (action.newText || '').length;
   const hasImgKeyword = /配图|插图|插画|生图/.test(instruction);
+  // 根据文字长度和关键词智能计算配图数量
+  const baseCount = hasImgKeyword ? Math.max(4, Math.floor(textLen / 200)) : 0;
   if (hasImgKeyword && textLen > 100 && action.op === 'appendAll') {
-    const imgCount = Math.min(6, Math.max(1, Math.floor(textLen / 300)));
-    action.needImages = imgCount;
-    console.log(`[word-expert] 检测到配图需求: ${imgCount} 张`);
+    action.needImages = baseCount;
+    console.log(`[word-expert] 检测到配图需求: ${baseCount} 张`);
   }
 
   return { ok: true, action };
+} catch (e) {
+  console.error(`[word-expert] error:`, e.message);
+  return { ok: false, error: e.message };
+}
 }
 
 function parseAction(text) {

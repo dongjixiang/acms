@@ -443,8 +443,11 @@
         var origVal = _origSlidesApi[prop];
         if (typeof origVal === 'function') {
           return function () {
+            // ⚠️ 双层兜底：__slidesEditor.call 是 async，同步 throw 走 try/catch，
+            //    async 内的 reject 走 Promise.catch（v0.97.7 实测 bug：只有后者生效）
+            var p;
             try {
-              return origVal.apply(this, arguments);
+              p = origVal.apply(this, arguments);
             } catch (e) {
               if (e && String(e.message || '').indexOf('未知 channel') >= 0) {
                 console.warn('[acms-ppt-ai] 跳过未注册 channel:', prop);
@@ -452,6 +455,19 @@
               }
               throw e;
             }
+            if (p && typeof p.then === 'function') {
+              return p.then(
+                function (v) { return v; },
+                function (e) {
+                  if (e && String(e.message || String(e) || '').indexOf('未知 channel') >= 0) {
+                    console.warn('[acms-ppt-ai] 跳过未注册 channel:', prop);
+                    return null;
+                  }
+                  throw e;
+                }
+              );
+            }
+            return p;
           };
         }
         return origVal;

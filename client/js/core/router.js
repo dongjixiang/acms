@@ -1,10 +1,10 @@
 // 路由 — 页面/视图切换
 // 依赖: core/state.js, core/utils.js
 
-// 顶层页面切换（项目列表 ↔ 工作空间 ↔ 系统管理）
+// 顶层页面切换（项目列表 ↔ 工作空间 ↔ 系统管理 ↔ Agent Registry）
 function showView(id) {
   // 隐藏所有顶层页面
-  const pages = ['view-workspace', 'view-admin', 'view-improvements'];
+  const pages = ['view-workspace', 'view-admin', 'view-improvements', 'view-agent-admin'];
   pages.forEach(pid => {
     const el = document.getElementById(pid);
     if (el) el.style.display = 'none';

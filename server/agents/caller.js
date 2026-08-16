@@ -42,15 +42,22 @@ class AgentCaller {
     const domain = toAgentInfo?.domain || 'general';
     console.log(`[Caller] dispatching to domain=${domain} (toAgentId=${toAgentId})`);
     console.log(`[Caller] registry.dispatch type:`, typeof registry.dispatch);
-    const result = await registry.dispatch(domain, request.instruction, {
-      ...request.context,
-      __meta: {
-        callId: this.genCallId(),
-        fromAgent: fromId,
-        calledBy: [...calledBy, fromId],
-        purpose: request.purpose
-      }
-    });
+    try {
+      const result = await registry.dispatch(domain, request.instruction, {
+        ...request.context,
+        __meta: {
+          callId: this.genCallId(),
+          fromAgent: fromId,
+          calledBy: [...calledBy, fromId],
+          purpose: request.purpose
+        }
+      });
+      console.log(`[Caller] dispatch result:`, result);
+      return result;
+    } catch (e) {
+      console.error(`[Caller] dispatch error:`, e.message, e.stack);
+      throw e;
+    }
 
     const latency = Date.now() - start;
 

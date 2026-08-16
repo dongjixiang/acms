@@ -597,43 +597,26 @@
         showOfficeV3Result('❌ 没有打开的 ' + officeKindName(oa.kind) + ' 文档，请先在 Office 中打开要编辑的文件', null, requirementId);
         return;
       }
-      showOfficeV3Result('⏳ 小吉正在分析文档…', null, requirementId);
-      fetch('/api/agent-buddy/office-action', {
+      showOfficeV3Result('⏳ 小吉正在委托 Word专家…', null, requirementId);
+      // v0.97: 通过 Agent Registry 委托给 Word 专家
+      fetch('/api/agents/agent-xiaoji/call', {
         method: 'POST',
         headers: getAuthHeaders(),
-        body: JSON.stringify({ kind: ctx.kind, docContext: ctx.doc, instruction: oa.instruction })
+        body: JSON.stringify({
+          toAgentId: ctx.kind === 'word' ? 'agent-word-expert' : 'agent-general',
+          instruction: oa.instruction,
+          context: { docContext: ctx.doc }
+        })
       })
         .then(function(r) { return r.json(); })
         .then(function(data) {
-          if (!data || !data.ok || !data.action) {
+          if (!data || !data.ok || !data.result || !data.result.action) {
             showOfficeV3Result('❌ ' + ((data && data.error) || '生成编辑动作失败'), null, requirementId);
             return;
           }
+          var action = data.result.action;
           try {
-            // v0.97: 支持 batch 模式（appendAll + 多个 generateImage）
-            if (data.batch && data.action && Array.isArray(data.action.operations)) {
-              var batchOps = data.action.operations;
-              var batchIdx = 0;
-              var batchResults = [];
-              function runNext() {
-                if (batchIdx >= batchOps.length) {
-                  showOfficeV3Result('✅ 已生成 ' + batchResults.filter(function(r){return r.ok}).length + ' 个操作', null, requirementId);
-                  return;
-                }
-                var op = batchOps[batchIdx++];
-                Promise.resolve(window.OfficeV3.runAction(op)).then(function (res) {
-                  batchResults.push(res || { ok: false, error: '未知错误' });
-                  runNext();
-                }).catch(function (err2) {
-                  batchResults.push({ ok: false, error: err2.message });
-                  runNext();
-                });
-              }
-              runNext();
-              return;
-            }
-            // v0.96.9: generateImage 返回 Promise，统一 Promise.resolve 处理
-            Promise.resolve(window.OfficeV3.runAction(data.action)).then(function (res) {
+            Promise.resolve(window.OfficeV3.runAction(action)).then(function (res) {
               if (res && res.ok) {
                 showOfficeV3Result('✅ ' + (res.summary || '已应用'), res, requirementId);
               } else {

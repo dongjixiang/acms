@@ -84,7 +84,7 @@ class AgentRegistry {
         instruction,
         context,
         modelId,
-        caller,  // 注入 caller 供 Agent 内部委托其他 Agent
+        caller: getCaller(),  // 注入 caller 供 Agent 内部委托其他 Agent
         agentId: agent.id
       });
 

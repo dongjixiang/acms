@@ -31,10 +31,21 @@ document.addEventListener('DOMContentLoaded', () => {
   <main id="view-admin" class="view-main" style="display:none">
     <div class="projects-page">
       <div class="view-header" style="display:flex;align-items:center;gap:12px">
-        <button class="btn-back" onclick="backFromAdmin()">← 返回</button>
+        <button class="btn-back" onclick="backFromAdmin()%">← 返回</button>
         <h2>⚙️ 系统管理</h2>
       </div>
       <div id="admin-content"></div>
+    </div>
+  </main>
+
+  <!-- ====== Agent Registry 管理（独立页面） ====== -->
+  <main id="view-agent-admin" class="view-main" style="display:none">
+    <div class="projects-page">
+      <div class="view-header" style="display:flex;align-items:center;gap:12px">
+        <button class="btn-back" onclick="backFromAgentAdmin()">← 返回</button>
+        <h2>🤖 Agent Registry</h2>
+      </div>
+      <div id="agent-admin-content"></div>
     </div>
   </main>
 
