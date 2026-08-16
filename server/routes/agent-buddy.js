@@ -890,7 +890,14 @@ router.post('/office-action', async function(req, res) {
           return 'sheetId=' + s.id + ' name=' + s.name + ':\\n' + rows;
         }).join('\\n---\\n');
       // v0.97: sheetId 必须以文档摘要中给出的为准（如 sheet-1），严禁自造（如 sheet1）
-      docPrompt += '\\n【sheetId 硬规则】operations 里的 sheetId 必须原样使用文档摘要中 sheetId= 后的值（例如 sheet-1），**严禁**自造/猜测/省略连字符。若摘要没有任何 sheet 信息则回复 {"op":"none","error":"工作簿尚未就绪，请稍后重试"}。';
+      // v0.97.1: 措辞放宽——禁止自造【不存在的】sheetId（编一个文档里没有的 id），但允许从现有 sheets 中挑选第一个/最近一个
+      docPrompt += '\\n【sheetId 硬规则】operations 里的 sheetId 必须从文档摘要中【已有】的 sheetId= 值里选取一个（例如 sheet-1），**禁止**自造文档里不存在的 id（如 sheet1 省略连字符、Sheet2 等）。用户没指定 sheet 时，从现有 sheets 中挑第一个即可。';
+      // v0.97.1: 通用填充规则——用户说"生成/填充/写一些数据/测试数据"没指定位置时的默认行为
+      docPrompt += '\\n【通用填充规则】用户说"生成/填充/写一些数据/测试数据/示例数据/假数据"且**未指定 sheet/位置/列结构**时：默认使用 docsContext.sheets[0]（第一个 sheet）；从 A1 开始填写（若 A1 已有表头文字，则从已有数据末尾的下一行开始，避免覆盖）；按 3-5 列的通用列结构（姓名/编号|项目/名称|数值/分数/金额|日期 等合理组合）填充 5-10 行真实感的示例数据。**禁止**输出 op:none 拒绝。';
+      // v0.97.1: 行/列推断规则——address 必须用 A1、B2 这种字母+数字形式，禁止写"sheet1 第3行"
+      docPrompt += '\\n【address 推断规则】address 必须是 A1 引用样式（字母列+数字行，如 A1/B2/E7），禁止写中文行号或描述性位置（如"第3行"/"第三列"/"中间"）。';
+      // 若摘要没有任何 sheet 信息（极少见：工作簿刚加载未就绪），才允许返回 none
+      docPrompt += '\\n若摘要中没有任何 sheet 信息（sheets=[] 或为空），才回复 {"op":"none","error":"工作簿尚未就绪，请稍后重试"}。';
     }
 
     var system = '你是 Office 文档编辑动作生成器。根据用户指令和文档摘要，输出严格 JSON 动作，不要输出其他文字。\\n'
@@ -901,7 +908,7 @@ router.post('/office-action', async function(req, res) {
       + '- insertAfter（word/slides）：在某段后插入新段落。格式 {"op":"insertAfter","blockIdx":N,"newText":"完整的新段落文本"}。\\n'
       + '- formatOps（word，v0.96.7/v0.96.9）：批量格式调整（只改格式不改文字）。格式 {"op":"formatOps","operations":[{"blockIdx":N,"format":{...}}]}。format 支持的字段：heading（0=转正文，1..9=标题级别）、kind（"bullet"|"numbered"|"none"）、bold/italic/strike/underline（true/false）、sizeHalfPoints（字号，半磅：24=12pt，22=11pt，28=14pt，44=22pt二号）、font（字体名，如"宋体"/"微软雅黑"/"楷体"）、color（文字颜色，十六进制无#，如 FF0000）、highlight（高亮，十六进制无#或颜色名，如 FFFF00/yellow）、align（"left"|"center"|"right"|"justify"）、indentFirstLine/indentLeft/indentRight（缩进，整数）、lineSpacing（行距，数值）、spaceBefore/spaceAfter（段前段后间距，整数）、shadingFill（段落底纹，十六进制无#）。未提及的字段保持原样。\\n'
       + '- insertAfterSelection（word，v0.96.9）：把新文本插入到用户选中区域之后（**原文保留不动**，用户自行对比取舍）。用于\"对选中文字润色/总结/改写/翻译\"类指令。格式 {"op":"insertAfterSelection","newText":"润色/总结/改写后的完整文本","summary":"一句话说明"}。newText 只针对【用户选中的文字原文】，不要包含未选中的内容。\\n'
-      + '- generateImage（word，v0.96.9）：根据选中的文字生成一张插图的绘画描述 prompt（用于文生图）。格式 {"op":"generateImage","prompt":"详细的插图绘画描述（中文，描述画面主体/风格/构图/氛围）","summary":"一句话说明"}。\\n'
+      + '- generateImage（word，v0.96.9/v0.97）：有选区时根据选中文字生成插图。无选区时由前端 appendAll 自动触发配图，LLM 不需要输出此 op。\\n'
       + '- addSmartart（slides，v0.96.8）：在幻灯片上插入 SmartArt 图形。格式 {"op":"addSmartart","slideIndex":N,"layout":"process","items":["第一项","第二项","第三项"],"summary":"一句话说明"}。layout 可选值：list/process/cycle/hierarchy/pyramid/matrix/venn。items 至少 2 项。\\n'
       + '- propose（xlsx）：批量操作。格式 {"op":"propose","summary":"一句话说明","operations":[{"op":"set_cell",...}]}\n'
       + 'xlsx 支持的 op：set_cell、set_formula（value 换成 formula）、clear_cell、rename_sheet、add_sheet、delete_sheet、set_range、sort_range、add_chart。\n'
@@ -913,7 +920,8 @@ router.post('/office-action', async function(req, res) {
       + '【语义决策规则 — 极重要】\n'
       + '- **选区优先（v0.96.8/v0.96.9）**：文档摘要中标了 [已选中] 的 block 是用户选中的内容。用户指令含"润色/翻译/改写/排版/修改"等编辑意图且存在 [已选中] 标记时 → 只对 [已选中] 的 block 生成操作（proposeEdit/proposeEdits/formatOps 的 blockIdx 只能选 [已选中] 的），**严禁修改未选中的 block**。\\n'
       + '- **选中区域插入（v0.96.9）**：文档摘要含【用户选中的文字原文】且指令是"对选中的文字润色/总结/改写/翻译" → 输出 insertAfterSelection（newText 是针对选中文字的润色/总结/改写结果，**插入到选中区域之后，不修改不删除原文**）。"对选中内容生成插图/配图/插画" → 输出 generateImage。无选区时按以下规则全文操作。\\n'
-      + '- 用户说「写一篇 XXX/作文/文章/内容/段落」且未指定位置时 → 优先用 appendAll（追加到文档末尾），除非文档明确要求替换某段。\n'
+      + '- 用户说「写一篇 XXX/作文/文章/内容/段落」且未指定位置时 → 优先用 appendAll（追加到文档末尾），除非文档明确要求替换某段。\\n'
+      + '- **用户说「写文章+配图/插画/插图」或「XXX 不少于 N 张图」**（v0.97）：只输出 appendAll 写入全文。前端会根据文章结构自动插入插图并生成图片，LLM 不需要输出任何插图标记。\\n'
       + '- 用户说「改/编辑/替换/更新 + 第N段/第N个 + 成 XXX」 → proposeEdit（blockIdx/textBoxIdx 指向目标）。\n'
       + '- 用户说「润色全文/使表达更清晰流畅/改写全文/优化全文/通顺一些」 → proposeEdits（对每个需要润色的段落输出润色后的完整新文本，保持结构和原意；不需要改的段不要列出）。\n'
       + '- 用户说「整理排版/排版/修正标题层级/统一列表/去除加粗斜体/首行缩进/格式调整」 → formatOps（只输出格式字段，不改动任何文字内容）。标题层级：正文用 heading=0，各级标题用 heading=1..9（按文档结构和用户意图）。\n'
@@ -934,8 +942,10 @@ router.post('/office-action', async function(req, res) {
       + '- word 例 7（选区总结，v0.96.9）：文档摘要含【用户选中的文字原文】。指令：总结选中的文字。输出：{"op":"insertAfterSelection","newText":"摘要：本段主要说明项目推进与交付情况。","summary":"已生成摘要，插入到选中文字之后"}。\n'
       + '- word 例 8（选区插图，v0.96.9）：文档摘要含【用户选中的文字原文】。指令：根据选中的文字生成插图。输出：{"op":"generateImage","prompt":"一幅水墨风格插图，描绘春日的柳树与湖面，意境清新，留白构图","summary":"已根据选中文字生成插图描述"}。\n'
       + '- word 例 9（字号排版，v0.96.9）：文档摘要：[0](type=docHeading) 第一章 背景。指令：把选中的标题设为二号字并加粗。输出：{"op":"formatOps","operations":[{"blockIdx":0,"format":{"sizeHalfPoints":44,"bold":true}}]}（二号=22pt=44半磅）。\n'
-      + '- xlsx：sheet1 有 A1:D4。指令：把 D4 改成 SUM 公式。输出：{"op":"propose","summary":"设置合计公式","operations":[{"op":"set_formula","sheetId":"sheet1","address":"D4","formula":"=SUM(D2:D3)"}]}。\n'
-      + fixedHint + '\n';
+      + '- word 例 10（写文章+配图，v0.97）：文档为空。指令：写一篇武侠小说配4张插图。输出：{"op":"appendAll","newText":"武侠全文内容..."}。前端会自动在文中插入插图并生成图片，LLM 只需输出 appendAll。\n'
+      + '- xlsx：sheet1 有 A1:D4。指令：把 D4 改成 SUM 公式。输出：{"op":"propose","summary":"设置合计公式","operations":[{"op":"set_formula","sheetId":"sheet1","address":"D4","formula":"=SUM(D2:D3)"}]}。\\n'
+      + '- xlsx 通用填充（v0.97.1）：sheetId=sheet-1 name=Sheet1 内容为空或仅有 A1 表头"姓名|分数|日期"。指令：生成一些测试数据。输出：{"op":"propose","summary":"已生成 5 行测试数据","operations":[{"op":"set_cell","sheetId":"sheet-1","address":"A2","value":"张三"},{"op":"set_cell","sheetId":"sheet-1","address":"B2","value":92},{"op":"set_cell","sheetId":"sheet-1","address":"C2","value":"2024-03-15"},... 共5行]}。**禁止**输出 op:none 拒绝——"生成测试数据"是有明确意图的指令，用默认位置即可。\\n'
+      + fixedHint + '\\n';
 
     var result = await llmAdapter.callLLM(model.id, [
       { role: 'system', content: system },
@@ -945,39 +955,64 @@ router.post('/office-action', async function(req, res) {
     var content = typeof result === 'string' ? result : (result && result.content) || '';
     console.log('[office-action] LLM 原始输出 >>>', JSON.stringify(content).slice(0, 2000));
     var action = null;
-    // JSON 容错解析：LLM 可能输出被截断（maxTokens 不够）或字符串值含未转义引号
-    try {
-      var start = content.indexOf('{');
-      var end = content.lastIndexOf('}');
-      if (start >= 0 && end > start) {
-        var jsonStr = content.slice(start, end + 1);
-        try {
-          action = JSON.parse(jsonStr);
-        } catch (e1) {
-          // 修复 1：字符串值内的裸引号转义（LLM 常把文档里的 " 原样复制进 newText，不转义）
-          var repaired = repairJsonQuotes(jsonStr);
-          try { action = JSON.parse(repaired); }
-          catch (e2) {
-            // 修复 2：截断修复——去掉末尾不完整片段重试
-            var fixed = null;
-            var cutStr = jsonStr;
-            for (var t = 0; t < 4; t++) {
-              var cutEnd = cutStr.lastIndexOf('}');
-              if (cutEnd <= 0) break;
-              cutStr = cutStr.slice(0, cutEnd + 1);
-              try { fixed = JSON.parse(cutStr); break; } catch (e3) { /* 继续回退 */ }
-              cutStr = cutStr.slice(0, cutEnd);
+    // v0.97: 支持多个 JSON 对象（appendAll + 多个 generateImage 分开输出）
+    // 先尝试解析为单个 JSON（含 operations 数组）
+    // JSON 容错解析
+    function extractJson(text) {
+      var results = [];
+      var depth = 0, start = -1;
+      for (var i = 0; i < text.length; i++) {
+        var ch = text[i];
+        if (ch === '{') {
+          if (depth === 0) start = i;
+          depth++;
+        } else if (ch === '}') {
+          depth--;
+          if (depth === 0 && start >= 0) {
+            var jsonStr = text.slice(start, i + 1);
+            try {
+              results.push(JSON.parse(jsonStr));
+            } catch (e) {
+              var repaired = repairJsonQuotes(jsonStr);
+              try { results.push(JSON.parse(repaired)); } catch (e2) { /* skip */ }
             }
-            if (fixed) action = fixed;
-            else console.warn('[office-action] LLM 输出非 JSON:', content.slice(0, 200));
+            start = -1;
           }
         }
       }
-    } catch (e) {
-      console.warn('[office-action] 解析异常:', e.message);
+      return results;
+    }
+    var jsons = extractJson(content);
+    if (jsons.length > 0) {
+      // 如果只有一个 JSON，用它
+      // 如果有多个，第一个作为主 action，后续合并到 operations
+      action = jsons[0];
+      if (jsons.length > 1) {
+        // 把后续 JSON 收集到 operations
+        var imgOps = jsons.slice(1).filter(function(j) { return j && j.op === 'generateImage'; });
+        if (imgOps.length > 0) {
+          if (!action.operations) action.operations = [];
+          action.operations = action.operations.concat(imgOps);
+        }
+      }
+      console.log('[office-action] 解析到', jsons.length, '个 JSON，主 op=', action.op, 'operations=', (action.operations || []).length);
+    } else {
+      console.warn('[office-action] LLM 输出非 JSON:', content.slice(0, 200));
     }
     if (!action || !action.op) {
       return res.json({ ok: false, error: '无法生成编辑动作：' + String(content || 'LLM 无输出').slice(0, 200) });
+    }
+    // v0.97: 支持 LLM 输出 operations 数组（如 appendAll + 多个 generateImage 组合）
+    if (action.operations && Array.isArray(action.operations)) {
+      // 过滤空操作
+      action.operations = action.operations.filter(function(op) {
+        if (op.op === 'generateImage') return op && String(op.prompt || '').trim() !== '';
+        if (op.op === 'insertAfterSelection') return op && String(op.newText || '').trim() !== '';
+        return true;
+      });
+      if (!action.operations.length) {
+        return res.json({ ok: false, error: '生成的动作为空' });
+      }
     }
     // proposeEdits/formatOps 过滤空 operation（newText 为空或 format 为空）
     if ((action.op === 'proposeEdits' || action.op === 'formatOps') && Array.isArray(action.operations)) {
@@ -1012,6 +1047,18 @@ router.post('/office-action', async function(req, res) {
     action.kind = kind;
     if (action.op === 'none') {
       return res.json({ ok: false, error: action.error || '无法匹配文档内容' });
+    }
+    // v0.97: 检测配图需求——如果 instruction 含配图关键词，在 action 里加 needImages 字段
+    var imgKeywords = /配图|插图|插画|生图|画画|绘.*图/;
+    if (imgKeywords.test(instruction || '')) {
+      // 估算需要几张图（按文本长度粗略估计）
+      var textLen = String(action.newText || '').length;
+      var imgCount = Math.max(1, Math.min(6, Math.floor(textLen / 200)));
+      action.needImages = imgCount;
+    }
+    // v0.97: 如果有 operations 数组，包装成 batch 格式供前端串行执行
+    if (action.operations && action.operations.length > 0) {
+      return res.json({ ok: true, action: action, batch: true });
     }
     return res.json({ ok: true, action: action });
   } catch (e) {

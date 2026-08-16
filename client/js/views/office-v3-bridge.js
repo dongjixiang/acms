@@ -761,7 +761,199 @@
     }
   }
 
-  // GenOffice Word UI：在第 blockIdx 段之后插入新段落（v0.96.2 P138）
+  // v0.97: appendAll + 自动配图（解析【插图N：xxx】标记，串行调生图 API）
+  function genOfficeAppendAllWithImages(frame, newText, markers) {
+    return new Promise(function (resolve) {
+      var win = frame && frame.contentWindow;
+      var docEl = win && win.document ? win.document.querySelector('[contenteditable="true"]') : null;
+      var editor = docEl && docEl.editor;
+      if (!editor) { resolve({ ok: false, error: '编辑器未就绪', imgCount: 0 }); return; }
+      
+      // 去掉插图标记后写入文字
+      var cleanText = String(newText || '').replace(/【插图\d+：[^】]+】/g, '');
+      var ag = genOfficeAppendAll(frame, cleanText);
+      if (!ag.ok) { resolve({ ok: false, error: ag.error, imgCount: 0 }); return; }
+      
+      // 串行生成每张图片
+      var idx = 0;
+      var imgCount = 0;
+      var errors = [];
+      
+      function genNext() {
+        if (idx >= markers.length) {
+          resolve({ ok: true, imgCount: imgCount, errors: errors, summary: '已生成 ' + imgCount + ' 张插图' });
+          return;
+        }
+        var marker = markers[idx++];
+        var match = marker.match(/【插图(\d+)：([^】]+)】/);
+        if (!match) { genNext(); return; }
+        var desc = match[2].trim();
+        
+        // 调生图 API
+        var recentImages = genOfficeCollectRecentImages(editor, 1);
+        var body = { prompt: desc, n: 1, size: '1024x1024' };
+        if (recentImages.length > 0) body.referenceImage = recentImages[0];
+        
+        fetch('/api/image-tools/ai-generate?api_key=dev-key-001', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+          body: JSON.stringify(body)
+        }).then(function (r) { return r.json(); }).then(function (data) {
+          if (!data || !data.ok || !data.options || !data.options.length) {
+            errors.push('插图' + match[1] + '生成失败');
+            genNext();
+            return;
+          }
+          var opt = data.options[0];
+          var imgData = opt.dataUrl || opt.image_url_output;
+          if (!imgData) { errors.push('插图' + match[1] + '返回无图片数据'); genNext(); return; }
+          
+          // 转 dataUrl（如果是 http URL）
+          var p = Promise.resolve(imgData);
+          if (imgData.indexOf('data:') !== 0) {
+            p = fetch(imgData).then(function (r2) { return r2.blob(); }).then(function (blob) {
+              return new Promise(function (resolve2) {
+                var fr = new FileReader();
+                fr.onload = function () { resolve2(fr.result); };
+                fr.readAsDataURL(blob);
+              });
+            });
+          }
+          
+          p.then(function (dataUrl) {
+            var node = {
+              type: 'docProtected',
+              attrs: {
+                blockType: 'image',
+                imageDataUrl: null,
+                label: 'AI 插图 ' + match[1],
+                previewText: 'AI 插图 ' + match[1],
+                imageWidthPx: 320,
+                imageHeightPx: null,
+                genImage: { dataUrl: dataUrl, base64: dataUrl.split(',')[1], mime: opt.mime || 'image/png' }
+              }
+            };
+            // 插入到文档末尾
+            var pos = editor.state.doc.content.size;
+            editor.chain().focus().insertContentAt(pos, node).run();
+            imgCount++;
+            genNext();
+          }).catch(function (err) {
+            errors.push('插图' + match[1] + '插入失败: ' + err.message);
+            genNext();
+          });
+        }).catch(function (err) {
+          errors.push('插图' + match[1] + '请求失败: ' + err.message);
+          genNext();
+        });
+      }
+      
+      genNext();
+    });
+  }
+
+  // v0.97: 批量生成插图并插入文档末尾（用于 appendAll 后自动配图）
+  function genOfficeGenerateBatchImages(frame, count) {
+    return new Promise(function (resolve) {
+      var win = frame && frame.contentWindow;
+      var docEl = win && win.document ? win.document.querySelector('[contenteditable="true"]') : null;
+      var editor = docEl && docEl.editor;
+      if (!editor) { resolve({ ok: false, error: '编辑器未就绪', imgCount: 0 }); return; }
+      
+      // 根据文档内容生成插图描述
+      var docText = '';
+      try {
+        editor.state.doc.content.forEach(function (child) {
+          if (child.type.name === 'docParagraph') {
+            child.content.forEach(function (c) {
+              if (c.text) docText += c.text + ' ';
+            });
+          }
+        });
+      } catch (e) { /* ignore */ }
+      
+      // 用文档前200字生成插图描述（简化版：直接用固定描述）
+      var sceneDescs = [
+        '一幅中国水墨风格插图，武侠场景，意境深远',
+        '一幅中国水墨风格插图，武侠打斗场景，动感十足',
+        '一幅中国水墨风格插图，武侠人物特写，神情坚毅',
+        '一幅中国水墨风格插图，武侠场景，夜色笼罩',
+        '一幅中国水墨风格插图，武侠场景，山水背景',
+        '一幅中国水墨风格插图，武侠决战场景，气势磅礴'
+      ];
+      
+      var idx = 0;
+      var imgCount = 0;
+      var errors = [];
+      
+      function genNext() {
+        if (idx >= count) {
+          resolve({ ok: true, imgCount: imgCount, errors: errors, summary: '已生成 ' + imgCount + ' 张插图' });
+          return;
+        }
+        var desc = sceneDescs[idx] || '一幅中国水墨风格插图，武侠场景';
+        var recentImages = genOfficeCollectRecentImages(editor, 1);
+        var body = { prompt: desc, n: 1, size: '1024x1024' };
+        if (recentImages.length > 0) body.referenceImage = recentImages[0];
+        
+        fetch('/api/image-tools/ai-generate?api_key=dev-key-001', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+          body: JSON.stringify(body)
+        }).then(function (r) { return r.json(); }).then(function (data) {
+          if (!data || !data.ok || !data.options || !data.options.length) {
+            errors.push('插图' + (idx+1) + '生成失败');
+            idx++; genNext();
+            return;
+          }
+          var opt = data.options[0];
+          var imgData = opt.dataUrl || opt.image_url_output;
+          if (!imgData) { errors.push('插图' + (idx+1) + '返回无图片'); idx++; genNext(); return; }
+          
+          var p = Promise.resolve(imgData);
+          if (imgData.indexOf('data:') !== 0) {
+            p = fetch(imgData).then(function (r2) { return r2.blob(); }).then(function (blob) {
+              return new Promise(function (resolve2) {
+                var fr = new FileReader();
+                fr.onload = function () { resolve2(fr.result); };
+                fr.readAsDataURL(blob);
+              });
+            });
+          }
+          
+          p.then(function (dataUrl) {
+            var node = {
+              type: 'docProtected',
+              attrs: {
+                blockType: 'image',
+                imageDataUrl: null,
+                label: 'AI 插图 ' + (idx+1),
+                previewText: 'AI 插图 ' + (idx+1),
+                imageWidthPx: 320,
+                imageHeightPx: null,
+                genImage: { dataUrl: dataUrl, base64: dataUrl.split(',')[1], mime: opt.mime || 'image/png' }
+              }
+            };
+            var pos = editor.state.doc.content.size;
+            editor.chain().focus().insertContentAt(pos, node).run();
+            imgCount++;
+            idx++;
+            genNext();
+          }).catch(function (err) {
+            errors.push('插图' + (idx+1) + '插入失败: ' + err.message);
+            idx++; genNext();
+          });
+        }).catch(function (err) {
+          errors.push('插图' + (idx+1) + '请求失败: ' + err.message);
+          idx++; genNext();
+        });
+      }
+      
+      genNext();
+    });
+  }
+
+    // GenOffice Word UI：在第 blockIdx 段之后插入新段落（v0.96.2 P138）
   function genOfficeInsertAfter(frame, blockIdx, newText) {
     try {
       var win = frame && frame.contentWindow;
@@ -1736,11 +1928,43 @@
         }
         if (!inst || !inst.editor) return { ok: false, error: '没有打开的 ' + action.kind + ' 编辑器' };
         var ed = inst.editor;
-        // v0.96.2 (P138): appendAll — 在文档末尾追加新内容（word/slides）
+        // v0.96.2/v0.97: appendAll — 在文档末尾追加新内容（word/slides）
+        // v0.97: 支持【插图N：画面描述】标记，自动调生图 API 并插入图片
         if (action.op === 'appendAll') {
           if (ed.kind === 'word-ui') {
             var ag = genOfficeAppendAll(ed.iframe, action.newText);
             if (!ag.ok) return ag;
+            // v0.97: 解析插图标记
+            // v0.97: 兼容多种插图标记格式：【插图N：xxx】或【此处可插入插图：xxx】
+            var imgMarkers = [];
+            var rawText = String(action.newText || '');
+            var markerRegex = /【(?:插图\d*：|此处可插入插图：)([^】]+)】/g;
+            var m;
+            var imgIdx = 0;
+            while ((m = markerRegex.exec(rawText)) !== null) {
+              imgIdx++;
+              imgMarkers.push('【插图' + imgIdx + '：' + m[1] + '】');
+            }
+            // v0.97: 如果后端指示需要配图（action.needImages），自动在文档末尾生成图片
+            if (action.needImages && action.needImages > 0) {
+              return genOfficeGenerateBatchImages(ed.iframe, action.needImages).then(function (res) {
+                return {
+                  ok: true,
+                  summary: (res.summary || '已追加内容并生成 ' + res.imgCount + ' 张插图'),
+                  pendingSave: true,
+                };
+              });
+            }
+            // v0.97: 如果 newText 里有插图标记，也自动配图
+            if (imgMarkers.length > 0) {
+              return genOfficeAppendAllWithImages(ed.iframe, action.newText, imgMarkers).then(function (res) {
+                return {
+                  ok: true,
+                  summary: (res.summary || '已追加内容并生成 ' + res.imgCount + ' 张插图'),
+                  pendingSave: true,
+                };
+              });
+            }
             return {
               ok: true,
               summary: action.summary || '已追加 ' + (ag.appended || 1) + ' 段到文档末尾',

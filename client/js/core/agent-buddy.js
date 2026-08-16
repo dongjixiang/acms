@@ -610,6 +610,28 @@
             return;
           }
           try {
+            // v0.97: 支持 batch 模式（appendAll + 多个 generateImage）
+            if (data.batch && data.action && Array.isArray(data.action.operations)) {
+              var batchOps = data.action.operations;
+              var batchIdx = 0;
+              var batchResults = [];
+              function runNext() {
+                if (batchIdx >= batchOps.length) {
+                  showOfficeV3Result('✅ 已生成 ' + batchResults.filter(function(r){return r.ok}).length + ' 个操作', null, requirementId);
+                  return;
+                }
+                var op = batchOps[batchIdx++];
+                Promise.resolve(window.OfficeV3.runAction(op)).then(function (res) {
+                  batchResults.push(res || { ok: false, error: '未知错误' });
+                  runNext();
+                }).catch(function (err2) {
+                  batchResults.push({ ok: false, error: err2.message });
+                  runNext();
+                });
+              }
+              runNext();
+              return;
+            }
             // v0.96.9: generateImage 返回 Promise，统一 Promise.resolve 处理
             Promise.resolve(window.OfficeV3.runAction(data.action)).then(function (res) {
               if (res && res.ok) {
