@@ -297,3 +297,27 @@ acms/
 > **ACMS = LLM tool-use registry + task kanban + workspace sandbox + workspec-driven assists.**  
 > Agent = LLM loop with 5 sandboxed tools, invoked per task via `executeTaskAgent`.  
 > **拆分原则：每个文件单一职责，每个工具按权限分级，每个 L2 业务独立演化。**
+
+
+---
+
+## 9. P159 — Agent Loop 双重防卡死机制 (2026-08-17)
+
+**背景**: T-MSX8TTEU bug — agent 本应 2 轮完成,实际跑 32 轮后 LLM API 假死 8 小时未返回,taskLock 永未释放 → task 永远 in_progress。
+
+**两层防御**:
+
+| 层 | 文件 | 机制 | 超时默认 |
+|---|---|---|---|
+| **内部循环级** | `server/services/llm-adapter.js` → `server/services/context_compressor.js` | token-based context 压缩(>30 msg 触发) + 前置剪枝 tool_result → "信息丢失"疗法治过度验证循环 | messages>30 或 tokens>32K |
+| **任务全局级** | `server/services/task-agent.js` | `Promise.race([runtimeExec(...), timeoutPromise])` 套 10 分钟,超时 throw `TASK_GLOBAL_TIMEOUT` → catch 标 failed | 10 min (env ACMS_TASK_TIMEOUT_MS) |
+| **外部兜底** | `server/routes/ai-tools.js` | `POST /api/ai-tools/force-release-task-lock/:taskId` 手动释锁 + 写 progress_note | 按需 |
+
+**借鉴**: Hermes `IterationBudget` + `ContextCompressor` 设计(`run_agent.py:283`, `agent/context_compressor.py:1-1556`)。
+
+**环境变量**:
+- `ACMS_TASK_TIMEOUT_MS=600000` (默认 10 分钟,0=禁用)
+- 默认值由 `server/services/task-agent.js` line ~20 的 IIFE 读取
+
+**历史**: Hermes 无跨轮重复检测,靠 compression 自然治循环。ACMS 走不同路线 — 先用全局 timeout 兜底,后续再补"同工具连续 N 轮重复强制收手"。
+

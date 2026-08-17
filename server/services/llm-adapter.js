@@ -702,8 +702,82 @@ async function runToolLoop(modelId, messages, options = {}) {
   //   4 个改进点:① 前置剪枝(pruneToolOutputs)不调 LLM ② token-based 触发 ③ 结构化 summary 模板
   //   ④ 失败冷却 10 分钟(避免反复重试失败摘要)
   //   治"runToolLoop 过度循环(22 轮重复验证)→ 信息爆炸 → LLM 注意力分散" bug
-  const { compressMessages, resetRunState: _resetCCState } = require('./context-compressor');
+  const { compressMessages, resetRunState: _resetCCState } = require('./context_compressor');
   _resetCCState();  // 每次 runToolLoop 开始重置 per-run 状态
+
+  // P160: 工具调用执行 helper — 返回 messages 数组
+  async function _execToolCall(tc, toolReg, api, msgs, hist, rnd, ctx) {
+    const tool = toolReg.getTool(tc.name);
+    const argsPreview = JSON.stringify(tc.args || {}).slice(0, 200);
+    console.log(`[runToolLoop]   call: ${tc.name}(${argsPreview})`);
+    const out = [];
+    if (!tool) {
+      const allTools = toolReg.listTools ? toolReg.listTools() : [];
+      const validNames = new Set(allTools);
+      const repaired = repairToolName(tc.name, validNames);
+      if (repaired !== tc.name && validNames.has(repaired)) {
+        const repairedTool = toolReg.getTool(repaired);
+        if (repairedTool) {
+          console.log(`[runToolLoop] v0.33 tool name repair: "${tc.name}" → "${repaired}"`);
+          hist.push({ round: rnd + 1, tool: repaired, args: argsPreview, result: 'REPAIRED_NAME' });
+          try {
+            const toolResult = await repairedTool.handler(tc.args, ctx);
+            const truncatedResult = truncateToolResult(repaired, toolResult);
+            if (truncatedResult.truncated) {
+              console.log(`[runToolLoop] v0.33 truncated ${repaired} result: ${truncatedResult.origSize} → ${TOOL_RESULT_TRUNCATE_BYTES} bytes`);
+            }
+            hist[hist.length - 1].resultPreview = JSON.stringify(truncatedResult.result).slice(0, 300);
+            out.push(toolRegistry.makeToolResult(api, tc.id, truncatedResult.result));
+          } catch (e) {
+            hist[hist.length - 1].error = e.message;
+            out.push(toolRegistry.makeToolResult(api, tc.id, { error: e.message }));
+          }
+          return out;
+        }
+      }
+      console.log(`[runToolLoop]   -> 未知工具: ${tc.name}`);
+      hist.push({ round: rnd + 1, tool: tc.name, args: argsPreview, result: 'UNKNOWN_TOOL' });
+      out.push(toolRegistry.makeToolResult(api, tc.id, { error: `未知工具: ${tc.name}` }));
+      return out;
+    }
+    const callKey = `${tc.name}:${JSON.stringify(tc.args)}`;
+    if (callKey === lastToolCallKey) {
+      console.warn(`[runToolLoop]   -> 检测到连续两轮同 tool+args — 警告 LLM，不强制退出 (round ${rnd + 1}/${maxRounds})`);
+      hist.push({ round: rnd + 1, tool: tc.name, args: argsPreview, result: 'WARN_REPEAT' });
+      out.push(toolRegistry.makeToolResult(api, tc.id, {
+        warning: `You just called ${tc.name} with the same arguments in the previous round. This is a repeated call. If you have enough information, write the files or finish. If you need different info, try a different tool or different arguments. Do NOT call the same tool with the same arguments again — you have limited rounds left (${maxRounds - rnd - 1} rounds remaining).`,
+        _duplicateCall: true,
+      }));
+      lastToolCallKey = callKey;
+      return out;
+    }
+    lastToolCallKey = callKey;
+    try {
+      const pre = await runPreHooks(tc.name, tc.args, ctx);
+      if (pre.abort) {
+        hist.push({ round: rnd + 1, tool: tc.name, args: argsPreview, result: 'PRE_HOOK_ABORT', error: pre.abortReason });
+        out.push(toolRegistry.makeToolResult(api, tc.id, { ok: false, aborted: true, reason: pre.abortReason }));
+        return out;
+      }
+      const finalArgs = pre.args || tc.args;
+      const toolResult = await tool.handler(finalArgs, ctx);
+      const resultPreview = JSON.stringify(toolResult).slice(0, 300);
+      const postResult = await runPostHooks(tc.name, finalArgs, toolResult, ctx);
+      const truncated = truncateToolResult(tc.name, postResult);
+      if (truncated.truncated) {
+        console.log(`[runToolLoop] v0.33 truncated ${tc.name} result: ${truncated.origSize} → ${TOOL_RESULT_TRUNCATE_BYTES} bytes`);
+      }
+      console.log(`[runToolLoop]   -> result (${resultPreview.length} chars): ${resultPreview}`);
+      hist.push({ round: rnd + 1, tool: tc.name, args: argsPreview, resultPreview });
+      out.push(toolRegistry.makeToolResult(api, tc.id, truncated.result));
+    } catch (e) {
+      console.log(`[runToolLoop]   -> ERROR: ${e.message}`);
+      hist.push({ round: rnd + 1, tool: tc.name, args: argsPreview, error: e.message });
+      out.push(toolRegistry.makeToolResult(api, tc.id, { error: e.message }));
+    }
+    return out;
+  }
+
 
 
 
@@ -980,90 +1054,39 @@ Round ${round + 1}/${maxRounds}。
     }
     messages.push(asstMsg);
 
-    for (const tc of result.toolCalls) {
-      const tool = toolRegistry.getTool(tc.name);
-      const argsPreview = JSON.stringify(tc.args || {}).slice(0, 200);
-      console.log(`[runToolLoop]   call: ${tc.name}(${argsPreview})`);
-
-      if (!tool) {
-        // v0.33 C 方案: tool name 容错（参考 Hermes _repair_tool_call:6098）
-        //   模型拼写错误（TodoTool_tool / Patch_tool / ReadFile）→ 5 步自动修
-        const allTools = toolRegistry.listTools ? toolRegistry.listTools() : [];
-        const validNames = new Set(allTools);
-        const repaired = repairToolName(tc.name, validNames);
-        if (repaired !== tc.name && validNames.has(repaired)) {
-          const repairedTool = toolRegistry.getTool(repaired);
-          if (repairedTool) {
-            console.log(`[runToolLoop] v0.33 tool name repair: "${tc.name}" → "${repaired}"`);
-            toolCallHistory.push({ round: round + 1, tool: repaired, args: argsPreview, result: 'REPAIRED_NAME' });
-            // 修复成功，按正常 tool 处理
-            try {
-              // 递归调用逻辑：但简单起见直接在这里执行一次
-              const toolResult = await repairedTool.handler(tc.args, context);
-              const truncatedResult = truncateToolResult(repaired, toolResult);
-              if (truncatedResult.truncated) {
-                console.log(`[runToolLoop] v0.33 truncated ${repaired} result: ${truncatedResult.origSize} → ${TOOL_RESULT_TRUNCATE_BYTES} bytes`);
-              }
-              toolCallHistory[toolCallHistory.length - 1].resultPreview = JSON.stringify(truncatedResult.result).slice(0, 300);
-              messages.push(toolRegistry.makeToolResult(api, tc.id, truncatedResult.result));
-            } catch (e) {
-              toolCallHistory[toolCallHistory.length - 1].error = e.message;
-              messages.push(toolRegistry.makeToolResult(api, tc.id, { error: e.message }));
-            }
-            continue;
-          }
+    // P160: 工具并行执行 — Hermes _PARALLEL_SAFE_TOOLS 借鉴
+    //   read/search/exec/git 类读操作可并发,write/patch 串行防竞态
+    const _PARALLEL_SAFE_TOOLS = new Set([
+      'agent_read_file', 'agent_list_files', 'agent_search_files',
+      'agent_exec_command', 'agent_git_status', 'agent_git_log',
+      'agent_git_diff', 'agent_set_phase',
+    ]);
+    const MAX_CONCURRENT_TOOLS = 4;
+    const parallelCalls = [];
+    const serialCalls = [];
+    for (const _tci of result.toolCalls) {
+      if (_PARALLEL_SAFE_TOOLS.has(_tci.name)) parallelCalls.push(_tci);
+      else serialCalls.push(_tci);
+    }
+    // 并行组
+    for (let i = 0; i < parallelCalls.length; i += MAX_CONCURRENT_TOOLS) {
+      const batch = parallelCalls.slice(i, i + MAX_CONCURRENT_TOOLS);
+      const batchResults = await Promise.allSettled(batch.map(async (_tc) => {
+        return await _execToolCall(_tc, toolRegistry, api, messages, toolCallHistory, round, context);
+      }));
+      for (const res of batchResults) {
+        if (res.status === 'fulfilled') {
+          const msgs = res.value;
+          if (msgs) for (const m of msgs) messages.push(m);
+        } else {
+          console.warn(`[runToolLoop] P160 并行工具失败: ${res.reason && res.reason.message || String(res.reason)}`);
         }
-        console.log(`[runToolLoop]   -> 未知工具: ${tc.name}`);
-        toolCallHistory.push({ round: round + 1, tool: tc.name, args: argsPreview, result: 'UNKNOWN_TOOL' });
-        messages.push(toolRegistry.makeToolResult(api, tc.id, { error: `未知工具: ${tc.name}` }));
-        continue;
       }
-
-      // v0.25 fix: 放宽 v0.20 强制退出 — 重复 tool 调用不再 return，而是把「你刚调了同一 tool」塞回 messages
-      //   让 LLM 自己决定下一步。真死循环由 maxRounds 兜底。
-      //   根因（T-MRDO0ECU 案例）：agent 在 round 6 已看到 GameState.js 不存在，但 round 7 重复调 walker
-      //   时被强制截断，失去了调 agent_write_file 的机会。LLM 收到 warning 后会自主收敛。
-      const callKey = `${tc.name}:${JSON.stringify(tc.args)}`;
-      if (callKey === lastToolCallKey) {
-        console.warn(`[runToolLoop]   -> 检测到连续两轮同 tool+args — 警告 LLM，不强制退出 (round ${round + 1}/${maxRounds})`);
-        toolCallHistory.push({ round: round + 1, tool: tc.name, args: argsPreview, result: 'WARN_REPEAT' });
-        messages.push(toolRegistry.makeToolResult(api, tc.id, {
-          warning: `You just called ${tc.name} with the same arguments in the previous round. This is a repeated call. If you have enough information, write the files or finish. If you need different info, try a different tool or different arguments. Do NOT call the same tool with the same arguments again — you have limited rounds left (${maxRounds - round - 1} rounds remaining).`,
-          _duplicateCall: true,
-        }));
-        lastToolCallKey = callKey;
-        continue;
-      }
-      lastToolCallKey = callKey;
-
-      try {
-        // v0.46 Hook 系统: PreToolUse 链（可修改 args / abort=true 跳过 tool 执行）
-        const pre = await runPreHooks(tc.name, tc.args, context);
-        if (pre.abort) {
-          toolCallHistory.push({ round: round + 1, tool: tc.name, args: argsPreview, result: 'PRE_HOOK_ABORT', error: pre.abortReason });
-          messages.push(toolRegistry.makeToolResult(api, tc.id, { ok: false, aborted: true, reason: pre.abortReason }));
-          continue;
-        }
-        const finalArgs = pre.args || tc.args;
-        // v0.20：handler 接 (args, context) — context 用于传 reqId 等
-        const toolResult = await tool.handler(finalArgs, context);
-        const resultPreview = JSON.stringify(toolResult).slice(0, 300);
-        // v0.46 Hook 系统: PostToolUse 链（可修改/包装 result）
-        const postResult = await runPostHooks(tc.name, finalArgs, toolResult, context);
-        // v0.33 C 方案: 截断超长 tool result（参考 Hermes enforce_turn_budget:181）
-        //   防止 LLM 调一次 read_file 拿到 50KB 文件把 context 撑爆
-        const truncated = truncateToolResult(tc.name, postResult);
-        if (truncated.truncated) {
-          console.log(`[runToolLoop] v0.33 truncated ${tc.name} result: ${truncated.origSize} → ${TOOL_RESULT_TRUNCATE_BYTES} bytes`);
-        }
-        console.log(`[runToolLoop]   -> result (${resultPreview.length} chars): ${resultPreview}`);
-        toolCallHistory.push({ round: round + 1, tool: tc.name, args: argsPreview, resultPreview });
-        messages.push(toolRegistry.makeToolResult(api, tc.id, truncated.result));
-      } catch (e) {
-        console.log(`[runToolLoop]   -> ERROR: ${e.message}`);
-        toolCallHistory.push({ round: round + 1, tool: tc.name, args: argsPreview, error: e.message });
-        messages.push(toolRegistry.makeToolResult(api, tc.id, { error: e.message }));
-      }
+    }
+    // 串行组
+    for (const _tc of serialCalls) {
+      const sres = await _execToolCall(_tc, toolRegistry, api, messages, toolCallHistory, round, context);
+      if (sres) for (const m of sres) messages.push(m);
     }
   }
   console.error(`[runToolLoop] Tool loop exceeded max rounds (${maxRounds}). 完整 tool call history (${toolCallHistory.length} 条):\n${toolCallHistory.map(h => `  r${h.round} ${h.tool}(${(h.args||'').slice(0, 80)}) → ${h.resultPreview ? h.resultPreview.slice(0, 80) : (h.result || h.error || '?')}`).join('\n')}`);

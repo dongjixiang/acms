@@ -618,27 +618,39 @@ ${task.description || '(no description)'}
 
 
 
-    const runtimeResult = await runtimeExec({
+    
+    // P159: Promise.race 套全局超时 — 超时后 throw 给外层 catch
+    let runtimeResult;
+    try {
+      const timeoutPromise = TASK_TIMEOUT_MS > 0
+        ? new Promise((_, reject) => setTimeout(
+            () => reject(Object.assign(
+              new Error(`Task ${taskId} 全局超时 ${TASK_TIMEOUT_MS / 1000}s — 强制熔断,LLM API hang 或 runToolLoop 死循环`),
+              { code: 'TASK_GLOBAL_TIMEOUT', timeoutMs: TASK_TIMEOUT_MS }
+            )),
+            TASK_TIMEOUT_MS
+          ))
+        : new Promise(() => {});  // ACMS_TASK_TIMEOUT_MS=0 → 禁用超时
 
-      modelId: model.id,
-
-      messages,
-
-      toolNames,
-
-      maxRounds: 90,
-
-      maxTokens: options.maxTokens ?? 32000,
-
-      context: { projectId, taskId },
-
-      onProgress: saveProgress,
-
-      caller: 'task-agent',
-
-    });
+      runtimeResult = await Promise.race([
+        runtimeExec({
+          modelId: model.id,
+          messages,
+          toolNames,
+          maxRounds: 90,
+          maxTokens: options.maxTokens ?? 32000,
+          context: { projectId, taskId },
+          onProgress: saveProgress,
+          caller: 'task-agent',
+        }),
+        timeoutPromise,
+      ]);
+    } catch (raceErr) {
+      throw raceErr;
+    }
 
     analysis = runtimeResult.content;
+
 
   } catch (e) {
 
