@@ -107,6 +107,9 @@ setInterval(() => {
   try { require('./services/auto-archive-service').autoArchive(); } catch (e) { /* */ }
 }, 24 * 60 * 60 * 1000);
 
+// P160: Task Watchdog — 兜底熔断卡死任务 (ACMS_WATCHDOG_ENABLED=true 启用)
+try { require('./services/task-watchdog').init(); } catch (e) { console.error('[P160 watchdog] 启动失败:', e.message); }
+
 // v0.55.1：每日清理回收站（删除 > 7 天的软删 session）
 function cleanupExpiredChatSessions() {
   try {
