@@ -930,4 +930,24 @@ ${successSamples.map(t => `### ${t.id} (${t.type})
   }
 });
 
+// P159: Force-release task lock — 给 PM 救火用(治"LLM API 假死 8h → taskLock 永未释放" bug)
+//   正常情况 taskLock 由 agent-execute 路由的 try/finally 自动释放
+//   只有 LLM API 假死时锁才永不释放,这个 endpoint 是唯一安全释放途径
+//   用法: POST /api/ai-tools/force-release-task-lock/:taskId { reason: "..." }
+router.post('/force-release-task-lock/:taskId', (req, res) => {
+  const { taskId } = req.params;
+  const reason = (req.body && req.body.reason) || 'no reason given';
+  const wasLocked = dispatcher.isTaskLocked(taskId);
+  dispatcher.releaseTaskLock(taskId);
+  console.warn(`[P159] ⚠️ 手动释放 taskLock: taskId=${taskId} wasLocked=${wasLocked} reason="${reason}"`);
+  res.json({
+    ok: true,
+    taskId,
+    wasLocked,
+    released: true,
+    reason,
+    timestamp: new Date().toISOString(),
+  });
+});
+
 module.exports = router;

@@ -698,56 +698,56 @@ async function runToolLoop(modelId, messages, options = {}) {
   // v0.25 debug: 记录每轮 LLM 调了啥 + tool 结果，方便 PM 查 tool loop 卡死根因
   const toolCallHistory = [];
 
-  // v0.29 fix: Context 压缩 — Hermes-style 防止 LLM 长对话失忆 goal
-  //   当 messages 超过阈值（默认 30），summarize 旧 messages，保留 system + 最近 12 条
-  //   根因：T-MRDO0ECU 重跑 Round 12 时 messages 已 37 条，goal 在 messages[1] 已被推到 attention 边缘
-  // v0.45: 改用 LLM 摘要（保留语义信息）而非纯规则截断
-  const COMPRESS_THRESHOLD = 30;
-  const KEEP_RECENT = 12;
-  let _compressed = false;
+  // P159: 上下文压缩抽到独立文件(借鉴 Hermes agent/context_compressor.py)
+  //   4 个改进点:① 前置剪枝(pruneToolOutputs)不调 LLM ② token-based 触发 ③ 结构化 summary 模板
+  //   ④ 失败冷却 10 分钟(避免反复重试失败摘要)
+  //   治"runToolLoop 过度循环(22 轮重复验证)→ 信息爆炸 → LLM 注意力分散" bug
+  const { compressMessages, resetRunState: _resetCCState } = require('./context-compressor');
+  _resetCCState();  // 每次 runToolLoop 开始重置 per-run 状态
 
-  // v0.45: LLM-based context compression
-  async function compressMessages(messages, maxRounds, round) {
-    if (_compressed) return;
-    _compressed = true;
 
-    const systemMsg = messages[0];
-    const msgsToCompress = messages.slice(1, -KEEP_RECENT);
-    const recentMsgs = messages.slice(-KEEP_RECENT);
-    const droppedCount = msgsToCompress.length;
 
-    if (droppedCount === 0) return;
 
-    // 构建压缩提示：让 LLM 总结被丢弃的 messages
-    const compressPrompt = [
-      { role: 'system', content: 'You are a context summarizer. Summarize the following conversation messages in 3-5 sentences. Focus on: what the agent did, what files were created/modified, what decisions were made. Do NOT include tool call details — only the outcomes.' },
-      { role: 'user', content: msgsToCompress.map(m => {
-        if (m.role === 'tool_result') return `Tool result for ${m.name || m.tool_call_id}: ${typeof m.content === 'string' ? m.content.slice(0, 500) : JSON.stringify(m.content).slice(0, 500)}`;
-        return `${m.role}: ${typeof m.content === 'string' ? m.content.slice(0, 500) : JSON.stringify(m.content).slice(0, 500)}`;
-      }).join('\n---\n') },
-    ];
 
-    try {
-      // 用同一个 model 做摘要调用（不占 tool loop）
-      const summaryResult = await callLLMWithTools(modelId, compressPrompt, {
-        toolNames: [],
-        maxTokens: 500,
-      });
-      const summaryText = summaryResult.content || `[Earlier ${droppedCount} messages compressed: agent explored workspace and made tool calls. Goal context remains in system prompt above.]`;
-      const compressed = [systemMsg, { role: 'user', content: summaryText }, ...recentMsgs];
-      messages.length = 0;
-      messages.push(...compressed);
-      console.log(`[runToolLoop] v0.45 context compression: ${messages.length + droppedCount} → ${compressed.length} messages (kept system + last ${KEEP_RECENT} + LLM summary)`);
-    } catch (e) {
-      // 摘要失败则降级为规则压缩
-      const droppedToolSummary = toolCallHistory.slice(0, toolCallHistory.length - KEEP_RECENT / 2).map(h => `${h.tool}(${(h.args||'').slice(0, 60)})`).join(', ');
-      const summaryText = `[Earlier ${droppedCount} messages compressed: agent explored workspace and made tool calls: ${droppedToolSummary || 'exploration + verification'}. Goal context remains in system prompt above.]`;
-      const compressed = [systemMsg, { role: 'user', content: summaryText }, ...recentMsgs];
-      messages.length = 0;
-      messages.push(...compressed);
-      console.log(`[runToolLoop] v0.45 context compression (fallback): ${messages.length + droppedCount} → ${compressed.length} messages`);
-    }
-  }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
   for (let round = 0; round < maxRounds; round++) {
     console.log(`[runToolLoop] round=${round + 1}/${maxRounds} | messages=${messages.length} | taskId=${context.taskId || '?'}`);
@@ -775,10 +775,8 @@ async function runToolLoop(modelId, messages, options = {}) {
       } catch (e) { /* steer check failed, continue */ }
     }
 
-    // v0.45: 上下文压缩 — 超过阈值时 LLM 摘要旧 messages
-    if (messages.length > COMPRESS_THRESHOLD && !_compressed) {
-      await compressMessages(messages, maxRounds, round);
-    }
+    // P159: 阈值判断 + 摘要逻辑全部抽到 context-compressor.js(shouldCompress + compressMessages)
+    await compressMessages(messages, { modelId });
 
     // v0.44.4: 去掉 L576 的"模型思考中..."推送——它总是在每轮最后覆盖 tool call entry
     //   因为下一轮 L576 push 的时间戳 > 上一轮 L616 push 的时间戳

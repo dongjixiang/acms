@@ -644,9 +644,27 @@ ${task.description || '(no description)'}
 
 
     console.error(`[agent-execute] runToolLoop failed: ${e.message}`);
-
-
     analysis = `[Agent execution failed: ${e.message}]\n\nTask context:\n${taskContext}`;
+
+    // P159: 超时熔断 → 主动标 failed + 写 progress_note(让 PM 看板看到根因)
+    if (e && e.code === 'TASK_GLOBAL_TIMEOUT') {
+      const now = new Date().toISOString();
+      try {
+        const curTask = taskStore.getById(taskId);
+        const newNote = ((curTask && curTask.progress_note) || '') +
+          (curTask && curTask.progress_note ? '\n\n' : '') +
+          `[超时熔断 ${now}] Task 全局超时 ${e.timeoutMs / 1000}s。LLM API hang 或 runToolLoop 死循环。手动复提交或拆分任务。`;
+        taskStore.update(taskId, {
+          status: 'failed',
+          progress_note: newNote,
+          completed_at: now,
+          updated_at: now,
+        });
+        console.warn(`[P159] ${taskId} 超时熔断 → 标 failed (${e.timeoutMs / 1000}s)`);
+      } catch (e2) {
+        console.error(`[P159] ${taskId} 写 failed 状态失败: ${e2.message}`);
+      }
+    }
 
 
   }
