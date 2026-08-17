@@ -172,7 +172,7 @@ async function refreshKanban(parentId, root) {
           ${t.status === 'in_progress' ? '<div class="progress-bar"><div class="progress-fill" style="width:' + (t.progress || 0) + '%"></div></div>' : ''}
           ${blocked && t.status === 'backlog' ? '<div class="task-actions"><span style="font-size:11px;color:var(--accent3)">⏳ ' + escHtml(t.block_reason || '等待依赖') + '</span></div>' : ''}
           ${!blocked && t.status === 'backlog' ? '<div class="task-actions" style="display:flex;gap:6px;align-items:center"><select value="' + (t.assigned_to||'') + '" onclick="event.stopPropagation()" onchange="event.stopPropagation();assignTaskCard(\'' + t.id + '\',this.value)" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:3px;max-width:130px">' + agentOpts + '</select><button class="btn-small btn-accept" onclick="event.stopPropagation();claimTask(\'' + t.id + '\')">认领</button></div>' : ''}
-          ${t.status === 'in_progress' ? '<div class="task-actions"><button class="btn-small btn-accept" onclick="event.stopPropagation();submitTask(\'' + t.id + '\')">提交</button></div>' : ''}
+          ${t.status === 'in_progress' ? '<div class="task-actions"><button class="btn-small btn-accept" onclick="event.stopPropagation();submitTask(\'' + t.id + '\')">提交</button><button class="btn-small btn-danger" onclick="event.stopPropagation();forceReleaseTask(\'\' + t.id + \'\')" title="P160" style="background:#ff6b6b;color:#fff">⚡释放</button></div>' : ''}
           ${t.status === 'in_progress' ? '<div class="task-progress-mini" style="margin-top:4px;font-size:10px;color:var(--accent);cursor:pointer" onmouseenter="showProgressTooltip(\'' + t.id + '\', this.closest(\'.task-card\'))" onmouseleave="window._kanbanTipCardLeaveTimer = setTimeout(hideProgressTooltip, 300)">' + (t.progress_note ? escHtml(t.progress_note).slice(0, 40) : '') + ' ' + (t.progress || 0) + '%</div>' : ''}
           ${t.status === 'review' ? '<div class="task-actions"><button class="btn-small btn-accept" onclick="event.stopPropagation();reviewTask(\'' + t.id + '\',\'approved\')">通过</button><button class="btn-small btn-reject" onclick="event.stopPropagation();reviewTask(\'' + t.id + '\',\'rejected\')">驳回</button></div>' : ''}
           ${t.status === 'failed' ? '<div class="task-actions" style="display:flex;gap:6px"><button class="btn-small btn-accept" onclick="event.stopPropagation();reactivateTask(\'' + t.id + '\')" title="把失败任务拉回 backlog 重跑">↻ 重激活</button><button class="btn-small btn-reject" onclick="event.stopPropagation();archiveTask(\'' + t.id + '\')" title="放弃这个失败任务">归档</button></div>' : ''}
@@ -279,7 +279,7 @@ async function openTask(taskId, root) {
       '</div>' : '') +
       '<div style="margin-top:16px;display:flex;gap:8px">' +
         (t.status === 'backlog' ? '<button class="btn-accept" onclick="claimTask(\'' + t.id + '\')">认领</button>' : '') +
-        (t.status === 'in_progress' ? '<button class="btn-primary" onclick="updateTaskProgress(\'' + t.id + '\')">更新进度</button><button class="btn-accept" onclick="submitTask(\'' + t.id + '\', ' + (t.auto_review ? 'true' : 'false') + ')">提交审核</button>' : '') +
+        (t.status === 'in_progress' ? '<button class="btn-primary" onclick="updateTaskProgress(\'' + t.id + '\')">更新进度</button><button class="btn-accept" onclick="submitTask(\'' + t.id + '\', ' + (t.auto_review ? 'true' : 'false') + ')">提交审核</button><button class="btn-small btn-danger" onclick="forceReleaseTask(\'\' + t.id + \'\')" title="P160">⚡释放</button>' : '') +
         (t.status === 'review' ? '<button class="btn-accept" onclick="reviewTask(\'' + t.id + '\',\'approved\')">通过</button><button class="btn-reject" onclick="reviewTask(\'' + t.id + '\',\'rejected\')">驳回</button>' : '') +
         // P0 v0.X: manual / plan_first 模式 + in_progress 状态 + 还没在跑 → 显示"开始执行"
         //   还没在跑的判定：progress === 0 且 execution_log 为空
@@ -339,6 +339,26 @@ async function assignTaskCard(taskId, agentId) {
 }
 
 async function claimTask(tid) { const a = await showPrompt({ title: '认领任务', message: '请输入智能体 ID', defaultValue: 'agent-scholar-001', minLength: 1, multiline: false, confirmText: '认领' }); if (!a) return; try { await Tasks.claim(tid, a); toast('已认领 ✅', 'success'); refreshKanban(); openTask(tid); } catch (e) { toast('失败: ' + e.message, 'error'); } }
+// P160: 强制释放 task lock + 标 failed (PM 救火)
+
+async function forceReleaseTask(taskId) {
+
+  if (!confirm("P160 force release? taskId: " + taskId)) return;
+
+  try {
+
+    const res = await api('POST', '/ai-tools/force-release-task-lock/' + taskId, { reason: 'PM manual' });
+
+    if (res.ok) { toast("released", "ok"); refreshKanban(); }
+
+    else { toast('failed: ' + (res.error || JSON.stringify(res)), 'error'); }
+
+  } catch (e) { toast("request failed: " + e.message, 'error'); }
+
+}
+
+
+
 async function submitTask(tid) { const n = await showPrompt({ title: '提交任务', message: '提交说明', placeholder: '例如：实现了 xxx 功能 / 修了 xxx bug', multiline: true, confirmText: '提交' }) || '完成'; try { await Tasks.submit(tid, 'agent-scholar-001', [], n); toast('已提交', 'success'); refreshKanban(); } catch (e) { toast('失败: ' + e.message, 'error'); } }
 // P0 v0.X: 驳回必填理由（min 10 字）— 用 ACMS 标准 showPrompt 弹窗
 //   之前用 window.prompt() 在某些浏览器被拦截 / 用户不知道要点 OK
