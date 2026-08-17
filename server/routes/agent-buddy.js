@@ -992,8 +992,9 @@ router.post('/office-action', async function(req, res) {
       + '- insertAfter（word/slides）：在某段后插入新段落。格式 {"op":"insertAfter","blockIdx":N,"newText":"完整的新段落文本"}。\\n'
       + '- formatOps（word，v0.96.7/v0.96.9）：批量格式调整（只改格式不改文字）。格式 {"op":"formatOps","operations":[{"blockIdx":N,"format":{...}}]}。format 支持的字段：heading（0=转正文，1..9=标题级别）、kind（"bullet"|"numbered"|"none"）、bold/italic/strike/underline（true/false）、sizeHalfPoints（字号，半磅：24=12pt，22=11pt，28=14pt，44=22pt二号）、font（字体名，如"宋体"/"微软雅黑"/"楷体"）、color（文字颜色，十六进制无#，如 FF0000）、highlight（高亮，十六进制无#或颜色名，如 FFFF00/yellow）、align（"left"|"center"|"right"|"justify"）、indentFirstLine/indentLeft/indentRight（缩进，整数）、lineSpacing（行距，数值）、spaceBefore/spaceAfter（段前段后间距，整数）、shadingFill（段落底纹，十六进制无#）。未提及的字段保持原样。\\n'
       + '- insertAfterSelection（word，v0.96.9）：把新文本插入到用户选中区域之后（**原文保留不动**，用户自行对比取舍）。用于\"对选中文字润色/总结/改写/翻译\"类指令。格式 {"op":"insertAfterSelection","newText":"润色/总结/改写后的完整文本","summary":"一句话说明"}。newText 只针对【用户选中的文字原文】，不要包含未选中的内容。\\n'
-      + '- generateImage（word，v0.96.9/v0.97）：有选区时根据选中文字生成插图。无选区时由前端 appendAll 自动触发配图，LLM 不需要输出此 op。\\n'
-      + '- addSmartart（slides，v0.96.8）：在幻灯片上插入 SmartArt 图形。格式 {"op":"addSmartart","slideIndex":N,"layout":"process","items":["第一项","第二项","第三项"],"summary":"一句话说明"}。layout 可选值：list/process/cycle/hierarchy/pyramid/matrix/venn。items 至少 2 项。\\n'
+      + '- generateImage（word，v0.96.9/v0.97）：有选区时根据选中文字生成插图。无选区时由前端 appendAll 自动触发配图（用户的"写文章+配图"场景），LLM 不需要输出此 op。\\n'
+      + '- insertImagesAtContent（word，v0.97+）：为【已有文章】批量配图。场景是用户选中已有正文说"给文章配图/在文章恰当位置配图"且无选区编辑意图（不是"对某段润色"）。LLM 必须：(1) 分析文档摘要抽取关键元素（人物/场景/动物/物品）；(2) 决策 3-5 张图（段落数 / 3 向上取整，最多 6 张）；(3) 每张选 afterBlockIdx（在该段之后插入）；(4) 写 globalStyle 统一风格（用户指定则用用户的，如"水墨"/"赛博朋克"；未指定则省略，前端用通用风格）；(5) 每张写具体 prompt（主角+场景+动作+氛围）。格式 {"op":"insertImagesAtContent","summary":"一句话说明","globalStyle":"统一风格描述，可省略","images":[{"afterBlockIdx":N,"prompt":"该图的具体画面","reason":"为什么这里适合插图"},...]}。**严禁**输出 op:none ——"给文章配图"是有明确意图的指令。\\n'
+      + '- addSmartart（slides，v0.96.8）：在幻灯片上插入 SmartArt 图形。格式 {"op":"addSmartart","slideIndex":N,"layout":"process","items":["第一项","第二项","第三项"],"summary":"一句话说明"}。layout 可选值：list/process/cycle/hierarchy/pyramid/matrix/venn。items 至少 2 项。\n'
       + '- propose（xlsx）：批量操作。格式 {"op":"propose","summary":"一句话说明","operations":[{"op":"set_cell",...}]}\n'
       + 'xlsx 支持的 op：set_cell、set_formula（value 换成 formula）、clear_cell、rename_sheet、add_sheet、delete_sheet、set_range、sort_range、add_chart。\n'
       + '【xlsx 格式硬规则 — v0.97 极重要】\n'
@@ -1006,6 +1007,7 @@ router.post('/office-action', async function(req, res) {
       + '- **选中区域插入（v0.96.9）**：文档摘要含【用户选中的文字原文】且指令是"对选中的文字润色/总结/改写/翻译" → 输出 insertAfterSelection（newText 是针对选中文字的润色/总结/改写结果，**插入到选中区域之后，不修改不删除原文**）。"对选中内容生成插图/配图/插画" → 输出 generateImage。无选区时按以下规则全文操作。\\n'
       + '- 用户说「写一篇 XXX/作文/文章/内容/段落」且未指定位置时 → 优先用 appendAll（追加到文档末尾），除非文档明确要求替换某段。\\n'
       + '- **用户说「写文章+配图/插画/插图」或「XXX 不少于 N 张图」**（v0.97）：只输出 appendAll 写入全文。前端会根据文章结构自动插入插图并生成图片，LLM 不需要输出任何插图标记。\\n'
+      + '- **用户说「给【已有文章】配图/在文章恰当位置配图/为文章生成插图」（v0.97+）**：文档非空且无 [已选中] 块 → 输出 insertImagesAtContent（不论用词：「给文章配图/为文章配图/配插图/通篇配图/均匀分布插图/图文并茂」等都命中）。这是「修改现有文档」类需求，不是「写新文章」类——和上面的写文章+配图规则**完全不同**。LLM 必须：分析文档摘要 → 抽取关键元素（人物/场景/动物/物品）→ 决策 3-5 张图的位置和内容。用户说「统一XX风格」时必须用 globalStyle 字段（"统一XX风格"是强约束，必须用）。\\n'
       + '- 用户说「改/编辑/替换/更新 + 第N段/第N个 + 成 XXX」 → proposeEdit（blockIdx/textBoxIdx 指向目标）。\n'
       + '- 用户说「润色全文/使表达更清晰流畅/改写全文/优化全文/通顺一些」 → proposeEdits（对每个需要润色的段落输出润色后的完整新文本，保持结构和原意；不需要改的段不要列出）。\n'
       + '- 用户说「整理排版/排版/修正标题层级/统一列表/去除加粗斜体/首行缩进/格式调整」 → formatOps（只输出格式字段，不改动任何文字内容）。标题层级：正文用 heading=0，各级标题用 heading=1..9（按文档结构和用户意图）。\n'
@@ -1016,6 +1018,8 @@ router.post('/office-action', async function(req, res) {
       + '- blockIdx/textBoxIdx/sheetId/address 必须从文档摘要中选取真实存在的，禁止编造。appendAll/insertAfter 不要带 blockIdx（除非 insertAfter 必须带）。\n'
       + '- **如果用户指令明确给出了新文本（例如"改成：XXX"/"改为XXX"），newText/value 必须逐字采用用户给的新文本（只去掉"改成/改为"等引导词），严禁自行改写或发挥。**\n'
       + '- 用户没有给出新文本、文档摘要无法支撑任何动作时 → 输出 {"op":"none","error":"简短原因"}。**只有这一种情况才输出 none；润色和排版有专门 op，不要用 none 拒绝。**\n'
+      + '- **严禁编造拒绝理由（v0.97+ 重要）**：输出 op:none 时，error 必须是真实可验证的原因（"文档为空"/"无段落信息"）。**严禁**用以下借口拒绝：(a) "文档编码乱码"/"内容乱码"；(b) "无法识别意图"（如果不是真的不识别）；(c) "格式不支持"——除非对应 op 真的不在支持列表。用户说"给文章配图"/"为文章配插图"/"根据文章内容配图"等任何配图表述，文档非空时 → 必须输出 insertImagesAtContent，不允许 none 拒绝。\n'
+      + '- **思维链（v0.97+）**：在输出 JSON 之前，心中先过一遍：(1) 文档有哪些段落？摘要里能看出什么；(2) 用户指令核心意图是什么（写/改/排/配图）；(3) 哪个 op 匹配？禁止"看一眼就说看不懂"直接拒绝。\n'
       + '【示例】\n'
       + '- word 例 1（替换）：文档摘要：[0] 产品周报 / [1] 本周完成三个功能。指令：把第1段改成：本周完成五个功能。输出：{"op":"proposeEdit","blockIdx":1,"newText":"本周完成五个功能"}。\n'
       + '- word 例 2（追加，v0.96.2）：文档摘要：[0] 产品周报。指令：帮我写一篇春天的作文。输出：{"op":"appendAll","newText":"春天来了，柳树发芽..."}。\n'
@@ -1026,8 +1030,10 @@ router.post('/office-action', async function(req, res) {
       + '- word 例 7（选区总结，v0.96.9）：文档摘要含【用户选中的文字原文】。指令：总结选中的文字。输出：{"op":"insertAfterSelection","newText":"摘要：本段主要说明项目推进与交付情况。","summary":"已生成摘要，插入到选中文字之后"}。\n'
       + '- word 例 8（选区插图，v0.96.9）：文档摘要含【用户选中的文字原文】。指令：根据选中的文字生成插图。输出：{"op":"generateImage","prompt":"一幅水墨风格插图，描绘春日的柳树与湖面，意境清新，留白构图","summary":"已根据选中文字生成插图描述"}。\n'
       + '- word 例 9（字号排版，v0.96.9）：文档摘要：[0](type=docHeading) 第一章 背景。指令：把选中的标题设为二号字并加粗。输出：{"op":"formatOps","operations":[{"blockIdx":0,"format":{"sizeHalfPoints":44,"bold":true}}]}（二号=22pt=44半磅）。\n'
-      + '- word 例 10（写文章+配图，v0.97）：文档为空。指令：写一篇武侠小说配4张插图。输出：{"op":"appendAll","newText":"武侠全文内容..."}。前端会自动在文中插入插图并生成图片，LLM 只需输出 appendAll。\n'
-      + '- xlsx：sheet1 有 A1:D4。指令：把 D4 改成 SUM 公式。输出：{"op":"propose","summary":"设置合计公式","operations":[{"op":"set_formula","sheetId":"sheet1","address":"D4","formula":"=SUM(D2:D3)"}]}。\\n'
+      + '- word 例 10（写文章+配图，v0.97）：文档为空。指令：写一篇武侠小说配4张插图。输出：{"op":"appendAll","newText":"武侠全文内容..."}。前端会自动在文中插入插图并生成图片，LLM 只需输出 appendAll。\\n'
+      + '- word 例 11（给已有文章配图，v0.97+）：文档摘要：[0] 江南水乡春景 / [1] 主角林风踏入小镇 / [2] 客栈内遇到老者。指令：给我根据文章内容在恰当的地方配置插图，统一水墨风格。输出：{"op":"insertImagesAtContent","summary":"已配置 3 张水墨插图","globalStyle":"中国水墨画，留白构图，写意为主","images":[{"afterBlockIdx":0,"prompt":"江南水乡全景，烟雨朦胧，小桥流水，水墨晕染","reason":"开篇场景"},{"afterBlockIdx":1,"prompt":"林风青衫仗剑立于小镇石桥上","reason":"主角首次出场"},{"afterBlockIdx":2,"prompt":"客栈内老者与林风对坐，烛光摇曳","reason":"关键人物互动场景"}]}。\\n'
+      + '- word 例 12（给已有文章配图，未指定风格）：文档摘要：[0] 实验室全景 / [1] 科学家发现新元素 / [2] 实验结果发表。指令：帮我给文章配几张图。输出：{"op":"insertImagesAtContent","summary":"已配置 3 张通用插图","images":[{"afterBlockIdx":0,"prompt":"现代实验室全景，仪器林立，蓝色调","reason":"开篇场景"},{"afterBlockIdx":1,"prompt":"科学家专注观察显微镜下的样本","reason":"主角工作场景"},{"afterBlockIdx":2,"prompt":"科学家在学术会议上展示研究成果","reason":"成就场景"}]}。globalStyle 可省略，前端会用通用风格。\n'
+      + '- xlsx：sheet1 有 A1:D4。指令：把 D4 改成 SUM 公式。输出：{"op":"propose","summary":"设置合计公式","operations":[{"op":"set_formula","sheetId":"sheet1","address":"D4","formula":"=SUM(D2:D3)"}]}。\n'
       + '- xlsx 通用填充（v0.97.1）：sheetId=sheet-1 name=Sheet1 内容为空或仅有 A1 表头"姓名|分数|日期"。指令：生成一些测试数据。输出：{"op":"propose","summary":"已生成 5 行测试数据","operations":[{"op":"set_cell","sheetId":"sheet-1","address":"A2","value":"张三"},{"op":"set_cell","sheetId":"sheet-1","address":"B2","value":92},{"op":"set_cell","sheetId":"sheet-1","address":"C2","value":"2024-03-15"},... 共5行]}。**禁止**输出 op:none 拒绝——"生成测试数据"是有明确意图的指令，用默认位置即可。\\n'
       + fixedHint + '\\n';
 
@@ -1114,6 +1120,44 @@ router.post('/office-action', async function(req, res) {
     }
     if (action.op === 'generateImage' && !String(action.prompt || '').trim()) {
       return res.json({ ok: false, error: '生成的插图描述为空' });
+    }
+    // v0.97+: insertImagesAtContent 校验 — 给已有文章批量配图
+    if (action.op === 'insertImagesAtContent') {
+      if (!Array.isArray(action.images) || action.images.length === 0) {
+        return res.json({ ok: false, error: 'insertImagesAtContent 缺少 images 数组' });
+      }
+      // 过滤空 prompt + 校验 afterBlockIdx 范围
+      var maxBlockIdx = (docContext.blocks || []).length - 1;
+      var validImages = [];
+      var dropped = [];
+      for (var imi = 0; imi < action.images.length; imi++) {
+        var img = action.images[imi];
+        if (!img || typeof img.prompt !== 'string' || !img.prompt.trim()) {
+          dropped.push({ reason: 'prompt 为空', index: imi });
+          continue;
+        }
+        if (typeof img.afterBlockIdx !== 'number' || img.afterBlockIdx < 0 || img.afterBlockIdx > maxBlockIdx) {
+          // 越界：降级到 maxBlockIdx（最后一段之后）
+          dropped.push({ reason: 'afterBlockIdx 越界（' + img.afterBlockIdx + '）', index: imi, maxBlockIdx: maxBlockIdx });
+          if (maxBlockIdx >= 0) img.afterBlockIdx = maxBlockIdx;
+        }
+        validImages.push(img);
+      }
+      if (validImages.length === 0) {
+        return res.json({ ok: false, error: 'insertImagesAtContent 所有图片均被过滤（无有效 prompt 或 blockIdx 越界）' });
+      }
+      if (validImages.length > 6) {
+        // 防止 LLM 一次输出太多张（生图慢+风格飘移）
+        validImages = validImages.slice(0, 6);
+      }
+      action.images = validImages;
+      if (dropped.length > 0) {
+        console.warn('[office-action] insertImagesAtContent 过滤', dropped.length, '条:', JSON.stringify(dropped));
+      }
+      // globalStyle 可选；如果是空字符串规范化成 undefined
+      if (action.globalStyle != null && !String(action.globalStyle).trim()) {
+        action.globalStyle = undefined;
+      }
     }
     // 确定性覆盖：用户明确给的新文本优先于 LLM 生成（防编造）
     if (fixedNewText) {

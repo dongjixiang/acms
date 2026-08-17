@@ -143,7 +143,9 @@ async function refreshKanban(parentId, root) {
   let agentOpts = '<option value="">选择智能体</option>';
   try {
     const r = await fetch('/api/agents', { headers: { 'X-API-Key': 'dev-key-001' } });
-    (await r.json()).forEach(a => { agentOpts += '<option value="' + a.id + '">' + (a.name || a.id) + '</option>'; });
+    // P158: 后端 v0.97.x 起返回 {ok:true, agents:[...]}; 兼容老格式（直接数组）
+    var _agentsData = await r.json();
+    (_agentsData.agents || _agentsData || []).forEach(a => { agentOpts += '<option value="' + a.id + '">' + (a.name || a.id) + '</option>'; });
   } catch(e) {}
   if (!_kanbanFilterLoaded) { await loadKanbanReqFilter(R); _kanbanFilterLoaded = true; }
   try {
@@ -307,7 +309,9 @@ var _agentCache = null;
 async function loadAgentList(taskId) {
   try {
     var resp = await fetch('/api/agents', { headers: { 'X-API-Key': 'dev-key-001' } });
-    _agentCache = await resp.json();
+    var _agentsResp = await resp.json();
+    // P158: 后端 v0.97.x 起返回 {ok:true, agents:[...]}; 兼容老格式（直接数组）
+    _agentCache = _agentsResp.agents || _agentsResp || [];
     var sel = document.getElementById('assign-agent-' + taskId);
     if (!sel) return;
     sel.innerHTML = '<option value="">' + (sel.querySelector('option')?.textContent || '选择智能体') + '</option>';

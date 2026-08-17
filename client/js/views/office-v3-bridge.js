@@ -948,9 +948,177 @@
           idx++; genNext();
         });
       }
-      
+
       genNext();
     });
+  }
+
+  // v0.97+: 给已有文章批量配图（新的 op: insertImagesAtContent）
+  // 思路：先一次性插入所有 loading 占位（blockIdx 提前锁定），再串行生图替换
+  // referenceImage 链式传递保证风格一致
+  function genOfficeInsertImagesAtContent(frame, action) {
+    return new Promise(function (resolve) {
+      var win = frame && frame.contentWindow;
+      var docEl = win && win.document ? win.document.querySelector('[contenteditable="true"]') : null;
+      var editor = docEl && docEl.editor;
+      if (!editor) { resolve({ ok: false, error: '编辑器未就绪' }); return; }
+      var images = Array.isArray(action.images) ? action.images : [];
+      var globalStyle = String(action.globalStyle || '').trim();
+      if (!images.length) { resolve({ ok: false, error: 'images 数组为空' }); return; }
+      // 收集段落节点（与后端 docContext 索引一致）
+      var paras = [];
+      editor.state.doc.content.forEach(function (node, offset) {
+        var n = node.type.name;
+        if (n === 'docParagraph' || n === 'docHeading' || n === 'docListItem') {
+          paras.push({ node: node, offset: offset });
+        }
+      });
+      // 过滤越界 + 排序按 afterBlockIdx 升序（保证插入位置不打架）
+      var validItems = [];
+      images.forEach(function (img) {
+        if (!img || typeof img.afterBlockIdx !== 'number' || !img.prompt) return;
+        var target = paras[img.afterBlockIdx];
+        if (!target) return;
+        validItems.push({
+          afterBlockIdx: img.afterBlockIdx,
+          prompt: String(img.prompt).trim(),
+          reason: img.reason || '',
+          insertPos: target.offset + target.node.nodeSize,
+        });
+      });
+      if (!validItems.length) { resolve({ ok: false, error: '所有图片均超出段落范围' }); return; }
+      // 按 afterBlockIdx 降序插（先插后面的，再插前面的，避免破坏前面 blockIdx 位置）
+      validItems.sort(function (a, b) { return b.afterBlockIdx - a.afterBlockIdx; });
+      // 一次性插入所有 placeholder
+      validItems.forEach(function (item) {
+        var ph = {
+          type: 'docProtected',
+          attrs: {
+            blockType: 'image',
+            imageDataUrl: null,
+            label: 'AI 插图',
+            previewText: '正在生成插图...',
+            imageWidthPx: 320,
+            imageHeightPx: 200,
+            genImage: { loading: true, mime: 'image/png' }
+          }
+        };
+        editor.chain().focus().insertContentAt(item.insertPos, ph).run();
+      });
+      console.log('[IMG-DEBUG] insertImagesAtContent: inserted', validItems.length, 'placeholders');
+      // 串行生图（referenceImage 链式 + 失败降级）
+      var idx = 0;
+      var successCount = 0;
+      var failedCount = 0;
+      var previousImageDataUrl = null;
+      function genNext() {
+        if (idx >= validItems.length) {
+          resolve({
+            ok: successCount > 0,
+            imgCount: successCount,
+            failCount: failedCount,
+            summary: action.summary || ('已生成 ' + successCount + ' 张插图' + (failedCount ? '（' + failedCount + ' 张失败）' : '')),
+          });
+          return;
+        }
+        var item = validItems[idx];
+        var fullPrompt = globalStyle ? (globalStyle + '。' + item.prompt) : item.prompt;
+        var body = { prompt: fullPrompt, n: 1, size: '1024x1024' };
+        if (previousImageDataUrl) body.referenceImage = previousImageDataUrl;
+        fetch('/api/image-tools/ai-generate?api_key=dev-key-001', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+          body: JSON.stringify(body)
+        }).then(function (r) { return r.json(); }).then(function (data) {
+          if (!data || !data.ok || !data.options || !data.options.length) {
+            failedCount++;
+            replacePlaceholderWithError(editor, item, (data && data.error) || '生图失败');
+            idx++; genNext(); return;
+          }
+          var opt = data.options[0];
+          var imgData = opt.dataUrl || opt.image_url_output;
+          if (!imgData) {
+            failedCount++;
+            replacePlaceholderWithError(editor, item, '返回无图片');
+            idx++; genNext(); return;
+          }
+          var p = Promise.resolve(imgData);
+          if (imgData.indexOf('data:') !== 0) {
+            p = fetch(imgData).then(function (r2) { return r2.blob(); }).then(function (blob) {
+              return new Promise(function (resolve2) {
+                var fr = new FileReader();
+                fr.onload = function () { resolve2(fr.result); };
+                fr.readAsDataURL(blob);
+              });
+            });
+          }
+          p.then(function (dataUrl) {
+            previousImageDataUrl = dataUrl;
+            var node = {
+              type: 'docProtected',
+              attrs: {
+                blockType: 'image',
+                imageDataUrl: null,
+                label: 'AI 插图 ' + (idx + 1),
+                previewText: 'AI 插图: ' + item.prompt.slice(0, 40),
+                imageWidthPx: 320,
+                imageHeightPx: null,
+                genImage: { dataUrl: dataUrl, base64: dataUrl.split(',')[1], mime: opt.mime || 'image/png' }
+              }
+            };
+            replacePlaceholderWithImage(editor, node);
+            successCount++;
+            idx++; genNext();
+          }).catch(function (err) {
+            failedCount++;
+            replacePlaceholderWithError(editor, item, err.message || '插入失败');
+            idx++; genNext();
+          });
+        }).catch(function (err) {
+          failedCount++;
+          replacePlaceholderWithError(editor, item, err.message || '请求失败');
+          idx++; genNext();
+        });
+      }
+      genNext();
+    });
+  }
+  // 替换第一个 loading placeholder 为真实图片
+  function replacePlaceholderWithImage(editor, imgNode) {
+    var doc = editor.state.doc;
+    var targetPos = -1;
+    var nodeSize = 1;
+    doc.content.forEach(function (child, offset) {
+      if (targetPos >= 0) return;
+      if (child.type.name === 'docProtected' && child.attrs.blockType === 'image' && child.attrs.genImage && child.attrs.genImage.loading) {
+        targetPos = offset;
+        nodeSize = child.nodeSize;
+      }
+    });
+    if (targetPos >= 0) {
+      editor.chain().focus().deleteRange({ from: targetPos, to: targetPos + nodeSize }).run();
+      editor.chain().focus().insertContentAt(targetPos, imgNode).run();
+    } else {
+      // 找不到 placeholder，插入到末尾
+      var pos = editor.state.doc.content.size;
+      editor.chain().focus().insertContentAt(pos, imgNode).run();
+    }
+  }
+  // 替换第一个 loading placeholder 为错误占位（保持 blockIdx 稳定）
+  function replacePlaceholderWithError(editor, item, errorMsg) {
+    var errNode = {
+      type: 'docProtected',
+      attrs: {
+        blockType: 'image',
+        imageDataUrl: null,
+        label: 'AI 插图失败',
+        previewText: '⚠️ 生成失败: ' + (item.prompt || '').slice(0, 30) + ' — ' + errorMsg,
+        imageWidthPx: 320,
+        imageHeightPx: 100,
+        genImage: { error: errorMsg, prompt: item.prompt, mime: 'image/png' }
+      }
+    };
+    replacePlaceholderWithImage(editor, errNode);
   }
 
     // GenOffice Word UI：在第 blockIdx 段之后插入新段落（v0.96.2 P138）
@@ -2073,6 +2241,24 @@
             };
           }
           return { ok: false, error: '当前编辑器不支持 proposeEdits' };
+        }
+        // v0.97+: insertImagesAtContent — 给已有文章批量配图（异步，链式 referenceImage 保持风格一致）
+        if (action.op === 'insertImagesAtContent') {
+          if (ed.kind === 'word-ui') {
+            return genOfficeInsertImagesAtContent(ed.iframe, action).then(function (gi) {
+              if (gi && gi.ok) {
+                return {
+                  ok: true,
+                  summary: gi.summary || action.summary || '已生成插图',
+                  imgCount: gi.imgCount,
+                  failCount: gi.failCount,
+                  pendingSave: true,
+                };
+              }
+              return { ok: false, error: (gi && gi.error) || '批量配图失败' };
+            });
+          }
+          return Promise.resolve({ ok: false, error: '当前编辑器不支持 insertImagesAtContent（需 GenOffice Word UI）' });
         }
         if (action.op === 'formatOps') {
           // v0.96.7: 批量格式调整（排版：标题层级/列表/加粗斜体/对齐/缩进）
