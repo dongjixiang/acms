@@ -215,9 +215,16 @@ function renderAgentCard(a) {
       '<div class="aa-tools-label">工具 (' + (a.boundTools || []).length + ')</div>' +
       toolsHtml +
     '</div>' +
+    '<div class="aa-card-tools">' +
+      '<div class="aa-tools-label">技能 (' + (a.boundSkills || []).length + ')</div>' +
+      (a.boundSkills && a.boundSkills.length
+        ? a.boundSkills.map(function(s) { return '<span class="aa-tag aa-tag-skill">📚 ' + escHtml(s) + '</span>'; }).join('')
+        : '<span class="aa-none">未绑定技能（全局技能仍可见）</span>') +
+    '</div>' +
     '<div class="aa-card-actions">' +
       '<button class="aa-btn aa-btn-test" onclick="testCall(\'' + escAttr(a.id) + '\')">📞 测试</button>' +
       '<button class="aa-btn aa-btn-bind" onclick="openBindModal(\'' + escAttr(a.id) + '\')">🔗 工具</button>' +
+      '<button class="aa-btn aa-btn-bind" onclick="openSkillModal(\'' + escAttr(a.id) + '\')">📚 技能</button>' +
       '<button class="aa-btn" onclick="openAgentForm(\'' + escAttr(a.id) + '\')">✏️ 编辑</button>' +
       '<button class="aa-btn aa-btn-danger" onclick="deleteAgent(\'' + escAttr(a.id) + '\')">🗑 删除</button>' +
     '</div>' +
@@ -634,6 +641,93 @@ function openBindModal(agentId) {
     '</div>' +
     '</div></div>';
   showWindowModal(html);
+}
+
+/* ── 技能绑定模态框（v0.110，B 方案：agent 侧管理技能） ── */
+async function openSkillModal(agentId) {
+  var agent = agentsCache.find(function(a) { return a.id === agentId; });
+  if (!agent) return;
+  showWindowModal('<div class="aa-modal-box"><div class="aa-modal-loading">加载技能中…</div></div>');
+
+  try {
+    var data = await api('GET', '/agents/' + agentId + '/skills');
+    if (!data || !data.ok) throw new Error((data && data.error) || '加载失败');
+    var bound = data.bound || [];
+    var available = data.available || [];
+
+    // 已绑定
+    var boundHtml = bound.length
+      ? bound.map(function(n) {
+          var s = available.find(function(x) { return x.name === n; });
+          return '<div class="aa-bound-item">' +
+            '<span class="aa-tool-name">📚 ' + escHtml(n) + '</span>' +
+            '<span class="aa-tool-cat">' + (s ? escHtml(s.category || '') : '') + ' · ' + (s && s.source === 'external' ? '外部' : '内置') + '</span>' +
+            '<button class="aa-btn-remove" onclick="toggleSkill(null, \'' + escAttr(agentId) + '\', \'' + escAttr(n) + '\')">移除</button>' +
+          '</div>';
+        }).join('')
+      : '<div class="aa-none">暂无绑定技能</div>';
+
+    // 全量技能 checkbox（按 category 分组）
+    var groups = {};
+    available.forEach(function(s) {
+      var cat = s.category || 'general';
+      if (!groups[cat]) groups[cat] = [];
+      groups[cat].push(s);
+    });
+    var availableHtml = Object.keys(groups).sort().map(function(cat) {
+      var items = groups[cat].map(function(s) {
+        var checked = bound.indexOf(s.name) >= 0 ? 'checked' : '';
+        var agentsNote = (s.agents && s.agents.length) ? ' · 专属:' + s.agents.join(',') : '';
+        return '<label class="aa-checkbox">' +
+          '<input type="checkbox" value="' + escAttr(s.name) + '" ' + checked + ' onchange="toggleSkill(this, \'' + escAttr(agentId) + '\', \'' + escAttr(s.name) + '\')">' +
+          '<span class="aa-checkbox-text">' + escHtml(s.name) + '</span>' +
+          '<span class="aa-tool-cat">' + escHtml(cat) + (s.source === 'external' ? ' · 外部' : '') + escHtml(agentsNote) + '</span>' +
+        '</label>';
+      }).join('');
+      return '<div class="aa-section-title" style="margin-top:8px">' + escHtml(cat) + ' (' + groups[cat].length + ')</div>' + items;
+    }).join('');
+    if (!availableHtml) availableHtml = '<div class="aa-none">暂无技能</div>';
+
+    var html = '<div class="aa-modal" onclick="closeWindowModal(event)">' +
+      '<div class="aa-modal-box" onclick="event.stopPropagation()">' +
+      '<button class="aa-modal-close" onclick="closeWindowModal()">×</button>' +
+      '<h3>📚 管理技能 - ' + escHtml(agent.name) + '</h3>' +
+      '<div class="aa-hint">绑定 = 该 Agent 专属技能；未绑定的全局技能对其仍可见。</div>' +
+      '<div class="aa-section-title">已绑定 (' + bound.length + ')</div>' +
+      '<div class="aa-bound-tools">' + boundHtml + '</div>' +
+      availableHtml +
+      '<div class="aa-modal-actions">' +
+        '<button class="aa-btn aa-btn-cancel" onclick="closeWindowModal()">关闭</button>' +
+      '</div>' +
+      '</div></div>';
+    showWindowModal(html);
+  } catch (e) {
+    showWindowModal('<div class="aa-modal-box"><div class="aa-none">技能加载失败: ' + escHtml(e.message) + '</div>' +
+      '<div class="aa-modal-actions"><button class="aa-btn" onclick="closeWindowModal()">关闭</button></div></div>');
+  }
+}
+
+async function toggleSkill(checkbox, agentId, skillName) {
+  try {
+    if (!checkbox || checkbox.checked) {
+      await api('POST', '/agents/' + agentId + '/skills', { skillName: skillName });
+    } else {
+      await api('DELETE', '/agents/' + agentId + '/skills/' + encodeURIComponent(skillName));
+    }
+    // 同步缓存
+    var agent = agentsCache.find(function(a) { return a.id === agentId; });
+    if (agent) {
+      var cur = agent.boundSkills || [];
+      if (!checkbox || checkbox.checked) {
+        if (cur.indexOf(skillName) === -1) cur.push(skillName);
+      } else {
+        agent.boundSkills = cur.filter(function(s) { return s !== skillName; });
+      }
+    }
+    openSkillModal(agentId);
+  } catch (e) {
+    alert('技能操作失败: ' + e.message);
+  }
 }
 
 function groupRuntimeTools() {

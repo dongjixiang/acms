@@ -27,6 +27,14 @@ const SYSTEM_PROMPT = `你是 ACMS 的 Word 文档专家。根据用户指令操
 async function handle({ instruction, context, modelId, caller, agentId }) {
   console.log(`[word-expert] handle called with instruction:`, instruction?.slice(0, 50));
   try {
+    // v0.110: Agent 专属技能注入（绑定/声明的技能拼进 system prompt）
+    const skillLoader = require('../services/skill-loader');
+    const agentStore = require('../stores/agent-store');
+    const _agent = agentId ? agentStore.getById(agentId) : null;
+    const _bound = _agent ? (JSON.parse(_agent.bound_skills || '[]')) : [];
+    const _skillHint = skillLoader.buildAgentSkillHint(agentId, _bound);
+    const _system = _skillHint ? SYSTEM_PROMPT + '\n\n' + _skillHint : SYSTEM_PROMPT;
+
     // 1. 获取模型
     const model = modelId ? modelStore.getById(modelId) : modelStore.getDefaultGenModel();
     if (!model) return { ok: false, error: '模型未配置' };
@@ -36,7 +44,7 @@ async function handle({ instruction, context, modelId, caller, agentId }) {
 
   // 3. 调 LLM 生成 action
   const result = await llmAdapter.callLLM(model.id, [
-    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'system', content: _system },
     { role: 'user', content: `文档摘要：\n${JSON.stringify(docContext).slice(0, 2000)}\n\n用户指令：${instruction}` }
   ], { maxTokens: 2000, temperature: 0.1 });
 

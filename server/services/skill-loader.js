@@ -95,6 +95,8 @@ function discoverSkills() {
         const execution = metadata.execution || {};
         // references 引用
         const references = metadata.references || [];
+        // v0.110: agents 声明（技能侧专属标记，与 agent 侧绑定互补）
+        const agents = metadata.agents || [];
 
         skills.push({
           id,
@@ -107,6 +109,7 @@ function discoverSkills() {
           matchOn,
           execution,
           references,
+          agents,       // v0.110: [agentId] 声明归属；空 = 全局
           filePath,
           body: body || '',
           source,  // v0.109: 'builtin' | 'external'
@@ -148,9 +151,37 @@ function getByCategory(category) {
   return getSkills().filter(s => s.category === category);
 }
 
+// ===== v0.110: 按 Agent 可见性过滤技能（B 方案 Agent 绑定） =====
+//   可见规则：
+//   1. 技能 frontmatter 声明了 agents → 仅声明的 agent 可见（技能侧专属，A 兼容）
+//   2. Agent 绑定了该技能（bound_skills 按 name）→ 专属可见（B 方案）
+//   3. 未声明 agents + 未绑定 → 全局可见（现状默认）
+function getSkillsForAgent(agentId, boundSkillNames = []) {
+  const all = getSkills();
+  const bound = Array.isArray(boundSkillNames) ? boundSkillNames : [];
+  return all.filter(s => {
+    if (Array.isArray(s.agents) && s.agents.length > 0) return s.agents.includes(agentId);
+    if (bound.length > 0 && bound.includes(s.name)) return true;
+    return true;  // 全局
+  });
+}
+
+// ===== v0.110: 构建 Agent 专属技能提示段（expert handler / task-agent 注入用） =====
+function buildAgentSkillHint(agentId, boundSkillNames = []) {
+  if (!agentId) return '';
+  const visible = getSkillsForAgent(agentId, boundSkillNames);
+  if (!visible.length) return '';
+  const parts = visible.map(s => '- ' + s.name + '：' + (s.description || '') + '\n  步骤：' + String(s.body).slice(0, 400));
+  return '【本智能体技能】\n' + parts.join('\n') + '\n';
+}
+
 // ===== 匹配：根据任务属性找匹配的 Skill =====
-function matchForTask(task) {
-  const skills = getSkills();
+// v0.110: opts.agentId + opts.boundSkills → 先按 Agent 可见性过滤（多智能体下
+//   worker 只匹配自己可见的技能，不匹配其他 agent 专属技能）
+function matchForTask(task, opts = {}) {
+  const skills = (opts.agentId)
+    ? getSkillsForAgent(opts.agentId, opts.boundSkills || [])
+    : getSkills();
   const matches = [];
 
   for (const s of skills) {
@@ -285,6 +316,8 @@ module.exports = {
   getSkills,
   getById,
   getByCategory,
+  getSkillsForAgent,     // v0.110
+  buildAgentSkillHint,   // v0.110
   matchForTask,
   loadSkillBody,
   loadSkillExecution,

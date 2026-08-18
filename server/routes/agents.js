@@ -13,6 +13,7 @@ const router = express.Router();
 const { collection } = require('../db/connection');
 const agentStore = require('../stores/agent-store');
 const toolStore = require('../stores/tool-store');
+const skillLoader = require('../services/skill-loader');  // v0.110: Agent-Skill 绑定
 const registry = require('../agents/registry');
 const caller = require('../agents/caller');
 
@@ -53,7 +54,8 @@ router.get('/', function (req, res) {
           isRuntime: !toolMap.has(tid) && runtimeToolMap.has(tid)
         };
       }).filter(Boolean),
-      allowedToCall: parseJsonArray(a.allowed_to_call)
+      allowedToCall: parseJsonArray(a.allowed_to_call),
+      boundSkills: parseJsonArray(a.bound_skills)  // v0.110
     }))
   });
 });
@@ -188,6 +190,59 @@ router.post('/:id/tools', function (req, res) {
 router.delete('/:id/tools/:toolId', function (req, res) {
   agentStore.removeTool(req.params.id, req.params.toolId);
   res.json({ ok: true });
+});
+
+// ── Agent-Skill 绑定（v0.110，B 方案：agent 侧管理技能，像 bound_tools） ──
+
+/** GET /api/agents/:id/skills — 该 agent 可见技能（绑定 + 专属 + 全局） */
+router.get('/:id/skills', function (req, res) {
+  const agent = agentStore.getById(req.params.id);
+  if (!agent) return res.status(404).json({ ok: false, error: 'Agent 不存在' });
+
+  const boundNames = JSON.parse(agent.bound_skills || '[]');
+  const allSkills = skillLoader.getSkills();
+  const visible = skillLoader.getSkillsForAgent(req.params.id, boundNames);
+
+  res.json({
+    ok: true,
+    bound: boundNames,
+    visible: visible.map(s => ({ name: s.name, id: s.id, description: s.description, category: s.category, source: s.source, agents: s.agents || [] })),
+    available: allSkills.map(s => ({ name: s.name, id: s.id, description: s.description, category: s.category, source: s.source, agents: s.agents || [] })),
+  });
+});
+
+/** POST /api/agents/:id/skills — 绑定技能（body: { skillNames: [..] } 或 { skillName: '..' }） */
+router.post('/:id/skills', function (req, res) {
+  const { skillNames, skillName } = req.body;
+  const names = skillNames || (skillName ? [skillName] : []);
+  if (!Array.isArray(names) || names.length === 0) {
+    return res.json({ ok: false, error: 'skillNames 数组必填' });
+  }
+  const agent = agentStore.getById(req.params.id);
+  if (!agent) return res.status(404).json({ ok: false, error: 'Agent 不存在' });
+
+  // 校验技能存在（文件技能按 name 匹配）
+  const all = skillLoader.getSkills();
+  const known = new Set(all.map(s => s.name));
+  const unknown = names.filter(n => !known.has(n));
+  if (unknown.length > 0) {
+    return res.json({ ok: false, error: `技能不存在: ${unknown.join(', ')}` });
+  }
+
+  const cur = JSON.parse(agent.bound_skills || '[]');
+  const merged = Array.from(new Set([...cur, ...names]));
+  agentStore.update(req.params.id, { boundSkills: merged });
+  res.json({ ok: true, bound: merged });
+});
+
+/** DELETE /api/agents/:id/skills/:name — 解绑技能 */
+router.delete('/:id/skills/:name', function (req, res) {
+  const name = decodeURIComponent(req.params.name);
+  const agent = agentStore.getById(req.params.id);
+  if (!agent) return res.status(404).json({ ok: false, error: 'Agent 不存在' });
+  const cur = JSON.parse(agent.bound_skills || '[]').filter(s => s !== name);
+  agentStore.update(req.params.id, { boundSkills: cur });
+  res.json({ ok: true, bound: cur });
 });
 
 // ── 委托调用测试 ────────────────────────────────────────

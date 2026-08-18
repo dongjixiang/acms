@@ -12,6 +12,7 @@ const { runToolLoop } = require('./llm-adapter');
 const { execute: runtimeExec } = require('./agent-runtime');
 const taskRouter = require('./task-router');
 const skillLoader = require('./skill-loader');
+const agentStore = require('../stores/agent-store');  // v0.110: 读 bound_skills 按 Agent 过滤技能
 
 const { registerTool } = require('./tool-registry');
 
@@ -2378,7 +2379,11 @@ function buildSystemPrompt(task, lang = 'zh') {
   // 加载匹配的 skill（身份级知识，保持在 system prompt 里）
 
 
-  const matches = skillLoader.matchForTask(task);
+    // v0.110: 按执行 Agent（task.assigned_to）过滤可见技能——worker 只匹配自己绑定的技能
+  const _execAgentId = task.assigned_to || undefined;
+  const _execAgent = _execAgentId ? agentStore.getById(_execAgentId) : null;
+  const _boundSkills = _execAgent ? (JSON.parse(_execAgent.bound_skills || '[]')) : [];
+  const matches = skillLoader.matchForTask(task, { agentId: _execAgentId, boundSkills: _boundSkills });
 
 
   if (matches.length > 0) {

@@ -10,6 +10,7 @@ class AgentStore {
       id, name, role, domain, modelId, systemPrompt,
       allowed_to_call: JSON.stringify(allowedToCall),
       bound_tools: '[]',
+      bound_skills: '[]',  // v0.110: Agent 绑定技能（B 方案，按 name 引用文件技能）
       status: 'online',
       registered_at: existing?.registered_at || now,
       last_seen_at: now
@@ -30,6 +31,7 @@ class AgentStore {
     if (!agent) return null;
     if (updates.allowedToCall !== undefined) updates.allowed_to_call = JSON.stringify(updates.allowedToCall);
     if (updates.boundTools !== undefined) updates.bound_tools = JSON.stringify(updates.boundTools);
+    if (updates.boundSkills !== undefined) updates.bound_skills = JSON.stringify(updates.boundSkills);  // v0.110
     Object.assign(agent, updates, { last_seen_at: new Date().toISOString() });
     collection('agents').update(a => a.id === id, agent);
     return agent;
@@ -68,6 +70,28 @@ class AgentStore {
     if (!agent) return false;
     const tools = (JSON.parse(agent.bound_tools || '[]')).filter(t => t.id !== toolId);
     agent.bound_tools = JSON.stringify(tools);
+    collection('agents').update(a => a.id === agentId, agent);
+    return true;
+  }
+
+  /** 绑定技能（v0.110，按 name 字符串引用文件技能） */
+  addSkill(agentId, skillName) {
+    const agent = this.getById(agentId);
+    if (!agent) return false;
+    const skills = JSON.parse(agent.bound_skills || '[]');
+    if (skills.includes(skillName)) return true;  // 已绑定
+    skills.push(skillName);
+    agent.bound_skills = JSON.stringify(skills);
+    collection('agents').update(a => a.id === agentId, agent);
+    return true;
+  }
+
+  /** 解绑技能 */
+  removeSkill(agentId, skillName) {
+    const agent = this.getById(agentId);
+    if (!agent) return false;
+    const skills = (JSON.parse(agent.bound_skills || '[]')).filter(s => s !== skillName);
+    agent.bound_skills = JSON.stringify(skills);
     collection('agents').update(a => a.id === agentId, agent);
     return true;
   }
