@@ -291,6 +291,41 @@ function buildHistoryContextHint(message, userId) {
   } catch (e) { return ''; }
 }
 
+// v0.108: Phase E — 技能按需注入（参考 Hermes 触发条件加载）
+//   当前消息与技能 name/description 关键词匹配 → 注入 ≤2 条（body 前 200 字符）
+//   不相关不占 token；匹配同时记录 use_count（技能使用热度，供策展参考）
+function buildSkillHint(message, userId) {
+  if (!message || !userId) return '';
+  try {
+    const skills = loadMemory(userId, 'buddy_skills');
+    if (!Array.isArray(skills) || !skills.length) return '';
+    const msgWords = extractKeywords(message);
+    if (!msgWords.length) return '';
+    const hits = [];
+    for (const s of skills) {
+      const text = (s.name || '') + ' ' + (s.description || '');
+      const overlap = extractKeywords(text).filter(w => msgWords.includes(w));
+      if (overlap.length >= 1) {
+        hits.push({ skill: s, score: overlap.length });
+      }
+    }
+    if (!hits.length) return '';
+    hits.sort((a, b) => b.score - a.score);
+    const top = hits.slice(0, 2);
+    // 使用计数（只对命中的技能累计）
+    try {
+      const next = skills.map(s => {
+        if (top.some(h => h.skill.name === s.name)) return { ...s, use_count: (s.use_count || 0) + 1 };
+        return s;
+      });
+      saveMemory(userId, 'buddy_skills', next);
+    } catch (e) { /* 计数失败不影响注入 */ }
+    return '；我会的技能：' + top.map(h => {
+      return h.skill.name + '（' + h.skill.description + '）步骤：' + String(h.skill.body).slice(0, 200);
+    }).join(' / ');
+  } catch (e) { return ''; }
+}
+
 // v0.104: Memory 写入安全扫描（参考 Hermes memory_tool.py）——learn: 内容会注入 system prompt，
 //   必须过滤 prompt 注入/凭据外泄/不可见 unicode。返回威胁类型名或 null。
 const _MEMORY_THREAT_PATTERNS = [
@@ -599,7 +634,8 @@ router.post('/chat', async function(req, res) {
           } catch (e) { profileHint = ''; }
         }
         var raw = profileHint + buildUserSummary(context) + actionHint + learnHint + historyHint
-          + buildHistoryContextHint(message, userId);  // v0.106: Phase C 历史对话检索
+          + buildHistoryContextHint(message, userId)   // v0.106: Phase C 历史对话检索
+          + buildSkillHint(message, userId);           // v0.108: Phase E 技能按需注入
         if (!raw) return '';
         var truncated = 0;
         if (raw.length > 500) { truncated = raw.length - 500; raw = raw.slice(0, 500) + '…'; }

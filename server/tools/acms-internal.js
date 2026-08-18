@@ -1419,6 +1419,89 @@ registerTool({
   }
 });
 
+// v0.108: Phase E — 小吉运行时 Skill 系统（参考 Hermes skills）
+//   程序性知识层：小吉自主记录"怎么做某类事"（用户教学/可复用流程/成功经验），
+//   与事实记忆（user_profile/learned_facts）互补——Hermes 四层记忆的最后一块
+registerTool({
+  name: 'buddy_skill',
+  description: '【技能工具】创建/删除/列出你（小吉）学会的做事技能。技能是程序性知识（怎么做），' +
+    '区别于记忆（是什么）。技能会在相关话题出现时自动注入你的上下文，帮你直接复用。\n' +
+    '何时创建技能：\n' +
+    '- ✅ 用户教了你一个新方法/新流程（"以后生成海报先查最新比分"）\n' +
+    '- ✅ 你发现了一个可复用的多步流程（"查油价：先搜→拿到官网→fetch_url"）\n' +
+    '- ✅ 用户纠正了你的做事方式且值得长期记住\n' +
+    '- ❌ 不要存：一次性事实、临时状态、你已有工具能完成的事\n' +
+    '格式：name=简短名称（如"查油价"）；description=触发场景（一句话，用于匹配）；body=具体步骤（换行分隔，≤800字）。\n' +
+    '容量：最多 20 条。写满返回 MEMORY_FULL——先 remove 不再用的旧技能再重试。\n' +
+    'action=create 时同名技能会被覆盖更新，action=remove 按 name 删除。',
+  parameters: {
+    type: 'object',
+    properties: {
+      action: { type: 'string', enum: ['create', 'remove', 'list'], description: 'create=创建/覆盖技能；remove=按 name 删除；list=列出全部技能名' },
+      name: { type: 'string', description: '技能名称，简短（如"查油价"、"海报生成流程"）' },
+      description: { type: 'string', description: '触发场景一句话（当前消息相关时技能会被注入），如"用户问油价/价格/行情时"' },
+      body: { type: 'string', description: '具体步骤，换行分隔，≤800 字符' },
+    },
+    required: ['action']
+  },
+  async handler(args, ctx) {
+    const u = (ctx && ctx.user) || {};
+    const userId = u.id || u.userId;
+    if (!userId) return { ok: false, error: 'NO_USER', message: '未登录用户不能操作技能' };
+    const action = safeStr(args.action);
+    const STORE_KEY = 'buddy_skills';
+    const MAX_SKILLS = 20;
+    const MAX_BODY = 800;
+
+    const skills = Array.isArray(memRead(userId, STORE_KEY)) ? memRead(userId, STORE_KEY) : [];
+
+    if (action === 'list') {
+      return { ok: true, skills: skills.map(s => ({ name: s.name, description: s.description, use_count: s.use_count || 0, ts: s.ts })) };
+    }
+
+    const name = safeStr(args.name).trim();
+    if (!name) return { ok: false, error: 'INVALID_NAME', message: 'name 不能为空' };
+
+    if (action === 'remove') {
+      const next = skills.filter(s => s.name !== name);
+      if (next.length === skills.length) return { ok: true, message: '没有找到技能 ' + name, count: next.length };
+      memWrite(userId, STORE_KEY, next);
+      return { ok: true, message: '已删除技能 ' + name, count: next.length };
+    }
+
+    if (action !== 'create') return { ok: false, error: 'INVALID_ACTION', message: 'action 必须是 create/remove/list' };
+
+    const description = safeStr(args.description).trim();
+    const body = safeStr(args.body).trim();
+    if (!description || !body) return { ok: false, error: 'INVALID_ARGS', message: 'create 需要 description 和 body' };
+    if (body.length > MAX_BODY) return { ok: false, error: 'BODY_TOO_LONG', message: 'body 超过 ' + MAX_BODY + ' 字符（当前 ' + body.length + '），精简后再试' };
+    const blocked = scanMemoryContent(name) || scanMemoryContent(description) || scanMemoryContent(body);
+    if (blocked) return { ok: false, error: 'MEMORY_BLOCKED', message: '内容被安全扫描拦截（' + blocked + '），不写入' };
+
+    const existing = skills.some(s => s.name === name);
+    const now = Date.now();
+    const next = skills.map(s => {
+      if (s.name === name) return { name, description, body, ts: now, use_count: s.use_count || 0 };
+      return s;
+    });
+    if (!existing) {
+      // 超限策展（同 Phase D）
+      if (next.length >= MAX_SKILLS) {
+        return {
+          ok: false,
+          error: 'MEMORY_FULL',
+          message: '技能已满 ' + MAX_SKILLS + ' 条。先 remove 不再用的旧技能再重试。当前技能：' + next.map(s => s.name).join('、'),
+          skills: next.map(s => ({ name: s.name, description: s.description })),
+        };
+      }
+      next.push({ name, description, body, ts: now, use_count: 0 });
+    }
+
+    if (!memWrite(userId, STORE_KEY, next)) return { ok: false, error: 'SAVE_FAILED', message: '技能写入失败' };
+    return { ok: true, message: existing ? '技能已更新：' + name : '技能已创建：' + name, count: next.length };
+  }
+});
+
 console.log('[tools/acms-internal] 注册完成:', '42 个 ACMS 内部操作工具（查询 16 + 写 16 + 系统 6 + meta 2 + 管家通用 1 + 历史搜索 1）');
 
 // v0.105: Phase B — Agent 自主记忆工具（参考 Hermes memory 工具）
