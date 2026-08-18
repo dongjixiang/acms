@@ -275,6 +275,7 @@ app.use('/api/app-runtime', require('./routes/app-runtime'));
 app.use('/api/office', require('./routes/office'));  // v0.62 Office 文档编辑器
 // v0.XX: 代理设置 API（Phase 1）— 全局出站代理（支持按域名规则 + 兜底 + bypassLocal + 环境变量）
 app.use('/api/proxy-settings', require('./routes/proxy-settings'));
+app.use('/api/agent-trace', require('./routes/agent-trace'));  // v0.101: Agent 运行全链路追踪 + HTML 报告
 // 调试端点：检查 event-bus WS 客户端
 app.get('/api/debug/ws-clients', (req, res) => {
   const eb = require('./services/event-bus');

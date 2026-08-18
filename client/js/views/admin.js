@@ -39,6 +39,7 @@ async function loadAdminPage() {
     const defaultGen = await api('GET', '/admin/default-gen-model');
     const elicitorState = await api('GET', '/admin/elicitor-enabled');
     const autoAbandonState = await api('GET', '/admin/auto-abandon-config');  // v0.X：自动放弃配置
+    const traceState = await api('GET', '/agent-trace/config');  // v0.101：Agent 运行追踪开关
     const webhooks = await api('GET', '/webhooks');  // v0.17f：事件 webhook 订阅列表
     const agnesKeyState = await api('GET', '/admin/agnes-key');  // v0.19：Agnes AI Video Key 状态
 
@@ -268,6 +269,26 @@ async function loadAdminPage() {
             <span style="font-size:12px;color:var(--text2)">天</span>
           </div>
         </div>
+        <!-- v0.101：Agent 运行追踪 — 记录 LLM 全链路 + HTML 报告 -->
+        <div class="config-row" style="margin-top:16px;border-top:1px solid var(--border);padding-top:16px">
+          <div style="flex:1;min-width:0">
+            <strong>🔍 Agent 运行追踪</strong>
+            <div style="font-size:11px;margin-top:3px;color:var(--text2)">
+              开启后，所有 Agent 运行（小吉聊天 / 需求对话 / 任务执行）每轮的完整数据将被记录：<br>
+              发送给模型的 messages、模型完整回复、工具调用（参数+结果+耗时）、系统注入的重试/装睡检测事件。<br>
+              用于分析 Agent 效率瓶颈。记录保存在 <code>data/traces/</code>，保留最近 100 条自动清理。
+            </div>
+            <div id="trace-list" style="margin-top:10px;font-size:12px;color:var(--text2)"></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+            <span id="trace-enabled-label" style="font-size:13px;color:${traceState.enabled ? 'var(--green)' : 'var(--text2)'}">${traceState.enabled ? '已启用' : '已禁用'}</span>
+            <label style="position:relative;display:inline-block;width:42px;height:22px;cursor:pointer">
+              <input type="checkbox" id="trace-enabled-toggle" ${traceState.enabled ? 'checked' : ''} onchange="setTraceEnabled(this)" style="opacity:0;width:0;height:0">
+              <span id="trace-track" style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:${traceState.enabled ? 'var(--green)' : 'var(--border)'};border-radius:22px;transition:0.2s"></span>
+              <span id="trace-knob" style="position:absolute;cursor:pointer;height:18px;width:18px;left:${traceState.enabled ? '22px' : '2px'};top:2px;background:#fff;border-radius:50%;transition:0.2s"></span>
+            </label>
+          </div>
+        </div>
         <!-- v0.19：Agnes AI Video API Key 配置 -->
         <div class="config-row" style="margin-top:16px;border-top:1px solid var(--border);padding-top:16px">
           <div>
@@ -461,6 +482,8 @@ async function loadAdminPage() {
     loadAdminAppToolsStats();
     // v0.XX: 代理设置（高级 tab 内的卡片，hydrate UI + 后端配置）
     if (typeof loadProxySettings === 'function') loadProxySettings();
+    // v0.101: Agent 运行追踪列表（高级 tab）
+    loadTraceList();
   } catch (e) { document.getElementById('admin-content').innerHTML = `<div class="empty">加载失败: ${e.message}</div>`; }
 }
 
@@ -935,6 +958,82 @@ async function saveAutoAbandonDays(input) {
     toast(`已保存：${days} 天后自动放弃`, 'success');
   } catch(e) {
     toast('保存失败: ' + e.message, 'error');
+  }
+}
+
+// v0.101：Agent 运行追踪 — toggle 实时切换（§P99 四件套）
+async function setTraceEnabled(checkbox) {
+  const wantChecked = checkbox.checked;
+  const original = !wantChecked;
+  // 1. 立即视觉反馈
+  const label = _byId('trace-enabled-label');
+  const track = _byId('trace-track');
+  const knob = _byId('trace-knob');
+  if (label) { label.textContent = wantChecked ? '已启用' : '已禁用'; label.style.color = wantChecked ? 'var(--green)' : 'var(--text2)'; }
+  if (track) track.style.background = wantChecked ? 'var(--green)' : 'var(--border)';
+  if (knob) knob.style.left = wantChecked ? '22px' : '2px';
+  // 2. POST
+  try {
+    await api('POST', '/agent-trace/config', { enabled: wantChecked });
+    toast(wantChecked ? '🔍 Agent 运行追踪已开启（小吉聊天/任务执行将记录全链路）' : '🔍 Agent 运行追踪已关闭', 'success');
+    loadTraceList();  // 刷新列表（开关状态变化可能影响显示）
+  } catch(e) {
+    // 3. 失败回滚视觉 + checkbox
+    checkbox.checked = original;
+    if (label) { label.textContent = original ? '已启用' : '已禁用'; label.style.color = original ? 'var(--green)' : 'var(--text2)'; }
+    if (track) track.style.background = original ? 'var(--green)' : 'var(--border)';
+    if (knob) knob.style.left = original ? '22px' : '2px';
+    toast('设置失败: ' + e.message, 'error');
+  }
+}
+
+// v0.101：加载追踪列表（最近 10 条）
+async function loadTraceList() {
+  const box = _byId('trace-list');
+  if (!box) return;
+  try {
+    const r = await api('GET', '/agent-trace?limit=10');
+    const list = (r && r.traces) || [];
+    if (!list.length) {
+      box.innerHTML = '<span style="color:var(--text3)">暂无记录 — 开启开关后，下一次 Agent 运行会自动记录</span>';
+      return;
+    }
+    const rows = list.map(t => {
+      const st = t.status === 'completed' ? '✅' : t.status === 'failed' ? '❌' : '⏳';
+      const time = new Date(t.startedAt).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+      const ctx = t.context && (t.context.reqId || t.context.taskId) ? (t.context.reqId || t.context.taskId) : '';
+      const sizeKB = Math.max(1, Math.round((t.size || 0) / 1024));
+      return '<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">'
+        + '<span title="' + t.id + '">' + st + '</span>'
+        + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + time
+        + (ctx ? ' · <span style="color:var(--text3)">' + ctx + '</span>' : '')
+        + ' · <span style="color:var(--text3)">' + (t.roundCount || 0) + ' 轮 · ' + sizeKB + 'KB</span></span>'
+        + '<button class="btn-small" onclick="openTraceReport(\'' + t.id + '\')" title="生成 HTML 报告">📊 报告</button>'
+        + '<button class="btn-small" onclick="deleteTraceOne(\'' + t.id + '\')" title="删除">🗑</button>'
+        + '</div>';
+    }).join('');
+    box.innerHTML = '<span style="color:var(--text3)">最近 ' + list.length + ' 条记录（保留 100 条自动清理）：</span>' + rows;
+  } catch(e) {
+    box.innerHTML = '<span style="color:var(--text3)">加载失败: ' + e.message + '</span>';
+  }
+}
+
+// v0.101：打开 HTML 报告（新窗口）
+function openTraceReport(id) {
+  const key = (typeof API_KEY !== 'undefined') ? API_KEY : 'dev-key-001';
+  const win = window.open('/api/agent-trace/' + id + '/report?api_key=' + key, '_blank');
+  if (!win) toast('浏览器阻止了新窗口，请允许弹窗', 'error');
+}
+
+// v0.101：删除一条追踪记录
+async function deleteTraceOne(id) {
+  if (!(await showConfirm('确认删除这条追踪记录？'))) return;
+  try {
+    await api('DELETE', '/agent-trace/' + id);
+    toast('已删除', 'success');
+    loadTraceList();
+  } catch(e) {
+    toast('删除失败: ' + e.message, 'error');
   }
 }
 

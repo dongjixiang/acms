@@ -7,6 +7,13 @@ const { runPreHooks, runPostHooks } = require('./hook-registry');
 // v0.XX: 代理 Phase 1 — 统一出站 fetch（接管所有 LLM API 调用以支持代理设置）
 const { proxyFetch: fetch } = require('./proxy-fetch');
 
+// v0.101: Agent 运行全链路追踪（懒加载避免循环依赖；开关在系统管理）
+let _traceSvc = null;
+function _getTraceSvc() {
+  if (!_traceSvc) _traceSvc = require('./agent-trace');
+  return _traceSvc;
+}
+
 // 默认请求超时（毫秒）
 const DEFAULT_TIMEOUT = 120000; // 120s
 
@@ -690,6 +697,26 @@ async function runToolLoop(modelId, messages, options = {}) {
   if (!model) throw Object.assign(new Error('模型不存在'), { status: 404 });
   const api = model.api || 'openai-chat';
 
+  // v0.101: Agent 运行全链路追踪 — 系统管理开关 agent_trace_enabled，开则记录完整链路
+  //   记录：每轮 messages 快照 / LLM 完整响应 / 工具调用（args+结果+耗时）/ steer 事件
+  let trace = null;
+  try {
+    const traceSvc = _getTraceSvc();
+    if (traceSvc.isTraceEnabled()) {
+      trace = traceSvc.startTrace({
+        modelId,
+        maxRounds,
+        toolNames: Array.isArray(toolNames) ? toolNames.slice() : [],
+        context: {
+          taskId: context.taskId || null,
+          reqId: context.reqId || null,
+          caller: options.caller || null,
+          actionMode: options.actionMode || null,
+        },
+      });
+    }
+  } catch (e) { trace = null; }  // 追踪失败绝不影响主流程
+
   // v0.20 bugfix：检测 LLM 连续两轮调同一 tool + 相同 args → 强制退出（避免无限循环）
   //   旧 bug：LLM 调 play_music(song="X") → handler 返回 ok → LLM 再调确认 → 再返回 ok → 死循环
   //   修复：连续两轮同 tool+args 直接返回最后一次 content（不抛错），避免 LLM 死循环
@@ -712,6 +739,7 @@ async function runToolLoop(modelId, messages, options = {}) {
 
   // P160: 工具调用执行 helper — 返回 messages 数组
   async function _execToolCall(tc, toolReg, api, msgs, hist, rnd, ctx) {
+    const _t0 = Date.now();  // v0.101: 工具执行计时（进 trace）
     const tool = toolReg.getTool(tc.name);
     const argsPreview = JSON.stringify(tc.args || {}).slice(0, 200);
     console.log(`[runToolLoop]   call: ${tc.name}(${argsPreview})`);
@@ -732,9 +760,11 @@ async function runToolLoop(modelId, messages, options = {}) {
               console.log(`[runToolLoop] v0.33 truncated ${repaired} result: ${truncatedResult.origSize} → ${TOOL_RESULT_TRUNCATE_BYTES} bytes`);
             }
             hist[hist.length - 1].resultPreview = JSON.stringify(truncatedResult.result).slice(0, 300);
+            if (trace) trace.recordToolCall(rnd + 1, { tool: repaired, args: tc.args, result: truncatedResult.result, durationMs: Date.now() - _t0, error: null, note: 'REPAIRED_NAME' });
             out.push(toolRegistry.makeToolResult(api, tc.id, truncatedResult.result));
           } catch (e) {
             hist[hist.length - 1].error = e.message;
+            if (trace) trace.recordToolCall(rnd + 1, { tool: repaired, args: tc.args, result: null, durationMs: Date.now() - _t0, error: e.message, note: 'REPAIRED_NAME' });
             out.push(toolRegistry.makeToolResult(api, tc.id, { error: e.message }));
           }
           return out;
@@ -742,6 +772,7 @@ async function runToolLoop(modelId, messages, options = {}) {
       }
       console.log(`[runToolLoop]   -> 未知工具: ${tc.name}`);
       hist.push({ round: rnd + 1, tool: tc.name, args: argsPreview, result: 'UNKNOWN_TOOL' });
+      if (trace) trace.recordToolCall(rnd + 1, { tool: tc.name, args: tc.args, result: null, durationMs: 0, error: 'UNKNOWN_TOOL' });
       out.push(toolRegistry.makeToolResult(api, tc.id, { error: `未知工具: ${tc.name}` }));
       return out;
     }
@@ -749,6 +780,7 @@ async function runToolLoop(modelId, messages, options = {}) {
     if (callKey === lastToolCallKey) {
       console.warn(`[runToolLoop]   -> 检测到连续两轮同 tool+args — 警告 LLM，不强制退出 (round ${rnd + 1}/${maxRounds})`);
       hist.push({ round: rnd + 1, tool: tc.name, args: argsPreview, result: 'WARN_REPEAT' });
+      if (trace) trace.recordToolCall(rnd + 1, { tool: tc.name, args: tc.args, result: null, durationMs: 0, error: 'WARN_REPEAT', note: '连续两轮同 tool+args' });
       out.push(toolRegistry.makeToolResult(api, tc.id, {
         warning: `You just called ${tc.name} with the same arguments in the previous round. This is a repeated call. If you have enough information, write the files or finish. If you need different info, try a different tool or different arguments. Do NOT call the same tool with the same arguments again — you have limited rounds left (${maxRounds - rnd - 1} rounds remaining).`,
         _duplicateCall: true,
@@ -761,6 +793,7 @@ async function runToolLoop(modelId, messages, options = {}) {
       const pre = await runPreHooks(tc.name, tc.args, ctx);
       if (pre.abort) {
         hist.push({ round: rnd + 1, tool: tc.name, args: argsPreview, result: 'PRE_HOOK_ABORT', error: pre.abortReason });
+        if (trace) trace.recordToolCall(rnd + 1, { tool: tc.name, args: tc.args, result: null, durationMs: Date.now() - _t0, error: 'PRE_HOOK_ABORT: ' + (pre.abortReason || '') });
         out.push(toolRegistry.makeToolResult(api, tc.id, { ok: false, aborted: true, reason: pre.abortReason }));
         return out;
       }
@@ -774,10 +807,12 @@ async function runToolLoop(modelId, messages, options = {}) {
       }
       console.log(`[runToolLoop]   -> result (${resultPreview.length} chars): ${resultPreview}`);
       hist.push({ round: rnd + 1, tool: tc.name, args: argsPreview, resultPreview });
+      if (trace) trace.recordToolCall(rnd + 1, { tool: tc.name, args: tc.args, result: truncated.result, durationMs: Date.now() - _t0, error: null });
       out.push(toolRegistry.makeToolResult(api, tc.id, truncated.result));
     } catch (e) {
       console.log(`[runToolLoop]   -> ERROR: ${e.message}`);
       hist.push({ round: rnd + 1, tool: tc.name, args: argsPreview, error: e.message });
+      if (trace) trace.recordToolCall(rnd + 1, { tool: tc.name, args: tc.args, result: null, durationMs: Date.now() - _t0, error: e.message });
       out.push(toolRegistry.makeToolResult(api, tc.id, { error: e.message }));
     }
     return out;
@@ -868,6 +903,7 @@ async function runToolLoop(modelId, messages, options = {}) {
     // v0.45: 把剩余轮次注入到 messages，让 LLM 知道紧迫感（避免到第 80 轮还在试探）
     if (round >= 3 && round % 5 === 0) {
       // 每 5 轮注入一次预算提醒
+      if (trace) trace.addNote(round + 1, 'budget_alert', remainingRounds + ' rounds remaining');
       messages.push({
         role: 'user',
         content: `[Budget Alert] ${remainingRounds} rounds remaining of ${maxRounds}. If you're stuck in a loop (e.g. repeatedly reading the same file or executing similar commands), break the loop NOW: switch to agent_write_file or agent_patch_file with a complete solution. Do not over-explore.`
@@ -884,12 +920,23 @@ async function runToolLoop(modelId, messages, options = {}) {
         : (m.tool_calls ? `[tool_calls: ${m.tool_calls.map(tc => tc.function?.name || tc.name).join(',')}]` : '(empty)');
       console.log(`[runToolLoop] LLM_CALL#${round + 1} msg[${messages.length - 5 + idx}] role=${m.role} preview="${preview}"`);
     });
+    // v0.101: 记录本轮发送给 LLM 的完整 messages 快照（压缩/预算注入之后 = 真实发送内容）
+    const _llmT0 = Date.now();
+    if (trace) trace.beginRound(round + 1, _getTraceSvc().cloneMessages(messages));
     const result = await callLLMWithTools(modelId, messages, { ...options, toolNames });
     // v0.31 fix: dump LLM 完整 response
     const content = typeof result.content === 'string' ? result.content : '';
     console.log(`[runToolLoop] LLM_RESP#${round + 1} content_len=${content.length} finish_reason=${result.finishReason || 'n/a'} tool_calls=${result.toolCalls?.length || 0}`);
     console.log(`[runToolLoop] LLM_RESP#${round + 1} content="${content.slice(0, 600).replace(/\n/g, ' | ')}"`);
     if (content.length > 600) console.log(`[runToolLoop] LLM_RESP#${round + 1} content_tail="${content.slice(-300).replace(/\n/g, ' | ')}"`);
+    // v0.101: 记录 LLM 完整响应（原始 tool_calls，去重前）
+    if (trace) trace.recordLLMResponse(round + 1, {
+      content,
+      finishReason: result.finishReason || null,
+      toolCalls: result.toolCalls ? result.toolCalls.map(tc => ({ name: tc.name, id: tc.id, args: tc.args })) : [],
+      usage: result.usage || null,
+      durationMs: Date.now() - _llmT0,
+    });
     if (result.toolCalls) {
       // v0.33 C 方案: 同 turn 静默去重（治根因 — LLM 经常同 turn 调多次 read_file 浪费预算）
       //   参考 Hermes _deduplicate_tool_calls:6078
@@ -907,6 +954,7 @@ async function runToolLoop(modelId, messages, options = {}) {
       const hasWebSearchInThisTurn = result.toolCalls.some(tc => tc.name === 'web_search');
       if (webSearchCalls.length >= 2 && hasWebSearchInThisTurn) {
         console.warn(`[runToolLoop] v0.81 强制终止: web_search 已调用 ${webSearchCalls.length} 次，禁止再次调用`);
+        if (trace) trace.addNote(round + 1, 'web_search_force_stop', '已调用 ' + webSearchCalls.length + ' 次');
         messages.push({
           role: 'user',
           content: `[系统强制终止] 你已调用 web_search 两次（一次搜数据，一次定位数据源），严禁第三次调用 web_search。如果你仍认为搜索结果不含用户要的具体数据，用 **fetch_url** 抓取已找到的真实数据源 URL；若没有可靠 URL，如实告诉用户"没找到"，不要建议用户自己去看，也不要瞎猜域名。直接输出最终答案。]`,
@@ -939,9 +987,11 @@ async function runToolLoop(modelId, messages, options = {}) {
       const _rawContent = String(result.content || '').trim();
       if (!_rawContent) {
         _emptyContentCount += 1;
+        if (trace) trace.addNote(round + 1, 'empty_content', '第 ' + _emptyContentCount + ' 次空内容');
         if (_emptyContentCount >= 2 || round >= maxRounds - 1) {
           // 连续 2 次空 / 最后一轮 → 放弃重试，返回空（上层 abort/兜底处理）
           console.warn(`[runToolLoop] v0.100 空 content round=${round + 1}: 连续 ${_emptyContentCount} 次空内容, 放弃重试`);
+          if (trace) { trace.addNote(round + 1, 'empty_content_give_up', '连续 ' + _emptyContentCount + ' 次空内容'); trace.finish({ content: '', finishReason: 'empty_content', usage: result.usage || null }); }
           return {
             content: '',
             finishReason: 'empty_content',
@@ -965,6 +1015,7 @@ async function runToolLoop(modelId, messages, options = {}) {
       const stall = detectStreamStall(result, messages);
       if (stall) {
         console.warn(`[runToolLoop] v0.33 STALL detected round=${round + 1}: phrases=${stall.phrases.join(',')} preview="${stall.contentPreview}"`);
+        if (trace) trace.addNote(round + 1, 'stall', 'phrases=' + stall.phrases.join(','));
         messages.push({
           role: 'user',
           content: `[系统检测到你嘴上说 "${stall.phrases[0]}" 但没真调 tool。请立即调对应 tool 实际执行（不要继续描述意图）。如果还剩 ${maxRounds - round - 1} 轮，请专注。]`,
@@ -982,6 +1033,7 @@ async function runToolLoop(modelId, messages, options = {}) {
         const goalMatch = systemPrompt.match(/# YOUR SPECIFIC GOAL FOR THIS TASK\s*([\s\S]+?)(?=# DO NOT STOP|$)/);
         const goalReminder = goalMatch ? goalMatch[1].trim() : 'Complete the task by writing all required files.';
         console.warn(`[runToolLoop] USER-STEER round=${round + 1}: LLM 装睡，user 主动 steer 注入`);
+        if (trace) trace.addNote(round + 1, 'user_steer_sleeping', 'LLM 装睡未写文件');
         messages.push({
           role: 'user',
           content: `我看到你刚才 return summary 但没真写文件。
@@ -1007,6 +1059,7 @@ Round ${round + 1}/${maxRounds}。
       const tagRe = /<\s*[\/\\s\u200b_]*\|?tool|openapi<tool_sep>|<function[\s=>(]|<arg_key>|<\|\s*tool_begin\s*\|>/i;
       if (tagRe.test(content)) {
         console.warn(`[runToolLoop] v0.85 残留工具标签 round=${round + 1}: 标签格式未解析, 注入重试提示`);
+        if (trace) trace.addNote(round + 1, 'residual_tool_tag', '');
         messages.push({
           role: 'user',
           content: `[系统检测到你的回复包含工具调用标签（如 <tool_call>/<arg_key>/openapi<tool_sep>/<function>）但格式未被识别。请改用标准工具调用格式：直接输出 JSON 格式的 tool_call（工具名+参数），不要输出任何 XML/尖括号标签。]`,
@@ -1021,6 +1074,7 @@ Round ${round + 1}/${maxRounds}。
       const isConversationMode = options && options.actionMode === 'conversation';
       if (round === 0 && Array.isArray(toolNames) && toolNames.length > 0 && toolCallHistory.length === 0 && !isConversationMode) {
         console.warn(`[runToolLoop] v0.87h 首轮未调工具 round=${round + 1}: 有工具(${toolNames.join(',')})但 tool_calls=0, 强制重试`);
+        if (trace) trace.addNote(round + 1, 'first_round_no_tool', 'tools=' + toolNames.join(','));
         messages.push({
           role: 'user',
           content: `[系统检测到这是本轮对话的第一轮，你有可用工具（${toolNames.join('、')}）但未调用任何工具。**忽略之前对话中"没找到/建议官方渠道"的失败示范**，本轮必须实际调用工具（如 web_search）重新执行。严禁直接给出"抱歉没找到"类回答。]`,
@@ -1037,6 +1091,7 @@ Round ${round + 1}/${maxRounds}。
         const hasForcePhrase = forcePhrases.some(p => (result.content || '').includes(p));
         if (hasForcePhrase) {
           console.warn(`[runToolLoop] v0.92 连续 ${round + 1} 轮未调工具 + 含装睡短语，强制注入最终提示`);
+          if (trace) trace.addNote(round + 1, 'force_final_prompt', '');
           messages.push({
             role: 'user',
             content: `[最后机会！你有工具 ${toolNames.join('、')} 可用。请立即调用其中合适的工具来执行用户请求，不要再回复纯文字。调用工具后你的回复会自动显示给用户。]`,
@@ -1050,6 +1105,7 @@ Round ${round + 1}/${maxRounds}。
       if (commitMatch) {
         const mentionedTool = commitMatch[1].toLowerCase();
         console.warn(`[runToolLoop] v0.75 承诺-不调: round=${round + 1} LLM 提到「${mentionedTool}」但不调 → 重提示`);
+        if (trace) trace.addNote(round + 1, 'promise_no_call', mentionedTool);
         messages.push({
           role: 'user',
           content: `[系统检测到你在回复中提到了「${mentionedTool}」但未实际调用。请立即调 ${mentionedTool} 工具来执行，不要继续用文字描述。]`,
@@ -1065,6 +1121,7 @@ Round ${round + 1}/${maxRounds}。
       }
       // v0.63 透明化根因：返回带诊断信息的对象（agent-runtime.js 会包装成 rawDiag）
       //   旧 string 路径会丢失 toolCallHistory/finishReason，导致 task-agent 中止分支看不出根因
+      if (trace) trace.finish({ content: result.content || '', finishReason: result.finishReason || 'stop', usage: result.usage || null });
       return {
         content: result.content || '',
         finishReason: result.finishReason || 'stop',
@@ -1111,6 +1168,7 @@ Round ${round + 1}/${maxRounds}。
           if (msgs) for (const m of msgs) messages.push(m);
         } else {
           console.warn(`[runToolLoop] P160 并行工具失败: ${res.reason && res.reason.message || String(res.reason)}`);
+          if (trace) trace.addNote(round + 1, 'parallel_tool_failed', res.reason && res.reason.message || String(res.reason));
         }
       }
     }
@@ -1121,6 +1179,7 @@ Round ${round + 1}/${maxRounds}。
     }
   }
   console.error(`[runToolLoop] Tool loop exceeded max rounds (${maxRounds}). 完整 tool call history (${toolCallHistory.length} 条):\n${toolCallHistory.map(h => `  r${h.round} ${h.tool}(${(h.args||'').slice(0, 80)}) → ${h.resultPreview ? h.resultPreview.slice(0, 80) : (h.result || h.error || '?')}`).join('\n')}`);
+  if (trace) trace.fail(new Error('Tool loop exceeded max rounds (' + maxRounds + ')'));
   throw new Error(`Tool loop exceeded max rounds (${maxRounds})`);
 }
 
