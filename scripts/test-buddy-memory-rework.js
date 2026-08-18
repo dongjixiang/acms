@@ -74,6 +74,43 @@ check('null 不拼', historyHint(null) === '');
 check('有 text 正常拼', historyHint({ text: '用户偏好直接执行' }) === '；历史摘要：用户偏好直接执行');
 check('超长截断 200', historyHint({ text: 'x'.repeat(500) }).length < 220);
 
+console.log('== 3b. v0.103 摘要检索式注入 ==');
+function extractKeywords(text) {
+  if (!text) return [];
+  const out = new Set();
+  const chunks = String(text).replace(/[^\u4e00-\u9fa5a-zA-Z0-9]/g, ' ').split(/\s+/).filter(Boolean);
+  for (const ch of chunks) {
+    if (/^[a-zA-Z0-9]+$/.test(ch)) {
+      if (ch.length >= 2) out.add(ch.toLowerCase());
+      continue;
+    }
+    for (let i = 0; i < ch.length - 1; i++) out.add(ch.slice(i, i + 2));
+  }
+  return Array.from(out);
+}
+function isSummaryRelevant(message, summary) {
+  if (!message || !summary) return false;
+  const msgWords = extractKeywords(message);
+  if (!msgWords.length) return false;
+  const topics = Array.isArray(summary.topics) ? summary.topics : [];
+  for (const t of topics) {
+    if (t && String(t).length >= 2 && message.indexOf(String(t)) >= 0) return true;
+  }
+  const sumWords = extractKeywords(String(summary.text || ''));
+  for (const w of msgWords) {
+    if (sumWords.indexOf(w) >= 0) return true;
+  }
+  return false;
+}
+const sumNews = { text: '用户关注每日新闻和天气查询', topics: ['新闻', '天气'] };
+check('topics 命中（新闻）', isSummaryRelevant('今天有什么新闻', sumNews));
+check('topics 命中（天气）', isSummaryRelevant('北京天气如何', sumNews));
+check('关键词重叠命中', isSummaryRelevant('每日热点关注什么', sumNews), '');  // 每日→摘要"每日"
+check('无关不命中（聊任务）', !isSummaryRelevant('帮我看看看板任务', sumNews));
+check('空消息不命中', !isSummaryRelevant('', sumNews));
+check('无摘要不命中', !isSummaryRelevant('新闻', null));
+check('bigram 提取', extractKeywords('查油价').includes('油价'));
+
 console.log('== 4. 注入预算 500 上限 ==');
 const raw = '；'.repeat(300);  // 600 字符
 const capped = raw.length > 500 ? raw.slice(0, 500) + '…' : raw;

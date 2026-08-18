@@ -219,6 +219,39 @@ function buildUserSummary(context) {
   return parts.join('；') || '';
 }
 
+// v0.103: 历史摘要检索式注入（参考 Hermes session_search）——当前消息与摘要 topics/关键词
+//   匹配才注入，不匹配不占 token。轻量关键词提取（中文 bigram + 英文单词），零依赖。
+function extractKeywords(text) {
+  if (!text) return [];
+  const out = new Set();
+  const chunks = String(text).replace(/[^\u4e00-\u9fa5a-zA-Z0-9]/g, ' ').split(/\s+/).filter(Boolean);
+  for (const ch of chunks) {
+    if (/^[a-zA-Z0-9]+$/.test(ch)) {
+      if (ch.length >= 2) out.add(ch.toLowerCase());
+      continue;
+    }
+    // 中文：2-gram 滑窗（"今天新闻" → 今天/天新/新闻）
+    for (let i = 0; i < ch.length - 1; i++) out.add(ch.slice(i, i + 2));
+  }
+  return Array.from(out);
+}
+
+// 判断当前消息是否与历史摘要相关（topics 直接命中 或 关键词重叠 ≥1）
+function isSummaryRelevant(message, summary) {
+  if (!message || !summary) return false;
+  const msgWords = extractKeywords(message);
+  if (!msgWords.length) return false;
+  const topics = Array.isArray(summary.topics) ? summary.topics : [];
+  for (const t of topics) {
+    if (t && String(t).length >= 2 && message.indexOf(String(t)) >= 0) return true;
+  }
+  const sumWords = extractKeywords(String(summary.text || ''));
+  for (const w of msgWords) {
+    if (sumWords.indexOf(w) >= 0) return true;
+  }
+  return false;
+}
+
 // 从 buddy_memory 表读取记忆值
 function loadMemory(userId, key) {
   if (!userId) return null;
@@ -464,9 +497,13 @@ router.post('/chat', async function(req, res) {
       }
     }
     // v0.102: 历史摘要兜底——chatSummary.text 不存在（旧数据/生成失败）时不拼 undefined
-    var historyHint = (chatSummary && chatSummary.text)
-      ? '；历史摘要：' + String(chatSummary.text).slice(0, 200)
-      : '';
+    // v0.103: 检索式注入——当前消息命中摘要 topics/关键词才注入（参考 Hermes session_search）
+    var historyHint = '';
+    try {
+      if (message && chatSummary && chatSummary.text && isSummaryRelevant(message, chatSummary)) {
+        historyHint = '；历史相关对话：' + String(chatSummary.text).slice(0, 200);
+      }
+    } catch (e) { historyHint = ''; }
 
     // 2. 拼 SKILL system prompt
     var retrievedToolNames = [];
