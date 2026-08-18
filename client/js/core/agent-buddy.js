@@ -539,6 +539,8 @@
     var container = document.querySelector('#ap-messages');
     if (!container) return;
     var id = 'ap-action-' + action.requirementId;
+    // v0.112 fix: 清掉其他 req 的 action cards，避免多次查询累积旧结果（保留同 req card 给 updateActionCard 复用）
+    container.querySelectorAll('.ap-action-card').forEach(function(c) { if (c.id !== id) c.remove(); });
     var existing = document.getElementById(id);
     var card = existing || document.createElement('div');
     card.id = id;
