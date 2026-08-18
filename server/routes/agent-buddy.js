@@ -548,8 +548,18 @@ router.post('/chat', async function(req, res) {
       userName: user ? (user.displayName || user.username || '伙伴') : (context.userName || '伙伴'),
       // v0.102: Memory 注入预算——总长上限 500 字符（超出截断，防止噪音膨胀挤占工具上下文）
       // v0.104: 容量 header（参考 Hermes）——让 LLM 看到记忆余量百分比，主动策展合并
+      // v0.105: Phase B — 注入小吉自主记录的用户偏好（user_profile，优先级最高防截断）
       userSummary: (function() {
-        var raw = buildUserSummary(context) + actionHint + learnHint + historyHint;
+        var profileHint = '';
+        if (userId) {
+          try {
+            var profiles = loadMemory(userId, 'user_profile');
+            if (Array.isArray(profiles) && profiles.length > 0) {
+              profileHint = '；用户偏好：' + profiles.map(function(p) { return p.key + '→' + p.value; }).join('、');
+            }
+          } catch (e) { profileHint = ''; }
+        }
+        var raw = profileHint + buildUserSummary(context) + actionHint + learnHint + historyHint;
         if (!raw) return '';
         if (raw.length > 500) raw = raw.slice(0, 500) + '…';
         var pct = Math.round(raw.length / 500 * 100);

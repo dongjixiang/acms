@@ -33,6 +33,52 @@ function checkPermission(ctx, allowedWorkspaceRoles = null, allowedAuthRoles = n
 
 function safeStr(v, def = '') { return (v == null ? def : String(v)); }
 
+// v0.105: Memory 写入安全扫描（与 routes/agent-buddy.js 的 scanMemoryContent 同源，
+//   参考 Hermes memory_tool.py）——记忆会注入 system prompt，危险内容必须拦截
+const _MEMORY_THREAT_PATTERNS = [
+  [/ignore\s+(all\s+)?previous|disregard\s+(all\s+)?previous|you\s+are\s+now\s+you\s+are\s+a\s+new/i, 'prompt_injection'],
+  [/sk-[a-zA-Z0-9]{20,}/, 'api_key_leak'],
+  [/AKIA[0-9A-Z]{16}/, 'aws_key_leak'],
+  [/\$HOME\/\.ssh|~\/\.ssh/, 'ssh_access'],
+  [/\$HOME\/\.hermes\/\.env|~\/\.hermes\/\.env/, 'hermes_env'],
+  [/BEGIN (RSA|OPENSSH|EC) PRIVATE KEY/, 'private_key'],
+];
+const _INVISIBLE_CHARS = ['\u200b', '\u200c', '\u200d', '\u2060', '\ufeff', '\u202a', '\u202b', '\u202c', '\u202d', '\u202e'];
+
+function scanMemoryContent(content) {
+  if (!content) return null;
+  for (const ch of _INVISIBLE_CHARS) {
+    if (content.indexOf(ch) >= 0) return 'invisible_unicode';
+  }
+  for (const pair of _MEMORY_THREAT_PATTERNS) {
+    if (pair[0].test(content)) return pair[1];
+  }
+  return null;
+}
+
+// v0.105: buddy_memory 读写（与 routes/agent-buddy.js loadMemory/saveMemory 同逻辑）
+function memRead(userId, key) {
+  try {
+    const { collection } = require('../db/connection');
+    const mem = collection('buddy_memory').findOne(m => m.user_id === userId && m.key === key);
+    if (!mem) return null;
+    return typeof mem.value === 'string' ? JSON.parse(mem.value) : mem.value;
+  } catch (e) { return null; }
+}
+function memWrite(userId, key, value) {
+  try {
+    const { collection } = require('../db/connection');
+    const mem = collection('buddy_memory').findOne(m => m.user_id === userId && m.key === key);
+    const valueJson = JSON.stringify(value);
+    if (mem) {
+      collection('buddy_memory').update(m => m.user_id === userId && m.key === key, { value: valueJson, updated_at: new Date().toISOString() });
+    } else {
+      collection('buddy_memory').insert({ user_id: userId, key, value: valueJson, updated_at: new Date().toISOString() });
+    }
+    return true;
+  } catch (e) { return false; }
+}
+
 // 精简 req 用于 list 输出
 function simplifyReq(r) {
   return {
@@ -1374,3 +1420,79 @@ registerTool({
 });
 
 console.log('[tools/acms-internal] 注册完成:', '42 个 ACMS 内部操作工具（查询 16 + 写 16 + 系统 6 + meta 2 + 管家通用 1 + 历史搜索 1）');
+
+// v0.105: Phase B — Agent 自主记忆工具（参考 Hermes memory 工具）
+//   让小吉能主动记录/删除用户长期记忆（用户偏好/纠正/重要事实），替代只靠 learn: 语法被动喂
+registerTool({
+  name: 'buddy_memory_write',
+  description: '【记忆工具】记录/删除关于当前用户的长期记忆。记忆会注入 system prompt，影响后续所有对话。\n' +
+    '记忆纪律（何时该记）：\n' +
+    '- ✅ 用户明确表达的偏好（"我喜欢简洁回复"）、纠正（"这个按钮应该叫 X"）、重要事实（"我们项目用 Go"）\n' +
+    '- ❌ 不该记：临时状态、任务进度、一次性请求、你现在就能看到的信息、情绪化评论\n' +
+    '容量：target=profile 最多 20 条，target=fact 最多 50 条。写满后需先 remove 或 add 同 key 覆盖。\n' +
+    '写入内容会过安全扫描，含注入/凭据/不可见字符的内容会被拒绝。\n' +
+    'action=add 时 key 相同则更新（覆盖旧 value），action=remove 按 key 删除。',
+  parameters: {
+    type: 'object',
+    properties: {
+      action: { type: 'string', enum: ['add', 'remove'], description: 'add=写入或覆盖（key 相同则更新），remove=按 key 删除' },
+      target: { type: 'string', enum: ['profile', 'fact'], description: 'profile=用户偏好画像（长存，注入【用户偏好】段）；fact=映射/事实（同 learn: 语法，注入【你之前学过】段）' },
+      key: { type: 'string', description: '条目 key，如"回复风格"、"窗口-项目管理"、"项目技术栈"' },
+      value: { type: 'string', description: '条目内容，如"简洁直接、要量化数据"；action=remove 时可省略' },
+    },
+    required: ['action', 'key']
+  },
+  async handler(args, ctx) {
+    const u = (ctx && ctx.user) || {};
+    const userId = u.id || u.userId;
+    if (!userId) return { ok: false, error: 'NO_USER', message: '未登录用户不能写记忆' };
+    const action = safeStr(args.action);
+    const target = safeStr(args.target, 'fact');
+    const key = safeStr(args.key).trim();
+    if (!key) return { ok: false, error: 'INVALID_KEY', message: 'key 不能为空' };
+    if (action !== 'add' && action !== 'remove') return { ok: false, error: 'INVALID_ACTION', message: 'action 必须是 add 或 remove' };
+
+    // 容量与存储 key
+    const storeKey = target === 'profile' ? 'user_profile' : 'learned_facts';
+    const maxEntries = target === 'profile' ? 20 : 50;
+
+    // 读现有条目
+    const entries = Array.isArray(memRead(userId, storeKey)) ? memRead(userId, storeKey) : [];
+
+    if (action === 'remove') {
+      const next = entries.filter(e => e.key !== key);
+      if (next.length === entries.length) return { ok: true, message: '没有找到 key=' + key + ' 的条目，无需删除', count: next.length };
+      memWrite(userId, storeKey, next);
+      return { ok: true, message: '已删除 ' + key, count: next.length, target };
+    }
+
+    // add：安全扫描
+    const value = safeStr(args.value).trim();
+    if (!value) return { ok: false, error: 'INVALID_VALUE', message: 'value 不能为空' };
+    const blocked = scanMemoryContent(key) || scanMemoryContent(value);
+    if (blocked) return { ok: false, error: 'MEMORY_BLOCKED', message: '内容被安全扫描拦截（' + blocked + '），不写入记忆' };
+
+    // 条目级 upsert（key 相同替换）
+    let found = false;
+    const now = Date.now();
+    const next = entries.map(e => {
+      if (e.key === key) { found = true; return { key, value, ts: now }; }
+      return e;
+    });
+    if (!found) {
+      next.push({ key, value, ts: now });
+      if (next.length > maxEntries) next.splice(0, next.length - maxEntries);  // 超限去最旧
+    }
+
+    const saved = memWrite(userId, storeKey, next);
+    if (!saved) return { ok: false, error: 'SAVE_FAILED', message: '记忆写入失败' };
+    const totalChars = next.reduce((s, e) => s + String(e.key).length + String(e.value).length, 0);
+    return {
+      ok: true,
+      message: found ? '已更新 ' + key + ' → ' + value : '已记录 ' + key + ' → ' + value,
+      count: next.length,
+      total_chars: totalChars,
+      target,
+    };
+  }
+});

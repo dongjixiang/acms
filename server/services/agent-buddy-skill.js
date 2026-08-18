@@ -69,8 +69,9 @@ const VIEW_TOOLS = {
   '_default':      ['list_my_work', 'open_view', 'get_dashboard_stats', 'search_requirements']
 };
 
-// L0 常驻工具（最小集：最常用的 6 个，其他由 retriever 自动匹配）
-const L0_TOOLS = ['open_view', 'query_collection', 'web_search', 'fetch_url', 'send_email', '_expand_tools'];
+// L0 常驻工具（最小集：最常用的 7 个，其他由 retriever 自动匹配）
+// v0.105: + buddy_memory_write（Phase B Agent 自主记忆）
+const L0_TOOLS = ['open_view', 'query_collection', 'web_search', 'fetch_url', 'send_email', '_expand_tools', 'buddy_memory_write'];
 
 // ── L2 扩载层（按 LLM 主动 _expand_tools({category}) 触发）──
 const CATEGORY_TOOLS = {
