@@ -246,11 +246,13 @@ function _buildSummary(trace, result) {
   for (const r of trace.rounds) {
     if (r.llm) {
       if (r.llm.usage) {
-        const p = r.llm.usage.prompt_tokens || r.llm.usage.input_tokens || 0;
-        const c = r.llm.usage.completion_tokens || r.llm.usage.output_tokens || 0;
+        // 兼容 snake_case (openai) / camelCase (deepseek 等) 两种 usage 字段名
+        const u = r.llm.usage;
+        const p = u.prompt_tokens || u.input_tokens || u.promptTokens || 0;
+        const c = u.completion_tokens || u.output_tokens || u.completionTokens || 0;
         s.tokens.prompt += p;
         s.tokens.completion += c;
-        s.tokens.total += (r.llm.usage.total_tokens || 0) || (p + c);
+        s.tokens.total += (u.total_tokens || u.totalTokens || 0) || (p + c);
       }
       const rd = r.llm.durationMs || 0;
       if (rd > s.maxLLMRoundMs) s.maxLLMRoundMs = rd;
@@ -383,7 +385,10 @@ function renderToolCalls(toolCalls) {
 function renderRound(r, maxMs) {
   const llmBlock = r.llm
     ? (function () {
-        const usage = r.llm.usage ? ' · 💬 ' + ((r.llm.usage.prompt_tokens || r.llm.usage.input_tokens || 0) + '/' + (r.llm.usage.completion_tokens || r.llm.usage.output_tokens || 0)) + ' tok' : '';
+        const u = r.llm.usage || {};
+        const pTok = u.prompt_tokens || u.input_tokens || u.promptTokens || 0;
+        const cTok = u.completion_tokens || u.output_tokens || u.completionTokens || 0;
+        const usage = r.llm.usage ? ' · 💬 ' + pTok + '/' + cTok + ' tok' : '';
         const calls = (r.llm.toolCalls && r.llm.toolCalls.length)
           ? '<div class="llm-calls"><span class="msg-role">[tool_calls]</span><pre class="msg-content">' + esc(JSON.stringify(r.llm.toolCalls.map(t => ({ name: t.name, args: t.args })), null, 2)) + '</pre></div>'
           : '';
@@ -415,7 +420,8 @@ function renderRound(r, maxMs) {
  * @returns {string}
  */
 function renderHtml(trace) {
-  const s = trace.summary || _buildSummary(trace, {});
+  // 报告总是用最新逻辑重算 summary（旧文件里的 summary 快照可能字段不兼容）
+  const s = _buildSummary(trace, { finishReason: (trace.summary && trace.summary.finishReason) || null });
   const maxMs = Math.max(s.maxLLMRoundMs || 1, 1);
 
   // 轮次耗时条形图（纯 CSS）
