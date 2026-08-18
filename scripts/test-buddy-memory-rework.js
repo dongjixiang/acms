@@ -75,6 +75,7 @@ check('有 text 正常拼', historyHint({ text: '用户偏好直接执行' }) ==
 check('超长截断 200', historyHint({ text: 'x'.repeat(500) }).length < 220);
 
 console.log('== 3b. v0.103 摘要检索式注入 ==');
+const _STOP_CHARS = new Set('的了吗呢吧啊哦呀是我你他她它们和或就都请帮查搜看看一下什么怎么为什么多少几个这那要有给没不别能会到对于在里后前上中下大小多少高'.split(''));
 function extractKeywords(text) {
   if (!text) return [];
   const out = new Set();
@@ -84,7 +85,11 @@ function extractKeywords(text) {
       if (ch.length >= 2) out.add(ch.toLowerCase());
       continue;
     }
-    for (let i = 0; i < ch.length - 1; i++) out.add(ch.slice(i, i + 2));
+    for (let i = 0; i < ch.length - 1; i++) {
+      const gram = ch.slice(i, i + 2);
+      if (_STOP_CHARS.has(gram[0]) && _STOP_CHARS.has(gram[1])) continue;
+      out.add(gram);
+    }
   }
   return Array.from(out);
 }

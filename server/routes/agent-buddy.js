@@ -221,6 +221,8 @@ function buildUserSummary(context) {
 
 // v0.103: 历史摘要检索式注入（参考 Hermes session_search）——当前消息与摘要 topics/关键词
 //   匹配才注入，不匹配不占 token。轻量关键词提取（中文 bigram + 英文单词），零依赖。
+// v0.106: 加停用词过滤——"帮我/请问/一下"等高频无意义 bigram 导致误命中（写邮件→查油价）
+const _STOP_CHARS = new Set('的了吗呢吧啊哦呀是我你他她它们和或就都请帮查搜看看一下什么怎么为什么多少几个这那要有给没不别能会到对于在里后前上中下大小多少高'.split(''));
 function extractKeywords(text) {
   if (!text) return [];
   const out = new Set();
@@ -230,8 +232,12 @@ function extractKeywords(text) {
       if (ch.length >= 2) out.add(ch.toLowerCase());
       continue;
     }
-    // 中文：2-gram 滑窗（"今天新闻" → 今天/天新/新闻）
-    for (let i = 0; i < ch.length - 1; i++) out.add(ch.slice(i, i + 2));
+    // 中文：2-gram 滑窗（"今天新闻" → 今天/天新/新闻），双停用字 bigram 跳过（如"帮我"）
+    for (let i = 0; i < ch.length - 1; i++) {
+      const gram = ch.slice(i, i + 2);
+      if (_STOP_CHARS.has(gram[0]) && _STOP_CHARS.has(gram[1])) continue;
+      out.add(gram);
+    }
   }
   return Array.from(out);
 }
@@ -250,6 +256,39 @@ function isSummaryRelevant(message, summary) {
     if (sumWords.indexOf(w) >= 0) return true;
   }
   return false;
+}
+
+// v0.106: Phase C — 历史对话检索式注入（参考 Hermes session_search）
+//   当前消息关键词命中历史对话（早于前端已传的最近几条）→ 注入相关片段，
+//   让 LLM 能回忆"上周聊过 X"的具体内容（不只摘要）
+function buildHistoryContextHint(message, userId) {
+  if (!message || !userId) return '';
+  try {
+    const historySvc = require('../services/buddy-chat-history');
+    const history = historySvc.getHistory(userId, 50);
+    if (!Array.isArray(history) || history.length < 8) return '';  // 太少没检索价值
+    const msgWords = extractKeywords(message);
+    if (!msgWords.length) return '';
+    // 跳过最近 4 条（前端已传最近对话，无需重复注入）
+    const candidates = history.slice(0, -4);
+    const hits = [];
+    for (let i = candidates.length - 1; i >= 0 && hits.length < 2; i--) {
+      const h = candidates[i];
+      const text = String((h && h.text) || '');
+      if (text.length < 4) continue;
+      const overlap = extractKeywords(text).filter(w => msgWords.includes(w));
+      if (overlap.length >= 1) {
+        hits.push({
+          role: h.role,
+          text: text.slice(0, 120),
+          overlap: overlap.slice(0, 3).join('/'),
+        });
+      }
+    }
+    if (!hits.length) return '';
+    const parts = hits.map(h => (h.role === 'user' ? 'ta说' : '我说') + '「' + h.text + '」');
+    return '；相关历史：' + parts.join(' / ');
+  } catch (e) { return ''; }
 }
 
 // v0.104: Memory 写入安全扫描（参考 Hermes memory_tool.py）——learn: 内容会注入 system prompt，
@@ -559,7 +598,8 @@ router.post('/chat', async function(req, res) {
             }
           } catch (e) { profileHint = ''; }
         }
-        var raw = profileHint + buildUserSummary(context) + actionHint + learnHint + historyHint;
+        var raw = profileHint + buildUserSummary(context) + actionHint + learnHint + historyHint
+          + buildHistoryContextHint(message, userId);  // v0.106: Phase C 历史对话检索
         if (!raw) return '';
         if (raw.length > 500) raw = raw.slice(0, 500) + '…';
         var pct = Math.round(raw.length / 500 * 100);
