@@ -578,6 +578,11 @@ router.post('/chat', async function(req, res) {
 
     // 6. 跑 runToolLoop（LLM 可以调 tool）
     var runtimeResult;
+    // v0.100 (2026-08-18): 行为纠正检测修复 — 捕获 LLM 最后调用的工具名
+    //   之前 672 行用未定义的 result.toolCalls（主路径变量是 runtimeResult）→ 恒 false
+    //   这里通过 onProgress 的 tools 参数捕获（llm-adapter 传 [tc.name]），非流式也生效
+    var _lastToolInfo = null;
+    var _ssePush = null;  // v0.100: 显式声明（原代码隐式全局，并发请求会互相污染）
     try {
       if (officeAction) {
         // P5: office_edit 不走 tool-loop，reply 由前端动作卡接管（生成器端点负责精确参数）
@@ -589,14 +594,19 @@ router.post('/chat', async function(req, res) {
         var _isStream = req.query && req.query.stream === '1';
         if (_isStream) {
           _sseBuffer = [];
-          _ssePush = function(round, maxRounds, msg) {
-            if (msg.indexOf('正在生成任务总结') >= 0) return;
-            if (msg.indexOf('调用工具:') < 0) return;
-            var line = 'data: ' + JSON.stringify({ type: 'progress', round: round, total: maxRounds, msg: msg }) + '\n\n';
-            _sseBuffer.push(line);
-            console.log('[agent-buddy] SSE progress buffered:', msg.slice(0, 80));
-          };
         }
+        // v0.100: 统一 onProgress —— 流式时推送进度，非流式只捕获工具名（行为纠正检测用）
+        _ssePush = function(round, maxRounds, msg, tools) {
+          if (Array.isArray(tools) && tools.length > 0) {
+            _lastToolInfo = { name: tools[tools.length - 1], ts: Date.now() };
+          }
+          if (!_isStream) return;
+          if (msg.indexOf('正在生成任务总结') >= 0) return;
+          if (msg.indexOf('调用工具:') < 0) return;
+          var line = 'data: ' + JSON.stringify({ type: 'progress', round: round, total: maxRounds, msg: msg }) + '\n\n';
+          _sseBuffer.push(line);
+          console.log('[agent-buddy] SSE progress buffered:', msg.slice(0, 80));
+        };
         runtimeResult = await runtimeExec({
           modelId: model.id,
           messages,
@@ -669,12 +679,14 @@ router.post('/chat', async function(req, res) {
       }
 
       // 10. 存 last_tool_call（用于下次行为纠正检测）
-      if (result && result.toolCalls && result.toolCalls.length > 0) {
-        var lastToolCall = result.toolCalls[result.toolCalls.length - 1];
+      // v0.100 (2026-08-18) 修复：原代码用未定义的 result.toolCalls（主路径变量是 runtimeResult，
+      //   且 runToolLoop 返回对象里 toolCalls 恒为 []）→ 条件恒 false → 从不写入 → 行为纠正检测从未生效
+      //   现改用 onProgress 捕获的最后工具名（_lastToolInfo，含 officeAction/callLLM 分支的 null 保护）
+      if (_lastToolInfo) {
         saveMemory(userId, 'last_buddy_tool_call', {
-          action: lastToolCall.name,
-          args: lastToolCall.args,
-          ts: Date.now()
+          action: _lastToolInfo.name,
+          args: null,
+          ts: _lastToolInfo.ts
         });
       }
     }

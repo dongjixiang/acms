@@ -27,6 +27,22 @@ function ensureActionProject(userId) {
 function getOrCreateActionRequirement(userId) {
   const { collection } = require('../db/connection');
   const project = ensureActionProject(userId);
+  const key = `buddy_action_req:${userId || 'anonymous'}`;
+
+  // v0.100 (2026-08-18): 复用最近一个闲置容器 — 原来每次动作都新建 requirement，
+  //   累积 420+ 条「小吉即时动作」垃圾（占 requirements 89%），污染列表/统计/搜索
+  //   策略：buddy_memory 里 buddy_action_req 指向的容器若仍存在且闲置（system_record=1 + status='idea'）则复用
+  try {
+    const mem = collection('buddy_memory').findOne(m => m.user_id === (userId || 'anonymous') && m.key === key);
+    if (mem && mem.value) {
+      const existingId = JSON.parse(mem.value);
+      const existing = reqStore.getById(existingId);
+      if (existing && existing.system_record === 1 && existing.status === 'idea') {
+        return existing;
+      }
+    }
+  } catch (e) { /* 解析失败/容器不存在 → 走新建 */ }
+
   const requirement = reqStore.create({
     projectId: project.id,
     title: `小吉即时动作 · ${userId || 'anonymous'}`,
@@ -37,9 +53,8 @@ function getOrCreateActionRequirement(userId) {
   });
   reqStore.update(requirement.id, { chat_mode: 'free', system_record: 1 });
 
-  const key = `buddy_action_req:${userId || 'anonymous'}`;
-  const mem = collection('buddy_memory').findOne(m => m.user_id === (userId || 'anonymous') && m.key === key);
   const value = JSON.stringify(requirement.id);
+  const mem = collection('buddy_memory').findOne(m => m.user_id === (userId || 'anonymous') && m.key === key);
   if (mem) collection('buddy_memory').update(m => m.user_id === (userId || 'anonymous') && m.key === key, { value, updated_at: new Date().toISOString() });
   else collection('buddy_memory').insert({ user_id: userId || 'anonymous', key, value, updated_at: new Date().toISOString() });
   return reqStore.getById(requirement.id);
@@ -99,7 +114,7 @@ async function routeMessage(modelId, message, history = [], ctx = {}) {
   const system = `你是 ACMS 小吉的动作路由器。只做分类，不调用工具，不制定开发计划。
 输出严格 JSON：
 {"mode":"conversation|single_action|conversational_action","confidence":0.0,"capabilities":[],"requires_confirmation":false,"reason":"..."}
-能力枚举：image_generation、image_search、music_playback、email_draft、email_send、web_search、web_research、document_generation、project_create、web_fetch、code_execution、video_generation、office_edit。
+能力枚举：image_generation、image_search、music_playback、email_draft、email_send、web_search、web_research、document_generation、project_create、create_task、web_fetch、code_execution、video_generation、office_edit。
 ${officeEditHint}规则：
 - 纯问答/查询 ACMS 数据/闲聊 → conversation。
 - 一个明确工具动作 → single_action。
@@ -109,6 +124,7 @@ ${officeEditHint}规则：
 - **重要：mode 为 single_action 或 conversational_action 时，必须根据用户意图将相关能力填入 capabilities 数组，不要留空。**
 - **找图片/搜图片/查图片→ capabilities 含 image_search。生成图片/画图片/创作图片→ capabilities 含 image_generation。两者不同。**
 - **创建项目/新建项目→ capabilities 含 project_create。**
+- **创建任务/新建任务/加个任务/添加任务 → capabilities 含 create_task（注意区分：创建项目是 project_create，创建任务/看板任务是 create_task）。**
 - **用户消息包含 http/https URL 时，必须分类为 single_action 并填入 web_fetch 能力（抓取网页内容），不要分类为 conversation。**
 - **用户说"看新闻"/"查新闻"/"搜新闻"/"最新消息"/"今天有什么新闻"等→ capabilities 含 web_search。**
 - **v0.88 用户要求改代码/写代码/修bug/实现功能/读文件/跑命令/查看项目代码/调试 等代码执行意图 → capabilities 含 code_execution。**
@@ -243,6 +259,10 @@ function getActionToolNames(route, baseTools) {
       if (capability === 'video_generation') { tools.add('play_video'); tools.add('agnes_generate_video'); tools.add('agnes_query_video'); }
       if (capability === 'image_search') { tools.delete('generate_image'); tools.add('web_search'); }
       if (capability === 'project_create') { tools.add('create_project'); tools.add('list_projects'); }
+      // v0.100 (2026-08-18): create_task 补映射 —— 白名单/关键词拦截有但映射表漏了，
+      //   导致「创建任务」路由到 single_action 后工具列表为空，小吉只能反问无法真建
+      //   注入 list_projects：create_task 需要 projectId，LLM 可先查项目再建
+      if (capability === 'create_task') { tools.add('create_task'); tools.add('list_projects'); }
       if (capability === 'web_fetch') { tools.add('fetch_url'); }
       // v0.88: code_execution —— 注入代码执行池（读/写/跑命令/git）
       //   从 listPool 取真实注册的工具（防 P81/P97 漏 require 复发）

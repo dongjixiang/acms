@@ -698,6 +698,11 @@ async function runToolLoop(modelId, messages, options = {}) {
   // v0.25 debug: 记录每轮 LLM 调了啥 + tool 结果，方便 PM 查 tool loop 卡死根因
   const toolCallHistory = [];
 
+  // v0.100 (2026-08-18): 空 content 连续计数 — LLM 输出空内容不能当最终答案
+  //   模型（如 MiniMax）调完工具后不写总结 → 空 content 被当最终答案 → 用户看到兜底文案
+  //   空 content 注入重试提示最多 1 次（连续 2 次空直接放弃，避免死循环浪费轮次）
+  let _emptyContentCount = 0;
+
   // P159: 上下文压缩抽到独立文件(借鉴 Hermes agent/context_compressor.py)
   //   4 个改进点:① 前置剪枝(pruneToolOutputs)不调 LLM ② token-based 触发 ③ 结构化 summary 模板
   //   ④ 失败冷却 10 分钟(避免反复重试失败摘要)
@@ -928,6 +933,32 @@ async function runToolLoop(modelId, messages, options = {}) {
     }
     if (result.usage) console.log(`[runToolLoop] LLM_RESP#${round + 1} usage=${JSON.stringify(result.usage)}`);
     if (!result.toolCalls?.length) {
+      // v0.100 (2026-08-18): 空 content 拦截 — LLM 输出空内容不能当最终答案
+      //   原逻辑只判断 tool_calls 为空就进最终答案分支，content='' 也放行 → 用户看到兜底文案
+      //   修法：调过工具 → 强制要求基于工具结果写总结；没调过 → 强制要求回答
+      const _rawContent = String(result.content || '').trim();
+      if (!_rawContent) {
+        _emptyContentCount += 1;
+        if (_emptyContentCount >= 2 || round >= maxRounds - 1) {
+          // 连续 2 次空 / 最后一轮 → 放弃重试，返回空（上层 abort/兜底处理）
+          console.warn(`[runToolLoop] v0.100 空 content round=${round + 1}: 连续 ${_emptyContentCount} 次空内容, 放弃重试`);
+          return {
+            content: '',
+            finishReason: 'empty_content',
+            toolCalls: [],
+            toolCallCount: toolCallHistory.length,
+            usage: result.usage || null,
+          };
+        }
+        console.warn(`[runToolLoop] v0.100 空 content round=${round + 1}: LLM 返回空内容, 注入重试提示`);
+        messages.push({
+          role: 'user',
+          content: toolCallHistory.length > 0
+            ? `[系统检测到你的回复内容为空。你已调用 ${toolCallHistory.length} 次工具，请根据工具执行结果输出最终答案给用户（总结做了什么/结果如何），不得输出空内容。]`
+            : '[系统检测到你的回复内容为空。请直接回答用户的问题，或调用可用工具执行。]',
+        });
+        continue;
+      }
       // v0.33 C 方案: stream stall detection（参考 Hermes run_agent.py:8330）
       //   LLM 返回 content 但没 tool_calls + content 提到"i will write" → 装睡信号
       //   比装睡检测更前置：装睡检测需要 LLM 调 tool，stall detection 是"连 tool 都不调但嘴上说会调"
