@@ -22,11 +22,31 @@ function parseFrontmatter(raw) {
   const body = trimmed.slice(endIdx + 3).trimStart();
 
   const metadata = {};
+  let currentKey = null;  // v0.111: 跟踪待收子键的父 key（支持 matchOn 等嵌套结构）
   for (const line of yamlStr.split('\n')) {
-    const colonIdx = line.indexOf(':');
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    // 缩进行 = 子键，挂到 currentKey 容器下（仅支持一层嵌套）
+    if (/^\s/.test(line) && currentKey && metadata[currentKey] && typeof metadata[currentKey] === 'object' && !Array.isArray(metadata[currentKey])) {
+      const subColon = trimmed.indexOf(':');
+      if (subColon === -1) continue;
+      const subKey = trimmed.slice(0, subColon).trim();
+      let subVal = trimmed.slice(subColon + 1).trim();
+      if ((subVal.startsWith('"') && subVal.endsWith('"')) || (subVal.startsWith("'") && subVal.endsWith("'"))) {
+        subVal = subVal.slice(1, -1);
+      }
+      if (subVal.startsWith('[') && subVal.endsWith(']')) {
+        subVal = subVal.slice(1, -1).split(',').map(s => s.trim().replace(/^["']|["']$/g, ''));
+      }
+      metadata[currentKey][subKey] = subVal;
+      continue;
+    }
+
+    const colonIdx = trimmed.indexOf(':');
     if (colonIdx === -1) continue;
-    const key = line.slice(0, colonIdx).trim();
-    let val = line.slice(colonIdx + 1).trim();
+    const key = trimmed.slice(0, colonIdx).trim();
+    let val = trimmed.slice(colonIdx + 1).trim();
     // 去掉引号
     if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
       val = val.slice(1, -1);
@@ -35,7 +55,14 @@ function parseFrontmatter(raw) {
     if (val.startsWith('[') && val.endsWith(']')) {
       val = val.slice(1, -1).split(',').map(s => s.trim().replace(/^["']|["']$/g, ''));
     }
-    metadata[key] = val;
+    // 空值 = 嵌套容器开头（下一行缩进的内容挂进来）；否则普通标量
+    if (val === '') {
+      metadata[key] = {};
+      currentKey = key;
+    } else {
+      metadata[key] = val;
+      currentKey = null;
+    }
   }
 
   return { metadata, body };

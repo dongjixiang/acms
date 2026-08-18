@@ -19,7 +19,7 @@ function check(name, cond, extra) {
   check('外部技能被扫到（会议纪要）', external.some(s => s.name.includes('会议纪要')), JSON.stringify(external.map(s => s.name)));
   check('外部技能来源标记', external.every(s => s.source === 'external'));
   check('内置技能仍有', builtin.length >= 1);
-  check('frontmatter 解析正常', external[0] && external[0].description.includes('会议纪要'), external[0] && external[0].description);
+  check('frontmatter 解析正常', external.some(s => s.name.includes('会议纪要') && s.description.includes('会议纪要')), external.map(s => s.name).join(','));
 
   console.log('== 2. 消息匹配注入（buildChatPrompt） ==');
   // 会议纪要消息 → 应出现【外部技能】段
