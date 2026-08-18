@@ -252,6 +252,29 @@ function isSummaryRelevant(message, summary) {
   return false;
 }
 
+// v0.104: Memory 写入安全扫描（参考 Hermes memory_tool.py）——learn: 内容会注入 system prompt，
+//   必须过滤 prompt 注入/凭据外泄/不可见 unicode。返回威胁类型名或 null。
+const _MEMORY_THREAT_PATTERNS = [
+  [/ignore\s+(all\s+)?previous|disregard\s+(all\s+)?previous|you\s+are\s+now\s+you\s+are\s+a\s+new/i, 'prompt_injection'],
+  [/sk-[a-zA-Z0-9]{20,}/, 'api_key_leak'],
+  [/AKIA[0-9A-Z]{16}/, 'aws_key_leak'],
+  [/\$HOME\/\.ssh|~\/\.ssh/, 'ssh_access'],
+  [/\$HOME\/\.hermes\/\.env|~\/\.hermes\/\.env/, 'hermes_env'],
+  [/BEGIN (RSA|OPENSSH|EC) PRIVATE KEY/, 'private_key'],
+];
+const _INVISIBLE_CHARS = ['\u200b', '\u200c', '\u200d', '\u2060', '\ufeff', '\u202a', '\u202b', '\u202c', '\u202d', '\u202e'];
+
+function scanMemoryContent(content) {
+  if (!content) return null;
+  for (const ch of _INVISIBLE_CHARS) {
+    if (content.indexOf(ch) >= 0) return 'invisible_unicode';
+  }
+  for (const pair of _MEMORY_THREAT_PATTERNS) {
+    if (pair[0].test(content)) return pair[1];
+  }
+  return null;
+}
+
 // 从 buddy_memory 表读取记忆值
 function loadMemory(userId, key) {
   if (!userId) return null;
@@ -524,9 +547,13 @@ router.post('/chat', async function(req, res) {
       retrievedTools: retrievedToolNames,  // v0.74
       userName: user ? (user.displayName || user.username || '伙伴') : (context.userName || '伙伴'),
       // v0.102: Memory 注入预算——总长上限 500 字符（超出截断，防止噪音膨胀挤占工具上下文）
+      // v0.104: 容量 header（参考 Hermes）——让 LLM 看到记忆余量百分比，主动策展合并
       userSummary: (function() {
         var raw = buildUserSummary(context) + actionHint + learnHint + historyHint;
-        return raw.length > 500 ? raw.slice(0, 500) + '…' : raw;
+        if (!raw) return '';
+        if (raw.length > 500) raw = raw.slice(0, 500) + '…';
+        var pct = Math.round(raw.length / 500 * 100);
+        return '[Memory ' + pct + '% — ' + raw.length + '/500 chars] ' + raw;
       })(),
       personality: context.personality || '',
       // P2: 注入近期 Agent 事件
@@ -706,6 +733,12 @@ router.post('/chat', async function(req, res) {
       if (newFacts.length > 0) {
         var existingFacts = loadMemory(userId, 'learned_facts') || [];
         newFacts.forEach(function(nf) {
+          // v0.104: 安全扫描——learn 内容会注入 system prompt，危险内容（注入/凭据/不可见字符）不入库
+          var blocked = scanMemoryContent(nf.key) || scanMemoryContent(nf.value);
+          if (blocked) {
+            console.warn('[agent-buddy] learn 内容被安全扫描拦截: ' + blocked + ' key=' + nf.key);
+            return;
+          }
           var found = false;
           for (var i = 0; i < existingFacts.length; i++) {
             if (existingFacts[i].key === nf.key) {
