@@ -205,13 +205,17 @@ function computeToolNames(currentView, expandedCategories) {
 }
 
 // 从 context 生成用户摘要字符串（v0.59 兼容）
+// v0.102 架构调整：计数降噪——loginCount 超阈值只显示"老用户"（914 次无决策价值），
+//   保留高频视图（限 6 个）+ 上次在看（行为信号）
 function buildUserSummary(context) {
   if (!context) return '';
   const parts = [];
-  if (context.loginCount > 0) parts.push('见过 ' + context.loginCount + ' 次');
-  if (context.totalQuestions > 0) parts.push('聊过 ' + context.totalQuestions + ' 个话题');
+  const loginCount = context.loginCount || 0;
+  if (loginCount > 30) parts.push('老用户');
+  else if (loginCount > 0) parts.push('见过 ' + loginCount + ' 次');
   const views = context.knownViews || [];
-  if (views.length > 0) parts.push('用过 ' + views.join('、'));
+  if (views.length > 0) parts.push('常用 ' + views.slice(0, 6).join('、'));
+  if (context.lastView) parts.push('上次在看「' + context.lastView + '」');
   return parts.join('；') || '';
 }
 
@@ -373,7 +377,8 @@ router.post('/chat', async function(req, res) {
       if (Array.isArray(savedCats)) previousCategories = savedCats;
     }
 
-    // v0.61: L2 动作上下文——读 recent_actions（最近 5 条去重操作）
+    // v0.61: L2 动作上下文——读 recent_actions（最近操作）
+    // v0.102 架构调整：只保留语义动作（act: 前缀），过滤 UI 噪音（btn:/toast:/view: 点击事件对 LLM 无决策价值）
     var recentActions = [];
     if (userId) {
       var savedActions = loadMemory(userId, 'recent_actions');
@@ -382,11 +387,13 @@ router.post('/chat', async function(req, res) {
         var seenActs = {};
         for (var i = (savedActions.length - 1); i >= 0; i--) {
           var a = savedActions[i];
-          if (!seenActs[a.action]) {
-            seenActs[a.action] = true;
-            deduped.push({ action: a.action, view: a.view });
+          var act = (a && a.action) || '';
+          if (act.indexOf('btn:') === 0 || act.indexOf('toast:') === 0) continue;  // 丢弃 UI 点击/弹窗噪音
+          if (!seenActs[act]) {
+            seenActs[act] = true;
+            deduped.push({ action: act, view: a.view });
           }
-          if (deduped.length >= 5) break;
+          if (deduped.length >= 3) break;  // 只保留 3 条语义动作
         }
         recentActions = deduped;
       }
@@ -405,16 +412,8 @@ router.post('/chat', async function(req, res) {
       ? '；你之前学过：' + learnedFacts.map(function(f) { return f.key + '→' + f.value; }).join('、')
       : '';
 
-    // v0.61: 行为纠正检测——上次小吉调了什么 vs 用户最近操作
-    var lastCall = userId ? loadMemory(userId, 'last_buddy_tool_call') : null;
-    if (lastCall) {
-      var conflictingActions = (recentActions || []).filter(function(a) {
-        return a.action !== ('tool:' + lastCall.action) && a.action.indexOf('toast:') !== 0;
-      });
-      if (conflictingActions.length > 0) {
-        actionHint += '；【注意：上次你调了' + lastCall.action + '，但用户实际做了' + conflictingActions[0].action + '— 可能纠正了你】';
-      }
-    }
+    // v0.102 架构调整：删除 v0.61 UI 动作推断的行为纠正（act:close ≠ 纠正，误报率高）。
+    //   纠正信号只认语言层 learn: 语法（learned_facts），由 LLM 显式记录，不靠猜。
 
     // v0.79: 读取历史摘要（跨会话上下文）
     var chatHistory = [];
@@ -446,6 +445,9 @@ router.post('/chat', async function(req, res) {
                         if (jsonMatch) summary = JSON.parse(jsonMatch[0]);
                       } catch(e) {}
                       if (summary) {
+                        // v0.102: 字段归一化——LLM 可能输出 summary/content/摘要 等字段名，统一成 text
+                        //   否则 saveSummary 存了无 text 的对象，注入端拼出"历史摘要：undefined"
+                        summary.text = summary.text || summary.summary || summary.content || summary['摘要'] || '';
                         summary.messageCount = summaryData.history.length;
                         historySvc.saveSummary(userId, summary);
                         console.log('[buddy-history] 摘要已生成并保存');
@@ -461,8 +463,9 @@ router.post('/chat', async function(req, res) {
         console.warn('[buddy-history] 加载历史失败:', e.message);
       }
     }
-    var historyHint = chatSummary
-      ? '；历史摘要：' + chatSummary.text
+    // v0.102: 历史摘要兜底——chatSummary.text 不存在（旧数据/生成失败）时不拼 undefined
+    var historyHint = (chatSummary && chatSummary.text)
+      ? '；历史摘要：' + String(chatSummary.text).slice(0, 200)
       : '';
 
     // 2. 拼 SKILL system prompt
@@ -483,7 +486,11 @@ router.post('/chat', async function(req, res) {
       expandedCategories: previousCategories,
       retrievedTools: retrievedToolNames,  // v0.74
       userName: user ? (user.displayName || user.username || '伙伴') : (context.userName || '伙伴'),
-      userSummary: buildUserSummary(context) + actionHint + learnHint + historyHint,
+      // v0.102: Memory 注入预算——总长上限 500 字符（超出截断，防止噪音膨胀挤占工具上下文）
+      userSummary: (function() {
+        var raw = buildUserSummary(context) + actionHint + learnHint + historyHint;
+        return raw.length > 500 ? raw.slice(0, 500) + '…' : raw;
+      })(),
       personality: context.personality || '',
       // P2: 注入近期 Agent 事件
       agentEvents: _recentAgentEvents.slice(-3).map(function(ev) {

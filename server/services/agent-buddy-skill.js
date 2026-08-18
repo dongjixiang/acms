@@ -154,8 +154,8 @@ function buildChatPrompt(ctx = {}) {
     ? `\n\n【近期 Agent 动态】\n${ctx.agentEvents.map(function(e) { return '- ' + e; }).join('\n')}`
     : '';
 
-  // 性格印象
-  const personalityHint = ctx.personality ? `\n\n【你对这个用户的印象】${ctx.personality}` : '';
+  // 用户画像（v0.102: 标题中性化——事实画像而非情感印象）
+  const personalityHint = ctx.personality ? `\n\n【用户画像（小吉观察）】${ctx.personality}` : '';
 
   // Skill 注入：根据当前视图加载相关 skill（复用 skill-loader）
   let skillHint = '';
@@ -229,19 +229,31 @@ ${isFirstTime ? '- 第一次见面，做个简短的自我介绍（30-50字）�
 
 /**
  * 性格总结 prompt（每 8 条消息触发一次）
+ * v0.102 架构调整：输出「用户行为事实画像」而非情感印象——
+ *   情感拟人描述（"ta 很可爱/我要陪伴他"）注入给 AI 自己是自我循环，
+ *   事实画像（偏好/做事方式/雷区）才能改变 LLM 行为。
  */
 function buildPersonalityPrompt(ctx = {}) {
   const oldPersonality = ctx.oldPersonality || '还没有了解';
   const history = ctx.history || '';
-  return `你是「小吉」，ACMS 平台助手。你和用户进行了一些对话，现在总结一下你对这个用户的最新印象。
+  return `你是「小吉」，ACMS 平台助手。你和用户进行了一些对话，现在提炼这个用户的行为事实画像。
 
-你之前对 ta 的印象：${oldPersonality}
+你之前对 ta 的画像：${oldPersonality}
 
 最近的对话：
 ${history}
 
-请用一句话总结你对这个用户的最新印象 — ta 说话的风格、你们的关系、你的个性如何适应 ta。
-要求：20-60字，自然一点，像你在心里默默想的。`;
+请输出用户的「行为事实画像」（40-90字），包含：
+- 沟通偏好：简洁还是详细？直接还是委婉？用词风格？
+- 做事方式：偏好直接执行、先给方案再动手、还是要量化数据支撑？
+- 反感/雷区：讨厌等待？讨厌绕圈子？讨厌形式主义？
+- 常涉及的工作主题（如看板、需求、邮件、某个具体项目）
+
+要求：
+- 全部是**事实性观察**（ta 做过/说过什么），不要情感评价（"ta 很可爱"）
+- 不要第一人称情感表达（"我要陪 ta 聊天"）
+- 不要引号、不要标题，直接用分号分隔的事实句
+- 没有足够依据的维度跳过，宁缺毋滥；无法提炼时输出「暂无明确画像」`;
 }
 
 /**
