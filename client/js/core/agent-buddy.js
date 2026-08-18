@@ -546,6 +546,8 @@
     card.dataset.requirementId = action.requirementId;
     card.dataset.mode = action.mode || 'conversational_action';
     if (!existing) container.appendChild(card);
+    // v0.112 fix: renderActionCard 后自动滚到底，让最新结果可见（之前 scrollTop=0 卡太高 1118px → 只能看到顶部标题）
+    container.scrollTop = container.scrollHeight;
     updateActionCard(card, action.status || {}, action);
     // v0.76: 如果 tool 返回了 _action（如 enter_project），执行前端动作
     if (action._action && action._action.enterProject) {
@@ -1116,7 +1118,9 @@ function isNonPlanTerminal(state) {
       + progressHtml
       + '<div class="ap-action-steps">' + stepsHtml + '</div>' + imageHtml + musicHtml + imgSearchHtml + emailHtml + videoHtml
       + '<button class="ap-action-trace" data-action="toggle-trace">▼ 查看执行详情</button>'
-      + toolSummaryHtml
+      + toolSummaryHtml;
+    // v0.112 fix: updateActionCard 内容更新后也滚到底（进度条更新 / 音乐完成 / 图片完成时让最新结果可见）
+    container.scrollTop = container.scrollHeight;
       + '<div class="ap-action-trace-body" hidden>' + escHtml(JSON.stringify({ planStatus: state.planStatus, plan: plan, assistImage: img, assistMusic: music, assistEmail: email, assistVideo: video }, null, 2)) + '</div>';
 
     var sendBtn = card.querySelector('[data-action="send-email"]');
