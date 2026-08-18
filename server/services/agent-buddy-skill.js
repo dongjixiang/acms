@@ -13,6 +13,24 @@ const toolRegistry = require('./tool-registry');
 const skillLoader = require('./skill-loader');
 const appToolsRegistry = require('./app-tools-registry');  // v0.66
 const toolRetriever = require('./tool-retriever');  // v0.74: 智能工具检索
+
+// v0.109: 消息关键词提取（中文 bigram + 停用词过滤，与 routes/agent-buddy.js 同源）
+//   用于外部技能按话题匹配注入
+const _STOP_CHARS = new Set('的了吗呢吧啊哦呀是我你他她它们和或就都请帮查搜看看一下什么怎么为什么多少几个这那要有给没不别能会到对于在里后前上中下大小多少高'.split(''));
+function _extractKeywords(text) {
+  if (!text) return [];
+  const out = new Set();
+  const chunks = String(text).replace(/[^\u4e00-\u9fa5a-zA-Z0-9]/g, ' ').split(/\s+/).filter(Boolean);
+  for (const ch of chunks) {
+    if (/^[a-zA-Z0-9]+$/.test(ch)) { if (ch.length >= 2) out.add(ch.toLowerCase()); continue; }
+    for (let i = 0; i < ch.length - 1; i++) {
+      const gram = ch.slice(i, i + 2);
+      if (_STOP_CHARS.has(gram[0]) && _STOP_CHARS.has(gram[1])) continue;
+      out.add(gram);
+    }
+  }
+  return Array.from(out);
+}
 // L0 基础身份提示（永久常驻层）
 // ── L0 永久层（~500 tokens，常驻不卸载）──
 const L0_BASE = `你是「小吉」，ACMS 智能协同管理平台的系统助手。
@@ -160,6 +178,7 @@ function buildChatPrompt(ctx = {}) {
   const personalityHint = ctx.personality ? `\n\n【用户画像（小吉观察）】${ctx.personality}` : '';
 
   // Skill 注入：根据当前视图加载相关 skill（复用 skill-loader）
+  // v0.109: + 按消息关键词匹配 description（外部技能如"会议纪要"在消息提到时自动注入）
   let skillHint = '';
   try {
     var skills = skillLoader.getSkills();
@@ -170,6 +189,20 @@ function buildChatPrompt(ctx = {}) {
     }).slice(0, 2);  // 最多注入 2 个
     if (viewSkills.length > 0) {
       skillHint = '\n\n【相关技能参考】\n' + viewSkills.map(function(s) { return '- ' + s.name + ': ' + (s.description || s.body.slice(0, 100)); }).join('\n');
+    }
+    // v0.109: 消息关键词匹配（bigram 停用词过滤，同 agent-buddy.js extractKeywords）
+    if (ctx.message && typeof ctx.message === 'string' && ctx.message.length >= 4) {
+      var msgWords = _extractKeywords(ctx.message);
+      var msgMatched = skills.filter(function(s) {
+        var text = (s.name || '') + ' ' + (s.description || '');
+        return _extractKeywords(text).some(function(w) { return msgWords.indexOf(w) >= 0; });
+      }).slice(0, 2);
+      if (msgMatched.length > 0) {
+        var msgSkillBlock = '\n【外部技能（按当前话题匹配）】\n' + msgMatched.map(function(s) {
+          return '- ' + s.name + '（来源:' + (s.source || 'builtin') + '）：' + (s.description || '') + '\n  步骤：' + String(s.body).slice(0, 300);
+        }).join('\n');
+        skillHint += msgSkillBlock;
+      }
     }
   } catch (e) { /* skill-loader 不可用时忽略 */ }
 

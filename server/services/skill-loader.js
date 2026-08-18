@@ -6,7 +6,9 @@
 const fs = require('fs');
 const path = require('path');
 
+// v0.109: 双目录——内置技能（随代码部署）+ 外部技能（data/skills，gitignore，运行时放 SKILL.md 即生效）
 const SKILLS_DIR = path.join(__dirname, '..', 'skills');
+const DATA_SKILLS_DIR = path.join(__dirname, '..', '..', 'data', 'skills');
 
 // ===== YAML frontmatter 解析（轻量版，不依赖外部库）=====
 function parseFrontmatter(raw) {
@@ -40,73 +42,83 @@ function parseFrontmatter(raw) {
 }
 
 // ===== 发现所有 skill 文件 =====
+// v0.109: 扫描内置 + 外部两个目录，来源标记 builtin/external
 function discoverSkills() {
   const skills = [];
 
-  if (!fs.existsSync(SKILLS_DIR)) return skills;
+  // v0.109: 抽公共扫描函数（dir + source 标记）
+  function scanDir(dir, source) {
+    if (!fs.existsSync(dir)) return;
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
 
-  const entries = fs.readdirSync(SKILLS_DIR, { withFileTypes: true });
+    for (const entry of entries) {
+      let filePath = null;
+      let skillId = null;
 
-  for (const entry of entries) {
-    let filePath = null;
-    let skillId = null;
+      // 跳过非技能文件（README/.gitkeep 等文档类，避免被当成 general 技能注入）
+      const lowerName = entry.name.toLowerCase();
+      if (lowerName === 'readme.md' || lowerName === '.gitkeep' || lowerName === '.gitignore') continue;
 
-    // 模式 1: skills/<id>.md（扁平文件）
-    if (entry.isFile() && entry.name.endsWith('.md') && entry.name !== 'SKILL.md') {
-      filePath = path.join(SKILLS_DIR, entry.name);
-      skillId = entry.name.replace(/\.md$/, '');
-    }
+      // 模式 1: <dir>/<id>.md（扁平文件）
+      if (entry.isFile() && entry.name.endsWith('.md') && entry.name !== 'SKILL.md') {
+        filePath = path.join(dir, entry.name);
+        skillId = entry.name.replace(/\.md$/, '');
+      }
 
-    // 模式 2: skills/<dir>/SKILL.md（目录模式）
-    if (entry.isDirectory()) {
-      const skillMd = path.join(SKILLS_DIR, entry.name, 'SKILL.md');
-      if (fs.existsSync(skillMd)) {
-        filePath = skillMd;
-        // dir 名或 frontmatter id 作为 skillId
-        skillId = entry.name;
+      // 模式 2: <dir>/<skilldir>/SKILL.md（目录模式，Hermes 技能包格式）
+      if (entry.isDirectory()) {
+        const skillMd = path.join(dir, entry.name, 'SKILL.md');
+        if (fs.existsSync(skillMd)) {
+          filePath = skillMd;
+          skillId = entry.name;
+        }
+      }
+
+      if (!filePath || !skillId) continue;
+
+      try {
+        const raw = fs.readFileSync(filePath, 'utf-8');
+        const { metadata, body } = parseFrontmatter(raw);
+
+        // 统一字段名
+        const id = metadata.id || metadata.skill_id || skillId;
+        const name = metadata.name || id;
+        const desc = metadata.description || '';
+        const category = metadata.category || 'general';
+        const version = metadata.version || '0.0.1';
+        const author = metadata.author || '';
+        const created = metadata.created || metadata.created_at || '';
+
+        // matchOn 条件
+        const matchOn = metadata.matchOn || {};
+        // execution 步骤
+        const execution = metadata.execution || {};
+        // references 引用
+        const references = metadata.references || [];
+
+        skills.push({
+          id,
+          name,
+          description: desc,
+          category,
+          version,
+          author,
+          created,
+          matchOn,
+          execution,
+          references,
+          filePath,
+          body: body || '',
+          source,  // v0.109: 'builtin' | 'external'
+        });
+      } catch (e) {
+        // 跳过解析失败的 skill
       }
     }
-
-    if (!filePath || !skillId) continue;
-
-    try {
-      const raw = fs.readFileSync(filePath, 'utf-8');
-      const { metadata, body } = parseFrontmatter(raw);
-
-      // 统一字段名
-      const id = metadata.id || metadata.skill_id || skillId;
-      const name = metadata.name || id;
-      const desc = metadata.description || '';
-      const category = metadata.category || 'general';
-      const version = metadata.version || '0.0.1';
-      const author = metadata.author || '';
-      const created = metadata.created || metadata.created_at || '';
-
-      // matchOn 条件
-      const matchOn = metadata.matchOn || {};
-      // execution 步骤
-      const execution = metadata.execution || {};
-      // references 引用
-      const references = metadata.references || [];
-
-      skills.push({
-        id,
-        name,
-        description: desc,
-        category,
-        version,
-        author,
-        created,
-        matchOn,
-        execution,
-        references,
-        filePath,
-        body: body || '',
-      });
-    } catch (e) {
-      // 跳过解析失败的 skill
-    }
   }
+
+  scanDir(SKILLS_DIR, 'builtin');
+  scanDir(DATA_SKILLS_DIR, 'external');
 
   return skills;
 }

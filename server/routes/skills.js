@@ -9,6 +9,21 @@ router.get('/', (req, res) => {
   res.json(skills);
 });
 
+// v0.109: 文件版技能列表（内置 server/skills + 外部 data/skills，含来源标记）
+//   外部技能即插即用：往 data/skills/ 放 SKILL.md 即可，5 秒缓存自动刷新
+router.get('/files', (req, res) => {
+  const skillLoader = require('../services/skill-loader');
+  const skills = skillLoader.getSkills();
+  res.json({
+    skills: skills.map(s => ({
+      id: s.id, name: s.name, description: s.description, category: s.category,
+      source: s.source || 'builtin', filePath: s.filePath,
+    })),
+    count: skills.length,
+    externalCount: skills.filter(s => (s.source || 'builtin') === 'external').length,
+  });
+});
+
 // 技能详情
 router.get('/:id', (req, res) => {
   const skill = skillStore.getById(req.params.id);
