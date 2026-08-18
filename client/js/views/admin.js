@@ -232,6 +232,27 @@ async function loadAdminPage() {
         <h3>⚙️ 高级设置</h3>
         <p style="color:var(--text2);font-size:13px;margin:4px 0 8px">实验性 / 阶段性功能开关。DB 未配置时回退到环境变量 <code>ELICITOR_ENABLED</code></p>
 
+        <!-- v0.101：Agent 运行追踪 — 记录 LLM 全链路 + HTML 报告（置顶：首屏可见） -->
+        <div class="config-row" style="margin-top:8px;padding-bottom:16px">
+          <div style="flex:1;min-width:0">
+            <strong>🔍 Agent 运行追踪</strong>
+            <div style="font-size:11px;margin-top:3px;color:var(--text2)">
+              开启后，所有 Agent 运行（小吉聊天 / 需求对话 / 任务执行）每轮的完整数据将被记录：<br>
+              发送给模型的 messages、模型完整回复、工具调用（参数+结果+耗时）、系统注入的重试/装睡检测事件。<br>
+              用于分析 Agent 效率瓶颈。记录保存在 <code>data/traces/</code>，保留最近 100 条自动清理。
+            </div>
+            <div id="trace-list" style="margin-top:10px;font-size:12px;color:var(--text2)"></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+            <span id="trace-enabled-label" style="font-size:13px;color:${traceState.enabled ? 'var(--green)' : 'var(--text2)'}">${traceState.enabled ? '已启用' : '已禁用'}</span>
+            <label style="position:relative;display:inline-block;width:42px;height:22px;cursor:pointer">
+              <input type="checkbox" id="trace-enabled-toggle" ${traceState.enabled ? 'checked' : ''} onchange="setTraceEnabled(this)" style="opacity:0;width:0;height:0">
+              <span id="trace-track" style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:${traceState.enabled ? 'var(--green)' : 'var(--border)'};border-radius:22px;transition:0.2s"></span>
+              <span id="trace-knob" style="position:absolute;cursor:pointer;height:18px;width:18px;left:${traceState.enabled ? '22px' : '2px'};top:2px;background:#fff;border-radius:50%;transition:0.2s"></span>
+            </label>
+          </div>
+        </div>
+
         <div id="proxy-settings-card"></div>
         <div class="config-row">
           <div>
@@ -267,26 +288,6 @@ async function loadAdminPage() {
             </label>
             <input type="number" id="auto-abandon-days-input" value="${autoAbandonState.days}" min="1" max="365" onchange="saveAutoAbandonDays(this)" style="width:64px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;text-align:center">
             <span style="font-size:12px;color:var(--text2)">天</span>
-          </div>
-        </div>
-        <!-- v0.101：Agent 运行追踪 — 记录 LLM 全链路 + HTML 报告 -->
-        <div class="config-row" style="margin-top:16px;border-top:1px solid var(--border);padding-top:16px">
-          <div style="flex:1;min-width:0">
-            <strong>🔍 Agent 运行追踪</strong>
-            <div style="font-size:11px;margin-top:3px;color:var(--text2)">
-              开启后，所有 Agent 运行（小吉聊天 / 需求对话 / 任务执行）每轮的完整数据将被记录：<br>
-              发送给模型的 messages、模型完整回复、工具调用（参数+结果+耗时）、系统注入的重试/装睡检测事件。<br>
-              用于分析 Agent 效率瓶颈。记录保存在 <code>data/traces/</code>，保留最近 100 条自动清理。
-            </div>
-            <div id="trace-list" style="margin-top:10px;font-size:12px;color:var(--text2)"></div>
-          </div>
-          <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
-            <span id="trace-enabled-label" style="font-size:13px;color:${traceState.enabled ? 'var(--green)' : 'var(--text2)'}">${traceState.enabled ? '已启用' : '已禁用'}</span>
-            <label style="position:relative;display:inline-block;width:42px;height:22px;cursor:pointer">
-              <input type="checkbox" id="trace-enabled-toggle" ${traceState.enabled ? 'checked' : ''} onchange="setTraceEnabled(this)" style="opacity:0;width:0;height:0">
-              <span id="trace-track" style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:${traceState.enabled ? 'var(--green)' : 'var(--border)'};border-radius:22px;transition:0.2s"></span>
-              <span id="trace-knob" style="position:absolute;cursor:pointer;height:18px;width:18px;left:${traceState.enabled ? '22px' : '2px'};top:2px;background:#fff;border-radius:50%;transition:0.2s"></span>
-            </label>
           </div>
         </div>
         <!-- v0.19：Agnes AI Video API Key 配置 -->
@@ -988,14 +989,17 @@ async function setTraceEnabled(checkbox) {
 }
 
 // v0.101：加载追踪列表（最近 10 条）
+//   写所有 #trace-list 副本（hidden 模板 + 浮窗克隆）。注意 querySelectorAll 返回
+//   静态 NodeList——必须在写入时重新查询，否则 await 后新克隆的浮窗副本不在列表里
 async function loadTraceList() {
-  const box = _byId('trace-list');
-  if (!box) return;
+  const setAll = (html) => {
+    document.querySelectorAll('#trace-list').forEach(box => { box.innerHTML = html; });
+  };
   try {
     const r = await api('GET', '/agent-trace?limit=10');
     const list = (r && r.traces) || [];
     if (!list.length) {
-      box.innerHTML = '<span style="color:var(--text3)">暂无记录 — 开启开关后，下一次 Agent 运行会自动记录</span>';
+      setAll('<span style="color:var(--text3)">暂无记录 — 开启开关后，下一次 Agent 运行会自动记录</span>');
       return;
     }
     const rows = list.map(t => {
@@ -1012,9 +1016,9 @@ async function loadTraceList() {
         + '<button class="btn-small" onclick="deleteTraceOne(\'' + t.id + '\')" title="删除">🗑</button>'
         + '</div>';
     }).join('');
-    box.innerHTML = '<span style="color:var(--text3)">最近 ' + list.length + ' 条记录（保留 100 条自动清理）：</span>' + rows;
+    setAll('<span style="color:var(--text3)">最近 ' + list.length + ' 条记录（保留 100 条自动清理）：</span>' + rows);
   } catch(e) {
-    box.innerHTML = '<span style="color:var(--text3)">加载失败: ' + e.message + '</span>';
+    setAll('<span style="color:var(--text3)">加载失败: ' + e.message + '</span>');
   }
 }
 
