@@ -71,12 +71,35 @@ function cleanup() {
   r = await call({ action: 'remove', target: 'profile', key: '不存在' });
   check('remove 不存在友好返回', r.ok === true);
 
+  console.log('== 7b. v0.107 Phase D 超限策展 ==');
+  // 先清掉现有 profile，种 20 条凑满
+  await call({ action: 'remove', target: 'profile', key: '项目技术栈' });
+  await call({ action: 'remove', target: 'profile', key: 'k' });
+  for (let i = 0; i < 20; i++) {
+    await call({ action: 'add', target: 'profile', key: '条目' + i, value: '值' + i });
+  }
+  r = await call({ action: 'add', target: 'profile', key: '新条目', value: '新值' });
+  check('满 20 条超限报错', r.ok === false && r.error === 'MEMORY_FULL', JSON.stringify(r).slice(0, 120));
+  check('报错带条目列表', Array.isArray(r.entries) && r.entries.length === 20 && r.entries[0].key === '条目0', JSON.stringify(r.entries && r.entries.slice(0, 2)));
+  check('覆盖已有 key 不触发超限', (await call({ action: 'add', target: 'profile', key: '条目0', value: '新值0' })).ok === true);
+  r = await call({ action: 'remove', target: 'profile', key: '条目19' });
+  check('remove 后腾出名额', r.ok === true && r.count === 19, String(r.count));
+  r = await call({ action: 'add', target: 'profile', key: '新条目', value: '新值' });
+  check('腾出后可 add', r.ok === true && r.count === 20, JSON.stringify(r).slice(0, 80));
+  // 字符上限测试：fact 上限 2000 字符，塞长条目触发
+  const longVal = 'x'.repeat(1500);
+  await call({ action: 'add', target: 'fact', key: '长条目', value: longVal });
+  r = await call({ action: 'add', target: 'fact', key: '长条目2', value: longVal });
+  check('字符超限报错', r.ok === false && r.error === 'MEMORY_FULL', JSON.stringify(r).slice(0, 100));
+  await call({ action: 'remove', target: 'fact', key: '长条目' });
+  await call({ action: 'remove', target: 'fact', key: '长条目2' });
+
   console.log('== 8. 注入端（模拟 userSummary 组装） ==');
   const { collection } = require(path.join(__dirname, '..', 'server', 'db', 'connection'));
   const mem = collection('buddy_memory').findOne(m => m.user_id === TEST_USER && m.key === 'user_profile');
   const profiles = JSON.parse(mem.value);
   const hint = '；用户偏好：' + profiles.map(p => p.key + '→' + p.value).join('、');
-  check('注入文本含偏好', hint.includes('项目技术栈→ACMS 用 Node.js + SQLite'), hint);
+  check('注入文本含偏好', hint.includes('条目0→新值0') && hint.includes('新条目→新值'), hint.slice(0, 100));
 
   console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
   cleanup();

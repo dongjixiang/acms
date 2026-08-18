@@ -1429,9 +1429,10 @@ registerTool({
     '记忆纪律（何时该记）：\n' +
     '- ✅ 用户明确表达的偏好（"我喜欢简洁回复"）、纠正（"这个按钮应该叫 X"）、重要事实（"我们项目用 Go"）\n' +
     '- ❌ 不该记：临时状态、任务进度、一次性请求、你现在就能看到的信息、情绪化评论\n' +
-    '容量：target=profile 最多 20 条，target=fact 最多 50 条。写满后需先 remove 或 add 同 key 覆盖。\n' +
+    '容量：target=profile 最多 20 条 / 800 字符，target=fact 最多 50 条。写满时返回 MEMORY_FULL 错误并附当前条目列表——\n' +
+    '**此时先调 remove 删掉最没用的旧条目（或合并多条为一条），再重试 add**，不要硬塞。\n' +
     '写入内容会过安全扫描，含注入/凭据/不可见字符的内容会被拒绝。\n' +
-    'action=add 时 key 相同则更新（覆盖旧 value），action=remove 按 key 删除。',
+    'action=add 时 key 相同则更新（覆盖旧 value，不占新名额），action=remove 按 key 删除。',
   parameters: {
     type: 'object',
     properties: {
@@ -1455,6 +1456,7 @@ registerTool({
     // 容量与存储 key
     const storeKey = target === 'profile' ? 'user_profile' : 'learned_facts';
     const maxEntries = target === 'profile' ? 20 : 50;
+    const maxChars = target === 'profile' ? 800 : 2000;  // v0.107: 字符上限（profile 800 / fact 2000）
 
     // 读现有条目
     const entries = Array.isArray(memRead(userId, storeKey)) ? memRead(userId, storeKey) : [];
@@ -1472,16 +1474,40 @@ registerTool({
     const blocked = scanMemoryContent(key) || scanMemoryContent(value);
     if (blocked) return { ok: false, error: 'MEMORY_BLOCKED', message: '内容被安全扫描拦截（' + blocked + '），不写入记忆' };
 
-    // 条目级 upsert（key 相同替换）
-    let found = false;
+    // 条目级 upsert（key 相同替换，不占新名额）
+    const existingSameKey = entries.some(e => e.key === key);
     const now = Date.now();
     const next = entries.map(e => {
-      if (e.key === key) { found = true; return { key, value, ts: now }; }
+      if (e.key === key) { return { key, value, ts: now }; }
       return e;
     });
-    if (!found) {
+    if (!existingSameKey) {
+      // v0.107: 超限检查——不再静默挤掉旧条目，返回 MEMORY_FULL + 条目列表让 LLM 策展
+      //   条数超限
+      if (next.length >= maxEntries) {
+        return {
+          ok: false,
+          error: 'MEMORY_FULL',
+          message: target + ' 已满（' + maxEntries + ' 条）。先 remove 最没用的旧条目或合并多条为一条再重试 add。当前条目：' +
+            next.map(e => e.key).join('、'),
+          entries: next.map(e => ({ key: e.key, value: e.value })),
+          count: next.length,
+        };
+      }
+      // 字符超限（新条目加入后超过上限）
+      const newEntryChars = key.length + value.length;
+      const totalCharsNow = next.reduce((s, e) => s + String(e.key).length + String(e.value).length, 0);
+      if (totalCharsNow + newEntryChars > maxChars) {
+        return {
+          ok: false,
+          error: 'MEMORY_FULL',
+          message: target + ' 已超字符上限（' + maxChars + ' 字符，当前 ' + totalCharsNow + '）。先 remove 或合并旧条目腾空间再重试。当前条目：' +
+            next.map(e => e.key).join('、'),
+          entries: next.map(e => ({ key: e.key, value: e.value })),
+          count: next.length,
+        };
+      }
       next.push({ key, value, ts: now });
-      if (next.length > maxEntries) next.splice(0, next.length - maxEntries);  // 超限去最旧
     }
 
     const saved = memWrite(userId, storeKey, next);
@@ -1489,7 +1515,7 @@ registerTool({
     const totalChars = next.reduce((s, e) => s + String(e.key).length + String(e.value).length, 0);
     return {
       ok: true,
-      message: found ? '已更新 ' + key + ' → ' + value : '已记录 ' + key + ' → ' + value,
+      message: existingSameKey ? '已更新 ' + key + ' → ' + value : '已记录 ' + key + ' → ' + value,
       count: next.length,
       total_chars: totalChars,
       target,

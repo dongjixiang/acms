@@ -601,9 +601,11 @@ router.post('/chat', async function(req, res) {
         var raw = profileHint + buildUserSummary(context) + actionHint + learnHint + historyHint
           + buildHistoryContextHint(message, userId);  // v0.106: Phase C 历史对话检索
         if (!raw) return '';
-        if (raw.length > 500) raw = raw.slice(0, 500) + '…';
-        var pct = Math.round(raw.length / 500 * 100);
-        return '[Memory ' + pct + '% — ' + raw.length + '/500 chars] ' + raw;
+        var truncated = 0;
+        if (raw.length > 500) { truncated = raw.length - 500; raw = raw.slice(0, 500) + '…'; }
+        var pct = Math.min(100, Math.round(raw.length / 500 * 100));
+        // v0.107: 截断可见——LLM 知道有内容被预算截掉，主动要求时可用工具读全量
+        return '[Memory ' + pct + '% — ' + raw.length + '/500 chars' + (truncated > 0 ? '，截断 ' + truncated + ' 字符' : '') + '] ' + raw;
       })(),
       personality: context.personality || '',
       // P2: 注入近期 Agent 事件
