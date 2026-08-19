@@ -195,25 +195,37 @@ async function renderMermaidContainers(containers) {
 }
 
 // ===== 表格渲染 =====
+// v1.0 (Phase 10b): 加强版 — 支持 LLM 常见格式变体
+//   原正则太严格: 要求每行以 | 开头结尾 + 分隔行格式固定
+//   LLM 常输出「| 日期 | 天气 |」「|---|---|---|」等紧凑格式 → 正则不匹配 → 表格显示为原始文本
+//   新正则: 表头/分隔行/数据行都可选前导尾随 |,分隔行允许 `---` / `:--:` / `| --- |` 变体
 function renderTables(html) {
-  const tableRegex = /(\|.+\|\n\|[-:|\s]+\|\n((?:\|.+\|\n?)+))/g;
+  // v1.0 (Phase 10b): 加强版正则 — 分隔行允许空格 (| --- | --- |) 和紧凑格式 (|---|---|)
+  const tableRegex = /((?:^|\n)\|?[^\n]+\|?\n\|?[-:|\s]+\|?\n(?:(?:\|?[^\n]+\|?)\n?)+)/g;
   return html.replace(tableRegex, (match) => {
-    const lines = match.trim().split('\n');
+    const lines = match.trim().split('\n').map(l => l.trim()).filter(Boolean);
     if (lines.length < 2) return match;
 
-    const headers = lines[0].split('|').filter(s => s.trim());
-    const rows = lines.slice(2).filter(l => l.includes('|'));
+    // 表头: 第一行（过滤分隔行单元格）
+    const headers = lines[0].split('|').map(s => s.trim()).filter(s => s && !/^[-:]+$/.test(s));
+    if (headers.length === 0) return match;
+
+    // 数据行: 从第三行开始（跳过分隔行）,过滤空行和分隔行
+    const rows = lines.slice(2)
+      .map(l => l.split('|').map(s => s.trim()).filter(s => s && !/^[-:]+$/.test(s)))
+      .filter(r => r.length > 0);
+
+    if (rows.length === 0) return match;
 
     let table = '<table><thead><tr>';
     for (const h of headers) {
-      table += `<th>${h.trim()}</th>`;
+      table += `<th>${h}</th>`;
     }
     table += '</tr></thead><tbody>';
     for (const row of rows) {
-      const cells = row.split('|').filter(s => s.trim());
       table += '<tr>';
-      for (const c of cells) {
-        table += `<td>${c.trim()}</td>`;
+      for (const c of row) {
+        table += `<td>${c}</td>`;
       }
       table += '</tr>';
     }
