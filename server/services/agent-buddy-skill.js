@@ -177,7 +177,11 @@ function buildChatPrompt(ctx = {}) {
     if (cat === 'app') return getAppCategoryTools();
     return CATEGORY_TOOLS[cat] || [];
     });
-  const allToolNames = [...new Set([...L0_TOOLS, ...l1ToolNames, ...l2ToolNames, ...retrievedToolNames])];
+  const baseToolNames = [...new Set([...L0_TOOLS, ...l1ToolNames, ...l2ToolNames, ...retrievedToolNames])];
+  // v1.0 (Phase 2-A): 调用方可传 effectiveToolNames（已按 action route 过滤后的工具清单）
+  //   让 system prompt 里的【工具白名单】与 LLM API 实际 toolNames 一致
+  //   避免 LLM 看到 38 个工具但 API 只接受 4 个的误导
+  const allToolNames = ctx.effectiveToolNames || baseToolNames;
 
   // B2 优化：LLM 通过 body.tools 已经能拿到完整 schema（OpenAI/Anthropic 工具调用 API）
   // system prompt 里再贴一遍 description 是冗余——改用工具名 + 短简介（取 description 第一行）

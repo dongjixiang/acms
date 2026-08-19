@@ -615,7 +615,7 @@ router.post('/chat', async function(req, res) {
       console.warn('[agent-buddy] tool retriever error:', e.message);
     }
 
-    var buddyCtx = {
+var buddyCtx = {
       currentView: context.currentView || '_default',
       expandedCategories: previousCategories,
       retrievedTools: retrievedToolNames,  // v0.74
@@ -655,17 +655,30 @@ router.post('/chat', async function(req, res) {
       // v0.89: 成功经验追踪器需要原 message 查相关案例
       message: message,
     };
-    var systemPrompt = buddySkill.buildChatPrompt(buddyCtx);
 
-    // 2.5 conversational-action：单轮 LLM 路由，只决定即时聊天动作模式。
-    // Router 无工具；真正执行仍走下面统一 runtime/tool-loop。
-    // v0.96.2 (P138 修复 + office_edit 语义): 把 currentView/fileName 注入 router，让 LLM 知道前端打开了什么
-    //   才能区分「在打开的 Word 里写」(office_edit) vs 「生成新文档」(document_generation)
+    // 2.5 conversational-action：单轮 LLM 路由（v1.0 提前到 buildChatPrompt 之前）
+    //   原顺序：buildChatPrompt → routeMessage → computeToolNames → getActionToolNames
+    //   改顺序：routeMessage → computeToolNames → getActionToolNames → buildChatPrompt(effectiveToolNames)
+    //   原因：Phase 2-A 让 system prompt 里【工具白名单】与 LLM API 实际 toolNames 一致
+    //         否则 LLM 看到 38 个工具但 API 只接受 4 个 → 误导 → 尝试调不在的 → API 拒绝
+    // v0.96.2 (P138 修复 + office_edit 语义): 把 currentView/fileName 注入 router
     var actionRoute = await buddyAction.routeMessage(model.id, message, context.history || [], {
       currentView: context.currentView || '',
       fileName: context.fileName || context.openFileName || '',
     });
     var actionRequirement = null;
+
+    // 3. 算 toolNames（与 SKILL prompt 一一对应）
+    var toolNames = computeToolNames(context.currentView, previousCategories);
+    toolNames = buddyAction.getActionToolNames(actionRoute, toolNames);
+    console.log('[agent-buddy DEBUG] toolNames:', JSON.stringify(toolNames));
+    // 如果已经有 ACMS 内部 tool 注册了就全用，否则退回到 v0.59 纯对话模式（不传 tools）
+    var hasSkills = toolNames.length > 0 && require('../services/tool-registry').getTool(toolNames[0]);
+    console.log('[agent-buddy DEBUG] hasSkills:', hasSkills, 'toolNames[0]:', toolNames[0], 'getTool result:', toolNames.length > 0 ? !!require('../services/tool-registry').getTool(toolNames[0]) : 'N/A');
+
+    // v1.0 (Phase 2-A): 把 effectiveToolNames 传给 buildChatPrompt
+    //   toolIndex 段只列 toolNames 里有的工具，避免 LLM 看到 38 个但只能调 4 个的误导
+    var systemPrompt = buddySkill.buildChatPrompt(Object.assign({}, buddyCtx, { effectiveToolNames: toolNames }));
     if (actionRoute.mode !== 'conversation') {
       actionRequirement = buddyAction.getOrCreateActionRequirement(userId || 'anonymous');
       systemPrompt += buddyAction.buildActionPrompt(actionRoute);
@@ -688,14 +701,6 @@ router.post('/chat', async function(req, res) {
       };
       console.log('[agent-buddy] office_edit 前端动作:', JSON.stringify(officeAction));
     }
-
-    // 3. 算 toolNames（与 SKILL prompt 一一对应）
-    var toolNames = computeToolNames(context.currentView, previousCategories);
-    toolNames = buddyAction.getActionToolNames(actionRoute, toolNames);
-    console.log('[agent-buddy DEBUG] toolNames:', JSON.stringify(toolNames));
-    // 如果已经有 ACMS 内部 tool 注册了就全用，否则退回到 v0.59 纯对话模式（不传 tools）
-    var hasSkills = toolNames.length > 0 && require('../services/tool-registry').getTool(toolNames[0]);
-    console.log('[agent-buddy DEBUG] hasSkills:', hasSkills, 'toolNames[0]:', toolNames[0], 'getTool result:', toolNames.length > 0 ? !!require('../services/tool-registry').getTool(toolNames[0]) : 'N/A');
 
     // 4. 构建 messages（含对话历史）
     // v0.79: 过滤掉空 content 的 user/buddy 历史消息 — 上游 OpenAI 严格模式把空 user 视为不存在

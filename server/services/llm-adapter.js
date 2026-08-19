@@ -1009,18 +1009,28 @@ async function runToolLoop(modelId, messages, options = {}) {
         });
         continue;
       }
-      // v0.33 C 方案: stream stall detection（参考 Hermes run_agent.py:8330）
+// v0.33 C 方案: stream stall detection（参考 Hermes run_agent.py:8330）
       //   LLM 返回 content 但没 tool_calls + content 提到"i will write" → 装睡信号
       //   比装睡检测更前置：装睡检测需要 LLM 调 tool，stall detection 是"连 tool 都不调但嘴上说会调"
+      // v1.0 (Phase 2-C): 豁免"刚成功调过工具"的轮次
+      //   异步工具（play_music/generate_image）返回 reqId 后,LLM 想自然回复用户「好的我帮你找」
+      //   → 含「正在为你」/「帮你找」触发 stall → LLM 被警告 → 死循环直到 maxRounds
+      //   治 4/5 stall 死循环 trace (msyt6tv8/msytjpfw/msyu0jla/msyvboo6)
+      //   只在 toolCallHistory.length === 0 (本轮之前完全没调过工具) 时才判 stall
       const stall = detectStreamStall(result, messages);
       if (stall) {
-        console.warn(`[runToolLoop] v0.33 STALL detected round=${round + 1}: phrases=${stall.phrases.join(',')} preview="${stall.contentPreview}"`);
-        if (trace) trace.addNote(round + 1, 'stall', 'phrases=' + stall.phrases.join(','));
-        messages.push({
-          role: 'user',
-          content: `[系统检测到你嘴上说 "${stall.phrases[0]}" 但没真调 tool。请立即调对应 tool 实际执行（不要继续描述意图）。如果还剩 ${maxRounds - round - 1} 轮，请专注。]`,
-        });
-        continue;
+        if (toolCallHistory.length > 0) {
+          console.log(`[runToolLoop] v1.0 stall 豁免: round=${round + 1} 已调 ${toolCallHistory.length} 次工具,放行自然回复`);
+          // 不 continue,让 LLM 自然返回 content
+        } else {
+          console.warn(`[runToolLoop] v0.33 STALL detected round=${round + 1}: phrases=${stall.phrases.join(',')} preview="${stall.contentPreview}"`);
+          if (trace) trace.addNote(round + 1, 'stall', 'phrases=' + stall.phrases.join(','));
+          messages.push({
+            role: 'user',
+            content: `[系统检测到你嘴上说 "${stall.phrases[0]}" 但没真调 tool。请立即调对应 tool 实际执行（不要继续描述意图）。如果还剩 ${maxRounds - round - 1} 轮，请专注。]`,
+          });
+          continue;
+        }
       }
       // v0.30 fix: 装睡检测 — user 语气 + 二选一选项（Hermes-style user-driven steer）
       //   根因：v0.29 STEER 注入 goal 段但 LLM 当 system warning 看，4 轮装睡都不醒悟
@@ -1172,11 +1182,35 @@ Round ${round + 1}/${maxRounds}。
         }
       }
     }
-    // 串行组
+// 串行组
     for (const _tc of serialCalls) {
       const sres = await _execToolCall(_tc, toolRegistry, api, messages, toolCallHistory, round, context);
       if (sres) for (const m of sres) messages.push(m);
     }
+
+    // v1.0 (Phase 2-D): plan_execute 调通后锁子工具
+    //   治 mszcfa4s_kiyo 类失败: plan_execute 创建 plan 后,LLM 又单独调 generate_image/send_email
+    //   扫描本轮 messages 末尾的工具结果,如果含 plan_id → 注入 user msg 让 LLM 知道 plan 已接管
+    try {
+      const lastToolMsgs = messages.slice(-Math.max(parallelCalls.length + serialCalls.length, 1));
+      for (const m of lastToolMsgs) {
+        if (m && m.role === 'tool' && typeof m.content === 'string') {
+          let parsed = null;
+          try { parsed = JSON.parse(m.content); } catch (_) {}
+          if (parsed && (parsed.plan_id || parsed.planId) && parsed.ok !== false) {
+            const planId = parsed.plan_id || parsed.planId;
+            console.log(`[runToolLoop] v1.0 plan_execute 调通: plan_id=${planId}, 锁子工具`);
+            if (trace) trace.addNote(round + 1, 'plan_lock', `plan_id=${planId}`);
+            messages.push({
+              role: 'user',
+              content: `[Plan 已接管] plan_execute 已创建 plan_id=${planId} 并由 plan engine 调度执行。你（LLM）**不要**再调以下子工具：generate_image / send_email / play_music / play_video / web_search / fetch_url / document_gen / agnes_generate_video。等 plan_result 到达后系统会推送给你,再回复最终用户。]`,
+            });
+            break;
+          }
+        }
+      }
+    } catch (e) { /* plan 检测失败不应影响主流程 */ }
+
   }
   console.error(`[runToolLoop] Tool loop exceeded max rounds (${maxRounds}). 完整 tool call history (${toolCallHistory.length} 条):\n${toolCallHistory.map(h => `  r${h.round} ${h.tool}(${(h.args||'').slice(0, 80)}) → ${h.resultPreview ? h.resultPreview.slice(0, 80) : (h.result || h.error || '?')}`).join('\n')}`);
   if (trace) trace.fail(new Error('Tool loop exceeded max rounds (' + maxRounds + ')'));

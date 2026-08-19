@@ -144,7 +144,7 @@ async function routeMessage(modelId, message, history = [], ctx = {}) {
   const system = `你是 ACMS 小吉的动作路由器。只做分类，不调用工具，不制定开发计划。
 输出严格 JSON：
 {"mode":"conversation|single_action|conversational_action","confidence":0.0,"capabilities":[],"requires_confirmation":false,"reason":"..."}
-能力枚举：image_generation、image_search、music_playback、email_draft、email_send、web_search、web_research、document_generation、project_create、create_task、web_fetch、code_execution、video_generation、office_edit。
+- 能力枚举：image_generation、image_search、music_playback、email_draft、email_send、web_search、web_research、document_generation、project_create、create_task、web_fetch、code_execution、video_generation、office_edit、office_open、view_navigation、window_control。
 ${officeEditHint}规则：
 - 纯问答/查询 ACMS 数据/闲聊 → conversation。
 - 一个明确工具动作 → single_action。
@@ -212,7 +212,7 @@ ${officeEditHint}规则：
     if (!route.capabilities.includes('web_fetch')) route.capabilities.push('web_fetch');
     console.log('[agent-buddy-action] URL 命中 web_fetch, 强制覆盖路由');
   }
-  // v0.88: 关键词前置拦截 — 代码执行意图（改代码/修bug/实现功能/读文件/跑命令）
+// v0.88: 关键词前置拦截 — 代码执行意图（改代码/修bug/实现功能/读文件/跑命令）
   //   code_execution 意图 = 需要在项目 workspace 里读写文件/跑命令/git
   //   命中后把 code_execution 加进 capabilities（不覆盖已有，可叠加 web_search 等）
   const codeExecRe = /改代码|写代码|修[一这]?[个]?bug|修[一这]?[个]?缺陷|实现[一这]?[个]?功能|新增.*功能|读文件|看.*代码|跑[个一]?命令|执行命令|调试|查看项目|改文件|写文件|重构|代码审查|看下.*代码/;
@@ -223,6 +223,28 @@ ${officeEditHint}规则：
     }
     route.capabilities.push('code_execution');
     console.log('[agent-buddy-action] 关键词命中 code_execution, 强制覆盖路由');
+  }
+  // v1.0 (Phase 2-B): office_open 关键词拦截 — 「打开Word/Excel/PPT」「打开文档」类
+  //   治 mt049ys1 「帮我打开Word」 类 router 误判为 conversation（无 open_view 工具）
+  const officeOpenRe = /打开.*(?:Word|Excel|PPT|PowerPoint|文档|表格|演示)|新建.*(?:Word|Excel|PPT|文档)|创建.*(?:Word|Excel|PPT)/i;
+  if (officeOpenRe.test(message)) {
+    if (route.mode === 'conversation') {
+      route.mode = 'single_action';
+      route.confidence = 0.9;
+    }
+    if (!route.capabilities.includes('office_open')) route.capabilities.push('office_open');
+    console.log('[agent-buddy-action] 关键词命中 office_open, 强制覆盖路由');
+  }
+  // v1.0 (Phase 2-B): view_navigation 关键词拦截 — 「打开看板/需求/缺陷/dashboard/项目详情」等视图
+  //   注意: office_open (打开Word/Excel/PPT) 优先级更高,先命中 office_open 就不命中 view_navigation
+  const viewNavRe = /(?:打开|进入|进去|切到|切换到|跳到|转到|进\s*入|进\s*去|看[一这]?下|看[一这]?眼|查[一这]?下|看看)\s*(?:看板|kanban|需求(?:列表|池)?|requirements|缺陷|bugs?|任务|tasks|仪表[盘台]|dashboard|项目详情|详情页|聊天|chat|admin|管理|项目管理|项目列表)/i;
+  if (viewNavRe.test(message) && !route.capabilities.includes('view_navigation') && !route.capabilities.includes('office_open')) {
+    if (route.mode === 'conversation') {
+      route.mode = 'single_action';
+      route.confidence = 0.85;
+    }
+    route.capabilities.push('view_navigation');
+    console.log('[agent-buddy-action] 关键词命中 view_navigation, 强制覆盖路由');
   }
   // video_generation 关键词拦截 — 用户说"生成视频"/"做一个视频"/"画一段视频"等
   const videoGenRe = /生成.*视频|做.*视频|画.*视频|创作.*视频|帮我.*视频|给我.*视频|视频.*生成|拍.*视频/;
@@ -305,6 +327,11 @@ function getActionToolNames(route, baseTools) {
       //   注入 list_projects：create_task 需要 projectId，LLM 可先查项目再建
       if (capability === 'create_task') { tools.add('create_task'); tools.add('list_projects'); }
       if (capability === 'web_fetch') { tools.add('fetch_url'); }
+      // v1.0 (Phase 2-B): office_open / view_navigation / window_control
+      //   治 mt049ys1 「帮我打开Word」 类 router 误判为 conversation（无 open_view 工具）
+      if (capability === 'office_open') { tools.add('open_view'); tools.add('highlight_element'); }
+      if (capability === 'view_navigation') { tools.add('open_view'); }
+      if (capability === 'window_control') { tools.add('close_window'); tools.add('highlight_element'); }
       // v0.88: code_execution —— 注入代码执行池（读/写/跑命令/git）
       //   从 listPool 取真实注册的工具（防 P81/P97 漏 require 复发）
       if (capability === 'code_execution') {
