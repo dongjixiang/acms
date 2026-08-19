@@ -15,7 +15,7 @@ const appToolsRegistry = require('./app-tools-registry');  // v0.66
 const toolRetriever = require('./tool-retriever');  // v0.74: 智能工具检索
 
 // v0.109: 消息关键词提取（中文 bigram + 停用词过滤，与 routes/agent-buddy.js 同源）
-//   用于外部技能按话题匹配注入
+//   保留备用: 视图相关 skill 匹配仍用; P1-C 后不再用于消息匹配注入
 const _STOP_CHARS = new Set('的了吗呢吧啊哦呀是我你他她它们和或就都请帮查搜看看一下什么怎么为什么多少几个这那要有给没不别能会到对于在里后前上中下大小多少高'.split(''));
 function _extractKeywords(text) {
   if (!text) return [];
@@ -31,6 +31,40 @@ function _extractKeywords(text) {
   }
   return Array.from(out);
 }
+
+// v1.0 (Phase 1-B): query intent 判定 — 只对「工具/数据查询类」注入成功经验
+//   闲聊/问候 query 不注入，避免「你干啥呢」→ 天气成功经验 误匹配
+const _TOOL_INTENT_KEYWORDS = /(价格|多少|怎么|为什么|查询|统计|列表|状态|几|哪些|哪里|如何|怎么样|什么|生成|画|搜索|搜|播放|听|发邮件|打开|编辑|改|做|建|写|查|看看|报|列表|导出|下载|抓|帮我|给我|请)/;
+// 注意：刻意不包含「你/干啥/干嘛/呢」等闲聊虚词
+function _isToolIntentQuery(message, actionMode) {
+  // route 已经判定为非 conversation（single_action / conversational_action）→ 工具意图
+  if (actionMode && actionMode !== 'conversation') return true;
+  const m = String(message || '').trim();
+  if (!m) return false;
+  if (m.length < 6) return false;  // 6 字以内大概率是招呼/问候
+  if (/https?:\/\//.test(m)) return true;  // 含 URL → 抓取意图
+  if (_TOOL_INTENT_KEYWORDS.test(m)) return true;
+  return false;
+}
+
+// v1.0 (Phase 1-B): 二次过滤成功经验 — hint 里 query 和当前 query 必须真重叠
+//   治根因: success-tracker 用 token 重叠度打分，闲聊和「天气」共享「天」字就误命中
+function _hintRealOverlap(currentQuery, hintText) {
+  // hint 格式: 「原始 query」→ 域名
+  const m = hintText.match(/「(.+?)」/);
+  if (!m) return false;
+  const hintQuery = m[1];
+  const a = new Set(_extractKeywords(currentQuery));
+  const b = new Set(_extractKeywords(hintQuery));
+  let overlap = 0;
+  a.forEach(t => { if (b.has(t)) overlap++; });
+  if (overlap === 0) return false;
+  // 至少 1 个有意义的 bigram 重叠（不算单字停用词）
+  const hasMeaningful = [...a].some(t => t.length >= 2 && b.has(t));
+  if (!hasMeaningful) return false;
+  // 重叠度阈值
+  return overlap / Math.sqrt(a.size * b.size) > 0.25;
+}
 // L0 基础身份提示（永久常驻层）
 // ── L0 永久层（~500 tokens，常驻不卸载）──
 const L0_BASE = `你是「小吉」，ACMS 智能协同管理平台的系统助手。
@@ -45,6 +79,7 @@ const L0_BASE = `你是「小吉」，ACMS 智能协同管理平台的系统助�
 系统已根据当前用户请求自动匹配最合适的工具（见下方工具列表）——无需记工具名。
 包含：当前视图相关工具 + 系统常备工具 + 语义检索匹配工具。
 不够用就调 _expand_tools({category: "..."}) 手动扩载，可扩载类别：requirement | task | bug | agent | window | system | dashboard | office | project | media | app
+- **技能按需**：当前视图相关的 1-2 个 skill 摘要已注入；要看全部 skill 列表/加载完整内容，调 buddy_skill 工具（action: 'list' | 'get' | 'create'）
 
 【执行约束（重要）】
 - ACMS 业务数据的创建/修改/删除前，用中文告诉用户并等待确认；但图片/文档生成等可逆创作动作可直接执行
@@ -178,7 +213,9 @@ function buildChatPrompt(ctx = {}) {
   const personalityHint = ctx.personality ? `\n\n【用户画像（小吉观察）】${ctx.personality}` : '';
 
   // Skill 注入：根据当前视图加载相关 skill（复用 skill-loader）
-  // v0.109: + 按消息关键词匹配 description（外部技能如"会议纪要"在消息提到时自动注入）
+  // v1.0 (Phase 1-C): 移除 v0.109 消息关键词匹配注入（闲聊「你干啥呢」误命中「需求启发师」）
+  //   改为：仅按视图匹配注入 1-2 个轻量提示；LLM 真要看全部/加载完整内容调 buddy_skill 工具
+  //   buddy_skill 工具已在 L0_TOOLS（line 93）常驻，LLM 可随时主动调阅
   let skillHint = '';
   try {
     var skills = skillLoader.getSkills();
@@ -186,36 +223,29 @@ function buildChatPrompt(ctx = {}) {
       var cats = s.category || 'general';
       // 根据视图匹配 skill category
       return cats === view || (view === 'kanban' && cats === '管理工作流') || (view === 'requirements' && cats === '需求分析') || cats === 'general';
-    }).slice(0, 2);  // 最多注入 2 个
+    }).slice(0, 1);  // v1.0: 最多 1 个（避免闲聊场景塞 2 个 skill 摘要）
     if (viewSkills.length > 0) {
-      skillHint = '\n\n【相关技能参考】\n' + viewSkills.map(function(s) { return '- ' + s.name + ': ' + (s.description || s.body.slice(0, 100)); }).join('\n');
-    }
-    // v0.109: 消息关键词匹配（bigram 停用词过滤，同 agent-buddy.js extractKeywords）
-    if (ctx.message && typeof ctx.message === 'string' && ctx.message.length >= 4) {
-      var msgWords = _extractKeywords(ctx.message);
-      var msgMatched = skills.filter(function(s) {
-        var text = (s.name || '') + ' ' + (s.description || '');
-        return _extractKeywords(text).some(function(w) { return msgWords.indexOf(w) >= 0; });
-      }).slice(0, 2);
-      if (msgMatched.length > 0) {
-        var msgSkillBlock = '\n【外部技能（按当前话题匹配）】\n' + msgMatched.map(function(s) {
-          return '- ' + s.name + '（来源:' + (s.source || 'builtin') + '）：' + (s.description || '') + '\n  步骤：' + String(s.body).slice(0, 300);
-        }).join('\n');
-        skillHint += msgSkillBlock;
-      }
+      skillHint = '\n\n【当前视图相关技能（仅摘要;查全部/加载完整内容请调 buddy_skill 工具）】\n' + viewSkills.map(function(s) { return '- ' + s.name + ': ' + (s.description || s.body.slice(0, 100)); }).join('\n');
     }
   } catch (e) { /* skill-loader 不可用时忽略 */ }
 
   // v0.89: 成功经验继承（让 web_search 走过的成功路径能跨 session 复用）
   //   从 system_configs.search_success_log 检索 top-3 相关案例，注入 prompt 提示 LLM
   //   token 预算：3 条 × ~80 字符 = ~150 tokens
+  // v1.0 (Phase 1-B): 加 query intent gate + 二次相关性过滤
+  //   闲聊 query（actionMode='conversation' 且不含工具关键词）不注入
+  //   注入前用 bigram 重叠度过滤，避免 token 误命中（如「你干啥呢」→「天气」）
   let successHint = '';
   try {
     if (ctx.message && typeof ctx.message === 'string' && ctx.message.length >= 4) {
-      var tracker = require('./search-success-tracker');
-      var hints = tracker.getRelevantSuccesses(ctx.message, 3);
-      if (hints && hints.length > 0) {
-        successHint = '\n\n【上次类似查询成功经验（可参考复用）】\n' + hints.map(function(h) { return '  - ' + h; }).join('\n');
+      const isToolIntent = _isToolIntentQuery(ctx.message, ctx.actionMode);
+      if (isToolIntent) {
+        var tracker = require('./search-success-tracker');
+        var hints = tracker.getRelevantSuccesses(ctx.message, 3);
+        var filtered = hints.filter(function(h) { return _hintRealOverlap(ctx.message, h); });
+        if (filtered.length > 0) {
+          successHint = '\n\n【上次类似查询成功经验（可参考复用）】\n' + filtered.map(function(h) { return '  - ' + h; }).join('\n');
+        }
       }
     }
   } catch (e) { /* tracker 不可用时静默忽略 */ }

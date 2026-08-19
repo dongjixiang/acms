@@ -30,9 +30,20 @@ registerTool({
       if (req && req.assist_music) {
         let existing;
         try { existing = JSON.parse(req.assist_music); } catch {}
-        if (existing && existing.status === 'done') {
-          console.log(`[tool:play_music] ${reqId} 音乐已由预检触发，跳过重复`);
+        // v0.100 fix: 去重必须比较歌名+艺人，不能只看 status==='done'
+        //   小吉复用隐藏动作容器（getOrCreateActionRequirement），assist_music 是历史残留。
+        //   只看 status 会让「新歌请求」被历史 done 状态拦截 → runAssistJob 不执行 →
+        //   前端轮询渲染的永远是历史卡片（用户报：想听梁静茹的勇气，卡片是历史内容）。
+        //   只有同一首歌（song+artist 都匹配）才算重复，才跳过。
+        if (existing && existing.status === 'done'
+            && (existing.song || '') === (args.song || '')
+            && (existing.artist || '') === (args.artist || '')) {
+          console.log(`[tool:play_music] ${reqId} 同一首歌已由预检触发，跳过重复: ${args.song} - ${args.artist || ''}`);
           return { ok: true, skipped: true, message: `已找到「${args.song}」的播放源，等待卡片出现即可。` };
+        }
+        // 不同歌：重置历史状态，确保 runAssistJob 重新执行（避免前端看到旧 generating/done 残留）
+        if (existing && existing.status === 'done') {
+          console.log(`[tool:play_music] ${reqId} 历史残留 done 被新歌覆盖: "${existing.song || ''}" → "${args.song}"`);
         }
       }
       const musicSvc = require('../services/assists/music');

@@ -29,19 +29,13 @@ function getOrCreateActionRequirement(userId) {
   const project = ensureActionProject(userId);
   const key = `buddy_action_req:${userId || 'anonymous'}`;
 
-  // v0.100 (2026-08-18): 复用最近一个闲置容器 — 原来每次动作都新建 requirement，
-  //   累积 420+ 条「小吉即时动作」垃圾（占 requirements 89%），污染列表/统计/搜索
-  //   策略：buddy_memory 里 buddy_action_req 指向的容器若仍存在且闲置（system_record=1 + status='idea'）则复用
-  try {
-    const mem = collection('buddy_memory').findOne(m => m.user_id === (userId || 'anonymous') && m.key === key);
-    if (mem && mem.value) {
-      const existingId = JSON.parse(mem.value);
-      const existing = reqStore.getById(existingId);
-      if (existing && existing.system_record === 1 && existing.status === 'idea') {
-        return existing;
-      }
-    }
-  } catch (e) { /* 解析失败/容器不存在 → 走新建 */ }
+  // v0.101 (2026-08-19): 每次动作新建容器，不复用。
+  //   v0.100 复用闲置容器（buddy_action_req 指向的旧容器）导致前端卡片 id = ap-action-<reqId>
+  //   复用历史位置的卡片 DOM → 新动作内容渲染到聊天流上方旧卡片，不直观（多多反馈）。
+  //   现在：每次动作一个独立 requirement → 前端每次 append 新卡片到消息流底部（聊天向下）。
+  //   垃圾治理改用「容量清理」：每 user 保留最近 5 条小吉动作容器，更旧的删除（见 cleanupOldActionReqs）。
+  //   注意：不能复用旧容器还有一个原因——旧容器里 assist_music/assist_image 等字段是历史残留，
+  //   工具 handler 读到的状态永远滞后（如 play_music 历史 done 状态拦截新歌请求）。
 
   const requirement = reqStore.create({
     projectId: project.id,
@@ -57,7 +51,43 @@ function getOrCreateActionRequirement(userId) {
   const mem = collection('buddy_memory').findOne(m => m.user_id === (userId || 'anonymous') && m.key === key);
   if (mem) collection('buddy_memory').update(m => m.user_id === (userId || 'anonymous') && m.key === key, { value, updated_at: new Date().toISOString() });
   else collection('buddy_memory').insert({ user_id: userId || 'anonymous', key, value, updated_at: new Date().toISOString() });
+
+  cleanupOldActionReqs(userId, requirement.id);
   return reqStore.getById(requirement.id);
+}
+
+// v0.101: 容量清理 — 每 user 保留最近 MAX_KEEP 条小吉动作容器，更旧的删除。
+//   替代 v0.100 的「复用容器」策略：既防止 requirements 表被小吉动作垃圾占满，
+//   又保证每次动作有独立容器（前端卡片位置正确、工具状态无历史残留）。
+const MAX_KEEP_ACTION_REQS = 5;
+function cleanupOldActionReqs(userId, keepId) {
+  try {
+    const { collection } = require('../db/connection');
+    const all = collection('requirements').find(r =>
+      r.system_record === 1 && r.status === 'idea'
+      && (r.title || '').indexOf('小吉即时动作') === 0
+      && r.created_by === (userId || 'system')
+    );
+    // 按创建时间倒序，保留最近 MAX_KEEP 条（含刚新建的 keepId）
+    const sorted = all.slice().sort((a, b) => {
+      const ta = new Date(a.created_at || 0).getTime();
+      const tb = new Date(b.created_at || 0).getTime();
+      return tb - ta;
+    });
+    // 只清理「已经闲置超过 30 分钟」的旧容器：刚建的可能还在被前端轮询/工具异步写入
+    const now = Date.now();
+    const stale = sorted.slice(MAX_KEEP_ACTION_REQS).filter(r => {
+      if (r.id === keepId) return false;
+      const ageMs = now - new Date(r.created_at || 0).getTime();
+      return ageMs > 30 * 60 * 1000;
+    });
+    for (const r of stale) {
+      collection('requirements').remove(x => x.id === r.id);
+      console.log(`[agent-buddy-action] 清理旧动作容器 ${r.id} (user=${userId}, age=${Math.round((now - new Date(r.created_at || 0).getTime()) / 60000)}min)`);
+    }
+  } catch (e) {
+    console.warn('[agent-buddy-action] cleanupOldActionReqs 失败（可忽略）:', e.message);
+  }
 }
 
 function extractJson(text) {
@@ -237,9 +267,20 @@ ${officeEditHint}规则：
   return route;
 }
 
+// v1.0 (Phase 1-A): conversation 模式只留 L0 元工具，避免 LLM 面对 37 个工具乱选
+//   L0 元工具清单：get_my_profile(查自己) / buddy_memory_write(记偏好)
+//                  _expand_tools(主动扩载) / buddy_skill(查/加载技能)
+//   LLM 真要做事 → 主动调 _expand_tools 加载对应类别，或调 get_my_profile 查上下文
+//   治 trace 失败模式 80%：37 工具 + 首轮强制调 → LLM 乱选 → 装睡/stall
+const CONVERSATION_L0_TOOLS = ['get_my_profile', 'buddy_memory_write', '_expand_tools', 'buddy_skill'];
+
 function getActionToolNames(route, baseTools) {
   const tools = new Set(baseTools || []);
-  if (route.mode === 'conversational_action') {
+  if (route.mode === 'conversation') {
+    // v1.0: 闲聊模式清空 baseTools，只留元工具
+    tools.clear();
+    CONVERSATION_L0_TOOLS.forEach(n => tools.add(n));
+  } else if (route.mode === 'conversational_action') {
     // v0.73: 复合动作只给 plan_execute，清掉所有基础工具
     tools.clear();
     tools.add('plan_execute');

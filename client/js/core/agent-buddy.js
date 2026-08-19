@@ -539,8 +539,10 @@
     var container = document.querySelector('#ap-messages');
     if (!container) return;
     var id = 'ap-action-' + action.requirementId;
-    // v0.112 fix: 清掉其他 req 的 action cards，避免多次查询累积旧结果（保留同 req card 给 updateActionCard 复用）
-    container.querySelectorAll('.ap-action-card').forEach(function(c) { if (c.id !== id) c.remove(); });
+    // v0.101 fix: 每次动作一张独立卡片，追加到消息流底部（聊天向下）。
+    //   v0.112 旧逻辑「清掉其他 req 的卡片 + 复用同 req 卡片」依赖后端容器复用：
+    //   后端复用容器时 requirementId 不变 → 卡片永远更新历史位置那张 → 新内容渲染到上面（多多反馈）。
+    //   现在后端每次动作新建容器（requirementId 唯一）→ 这里直接 append 新卡片，历史卡片保留在上方作为聊天记录。
     var existing = document.getElementById(id);
     var card = existing || document.createElement('div');
     card.id = id;
@@ -1120,10 +1122,15 @@ function isNonPlanTerminal(state) {
       + progressHtml
       + '<div class="ap-action-steps">' + stepsHtml + '</div>' + imageHtml + musicHtml + imgSearchHtml + emailHtml + videoHtml
       + '<button class="ap-action-trace" data-action="toggle-trace">▼ 查看执行详情</button>'
-      + toolSummaryHtml;
-    // v0.112 fix: updateActionCard 内容更新后也滚到底（进度条更新 / 音乐完成 / 图片完成时让最新结果可见）
-    container.scrollTop = container.scrollHeight;
+      + toolSummaryHtml
       + '<div class="ap-action-trace-body" hidden>' + escHtml(JSON.stringify({ planStatus: state.planStatus, plan: plan, assistImage: img, assistMusic: music, assistEmail: email, assistVideo: video }, null, 2)) + '</div>';
+    // v0.112 fix: updateActionCard 内容更新后也滚到底（进度条更新 / 音乐完成 / 图片完成时让最新结果可见）
+    // v0.101.1 fix: container 未定义 bug —— v0.112 把滚动语句插在 innerHTML 拼接链中间，
+    //   导致 ①ReferenceError: container is not defined（updateActionCard 无此局部变量）
+    //   ②trace-body 被切出拼接链，执行详情按钮点开为空。
+    //   修复：滚动移到拼接链之后，用 card.closest 安全获取容器（兼容浮窗/主窗口双上下文 P88）。
+    var scrollContainer = card.closest('#ap-messages') || document.querySelector('#ap-messages');
+    if (scrollContainer) scrollContainer.scrollTop = scrollContainer.scrollHeight;
 
     var sendBtn = card.querySelector('[data-action="send-email"]');
     if (sendBtn) sendBtn.onclick = function(e) { e.stopPropagation(); sendActionEmail(card.dataset.requirementId, card, sendBtn); };
