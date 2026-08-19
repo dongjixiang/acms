@@ -922,7 +922,9 @@ function isNonPlanTerminal(state) {
     var plan = state.plan || {};
     var steps = Array.isArray(plan.steps) ? plan.steps : [];
     var mode = action && action.mode || 'conversational_action';
-    var summary = plan.summary || (mode === 'conversational_action' ? '小吉正在连续执行' : '小吉正在执行');
+    var summary = plan.summary
+      // v1.0 (Phase 9): 终态时 summary 显示"✅ 已完成"（治 single_action 卡片一直显示"小吉正在执行"）
+      || (isNonPlanTerminal(state) ? '✅ 动作已完成' : (mode === 'conversational_action' ? '小吉正在连续执行' : '小吉正在执行'));
 
     // 无 plan steps 时，检查 assistImage / assistImageSearch / assistMusic / assistEmail 独立状态（single_action 模式）
     var img = state && state.assistImage;
@@ -979,7 +981,14 @@ function isNonPlanTerminal(state) {
         + '<span class="ap-action-step-label">找歌</span>'
         + '<span class="ap-action-step-state">搜索中…</span></div>';
     } else {
-      stepsHtml = '<div class="ap-action-empty">正在准备动作…</div>';
+      // v1.0 (Phase 9): 区分终态与非终态 — 治 single_action (web_search/热点新闻) 卡片永远显示"正在准备动作…"
+      //   根因: planStatus='done' 但 plan={} 无 steps → 走 else → 无条件"正在准备动作…"
+      //   修复: planStatus='done' 或 plan.status='done' 时显示"✅ 已完成"
+      var _doneNoSteps = (state && state.planStatus === 'done')
+        || (state && state.plan && state.plan.status === 'done');
+      stepsHtml = _doneNoSteps
+        ? '<div class="ap-action-step ap-step-done"><span class="ap-action-step-icon">✓</span><span class="ap-action-step-label">动作</span><span class="ap-action-step-state">已完成</span></div>'
+        : '<div class="ap-action-empty">正在准备动作…</div>';
     }
 
     var planSteps = (state.plan && state.plan.steps || []);
