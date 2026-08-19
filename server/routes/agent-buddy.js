@@ -911,6 +911,16 @@ var buddyCtx = {
 
     // v0.66: 流式输出 — 当 query stream=1 时，reply 文本分块 SSE 推送，最后发 action JSON
     var isStream = req.query && req.query.stream === '1';
+    // v1.0 (Phase 9): 两个分支共用写 plan_status='done'
+    //   原代码只写在非 SSE else 分支 → SSE 聊天流（stream=1）永远不写 done
+    //   → 前端 action card 轮询看到 planStatus≠'done' → 永远显示"正在准备动作…"
+    //   治「帮我查热点新闻 single action 卡片永远正在准备」
+    if (actionRequirement) {
+      try {
+        const reqStore = require('../stores/requirement-store');
+        reqStore.update(actionRequirement.id, { plan_status: 'done' });
+      } catch (e) { /* 非关键，不阻断响应 */ }
+    }
     if (isStream) {
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
