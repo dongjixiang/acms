@@ -461,6 +461,13 @@ async function searchWeb(query, options = {}) {
   const cached = getSearchCache(query, maxResults);
   if (cached) {
     console.log(`[web-search] 缓存命中: "${query.slice(0, 50)}"`);
+    // v1.0 (Phase 11): 缓存命中也记录成功经验
+    //   根因: 15:24 深圳天气成功走缓存 → 没 recordSearchSuccess → 下次无法复用成功路径
+    try {
+      if (Array.isArray(cached.results) && cached.results.length > 0) {
+        successTracker.recordSearchSuccess(originalQuery, query, cached.source || 'cache', cached.results);
+      }
+    } catch (_) { /* 记录失败不影响返回 */ }
     return { ...cached, _cached: true };
   }
 

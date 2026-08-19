@@ -49,11 +49,22 @@ function _isToolIntentQuery(message, actionMode) {
 
 // v1.0 (Phase 1-B): 二次过滤成功经验 — hint 里 query 和当前 query 必须真重叠
 //   治根因: success-tracker 用 token 重叠度打分，闲聊和「天气」共享「天」字就误命中
+// v1.0 (Phase 11): 支持 search 类型 hint — 格式差异:
+//   fetch:  「query」→ 域名
+//   search: query（source）→ url   (无「」括号!)
+//   原正则 /「(.+?)」/ 只匹配 fetch,search 类型全部被滤掉 → 成功经验丢失
 function _hintRealOverlap(currentQuery, hintText) {
-  // hint 格式: 「原始 query」→ 域名
-  const m = hintText.match(/「(.+?)」/);
-  if (!m) return false;
-  const hintQuery = m[1];
+  let hintQuery = '';
+  // fetch 类型: 「query」→ domain
+  const fetchM = hintText.match(/「(.+?)」/);
+  if (fetchM) {
+    hintQuery = fetchM[1];
+  } else {
+    // search 类型: query（source）→ url
+    const searchM = hintText.match(/^(.+?)(?:（[^）]+）)→\s*\S+/);
+    if (searchM) hintQuery = searchM[1].trim();
+  }
+  if (!hintQuery) return false;
   const a = new Set(_extractKeywords(currentQuery));
   const b = new Set(_extractKeywords(hintQuery));
   let overlap = 0;
