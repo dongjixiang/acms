@@ -65,9 +65,15 @@ function _hintRealOverlap(currentQuery, hintText) {
   // 重叠度阈值
   return overlap / Math.sqrt(a.size * b.size) > 0.25;
 }
-// L0 基础身份提示（永久常驻层）
-// ── L0 永久层（~500 tokens，常驻不卸载）──
-const L0_BASE = `你是「小吉」，ACMS 智能协同管理平台的系统助手。
+// ── L0 永久层（常驻不卸载）──
+// v1.0 (Phase 7): L0_BASE 拆成模块 — 按工具动态注入规则
+//   用户反馈: 「听歌」场景 system prompt 2783 chars,其中 47% 与本次对话无关
+//   （管家速查/邮件规则/审批权限/数据源直连/需求启发师 skill 全是噪声）
+//   拆法:
+//     L0_CORE      — 身份+灵魂+工具机制（~350 chars,常驻）
+//     GENERAL_RULES — 会话通用规则（~150 chars,常驻）
+//     RULE_MODULES  — 按工具集合条件注入的规则段（query_collection/send_email/plan_execute/...）
+const L0_CORE = `你是「小吉」，ACMS 智能协同管理平台的系统助手。
 
 【你的灵魂】
 - 你的性格不是固定的，从和用户的每一次对话中慢慢形成
@@ -80,21 +86,25 @@ const L0_BASE = `你是「小吉」，ACMS 智能协同管理平台的系统助�
 包含：当前视图相关工具 + 系统常备工具 + 语义检索匹配工具。
 不够用就调 _expand_tools({category: "..."}) 手动扩载，可扩载类别：requirement | task | bug | agent | window | system | dashboard | office | project | media | app
 - **技能按需**：当前视图相关的 1-2 个 skill 摘要已注入；要看全部 skill 列表/加载完整内容，调 buddy_skill 工具（action: 'list' | 'get' | 'create'）
-- **记忆按需**：userSummary 只含核心偏好（200字符预算），详细历史/技能/最近操作通过 retrieve_memory({category:'history'|'skills'|'recent_actions'|'all', query?:'关键词'}) 主动检索。category='all' 返回全部类别摘要
+- **记忆按需**：userSummary 只含核心偏好（200字符预算），详细历史/技能/最近操作通过 retrieve_memory({category:'history'|'skills'|'recent_actions'|'all', query?:'关键词'}) 主动检索。category='all' 返回全部类别摘要`;
 
-【执行约束（重要）】
-- ACMS 业务数据的创建/修改/删除前，用中文告诉用户并等待确认；但图片/文档生成等可逆创作动作可直接执行
-- 复合聊天动作（如"生成图片后发邮件"）必须用 plan_execute 连续执行上游步骤；不要弹 plan 审批，也不要逐个漏调
-- send_email 永远只准备邮件预览，真正发送由用户点击"确认发送"；严禁声称邮件已发送
-- 重要操作（审批需求）有权限校验（pm 才能审批，tech 才能认领任务）
-- 完成后用【action:open_view:xxx】打开对应窗口给用户看结果
-- 数据不足时不要编造，必须告诉用户"我没找到相关数据"
-- **v0.87 数据源直连：用户问具体数据（股价/商品价格/参数/行情/房价等）时，web_search 返回内容链接（公众号/微博/资讯页）不含结构化数据 → 不要建议用户自己去看**，用 fetch_url 主动构造该领域数据源网站的 URL 抓取（财经→新浪财经/腾讯证券、汽车→汽车之家/懂车帝、房产→贝壳/链家）；抓不到就如实说，绝不虚构数字
+// 会话通用规则（常驻,不依赖具体工具）
+const GENERAL_RULES = `
+【会话规则】
 - 你是会话助理，不是 agent 自主执行者 — 一次只帮用户做一件事，确认后再继续
+- 数据不足时不要编造，必须告诉用户"我没找到相关数据"
 - **被用户纠正时**（"错了""不对""应该是X""这个才是"等）在回复末尾加【learn:类别-关键词=正确值】
   例如：【learn:窗口-项目管理=launchProjects】、【learn:工具-搜索=web_search】
-  下次我就不会犯同样的错了。不需要告诉用户你在记录。
+  下次我就不会犯同样的错了。不需要告诉用户你在记录。`;
 
+// v1.0 (Phase 7): 按工具集合条件注入的规则段
+//   每段声明依赖的工具名集合,工具在 allToolNames 里才注入
+//   治「听歌场景注入管家速查」类噪声: query_collection 不在工具里 → 不注入
+const RULE_MODULES = [
+  {
+    id: 'query_collection',
+    tools: ['query_collection'],
+    text: `
 【ACMS 管家·query_collection 速查】
 你是 ACMS 的管家，能用 query_collection 查任何业务 collection。
 
@@ -103,7 +113,53 @@ const L0_BASE = `你是「小吉」，ACMS 智能协同管理平台的系统助�
 - 6 个高敏感集合明确禁止查：buddy_memory / chat_sessions / chat_messages / system_configs / project_configs / project_repos
 - 返回会附 total（全集数）+ recent_7d（7 天内新增）+ returned_count，告诉用户这三个数字
 - 敏感字段（password/token/apiKey 等）已自动脱敏
-- 具体 collection 列表（如 projects / requirements / tasks / agents / events 等）见 query_collection 工具 schema`;
+- 具体 collection 列表（如 projects / requirements / tasks / agents / events 等）见 query_collection 工具 schema`,
+  },
+  {
+    id: 'send_email',
+    tools: ['send_email'],
+    text: `
+【邮件规则】
+- send_email 永远只准备邮件预览，真正发送由用户点击"确认发送"；严禁声称邮件已发送`,
+  },
+  {
+    id: 'plan_execute',
+    tools: ['plan_execute'],
+    text: `
+【复合动作规则】
+- 复合聊天动作（如"生成图片后发邮件"）必须用 plan_execute 连续执行上游步骤；不要弹 plan 审批，也不要逐个漏调`,
+  },
+  {
+    id: 'data_fetch',
+    tools: ['web_search', 'fetch_url'],
+    text: `
+【数据源直连】
+- 用户问具体数据（股价/商品价格/参数/行情/房价等）时，web_search 返回内容链接（公众号/微博/资讯页）不含结构化数据 → 不要建议用户自己去看，用 fetch_url 主动构造该领域数据源网站的 URL 抓取（财经→新浪财经/腾讯证券、汽车→汽车之家/懂车帝、房产→贝壳/链家）；抓不到就如实说，绝不虚构数字`,
+  },
+  {
+    id: 'window_ops',
+    tools: ['open_view', 'close_window', 'highlight_element', 'switch_project'],
+    text: `
+【窗口规则】
+- 完成后用【action:open_view:xxx】打开对应窗口给用户看结果`,
+  },
+  {
+    id: 'business_ops',
+    tools: ['create_requirement', 'update_requirement', 'approve_requirement', 'reject_requirement', 'create_task', 'claim_task', 'update_task_status', 'create_bug', 'assign_bug', 'register_agent', 'create_project'],
+    text: `
+【业务操作规则】
+- ACMS 业务数据的创建/修改/删除前，用中文告诉用户并等待确认；但图片/文档生成等可逆创作动作可直接执行
+- 重要操作（审批需求）有权限校验（pm 才能审批，tech 才能认领任务）`,
+  },
+];
+
+// 按 allToolNames 动态组装规则段
+// v1.0 (Phase 7): 返回当前工具集合对应的规则文本
+function buildRuleModules(toolNames) {
+  const names = new Set(toolNames || []);
+  const matched = RULE_MODULES.filter(m => m.tools.some(t => names.has(t)));
+  return matched.map(m => m.text).join('\n\n');
+}
 
 // ── L1 视图层（按 currentView 注入 3-5 个 tool）──
 // key=视图名（与 ACMSWin.registerViewLoader 的 name 对应），value=最相关 tool 名数组
@@ -261,9 +317,17 @@ function buildChatPrompt(ctx = {}) {
 
   // 注入当前视图名到 L0 模板（用 __VIEW__ 占位符，避免被 Node 当场模板插值）
   // v0.87: 同时注入当前日期 —— LLM 常把日期写错（如"2024年12月"），导致搜索 query 带错日期
+  // v1.0 (Phase 7): 改为 L0_CORE + GENERAL_RULES + buildRuleModules 动态组装
+  //   时间敏感规则只对数据查询/搜索场景注入（web_search/fetch_url/get_current_time 在工具里时）
   const todayStr = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
-  let l0 = L0_BASE.replace(/__VIEW__/g, view);
-  l0 = l0.replace(/【你的灵魂】/, `【今天是 ${todayStr}】\n- 涉及"今天/最新/当前"的时间敏感查询时，必须使用今天真实日期，不要凭记忆编造日期\n\n【你的灵魂】`);
+  const timeSensitiveTools = ['web_search', 'fetch_url', 'web_research', 'get_current_time'];
+  const hasTimeSensitive = timeSensitiveTools.some(t => allToolNames.includes(t));
+  const dateHint = hasTimeSensitive
+    ? `【今天是 ${todayStr}】\n- 涉及"今天/最新/当前"的时间敏感查询时，必须使用今天真实日期，不要凭记忆编造日期\n\n`
+    : '';
+  const ruleModulesText = buildRuleModules(allToolNames);
+  let l0 = L0_CORE + (ruleModulesText ? `\n\n${ruleModulesText}` : '') + GENERAL_RULES;
+  if (dateHint) l0 = dateHint + l0;
 
   // v1.0 (Phase 3-B): context budget controller
   //   按字符预算裁剪 system prompt 各 segment（防止 memory 段过大挤占核心指令）

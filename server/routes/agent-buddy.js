@@ -711,11 +711,42 @@ var buddyCtx = {
     // 4. 构建 messages（含对话历史）
     // v0.79: 过滤掉空 content 的 user/buddy 历史消息 — 上游 OpenAI 严格模式把空 user 视为不存在
     //   Agnes AI 等代理报 "No user query found in messages" 即此原因
+    // v1.0 (Phase 8): 历史分层注入（借鉴 Hermes working/session/long-term 三层记忆）
+    //   治「你好啊带 3 组历史」: history 全量注入 → 只保留最近 3 组
+    //   更早历史: 命中 isSummaryRelevant 时注入 chatSummary 摘要为一条 assistant 消息
+    //   跨会话: buildHistoryContextHint 检索相关片段注入（不占 userSummary 预算）
     var messages = [
       { role: 'system', content: systemPrompt }
     ];
+
+    // v1.0 (Phase 8): 更早历史摘要注入（session rollup）
+    //   只在前端历史超限时才补: history 条数 > MAX_HISTORY_MESSAGES 时,
+    //   且 chatSummary 与当前消息相关 → 注入摘要
     var history = context.history || [];
-    history.forEach(function(h) {
+    const MAX_HISTORY_MESSAGES = 6;  // 最多保留最近 6 条（3 组 user/buddy）
+    const historyOverflow = history.length > MAX_HISTORY_MESSAGES;
+    if (historyOverflow) {
+      try {
+        if (chatSummary && chatSummary.text && isSummaryRelevant(message, chatSummary)) {
+          messages.push({
+            role: 'assistant',
+            content: '[更早对话摘要] ' + String(chatSummary.text).slice(0, 300),
+          });
+        }
+      } catch (e) { /* 摘要不可用忽略 */ }
+    }
+    // v1.0 (Phase 8): 跨会话检索注入（long-term retrieval）
+    //   当前消息命中历史对话关键词 → 注入相关片段（参考 Hermes session_search）
+    try {
+      var histCtxHint = buildHistoryContextHint(message, userId);
+      if (histCtxHint && historyOverflow) {
+        messages.push({ role: 'assistant', content: '[历史相关片段] ' + histCtxHint.slice(0, 300) });
+      }
+    } catch (e) { /* 检索不可用忽略 */ }
+
+    // v1.0 (Phase 8): 只保留最近 MAX_HISTORY_MESSAGES 条历史（working memory）
+    var recentHistory = historyOverflow ? history.slice(-MAX_HISTORY_MESSAGES) : history;
+    recentHistory.forEach(function(h) {
       var text = (h && h.text != null) ? String(h.text) : '';
       if (!text.trim()) return;  // 跳过空消息
       if (h.role === 'user') {
