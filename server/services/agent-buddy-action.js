@@ -147,7 +147,9 @@ async function routeMessage(modelId, message, history = [], ctx = {}) {
 - 能力枚举：image_generation、image_search、music_playback、email_draft、email_send、web_search、web_research、document_generation、project_create、create_task、web_fetch、code_execution、video_generation、office_edit、office_open、view_navigation、window_control。
 ${officeEditHint}规则：
 - 纯问答/查询 ACMS 数据/闲聊 → conversation。
-- 一个明确工具动作 → single_action。
+  - **v1.0 (P5) 闲聊识别强化**: 含「你/小吉 + 疑问词」(如「你明天有啥打算」「小吉你干啥呢」「你最喜欢啥」「你是谁」「你能干啥」)的 query → **必 conversation**,不要猜工具意图。主语是"你/小吉"且问 AI 自己的偏好/状态/计划 = 闲聊。
+  - **例外**: 「你帮...」+ 明确动词（找/搜/听/生成/打开...）是真实工具意图,不算闲聊。
+  - 一个明确工具动作 → single_action。
 - 两个及以上有依赖的动作（如生成图片后发邮件）→ conversational_action。
 - send email 是外部副作用，必须包含 email_draft + email_send，requires_confirmation=true。
 - 用户描述简短但动作明确时照常分类，不要因为缺少主题、数量等默认参数判无法理解。
@@ -167,10 +169,30 @@ ${officeEditHint}规则：
   ], { maxTokens: 350, temperature: 0, caller: 'agent-buddy-action-router' });
   const content = typeof result === 'string' ? result : (result && result.content) || '';
   const route = normalizeRoute(extractJson(content));
+// v1.0 (Phase 5-B): 闲聊兜底关键词拦截 — 含「你/小吉 + 疑问词」的 query 强降级 conversation
+  //   治「你明天有啥打算」「小吉你干啥呢」「你最喜欢啥」类被 router 误判成工具动作
+  //   允许中间插入最多 5 个字 (如「你最喜欢」「你明天想去」「你想听」)
+  //   注意: 「你想听...」「你帮我...」是真实意图,不算闲聊 — 加 ! 你想/帮我 否定
+  const chatRe = /(?:你|小吉)\s*.{0,5}?(?:有啥|有[什么啥]|干什么|干嘛|干啥|咋了|咋|怎么|为什么|喜欢|觉得|会|能|是.*吗|是啥|是谁)/;
+  // 例外: 「你想听...」「你帮我...」是真实工具意图
+  const notChatRe = /你.*帮.*(找|搜|查|听|做|打开|生成|画|写|改|创建)|你.*想.*(听|看|搜|找|生成)/;
+  if (chatRe.test(message) && !notChatRe.test(message) && route.mode !== 'conversation') {
+    console.log(`[agent-buddy-action] 闲聊兜底命中: "${message.slice(0, 30)}..." → 降级 conversation`);
+    route.mode = 'conversation';
+    route.capabilities = [];
+    route.confidence = 0.9;
+  }
   // v0.66: 关键词前置拦截 — 不管路由器 LLM 怎么分类，看到"找图片"就强制 image_search
-  const searchImgRe = /找图片|搜图片|查图片|找一张.*图|搜一张.*图/;
-  if (searchImgRe.test(message) && route.mode !== 'conversation') {
-    route.capabilities = ['image_search'];
+  // v1.0 (Phase 5-A): 扩展正则覆盖「找...图片」「找美女图片」「搜点图」等松散表达
+  //   必须含"图/图片/照片/壁纸/头像/海报"等图片关键词,避免误命中闲聊
+  const searchImgRe = /找.*图|搜.*图|找.*图片|搜.*图片|找.*照片|搜.*照片|找.*壁纸|搜.*壁纸|找.*头像|搜.*头像|找.*海报|搜.*海报|查.*图|查.*图片|图片.*搜索|搜[些点张]\s*图/i;
+  if (searchImgRe.test(message)) {
+    if (route.mode === 'conversation') {
+      route.mode = 'single_action';
+      route.confidence = 0.85;
+    }
+    if (!route.capabilities.includes('image_search')) route.capabilities.push('image_search');
+    if (!route.capabilities.includes('web_search')) route.capabilities.push('web_search');
     console.log('[agent-buddy-action] 关键词命中 image_search, 强制覆盖路由');
   }
   // v0.76: 关键词前置拦截 — 不管路由器 LLM 怎么分类，看到"创建项目/新建项目"就强制 project_create
@@ -403,8 +425,12 @@ function buildActionPrompt(route) {
 - send_email 只创建 pending_send_email 预览，不会真正发送；必须等待用户确认后才发送，严禁声称"邮件已发送"。` + STALL_HARD_CONSTRAINTS + `
 `;
   }
-  return shared + `
-【单一动作】必须调用对应工具一次。若是 send_email，工具只准备预览并等待确认，严禁声称已发送。` + STALL_HARD_CONSTRAINTS + `
+return shared + `
+【单一动作】必须调用对应工具一次。若是 send_email，工具只准备预览并等待确认，严禁声称已发送。` + STALL_HARD_CONSTRAINTS + (route.capabilities.includes('image_search')
+    ? `
+
+【图片搜索】image_search capability 调 web_search 时**必须传 image_search=true 参数**（直接走百度图片搜索，返回图片结果），不要走文字 web_search。示例：web_search({query: "用户原话里的图片关键词", image_search: true, max_results: 9})。`
+    : '') + `
 `;
 }
 
