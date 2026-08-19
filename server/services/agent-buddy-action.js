@@ -292,9 +292,11 @@ ${officeEditHint}规则：
 // v1.0 (Phase 1-A): conversation 模式只留 L0 元工具，避免 LLM 面对 37 个工具乱选
 //   L0 元工具清单：get_my_profile(查自己) / buddy_memory_write(记偏好)
 //                  _expand_tools(主动扩载) / buddy_skill(查/加载技能)
+//                  retrieve_memory(查长期记忆: 用户偏好/历史/技能/最近操作)
+// v1.0 (Phase 3-A): + retrieve_memory (Memory retrieve 化)
 //   LLM 真要做事 → 主动调 _expand_tools 加载对应类别，或调 get_my_profile 查上下文
 //   治 trace 失败模式 80%：37 工具 + 首轮强制调 → LLM 乱选 → 装睡/stall
-const CONVERSATION_L0_TOOLS = ['get_my_profile', 'buddy_memory_write', '_expand_tools', 'buddy_skill'];
+const CONVERSATION_L0_TOOLS = ['get_my_profile', 'buddy_memory_write', '_expand_tools', 'buddy_skill', 'retrieve_memory'];
 
 function getActionToolNames(route, baseTools) {
   const tools = new Set(baseTools || []);

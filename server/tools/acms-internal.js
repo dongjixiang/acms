@@ -1605,3 +1605,97 @@ registerTool({
     };
   }
 });
+
+// v1.0 (Phase 3-A): retrieve_memory 工具 — Memory 段 retrieve 化
+//   把 system prompt 里无差别注入的 userSummary/历史对话/agent events 改成 LLM 主动调
+//   借鉴 Hermes 分层记忆：working / session / long-term / cross-session
+//   - preferences: 用户偏好 (user_profile)
+//   - history:     相关历史对话 (chat_sessions)
+//   - skills:      已学技能 (buddy_skills)
+//   - recent_actions: 最近操作 (system_events 或 user_actions)
+//   - all:         全部 categories
+registerTool({
+  name: 'retrieve_memory',
+  description: '【记忆检索·L0 元工具】按 category 检索小吉的长期记忆。' +
+    'system prompt 不再无差别注入详细记忆（节省 token），需要时主动调本工具。' +
+    'categories: preferences(用户偏好) | history(相关历史对话) | skills(已学技能) | recent_actions(最近操作) | all(全部)。' +
+    '返回 markdown 格式摘要，> 500 字符会自动截断。',
+  parameters: {
+    type: 'object',
+    properties: {
+      category: { type: 'string', enum: ['preferences', 'history', 'skills', 'recent_actions', 'all'], description: '记忆类别' },
+      query: { type: 'string', description: '可选关键词,只返回与 query 相关的条目 (history 类支持)' },
+    },
+    required: ['category']
+  },
+  async handler(args, ctx) {
+    const u = getCtxUser(ctx);
+    const userId = u ? (u.id || u.userId) : null;
+    if (!userId) return { ok: false, error: 'NO_USER', message: '未登录' };
+    const category = String(args.category || 'all');
+    const query = String(args.query || '').trim();
+
+    const sections = [];
+
+    // preferences
+    if (category === 'preferences' || category === 'all') {
+      try {
+        const profiles = memRead(userId, 'user_profile');
+        if (Array.isArray(profiles) && profiles.length > 0) {
+          const lines = profiles.slice(0, 30).map(p => '- ' + p.key + ' → ' + p.value);
+          sections.push('## 用户偏好\n' + lines.join('\n'));
+        }
+      } catch (_) {}
+    }
+
+    // skills
+    if (category === 'skills' || category === 'all') {
+      try {
+        const skills = memRead(userId, 'buddy_skills');
+        if (Array.isArray(skills) && skills.length > 0) {
+          const lines = skills.slice(0, 20).map(s => '- ' + s.name + ': ' + (s.description || '').slice(0, 80));
+          sections.push('## 已学技能\n' + lines.join('\n'));
+        }
+      } catch (_) {}
+    }
+
+    // recent_actions
+    if (category === 'recent_actions' || category === 'all') {
+      try {
+        const recent = memRead(userId, 'recent_actions');
+        if (Array.isArray(recent) && recent.length > 0) {
+          const lines = recent.slice(0, 10).map(a => '- ' + a.action + ' (' + (a.ts || '') + ')');
+          sections.push('## 最近操作\n' + lines.join('\n'));
+        }
+      } catch (_) {}
+    }
+
+    // history (相关历史对话)
+    if (category === 'history' || category === 'all') {
+      try {
+        const { collection } = require('../db/connection');
+        const sessions = collection('chat_sessions').chain()
+          .find({ user_id: userId })
+          .limit(20)
+          .data();
+        const matched = query
+          ? sessions.filter(s => JSON.stringify(s).toLowerCase().includes(query.toLowerCase())).slice(0, 5)
+          : sessions.slice(0, 3);
+        if (matched.length > 0) {
+          const lines = matched.map(s => '- ' + (s.created_at || '').slice(0, 16) + ' ' + (s.title || s.summary || '').slice(0, 80));
+          sections.push('## 相关历史对话' + (query ? ' (匹配 "' + query + '")' : '') + '\n' + lines.join('\n'));
+        }
+      } catch (_) {}
+    }
+
+    if (sections.length === 0) {
+      return { ok: true, category, content: '(无相关记忆)' };
+    }
+
+    let content = sections.join('\n\n');
+    const truncated = content.length > 500;
+    if (truncated) content = content.slice(0, 500) + '\n…(已截断, 用 query 参数精确定位)';
+
+    return { ok: true, category, content, truncated };
+  }
+});

@@ -80,6 +80,7 @@ const L0_BASE = `你是「小吉」，ACMS 智能协同管理平台的系统助�
 包含：当前视图相关工具 + 系统常备工具 + 语义检索匹配工具。
 不够用就调 _expand_tools({category: "..."}) 手动扩载，可扩载类别：requirement | task | bug | agent | window | system | dashboard | office | project | media | app
 - **技能按需**：当前视图相关的 1-2 个 skill 摘要已注入；要看全部 skill 列表/加载完整内容，调 buddy_skill 工具（action: 'list' | 'get' | 'create'）
+- **记忆按需**：userSummary 只含核心偏好（200字符预算），详细历史/技能/最近操作通过 retrieve_memory({category:'history'|'skills'|'recent_actions'|'all', query?:'关键词'}) 主动检索。category='all' 返回全部类别摘要
 
 【执行约束（重要）】
 - ACMS 业务数据的创建/修改/删除前，用中文告诉用户并等待确认；但图片/文档生成等可逆创作动作可直接执行
@@ -125,7 +126,9 @@ const VIEW_TOOLS = {
 // L0 常驻工具（最小集：最常用的 8 个，其他由 retriever 自动匹配）
 // v0.105: + buddy_memory_write（Phase B Agent 自主记忆）
 // v0.108: + buddy_skill（Phase E 运行时技能）
-const L0_TOOLS = ['open_view', 'query_collection', 'web_search', 'fetch_url', 'send_email', '_expand_tools', 'buddy_memory_write', 'buddy_skill'];
+// v1.0 (Phase 3-A): + retrieve_memory（Memory 段 retrieve 化）
+//   完整记忆不再无差别注入,LLM 主动调 retrieve_memory 读
+const L0_TOOLS = ['open_view', 'query_collection', 'web_search', 'fetch_url', 'send_email', '_expand_tools', 'buddy_memory_write', 'buddy_skill', 'retrieve_memory'];
 
 // ── L2 扩载层（按 LLM 主动 _expand_tools({category}) 触发）──
 const CATEGORY_TOOLS = {
@@ -260,8 +263,30 @@ function buildChatPrompt(ctx = {}) {
   let l0 = L0_BASE.replace(/__VIEW__/g, view);
   l0 = l0.replace(/【你的灵魂】/, `【今天是 ${todayStr}】\n- 涉及"今天/最新/当前"的时间敏感查询时，必须使用今天真实日期，不要凭记忆编造日期\n\n【你的灵魂】`);
 
+  // v1.0 (Phase 3-B): context budget controller
+  //   按字符预算裁剪 system prompt 各 segment（防止 memory 段过大挤占核心指令）
+  //   优先级: l0/tools > userSummary > personalityHint > skillHint > successHint > agentEvents
+  //   每段独立预算,超预算截断,输出 [truncated] 提示
+  const BUDGETS = {
+    userSummary: 200,   // 用户偏好 + userSummary（已独立预算）
+    personalityHint: 150,
+    skillHint: 250,
+    successHint: 200,
+    agentEvents: 200,
+  };
+  function _budgetCut(label, text, budget) {
+    if (!text || text.length <= budget) return text;
+    const truncated = text.length - budget;
+    return text.slice(0, budget) + `\n[...${label} 截断 ${truncated} 字符, 详细调 retrieve_memory]`;
+  }
+  const userSummaryFinal = _budgetCut('userSummary', userSummary, BUDGETS.userSummary);
+  const personalityHintFinal = _budgetCut('personalityHint', personalityHint, BUDGETS.personalityHint);
+  const skillHintFinal = _budgetCut('skillHint', skillHint, BUDGETS.skillHint);
+  const successHintFinal = _budgetCut('successHint', successHint, BUDGETS.successHint);
+  const agentEventsFinal = _budgetCut('agentEvents', agentEvents, BUDGETS.agentEvents);
+
   // B2 优化：详细 schema 已通过 body.tools 传给 LLM API；system prompt 只列工具白名单 + 短简介
-  return `${l0}${userSummary}${agentEvents}${viewHint}${personalityHint}${skillHint}${successHint}\n\n【你当前可用的工具（共 ${allToolNames.length} 个）— 详细 schema 在 API 层 body.tools 里】\n${toolIndex || '(暂无工具，可调 _expand_tools({category: "..."}) 加载)'}`;
+  return `${l0}${userSummaryFinal}${agentEventsFinal}${viewHint}${personalityHintFinal}${skillHintFinal}${successHintFinal}\n\n【你当前可用的工具（共 ${allToolNames.length} 个）— 详细 schema 在 API 层 body.tools 里】\n${toolIndex || '(暂无工具，可调 _expand_tools({category: "..."}) 加载)'}`;
 }
 
 /**

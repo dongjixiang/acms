@@ -623,6 +623,10 @@ var buddyCtx = {
       // v0.102: Memory 注入预算——总长上限 500 字符（超出截断，防止噪音膨胀挤占工具上下文）
       // v0.104: 容量 header（参考 Hermes）——让 LLM 看到记忆余量百分比，主动策展合并
       // v0.105: Phase B — 注入小吉自主记录的用户偏好（user_profile，优先级最高防截断）
+      // v1.0 (Phase 3-A): Memory 段 retrieve 化 — 不再无差别注入详细记忆
+      //   profileHint 仍注入（核心偏好，最高优先）但总长预算收紧到 200 字符
+      //   historyHint / agent events / buildHistoryContextHint / buildSkillHint 改成指针
+      //   LLM 需要时调 retrieve_memory({category:'history'|'skills'}) 读详细
       userSummary: (function() {
         var profileHint = '';
         if (userId) {
@@ -633,15 +637,17 @@ var buddyCtx = {
             }
           } catch (e) { profileHint = ''; }
         }
-        var raw = profileHint + buildUserSummary(context) + actionHint + learnHint + historyHint
-          + buildHistoryContextHint(message, userId)   // v0.106: Phase C 历史对话检索
-          + buildSkillHint(message, userId);           // v0.108: Phase E 技能按需注入
+        // v1.0: Phase 3-A 简化 — 只注入 profileHint + 简短 userSummary
+        //   historyHint / agentEvents / buildHistoryContextHint / buildSkillHint 不再注入
+        //   改为：LLM 主动调 retrieve_memory({category:'history'|'skills'|'recent_actions'}) 读
+        var raw = profileHint + buildUserSummary(context);
         if (!raw) return '';
         var truncated = 0;
-        if (raw.length > 500) { truncated = raw.length - 500; raw = raw.slice(0, 500) + '…'; }
-        var pct = Math.min(100, Math.round(raw.length / 500 * 100));
-        // v0.107: 截断可见——LLM 知道有内容被预算截掉，主动要求时可用工具读全量
-        return '[Memory ' + pct + '% — ' + raw.length + '/500 chars' + (truncated > 0 ? '，截断 ' + truncated + ' 字符' : '') + '] ' + raw;
+        // v1.0: 收紧到 200 字符预算（从 500 降到 200，让 system prompt 更轻）
+        var BUDGET = 200;
+        if (raw.length > BUDGET) { truncated = raw.length - BUDGET; raw = raw.slice(0, BUDGET) + '…'; }
+        var pct = Math.min(100, Math.round(raw.length / BUDGET * 100));
+        return '[Memory ' + pct + '% — ' + raw.length + '/' + BUDGET + ' chars' + (truncated > 0 ? '，截断 ' + truncated + ' 字符,详细调 retrieve_memory' : '') + '] ' + raw;
       })(),
       personality: context.personality || '',
       // P2: 注入近期 Agent 事件
