@@ -229,7 +229,7 @@
         _openBtn.disabled = false;
       }
     });
-  });
+  }
 
   // ── ACMS 补丁 (v0.97.2)：前端补全 Excel 保存链路 ──────────────────────────────
   // 背景：GenOffice sheets-ui bundle 自身不暴露 saveXlsx；内部 desktopApi.saveWorkbookEdits
@@ -363,7 +363,6 @@
     notifyDirtyToParent();
   };
   console.info('[sheets-host] v0.97.2 save-as-xlsx 补丁已装载（另存新文件）');
-}
 
 // 让外部（bridge / 上层）可以更新顶部文件名显示
   window.__setFileNameLabel = setFileNameLabel;
