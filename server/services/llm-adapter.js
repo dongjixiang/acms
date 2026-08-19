@@ -730,6 +730,10 @@ async function runToolLoop(modelId, messages, options = {}) {
   //   空 content 注入重试提示最多 1 次（连续 2 次空直接放弃，避免死循环浪费轮次）
   let _emptyContentCount = 0;
 
+  // v1.0 (Phase 6-B): 异步任务感知标记 — 注入[异步任务已提交]后,下轮 LLM 只需简短确认
+  //   配合 P6-A: 降 max_tokens 到 300, 加速 LLM 响应
+  let _asyncShortOutput = false;
+
   // P159: 上下文压缩抽到独立文件(借鉴 Hermes agent/context_compressor.py)
   //   4 个改进点:① 前置剪枝(pruneToolOutputs)不调 LLM ② token-based 触发 ③ 结构化 summary 模板
   //   ④ 失败冷却 10 分钟(避免反复重试失败摘要)
@@ -923,7 +927,12 @@ async function runToolLoop(modelId, messages, options = {}) {
     // v0.101: 记录本轮发送给 LLM 的完整 messages 快照（压缩/预算注入之后 = 真实发送内容）
     const _llmT0 = Date.now();
     if (trace) trace.beginRound(round + 1, _getTraceSvc().cloneMessages(messages));
-    const result = await callLLMWithTools(modelId, messages, { ...options, toolNames });
+    // v1.0 (Phase 6-B): 异步任务提示后降 max_tokens — 只需简短确认,不需要 4000 token
+    //   治「程响的可能等 116 秒」: 注入[异步任务已提交]后,LLM 只需输出 10-20 字确认
+    const _llmOptions = (_asyncShortOutput && (options.maxTokens || 0) > 300)
+      ? { ...options, maxTokens: 300 }
+      : options;
+    const result = await callLLMWithTools(modelId, messages, { ..._llmOptions, toolNames });
     // v0.31 fix: dump LLM 完整 response
     const content = typeof result.content === 'string' ? result.content : '';
     console.log(`[runToolLoop] LLM_RESP#${round + 1} content_len=${content.length} finish_reason=${result.finishReason || 'n/a'} tool_calls=${result.toolCalls?.length || 0}`);
@@ -1210,6 +1219,36 @@ Round ${round + 1}/${maxRounds}。
         }
       }
     } catch (e) { /* plan 检测失败不应影响主流程 */ }
+
+    // v1.0 (Phase 6-A): 异步任务感知 — 通用 reqId 检测
+    //   治「程响的可能等 116 秒」: play_music 返回 reqId 后,LLM 不知道卡片何时回来,
+    //   继续等/继续调 → 用户等很久
+    //   检测: 工具结果含 reqId + ok===true + 异步提示词 → 注入 user msg 让 LLM 知道
+    //   「卡片会自动显示,只需简短确认,不要继续调工具/等结果」
+    try {
+      const asyncKeywords = ['正在为你', '正在生成', '正在找', '正在准备', '预计', '等待', '已提交', '正在处理', '正在创建'];
+      const lastToolMsgs2 = messages.slice(-Math.max(parallelCalls.length + serialCalls.length, 1));
+      for (const m of lastToolMsgs2) {
+        if (m && m.role === 'tool' && typeof m.content === 'string') {
+          let parsed = null;
+          try { parsed = JSON.parse(m.content); } catch (_) {}
+          if (parsed && parsed.ok === true && parsed.reqId) {
+            const msgText = String(parsed.message || '');
+            const isAsync = asyncKeywords.some(k => msgText.includes(k));
+            if (isAsync) {
+              console.log(`[runToolLoop] v1.0 异步任务已提交: reqId=${parsed.reqId}, 注入简短确认提示`);
+              if (trace) trace.addNote(round + 1, 'async_submitted', `reqId=${parsed.reqId}`);
+              _asyncShortOutput = true;  // v1.0 (Phase 6-B): 下轮 LLM 只需简短确认
+              messages.push({
+                role: 'user',
+                content: `[异步任务已提交] 工具已启动后台任务 (reqId=${parsed.reqId})，结果卡片会自动显示给用户。你（LLM）**只需简短确认**（10-20字，如"好的，正在为你处理"），**不要继续调工具**，也不要等结果或再次调用相同工具。直接输出简短确认即可。`,
+              });
+              break;
+            }
+          }
+        }
+      }
+    } catch (e) { /* 异步检测失败不应影响主流程 */ }
 
   }
   console.error(`[runToolLoop] Tool loop exceeded max rounds (${maxRounds}). 完整 tool call history (${toolCallHistory.length} 条):\n${toolCallHistory.map(h => `  r${h.round} ${h.tool}(${(h.args||'').slice(0, 80)}) → ${h.resultPreview ? h.resultPreview.slice(0, 80) : (h.result || h.error || '?')}`).join('\n')}`);
