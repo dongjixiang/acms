@@ -113,8 +113,13 @@ async function collectWithPriority(promises, priorityIdx, extraWaitMs, timeoutMs
   }
 
   // 阶段2: 不够 → 等所有源都结束，合并全部
-  console.log(`[web-search] collectWithPriority 阶段1 不足 (${stage1.merged.length}条)，等所有源结束后合并`);
-  const settledAll = await Promise.allSettled(promises);
+  // v1.0 (Phase 10): 阶段2 加超时保护 — Promise.allSettled 无超时,ab-bingcn (agent-browser) 可拖 25s+
+  //   治「热点新闻/天气查询 20-50s」: 阶段2 最多等 8s 就返回已有结果
+  console.log(`[web-search] collectWithPriority 阶段1 不足 (${stage1.merged.length}条)，等所有源结束后合并 (≤8s)`);
+  const settledAll = await Promise.race([
+    Promise.allSettled(promises),
+    new Promise((resolve) => setTimeout(() => resolve(promises.map(() => ({ status: 'pending', value: null }))), 8000)),
+  ]);
   const seenUrl = stage1.seenUrl;
   const seenTitle = stage1.seenTitle;
   const merged = [...stage1.merged];  // 保留阶段1 已有的（含 ab-bingcn 前置排序）
@@ -524,10 +529,12 @@ async function searchWeb(query, options = {}) {
       if (!p._srcName) p._srcName = i === abIdx ? 'ab-bingcn' : ('src' + i);
     });
     const checkQuality = (results) => {
-      const abCount = results.filter(r => r._source === 'ab-bingcn').length;
-      return abCount >= 3;  // 高可信源 >=3 条 → 阶段1 够用
+      // v1.0 (Phase 10): 放宽质量门 — 总数 >= 3 就够用（不限 ab-bingcn）
+      //   原逻辑要求 ab-bingcn >= 3 条,但 ab-bingcn (agent-browser) 慢时 20s+ 才返回
+      //   → 阶段1 干等 → 慢查询。现在只要 3 条结果就返回,不等 ab-bingcn
+      return results.length >= 3;
     };
-    const winner1 = await collectWithPriority(highSources, abIdx, 2000, 30000, checkQuality);
+    const winner1 = await collectWithPriority(highSources, abIdx, 2000, 10000, checkQuality);
     if (winner1 && winner1.results.length > 0) {
       const result = { results: winner1.results, source: winner1.source };
       if (winner1._stage) result._stage = winner1._stage;
