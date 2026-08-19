@@ -1699,3 +1699,124 @@ registerTool({
     return { ok: true, category, content, truncated };
   }
 });
+
+// v1.0 (Phase 4-A): query_project_context 工具 — 项目/系统 context retrieve 化
+//   system prompt 不再无差别注入项目/系统配置,LLM 主动调
+//   借鉴 Hermes 分层记忆: working / session / long-term / cross-session
+//   - project:  当前项目成员 / 需求池 / 任务统计
+//   - system:   系统级配置 (system_configs)
+//   - user:     用户档案 (扩展 get_my_profile)
+//   - events:   近期系统事件
+//   - all:      全部 scope
+registerTool({
+  name: 'query_project_context',
+  description: '【上下文检索·L0 元工具】按 scope 检索项目/系统/用户上下文。' +
+    'system prompt 不再无差别注入项目背景（节省 token），需要时主动调本工具。' +
+    'scopes: project(当前项目成员/需求池/任务统计) | system(系统配置) | user(用户档案) | events(近期事件) | all(全部)。' +
+    'project scope 可传 project_id 指定项目。返回 markdown 格式摘要,> 600 字符自动截断。',
+  parameters: {
+    type: 'object',
+    properties: {
+      scope: { type: 'string', enum: ['project', 'system', 'user', 'events', 'all'], description: '上下文类别' },
+      project_id: { type: 'string', description: 'project scope 时指定项目 id (可选,默认查当前用户可见的项目)' },
+      limit: { type: 'number', description: '每个 scope 返回条数上限,默认 10' },
+    },
+    required: ['scope']
+  },
+  async handler(args, ctx) {
+    const u = getCtxUser(ctx);
+    const userId = u ? (u.id || u.userId) : null;
+    if (!userId) return { ok: false, error: 'NO_USER', message: '未登录' };
+    const scope = String(args.scope || 'all');
+    const projectId = String(args.project_id || '').trim();
+    const limit = Math.min(Math.max(parseInt(args.limit) || 10, 1), 30);
+    const sections = [];
+
+    // project scope
+    if (scope === 'project' || scope === 'all') {
+      try {
+        const { collection } = require('../db/connection');
+        let projects;
+        if (projectId) {
+          projects = collection('projects').find(p => p.id === projectId);
+        } else {
+          // 当前用户可见的项目（owner / collaborator / admin 看全部）
+          projects = collection('projects').chain()
+            .find(p => p.owner === userId || (p.collaborators || []).includes(userId) || u.role === 'admin')
+            .limit(limit)
+            .data();
+        }
+        if (Array.isArray(projects) && projects.length > 0) {
+          const lines = projects.map(p => {
+            const memberCount = (p.members || []).length;
+            const reqCount = (p.requirement_ids || []).length;
+            return '- ' + p.name + ' (' + p.id + ') — 成员 ' + memberCount + ', 需求 ' + reqCount + ', 状态 ' + (p.status || 'active');
+          });
+          sections.push('## 当前项目\n' + lines.join('\n'));
+        } else {
+          sections.push('## 当前项目\n(无可见项目)');
+        }
+      } catch (_) {}
+    }
+
+    // system scope
+    if (scope === 'system' || scope === 'all') {
+      try {
+        const { collection } = require('../db/connection');
+        // 公开配置 (非敏感)
+        const publicKeys = ['app_name', 'app_version', 'feature_flags', 'theme_default', 'agent_trace_enabled'];
+        const cfgs = collection('system_configs').chain()
+          .find(c => publicKeys.includes(c.key))
+          .limit(limit)
+          .data();
+        if (Array.isArray(cfgs) && cfgs.length > 0) {
+          const lines = cfgs.map(c => '- ' + c.key + ' = ' + (typeof c.value === 'string' ? c.value : JSON.stringify(c.value)).slice(0, 80));
+          sections.push('## 系统配置\n' + lines.join('\n'));
+        }
+      } catch (_) {}
+    }
+
+    // user scope
+    if (scope === 'user' || scope === 'all') {
+      try {
+        const { collection } = require('../db/connection');
+        const usr = collection('users').findOne(u => u.id === userId);
+        if (usr) {
+          const lines = [
+            '- name = ' + (usr.displayName || usr.username || '?'),
+            '- role = ' + (usr.role || '?'),
+            '- project_count = ' + (usr.project_count || '?'),
+            '- login_count = ' + (usr.login_count || '?'),
+          ];
+          sections.push('## 用户档案\n' + lines.join('\n'));
+        }
+      } catch (_) {}
+    }
+
+    // events scope
+    if (scope === 'events' || scope === 'all') {
+      try {
+        const { collection } = require('../db/connection');
+        const events = collection('events').chain()
+          .find({})
+          .simplesort('ts', true)
+          .limit(limit)
+          .data();
+        if (Array.isArray(events) && events.length > 0) {
+          const lines = events.map(e => '- ' + (e.ts || '').slice(0, 16) + ' ' + e.type + ': ' + (e.summary || e.payload || '').slice(0, 80));
+          sections.push('## 近期事件\n' + lines.join('\n'));
+        }
+      } catch (_) {}
+    }
+
+    if (sections.length === 0) {
+      return { ok: true, scope, content: '(无相关上下文)' };
+    }
+
+    let content = sections.join('\n\n');
+    const truncated = content.length > 600;
+    if (truncated) content = content.slice(0, 600) + '\n…(已截断, 用 limit 参数缩小范围)';
+
+    return { ok: true, scope, content, truncated };
+  }
+});

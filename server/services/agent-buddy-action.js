@@ -158,7 +158,8 @@ ${officeEditHint}规则：
 - **用户消息包含 http/https URL 时，必须分类为 single_action 并填入 web_fetch 能力（抓取网页内容），不要分类为 conversation。**
 - **用户说"看新闻"/"查新闻"/"搜新闻"/"最新消息"/"今天有什么新闻"等→ capabilities 含 web_search。**
 - **v0.88 用户要求改代码/写代码/修bug/实现功能/读文件/跑命令/查看项目代码/调试 等代码执行意图 → capabilities 含 code_execution。**
-- **v0.94 (P5) 用户要求修改/编辑/调整已打开的 Office 文档（Word 文档/Excel 表格/PPT 演示）的内容、格式、数据 → capabilities 含 office_edit。注意区分：生成一份全新文档 → document_generation；修改当前已打开的文档 → office_edit。**`;
+- **v1.0 (P3-A) 用户问"我有什么偏好/之前聊过什么/我学了什么/最近操作"等记忆类查询 → capabilities 含 retrieve_memory (内部走 retrieve_memory 工具)。**
+- **v1.0 (P4-A) 用户问"我在哪个项目/项目里有多少需求/系统配置/近期事件"等上下文类查询 → capabilities 含 query_project_context (内部走 query_project_context 工具)。**`;
   const result = await callLLM(modelId, [
     { role: 'system', content: system },
     ...(historyText ? [{ role: 'user', content: `最近对话：\\n${historyText}` }] : []),
@@ -246,6 +247,27 @@ ${officeEditHint}规则：
     route.capabilities.push('view_navigation');
     console.log('[agent-buddy-action] 关键词命中 view_navigation, 强制覆盖路由');
   }
+  // v1.0 (Phase 4-A): query_project_context 关键词拦截 — 「我在哪个项目/项目里有多少需求/系统配置/近期事件」
+  //   治 P3/P4 工具暴露但 router 没主动选的问题
+  const projectCtxRe = /(我.*项目|项目.*需求|系统配置|近期事件|最近.*事件|我.*哪个项目|哪些项目|项目.*成员|项目.*状态)/;
+  if (projectCtxRe.test(message)) {
+    if (route.mode === 'conversation') {
+      route.mode = 'single_action';
+      route.confidence = 0.85;
+    }
+    if (!route.capabilities.includes('query_project_context')) route.capabilities.push('query_project_context');
+    console.log('[agent-buddy-action] 关键词命中 query_project_context, 强制覆盖路由');
+  }
+  // v1.0 (Phase 3-A): retrieve_memory 关键词拦截 — 「我有什么偏好/之前聊过什么/学了什么/最近操作」
+  const memoryRe = /(我.*偏好|我.*学|之前.*聊|以前.*聊|之前.*对话|历史.*对话|我.*记什么|记.*什么|我的.*记忆|最近.*操作|之前.*教)/;
+  if (memoryRe.test(message)) {
+    if (route.mode === 'conversation') {
+      route.mode = 'single_action';
+      route.confidence = 0.85;
+    }
+    if (!route.capabilities.includes('retrieve_memory')) route.capabilities.push('retrieve_memory');
+    console.log('[agent-buddy-action] 关键词命中 retrieve_memory, 强制覆盖路由');
+  }
   // video_generation 关键词拦截 — 用户说"生成视频"/"做一个视频"/"画一段视频"等
   const videoGenRe = /生成.*视频|做.*视频|画.*视频|创作.*视频|帮我.*视频|给我.*视频|视频.*生成|拍.*视频/;
   if (videoGenRe.test(message) && !route.capabilities.includes('video_generation')) {
@@ -293,10 +315,12 @@ ${officeEditHint}规则：
 //   L0 元工具清单：get_my_profile(查自己) / buddy_memory_write(记偏好)
 //                  _expand_tools(主动扩载) / buddy_skill(查/加载技能)
 //                  retrieve_memory(查长期记忆: 用户偏好/历史/技能/最近操作)
+//                  query_project_context(查项目/系统/用户上下文)
 // v1.0 (Phase 3-A): + retrieve_memory (Memory retrieve 化)
+// v1.0 (Phase 4-A): + query_project_context (项目 context retrieve 化)
 //   LLM 真要做事 → 主动调 _expand_tools 加载对应类别，或调 get_my_profile 查上下文
 //   治 trace 失败模式 80%：37 工具 + 首轮强制调 → LLM 乱选 → 装睡/stall
-const CONVERSATION_L0_TOOLS = ['get_my_profile', 'buddy_memory_write', '_expand_tools', 'buddy_skill', 'retrieve_memory'];
+const CONVERSATION_L0_TOOLS = ['get_my_profile', 'buddy_memory_write', '_expand_tools', 'buddy_skill', 'retrieve_memory', 'query_project_context'];
 
 function getActionToolNames(route, baseTools) {
   const tools = new Set(baseTools || []);
@@ -334,6 +358,10 @@ function getActionToolNames(route, baseTools) {
       if (capability === 'office_open') { tools.add('open_view'); tools.add('highlight_element'); }
       if (capability === 'view_navigation') { tools.add('open_view'); }
       if (capability === 'window_control') { tools.add('close_window'); tools.add('highlight_element'); }
+      // v1.0 (Phase 3-A): retrieve_memory — 记忆类查询
+      if (capability === 'retrieve_memory') { tools.add('retrieve_memory'); }
+      // v1.0 (Phase 4-A): query_project_context — 项目/系统 context 查询
+      if (capability === 'query_project_context') { tools.add('query_project_context'); }
       // v0.88: code_execution —— 注入代码执行池（读/写/跑命令/git）
       //   从 listPool 取真实注册的工具（防 P81/P97 漏 require 复发）
       if (capability === 'code_execution') {

@@ -128,7 +128,9 @@ const VIEW_TOOLS = {
 // v0.108: + buddy_skill（Phase E 运行时技能）
 // v1.0 (Phase 3-A): + retrieve_memory（Memory 段 retrieve 化）
 //   完整记忆不再无差别注入,LLM 主动调 retrieve_memory 读
-const L0_TOOLS = ['open_view', 'query_collection', 'web_search', 'fetch_url', 'send_email', '_expand_tools', 'buddy_memory_write', 'buddy_skill', 'retrieve_memory'];
+// v1.0 (Phase 4-A): + query_project_context（项目/系统 context retrieve 化）
+//   项目背景/系统配置不再无差别注入,LLM 主动调 query_project_context 读
+const L0_TOOLS = ['open_view', 'query_collection', 'web_search', 'fetch_url', 'send_email', '_expand_tools', 'buddy_memory_write', 'buddy_skill', 'retrieve_memory', 'query_project_context'];
 
 // ── L2 扩载层（按 LLM 主动 _expand_tools({category}) 触发）──
 const CATEGORY_TOOLS = {

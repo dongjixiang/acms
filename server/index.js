@@ -79,6 +79,16 @@ const { setupAppRuntimeWS } = require('./handlers/app-runtime-ws');
 setupAppRuntimeWS(httpServer);
 console.log('[ACMS] appRuntime WS 已挂到 httpServer: /ws/app-runtime/{sessionId}');
 
+// v1.0 (Phase 4-B): Trace watchdog — 清理僵尸 running trace
+//   治之前发现的 bug: trc_msyvcijq_dv6n 跑了 20+ 小时没清理
+//   每 5 分钟扫描一次,超 30 分钟没更新的 running trace 标 failed
+try {
+  const watchdog = require('./services/trace-watchdog');
+  watchdog.start(5 * 60 * 1000);  // 5 分钟间隔
+} catch (e) {
+  console.warn('[ACMS] ⚠️ Trace watchdog 启动失败:', e.message);
+}
+
 // ── 启动时：自动创建 ACMS 自我改进项目 ──
 try {
   const { collection } = require('./db/connection');
