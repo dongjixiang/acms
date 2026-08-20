@@ -683,6 +683,19 @@ function detectStreamStall(result, messages) {
   ];
   const matched = stallPhrases.filter(p => content.includes(p));
   if (matched.length > 0) {
+    // v1.1 (P12): 疑问句豁免 — 「需要我帮你查吗？」是提议不是承诺
+    //   实踩(2026-08-20 trc_mt0qtowi_dhvp): 用户问"没有地方可以查比特币的行情么？",
+    //   小吉回答渠道列表后礼貌收尾"需要我帮你查一下今天的比特币具体价格吗？"
+    //   → 命中 '我帮你'/'帮你查' 被 stall 误伤,强制第二轮重复给列表。
+    //   规则: 问号结尾 / 吗么结尾 / 「需要我|要我|可以我」开头 = 提议句,不判装睡。
+    //   「吧」结尾不豁免(「我帮你找找看吧」是承诺不是提议)。
+    const trimmed = content.trim();
+    const isQuestion = /[?？]\s*$/.test(trimmed)
+      || /(吗|么)\s*$/.test(trimmed)
+      || /^(需要|要|可以|想|让)我/.test(trimmed);
+    if (isQuestion) {
+      return null;
+    }
     return { phrases: matched, contentPreview: (result.content || '').slice(0, 200) };
   }
   return null;
@@ -1256,4 +1269,4 @@ Round ${round + 1}/${maxRounds}。
   throw new Error(`Tool loop exceeded max rounds (${maxRounds})`);
 }
 
-module.exports = { callLLM, callLLMStream, callLLMWithTools, runToolLoop };
+module.exports = { callLLM, callLLMStream, callLLMWithTools, runToolLoop, detectStreamStall };

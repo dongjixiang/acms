@@ -757,12 +757,14 @@ registerTool({
   parameters: {
     type: 'object',
     properties: {
-      category: { type: 'string', description: '要扩载的 category：requirement/task/bug/agent/window/system/dashboard' }
+      category: { type: 'string', description: '要扩载的 category：requirement/task/bug/agent/window/system/dashboard/office/project/media/app/web（web 含 web_search/fetch_url 联网工具）' }
     },
     required: ['category']
   },
   async handler(args, ctx) {
-    const validCats = ['requirement', 'task', 'bug', 'agent', 'window', 'system', 'dashboard'];
+    // v1.1 (P12): validCats 与 agent-buddy-skill.js CATEGORY_TOOLS 对齐
+    //   实踩(2026-08-20): 之前只有 7 类,LLM 扩 office 报 INVALID_CATEGORY,扩不到联网工具
+    const validCats = ['requirement', 'task', 'bug', 'agent', 'window', 'system', 'dashboard', 'office', 'project', 'media', 'app', 'web'];
     if (!validCats.includes(args.category)) {
       return { ok: false, error: 'INVALID_CATEGORY', message: `category 必须是 ${validCats.join('/')} 之一`, validCategories: validCats };
     }

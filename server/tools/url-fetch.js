@@ -24,6 +24,16 @@ const { checkUrlSafety } = require('../services/url-safety');
 // v0.XX: 代理 Phase 1 — 统一出站 fetch
 const { proxyFetch: fetch } = require('../services/proxy-fetch');
 
+// v1.1 (P12): GBK/GB18030/Big5 等非 UTF-8 charset 转码（行情接口如 qt.gtimg.cn 返回 GBK）
+let _iconv = null;
+function decodeWithIconv(buf, charset) {
+  try {
+    if (!_iconv) _iconv = require('iconv-lite');
+    if (_iconv.encodingExists(charset)) return _iconv.decode(buf, charset);
+  } catch (e) { /* fallback 到 utf-8 */ }
+  return buf.toString('utf-8');
+}
+
 const FETCH_TIMEOUT_MS = 30000;
 const MAX_LENGTH_DEFAULT = 5000;
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;  // 24h
@@ -188,10 +198,40 @@ async function fetchUrlCore({ url, max_length = MAX_LENGTH_DEFAULT }) {
   } else {
     // 内容类型检查
     const ct = resp.headers.get('content-type') || '';
-    if (!ct.includes('text/html') && !ct.includes('application/xhtml')) {
+    // v1.1 (P12): 放宽类型限制 — 行情/数据 API 常返回 text/plain / application/json / javascript
+    //   (实踩 2026-08-20: 腾讯 qt.gtimg.cn 返回 text/html; charset=GBK 但实际是纯文本行情数据 v_xxx="...")
+    const isHtmlType = ct.includes('text/html') || ct.includes('application/xhtml');
+    const isPlainType = ct.includes('text/plain') || ct.includes('text/json')
+      || ct.includes('application/json') || ct.includes('text/javascript')
+      || ct.includes('application/javascript') || ct.includes('application/x-javascript');
+    if (!isHtmlType && !isPlainType) {
       return { error: `不支持的内容类型: ${ct}` };
     }
-    html = await resp.text();
+    // 按 charset 解码（GBK/GB18030/Big5 用 iconv-lite；默认 UTF-8）
+    const charsetMatch = ct.match(/charset\s*=\s*["']?([\w-]+)/i);
+    const charset = charsetMatch ? charsetMatch[1].toLowerCase() : '';
+    const buf = Buffer.from(await resp.arrayBuffer());
+    const isUtf8Like = !charset || /utf|ascii|latin|iso-8859/i.test(charset);
+    html = isUtf8Like ? buf.toString('utf-8') : decodeWithIconv(buf, charset);
+    // v1.1 (P12): 纯文本/JSON 数据源直接返回原始文本（不做 HTML 提取）
+    //   —— 行情接口（qt.gtimg.cn 等）没有 <html> 结构，cheerio 提取不到内容
+    const noHtmlStructure = !/<html|<!doctype/i.test(html) && html.length < 200000;
+    if (isPlainType || (isHtmlType && noHtmlStructure)) {
+      const maxLen = max_length || MAX_LENGTH_DEFAULT;
+      const rawResult = {
+        url,
+        finalUrl: resp?.url || url,
+        title: html.slice(0, 80).replace(/["'\r\n]/g, ' ').trim(),
+        content: html.slice(0, maxLen) + (html.length > maxLen ? `\n...(已截断，原文 ${html.length} 字符)` : ''),
+        length: html.length,
+        truncated: html.length > maxLen,
+        fetchedAt: new Date().toISOString(),
+        contentType: ct,
+        rawText: true,
+      };
+      setCached(url, rawResult);
+      return { ...rawResult, cached: false };
+    }
   }
   const $ = cheerio.load(html, { decodeEntities: true });
 

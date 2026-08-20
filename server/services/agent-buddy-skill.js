@@ -95,7 +95,7 @@ const L0_CORE = `你是「小吉」，ACMS 智能协同管理平台的系统助�
 【工具选择】
 系统已根据当前用户请求自动匹配最合适的工具（见下方工具列表）——无需记工具名。
 包含：当前视图相关工具 + 系统常备工具 + 语义检索匹配工具。
-不够用就调 _expand_tools({category: "..."}) 手动扩载，可扩载类别：requirement | task | bug | agent | window | system | dashboard | office | project | media | app
+不够用就调 _expand_tools({category: "..."}) 手动扩载，可扩载类别：requirement | task | bug | agent | window | system | dashboard | office | project | media | app | web（web 类别含 web_search/fetch_url 联网工具）
 - **技能按需**：当前视图相关的 1-2 个 skill 摘要已注入；要看全部 skill 列表/加载完整内容，调 buddy_skill 工具（action: 'list' | 'get' | 'create'）
 - **记忆按需**：userSummary 只含核心偏好（200字符预算），详细历史/技能/最近操作通过 retrieve_memory({category:'history'|'skills'|'recent_actions'|'all', query?:'关键词'}) 主动检索。category='all' 返回全部类别摘要`;
 
@@ -146,6 +146,8 @@ const RULE_MODULES = [
     text: `
 【数据源直连】
 - 用户问具体数据（股价/商品价格/参数/行情/房价等）时，web_search 返回内容链接（公众号/微博/资讯页）不含结构化数据 → 不要建议用户自己去看，用 fetch_url 主动构造该领域数据源网站的 URL 抓取（财经→新浪财经/腾讯证券、汽车→汽车之家/懂车帝、房产→贝壳/链家）；抓不到就如实说，绝不虚构数字
+- **行情类优先用文本接口**（fetch_url 已支持 text/plain + GBK 转码）：腾讯行情 https://qt.gtimg.cn/q=代码 （A股: sh000001/sz000001、比特币: btc_usd、港股: hk00700、美股: usAAPL，可逗号分隔一次查多个）返回纯文本行情，比抓行情网页更可靠
+- **已知抓不到的源**（不要浪费时间重试）：feixiaohao.com（非小号，动态渲染）、quote.eastmoney.com 的 /btc/ 等子路径（跳转到首页）；东方财富行情要走新浪/腾讯接口而非抓网页
 
 【回复格式规范（v1.0）】
 - 新闻/资讯/热搜类：用编号列表，**每条一行**（1. **标题** - 摘要），条目间必须换行；不要把所有条目挤进一段
@@ -217,6 +219,7 @@ const CATEGORY_TOOLS = {
   'office':      ['generate_docx', 'generate_xlsx', 'generate_pptx', 'document_edit'],
   'project':     ['list_projects', 'create_project'],
   'media':       ['play_video', 'agnes_generate_video', 'agnes_query_video'],
+  'web':         ['web_search', 'fetch_url', 'web_research', 'get_current_time'],
 };
 
 // v0.66: L2 'app' category 动态加载所有 app-tool（前端应用通过 WS 暴露的能力）
@@ -345,6 +348,19 @@ function buildChatPrompt(ctx = {}) {
   const ruleModulesText = buildRuleModules(allToolNames);
   let l0 = L0_CORE + (ruleModulesText ? `\n\n${ruleModulesText}` : '') + GENERAL_RULES;
   if (dateHint) l0 = dateHint + l0;
+
+  // v1.1 (P12): 能力边界 — 工具列表是动态子集,不是系统全部能力
+  //   实踩(2026-08-20): conversation 模式只注入 6 个 L0 元工具(无 web_search/fetch_url),
+  //   小吉向用户断言「我没有网络搜索工具/不能联网」,还把错误认知写入长期记忆
+  //   (buddy_memory learned_facts「能力限制→无网络搜索工具」)。
+  //   本质: LLM 把「当前没注入」误解为「系统没有」。
+  const hasWebTools = allToolNames.includes('web_search') || allToolNames.includes('fetch_url');
+  if (!hasWebTools) {
+    l0 += `\n\n【能力边界】\n`
+      + `- 当前注入的工具列表是系统按场景动态匹配的**子集**，不是系统全部能力。你没有看到某工具 ≠ 系统没有该能力。\n`
+      + `- 查资料/新闻/天气/行情等实时信息由 web_search/fetch_url 执行，用户说"帮我查XX"时系统会自动分配这些工具。\n`
+      + `- **严禁**向用户断言「我没有搜索工具 / 不能联网 / 没有这个能力」。用户要查数据时直接引导：「我可以帮你查，你说要查什么」。`;
+  }
 
   // v1.0 (Phase 3-B): context budget controller
   //   按字符预算裁剪 system prompt 各 segment（防止 memory 段过大挤占核心指令）
