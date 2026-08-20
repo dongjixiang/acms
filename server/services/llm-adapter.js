@@ -701,6 +701,73 @@ function detectStreamStall(result, messages) {
   return null;
 }
 
+/**
+ * v1.1 (2026-08-20): 服务端强制兜底数据获取 — 查询类请求首轮 LLM 不调工具时代执行。
+ * 治 agnes-2.5-flash 等模型不遵守 function-calling，直接编造新闻（trace trc_mt1kiue4_xymk）。
+ * 数据获取优先级：
+ *   1. 新闻/财经/行情类 → 华尔街见闻 7x24 快讯 API 直连（真实数据源，免登录 JSON，Hermes 实测 2026-08-20）
+ *   2. 其他查询类 → 服务端直接调 web_search（不依赖 LLM 发起 tool_call）
+ * @param {string} query 用户查询原文
+ * @param {object} opts { progressCallback, round, maxRounds }
+ * @returns {Promise<{injected:boolean, source:string, formatted:string, count:number, durationMs:number, error?:string}>}
+ */
+async function _serverAutoFetch(query, opts = {}) {
+  const _t0 = Date.now();
+  const newsLike = /新闻|资讯|财经|经济|热点|今日|今天|最新|行情|大盘|股市|市场/.test(query);
+  try {
+    // ── 路径 1: 新闻/财经/行情类 → 华尔街见闻 lives API 直连 ──
+    if (newsLike) {
+      const wallstcnUrl = 'https://api-one.wallstcn.com/apiv1/content/lives?channel=global-channel&limit=15';
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), 10000);
+      try {
+        const resp = await fetch(wallstcnUrl, {
+          signal: ctrl.signal,
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+        });
+        clearTimeout(to);
+        if (resp.ok) {
+          const data = await resp.json();
+          const items = data?.data?.items || [];
+          if (Array.isArray(items) && items.length > 0) {
+            // 只保留今天（北京时间）的快讯，按时间倒序
+            const now = Date.now();
+            const todayItems = items.filter(it => it.display_time && (now - it.display_time * 1000) < 26 * 3600 * 1000);
+            const list = (todayItems.length > 0 ? todayItems : items).slice(0, 15);
+            const formatted = list.map((it, i) => {
+              const dt = new Date((it.display_time || now) * 1000);
+              const hm = `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
+              const text = (it.content_text || it.title || '').replace(/\s+/g, ' ').trim().slice(0, 220);
+              return `[${i + 1}] ${hm} ${text}`;
+            }).join('\n');
+            if (formatted) {
+              return { injected: true, source: '华尔街见闻7x24快讯', formatted, count: list.length, durationMs: Date.now() - _t0 };
+            }
+          }
+        }
+      } catch (e) {
+        clearTimeout(to);
+        console.warn(`[runToolLoop] v1.1 华尔街见闻 API 直连失败: ${e.message}`);
+      }
+    }
+
+    // ── 路径 2: 其他查询类 → 服务端执行 web_search ──
+    if (opts.progressCallback) opts.progressCallback((opts.round || 0) + 1, opts.maxRounds || 10, '系统代查实时信息中...', ['web_search']);
+    const { searchWeb } = require('./web-search');
+    const sr = await searchWeb(query, { maxResults: 10 });
+    if (sr && !sr.error && Array.isArray(sr.results) && sr.results.length > 0) {
+      const formatted = sr.results.map((r, i) => {
+        const snip = (r.snippet || '').slice(0, 200);
+        return `[${i + 1}] **${r.title}**\n    ${r.url}${snip ? '\n    > ' + snip : ''}`;
+      }).join('\n\n');
+      return { injected: true, source: 'web_search（服务端代执行）', formatted, count: sr.results.length, durationMs: Date.now() - _t0 };
+    }
+    return { injected: false, error: sr?.error || 'web_search 无结果', durationMs: Date.now() - _t0 };
+  } catch (e) {
+    return { injected: false, error: e.message, durationMs: Date.now() - _t0 };
+  }
+}
+
 async function runToolLoop(modelId, messages, options = {}) {
   const maxRounds = options.maxRounds ?? 10;
   const toolNames = options.toolNames;
@@ -709,7 +776,6 @@ async function runToolLoop(modelId, messages, options = {}) {
   const model = modelStore.getById(modelId);
   if (!model) throw Object.assign(new Error('模型不存在'), { status: 404 });
   const api = model.api || 'openai-chat';
-
   // v0.101: Agent 运行全链路追踪 — 系统管理开关 agent_trace_enabled，开则记录完整链路
   //   记录：每轮 messages 快照 / LLM 完整响应 / 工具调用（args+结果+耗时）/ steer 事件
   let trace = null;
@@ -927,6 +993,31 @@ async function runToolLoop(modelId, messages, options = {}) {
       });
     }
     console.log(`[runToolLoop] LLM_CALL#${round + 1}/${maxRounds} (剩余 ${remainingRounds}) system_prompt_len=${sysContent.length} system_preview="${sysContent.slice(0, 300).replace(/\n/g, ' ')}..."`);
+    // v1.1 (2026-08-20): 新闻/财经/行情类请求首轮预注入真实数据 —
+    //   web_search（头条热榜）对"今日经济新闻"返回泛社会热点（实测 trc_mt1nrfbl_tkji），
+    //   LLM 基于垃圾结果总结 = 回答质量差。新闻类直接服务端直连华尔街见闻 7x24 快讯 API，
+    //   把真实数据预注入 messages（LLM 首轮即见真数据，不依赖它调工具、不依赖 web_search 质量）。
+    if (round === 0 && (!options || options.actionMode !== 'conversation') && Array.isArray(toolNames) && toolNames.includes('web_search')) {
+      const _lastUser = [...messages].reverse().find(m => m.role === 'user' && typeof m.content === 'string' && m.content.trim() && !m.content.trim().startsWith('['));
+      const _uq = _lastUser ? _lastUser.content.trim().slice(0, 100) : '';
+      const _newsLike = /新闻|资讯|财经|经济|热点|今日|今天|最新|行情|大盘|股市|市场/.test(_uq);
+      const _alreadyInjected = messages.some(m => typeof m.content === 'string' && m.content.includes('[系统代查结果]'));
+      if (_newsLike && _uq && !_alreadyInjected) {
+        const _auto = await _serverAutoFetch(_uq, { progressCallback, round, maxRounds });
+        if (_auto && _auto.injected) {
+          messages.push({
+            role: 'user',
+            content: `[系统代查结果] 用户请求实时信息「${_uq}」，系统已自动获取以下真实数据（来源: ${_auto.source}，非模型编造）：\n\n${_auto.formatted}\n\n请基于以上真实数据回答用户。若数据不含用户要的具体项，可继续调用工具（web_search/fetch_url）补充，但严禁编造数字/日期/新闻内容。`,
+          });
+          toolCallHistory.push({ round: round + 1, tool: 'web_search', args: _uq, result: 'SERVER_AUTO', resultPreview: `server-auto ${_auto.source}: ${_auto.count} 条` });
+          if (trace) trace.recordToolCall(round + 1, { tool: 'web_search', args: { query: _uq, serverAuto: true, source: _auto.source }, result: { count: _auto.count, source: _auto.source }, durationMs: _auto.durationMs || 0, error: null, note: 'SERVER_AUTO' });
+          if (trace) trace.addNote(round + 1, 'server_auto_fetch', `${_auto.source} ${_auto.count}条 query="${_uq.slice(0, 40)}"`);
+          console.log(`[runToolLoop] v1.1 新闻类预注入 ${_auto.source}: ${_auto.count} 条`);
+        } else {
+          console.warn(`[runToolLoop] v1.1 新闻类预注入失败，走 LLM 自主工具路径: ${_auto ? _auto.error : 'no result'}`);
+        }
+      }
+    }
     if (sysContent.length > 300) console.log(`[runToolLoop] LLM_CALL#${round + 1} system_tail="${sysContent.slice(-300).replace(/\n/g, ' ')}"`);
     console.log(`[runToolLoop] LLM_CALL#${round + 1} messages_count=${messages.length}`);
     // dump 最近 5 条 messages（每条前 250 字符）— v0.31.1 容错 content 为 null/undefined
@@ -1103,10 +1194,34 @@ Round ${round + 1}/${maxRounds}。
       //   → 这是装睡的变体（历史对话里的失败示范会让 LLM 直接复述失败结论）
       //   → 强制重试，忽略历史失败，要求本轮实际调工具
       //   ⚠️ 闲聊模式（conversation）跳过：用户说"在干嘛/你好/早上好"等不需要调工具
+      // v1.1 (2026-08-20): 服务端强制兜底 — 查询类请求（web_search 可用）首轮无工具时，
+      //   不依赖模型自觉，代码层直接代执行数据获取（新闻类→华尔街见闻 API 直连 / 其他→web_search），
+      //   把真实数据注入 messages 再让 LLM 总结。治 agnes-2.5-flash 等模型不遵守 function-calling
+      //   直接编造新闻（trace trc_mt1kiue4_xymk 实测：2 轮 0 工具调用，编造 597 字假新闻）。
       const isConversationMode = options && options.actionMode === 'conversation';
       if (round === 0 && Array.isArray(toolNames) && toolNames.length > 0 && toolCallHistory.length === 0 && !isConversationMode) {
         console.warn(`[runToolLoop] v0.87h 首轮未调工具 round=${round + 1}: 有工具(${toolNames.join(',')})但 tool_calls=0, 强制重试`);
         if (trace) trace.addNote(round + 1, 'first_round_no_tool', 'tools=' + toolNames.join(','));
+        const lastUserMsg = [...messages].reverse().find(m => m.role === 'user' && typeof m.content === 'string' && m.content.trim() && !m.content.trim().startsWith('['));
+        const userQuery = lastUserMsg ? lastUserMsg.content.trim().slice(0, 100) : '';
+        // 查询类关键词闸：只有真正的查询/检索请求才代执行，避免误伤"帮我写首诗"等创作类
+        const queryLike = /查|搜|找|最新|今天|行情|新闻|价格|多少|怎么样|如何|什么|资讯|热点|财经|经济|汇率|天气/.test(userQuery);
+        const serverAutoOk = toolNames.includes('web_search') && userQuery && queryLike;
+        if (serverAutoOk) {
+          const autoResult = await _serverAutoFetch(userQuery, { progressCallback, round, maxRounds });
+          if (autoResult && autoResult.injected) {
+            messages.push({
+              role: 'user',
+              content: `[系统代查结果] 用户请求实时信息「${userQuery}」，系统已自动获取以下真实数据（来源: ${autoResult.source}，非模型编造）：\n\n${autoResult.formatted}\n\n请基于以上真实数据回答用户。若数据不含用户要的具体项，可继续调用工具（web_search/fetch_url）补充，但严禁编造数字/日期/新闻内容。`,
+            });
+            toolCallHistory.push({ round: round + 1, tool: 'web_search', args: userQuery, result: 'SERVER_AUTO', resultPreview: `server-auto ${autoResult.source}: ${autoResult.count} 条` });
+            if (trace) trace.recordToolCall(round + 1, { tool: 'web_search', args: { query: userQuery, serverAuto: true, source: autoResult.source }, result: { count: autoResult.count, source: autoResult.source }, durationMs: autoResult.durationMs || 0, error: null, note: 'SERVER_AUTO' });
+            if (trace) trace.addNote(round + 1, 'server_auto_fetch', `${autoResult.source} ${autoResult.count}条 query="${userQuery.slice(0, 40)}"`);
+            console.log(`[runToolLoop] v1.1 服务端代执行 ${autoResult.source} 成功: ${autoResult.count} 条`);
+            continue;
+          }
+          console.warn(`[runToolLoop] v1.1 服务端代执行失败，回退注入提示: ${autoResult ? autoResult.error : 'no result'}`);
+        }
         messages.push({
           role: 'user',
           content: `[系统检测到这是本轮对话的第一轮，你有可用工具（${toolNames.join('、')}）但未调用任何工具。**忽略之前对话中"没找到/建议官方渠道"的失败示范**，本轮必须实际调用工具（如 web_search）重新执行。严禁直接给出"抱歉没找到"类回答。]`,
