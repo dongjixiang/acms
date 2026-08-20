@@ -35,7 +35,12 @@ async function http1Fetch(urlStr, opts = {}) {
     }
     return { ok: resp.ok, status: resp.status, headers, body: buffer.toString('utf-8') };
   } catch (e) {
-    return { ok: false, error: e.message, status_code: e.name === 'AbortError' ? 408 : 0 };
+    // v0.94 (2026-08-20): 透传 e.cause（undici dispatcher 错误根因常在 cause 里），加 debug 日志
+    //   之前只返 e.message，但 undici 在 HTTP/1.1 + Cloudflare 握手失败等场景下抛的 Error 可能无 message
+    console.error(`[http1Fetch] ${urlStr} 异常:`, e.name, e.code, e.message,
+      '| cause:', e.cause?.message, e.cause?.code);
+    const detailed = e.cause?.message || e.message || `${e.name || 'Error'}: 无 message`;
+    return { ok: false, error: detailed, status_code: e.name === 'AbortError' ? 408 : 0 };
   }
 }
 

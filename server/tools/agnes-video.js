@@ -68,8 +68,9 @@ async function generateVideo(args) {
     });
 
     if (!resp.ok) {
+      // v0.94 (2026-08-20): resp.error 兜底（http1Fetch 内部异常吞掉 e.message 时可能 undefined）
       return {
-        error: `Agnes API 请求失败: ${resp.error}`,
+        error: `Agnes API 请求失败: ${resp.error || '(无 message — http1Fetch catch 块异常吞了 e.message，需查 e.cause)'}`,
         status_code: resp.status_code || 0,
       };
     }
@@ -99,8 +100,9 @@ async function generateVideo(args) {
       raw: data,
     };
   } catch (e) {
+    // v0.94 (2026-08-20): error 兜底（e.message 在 undici 边缘场景可能 undefined）
     return {
-      error: `Agnes API 请求失败: ${e.message}`,
+      error: `Agnes API 请求失败: ${e.message || e.cause?.message || e.name || '未知异常（无 message）'}`,
       status_code: e.name === 'TimeoutError' ? 408 : 0,
     };
   }

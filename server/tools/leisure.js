@@ -87,9 +87,16 @@ registerTool({
     try {
       const videoSvc = require('../services/assists/video');
       console.log(`[tool:play_video] ${reqId} prompt="${args.prompt.slice(0, 80)}"`);
+      // v0.94 (2026-08-20): 立即写 chat 流 entry 让用户看到 ⏳ 卡片（v0.50.1 教训：治用户焦虑）
+      videoSvc.writeVideoChatEntry(reqId, 'loading', {
+        prompt: args.prompt,
+        duration: args.duration || 5,
+        message: '视频生成中，预计 60-300 秒完成...',
+      });
       // v0.92: 同步 await 一次，让 API Key 失效等错误能直接返回 ok=false
       //   之前用 setImmediate 异步 → handler 永远返回 ok=true → LLM 拿到 ok=true
       //   后台实际 failed → 下一轮 LLM 又说"已提交"但 tool_calls=0 → stall 循环
+      // v0.94 (2026-08-20): runAssistJob catch 块改 throw，handler catch 能拿到真实错误
       await videoSvc.runAssistJob(reqId, { prompt: args.prompt, duration: args.duration });
       return {
         ok: true,
@@ -98,7 +105,18 @@ registerTool({
         reqId,
       };
     } catch (e) {
-      return { ok: false, error: e.message, message: `视频生成失败: ${e.message}` };
+      // v0.94 (2026-08-20): 错误信息兜底（治"Agnes API 请求失败: undefined"）
+      const errMsg = e.message || e.cause?.message || e.toString() || '未知错误';
+      // 写 chat 流 failed entry（覆盖之前 loading 让用户立刻看到失败）
+      try {
+        const videoSvc = require('../services/assists/video');
+        videoSvc.writeVideoChatEntry(reqId, 'failed', {
+          prompt: args.prompt,
+          error: errMsg,
+          message: `❌ 视频生成失败: ${errMsg}`,
+        });
+      } catch { /* ignore 写 entry 失败，不影响主流程 */ }
+      return { ok: false, error: errMsg, message: `视频生成失败: ${errMsg}` };
     }
   },
 });

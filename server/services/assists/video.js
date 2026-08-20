@@ -380,7 +380,12 @@ let finalImage = imageUrl || null;
 
     console.log(`[assist:video] ${requirementId} 任务已创建, video_id=${result.video_id}, status=${result.status}`);
   } catch (e) {
-    console.error(`[assist:video] ${requirementId} 创建失败:`, e.message);
+    // v0.94 (2026-08-20): 错误信息兜底（避免 "Agnes API 请求失败: undefined"）
+    //   AGNES API 在 undici HTTP/1.1 + Cloudflare 握手失败等边缘场景下可能抛无 message 的 Error
+    //   e.cause 经常携带真正的根因（ECONNRESET / fetch failed 等）
+    const errMsg = e.message || e.cause?.message || e.toString() || '未知错误（无 message）';
+    console.error(`[assist:video] ${requirementId} 创建失败:`, errMsg,
+      '| e.name=', e.name, '| e.code=', e.code, '| e.cause=', e.cause?.message);
     reqStore.update(requirementId, {
       [VIDEO_FIELD]: JSON.stringify({
         status: 'failed',
@@ -394,11 +399,50 @@ let finalImage = imageUrl || null;
         task_id: null,
         progress: 0,
         video_url: null,
-        error: e.message || '未知错误',
+        error: errMsg,
         generated_at: new Date().toISOString(),
       }),
     });
+    // v0.94 (2026-08-20): throw 让 handler 拿到 ok=false（治"LLM 撒谎说已提交"）
+    //   之前 catch 吞错 → handler 看到 await 不抛错 → return ok=true → LLM final answer 撒谎
+    throw e;
   }
+}
+
+/**
+ * v0.94 (2026-08-20): 写视频生成 chat 流 entry（治"用户看不到进度"）
+ *   复用 web.js writeChatEntryForTool 模式：source + dedupe key 写入 supplement_history
+ *   前端 chat.js 可根据 source 渲染 ⏳/❌/✅ 卡片
+ *   dedupe key = "video_<status>:<prompt 前 60 字>:<timestamp 分钟粒度>"
+ *     → 同一分钟内多次调不重复写
+ */
+function writeVideoChatEntry(reqId, status, payload) {
+  if (!reqId) return;
+  const req = reqStore.getById(reqId);
+  if (!req) return;
+  let hist = [];
+  try { hist = JSON.parse(req.supplement_history || '[]'); } catch { hist = []; }
+  if (!Array.isArray(hist)) hist = [];
+  const source = `video_${status}`;  // video_loading / video_failed / video_done
+  const prompt = String(payload.prompt || '').slice(0, 60);
+  const minute = new Date().toISOString().slice(0, 16);  // YYYY-MM-DDTHH:MM
+  const dedupeKey = `${source}:${prompt}:${minute}`;
+  const dup = hist.some(e => {
+    if (e.source !== source) return false;
+    try {
+      const old = JSON.parse(e.text || '{}');
+      const oldKey = `${source}:${String(old.prompt || '').slice(0, 60)}:${old.at?.slice(0, 16) || ''}`;
+      return oldKey === dedupeKey;
+    } catch { return false; }
+  });
+  if (dup) return;
+  hist.push({
+    role: 'system',
+    text: JSON.stringify({ ...payload, at: new Date().toISOString() }),
+    at: new Date().toISOString(),
+    source,
+  });
+  reqStore.update(reqId, { supplement_history: JSON.stringify(hist) });
 }
 
 /**
@@ -489,6 +533,7 @@ module.exports = {
   runAssistJob,
   queryAssistJob,
   getAssist,
+  writeVideoChatEntry,  // v0.94: 写视频生成 chat 流 entry（治"用户焦虑看不到状态"）
   // v0.22.30: 导出 helper 给 routes/requirements.js 用
   getVideoField,
   getVideoDebounceKey,
