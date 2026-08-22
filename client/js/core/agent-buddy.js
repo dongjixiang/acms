@@ -923,7 +923,8 @@ function isNonPlanTerminal(state) {
     if (img && ['generating', 'running', 'pending'].indexOf(img.status) >= 0) return false;
     if (music && ['generating', 'running', 'pending'].indexOf(music.status) >= 0) return false;
     if (email && ['sending', 'pending'].indexOf(email.status) >= 0) return false;
-    if (video && ['generating', 'running', 'pending'].indexOf(video.status) >= 0) return false;
+    // v0.113b: video 状态机含 queued（任务创建后 60-300s 才完成）——漏了它又会被 planStatus 短路判终态
+    if (video && ['queued', 'generating', 'running', 'pending', 'processing', 'rendering'].indexOf(video.status) >= 0) return false;
     // 最后才认 planStatus（信息型 single_action 如 fetch_url，无 assist_* 字段）
     if (state && state.planStatus === 'done') return true;
     return (img && ['done', 'failed'].indexOf(img.status) >= 0)
