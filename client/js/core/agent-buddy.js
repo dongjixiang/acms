@@ -1402,9 +1402,9 @@ function isNonPlanTerminal(state) {
     if (el) el.remove();
   }
 
-  // v0.96/0.114l: 操作日志条 — 展示小吉后台执行的工具调用
-  // v0.114l: 改为持久显示（不自动移除）——多多要求工具执行摘要也渲染在对话框里；
-  //   只在下一轮用户消息发送时清空（chatSend 里调），不再 4 秒消失
+  // v0.96/0.114m: 操作日志条 — 展示小吉后台执行的工具调用
+  // v0.114n: 日志插到流式回复气泡之前（工具先执行 → 先显示日志，回复后到），
+  //   按实际时间自然顺序排列；不再 append 到末尾（否则日志在回复下面很别扭）
   var _opLogEntries = [];
   function renderOpLog(msg) {
     var container = document.querySelector('#ap-messages');
@@ -1419,7 +1419,14 @@ function isNonPlanTerminal(state) {
     var div = document.createElement('div');
     div.className = 'ap-op-log';
     div.innerHTML = '<span style="opacity:.75">🔧</span> ' + escHtml(msg);
-    container.appendChild(div);
+    // 插入位置：流式气泡之前（自然顺序：日志在回复上边）；
+    //   气泡未创建时 append（此时没有回复，日志就是当前最新内容）
+    var streamBubble = document.getElementById('ap-stream-bubble');
+    if (streamBubble && streamBubble.parentNode === container) {
+      container.insertBefore(div, streamBubble);
+    } else {
+      container.appendChild(div);
+    }
     container.scrollTop = container.scrollHeight;
   }
 
@@ -1861,22 +1868,20 @@ function isNonPlanTerminal(state) {
       var raw = accumulated || '嗯… 我没听清，能再说一遍吗？';
       // 移除流式标记，保留气泡
       var msgEl = document.getElementById('ap-stream-bubble');
+      // v0.114n: 分隔线插到回复气泡之前（日志在上 → 分隔 → 回复），
+      //   让工具摘要与最终回复自然分段
+      var container = document.querySelector('#ap-messages');
+      if (container && _opLogEntries.length > 0 && container.querySelector('.ap-op-log') && msgEl && msgEl.parentNode === container) {
+        var sep = document.createElement('div');
+        sep.className = 'ap-op-sep';
+        sep.style.cssText = 'height:1px;background:var(--border,#2a2f3a);margin:6px 0;opacity:.5';
+        container.insertBefore(sep, msgEl);
+      }
       if (msgEl) {
         var cleanText = raw.replace(/【face:\w+】/g, '').replace(/【action:[^:]+:[^】]+】/g, '').trim();
         var mdFn = typeof renderMarkdown === 'function' ? renderMarkdown : function(t) { return escHtml(t); };
         msgEl.innerHTML = '<span class="ap-msg-text">' + mdFn(cleanText) + '</span>';
         msgEl.id = '';  // 移除临时 ID，变成普通气泡
-      }
-      // v0.114l: 最终回复后追加一条分隔（让工具摘要与回复之间、多次回复之间另起一行）
-      var container = document.querySelector('#ap-messages');
-      if (container) {
-        var sep = document.createElement('div');
-        sep.className = 'ap-op-sep';
-        sep.style.cssText = 'height:1px;background:var(--border,#2a2f3a);margin:6px 0;opacity:.5';
-        // 只在确实有操作日志时加分隔
-        if (_opLogEntries.length > 0 && container.querySelector('.ap-op-log')) {
-          container.appendChild(sep);
-        }
       }
       if (container) container.scrollTop = container.scrollHeight;
       executeActions(raw);
