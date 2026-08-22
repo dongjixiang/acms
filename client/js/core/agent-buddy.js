@@ -1655,30 +1655,36 @@ function isNonPlanTerminal(state) {
       });
     }
 
-    // v0.114i: ask_user_question 问题表单 —— 渲染每个问题（选项单选 / 自由输入），
-    //   收集 answers 提交（{ '0': '回答1', '1': '...' }），取消则 deny
+    // v0.114i/k: ask_user_question 问题表单 —— 渲染每个问题（选项单选/多选 + Other 自由输入），
+    //   收集 answers 提交（{ '0': '回答1', '1': '...' }，多选用 ", " 连接），取消则 deny
+    //   v0.114k: ① 左对齐 ② 问题加粗、选项字号小于问题 ③ 补 Other 自由输入 + multiSelect 多选
     function handleUserQuestion(ap) {
       var questions = ap.questions || [];
       var overlay = document.createElement('div');
       overlay.className = 'confirm-overlay';
       var qHtml = questions.map(function(q, i) {
+        var multi = !!q.multiSelect;
+        var inputName = multi ? ('uq_' + i + '[]') : ('uq_' + i);
         var opts = (q.options || []).map(function(o, oi) {
-          return '<label style="display:block;margin:6px 0;cursor:pointer">'
-            + '<input type="radio" name="uq_' + i + '" value="' + escHtml(o) + '"' + (oi === 0 ? ' checked' : '') + '> '
+          return '<label style="display:block;margin:5px 0;cursor:pointer;font-size:12.5px;text-align:left;color:var(--text2)">'
+            + '<input type="' + (multi ? 'checkbox' : 'radio') + '" name="' + inputName + '" value="' + escHtml(o) + '"' + (oi === 0 ? '' : '') + ' style="vertical-align:middle;margin-right:6px"> '
             + escHtml(o) + '</label>';
         }).join('');
-        return '<div style="margin-bottom:14px">'
-          + '<div style="font-weight:600;margin-bottom:4px">' + escHtml(q.header || ('问题 ' + (i + 1))) + '</div>'
-          + '<div style="color:var(--text2);margin-bottom:6px;font-size:13px">' + escHtml(q.question || '') + '</div>'
-          + (opts
-              ? opts
-              : '<input type="text" class="prompt-input" data-free="' + i + '" placeholder="输入回答..." style="width:100%">')
+        // CLI 自动提供 Other 自由输入（源码实证：users will always be able to select "Other"）
+        opts += '<label style="display:block;margin:5px 0;cursor:pointer;font-size:12.5px;text-align:left;color:var(--text2)">'
+          + '<input type="' + (multi ? 'checkbox' : 'radio') + '" name="' + inputName + '" value="__qwen_other__" style="vertical-align:middle;margin-right:6px"> '
+          + 'Other（自定义）</label>';
+        return '<div style="margin-bottom:16px;text-align:left">'
+          + '<div style="font-weight:700;margin-bottom:3px;font-size:14px">' + escHtml(q.header || ('问题 ' + (i + 1))) + '</div>'
+          + '<div style="color:var(--text1);margin-bottom:8px;font-size:13px;font-weight:600">' + escHtml(q.question || '') + '</div>'
+          + opts
+          + '<input type="text" class="prompt-input" data-other="' + i + '" placeholder="选择 Other 时输入自定义回答..." style="width:100%;margin-top:6px;display:none">'
           + '</div>';
       }).join('');
       overlay.innerHTML = '<div class="confirm-dialog prompt-dialog" style="max-width:480px">'
-        + '<h3>🤔 小吉需要确认</h3>'
-        + '<div style="max-height:50vh;overflow:auto">' + qHtml + '</div>'
-        + '<div class="confirm-actions">'
+        + '<h3 style="text-align:left">🤔 小吉需要确认</h3>'
+        + '<div style="max-height:55vh;overflow:auto;text-align:left">' + qHtml + '</div>'
+        + '<div class="confirm-actions" style="justify-content:flex-start">'
         + '<button class="btn-back confirm-cancel">取消</button>'
         + '<button class="confirm-btn btn-accept confirm-submit">提交回答</button>'
         + '</div></div>';
@@ -1686,6 +1692,22 @@ function isNonPlanTerminal(state) {
 
       var cancelBtn = overlay.querySelector('.confirm-cancel');
       var submitBtn = overlay.querySelector('.confirm-submit');
+
+      // Other 选中时显示自由输入框
+      questions.forEach(function(q, i) {
+        var otherInput = overlay.querySelector('input[data-other="' + i + '"]');
+        if (!otherInput) return;
+        var inputName = (q.multiSelect ? ('uq_' + i + '[]') : ('uq_' + i));
+        overlay.querySelectorAll('input[name="' + inputName + '"]').forEach(function(inp) {
+          inp.addEventListener('change', function() {
+            var others = overlay.querySelectorAll('input[name="' + inputName + '"]');
+            var otherChecked = false;
+            others.forEach(function(o) { if (o.value === '__qwen_other__' && o.checked) otherChecked = true; });
+            otherInput.style.display = otherChecked ? 'block' : 'none';
+          });
+        });
+      });
+
       function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
 
       cancelBtn.addEventListener('click', function() {
@@ -1698,9 +1720,20 @@ function isNonPlanTerminal(state) {
       submitBtn.addEventListener('click', function() {
         var answers = {};
         questions.forEach(function(q, i) {
-          var checked = overlay.querySelector('input[name="uq_' + i + '"]:checked');
-          var free = overlay.querySelector('input[data-free="' + i + '"]');
-          answers[q.answerKey || String(i)] = (checked && checked.value) || (free && free.value.trim()) || '';
+          var inputName = (q.multiSelect ? ('uq_' + i + '[]') : ('uq_' + i));
+          var checked = overlay.querySelectorAll('input[name="' + inputName + '"]:checked');
+          var otherInput = overlay.querySelector('input[data-other="' + i + '"]');
+          var values = [];
+          checked.forEach(function(c) {
+            if (c.value === '__qwen_other__') {
+              var custom = (otherInput && otherInput.value.trim()) || '';
+              if (custom) values.push(custom);
+            } else {
+              values.push(c.value);
+            }
+          });
+          // 单选但 Other 未填 → 空；多选合并 ", "（CLI 协议：answers 多选用 ", " 连接）
+          answers[q.answerKey || String(i)] = values.join(', ');
         });
         close();
         fetch('/api/qwen/approvals/' + ap.approvalId, {

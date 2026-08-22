@@ -258,6 +258,7 @@ class QwenSession {
         question: (q && q.question) || '',
         options: Array.isArray(q && q.options) ? q.options.map((o) => (o && o.label) || o) : [],
         inputType: (q && q.inputType) || 'single_select',
+        multiSelect: !!(q && q.multiSelect),  // v0.114k: 透传多选标记（CLI 协议 multiSelect）
         answerKey: String((q && q.answerKey) ?? i),
       })) : [],
     };
