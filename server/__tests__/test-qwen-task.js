@@ -40,6 +40,7 @@ function check(name, cond, detail = '') {
   check('英文 lang → English 指令', promptEn.includes('English'));
   check('自定义 taskContext 优先', buildTaskPrompt(task, 'CUSTOM-CTX', '/ws/demo', 'zh').includes('CUSTOM-CTX'));
   check('system prompt 含工程指令', TASK_SYSTEM_PROMPT.includes('Qwen Code 内核'));
+  check('system prompt 禁止 git', TASK_SYSTEM_PROMPT.includes('禁止运行任何 git 命令'));
 
   // --- 3. 配置开关 ---
   console.log('\n--- 3. 配置开关（需要 DB）---');
