@@ -447,6 +447,7 @@ function snapshotActionState(requirementId) {
     assistImageSearch: safeJson(req.assist_image_search),
     assistMusic: safeJson(req.assist_music),
     assistEmail: safeJson(req.assist_send_email),
+    assistVideo: safeJson(req.assist_video),  // v0.113c: 漏了视频字段 → 前端永远拿不到 video 状态
     pendingEmail: getLatestPendingEmail(req),
   };
 }
