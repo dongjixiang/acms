@@ -128,11 +128,12 @@ async function queryVideo(args) {
   }
 
   // 候选端点（按优先级）
-  //   1) /v1/videos/{task_id} — agnes-video-v2.0 litellm proxy 标准端点，返回 200 + 状态
-  //   2) /agnesapi?video_id=... — 旧版（兜底，未来版本可能移除）
+  //   1) /agnesapi?video_id=... — 推荐方式（官方文档），completed 时返回 url 字段（视频真实地址）
+  //      v0.113e 修复: 之前放第 2 位兜底，v1 端点总是先返回 → url 永远拿不到 → 前端 video_url 恒 null
+  //   2) /v1/videos/{task_id} — 旧版兼容端点（有 status/progress 但无 url）
   const candidates = [];
-  if (taskId) candidates.push({ url: `${API_BASE}/v1/videos/${encodeURIComponent(taskId)}`, kind: 'v1' });
   if (videoId) candidates.push({ url: `${API_BASE}/agnesapi?video_id=${encodeURIComponent(videoId)}` + (args.model_name ? `&model_name=${encodeURIComponent(args.model_name)}` : ''), kind: 'agnesapi' });
+  if (taskId) candidates.push({ url: `${API_BASE}/v1/videos/${encodeURIComponent(taskId)}`, kind: 'v1' });
 
   let lastErr = null;
   for (const { url, kind } of candidates) {
@@ -174,8 +175,13 @@ async function queryVideo(args) {
       };
 
       if (data.status === 'completed') {
-        // agnes-video-v2.0 用 remixed_from_video_id 存视频 URL/ID
-        result.video_url = data.remixed_from_video_id || data.video_url || null;
+        // v0.113e: url 在 agnesapi 响应的顶层 url 字段（官方文档 metadata.url 的等价物）；
+        //   兼容老字段 remixed_from_video_id / video_url / metadata.url
+        result.video_url = data.url
+          || (data.metadata && data.metadata.url)
+          || data.remixed_from_video_id
+          || data.video_url
+          || null;
         result.seconds = data.seconds || null;
         result.size = data.size || null;
       }
