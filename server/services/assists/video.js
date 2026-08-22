@@ -212,7 +212,7 @@ function calcNumFrames(targetSeconds, frameRate = 24) {
  *   NO retry (4xx 除 429): 配置/参数问题，再试也是同样错
  *   返回 { ok, error, result } — 调用方用 retried.ok 判断，retried.result 拿原始响应
  */
-async function callAgnesVideoWithRetry(tool, params) {
+async function callAgnesVideoWithRetry(tool, params, ctx) {
   const MAX_ATTEMPTS = 3;
   const RETRY_STATUSES = [429, 502, 503, 504];
   // transport errors 在 agnes-video.js 里 status_code=0（默认）或 408（timeout）
@@ -222,7 +222,11 @@ async function callAgnesVideoWithRetry(tool, params) {
   let lastResult = null;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      const result = await tool.handler(params);
+      // v0.114e: ctx 透传（含 reqId）→ agnes_generate_video handler 的 v0.113d
+      //   卡片联动（写 assist_video + setInterval 轮询 queryAssistJob 拉 video_url）
+      //   才能生效。此前只传 params，ctx.reqId=undefined → 联动被跳过 →
+      //   play_video 链路 video_url 恒 null，前端 1114 行永远走"done 但无 URL"分支。
+      const result = await tool.handler(params, ctx);
       lastResult = result;
       if (!result || !result.error) return { ok: true, error: null, result };
       lastErr = result.error;
@@ -351,7 +355,8 @@ let finalImage = imageUrl || null;
       }
     }
     // v0.53: 包一层重试（最多 3 次，指数退避）— 5xx/429/transport errors 重试，4xx/API Key 缺失不重试
-    const retried = await callAgnesVideoWithRetry(videoTool, params);
+    // v0.114e: 传 ctx {reqId} → agnes_generate_video handler 的卡片联动轮询生效（play_video 展示修复）
+    const retried = await callAgnesVideoWithRetry(videoTool, params, { reqId: requirementId });
     const result = retried.result;
     if (!retried.ok || result.error) {
       throw new Error(retried.error || result.error || '视频生成失败');
