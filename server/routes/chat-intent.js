@@ -291,8 +291,15 @@ router.post('/detect-and-respond', async (req, res, next) => {
           const qwenMgr = require('../services/qwen-manager');
           // auto 模式 + 沙箱策略（qwen-manager onApproval 跟随 permission_suggestions）
           // 自由对话无审批 UI（agent-buddy 才有），不用 ask 模式
-          const qr = await qwenMgr.chat(reqId, text, { approvalMode: 'auto' });
-          if (qr.ok && qr.result && qr.result.trim()) qwenAiReply = qr.result.trim();
+          // v0.114f: 显式超时 45s（默认 10min 太长，自由对话等不起）——
+          //   冷启动 ~32s + 首 token，45s 内应出结果；超时/失败立即回退旧引擎
+          const qr = await qwenMgr.chat(reqId, text, { approvalMode: 'auto', timeoutMs: 45000 });
+          if (qr.ok && qr.result && qr.result.trim()) {
+            qwenAiReply = qr.result.trim();
+          } else if (!qr.ok) {
+            // v0.114f: 失败/0字符 → 立即回退（不再等满超时）
+            console.warn(`[detect-and-respond] ${reqId} Qwen 失败(${qr.subtype || 'unknown'}) → 立即回退旧引擎`);
+          }
           console.log(`[detect-and-respond] ${reqId} Qwen 内核回复 (${(qr.result || '').length} chars)`);
         } catch (qe) {
           console.warn(`[detect-and-respond] ${reqId} Qwen 分流失败，回退旧引擎: ${qe.message}`);
