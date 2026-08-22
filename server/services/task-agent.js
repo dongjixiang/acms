@@ -20,6 +20,10 @@ const { runHook } = require('./hook-registry');
 
 const eventBus = require('./event-bus');
 
+// P159 fix (v0.114): TASK_TIMEOUT_MS 此前从未定义 → 单角色路径跑旧引擎时 ReferenceError
+// 与 task-watchdog 一致：ACMS_TASK_TIMEOUT_MS 单位分钟，默认 10min；0 → 禁用
+const TASK_TIMEOUT_MS = (Number(process.env.ACMS_TASK_TIMEOUT_MS) || 10) * 60 * 1000;
+
 
 
 
