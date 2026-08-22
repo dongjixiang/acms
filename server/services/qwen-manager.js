@@ -129,7 +129,15 @@ function getManager() {
   manager = new QwenSessionManager({
     maxSessions: config.maxSessions,
     idleTimeoutMs: config.idleTimeoutMs,
+    // v0.114d: auto 模式也走沙箱策略（跟随 Qwen permission_suggestions，建议 deny 则拒绝），
+    //   不再全放行。ask 模式（小吉聊天审批）走 onApprovalRequest，不受此影响。
     onApproval: async (toolCall) => {
+      const suggs = (toolCall && toolCall.permission_suggestions) || [];
+      const hasDeny = suggs.some((s) => s && s.allow === false);
+      if (hasDeny) {
+        console.warn(`[qwen] [审批] ${toolCall.tool_name} → deny（权限建议 deny）`);
+        return false;
+      }
       console.log(`[qwen] [审批] ${toolCall.tool_name} → auto allow`);
       return true;
     },

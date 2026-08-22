@@ -271,7 +271,36 @@ router.post('/detect-and-respond', async (req, res, next) => {
         return res.json({ ok: true, reqId, directReply: true, aiReply: '⚠️ 当前没有可用的 AI 模型', musicCardJson });
       }
 
-      // 3. 拼接 messages：system + 历史 + 当前 user
+      // v0.114d: 自由对话 → Qwen 内核分流（路径2）
+      //   Qwen 内核处理纯对话 + 通用问答（它自带 web 搜索/文件能力）；
+      //   ACMS 特有工具（音乐卡片/视频/图片/邮件/文档生成）保持旧引擎——
+      //   这些工具的 assist 卡片链路（assist_music/assist_video/assist_image）Qwen MCP 未覆盖。
+      const qwenFreeAllowed = (() => {
+        try {
+          const qwenMgr = require('../services/qwen-manager');
+          if (!qwenMgr.getConfig().enabled) return false;
+          if (musicCardJson) return false;  // 音乐卡片走旧引擎（预检已命中）
+          const ACMS_TOOL_RE = /生成.{0,6}(图片|照片|图)|画.{0,3}(张|个|幅|一)|视频|跳舞|唱歌|发邮件|发送邮件|邮件|播放|听[一这]?首|放[一这]?首|想听|找歌|音乐|文档|docx|ppt|pptx|excel|xlsx|写.{0,4}(周报|报告|总结|方案)/i;
+          return !ACMS_TOOL_RE.test(text || '');
+        } catch (e) { return false; }
+      })();
+
+      let qwenAiReply = null;
+      if (qwenFreeAllowed) {
+        try {
+          const qwenMgr = require('../services/qwen-manager');
+          // auto 模式 + 沙箱策略（qwen-manager onApproval 跟随 permission_suggestions）
+          // 自由对话无审批 UI（agent-buddy 才有），不用 ask 模式
+          const qr = await qwenMgr.chat(reqId, text, { approvalMode: 'auto' });
+          if (qr.ok && qr.result && qr.result.trim()) qwenAiReply = qr.result.trim();
+          console.log(`[detect-and-respond] ${reqId} Qwen 内核回复 (${(qr.result || '').length} chars)`);
+        } catch (qe) {
+          console.warn(`[detect-and-respond] ${reqId} Qwen 分流失败，回退旧引擎: ${qe.message}`);
+          qwenAiReply = null;
+        }
+      }
+
+      // 3. 拼接 messages：system + 历史 + 当前 user（仅旧引擎路径需要）
       const systemPrompt = '你是 ACMS 自由对话助手。用户通过 ACMS（智能体协同管理系统）与你交流。请用中文简洁回答用户的问题（Markdown 格式）。可以主动使用 web_search 工具查询实时信息。不要反问澄清需求——用户只是自由提问。';
       const messages = [{ role: 'system', content: systemPrompt }, ...historyMessages, { role: 'user', content: text }];
 
@@ -283,16 +312,19 @@ router.post('/detect-and-respond', async (req, res, next) => {
       }
 
       try {
-        const runtimeResult = await runtimeExec({
-          modelId: model.id,
-          messages,
-          // v0.66: 把 chat 流可见 tools 改为动态函数（每次 chat 请求拿最新 app-tool 列表）
-          toolNames: getIntentToolNames().filter(function(n) { return n !== 'plan_execute'; }).concat(['play_music']),
-          maxRounds: 3,
-          context: { reqId: contextReqId },
-          caller: 'chat-intent-session',
-        });
-        const aiReply = runtimeResult.content;
+        let aiReply = qwenAiReply;
+        if (!aiReply) {
+          const runtimeResult = await runtimeExec({
+            modelId: model.id,
+            messages,
+            // v0.66: 把 chat 流可见 tools 改为动态函数（每次 chat 请求拿最新 app-tool 列表）
+            toolNames: getIntentToolNames().filter(function(n) { return n !== 'plan_execute'; }).concat(['play_music']),
+            maxRounds: 3,
+            context: { reqId: contextReqId },
+            caller: 'chat-intent-session',
+          });
+          aiReply = runtimeResult.content;
+        }
 
         // 4. 写 assistant message + 触发自动标题（仅 session 模式）
         if (isSession && session) {

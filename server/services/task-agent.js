@@ -142,8 +142,14 @@ async function executeTaskAgent(taskId, options = {}) {
 
   // 只有显式要求 multiRole，或 Router 判定复杂任务时，才进入完整流水线。
   // lightweight 先复用单 Agent 主路径；后续可替换为专用 data executor。
+  // v0.114d: Qwen 内核启用时跳过 router 触发的多角色流水线 —— Qwen Code
+  //   自己会 plan/implement/test（内置 subagents），ACMS 的角色分工不再需要。
+  //   仅保留 options.multiRole === true 显式要求时仍走多角色。
+  const qwenTaskOn = (() => {
+    try { return require('./qwen-task').taskEnabled(); } catch (e) { return false; }
+  })();
   const shouldRunMultiRole = options.multiRole === true
-    || (options.multiRole !== false && route.mode === 'full-pipeline');
+    || (options.multiRole !== false && route.mode === 'full-pipeline' && !qwenTaskOn);
 
   if (shouldRunMultiRole) {
     return await runMultiRoleSequence(task, options);
