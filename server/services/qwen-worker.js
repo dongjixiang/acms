@@ -136,6 +136,7 @@ class QwenSession {
       '--model', this.model,
       '--approval-mode', 'default',
       '--session-id', this.sessionId,
+      '--include-partial-messages',  // B7: 真流式必需（否则无 content_block_delta 事件）
     ];
 
     // B6: 小吉人设注入（保留 Qwen Code 工程能力，追加 ACMS 身份）
