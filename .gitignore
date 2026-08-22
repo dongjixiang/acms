@@ -50,3 +50,4 @@ models/
 server/public/office/
 server/public/generate/assets/
 server/data/qwen-task-test-ws/
+server/__tests__/tmp-*.js
