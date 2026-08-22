@@ -56,6 +56,11 @@ function setTaskEnabled(v) {
 //   - permission_suggestions 里有 allow=false → 拒绝
 //   - 其余放行（Qwen 的 classifier 已对 rm -rf / 等危险操作建议 deny）
 function sandboxPolicy(toolCall) {
+  // v0.114i: ask_user_question 在 task 场景（无人值守）无法回答 → 显式 deny
+  if (toolCall && toolCall._isUserQuestion) {
+    console.warn('[qwen-task] 沙箱拒绝 ask_user_question（task 场景无法回答用户问题）');
+    return false;
+  }
   const suggs = (toolCall && toolCall.permission_suggestions) || [];
   const hasDeny = suggs.some((s) => s && s.allow === false);
   if (hasDeny) {

@@ -1632,6 +1632,11 @@ function isNonPlanTerminal(state) {
       if (approvalPollTimer) { clearInterval(approvalPollTimer); approvalPollTimer = null; }
     }
     function handleApprovalPrompt(ap) {
+      // v0.114i: ask_user_question → 问题表单（模型期望用户回答，不是 allow/deny）
+      if (ap.isUserQuestion && ap.questions && ap.questions.length > 0) {
+        handleUserQuestion(ap);
+        return;
+      }
       var toolName = ap.toolName || '未知工具';
       var input = ap.input || {};
       var desc = toolName;
@@ -1648,6 +1653,64 @@ function isNonPlanTerminal(state) {
           body: JSON.stringify({ decision: allow ? 'allow' : 'deny' }),
         }).catch(function() {});
       });
+    }
+
+    // v0.114i: ask_user_question 问题表单 —— 渲染每个问题（选项单选 / 自由输入），
+    //   收集 answers 提交（{ '0': '回答1', '1': '...' }），取消则 deny
+    function handleUserQuestion(ap) {
+      var questions = ap.questions || [];
+      var overlay = document.createElement('div');
+      overlay.className = 'confirm-overlay';
+      var qHtml = questions.map(function(q, i) {
+        var opts = (q.options || []).map(function(o, oi) {
+          return '<label style="display:block;margin:6px 0;cursor:pointer">'
+            + '<input type="radio" name="uq_' + i + '" value="' + escHtml(o) + '"' + (oi === 0 ? ' checked' : '') + '> '
+            + escHtml(o) + '</label>';
+        }).join('');
+        return '<div style="margin-bottom:14px">'
+          + '<div style="font-weight:600;margin-bottom:4px">' + escHtml(q.header || ('问题 ' + (i + 1))) + '</div>'
+          + '<div style="color:var(--text2);margin-bottom:6px;font-size:13px">' + escHtml(q.question || '') + '</div>'
+          + (opts
+              ? opts
+              : '<input type="text" class="prompt-input" data-free="' + i + '" placeholder="输入回答..." style="width:100%">')
+          + '</div>';
+      }).join('');
+      overlay.innerHTML = '<div class="confirm-dialog prompt-dialog" style="max-width:480px">'
+        + '<h3>🤔 小吉需要确认</h3>'
+        + '<div style="max-height:50vh;overflow:auto">' + qHtml + '</div>'
+        + '<div class="confirm-actions">'
+        + '<button class="btn-back confirm-cancel">取消</button>'
+        + '<button class="confirm-btn btn-accept confirm-submit">提交回答</button>'
+        + '</div></div>';
+      document.body.appendChild(overlay);
+
+      var cancelBtn = overlay.querySelector('.confirm-cancel');
+      var submitBtn = overlay.querySelector('.confirm-submit');
+      function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
+
+      cancelBtn.addEventListener('click', function() {
+        close();
+        fetch('/api/qwen/approvals/' + ap.approvalId, {
+          method: 'POST', headers: getAuthHeaders(),
+          body: JSON.stringify({ decision: 'deny' }),
+        }).catch(function() {});
+      });
+      submitBtn.addEventListener('click', function() {
+        var answers = {};
+        questions.forEach(function(q, i) {
+          var checked = overlay.querySelector('input[name="uq_' + i + '"]:checked');
+          var free = overlay.querySelector('input[data-free="' + i + '"]');
+          answers[q.answerKey || String(i)] = (checked && checked.value) || (free && free.value.trim()) || '';
+        });
+        close();
+        fetch('/api/qwen/approvals/' + ap.approvalId, {
+          method: 'POST', headers: getAuthHeaders(),
+          body: JSON.stringify({ decision: 'allow', answers: answers }),
+        }).catch(function() {});
+      });
+      // Esc 关闭 = 取消
+      var escHandler = function(e) { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', escHandler); } };
+      document.addEventListener('keydown', escHandler);
     }
 
     function startStream(retryMsg) {

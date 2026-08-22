@@ -60,11 +60,16 @@ router.get('/approvals/pending', authMiddleware, (req, res) => {
 
 // POST /api/qwen/approvals/:id
 router.post('/approvals/:id', authMiddleware, (req, res) => {
-  const decision = (req.body && req.body.decision) || '';
+  const body = req.body || {};
+  const decision = body.decision || '';
   const allowed = decision === 'allow' || decision === 'allowed' || decision === true;
-  const done = qwenManager.settleApproval(req.params.id, allowed);
+  // v0.114i: ask_user_question 场景前端提交 answers（{ '0': '回答1', '1': '...' }）
+  const answers = (body.answers && typeof body.answers === 'object' && !Array.isArray(body.answers))
+    ? body.answers : null;
+  const payload = answers ? { allowed, answers } : allowed;
+  const done = qwenManager.settleApproval(req.params.id, payload);
   if (!done) return res.status(404).json({ error: '审批不存在或已处理' });
-  res.json({ ok: true, decision: allowed ? 'allow' : 'deny' });
+  res.json({ ok: true, decision: allowed ? 'allow' : 'deny', answered: !!answers });
 });
 
 // POST /api/qwen/release

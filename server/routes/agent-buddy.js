@@ -800,12 +800,12 @@ var buddyCtx = {
       if (qwenEnabled && !officeAction && !message.startsWith('__')) {
         // B6c: 分流范围 — conversation 全走 Qwen；
         //   single/conversational_action 仅当 capabilities 全是 Qwen 能处理的
-        //   （code_execution/query_project_context）才走 Qwen，
-        //   涉及 ACMS 特有能力（image/music/email/document/video/office）保持旧引擎。
-        //   v0.114h: web_search/web_fetch 从安全集移除 — 实测 Qwen 内核查具体数据
-        //   （油价）3 分钟找不到源回"没查到"，而旧引擎 runToolLoop 的 web_search/
-        //   fetch_url 有 v0.87 数据源衔接逻辑（搜不到→再搜定位 URL→抓取）18 秒出结果。
-        var _qwenSafeCaps = new Set(['code_execution', 'query_project_context']);
+        //   才走 Qwen；涉及 ACMS 特有能力（image/music/email/document/video/office）
+        //   保持旧引擎。
+        //   v0.114j: web_search/web_fetch 加回安全集 —— 多多决定工具调用都交给
+        //   Qwen Code（未来可能成为唯一 Agent）。查数据慢/质量差的问题由
+        //   ask_user_question 修复（v0.114i）+ 内核模型固定 MiniMax 缓解。
+        var _qwenSafeCaps = new Set(['web_search', 'web_fetch', 'code_execution', 'query_project_context']);
         var _caps = (actionRoute.capabilities || []);
         var _qwenCanHandle = actionRoute.mode === 'conversation' ||
           (_caps.length > 0 && _caps.every(function(c) { return _qwenSafeCaps.has(c); }));

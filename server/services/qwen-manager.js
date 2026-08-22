@@ -107,12 +107,17 @@ function listPendingApprovals(userId) {
       toolName: rec.toolCall.tool_name,
       input: rec.toolCall.input,
       suggestions: rec.toolCall.permission_suggestions || [],
+      // v0.114i: ask_user_question 透传（前端渲染问题表单）
+      isUserQuestion: !!rec.toolCall._isUserQuestion,
+      questions: rec.toolCall.questions || [],
       createdAt: rec.createdAt,
     });
   }
   return list;
 }
 
+// v0.114i: settle 支持 answers（ask_user_question 场景）
+//   allowed: boolean | { allowed:boolean, answers:object }
 function settleApproval(approvalId, allowed) {
   const rec = pendingApprovals.get(approvalId);
   if (!rec || rec.settled) return false;
@@ -132,6 +137,12 @@ function getManager() {
     // v0.114d: auto 模式也走沙箱策略（跟随 Qwen permission_suggestions，建议 deny 则拒绝），
     //   不再全放行。ask 模式（小吉聊天审批）走 onApprovalRequest，不受此影响。
     onApproval: async (toolCall) => {
+      // v0.114i: ask_user_question 在 auto 模式（无前端交互）下无法回答 → 显式 deny
+      //   （worker 层会把 allow-无answers 转 deny，这里提前拒绝更清晰）
+      if (toolCall && toolCall._isUserQuestion) {
+        console.warn('[qwen] [审批] ask_user_question → deny（auto 模式无法回答用户问题）');
+        return false;
+      }
       const suggs = (toolCall && toolCall.permission_suggestions) || [];
       const hasDeny = suggs.some((s) => s && s.allow === false);
       if (hasDeny) {

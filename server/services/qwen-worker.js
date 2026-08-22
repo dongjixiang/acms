@@ -235,11 +235,31 @@ class QwenSession {
   async _handleApproval(req, requestId) {
     this.approvalCount++;
     this.lastActivityAt = Date.now();
+
+    // v0.114i: 识别 ask_user_question 工具调用（模型向用户提问澄清，如"查哪个城市的油价？"）
+    //   它不是普通的 allow/deny 审批 —— 模型期望的是用户对问题的实际回答（answers），
+    //   响应格式：{ behavior:'allow', updatedInput:{ answers:{ '0':'回答1', '1':'回答2' } } }
+    const isUserQuestion = req.tool_name === 'ask_user_question'
+      || (req._meta && req._meta.qwenInteractionKind === 'user_question');
+    const rawQuestions = (req.input && Array.isArray(req.input.questions)) ? req.input.questions
+      : (req._meta && Array.isArray(req._meta.qwenQuestions)) ? req._meta.qwenQuestions
+      : [];
+
     const toolCall = {
       tool_name: req.tool_name,
       tool_use_id: req.tool_use_id,
       input: req.input,
       permission_suggestions: req.permission_suggestions || [],
+      // v0.114i: 透传问答信息（前端可渲染问题表单而非"允许/拒绝"按钮）
+      _isUserQuestion: isUserQuestion,
+      questions: isUserQuestion ? rawQuestions.map((q, i) => ({
+        index: String(i),
+        header: (q && q.header) || `问题 ${i + 1}`,
+        question: (q && q.question) || '',
+        options: Array.isArray(q && q.options) ? q.options.map((o) => (o && o.label) || o) : [],
+        inputType: (q && q.inputType) || 'single_select',
+        answerKey: String((q && q.answerKey) ?? i),
+      })) : [],
     };
     // 事件流回调（trace）
     this._emit({ type: 'approval_request', session_id: this.sessionId, toolCall, request_id: requestId });
@@ -259,15 +279,35 @@ class QwenSession {
         decision = false;
       }
     }
-    const allowed = decision === true || decision === 'allow' || decision === 'allowed';
+
+    // v0.114i: decision 可能是对象（含 answers）而非布尔 —— ask_user_question 场景
+    let allowed = false;
+    let answers = null;
+    if (decision && typeof decision === 'object') {
+      allowed = decision.allowed === true || decision.allow === true || decision.behavior === 'allow';
+      answers = decision.answers || null;
+    } else {
+      allowed = decision === true || decision === 'allow' || decision === 'allowed';
+    }
+
+    // ask_user_question：必须带 answers 才真正完成（没有 answers 的 allow 会被模型视为未回答）
+    if (isUserQuestion && allowed && (!answers || Object.keys(answers).length === 0)) {
+      debug('ask_user_question 被 allow 但无 answers，转为 deny（模型应继续等回答或自行处理）');
+      allowed = false;
+    }
+
     this._emit({ type: 'approval_result', session_id: this.sessionId, tool_use_id: toolCall.tool_use_id, allowed });
+
+    const responseBody = allowed
+      ? (answers ? { behavior: 'allow', updatedInput: { answers } } : { behavior: 'allow' })
+      : { behavior: 'deny', message: isUserQuestion ? 'ACMS 未收到用户回答' : 'Rejected by ACMS' };
 
     this.child.stdin.write(JSON.stringify({
       type: 'control_response',
       response: {
         subtype: 'success',
         request_id: requestId,
-        response: allowed ? { behavior: 'allow' } : { behavior: 'deny', message: 'Rejected by ACMS' },
+        response: responseBody,
       },
     }) + '\n');
   }
