@@ -90,6 +90,8 @@ class QwenSession {
     this.approvalMode = opts.approvalMode || 'auto';   // 'auto' | 'ask'
     this.onApprovalRequest = opts.onApprovalRequest || null;  // ask 模式回调
     this.enableMcp = opts.enableMcp !== false;  // B3: 默认开 MCP（ACMS 工具暴露给 Qwen）
+    this.systemPrompt = opts.systemPrompt || null;       // B6: 完全覆盖 system prompt
+    this.appendSystemPrompt = opts.appendSystemPrompt || null;  // B6: 追加人设（保留 Qwen 工程能力）
 
     this.child = null;
     this.rl = null;
@@ -135,6 +137,10 @@ class QwenSession {
       '--approval-mode', 'default',
       '--session-id', this.sessionId,
     ];
+
+    // B6: 小吉人设注入（保留 Qwen Code 工程能力，追加 ACMS 身份）
+    if (this.systemPrompt) args.push('--system-prompt', this.systemPrompt);
+    if (this.appendSystemPrompt) args.push('--append-system-prompt', this.appendSystemPrompt);
 
     // B3: ACMS MCP 工具层（Qwen 可调 acms_* 工具）
     if (this.enableMcp) {
@@ -429,7 +435,6 @@ class QwenSessionManager {
     if (session && session.ready && session.child && session.child.exitCode === null) {
       return session;
     }
-    // 旧的失效会话清理
     if (session) { try { session.close(); } catch (e) { /* ignore */ } this.sessions.delete(userId); }
 
     // 并发上限
@@ -465,6 +470,9 @@ class QwenSessionManager {
       sessionId: opts.sessionId,
       onApproval: this.onApproval || (async () => true),
       onEvent: this.onEvent || null,
+      // B6: 人设注入（透传）
+      systemPrompt: opts.systemPrompt || undefined,
+      appendSystemPrompt: opts.appendSystemPrompt || undefined,
     });
     await session.start();
     this.sessions.set(userId, session);

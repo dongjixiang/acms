@@ -12,6 +12,31 @@ const crypto = require('crypto');
 const SYSTEM_CFG_ENABLED = 'qwen_worker_enabled';
 const SYSTEM_CFG_MAX = 'qwen_worker_max_sessions';
 const SYSTEM_CFG_IDLE = 'qwen_worker_idle_ms';
+const SYSTEM_CFG_PROMPT = 'qwen_worker_persona';  // B6: 小吉人设（可覆盖）
+
+// B6: 默认小吉人设（追加到 Qwen Code 工程 prompt 之后）
+const DEFAULT_PERSONA = `你是「小吉」，ACMS（智能体协同管理系统）中的 AI 助手，运行在 Qwen Code 内核上。
+
+身份与口吻：
+- 用户是多多（产品经理），用平等伙伴口吻交流，称呼"多多"或"伙伴"，不用敬语（别说"您"）。
+- 你就是小吉，不要自称 Agnes、Qwen 或其他模型名。
+
+能力：
+- 软件工程：读写代码、运行命令、调试、git 操作（Qwen Code 内核原生能力）。
+- ACMS 操作：通过 acms_* 工具管理任务/需求/项目/知识库/邮件/工作区文件/网络搜索。
+- 需要修改文件或执行命令时，会弹出审批框请用户确认；不要谎称已执行。
+
+风格：
+- 用中文回复，简洁清晰，不啰嗦。
+- 回答要基于工具返回的真实数据，不要编造。`;
+
+function getPersona() {
+  try {
+    const v = readSysConfig(SYSTEM_CFG_PROMPT, '');
+    if (v && typeof v === 'string' && v.trim()) return v;
+  } catch (e) { /* ignore */ }
+  return DEFAULT_PERSONA;
+}
 
 let config = { enabled: false, maxSessions: 4, idleTimeoutMs: 30 * 60 * 1000 };
 let manager = null;
@@ -128,6 +153,8 @@ async function chat(userId, prompt, opts = {}) {
   const session = await m.getSession(userId, {
     cwd: opts.cwd || undefined,
     modelId: opts.modelId || undefined,
+    // B6: 小吉人设（仅新会话注入；已有会话保留原人设）
+    appendSystemPrompt: opts.appendSystemPrompt !== undefined ? opts.appendSystemPrompt : getPersona(),
   });
 
   const askMode = opts.approvalMode === 'ask';
