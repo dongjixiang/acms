@@ -180,6 +180,17 @@ async function chat(userId, prompt, opts = {}) {
   if (askMode) {
     session.approvalMode = 'ask';
     session.onApprovalRequest = (toolCall, ctx) => {
+      // v0.114q: 只读安全工具自动放行（不弹审批框）—— Qwen 调 web_search/fetch_url
+      //   等只读工具也弹框等用户点"允许"，不点就 ask 超时 240s 卡死，
+      //   表现为"只有工具调用、没有 Agent 回复文本"。只读工具无副作用，直接 allow。
+      const tname = (toolCall && toolCall.tool_name) || '';
+      // 只读安全前缀/白名单（Qwen CLI 工具 + ACMS MCP 只读工具）
+      const isReadOnly = /^(web_search|web_fetch|fetch_url|get_current_time|get_available_models|read|list|search|grep|glob|ls|cat|head|tail|todo_read|agent_read|agent_list|agent_search|agent_git_status|agent_git_log|agent_git_diff|agent_db_query|acms_.*(list|get|read|search|query|status)|mcp__acms__acms_.*(list|get|read|search|query|status))/i.test(tname)
+        || (toolCall && Array.isArray(toolCall.permission_suggestions) && toolCall.permission_suggestions.length === 0 && /query|search|read|list|get|status|fetch|check/i.test(tname));
+      if (isReadOnly) {
+        console.log(`[qwen] [审批] ${tname} → 只读安全工具自动 allow`);
+        return Promise.resolve(true);
+      }
       return new Promise((resolve) => {
         const rec = createApprovalRecord(userId, ctx.sessionId, toolCall, ctx.requestId);
         rec.resolve = resolve;
@@ -194,12 +205,16 @@ async function chat(userId, prompt, opts = {}) {
     session.onApprovalRequest = null;
   }
 
-  // v0.114m: 透传 onEvent（工具调用事件 → 前端 SSE progress 渲染工具摘要）
-  //   已有会话复用时不重新构造，动态挂 onEvent 叠加（保留 manager 默认 eventBus 转发）
+  // v0.114m/0.114q: 透传 onEvent（工具调用事件 → 前端 SSE progress 渲染工具摘要）
+  //   v0.114q: 改为设置一次性 onEvent（不复用会话时累积闭包链——旧闭包引用旧 res，
+  //   复用会话多次 chat 后链会无限变长且写已结束响应）。保留 manager 默认 eventBus
+  //   转发（全局 trace），叠加本次回调。
   if (opts.onEvent) {
-    var _baseOnEvent = session.onEvent || null;
     session.onEvent = (evt) => {
-      try { if (_baseOnEvent) _baseOnEvent(evt); } catch (e) { /* ignore */ }
+      try {
+        const eventBus = require('./event-bus');
+        eventBus.emit('qwen:event', { actor: {}, payload: evt });
+      } catch (e) { /* ignore */ }
       try { opts.onEvent(evt); } catch (e) { /* ignore */ }
     };
   }
