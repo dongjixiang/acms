@@ -121,9 +121,26 @@ function startChatPolling(reqId) {
       const state = _chatState[reqId];
       if (!state) return;
 
-      // 增量：只拉新增的 supplement_history
-      const histResp = await api('GET', `/requirements/${reqId}/supplement-history`);
-      const history = backfillChatRounds(histResp.history || []);
+// 增量：只拉新增的 supplement_history
+      // v0.101 fix: 合并拉 chat session reqId + sessionRequirementId（hidden reqId）—— 工具结果写后者
+      console.log('🔧 ACMS_DEBUG: startChatPolling 启动 reqId=' + reqId + ' sessionRequirementId=' + state.sessionRequirementId);
+      const pollReqIds = [reqId];
+      if (state.sessionRequirementId && state.sessionRequirementId !== reqId) {
+        pollReqIds.push(state.sessionRequirementId);
+      }
+      const allHist = [];
+      const seenK = new Set();
+      for (const rid of pollReqIds) {
+        try {
+          const hr = await api('GET', `/requirements/${rid}/supplement-history`);
+          for (const e of (hr?.history || [])) {
+            const k = (e.at || '') + '|' + (e.role || '') + '|' + (e.source || '') + '|' + ((e.text || '').slice(0, 80));
+            if (!seenK.has(k)) { seenK.add(k); allHist.push(e); }
+          }
+        } catch {}
+      }
+      allHist.sort((a, b) => (a.at || '').localeCompare(b.at || ''));
+      const history = backfillChatRounds(allHist);
         if (history.length > state.histCount) {
         for (let i = state.histCount; i < history.length; i++) renderChatBubble(container, history[i]);
         // v0.48：聚合渲染 plan bubbles
@@ -1209,14 +1226,32 @@ async function chatSendDetect(reqId, text) {
       toast('🔍 已自动搜索最新信息', 'info', 2000);
     }
 
-    // 提前计入 histCount，避免 polling 重复渲染
+// 提前计入 histCount，避免 polling 重复渲染
     const state = _chatState[reqId];
     if (state) {
       // 直接拉真实 supplement_history 同步 histCount（比手动计算更可靠）
       try {
-        const syncResp = await api('GET', `/requirements/${reqId}/supplement-history`);
-        if (syncResp?.history) {
-          const history = syncResp.history;
+        // v0.101 fix: session 模式下 generate_image 等工具的 image_card 写到 hidden reqId (data.sessionRequirementId)，
+        //   但前端只拉 chat session reqId → 永远看不到图。修：合并拉两边 + 按 at 时间排序去重。
+        const reqIdsToFetch = [reqId];
+        if (data.sessionRequirementId && data.sessionRequirementId !== reqId) {
+          reqIdsToFetch.push(data.sessionRequirementId);
+          state.sessionRequirementId = data.sessionRequirementId; // 记录给 polling 用
+        }
+        const allHistory = [];
+        const seenKeys = new Set();
+        for (const rid of reqIdsToFetch) {
+          try {
+            const syncResp = await api('GET', `/requirements/${rid}/supplement-history`);
+            for (const e of (syncResp?.history || [])) {
+              const key = (e.at || '') + '|' + (e.role || '') + '|' + (e.source || '') + '|' + ((e.text || '').slice(0, 80));
+              if (!seenKeys.has(key)) { seenKeys.add(key); allHistory.push(e); }
+            }
+          } catch {}
+        }
+        allHistory.sort((a, b) => (a.at || '').localeCompare(b.at || ''));
+        if (allHistory.length) {
+          const history = allHistory;
           // v0.18 bugfix：移除 typing dots（AI 回复回来了）
           const typingNow = document.getElementById(`chat-typing-detect-${reqId}`);
           if (typingNow) typingNow.remove();

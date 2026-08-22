@@ -225,6 +225,8 @@ app.get('/', (req, res) => res.redirect('/client/index.html'));
 // API 路由
 app.use('/api/projects', require('./routes/projects'));
 app.use('/api/requirements', require('./routes/requirements'));
+// v0.101 alias: 让前端老代码/手输 URL 调 /requirements/:id/... 也能工作（修复 chat 流图片不显示 bug 的兜底）
+app.use('/requirements', require('./routes/requirements'));
 app.use('/api/tasks', require('./routes/tasks'));
 app.use('/api/agents', require('./routes/agents'));
 app.use('/api/tools', require('./routes/tools'));

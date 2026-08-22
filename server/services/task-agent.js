@@ -620,6 +620,35 @@ ${task.description || '(no description)'}
 
 
     
+    // v0.114: Qwen Code 内核优先（task 场景）—— 失败自动回退旧引擎
+    //   task 场景沙箱自动放行（approvalMode=auto + 权限建议策略），
+    //   cwd=项目 workspace，一次 ask 完成探索→写码→验证→提交。
+    let qwenUsed = false;
+    try {
+      const qwenTask = require('./qwen-task');
+      if (qwenTask.taskEnabled()) {
+        const projectStore2 = require('../stores/project-store');
+        const projectObj = projectStore2.getById(projectId);
+        if (projectObj) {
+          const qr = await qwenTask.runQwenTask(task, {
+            project: projectObj,
+            modelId: model.id,
+            onProgress: saveProgress,
+            lang,
+            taskContext,
+          });
+          analysis = qr.content;
+          qwenUsed = true;
+          console.log(`[task-agent] ${taskId} 由 Qwen 内核完成 (${qr.numTurns} turns, ${qr.approvalCount} approvals)`);
+        } else {
+          console.warn(`[task-agent] ${taskId} project ${projectId} 不存在，跳过 Qwen 内核`);
+        }
+      }
+    } catch (qe) {
+      console.warn(`[task-agent] ${taskId} Qwen 内核不可用，回退旧引擎: ${qe.message}`);
+    }
+
+    if (!qwenUsed) {
     // P159: Promise.race 套全局超时 — 超时后 throw 给外层 catch
     let runtimeResult;
     try {
@@ -651,6 +680,7 @@ ${task.description || '(no description)'}
     }
 
     analysis = runtimeResult.content;
+    } // !qwenUsed
 
 
   } catch (e) {

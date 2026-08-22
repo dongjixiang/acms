@@ -177,7 +177,11 @@ async function downloadAndSaveOne(apiKey, projectSlug, url, metadata) {
  */
 function writeImageChatEntry(requirementId, card) {
   const req = reqStore.getById(requirementId);
-  if (!req) return;
+  if (!req) {
+    // v0.101 diag: 确认是 session 模式隐藏 req 还是真的 reqStore 缺记录
+    console.warn(`[assist:image] writeImageChatEntry SKIP — reqStore.getById(${requirementId}) = null (session 模式? hidden req? reqStore 未持久化?)`);
+    return;
+  }
 
   let history = [];
   try { history = JSON.parse(req.supplement_history || '[]'); } catch { history = []; }
