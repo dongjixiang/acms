@@ -823,7 +823,12 @@ var buddyCtx = {
               approvalMode: 'ask',   // 工具审批 → 前端确认框（ask 模式）
               timeoutMs: 240000,
               onDelta: _qwenIsStream ? function(delta) {
-                try { if (!res.writableEnded) res.write('data: ' + JSON.stringify({ type: 'text', chunk: delta }) + '\n\n'); } catch (e) { /* ignore */ }
+                try {
+                  if (!res.writableEnded) {
+                    res.write('data: ' + JSON.stringify({ type: 'text', chunk: delta }) + '\n\n');
+                    if (typeof res.flush === 'function') res.flush();  // 立即发送（防缓冲）
+                  }
+                } catch (e) { /* ignore */ }
               } : null,
             });
             if (qwenResp.ok) {
