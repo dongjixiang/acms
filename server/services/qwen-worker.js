@@ -113,6 +113,8 @@ class QwenSession {
     if (!this.apiKey) throw new Error('Qwen Session: apiKey 为空');
 
     const env = { ...process.env };
+    // B5: 限制子进程堆内存（120 低内存服务器防 OOM；CLI bundle 256MB 足够）
+    env.NODE_OPTIONS = process.env.NODE_OPTIONS || '--max-old-space-size=256';
     if (this.authType === 'anthropic') {
       env.ANTHROPIC_BASE_URL = this.baseUrl;
       env.ANTHROPIC_API_KEY = this.apiKey;
@@ -140,7 +142,7 @@ class QwenSession {
       if (fs.existsSync(mcpServerPath)) {
         const mcpConfig = JSON.stringify({
           mcpServers: {
-            acms: { command: process.execPath, args: [mcpServerPath] },
+            acms: { command: process.execPath, args: ['--max-old-space-size=128', mcpServerPath] },
           },
         });
         args.push('--mcp-config', mcpConfig);
@@ -348,6 +350,16 @@ class QwenSession {
     try {
       if (this.child && this.child.stdin) this.child.stdin.end();
     } catch (e) { /* ignore */ }
+    // B5: 清理 MCP server 孤儿进程（Qwen CLI 退出后 MCP 子进程可能残留，低内存服务器会累积泄漏）
+    try {
+      const { execSync } = require('child_process');
+      const isWin = process.platform === 'win32';
+      if (isWin) {
+        execSync(`taskkill /F /FI "WINDOWTITLE eq acms-mcp*" 2>nul`, { stdio: 'ignore' }).catch?.(() => {});
+      } else {
+        execSync(`pkill -f acms-mcp-server.js 2>/dev/null`, { stdio: 'ignore' });
+      }
+    } catch (e) { /* 清理失败忽略 */ }
     // 优雅退出窗口：3s 后 SIGKILL 兜底
     if (this.child && this.child.exitCode === null) {
       setTimeout(() => {
