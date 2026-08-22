@@ -17,31 +17,41 @@ const { proxyFetch } = require('../services/proxy-fetch');
  * 新代码请直接用 proxyFetch(url, opts, { http1: true }) + Response。
  */
 async function http1Fetch(urlStr, opts = {}) {
-  try {
-    const fetchOpts = {
-      method: opts.method || 'GET',
-      headers: opts.headers || {},
-      signal: opts.timeout ? AbortSignal.timeout(opts.timeout) : undefined,
-    };
-    if (opts.body) fetchOpts.body = opts.body;
+  const fetchOpts = {
+    method: opts.method || 'GET',
+    headers: opts.headers || {},
+    signal: opts.timeout ? AbortSignal.timeout(opts.timeout) : undefined,
+  };
+  if (opts.body) fetchOpts.body = opts.body;
 
+  try {
     const resp = await proxyFetch(urlStr, fetchOpts, { http1: true });
-    const buf = await resp.arrayBuffer();
-    const buffer = Buffer.from(buf);
-    const headers = {};
-    resp.headers.forEach((v, k) => { headers[k] = v; });
-    if (opts.binary) {
-      return { ok: resp.ok, status: resp.status, headers, body: buffer.toString('base64'), _binary: true };
-    }
-    return { ok: resp.ok, status: resp.status, headers, body: buffer.toString('utf-8') };
+    return await _consume(resp, opts);
   } catch (e) {
-    // v0.94 (2026-08-20): 透传 e.cause（undici dispatcher 错误根因常在 cause 里），加 debug 日志
-    //   之前只返 e.message，但 undici 在 HTTP/1.1 + Cloudflare 握手失败等场景下抛的 Error 可能无 message
-    console.error(`[http1Fetch] ${urlStr} 异常:`, e.name, e.code, e.message,
-      '| cause:', e.cause?.message, e.cause?.code);
-    const detailed = e.cause?.message || e.message || `${e.name || 'Error'}: 无 message`;
-    return { ok: false, error: detailed, status_code: e.name === 'AbortError' ? 408 : 0 };
+    // v0.113f: 共享连接池（_http1Agent keep-alive）偶发坏连接 → undici 抛无 message 错误。
+    //   用全新 Agent 重试一次（不共享池），治 Agnes API 间歇性"无 message"失败。
+    console.error(`[http1Fetch] ${urlStr} 首次异常:`, e.name, e.code, e.message || '(无message)', '| cause:', e.cause?.message, '| 换新连接重试...');
+    try {
+      const { Agent } = require('undici');
+      const freshResp = await globalThis.fetch(urlStr, { ...fetchOpts, dispatcher: new Agent({ allowH2: false }) });
+      return await _consume(freshResp, opts);
+    } catch (e2) {
+      console.error(`[http1Fetch] ${urlStr} 重试也失败:`, e2.name, e2.code, e2.message || '(无message)', '| cause:', e2.cause?.message);
+      const detailed = e2.cause?.message || e2.message || `${e2.name || 'Error'}: 无 message`;
+      return { ok: false, error: detailed, status_code: e2.name === 'AbortError' ? 408 : 0 };
+    }
   }
+}
+
+async function _consume(resp, opts) {
+  const buf = await resp.arrayBuffer();
+  const buffer = Buffer.from(buf);
+  const headers = {};
+  resp.headers.forEach((v, k) => { headers[k] = v; });
+  if (opts.binary) {
+    return { ok: resp.ok, status: resp.status, headers, body: buffer.toString('base64'), _binary: true };
+  }
+  return { ok: resp.ok, status: resp.status, headers, body: buffer.toString('utf-8') };
 }
 
 module.exports = { http1Fetch };

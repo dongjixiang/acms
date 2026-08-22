@@ -68,10 +68,11 @@ async function generateVideo(args) {
     });
 
     if (!resp.ok) {
-      // v0.94 (2026-08-20): resp.error 兜底（http1Fetch 内部异常吞掉 e.message 时可能 undefined）
+      // v0.113f: http1Fetch 返回 status 字段（不是 status_code），之前读 status_code → undefined → 0
+      //   → 429 限流被误判为 transport 错误 + "(无 message)" 文案。现在透传 status + 清晰报错。
       return {
-        error: `Agnes API 请求失败: ${resp.error || '(无 message — http1Fetch catch 块异常吞了 e.message，需查 e.cause)'}`,
-        status_code: resp.status_code || 0,
+        error: `Agnes API 请求失败: ${resp.error || (resp.status ? `HTTP ${resp.status}` : '(无 message — http1Fetch catch 块异常吞了 e.message，需查 e.cause)')}`,
+        status_code: resp.status_code || resp.status || 0,
       };
     }
 
