@@ -26,8 +26,44 @@ registerTool({
     },
     required: ['prompt'],
   },
-  async handler(args) {
-    return await generateVideo(args);
+  async handler(args, ctx) {
+    const result = await generateVideo(args);
+    // v0.113d: 卡片联动 — 写 assist_video + 启动轮询，让前端视频卡片能展示
+    //   （否则 LLM 选这个工具时前端永远 "动作已完成" 无内容）
+    const reqId = ctx && ctx.reqId;
+    if (reqId && result && result.video_id && !result.error) {
+      try {
+        const videoSvc = require('../services/assists/video');
+        const reqStore = require('../stores/requirement-store');
+        reqStore.update(reqId, {
+          assist_video: JSON.stringify({
+            status: 'generating',
+            prompt: args.prompt,
+            duration: args.duration || 5,
+            video_id: result.video_id,
+            task_id: result.task_id || null,
+            progress: 0,
+            video_url: null,
+            error: null,
+            started_at: new Date().toISOString(),
+          }),
+        });
+        // 轮询直到 done/failed（每 15s，最多 30 次 ≈ 7.5 分钟）
+        let polls = 0;
+        const timer = setInterval(async () => {
+          polls++;
+          try {
+            const q = await videoSvc.queryAssistJob(reqId);
+            if (q && (q.status === 'done' || q.status === 'failed')) clearInterval(timer);
+          } catch (e) { clearInterval(timer); }
+          if (polls >= 30) clearInterval(timer);
+        }, 15000);
+        if (timer.unref) timer.unref();
+      } catch (e) {
+        console.warn('[agnes_generate_video] 卡片联动失败:', e.message);
+      }
+    }
+    return result;
   },
 });
 
