@@ -805,7 +805,11 @@ var buddyCtx = {
         //   v0.114j: web_search/web_fetch 加回安全集 —— 多多决定工具调用都交给
         //   Qwen Code（未来可能成为唯一 Agent）。查数据慢/质量差的问题由
         //   ask_user_question 修复（v0.114i）+ 内核模型固定 MiniMax 缓解。
-        var _qwenSafeCaps = new Set(['web_search', 'web_fetch', 'code_execution', 'query_project_context']);
+        //   v0.114o: query_project_context 从安全集移除 —— Qwen 内核的 MCP 工具列表
+        //   没有它（MCP 无登录用户 ctx，无法查项目上下文），声明能处理会导致模型
+        //   "假装调用"把它写成文字混进回复（实测："调用工具: query_project_context
+        //   ({\"scope\":\"user\"})" 出现在回复文本里）。这类请求走旧引擎（有完整 ctx.user）。
+        var _qwenSafeCaps = new Set(['web_search', 'web_fetch', 'code_execution']);
         var _caps = (actionRoute.capabilities || []);
         var _qwenCanHandle = actionRoute.mode === 'conversation' ||
           (_caps.length > 0 && _caps.every(function(c) { return _qwenSafeCaps.has(c); }));
@@ -1053,7 +1057,15 @@ var buddyCtx = {
         console.log('[agent-buddy] No progress events to flush (buffer empty)');
       }
       // 分块推送 reply 文本（每块 3-6 字，模拟流式）
-      var chunks = reply.match(/.{1,6}/g) || [reply || ''];
+      // v0.114o: 按 Unicode 码点切块（Array.from 不切代理对）——
+      //   旧版 reply.match(/.{1,6}/g) 按 UTF-16 code unit 切，emoji（如 🚀）的
+      //   代理对被从中间切开 → 前端收到半个代理对 → 显示 "��" 乱码
+      var chunks = Array.from(reply || '').reduce(function(acc, ch, i) {
+        if (i % 6 === 0) acc.push('');
+        acc[acc.length - 1] += ch;
+        return acc;
+      }, []);
+      if (chunks.length === 0) chunks = [reply || ''];
       for (var si = 0; si < chunks.length; si++) {
         if (!res.headersSent || res.writableEnded) break;
         res.write('data: ' + JSON.stringify({ type: 'text', chunk: chunks[si] }) + '\n\n');
