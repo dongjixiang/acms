@@ -785,6 +785,7 @@ var buddyCtx = {
     var _lastToolInfo = null;
     var _ssePush = null;  // v0.100: 显式声明（原代码隐式全局，并发请求会互相污染）
     var _qwenStreamed = false;  // B7: Qwen 真流式标记（跳过伪流式）
+    var _qwenHandled = false;   // v0.114h: Qwen 已成功处理标记（跳过 runToolLoop 防双跑）
     try {
       // ── v0.102: Qwen 内核分流 ──
       // system_configs.qwen_worker_enabled=true 时，普通消息走 Qwen Code 内核
@@ -799,9 +800,12 @@ var buddyCtx = {
       if (qwenEnabled && !officeAction && !message.startsWith('__')) {
         // B6c: 分流范围 — conversation 全走 Qwen；
         //   single/conversational_action 仅当 capabilities 全是 Qwen 能处理的
-        //   （web_search/web_fetch/code_execution/query_project_context）才走 Qwen，
+        //   （code_execution/query_project_context）才走 Qwen，
         //   涉及 ACMS 特有能力（image/music/email/document/video/office）保持旧引擎。
-        var _qwenSafeCaps = new Set(['web_search', 'web_fetch', 'code_execution', 'query_project_context']);
+        //   v0.114h: web_search/web_fetch 从安全集移除 — 实测 Qwen 内核查具体数据
+        //   （油价）3 分钟找不到源回"没查到"，而旧引擎 runToolLoop 的 web_search/
+        //   fetch_url 有 v0.87 数据源衔接逻辑（搜不到→再搜定位 URL→抓取）18 秒出结果。
+        var _qwenSafeCaps = new Set(['code_execution', 'query_project_context']);
         var _caps = (actionRoute.capabilities || []);
         var _qwenCanHandle = actionRoute.mode === 'conversation' ||
           (_caps.length > 0 && _caps.every(function(c) { return _qwenSafeCaps.has(c); }));
@@ -835,6 +839,8 @@ var buddyCtx = {
               runtimeResult = { content: qwenResp.result || '' };
               console.log('[agent-buddy] [qwen] 回复 ' + (qwenResp.result || '').length + ' 字, turns=' + qwenResp.numTurns + ', approvals=' + qwenResp.approvalCount);
               if (_qwenIsStream) _qwenStreamed = true;
+              // v0.114h: 标记 Qwen 已处理 → 下方跳过 runToolLoop（防双跑）
+              _qwenHandled = true;
             } else {
               console.warn('[agent-buddy] [qwen] 失败:', JSON.stringify(qwenResp.error).slice(0, 200));
               runtimeResult = { content: '（Qwen 内核暂时不可用，已切换到常规模式）' };
@@ -844,10 +850,12 @@ var buddyCtx = {
           }
         }
       }
-      if (officeAction) {
+      // v0.114h: Qwen 已成功处理 → 跳过 officeAction/runToolLoop/常规 callLLM，
+      //   直接走下方统一的 final answer 逻辑（runtimeResult 已是 Qwen 回复）。
+      if (!_qwenHandled && officeAction) {
         // P5: office_edit 不走 tool-loop，reply 由前端动作卡接管（生成器端点负责精确参数）
         runtimeResult = { content: '好的，我来帮你编辑' + (officeAction.kind === 'word' ? ' Word 文档' : officeAction.kind === 'xlsx' ? ' Excel 表格' : ' PPT 演示文稿') + '。' };
-      } else if (hasSkills) {
+      } else if (!_qwenHandled && hasSkills) {
         console.log('[agent-buddy DEBUG] 开始 runToolLoop, model:', model.id, 'toolNames:', JSON.stringify(toolNames));
         // v0.96: SSE 进度推送 — 直接写（headers 未发送时），同时缓冲一份等 writeHead 后补发
         var _sseBuffer = null;
@@ -879,7 +887,7 @@ var buddyCtx = {
           onProgress: _ssePush,
         });
         console.log('[agent-buddy DEBUG] runToolLoop 完成, content:', (runtimeResult.content || '').slice(0, 100));
-      } else {
+      } else if (!_qwenHandled) {
         // 无 tools 时退回到常规 callLLM
         var result = await callLLM(model.id, messages, {
           maxTokens: 500,
