@@ -834,6 +834,17 @@ var buddyCtx = {
                   }
                 } catch (e) { /* ignore */ }
               } : null,
+              // v0.114m: Qwen 内核工具调用事件 → SSE progress（前端 renderOpLog 显示工具摘要）
+              onEvent: _qwenIsStream ? function(evt) {
+                try {
+                  if (evt && evt.type === 'approval_request' && evt.toolCall && !res.writableEnded) {
+                    var _tname = evt.toolCall.tool_name || 'tool';
+                    // 转成与 runToolLoop _ssePush 相同的格式（前端按 msg 去重 + 渲染）
+                    res.write('data: ' + JSON.stringify({ type: 'progress', msg: '调用工具: ' + _tname }) + '\n\n');
+                    if (typeof res.flush === 'function') res.flush();
+                  }
+                } catch (e) { /* ignore */ }
+              } : null,
             });
             if (qwenResp.ok) {
               runtimeResult = { content: qwenResp.result || '' };

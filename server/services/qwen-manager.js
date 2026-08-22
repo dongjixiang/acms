@@ -194,6 +194,16 @@ async function chat(userId, prompt, opts = {}) {
     session.onApprovalRequest = null;
   }
 
+  // v0.114m: 透传 onEvent（工具调用事件 → 前端 SSE progress 渲染工具摘要）
+  //   已有会话复用时不重新构造，动态挂 onEvent 叠加（保留 manager 默认 eventBus 转发）
+  if (opts.onEvent) {
+    var _baseOnEvent = session.onEvent || null;
+    session.onEvent = (evt) => {
+      try { if (_baseOnEvent) _baseOnEvent(evt); } catch (e) { /* ignore */ }
+      try { opts.onEvent(evt); } catch (e) { /* ignore */ }
+    };
+  }
+
   const result = await session.ask(prompt, {
     timeoutMs: opts.timeoutMs || undefined,
     onDelta: opts.onDelta || null,  // B7: 真流式
