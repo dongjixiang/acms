@@ -29,9 +29,14 @@ function writeSysConfig(key, value) {
     const { collection } = require('../db/connection');
     const coll = collection('system_configs');
     const existing = coll.findOne((c) => c.key === key);
-    if (existing) coll.updateOne(existing, { ...existing, value });
-    else coll.insertOne({ key, value, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
-  } catch (e) { /* 忽略持久化失败 */ }
+    if (existing) {
+      coll.update((c) => c.key === key, { ...existing, value, updated_at: new Date().toISOString() });
+    } else {
+      coll.insert({ key, value, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+    }
+  } catch (e) {
+    console.warn('[qwen-manager] writeSysConfig 失败:', e.message);
+  }
 }
 function loadConfigFromDb() {
   try {
