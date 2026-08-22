@@ -859,7 +859,7 @@
     return map[status] || ['○', status || '等待'];
   }
 
-  function imagePreviewUrl(requirementId, state) {
+function imagePreviewUrl(requirementId, state) {
     var img = state && state.assistImage;
     if (!img || img.status !== 'done') return '';
     var planSteps = state.plan && state.plan.steps || [];
@@ -870,6 +870,17 @@
     if (fid) return '/api/chat/upload/' + encodeURIComponent(fid) + '/raw';
     // v0.73: 优先用本地 workspace_path（含 projectSlug 前缀，解决 CDN CORS 问题）
     var localPath = img.workspace_path || (img.options && img.options[0] && img.options[0].workspace_path) || '';
+    // v0.101 diag: 记录实际走的分支 + 实际请求 URL（排查 404 / plan_step 路径无前缀）
+    console.log('[image:url-resolved]', {
+      reqId: requirementId,
+      assistImage_status: img.status,
+      has_imageStep: !!imageStep,
+      imageStep_asset_path: imageStep && imageStep.result && imageStep.result.asset_path,
+      workspace_path: img.workspace_path,
+      options0_workspace_path: img.options && img.options[0] && img.options[0].workspace_path,
+      resolved_localPath: localPath,
+      final_url: localPath ? '/api/files/asset?path=' + encodeURIComponent(localPath) : (img.image_url_output || '(cdn-fallback)')
+    });
     if (localPath) return '/api/files/asset?path=' + encodeURIComponent(localPath);
     return img.image_url_output || (img.options && img.options[0] && img.options[0].image_url_output) || '';
   }
@@ -897,10 +908,6 @@
   }
 
 function isNonPlanTerminal(state) {
-  // v0.79: 顶层 planStatus='done' 表示 LLM tool loop 已完成（无 plan 的 single_action 模式）
-  //   例: fetch_url 这种信息获取型工具，结果不写 assist_* 字段
-  //   但 action card 不能永远显示"正在准备动作…"，必须认 planStatus
-  if (state && state.planStatus === 'done') return true;
   var plan = state && state.plan;
   if (plan && Array.isArray(plan.steps) && plan.steps.length > 0) {
     return ['done', 'failed', 'partial_failed'].indexOf(plan.status) >= 0;
@@ -910,6 +917,15 @@ function isNonPlanTerminal(state) {
     var music = state && state.assistMusic;
     var email = state && state.assistEmail;
     var video = state && state.assistVideo;
+    // v0.113 fix: 异步任务进行中（generating/running/pending）→ 不是终态，
+    //   即使 planStatus='done'（fire-forget 工具先写 done，结果 10-60s 后才到）。
+    //   之前 planStatus 短路在最前 → 图片生成中就被判终态 → 轮询提前停 → 图片卡片永不更新。
+    if (img && ['generating', 'running', 'pending'].indexOf(img.status) >= 0) return false;
+    if (music && ['generating', 'running', 'pending'].indexOf(music.status) >= 0) return false;
+    if (email && ['sending', 'pending'].indexOf(email.status) >= 0) return false;
+    if (video && ['generating', 'running', 'pending'].indexOf(video.status) >= 0) return false;
+    // 最后才认 planStatus（信息型 single_action 如 fetch_url，无 assist_* 字段）
+    if (state && state.planStatus === 'done') return true;
     return (img && ['done', 'failed'].indexOf(img.status) >= 0)
         || (imgSearch && Array.isArray(imgSearch.images) && imgSearch.images.length > 0)
         || (music && ['done', 'failed'].indexOf(music.status) >= 0)
