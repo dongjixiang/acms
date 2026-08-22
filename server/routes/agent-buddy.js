@@ -784,6 +784,7 @@ var buddyCtx = {
     //   这里通过 onProgress 的 tools 参数捕获（llm-adapter 传 [tc.name]），非流式也生效
     var _lastToolInfo = null;
     var _ssePush = null;  // v0.100: 显式声明（原代码隐式全局，并发请求会互相污染）
+    var _qwenStreamed = false;  // B7: Qwen 真流式标记（跳过伪流式）
     try {
       // ── v0.102: Qwen 内核分流 ──
       // system_configs.qwen_worker_enabled=true 时，普通消息走 Qwen Code 内核
@@ -806,14 +807,29 @@ var buddyCtx = {
           (_caps.length > 0 && _caps.every(function(c) { return _qwenSafeCaps.has(c); }));
         if (_qwenCanHandle) {
           try {
+            // B7: 真流式 — 提前 writeHead，text_delta 实时推送
+            var _qwenIsStream = req.query && req.query.stream === '1';
+            if (_qwenIsStream) {
+              res.writeHead(200, {
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+                'X-Accel-Buffering': 'no',
+              });
+              if (typeof res.flush === 'function') res.flush();
+            }
             console.log('[agent-buddy] [qwen] 内核分流 userId=' + userId + ' mode=' + actionRoute.mode + ' caps=' + JSON.stringify(_caps) + ' msg="' + message.slice(0, 40) + '"');
             var qwenResp = await qwenManagerMod.chat(userId, message, {
               approvalMode: 'ask',   // 工具审批 → 前端确认框（ask 模式）
               timeoutMs: 240000,
+              onDelta: _qwenIsStream ? function(delta) {
+                try { if (!res.writableEnded) res.write('data: ' + JSON.stringify({ type: 'text', chunk: delta }) + '\n\n'); } catch (e) { /* ignore */ }
+              } : null,
             });
             if (qwenResp.ok) {
               runtimeResult = { content: qwenResp.result || '' };
               console.log('[agent-buddy] [qwen] 回复 ' + (qwenResp.result || '').length + ' 字, turns=' + qwenResp.numTurns + ', approvals=' + qwenResp.approvalCount);
+              if (_qwenIsStream) _qwenStreamed = true;
             } else {
               console.warn('[agent-buddy] [qwen] 失败:', JSON.stringify(qwenResp.error).slice(0, 200));
               runtimeResult = { content: '（Qwen 内核暂时不可用，已切换到常规模式）' };
@@ -960,6 +976,26 @@ var buddyCtx = {
       } catch (e) { /* 非关键，不阻断响应 */ }
     }
     if (isStream) {
+      if (_qwenStreamed) {
+        // B7: Qwen 真流式已输出（headers 已写），只补 action + 结束
+        if (actionRequirement) {
+          try {
+            if (!res.writableEnded) res.write('data: ' + JSON.stringify({
+              type: 'action',
+              action: actionRequirement ? {
+                mode: actionRoute.mode,
+                capabilities: actionRoute.capabilities,
+                confidence: actionRoute.confidence,
+                requires_confirmation: actionRoute.requires_confirmation,
+                requirementId: actionRequirement.id,
+                status: buddyAction.snapshotActionState(actionRequirement.id),
+                _action: officeAction ? { officeV3: officeAction } : undefined,
+              } : null,
+            }) + '\n\n');
+          } catch (e) { /* ignore */ }
+        }
+        if (!res.writableEnded) res.end();
+      } else {
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
@@ -1002,6 +1038,7 @@ var buddyCtx = {
         }) + '\n\n');
       }
       if (!res.writableEnded) res.end();
+      }  // B7: else 分支（非 Qwen 流式）闭合
     } else {
       // v0.79: 标记 plan_status='done'，让 fetch_url 等无 assist_* 字段的 single_action 也能停轮询
       if (actionRequirement) {

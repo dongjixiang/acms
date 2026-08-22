@@ -175,7 +175,10 @@ async function chat(userId, prompt, opts = {}) {
     session.onApprovalRequest = null;
   }
 
-  const result = await session.ask(prompt, { timeoutMs: opts.timeoutMs || undefined });
+  const result = await session.ask(prompt, {
+    timeoutMs: opts.timeoutMs || undefined,
+    onDelta: opts.onDelta || null,  // B7: 真流式
+  });
   return {
     ok: !result.is_error,
     subtype: result.subtype,

@@ -202,6 +202,7 @@ class QwenSession {
     this.lastActivityAt = Date.now();
     this.turnCount++;
     this._inFlight = true;
+    this._onDelta = opts.onDelta || null;  // B7: 真流式回调（text_delta 实时）
 
     const resultPromise = new Promise((resolve) => { this._pendingResolve = resolve; });
     this.child.stdin.write(JSON.stringify({
@@ -224,6 +225,7 @@ class QwenSession {
     const result = await resultPromise;
     clearTimeout(timer);
     this._inFlight = false;
+    this._onDelta = null;
     this.lastResult = result;
     return result;
   }
@@ -312,6 +314,10 @@ class QwenSession {
         break;
       case 'stream_event':
         this._emit({ type: 'stream_event', session_id: this.sessionId, event: msg.event });
+        // B7: 真流式 — text_delta 实时回调
+        if (this._onDelta && msg.event && msg.event.type === 'content_block_delta' && msg.event.delta && msg.event.delta.type === 'text_delta') {
+          try { this._onDelta(msg.event.delta.text || ''); } catch (e) { debug('onDelta 异常:', e.message); }
+        }
         break;
       case 'control_request': {
         const req = msg.request || {};
