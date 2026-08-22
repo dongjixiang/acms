@@ -75,6 +75,66 @@ const TOOLS = [
       required: ['to', 'subject', 'body'],
     },
   },
+  // ── B4: 扩展工具（2026-08-22）──
+  {
+    name: 'acms_project_list',
+    description: '列出 ACMS 中的所有项目。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: '返回条数上限（默认 20）' },
+      },
+    },
+  },
+  {
+    name: 'acms_requirement_list',
+    description: '列出 ACMS 需求（可筛选项目/状态）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string', description: '项目 ID（可选）' },
+        status: { type: 'string', description: '状态筛选（可选）：backlog/todo/in_progress/done' },
+        limit: { type: 'number', description: '返回条数上限（默认 10）' },
+      },
+    },
+  },
+  {
+    name: 'acms_web_search',
+    description: '通过 ACMS 搜索网络（Bing/头条/百度多路，含缓存）。用于查资料、找新闻、验证事实。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '搜索关键词' },
+        maxResults: { type: 'number', description: '返回条数（默认 5，最大 10）' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'acms_workspace_read_file',
+    description: '读取 ACMS 项目工作区中的文件内容。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectSlug: { type: 'string', description: '项目 slug/ID' },
+        path: { type: 'string', description: '相对路径（如 src/main.js）' },
+      },
+      required: ['projectSlug', 'path'],
+    },
+  },
+  {
+    name: 'acms_workspace_write_file',
+    description: '写入文件到 ACMS 项目工作区（注意：会真实修改文件，请先确认）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectSlug: { type: 'string', description: '项目 slug/ID' },
+        path: { type: 'string', description: '相对路径（如 src/main.js）' },
+        content: { type: 'string', description: '文件内容' },
+      },
+      required: ['projectSlug', 'path', 'content'],
+    },
+  },
 ];
 
 // ---------- 工具实现 ----------
@@ -130,6 +190,45 @@ async function handleCall(toolName, args) {
           to: args.to, cc: args.cc, subject: args.subject, body: args.body,
         });
         return toolResult({ ok: true, messageId: result && result.messageId });
+      }
+      case 'acms_project_list': {
+        const projectStore = require('../stores/project-store');
+        const projects = (projectStore.list() || []).slice(0, args.limit || 20).map((p) => ({
+          id: p.id, name: p.name, slug: p.slug, description: (p.description || '').slice(0, 80),
+        }));
+        return toolResult({ count: projects.length, projects });
+      }
+      case 'acms_requirement_list': {
+        const reqStore = require('../stores/requirement-store');
+        const reqs = reqStore.list({
+          projectId: args.projectId || undefined,
+          status: args.status || undefined,
+          limit: args.limit || 10,
+          lite: true,
+        });
+        const list = (reqs || []).map((r) => ({
+          id: r.id, title: r.title, status: r.status, priority: r.priority, projectId: r.project_id,
+        }));
+        return toolResult({ count: list.length, requirements: list });
+      }
+      case 'acms_web_search': {
+        const ws = require('../services/web-search');
+        const result = await ws.searchWeb(args.query, { maxResults: Math.min(args.maxResults || 5, 10) });
+        if (result && result.error) return toolResult({ error: result.error }, true);
+        const items = (result.results || []).map((r) => ({
+          title: r.title, url: r.url, snippet: (r.snippet || '').slice(0, 150),
+        }));
+        return toolResult({ query: args.query, count: items.length, results: items });
+      }
+      case 'acms_workspace_read_file': {
+        const ws = require('../services/workspace-service');
+        const content = ws.readFile(args.projectSlug, args.path);
+        return toolResult({ path: args.path, content: String(content).slice(0, 20000) });
+      }
+      case 'acms_workspace_write_file': {
+        const ws = require('../services/workspace-service');
+        const result = ws.writeFile(args.projectSlug, args.path, args.content);
+        return toolResult(result);
       }
       default:
         return toolResult({ error: `未知工具: ${toolName}` }, true);
