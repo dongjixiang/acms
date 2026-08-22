@@ -407,20 +407,6 @@ class QwenSessionManager {
 
   async _resolveModel(modelId) {
     const modelStore = require('../stores/model-store');
-
-    // v0.114f: Qwen 内核专用模型优先（qwen_worker_model_id 系统配置）
-    //   避免跟随 default_gen_model（可能被切到不稳后端如 agnes-2.5-flash）
-    if (!modelId) {
-      try {
-        const { collection } = require('../db/connection');
-        const cfg = collection('system_configs').findOne((c) => c.key === 'qwen_worker_model_id');
-        if (cfg && cfg.value) {
-          const m = modelStore.getById(cfg.value);
-          if (m) return m;
-        }
-      } catch (e) { debug('读取 qwen_worker_model_id 失败:', e.message); }
-    }
-
     const model = modelId ? modelStore.getById(modelId) : null;
     if (model) return model;
 
