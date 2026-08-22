@@ -89,6 +89,7 @@ class QwenSession {
     this.approvalTimeoutMs = opts.approvalTimeoutMs || 60000;
     this.approvalMode = opts.approvalMode || 'auto';   // 'auto' | 'ask'
     this.onApprovalRequest = opts.onApprovalRequest || null;  // ask 模式回调
+    this.enableMcp = opts.enableMcp !== false;  // B3: 默认开 MCP（ACMS 工具暴露给 Qwen）
 
     this.child = null;
     this.rl = null;
@@ -132,6 +133,20 @@ class QwenSession {
       '--approval-mode', 'default',
       '--session-id', this.sessionId,
     ];
+
+    // B3: ACMS MCP 工具层（Qwen 可调 acms_* 工具）
+    if (this.enableMcp) {
+      const mcpServerPath = path.join(__dirname, 'acms-mcp-server.js');
+      if (fs.existsSync(mcpServerPath)) {
+        const mcpConfig = JSON.stringify({
+          mcpServers: {
+            acms: { command: process.execPath, args: [mcpServerPath] },
+          },
+        });
+        args.push('--mcp-config', mcpConfig);
+        debug('MCP enabled:', mcpServerPath);
+      }
+    }
 
     debug('spawn:', 'node', args.join(' '));
     this.child = spawn('node', args, {

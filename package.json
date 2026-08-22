@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@askjo/camofox-browser": "^1.13.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@office-open/docx": "^0.10.13",
     "@qwen-code/qwen-code": "^0.21.15",
     "adm-zip": "^0.5.17",
