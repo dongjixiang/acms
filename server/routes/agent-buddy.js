@@ -785,6 +785,34 @@ var buddyCtx = {
     var _lastToolInfo = null;
     var _ssePush = null;  // v0.100: 显式声明（原代码隐式全局，并发请求会互相污染）
     try {
+      // ── v0.102: Qwen 内核分流 ──
+      // system_configs.qwen_worker_enabled=true 时，普通消息走 Qwen Code 内核
+      // （Auto-Memory/Skills/SubAgents 全套能力），office 动作和特殊消息保持原路径。
+      var qwenManagerMod = null;
+      var qwenEnabled = false;
+      try {
+        qwenManagerMod = require('../services/qwen-manager');
+        qwenEnabled = qwenManagerMod.getConfig().enabled;
+      } catch (e) { qwenEnabled = false; }
+
+      if (qwenEnabled && !officeAction && actionRoute.mode === 'conversation' && !message.startsWith('__')) {
+        try {
+          console.log('[agent-buddy] [qwen] 内核分流 userId=' + userId + ' msg="' + message.slice(0, 40) + '"');
+          var qwenResp = await qwenManagerMod.chat(userId, message, {
+            approvalMode: 'ask',   // 工具审批 → 前端确认框（ask 模式）
+            timeoutMs: 240000,
+          });
+          if (qwenResp.ok) {
+            runtimeResult = { content: qwenResp.result || '' };
+            console.log('[agent-buddy] [qwen] 回复 ' + (qwenResp.result || '').length + ' 字, turns=' + qwenResp.numTurns + ', approvals=' + qwenResp.approvalCount);
+          } else {
+            console.warn('[agent-buddy] [qwen] 失败:', JSON.stringify(qwenResp.error).slice(0, 200));
+            runtimeResult = { content: '（Qwen 内核暂时不可用，已切换到常规模式）' };
+          }
+        } catch (qErr) {
+          console.warn('[agent-buddy] [qwen] 异常，fallback runToolLoop:', qErr.message);
+        }
+      }
       if (officeAction) {
         // P5: office_edit 不走 tool-loop，reply 由前端动作卡接管（生成器端点负责精确参数）
         runtimeResult = { content: '好的，我来帮你编辑' + (officeAction.kind === 'word' ? ' Word 文档' : officeAction.kind === 'xlsx' ? ' Excel 表格' : ' PPT 演示文稿') + '。' };

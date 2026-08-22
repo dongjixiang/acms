@@ -40,6 +40,8 @@ async function loadAdminPage() {
     const elicitorState = await api('GET', '/admin/elicitor-enabled');
     const autoAbandonState = await api('GET', '/admin/auto-abandon-config');  // v0.X：自动放弃配置
     const traceState = await api('GET', '/agent-trace/config');  // v0.101：Agent 运行追踪开关
+    let qwenState = { enabled: false, config: { maxSessions: 4, idleTimeoutMs: 1800000 }, active: 0 };
+    try { qwenState = await api('GET', '/qwen/status'); } catch(e) { /* qwen 路由未挂载时忽略 */ }  // v0.102：Qwen 内核
     const webhooks = await api('GET', '/webhooks');  // v0.17f：事件 webhook 订阅列表
     const agnesKeyState = await api('GET', '/admin/agnes-key');  // v0.19：Agnes AI Video Key 状态
 
@@ -249,6 +251,26 @@ async function loadAdminPage() {
               <input type="checkbox" id="trace-enabled-toggle" ${traceState.enabled ? 'checked' : ''} onchange="setTraceEnabled(this)" style="opacity:0;width:0;height:0">
               <span id="trace-track" style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:${traceState.enabled ? 'var(--green)' : 'var(--border)'};border-radius:22px;transition:0.2s"></span>
               <span id="trace-knob" style="position:absolute;cursor:pointer;height:18px;width:18px;left:${traceState.enabled ? '22px' : '2px'};top:2px;background:#fff;border-radius:50%;transition:0.2s"></span>
+            </label>
+          </div>
+        </div>
+
+        <!-- v0.102：Qwen Code 嵌入式内核（置顶：紧跟追踪开关） -->
+        <div class="config-row" style="margin-top:8px;padding-bottom:16px">
+          <div style="flex:1;min-width:0">
+            <strong>🧠 Qwen Code 内核</strong>
+            <div style="font-size:11px;margin-top:3px;color:var(--text2)">
+              小吉聊天切换到 Qwen Code 内核（Auto-Memory / Auto-Skills / SubAgents / MCP 全套能力）。<br>
+              开启后普通聊天消息走 Qwen Code，工具操作需你在聊天窗口确认；Office/需求等特殊路径保持原引擎。<br>
+              当前：${qwenState.active || 0} 个活跃会话 / 上限 ${qwenState.config.maxSessions} · 空闲 ${Math.round((qwenState.config.idleTimeoutMs || 1800000) / 60000)} 分钟回收
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+            <span id="qwen-enabled-label" style="font-size:13px;color:${qwenState.enabled ? 'var(--green)' : 'var(--text2)'}">${qwenState.enabled ? '已启用' : '已禁用'}</span>
+            <label style="position:relative;display:inline-block;width:42px;height:22px;cursor:pointer">
+              <input type="checkbox" id="qwen-enabled-toggle" ${qwenState.enabled ? 'checked' : ''} onchange="setQwenEnabled(this)" style="opacity:0;width:0;height:0">
+              <span id="qwen-track" style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:${qwenState.enabled ? 'var(--green)' : 'var(--border)'};border-radius:22px;transition:0.2s"></span>
+              <span id="qwen-knob" style="position:absolute;cursor:pointer;height:18px;width:18px;left:${qwenState.enabled ? '22px' : '2px'};top:2px;background:#fff;border-radius:50%;transition:0.2s"></span>
             </label>
           </div>
         </div>
@@ -980,6 +1002,28 @@ async function setTraceEnabled(checkbox) {
     loadTraceList();  // 刷新列表（开关状态变化可能影响显示）
   } catch(e) {
     // 3. 失败回滚视觉 + checkbox
+    checkbox.checked = original;
+    if (label) { label.textContent = original ? '已启用' : '已禁用'; label.style.color = original ? 'var(--green)' : 'var(--text2)'; }
+    if (track) track.style.background = original ? 'var(--green)' : 'var(--border)';
+    if (knob) knob.style.left = original ? '22px' : '2px';
+    toast('设置失败: ' + e.message, 'error');
+  }
+}
+
+// v0.102：Qwen Code 内核 — toggle 实时切换（§P99 四件套）
+async function setQwenEnabled(checkbox) {
+  const wantChecked = checkbox.checked;
+  const original = !wantChecked;
+  const label = _byId('qwen-enabled-label');
+  const track = _byId('qwen-track');
+  const knob = _byId('qwen-knob');
+  if (label) { label.textContent = wantChecked ? '已启用' : '已禁用'; label.style.color = wantChecked ? 'var(--green)' : 'var(--text2)'; }
+  if (track) track.style.background = wantChecked ? 'var(--green)' : 'var(--border)';
+  if (knob) knob.style.left = wantChecked ? '22px' : '2px';
+  try {
+    await api('POST', '/qwen/config', { enabled: wantChecked });
+    toast(wantChecked ? '🧠 Qwen 内核已开启 — 小吉聊天将使用 Qwen Code 引擎' : '🧠 Qwen 内核已关闭 — 小吉回到常规引擎', 'success');
+  } catch(e) {
     checkbox.checked = original;
     if (label) { label.textContent = original ? '已启用' : '已禁用'; label.style.color = original ? 'var(--green)' : 'var(--text2)'; }
     if (track) track.style.background = original ? 'var(--green)' : 'var(--border)';

@@ -1591,6 +1591,48 @@ function isNonPlanTerminal(state) {
     var streamRetryCount = 0;
     var MAX_RETRY = 3;
 
+    // ── v0.102: Qwen 内核审批轮询（ask 模式）──
+    // 后端 can_use_tool 审批挂起 → 前端轮询发现 → showConfirm → POST 决策
+    var approvalPollTimer = null;
+    var seenApprovals = {};
+    function startApprovalPolling() {
+      stopApprovalPolling();
+      approvalPollTimer = setInterval(function() {
+        fetch('/api/qwen/approvals/pending', { headers: getAuthHeaders() })
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            var list = (data && data.approvals) || [];
+            list.forEach(function(ap) {
+              if (!ap || seenApprovals[ap.approvalId]) return;
+              seenApprovals[ap.approvalId] = true;
+              handleApprovalPrompt(ap);
+            });
+          })
+          .catch(function() { /* 轮询失败忽略 */ });
+      }, 1500);
+    }
+    function stopApprovalPolling() {
+      if (approvalPollTimer) { clearInterval(approvalPollTimer); approvalPollTimer = null; }
+    }
+    function handleApprovalPrompt(ap) {
+      var toolName = ap.toolName || '未知工具';
+      var input = ap.input || {};
+      var desc = toolName;
+      if (input.file_path) desc += ' → ' + input.file_path;
+      else if (input.command) desc += ' → ' + String(input.command).slice(0, 80);
+      else if (input.url) desc += ' → ' + String(input.url).slice(0, 80);
+      else if (input.content && typeof input.content === 'string') desc += '（内容 ' + input.content.length + ' 字符）';
+      showConfirm(desc + '\n\n是否允许小吉执行这个操作？', {
+        title: '🔧 工具审批', confirmText: '允许', cancelText: '拒绝', type: 'info',
+      }).then(function(allow) {
+        fetch('/api/qwen/approvals/' + ap.approvalId, {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ decision: allow ? 'allow' : 'deny' }),
+        }).catch(function() {});
+      });
+    }
+
     function startStream(retryMsg) {
       streamAbortController = new AbortController();
       var signal = streamAbortController.signal;
@@ -1700,6 +1742,7 @@ function isNonPlanTerminal(state) {
     }
 
     function finalizeStream() {
+      stopApprovalPolling();  // v0.102: 停止审批轮询
       removeThinking();
       clearOpLogs();  // v0.96: 流式结束，清除操作日志条
       var raw = accumulated || '嗯… 我没听清，能再说一遍吗？';
@@ -1721,6 +1764,7 @@ function isNonPlanTerminal(state) {
       saveChatMemory(text, reply);
     }
 
+    startApprovalPolling();  // v0.102: 启动审批轮询（Qwen ask 模式）
     startStream();
   }
 
