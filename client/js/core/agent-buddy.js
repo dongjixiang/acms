@@ -1402,7 +1402,9 @@ function isNonPlanTerminal(state) {
     if (el) el.remove();
   }
 
-  // v0.96: 操作日志条 — 展示小吉后台执行的工具调用，缓解等待焦虑
+  // v0.96/0.114l: 操作日志条 — 展示小吉后台执行的工具调用
+  // v0.114l: 改为持久显示（不自动移除）——多多要求工具执行摘要也渲染在对话框里；
+  //   只在下一轮用户消息发送时清空（chatSend 里调），不再 4 秒消失
   var _opLogEntries = [];
   function renderOpLog(msg) {
     var container = document.querySelector('#ap-messages');
@@ -1416,17 +1418,12 @@ function isNonPlanTerminal(state) {
     _opLogEntries.push(msg);
     var div = document.createElement('div');
     div.className = 'ap-op-log';
-    div.textContent = msg;
+    div.innerHTML = '<span style="opacity:.75">🔧</span> ' + escHtml(msg);
     container.appendChild(div);
     container.scrollTop = container.scrollHeight;
-    // 每条显示 4 秒后自动移除，避免长期挂着
-    setTimeout(function() {
-      if (div.parentNode) div.remove();
-      var idx = _opLogEntries.indexOf(msg);
-      if (idx >= 0) _opLogEntries.splice(idx, 1);
-    }, 4000);
   }
 
+  // v0.114l: 清空操作日志（下一轮消息发送前调用）
   function clearOpLogs() {
     _opLogEntries = [];
     var els = document.querySelectorAll('.ap-op-log');
@@ -1571,6 +1568,9 @@ function isNonPlanTerminal(state) {
 
   function sendMessage(text) {
     renderUserMessage(text);
+    // v0.114l: 用户发新消息 → 清空上一轮的工具操作日志（保证每轮独立，
+    //   日志紧跟当轮回复，不跨轮残留）
+    clearOpLogs();
     renderThinking();
 
     _chatHistory.push({ role: 'user', text: text });
@@ -1857,7 +1857,7 @@ function isNonPlanTerminal(state) {
     function finalizeStream() {
       stopApprovalPolling();  // v0.102: 停止审批轮询
       removeThinking();
-      clearOpLogs();  // v0.96: 流式结束，清除操作日志条
+      // v0.114l: 不再 clearOpLogs —— 工具执行摘要持久保留在对话框里（多多要求）
       var raw = accumulated || '嗯… 我没听清，能再说一遍吗？';
       // 移除流式标记，保留气泡
       var msgEl = document.getElementById('ap-stream-bubble');
@@ -1867,6 +1867,18 @@ function isNonPlanTerminal(state) {
         msgEl.innerHTML = '<span class="ap-msg-text">' + mdFn(cleanText) + '</span>';
         msgEl.id = '';  // 移除临时 ID，变成普通气泡
       }
+      // v0.114l: 最终回复后追加一条分隔（让工具摘要与回复之间、多次回复之间另起一行）
+      var container = document.querySelector('#ap-messages');
+      if (container) {
+        var sep = document.createElement('div');
+        sep.className = 'ap-op-sep';
+        sep.style.cssText = 'height:1px;background:var(--border,#2a2f3a);margin:6px 0;opacity:.5';
+        // 只在确实有操作日志时加分隔
+        if (_opLogEntries.length > 0 && container.querySelector('.ap-op-log')) {
+          container.appendChild(sep);
+        }
+      }
+      if (container) container.scrollTop = container.scrollHeight;
       executeActions(raw);
       var faceMatch = raw.match(/【face:(\w+)】/);
       if (faceMatch) setFace(faceMatch[1]);

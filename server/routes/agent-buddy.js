@@ -847,6 +847,16 @@ var buddyCtx = {
             }
           } catch (qErr) {
             console.warn('[agent-buddy] [qwen] 异常，fallback runToolLoop:', qErr.message);
+            // v0.114l: Qwen 流式已推送过部分 delta → 后续 runToolLoop reply 前插入
+            //   分隔标记（前端 accumulated 已含 Qwen 文本，换行分隔避免拼一行）
+            if (_qwenIsStream) {
+              try {
+                if (!res.writableEnded) {
+                  res.write('data: ' + JSON.stringify({ type: 'text', chunk: '\n\n---\n\n' }) + '\n\n');
+                  if (typeof res.flush === 'function') res.flush();
+                }
+              } catch (e) { /* ignore */ }
+            }
           }
         }
       }
@@ -1009,14 +1019,18 @@ var buddyCtx = {
         }
         if (!res.writableEnded) res.end();
       } else {
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no',
-      });
-      // v0.96: 立即 flush，确保后续进度事件不会被缓冲
-      if (typeof res.flush === 'function') res.flush();
+      // v0.114l: Qwen 分流可能已提前 writeHead（817 行）但失败 fallback 到这里 →
+      //   headersSent=true 时不能重复 writeHead（ERR_HTTP_HEADERS_SENT），直接写数据
+      if (!res.headersSent) {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        });
+        // v0.96: 立即 flush，确保后续进度事件不会被缓冲
+        if (typeof res.flush === 'function') res.flush();
+      }
       // v0.96: flush 缓冲的 progress 事件（在 writeHead 之后）
       if (_sseBuffer && _sseBuffer.length > 0) {
         console.log('[agent-buddy] Flushing', _sseBuffer.length, 'progress events');
