@@ -1575,9 +1575,7 @@ function isNonPlanTerminal(state) {
 
   function sendMessage(text) {
     renderUserMessage(text);
-    // v0.114l: 用户发新消息 → 清空上一轮的工具操作日志（保证每轮独立，
-    //   日志紧跟当轮回复，不跨轮残留）
-    clearOpLogs();
+    // v0.114p: 工具调用已内嵌流式文本，无需清独立日志条
     renderThinking();
 
     _chatHistory.push({ role: 'user', text: text });
@@ -1823,8 +1821,15 @@ function isNonPlanTerminal(state) {
                   // 后端请求改变速度
                   streamSpeed = Math.max(10, Math.min(100, evt.speed || 30));
                 } else if (evt.type === 'progress') {
-                  // v0.96: 工具调用进度推送 — 在聊天区追加操作日志条
-                  renderOpLog(evt.msg);
+                  // v0.114p: 工具调用信息追加进流式回复文本（按实际时间自然顺序），
+                  //   不再独立 div —— 多多要求工具调用放到流式回复里面
+                  var progMsg = (evt.msg || '').trim();
+                  if (progMsg) {
+                    // 若前面已有文本且未换行，先补换行
+                    if (accumulated && !accumulated.endsWith('\n')) accumulated += '\n';
+                    accumulated += '> 🔧 ' + progMsg + '\n';
+                    updateStreamMessage(accumulated);
+                  }
                 }
               } catch(e) { /* 跳过解析失败的 SSE 行 */ }
             }
@@ -1864,19 +1869,12 @@ function isNonPlanTerminal(state) {
     function finalizeStream() {
       stopApprovalPolling();  // v0.102: 停止审批轮询
       removeThinking();
-      // v0.114l: 不再 clearOpLogs —— 工具执行摘要持久保留在对话框里（多多要求）
+      // v0.114p: 工具调用已内嵌在 accumulated 文本流里（progress → accumulated），
+      //   不再需要独立日志条/分隔线
       var raw = accumulated || '嗯… 我没听清，能再说一遍吗？';
       // 移除流式标记，保留气泡
       var msgEl = document.getElementById('ap-stream-bubble');
-      // v0.114n: 分隔线插到回复气泡之前（日志在上 → 分隔 → 回复），
-      //   让工具摘要与最终回复自然分段
       var container = document.querySelector('#ap-messages');
-      if (container && _opLogEntries.length > 0 && container.querySelector('.ap-op-log') && msgEl && msgEl.parentNode === container) {
-        var sep = document.createElement('div');
-        sep.className = 'ap-op-sep';
-        sep.style.cssText = 'height:1px;background:var(--border,#2a2f3a);margin:6px 0;opacity:.5';
-        container.insertBefore(sep, msgEl);
-      }
       if (msgEl) {
         var cleanText = raw.replace(/【face:\w+】/g, '').replace(/【action:[^:]+:[^】]+】/g, '').trim();
         var mdFn = typeof renderMarkdown === 'function' ? renderMarkdown : function(t) { return escHtml(t); };
