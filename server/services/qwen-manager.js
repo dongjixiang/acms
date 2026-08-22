@@ -211,7 +211,31 @@ function setConfig(patch) {
   return { ...config };
 }
 
+// B6b: 人设读写（admin 可编辑）
+function getPersonaForEdit() {
+  try {
+    const v = readSysConfig(SYSTEM_CFG_PROMPT, '');
+    if (v && typeof v === 'string') return { customized: true, persona: v };
+  } catch (e) { /* ignore */ }
+  return { customized: false, persona: DEFAULT_PERSONA };
+}
+function setPersona(persona) {
+  const p = String(persona || '').trim();
+  if (!p) {
+    // 清空 → 回默认
+    try {
+      const { collection } = require('../db/connection');
+      const coll = collection('system_configs');
+      coll.remove((c) => c.key === SYSTEM_CFG_PROMPT);
+    } catch (e) { /* ignore */ }
+    return { customized: false, persona: DEFAULT_PERSONA };
+  }
+  writeSysConfig(SYSTEM_CFG_PROMPT, p);
+  return { customized: true, persona: p };
+}
+
 module.exports = {
   getManager, chat, getConfig, setConfig,
   listPendingApprovals, settleApproval,
+  getPersonaForEdit, setPersona,  // B6b: admin 人设编辑
 };

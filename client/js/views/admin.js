@@ -42,6 +42,8 @@ async function loadAdminPage() {
     const traceState = await api('GET', '/agent-trace/config');  // v0.101：Agent 运行追踪开关
     let qwenState = { enabled: false, config: { maxSessions: 4, idleTimeoutMs: 1800000 }, active: 0 };
     try { qwenState = await api('GET', '/qwen/status'); } catch(e) { /* qwen 路由未挂载时忽略 */ }  // v0.102：Qwen 内核
+    let qwenPersona = { customized: false, persona: '' };
+    try { qwenPersona = await api('GET', '/qwen/persona'); } catch(e) { /* ignore */ }  // B6b：人设
     const webhooks = await api('GET', '/webhooks');  // v0.17f：事件 webhook 订阅列表
     const agnesKeyState = await api('GET', '/admin/agnes-key');  // v0.19：Agnes AI Video Key 状态
 
@@ -272,6 +274,22 @@ async function loadAdminPage() {
               <span id="qwen-track" style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:${qwenState.enabled ? 'var(--green)' : 'var(--border)'};border-radius:22px;transition:0.2s"></span>
               <span id="qwen-knob" style="position:absolute;cursor:pointer;height:18px;width:18px;left:${qwenState.enabled ? '22px' : '2px'};top:2px;background:#fff;border-radius:50%;transition:0.2s"></span>
             </label>
+          </div>
+        </div>
+
+        <!-- B6b：小吉人设编辑 -->
+        <div class="config-row" style="margin-top:4px;padding-bottom:12px">
+          <div style="flex:1;min-width:0">
+            <strong>🎭 小吉人设</strong>
+            <div style="font-size:11px;margin-top:3px;color:var(--text2)">
+              注入给 Qwen 内核的系统提示（人设/口吻/能力边界）。改动对<span style="color:var(--accent2)">新会话</span>生效（已有会话需释放后重建）。留空保存 = 恢复默认。
+            </div>
+            <textarea id="qwen-persona-input" rows="7" style="width:100%;margin-top:6px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:8px;font-size:12px;font-family:inherit;box-sizing:border-box;resize:vertical">${escHtml(qwenPersona.persona || '')}</textarea>
+            <div style="display:flex;gap:8px;margin-top:6px;align-items:center">
+              <button class="btn-back" onclick="saveQwenPersona()" style="padding:4px 14px;border-radius:6px;font-size:12px">💾 保存人设</button>
+              <button class="btn-back" onclick="resetQwenPersona()" style="padding:4px 14px;border-radius:6px;font-size:12px">↩️ 恢复默认</button>
+              <span id="qwen-persona-status" style="font-size:11px;color:${qwenPersona.customized ? 'var(--green)' : 'var(--text3)'}">${qwenPersona.customized ? '已自定义' : '使用默认'}</span>
+            </div>
           </div>
         </div>
 
@@ -1030,6 +1048,28 @@ async function setQwenEnabled(checkbox) {
     if (knob) knob.style.left = original ? '22px' : '2px';
     toast('设置失败: ' + e.message, 'error');
   }
+}
+
+// B6b：小吉人设 — 保存/重置
+async function saveQwenPersona() {
+  const input = _byId('qwen-persona-input');
+  const persona = input ? input.value : '';
+  const statusEl = _byId('qwen-persona-status');
+  try {
+    const r = await api('POST', '/qwen/persona', { persona });
+    if (statusEl) {
+      statusEl.textContent = r.customized ? '已自定义' : '使用默认';
+      statusEl.style.color = r.customized ? 'var(--green)' : 'var(--text3)';
+    }
+    toast(r.customized ? '🎭 小吉人设已保存（新会话生效）' : '🎭 已恢复默认人设', 'success');
+  } catch(e) {
+    toast('保存失败: ' + e.message, 'error');
+  }
+}
+async function resetQwenPersona() {
+  const input = _byId('qwen-persona-input');
+  if (input) input.value = '';
+  await saveQwenPersona();
 }
 
 // v0.101：加载追踪列表（最近 10 条）

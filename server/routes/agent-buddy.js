@@ -795,22 +795,32 @@ var buddyCtx = {
         qwenEnabled = qwenManagerMod.getConfig().enabled;
       } catch (e) { qwenEnabled = false; }
 
-      if (qwenEnabled && !officeAction && actionRoute.mode === 'conversation' && !message.startsWith('__')) {
-        try {
-          console.log('[agent-buddy] [qwen] 内核分流 userId=' + userId + ' msg="' + message.slice(0, 40) + '"');
-          var qwenResp = await qwenManagerMod.chat(userId, message, {
-            approvalMode: 'ask',   // 工具审批 → 前端确认框（ask 模式）
-            timeoutMs: 240000,
-          });
-          if (qwenResp.ok) {
-            runtimeResult = { content: qwenResp.result || '' };
-            console.log('[agent-buddy] [qwen] 回复 ' + (qwenResp.result || '').length + ' 字, turns=' + qwenResp.numTurns + ', approvals=' + qwenResp.approvalCount);
-          } else {
-            console.warn('[agent-buddy] [qwen] 失败:', JSON.stringify(qwenResp.error).slice(0, 200));
-            runtimeResult = { content: '（Qwen 内核暂时不可用，已切换到常规模式）' };
+      if (qwenEnabled && !officeAction && !message.startsWith('__')) {
+        // B6c: 分流范围 — conversation 全走 Qwen；
+        //   single/conversational_action 仅当 capabilities 全是 Qwen 能处理的
+        //   （web_search/web_fetch/code_execution/query_project_context）才走 Qwen，
+        //   涉及 ACMS 特有能力（image/music/email/document/video/office）保持旧引擎。
+        var _qwenSafeCaps = new Set(['web_search', 'web_fetch', 'code_execution', 'query_project_context']);
+        var _caps = (actionRoute.capabilities || []);
+        var _qwenCanHandle = actionRoute.mode === 'conversation' ||
+          (_caps.length > 0 && _caps.every(function(c) { return _qwenSafeCaps.has(c); }));
+        if (_qwenCanHandle) {
+          try {
+            console.log('[agent-buddy] [qwen] 内核分流 userId=' + userId + ' mode=' + actionRoute.mode + ' caps=' + JSON.stringify(_caps) + ' msg="' + message.slice(0, 40) + '"');
+            var qwenResp = await qwenManagerMod.chat(userId, message, {
+              approvalMode: 'ask',   // 工具审批 → 前端确认框（ask 模式）
+              timeoutMs: 240000,
+            });
+            if (qwenResp.ok) {
+              runtimeResult = { content: qwenResp.result || '' };
+              console.log('[agent-buddy] [qwen] 回复 ' + (qwenResp.result || '').length + ' 字, turns=' + qwenResp.numTurns + ', approvals=' + qwenResp.approvalCount);
+            } else {
+              console.warn('[agent-buddy] [qwen] 失败:', JSON.stringify(qwenResp.error).slice(0, 200));
+              runtimeResult = { content: '（Qwen 内核暂时不可用，已切换到常规模式）' };
+            }
+          } catch (qErr) {
+            console.warn('[agent-buddy] [qwen] 异常，fallback runToolLoop:', qErr.message);
           }
-        } catch (qErr) {
-          console.warn('[agent-buddy] [qwen] 异常，fallback runToolLoop:', qErr.message);
         }
       }
       if (officeAction) {

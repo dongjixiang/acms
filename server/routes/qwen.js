@@ -85,4 +85,13 @@ router.post('/config', authMiddleware, (req, res) => {
   res.json({ ok: true, config: qwenManager.setConfig({ enabled, maxSessions, idleTimeoutMs }) });
 });
 
+// B6b: 人设读写
+router.get('/persona', authMiddleware, (req, res) => {
+  res.json({ ok: true, ...qwenManager.getPersonaForEdit() });
+});
+router.post('/persona', authMiddleware, (req, res) => {
+  const { persona } = req.body || {};
+  res.json({ ok: true, ...qwenManager.setPersona(persona) });
+});
+
 module.exports = router;
