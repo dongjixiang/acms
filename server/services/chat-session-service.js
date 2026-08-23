@@ -221,6 +221,51 @@ function cleanSessionMessages(sessionId, opts = {}) {
   };
 }
 
+// v0.117d：自由对话 session → 创建隐藏 requirement（共享 chat-intent.js 逻辑）
+//   让 /requirements/:id/assist/:method + /stream 接受 sess-xxx 自动 resolve
+//   → connectAssistStream 在自由对话模式可直接复用主流程 SSE 流式卡片
+//   不重复 chat-intent.js:21 的实现（避免回归），新写一份独立函数
+function getOrCreateSessionRequirement(sessionId) {
+  if (!sessionId) return null;
+  try {
+    const { collection } = require('../db/connection');
+    const mem = collection('buddy_memory').findOne(m => m.key === 'session_req:' + sessionId);
+    if (mem) {
+      const existing = reqStore.getById(mem.value);
+      if (existing) return existing;
+    }
+    const projectSlug = 'agent-buddy-actions';
+    const projectStore = require('../stores/project-store');
+    let project = collection('projects').findOne(p => p.slug === projectSlug);
+    if (!project) {
+      project = projectStore.create({
+        name: '小吉动作记录', slug: projectSlug,
+        description: '小吉即时聊天动作的隐藏运行容器。',
+        owner: 'system',
+      });
+      collection('projects').update(p => p.id === project.id, { system_project: 1 });
+      project = collection('projects').findOne(p => p.id === project.id) || project;
+    }
+    const req = reqStore.create({
+      projectId: project.id,
+      title: '自由对话会话 · ' + sessionId,
+      description: '自由对话会话的隐藏运行容器（音乐/视频/图片等辅助工具）。',
+      createdBy: 'system', status: 'idea', role: 'system',
+    });
+    reqStore.update(req.id, { chat_mode: 'free', system_record: 1 });
+    const value = req.id;
+    if (mem) {
+      collection('buddy_memory').update(m => m.key === 'session_req:' + sessionId, { value, updated_at: new Date().toISOString() });
+    } else {
+      collection('buddy_memory').insert({ key: 'session_req:' + sessionId, user_id: 'system', value, updated_at: new Date().toISOString() });
+    }
+    return reqStore.getById(req.id);
+  } catch (e) {
+    console.warn('[chat-session-service.getOrCreateSessionRequirement] 失败:', e.message);
+    return null;
+  }
+}
+
 // ── Messages ──
 
 function appendMessage(sessionId, role, content, meta) {
@@ -293,6 +338,7 @@ module.exports = {
   loadHistoryForLLM,
   isFirstUserMessage,
   cleanSessionMessages,  // v0.117: 自由对话清理消息
+  getOrCreateSessionRequirement,  // v0.117d: 自由对话 → hidden REQ 解析（供 requirements.js 路由用）
   // Title
   extractTitleN,
   generateAutoTitle,

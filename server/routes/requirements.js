@@ -5,6 +5,7 @@ const reqStore = require('../stores/requirement-store');
 const eventBus = require('../services/event-bus');
 const reqService = require('../services/requirement-service');
 const modelStore = require('../stores/model-store');
+const chatSessionService = require('../services/chat-session-service');  // v0.117d: sess-xxx resolve
 
 // 创建需求
 router.post('/', async (req, res, next) => {
@@ -745,8 +746,16 @@ router.post('/:id/assist/run', async (req, res, next) => {
 router.post('/:id/assist/:method', async (req, res, next) => {
   try {
     const { method } = req.params;
+    let { id: reqId } = req.params;
+    // 🆕 v0.117d：自由对话 sess-xxx → 自动 resolve hidden requirement
+    //   让 connectAssistStream 在自由对话模式直接复用（与主流程 REQ-XXX 一致路径）
+    if (reqId.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(reqId);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      reqId = sessionReq.id;
+    }
     const { modelId, role, productName } = req.body || {};
-    const reqRec = reqStore.getById(req.params.id);
+    const reqRec = reqStore.getById(reqId);
     if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
     if (reqRec.status !== 'idea' && method !== 'health_check' && method !== 'clean' && method !== 'music' && method !== 'video' && method !== 'image_gen' && method !== 'screenplay') {
       return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
@@ -760,7 +769,7 @@ router.post('/:id/assist/:method', async (req, res, next) => {
     const manualBrief = (() => { try { return JSON.parse(reqRec.thinking_brief || 'null'); } catch { return null; } })();
     const manualRound = manualBrief?.chat_round || 1;
     const manualFocus = manualBrief?.followup_question || '';
-    setImmediate(() => svc.runAssistJob(req.params.id, { ...req.body, modelId, role, chatRound: manualRound, followupQuestion: manualFocus, deepDiveOf, productName })
+setImmediate(() => svc.runAssistJob(reqId, { ...req.body, modelId, role, chatRound: manualRound, followupQuestion: manualFocus, deepDiveOf, productName })
       .catch(e => console.error(`[assist.${method}] 任务异常:`, e.message)));
 
     res.status(202).json({ method, status: 'generating' });
@@ -813,7 +822,14 @@ router.post('/:id/assist/:method/regenerate', async (req, res, next) => {
 router.get('/:id/assist/:method/stream', async (req, res, next) => {
   try {
     const { method } = req.params;
-    const reqRec = reqStore.getById(req.params.id);
+    let reqId = req.params.id;
+    // 🆕 v0.117d：自由对话 sess-xxx → 自动 resolve（与 POST /assist/:method 一致）
+    if (reqId.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(reqId);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      reqId = sessionReq.id;
+    }
+    const reqRec = reqStore.getById(reqId);
     if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
 
     const svc = assists.getAssist(method);
@@ -837,7 +853,7 @@ router.get('/:id/assist/:method/stream', async (req, res, next) => {
     //   视频任务需要更长等待（POST /v1/videos 可能数分钟才返回）
     const maxIter = method === 'video' ? 120 : 45;  // 视频等 240s，其他等 90s
     for (let i = 0; i < maxIter; i++) {
-      const fresh = reqStore.getById(req.params.id);
+      const fresh = reqStore.getById(reqId);
       if (!fresh) { send('error', { message: '需求已删除' }); break; }
 
       let assistData = null;
