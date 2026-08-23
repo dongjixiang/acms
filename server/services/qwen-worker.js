@@ -104,6 +104,9 @@ class QwenSession {
     this.turnCount = 0;
     this.approvalCount = 0;
     this._inFlight = false;  // ask 进行中（防空闲回收误杀）
+    this._askQueue = [];     // 🆕 修复（2026-08-23）：并发消息队列 —— 同一会话同时只允许一个 ask 在飞
+                             //   _pendingResolve 是单值，并发 ask 会互相覆盖（第二条覆盖第一条的 resolve
+                             //   → 第一条永不 resolve 直到超时）。队列串行化解决。
     this.events = [];   // 事件流缓冲（trace）
     this.lastResult = null;
     this._initTimeout = null;
@@ -183,6 +186,8 @@ class QwenSession {
         this._pendingResolve = null;
         r({ type: 'result', subtype: 'cli_exit', is_error: true, error: { message: `CLI exited with code ${code}` } });
       }
+      // 🆕 修复（2026-08-23）：CLI 退出 → 队列中排队的 ask 全部 reject（否则永远挂起）
+      this._flushQueue(new Error(`CLI exited with code ${code}`));
     });
 
     // 握手：发 initialize 等 ACK
@@ -200,7 +205,22 @@ class QwenSession {
 
   // ---------- 消息 ----------
   async ask(prompt, opts = {}) {
+    // 🆕 修复（2026-08-23）：并发消息串行化
+    //   同一会话同时只允许一个 ask 在飞 —— _pendingResolve 是单值，并发 ask 会互相覆盖：
+    //   第二条消息的 resolve 覆盖第一条 → 第一条永不 resolve（干等到超时），第二条拿到错乱结果。
+    //   用户连发两条消息（如"改一下" + "好了么？"）必踩。这里排队串行执行。
+    if (this._inFlight) {
+      return new Promise((resolve, reject) => {
+        this._askQueue.push({ prompt, opts, resolve, reject });
+      });
+    }
+    return this._doAsk(prompt, opts);
+  }
+
+  async _doAsk(prompt, opts = {}) {
     if (!this.ready || !this.child || this.child.exitCode !== null) {
+      // 🆕 修复（2026-08-23）：未就绪 → 队列全部 reject（快速失败，不干等超时）
+      this._flushQueue(new Error('Qwen 会话未就绪或已退出'));
       throw new Error('Qwen 会话未就绪或已退出');
     }
     this.lastActivityAt = Date.now();
@@ -231,6 +251,12 @@ class QwenSession {
     this._inFlight = false;
     this._onDelta = null;
     this.lastResult = result;
+
+    // 🆕 修复（2026-08-23）：当前 ask 完成 → 处理队列中下一条
+    const next = this._askQueue.shift();
+    if (next) {
+      this._doAsk(next.prompt, next.opts).then(next.resolve, next.reject);
+    }
     return result;
   }
 
@@ -361,7 +387,11 @@ class QwenSession {
         this._emit({ type: 'stream_event', session_id: this.sessionId, event: msg.event });
         // B7: 真流式 — text_delta 实时回调
         if (this._onDelta && msg.event && msg.event.type === 'content_block_delta' && msg.event.delta && msg.event.delta.type === 'text_delta') {
-          try { this._onDelta(msg.event.delta.text || ''); } catch (e) { debug('onDelta 异常:', e.message); }
+          const _dt = msg.event.delta.text || '';
+          // 🆕 修复（2026-08-23）：空 text_delta 不过滤会导致前端创建空气泡
+          //   （updateStreamMessage('') 用空 accumulated 建气泡，只有 cursor 没文字）
+          //   thinking 转 text 边界、流式分段间隙可能发空串 —— 直接跳过
+          if (_dt) { try { this._onDelta(_dt); } catch (e) { debug('onDelta 异常:', e.message); } }
         }
         // 🆕 P0 方案B: tool_use 块开始（Anthropic stream 协议：tool_use 块独立于 text 块）
         if (msg.event && msg.event.type === 'content_block_start' && msg.event.content_block && msg.event.content_block.type === 'tool_use') {
@@ -470,10 +500,21 @@ class QwenSession {
     };
   }
 
+  // 🆕 修复（2026-08-23）：清空排队中的 ask（CLI 退出 / 会话关闭时调用，防止 promise 永远挂起）
+  _flushQueue(err) {
+    if (!this._askQueue || this._askQueue.length === 0) return;
+    const queued = this._askQueue.splice(0);
+    for (const item of queued) {
+      try { item.reject(err); } catch (e) { /* ignore */ }
+    }
+  }
+
   close() {
     if (this.closed) return;
     this.closed = true;
     this.ready = false;
+    // 🆕 修复（2026-08-23）：关闭 → 队列中排队的 ask 全部 reject（否则永远挂起）
+    this._flushQueue(new Error('Qwen 会话已关闭'));
     try {
       if (this.child && this.child.stdin) this.child.stdin.end();
     } catch (e) { /* ignore */ }
@@ -515,6 +556,7 @@ class QwenSessionManager {
     this.onApproval = opts.onApproval || null;
     this.onEvent = opts.onEvent || null;
     this.sessions = new Map(); // key: userId → QwenSession
+    this._creating = new Map(); // 🆕 修复（2026-08-23）：创建锁 —— key: userId → Promise（防并发双 spawn）
     this._idleTimer = setInterval(() => this._reapIdle(), 60 * 1000);
     this._idleTimer.unref?.();
   }
@@ -552,52 +594,69 @@ class QwenSessionManager {
    * 获取（或创建）用户会话
    */
   async getSession(userId, opts = {}) {
+    // 🆕 修复（2026-08-23）：创建锁 —— 同一 userId 并发请求时只允许一个创建流程
+    //   否则两个请求同时发现 sessions 无此 userId → 各自 spawn CLI（双进程、同 session 双写 stdin）
+    //   实测：02:36:46/47 两个 Qwen CLI 进程同 session-id 4043f398（v0.114n 测试时）
+    if (this._creating.has(userId)) {
+      debug(`getSession 等待创建锁 ${userId}`);
+      return this._creating.get(userId);
+    }
+
     let session = this.sessions.get(userId);
     if (session && session.ready && session.child && session.child.exitCode === null) {
       return session;
     }
     if (session) { try { session.close(); } catch (e) { /* ignore */ } this.sessions.delete(userId); }
 
-    // 并发上限
-    if (this.sessions.size >= this.maxSessions) {
-      // 淘汰最久未活动
-      let oldestKey = null, oldestAt = Infinity;
-      for (const [k, s] of this.sessions) {
-        if (s.lastActivityAt < oldestAt) { oldestAt = s.lastActivityAt; oldestKey = k; }
+    const creatingPromise = (async () => {
+      // 并发上限
+      if (this.sessions.size >= this.maxSessions) {
+        // 淘汰最久未活动
+        let oldestKey = null, oldestAt = Infinity;
+        for (const [k, s] of this.sessions) {
+          if (s.lastActivityAt < oldestAt) { oldestAt = s.lastActivityAt; oldestKey = k; }
+        }
+        if (oldestKey) {
+          debug(`会话池满(${this.maxSessions})，淘汰 ${oldestKey}`);
+          try { this.sessions.get(oldestKey).close(); } catch (e) { /* ignore */ }
+          this.sessions.delete(oldestKey);
+        }
       }
-      if (oldestKey) {
-        debug(`会话池满(${this.maxSessions})，淘汰 ${oldestKey}`);
-        try { this.sessions.get(oldestKey).close(); } catch (e) { /* ignore */ }
-        this.sessions.delete(oldestKey);
-      }
+
+      const model = await this._resolveModel(opts.modelId);
+      if (!model) throw new Error('没有可用模型（llm_models 为空或无 active）');
+
+      const cwd = opts.cwd || path.join(process.env.ACMS_DATA_DIR || path.join(__dirname, '..', 'data'), 'qwen-workspace', userId || 'default');
+      fs.mkdirSync(cwd, { recursive: true });
+
+      const modelStore = require('../stores/model-store');
+      const apiKey = modelStore.getDecryptedKey(model.id);
+      if (!apiKey) throw new Error(`模型 ${model.name} 未配置 API Key`);
+
+      session = new QwenSession({
+        model: model.model,
+        authType: this._modelToAuthType(model),
+        baseUrl: model.baseUrl,
+        apiKey,
+        cwd,
+        sessionId: opts.sessionId,
+        onApproval: this.onApproval || (async () => true),
+        onEvent: this.onEvent || null,
+        // B6: 人设注入（透传）
+        systemPrompt: opts.systemPrompt || undefined,
+        appendSystemPrompt: opts.appendSystemPrompt || undefined,
+      });
+      await session.start();
+      this.sessions.set(userId, session);
+      return session;
+    })();
+
+    this._creating.set(userId, creatingPromise);
+    try {
+      return await creatingPromise;
+    } finally {
+      this._creating.delete(userId);
     }
-
-    const model = await this._resolveModel(opts.modelId);
-    if (!model) throw new Error('没有可用模型（llm_models 为空或无 active）');
-
-    const cwd = opts.cwd || path.join(process.env.ACMS_DATA_DIR || path.join(__dirname, '..', 'data'), 'qwen-workspace', userId || 'default');
-    fs.mkdirSync(cwd, { recursive: true });
-
-    const modelStore = require('../stores/model-store');
-    const apiKey = modelStore.getDecryptedKey(model.id);
-    if (!apiKey) throw new Error(`模型 ${model.name} 未配置 API Key`);
-
-    session = new QwenSession({
-      model: model.model,
-      authType: this._modelToAuthType(model),
-      baseUrl: model.baseUrl,
-      apiKey,
-      cwd,
-      sessionId: opts.sessionId,
-      onApproval: this.onApproval || (async () => true),
-      onEvent: this.onEvent || null,
-      // B6: 人设注入（透传）
-      systemPrompt: opts.systemPrompt || undefined,
-      appendSystemPrompt: opts.appendSystemPrompt || undefined,
-    });
-    await session.start();
-    this.sessions.set(userId, session);
-    return session;
   }
 
   /**

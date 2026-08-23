@@ -4,6 +4,9 @@
   --bg: #0f0f1a;
   --bg2: #1a1a2e;
   --bg3: #252540;
+  --bg4: #2e2e4a;
+  --border1: rgba(255,255,255,.08);
+  --text3: #777;
   --text: #e0e0e0;
   --text2: #9090a0;
   /* Office 编辑器独立主色 (OO design language) */
@@ -41,6 +44,9 @@
   --bg: #f5f5f7;
   --bg2: #ffffff;
   --bg3: #eeeef1;
+  --bg4: #e2e2e8;
+  --border1: rgba(0,0,0,.08);
+  --text3: #8a8a98;
   --text: #1a1a2e;
   --text2: #6e6e80;
   --accent: #0ea89d;
@@ -67,6 +73,9 @@
   --bg: #fef9ef;
   --bg2: #fffbf0;
   --bg3: #f5eedc;
+  --bg4: #ece2cc;
+  --border1: rgba(80,60,30,.12);
+  --text3: #a0917a;
   --text: #3d3022;
   --text2: #8b7b65;
   --accent: #5b8c5a;
@@ -4202,25 +4211,25 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
 .ap-tool-card-section-head { color: var(--text3, #888); font-size: 10px; margin-bottom: 3px; }
 .ap-tool-card-path { color: var(--text2, #ccc); font-family: monospace; font-size: 11px; margin-bottom: 2px; word-break: break-all; }
 .ap-tool-card-code {
-  background: rgba(0,0,0,.25); padding: 5px 7px; border-radius: 3px;
+  background: var(--bg4, rgba(0,0,0,.12)); padding: 5px 7px; border-radius: 3px;
   font-family: monospace; font-size: 11px; max-height: 200px; overflow: auto;
   white-space: pre-wrap; word-break: break-all;
 }
 .ap-tool-card-pattern { color: var(--accent2, #ffd93d); font-family: monospace; font-size: 11px; }
 .ap-tool-card-url { color: var(--accent, #0ea89d); font-family: monospace; font-size: 11px; word-break: break-all; }
 .ap-tool-card-json {
-  background: rgba(0,0,0,.25); padding: 5px 7px; border-radius: 3px;
+  background: var(--bg4, rgba(0,0,0,.12)); padding: 5px 7px; border-radius: 3px;
   font-family: monospace; font-size: 11px; max-height: 250px; overflow: auto;
   white-space: pre-wrap;
 }
 .ap-tool-card-mcp-name { color: #c084fc; font-size: 11px; margin-bottom: 3px; }
 .ap-tool-card-output {
-  background: rgba(0,0,0,.2); padding: 5px 7px; border-radius: 3px;
+  background: var(--bg4, rgba(0,0,0,.12)); padding: 5px 7px; border-radius: 3px;
   font-family: monospace; font-size: 11px; max-height: 300px; overflow: auto;
   white-space: pre-wrap; word-break: break-all; margin: 0;
 }
 .ap-tool-card-diff {
-  background: rgba(0,0,0,.25); padding: 5px 7px; border-radius: 3px;
+  background: var(--bg4, rgba(0,0,0,.12)); padding: 5px 7px; border-radius: 3px;
   font-family: monospace; font-size: 11px; max-height: 250px; overflow: auto;
   white-size: 11px; margin: 0;
 }
@@ -4280,7 +4289,7 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
 .ap-thinking-toggle { margin-left: auto; cursor: pointer; user-select: none; }
 .ap-thinking-body {
   margin: 0; padding: 6px 10px;
-  background: rgba(0,0,0,.2);
+  background: var(--bg4, rgba(0,0,0,.1));
   color: var(--text2, #ccc);
   font-family: monospace; font-size: 11px;
   max-height: 300px; overflow: auto;

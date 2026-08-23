@@ -1887,8 +1887,6 @@ function handleStream(r) {
                   accumulated += evt.chunk || '';
                   updateStreamMessage(accumulated);
                   _lastBubbleEvent = 'text';
-                } else if (evt.type === 'action') {
-                  actionData = evt;
                 } else if (evt.type === 'speed') {
                   streamSpeed = Math.max(10, Math.min(100, evt.speed || 30));
                 } else if (evt.type === 'progress') {
@@ -1960,12 +1958,16 @@ function handleStream(r) {
       removeThinking();
       // v0.96: 不清除 op logs — 让操作日志条保留在流式文字上方，等 finalizeStream 再清
       var cleanText = text.replace(/【face:\w+】/g, '').replace(/【action:[^:]+:[^】]+】/g, '').trim();
+      // 🆕 修复（2026-08-23）：空文本不创建气泡（空气泡根因防御）
+      //   后端 onDelta 已过滤空串（qwen-worker.js），这里前端兜底：
+      //   没有现成气泡时，空文本直接跳过 —— 避免 updateStreamMessage('') 创建只有 cursor 的空气泡
+      var msgEl = document.getElementById('ap-stream-bubble');
+      if (!cleanText && !msgEl) return;
       var mdFn = typeof renderMarkdown === 'function' ? renderMarkdown : function(t) { return escHtml(t); };
       var container = document.querySelector('#ap-messages');
       if (!container) return;
 
       // 使用固定元素（避免流式期间反复创建）
-      var msgEl = document.getElementById('ap-stream-bubble');
       if (!msgEl) {
         msgEl = document.createElement('div');
         msgEl.id = 'ap-stream-bubble';
