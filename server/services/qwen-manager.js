@@ -61,7 +61,11 @@ function buildHistoryPrompt(historyMessages, currentPrompt) {
   return lines.join('\n');
 }
 
-let config = { enabled: false, maxSessions: 4, idleTimeoutMs: 30 * 60 * 1000 };
+// v0.117：默认空闲回收 2h（原 30min 太短，用户聊完一阵放下再回来就被 reap，session 重建丢上下文）
+//   120 服务器 1.87GB 内存 × maxSessions=4 × ~120MB/会话 ≈ 480MB 上限内。
+//   已配 system_configs.qwen_worker_idle_ms 优先；此处仅作为代码默认值（admin UI 改后的持久化值重启生效）。
+const DEFAULT_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+let config = { enabled: false, maxSessions: 4, idleTimeoutMs: DEFAULT_IDLE_TIMEOUT_MS };
 let manager = null;
 
 // ---------- 配置持久化 ----------
@@ -91,7 +95,7 @@ function loadConfigFromDb() {
     const v = readSysConfig(SYSTEM_CFG_ENABLED, false);
     config.enabled = v === true || v === 'true' || v === 1 || v === '1';
     config.maxSessions = parseInt(readSysConfig(SYSTEM_CFG_MAX, 4), 10) || 4;
-    config.idleTimeoutMs = parseInt(readSysConfig(SYSTEM_CFG_IDLE, 30 * 60 * 1000), 10) || 30 * 60 * 1000;
+    config.idleTimeoutMs = parseInt(readSysConfig(SYSTEM_CFG_IDLE, DEFAULT_IDLE_TIMEOUT_MS), 10) || DEFAULT_IDLE_TIMEOUT_MS;
   } catch (e) { /* DB 未就绪 */ }
 }
 try { loadConfigFromDb(); } catch (e) { /* ignore */ }
