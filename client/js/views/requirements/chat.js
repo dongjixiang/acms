@@ -1213,7 +1213,11 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
             sessionReqId = evt.sessionRequirementId || null;
             musicCardJson = evt.musicCardJson || null;
             if (evt.error) {
-              if (streamBubbleEl) streamBubbleEl.textContent = '⚠️ AI 暂时无响应: ' + String(evt.error).slice(0, 100);
+              // 🆕 v0.117x: error 安全转换 —— 后端可能传对象（String(对象)=[object Object]）
+              const errText = (evt.error && typeof evt.error === 'object')
+                ? (evt.error.message || JSON.stringify(evt.error))
+                : String(evt.error);
+              if (streamBubbleEl) streamBubbleEl.textContent = '⚠️ AI 暂时无响应: ' + errText.slice(0, 100);
             } else if (evt.result && streamBubbleEl) {
               streamBubbleEl.textContent = evt.result;
             }

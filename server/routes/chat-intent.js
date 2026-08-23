@@ -362,11 +362,16 @@ router.post('/detect-and-respond', async (req, res, next) => {
 
         // end 事件：前端 finalize bubble + 显示 result
         try {
+          // 🆕 v0.117x: error 安全序列化 —— qwen-worker 返回 {message:'...'} 普通对象，
+          //   原样传对象 → 前端 String(对象) = [object Object]
+          const errText = (qr.error && typeof qr.error === 'object')
+            ? (qr.error.message || JSON.stringify(qr.error)).slice(0, 200)
+            : (qr.error || null);
           res.write(`data: ${JSON.stringify({
             type: 'end',
             ok: qr.ok,
             result: qwenAiReply,
-            error: qr.error || null,
+            error: errText,
             sessionRequirementId: contextReqId !== reqId ? contextReqId : undefined,
             musicCardJson: musicCardJson || null,
           })}\n\n`);
