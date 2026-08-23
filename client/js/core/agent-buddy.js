@@ -1659,17 +1659,48 @@ function isNonPlanTerminal(state) {
       if (approvalPollTimer) { clearInterval(approvalPollTimer); approvalPollTimer = null; }
     }
     function handleApprovalPrompt(ap) {
-      // 🆕 P1 方案B（卡片化）：tool-card 已通过 SSE await_approval 渲染按钮，
-      //   用户从卡片点 ✅/❌ → CustomEvent 'qwen:tool-card:decision' 走 onToolCardDecision
-      //   approvalPolls 不再弹 showConfirm 兜底（避免重复弹窗）。
-      //   仅当 tool-card 缺失（race condition: SSE 还没到但审批已挂起）才回退到弹窗。
-      if (ap.toolUseId) {
-        // 已有 toolUseId（P1 后端补的） → SSE 应已渲染按钮；标记 seenApprovals 防再处理
-        return;
-      }
       // v0.114i: ask_user_question → 问题表单（模型期望用户回答，不是 allow/deny）
       if (ap.isUserQuestion && ap.questions && ap.questions.length > 0) {
         handleUserQuestion(ap);
+        return;
+      }
+      // 🆕 P1 方案B（卡片化）：tool-card 已通过 SSE await_approval 渲染按钮，
+      //   用户从卡片点 ✅/❌ → CustomEvent 'qwen:tool-card:decision' 走 onToolCardDecision
+      //   approvalPolls 不再弹 showConfirm 兜底（避免重复弹窗）。
+      //   🆕 修复（2026-08-23）：有 toolUseId 时不能直接 return —— 卡片可能因
+      //   reset()/缓存/SSE 丢失而没渲染（审批入口永久消失 → Qwen CLI 60s 超时中断）。
+      //   给 SSE 卡片 1.5s 渲染窗口：窗口内卡片出现则信任卡片；否则 fallback 弹窗。
+      if (ap.toolUseId) {
+        var cardEl = null;
+        try {
+          cardEl = document.querySelector('.ap-tool-card[data-tool-use-id="' + ap.toolUseId + '"]');
+        } catch (e) { /* ignore */ }
+        if (cardEl) return;  // 卡片已渲染（含审批按钮）→ 信任卡片
+        // 卡片还没到 → 等一个轮询周期再看，还没到就弹窗兜底
+        setTimeout(function() {
+          var el2 = null;
+          try {
+            el2 = document.querySelector('.ap-tool-card[data-tool-use-id="' + ap.toolUseId + '"]');
+          } catch (e) { /* ignore */ }
+          if (el2) return;  // SSE 卡片补到了
+          // SSE 卡片确实没渲染 → showConfirm 兜底（否则审批挂起 → CLI 超时中断）
+          var toolName = ap.toolName || '未知工具';
+          var input = ap.input || {};
+          var desc = toolName;
+          if (input.file_path) desc += ' → ' + input.file_path;
+          else if (input.command) desc += ' → ' + String(input.command).slice(0, 80);
+          else if (input.url) desc += ' → ' + String(input.url).slice(0, 80);
+          else if (input.content && typeof input.content === 'string') desc += '（内容 ' + input.content.length + ' 字符）';
+          showConfirm(desc + '\n\n是否允许小吉执行这个操作？', {
+            title: '🔧 工具审批', confirmText: '允许', cancelText: '拒绝', type: 'info',
+          }).then(function(allow) {
+            fetch('/api/qwen/approvals/' + ap.approvalId, {
+              method: 'POST',
+              headers: getAuthHeaders(),
+              body: JSON.stringify({ decision: allow ? 'allow' : 'deny' }),
+            }).catch(function() {});
+          });
+        }, 1500);
         return;
       }
       var toolName = ap.toolName || '未知工具';

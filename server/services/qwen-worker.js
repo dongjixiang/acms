@@ -195,7 +195,11 @@ class QwenSession {
       this._handshakeResolve = resolve;
       this._handshakeReject = reject;
       this._initTimeout = setTimeout(() => reject(new Error('Qwen 握手超时 (15s)')), 15000);
-      this._sendControl({ subtype: 'initialize', hooks: null, mcpServers: null, sdkMcpServers: null, agents: null });
+      // 🆕 修复（2026-08-23）：timeout.canUseTool 提到 600s（CLI 上限）——
+      //   CLI 默认 can_use_tool 审批超时 60s，ACMS ask 模式审批挂起等前端决策
+      //   （5min 自动 deny）→ 前端没及时点 → CLI 60s 先超时 → "Control request timeout"
+      //   → 工具调用（如 edit 文件）中断。提到 600s 让 CLI 等 ACMS 的 deny 兜底。
+      this._sendControl({ subtype: 'initialize', hooks: null, mcpServers: null, sdkMcpServers: null, agents: null, timeout: { canUseTool: 600000 } });
     });
 
     this.ready = true;

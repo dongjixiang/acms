@@ -241,20 +241,42 @@ if (totalCards >= GROUP_THRESHOLD) {
   }
 
   // ============ Reset ============
+  function hasAwaitingCard() {
+    for (var key in _cards) {
+      if (_cards[key] && _cards[key].status === 'awaiting') return true;
+    }
+    return false;
+  }
+
   function reset() {
     // 🆕 P2：移除上一轮卡片 DOM（防止多轮对话卡片叠加）
+    // 🆕 修复（2026-08-23）：**跳过 awaiting 状态的审批卡片** —— 用户连发消息时
+    //   sendMessage → reset() 会把"等待审批"的卡片删掉 → 审批入口永久消失 →
+    //   Qwen CLI 60s 等不到 control_response → "Control request timeout" → 编辑中断
+    //   只清已完成/失败/已决策的卡片，待审批卡片保留到本轮结束。
     for (var key in _cards) {
-      if (_cards[key] && _cards[key].el && _cards[key].el.parentNode) {
-        _cards[key].el.parentNode.removeChild(_cards[key].el);
+      var c = _cards[key];
+      if (c && c.status === 'awaiting') continue;  // 保留待审批卡片
+      if (c && c.el && c.el.parentNode) {
+        c.el.parentNode.removeChild(c.el);
       }
     }
+    // 清理非 awaiting 的卡片引用
+    for (var key2 in _cards) {
+      var c2 = _cards[key2];
+      if (c2 && c2.status !== 'awaiting') delete _cards[key2];
+    }
+    // thinking 卡片：本轮结束删掉（新一轮 handleThinking 重建）
     if (_thinkingEl && _thinkingEl.parentNode) _thinkingEl.parentNode.removeChild(_thinkingEl);
-    if (_groupEl && _groupEl.parentNode) _groupEl.parentNode.removeChild(_groupEl);
-    _cards = Object.create(null);
-    _thinkingText = '';
     _thinkingEl = null;
-    _groupEl = null;
-    _groupIds = [];
+    _thinkingText = '';
+    // group 容器：有待审批卡片时必须保留（卡片在 group 里，删 group = 删卡片）
+    //   无 awaiting 卡片时正常清理
+    if (!hasAwaitingCard()) {
+      if (_groupEl && _groupEl.parentNode) _groupEl.parentNode.removeChild(_groupEl);
+      _groupEl = null;
+      _groupIds = [];
+    }
   }
 
   // ============ DOM helpers ============
