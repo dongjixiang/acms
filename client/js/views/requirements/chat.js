@@ -1136,7 +1136,6 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
     var hintEl = document.createElement('div');
     hintEl.className = 'chat-tool-hint';
     hintEl.textContent = '💡 工具调用完成，点击 ▶ 展开查看详情';
-    hintEl.style.cssText = 'font-size:11px;color:var(--text3);padding:4px 8px;text-align:center;';
     c.insertBefore(hintEl, anchor);
   }
 
