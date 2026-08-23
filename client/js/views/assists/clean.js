@@ -105,7 +105,8 @@ async function submitFreeCleanSelected(cardId, reqId) {
     const r = await api('POST', `/chat-sessions/${reqId}/clean`, { mode: 'selected', indices });
     card.remove();
     toast(`已清理 ${r.entries_removed || indices.length} 条记录，剩余 ${r.history_remaining || 0} 条`, 'success');
-    setTimeout(() => { if (typeof loadChatStream === 'function') loadChatStream(reqId); }, 800);
+    // v0.117b：自由对话模式独立 reload chat 流（不能调 loadChatStream —— 它走 /requirements/:id/supplement-history 报 REQ_NOT_FOUND）
+    setTimeout(() => { reloadFreeChatStream(reqId); }, 800);
   } catch (e) {
     toast('清理失败: ' + e.message, 'error');
   }
@@ -118,9 +119,44 @@ async function submitFreeCleanAll(cardId, reqId) {
     const card = document.getElementById(cardId);
     if (card) card.remove();
     toast(`已清理 ${r.entries_removed} 条记录`, 'success');
-    setTimeout(() => { if (typeof loadChatStream === 'function') loadChatStream(reqId); }, 800);
+    setTimeout(() => { reloadFreeChatStream(reqId); }, 800);
   } catch (e) {
     toast('清理失败: ' + e.message, 'error');
+  }
+}
+
+/**
+ * v0.117b：自由对话清理后 reload chat 流
+ *   不调 loadChatStream（走 /requirements/:id/supplement-history 会 REQ_NOT_FOUND）
+ *   独立 fetch chat_messages + 重渲染气泡（与 chat.js loadChatSessionMessages 同模式，但内联避免跨模块耦合）
+ */
+async function reloadFreeChatStream(reqId) {
+  if (!reqId || !reqId.startsWith('sess-')) return;
+  const container = document.getElementById('chat-stream-msgs-' + reqId);
+  if (!container) return;
+  try {
+    const r = await api('GET', '/chat-sessions/' + reqId + '/messages');
+    const messages = (r && r.messages) || [];
+    container.innerHTML = '';
+    if (messages.length === 0) {
+      container.innerHTML = '<div class="chat-free-welcome" style="text-align:center;padding:40px 20px;color:var(--text2)">'
+        + '<div style="font-size:32px;margin-bottom:8px">💬</div>'
+        + '<div style="font-size:15px;font-weight:500;color:var(--text);margin-bottom:4px">新对话</div>'
+        + '<div style="font-size:12px">问我任何问题，AI 会基于知识库和互联网帮你解答</div>'
+        + '</div>';
+      if (window._chatState && window._chatState[reqId]) window._chatState[reqId].histCount = 0;
+      return;
+    }
+    for (const m of messages) {
+      if (typeof renderChatBubble === 'function') {
+        renderChatBubble(container, { role: m.role, text: m.content || '', at: m.ts || new Date().toISOString() });
+      }
+    }
+    if (window._chatState && window._chatState[reqId]) window._chatState[reqId].histCount = messages.length;
+    if (typeof chatScrollToBottom === 'function') chatScrollToBottom(container);
+  } catch (e) {
+    console.error('[clean] reload chat 流失败:', e.message);
+    // 清理本身已成功，UI reload 失败不影响
   }
 }
 
