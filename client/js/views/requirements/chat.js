@@ -1129,6 +1129,13 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
     bubble.innerHTML = '<div class="ap-msg-text"></div><span class="ap-cursor">▍</span>';
     c.insertBefore(bubble, anchor.nextSibling);
     streamBubbleEl = bubble.querySelector('.ap-msg-text');
+
+    // 🆕 v0.117h: 添加展开提示（用户可能不知道要点击 ▶ 展开卡片）
+    var hintEl = document.createElement('div');
+    hintEl.className = 'chat-tool-hint';
+    hintEl.textContent = '💡 工具调用完成，点击 ▶ 展开查看详情';
+    hintEl.style.cssText = 'font-size:11px;color:var(--text3);padding:4px 8px;text-align:center;';
+    c.insertBefore(hintEl, anchor);
   }
 
   try {
