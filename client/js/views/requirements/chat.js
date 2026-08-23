@@ -1114,11 +1114,6 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
   if (window.ACMSQwenToolCard && window.ACMSQwenToolCard.setContainer) {
     window.ACMSQwenToolCard.setContainer(c);
   }
-  // 🆕 v0.117aa: 自由对话穿插模式禁用 group 合并 —— group 迁移会把穿插在
-  //   文本气泡间的卡片抽走合并（"新工具调用跑到上面的工具组里"），破坏时间顺序
-  if (window.ACMSQwenToolCard && window.ACMSQwenToolCard.setGroupEnabled) {
-    window.ACMSQwenToolCard.setGroupEnabled(false);
-  }
   // 移除 typing dots
   if (typingEl) { typingEl.remove(); typingEl = null; }
 
@@ -1185,6 +1180,12 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
             // 🆕 v0.117z: 上事件不是 text → 封存旧气泡开新气泡（按时间穿插）
             if (_lastBubbleEvent !== null && _lastBubbleEvent !== 'text') {
               finalizeCurrentBubble();
+            }
+            // 🆕 v0.117bb: 文本开始 = 回复段边界（与小吉 v0.115a onReplyStart 一致）
+            //   封存当前 group/计数 → 穿插场景每个工具独立 segment 不 group；
+            //   连续工具（无文本穿插）同段累计 ≥3 才合并 group
+            if (window.ACMSQwenToolCard && window.ACMSQwenToolCard.onReplyStart) {
+              window.ACMSQwenToolCard.onReplyStart();
             }
             var tb = ensureStreamBubble();
             accumulated += (evt.text || '');
