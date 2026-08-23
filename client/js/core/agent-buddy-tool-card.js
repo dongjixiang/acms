@@ -32,6 +32,9 @@
   // 🆕 v0.115a：当前"回复段"号（reset=新轮次、onReplyStart=回复开始 时递增；
   //   卡片创建时打标，group 迁移只迁同段 —— 回复前的工具一组，回复后的工具新一组）
   var _segment = 0;
+  // 🆕 v0.117aa: group 合并开关 —— 自由对话穿插模式关闭（group 迁移会把穿插在
+  //   文本气泡间的卡片抽走合并，破坏时间顺序）；小吉面板默认开启（3+ 折叠收纳）
+  var _groupEnabled = true;
 
   function getContainer() {
     // 🆕 v0.117k: 只在 _container 为 null 时 fallback，不检查 isConnected
@@ -119,7 +122,7 @@
     // 🆕 v0.117u: 统一用容器内查找锚点（不能 document.getElementById —— 小吉面板也有同 ID，会插错位置）
     var streamBubble = container.querySelector('#ap-stream-bubble');
 
-    if (totalCards >= GROUP_THRESHOLD) {
+    if (_groupEnabled && totalCards >= GROUP_THRESHOLD) {
       // 触发 group：把当前回复段已有卡片（含当前）打包到 group 容器
       if (!_groupEl) {
         _groupEl = createGroupEl(totalCards);
@@ -804,6 +807,7 @@ function paintHead(card) {
     reset: reset,
     onReplyStart: onReplyStart,   // 🆕 v0.115a：Agent 回复开始 → 封存当前 group（回复段分组）
     setContainer: function (c) { _container = c; },  // 🆕 v0.117f：自由对话窗口容器（#chat-stream-msgs-sess-xxx）也能渲染工具卡片
+    setGroupEnabled: function (v) { _groupEnabled = !!v; },  // 🆕 v0.117aa: 自由对话穿插模式关闭 group 合并
     debugCount: function () { return _apInsertedAt; },
   };
 })();

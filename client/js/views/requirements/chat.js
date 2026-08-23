@@ -1114,6 +1114,11 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
   if (window.ACMSQwenToolCard && window.ACMSQwenToolCard.setContainer) {
     window.ACMSQwenToolCard.setContainer(c);
   }
+  // 🆕 v0.117aa: 自由对话穿插模式禁用 group 合并 —— group 迁移会把穿插在
+  //   文本气泡间的卡片抽走合并（"新工具调用跑到上面的工具组里"），破坏时间顺序
+  if (window.ACMSQwenToolCard && window.ACMSQwenToolCard.setGroupEnabled) {
+    window.ACMSQwenToolCard.setGroupEnabled(false);
+  }
   // 移除 typing dots
   if (typingEl) { typingEl.remove(); typingEl = null; }
 
