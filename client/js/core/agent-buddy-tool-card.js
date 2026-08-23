@@ -237,14 +237,7 @@
     // 🆕 v0.117m: 确保 body 已创建（paintHead 会重画 body，但保留 innerHTML）
     if (card.status === 'pending') {
       paintHead(card);
-      // 调试：检查 body 是否存在
-      var debugBody = card.el.querySelector('.ap-tool-card-body');
-      console.log('[debug] phaseInputComplete: body exists:', !!debugBody, 'input:', JSON.stringify(card.input).slice(0, 100));
       paintInput(card);
-      // 调试：检查 body 内容
-      if (debugBody) {
-        console.log('[debug] after paintInput: body.innerHTML length:', debugBody.innerHTML.length);
-      }
     }
   }
 
@@ -261,15 +254,7 @@
     card.status = card.isError ? 'failed' : 'done';
     // 🆕 v0.117m: 先 paintHead 确保 body 存在，再 paintOutput 填充内容
     paintHead(card);
-    // 调试：检查 body 是否存在
-    var debugBody = card.el.querySelector('.ap-tool-card-body');
-    console.log('[debug] phaseResult: body exists:', !!debugBody, 'output length:', card.output?.length, 'isError:', card.isError);
     paintOutput(card);
-    // 调试：检查 body 内容
-    if (debugBody) {
-      console.log('[debug] after paintOutput: body.innerHTML length:', debugBody.innerHTML.length);
-      console.log('[debug] body.innerHTML:', debugBody.innerHTML.slice(0, 200));
-    }
   }
 
   // phase: approval_decided — 审批决策（ask 模式）
@@ -413,16 +398,7 @@ function paintHead(card) {
         e.stopPropagation();
         var body = card.el.querySelector('.ap-tool-card-body');
         var hidden = body.style.display === 'none';
-        console.log('[debug] toggle click: hidden=', hidden, 'bodyExists=', !!body);
         setBodyVisible(card, hidden);
-        // 验证展开后 body 高度
-        setTimeout(() => {
-          if (body) {
-            console.log('[debug] after setBodyVisible: body display=', body.style.display, 'height=', body.offsetHeight);
-          }
-          const cardRect = card.el.getBoundingClientRect();
-          console.log('[debug] card height after toggle:', cardRect.height);
-        }, 50);
       });
     }
     // 点 head 也能折叠/展开（除了 toggle / head-btn 按钮）

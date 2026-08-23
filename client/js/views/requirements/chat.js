@@ -1116,35 +1116,46 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
   }
   // 移除 typing dots
   if (typingEl) { typingEl.remove(); typingEl = null; }
-  // 创建流式气泡
-  var streamBubbleEl = null;
-  var accumulated = '';
+
+  // 🆕 v0.117z: 清掉遗留的旧 1px 占位 anchor（历史版本创建，非气泡）
   if (c) {
-    // 🆕 v0.117g: 创建 id="ap-stream-bubble" 锚点（自由对话窗口没有此元素）
-    //   agent-buddy-tool-card.js insertBeforeStreamBubble 依赖此 ID 定位插入点
-    //   没有它 → fallback 到 appendChild → 卡片被压到容器末尾 = "一条线"
-    // 🆕 v0.117u: 必须在容器内查找 —— document.getElementById 会拿到小吉面板的同 ID 锚点（插错窗口）
-    var anchor = c.querySelector('#ap-stream-bubble');
-    if (!anchor) {
-      anchor = document.createElement('div');
-      anchor.id = 'ap-stream-bubble';
-      // 🆕 v0.117k: 设置 min-height 防止 flex stretch 压塌
-      anchor.style.minHeight = '1px';
-      c.appendChild(anchor);
+    c.querySelectorAll('#ap-stream-bubble').forEach(function (a) {
+      if (!a.classList.contains('ap-stream-bubble')) a.remove();
+    });
+  }
+
+  // 🆕 v0.117z: 与小吉 B10 一致的穿插状态机
+  //   text_delta → 若上事件不是 text 则封存旧气泡开新气泡
+  //   tool_card → 若上事件是 text 则封存（卡片插到新位置前）
+  //   结果：thinking → 文本气泡 → 工具卡 → 文本气泡 → 工具卡 按实际时间交替
+  var streamBubbleEl = null;   // 当前流式文本气泡的 .ap-msg-text
+  var accumulated = '';
+  var _lastBubbleEvent = null; // 'text' | 'tool_card' | 'thinking' | 'progress' | null
+
+  function finalizeCurrentBubble() {
+    if (!streamBubbleEl) return;
+    var bubble = streamBubbleEl.closest('.ap-stream-bubble');
+    if (bubble) {
+      var cursor = bubble.querySelector('.ap-cursor');
+      if (cursor) cursor.remove();
+      bubble.removeAttribute('id');   // 清 id → 后续卡片 appendChild 到末尾（新位置）
+      bubble.classList.remove('ap-stream-bubble');  // 静态化（历史气泡不再被当锚点）
     }
+    streamBubbleEl = null;
+    accumulated = '';
+  }
+
+  function ensureStreamBubble() {
+    if (streamBubbleEl) return streamBubbleEl;
+    if (!c) return null;
     var bubble = document.createElement('div');
     bubble.className = 'ap-msg ap-msg-buddy ap-stream-bubble';
+    bubble.id = 'ap-stream-bubble';   // 当前流式气泡 = 卡片插入锚点（小吉模式）
     bubble.innerHTML = '<div class="ap-msg-text"></div><span class="ap-cursor">▍</span>';
-    // 🆕 v0.117r: 气泡插入到锚点之后，工具卡片插入到锚点之前
-    //   这样展开时气泡会自动下移
-    c.insertBefore(bubble, anchor.nextSibling);
+    c.appendChild(bubble);
     streamBubbleEl = bubble.querySelector('.ap-msg-text');
-
-    // 🆕 v0.117h: 添加展开提示（用户可能不知道要点击 ▶ 展开卡片）
-    var hintEl = document.createElement('div');
-    hintEl.className = 'chat-tool-hint';
-    hintEl.textContent = '💡 工具调用完成，点击 ▶ 展开查看详情';
-    c.insertBefore(hintEl, anchor);
+    if (typeof chatScrollToBottom === 'function') chatScrollToBottom(c);
+    return streamBubbleEl;
   }
 
   try {
@@ -1166,74 +1177,57 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
         try {
           var evt = JSON.parse(line.slice(6));
           if (evt.type === 'text_delta') {
+            // 🆕 v0.117z: 上事件不是 text → 封存旧气泡开新气泡（按时间穿插）
+            if (_lastBubbleEvent !== null && _lastBubbleEvent !== 'text') {
+              finalizeCurrentBubble();
+            }
+            var tb = ensureStreamBubble();
             accumulated += (evt.text || '');
-            if (streamBubbleEl) streamBubbleEl.textContent = accumulated;
+            if (tb) tb.textContent = accumulated;
             if (typeof chatScrollToBottom === 'function') chatScrollToBottom(c);
+            _lastBubbleEvent = 'text';
           } else if (evt.type === 'tool_card') {
-            console.log('[handleFreeChatSSE] tool_card event:', evt.phase, evt.tool_name);
+            // 🆕 v0.117z: 文本后工具 → 封存文本气泡（卡片插到新位置前）
+            if (_lastBubbleEvent === 'text') finalizeCurrentBubble();
             if (window.ACMSQwenToolCard && window.ACMSQwenToolCard.handleToolCard) {
               window.ACMSQwenToolCard.handleToolCard(evt);
-              console.log('[handleFreeChatSSE] after handleToolCard, debugCount:', window.ACMSQwenToolCard.debugCount());
-              // 调试：检查容器内卡片状态
-              setTimeout(() => {
-                if (c) {
-                  const cards = c.querySelectorAll('.ap-tool-card');
-                  console.log('[debug] cards in container:', cards.length);
-                  cards.forEach((card, i) => {
-                    const head = card.querySelector('.ap-tool-card-head');
-                    const body = card.querySelector('.ap-tool-card-body');
-                    const rect = card.getBoundingClientRect();
-                    const headRect = head?.getBoundingClientRect();
-                    console.log(`[debug] card ${i}:`, {
-                      status: card.className.match(/ap-tool-status-(\w+)/)?.[1],
-                      bodyDisplay: body?.style.display,
-                      height: rect.height,
-                      headHeight: headRect?.height,
-                      parent: card.parentNode?.id || card.parentNode?.className
-                    });
-                  });
-                  const anchor = c.querySelector('#ap-stream-bubble');
-                  console.log('[debug] anchor exists:', !!anchor, 'height:', anchor?.getBoundingClientRect().height);
-                  const group = c.querySelector('.ap-tool-group');
-                  console.log('[debug] group exists:', !!group);
-                }
-              }, 100);
-            } else {
-              console.warn('[handleFreeChatSSE] ACMSQwenToolCard.handleToolCard not available');
             }
+            _lastBubbleEvent = 'tool_card';
           } else if (evt.type === 'thinking') {
             if (window.ACMSQwenToolCard && window.ACMSQwenToolCard.handleThinking) {
               window.ACMSQwenToolCard.handleThinking(evt);
             }
+            _lastBubbleEvent = 'thinking';
           } else if (evt.type === 'progress') {
-            if (!accumulated.endsWith('\n')) accumulated += '\n';
-            accumulated += '> 🔧 ' + (evt.msg || '') + '\n';
-            if (streamBubbleEl) streamBubbleEl.textContent = accumulated;
+            if (_lastBubbleEvent === 'text') finalizeCurrentBubble();
+            _lastBubbleEvent = 'progress';
           } else if (evt.type === 'end') {
             sessionReqId = evt.sessionRequirementId || null;
             musicCardJson = evt.musicCardJson || null;
             if (evt.error) {
               // 🆕 v0.117x: error 安全转换 —— 后端可能传对象（String(对象)=[object Object]）
+              finalizeCurrentBubble();
+              var eb = ensureStreamBubble();
               const errText = (evt.error && typeof evt.error === 'object')
                 ? (evt.error.message || JSON.stringify(evt.error))
                 : String(evt.error);
-              if (streamBubbleEl) streamBubbleEl.textContent = '⚠️ AI 暂时无响应: ' + errText.slice(0, 100);
-            } else if (evt.result && streamBubbleEl) {
-              streamBubbleEl.textContent = evt.result;
+              if (eb) eb.textContent = '⚠️ AI 暂时无响应: ' + errText.slice(0, 100);
+              _lastBubbleEvent = 'text';
+              finalizeCurrentBubble();
+            } else if (evt.result) {
+              // 已流式显示（_lastBubbleEvent==='text'）→ 直接封存；否则（onDelta 没推）→ 创建气泡显示 result
+              if (_lastBubbleEvent !== 'text') {
+                var rb = ensureStreamBubble();
+                if (rb) rb.textContent = evt.result;
+                _lastBubbleEvent = 'text';
+              }
+              finalizeCurrentBubble();
             }
             // music card
             if (musicCardJson && typeof renderMusicBubble === 'function' && c) {
               var musicHtml = renderMusicBubble(musicCardJson);
               if (musicHtml) {
                 c.insertAdjacentHTML('beforeend', '<div class="chat-bubble chat-bubble-system"><div class="chat-bubble-meta"><span class="chat-label">🎵</span></div>' + musicHtml + '</div>');
-              }
-            }
-            // 移除光标
-            if (c) {
-              var _bubble = c.querySelector('.ap-stream-bubble');
-              if (_bubble) {
-                var _cursor = _bubble.querySelector('.ap-cursor');
-                if (_cursor) _cursor.remove();
               }
             }
             if (typeof chatScrollToBottom === 'function') chatScrollToBottom(c);
