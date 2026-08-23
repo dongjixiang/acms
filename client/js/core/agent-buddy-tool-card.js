@@ -464,6 +464,17 @@ function paintHead(card) {
       card.el.style.boxShadow = '0 0 0 2px rgba(78, 205, 196, 0.5)';
       setTimeout(() => { card.el.style.boxShadow = ''; }, 500);
       scrollCardIntoView(card.el);
+      // 🆕 v0.117s: 展开后滚动到卡片底部，确保气泡可见
+      setTimeout(() => {
+        var container = getContainer();
+        if (container) {
+          var cardBottom = card.el.getBoundingClientRect().bottom;
+          var containerBottom = container.getBoundingClientRect().bottom;
+          if (cardBottom > containerBottom) {
+            container.scrollTop += (cardBottom - containerBottom) + 20;
+          }
+        }
+      }, 100);
     }
   }
 
