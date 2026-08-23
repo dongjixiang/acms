@@ -314,10 +314,15 @@ router.post('/detect-and-respond', async (req, res, next) => {
       }
 
       // 3. 拼接 messages：system + 历史 + 当前 user（仅旧引擎路径需要）
-      const systemPrompt = '你是 ACMS 自由对话助手。用户通过 ACMS（智能体协同管理系统）与你交流。请用中文简洁回答用户的问题（Markdown 格式）。可以主动使用 web_search 工具查询实时信息。不要反问澄清需求——用户只是自由提问。';
+      // 🆕 v0.117c：用 buildFreeChatSystemPrompt(null) 替代简化的 systemPrompt——
+      //   旧版本只提"可以主动使用 web_search 工具"，LLM 看到"生成图片：xxx"可能直接文字回复
+      //   不调 generate_image tool → 用户看不到图片卡片（"装睡"变种）。
+      //   buildFreeChatSystemPrompt 含"⛔ 严禁装睡 + 必须调 generate_image/play_video/send_email/play_music"
+      //   硬约束，让 LLM 看到意图就调对应 tool。req=null 时 title/description 回退"(空)"。
+      const systemPrompt = buildFreeChatSystemPrompt(null);
       const messages = [{ role: 'system', content: systemPrompt }, ...historyMessages, { role: 'user', content: text }];
 
-  // v0.65: session 模式 → 创建隐藏 requirement 作为工具存储容器（play_music/play_video/generate_image 需要真实 reqId）
+      // v0.65: session 模式 → 创建隐藏 requirement 作为工具存储容器（play_music/play_video/generate_image 需要真实 reqId）
       let contextReqId = reqId;
       if (isSession) {
         const sessionReq = getOrCreateSessionRequirement(reqId);
