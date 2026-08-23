@@ -2171,6 +2171,7 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
   flex-direction: column;
   gap: 8px;
   scroll-behavior: smooth;
+  align-items: flex-start;  /* 🆕 v0.117j: 防止 flex stretch 压塌工具卡片高度 */
 }
 .chat-stream::-webkit-scrollbar { width: 4px; }
 .chat-stream::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
