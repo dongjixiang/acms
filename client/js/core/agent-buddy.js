@@ -2060,12 +2060,15 @@ var faceMatch = raw.match(/【face:(\w+)】/);
     _panelOpen = true;
 
     // 清空旧消息（保留最新一条问候或对话）
+    // 🆕 v0.114x 修复：**不再清空容器** —— 历史工具卡片/消息是聊天记录，
+    //   打开面板/问候触发时清空会把它们全删（多多实报"工具调用卡片又没了"）。
+    //   改为：容器已有内容则保留，只在空容器时渲染问候。
     var container = document.querySelector('#ap-messages');
-    if (container) container.innerHTML = '';
-
-    var msg = entry && entry.message;
-    if (msg) renderMessage(msg);
-    else renderMessage('hi～ 我一直在呢');
+    if (container && container.children.length === 0) {
+      var msg = entry && entry.message;
+      if (msg) renderMessage(msg);
+      else renderMessage('hi～ 我一直在呢');
+    }
 
     renderScoreBar();
 
@@ -2256,13 +2259,13 @@ var faceMatch = raw.match(/【face:(\w+)】/);
       if (faceMatch) setFace(faceMatch[1]);
       var reply = raw.replace(/【[^】]+】/g, '').trim();
       var container = document.querySelector('#ap-messages');
-      if (container) container.innerHTML = '';
-      renderMessage(reply);
+      // 🆕 v0.114x 修复：不再清空容器（历史卡片/消息保留，问候追加到末尾）
+      if (container && container.children.length === 0) renderMessage(reply);
     })
     .catch(function() {
       var container = document.querySelector('#ap-messages');
-      if (container) container.innerHTML = '';
-      renderMessage(getBuddyUserName() + ' 欢迎回来～');
+      // 🆕 v0.114x 修复：不再清空容器
+      if (container && container.children.length === 0) renderMessage(getBuddyUserName() + ' 欢迎回来～');
     });
 
     // 5 秒超时兜底
