@@ -1154,8 +1154,12 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
             if (streamBubbleEl) streamBubbleEl.textContent = accumulated;
             if (typeof chatScrollToBottom === 'function') chatScrollToBottom(c);
           } else if (evt.type === 'tool_card') {
+            console.log('[handleFreeChatSSE] tool_card event:', evt.phase, evt.tool_name);
             if (window.ACMSQwenToolCard && window.ACMSQwenToolCard.handleToolCard) {
               window.ACMSQwenToolCard.handleToolCard(evt);
+              console.log('[handleFreeChatSSE] after handleToolCard, debugCount:', window.ACMSQwenToolCard.debugCount());
+            } else {
+              console.warn('[handleFreeChatSSE] ACMSQwenToolCard.handleToolCard not available');
             }
           } else if (evt.type === 'thinking') {
             if (window.ACMSQwenToolCard && window.ACMSQwenToolCard.handleThinking) {
