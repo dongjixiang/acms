@@ -359,7 +359,7 @@ router.post('/detect-and-respond', async (req, res, next) => {
       } catch (qe) {
         try {
           const errStr = (qe && typeof qe === 'object') ? JSON.stringify(qe).slice(0, 200) : (qe.message || String(qe));
-          res.write(`data: ${JSON.stringify({ type: 'end', ok: false, error: errStr })}\\n\\n`);
+          res.write(`data: ${JSON.stringify({ type: 'end', ok: false, error: errStr })}\n\n`);
           res.end();
         } catch (e) {}
         return;
