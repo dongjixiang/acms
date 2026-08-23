@@ -2176,6 +2176,17 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
 .chat-stream::-webkit-scrollbar { width: 4px; }
 .chat-stream::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
+/* 🆕 v0.117o: 工具卡片展开提示 */
+.chat-tool-hint {
+  font-size: 11px;
+  color: var(--text3);
+  padding: 4px 8px;
+  text-align: center;
+  background: rgba(78, 205, 196, 0.05);
+  border-radius: 4px;
+  margin: 4px 0;
+}
+
 /* Chat bubbles */
 .chat-bubble { max-width: 88%; padding: 10px 12px; border-radius: 10px; font-size: 13px; line-height: 1.6; animation: chatFadeIn .2s ease; }
 @keyframes chatFadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
