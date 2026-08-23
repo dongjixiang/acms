@@ -829,7 +829,11 @@ var buddyCtx = {
             console.log('[agent-buddy] [qwen] 内核分流 userId=' + userId + ' mode=' + actionRoute.mode + ' caps=' + JSON.stringify(_caps) + ' msg="' + message.slice(0, 40) + '"');
             var qwenResp = await qwenManagerMod.chat(userId, message, {
               approvalMode: 'ask',   // 工具审批 → 前端确认框（ask 模式）
-              timeoutMs: 240000,
+              // 🆕 修复（2026-08-23）：timeoutMs 240s → 600s（10min）
+              //   复杂任务 14+ 审批跑 5-10min，240s 太短触发 fallback runToolLoop
+              //   → 用户看到的是旧引擎回复，误以为"没转给 Qwen Code"
+              //   对齐 qwen-task.js:128 的 10min 默认值（task-agent 长任务已用此值）
+              timeoutMs: 600000,
               onDelta: _qwenIsStream ? function(delta) {
                 try {
                   if (!res.writableEnded) {
