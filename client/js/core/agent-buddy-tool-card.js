@@ -395,7 +395,14 @@ function paintHead(card) {
         e.stopPropagation();
         var body = card.el.querySelector('.ap-tool-card-body');
         var hidden = body.style.display === 'none';
+        console.log('[debug] toggle click: hidden=', hidden, 'bodyExists=', !!body);
         setBodyVisible(card, hidden);
+        // 验证展开后 body 高度
+        setTimeout(() => {
+          if (body) {
+            console.log('[debug] after setBodyVisible: body display=', body.style.display, 'height=', body.offsetHeight);
+          }
+        }, 50);
       });
     }
     // 点 head 也能折叠/展开（除了 toggle / head-btn 按钮）
