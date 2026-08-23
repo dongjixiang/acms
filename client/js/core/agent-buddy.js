@@ -543,9 +543,10 @@ function renderActionCard(action) {
     //   v0.112 旧逻辑「清掉其他 req 的卡片 + 复用同 req 卡片」依赖后端容器复用：
     //   后端复用容器时 requirementId 不变 → 卡片永远更新历史位置那张 → 新内容渲染到上面（多多反馈）。
     //   现在后端每次动作新建容器（requirementId 唯一）→ 这里直接 append 新卡片，历史卡片保留在上方作为聊天记录。
-    // 🆕 修复（2026-08-23）：renderActionCard 时强制 relocate 到「最后一段 text bubble 之后」
-    //   不管 existing/new（polling update 时 insertBefore card 自己 = DOM no-op）
-    //   避免 Action Card 出现在 text 上面（用户报告"Action Card 展示在消息上面"）
+    // 🆕 修复（2026-08-23 第三次）：回归 v0.114n 原则 — 按实际时间自然顺序
+    //   不再固定位置（既不在 text 之前也不在 text 之后），而是按 SSE 事件到达顺序自然插入
+    //   实时位置策略：insertBefore streamBubble（跟 tool-card 一致，先发生显示在前面）
+    //   polling update 时不移动 DOM 位置（updateActionCard 只改 innerHTML）
     var card = document.getElementById(id);
     if (!card) {
       card = document.createElement('div');
@@ -554,12 +555,11 @@ function renderActionCard(action) {
     }
     card.dataset.requirementId = action.requirementId;
     card.dataset.mode = action.mode || 'conversational_action';
-    // 找到最后一个静态 assistant text bubble 作为锚点
-    var bubbles = container.querySelectorAll('.ap-msg.ap-msg-buddy');
-    var anchor = bubbles.length ? bubbles[bubbles.length - 1] : null;
-    if (anchor) {
-      // 插到 anchor 紧后面（insertBefore 自己 = no-op，不会重复移动）
-      container.insertBefore(card, anchor.nextSibling);
+    // 实时插入：先发生显示在前面（v0.114n）
+    // 找到当前流式 bubble 作为锚点；流式 bubble 已被 finalize（id 清空）→ fallback appendChild
+    var streamBubble = document.getElementById('ap-stream-bubble');
+    if (streamBubble) {
+      container.insertBefore(card, streamBubble);
     } else {
       container.appendChild(card);
     }
@@ -1900,6 +1900,19 @@ function handleStream(r) {
                     accumulated = '';
                   }
                   _lastBubbleEvent = 'progress';
+                } else if (evt.type === 'action') {
+                  // 🆕 修复（2026-08-23 第三次）：action 事件实时渲染（不等 finalize），
+                  //   按 v0.114n insertBefore streamBubble（先发生显示在前面）
+                  //   同时作为 bubble 边界：后续 text chunk 创建新 bubble（按时间穿插）
+                  if (_lastBubbleEvent === 'text') {
+                    finalizeCurrentBubble();
+                    accumulated = '';
+                  }
+                  actionData = evt;
+                  if (evt.action && evt.action.requirementId) {
+                    renderActionCard(evt.action);
+                  }
+                  _lastBubbleEvent = 'action';
                 } else if (evt.type === 'tool_card') {
                   // 🆕 修复：tool_card 到达 → finalize 当前 assistant bubble
                   if (_lastBubbleEvent === 'text') {
@@ -1985,10 +1998,12 @@ function handleStream(r) {
       }
       if (container) container.scrollTop = container.scrollHeight;
       executeActions(raw);
-      var faceMatch = raw.match(/【face:(\w+)】/);
+var faceMatch = raw.match(/【face:(\w+)】/);
       if (faceMatch) setFace(faceMatch[1]);
       var reply = raw.replace(/【[^】]+】/g, '').trim();
-      if (actionData && actionData.action && actionData.action.requirementId) renderActionCard(actionData.action);
+      // 🆕 修复（2026-08-23 第三次）：SSE handler 已实时渲染 Action Card（按 v0.114n 位置），
+      //   finalize 不再调 renderActionCard 避免重复 / 位置覆盖
+      // if (actionData && actionData.action && actionData.action.requirementId) renderActionCard(actionData.action);
       _chatHistory.push({ role: 'buddy', text: reply });
       addScore('toast-fire');
       saveChatMemory(text, reply);
