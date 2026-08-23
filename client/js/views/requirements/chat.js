@@ -1123,7 +1123,8 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
     // 🆕 v0.117g: 创建 id="ap-stream-bubble" 锚点（自由对话窗口没有此元素）
     //   agent-buddy-tool-card.js insertBeforeStreamBubble 依赖此 ID 定位插入点
     //   没有它 → fallback 到 appendChild → 卡片被压到容器末尾 = "一条线"
-    var anchor = document.getElementById('ap-stream-bubble');
+    // 🆕 v0.117u: 必须在容器内查找 —— document.getElementById 会拿到小吉面板的同 ID 锚点（插错窗口）
+    var anchor = c.querySelector('#ap-stream-bubble');
     if (!anchor) {
       anchor = document.createElement('div');
       anchor.id = 'ap-stream-bubble';
