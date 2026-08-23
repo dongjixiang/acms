@@ -1115,10 +1115,19 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
   var streamBubbleEl = null;
   var accumulated = '';
   if (c) {
+    // 🆕 v0.117g: 创建 id="ap-stream-bubble" 锚点（自由对话窗口没有此元素）
+    //   agent-buddy-tool-card.js insertBeforeStreamBubble 依赖此 ID 定位插入点
+    //   没有它 → fallback 到 appendChild → 卡片被压到容器末尾 = "一条线"
+    var anchor = document.getElementById('ap-stream-bubble');
+    if (!anchor) {
+      anchor = document.createElement('div');
+      anchor.id = 'ap-stream-bubble';
+      c.appendChild(anchor);
+    }
     var bubble = document.createElement('div');
     bubble.className = 'ap-msg ap-msg-buddy ap-stream-bubble';
     bubble.innerHTML = '<div class="ap-msg-text"></div><span class="ap-cursor">▍</span>';
-    c.appendChild(bubble);
+    c.insertBefore(bubble, anchor.nextSibling);
     streamBubbleEl = bubble.querySelector('.ap-msg-text');
   }
 
