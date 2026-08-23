@@ -1821,13 +1821,18 @@ function isNonPlanTerminal(state) {
       });
     }
 
-    function handleStream(r) {
+function handleStream(r) {
       var reader = r.body.getReader();
       var decoder = new TextDecoder();
       // accumulated 和 actionData 已在 sendMessage 作用域声明，这里不再重复声明
       streamDone = false;
       _streamDone = false;
       var lastProcessTime = Date.now();
+      // 🆕 修复（2026-08-23）：assistant 文本按"间隔事件"分段成独立气泡
+      //   text → text → 累积到同一 bubble
+      //   text → tool_card → text → 分 3 段：bubble1 + tool_card + bubble2
+      //   progress 不再 append 到 accumulated（v0.114p 反转）—— 工具摘要走 tool_card 路径
+      var _lastBubbleEvent = null;  // 'text' | 'tool_card' | 'thinking' | null
 
       function processStream() {
         if (streamDone || streamPaused) return;
@@ -1854,29 +1859,39 @@ function isNonPlanTerminal(state) {
               try {
                 var evt = JSON.parse(line.slice(6));
                 if (evt.type === 'text') {
+                  // 🆕 修复：text chunk 在 tool_card/thinking/progress 后到达 → finalize 旧 bubble + 创建新 bubble
+                  if (_lastBubbleEvent !== null && _lastBubbleEvent !== 'text') {
+                    finalizeCurrentBubble();
+                    accumulated = '';
+                  }
                   accumulated += evt.chunk || '';
                   updateStreamMessage(accumulated);
+                  _lastBubbleEvent = 'text';
                 } else if (evt.type === 'action') {
                   actionData = evt;
                 } else if (evt.type === 'speed') {
-                  // 后端请求改变速度
                   streamSpeed = Math.max(10, Math.min(100, evt.speed || 30));
                 } else if (evt.type === 'progress') {
-                  // v0.114p: 工具调用信息追加进流式回复文本（按实际时间自然顺序），
-                  //   不再独立 div —— 多多要求工具调用放到流式回复里面
-                  var progMsg = (evt.msg || '').trim();
-                  if (progMsg) {
-                    // 若前面已有文本且未换行，先补换行
-                    if (accumulated && !accumulated.endsWith('\n')) accumulated += '\n';
-                    accumulated += '> 🔧 ' + progMsg + '\n';
-                    updateStreamMessage(accumulated);
+                  // 🆕 v0.114p 反转（2026-08-23）：progress 不再 append 到 assistant 文本流
+                  //   —— 工具摘要走 tool_card 独立卡片路径（避免与 assistant 文本挤在同一气泡）
+                  //   progress 仍可作为"事件信号"影响 _lastBubbleEvent（让后续 text 触发新 bubble）
+                  if (_lastBubbleEvent === 'text') {
+                    finalizeCurrentBubble();
+                    accumulated = '';
                   }
+                  _lastBubbleEvent = 'progress';
                 } else if (evt.type === 'tool_card') {
-                  // 🆕 P1 方案B（卡片化）：Qwen 工具调用独立卡片
+                  // 🆕 修复：tool_card 到达 → finalize 当前 assistant bubble
+                  if (_lastBubbleEvent === 'text') {
+                    finalizeCurrentBubble();
+                    accumulated = '';
+                  }
                   if (window.ACMSQwenToolCard) window.ACMSQwenToolCard.handleToolCard(evt);
+                  _lastBubbleEvent = 'tool_card';
                 } else if (evt.type === 'thinking') {
-                  // 🆕 P1 方案B：thinking 流式累积到折叠卡片
+                  // thinking 不需要影响 bubble 分段（仅折叠卡片）
                   if (window.ACMSQwenToolCard) window.ACMSQwenToolCard.handleThinking(evt.text);
+                  _lastBubbleEvent = 'thinking';
                 }
               } catch(e) { /* 跳过解析失败的 SSE 行 */ }
             }
@@ -1893,6 +1908,21 @@ function isNonPlanTerminal(state) {
       processStream();
     }
 
+    // 🆕 修复（2026-08-23）：把当前流式 bubble 转静态（去 cursor + 清 id），下次 text chunk 创建新 bubble
+    function finalizeCurrentBubble() {
+      var msgEl = document.getElementById('ap-stream-bubble');
+      if (!msgEl) return;
+      var textSpan = msgEl.querySelector('.ap-msg-text');
+      if (textSpan) {
+        // 移除光标子元素（保留 md 渲染结果：strong/code/emoji）
+        var cursor = textSpan.querySelector('.ap-cursor');
+        if (cursor && cursor.parentNode) cursor.parentNode.removeChild(cursor);
+        // 直接用现有 innerHTML（避免重新跑 md 渲染丢结构）
+        msgEl.innerHTML = '<span class="ap-msg-text">' + textSpan.innerHTML + '</span>';
+      }
+      msgEl.id = '';  // 移除临时 ID，下次 text chunk 找不到就创建新 bubble
+    }
+
     function updateStreamMessage(text) {
       removeThinking();
       // v0.96: 不清除 op logs — 让操作日志条保留在流式文字上方，等 finalizeStream 再清
@@ -1901,12 +1931,14 @@ function isNonPlanTerminal(state) {
       var container = document.querySelector('#ap-messages');
       if (!container) return;
 
-      // 使用固定元素，避免流式结束后再创建新气泡
+      // 使用固定元素（避免流式期间反复创建）
       var msgEl = document.getElementById('ap-stream-bubble');
       if (!msgEl) {
         msgEl = document.createElement('div');
         msgEl.id = 'ap-stream-bubble';
         msgEl.className = 'ap-msg ap-msg-buddy';
+        // 🆕 修复：append 到 #ap-messages 末尾（tool_card/thinkings 是 insertBefore streamBubble 实现的，
+        //   所以新 bubble 自然在它们之后；streamBubble 元素 ID 在 finalizeCurrentBubble 时被清空）
         container.appendChild(msgEl);
       }
       msgEl.innerHTML = '<span class="ap-msg-text">' + mdFn(cleanText) + '<span class="ap-cursor">|</span></span>';
@@ -1918,8 +1950,9 @@ function isNonPlanTerminal(state) {
       // 🆕 P1 方案B（卡片化）：卸载 tool-card 决策监听（避免多轮对话累积 listener）
       try { document.removeEventListener('qwen:tool-card:decision', onToolCardDecision); } catch (e) {}
       removeThinking();
-      // v0.114p: 工具调用已内嵌在 accumulated 文本流里（progress → accumulated），
-      //   不再需要独立日志条/分隔线
+      // 🆕 修复（2026-08-23）：finalize 最后一个 bubble（如果还有 streamBubble 没 finalize）
+      var lastBubble = document.getElementById('ap-stream-bubble');
+      if (lastBubble) finalizeCurrentBubble();
       var raw = accumulated || '嗯… 我没听清，能再说一遍吗？';
       // 移除流式标记，保留气泡
       var msgEl = document.getElementById('ap-stream-bubble');
