@@ -391,6 +391,8 @@ function paintHead(card) {
     // 绑定折叠按钮
     var toggleBtn = card.el.querySelector('.ap-tool-card-toggle');
     if (toggleBtn) {
+      toggleBtn.style.cursor = 'pointer';
+      toggleBtn.title = '点击展开/折叠';
       toggleBtn.addEventListener('click', function (e) {
         e.stopPropagation();
         var body = card.el.querySelector('.ap-tool-card-body');
@@ -402,6 +404,8 @@ function paintHead(card) {
           if (body) {
             console.log('[debug] after setBodyVisible: body display=', body.style.display, 'height=', body.offsetHeight);
           }
+          const cardRect = card.el.getBoundingClientRect();
+          console.log('[debug] card height after toggle:', cardRect.height);
         }, 50);
       });
     }
