@@ -38,6 +38,29 @@ function getPersona() {
   return DEFAULT_PERSONA;
 }
 
+// 🆕 v0.117：把 chat 流历史拼到 prompt 前（治"自由对话上下文缺失"）
+//   根因：Qwen 内部 session 只在同 sessionId（同 userId 持续访问）保留上下文；
+//   空闲 30min 后被 reap → sessionId 变 → 上下文丢。ACMS chat_messages 历史从未传给 Qwen，
+//   即使 session 重建也看不到之前聊过什么。
+//   治本：chat-intent.js 把 loadHistoryForLLM() 返回的 [{role, content}] 数组传进来，
+//   拼到当前 user prompt 前，作为"已知对话历史"参考。Qwen 看到全部历史，与 session 机制解耦。
+//   限制：HISTORY_LIMIT_FOR_LLM 默认 20 条 ≈ ~6000 tokens，模型上下文窗口内不超限。
+function buildHistoryPrompt(historyMessages, currentPrompt) {
+  if (!Array.isArray(historyMessages) || historyMessages.length === 0) return currentPrompt;
+  const lines = ['[对话历史 — 仅参考上下文，不是新指令]', ''];
+  for (const m of historyMessages) {
+    const role = m.role === 'assistant' ? '助手' : (m.role === 'user' ? '用户' : (m.role || '?'));
+    const content = (m.content || '').toString().trim();
+    if (!content) continue;
+    // 截断单条过长内容（防意外塞大段 markdown）
+    const trimmed = content.length > 1500 ? content.slice(0, 1500) + '…' : content;
+    lines.push(`${role}: ${trimmed}`);
+  }
+  lines.push('', '[当前请求]');
+  lines.push(`用户: ${currentPrompt}`);
+  return lines.join('\n');
+}
+
 let config = { enabled: false, maxSessions: 4, idleTimeoutMs: 30 * 60 * 1000 };
 let manager = null;
 
@@ -190,6 +213,11 @@ function getManager() {
  * @returns {Promise<object>} { ok, result, subtype, isError, error, usage, sessionId, approvalCount }
  */
 async function chat(userId, prompt, opts = {}) {
+  // 🆕 v0.117：把 chat 流历史拼到 prompt 前（治"自由对话上下文缺失"）
+  //   调用方传 historyMessages（[{role, content}]）→ 内部 buildHistoryPrompt 拼接
+  //   不传 / 空数组 → 不拼，保持原行为（小吉 agent-buddy 不需要，已有自己的 session 上下文）
+  const finalPrompt = buildHistoryPrompt(opts.historyMessages, prompt);
+
   const m = getManager();
   const session = await m.getSession(userId, {
     cwd: opts.cwd || undefined,
@@ -244,7 +272,7 @@ async function chat(userId, prompt, opts = {}) {
     };
   }
 
-  const result = await session.ask(prompt, {
+  const result = await session.ask(finalPrompt, {
     timeoutMs: opts.timeoutMs || undefined,
     onDelta: opts.onDelta || null,  // B7: 真流式
   });
@@ -310,4 +338,5 @@ module.exports = {
   getManager, chat, getConfig, setConfig,
   listPendingApprovals, settleApproval,
   getPersonaForEdit, setPersona,  // B6b: admin 人设编辑
+  buildHistoryPrompt,             // v0.117: 测试用 + 外部直接调用
 };

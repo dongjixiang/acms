@@ -293,7 +293,13 @@ router.post('/detect-and-respond', async (req, res, next) => {
           // 自由对话无审批 UI（agent-buddy 才有），不用 ask 模式
           // v0.114f: 显式超时 45s（默认 10min 太长，自由对话等不起）——
           //   冷启动 ~32s + 首 token，45s 内应出结果；超时/失败立即回退旧引擎
-          const qr = await qwenMgr.chat(reqId, text, { approvalMode: 'auto', timeoutMs: 45000 });
+          // 🆕 v0.117: historyMessages 传进去（治"上下文缺失"）——
+          //   ACMS chat_messages 历史拼到 prompt 前，Qwen 即使 session 被 reap 也看到上下文
+          const qr = await qwenMgr.chat(reqId, text, {
+            approvalMode: 'auto',
+            timeoutMs: 45000,
+            historyMessages,  // 数组 [{role, content}]，qwen-manager 内部拼到 prompt 前
+          });
           if (qr.ok && qr.result && qr.result.trim()) {
             qwenAiReply = qr.result.trim();
           } else if (!qr.ok) {
