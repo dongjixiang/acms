@@ -1821,6 +1821,8 @@ function isNonPlanTerminal(state) {
           seenApprovals[ap.approvalId] = true;  // 标记防止 approvalPolls 再弹窗
           var body = { decision: detail.allow ? 'allow' : 'deny' };
           if (detail.answers) body.answers = detail.answers;
+          // 🆕 v0.115b：⏩ 全部允许 —— 本会话内此类操作自动通过
+          if (detail.alwaysAllow) body.alwaysAllow = true;
           return fetch('/api/qwen/approvals/' + ap.approvalId, {
             method: 'POST',
             headers: getAuthHeaders(),
@@ -1898,6 +1900,9 @@ function handleStream(r) {
               try {
                 var evt = JSON.parse(line.slice(6));
                 if (evt.type === 'text') {
+                  // 🆕 v0.115a：Agent 回复开始 → 封存当前工具 group（回复段分组：
+                  //   回复前的连续工具一组，回复后新调用的多个工具开新 group）
+                  if (window.ACMSQwenToolCard) window.ACMSQwenToolCard.onReplyStart();
                   // 🆕 修复：text chunk 在 tool_card/thinking/progress 后到达 → finalize 旧 bubble + 创建新 bubble
                   if (_lastBubbleEvent !== null && _lastBubbleEvent !== 'text') {
                     finalizeCurrentBubble();

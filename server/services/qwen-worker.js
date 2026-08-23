@@ -89,6 +89,9 @@ class QwenSession {
     this.approvalTimeoutMs = opts.approvalTimeoutMs || 60000;
     this.approvalMode = opts.approvalMode || 'auto';   // 'auto' | 'ask'
     this.onApprovalRequest = opts.onApprovalRequest || null;  // ask 模式回调
+    // 🆕 v0.115b：会话内自动放行集合（用户对某工具选"全部允许"后，本会话内同类操作不再弹审批）
+    //   仅存于内存（会话/CLI 生命周期内有效），会话重建即清空
+    this.autoAllowTools = new Set();
     this.enableMcp = opts.enableMcp !== false;  // B3: 默认开 MCP（ACMS 工具暴露给 Qwen）
     this.systemPrompt = opts.systemPrompt || null;       // B6: 完全覆盖 system prompt
     this.appendSystemPrompt = opts.appendSystemPrompt || null;  // B6: 追加人设（保留 Qwen 工程能力）
@@ -268,6 +271,22 @@ class QwenSession {
   async _handleApproval(req, requestId) {
     this.approvalCount++;
     this.lastActivityAt = Date.now();
+
+    // 🆕 v0.115b：会话内自动放行 —— 用户此前对同类工具选择了"全部允许"。
+    //   命中集合 → 不弹审批、不挂队列，直接 allow（CLI proceed 执行）。
+    //   排除 ask_user_question（需要用户实际回答，不能自动放行）。
+    const tnameEarly = req.tool_name || '';
+    const isUserQuestionEarly = tnameEarly === 'ask_user_question'
+      || (req._meta && req._meta.qwenInteractionKind === 'user_question');
+    if (!isUserQuestionEarly && this.autoAllowTools && this.autoAllowTools.has(tnameEarly)) {
+      debug(`[qwen] ${tnameEarly} 命中会话自动放行集合，跳过审批直接 allow`);
+      this._emit({ type: 'approval_result', session_id: this.sessionId, tool_use_id: req.tool_use_id, allowed: true, autoAllowed: true });
+      this.child.stdin.write(JSON.stringify({
+        type: 'control_response',
+        response: { subtype: 'success', request_id: requestId, response: { behavior: 'allow' } },
+      }) + '\n');
+      return;
+    }
 
     // v0.114i: 识别 ask_user_question 工具调用（模型向用户提问澄清，如"查哪个城市的油价？"）
     //   它不是普通的 allow/deny 审批 —— 模型期望的是用户对问题的实际回答（answers），
@@ -592,6 +611,15 @@ class QwenSessionManager {
     if (api.includes('anthropic') || base.includes('minimax') && base.includes('anthropic')) return 'anthropic';
     if (api.includes('gemini')) return 'gemini';
     return 'openai';
+  }
+
+  // 🆕 v0.115b：按 sessionId 查找会话（审批决策"全部允许"时把工具加入会话自动放行集合）
+  findSessionBySessionId(sessionId) {
+    if (!sessionId) return null;
+    for (const sess of this.sessions.values()) {
+      if (sess.sessionId === sessionId) return sess;
+    }
+    return null;
   }
 
   /**

@@ -205,7 +205,7 @@ async function runAssistJob(requirementId, opts = {}) {
           playableSources.push({
             type: 'bilibili',
             label: `B站 #${playableSources.length + 1}`,
-            url: `https://player.bilibili.com/player.html?bvid=${bvid}&autoplay=0`,
+            url: `https://player.bilibili.com/player.html?bvid=${bvid}&autoplay=0&danmaku=0`,
             title: '哔哩哔哩',
           });
         }

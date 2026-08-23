@@ -4246,6 +4246,9 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
 .ap-tool-card-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .ap-tool-card-allow { background: rgba(81,207,102,.15); border-color: rgba(81,207,102,.4); color: #51cf66; }
 .ap-tool-card-deny { background: rgba(255,107,107,.15); border-color: rgba(255,107,107,.4); color: #ff6b6b; }
+/* 🆕 v0.115b：⏩ 全部允许 —— 本会话内此类操作自动通过（黄色系区别于单次允许） */
+.ap-tool-card-always { background: rgba(255,217,61,.15); border-color: rgba(255,217,61,.4); color: #ffd93d; }
+.ap-tool-card-always:hover:not(:disabled) { background: rgba(255,217,61,.28); }
 /* ask_user_question 内嵌表单（v0.114k UI 规范：左对齐 + 问题加粗 + 选项字号小 + Other + multiSelect） */
 .ap-tool-card-questions { margin-top: 4px; }
 .ap-tool-card-q-block { margin-bottom: 10px; text-align: left; }
@@ -4440,6 +4443,12 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
   gap: 6px;
   scrollbar-width: thin;
 }
+/* 🆕 v0.114y 修复：聊天内容溢出时 flex 压缩把工具卡片压成 1px（多多实报"工具调用窗口消失"）。
+   flex item 默认 flex-shrink:1；且 .ap-tool-card/.ap-thinking-card 有 overflow:hidden，
+   规范规定 overflow 非 visible 时 min-height:auto 解析为 0 → 失去内容高度保护，
+   容器内容总高超过可视高时卡片被压扁（head 33px 被裁成 1px 细线）。
+   修复：所有消息/卡片/group 子项禁止 flex 压缩（内容靠 overflow-y:auto 滚动，不该压缩）。 */
+.ap-messages > * { flex-shrink: 0; }
 .ap-msg {
   display: flex;
   gap: 6px;

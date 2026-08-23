@@ -67,9 +67,10 @@ router.post('/approvals/:id', authMiddleware, (req, res) => {
   const answers = (body.answers && typeof body.answers === 'object' && !Array.isArray(body.answers))
     ? body.answers : null;
   const payload = answers ? { allowed, answers } : allowed;
-  const done = qwenManager.settleApproval(req.params.id, payload);
+  // 🆕 v0.115b: alwaysAllow=true → 本会话内此类操作自动通过（settleApproval 记录到会话集合）
+  const done = qwenManager.settleApproval(req.params.id, payload, body.alwaysAllow ? { alwaysAllow: true } : undefined);
   if (!done) return res.status(404).json({ error: '审批不存在或已处理' });
-  res.json({ ok: true, decision: allowed ? 'allow' : 'deny', answered: !!answers });
+  res.json({ ok: true, decision: allowed ? 'allow' : 'deny', answered: !!answers, alwaysAllow: !!body.alwaysAllow });
 });
 
 // POST /api/qwen/release

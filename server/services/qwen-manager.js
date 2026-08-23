@@ -120,12 +120,32 @@ function listPendingApprovals(userId) {
 
 // v0.114i: settle 支持 answers（ask_user_question 场景）
 //   allowed: boolean | { allowed:boolean, answers:object }
-function settleApproval(approvalId, allowed) {
+// 🆕 v0.115b: opts.alwaysAllow=true 且决策为 allow → 工具名加入会话自动放行集合
+//   （本会话内后续同类操作不再弹审批，直接 allow）
+function settleApproval(approvalId, allowed, opts) {
   const rec = pendingApprovals.get(approvalId);
   if (!rec || rec.settled) return false;
   rec.settled = true;
   pendingApprovals.delete(approvalId);
   if (rec.resolve) rec.resolve(allowed);
+
+  // 会话内自动放行记录（仅 ask 模式卡片"全部允许"触发）
+  const isAllow = allowed === true || allowed === 'allow'
+    || (allowed && typeof allowed === 'object' && (allowed.allowed === true || allowed.allow === true));
+  if (opts && opts.alwaysAllow && isAllow) {
+    const tname = rec.toolCall && rec.toolCall.tool_name;
+    const isUserQ = rec.toolCall && rec.toolCall._isUserQuestion;
+    if (tname && !isUserQ) {
+      const manager = getManager();
+      const sess = manager && manager.findSessionBySessionId ? manager.findSessionBySessionId(rec.sessionId) : null;
+      if (sess && sess.autoAllowTools) {
+        sess.autoAllowTools.add(tname);
+        console.log(`[qwen] [审批] ${tname} → 加入会话自动放行集合 (session=${String(rec.sessionId).slice(0, 8)})`);
+      } else {
+        console.warn(`[qwen] [审批] 会话 ${String(rec.sessionId).slice(0, 8)} 未找到，无法记录自动放行`);
+      }
+    }
+  }
   return true;
 }
 

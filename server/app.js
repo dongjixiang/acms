@@ -213,6 +213,9 @@ app.use('/client', express.static(path.join(__dirname, '..', 'client'), {
     };
     const mime = mimeMap[require('path').extname(filePath).toLowerCase()];
     if (mime) res.setHeader('Content-Type', mime);
+    // v0.114y: 禁用浏览器启发式缓存 — 开发期 JS 频繁迭代，用户普通刷新(F5)也应拿到最新版
+    //   （多多实测环境不主动 Ctrl+F5；之前修复被浏览器旧 JS 吞掉导致"修好了还报 bug"）
+    res.setHeader('Cache-Control', 'no-cache');
   }
 }));
 

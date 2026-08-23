@@ -1,7 +1,8 @@
 // 小吉 conversational-action 运行时
-// 为即时聊天动作提供真实 requirement 容器，并用 LLM 单轮结构化路由复合动作。
+// 为即时聊天动作提供真实 requirement 容器，并用规则路由复合动作。
+// v0.116: 路由从 LLM 分类改为纯规则（工具调用已全权交给 Qwen Code，
+//   路由 LLM 与 Qwen 能力重叠且分类不可靠需大量正则兜底，纯属固定成本）。
 
-const { callLLM } = require('./llm-adapter');
 const reqStore = require('../stores/requirement-store');
 
 const ACTION_PROJECT_SLUG = 'agent-buddy-actions';
@@ -129,208 +130,128 @@ function normalizeRoute(raw) {
   return normalized;
 }
 
+// v0.116: 纯规则路由（2026-08-23）—— 移除 LLM 分类调用。
+//   背景：工具调用已全权交给 Qwen Code（conversation + web_search/web_fetch/code_execution 全走 Qwen），
+//   路由 LLM（default_gen_model）先分类一次与 Qwen 能力重叠、且分类不可靠需要 15+ 条正则兜底修正，
+//   纯属每次聊天的固定成本（延迟 + token + 故障点）。
+//   现在：能力正则直接得出 mode + capabilities；未命中任何能力 → conversation（走 Qwen）。
+//   保留 modelId/history 参数仅为调用方兼容，不再使用。
 async function routeMessage(modelId, message, history = [], ctx = {}) {
-  const historyText = (history || []).slice(-4).map(h => `${h.role}: ${String(h.text || '').slice(0, 180)}`).join('\\n');
-  // v0.96.2 (P138 修复 + office_edit 语义): 注入当前前端视图/打开的文件名，让 router 能区分
-  //   「在打开的 Word 里写」（office_edit）vs 「生成新文档」（document_generation）
   const currentView = String(ctx.currentView || '').trim();
   const openFileName = String(ctx.fileName || ctx.openFileName || '').trim();
-  const officeEditHint = (currentView && /office[-_]v3[-_](word|excel|xlsx|slides|pptx|ppt)/i.test(currentView))
-    ? `\n【关键上下文】当前前端打开了 ${currentView}${openFileName ? '（文件：' + openFileName + '）' : ''}。\n` +
-      `- 用户说「写/创作/生成/加 + 内容/作文/文章/段落/章节 + （在文档里/到文档/给文档）」或任何涉及**该文档**的写作/追加/补全意图 → capabilities 必须包含 office_edit（不要归类为 document_generation）。\n` +
-      `- 用户只说「写一篇 XXX」无明确文档词，但当前已打开了该类文档（word/word-ui → Word），意图是在文档里写 → office_edit；只在**没有任何文档打开**时才归 document_generation。\n` +
-      `- 用户明确说「生成新文档/导出/新建文件」且没指明要写进打开的文档 → document_generation。\n`
-    : '';
-  const system = `你是 ACMS 小吉的动作路由器。只做分类，不调用工具，不制定开发计划。
-输出严格 JSON：
-{"mode":"conversation|single_action|conversational_action","confidence":0.0,"capabilities":[],"requires_confirmation":false,"reason":"..."}
-- 能力枚举：image_generation、image_search、music_playback、email_draft、email_send、web_search、web_research、document_generation、project_create、create_task、web_fetch、code_execution、video_generation、office_edit、office_open、view_navigation、window_control。
-${officeEditHint}规则：
-- 纯问答/查询 ACMS 数据/闲聊 → conversation。
-  - **v1.0 (P5) 闲聊识别强化**: 含「你/小吉 + 疑问词」(如「你明天有啥打算」「小吉你干啥呢」「你最喜欢啥」「你是谁」「你能干啥」)的 query → **必 conversation**,不要猜工具意图。主语是"你/小吉"且问 AI 自己的偏好/状态/计划 = 闲聊。
-  - **例外**: 「你帮...」+ 明确动词（找/搜/听/生成/打开...）是真实工具意图,不算闲聊。
-  - 一个明确工具动作 → single_action。
-- 两个及以上有依赖的动作（如生成图片后发邮件）→ conversational_action。
-- send email 是外部副作用，必须包含 email_draft + email_send，requires_confirmation=true。
-- 用户描述简短但动作明确时照常分类，不要因为缺少主题、数量等默认参数判无法理解。
-- **重要：mode 为 single_action 或 conversational_action 时，必须根据用户意图将相关能力填入 capabilities 数组，不要留空。**
-- **找图片/搜图片/查图片→ capabilities 含 image_search。生成图片/画图片/创作图片→ capabilities 含 image_generation。两者不同。**
-- **创建项目/新建项目→ capabilities 含 project_create。**
-- **创建任务/新建任务/加个任务/添加任务 → capabilities 含 create_task（注意区分：创建项目是 project_create，创建任务/看板任务是 create_task）。**
-- **用户消息包含 http/https URL 时，必须分类为 single_action 并填入 web_fetch 能力（抓取网页内容），不要分类为 conversation。**
-- **用户说"看新闻"/"查新闻"/"搜新闻"/"最新消息"/"今天有什么新闻"等→ capabilities 含 web_search。**
-- **v0.88 用户要求改代码/写代码/修bug/实现功能/读文件/跑命令/查看项目代码/调试 等代码执行意图 → capabilities 含 code_execution。**
-- **v1.0 (P3-A) 用户问"我有什么偏好/之前聊过什么/我学了什么/最近操作"等记忆类查询 → capabilities 含 retrieve_memory (内部走 retrieve_memory 工具)。**
-- **v1.0 (P4-A) 用户问"我在哪个项目/项目里有多少需求/系统配置/近期事件"等上下文类查询 → capabilities 含 query_project_context (内部走 query_project_context 工具)。**`;
-  const result = await callLLM(modelId, [
-    { role: 'system', content: system },
-    ...(historyText ? [{ role: 'user', content: `最近对话：\\n${historyText}` }] : []),
-    { role: 'user', content: message },
-  ], { maxTokens: 350, temperature: 0, caller: 'agent-buddy-action-router' });
-  const content = typeof result === 'string' ? result : (result && result.content) || '';
-  const route = normalizeRoute(extractJson(content));
-// v1.0 (Phase 5-B): 闲聊兜底关键词拦截 — 含「你/小吉 + 疑问词」的 query 强降级 conversation
-  //   治「你明天有啥打算」「小吉你干啥呢」「你最喜欢啥」类被 router 误判成工具动作
-  //   允许中间插入最多 5 个字 (如「你最喜欢」「你明天想去」「你想听」)
-  //   注意: 「你想听...」「你帮我...」是真实意图,不算闲聊 — 加 ! 你想/帮我 否定
-  const chatRe = /(?:你|小吉)\s*.{0,5}?(?:有啥|有[什么啥]|干什么|干嘛|干啥|咋了|咋|怎么|为什么|喜欢|觉得|会|能|是.*吗|是啥|是谁)/;
-  // 例外: 「你想听...」「你帮我...」是真实工具意图
-  const notChatRe = /你.*帮.*(找|搜|查|听|做|打开|生成|画|写|改|创建)|你.*想.*(听|看|搜|找|生成)/;
-  if (chatRe.test(message) && !notChatRe.test(message) && route.mode !== 'conversation') {
-    console.log(`[agent-buddy-action] 闲聊兜底命中: "${message.slice(0, 30)}..." → 降级 conversation`);
-    route.mode = 'conversation';
-    route.capabilities = [];
-    route.confidence = 0.9;
-  }
-  // v0.66: 关键词前置拦截 — 不管路由器 LLM 怎么分类，看到"找图片"就强制 image_search
-  // v1.0 (Phase 5-A): 扩展正则覆盖「找...图片」「找美女图片」「搜点图」等松散表达
-  //   必须含"图/图片/照片/壁纸/头像/海报"等图片关键词,避免误命中闲聊
+  // v0.96.2 (P138 修复 + office_edit 语义): 当前前端打开的 office 视图
+  //   「在打开的 Word 里写」（office_edit）vs 「生成新文档」（document_generation）
+  const isOfficeView = currentView && /office[-_]v3[-_]?(word|excel|xlsx|slides|pptx|ppt)?/i.test(currentView);
+
+  const caps = new Set();
+  const mark = (cap) => caps.add(cap);
+
+  // ── 能力正则（命中即加入 capabilities；mode 最后统一计算）──
+  // 图片搜索：找图/搜图（区别于生成）
   const searchImgRe = /找.*图|搜.*图|找.*图片|搜.*图片|找.*照片|搜.*照片|找.*壁纸|搜.*壁纸|找.*头像|搜.*头像|找.*海报|搜.*海报|查.*图|查.*图片|图片.*搜索|搜[些点张]\s*图/i;
-  if (searchImgRe.test(message)) {
-    if (route.mode === 'conversation') {
-      route.mode = 'single_action';
-      route.confidence = 0.85;
-    }
-    if (!route.capabilities.includes('image_search')) route.capabilities.push('image_search');
-    if (!route.capabilities.includes('web_search')) route.capabilities.push('web_search');
-    console.log('[agent-buddy-action] 关键词命中 image_search, 强制覆盖路由');
-  }
-  // v0.76: 关键词前置拦截 — 不管路由器 LLM 怎么分类，看到"创建项目/新建项目"就强制 project_create
-  // v0.79: 扩展正则匹配"项目...创建"倒序（如"项目还没帮我创建呢"），支持"创"简写
+  if (searchImgRe.test(message)) { mark('image_search'); console.log('[agent-buddy-action] 关键词命中 image_search'); }
+  // 图片生成：画/生成图（补：原依赖 LLM 分类）
+  const imageGenRe = /生成.{0,6}(图片|照片|图|海报|封面)|画.{0,3}(张|个|幅|一)|帮我画|画一?张|做[一一张]?图|做.{0,3}(图|海报)|配图|创作.{0,4}图|设计.{0,4}(海报|图|封面)/;
+  if (imageGenRe.test(message)) { mark('image_generation'); console.log('[agent-buddy-action] 关键词命中 image_generation'); }
+  // 创建项目（覆盖式：命中即清掉查询类误命中，如「我.*项目」）
   const createProjectRe = /创.*项目|项目.*创|新建.*项目|新建.*叫|帮我建.*项目/;
-  if (createProjectRe.test(message) && route.mode !== 'conversation') {
-    route.capabilities = ['project_create'];
-    console.log('[agent-buddy-action] 关键词命中 project_create, 强制覆盖路由');
-  }
-  // v0.79: 关键词前置拦截 — 看到"创建任务/创建开发任务"就强制 task 相关工具
+  if (createProjectRe.test(message)) { caps.clear(); mark('project_create'); console.log('[agent-buddy-action] 关键词命中 project_create, 强制覆盖路由'); }
+  // 创建任务
   const createTaskRe = /创.*任务|任务.*创建|建.*任务|新建.*任务/;
-  if (createTaskRe.test(message) && route.mode !== 'conversation') {
-    route.capabilities = ['create_task'];
-    console.log('[agent-buddy-action] 关键词命中 create_task, 强制覆盖路由');
-  }
-  // v0.79: 关键词前置拦截 — 看到"看新闻/查新闻/最新消息"就强制 web_search
+  if (createTaskRe.test(message)) { mark('create_task'); console.log('[agent-buddy-action] 关键词命中 create_task'); }
+  // 新闻/搜索
   const newsSearchRe = /看新闻|查新闻|搜新闻|最新消息|今天.*新闻|有什么新闻|新闻.*今天/;
-  if (newsSearchRe.test(message) && route.mode !== 'conversation') {
-    route.capabilities = ['web_search'];
-    console.log('[agent-buddy-action] 关键词命中 web_search, 强制覆盖路由');
-  }
-  // v0.73: "生成X然后发邮件"关键词拦截 — 强制 conversational_action + image_generation + email_send
+  if (newsSearchRe.test(message)) { mark('web_search'); console.log('[agent-buddy-action] 关键词命中 web_search'); }
+  // 调研（补：原依赖 LLM 分类）
+  const researchRe = /调研|查资料|搜集.*资料|研究一下|综合分析/;
+  if (researchRe.test(message)) { mark('web_research'); console.log('[agent-buddy-action] 关键词命中 web_research'); }
+  // 音乐播放（补：原依赖 LLM 分类）
+  const musicRe = /播放|听[一这]?首|放[一这]?首|想听|找歌|听歌|唱歌|音乐|点一首/;
+  if (musicRe.test(message)) { mark('music_playback'); console.log('[agent-buddy-action] 关键词命中 music_playback'); }
+  // 视频生成
+  const videoGenRe = /生成.*视频|做.*视频|画.*视频|创作.*视频|帮我.*视频|给我.*视频|视频.*生成|拍.*视频|跳舞|跳[个一]?舞/;
+  if (videoGenRe.test(message)) { mark('video_generation'); console.log('[agent-buddy-action] 关键词命中 video_generation'); }
+  // 文档生成（补：原依赖 LLM 分类；与打开/编辑区分）
+  const docGenRe = /写.{0,4}(周报|报告|总结|方案|文档)|生成.{0,6}(周报|报告|总结|方案|文档)|做.{0,4}(周报|报告|总结|方案)|新建.*文档|制作.*文档|word文档|docx|pptx|excel|xlsx/;
+  if (docGenRe.test(message)) { mark('document_generation'); console.log('[agent-buddy-action] 关键词命中 document_generation'); }
+  // 发邮件
+  const emailSendRe = /发邮件|发送邮件|邮件发给|发个邮件|写封邮件|发一封|发邮件给|邮件发送/;
+  if (emailSendRe.test(message)) { mark('email_send'); console.log('[agent-buddy-action] 关键词命中 email_send'); }
+  // 复合：生成X然后发邮件 → 强制 conversational_action（前段有动作词才算复合意图）
   const emailAfterRe = /然后发邮件|再发邮件|发邮件给我|发邮件到|发邮件至|并发送邮件|且发邮件/;
-  if (emailAfterRe.test(message) && (route.capabilities.includes('image_generation') || /生成|画|创作/.test(message))) {
-    route.mode = 'conversational_action';
-    if (!route.capabilities.includes('image_generation')) route.capabilities.push('image_generation');
-    if (!route.capabilities.includes('email_send')) route.capabilities.push('email_send');
-    if (!route.capabilities.includes('email_draft')) route.capabilities.push('email_draft');
-    route.requires_confirmation = true;
+  let emailAfterHit = false;
+  if (emailAfterRe.test(message) && /生成|画|创作|做|写|总结|整理|查|搜|设计/.test(message)) {
+    emailAfterHit = true;
+    mark('email_send'); mark('email_draft');
+    if (/生成|画|创作|做|设计/.test(message)) mark('image_generation');
     console.log('[agent-buddy-action] 关键词命中 生成+发邮件, 强制 conversational_action');
   }
-  // v0.79: URL 检测 — 用户消息含完整 http(s) URL 时强制 web_fetch（直接抓取而非搜索）
-  //   注意：即使用户消息被 LLM 分类为 conversation，只要含 URL 就强制 web_fetch
+  // URL → web_fetch（直接抓取而非搜索）
   const urlRe = /https?:\/\/[^\s<>"')\],;]+/;
-  if (urlRe.test(message)) {
-    if (route.mode === 'conversation') {
-      route.mode = 'single_action';
-      route.confidence = 0.95;
-    }
-    if (!route.capabilities.includes('web_fetch')) route.capabilities.push('web_fetch');
-    console.log('[agent-buddy-action] URL 命中 web_fetch, 强制覆盖路由');
-  }
-// v0.88: 关键词前置拦截 — 代码执行意图（改代码/修bug/实现功能/读文件/跑命令）
-  //   code_execution 意图 = 需要在项目 workspace 里读写文件/跑命令/git
-  //   命中后把 code_execution 加进 capabilities（不覆盖已有，可叠加 web_search 等）
+  if (urlRe.test(message)) { mark('web_fetch'); console.log('[agent-buddy-action] URL 命中 web_fetch'); }
+  // 代码执行
   const codeExecRe = /改代码|写代码|修[一这]?[个]?bug|修[一这]?[个]?缺陷|实现[一这]?[个]?功能|新增.*功能|读文件|看.*代码|跑[个一]?命令|执行命令|调试|查看项目|改文件|写文件|重构|代码审查|看下.*代码/;
-  if (codeExecRe.test(message) && !route.capabilities.includes('code_execution')) {
-    if (route.mode === 'conversation') {
-      route.mode = 'single_action';
-      route.confidence = 0.9;
-    }
-    route.capabilities.push('code_execution');
-    console.log('[agent-buddy-action] 关键词命中 code_execution, 强制覆盖路由');
-  }
-  // v1.0 (Phase 2-B): office_open 关键词拦截 — 「打开Word/Excel/PPT」「打开文档」类
-  //   治 mt049ys1 「帮我打开Word」 类 router 误判为 conversation（无 open_view 工具）
+  if (codeExecRe.test(message)) { mark('code_execution'); console.log('[agent-buddy-action] 关键词命中 code_execution'); }
+  // Office 打开（优先级高于 document_generation：打开/新建文档 ≠ 生成文档）
   const officeOpenRe = /打开.*(?:Word|Excel|PPT|PowerPoint|文档|表格|演示)|新建.*(?:Word|Excel|PPT|文档)|创建.*(?:Word|Excel|PPT)/i;
   if (officeOpenRe.test(message)) {
-    if (route.mode === 'conversation') {
-      route.mode = 'single_action';
-      route.confidence = 0.9;
-    }
-    if (!route.capabilities.includes('office_open')) route.capabilities.push('office_open');
+    mark('office_open');
+    caps.delete('document_generation');
     console.log('[agent-buddy-action] 关键词命中 office_open, 强制覆盖路由');
   }
-  // v1.0 (Phase 2-B): view_navigation 关键词拦截 — 「打开看板/需求/缺陷/dashboard/项目详情」等视图
-  //   注意: office_open (打开Word/Excel/PPT) 优先级更高,先命中 office_open 就不命中 view_navigation
+  // 视图导航（office_open 已命中则不加）
   const viewNavRe = /(?:打开|进入|进去|切到|切换到|跳到|转到|进\s*入|进\s*去|看[一这]?下|看[一这]?眼|查[一这]?下|看看)\s*(?:看板|kanban|需求(?:列表|池)?|requirements|缺陷|bugs?|任务|tasks|仪表[盘台]|dashboard|项目详情|详情页|聊天|chat|admin|管理|项目管理|项目列表)/i;
-  if (viewNavRe.test(message) && !route.capabilities.includes('view_navigation') && !route.capabilities.includes('office_open')) {
-    if (route.mode === 'conversation') {
-      route.mode = 'single_action';
-      route.confidence = 0.85;
-    }
-    route.capabilities.push('view_navigation');
-    console.log('[agent-buddy-action] 关键词命中 view_navigation, 强制覆盖路由');
+  if (viewNavRe.test(message) && !caps.has('view_navigation') && !caps.has('office_open')) {
+    mark('view_navigation');
+    console.log('[agent-buddy-action] 关键词命中 view_navigation');
   }
-  // v1.0 (Phase 4-A): query_project_context 关键词拦截 — 「我在哪个项目/项目里有多少需求/系统配置/近期事件」
-  //   治 P3/P4 工具暴露但 router 没主动选的问题
-  const projectCtxRe = /(我.*项目|项目.*需求|系统配置|近期事件|最近.*事件|我.*哪个项目|哪些项目|项目.*成员|项目.*状态)/;
-  if (projectCtxRe.test(message)) {
-    if (route.mode === 'conversation') {
-      route.mode = 'single_action';
-      route.confidence = 0.85;
-    }
-    if (!route.capabilities.includes('query_project_context')) route.capabilities.push('query_project_context');
-    console.log('[agent-buddy-action] 关键词命中 query_project_context, 强制覆盖路由');
-  }
-  // v1.0 (Phase 3-A): retrieve_memory 关键词拦截 — 「我有什么偏好/之前聊过什么/学了什么/最近操作」
+  // 项目上下文查询（查询语义；创建/任务类意图不叠加，避免「帮我创建个项目」误命中「我.*项目」）
+  const projectCtxRe = /(我在.*项目|我.*在.*项目|哪个项目|哪些项目|项目(?:里|中|的).*(需求|任务|成员|状态|进度)|系统配置|近期事件|最近.*事件|项目.*成员|项目.*状态)/;
+  if (projectCtxRe.test(message) && !caps.has('project_create') && !caps.has('create_task')) { mark('query_project_context'); console.log('[agent-buddy-action] 关键词命中 query_project_context'); }
+  // 记忆查询
   const memoryRe = /(我.*偏好|我.*学|之前.*聊|以前.*聊|之前.*对话|历史.*对话|我.*记什么|记.*什么|我的.*记忆|最近.*操作|之前.*教)/;
-  if (memoryRe.test(message)) {
-    if (route.mode === 'conversation') {
-      route.mode = 'single_action';
-      route.confidence = 0.85;
-    }
-    if (!route.capabilities.includes('retrieve_memory')) route.capabilities.push('retrieve_memory');
-    console.log('[agent-buddy-action] 关键词命中 retrieve_memory, 强制覆盖路由');
-  }
-  // video_generation 关键词拦截 — 用户说"生成视频"/"做一个视频"/"画一段视频"等
-  const videoGenRe = /生成.*视频|做.*视频|画.*视频|创作.*视频|帮我.*视频|给我.*视频|视频.*生成|拍.*视频/;
-  if (videoGenRe.test(message) && !route.capabilities.includes('video_generation')) {
-    if (route.mode === 'conversation') {
-      route.mode = 'single_action';
-      route.confidence = 0.9;
-    }
-    route.capabilities.push('video_generation');
-    console.log('[agent-buddy-action] 关键词命中 video_generation, 强制覆盖路由');
-  }
-  // v0.94 (P5): 关键词前置拦截 — 修改已打开 Office 文档意图（改/编辑 Word/Excel/PPT）
-  //   与 document_generation 区分：生成新文档不命中；"改/编辑/调整 + 文档类型词"命中
+  if (memoryRe.test(message)) { mark('retrieve_memory'); console.log('[agent-buddy-action] 关键词命中 retrieve_memory'); }
+  // Office 编辑（改文档类，优先级高于 document_generation）
   const officeEditRe = /(改|编辑|调整|修改|更新|把).*(文档|word|excel|表格|xlsx|ppt|幻灯片|演示文稿|演示文件|文件里的|文件内)/;
   const officeEditRe2 = /(文档|表格|幻灯片|演示文稿).*(改成|改为|加上|删除|更新|修改|更新为|改成)/;
-  if ((officeEditRe.test(message) || officeEditRe2.test(message)) && !route.capabilities.includes('office_edit')) {
-    if (route.mode === 'conversation') {
-      route.mode = 'single_action';
-      route.confidence = 0.9;
-    }
-    route.capabilities.push('office_edit');
+  if (officeEditRe.test(message) || officeEditRe2.test(message)) {
+    mark('office_edit');
+    caps.delete('document_generation');
     console.log('[agent-buddy-action] 关键词命中 office_edit, 强制覆盖路由');
   }
-  // v0.96.2 (P138 修复): 当前已打开 Office 文档 + 用户说「写/创作/生成/做 + 作文/文章/内容/段落/章节/...
-  //   标题/简介/总结/描述」 → office_edit（不是 document_generation）。
-  //   v0.96 之前: 「帮我写一篇春天的作文」被归到 document_generation → 生成新 .docx 附件而非写进打开的 Word。
-  //   触发条件: 当前前端打开 office 视图（currentView 来自 ctx）+ 消息含「写作动词 + 写作名词」组合。
-  const isOfficeView = currentView && /office[-_]v3[-_]?(word|excel|xlsx|slides|pptx|ppt)?/i.test(currentView);
+  // Office 编辑（当前已打开 office 视图 + 写作动词/名词组合 → 写进打开的文档）
   const writeVerbRe = /写|创作|起草|拟|编|生成|做|产出|补充|加(一段|一篇|一些|几段|一个)|续写|扩写|改写/;
   const writeNounRe = /作文|文章|内容|段落|章节|标题|简介|介绍|总结|描述|文案|报告|总结|读后感|日记|小说|诗歌|故事|脚本|大纲|提纲/;
-  if (isOfficeView && writeVerbRe.test(message) && writeNounRe.test(message) && !route.capabilities.includes('office_edit')) {
-    if (route.mode === 'conversation') {
-      route.mode = 'single_action';
-      route.confidence = 0.92;
-    }
-    route.capabilities.push('office_edit');
-    // 如果 router 误归到 document_generation，移除去重（避免 document_gen tool 跑）
-    const idx = route.capabilities.indexOf('document_generation');
-    if (idx >= 0) route.capabilities.splice(idx, 1);
+  if (isOfficeView && writeVerbRe.test(message) && writeNounRe.test(message)) {
+    mark('office_edit');
+    caps.delete('document_generation');
     console.log('[agent-buddy-action] 关键上下文+写作动词命中 office_edit, 强制覆盖路由（移除 document_generation）');
   }
-  return route;
+
+  // ── 闲聊兜底：含「你/小吉 + 疑问词」且非「你帮我/你想听」→ 清空能力降级 conversation ──
+  const chatRe = /(?:你|小吉)\s*.{0,5}?(?:有啥|有[什么啥]|干什么|干嘛|干啥|咋了|咋|怎么|为什么|喜欢|觉得|会|能|是.*吗|是啥|是谁)/;
+  const notChatRe = /你.*帮.*(找|搜|查|听|做|打开|生成|画|写|改|创建)|你.*想.*(听|看|搜|找|生成)/;
+  if (chatRe.test(message) && !notChatRe.test(message) && caps.size > 0) {
+    console.log(`[agent-buddy-action] 闲聊兜底命中: "${message.slice(0, 30)}..." → 降级 conversation`);
+    caps.clear();
+  }
+
+  // ── mode 计算 ──
+  let mode;
+  let confidence;
+  if (emailAfterHit) { mode = 'conversational_action'; confidence = 0.9; }
+  else if (caps.size >= 2) { mode = 'conversational_action'; confidence = 0.85; }
+  else if (caps.size === 1) { mode = 'single_action'; confidence = 0.85; }
+  else { mode = 'conversation'; confidence = 0.6; }
+
+  const capabilities = [...caps];
+  return {
+    mode,
+    confidence,
+    capabilities,
+    requires_confirmation: capabilities.includes('email_send'),
+    reason: `纯规则路由：命中 ${capabilities.join(', ') || '无（conversation）'}`,
+  };
 }
 
 // v1.0 (Phase 1-A): conversation 模式只留 L0 元工具，避免 LLM 面对 37 个工具乱选

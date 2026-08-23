@@ -73,7 +73,7 @@ function testPromptSafety() {
   });
   assert(prompt.includes('plan_execute'));
   assert(prompt.includes('等待用户确认'));
-  assert(prompt.includes('严禁声称“邮件已发送”'));
+  assert(prompt.includes('严禁声称"邮件已发送"'));
 }
 
 function testActionCardStateShape() {

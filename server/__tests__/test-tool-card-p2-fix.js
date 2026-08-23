@@ -48,8 +48,9 @@ tcc.handleToolCard({
 });
 const c1 = container.querySelector('[data-tool-use-id="tu_1"]');
 const headBtns = c1.querySelectorAll('.ap-tool-card-head-btn');
-check('awaiting 卡片 head 有 2 个审批按钮', headBtns.length === 2, `count=${headBtns.length}`);
+check('awaiting 卡片 head 有 3 个审批按钮（✅/⏩/❌）', headBtns.length === 3, `count=${headBtns.length}`);
 check('head 按钮含 ✅', !!c1.querySelector('.ap-tool-card-head-btn.ap-tool-card-allow'), 'allow btn');
+check('head 按钮含 ⏩（v0.115b 全部允许）', !!c1.querySelector('.ap-tool-card-head-btn.ap-tool-card-always'), 'always btn');
 check('head 按钮含 ❌', !!c1.querySelector('.ap-tool-card-head-btn.ap-tool-card-deny'), 'deny btn');
 // body 里**没有**审批按钮（head 已经有了，body 不重复）
 const bodyBtns = c1.querySelector('.ap-tool-card-body').querySelectorAll('.ap-tool-card-btn');

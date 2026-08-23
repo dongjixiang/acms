@@ -29,8 +29,9 @@
   var GROUP_THRESHOLD = 3;      // 超过此数启动 group
   // 🆕 v0.114v：当前轮次内已渲染的独立卡片数（不跨轮累计）
   var _roundCardCount = 0;
-  // 🆕 v0.114v：当前轮次号（reset 时 +1，卡片创建时打标，group 迁移只迁本轮）
-  var _currentRound = 0;
+  // 🆕 v0.115a：当前"回复段"号（reset=新轮次、onReplyStart=回复开始 时递增；
+  //   卡片创建时打标，group 迁移只迁同段 —— 回复前的工具一组，回复后的工具新一组）
+  var _segment = 0;
 
   function getContainer() {
     if (!_container || !_container.isConnected) _container = document.querySelector('#ap-messages');
@@ -87,50 +88,59 @@
       input: null,
       output: null,
       isError: false,
-      round: _currentRound,  // 🆕 v0.114v：标记轮次（group 迁移/计数只认本轮）
+      segment: _segment,  // 🆕 v0.115a：标记回复段（group 迁移/计数只认同段）
     };
     paintHead(_cards[evt.tool_use_id]);
     insertCardEl(el, evt.tool_use_id);
   }
 
-  // 🆕 P2：智能插入（独立 / group）
+  // 🆕 v0.115a：按"回复段"分组的智能插入（多多规则：回复前的连续工具可合并 group；
+  //   回复文本出现后（onReplyStart 封存旧 group），再调用的多个工具开新 group）
   function insertCardEl(el, toolUseId) {
     var container = getContainer();
     if (!container) return;
-    _roundCardCount++;  // 🆕 v0.114v：只计当前轮次（历史卡片不再累计，跨轮不会误触发 group）
+    _roundCardCount++;  // 只计当前回复段（onReplyStart/reset 归零）
     var totalCards = _roundCardCount;
 
-if (totalCards >= GROUP_THRESHOLD) {
-      // 触发 group：把本轮已有卡片（含当前）打包到 group 容器
-      // 🆕 v0.114v：只迁移**本轮**的卡片 —— 历史轮次卡片/group 保留在聊天流原位
+    if (totalCards >= GROUP_THRESHOLD) {
+      // 触发 group：把当前回复段已有卡片（含当前）打包到 group 容器
       if (!_groupEl) {
         _groupEl = createGroupEl(totalCards);
         var streamBubble = document.getElementById('ap-stream-bubble');
         container.insertBefore(_groupEl, streamBubble || null);
-        // 迁移本轮已渲染的卡片到 group（只迁移当前轮次的独立卡片）
+        // 迁移当前回复段已渲染的独立卡片（只迁同段，历史段卡片/group 保留原位）
         var groupBody = _groupEl.querySelector('.ap-tool-group-body');
         for (var k in _cards) {
           if (_cards[k] && _cards[k].el && _cards[k].el !== el
               && _cards[k].el.parentNode === container
-              && _cards[k].round === _currentRound) {  // 🆕 v0.114v：只迁本轮
+              && _cards[k].segment === _segment) {
             groupBody.appendChild(_cards[k].el);
-            _groupIds.push(k);  // 🆕 P2 bug fix：迁移的旧卡片也要 push（之前漏了导致 count 偏少）
+            _groupIds.push(k);
           }
         }
-        // 同时把 thinking 卡也移到 group 上方（保持视觉顺序：thinking 在最上，tools group 在中，stream bubble 在下）
+        // thinking 卡移到 group 上方（视觉顺序：thinking 最上，group 中，stream bubble 下）
         if (_thinkingEl && _thinkingEl.parentNode === container) {
           container.insertBefore(_thinkingEl, _groupEl);
         }
       }
-      // 当前卡片塞 group
       _groupEl.querySelector('.ap-tool-group-body').appendChild(el);
       _groupIds.push(toolUseId);
-      // 更新 group head 计数
       updateGroupHead();
     } else {
       insertBeforeStreamBubble(el);
     }
     container.scrollTop = container.scrollHeight;
+  }
+
+  // 🆕 v0.115a：Agent 回复开始（SSE text 事件）→ 封存当前 group。
+  //   多多规则：回复前的一批工具合并为一个 group；回复出现后新调用的多个工具开新 group。
+  //   幂等：本回复段无工具时 no-op（纯文本回复不会产生空段）。
+  function onReplyStart() {
+    if (_roundCardCount === 0 && !_groupEl) return;
+    _segment++;
+    _roundCardCount = 0;
+    _groupEl = null;   // 封存（DOM 保留在聊天流），新回复段独立分组
+    _groupIds = [];
   }
 
   function createGroupEl(initialCount) {
@@ -260,13 +270,10 @@ if (totalCards >= GROUP_THRESHOLD) {
 
   // ============ Reset ============
   function reset() {
-    // 🆕 v0.114v：**不再删除任何卡片 DOM** —— 历史工具调用卡片保留在聊天流
-    //   （多多核心原则：聊天流向下，历史卡片保留）。之前 reset 删非 awaiting 卡片
-    //   → 用户聊几句后历史工具调用窗口全消失（用户实报）。
-    //   这里只做"轮次边界"：本轮计数归零 + group 状态重置，下一轮卡片独立分组；
-    //   thinking 卡片每轮重建（临时思考过程不清历史）。
+    // 🆕 v0.115a：按回复段划分 —— reset 只做轮次边界（新对话轮次），
+    //   回复段边界由 onReplyStart（SSE text 事件）控制；历史卡片/group 全部保留。
+    _segment++;
     _roundCardCount = 0;
-    _currentRound++;          // 新轮次（group 迁移/卡片打标认新 round）
     _groupEl = null;          // 本轮 group 容器已封存（保留 DOM），新轮独立 group
     _groupIds = [];
     // thinking 卡片：每轮重建（思考过程是临时态，不保留）
@@ -301,10 +308,12 @@ function paintHead(card) {
 
     // 🆕 A2 修复（2026-08-23）：awaiting 卡片 head 内嵌快捷审批按钮
     //   —— 不依赖 body 展开，group 折叠时也能点（解决"多次调用时没法审批"）
+    // 🆕 v0.115b：加 ⏩"全部允许" —— 本会话内此类操作自动通过（后端记入会话自动放行集合）
     var headActionsHtml = '';
     if (card.status === 'awaiting' && !card.isUserQuestion) {
       headActionsHtml = '<span class="ap-tool-card-head-actions">'
-        + '<button class="ap-tool-card-btn ap-tool-card-allow ap-tool-card-head-btn" data-action="allow" data-tool-use-id="' + escHtml(card.toolUseId) + '" title="允许执行">✅</button>'
+        + '<button class="ap-tool-card-btn ap-tool-card-allow ap-tool-card-head-btn" data-action="allow" data-tool-use-id="' + escHtml(card.toolUseId) + '" title="允许执行一次">✅</button>'
+        + '<button class="ap-tool-card-btn ap-tool-card-always ap-tool-card-head-btn" data-action="always-allow" data-tool-use-id="' + escHtml(card.toolUseId) + '" title="本会话内此类操作自动通过（不再询问）">⏩</button>'
         + '<button class="ap-tool-card-btn ap-tool-card-deny ap-tool-card-head-btn" data-action="deny" data-tool-use-id="' + escHtml(card.toolUseId) + '" title="拒绝执行">❌</button>'
         + '</span>';
     }
@@ -345,7 +354,9 @@ function paintHead(card) {
         e.stopPropagation();  // 阻止 head 点击折叠
         var action = btn.getAttribute('data-action');
         var toolUseId = btn.getAttribute('data-tool-use-id');
-        var detail = { toolUseId: toolUseId, allow: (action === 'allow') };
+        // 🆕 v0.115b：always-allow = 允许 + 本会话内此类操作自动通过
+        var detail = { toolUseId: toolUseId, allow: (action === 'allow' || action === 'always-allow') };
+        if (action === 'always-allow') detail.alwaysAllow = true;
         // 锁按钮（防双击）
         headBtns.forEach(function (b) { b.disabled = true; });
         document.dispatchEvent(new CustomEvent('qwen:tool-card:decision', { detail: detail }));
@@ -746,6 +757,7 @@ function paintHead(card) {
     handleToolCard: handleToolCard,
     handleThinking: handleThinking,
     reset: reset,
+    onReplyStart: onReplyStart,   // 🆕 v0.115a：Agent 回复开始 → 封存当前 group（回复段分组）
     debugCount: function () { return _apInsertedAt; },
   };
 })();
