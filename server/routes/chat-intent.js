@@ -313,7 +313,10 @@ router.post('/detect-and-respond', async (req, res, next) => {
         const qwenMgr = require('../services/qwen-manager');
         const qr = await qwenMgr.chat(reqId, text, {
           approvalMode: 'auto',
-          timeoutMs: 45000,
+          // 🆕 v0.117y: 45s → 600s，对齐 agent-buddy(600s)/qwen-task(600s)
+          //   45s 只够冷启动+首 token，Qwen 写代码要调多个工具（10+ tool_card），必超时
+          //   SSE 流式有实时进度反馈，设长不会干等
+          timeoutMs: 600000,
           historyMessages,  // 🆕 v0.117: chat_messages 历史拼到 prompt 前
           onDelta: (delta) => {
             // Qwen 真流式文本 → 推流
