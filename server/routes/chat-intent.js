@@ -358,7 +358,8 @@ router.post('/detect-and-respond', async (req, res, next) => {
         return;  // 🆕 SSE 已发完，避免下面 runtimeExec 双跑
       } catch (qe) {
         try {
-          res.write(`data: ${JSON.stringify({ type: 'end', ok: false, error: qe.message })}\n\n`);
+          const errStr = (qe && typeof qe === 'object') ? JSON.stringify(qe).slice(0, 200) : (qe.message || String(qe));
+          res.write(`data: ${JSON.stringify({ type: 'end', ok: false, error: errStr })}\\n\\n`);
           res.end();
         } catch (e) {}
         return;
