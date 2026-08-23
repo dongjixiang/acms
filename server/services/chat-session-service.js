@@ -25,6 +25,7 @@
 
 const crypto = require('crypto');
 const { collection } = require('../db/connection');
+const reqStore = require('../stores/requirement-store');  // 🆕 v0.117cc: getOrCreateSessionRequirement 需要（漏 import 导致 SESSION_REQ_NOT_FOUND）
 
 const RECYCLE_DAYS = 7;
 const HISTORY_LIMIT_FOR_LLM = 20;
