@@ -2173,6 +2173,10 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
   scroll-behavior: smooth;
   align-items: flex-start;  /* 🆕 v0.117j: 防止 flex stretch 压塌工具卡片高度 */
 }
+/* 🆕 v0.117v: 自由对话 chat-stream 也要禁止 flex 压缩子项（同 v0.114y 小吉面板修复）
+   flex item 默认 flex-shrink:1，容器内容超高时卡片被压扁（展开后卡片高度不变=40px，
+   气泡不往下移 = 视觉重叠）。内容靠 overflow-y:auto 滚动，不该压缩子项。 */
+.chat-stream > * { flex-shrink: 0; }
 .chat-stream::-webkit-scrollbar { width: 4px; }
 .chat-stream::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
