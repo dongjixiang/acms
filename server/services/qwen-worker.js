@@ -608,7 +608,17 @@ class QwenSessionManager {
 
     let session = this.sessions.get(userId);
     if (session && session.ready && session.child && session.child.exitCode === null) {
-      return session;
+      // 🆕 修复（2026-08-23）：cwd 变化 → 重建会话（workspace 映射跨项目切换）
+      //   同一 userId 先在项目 A 聊（cwd=workspaces/A），切到项目 B 后 cwd 变了，
+      //   如果复用旧会话，Qwen 还在 A 目录干活 → 文件改错项目。
+      //   会话 cwd 不同 → close 旧会话重建（下次 getSession 建新 CLI）。
+      if (opts.cwd && session.cwd && session.cwd !== opts.cwd) {
+        debug(`会话 cwd 变化 ${session.cwd.slice(-40)} → ${opts.cwd.slice(-40)}，重建`);
+        try { session.close(); } catch (e) { /* ignore */ }
+        this.sessions.delete(userId);
+      } else {
+        return session;
+      }
     }
     if (session) { try { session.close(); } catch (e) { /* ignore */ } this.sessions.delete(userId); }
 

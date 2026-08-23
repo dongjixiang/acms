@@ -175,7 +175,10 @@ async function chat(userId, prompt, opts = {}) {
     cwd: opts.cwd || undefined,
     modelId: opts.modelId || undefined,
     // B6: 小吉人设（仅新会话注入；已有会话保留原人设）
-    appendSystemPrompt: opts.appendSystemPrompt !== undefined ? opts.appendSystemPrompt : getPersona(),
+    // 🆕 workspaceHint（v0.114t）：聊天路径 workspace 映射 —— 追加在当前项目工作区的
+    //   指引（项目 slug + 路径）。注意：不是覆盖人设，是拼在人设后面。
+    appendSystemPrompt: (opts.appendSystemPrompt !== undefined ? opts.appendSystemPrompt : getPersona())
+      + (opts.workspaceHint || ''),
   });
 
   const askMode = opts.approvalMode === 'ask';

@@ -827,8 +827,35 @@ var buddyCtx = {
               if (typeof res.flush === 'function') res.flush();
             }
             console.log('[agent-buddy] [qwen] 内核分流 userId=' + userId + ' mode=' + actionRoute.mode + ' caps=' + JSON.stringify(_caps) + ' msg="' + message.slice(0, 40) + '"');
+            // 🆕 修复（2026-08-23）：Qwen Code workspace 映射到 ACMS workspace ——
+            //   聊天路径默认 cwd 是 qwen-workspace/<userId>（与 ACMS 项目隔离），
+            //   用户让小吉改项目文件时 Qwen 在孤儿目录干活。这里解析当前项目
+            //   （前端 currentProjectId）→ ACMS workspace 路径 → 作为 Qwen cwd。
+            //   同时注入 workspace 指引（项目 slug + 路径），让 Qwen 知道该操作哪个项目。
+            var _qwenCwd = null;
+            var _qwenWsHint = '';
+            try {
+              var _projStore = require('../stores/project-store');
+              var _wsSvc = require('../services/workspace-service');
+              var _proj = sharedCtx.projectId ? _projStore.getById(sharedCtx.projectId) : null;
+              if (_proj && _proj.slug) {
+                var _wsPath = _wsSvc.getPath(_proj.slug);
+                var _fs = require('fs');
+                if (!_fs.existsSync(_wsPath)) _fs.mkdirSync(_wsPath, { recursive: true });
+                _qwenCwd = _wsPath;
+                _qwenWsHint = '\n\n【当前 ACMS 项目】\n- 项目名称: ' + (_proj.name || _proj.slug) + '\n'
+                  + '- 项目 slug: ' + _proj.slug + '\n'
+                  + '- 工作目录: ' + _wsPath + '\n'
+                  + '- 本工作目录是 ACMS 项目 workspace（' + _wsPath + '），修改项目文件请直接在该目录下读写。\n'
+                  + '- 使用 acms_workspace_* 工具时 projectSlug 传 "' + _proj.slug + '"（不要传 default）。\n'
+                  + '- 如果用户明确提到其他项目，才切换到对应目录；否则默认就在本项目工作区。';
+                console.log('[agent-buddy] [qwen] workspace 映射: project=' + _proj.slug + ' cwd=' + _wsPath);
+              }
+            } catch (e) { console.warn('[agent-buddy] [qwen] workspace 映射失败:', e.message); }
             var qwenResp = await qwenManagerMod.chat(userId, message, {
               approvalMode: 'ask',   // 工具审批 → 前端确认框（ask 模式）
+              cwd: _qwenCwd || undefined,  // 🆕 workspace 映射（无项目时 undefined → qwen-workspace 兜底）
+              workspaceHint: _qwenWsHint || undefined,  // 🆕 workspace 指引（拼在人设后，不覆盖人设）
               // 🆕 修复（2026-08-23）：timeoutMs 240s → 600s（10min）
               //   复杂任务 14+ 审批跑 5-10min，240s 太短触发 fallback runToolLoop
               //   → 用户看到的是旧引擎回复，误以为"没转给 Qwen Code"
