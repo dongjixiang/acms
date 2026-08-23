@@ -455,6 +455,9 @@ function paintHead(card) {
     body.style.display = visible ? 'block' : 'none';
     if (toggleBtn) toggleBtn.textContent = visible ? '▼' : '▶';
     if (visible) {
+      // 🆕 v0.117p: 展开后添加短暂的高亮效果，帮助用户注意到卡片已展开
+      card.el.style.boxShadow = '0 0 0 2px rgba(78, 205, 196, 0.5)';
+      setTimeout(() => { card.el.style.boxShadow = ''; }, 500);
       scrollCardIntoView(card.el);
     }
   }
