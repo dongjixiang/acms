@@ -1105,6 +1105,11 @@ async function chatSend(reqId) {
  */
 async function handleFreeChatSSE(reqId, resp, typingEl) {
   var c = document.getElementById('chat-stream-msgs-' + reqId);
+  // 🆕 v0.117u: 每轮消息开始做工具卡轮次边界（reset 只重置计数/group，不删历史卡片 DOM）
+  //   否则 _roundCardCount 跨消息累加，第 2-3 条消息就误触发 group → 卡片插错位置重叠
+  if (window.ACMSQwenToolCard && window.ACMSQwenToolCard.reset) {
+    window.ACMSQwenToolCard.reset();
+  }
   // 设置 ACMSQwenToolCard 容器到自由对话 chat 流（默认是 #ap-messages）
   if (window.ACMSQwenToolCard && window.ACMSQwenToolCard.setContainer) {
     window.ACMSQwenToolCard.setContainer(c);

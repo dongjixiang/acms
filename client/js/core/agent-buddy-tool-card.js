@@ -116,11 +116,13 @@
     _roundCardCount++;  // 只计当前回复段（onReplyStart/reset 归零）
     var totalCards = _roundCardCount;
 
+    // 🆕 v0.117u: 统一用容器内查找锚点（不能 document.getElementById —— 小吉面板也有同 ID，会插错位置）
+    var streamBubble = container.querySelector('#ap-stream-bubble');
+
     if (totalCards >= GROUP_THRESHOLD) {
       // 触发 group：把当前回复段已有卡片（含当前）打包到 group 容器
       if (!_groupEl) {
         _groupEl = createGroupEl(totalCards);
-        var streamBubble = document.getElementById('ap-stream-bubble');
         container.insertBefore(_groupEl, streamBubble || null);
         // 迁移当前回复段已渲染的独立卡片（只迁同段，历史段卡片/group 保留原位）
         var groupBody = _groupEl.querySelector('.ap-tool-group-body');
@@ -141,23 +143,9 @@
       _groupIds.push(toolUseId);
       updateGroupHead();
     } else {
-      // 🆕 v0.117t: 插入到最后一个卡片后面，而不是锚点前
-      var streamBubble = document.getElementById('ap-stream-bubble');
+      // 🆕 v0.117u: 直接 insertBefore(streamBubble) —— 天然顺序（每次插到锚点前=旧卡后）
       if (streamBubble && streamBubble.parentNode === container) {
-        // 找最后一个插入的卡片（streamBubble 之前的连续卡片）
-        var lastCard = null;
-        var sibling = streamBubble.previousElementSibling;
-        while (sibling && sibling.classList.contains('ap-tool-card')) {
-          lastCard = sibling;
-          sibling = sibling.previousElementSibling;
-        }
-        if (lastCard) {
-          // 插入到最后一张卡片的后面（nextSibling 是 streamBubble）
-          container.insertBefore(el, lastCard.nextSibling);
-        } else {
-          // 没有卡片，插入到 streamBubble 前面
-          container.insertBefore(el, streamBubble);
-        }
+        container.insertBefore(el, streamBubble);
       } else {
         container.appendChild(el);
       }
@@ -523,6 +511,9 @@ function paintHead(card) {
   function paintInput(card) {
     var body = card.el.querySelector('.ap-tool-card-body');
     if (!body || !card.input) return;
+    // 🆕 v0.117u: 幂等 —— 已渲染过 input 就跳过（input_complete 事件可能到达两次）
+    if (card._inputPainted) return;
+    card._inputPainted = true;
     var html = '<div class="ap-tool-card-section">'
       + '<div class="ap-tool-card-section-head">📥 参数</div>'
       + renderInputByType(card.toolName, card.input)
@@ -539,6 +530,9 @@ function paintHead(card) {
   function paintOutput(card) {
     var body = card.el.querySelector('.ap-tool-card-body');
     if (!body) return;
+    // 🆕 v0.117u: 幂等 —— 已渲染过 output 就跳过
+    if (card._outputPainted) return;
+    card._outputPainted = true;
     if (card.output) {
       var truncated = card.output.length > 800 ? card.output.slice(0, 800) + '\n…(截断，原长度 ' + card.output.length + ')' : card.output;
       var rendered = null;
