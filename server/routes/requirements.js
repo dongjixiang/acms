@@ -641,7 +641,15 @@ const { pickNext: pickAssistNext } = require('../services/assists/router');
 // 列出所有已生成的辅助手段（前端轮询用）
 router.get('/:id/assist', (req, res, next) => {
   try {
-    const reqRec = reqStore.getById(req.params.id);
+    let reqId = req.params.id;
+    // 🆕 v0.117dd: 自由对话 sess-xxx → 自动 resolve（与 POST /assist/:method + /stream 一致）
+    //   否则 renderLeisureResult 用 sess-xxx 拉 /assist → REQ_NOT_FOUND
+    if (reqId.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(reqId);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      reqId = sessionReq.id;
+    }
+    const reqRec = reqStore.getById(reqId);
     if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
 
     const result = {};
@@ -649,7 +657,7 @@ router.get('/:id/assist', (req, res, next) => {
     for (const method of assists.ASSIST_METHODS) {
       const svc = assists.getAssist(method);
       if (svc && svc.getAssist) {
-        const data = svc.getAssist(req.params.id);
+        const data = svc.getAssist(reqId);
         if (data) result[method] = data;
         // v0.13 B6 fix: 删 use_case 调试 log
         //   旧：每 5 次 GET 输出诊断（前端 3s polling × 多个 req → 持续刷屏）
@@ -688,7 +696,14 @@ function collectAssistState(reqId, currentRound) {
 router.post('/:id/assist/run', async (req, res, next) => {
   try {
     const { modelId, role } = req.body || {};
-    const reqRec = reqStore.getById(req.params.id);
+    let reqId = req.params.id;
+    // 🆕 v0.117dd: 自由对话 sess-xxx → 自动 resolve（与 /assist/:method 一致）
+    if (reqId.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(reqId);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      reqId = sessionReq.id;
+    }
+    const reqRec = reqStore.getById(reqId);
     if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
     if (reqRec.status !== 'idea') {
       return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
@@ -783,7 +798,14 @@ router.post('/:id/assist/:method/regenerate', async (req, res, next) => {
   try {
     const { method } = req.params;
     const { modelId, role } = req.body || {};
-    const reqRec = reqStore.getById(req.params.id);
+    let reqId = req.params.id;
+    // 🆕 v0.117dd: 自由对话 sess-xxx → 自动 resolve（chatAssistRegen 换一批按钮）
+    if (reqId.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(reqId);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      reqId = sessionReq.id;
+    }
+    const reqRec = reqStore.getById(reqId);
     if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
     if (reqRec.status !== 'idea') {
       return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
