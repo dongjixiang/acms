@@ -4196,6 +4196,7 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
   font-size: 12px;
   text-align: left;
   overflow: hidden;
+  min-height: 40px;  /* 🆕 v0.117l: 防止 body 折叠时卡片被压塌 */
 }
 .ap-tool-card-head {
   display: flex; align-items: center; gap: 8px;
