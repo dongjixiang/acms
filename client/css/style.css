@@ -4206,10 +4206,10 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
   border-radius: 6px;
   font-size: 12px;
   text-align: left;
-  overflow: hidden;
   min-height: 40px;  /* 🆕 v0.117l: 防止 body 折叠时卡片被压塌 */
   max-width: 100%;  /* 🆕 v0.117n: 限制宽度防止横向撑开 */
   box-sizing: border-box;  /* 🆕 padding 计入宽度 */
+  /* 🆕 v0.117q: 移除 overflow: hidden，允许 body 展开时卡片高度自适应 */
 }
 .ap-tool-card-head {
   display: flex; align-items: center; gap: 8px;
