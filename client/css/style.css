@@ -4198,9 +4198,10 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
 }
 .ap-tool-card-head {
   display: flex; align-items: center; gap: 8px;
-  padding: 6px 10px;
+  padding: 10px 12px;  /* 🆕 v0.117i: 增加 padding 让卡片更明显 */
   background: var(--bg4, rgba(20,20,40,.6));
   border-bottom: 1px solid var(--border1, rgba(255,255,255,.06));
+  min-height: 40px;  /* 🆕 最小高度确保可见 */
 }
 .ap-tool-card-icon { font-size: 13px; }
 .ap-tool-card-name { color: var(--accent, #0ea89d); font-family: monospace; font-weight: 600; }

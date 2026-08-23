@@ -42,7 +42,9 @@
   function insertBeforeStreamBubble(el) {
     var container = getContainer();
     if (!container) return false;
-    var streamBubble = document.getElementById('ap-stream-bubble');
+    // 🆕 v0.117j: 在容器内查找锚点，不是全局 document.getElementById
+    //   自由对话窗口有自己的 #ap-stream-bubble，不能用小吉面板的
+    var streamBubble = container.querySelector('#ap-stream-bubble');
     if (streamBubble && streamBubble.parentNode === container) {
       container.insertBefore(el, streamBubble);
     } else {
