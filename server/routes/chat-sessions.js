@@ -63,6 +63,23 @@ router.get('/:id/messages', (req, res) => {
   }
 });
 
+// v0.117：清理会话消息（自由对话补"清理"功能）
+//   body: { mode: 'all'|'user'|'assistant'|'system'|'ai'|'selected', indices?: [...] }
+router.post('/:id/clean', (req, res) => {
+  try {
+    const { mode = 'all', indices } = req.body || {};
+    const result = svc.cleanSessionMessages(req.params.id, { mode, indices });
+    if (result.error === 'NOT_FOUND') return res.status(404).json({ error: 'NOT_FOUND' });
+    if (result.error && result.error.startsWith('未知清理模式')) {
+      return res.status(400).json({ error: 'INVALID_MODE', message: result.error });
+    }
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[chat-sessions] POST /:id/clean error:', e);
+    res.status(500).json({ error: 'INTERNAL', message: e.message });
+  }
+});
+
 router.patch('/:id', (req, res) => {
   try {
     const { title } = req.body || {};

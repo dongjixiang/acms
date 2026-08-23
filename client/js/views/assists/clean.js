@@ -26,15 +26,115 @@
 })();
 
 /**
+ * v0.117 自由对话清理表单（独立路径，不走 chatAssist）
+ *   数据源：chat_messages 表（不是 supplement_history）
+ *   提交：POST /api/chat-sessions/:id/clean {mode, indices}
+ */
+async function renderFreeChatCleanForm(reqId) {
+  const stream = document.getElementById(`chat-stream-msgs-${reqId}`);
+  if (!stream) { toast('找不到会话容器', 'error'); return; }
+
+  let messages;
+  try {
+    const resp = await api('GET', `/chat-sessions/${reqId}/messages`);
+    messages = resp.messages || [];
+  } catch (e) {
+    toast('加载会话历史失败: ' + e.message, 'error');
+    return;
+  }
+
+  if (messages.length === 0) {
+    toast('当前会话没有记录可清理', 'info');
+    return;
+  }
+
+  const cardId = `inline-clean-${reqId}-${Date.now()}`;
+  const roleIcons = { user: '💬', assistant: '🤖', system: '📎' };
+
+  const displayList = messages.slice(-30);
+  const offset = messages.length - displayList.length;
+
+  const itemsHtml = displayList.map((m, i) => {
+    const realIdx = offset + i;
+    const icon = roleIcons[m.role] || '❓';
+    const text = (m.content || '').replace(/\n/g, ' ').slice(0, 25);
+    const label = text.length > 22 ? text.slice(0, 20) + '...' : text;
+    const time = m.ts ? new Date(m.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '';
+    return `<label style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:12px;cursor:pointer;border-bottom:1px solid var(--border)">
+      <input type="checkbox" class="clean-item-cb" value="${realIdx}" style="flex-shrink:0">
+      <span style="flex-shrink:0">${icon}</span>
+      <span style="color:var(--text2);flex-shrink:0;width:36px;font-size:11px">${time}</span>
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">${escHtml(label)}</span>
+    </label>`;
+  }).join('');
+
+  const html = `
+    <div id="${cardId}" class="chat-inline-form" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;margin:6px 0">
+      <div style="font-weight:600;font-size:14px;margin-bottom:4px">🧹 对话清理（自由对话）</div>
+      <div style="font-size:11px;color:var(--text2);margin-bottom:8px">
+        共 ${messages.length} 条记录 · 显示最近 ${displayList.length} 条 · 勾选要清理的条目
+      </div>
+      <div style="margin:4px 0 8px;display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn-small" onclick="document.querySelectorAll('#${cardId} .clean-item-cb').forEach(c=>c.checked=true)">☑️ 全选</button>
+        <button class="btn-small" onclick="document.querySelectorAll('#${cardId} .clean-item-cb').forEach(c=>c.checked=false)">↩️ 取消</button>
+        <button class="btn-small btn-primary" onclick="submitFreeCleanSelected('${cardId}','${reqId}')">🗑 清理选中</button>
+        <button class="btn-small btn-reject" onclick="submitFreeCleanAll('${cardId}','${reqId}')">⚠️ 全部清理</button>
+        <button class="btn-small" onclick="dismissInlineForm('${cardId}')">取消</button>
+      </div>
+      <div style="max-height:280px;overflow-y:auto;min-height:60px">${itemsHtml}</div>
+    </div>
+  `;
+
+  const typing = stream.querySelector('.chat-typing');
+  const temp = document.createElement('div');
+  temp.innerHTML = html;
+  const card = temp.firstElementChild;
+  if (typing) stream.insertBefore(card, typing);
+  else stream.appendChild(card);
+  stream.scrollTop = stream.scrollHeight;
+}
+
+async function submitFreeCleanSelected(cardId, reqId) {
+  const card = document.getElementById(cardId);
+  if (!card) return;
+  const checked = card.querySelectorAll('.clean-item-cb:checked');
+  if (checked.length === 0) return toast('请先勾选要清理的条目', 'warning');
+  const indices = Array.from(checked).map(cb => parseInt(cb.value, 10)).filter(i => !isNaN(i));
+  if (indices.length === 0) return toast('无有效选中', 'warning');
+  try {
+    const r = await api('POST', `/chat-sessions/${reqId}/clean`, { mode: 'selected', indices });
+    card.remove();
+    toast(`已清理 ${r.entries_removed || indices.length} 条记录，剩余 ${r.history_remaining || 0} 条`, 'success');
+    setTimeout(() => { if (typeof loadChatStream === 'function') loadChatStream(reqId); }, 800);
+  } catch (e) {
+    toast('清理失败: ' + e.message, 'error');
+  }
+}
+
+async function submitFreeCleanAll(cardId, reqId) {
+  if (!window.confirm('确认清理全部对话记录？此操作不可撤销。')) return;
+  try {
+    const r = await api('POST', `/chat-sessions/${reqId}/clean`, { mode: 'all' });
+    const card = document.getElementById(cardId);
+    if (card) card.remove();
+    toast(`已清理 ${r.entries_removed} 条记录`, 'success');
+    setTimeout(() => { if (typeof loadChatStream === 'function') loadChatStream(reqId); }, 800);
+  } catch (e) {
+    toast('清理失败: ' + e.message, 'error');
+  }
+}
+
+/**
  * 渲染清理表单（内联）
  */
 async function chatCleanPrompt(reqId) {
   if (!reqId) return;
 
-  // ═══ 自由对话：清理功能暂不支持（无 requirement 的 supplement_history）
-  if (reqId === '__free__' || (reqId && reqId.startsWith('sess-'))) {
-    toast('自由对话暂不支持清理功能，直接发新消息即可覆盖', 'info');
-    return;
+  // ═══ v0.117 自由对话：调 chat_messages + /chat-sessions/:id/clean 独立路径 ═══
+  //   旧实现 toast 拦截是因为没 requirement 关联，无法操作 supplement_history。
+  //   新实现：自由对话有 sess-xxx → chat_messages 表，独立 REST 接口清理。
+  if (reqId.startsWith('sess-')) {
+    return await renderFreeChatCleanForm(reqId);
   }
 
   const stream = document.getElementById(`chat-stream-msgs-${reqId}`);

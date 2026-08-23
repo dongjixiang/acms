@@ -165,6 +165,62 @@ function purgeAllSessions() {
   return purged;
 }
 
+// v0.117：清理会话消息（自由对话补"清理"功能，类比 requirement clean）
+//   session 没有 supplement_history 字段，聊条存在 chat_messages 表
+//   按 mode（all/user/assistant/system/ai/selected）删 role 匹配的记录
+//   selected 模式按 indices（chat_messages 数组下标）精确删除
+function cleanSessionMessages(sessionId, opts = {}) {
+  const session = getSession(sessionId);
+  if (!session) return { error: 'NOT_FOUND' };
+
+  const mode = opts.mode || 'all';
+  const all = getSessionMessages(sessionId);
+  let removed = 0;
+  let keepIndices;
+  let label;
+
+  if (mode === 'selected' && Array.isArray(opts.indices) && opts.indices.length > 0) {
+    const removeIdxSet = new Set(opts.indices.map(Number).filter(i => i >= 0 && i < all.length));
+    keepIndices = all.map((_, i) => i).filter(i => !removeIdxSet.has(i));
+    removed = removeIdxSet.size;
+    label = `选中条目 ${opts.indices.length} 条`;
+  } else {
+    const rolesToRemove = {
+      all: ['user', 'assistant', 'system'],
+      user: ['user'],
+      assistant: ['assistant'],
+      system: ['system'],
+      ai: ['assistant', 'system'],
+    };
+    const targets = rolesToRemove[mode];
+    if (!targets) return { error: `未知清理模式: ${mode}`, entries_removed: 0 };
+    keepIndices = all.map((m, i) => (targets.includes(m.role) ? -1 : i)).filter(i => i >= 0);
+    removed = all.length - keepIndices.length;
+    label = { all: '全部', user: '用户', assistant: 'AI 回答', system: '系统参考', ai: 'AI 回答+系统参考' }[mode] || mode;
+  }
+
+  // 按 (session_id, ts) 删除 chat_messages 记录（保证唯一性）
+  const messagesCol = collection('chat_messages');
+  for (let i = 0; i < all.length; i++) {
+    if (!keepIndices.includes(i)) {
+      const m = all[i];
+      messagesCol.remove(x => x.session_id === sessionId && x.ts === m.ts);
+    }
+  }
+
+  // 更新 session.updated_at
+  collection('chat_sessions').update(
+    s => s.id === sessionId,
+    { updated_at: nowIso() }
+  );
+
+  return {
+    entries_removed: removed,
+    history_remaining: keepIndices.length,
+    note: `已清理 ${label} 共 ${removed} 条对话记录${keepIndices.length > 0 ? `，剩余 ${keepIndices.length} 条` : ''}`,
+  };
+}
+
 // ── Messages ──
 
 function appendMessage(sessionId, role, content, meta) {
@@ -236,6 +292,7 @@ module.exports = {
   appendMessage,
   loadHistoryForLLM,
   isFirstUserMessage,
+  cleanSessionMessages,  // v0.117: 自由对话清理消息
   // Title
   extractTitleN,
   generateAutoTitle,
