@@ -102,7 +102,7 @@ check('第 3 张卡片触发 group 创建（threshold=3）', at3 === 1, `group c
 tcc.handleToolCard({ type: 'tool_card', phase: 'start', tool_use_id: 'tu_d', tool_name: 'read_file' });
 const groupBody = container.querySelector('.ap-tool-group-body');
 check('group body 包含全部 4 张卡片', groupBody.querySelectorAll('.ap-tool-card').length === 4, `count=${groupBody.querySelectorAll('.ap-tool-card').length}`);
-check('group head 显示计数 4', container.querySelector('.ap-tool-group-count').textContent.startsWith('4'), container.querySelector('.ap-tool-group-count').textContent);
+check('group head 显示计数 4', container.querySelector('.ap-tool-group-stats').textContent.length >= 0 && container.querySelector('.ap-tool-group-title').textContent.includes('(4)'), container.querySelector('.ap-tool-group-title').textContent);
 
 // ============ Case 5: MCP 渲染 ============
 console.log('\n--- Case 5: MCP acms_* 友好渲染 ---');

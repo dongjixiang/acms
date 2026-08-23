@@ -125,10 +125,11 @@ if (totalCards >= GROUP_THRESHOLD) {
   function createGroupEl(initialCount) {
     var group = document.createElement('div');
     group.className = 'ap-tool-group';
+    // 🆕 A3（2026-08-23）：group head 加状态徽章（避免用户不知道 group 内有 awaiting 卡片）
     group.innerHTML = '<div class="ap-tool-group-head" data-action="toggle-group">'
       + '<span class="ap-tool-group-toggle">▶</span>'
       + '<span class="ap-tool-group-title">🔧 工具调用</span>'
-      + '<span class="ap-tool-group-count">' + initialCount + '</span>'
+      + '<span class="ap-tool-group-stats"></span>'
       + '</div>'
       + '<div class="ap-tool-group-body" style="display:none"></div>';
     var head = group.querySelector('.ap-tool-group-head');
@@ -143,16 +144,22 @@ if (totalCards >= GROUP_THRESHOLD) {
 
   function updateGroupHead() {
     if (!_groupEl) return;
-    var count = _groupIds.length;
-    var statuses = [];
-    var failedCount = 0;
+    var total = _groupIds.length;
+    var awaitingCount = 0, failedCount = 0, doneCount = 0;
     for (var k in _cards) {
-      if (_cards[k].status === 'failed' || _cards[k].status === 'denied') failedCount++;
+      if (_cards[k].status === 'awaiting') awaitingCount++;
+      else if (_cards[k].status === 'failed' || _cards[k].status === 'denied') failedCount++;
+      else if (_cards[k].status === 'done' || _cards[k].status === 'allowed') doneCount++;
     }
+    var stats = [];
+    if (awaitingCount > 0) stats.push('<span class="ap-tool-group-stat-awaiting">⏳ ' + awaitingCount + ' 待审批</span>');
+    if (doneCount > 0) stats.push('<span class="ap-tool-group-stat-done">✅ ' + doneCount + '</span>');
+    if (failedCount > 0) stats.push('<span class="ap-tool-group-stat-failed">❌ ' + failedCount + ' 失败</span>');
+    var statsEl = _groupEl.querySelector('.ap-tool-group-stats');
+    if (statsEl) statsEl.innerHTML = stats.join(' ');
+    // 总数小字
     var titleEl = _groupEl.querySelector('.ap-tool-group-title');
-    var countEl = _groupEl.querySelector('.ap-tool-group-count');
-    if (titleEl) titleEl.textContent = '🔧 工具调用';
-    if (countEl) countEl.textContent = count + (failedCount ? '（' + failedCount + ' 失败）' : '');
+    if (titleEl) titleEl.textContent = '🔧 工具调用 (' + total + ')';
   }
 
   // phase: await_approval — 工具等待审批（ask 模式）
@@ -274,6 +281,16 @@ function paintHead(card) {
     var existingBody = card.el.querySelector('.ap-tool-card-body');
     var preservedBodyHtml = (existingBody && existingBody.innerHTML) || '';
 
+    // 🆕 A2 修复（2026-08-23）：awaiting 卡片 head 内嵌快捷审批按钮
+    //   —— 不依赖 body 展开，group 折叠时也能点（解决"多次调用时没法审批"）
+    var headActionsHtml = '';
+    if (card.status === 'awaiting' && !card.isUserQuestion) {
+      headActionsHtml = '<span class="ap-tool-card-head-actions">'
+        + '<button class="ap-tool-card-btn ap-tool-card-allow ap-tool-card-head-btn" data-action="allow" data-tool-use-id="' + escHtml(card.toolUseId) + '" title="允许执行">✅</button>'
+        + '<button class="ap-tool-card-btn ap-tool-card-deny ap-tool-card-head-btn" data-action="deny" data-tool-use-id="' + escHtml(card.toolUseId) + '" title="拒绝执行">❌</button>'
+        + '</span>';
+    }
+
     // 🆕 P2：head 加 ▶/▼ 折叠按钮（v0.18 极简偏好：默认折叠，看详情点开）
     card.el.innerHTML = '<div class="ap-tool-card-head">'
       + '<span class="ap-tool-card-toggle" data-action="toggle">▶</span>'
@@ -281,6 +298,7 @@ function paintHead(card) {
       + '<span class="ap-tool-card-name">' + escHtml(card.toolName) + '</span>'
       + '<span class="ap-tool-card-label">' + label + '</span>'
       + (card.isError ? '<span class="ap-tool-card-err">错误</span>' : '')
+      + headActionsHtml
       + '</div>'
       + '<div class="ap-tool-card-body" style="display:none"></div>';
 
@@ -294,6 +312,28 @@ function paintHead(card) {
       setBodyVisible(card, true);
     }
 
+    // 🆕 A1 修复（2026-08-23）：awaiting 卡片触发所在 group 自动展开
+    //   —— 即便用户没手动展开 group，group 内有审批时也能看到卡片
+    if (card.status === 'awaiting') {
+      ensureGroupVisible(card);
+    }
+    // 🆕 A3（2026-08-23）：任何状态变更后刷新 group head 状态徽章（done/failed/awaiting）
+    if (_groupEl) updateGroupHead();
+
+    // 绑定 head 内审批按钮（CustomEvent 触发器）
+    var headBtns = card.el.querySelectorAll('.ap-tool-card-head-btn');
+    headBtns.forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();  // 阻止 head 点击折叠
+        var action = btn.getAttribute('data-action');
+        var toolUseId = btn.getAttribute('data-tool-use-id');
+        var detail = { toolUseId: toolUseId, allow: (action === 'allow') };
+        // 锁按钮（防双击）
+        headBtns.forEach(function (b) { b.disabled = true; });
+        document.dispatchEvent(new CustomEvent('qwen:tool-card:decision', { detail: detail }));
+      });
+    });
+
     // 绑定折叠按钮
     var toggleBtn = card.el.querySelector('.ap-tool-card-toggle');
     if (toggleBtn) {
@@ -304,14 +344,40 @@ function paintHead(card) {
         setBodyVisible(card, hidden);
       });
     }
-    // 点 head 也能折叠/展开（除了 toggle 按钮本身）
+    // 点 head 也能折叠/展开（除了 toggle / head-btn 按钮）
     var head = card.el.querySelector('.ap-tool-card-head');
     head.addEventListener('click', function (e) {
-      if (e.target.classList.contains('ap-tool-card-toggle')) return;  // 上面已绑
+      if (!e || !e.target) return;
+      var t = e.target;
+      // head-btn 已 stopPropagation 自处理；这里兜底
+      if (typeof t.closest === 'function' && t.closest('.ap-tool-card-head-btn')) return;
+      if (t.classList && t.classList.contains('ap-tool-card-toggle')) return;
       var body = card.el.querySelector('.ap-tool-card-body');
       var hidden = body.style.display === 'none';
       setBodyVisible(card, hidden);
     });
+  }
+
+  // 🆕 A1（2026-08-23）：确保 card 所在的 group body 可见（含 awaiting 时自动展开）
+  function ensureGroupVisible(card) {
+    // 找到 card.el 的最近 group 祖先
+    var parent = card.el && card.el.parentNode;
+    while (parent && parent.nodeType === 1 && parent.classList &&
+           !parent.classList.contains('ap-tool-group-body') && !parent.classList.contains('ap-tool-card')) {
+      parent = parent.parentNode;
+    }
+    if (!parent || !parent.classList || !parent.classList.contains('ap-tool-group-body')) return;  // 不在 group 内
+    var groupEl = parent.parentNode;  // .ap-tool-group
+    if (!groupEl) return;
+    var body = parent;  // .ap-tool-group-body
+    if (body.style.display === 'none') {
+      body.style.display = 'block';
+      var head = groupEl.querySelector('.ap-tool-group-head');
+      if (head) {
+        var t = head.querySelector('.ap-tool-group-toggle');
+        if (t) t.textContent = '▼';
+      }
+    }
   }
 
   // 🆕 P2：body 显示/隐藏 helper（统一管理 ▶/▼ + body display）
@@ -365,7 +431,8 @@ function paintHead(card) {
     var html = '<div class="ap-tool-card-decision">';
     if (card.isUserQuestion && card.questions && card.questions.length) {
       html += renderUserQuestionForm(card);
-    } else {
+    } else if (card.status !== 'awaiting') {
+      // 🆕 A2（2026-08-23）：awaiting 卡片 head 已有审批按钮，body 不重复
       html += '<div class="ap-tool-card-decision-buttons">'
         + '<button class="ap-tool-card-btn ap-tool-card-allow" data-action="allow" data-tool-use-id="' + escHtml(card.toolUseId) + '">✅ 允许</button>'
         + '<button class="ap-tool-card-btn ap-tool-card-deny" data-action="deny" data-tool-use-id="' + escHtml(card.toolUseId) + '">❌ 拒绝</button>'

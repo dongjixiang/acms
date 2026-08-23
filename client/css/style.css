@@ -4307,13 +4307,44 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
 .ap-tool-group-head:hover { background: rgba(40,40,80,.6); }
 .ap-tool-group-toggle { font-size: 10px; color: var(--text3, #888); width: 12px; }
 .ap-tool-group-title { font-size: 12px; font-weight: 600; color: var(--accent, #0ea89d); }
-.ap-tool-group-count {
+.ap-tool-group-stats {
   margin-left: auto;
   font-size: 10px;
   color: var(--text3, #888);
   font-family: monospace;
+  display: flex;
+  gap: 6px;
 }
+.ap-tool-group-stat-awaiting { color: #ffd93d; font-weight: 600; }
+.ap-tool-group-stat-done { color: #51cf66; }
+.ap-tool-group-stat-failed { color: #ff6b6b; font-weight: 600; }
 .ap-tool-group-body { padding: 6px 10px; }
+
+/* 🆕 A2 修复（2026-08-23）：head 内审批按钮（不依赖 body 展开，group 折叠时也能点） */
+.ap-tool-card-head-actions {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 3px;
+  /* 阻止 head 点击折叠事件冒泡 */
+}
+.ap-tool-card-head-btn {
+  padding: 2px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--border1, rgba(255,255,255,.15));
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.ap-tool-card-head-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.ap-tool-card-head-btn.ap-tool-card-allow {
+  background: rgba(81,207,102,.2); border-color: rgba(81,207,102,.5); color: #51cf66;
+}
+.ap-tool-card-head-btn.ap-tool-card-deny {
+  background: rgba(255,107,107,.2); border-color: rgba(255,107,107,.5); color: #ff6b6b;
+}
+.ap-tool-card-head-btn:hover:not(:disabled) {
+  filter: brightness(1.3);
+}
 
 /* 🆕 P2 打磨：MCP acms_* 友好渲染样式 */
 .ap-tool-card-mcp-result { font-size: 11px; }
