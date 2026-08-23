@@ -1158,6 +1158,23 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
             if (window.ACMSQwenToolCard && window.ACMSQwenToolCard.handleToolCard) {
               window.ACMSQwenToolCard.handleToolCard(evt);
               console.log('[handleFreeChatSSE] after handleToolCard, debugCount:', window.ACMSQwenToolCard.debugCount());
+              // 调试：检查容器内卡片状态
+              setTimeout(() => {
+                if (c) {
+                  const cards = c.querySelectorAll('.ap-tool-card');
+                  console.log('[debug] cards in container:', cards.length);
+                  cards.forEach((card, i) => {
+                    const body = card.querySelector('.ap-tool-card-body');
+                    console.log(`[debug] card ${i}: status=${card.className.match(/ap-tool-status-(\w+)/)?.[1]}, bodyDisplay=${body?.style.display}`);
+                  });
+                  const group = c.querySelector('.ap-tool-group');
+                  console.log('[debug] group exists:', !!group);
+                  if (group) {
+                    const groupBody = group.querySelector('.ap-tool-group-body');
+                    console.log('[debug] group body display:', groupBody?.style.display);
+                  }
+                }
+              }, 100);
             } else {
               console.warn('[handleFreeChatSSE] ACMSQwenToolCard.handleToolCard not available');
             }
