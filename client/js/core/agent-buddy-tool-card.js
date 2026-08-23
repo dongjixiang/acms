@@ -49,6 +49,7 @@
     //   自由对话窗口有自己的 #ap-stream-bubble，不能用小吉面板的
     var streamBubble = container.querySelector('#ap-stream-bubble');
     if (streamBubble && streamBubble.parentNode === container) {
+      // 🆕 v0.117r: 插入到锚点之前，确保气泡在卡片下方
       container.insertBefore(el, streamBubble);
     } else {
       container.appendChild(el);

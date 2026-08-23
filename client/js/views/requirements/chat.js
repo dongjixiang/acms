@@ -1115,7 +1115,7 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
   var streamBubbleEl = null;
   var accumulated = '';
   if (c) {
-    // 🆕 v0.117j: 创建 id="ap-stream-bubble" 锚点（自由对话窗口没有此元素）
+    // 🆕 v0.117g: 创建 id="ap-stream-bubble" 锚点（自由对话窗口没有此元素）
     //   agent-buddy-tool-card.js insertBeforeStreamBubble 依赖此 ID 定位插入点
     //   没有它 → fallback 到 appendChild → 卡片被压到容器末尾 = "一条线"
     var anchor = document.getElementById('ap-stream-bubble');
@@ -1129,6 +1129,8 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
     var bubble = document.createElement('div');
     bubble.className = 'ap-msg ap-msg-buddy ap-stream-bubble';
     bubble.innerHTML = '<div class="ap-msg-text"></div><span class="ap-cursor">▍</span>';
+    // 🆕 v0.117r: 气泡插入到锚点之后，工具卡片插入到锚点之前
+    //   这样展开时气泡会自动下移
     c.insertBefore(bubble, anchor.nextSibling);
     streamBubbleEl = bubble.querySelector('.ap-msg-text');
 
