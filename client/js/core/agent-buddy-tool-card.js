@@ -149,6 +149,8 @@ if (totalCards >= GROUP_THRESHOLD) {
       var hidden = body.style.display === 'none';
       body.style.display = hidden ? 'block' : 'none';
       head.querySelector('.ap-tool-group-toggle').textContent = hidden ? '▼' : '▶';
+      // 🆕 v0.114w：group 展开后滚到可见（group 在底部时展开内容展示不全）
+      if (hidden) scrollCardIntoView(group);
     });
     return group;
   }
@@ -249,6 +251,8 @@ if (totalCards >= GROUP_THRESHOLD) {
         var hidden = body.style.display === 'none';
         body.style.display = hidden ? 'block' : 'none';
         toggleBtn.textContent = hidden ? '▲' : '▼';
+        // 🆕 v0.114w：展开后滚到可见
+        if (hidden) scrollCardIntoView(_thinkingEl);
       });
     }
     _thinkingEl.querySelector('.ap-thinking-body').textContent = _thinkingText;
@@ -373,6 +377,8 @@ function paintHead(card) {
   }
 
   // 🆕 A1（2026-08-23）：确保 card 所在的 group body 可见（含 awaiting 时自动展开）
+  // 🆕 v0.114w：展开 group 后滚到卡片可见 —— group 展开会改变卡片位置，
+  //   之前 setBodyVisible 的滚动基于折叠态算的位置不准，这里以展开后为准。
   function ensureGroupVisible(card) {
     // 找到 card.el 的最近 group 祖先
     var parent = card.el && card.el.parentNode;
@@ -392,15 +398,40 @@ function paintHead(card) {
         if (t) t.textContent = '▼';
       }
     }
+    // 🆕 v0.114w：group body 已展开 → 滚动到卡片可见（覆盖底部展示不全）
+    scrollCardIntoView(card.el);
   }
 
   // 🆕 P2：body 显示/隐藏 helper（统一管理 ▶/▼ + body display）
+  // 🆕 v0.114w：展开后自动滚动到卡片可见 —— 卡片在对话流底部时，
+  //   展开的 body 可能超出容器可视区（用户实报"扩展出来的内容展示不全"）。
   function setBodyVisible(card, visible) {
     var body = card.el.querySelector('.ap-tool-card-body');
     var toggleBtn = card.el.querySelector('.ap-tool-card-toggle');
     if (!body) return;
     body.style.display = visible ? 'block' : 'none';
     if (toggleBtn) toggleBtn.textContent = visible ? '▼' : '▶';
+    if (visible) {
+      scrollCardIntoView(card.el);
+    }
+  }
+
+  // 🆕 v0.114w：把卡片滚到聊天容器可视区内（底部时也能看到完整展开内容）
+  function scrollCardIntoView(cardEl) {
+    try {
+      var container = getContainer();
+      if (!container || !cardEl) return;
+      var cardRect = cardEl.getBoundingClientRect();
+      var contRect = container.getBoundingClientRect();
+      // 卡片下边缘超出容器可视区 → 滚动让卡片底部可见（留 12px 呼吸）
+      if (cardRect.bottom > contRect.bottom - 12) {
+        container.scrollTop += (cardRect.bottom - contRect.bottom) + 12;
+      }
+      // 卡片上边缘在可视区上方 → 滚动回顶部
+      else if (cardRect.top < contRect.top) {
+        container.scrollTop += (cardRect.top - contRect.top);
+      }
+    } catch (e) { /* 滚动失败忽略 */ }
   }
 
   function paintInput(card) {
