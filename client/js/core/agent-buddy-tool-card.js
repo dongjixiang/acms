@@ -34,7 +34,10 @@
   var _segment = 0;
 
   function getContainer() {
-    if (!_container || !_container.isConnected) _container = document.querySelector('#ap-messages');
+    // 🆕 v0.117k: 只在 _container 为 null 时 fallback，不检查 isConnected
+    //   之前：自由对话窗口被隐藏时 isConnected=false → fallback 到 #ap-messages → 卡片渲染到错误位置
+    //   修复：保留用户设置的容器，即使暂时不在 DOM 中也继续用
+    if (!_container) _container = document.querySelector('#ap-messages');
     return _container;
   }
 
