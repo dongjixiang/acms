@@ -343,6 +343,23 @@ router.post('/detect-and-respond', async (req, res, next) => {
         });
 
         if (qr.ok && qr.result && qr.result.trim()) qwenAiReply = qr.result.trim();
+
+        // 🆕 v0.117w: 保存 AI 回复到会话历史（用户消息已在 L262 保存）
+        //   工具调用信息（tool_card）不落库 —— SSE 只推给前端渲染卡片
+        if (isSession && session && qwenAiReply) {
+          try {
+            sessionSvc.appendMessage(reqId, 'assistant', qwenAiReply);
+            // 自动标题：仅首条 user message 时，且 title_auto=1（与旧引擎路径一致）
+            if (isFirstUserMsg && session.title_auto) {
+              const newTitle = sessionSvc.generateAutoTitle(text, session.title);
+              sessionSvc.updateSessionTitle(reqId, newTitle);
+              console.log(`[detect-and-respond] ${reqId} 自动标题: ${newTitle}`);
+            }
+          } catch (e) {
+            console.error('[detect-and-respond] 写 Qwen assistant message / 自动标题失败:', e.message);
+          }
+        }
+
         // end 事件：前端 finalize bubble + 显示 result
         try {
           res.write(`data: ${JSON.stringify({
