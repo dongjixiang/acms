@@ -534,7 +534,7 @@
 
   var _actionPollers = {};
 
-  function renderActionCard(action) {
+function renderActionCard(action) {
     if (!action || !action.requirementId) return;
     var container = document.querySelector('#ap-messages');
     if (!container) return;
@@ -543,13 +543,26 @@
     //   v0.112 旧逻辑「清掉其他 req 的卡片 + 复用同 req 卡片」依赖后端容器复用：
     //   后端复用容器时 requirementId 不变 → 卡片永远更新历史位置那张 → 新内容渲染到上面（多多反馈）。
     //   现在后端每次动作新建容器（requirementId 唯一）→ 这里直接 append 新卡片，历史卡片保留在上方作为聊天记录。
-    var existing = document.getElementById(id);
-    var card = existing || document.createElement('div');
-    card.id = id;
-    card.className = 'ap-action-card';
+    // 🆕 修复（2026-08-23）：renderActionCard 时强制 relocate 到「最后一段 text bubble 之后」
+    //   不管 existing/new（polling update 时 insertBefore card 自己 = DOM no-op）
+    //   避免 Action Card 出现在 text 上面（用户报告"Action Card 展示在消息上面"）
+    var card = document.getElementById(id);
+    if (!card) {
+      card = document.createElement('div');
+      card.id = id;
+      card.className = 'ap-action-card';
+    }
     card.dataset.requirementId = action.requirementId;
     card.dataset.mode = action.mode || 'conversational_action';
-    if (!existing) container.appendChild(card);
+    // 找到最后一个静态 assistant text bubble 作为锚点
+    var bubbles = container.querySelectorAll('.ap-msg.ap-msg-buddy');
+    var anchor = bubbles.length ? bubbles[bubbles.length - 1] : null;
+    if (anchor) {
+      // 插到 anchor 紧后面（insertBefore 自己 = no-op，不会重复移动）
+      container.insertBefore(card, anchor.nextSibling);
+    } else {
+      container.appendChild(card);
+    }
     // v0.112 fix: renderActionCard 后自动滚到底，让最新结果可见（之前 scrollTop=0 卡太高 1118px → 只能看到顶部标题）
     container.scrollTop = container.scrollHeight;
     updateActionCard(card, action.status || {}, action);
@@ -1150,6 +1163,13 @@ function isNonPlanTerminal(state) {
       + '<button class="ap-action-trace" data-action="toggle-trace">▼ 查看执行详情</button>'
       + toolSummaryHtml
       + '<div class="ap-action-trace-body" hidden>' + escHtml(JSON.stringify({ planStatus: state.planStatus, plan: plan, assistImage: img, assistMusic: music, assistEmail: email, assistVideo: video }, null, 2)) + '</div>';
+    // 🆕 修复（2026-08-23）：根据 plan 整体状态给 card 加 status class（让 CSS border-left 色生效）
+    var allDone = steps.length > 0 && steps.every(function(s) { return s.status === 'done' || s.status === 'skipped'; });
+    var anyFailed = steps.some(function(s) { return s.status === 'failed'; });
+    card.classList.remove('is-running', 'is-done', 'is-failed');
+    if (anyFailed) card.classList.add('is-failed');
+    else if (allDone) card.classList.add('is-done');
+    else if (steps.length > 0) card.classList.add('is-running');
     // v0.112 fix: updateActionCard 内容更新后也滚到底（进度条更新 / 音乐完成 / 图片完成时让最新结果可见）
     // v0.101.1 fix: container 未定义 bug —— v0.112 把滚动语句插在 innerHTML 拼接链中间，
     //   导致 ①ReferenceError: container is not defined（updateActionCard 无此局部变量）
