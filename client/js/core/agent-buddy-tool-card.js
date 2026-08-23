@@ -218,7 +218,11 @@
       card = _cards[evt.tool_use_id];
     }
     card.input = evt.input || {};
-    if (card.status === 'pending') paintInput(card);
+    // 🆕 v0.117m: 确保 body 已创建（paintHead 会重画 body，但保留 innerHTML）
+    if (card.status === 'pending') {
+      paintHead(card);  // 先创建 body
+      paintInput(card);  // 再填充 input
+    }
   }
 
   // phase: result — 工具执行结果
@@ -232,8 +236,9 @@
     card.output = evt.content || '';
     card.isError = !!evt.is_error;
     card.status = card.isError ? 'failed' : 'done';
-    paintOutput(card);
+    // 🆕 v0.117m: 先 paintHead 确保 body 存在，再 paintOutput 填充内容
     paintHead(card);
+    paintOutput(card);
   }
 
   // phase: approval_decided — 审批决策（ask 模式）
