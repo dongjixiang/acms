@@ -752,12 +752,13 @@ function paintHead(card) {
     return s.length > n ? s.slice(0, n) + '…' : s;
   }
 
-  // ============ Expose ============
+// ============ Expose ============
   window.ACMSQwenToolCard = {
     handleToolCard: handleToolCard,
     handleThinking: handleThinking,
     reset: reset,
     onReplyStart: onReplyStart,   // 🆕 v0.115a：Agent 回复开始 → 封存当前 group（回复段分组）
+    setContainer: function (c) { _container = c; },  // 🆕 v0.117f：自由对话窗口容器（#chat-stream-msgs-sess-xxx）也能渲染工具卡片
     debugCount: function () { return _apInsertedAt; },
   };
 })();

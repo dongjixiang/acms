@@ -1094,6 +1094,134 @@ async function chatSend(reqId) {
   await chatSendDetect(reqId, finalText);
 }
 
+/**
+ * 🆕 v0.117f：自由对话 SSE 流式事件处理（与 agent-buddy.js 小吉面板一致体验）
+ *   服务端 chat-intent.js 自由对话 Qwen 分支 writeHead(SSE) + onDelta/onEvent 推流：
+ *     - text_delta → 流式 append 文本到 assistant 气泡
+ *     - tool_card → ACMSQwenToolCard.handleToolCard 渲染工具卡片
+ *     - thinking → ACMSQwenToolCard.handleThinking 渲染思考过程
+ *     - progress → 嵌入 assistant 气泡底部（> 🔧 xxx）
+ *     - end → finalize bubble + 显示 result/musicCardJson
+ */
+async function handleFreeChatSSE(reqId, resp, typingEl) {
+  var c = document.getElementById('chat-stream-msgs-' + reqId);
+  // 设置 ACMSQwenToolCard 容器到自由对话 chat 流（默认是 #ap-messages）
+  if (window.ACMSQwenToolCard && window.ACMSQwenToolCard.setContainer) {
+    window.ACMSQwenToolCard.setContainer(c);
+  }
+  // 移除 typing dots
+  if (typingEl) { typingEl.remove(); typingEl = null; }
+  // 创建流式气泡
+  var streamBubbleEl = null;
+  var accumulated = '';
+  if (c) {
+    var bubble = document.createElement('div');
+    bubble.className = 'ap-msg ap-msg-buddy ap-stream-bubble';
+    bubble.innerHTML = '<div class="ap-msg-text"></div><span class="ap-cursor">▍</span>';
+    c.appendChild(bubble);
+    streamBubbleEl = bubble.querySelector('.ap-msg-text');
+  }
+
+  try {
+    var reader = resp.body.getReader();
+    var decoder = new TextDecoder();
+    var buf = '';
+    var sessionReqId = null;
+    var musicCardJson = null;
+
+    while (true) {
+      var _r = await reader.read();
+      if (_r.done) break;
+      buf += decoder.decode(_r.value, { stream: true });
+      var lines = buf.split('\n');
+      buf = lines.pop();
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        if (!line.startsWith('data: ')) continue;
+        try {
+          var evt = JSON.parse(line.slice(6));
+          if (evt.type === 'text_delta') {
+            accumulated += (evt.text || '');
+            if (streamBubbleEl) streamBubbleEl.textContent = accumulated;
+            if (typeof chatScrollToBottom === 'function') chatScrollToBottom(c);
+          } else if (evt.type === 'tool_card') {
+            if (window.ACMSQwenToolCard && window.ACMSQwenToolCard.handleToolCard) {
+              window.ACMSQwenToolCard.handleToolCard(evt);
+            }
+          } else if (evt.type === 'thinking') {
+            if (window.ACMSQwenToolCard && window.ACMSQwenToolCard.handleThinking) {
+              window.ACMSQwenToolCard.handleThinking(evt);
+            }
+          } else if (evt.type === 'progress') {
+            if (!accumulated.endsWith('\n')) accumulated += '\n';
+            accumulated += '> 🔧 ' + (evt.msg || '') + '\n';
+            if (streamBubbleEl) streamBubbleEl.textContent = accumulated;
+          } else if (evt.type === 'end') {
+            sessionReqId = evt.sessionRequirementId || null;
+            musicCardJson = evt.musicCardJson || null;
+            if (evt.error) {
+              if (streamBubbleEl) streamBubbleEl.textContent = '⚠️ AI 暂时无响应: ' + String(evt.error).slice(0, 100);
+            } else if (evt.result && streamBubbleEl) {
+              streamBubbleEl.textContent = evt.result;
+            }
+            // music card
+            if (musicCardJson && typeof renderMusicBubble === 'function' && c) {
+              var musicHtml = renderMusicBubble(musicCardJson);
+              if (musicHtml) {
+                c.insertAdjacentHTML('beforeend', '<div class="chat-bubble chat-bubble-system"><div class="chat-bubble-meta"><span class="chat-label">🎵</span></div>' + musicHtml + '</div>');
+              }
+            }
+            // 移除光标
+            if (c) {
+              var _bubble = c.querySelector('.ap-stream-bubble');
+              if (_bubble) {
+                var _cursor = _bubble.querySelector('.ap-cursor');
+                if (_cursor) _cursor.remove();
+              }
+            }
+            if (typeof chatScrollToBottom === 'function') chatScrollToBottom(c);
+          }
+        } catch (e) {}
+      }
+    }
+
+    // session 模式关联了隐藏 requirement → 轮询音乐结果
+    if (sessionReqId && musicCardJson) {
+      var _pollReqId = sessionReqId;
+      var _musicAttempts = 0;
+      var _musicTimer = setInterval(function() {
+        _musicAttempts++;
+        api('GET', '/requirements/' + _pollReqId + '/supplement-history').then(function(_hr) {
+          var _history = _hr.history || [];
+          var _stream = document.getElementById('chat-stream-msgs-' + reqId);
+          if (!_stream) { clearInterval(_musicTimer); return; }
+          for (var _i = 0; _i < _history.length; _i++) {
+            var _entry = _history[_i];
+            if (_entry.source === 'music_result' && _entry.text && typeof renderMusicBubble === 'function') {
+              try {
+                var _card = JSON.parse(_entry.text);
+                if (_card.type === 'music_card') {
+                  var _html = renderMusicBubble(_card);
+                  if (_html) {
+                    _stream.insertAdjacentHTML('beforeend', '<div class="chat-bubble chat-bubble-system"><div class="chat-bubble-meta"><span class="chat-label">🎵</span></div>' + _html + '</div>');
+                    chatScrollToBottom(_stream);
+                  }
+                  clearInterval(_musicTimer);
+                  return;
+                }
+              } catch(e) {}
+            }
+          }
+          if (_musicAttempts >= 30) clearInterval(_musicTimer);
+        }).catch(function() {});
+      }, 2000);
+    }
+  } catch (e) {
+    console.error('[handleFreeChatSSE]', e);
+    if (streamBubbleEl) streamBubbleEl.textContent = '⚠️ 流式响应异常: ' + (e.message || '未知错误');
+  }
+}
+
 async function chatSendDetect(reqId, text) {
   // 检测 URL（用于客户端展示关联状态卡）
   const urls = extractUrls(text);
@@ -1144,6 +1272,16 @@ async function chatSendDetect(reqId, text) {
       const errData = await resp.json().catch(() => ({}));
       throw new Error(errData.error || `HTTP ${resp.status}`);
     }
+
+    // 🆕 v0.117f：自由对话 Qwen 内核走 SSE 流式事件（与小吉面板一致体验）
+    //   服务端 writeHead(SSE) + onDelta/onEvent 推 tool_card / thinking / progress
+    //   → 前端 ReadableStream 解析 → ACMSQwenToolCard 渲染工具卡片
+    const ct = resp.headers.get('Content-Type') || '';
+    if (ct.includes('text/event-stream')) {
+      await handleFreeChatSSE(reqId, resp, typingEl);
+      return;
+    }
+
     const data = await resp.json();
 
     // ═══ 自由对话（免需求）═══ 直接渲染 AI 回复，不轮询

@@ -271,70 +271,111 @@ router.post('/detect-and-respond', async (req, res, next) => {
         return res.json({ ok: true, reqId, directReply: true, aiReply: '⚠️ 当前没有可用的 AI 模型', musicCardJson });
       }
 
-      // v0.114d: 自由对话 → Qwen 内核分流（路径2）
-      //   Qwen 内核处理纯对话 + 通用问答（它自带 web 搜索/文件能力）；
-      //   ACMS 特有工具（音乐卡片/视频/图片/邮件/文档生成）保持旧引擎——
-      //   这些工具的 assist 卡片链路（assist_music/assist_video/assist_image）Qwen MCP 未覆盖。
-      const qwenFreeAllowed = (() => {
-        try {
-          const qwenMgr = require('../services/qwen-manager');
-          if (!qwenMgr.getConfig().enabled) return false;
-          if (musicCardJson) return false;  // 音乐卡片走旧引擎（预检已命中）
-          const ACMS_TOOL_RE = /生成.{0,6}(图片|照片|图)|画.{0,3}(张|个|幅|一)|视频|跳舞|唱歌|发邮件|发送邮件|邮件|播放|听[一这]?首|放[一这]?首|想听|找歌|音乐|文档|docx|ppt|pptx|excel|xlsx|写.{0,4}(周报|报告|总结|方案)|写剧本|短视频剧本|分镜|剧本创意/i;
-          return !ACMS_TOOL_RE.test(text || '');
-        } catch (e) { return false; }
-      })();
+// v0.65: session 模式 → 创建隐藏 requirement 作为工具存储容器（play_music/play_video/generate_image 需要真实 reqId）
+    let contextReqId = reqId;
+    if (isSession) {
+      const sessionReq = getOrCreateSessionRequirement(reqId);
+      if (sessionReq) contextReqId = sessionReq.id;
+    }
 
-      let qwenAiReply = null;
-      if (qwenFreeAllowed) {
-        try {
-          const qwenMgr = require('../services/qwen-manager');
-          // auto 模式 + 沙箱策略（qwen-manager onApproval 跟随 permission_suggestions）
-          // 自由对话无审批 UI（agent-buddy 才有），不用 ask 模式
-          // v0.114f: 显式超时 45s（默认 10min 太长，自由对话等不起）——
-          //   冷启动 ~32s + 首 token，45s 内应出结果；超时/失败立即回退旧引擎
-          // 🆕 v0.117: historyMessages 传进去（治"上下文缺失"）——
-          //   ACMS chat_messages 历史拼到 prompt 前，Qwen 即使 session 被 reap 也看到上下文
-          const qr = await qwenMgr.chat(reqId, text, {
-            approvalMode: 'auto',
-            timeoutMs: 45000,
-            historyMessages,  // 数组 [{role, content}]，qwen-manager 内部拼到 prompt 前
-          });
-          if (qr.ok && qr.result && qr.result.trim()) {
-            qwenAiReply = qr.result.trim();
-          } else if (!qr.ok) {
-            // v0.114f: 失败/0字符 → 立即回退（不再等满超时）
-            console.warn(`[detect-and-respond] ${reqId} Qwen 失败(${qr.subtype || 'unknown'}) → 立即回退旧引擎`);
-          }
-          console.log(`[detect-and-respond] ${reqId} Qwen 内核回复 (${(qr.result || '').length} chars)`);
-        } catch (qe) {
-          console.warn(`[detect-and-respond] ${reqId} Qwen 分流失败，回退旧引擎: ${qe.message}`);
-          qwenAiReply = null;
-        }
+    // v0.114f: 自由对话 → Qwen 内核分流（路径2）
+    //   Qwen 内核处理纯对话 + 通用问答（它自带 web 搜索/文件能力）；
+    //   ACMS 特有工具（音乐卡片/视频/图片/邮件/文档生成）保持旧引擎——
+    //   这些工具的 assist 卡片链路（assist_music/assist_video/assist_image）Qwen MCP 未覆盖。
+    const qwenFreeAllowed = (() => {
+      try {
+        const qwenMgr = require('../services/qwen-manager');
+        if (!qwenMgr.getConfig().enabled) return false;
+        if (musicCardJson) return false;  // 音乐卡片走旧引擎（预检已命中）
+        const ACMS_TOOL_RE = /生成.{0,6}(图片|照片|图)|画.{0,3}(张|个|幅|一)|视频|跳舞|唱歌|发邮件|发送邮件|邮件|播放|听[一这]?首|放[一这]?首|想听|找歌|音乐|文档|docx|ppt|pptx|excel|xlsx|写.{0,4}(周报|报告|总结|方案)|写剧本|短视频剧本|分镜|剧本创意/i;
+        return !ACMS_TOOL_RE.test(text || '');
+      } catch (e) { return false; }
+    })();
+
+    let qwenAiReply = null;
+    let qwenStreamed = false;
+    if (qwenFreeAllowed) {
+      // 🆕 v0.117f：自由对话 Qwen 内核走 SSE 流式事件（与小吉面板一致体验）
+      //   之前一次性 res.json() 让 Qwen 内部 tool_card / approval / thinking 事件被吞
+      //   → 用户看不到工具调用/审批界面（"代码实现过程中没展示出来"症状）
+      //   现在提前 writeHead(SSE) + onDelta/onEvent 实时推流
+      if (!res.headersSent) {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        });
+        qwenStreamed = true;
       }
 
-      // 3. 拼接 messages：system + 历史 + 当前 user（仅旧引擎路径需要）
-      // 🆕 v0.117c：用 buildFreeChatSystemPrompt(null) 替代简化的 systemPrompt——
-      //   旧版本只提"可以主动使用 web_search 工具"，LLM 看到"生成图片：xxx"可能直接文字回复
-      //   不调 generate_image tool → 用户看不到图片卡片（"装睡"变种）。
-      //   buildFreeChatSystemPrompt 含"⛔ 严禁装睡 + 必须调 generate_image/play_video/send_email/play_music"
-      //   硬约束，让 LLM 看到意图就调对应 tool。req=null 时 title/description 回退"(空)"。
-      const systemPrompt = buildFreeChatSystemPrompt(null);
-      const messages = [{ role: 'system', content: systemPrompt }, ...historyMessages, { role: 'user', content: text }];
+      try {
+        const qwenMgr = require('../services/qwen-manager');
+        const qr = await qwenMgr.chat(reqId, text, {
+          approvalMode: 'auto',
+          timeoutMs: 45000,
+          historyMessages,  // 🆕 v0.117: chat_messages 历史拼到 prompt 前
+          onDelta: (delta) => {
+            // Qwen 真流式文本 → 推流
+            try { res.write(`data: ${JSON.stringify({ type: 'text_delta', text: delta })}\n\n`); } catch (e) {}
+          },
+          onEvent: (evt) => {
+            // Qwen 事件 → ACMSQwenToolCard 期望的 tool_card 格式
+            try {
+              let adapted = null;
+              if (evt.type === 'tool_use_start') {
+                adapted = { type: 'tool_card', phase: 'start', tool_use_id: evt.tool_use_id, tool_name: evt.tool_name };
+              } else if (evt.type === 'tool_use_end') {
+                adapted = { type: 'tool_card', phase: 'input_complete', tool_use_id: evt.tool_use_id, tool_name: evt.tool_name, input: evt.input };
+              } else if (evt.type === 'tool_result') {
+                adapted = { type: 'tool_card', phase: 'result', tool_use_id: evt.tool_use_id, tool_name: evt.tool_name || '', result: evt.content, error: evt.is_error ? 'tool error' : null };
+              } else if (evt.type === 'thinking_delta') {
+                adapted = { type: 'thinking', thinking: evt.text };
+              } else if (evt.type === 'approval_request') {
+                var tc = evt.toolCall || {};
+                adapted = { type: 'tool_card', phase: 'await_approval', tool_use_id: tc.tool_use_id, tool_name: tc.tool_name, input: tc.input };
+              } else if (evt.type === 'approval_result') {
+                adapted = { type: 'tool_card', phase: 'approval_decided', tool_use_id: evt.tool_use_id, tool_name: '', decision: evt.allowed ? 'allow' : 'deny' };
+              }
+              if (adapted) res.write(`data: ${JSON.stringify(adapted)}\n\n`);
+            } catch (e) {}
+          },
+        });
 
-      // v0.65: session 模式 → 创建隐藏 requirement 作为工具存储容器（play_music/play_video/generate_image 需要真实 reqId）
-      let contextReqId = reqId;
-      if (isSession) {
-        const sessionReq = getOrCreateSessionRequirement(reqId);
-        if (sessionReq) contextReqId = sessionReq.id;
+        if (qr.ok && qr.result && qr.result.trim()) qwenAiReply = qr.result.trim();
+        // end 事件：前端 finalize bubble + 显示 result
+        try {
+          res.write(`data: ${JSON.stringify({
+            type: 'end',
+            ok: qr.ok,
+            result: qwenAiReply,
+            error: qr.error || null,
+            sessionRequirementId: contextReqId !== reqId ? contextReqId : undefined,
+            musicCardJson: musicCardJson || null,
+          })}\n\n`);
+          res.end();
+        } catch (e) {}
+        return;  // 🆕 SSE 已发完，避免下面 runtimeExec 双跑
+      } catch (qe) {
+        try {
+          res.write(`data: ${JSON.stringify({ type: 'end', ok: false, error: qe.message })}\n\n`);
+          res.end();
+        } catch (e) {}
+        return;
       }
+    }
 
-      // 🆕 v0.117：自由对话模式加 document / screenplay precheck（与 music_precheck 同模式）
-      //   必须在 contextReqId 创建后跑（screenplay 需要真实 reqId 写 assist_screenplay 字段）
-      //   仅在 ACMS_TOOL_RE 命中时跑（Qwen 内核接管时不重复触发——避免双重执行）
-      if (!qwenFreeAllowed) {
-        const freeDocKeywords = /整理成文档|生成文档|导出文档|Word文档|\.docx|\.doc|文档|变成文档|形成文档|整理成word/i;
-        const freeScreenplayKeywords = /写剧本|短视频剧本|分镜|剧本创意/i;
+    // 🆕 v0.117c：runtimeExec fallback（Qwen 失败/SSE 失败时才走旧引擎）的 systemPrompt + messages 构造
+    //   Qwen 成功路径已在上面 return，不会到这里
+    const systemPrompt = buildFreeChatSystemPrompt(null);
+    const messages = [{ role: 'system', content: systemPrompt }, ...historyMessages, { role: 'user', content: text }];
+
+    // 🆕 v0.117：自由对话模式加 document / screenplay precheck（与 music_precheck 同模式）
+    //   必须在 contextReqId 创建后跑（screenplay 需要真实 reqId 写 assist_screenplay 字段）
+    //   仅在 ACMS_TOOL_RE 命中时跑（Qwen 内核接管时不重复触发——避免双重执行）
+    if (!qwenFreeAllowed) {
+      const freeDocKeywords = /整理成文档|生成文档|导出文档|Word文档|\.docx|\.doc|文档|变成文档|形成文档|整理成word/i;
+      const freeScreenplayKeywords = /写剧本|短视频剧本|分镜|剧本创意/i;
 
         if (freeDocKeywords.test(text)) {
           console.log(`[detect-and-respond] ${reqId} free 预检文档意图 → 抢跑触发`);
