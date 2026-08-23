@@ -1173,15 +1173,22 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
                   const cards = c.querySelectorAll('.ap-tool-card');
                   console.log('[debug] cards in container:', cards.length);
                   cards.forEach((card, i) => {
+                    const head = card.querySelector('.ap-tool-card-head');
                     const body = card.querySelector('.ap-tool-card-body');
-                    console.log(`[debug] card ${i}: status=${card.className.match(/ap-tool-status-(\w+)/)?.[1]}, bodyDisplay=${body?.style.display}`);
+                    const rect = card.getBoundingClientRect();
+                    const headRect = head?.getBoundingClientRect();
+                    console.log(`[debug] card ${i}:`, {
+                      status: card.className.match(/ap-tool-status-(\w+)/)?.[1],
+                      bodyDisplay: body?.style.display,
+                      height: rect.height,
+                      headHeight: headRect?.height,
+                      parent: card.parentNode?.id || card.parentNode?.className
+                    });
                   });
+                  const anchor = c.querySelector('#ap-stream-bubble');
+                  console.log('[debug] anchor exists:', !!anchor, 'height:', anchor?.getBoundingClientRect().height);
                   const group = c.querySelector('.ap-tool-group');
                   console.log('[debug] group exists:', !!group);
-                  if (group) {
-                    const groupBody = group.querySelector('.ap-tool-group-body');
-                    console.log('[debug] group body display:', groupBody?.style.display);
-                  }
                 }
               }, 100);
             } else {
