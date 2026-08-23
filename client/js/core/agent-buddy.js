@@ -1576,6 +1576,8 @@ function isNonPlanTerminal(state) {
   function sendMessage(text) {
     renderUserMessage(text);
     // v0.114p: 工具调用已内嵌流式文本，无需清独立日志条
+    // 🆕 P1 方案B（卡片化）：清空上一轮 SSE 工具卡片状态
+    if (window.ACMSQwenToolCard) window.ACMSQwenToolCard.reset();
     renderThinking();
 
     _chatHistory.push({ role: 'user', text: text });
@@ -1637,6 +1639,14 @@ function isNonPlanTerminal(state) {
       if (approvalPollTimer) { clearInterval(approvalPollTimer); approvalPollTimer = null; }
     }
     function handleApprovalPrompt(ap) {
+      // 🆕 P1 方案B（卡片化）：tool-card 已通过 SSE await_approval 渲染按钮，
+      //   用户从卡片点 ✅/❌ → CustomEvent 'qwen:tool-card:decision' 走 onToolCardDecision
+      //   approvalPolls 不再弹 showConfirm 兜底（避免重复弹窗）。
+      //   仅当 tool-card 缺失（race condition: SSE 还没到但审批已挂起）才回退到弹窗。
+      if (ap.toolUseId) {
+        // 已有 toolUseId（P1 后端补的） → SSE 应已渲染按钮；标记 seenApprovals 防再处理
+        return;
+      }
       // v0.114i: ask_user_question → 问题表单（模型期望用户回答，不是 allow/deny）
       if (ap.isUserQuestion && ap.questions && ap.questions.length > 0) {
         handleUserQuestion(ap);
@@ -1746,10 +1756,41 @@ function isNonPlanTerminal(state) {
           body: JSON.stringify({ decision: 'allow', answers: answers }),
         }).catch(function() {});
       });
-      // Esc 关闭 = 取消
+// Esc 关闭 = 取消
       var escHandler = function(e) { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', escHandler); } };
       document.addEventListener('keydown', escHandler);
     }
+
+    // 🆕 P1 方案B（卡片化）：tool-card 按钮点击 → 查 approval list → POST 决策
+    //   agent-buddy 的 approvalPolls 已在 handleApprovalPrompt 里跳过弹窗（避免重复），
+    //   真正决策走这个 listener
+    function onToolCardDecision(e) {
+      var detail = e && e.detail;
+      if (!detail) return;
+      var toolUseId = detail.toolUseId;
+      if (!toolUseId) return;
+      // 实时查最新 pending list（确保 approvalId 准确）
+      fetch('/api/qwen/approvals/pending', { headers: getAuthHeaders() })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          var list = (data && data.approvals) || [];
+          var ap = null;
+          for (var i = 0; i < list.length; i++) {
+            if (list[i].toolUseId === toolUseId) { ap = list[i]; break; }
+          }
+          if (!ap) return;  // 已被 settle（list 不再含）
+          seenApprovals[ap.approvalId] = true;  // 标记防止 approvalPolls 再弹窗
+          var body = { decision: detail.allow ? 'allow' : 'deny' };
+          if (detail.answers) body.answers = detail.answers;
+          return fetch('/api/qwen/approvals/' + ap.approvalId, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify(body),
+          });
+        })
+        .catch(function() { /* 静默失败 */ });
+    }
+    document.addEventListener('qwen:tool-card:decision', onToolCardDecision);
 
     function startStream(retryMsg) {
       streamAbortController = new AbortController();
@@ -1830,6 +1871,12 @@ function isNonPlanTerminal(state) {
                     accumulated += '> 🔧 ' + progMsg + '\n';
                     updateStreamMessage(accumulated);
                   }
+                } else if (evt.type === 'tool_card') {
+                  // 🆕 P1 方案B（卡片化）：Qwen 工具调用独立卡片
+                  if (window.ACMSQwenToolCard) window.ACMSQwenToolCard.handleToolCard(evt);
+                } else if (evt.type === 'thinking') {
+                  // 🆕 P1 方案B：thinking 流式累积到折叠卡片
+                  if (window.ACMSQwenToolCard) window.ACMSQwenToolCard.handleThinking(evt.text);
                 }
               } catch(e) { /* 跳过解析失败的 SSE 行 */ }
             }
@@ -1868,6 +1915,8 @@ function isNonPlanTerminal(state) {
 
     function finalizeStream() {
       stopApprovalPolling();  // v0.102: 停止审批轮询
+      // 🆕 P1 方案B（卡片化）：卸载 tool-card 决策监听（避免多轮对话累积 listener）
+      try { document.removeEventListener('qwen:tool-card:decision', onToolCardDecision); } catch (e) {}
       removeThinking();
       // v0.114p: 工具调用已内嵌在 accumulated 文本流里（progress → accumulated），
       //   不再需要独立日志条/分隔线

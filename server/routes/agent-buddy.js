@@ -839,14 +839,82 @@ var buddyCtx = {
                 } catch (e) { /* ignore */ }
               } : null,
               // v0.114m: Qwen 内核工具调用事件 → SSE progress（前端 renderOpLog 显示工具摘要）
+              // 🆕 P0 方案B（卡片化）：双通道 — 原有 progress 内嵌文本 + tool_card 完整数据
               onEvent: _qwenIsStream ? function(evt) {
                 try {
-                  if (evt && evt.type === 'approval_request' && evt.toolCall && !res.writableEnded) {
-                    var _tname = evt.toolCall.tool_name || 'tool';
-                    // 转成与 runToolLoop _ssePush 相同的格式（前端按 msg 去重 + 渲染）
-                    res.write('data: ' + JSON.stringify({ type: 'progress', msg: '调用工具: ' + _tname }) + '\n\n');
-                    if (typeof res.flush === 'function') res.flush();
+                  if (!evt || res.writableEnded) return;
+                  switch (evt.type) {
+                    case 'approval_request': {
+                      if (evt.toolCall) {
+                        var _tname = evt.toolCall.tool_name || 'tool';
+                        // 通道 1（保留）：内嵌文本流（v0.114p 行为不变）
+                        res.write('data: ' + JSON.stringify({ type: 'progress', msg: '调用工具: ' + _tname }) + '\n\n');
+                        // 通道 2（新）：tool_card 等待审批
+                        res.write('data: ' + JSON.stringify({
+                          type: 'tool_card',
+                          phase: 'await_approval',
+                          tool_name: _tname,
+                          tool_use_id: evt.toolCall.tool_use_id,
+                          input: evt.toolCall.input || {},
+                          permission_suggestions: evt.toolCall.permission_suggestions || [],
+                          is_user_question: !!evt.toolCall._isUserQuestion,
+                          questions: evt.toolCall.questions || [],
+                        }) + '\n\n');
+                      }
+                      break;
+                    }
+                    case 'tool_use_start': {
+                      // 工具开始执行（auto 模式跳过审批，直接进入 pending → executed）
+                      res.write('data: ' + JSON.stringify({
+                        type: 'tool_card',
+                        phase: 'start',
+                        tool_use_id: evt.tool_use_id,
+                        tool_name: evt.tool_name,
+                      }) + '\n\n');
+                      break;
+                    }
+                    case 'tool_use_end': {
+                      // 工具 input 流结束（input 完整）—— 卡片可渲染参数区
+                      res.write('data: ' + JSON.stringify({
+                        type: 'tool_card',
+                        phase: 'input_complete',
+                        tool_use_id: evt.tool_use_id,
+                        tool_name: evt.tool_name,
+                        input: evt.input || {},
+                      }) + '\n\n');
+                      break;
+                    }
+                    case 'tool_result': {
+                      // 工具执行结果（CLI 跑完工具，user 消息里带的 tool_result 块）
+                      res.write('data: ' + JSON.stringify({
+                        type: 'tool_card',
+                        phase: 'result',
+                        tool_use_id: evt.tool_use_id,
+                        content: typeof evt.content === 'string' ? evt.content : (Array.isArray(evt.content) ? JSON.stringify(evt.content) : ''),
+                        is_error: !!evt.is_error,
+                      }) + '\n\n');
+                      break;
+                    }
+                    case 'approval_result': {
+                      // 审批决策（allow/deny）—— 卡片右上角状态
+                      res.write('data: ' + JSON.stringify({
+                        type: 'tool_card',
+                        phase: 'approval_decided',
+                        tool_use_id: evt.tool_use_id,
+                        allowed: !!evt.allowed,
+                      }) + '\n\n');
+                      break;
+                    }
+                    case 'thinking_delta': {
+                      // D2: thinking 折叠卡片（前端 P1 实现完整折叠 UI，此处先透传）
+                      res.write('data: ' + JSON.stringify({
+                        type: 'thinking',
+                        text: evt.text || '',
+                      }) + '\n\n');
+                      break;
+                    }
                   }
+                  if (typeof res.flush === 'function') res.flush();
                 } catch (e) { /* ignore */ }
               } : null,
             });

@@ -4149,6 +4149,207 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
 .ap-tool-status { width:12px; text-align:center; }
 .ap-tool-name { color:var(--accent, #0ea89d); font-family:monospace; }
 .ap-tool-result { color:var(--text3, #777); }
+
+/* 🆕 P1 方案B（卡片化）：Qwen 内核工具调用卡片 */
+.ap-tool-card {
+  margin: 6px 0; padding: 0;
+  background: var(--bg3, rgba(37,37,64,.5));
+  border: 1px solid var(--border1, rgba(255,255,255,.08));
+  border-radius: 6px;
+  font-size: 12px;
+  text-align: left;
+  overflow: hidden;
+}
+.ap-tool-card-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg4, rgba(20,20,40,.6));
+  border-bottom: 1px solid var(--border1, rgba(255,255,255,.06));
+}
+.ap-tool-card-icon { font-size: 13px; }
+.ap-tool-card-name { color: var(--accent, #0ea89d); font-family: monospace; font-weight: 600; }
+.ap-tool-card-label { color: var(--text3, #888); font-size: 11px; }
+.ap-tool-card-err { margin-left: auto; color: #ff6b6b; font-size: 10px; }
+.ap-tool-card-body { padding: 6px 10px; }
+.ap-tool-card-section { margin-top: 4px; }
+.ap-tool-card-section-head { color: var(--text3, #888); font-size: 10px; margin-bottom: 3px; }
+.ap-tool-card-path { color: var(--text2, #ccc); font-family: monospace; font-size: 11px; margin-bottom: 2px; word-break: break-all; }
+.ap-tool-card-code {
+  background: rgba(0,0,0,.25); padding: 5px 7px; border-radius: 3px;
+  font-family: monospace; font-size: 11px; max-height: 200px; overflow: auto;
+  white-space: pre-wrap; word-break: break-all;
+}
+.ap-tool-card-pattern { color: var(--accent2, #ffd93d); font-family: monospace; font-size: 11px; }
+.ap-tool-card-url { color: var(--accent, #0ea89d); font-family: monospace; font-size: 11px; word-break: break-all; }
+.ap-tool-card-json {
+  background: rgba(0,0,0,.25); padding: 5px 7px; border-radius: 3px;
+  font-family: monospace; font-size: 11px; max-height: 250px; overflow: auto;
+  white-space: pre-wrap;
+}
+.ap-tool-card-mcp-name { color: #c084fc; font-size: 11px; margin-bottom: 3px; }
+.ap-tool-card-output {
+  background: rgba(0,0,0,.2); padding: 5px 7px; border-radius: 3px;
+  font-family: monospace; font-size: 11px; max-height: 300px; overflow: auto;
+  white-space: pre-wrap; word-break: break-all; margin: 0;
+}
+.ap-tool-card-diff {
+  background: rgba(0,0,0,.25); padding: 5px 7px; border-radius: 3px;
+  font-family: monospace; font-size: 11px; max-height: 250px; overflow: auto;
+  white-size: 11px; margin: 0;
+}
+.ap-diff-del { color: #ff6b6b; display: block; }
+.ap-diff-add { color: #51cf66; display: block; }
+.ap-tool-card-decision { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border1, rgba(255,255,255,.1)); }
+.ap-tool-card-decision-buttons { display: flex; gap: 6px; }
+.ap-tool-card-btn {
+  padding: 4px 10px; border-radius: 4px; border: 1px solid var(--border1, rgba(255,255,255,.15));
+  background: var(--bg3, #252540); color: var(--text1, #ddd); cursor: pointer;
+  font-size: 11px; font-family: inherit;
+}
+.ap-tool-card-btn:hover:not(:disabled) { background: var(--bg4, #1a1a30); }
+.ap-tool-card-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.ap-tool-card-allow { background: rgba(81,207,102,.15); border-color: rgba(81,207,102,.4); color: #51cf66; }
+.ap-tool-card-deny { background: rgba(255,107,107,.15); border-color: rgba(255,107,107,.4); color: #ff6b6b; }
+/* ask_user_question 内嵌表单（v0.114k UI 规范：左对齐 + 问题加粗 + 选项字号小 + Other + multiSelect） */
+.ap-tool-card-questions { margin-top: 4px; }
+.ap-tool-card-q-block { margin-bottom: 10px; text-align: left; }
+.ap-tool-card-q-header { font-weight: 700; margin-bottom: 3px; font-size: 13px; color: var(--text1); }
+.ap-tool-card-q-question { color: var(--text1); margin-bottom: 6px; font-size: 12px; font-weight: 600; }
+.ap-tool-card-q-opts { padding-left: 4px; }
+.ap-tool-card-q-opt {
+  display: block; margin: 4px 0; cursor: pointer;
+  font-size: 11.5px; text-align: left; color: var(--text2);
+}
+.ap-tool-card-q-other { color: var(--text3, #999); }
+.ap-tool-card-q-other-input {
+  width: 100%; margin-top: 4px; padding: 4px 7px;
+  background: var(--bg4, #1a1a30); border: 1px solid var(--border1, rgba(255,255,255,.1));
+  border-radius: 3px; color: var(--text1); font-size: 11px; font-family: inherit;
+}
+/* 状态色：左 border */
+.ap-tool-status-pending { border-left: 3px solid var(--text3, #888); }
+.ap-tool-status-awaiting { border-left: 3px solid #ffd93d; }
+.ap-tool-status-allowed  { border-left: 3px solid #51cf66; }
+.ap-tool-status-done     { border-left: 3px solid #51cf66; }
+.ap-tool-status-failed   { border-left: 3px solid #ff6b6b; }
+.ap-tool-status-denied   { border-left: 3px solid #ff6b6b; }
+
+/* 🆕 P1 方案B：thinking 折叠卡片 */
+.ap-thinking-card {
+  margin: 6px 0; padding: 0;
+  background: rgba(255,217,61,.04);
+  border: 1px solid rgba(255,217,61,.15);
+  border-radius: 6px;
+  font-size: 11px;
+  text-align: left;
+  overflow: hidden;
+}
+.ap-thinking-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 10px;
+  color: var(--text3, #999);
+  cursor: default;
+}
+.ap-thinking-toggle { margin-left: auto; cursor: pointer; user-select: none; }
+.ap-thinking-body {
+  margin: 0; padding: 6px 10px;
+  background: rgba(0,0,0,.2);
+  color: var(--text2, #ccc);
+  font-family: monospace; font-size: 11px;
+  max-height: 300px; overflow: auto;
+  white-space: pre-wrap; word-break: break-word;
+}
+
+/* 🆕 P2 打磨：折叠箭头（▶/▼）+ 状态切换 */
+.ap-tool-card-toggle {
+  cursor: pointer; user-select: none;
+  color: var(--text3, #888);
+  font-size: 10px;
+  width: 12px; display: inline-block;
+  transition: transform 0.15s ease;
+}
+.ap-tool-card-toggle:hover { color: var(--accent, #0ea89d); }
+.ap-tool-card-head { cursor: pointer; }  /* 整行可点 */
+
+/* 🆕 P2 打磨：失败态红色脉冲（治"装睡 v13"看不到错误）*/
+@keyframes ap-tool-card-error-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(255,107,107,.6); }
+  70% { box-shadow: 0 0 0 8px rgba(255,107,107,0); }
+  100% { box-shadow: 0 0 0 0 rgba(255,107,107,0); }
+}
+.ap-tool-status-failed,
+.ap-tool-status-denied {
+  animation: ap-tool-card-error-pulse 1s ease-out 2;
+}
+.ap-tool-status-failed .ap-tool-card-name,
+.ap-tool-status-denied .ap-tool-card-name {
+  color: #ff6b6b;
+}
+
+/* 🆕 P2 打磨：多工具 group 容器 */
+.ap-tool-group {
+  margin: 6px 0; padding: 0;
+  background: rgba(20,20,40,.3);
+  border: 1px solid var(--border1, rgba(255,255,255,.08));
+  border-radius: 6px;
+  font-size: 12px;
+  text-align: left;
+  overflow: hidden;
+}
+.ap-tool-group-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 10px;
+  background: var(--bg4, rgba(20,20,40,.6));
+  color: var(--text2, #ccc);
+  cursor: pointer;
+  user-select: none;
+}
+.ap-tool-group-head:hover { background: rgba(40,40,80,.6); }
+.ap-tool-group-toggle { font-size: 10px; color: var(--text3, #888); width: 12px; }
+.ap-tool-group-title { font-size: 12px; font-weight: 600; color: var(--accent, #0ea89d); }
+.ap-tool-group-count {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text3, #888);
+  font-family: monospace;
+}
+.ap-tool-group-body { padding: 6px 10px; }
+
+/* 🆕 P2 打磨：MCP acms_* 友好渲染样式 */
+.ap-tool-card-mcp-result { font-size: 11px; }
+.ap-tool-card-search-item {
+  margin: 4px 0; padding: 3px 0;
+  border-bottom: 1px dashed var(--border1, rgba(255,255,255,.06));
+}
+.ap-tool-card-search-item:last-child { border-bottom: none; }
+.ap-tool-card-search-item a { color: var(--accent, #0ea89d); text-decoration: none; }
+.ap-tool-card-search-item a:hover { text-decoration: underline; }
+.ap-tool-card-search-snippet {
+  color: var(--text3, #999); font-size: 10px;
+  margin-top: 2px; padding-left: 12px;
+}
+.ap-tool-card-search-more,
+.ap-tool-card-task-more {
+  color: var(--text3, #888); font-size: 10px;
+  font-style: italic; margin-top: 4px;
+}
+.ap-tool-card-task-count {
+  color: var(--accent, #0ea89d); font-weight: 600;
+  margin-bottom: 4px; font-size: 11px;
+}
+.ap-tool-card-task-item {
+  padding: 2px 0; color: var(--text2, #ccc);
+  display: flex; gap: 6px; align-items: center;
+}
+.ap-tool-card-task-status {
+  display: inline-block;
+  padding: 1px 5px;
+  background: var(--bg3, #252540);
+  border-radius: 3px;
+  font-size: 9px;
+  color: var(--text3, #888);
+  font-family: monospace;
+}
 .ap-cursor { display:inline-block; animation: ap-blink 0.8s step-end infinite; color:var(--accent, #0ea89d); font-weight:bold; margin-left:1px; }
 @keyframes ap-blink { 50% { opacity:0; } }
 .ap-action-imggrid { display:grid; grid-template-columns:repeat(3,1fr); gap:5px; margin:6px 0; }

@@ -105,6 +105,8 @@ function listPendingApprovals(userId) {
       approvalId: rec.approvalId,
       userId: rec.userId,
       toolName: rec.toolCall.tool_name,
+      // 🆕 P1 方案B（卡片化）：前端 SSE 工具卡片需要 tool_use_id 与审批列表匹配
+      toolUseId: rec.toolCall.tool_use_id,
       input: rec.toolCall.input,
       suggestions: rec.toolCall.permission_suggestions || [],
       // v0.114i: ask_user_question 透传（前端渲染问题表单）

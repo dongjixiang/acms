@@ -107,6 +107,9 @@ class QwenSession {
     this.events = [];   // 事件流缓冲（trace）
     this.lastResult = null;
     this._initTimeout = null;
+    // 🆕 P0 方案B（卡片化）：流式累积工具调用 input_json（CLI 按 Anthropic stream 协议发 input_json_delta）
+    this._toolUseAccum = new Map();  // tool_use_id → { tool_name, input_json }
+    this._lastToolUseId = null;      // 当前正在 input 流式的 tool_use_id
   }
 
   // ---------- 生命周期 ----------
@@ -360,7 +363,77 @@ class QwenSession {
         if (this._onDelta && msg.event && msg.event.type === 'content_block_delta' && msg.event.delta && msg.event.delta.type === 'text_delta') {
           try { this._onDelta(msg.event.delta.text || ''); } catch (e) { debug('onDelta 异常:', e.message); }
         }
+        // 🆕 P0 方案B: tool_use 块开始（Anthropic stream 协议：tool_use 块独立于 text 块）
+        if (msg.event && msg.event.type === 'content_block_start' && msg.event.content_block && msg.event.content_block.type === 'tool_use') {
+          const cb = msg.event.content_block;
+          this._toolUseAccum.set(cb.id, { tool_name: cb.name || 'unknown', input_json: '' });
+          this._lastToolUseId = cb.id;
+          this._emit({
+            type: 'tool_use_start',
+            session_id: this.sessionId,
+            tool_use_id: cb.id,
+            tool_name: cb.name || 'unknown',
+            block_index: msg.event.index,
+          });
+        }
+        // 🆕 P0 方案B: input_json_delta 累加（tool_use 的 input 是流式 JSON 片段）
+        if (msg.event && msg.event.type === 'content_block_delta' && msg.event.delta && msg.event.delta.type === 'input_json_delta' && this._lastToolUseId) {
+          const acc = this._toolUseAccum.get(this._lastToolUseId);
+          if (acc) acc.input_json += (msg.event.delta.partial_json || '');
+        }
+        // 🆕 P0 方案B: content_block_stop → tool_use input 完整
+        if (msg.event && msg.event.type === 'content_block_stop' && this._lastToolUseId && this._toolUseAccum.has(this._lastToolUseId)) {
+          const acc = this._toolUseAccum.get(this._lastToolUseId);
+          let parsedInput = {};
+          if (acc.input_json) {
+            try { parsedInput = JSON.parse(acc.input_json); }
+            catch (e) { debug(`tool_use ${this._lastToolUseId} input JSON 解析失败:`, e.message, 'raw:', acc.input_json.slice(0, 100)); }
+          }
+          this._emit({
+            type: 'tool_use_end',
+            session_id: this.sessionId,
+            tool_use_id: this._lastToolUseId,
+            tool_name: acc.tool_name,
+            input: parsedInput,
+          });
+          this._toolUseAccum.delete(this._lastToolUseId);
+          this._lastToolUseId = null;
+        }
+        // 🆕 P0 方案B: thinking_delta 透传（D2: 折叠卡片用，Anthropic 协议 delta.type='thinking_delta'）
+        if (msg.event && msg.event.type === 'content_block_delta' && msg.event.delta && msg.event.delta.type === 'thinking_delta') {
+          this._emit({
+            type: 'thinking_delta',
+            session_id: this.sessionId,
+            text: msg.event.delta.thinking || msg.event.delta.text || '',
+          });
+        }
         break;
+      case 'user': {
+        // 🆕 P0 方案B: CLI echo 的 user 消息里含 tool_result 块（Anthropic stream 协议规范）
+        //   旧版 SDK 风格 assistant.content[] 也可能有 tool_result，但现代协议统一放 user 侧
+        const content = msg.message && msg.message.content;
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block && block.type === 'tool_result') {
+              // content 可能是 string 或 [{type:'text', text:'...'}] 数组，统一成 string
+              let resultText = '';
+              if (typeof block.content === 'string') {
+                resultText = block.content;
+              } else if (Array.isArray(block.content)) {
+                resultText = block.content.map((b) => (b && b.text) || '').join('');
+              }
+              this._emit({
+                type: 'tool_result',
+                session_id: this.sessionId,
+                tool_use_id: block.tool_use_id,
+                content: resultText,
+                is_error: !!block.is_error,
+              });
+            }
+          }
+        }
+        break;
+      }
       case 'control_request': {
         const req = msg.request || {};
         if (req.subtype === 'can_use_tool') {
