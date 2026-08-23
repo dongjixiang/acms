@@ -1664,61 +1664,49 @@ function isNonPlanTerminal(state) {
         handleUserQuestion(ap);
         return;
       }
-      // 🆕 P1 方案B（卡片化）：tool-card 已通过 SSE await_approval 渲染按钮，
-      //   用户从卡片点 ✅/❌ → CustomEvent 'qwen:tool-card:decision' 走 onToolCardDecision
-      //   approvalPolls 不再弹 showConfirm 兜底（避免重复弹窗）。
-      //   🆕 修复（2026-08-23）：有 toolUseId 时不能直接 return —— 卡片可能因
-      //   reset()/缓存/SSE 丢失而没渲染（审批入口永久消失 → Qwen CLI 60s 超时中断）。
-      //   给 SSE 卡片 1.5s 渲染窗口：窗口内卡片出现则信任卡片；否则 fallback 弹窗。
-      if (ap.toolUseId) {
-        var cardEl = null;
-        try {
-          cardEl = document.querySelector('.ap-tool-card[data-tool-use-id="' + ap.toolUseId + '"]');
-        } catch (e) { /* ignore */ }
-        if (cardEl) return;  // 卡片已渲染（含审批按钮）→ 信任卡片
-        // 卡片还没到 → 等一个轮询周期再看，还没到就弹窗兜底
-        setTimeout(function() {
-          var el2 = null;
-          try {
-            el2 = document.querySelector('.ap-tool-card[data-tool-use-id="' + ap.toolUseId + '"]');
-          } catch (e) { /* ignore */ }
-          if (el2) return;  // SSE 卡片补到了
-          // SSE 卡片确实没渲染 → showConfirm 兜底（否则审批挂起 → CLI 超时中断）
-          var toolName = ap.toolName || '未知工具';
-          var input = ap.input || {};
-          var desc = toolName;
-          if (input.file_path) desc += ' → ' + input.file_path;
-          else if (input.command) desc += ' → ' + String(input.command).slice(0, 80);
-          else if (input.url) desc += ' → ' + String(input.url).slice(0, 80);
-          else if (input.content && typeof input.content === 'string') desc += '（内容 ' + input.content.length + ' 字符）';
-          showConfirm(desc + '\n\n是否允许小吉执行这个操作？', {
-            title: '🔧 工具审批', confirmText: '允许', cancelText: '拒绝', type: 'info',
-          }).then(function(allow) {
-            fetch('/api/qwen/approvals/' + ap.approvalId, {
-              method: 'POST',
-              headers: getAuthHeaders(),
-              body: JSON.stringify({ decision: allow ? 'allow' : 'deny' }),
-            }).catch(function() {});
-          });
-        }, 1500);
+      // 🆕 方案A（v0.114u）：纯卡片审批 —— 不再弹 showConfirm 弹窗（多多反馈"卡片+弹窗双通道很乱"）。
+      //   卡片由 SSE tool_card await_approval 渲染；这里只做兜底：
+      //   若卡片因 SSE 丢失/时序问题没渲染，用轮询到的审批数据**手动渲染卡片**
+      //   （走同一 handleToolCard 通道 → 仍是卡片形式，审批按钮在卡片 head）。
+      if (!ap.toolUseId) {
+        // 没有 toolUseId 的旧审批（极早期兼容）→ 手动渲染 await_approval 卡片
+        renderApprovalCardFallback(ap);
         return;
       }
-      var toolName = ap.toolName || '未知工具';
-      var input = ap.input || {};
-      var desc = toolName;
-      if (input.file_path) desc += ' → ' + input.file_path;
-      else if (input.command) desc += ' → ' + String(input.command).slice(0, 80);
-      else if (input.url) desc += ' → ' + String(input.url).slice(0, 80);
-      else if (input.content && typeof input.content === 'string') desc += '（内容 ' + input.content.length + ' 字符）';
-      showConfirm(desc + '\n\n是否允许小吉执行这个操作？', {
-        title: '🔧 工具审批', confirmText: '允许', cancelText: '拒绝', type: 'info',
-      }).then(function(allow) {
-        fetch('/api/qwen/approvals/' + ap.approvalId, {
-          method: 'POST',
-          headers: getAuthHeaders(),
-          body: JSON.stringify({ decision: allow ? 'allow' : 'deny' }),
-        }).catch(function() {});
-      });
+      var cardEl = null;
+      try {
+        cardEl = document.querySelector('.ap-tool-card[data-tool-use-id="' + ap.toolUseId + '"]');
+      } catch (e) { /* ignore */ }
+      if (cardEl) return;  // 卡片已渲染（含审批按钮）→ 信任卡片
+      // 卡片还没到 → 等一个轮询周期再看，还没到就手动渲染卡片（兜底，非弹窗）
+      setTimeout(function() {
+        var el2 = null;
+        try {
+          el2 = document.querySelector('.ap-tool-card[data-tool-use-id="' + ap.toolUseId + '"]');
+        } catch (e) { /* ignore */ }
+        if (el2) return;  // SSE 卡片补到了
+        renderApprovalCardFallback(ap);  // SSE 确实没渲染 → 手动渲染卡片
+      }, 1500);
+    }
+
+    // 🆕 方案A（v0.114u）：审批卡片兜底渲染 —— 把轮询到的审批数据手动喂给
+    //   ACMSQwenToolCard.handleToolCard(await_approval)，复用同一卡片渲染通道。
+    //   不弹 showConfirm（纯卡片审批，无弹窗双通道）。
+    function renderApprovalCardFallback(ap) {
+      if (!window.ACMSQwenToolCard) return;
+      try {
+        window.ACMSQwenToolCard.handleToolCard({
+          type: 'tool_card',
+          phase: 'await_approval',
+          tool_use_id: ap.toolUseId || ('apv_' + ap.approvalId),
+          tool_name: ap.toolName || 'unknown',
+          input: ap.input || {},
+          permission_suggestions: ap.suggestions || [],
+          is_user_question: false,
+          questions: [],
+        });
+        console.log('[buddy-approval] 卡片兜底渲染:', ap.toolName);
+      } catch (e) { console.warn('[buddy-approval] 卡片兜底渲染失败:', e.message); }
     }
 
     // v0.114i/k: ask_user_question 问题表单 —— 渲染每个问题（选项单选/多选 + Other 自由输入），
