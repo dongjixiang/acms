@@ -19,22 +19,54 @@
 // 6 个函数全部从 git 历史 d5bac94^ 完整恢复，确保 0 行为变化。
 
 async function chatAssist(reqId, method, extraBody) {
-  // ═══ 自由对话兜底 ═══ 通过输入流触发
-  // reqId 可能是 __free__（旧占位符）或 sess-xxx（替换后的真实会话ID）
+  // ═══ 自由对话兜底 ═══ v0.117：6 个 method 全部支持（治"5 个按钮被 toast 拦截"）
+  //   reqId 可能是 __free__（旧占位符）或 sess-xxx（替换后的真实会话ID）
+  //   思路：把表单数据按 method 拼成自然语言消息 → 注入输入框 → chatSend 触发
+  //   后端 ACMS_TOOL_RE 命中 → 旧引擎 + 对应 precheck（music/document/screenplay）
+  //   这样不依赖 agent-buddy 那套 SSE UI（free 模式无 SSE 卡片）
   if (reqId === '__free__' || (reqId && reqId.startsWith('sess-'))) {
-    // 对于音乐，拼成自然语言消息通过 chatSend 触发
-    if (method === 'music' && extraBody && extraBody.song) {
-      var artist = extraBody.artist ? extraBody.artist + ' ' : '';
-      var inputId = 'chat-input-' + reqId;
-      var input = document.getElementById(inputId);
-      if (input) {
-        input.value = '我想听 ' + artist + extraBody.song;
-        try { await chatSend(reqId); } catch (e) {
-          toast('发送失败: ' + (e.message || '未知错误'), 'error');
-        }
-      }
-    } else {
-      toast('自由对话模式暂不支持此工具，直接在输入框描述你的需求即可', 'info');
+    const eb = extraBody || {};
+    let msg = null;
+    let needField = '';  // 空=OK；非空=toast 提示
+    switch (method) {
+      case 'music':
+        if (!eb.song) { needField = '歌曲名'; break; }
+        msg = '我想听 ' + (eb.artist ? eb.artist + ' ' : '') + eb.song;
+        break;
+      case 'video':
+        if (!eb.prompt) { needField = '视频创意'; break; }
+        msg = '生成视频：' + eb.prompt + (eb.duration ? '，时长 ' + eb.duration + 's' : '');
+        break;
+      case 'image_gen':
+        if (!eb.prompt) { needField = '图片描述'; break; }
+        msg = '生成图片：' + eb.prompt;
+        break;
+      case 'send_email':
+        if (!eb.to) { needField = '收件人'; break; }
+        msg = '发邮件给 ' + eb.to + '，主题 ' + (eb.subject || '(无主题)') + '，正文：' + (eb.body || '');
+        break;
+      case 'screenplay':
+        if (!eb.idea) { needField = '剧本创意'; break; }
+        msg = '写一个短视频剧本：' + eb.idea
+          + (eb.target_seconds ? '，时长 ' + eb.target_seconds + 's' : '')
+          + (eb.art_style ? '，风格 ' + eb.art_style : '');
+        break;
+      case 'document_gen':
+        if (!eb.instruction) { needField = '文档主题'; break; }
+        msg = '整理成文档：' + eb.instruction;
+        break;
+      default:
+        // 未知 method（decision_tree/scenarios/competitive 等是需求对话专属，free 模式无意义）
+        toast('自由对话模式暂不支持 ' + method + '（需求对话专属），直接在输入框描述你的需求即可', 'info');
+        return;
+    }
+    if (needField) { toast('请先填写' + needField, 'warning'); return; }
+    var inputId = 'chat-input-' + reqId;
+    var input = document.getElementById(inputId);
+    if (!input) { toast('找不到输入框 (' + inputId + ')', 'error'); return; }
+    input.value = msg;
+    try { await chatSend(reqId); } catch (e) {
+      toast('发送失败: ' + (e.message || '未知错误'), 'error');
     }
     return;
   }

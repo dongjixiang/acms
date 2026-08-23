@@ -280,7 +280,7 @@ router.post('/detect-and-respond', async (req, res, next) => {
           const qwenMgr = require('../services/qwen-manager');
           if (!qwenMgr.getConfig().enabled) return false;
           if (musicCardJson) return false;  // 音乐卡片走旧引擎（预检已命中）
-          const ACMS_TOOL_RE = /生成.{0,6}(图片|照片|图)|画.{0,3}(张|个|幅|一)|视频|跳舞|唱歌|发邮件|发送邮件|邮件|播放|听[一这]?首|放[一这]?首|想听|找歌|音乐|文档|docx|ppt|pptx|excel|xlsx|写.{0,4}(周报|报告|总结|方案)/i;
+          const ACMS_TOOL_RE = /生成.{0,6}(图片|照片|图)|画.{0,3}(张|个|幅|一)|视频|跳舞|唱歌|发邮件|发送邮件|邮件|播放|听[一这]?首|放[一这]?首|想听|找歌|音乐|文档|docx|ppt|pptx|excel|xlsx|写.{0,4}(周报|报告|总结|方案)|写剧本|短视频剧本|分镜|剧本创意/i;
           return !ACMS_TOOL_RE.test(text || '');
         } catch (e) { return false; }
       })();
@@ -317,11 +317,68 @@ router.post('/detect-and-respond', async (req, res, next) => {
       const systemPrompt = '你是 ACMS 自由对话助手。用户通过 ACMS（智能体协同管理系统）与你交流。请用中文简洁回答用户的问题（Markdown 格式）。可以主动使用 web_search 工具查询实时信息。不要反问澄清需求——用户只是自由提问。';
       const messages = [{ role: 'system', content: systemPrompt }, ...historyMessages, { role: 'user', content: text }];
 
-      // v0.65: session 模式 → 创建隐藏 requirement 作为工具存储容器（play_music/play_video/generate_image 需要真实 reqId）
+  // v0.65: session 模式 → 创建隐藏 requirement 作为工具存储容器（play_music/play_video/generate_image 需要真实 reqId）
       let contextReqId = reqId;
       if (isSession) {
         const sessionReq = getOrCreateSessionRequirement(reqId);
         if (sessionReq) contextReqId = sessionReq.id;
+      }
+
+      // 🆕 v0.117：自由对话模式加 document / screenplay precheck（与 music_precheck 同模式）
+      //   必须在 contextReqId 创建后跑（screenplay 需要真实 reqId 写 assist_screenplay 字段）
+      //   仅在 ACMS_TOOL_RE 命中时跑（Qwen 内核接管时不重复触发——避免双重执行）
+      if (!qwenFreeAllowed) {
+        const freeDocKeywords = /整理成文档|生成文档|导出文档|Word文档|\.docx|\.doc|文档|变成文档|形成文档|整理成word/i;
+        const freeScreenplayKeywords = /写剧本|短视频剧本|分镜|剧本创意/i;
+
+        if (freeDocKeywords.test(text)) {
+          console.log(`[detect-and-respond] ${reqId} free 预检文档意图 → 抢跑触发`);
+          appendChatEntry(contextReqId, {
+            role: 'system',
+            text: '📄 正在生成文档…（完成前请勿重复发送）',
+            at: new Date().toISOString(),
+            source: 'document_precheck',
+          });
+          try {
+            const docGenSvc = require('../services/assists/document-gen');
+            docGenSvc.runAssistJob(contextReqId, { instruction: text, autoTriggered: true }).catch(e =>
+              console.error(`[detect-and-respond] ${reqId} document 预触发失败:`, e.message));
+          } catch (e) {
+            console.error(`[detect-and-respond] ${reqId} document 预触发异常:`, e.message);
+          }
+        }
+
+        if (freeScreenplayKeywords.test(text)) {
+          // 提取 idea / target_seconds / art_style（自然语言 → 参数）
+          const ideaMatch = text.match(/写(?:一个)?(?:短视频)?剧本[:：]\s*(.+?)(?:[,，。]|$)/);
+          const idea = ideaMatch ? ideaMatch[1].trim() : text;
+          const secMatch = text.match(/(\d{1,3})\s*秒/);
+          const targetSeconds = secMatch ? parseInt(secMatch[1]) : 30;
+          const styleMap = { '写实': 'photorealistic', '3D': '3d', 'G1': 'g1', '日漫': 'anime', '国风水墨': 'ink' };
+          const styleMatch = text.match(/(写实|3D|G1|日漫|国风水墨)/);
+          const artStyle = styleMap[styleMatch ? styleMatch[1] : ''] || 'photorealistic';
+
+          console.log(`[detect-and-respond] ${reqId} free 预检剧本: idea="${idea.slice(0, 30)}..." ${targetSeconds}s · ${artStyle}`);
+          appendChatEntry(contextReqId, {
+            role: 'system',
+            text: JSON.stringify({
+              type: 'screenplay_loading',
+              idea, target_seconds: targetSeconds, art_style: artStyle,
+              status: 'loading',
+            }),
+            at: new Date().toISOString(),
+            source: 'screenplay_precheck',
+          });
+          try {
+            const spSvc = require('../services/assists/screenplay');
+            spSvc.runAssistJob(contextReqId, {
+              idea, target_seconds: targetSeconds, art_style: artStyle, autoTriggered: true,
+            }).catch(e =>
+              console.error(`[detect-and-respond] ${reqId} screenplay 预触发失败:`, e.message));
+          } catch (e) {
+            console.error(`[detect-and-respond] ${reqId} screenplay 预触发异常:`, e.message);
+          }
+        }
       }
 
       try {
