@@ -468,17 +468,10 @@ function paintHead(card) {
       setTimeout(() => {
         var container = getContainer();
         if (container) {
-          // 方案1: 直接滚到卡片底部
-          var cardRect = card.el.getBoundingClientRect();
-          var containerRect = container.getBoundingClientRect();
-          var offset = cardRect.bottom - containerRect.bottom + 50; // 50px 缓冲
-          if (offset > 0) {
-            container.scrollTop += offset;
-          }
-          // 方案2: 或者直接滚到容器底部（确保所有内容可见）
-          // container.scrollTop = container.scrollHeight - container.clientHeight;
+          // 直接滚到容器底部（最可靠）
+          container.scrollTop = container.scrollHeight;
         }
-      }, 150);
+      }, 200);
     }
   }
 
