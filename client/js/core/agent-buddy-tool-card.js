@@ -141,7 +141,26 @@
       _groupIds.push(toolUseId);
       updateGroupHead();
     } else {
-      insertBeforeStreamBubble(el);
+      // 🆕 v0.117t: 插入到最后一个卡片后面，而不是锚点前
+      var streamBubble = document.getElementById('ap-stream-bubble');
+      if (streamBubble && streamBubble.parentNode === container) {
+        // 找最后一个插入的卡片（streamBubble 之前的连续卡片）
+        var lastCard = null;
+        var sibling = streamBubble.previousElementSibling;
+        while (sibling && sibling.classList.contains('ap-tool-card')) {
+          lastCard = sibling;
+          sibling = sibling.previousElementSibling;
+        }
+        if (lastCard) {
+          // 插入到最后一张卡片的后面（nextSibling 是 streamBubble）
+          container.insertBefore(el, lastCard.nextSibling);
+        } else {
+          // 没有卡片，插入到 streamBubble 前面
+          container.insertBefore(el, streamBubble);
+        }
+      } else {
+        container.appendChild(el);
+      }
     }
     container.scrollTop = container.scrollHeight;
   }
