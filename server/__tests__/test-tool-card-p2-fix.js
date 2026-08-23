@@ -58,9 +58,9 @@ check('body 不重复审批按钮（head 唯一）', bodyBtns.length === 0, `bod
 // ============ Case A2: 多次调用 + group 内有 awaiting 自动展开 ============
 console.log('\n--- Case A2: 多次调用 group 内 awaiting 自动展开 ---');
 tcc.reset();
-// 4 张卡片触发 group（threshold=3）
+// 用独立 tool_use_id（避免与 Case A1 的 tu_1 冲突 —— 真实场景 CLI 生成 UUID 不重复）
 ['read_file', 'bash', 'read_file', 'edit_file'].forEach(function (toolName, i) {
-  tcc.handleToolCard({ type: 'tool_card', phase: 'start', tool_use_id: 'tu_' + i, tool_name: toolName });
+  tcc.handleToolCard({ type: 'tool_card', phase: 'start', tool_use_id: 'tuA2_' + i, tool_name: toolName });
 });
 const group = container.querySelector('.ap-tool-group');
 check('group 已创建', !!group, 'ap-tool-group exists');
@@ -70,7 +70,7 @@ check('group body 初始折叠', groupBody.style.display === 'none', groupBody.s
 // 触发其中一张卡 await_approval
 tcc.handleToolCard({
   type: 'tool_card', phase: 'await_approval',
-  tool_use_id: 'tu_1', tool_name: 'bash',
+  tool_use_id: 'tuA2_1', tool_name: 'bash',
   input: { command: 'rm' },
 });
 check('awaiting 触发后 group body 自动展开', groupBody.style.display === 'block', groupBody.style.display);
@@ -83,7 +83,7 @@ check('group head 显示 ⏳ 1 待审批', statHtml.includes('1 待审批'), `ht
 check('group head 总数 4', group.querySelector('.ap-tool-group-title').textContent.includes('(4)'), group.querySelector('.ap-tool-group-title').textContent);
 
 // 给另一张卡 result(done)
-tcc.handleToolCard({ type: 'tool_card', phase: 'result', tool_use_id: 'tu_0', tool_name: 'read_file', content: 'file content' });
+tcc.handleToolCard({ type: 'tool_card', phase: 'result', tool_use_id: 'tuA2_0', tool_name: 'read_file', content: 'file content' });
 const statHtml2 = group.querySelector('.ap-tool-group-stats').innerHTML;
 check('done 卡片计入 group head 徽章', statHtml2.includes('1') && statHtml2.match(/✅\s*1/), `html=${statHtml2}`);
 

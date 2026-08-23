@@ -42,14 +42,18 @@ function check(name, cond, detail = '') {
 
 console.log('=== tool-card P2 mock 测试 ===\n');
 
-// ============ Case 1: reset() 移除 DOM ============
-console.log('--- Case 1: reset() 移除 DOM ---');
+// ============ Case 1: reset() 保留历史卡片（v0.114v） ============
+console.log('--- Case 1: reset() 保留历史卡片（v0.114v 聊天流向下） ---');
 tcc.handleToolCard({ type: 'tool_card', phase: 'start', tool_use_id: 'tu_1', tool_name: 'write_file' });
 const beforeCount = container.querySelectorAll('.ap-tool-card').length;
 check('reset 前 container 有卡片', beforeCount > 0, `count=${beforeCount}`);
 tcc.reset();
 const afterCount = container.querySelectorAll('.ap-tool-card').length;
-check('reset 后 container 无卡片', afterCount === 0, `count=${afterCount}`);
+check('reset 后历史卡片保留（不删 DOM）', afterCount === beforeCount, `count=${afterCount} vs ${beforeCount}`);
+// 新轮次新卡片正常渲染（round 隔离，不误入历史 group）
+tcc.handleToolCard({ type: 'tool_card', phase: 'start', tool_use_id: 'tu_1b', tool_name: 'write_file' });
+const round2Count = container.querySelectorAll('.ap-tool-card').length;
+check('新轮次卡片正常渲染', round2Count === afterCount + 1, `count=${round2Count}`);
 
 // ============ Case 2: 折叠按钮 ============
 console.log('\n--- Case 2: 折叠按钮 + 默认折叠 ---');

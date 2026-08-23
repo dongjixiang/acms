@@ -22,9 +22,15 @@
   var _container = null;
   var _apInsertedAt = 0;  // 调试计数
   // 🆕 P2：多工具合并 group（同一轮 3+ 工具调用时合并容器，避免堆 10 张卡）
-  var _groupEl = null;          // group 容器 DOM
+  // 🆕 v0.114v：group 按"轮次"划分 —— reset() 不再删历史卡片（聊天流向下原则），
+  //   新轮次 startGroup 重置 group 状态 → 新一轮卡片独立分组，历史卡片/group 保留。
+  var _groupEl = null;          // group 容器 DOM（当前轮）
   var _groupIds = [];           // 当前 group 内的 tool_use_id 列表
   var GROUP_THRESHOLD = 3;      // 超过此数启动 group
+  // 🆕 v0.114v：当前轮次内已渲染的独立卡片数（不跨轮累计）
+  var _roundCardCount = 0;
+  // 🆕 v0.114v：当前轮次号（reset 时 +1，卡片创建时打标，group 迁移只迁本轮）
+  var _currentRound = 0;
 
   function getContainer() {
     if (!_container || !_container.isConnected) _container = document.querySelector('#ap-messages');
@@ -81,6 +87,7 @@
       input: null,
       output: null,
       isError: false,
+      round: _currentRound,  // 🆕 v0.114v：标记轮次（group 迁移/计数只认本轮）
     };
     paintHead(_cards[evt.tool_use_id]);
     insertCardEl(el, evt.tool_use_id);
@@ -90,18 +97,22 @@
   function insertCardEl(el, toolUseId) {
     var container = getContainer();
     if (!container) return;
-    var totalCards = Object.keys(_cards).length;
+    _roundCardCount++;  // 🆕 v0.114v：只计当前轮次（历史卡片不再累计，跨轮不会误触发 group）
+    var totalCards = _roundCardCount;
 
 if (totalCards >= GROUP_THRESHOLD) {
-      // 触发 group：把已有卡片（含当前）打包到 group 容器
+      // 触发 group：把本轮已有卡片（含当前）打包到 group 容器
+      // 🆕 v0.114v：只迁移**本轮**的卡片 —— 历史轮次卡片/group 保留在聊天流原位
       if (!_groupEl) {
         _groupEl = createGroupEl(totalCards);
         var streamBubble = document.getElementById('ap-stream-bubble');
         container.insertBefore(_groupEl, streamBubble || null);
-        // 迁移之前已渲染的卡片到 group
+        // 迁移本轮已渲染的卡片到 group（只迁移当前轮次的独立卡片）
         var groupBody = _groupEl.querySelector('.ap-tool-group-body');
         for (var k in _cards) {
-          if (_cards[k] && _cards[k].el && _cards[k].el !== el && _cards[k].el.parentNode === container) {
+          if (_cards[k] && _cards[k].el && _cards[k].el !== el
+              && _cards[k].el.parentNode === container
+              && _cards[k].round === _currentRound) {  // 🆕 v0.114v：只迁本轮
             groupBody.appendChild(_cards[k].el);
             _groupIds.push(k);  // 🆕 P2 bug fix：迁移的旧卡片也要 push（之前漏了导致 count 偏少）
           }
@@ -146,10 +157,13 @@ if (totalCards >= GROUP_THRESHOLD) {
     if (!_groupEl) return;
     var total = _groupIds.length;
     var awaitingCount = 0, failedCount = 0, doneCount = 0;
-    for (var k in _cards) {
-      if (_cards[k].status === 'awaiting') awaitingCount++;
-      else if (_cards[k].status === 'failed' || _cards[k].status === 'denied') failedCount++;
-      else if (_cards[k].status === 'done' || _cards[k].status === 'allowed') doneCount++;
+    // 🆕 v0.114v：只统计当前 group 内的卡片（_groupIds），不统计历史轮卡片
+    for (var gi = 0; gi < _groupIds.length; gi++) {
+      var gc = _cards[_groupIds[gi]];
+      if (!gc) continue;
+      if (gc.status === 'awaiting') awaitingCount++;
+      else if (gc.status === 'failed' || gc.status === 'denied') failedCount++;
+      else if (gc.status === 'done' || gc.status === 'allowed') doneCount++;
     }
     var stats = [];
     if (awaitingCount > 0) stats.push('<span class="ap-tool-group-stat-awaiting">⏳ ' + awaitingCount + ' 待审批</span>');
@@ -241,42 +255,20 @@ if (totalCards >= GROUP_THRESHOLD) {
   }
 
   // ============ Reset ============
-  function hasAwaitingCard() {
-    for (var key in _cards) {
-      if (_cards[key] && _cards[key].status === 'awaiting') return true;
-    }
-    return false;
-  }
-
   function reset() {
-    // 🆕 P2：移除上一轮卡片 DOM（防止多轮对话卡片叠加）
-    // 🆕 修复（2026-08-23）：**跳过 awaiting 状态的审批卡片** —— 用户连发消息时
-    //   sendMessage → reset() 会把"等待审批"的卡片删掉 → 审批入口永久消失 →
-    //   Qwen CLI 60s 等不到 control_response → "Control request timeout" → 编辑中断
-    //   只清已完成/失败/已决策的卡片，待审批卡片保留到本轮结束。
-    for (var key in _cards) {
-      var c = _cards[key];
-      if (c && c.status === 'awaiting') continue;  // 保留待审批卡片
-      if (c && c.el && c.el.parentNode) {
-        c.el.parentNode.removeChild(c.el);
-      }
-    }
-    // 清理非 awaiting 的卡片引用
-    for (var key2 in _cards) {
-      var c2 = _cards[key2];
-      if (c2 && c2.status !== 'awaiting') delete _cards[key2];
-    }
-    // thinking 卡片：本轮结束删掉（新一轮 handleThinking 重建）
+    // 🆕 v0.114v：**不再删除任何卡片 DOM** —— 历史工具调用卡片保留在聊天流
+    //   （多多核心原则：聊天流向下，历史卡片保留）。之前 reset 删非 awaiting 卡片
+    //   → 用户聊几句后历史工具调用窗口全消失（用户实报）。
+    //   这里只做"轮次边界"：本轮计数归零 + group 状态重置，下一轮卡片独立分组；
+    //   thinking 卡片每轮重建（临时思考过程不清历史）。
+    _roundCardCount = 0;
+    _currentRound++;          // 新轮次（group 迁移/卡片打标认新 round）
+    _groupEl = null;          // 本轮 group 容器已封存（保留 DOM），新轮独立 group
+    _groupIds = [];
+    // thinking 卡片：每轮重建（思考过程是临时态，不保留）
     if (_thinkingEl && _thinkingEl.parentNode) _thinkingEl.parentNode.removeChild(_thinkingEl);
     _thinkingEl = null;
     _thinkingText = '';
-    // group 容器：有待审批卡片时必须保留（卡片在 group 里，删 group = 删卡片）
-    //   无 awaiting 卡片时正常清理
-    if (!hasAwaitingCard()) {
-      if (_groupEl && _groupEl.parentNode) _groupEl.parentNode.removeChild(_groupEl);
-      _groupEl = null;
-      _groupIds = [];
-    }
   }
 
   // ============ DOM helpers ============
