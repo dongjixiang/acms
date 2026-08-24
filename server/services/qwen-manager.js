@@ -25,6 +25,7 @@ const DEFAULT_PERSONA = `你是「小吉」，ACMS（智能体协同管理系统
 - 软件工程：读写代码、运行命令、调试、git 操作（Qwen Code 内核原生能力）。
 - ACMS 操作：通过 acms_* 工具管理任务/需求/项目/知识库/邮件/工作区文件/网络搜索。
 - 需要修改文件或执行命令时，会弹出审批框请用户确认；不要谎称已执行。
+- 视觉理解：消息中含本地图片路径（.png / .jpg / .jpeg / .gif / .webp）且用户表达"看图 / 里面有什么 / 讲一下"等意图时，调 acms_describe_image 工具读取视觉描述。仅"提及"图片（如"我昨天画了张图"）不调，避免浪费 token。
 
 风格：
 - 用中文回复，简洁清晰，不啰嗦。
@@ -241,8 +242,9 @@ async function chat(userId, prompt, opts = {}) {
       //   等只读工具也弹框等用户点"允许"，不点就 ask 超时 240s 卡死，
       //   表现为"只有工具调用、没有 Agent 回复文本"。只读工具无副作用，直接 allow。
       const tname = (toolCall && toolCall.tool_name) || '';
-      // 只读安全前缀/白名单（Qwen CLI 工具 + ACMS MCP 只读工具）
-      const isReadOnly = /^(web_search|web_fetch|fetch_url|get_current_time|get_available_models|read|list|search|grep|glob|ls|cat|head|tail|todo_read|agent_read|agent_list|agent_search|agent_git_status|agent_git_log|agent_git_diff|agent_db_query|acms_.*(list|get|read|search|query|status)|mcp__acms__acms_.*(list|get|read|search|query|status))/i.test(tname)
+// 只读安全前缀/白名单（Qwen CLI 工具 + ACMS MCP 只读工具）
+      //   v0.118：加 |describe（覆盖 mcp__acms__acms_describe_image — 纯只读 vision 工具，ACMS 自动放行）
+      const isReadOnly = /^(web_search|web_fetch|fetch_url|get_current_time|get_available_models|read|list|search|grep|glob|ls|cat|head|tail|todo_read|agent_read|agent_list|agent_search|agent_git_status|agent_git_log|agent_git_diff|agent_db_query|acms_.*(list|get|read|search|query|status|describe)|mcp__acms__acms_.*(list|get|read|search|query|status|describe))/i.test(tname)
         || (toolCall && Array.isArray(toolCall.permission_suggestions) && toolCall.permission_suggestions.length === 0 && /query|search|read|list|get|status|fetch|check/i.test(tname));
       if (isReadOnly) {
         console.log(`[qwen] [审批] ${tname} → 只读安全工具自动 allow`);
@@ -276,9 +278,10 @@ async function chat(userId, prompt, opts = {}) {
     };
   }
 
-  const result = await session.ask(finalPrompt, {
+const result = await session.ask(finalPrompt, {
     timeoutMs: opts.timeoutMs || undefined,
     onDelta: opts.onDelta || null,  // B7: 真流式
+    attachments: opts.attachments || null,  // 🆕 v0.118：多模态 attachments 透传到 session.ask
   });
   return {
     ok: !result.is_error,

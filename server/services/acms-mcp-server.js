@@ -135,6 +135,22 @@ const TOOLS = [
       required: ['projectSlug', 'path', 'content'],
     },
   },
+  // ── v0.118：视觉描述（单张图，纯文字回） ──
+  {
+    name: 'acms_describe_image',
+    // v0.118 强化 description（让 Agent 知道何时调）：
+    //   - 描述从纯技术改成"用户触发式"——明确告诉 Agent 看到本地图片路径就该调
+    //   - 反向提示避免重复：消息已经含 <image> attachment 时不要重复调
+    description: '当用户提供本地图片路径（PNG / JPG / GIF / WebP，≤8MB）让你看图时调用。返回 vision 模型给出的中文描述（不超过 400 字，纯文本，无 base64）。注意：消息已经含 <image> attachment 时不要重复调（避免重复计费）。路径必须在 cwd / 项目 workspace / Qwen task sandbox / 当前用户的 Pictures / Desktop / Downloads 之内，.git / .ssh / .env 等敏感路径会被拒。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path:  { type: 'string', description: '图片绝对路径' },
+        prompt:{ type: 'string', description: '可选：自定义 vision 提示词（默认"描述图中关键信息"）' },
+      },
+      required: ['path'],
+    },
+  },
 ];
 
 // ---------- 工具实现 ----------
@@ -229,6 +245,32 @@ async function handleCall(toolName, args) {
         const ws = require('../services/workspace-service');
         const result = ws.writeFile(args.projectSlug, args.path, args.content);
         return toolResult(result);
+      }
+      case 'acms_describe_image': {
+        const visionService = require('../services/vision-service');
+        // 上下文：cwd + 当前项目 workspace（如果可取）
+        const context = { cwd: process.cwd() };
+        try {
+          const projectStore = require('../stores/project-store');
+          // 没有明显可取的"当前项目"——MCP 调用方应传 path 直接走；白名单兜底会接受 Pictures 等用户目录
+        } catch (e) { /* ignore */ }
+        const r = await visionService.describeImage(args.path, context, { prompt: args.prompt });
+        if (!r.ok) {
+          // v0.118 三态路径政策：中间地带 (NOT_IN_AUTO_ALLOWLIST) 不当 error 抛，
+          //   而是作为结构化信息让 Agent 主动告诉用户"需要你确认"
+          if (r.requires_approval) {
+            return toolResult({
+              requires_user_approval: true,
+              reason: r.error || 'NOT_IN_AUTO_ALLOWLIST',
+              policy: r.policy,
+              path: args.path,
+              allowRoots: r.allowRoots || [],
+              message: '该路径不在自动白名单内。需要请用户明确批准是否放行（建议措辞："小吉：[路径] 不在我的自动允许目录里，要读这个图的话你点头 OK 我就当次放行，或者直接修改路径也行"）。',
+            });
+          }
+          return toolResult({ error: r.error || 'VISION_FAILED', size: r.size, mime: r.mime, policy: r.policy }, true);
+        }
+        return toolResult({ path: args.path, mime: r.mime, size: r.size, description: r.description });
       }
       default:
         return toolResult({ error: `未知工具: ${toolName}` }, true);

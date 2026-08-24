@@ -85,8 +85,32 @@ router.get('/upload/:id/raw', (req, res) => {
   res.sendFile(path.resolve(found.filePath));
 });
 
+// ── v0.118：从 URL 拉图并解析（同 saveAndParse 形态回） ──
+//   body: { url, name? }
+//   安全：只 http/https、拒内网、8MB 上限
+router.post('/upload/from-url', async (req, res, next) => {
+  try {
+    const { url, name } = req.body || {};
+    if (!url) return res.status(400).json({ error: 'URL_REQUIRED' });
+    const result = await svc.importFromUrl(url, { name });
+    res.json(result);
+  } catch (e) {
+    const msg = String(e.message || 'UNKNOWN');
+    console.warn('[chat-upload] from-url fail:', msg);
+    // 简单错误分类
+    let code = 'IMPORT_FAILED';
+    if (msg.startsWith('INTERNAL_HOST_BLOCKED')) code = 'INTERNAL_HOST_BLOCKED';
+    else if (msg.startsWith('NON_HTTP_URL')) code = 'NON_HTTP_URL';
+    else if (msg.startsWith('UNSUPPORTED_MIME')) code = 'UNSUPPORTED_TYPE';
+    else if (msg.startsWith('FILE_TOO_LARGE')) code = 'FILE_TOO_LARGE';
+    else if (msg.startsWith('INVALID_URL')) code = 'INVALID_URL';
+    else if (msg.startsWith('FETCH_FAIL') || msg.startsWith('HTTP_')) code = 'FETCH_FAILED';
+    res.status(code === 'INTERNAL_HOST_BLOCKED' ? 403 : 400).json({ error: code, detail: msg });
+  }
+});
+
 // ── 沉淀聊天附件到知识库（v0.9） ──
-//   默认不入库；用户在附件卡上点 "📥 存入知识库" 按钮触发
+//   默认不入库；用户在附件卡上点 \"📥 存入知识库\" 按钮触发
 //   不移动文件，复制一份到项目知识库 raw/user-uploads/
 //   源标记写入 notes：[chat-attach] xxx，方便后续追溯
 router.post('/upload/:id/promote', async (req, res, next) => {

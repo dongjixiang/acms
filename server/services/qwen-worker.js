@@ -221,7 +221,7 @@ class QwenSession {
         this._askQueue.push({ prompt, opts, resolve, reject });
       });
     }
-    return this._doAsk(prompt, opts);
+return this._doAsk(prompt, opts);
   }
 
   async _doAsk(prompt, opts = {}) {
@@ -236,9 +236,14 @@ class QwenSession {
     this._onDelta = opts.onDelta || null;  // B7: 真流式回调（text_delta 实时）
 
     const resultPromise = new Promise((resolve) => { this._pendingResolve = resolve; });
+
+    // 🆕 v0.118：attachments 多模态（base64 图）—— 与 prompt 一起 POST
+    //   Anthropic ContentBlock 数组形态，CLI 0.21.15 anthropicContentGenerator 已支持
+    //   formatUserContent 在 class 外部（module-level helper）
+    const userContent = formatUserContent(prompt, opts.attachments);
     this.child.stdin.write(JSON.stringify({
       type: 'user',
-      message: { role: 'user', content: prompt },
+      message: { role: 'user', content: userContent },
       session_id: this.sessionId,
       parent_tool_use_id: null,
     }) + '\n');
@@ -557,8 +562,26 @@ class QwenSession {
         try { if (this.child && this.child.exitCode === null) this.child.kill('SIGKILL'); } catch (e) { /* ignore */ }
       }, 3000).unref();
     }
-    log(`会话关闭 ${this.sessionId.slice(0, 8)}`);
+log(`会话关闭 ${this.sessionId.slice(0, 8)}`);
   }
+}
+
+/**
+ * 格式化为 Qwen CLI 接受的 user message content（Anthropic ContentBlock 数组）
+ *   - 无 attachments：返回原始字符串（向后兼容，原 chat 流都用字符串 content）
+ *   - 有 attachments：[{type:'text', text}, {type:'image', source:{type:'base64', media_type, data}}, ...]
+ *   att 形态: { mime:'image/png', data:'<base64>', name? }
+ */
+function formatUserContent(prompt, attachments) {
+  if (!Array.isArray(attachments) || attachments.length === 0) return prompt;
+  const blocks = [];
+  if (typeof prompt === 'string' && prompt) blocks.push({ type: 'text', text: prompt });
+  else if (Array.isArray(prompt)) blocks.push(...prompt);
+  for (const a of attachments) {
+    if (!a || !a.mime || !a.data) continue;
+    blocks.push({ type: 'image', source: { type: 'base64', media_type: a.mime, data: a.data } });
+  }
+  return blocks;
 }
 
 // ============================================================

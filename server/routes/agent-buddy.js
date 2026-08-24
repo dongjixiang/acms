@@ -861,6 +861,8 @@ var buddyCtx = {
               //   → 用户看到的是旧引擎回复，误以为"没转给 Qwen Code"
               //   对齐 qwen-task.js:128 的 10min 默认值（task-agent 长任务已用此值）
               timeoutMs: 600000,
+              // 🆕 v0.118：attachments 多模态——前端传 base64 attachments 给 Qwen 看图
+              attachments: Array.isArray(body.attachments) ? body.attachments.filter((a) => a && a.mime && a.data) : null,
               onDelta: _qwenIsStream ? function(delta) {
                 try {
                   if (!res.writableEnded) {

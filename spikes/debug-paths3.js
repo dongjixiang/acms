@@ -1,0 +1,13 @@
+const path = require('path');
+const { isPathAllowed } = require('../server/services/vision-service');
+const home = process.env.USERPROFILE || '';
+const SEP = String.fromCharCode(92);
+const p = ['C:', 'Windows', 'System32', 'config.png'].join(SEP);
+const ctx = { cwd: process.cwd() };
+console.log('real test path:', p);
+console.log('ctx.cwd:', JSON.stringify(ctx.cwd));
+console.log('isPathAllowed:', isPathAllowed(p, ctx));
+console.log();
+console.log('==> 处理 path.sep 兼容（path.resolve 后看是否还是用户给的盘符路径）:');
+console.log('  path.resolve 真实路径会保留盘符，所以 inAllow 兜底检查正常');
+console.log('==> 真实 Windows 路径 C:' + SEP + 'Windows' + SEP + 'System32' + SEP + 'config.png 不在' + home + SEP + 'Pictures 等任何白名单目录下面，isPathAllowed 应 = false');

@@ -106,21 +106,101 @@ function parseText(buffer) {
   }
 }
 
-// ── 图片 vision 描述（复用 knowledge-scanner 的 LLM 调用） ──
-async function describeImage(imagePath, maxTokens = 800) {
-  try {
-    const { analyzeFileWithLLM } = require('./knowledge-scanner');
-    // 提示词：让模型描述图片，输出简洁中文（避免长篇大论挤爆 token）
-    const prompt = `请用简洁的中文（不超过 400 字）描述这张图片的内容，重点说明：\n1. 图的类型（截图/照片/图表/界面等）\n2. 关键信息（文字、布局、UI 元素、数据趋势等）\n3. 如果是界面截图，说明页面名称和主要功能模块\n\n只输出描述，不要前缀或解释。`;
-    const result = await Promise.race([
-      analyzeFileWithLLM(prompt, imagePath, maxTokens),
-      new Promise((_, rej) => setTimeout(() => rej(new Error('VISION_TIMEOUT')), VISION_TIMEOUT_MS)),
-    ]);
-    return (result && typeof result === 'string') ? result.trim() : null;
-  } catch (e) {
-    console.warn('[chat-upload] 图片 vision 描述失败:', e.message);
-    return null;
+// ── 图片 vision 描述（v0.118 重构：调 vision-service） ──
+//   v1.0 抽出到 vision-service.js 让 acms-mcp-server 等其它模块复用
+//   chat-upload.js 这里只做"上传-解析-落盘"业务流，描述能力来自 vision-service
+const visionService = require('./vision-service');
+
+async function describeImage(imagePath) {
+  const r = await visionService.describeImage(imagePath, { cwd: process.cwd() });
+  return r.ok ? r.description : null;
+}
+
+/**
+ * v0.118：从 URL 下载图（同源处理）并落盘为 chat-upload 文件
+ *   - 仅 http/https（防 SSRF）
+ *   - 拒绝内网 IP（防打到 ACMS 后端 / 120 / 内网资源）
+ *   - 8MB 上限（Qwen `SESSION_ATTACHMENT_MAX_ITEM_BYTES`）
+ *   - mime 嗅探（magic-bytes，不依赖 content-type 头）
+ *   - 调 vision-service 描述
+ *
+ * @param {string} url
+ * @param {object} [opts] { name?, context?: { cwd, workspacePath, sandboxPath } }
+ * @returns {object} saveAndParse 同形态（含 extractedText / id / url）
+ */
+async function importFromUrl(url, opts = {}) {
+  if (!url || typeof url !== 'string') throw new Error('URL_REQUIRED');
+  let parsed;
+  try { parsed = new URL(url); } catch (e) { throw new Error('INVALID_URL'); }
+  if (!/^https?:$/.test(parsed.protocol)) throw new Error('NON_HTTP_URL');
+
+  // SSRF 防护：拒绝内网 IP（loopback / 私网 / link-local / multicast）
+  const hostnames = [parsed.hostname];
+  if (parsed.hostname.includes('.')) {
+    // 已经是 IP 或域名；解一遍避免 127.0.0.1 / localhost 的变相
   }
+  const FORBIDDEN_HOSTNAME = /^(localhost|127\.|10\.|192\.168\.|169\.254\.|::1$|fe80:|0\.)/i;
+  if (FORBIDDEN_HOSTNAME.test(parsed.hostname)) throw new Error('INTERNAL_HOST_BLOCKED');
+
+  let resp;
+  try {
+    const { http1Fetch } = require('../tools/http1-fetch');
+    resp = await http1Fetch(url, { method: 'GET', timeout: 15000, binary: true });
+  } catch (e) {
+    throw new Error('FETCH_FAIL: ' + (e.message || 'unknown'));
+  }
+  if (!resp || !resp.ok) {
+    throw new Error('HTTP_' + (resp?.status || 0) + ': ' + (resp?.error || 'fetch failed'));
+  }
+  // 二进制 body 已在 base64；反解 Buffer
+  const buffer = Buffer.from(resp.body, 'base64');
+  if (buffer.length > visionService.MAX_IMAGE_BYTES) {
+    throw new Error('FILE_TOO_LARGE: ' + buffer.length + ' > ' + visionService.MAX_IMAGE_BYTES);
+  }
+
+  // mime 嗅探（不依赖 content-type，可被人伪造）
+  const mime = visionService.sniffMimeFromBuffer(buffer);
+  if (!mime || !visionService.SUPPORTED_MIME.has(mime)) {
+    throw new Error('UNSUPPORTED_MIME_OR_NOT_IMAGE');
+  }
+
+  // 写盘到 UPLOAD_DIR
+  try { fs.mkdirSync(UPLOAD_DIR, { recursive: true }); } catch (e) { /* ignore */ }
+  const id = crypto.randomUUID();
+  const ext = (mime === 'image/jpeg' ? '.jpg' : '.' + (mime.split('/')[1] || 'img'));
+  const safeName = `${id}${ext}`;
+  const filePath = path.join(UPLOAD_DIR, safeName);
+  fs.writeFileSync(filePath, buffer);
+
+  // vision 描述（直接传 buffer，vision-service 内部会落 tmp）
+  const ctx = opts.context || { cwd: process.cwd() };
+  const vis = await visionService.describeImage(buffer, ctx);
+
+  // 写 meta（与 saveAndParse 兼容）
+  const meta = {
+    id, name: opts.name || parsed.pathname.split('/').pop() || 'from-url',
+    size: buffer.length, mime,
+    category: 'image', icon: '🖼',
+    savedAt: new Date().toISOString(),
+    filePath: safeName, source: 'url_import',
+    sourceUrl: url,
+  };
+  try {
+    fs.writeFileSync(path.join(UPLOAD_DIR, `${id}.meta.json`), JSON.stringify(meta, null, 2));
+  } catch (e) { /* ignore */ }
+
+  const result = {
+    id, name: meta.name, size: meta.size, mime,
+    category: 'image', icon: '🖼',
+    url: `/api/chat/upload/${id}/raw`,
+    extractedText: vis.ok ? vis.description : null,
+    savedAt: meta.savedAt,
+  };
+  if (!vis.ok) {
+    result.parseNote = 'AI 视觉识别不可用或失败（' + (vis.error || '') + '）';
+  }
+  console.log(`[chat-upload] ✅ (URL) ${id} | image | ${meta.name} (${(buffer.length/1024).toFixed(1)}KB)${vis.ok ? ' | text=' + result.extractedText.length + 'ch' : ' | parse=FAIL'}`);
+  return result;
 }
 
 /**
@@ -248,4 +328,11 @@ function readImageAsDataURI(id) {
   return `data:${info.meta.mime};base64,${b64}`;
 }
 
-module.exports = { saveAndParse, getFilePath, readImageAsDataURI, importFromPath, UPLOAD_DIR };
+module.exports = {
+  saveAndParse,
+  getFilePath,
+  readImageAsDataURI,
+  importFromPath,
+  importFromUrl,           // 🆕 v0.118：URL → base64 → save → vision
+  UPLOAD_DIR,
+};

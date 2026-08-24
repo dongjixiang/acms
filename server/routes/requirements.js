@@ -558,6 +558,12 @@ const briefService = require('../services/thinking-brief');
 // 查询思路简报（前端轮询用）
 router.get('/:id/thinking-brief', (req, res, next) => {
   try {
+    // 🆕 v0.117de: 自由对话 sess-xxx → 自动 resolve hidden requirement
+    if (req.params.id && req.params.id.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(req.params.id);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      req.params.id = sessionReq.id;
+    }
     const reqRec = reqStore.getById(req.params.id);
     if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
     const brief = briefService.getBrief(req.params.id);
@@ -925,6 +931,13 @@ router.post('/:id/assist/:method/use', async (req, res, next) => {
   try {
     const { method } = req.params;
     const body = req.body || {};
+    // 🆕 v0.117de: 自由对话 sess-xxx → 自动 resolve hidden requirement（与 d2390c2 5 路由统一）
+    //   覆盖 req.params.id → 后续所有 req.params.id 引用自动是真实 REQ-XXX（含 service 调用）
+    if (req.params.id && req.params.id.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(req.params.id);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      req.params.id = sessionReq.id;
+    }
     const reqRec = reqStore.getById(req.params.id);
     if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
 
@@ -1002,6 +1015,12 @@ router.post('/:id/assist/:method/use', async (req, res, next) => {
 //   保留: 旧客户端 / 测试 / 兜底场景
 router.post('/:id/assist/use_case/apply', async (req, res, next) => {
   try {
+    // 🆕 v0.117de: 自由对话 sess-xxx → 自动 resolve
+    if (req.params.id && req.params.id.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(req.params.id);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      req.params.id = sessionReq.id;
+    }
     const reqRec = reqStore.getById(req.params.id);
     if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
     const { acceptedItems, confirmedAssumptions, structuredData, discardedItems } = req.body || {};
@@ -1025,6 +1044,12 @@ router.post('/:id/assist/use_case/apply', async (req, res, next) => {
 //   不写库！用户编辑后必须调 /apply/confirm 才写
 router.post('/:id/assist/use_case/apply/preview', async (req, res, next) => {
   try {
+    // 🆕 v0.117de: 自由对话 sess-xxx → 自动 resolve
+    if (req.params.id && req.params.id.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(req.params.id);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      req.params.id = sessionReq.id;
+    }
     const reqRec = reqStore.getById(req.params.id);
     if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
     const { acceptedItems, confirmedAssumptions, discardedItems } = req.body || {};
@@ -1048,6 +1073,12 @@ router.post('/:id/assist/use_case/apply/preview', async (req, res, next) => {
 //   旧 description 进 description_history (最近 5 份, 永久可回滚)
 router.post('/:id/assist/use_case/apply/confirm', async (req, res, next) => {
   try {
+    // 🆕 v0.117de: 自由对话 sess-xxx → 自动 resolve
+    if (req.params.id && req.params.id.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(req.params.id);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      req.params.id = sessionReq.id;
+    }
     const reqRec = reqStore.getById(req.params.id);
     if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
     const { description, acceptedItems, confirmedAssumptions, structuredData, discardedItems } = req.body || {};
@@ -1199,6 +1230,14 @@ router.post('/:id/supplement', async (req, res, next) => {
 // v0.3.5 新增：读取补充历史（前端 idea panel 展示用）
 router.get('/:id/supplement-history', (req, res, next) => {
   try {
+    // 🆕 v0.117de: 自由对话 sess-xxx → 自动 resolve hidden requirement
+    //   原因：selectScreenplay / useAssist 等非 SSE 路径走 POST /assist/:method/use 后，
+    //   前端 startChatPolling 拉 sess-xxx 的 supplement-history → 之前漏 resolve → 404 → catch 吞掉 → 卡片不渲染
+    if (req.params.id && req.params.id.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(req.params.id);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      req.params.id = sessionReq.id;
+    }
     const reqRec = reqStore.getById(req.params.id);
     if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
     let history = [];
@@ -1377,6 +1416,12 @@ const healthCheckSvc = () => require('../services/assists/health-check');
 
 router.post('/:id/assist/health_check/dismiss', async (req, res, next) => {
   try {
+    // 🆕 v0.117de: 自由对话 sess-xxx → 自动 resolve
+    if (req.params.id && req.params.id.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(req.params.id);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      req.params.id = sessionReq.id;
+    }
     const result = healthCheckSvc().dismissFinding(req.params.id, req.body);
     if (result.error) return res.status(result.error === 'REQ_NOT_FOUND' ? 404 : 400).json(result);
     res.json(result);
@@ -1385,6 +1430,12 @@ router.post('/:id/assist/health_check/dismiss', async (req, res, next) => {
 
 router.post('/:id/assist/health_check/restore', async (req, res, next) => {
   try {
+    // 🆕 v0.117de: 自由对话 sess-xxx → 自动 resolve
+    if (req.params.id && req.params.id.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(req.params.id);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      req.params.id = sessionReq.id;
+    }
     const result = healthCheckSvc().restoreFinding(req.params.id, req.body);
     if (result.error) return res.status(result.error === 'REQ_NOT_FOUND' ? 404 : 400).json(result);
     res.json(result);
@@ -1393,6 +1444,12 @@ router.post('/:id/assist/health_check/restore', async (req, res, next) => {
 
 router.get('/:id/assist/health_check/dismissed', async (req, res, next) => {
   try {
+    // 🆕 v0.117de: 自由对话 sess-xxx → 自动 resolve
+    if (req.params.id && req.params.id.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(req.params.id);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      req.params.id = sessionReq.id;
+    }
     const result = healthCheckSvc().getDismissed(req.params.id);
     res.json({ dismissed: result });
   } catch (e) { next(e); }
@@ -1402,6 +1459,12 @@ router.get('/:id/assist/health_check/dismissed', async (req, res, next) => {
 //   v0.22.30: 接受 body.scene_idx 参数 → 按分桶字段读（剧本多镜头互不覆盖）
 router.post('/:id/assist/video/query', async (req, res, next) => {
   try {
+    // 🆕 v0.117de: 自由对话 sess-xxx → 自动 resolve
+    if (req.params.id && req.params.id.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(req.params.id);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      req.params.id = sessionReq.id;
+    }
     const videoSvc = require('../services/assists/video');
     const reqRec = reqStore.getById(req.params.id);
     const projectId = reqRec?.project_id || null;
@@ -1429,6 +1492,12 @@ router.post('/:id/assist/video/query', async (req, res, next) => {
 // v0.19：对话清理 — 统计当前对话条目数
 router.get('/:id/assist/clean/stats', async (req, res, next) => {
   try {
+    // 🆕 v0.117de: 自由对话 sess-xxx → 自动 resolve
+    if (req.params.id && req.params.id.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(req.params.id);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      req.params.id = sessionReq.id;
+    }
     const cleanSvc = require('../services/assists/clean');
     const reqRec = reqStore.getById(req.params.id);
     if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
