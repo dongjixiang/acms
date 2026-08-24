@@ -173,9 +173,25 @@ class QwenSession {
 
     this.rl = readline.createInterface({ input: this.child.stdout });
     this.rl.on('line', (line) => this._handleLine(line));
-    this.child.stderr.on('data', (d) => {
+this.child.stderr.on('data', (d) => {
       const s = d.toString().trim();
-      if (s && !s.includes('DEBUG')) debug('cli-stderr:', s.slice(0, 300));
+      // v0.118 临时诊断：stderr 全量输出，不受 DEBUG 门控
+      //   （之前 MCP config 错误 silent fail —— agent 找不到 acms_describe_image 看不到原因）
+      if (s) {
+        const tag = '[cli-stderr]';
+        console.log(tag, s.slice(0, 400));
+        // 同时追加到 data/qwen-spawn.log（之前 stderr 完全丢失）
+        try {
+          const fs = require('fs');
+          const path = require('path');
+          const logDir = path.resolve(__dirname, '..', '..', 'data');
+          if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+          fs.appendFileSync(
+            path.join(logDir, 'qwen-spawn.log'),
+            `[${new Date().toISOString()}] ${s.slice(0, 800)}\n`
+          );
+        } catch (e) { /* ignore */ }
+      }
     });
     this.child.on('error', (e) => {
       debug('cli error:', e.message);

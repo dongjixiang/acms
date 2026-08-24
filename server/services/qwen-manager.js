@@ -243,8 +243,10 @@ async function chat(userId, prompt, opts = {}) {
       //   表现为"只有工具调用、没有 Agent 回复文本"。只读工具无副作用，直接 allow。
       const tname = (toolCall && toolCall.tool_name) || '';
 // 只读安全前缀/白名单（Qwen CLI 工具 + ACMS MCP 只读工具）
-      //   v0.118：加 |describe（覆盖 mcp__acms__acms_describe_image — 纯只读 vision 工具，ACMS 自动放行）
-      const isReadOnly = /^(web_search|web_fetch|fetch_url|get_current_time|get_available_models|read|list|search|grep|glob|ls|cat|head|tail|todo_read|agent_read|agent_list|agent_search|agent_git_status|agent_git_log|agent_git_diff|agent_db_query|acms_.*(list|get|read|search|query|status|describe)|mcp__acms__acms_.*(list|get|read|search|query|status|describe))/i.test(tname)
+//   v0.118：注意 — `|describe` 看似能让 acms_describe_image 自动放行，
+//   但它会跳过 can_use_tool 审批 → 不出卡片 → 违背 v0.114u 多多拍板的"纯卡片审批"原则。
+//   故保持 describe 不在白名单，acms_describe_image 走审批卡片。
+const isReadOnly = /^(web_search|web_fetch|fetch_url|get_current_time|get_available_models|read|list|search|grep|glob|ls|cat|head|tail|todo_read|agent_read|agent_list|agent_search|agent_git_status|agent_git_log|agent_git_diff|agent_db_query|acms_.*(list|get|read|search|query|status)|mcp__acms__acms_.*(list|get|read|search|query|status))/i.test(tname)
         || (toolCall && Array.isArray(toolCall.permission_suggestions) && toolCall.permission_suggestions.length === 0 && /query|search|read|list|get|status|fetch|check/i.test(tname));
       if (isReadOnly) {
         console.log(`[qwen] [审批] ${tname} → 只读安全工具自动 allow`);

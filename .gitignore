@@ -51,3 +51,7 @@ server/public/office/
 server/public/generate/assets/
 server/data/qwen-task-test-ws/
 server/__tests__/tmp-*.js
+
+# v0.118 临时数据（用户隐私，不 commit）
+data/qwen-spawn.log
+spikes/chat-history-*-backup.json
