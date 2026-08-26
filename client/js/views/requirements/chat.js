@@ -1382,7 +1382,13 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
             }
             var tb = ensureStreamBubble();
             accumulated += (evt.text || '');
-            if (tb) tb.textContent = accumulated;
+            // 🆕 fix: 自由对话流式也要 markdown 渲染（与小吉 agent-buddy.js 一致）
+            //   旧: tb.textContent = accumulated → **bold** / # heading / - list 当文字显示
+            //   新: tb.innerHTML = mdFn(accumulated) → renderMarkdown 转 HTML
+            if (tb) {
+              var mdFn = typeof renderMarkdown === 'function' ? renderMarkdown : function(t) { return escHtml(t); };
+              tb.innerHTML = mdFn(accumulated);
+            }
             if (typeof chatScrollToBottom === 'function') chatScrollToBottom(c);
             _lastBubbleEvent = 'text';
           } else if (evt.type === 'tool_card') {
@@ -1434,7 +1440,11 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
               // 已流式显示（_lastBubbleEvent==='text'）→ 直接封存；否则（onDelta 没推）→ 创建气泡显示 result
               if (_lastBubbleEvent !== 'text') {
                 var rb = ensureStreamBubble();
-                if (rb) rb.textContent = evt.result;
+                // 🆕 fix: end 事件 result 同样 markdown 渲染（与流式路径一致）
+                if (rb) {
+                  var mdFn2 = typeof renderMarkdown === 'function' ? renderMarkdown : function(t) { return escHtml(t); };
+                  rb.innerHTML = mdFn2(evt.result);
+                }
                 _lastBubbleEvent = 'text';
               }
               finalizeCurrentBubble();
