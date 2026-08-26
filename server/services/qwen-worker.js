@@ -219,7 +219,20 @@ this.child.stderr.on('data', (d) => {
       //   CLI 默认 can_use_tool 审批超时 60s，ACMS ask 模式审批挂起等前端决策
       //   （5min 自动 deny）→ 前端没及时点 → CLI 60s 先超时 → "Control request timeout"
       //   → 工具调用（如 edit 文件）中断。提到 600s 让 CLI 等 ACMS 的 deny 兜底。
-      this._sendControl({ subtype: 'initialize', hooks: null, mcpServers: null, sdkMcpServers: null, agents: null, timeout: { canUseTool: 600000 } });
+      // v0.118.4 修复（2026-08-26）：真正装配 MCP！旧代码 mcpServers: null
+      //   （v0.118.3 注释说要用 mcpServers 字段但实际没传）→ Qwen 工具注册表
+      //   从未有 acms_* 工具（"找不到 acms_describe_image"）。SDK initialize
+      //   控制消息的 mcpServers 字段格式见 session-JV74G6EZ.js normalizeMcpServerConfig：
+      //   { name: { command, args, env, trust } }（stdio transport 隐式，不用 transport 字段）
+      const mcpServers = (this.enableMcp && this.mcpServerPath) ? {
+        acms: {
+          command: process.execPath,
+          args: ['--max-old-space-size=128', this.mcpServerPath],
+          env: {},
+          trust: true,   // SDK 注入的 server 标记 trusted（CLI 不再弹权限确认）
+        },
+      } : null;
+      this._sendControl({ subtype: 'initialize', hooks: null, mcpServers, sdkMcpServers: null, agents: null, timeout: { canUseTool: 600000 } });
     });
 
     this.ready = true;
