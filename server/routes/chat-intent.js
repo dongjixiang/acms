@@ -338,7 +338,9 @@ router.post('/detect-and-respond', async (req, res, next) => {
                 var tc = evt.toolCall || {};
                 adapted = { type: 'tool_card', phase: 'await_approval', tool_use_id: tc.tool_use_id, tool_name: tc.tool_name, input: tc.input };
               } else if (evt.type === 'approval_result') {
-                adapted = { type: 'tool_card', phase: 'approval_decided', tool_use_id: evt.tool_use_id, tool_name: '', decision: evt.allowed ? 'allow' : 'deny' };
+                // 对齐 agent-buddy.js:996 推 allowed 字段；前端 phaseApprovalDecided 读 evt.allowed
+                // 此前这里推 decision 字段，前端读不到 → 永远判定 denied（"已拒绝"），与实际决策无关
+                adapted = { type: 'tool_card', phase: 'approval_decided', tool_use_id: evt.tool_use_id, tool_name: '', allowed: !!evt.allowed };
               }
               if (adapted) res.write(`data: ${JSON.stringify(adapted)}\n\n`);
             } catch (e) {}
