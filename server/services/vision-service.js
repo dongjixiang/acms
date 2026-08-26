@@ -44,15 +44,15 @@ const FORBIDDEN_PATH_PATTERNS = [
   /[\\/]ProgramData([\\/]|$)/i,
 ];
 
-// 路径政策三态 (v0.118 重构，修复多多"中间地带应走审批"的反馈):
-//   1. 黑名单：直接拒，不打扰用户 (.ssh / .env / Win 系统目录 等)
-//   2. 白名单：自动 ok (cwd / 工作区 / Qwen sandbox / home/Pictures/Desktop/Downloads)
-//   3. 中间地带：requires_approval:true — 让 Agent 把决策权抛给用户
+// 路径政策 (v0.118.2 多多拍板 2026-08-25)：放开目录白名单限制
+//   之前三态：黑名单直接拒 / 白名单自动 ok / 中间地带 requires_approval 让用户决定
+//   现在：黑名单仍直接拒（敏感凭据+系统目录），其余**任意路径一律 AUTO_ALLOWED**
+//   —— 用户明确"describe_image 不要有目录白名单限制，都放开"。vision 只读图片文件，
+//   正常用户路径都能看了；.git/.ssh/.env/Windows 系统目录保留为最后一道安全闸。
 //
 // 返回:
 //   { ok:true, requiresApproval:false, policy:'AUTO_ALLOWED', source }
 //   { ok:false, requiresApproval:false, reason:'FORBIDDEN'|'EMPTY_PATH' }
-//   { ok:false, requiresApproval:true, reason:'NOT_IN_AUTO_ALLOWLIST' }
 function checkPathPolicy(absolutePath, context = {}) {
   if (!absolutePath) return { ok: false, requiresApproval: false, reason: 'EMPTY_PATH' };
   const abs = path.resolve(absolutePath);
@@ -64,23 +64,8 @@ function checkPathPolicy(absolutePath, context = {}) {
     }
   }
 
-  // 2. 白名单根：cwd / workspace / sandbox + home/Pictures/Desktop/Downloads 兜底
-  const allowRoots = [];
-  if (context.cwd) allowRoots.push(path.resolve(context.cwd));
-  if (context.workspacePath) allowRoots.push(path.resolve(context.workspacePath));
-  if (context.sandboxPath) allowRoots.push(path.resolve(context.sandboxPath));
-  const home = os.homedir();
-  const userHomeDirs = ['Pictures', 'Desktop', 'Downloads'].map((d) => path.resolve(home, d));
-  allowRoots.push(...userHomeDirs);
-
-  for (const root of allowRoots) {
-    if (abs === root || abs.startsWith(root + path.sep)) {
-      return { ok: true, requiresApproval: false, policy: 'AUTO_ALLOWED', source: root };
-    }
-  }
-
-  // 3. 中间地带：不在自动白名单内，让用户决定
-  return { ok: false, requiresApproval: true, reason: 'NOT_IN_AUTO_ALLOWLIST', allowRoots };
+  // 2. v0.118.2：不再检查白名单根 —— 任意路径放行（黑名单之外的都 AUTO_ALLOWED）
+  return { ok: true, requiresApproval: false, policy: 'AUTO_ALLOWED', source: abs };
 }
 
 // 向后兼容：旧 API isPathAllowed — 简化为 ok 二态，

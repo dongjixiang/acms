@@ -436,7 +436,7 @@ router.post('/action/:requirementId/send-email', async function(req, res) {
 // ════════════════════════════════════════
 
 router.post('/chat', async function(req, res) {
-  console.log('[agent-buddy] 收到请求:', req.body && req.body.message);
+  console.log('[agent-buddy] 收到请求:', req.body && req.body.message, 'keys:', req.body ? Object.keys(req.body) : 'none');
 
   try {
     var body = req.body || {};
@@ -756,6 +756,65 @@ var buddyCtx = {
       }
     });
     // v0.79: 校验当前 user message 非空（空消息直接返回 400 给前端，不浪费 LLM 调用）
+    // ── 续转模式（_continue__ 标记）── 必须在 message 校验之前，否则空消息被拦截
+    if (message === '_continue__') {
+      console.log('[agent-buddy] [qwen] 续转模式 userId=' + userId);
+      var qwenManagerMod2 = null;
+      var qwenEnabled2 = false;
+      try {
+        qwenManagerMod2 = require('../services/qwen-manager');
+        qwenEnabled2 = qwenManagerMod2.getConfig().enabled;
+      } catch (e) { qwenEnabled2 = false; }
+      if (qwenEnabled2) {
+        try {
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no',
+          });
+          if (typeof res.flush === 'function') res.flush();
+          const qm2 = qwenManagerMod2.getManager();
+          const sess2 = qm2.findSession ? qm2.findSession(userId) : null;
+          if (!sess2) {
+            res.write('data: ' + JSON.stringify({ type: 'error', error: 'no_session' }) + '\n\n');
+            res.end();
+            return;
+          }
+          await sess2.ask('', {
+            onDelta: function(delta) {
+              if (!res.writableEnded) {
+                try { res.write('data: ' + JSON.stringify({ type: 'text', chunk: delta }) + '\n\n'); } catch(e) {}
+              }
+            },
+          }).then(function(result) {
+            if (!res.writableEnded) {
+              try {
+                res.write('data: ' + JSON.stringify({
+                  type: 'result',
+                  content: result && result.result,
+                  is_error: !!(result && result.is_error),
+                }) + '\n\n');
+                res.end();
+              } catch(e) {}
+            }
+          }).catch(function(e) {
+            if (!res.writableEnded) {
+              try {
+                res.write('data: ' + JSON.stringify({ type: 'error', error: e.message }) + '\n\n');
+                res.end();
+              } catch(e2) {}
+            }
+          });
+          return;
+        } catch (e) {
+          console.warn('[agent-buddy] [qwen] 续转异常:', e.message);
+        }
+      }
+      // fallback：非 Qwen 路径返回简单响应
+      return res.json({ reply: '继续中…' });
+    }
+
     if (!message || !message.trim()) {
       return res.status(400).json({ error: 'EMPTY_MESSAGE', message: '消息内容不能为空' });
     }
@@ -959,7 +1018,34 @@ var buddyCtx = {
               _qwenHandled = true;
             } else {
               console.warn('[agent-buddy] [qwen] 失败:', JSON.stringify(qwenResp.error).slice(0, 200));
-              runtimeResult = { content: '（Qwen 内核暂时不可用，已切换到常规模式）' };
+              // 🆕 v0.119：识别 interrupt 触发的失败 → 推 SSE result 事件 + 渲染"已中断"卡片，不 fallback
+              //   Qwen CLI TurnInterruptedError.message = "Operation cancelled."（chunk-DPXZUGDQ.js:121）
+              //   control_request {subtype:"interrupt"} → recoverableCancellation 路径
+              //   JSON 序列化会丢 Error.name，所以只用 errText (message) 判定
+              const _qwenErrMsg = qwenResp.error && (qwenResp.error.message || String(qwenResp.error));
+              const _isInterrupted = !!(_qwenErrMsg && typeof _qwenErrMsg === 'string' && _qwenErrMsg.includes('Operation cancelled'));
+              if (_isInterrupted) {
+                if (_qwenIsStream && !res.writableEnded) {
+                  try {
+                    res.write('data: ' + JSON.stringify({
+                      type: 'result',
+                      is_error: true,
+                      error_message: _qwenErrMsg.slice(0, 200),
+                      interrupted: true,
+                      session_id: qwenResp.sessionId,
+                    }) + '\n\n');
+                    if (typeof res.flush === 'function') res.flush();
+                  } catch (e) { /* ignore */ }
+                }
+                // 🆕 v0.119 修复：必须 _qwenHandled=true 才跳过 runToolLoop fallback
+                //   之前误设 _qwenHandled=false，导致 hasSkills=true 时仍跑 fallback 引擎，
+                //   把后续 SSE 流覆盖，前端看到的是 fallback 输出而非中断状态
+                _qwenHandled = true;
+                _qwenStreamed = true;  // 标记 SSE 已推送，避免重复 writeHead
+                runtimeResult = { content: '' };  // 占位，不影响 UI（前端靠 interrupted 卡片渲染）
+              } else {
+                runtimeResult = { content: '（Qwen 内核暂时不可用，已切换到常规模式）' };
+              }
             }
           } catch (qErr) {
             console.warn('[agent-buddy] [qwen] 异常，fallback runToolLoop:', qErr.message);
@@ -1717,6 +1803,34 @@ try {
       console.warn('[agent-buddy] tool-retriever init warning:', e.message);
     });
   }, 1000);
+// 🆕 v0.119：中断当前 turn（按 req.user.id 找 session）
+//   小吉 session 按 userId 共享，所以一个用户多个 tab 时 interrupt 会同时打断
+//   所有 tab —— 这是 by design（小吉就是单 session 设计），文档说明
+router.post('/chat/interrupt', async function(req, res) {
+  var userId = req.user && (req.user.id || req.user.userId);
+  if (!userId) return res.status(401).json({ error: '未登录' });
+  try {
+    var qwenManagerMod = require('../services/qwen-manager');
+    const r = await qwenManagerMod.interrupt(userId);
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 🆕 v0.119：续转被中断的 turn
+router.post('/chat/continue', async function(req, res) {
+  var userId = req.user && (req.user.id || req.user.userId);
+  if (!userId) return res.status(401).json({ error: '未登录' });
+  try {
+    var qwenManagerMod = require('../services/qwen-manager');
+    const r = await qwenManagerMod.continueLastTurn(userId);
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 } catch (e) {
   console.warn('[agent-buddy] tool-retriever init error:', e.message);
 }

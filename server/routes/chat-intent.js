@@ -370,11 +370,17 @@ router.post('/detect-and-respond', async (req, res, next) => {
           const errText = (qr.error && typeof qr.error === 'object')
             ? (qr.error.message || JSON.stringify(qr.error)).slice(0, 200)
             : (qr.error || null);
+          // 🆕 v0.119：识别 interrupt 触发的 result
+          //   Qwen CLI TurnInterruptedError.message = "Operation cancelled."（chunk-DPXZUGDQ.js:121）
+          //   control_request {subtype:"interrupt"} → recoverableCancellation 路径
+          //   JSON 序列化会丢 Error.name，所以只用 errText (message) 判定
+          const isInterrupted = !!(errText && typeof errText === 'string' && errText.includes('Operation cancelled'));
           res.write(`data: ${JSON.stringify({
             type: 'end',
             ok: qr.ok,
             result: qwenAiReply,
             error: errText,
+            interrupted: isInterrupted,  // 🆕 v0.119
             sessionRequirementId: contextReqId !== reqId ? contextReqId : undefined,
             musicCardJson: musicCardJson || null,
           })}\n\n`);

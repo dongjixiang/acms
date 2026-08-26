@@ -819,6 +819,168 @@ document.addEventListener('click', function(e) {
 //   每个 reqId 一份待发附件队列；发送时清空
 window._chatAttachments = window._chatAttachments || {};
 
+// 🆕 v0.119：聊天 send 按钮多态状态机（每 reqId 一份状态）
+//   idle:        正常状态，[📤 发送] 蓝
+//   generating:  SSE 流式进行中，[⏹ 停止] 红边（输入框空 = 纯 interrupt，有内容 = interrupt-and-send）
+//   interrupting: interrupt 已发，等 result，[⋯ 中断中] 灰 disabled
+//   interrupted: result.interrupted=true 到达，渲染"已中断"卡片 + 续转按钮（输入框激活可发新指令）
+//   状态转移点：
+//     idle → generating：SSE 第一条 text_delta（或 tool_card）到达
+//     generating → interrupting：用户点 ⏹ 停止
+//     interrupting → interrupted：SSE end 事件 interrupted=true
+//     interrupting → idle：SSE end 事件 interrupted=false
+//     interrupted → generating：用户发新消息（chatSend 路径）
+//     interrupted → idle：用户点 [继续] 后正常流式
+window._chatSendState = window._chatSendState || {};
+window._chatInterrupted = window._chatInterrupted || {};  // reqId → { lastUserInput: '', interruptedAt: ts }
+window._chatContinueTimer = window._chatContinueTimer || {};  // reqId → setInterval handle（倒计时）
+
+function setChatSendState(reqId, state) {
+  window._chatSendState[reqId] = state;
+  var btn = document.getElementById('chat-send-btn-' + reqId);
+  var btnText = btn && btn.querySelector('.chat-send-btn-text');
+  var input = document.getElementById('chat-input-' + reqId);
+  if (btn) {
+    btn.classList.remove('chat-send-idle', 'chat-send-generating', 'chat-send-interrupting');
+    if (state === 'generating') btn.classList.add('chat-send-generating');
+    else if (state === 'interrupting') btn.classList.add('chat-send-interrupting');
+    else btn.classList.add('chat-send-idle');
+    btn.disabled = state === 'interrupting';
+  }
+  if (btnText) {
+    btnText.textContent = state === 'generating' ? '⏹ 停止'
+      : state === 'interrupting' ? '⋯ 中断中'
+      : '📤 发送';
+  }
+  if (input) {
+    input.placeholder = state === 'generating'
+      ? '输入新内容并点发送可替换当前任务…'
+      : '问我任何问题…（可直接 Ctrl+V 粘贴截图）';
+  }
+}
+
+function getChatSendState(reqId) {
+  return window._chatSendState[reqId] || 'idle';
+}
+
+// 🆕 v0.119：渲染"已中断"卡片 + 续转按钮
+function renderChatInterruptedCard(reqId, opts) {
+  opts = opts || {};
+  var c = document.getElementById('chat-stream-msgs-' + reqId);
+  if (!c) return;
+  // 移除旧的"已中断"卡片（避免重复）
+  var oldCard = c.querySelector('.chat-interrupted-card[data-req-id="' + reqId + '"]');
+  if (oldCard) oldCard.remove();
+  // 清掉上次的倒计时
+  if (window._chatContinueTimer[reqId]) {
+    clearInterval(window._chatContinueTimer[reqId]);
+    delete window._chatContinueTimer[reqId];
+  }
+  var card = document.createElement('div');
+  card.className = 'chat-interrupted-card';
+  card.setAttribute('data-req-id', reqId);
+  var leftText = opts.leftText || '已中断';
+  card.innerHTML =
+    '<div class="cic-head">⏹ ' + escHtml(leftText) + '</div>' +
+    '<div class="cic-actions">' +
+      '<button class="cic-btn cic-continue" type="button">↻ 继续刚才的</button>' +
+      '<button class="cic-btn cic-discard" type="button">✕ 放弃，新指令</button>' +
+    '</div>' +
+    '<div class="cic-timer"></div>';
+  c.appendChild(card);
+  // 绑定按钮
+  card.querySelector('.cic-continue').onclick = function() { chatContinueLastTurn(reqId); };
+  card.querySelector('.cic-discard').onclick = function() {
+    if (window._chatContinueTimer[reqId]) {
+      clearInterval(window._chatContinueTimer[reqId]);
+      delete window._chatContinueTimer[reqId];
+    }
+    card.remove();
+    var input = document.getElementById('chat-input-' + reqId);
+    if (input) { input.value = ''; input.focus(); }
+    setChatSendState(reqId, 'idle');
+  };
+  // 🆕 v0.119：v0.120 之前不开启 3 秒倒计时自动续转（等用户反馈再加，先做显式按钮）
+  card.querySelector('.cic-timer').textContent = '点「继续」恢复中断的任务，或输入新指令';
+  if (typeof chatScrollToBottom === 'function') chatScrollToBottom(c);
+}
+
+// 🆕 v0.119：调后端 /api/qwen/continue
+async function chatContinueLastTurn(reqId) {
+  var c = document.getElementById('chat-stream-msgs-' + reqId);
+  var card = c && c.querySelector('.chat-interrupted-card[data-req-id="' + reqId + '"]');
+  if (card) card.remove();
+  try {
+    const r = await api('POST', '/api/qwen/continue', { userId: reqId });
+    if (r && r.ok) {
+      setChatSendState(reqId, 'generating');
+      // 续转的输出会通过同 reqId 的 SSE 流回来 —— 但当前 SSE 连接已断（end 事件已发）
+      // 需要让前端去 fetch 续转的事件流；简化方案：toast 让用户知道已续转
+      // TODO v0.120：续转结果通过 SSE 同通道回来，需要 chat-intent.js 加 continue 端点
+      toast('已发送续转请求', 'info');
+    } else if (r && r.reason === 'no_session') {
+      toast('会话已过期，无法续转，请重新发送', 'warning');
+      setChatSendState(reqId, 'idle');
+    } else {
+      toast('续转失败：' + (r && r.error || '未知'), 'error');
+      setChatSendState(reqId, 'idle');
+    }
+  } catch (e) {
+    toast('续转请求异常：' + e.message, 'error');
+    setChatSendState(reqId, 'idle');
+  }
+}
+
+// 🆕 v0.119：调后端 /api/qwen/interrupt（纯中断，不发新消息）
+async function chatInterrupt(reqId) {
+  setChatSendState(reqId, 'interrupting');
+  try {
+    const r = await api('POST', '/api/qwen/interrupt', { userId: reqId });
+    if (r && r.ok) {
+      console.log('[chat] interrupt 已发送, session=', r.sessionId);
+      // 等 SSE end 事件 interrupted=true 到达后渲染卡片
+    } else if (r && r.reason === 'no_session') {
+      toast('会话已过期，无需中断', 'info');
+      setChatSendState(reqId, 'idle');
+    } else {
+      toast('中断失败：' + (r && r.error || '未知'), 'error');
+      setChatSendState(reqId, 'idle');
+    }
+  } catch (e) {
+    toast('中断请求异常：' + e.message, 'error');
+    setChatSendState(reqId, 'idle');
+  }
+}
+
+// 🆕 v0.119：中断后发新消息（chatSend 的特殊分支，专为 pending 队列）
+//   与正常 chatSend 不同点：状态已经是 interrupted，不需要再次 dispatch
+//   直接渲染用户气泡 + 调 chatSendDetect 触发新一轮 SSE 流
+async function chatSendAfterInterrupt(reqId, text, attachments) {
+  if (!text && (!attachments || !attachments.length)) return;
+  const finalText = chatBuildSupplementText(reqId, text);
+  const c = document.getElementById('chat-stream-msgs-' + reqId);
+  if (c) {
+    const userBubbleAttachments = (attachments || []).map(a => {
+      const icon = a.icon || '📎';
+      const fileUrl = a.id ? `/api/chat/upload/${encodeURIComponent(a.id)}/raw` : '#';
+      return `<a href="${escHtml(fileUrl)}" target="_blank" rel="noopener noreferrer"
+                class="attach-chip" title="${escHtml(a.name)}（点击下载/预览原文件）"
+                onclick="event.stopPropagation()">${icon} ${escHtml(a.name)}</a>`;
+    }).join('');
+    const userBubbleText = text || (attachments && attachments.length ? '📎 ' + attachments.length + ' 个附件' : '');
+    renderChatBubble(c, {
+      role: 'user',
+      text: userBubbleText,
+      attachmentsHtml: userBubbleAttachments,
+      at: new Date().toISOString(),
+    });
+    if (typeof chatScrollToBottom === 'function') chatScrollToBottom(c);
+  }
+  // 状态切 generating（按钮变 ⏹ 停止）
+  setChatSendState(reqId, 'generating');
+  await chatSendDetect(reqId, finalText);
+}
+
 const CHAT_UPLOAD_ACCEPT = {
   image: 'image/png,image/jpeg,image/jpg,image/gif,image/webp',
   pdf:   'application/pdf,.pdf',
@@ -1058,6 +1220,30 @@ async function chatSend(reqId) {
   const input = document.getElementById(`chat-input-${reqId}`);
   const text = input?.value?.trim();
   const attachments = window._chatAttachments[reqId] || [];
+  const state = getChatSendState(reqId);
+
+  // 🆕 v0.119：状态机分发
+  //   interrupting: 按钮 disabled，理论上到不了这里（防御性 return）
+  //   generating + 输入框空：纯中断（不发送新消息）
+  //   generating + 输入框有内容：中断 + 发新消息（先发 interrupt，等 SSE end 自动续接）
+  //   idle / interrupted：正常发送
+  if (state === 'interrupting') return;
+
+  if (state === 'generating') {
+    if (input) { input.value = ''; input.style.height = 'auto'; }
+    window._chatAttachments[reqId] = [];
+    chatRenderAttachPreview(reqId, []);
+    if (text) {
+      // 中断 + 发新消息
+      window._chatPendingSend = window._chatPendingSend || {};
+      window._chatPendingSend[reqId] = { text, attachments };
+      chatInterrupt(reqId);  // SSE end 到达时若 interrupted=true → 检查 pending 并触发
+    } else {
+      chatInterrupt(reqId);
+    }
+    return;
+  }
+
   if (!text && !attachments.length) { toast('先写点想法或添加附件', 'warning'); return; }
   const finalText = chatBuildSupplementText(reqId, text);
 
@@ -1086,6 +1272,9 @@ async function chatSend(reqId) {
   // 清空附件
   window._chatAttachments[reqId] = [];
   chatRenderAttachPreview(reqId, []);
+
+  // 状态切 generating（按钮变 ⏹ 停止）
+  setChatSendState(reqId, 'generating');
 
   // v0.15：统一智能端点 detect-and-respond 处理所有情况
   //   - 含 URL → 走 fetch_url + AI 摘要
@@ -1165,6 +1354,8 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
     var sessionReqId = null;
     var musicCardJson = null;
 
+    // 🆕 v0.119：标记 SSE 流已经开始，确保 text_delta/tool_card 到达时状态能切到 generating
+    //   （即使 chatSend 还没来得及切，事件流也会推它过去）
     while (true) {
       var _r = await reader.read();
       if (_r.done) break;
@@ -1176,6 +1367,8 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
         if (!line.startsWith('data: ')) continue;
         try {
           var evt = JSON.parse(line.slice(6));
+          // 🆕 v0.119：第一个流事件到达 → 切 generating（兜底，chatSend 已经先切了）
+          if (getChatSendState(reqId) === 'idle') setChatSendState(reqId, 'generating');
           if (evt.type === 'text_delta') {
             // 🆕 v0.117z: 上事件不是 text → 封存旧气泡开新气泡（按时间穿插）
             if (_lastBubbleEvent !== null && _lastBubbleEvent !== 'text') {
@@ -1210,7 +1403,19 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
           } else if (evt.type === 'end') {
             sessionReqId = evt.sessionRequirementId || null;
             musicCardJson = evt.musicCardJson || null;
-            if (evt.error) {
+            // 🆕 v0.119：中断触发的 end → 渲染"已中断"卡片 + 切状态
+            if (evt.interrupted === true) {
+              finalizeCurrentBubble();  // 封存未完成的流式气泡
+              renderChatInterruptedCard(reqId, { leftText: '已中断当前回复' });
+              setChatSendState(reqId, 'interrupted');
+              // pending send（用户在 generating 状态发了新指令等中断后接续）
+              if (window._chatPendingSend && window._chatPendingSend[reqId]) {
+                var pending = window._chatPendingSend[reqId];
+                delete window._chatPendingSend[reqId];
+                // 异步触发（让当前 SSE 处理完再开新连接）
+                setTimeout(function() { chatSendAfterInterrupt(reqId, pending.text, pending.attachments || []); }, 50);
+              }
+            } else if (evt.error) {
               // 🆕 v0.117x: error 安全转换 —— 后端可能传对象（String(对象)=[object Object]）
               finalizeCurrentBubble();
               var eb = ensureStreamBubble();
@@ -1220,6 +1425,11 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
               if (eb) eb.textContent = '⚠️ AI 暂时无响应: ' + errText.slice(0, 100);
               _lastBubbleEvent = 'text';
               finalizeCurrentBubble();
+              setChatSendState(reqId, 'idle');  // 🆕 v0.119：失败也回到 idle（不是 interrupted）
+              // 清掉 pending send（如果有）—— 错误时不发新消息，避免连锁
+              if (window._chatPendingSend && window._chatPendingSend[reqId]) {
+                delete window._chatPendingSend[reqId];
+              }
             } else if (evt.result) {
               // 已流式显示（_lastBubbleEvent==='text'）→ 直接封存；否则（onDelta 没推）→ 创建气泡显示 result
               if (_lastBubbleEvent !== 'text') {
@@ -1228,6 +1438,10 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
                 _lastBubbleEvent = 'text';
               }
               finalizeCurrentBubble();
+              setChatSendState(reqId, 'idle');  // 🆕 v0.119：正常完成回到 idle
+            } else {
+              // 兜底：end 事件但没 result 没 error 没 interrupted（不应该发生但防御）
+              setChatSendState(reqId, 'idle');
             }
             // music card
             if (musicCardJson && typeof renderMusicBubble === 'function' && c) {

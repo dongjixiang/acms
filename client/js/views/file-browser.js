@@ -479,11 +479,11 @@
       window._fb_open_file = {name:fn,src:src};
       ACMSWin.open('image-editor',{w:1000,h:700,title:'🖼️ '+fn});
     } else if(appName==='code-editor'){
-      // 代码：下载文本内容
+      // 代码：下载文本内容；保留原路径 fp 让 code-editor 保存时覆写
       fetch('/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK).then(function(r){return r.text();}).then(function(content){
-        window._fb_open_file = {name:fn,content:content};
+        window._fb_open_file = {name:fn, content:content, filePath:fp};
         ACMSWin.open('code-editor',{w:900,h:600,title:'💻 '+fn});
-      }).catch(function(e){console.log('[FB-DEBUG] PPT error:', e); to('读取文件失败: '+(e&&e.message||''), 'error');});
+      }).catch(function(e){console.log('[FB-DEBUG] code read error:', e); to('读取文件失败: '+(e&&e.message||''), 'error');});
     } else if(appName==='office-word'){
       // Word: 下载文件并保存到 office 目录，然后用 fileId 打开
       fetch('/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK).then(function(r){console.log('[FB-DEBUG] Files API response:', r.status, r.ok); return r.arrayBuffer();}).then(function(buf){

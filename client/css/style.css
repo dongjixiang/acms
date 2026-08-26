@@ -6616,3 +6616,159 @@ body { padding-bottom: 40px; }
   .ufd-footer { padding: 10px 14px; }
   .form-row { flex-direction: column; gap: 14px; }
 }
+
+/* ===== v0.119：聊天 send 按钮多态 + 已中断卡片 ===== */
+/* send 按钮三态：
+   - chat-send-idle: 默认蓝（primary）
+   - chat-send-generating: 红边（用户生成中可点 ⏹ 停止）
+   - chat-send-interrupting: 灰、disabled
+*/
+.chat-send-generating {
+  background: var(--bg) !important;
+  color: var(--red2) !important;
+  border-color: var(--red2) !important;
+  font-weight: 600;
+  animation: chat-send-pulse 1.4s ease-in-out infinite;
+}
+.chat-send-generating:hover {
+  background: color-mix(in srgb, var(--red2) 12%, var(--bg)) !important;
+}
+.chat-send-interrupting {
+  opacity: 0.6;
+  cursor: wait !important;
+}
+@keyframes chat-send-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--red2) 40%, transparent); }
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--red2) 0%, transparent); }
+}
+
+/* 已中断卡片 —— 灰色背景，区别于红色错误 */
+.chat-interrupted-card {
+  margin: 10px 14px 14px;
+  padding: 12px 14px;
+  background: var(--bg2);
+  border-left: 3px solid var(--text2);
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text);
+  animation: chat-interrupted-fade 0.3s ease-out;
+}
+.chat-interrupted-card .cic-head {
+  font-weight: 500;
+  margin-bottom: 8px;
+  color: var(--text);
+}
+.chat-interrupted-card .cic-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.chat-interrupted-card .cic-btn {
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.12s;
+}
+.chat-interrupted-card .cic-btn:hover {
+  background: var(--bg2);
+  border-color: var(--text2);
+}
+.chat-interrupted-card .cic-continue {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.chat-interrupted-card .cic-continue:hover {
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg));
+}
+.chat-interrupted-card .cic-discard {
+  color: var(--text2);
+}
+.chat-interrupted-card .cic-timer {
+  font-size: 11px;
+  color: var(--text2);
+  margin-top: 4px;
+}
+@keyframes chat-interrupted-fade {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ===== v0.119：小吉面板（agent-buddy）的 send 按钮多态 + 已中断卡片 ===== */
+/* 与 free chat 同套设计 —— 命名空间用 .ap- 前缀（agent panel）*/
+/* send 按钮三态：覆盖 .ap-send-btn 默认样式 */
+.ap-send-btn.ap-send-generating {
+  background: var(--bg) !important;
+  color: var(--red2) !important;
+  border-color: var(--red2) !important;
+  font-weight: 600;
+  animation: ap-send-pulse 1.4s ease-in-out infinite;
+}
+.ap-send-btn.ap-send-generating:hover {
+  background: color-mix(in srgb, var(--red2) 12%, var(--bg)) !important;
+}
+.ap-send-btn.ap-send-interrupting {
+  opacity: 0.6;
+  cursor: wait !important;
+}
+.ap-send-btn.ap-send-continued {
+  background: color-mix(in srgb, var(--accent, #0ea89d) 20%, var(--bg)) !important;
+  color: var(--accent, #0ea89d) !important;
+  border: 1px solid var(--accent, #0ea89d) !important;
+}
+@keyframes ap-send-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--red2) 40%, transparent); }
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--red2) 0%, transparent); }
+}
+
+/* 小吉"已中断"卡片 —— 灰色背景，与 free chat 卡片视觉一致 */
+.ap-interrupted-card {
+  margin: 8px 12px 12px;
+  padding: 10px 12px;
+  background: var(--bg2);
+  border-left: 3px solid var(--text2);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text);
+  animation: chat-interrupted-fade 0.3s ease-out;
+}
+.ap-interrupted-card .ap-ic-head {
+  font-weight: 500;
+  margin-bottom: 6px;
+  color: var(--text);
+}
+.ap-interrupted-card .ap-ic-actions {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.ap-interrupted-card .ap-ic-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  transition: all 0.12s;
+}
+.ap-interrupted-card .ap-ic-btn:hover {
+  background: var(--bg2);
+  border-color: var(--text2);
+}
+.ap-interrupted-card .ap-ic-continue {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.ap-interrupted-card .ap-ic-continue:hover {
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg));
+}
+.ap-interrupted-card .ap-ic-discard {
+  color: var(--text2);
+}
+.ap-interrupted-card .ap-ic-hint {
+  font-size: 10px;
+  color: var(--text2);
+  margin-top: 3px;
+}

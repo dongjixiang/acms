@@ -327,6 +327,35 @@ router.post('/mkdir', function(req, res) {
   }
 });
 
+// ===== WRITE /api/files/write =====
+// 覆写文件浏览器中已存在的文本文件（供 code-editor 保存使用）
+//   body: { path, content, encoding?: 'utf8' }
+//   - path 是完整的客户端路径（/workspaces/foo.txt 或 admin 的 /d/foo.txt）
+//   - content 是文本字符串（默认 UTF-8 写入）
+//   - 文件必须已存在（不允许创建新文件，请用 /upload）
+router.post('/write', function(req, res) {
+  var reqPath = req.body && req.body.path;
+  var content = req.body && req.body.content;
+  if (!reqPath || content == null) return res.status(400).json({ error: 'MISSING_PARAMS', message: '\u7f3a\u5c11\u53c2\u6570' });
+
+  var resolved = resolveSafePath(req, reqPath);
+  if (!resolved) return res.status(403).json({ error: 'FORBIDDEN', message: '\u6743\u9650\u4e0d\u8db3' });
+  var filePath = resolved.safePath;
+
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'NOT_FOUND', message: '\u6587\u4ef6\u4e0d\u5b58\u5728' });
+  var st = fs.statSync(filePath);
+  if (st.isDirectory()) return res.status(400).json({ error: 'IS_DIR', message: '\u8def\u5f84\u662f\u76ee\u5f55\uff0c\u4e0d\u80fd\u5199\u5165' });
+
+  try {
+    fs.writeFileSync(filePath, String(content), 'utf8');
+    var stAfter = fs.statSync(filePath);
+    res.json({ ok: true, path: reqPath, size: stAfter.size, mtime: stAfter.mtimeMs });
+  } catch (e) {
+    console.error('[Files] write error:', e);
+    res.status(500).json({ error: 'WRITE_ERROR', message: e.message });
+  }
+});
+
 // ===== UPLOAD /api/files/upload =====
 router.post('/upload', function(req, res) {
   var reqPath = req.body && req.body.path;

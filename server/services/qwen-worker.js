@@ -103,6 +103,7 @@ class QwenSession {
     this._pendingResolve = null;
     this._handshakeResolve = null;
     this._handshakeReject = null;
+    this._handshakeDone = false;  // 🆕 v0.119: 跟踪握手完成状态
     this.lastActivityAt = Date.now();
     this.turnCount = 0;
     this.approvalCount = 0;
@@ -153,15 +154,15 @@ class QwenSession {
     if (this.appendSystemPrompt) args.push('--append-system-prompt', this.appendSystemPrompt);
 
     // B3: ACMS MCP 工具层（Qwen 可调 acms_* 工具）
+    // v0.118.3 修复（2026-08-25）：`--mcp-config` 参数在 Qwen CLI 0.21.15 **不存在**
+    //   （grep cli.js 0 命中，静默忽略）→ 之前 MCP 从未真正加载，Qwen 工具注册表
+    //   里没有 acms_* 工具（acms_describe_image 找不到）。正确姿势：SDK initialize
+    //   控制消息里传 `mcpServers` 字段（session-JV74G6EZ.js normalizeMcpServerConfig）。
+    //   这里只记录路径，真正的注入在 _sendControl(initialize) 里做。
     if (this.enableMcp) {
       const mcpServerPath = path.join(__dirname, 'acms-mcp-server.js');
       if (fs.existsSync(mcpServerPath)) {
-        const mcpConfig = JSON.stringify({
-          mcpServers: {
-            acms: { command: process.execPath, args: ['--max-old-space-size=128', mcpServerPath] },
-          },
-        });
-        args.push('--mcp-config', mcpConfig);
+        this.mcpServerPath = mcpServerPath;
         debug('MCP enabled:', mcpServerPath);
       }
     }
@@ -386,6 +387,40 @@ return this._doAsk(prompt, opts);
     }) + '\n');
   }
 
+// 🆕 v0.119：中断当前 turn
+  //   走 Qwen CLI control_request {subtype:"interrupt"} → Session.handleInterrupt()
+  //   → activeTurnAbortController.abort(TurnInterruptedError) → recoverableCancellation
+  //   → runNonInteractive 返回 130 + emitResult(isError:true, "Turn interrupted")
+  //   Session 持续存活，processUserMessage 可继续接收新消息
+  //   关键 race: 必须在 _handshakeDone 后才能发，否则 stdio 写穿
+  interrupt() {
+    if (!this._handshakeDone) {
+      debug('interrupt 失败: handshake 未完成, session=', this.sessionId);
+      return false;
+    }
+    this._sendControl({ subtype: 'interrupt' });
+    debug('interrupt 已发送, session=', this.sessionId);
+    return true;
+  }
+
+  // 🆕 v0.119：续转被中断的 turn
+  //   走 Qwen CLI control_request {subtype:"continue_last_turn"} → requestContinueLastTurn()
+  //   → buildSessionRecoveryPlanFromApiHistory() 扫描 history 末态：
+  //     - interrupted_prompt（用户消息发了但 model 没回）→ 重发用户 parts
+  //     - interrupted_turn（model 发了但 tool_use 没收到 tool_result）→ 合成失败 tool_result
+  //     - clean/none → 拒绝续转，返回 {accepted:false}
+  //   续转本身跑在 work queue 里，与新 user message 串行
+  continueLastTurn(onAck) {
+    if (!this._handshakeDone) {
+      debug('continue_last_turn 失败: handshake 未完成, session=', this.sessionId);
+      return false;
+    }
+    this._continueAckCb = onAck;
+    this._sendControl({ subtype: 'continue_last_turn' });
+    debug('continue_last_turn 已发送, session=', this.sessionId);
+    return true;
+  }
+
   // ---------- 内部 ----------
   _sendControl(request) {
     this.child.stdin.write(JSON.stringify({
@@ -417,6 +452,16 @@ return this._doAsk(prompt, opts);
             this._handshakeResolve();
             this._handshakeResolve = null;
             this._handshakeReject = null;
+          }
+          // 🆕 v0.119：记录 handshake 完成，让 interrupt/continue 能工作
+          this._handshakeDone = true;
+        }
+        // 🆕 v0.119：continue_last_turn ACK
+        if (resp.subtype === 'success' && resp.response?.subtype === 'continue_last_turn') {
+          debug('continue_last_turn ACK:', JSON.stringify(resp.response).slice(0, 200));
+          if (this._continueAckCb) {
+            this._continueAckCb(resp.response);
+            this._continueAckCb = null;
           }
         }
         break;
@@ -652,13 +697,25 @@ class QwenSessionManager {
     return 'openai';
   }
 
-  // 🆕 v0.115b：按 sessionId 查找会话（审批决策"全部允许"时把工具加入会话自动放行集合）
+// 🆕 v0.115b：按 sessionId 查找会话（审批决策"全部允许"时把工具加入会话自动放行集合）
   findSessionBySessionId(sessionId) {
     if (!sessionId) return null;
     for (const sess of this.sessions.values()) {
       if (sess.sessionId === sessionId) return sess;
     }
     return null;
+  }
+
+  // 🆕 v0.119：按 userId 查找会话（不创建，纯查）
+  //   interrupt/continue 专用 —— 不应该因为"找不到就建一个空 session"导致副作用
+  //   返回 null 让上层决定如何 fallback（前端弹"session 已过期"提示）
+  findSession(userId) {
+    if (!userId) return null;
+    const sess = this.sessions.get(userId);
+    if (!sess) return null;
+    // 已关闭的会话也不算（exitCode 非空说明进程已死）
+    if (sess.closed || (sess.child && sess.child.exitCode !== null)) return null;
+    return sess;
   }
 
   /**

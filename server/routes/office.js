@@ -323,7 +323,9 @@ router.post('/save', async function (req, res) {
     const body = req.body || {};
     const type = (body.type || 'docx').replace('.', '');
     const name = body.name || ('untitled.' + type);
-    const fileId = uuidv4();
+    // 复用前端传入的 fileId（code-editor 在 office 链接打开场景需要覆写原文件），
+    // 没有才生成新的（office 编辑器新建文件的场景）
+    const fileId = (body.fileId && /^[0-9a-f-]{36}$/i.test(body.fileId)) ? body.fileId : uuidv4();
     const fileName = fileId + '.' + type;
     const filePath = path.join(OFFICE_DIR, fileName);
 
@@ -331,6 +333,10 @@ router.post('/save', async function (req, res) {
       const buf = Buffer.from(body.content, 'base64');
       if (buf.length < 4) throw new Error('content too short');
       fs.writeFileSync(filePath, buf);
+    }
+    else if (type === 'txt' && body.data && typeof body.data.content === 'string') {
+      // code-editor 保存纯文本：直接写 UTF-8
+      fs.writeFileSync(filePath, body.data.content, 'utf8');
     }
     else if (type === 'docx') {
       const buffer = await writeDocx(body);

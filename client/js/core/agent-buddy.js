@@ -88,10 +88,19 @@
   var _proactiveCooldown = 0;      // 主动弹出冷却时间戳
   var _proactiveTimer = null;      // 主动检查定时器
   var _knownPackages = [];         // [{ name, title, icon, category }]
-  var _streamSpeed = 30;           // v0.80: 流式速度（ms/块）
+var _streamSpeed = 30;           // v0.80: 流式速度（ms/块）
   var _streamPaused = false;       // v0.80: 流式暂停状态
   var _streamDone = false;         // v0.80: 流式完成状态
   var _streamAbortController = null; // v0.80: 流式中止控制器
+
+  // 🆕 v0.119：聊天 send 按钮多态状态机（与小吉面板对应）
+  //   idle:        正常，[➤] 蓝
+  //   generating:  SSE 流式进行中，[⏹] 红边（输入框空 = 纯 interrupt，有内容 = interrupt-and-send）
+  //   interrupting: interrupt 已发，等 SSE end，[⋯] 灰 disabled
+  //   interrupted: result.interrupted=true 到达，渲染"已中断"卡片
+  var _buddySendState = 'idle';
+  var _buddySessionId = null;
+  var _buddyPendingSend = null;  // { text }，generating 状态发的待续消息
 
   // ── L1：用户记忆（小吉知道什么）──
 
@@ -431,12 +440,26 @@
     // 点击外部关闭
     _panelEl.addEventListener('click', function(e) { e.stopPropagation(); });
 
-    // 输入框回车发送
+// 输入框回车发送
     var input = _panelEl.querySelector('#ap-input');
     var sendBtn = _panelEl.querySelector('#ap-send-btn');
     if (input && sendBtn) {
       function doSend() {
         var text = input.value.trim();
+        // 🆕 v0.119：状态机分发
+        if (_buddySendState === 'interrupting') return;  // 按钮 disabled，防御性
+        if (_buddySendState === 'generating') {
+          // 中断 / 中断+发新消息
+          input.value = '';
+          if (text) {
+            _buddyPendingSend = { text: text };
+            buddyInterrupt();
+          } else {
+            buddyInterrupt();
+          }
+          return;
+        }
+        // idle / interrupted：正常发送
         if (!text) return;
         input.value = '';
         sendMessage(text);
@@ -1591,7 +1614,203 @@ function isNonPlanTerminal(state) {
     }, 3000);
   }
 
-  // ── L5：聊天发送 ──
+// ── L5：聊天发送 ──
+
+  // 🆕 v0.119：send 按钮多态（apply state to DOM）
+  function setBuddySendBtnState(state) {
+    _buddySendState = state;
+    var btn = _panelEl && _panelEl.querySelector('#ap-send-btn');
+    var input = _panelEl && _panelEl.querySelector('#ap-input');
+    if (btn) {
+      btn.classList.remove('ap-send-idle', 'ap-send-generating', 'ap-send-interrupting');
+      if (state === 'generating') btn.classList.add('ap-send-generating');
+      else if (state === 'interrupting') btn.classList.add('ap-send-interrupting');
+      else btn.classList.add('ap-send-idle');
+      btn.disabled = state === 'interrupting';
+      btn.textContent = state === 'generating' ? '⏹'
+        : state === 'interrupting' ? '⋯'
+        : '➤';
+      btn.title = state === 'generating' ? '停止当前任务（输入框有内容则中断并发送）' : '发送';
+    }
+    if (input) {
+      input.placeholder = state === 'generating'
+        ? '输入新内容并点发送可替换当前任务…'
+        : '问小吉问题...';
+    }
+  }
+
+  // 🆕 v0.119：调 /api/agent-buddy/chat/interrupt
+  function buddyInterrupt() {
+    setBuddySendBtnState('interrupting');
+    fetch('/api/agent-buddy/chat/interrupt', {
+      method: 'POST',
+      headers: Object.assign({}, getAuthHeaders(), { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({})
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data && data.ok) {
+        console.log('[buddy] interrupt 已发送, session=', data.sessionId);
+        // 等 SSE result 事件 interrupted=true → 渲染卡片
+      } else if (data && data.reason === 'no_session') {
+        if (typeof toast === 'function') toast('会话已过期，无需中断', 'info');
+        setBuddySendBtnState('idle');
+      } else {
+        if (typeof toast === 'function') toast('中断失败：' + (data && data.error || '未知'), 'error');
+        setBuddySendBtnState('idle');
+      }
+    })
+    .catch(function(e) {
+      if (typeof toast === 'function') toast('中断请求异常：' + e.message, 'error');
+      setBuddySendBtnState('idle');
+    });
+  }
+
+  // 🆕 v0.119：调 /api/agent-buddy/chat/continue
+  function buddyContinueLastTurn() {
+    var card = _panelEl && _panelEl.querySelector('.ap-interrupted-card');
+    if (card) card.remove();
+    setBuddySendBtnState('generating');
+    fetch('/api/agent-buddy/chat/continue', {
+      method: 'POST',
+      headers: Object.assign({}, getAuthHeaders(), { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({})
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data && data.ok) {
+        // 续转请求已发给 CLI，现在用同 session 发 _continue__ 消息拿 SSE 流
+        console.log('[buddy-continue] ok=true, 开始 SSE 流');
+        if (typeof toast === 'function') toast('继续中…', 'info');
+        startContinueStream();
+      } else if (data && data.reason === 'no_session') {
+        if (typeof toast === 'function') toast('会话已过期，无法续转，请重新发送', 'warning');
+        setBuddySendBtnState('idle');
+      } else {
+        if (typeof toast === 'function') toast('续转失败：' + (data && data.error || '未知'), 'error');
+        setBuddySendBtnState('idle');
+      }
+    })
+    .catch(function(e) {
+      if (typeof toast === 'function') toast('续转请求异常：' + e.message, 'error');
+      setBuddySendBtnState('idle');
+    });
+  }
+
+  // 🆕 v0.119：续转 SSE 流 —— 发 _continue__ 消息到 /chat?stream=1 拿实时输出
+  function startContinueStream() {
+    var messagesEl = _panelEl && _panelEl.querySelector('#ap-messages');
+    var accumulated = '';
+    var streamDone = false;
+    var timeout = null;
+
+    function finalize() {
+      if (streamDone) return;
+      streamDone = true;
+      if (timeout) clearTimeout(timeout);
+      setBuddySendBtnState('idle');
+      // finalize 流式气泡
+      var msgEl = document.getElementById('ap-stream-bubble');
+      if (msgEl && accumulated) {
+        var cleanText = accumulated.replace(/【face:\w+】/g, '').replace(/【action:[^:]+:[^】]+】/g, '').trim();
+        var mdFn = typeof renderMarkdown === 'function' ? renderMarkdown : function(t) { return escHtml(t); };
+        msgEl.innerHTML = '<span class="ap-msg-text">' + mdFn(cleanText) + '</span>';
+        msgEl.id = '';
+      }
+      if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function appendDelta(delta) {
+      if (streamDone) return;
+      accumulated += delta;
+      var cleanText = accumulated.replace(/【face:\w+】/g, '').replace(/【action:[^:]+:[^】]+】/g, '').trim();
+      var mdFn = typeof renderMarkdown === 'function' ? renderMarkdown : function(t) { return escHtml(t); };
+      var container = document.querySelector('#ap-messages');
+      if (!container) return;
+      var msgEl = document.getElementById('ap-stream-bubble');
+      if (!msgEl) {
+        msgEl = document.createElement('div');
+        msgEl.id = 'ap-stream-bubble';
+        msgEl.className = 'ap-msg ap-msg-buddy';
+        container.appendChild(msgEl);
+      }
+      msgEl.innerHTML = '<span class="ap-msg-text">' + mdFn(cleanText) + '<span class="ap-cursor">|</span></span>';
+      container.scrollTop = container.scrollHeight;
+    }
+
+    var req = new XMLHttpRequest();
+    req.open('POST', '/api/agent-buddy/chat?stream=1', true);
+    var headers = getAuthHeaders();
+    for (var k in headers) { if (headers.hasOwnProperty(k)) req.setRequestHeader(k, headers[k]); }
+
+    var buf = '';
+    req.onprogress = function() {
+      if (streamDone) return;
+      var text = req.responseText;
+      var lines = text.split('\n');
+      buf += lines.pop();
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim();
+        if (!line.startsWith('data: ')) continue;
+        var jsonStr = line.slice(6);
+        var evt;
+        try { evt = JSON.parse(jsonStr); } catch(e) { continue; }
+        if (evt.type === 'text' && evt.chunk) {
+          appendDelta(evt.chunk);
+        } else if (evt.type === 'result' && !evt.is_error) {
+          finalize();
+        } else if (evt.type === 'result' && evt.is_error) {
+          if (typeof toast === 'function') toast('续转失败：' + (evt.error_message || '未知错误'), 'error');
+          finalize();
+        } else if (evt.type === 'error') {
+          if (typeof toast === 'function') toast('续转失败：' + (evt.error || '未知错误'), 'error');
+          finalize();
+        }
+      }
+    };
+
+    var sendBody = JSON.stringify({
+      message: '_continue__',
+      context: {}
+    });
+    console.log('[buddy-continue] 准备发送:', sendBody, 'URL:', '/api/agent-buddy/chat?stream=1');
+    req.send(sendBody);
+    console.log('[buddy-continue] SSE 请求已发, message=_continue__');
+
+    // 30 秒兜底
+    timeout = setTimeout(function() {
+      if (!streamDone) {
+        if (typeof toast === 'function') toast('续转超时，请重试', 'warning');
+        finalize();
+      }
+    }, 30000);
+  }
+
+  // 🆕 v0.119：渲染"已中断"卡片
+  function renderBuddyInterruptedCard() {
+    var msgs = _panelEl && _panelEl.querySelector('#ap-messages');
+    if (!msgs) return;
+    var old = msgs.querySelector('.ap-interrupted-card');
+    if (old) old.remove();
+    var card = document.createElement('div');
+    card.className = 'ap-interrupted-card';
+    card.innerHTML =
+      '<div class="ap-ic-head">⏹ 已中断当前回复</div>' +
+      '<div class="ap-ic-actions">' +
+        '<button class="ap-ic-btn ap-ic-continue" type="button">↻ 继续刚才的</button>' +
+        '<button class="ap-ic-btn ap-ic-discard" type="button">✕ 放弃，新指令</button>' +
+      '</div>' +
+      '<div class="ap-ic-hint">点「继续」恢复中断的任务，或输入新指令</div>';
+    msgs.appendChild(card);
+    card.querySelector('.ap-ic-continue').onclick = function() { buddyContinueLastTurn(); };
+    card.querySelector('.ap-ic-discard').onclick = function() {
+      card.remove();
+      var inp = _panelEl && _panelEl.querySelector('#ap-input');
+      if (inp) { inp.value = ''; inp.focus(); }
+      setBuddySendBtnState('idle');
+    };
+    msgs.scrollTop = msgs.scrollHeight;
+  }
 
   function sendMessage(text) {
     renderUserMessage(text);
@@ -1599,6 +1818,9 @@ function isNonPlanTerminal(state) {
     // 🆕 P1 方案B（卡片化）：清空上一轮 SSE 工具卡片状态
     if (window.ACMSQwenToolCard) window.ACMSQwenToolCard.reset();
     renderThinking();
+
+    // 🆕 v0.119：状态切 generating
+    setBuddySendBtnState('generating');
 
     _chatHistory.push({ role: 'user', text: text });
 
@@ -1947,6 +2169,31 @@ function handleStream(r) {
                   // thinking 不需要影响 bubble 分段（仅折叠卡片）
                   if (window.ACMSQwenToolCard) window.ACMSQwenToolCard.handleThinking(evt.text);
                   _lastBubbleEvent = 'thinking';
+                } else if (evt.type === 'result') {
+                  // 🆕 v0.119：Qwen turn 结束（来自中断触发或正常完成）
+                  //   interrupted=true 时 → 渲染"已中断"卡片 + 切状态
+                  if (evt.interrupted === true) {
+                    _lastBubbleEvent = 'progress';  // 让后续 text 创建新 bubble（防御性，正常后续不会有 text）
+                    setBuddySendBtnState('interrupted');
+                    renderBuddyInterruptedCard();
+                    // 如果有 pending send（用户在 generating 状态发了新指令），触发
+                    if (_buddyPendingSend) {
+                      var pending = _buddyPendingSend;
+                      _buddyPendingSend = null;
+                      // 异步触发（让当前 SSE 处理完再开新连接）
+                      setTimeout(function() {
+                        var msgs = _panelEl && _panelEl.querySelector('#ap-messages');
+                        if (msgs) {
+                          var ic = msgs.querySelector('.ap-interrupted-card');
+                          if (ic) ic.remove();
+                        }
+                        sendMessage(pending.text);
+                      }, 50);
+                    }
+                  } else {
+                    // 正常 result 事件（暂未使用，留扩展位）
+                    _lastBubbleEvent = 'progress';
+                  }
                 }
               } catch(e) { /* 跳过解析失败的 SSE 行 */ }
             }
@@ -2004,7 +2251,7 @@ function handleStream(r) {
       container.scrollTop = container.scrollHeight;
     }
 
-    function finalizeStream() {
+function finalizeStream() {
       stopApprovalPolling();  // v0.102: 停止审批轮询
       // 🆕 P1 方案B（卡片化）：卸载 tool-card 决策监听（避免多轮对话累积 listener）
       try { document.removeEventListener('qwen:tool-card:decision', onToolCardDecision); } catch (e) {}
@@ -2033,6 +2280,11 @@ var faceMatch = raw.match(/【face:(\w+)】/);
       _chatHistory.push({ role: 'buddy', text: reply });
       addScore('toast-fire');
       saveChatMemory(text, reply);
+      // 🆕 v0.119：流式结束 → 状态回 idle（如果还是 generating/interrupting 说明没有 interrupted result 事件触发）
+      //   interrupted 状态保持（已被 result 事件切过），让用户决定继续或放弃
+      if (_buddySendState === 'generating' || _buddySendState === 'interrupting') {
+        setBuddySendBtnState('idle');
+      }
     }
 
     startApprovalPolling();  // v0.102: 启动审批轮询（Qwen ask 模式）

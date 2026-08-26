@@ -5,6 +5,8 @@
 //   GET  /api/qwen/status            — 会话池状态 + 待审批数
 //   POST /api/qwen/chat              — 对话 { userId, prompt, cwd, modelId, timeoutMs, approvalMode }
 //   POST /api/qwen/release           — 释放会话 { userId }
+//   POST /api/qwen/interrupt         — 🆕 v0.119 中断当前 turn { userId? }
+//   POST /api/qwen/continue          — 🆕 v0.119 续转被中断 turn { userId? }
 //   POST /api/qwen/config            — 运行配置（开关/并发/空闲回收，持久化 system_configs）
 //   GET  /api/qwen/approvals/pending — 待审批列表 ?userId=
 //   POST /api/qwen/approvals/:id     — 审批决策 { decision: 'allow'|'deny' }
@@ -80,6 +82,33 @@ router.post('/release', authMiddleware, async (req, res) => {
   try {
     await qwenManager.getManager().release(userId);
     res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 🆕 v0.119：中断当前 turn（按 userId 找 session → control_request {subtype:"interrupt"}）
+//   适用于 free chat 和小吉（小吉 session 按 userId 共享；free chat sessionId 也是 userId 维度）
+//   返回 {ok, sessionId, reason}：ok=false + reason='no_session' 表示 session 已 idle reaped
+router.post('/interrupt', authMiddleware, async (req, res) => {
+  const userId = (req.body && req.body.userId) || (req.user && (req.user.id || req.user.userId));
+  if (!userId) return res.status(400).json({ error: 'userId 必填' });
+  try {
+    const r = await qwenManager.interrupt(userId);
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 🆕 v0.119：续转被中断的 turn（按 userId 找 session → control_request {subtype:"continue_last_turn"}）
+//   CLI 会扫 history 末态自动判断：interrupted_prompt → 重发用户 input；interrupted_turn → 合成失败 tool_result
+router.post('/continue', authMiddleware, async (req, res) => {
+  const userId = (req.body && req.body.userId) || (req.user && (req.user.id || req.user.userId));
+  if (!userId) return res.status(400).json({ error: 'userId 必填' });
+  try {
+    const r = await qwenManager.continueLastTurn(userId);
+    res.json(r);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

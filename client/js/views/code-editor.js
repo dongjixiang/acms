@@ -54,11 +54,15 @@
     return EXT_TO_LANG[ext] || 'plaintext';
   }
 
-  // ─── 编辑器主入口 ───
-  function openCodeEditor(w, fileId, fileName, initialContent) {
+// ─── 编辑器主入口 ───
+  //   filePath:       文件浏览器里的源路径（保存时覆写原文件）
+  //   officeFileId:   office 链接打开场景的 fileId（保存时覆写 office 文档）
+  //   fileName:       显示名
+  //   initialContent: 初始内容
+  function openCodeEditor(w, filePath, officeFileId, fileName, initialContent) {
     var lang = langFromFileName(fileName);
-    var _isServerFile = !!fileId;
-    var _fileId = fileId || null;
+    var _filePath = filePath || null;
+    var _officeFileId = officeFileId || null;
     var menuOpen = null; // 当前打开的菜单
 
     function closeMenu() {
@@ -74,12 +78,16 @@
     // 渲染 UI
     var h = '';
     h += '<div class="oo-editor oo-editor-code" style="display:flex;flex-direction:column;height:100%">';
-    // 标题栏: 文件名 + 保存
+// 标题栏: 状态标记 + 文件名 + 保存/下载
     h += '<div class="oo-titlebar">';
     h += '<span class="oo-titlebar-icon">📝</span>';
-    h += '<div class="oo-titlebar-name"><input id="code-title-input" value="' + escHtml(fileName || 'untitled') + '" placeholder="untitled"></div>';
+    h += '<div class="oo-titlebar-name">';
+    h += '<span id="code-name-status" class="code-name-status" data-status="clean" style="display:inline-block;min-width:14px;text-align:center;font-size:14px;font-weight:bold;line-height:1"></span>';
+    h += '<input id="code-title-input" value="' + escHtml(fileName || 'untitled') + '" placeholder="untitled">';
+    h += '</div>';
     h += '<div class="oo-titlebar-actions">';
-    h += '<button class="oo-titlebar-btn" id="code-save-btn">💾 保存</button>';
+    h += '<button class="oo-titlebar-btn" id="code-download-btn" title="下载到本地（浏览器 Blob，不影响服务器文件）">⬇ 下载</button>';
+    h += '<button class="oo-titlebar-btn" id="code-save-btn" title="保存修改（覆写原文件 / Office 文件 / 下载新文件）">💾 保存</button>';
     h += '</div></div>';
     // 菜单栏
     h += '<div class="code-menu-bar" style="display:flex;background:var(--bg2,#f0f0f0);border-bottom:1px solid var(--office-divider,#ddd);flex-shrink:0;font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;font-size:13px">';
@@ -130,6 +138,32 @@
     var aiPanel = w.$c.querySelector('#code-ai-panel');
     var editor = null;
 
+// 状态标记辅助函数（clean / modified / saved）
+    var nameStatusEl = null;
+    function setNameStatus(s) {
+      if (!nameStatusEl) return;
+      // 任何编辑都进入 modified 状态（即便改回原内容，也保持 modified 直到下次保存）
+      nameStatusEl.setAttribute('data-status', s);
+      if (s === 'modified') {
+        nameStatusEl.textContent = '●';
+        nameStatusEl.style.color = '#f59e0b'; // 橙色
+      } else if (s === 'saved') {
+        nameStatusEl.textContent = '✓';
+        nameStatusEl.style.color = '#10b981'; // 绿色
+        // ✓ 至少显示 1.2s；若保存后内容又变回原 initial 自动退回 clean
+        setTimeout(function () {
+          if (editor && editor.getModel && editor.getModel().getValue() === initialContentStr) {
+            nameStatusEl.setAttribute('data-status', 'clean');
+            nameStatusEl.textContent = '';
+            nameStatusEl.style.color = '';
+          }
+        }, 1200);
+      } else {
+        nameStatusEl.textContent = '';
+        nameStatusEl.style.color = '';
+      }
+    }
+
     loadMonaco(function () {
       editor = monaco.editor.create(mountEl, {
         value: initialContent || '',
@@ -148,14 +182,13 @@
         padding: { top: 12 },
       });
 
-      // 文件修改标记
-      var isDirty = false;
+      // 文件修改标记：Monaco onDidChangeModelContent → 标题栏 ●
+      nameStatusEl = w.$c.querySelector('#code-name-status');
       var model = editor.getModel();
       var initialContentStr = initialContent || '';
       model.onDidChangeContent(function () {
-        isDirty = model.getValue() !== initialContentStr;
-        var dot = w.$c.querySelector('#code-title-input');
-        if (dot) dot.style.color = isDirty ? '#ff6b35' : '';
+        // 任何编辑都进入 modified 状态（即便改回原内容，也保持 modified 直到下次保存）
+        setNameStatus('modified');
       });
     });
 
@@ -242,30 +275,59 @@
       if (!e.target.closest('.code-menu-item')) closeMenu();
     });
 
+// ─── 浏览器下载（无脑 Blob） ───
+    function downloadAsBlob(content, name) {
+      var blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url; a.download = name;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast('已下载 ' + name, 'success');
+    }
+
     // ─── 保存按钮 ───
     w.$c.querySelector('#code-save-btn').onclick = function () {
       if (!editor) { toast('编辑器未就绪', 'warning'); return; }
       var content = editor.getValue();
       var name = (w.$c.querySelector('#code-title-input').value || '').trim() || 'untitled.txt';
-      if (_isServerFile && _fileId) {
-        // 服务器文件 → POST 覆写
-        fetch('/api/office/save', { method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-API-Key': (window.ACMSConfig && window.ACMSConfig.apiKey) || 'dev-key-001' },
-          body: JSON.stringify({ type: 'txt', fileId: _fileId, name: name, data: { content: content } }),
-        }).then(function(r){return r.json()}).then(function(r){
-          if (r.ok) toast('已保存 ✅ ' + name, 'success');
-          else toast('保存失败: ' + (r.error || '未知'), 'error');
-        }).catch(function(e){ toast('保存失败: ' + e.message, 'error'); });
+      var apiKey = (window.ACMSConfig && window.ACMSConfig.apiKey) || 'dev-key-001';
+      var headers = { 'Content-Type': 'application/json', 'X-API-Key': apiKey };
+
+      if (_filePath) {
+        // (A) 来自文件浏览器 → 覆写原文件
+        fetch('/api/files/write', { method: 'POST', headers: headers,
+          body: JSON.stringify({ path: _filePath, content: content }),
+        }).then(function (r) { return r.json(); }).then(function (r) {
+          if (r.ok) {
+            initialContentStr = content; // 更新 baseline，下一次 onChangeContent 不会误判
+            setNameStatus('saved');
+            toast('已保存 ✅ ' + name, 'success');
+          } else toast('保存失败: ' + (r.error || '未知'), 'error');
+        }).catch(function (e) { toast('保存失败: ' + e.message, 'error'); });
+      } else if (_officeFileId) {
+        // (B) 来自 office 链接 → 覆写 office 文档
+        fetch('/api/office/save', { method: 'POST', headers: headers,
+          body: JSON.stringify({ type: 'txt', fileId: _officeFileId, name: name, data: { content: content } }),
+        }).then(function (r) { return r.json(); }).then(function (r) {
+          if (r.ok) {
+            initialContentStr = content;
+            setNameStatus('saved');
+            toast('已保存 ✅ ' + name, 'success');
+          } else toast('保存失败: ' + (r.error || '未知'), 'error');
+        }).catch(function (e) { toast('保存失败: ' + e.message, 'error'); });
       } else {
-        // 新文件 → 浏览器下载
-        var blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-        var url = URL.createObjectURL(blob);
-        var a = document.createElement('a');
-        a.href = url; a.download = name;
-        document.body.appendChild(a); a.click(); document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-        toast('已下载 ' + name, 'success');
+        // (C) 新文件 / Ctrl+O 本地打开 → 下载到本地
+        downloadAsBlob(content, name);
       }
+    };
+
+    // ─── 下载按钮（始终浏览器 Blob 下载） ───
+    w.$c.querySelector('#code-download-btn').onclick = function () {
+      if (!editor) { toast('编辑器未就绪', 'warning'); return; }
+      var content = editor.getValue();
+      var name = (w.$c.querySelector('#code-title-input').value || '').trim() || 'untitled.txt';
+      downloadAsBlob(content, name);
     };
 
     // ─── 键盘快捷键 ───

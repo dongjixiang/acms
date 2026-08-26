@@ -22,11 +22,11 @@ const cases = [
   [['C:', 'Windows', 'System32', 'drivers.png'].join(SEP), { cwd }, 'FORBIDDEN', false, 'Win System32 黑名单'],
   [path.join(home, 'Pictures', '.git', 'a.png'), { cwd }, 'FORBIDDEN', false, '.git 黑名单'],
 
-  // ── 中间地带（REQUIRES_APPROVAL — 让 Agent 提示用户）──
-  // 这是多多反馈要修的关键点
-  [path.join(home, 'Documents', 'a.png'), { cwd }, 'REQUIRES_APPROVAL', true, 'home/Documents 中间 → 需审批'],
-  [path.join(home, 'Projects', 'work', 'a.png'), { cwd }, 'REQUIRES_APPROVAL', true, 'home/Projects/... 嵌套 → 需审批'],
-  [['D:', 'somewhere', 'a.png'].join(SEP), { cwd }, 'REQUIRES_APPROVAL', true, 'D 盘其他位置 → 需审批'],
+  // ── v0.118.2：中间地带已放开（多多拍板"describe_image 不要有目录白名单限制"）──
+  // 黑名单之外任意路径一律 AUTO_ALLOWED
+  [path.join(home, 'Documents', 'a.png'), { cwd }, 'AUTO_ALLOWED', false, 'home/Documents 任意路径放行（v0.118.2）'],
+  [path.join(home, 'Projects', 'work', 'a.png'), { cwd }, 'AUTO_ALLOWED', false, 'home/Projects/... 嵌套放行（v0.118.2）'],
+  [['D:', 'somewhere', 'a.png'].join(SEP), { cwd }, 'AUTO_ALLOWED', false, 'D 盘其他位置放行（v0.118.2）'],
 
   // ── 边界 ──
   ['', {}, 'EMPTY_PATH', false, 'empty path'],

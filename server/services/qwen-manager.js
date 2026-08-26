@@ -243,10 +243,13 @@ async function chat(userId, prompt, opts = {}) {
       //   表现为"只有工具调用、没有 Agent 回复文本"。只读工具无副作用，直接 allow。
       const tname = (toolCall && toolCall.tool_name) || '';
 // 只读安全前缀/白名单（Qwen CLI 工具 + ACMS MCP 只读工具）
-//   v0.118：注意 — `|describe` 看似能让 acms_describe_image 自动放行，
-//   但它会跳过 can_use_tool 审批 → 不出卡片 → 违背 v0.114u 多多拍板的"纯卡片审批"原则。
-//   故保持 describe 不在白名单，acms_describe_image 走审批卡片。
-const isReadOnly = /^(web_search|web_fetch|fetch_url|get_current_time|get_available_models|read|list|search|grep|glob|ls|cat|head|tail|todo_read|agent_read|agent_list|agent_search|agent_git_status|agent_git_log|agent_git_diff|agent_db_query|acms_.*(list|get|read|search|query|status)|mcp__acms__acms_.*(list|get|read|search|query|status))/i.test(tname)
+//   v0.118.2 (2026-08-25 多多拍板)：放开 describe + computer_use__* 审批
+//     - `describe` 进白名单：acms_describe_image 不再弹审批卡（v0.118.1 曾回退，
+//       这次是多多明确新决策——"describe_image 都放开吧"）
+//     - `computer_use__*` 全放行：Qwen CLI 自带权限查询工具（get_cursor_position /
+//       check_permissions / get_accessibility_tree 等），无副作用只是 Qwen 内部机制，
+//       之前每次都弹审批（实测一次对话 11 次噪音审批）→ 全部自动 allow
+const isReadOnly = /^(web_search|web_fetch|fetch_url|get_current_time|get_available_models|read|list|search|grep|glob|ls|cat|head|tail|todo_read|agent_read|agent_list|agent_search|agent_git_status|agent_git_log|agent_git_diff|agent_db_query|computer_use__|acms_.*(list|get|read|search|query|status|describe)|mcp__acms__acms_.*(list|get|read|search|query|status|describe))/i.test(tname)
         || (toolCall && Array.isArray(toolCall.permission_suggestions) && toolCall.permission_suggestions.length === 0 && /query|search|read|list|get|status|fetch|check/i.test(tname));
       if (isReadOnly) {
         console.log(`[qwen] [审批] ${tname} → 只读安全工具自动 allow`);
@@ -294,9 +297,39 @@ const result = await session.ask(finalPrompt, {
     usage: result.usage || null,
     numTurns: result.num_turns || 0,
     durationMs: result.duration_ms || 0,
-    approvalCount: session.approvalCount,
+approvalCount: session.approvalCount,
     sessionId: session.sessionId,
   };
+}
+
+// 🆕 v0.119：按 userId 中断当前 turn（无 sessionId 维度，按 user 共享 session 设计）
+//   - getSession(userId) 不传 prompt 也能取到 session 句柄（看 QwenSessionManager.findOrCreate 内部逻辑）
+//   - 实际行为：等当前 ask 完成后取句柄；若没有 ask 在跑，session 可能仍存在（idle 期）
+async function interrupt(userId) {
+  const m = getManager();
+  const session = m.findSession ? m.findSession(userId) : null;
+  if (!session) {
+    console.log(`[qwen-mgr] interrupt: 无 session, userId=${userId}`);
+    return { ok: false, reason: 'no_session' };
+  }
+  const sent = session.interrupt();
+  console.log(`[qwen-mgr] interrupt userId=${userId} session=${String(session.sessionId).slice(0, 8)} sent=${sent}`);
+  return { ok: sent, sessionId: session.sessionId };
+}
+
+// 🆕 v0.119：按 userId 续转被中断的 turn
+//   - 若 history 末态是 clean（没中断过）→ CLI 返回 accepted:false，前端收到 no-op result
+//   - 若 history 末态是 interrupted_prompt/interrupted_turn → 续转成功
+async function continueLastTurn(userId) {
+  const m = getManager();
+  const session = m.findSession ? m.findSession(userId) : null;
+  if (!session) {
+    console.log(`[qwen-mgr] continueLastTurn: 无 session, userId=${userId}`);
+    return { ok: false, reason: 'no_session' };
+  }
+  const sent = session.continueLastTurn();
+  console.log(`[qwen-mgr] continueLastTurn userId=${userId} session=${String(session.sessionId).slice(0, 8)} sent=${sent}`);
+  return { ok: sent, sessionId: session.sessionId };
 }
 
 function getConfig() { return { ...config }; }
@@ -344,7 +377,7 @@ function setPersona(persona) {
 }
 
 module.exports = {
-  getManager, chat, getConfig, setConfig,
+  getManager, chat, interrupt, continueLastTurn, getConfig, setConfig,
   listPendingApprovals, settleApproval,
   getPersonaForEdit, setPersona,  // B6b: admin 人设编辑
   buildHistoryPrompt,             // v0.117: 测试用 + 外部直接调用

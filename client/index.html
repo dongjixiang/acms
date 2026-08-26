@@ -402,7 +402,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 onkeydown="if(event.key==='Enter' && !event.ctrlKey && !event.shiftKey && !event.altKey){event.preventDefault();chatSend('__free__')}"
                 onpaste="chatHandlePaste('__free__', event)"></textarea>
               <div class="chat-input-actions">
-                <button class="btn-small btn-primary" onclick="chatSend('__free__')">📤 发送</button>
+                <!-- 🆕 v0.119：send 按钮多态（id + 结构让 setChatSendState 操作） -->
+                <button class="btn-small btn-primary chat-send-idle" id="chat-send-btn-__free__" onclick="chatSend('__free__')">
+                  <span class="chat-send-btn-text">📤 发送</span>
+                </button>
                 <button class="btn-ai-mode btn-ai-off" id="ai-mode-btn-__free__" onclick="showAiPopover(event,'__free__')" title="AI 代回">↻<span class="btn-ai-state-dot"></span></button>
                 <div class="ai-reply-popover" id="ai-popover-__free__" data-req-id="__free__">
                   <div class="ai-reply-popover-title">AI 回复模式</div>
@@ -656,7 +659,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/core/notification-center.js?v=0.58"></script>
 <!-- 🆕 P1 方案B（卡片化）→ 🆕 P2 打磨 → 🆕 A 修复（2026-08-23）：必须在 agent-buddy.js 之前加载 -->
 <script src="/client/js/core/agent-buddy-tool-card.js?v=0.115.18"></script>
-<script src="/client/js/core/agent-buddy.js?v=0.99.0"></script>
+<script src="/client/js/core/agent-buddy.js?v=0.99.5"></script>
 <!-- v0.62.5: Office 编辑器 OO 风格主题 + 标题栏 (学 colors-table-classic.less + FileMenu.js) -->
 <link rel="stylesheet" href="/client/css/office-theme.css?v=0.66.0">
 <!-- v0.62.5: Ribbon TabBar 组件（学 OO TabBar.js API, 简化重写）— 必须在 office-editor.js 之前 -->
@@ -1098,10 +1101,21 @@ document.addEventListener('DOMContentLoaded', () => {
   PKG('code-editor', {
     title: '代码编辑器', icon: '💻', category: '工具', defaultSize: { w: 1000, h: 650 },
     loader: function(w) {
+      // 从文件浏览器或 office 链接打开都可能设置 _fb_open_file
+      // 字段: { name, content, filePath?, fileId? }
+      //   - filePath: 文件浏览器中的源路径（保存时覆写）
+      //   - fileId:   office fileId（office 链接打开场景，保存时覆写 office 文件）
       var f = window._fb_open_file; window._fb_open_file = null;
-      if (typeof openCodeEditor === 'function') openCodeEditor(w, null, f ? f.name : null, f ? f.content : null);
-      else w.$c.innerHTML = '<div style="padding:40px;text-align:center">加载中...</div>';
-    }
+      if (typeof openCodeEditor === 'function') {
+        openCodeEditor(
+          w,
+          f ? (f.filePath || null) : null,
+          f ? (f.fileId   || null) : null,
+          f ? f.name : null,
+          f ? f.content : null
+        );
+      } else w.$c.innerHTML = '<div style="padding:40px;text-align:center">加载中...</div>';
+    },
   });
   // v0.62.7: 图片编辑器 (TOAST UI Image Editor + AI)
   PKG('image-editor', {
