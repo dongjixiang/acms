@@ -574,43 +574,57 @@ scanners.push({
 // ════════════════════════════════════════════
 
 // 通用：调用 LLM 分析文件内容
+// v0.118.3 fix (2026-08-26): 模型 fallback 遍历 — MiniMax 429 额度用完时自动切下一个 vision 模型
+//   旧实现只取 visionModels[0]，一个模型失败直接 return null → 上传图片报"AI 视觉识别不可用或失败"
 async function analyzeFileWithLLM(promptText, imagePath, maxTokens = 1500) {
   try {
     const modelStore = require('../stores/model-store');
-    let model;
+    let models;
     if (imagePath && fs.existsSync(imagePath)) {
-      // 视觉分析：优先找标注了 vision 能力的模型
+      // 视觉分析：优先 vision 能力模型，全部失败时 fallback 到任意活跃模型
       const visionModels = modelStore.getActiveWithCapability('vision');
-      model = visionModels[0] || modelStore.getActive()[0];
+      models = visionModels.length ? visionModels : modelStore.getActive();
     } else {
       // 纯文本分析：任何活跃模型都行
-      model = modelStore.getActive()[0];
+      models = modelStore.getActive();
     }
-    if (!model) return null;
+    if (!models || models.length === 0) return null;
 
-    if (imagePath && fs.existsSync(imagePath)) {
-      // 视觉分析（图片）
-      const imageBuffer = fs.readFileSync(imagePath);
-      const base64Data = imageBuffer.toString('base64');
-      const ext = path.extname(imagePath).toLowerCase();
-      const mimeMap = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml' };
-      const mimeType = mimeMap[ext] || 'image/png';
-      const api = model.api || 'openai-chat';
+    const isImage = !!(imagePath && fs.existsSync(imagePath));
+    const imageBuffer = isImage ? fs.readFileSync(imagePath) : null;
+    const base64Data = imageBuffer ? imageBuffer.toString('base64') : null;
+    const ext = imagePath ? path.extname(imagePath).toLowerCase() : '';
+    const mimeMap = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml' };
+    const mimeType = mimeMap[ext] || 'image/png';
 
-      if (api === 'anthropic-messages') {
-        const messages = [{ role: 'user', content: [{ type: 'text', text: promptText }, { type: 'image', source: { type: 'base64', media_type: mimeType, data: base64Data } }] }];
+    let lastErr = null;
+    for (const model of models) {
+      try {
+        const api = model.api || 'openai-chat';
+        let messages;
+        if (isImage) {
+          if (api === 'anthropic-messages') {
+            messages = [{ role: 'user', content: [{ type: 'text', text: promptText }, { type: 'image', source: { type: 'base64', media_type: mimeType, data: base64Data } }] }];
+          } else {
+            messages = [{ role: 'user', content: [{ type: 'text', text: promptText }, { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64Data}` } }] }];
+          }
+        } else {
+          messages = [{ role: 'user', content: promptText }];
+        }
         const result = await callLLM(model.id, messages, { temperature: 0.3, maxTokens });
-        return result.content;
-      } else {
-        const messages = [{ role: 'user', content: [{ type: 'text', text: promptText }, { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64Data}` } }] }];
-        const result = await callLLM(model.id, messages, { temperature: 0.3, maxTokens });
-        return result.content;
+        if (result && result.content && typeof result.content === 'string' && result.content.trim()) {
+          return result.content;
+        }
+        // 空响应：不算成功，继续尝试下一个模型
+        lastErr = new Error(`EMPTY_RESPONSE from ${model.name} (${model.id})`);
+        console.warn(`[Scanner] ${model.name} 空响应，尝试下一个模型...`);
+      } catch (e) {
+        lastErr = e;
+        console.warn(`[Scanner] ${model.name} 失败，尝试下一个模型: ${e.message.slice(0, 160)}`);
       }
-    } else {
-      // 纯文本分析
-      const result = await callLLM(model.id, [{ role: 'user', content: promptText }], { temperature: 0.3, maxTokens });
-      return result.content;
     }
+    if (lastErr) console.log(`[Scanner] AI analysis failed (all ${models.length} models): ${lastErr.message}`);
+    return null;
   } catch (e) {
     console.log(`[Scanner] AI analysis failed: ${e.message}`);
     return null;
