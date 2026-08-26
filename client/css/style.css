@@ -4496,34 +4496,35 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
   white-space: pre-wrap; /* 保留换行符 */
 }
 
-/* v1.0 (Phase 10b): 消息内 markdown 表格样式 — 治天气/数据表格"字体大且突兀"
-   浏览器默认 table 样式(大字体/无边框)在聊天气泡里很突兀 */
-.ap-msg-text table {
-  width: 100%;
-  border-collapse: collapse;
-  margin: 4px 0;
-  font-size: 11px;
-  line-height: 1.3;
-  table-layout: auto;
-}
-.ap-msg-text th,
-.ap-msg-text td {
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  padding: 2px 6px;
-  text-align: left;
-  white-space: nowrap;
-  max-width: 160px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.ap-msg-text th {
-  background: rgba(255, 255, 255, 0.08);
-  font-weight: 600;
-  color: var(--text, #e0e0f0);
-}
-.ap-msg-text tr:nth-child(even) td {
-  background: rgba(255, 255, 255, 0.03);
-}
+  4501|/* v1.0 (Phase 10b): 消息内 markdown 表格样式 — 治天气/数据表格"字体大且突兀"
+  4502|   浏览器默认 table 样式(大字体/无边框)在聊天气泡里很突兀
+  4503|   [8/26] 修复: 改用语义化 CSS 变量，深浅两主题都可见 */
+  4504|.ap-msg-text table {
+  4505|  width: 100%;
+  4506|  border-collapse: collapse;
+  4507|  margin: 4px 0;
+  4508|  font-size: 11px;
+  4509|  line-height: 1.3;
+  4510|  table-layout: auto;
+  4511|}
+  4512|.ap-msg-text th,
+  4513|.ap-msg-text td {
+  4514|  border: 1px solid var(--border, rgba(255,255,255,0.18));
+  4515|  padding: 2px 6px;
+  4516|  text-align: left;
+  4517|  white-space: nowrap;
+  4518|  max-width: 160px;
+  4519|  overflow: hidden;
+  4520|  text-overflow: ellipsis;
+  4521|  color: var(--text, #e0e0f0);
+  4522|}
+  4523|.ap-msg-text th {
+  4524|  background: var(--bg3, rgba(255, 255, 255, 0.08));
+  4525|  font-weight: 600;
+  4526|}
+  4527|.ap-msg-text tr:nth-child(even) td {
+  4528|  background: var(--bg3-alt, rgba(255, 255, 255, 0.03));
+  4529|}
 
 .ap-msg-user {
   justify-content: flex-end;
