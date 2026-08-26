@@ -911,7 +911,7 @@ async function chatContinueLastTurn(reqId) {
   var card = c && c.querySelector('.chat-interrupted-card[data-req-id="' + reqId + '"]');
   if (card) card.remove();
   try {
-    const r = await api('POST', '/api/qwen/continue', { userId: reqId });
+    const r = await api('POST', '/qwen/continue', { userId: reqId });
     if (r && r.ok) {
       setChatSendState(reqId, 'generating');
       // 续转的输出会通过同 reqId 的 SSE 流回来 —— 但当前 SSE 连接已断（end 事件已发）
@@ -935,7 +935,7 @@ async function chatContinueLastTurn(reqId) {
 async function chatInterrupt(reqId) {
   setChatSendState(reqId, 'interrupting');
   try {
-    const r = await api('POST', '/api/qwen/interrupt', { userId: reqId });
+    const r = await api('POST', '/qwen/interrupt', { userId: reqId });
     if (r && r.ok) {
       console.log('[chat] interrupt 已发送, session=', r.sessionId);
       // 等 SSE end 事件 interrupted=true 到达后渲染卡片
@@ -2297,26 +2297,34 @@ async function renderLeisureResult(reqId, method, loadingEl) {
     }
 
     if (method === 'music') {
-      const sources = data.sources || [];
-      const playableUrl = data.playable_url || '';
-      const isBili = playableUrl.includes('bilibili.com');
-      const playerHtml = playableUrl
-        ? isBili
-          ? `<iframe src="${escHtml(playableUrl)}" style="width:100%;max-width:360px;height:160px;border:none;border-radius:6px;margin:4px 0" allow="autoplay" loading="lazy"></iframe>`
-          : `<audio controls style="width:100%;max-width:360px;height:36px;margin:4px 0" src="${escHtml(playableUrl)}"></audio>`
-        : '';
-      const cards = sources.map(s =>
-        `<a href="${escHtml(s.url)}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:4px 10px;margin:2px;background:var(--bg);border:1px solid var(--border);border-radius:6px;text-decoration:none;color:var(--text);font-size:12px">
-          ${s.icon || '🔗'} ${escHtml(s.platform)}
-        </a>`
-      ).join('');
-      loadingEl.innerHTML = `
-        <div class="assist-loading-head" style="border:none"><span style="font-size:16px">🎵</span><span class="assist-loading-title">${escHtml(data.song || '')}</span></div>
-        ${playerHtml}
-        <div style="padding:4px 0 0 0;display:flex;flex-wrap:wrap;gap:2px">${cards}</div>
-      `;
-      loadingEl.style.borderTopColor = 'var(--green)';
-      loadingEl.style.animation = 'none';
+        // v0.120 fix: 走 renderMusicBubble（共用 music-core.js 完整实现）
+        //   之前是 v0.19 简化版：只渲染 playable_url + 平台链接，没有多播放源切换/放大缩小/进度条
+        //   现在统一三个入口（自由对话侧栏 + 小吉/聊天流 + 自由对话辅助工具 → 同一份 renderMusicBubble）
+        const playable = (data.playable_sources || []).filter(s => s && s.url).map(s => ({
+          type: s.type || 'audio',
+          label: s.label || '源',
+          url: s.url,
+          title: s.title || s.label || s.type || '源',
+        }));
+        const platforms = (data.sources || []).map(s => ({
+          name: s.platform || s.name || '',
+          icon: s.icon || '🔗',
+          url: s.url || '',
+        }));
+        const cardJson = JSON.stringify({
+          type: 'music_card',
+          song: data.song || '',
+          artist: data.artist || null,
+          playable,
+          platforms,
+        });
+        loadingEl.innerHTML = renderMusicBubble(cardJson);
+        // audio 类型需要 attachProgress（renderMusicBubble 内部不调，assist 侧栏是手动调的）
+        if (window.ACMSMusicCard && loadingEl.querySelector('.music-player-wrap[data-type="audio"]')) {
+          window.ACMSMusicCard.attachProgress(loadingEl);
+        }
+        loadingEl.style.borderTopColor = 'var(--green)';
+        loadingEl.style.animation = 'none';
     } else if (method === 'video') {
       const vid = data.video_id || '';
       const isAsync = data.async_task && !data.video_url;
