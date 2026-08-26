@@ -32,11 +32,12 @@ function renderMarkdown(md) {
   // 在无序列表（- ）前添加换行
   html = html.replace(/(^|[^\n])(- )/g, '$1\n$2');
   
+  // 🆕 fix: 表格必须在 --- 替换为 <hr> 之前执行，否则分隔行 |---|---| 里的 --- 被换掉破坏结构
+  //   (顺序 bug: line 36 全局替换 /---/g 会破坏还没被 renderTables 解析的表格)
+  html = renderTables(html);
+
   // 转换分隔线为 <hr>
   html = html.replace(/---/g, '<hr>');
-
-  // 表格（必须在 --- 替换为 <hr> 之前执行，否则分隔行 | --- | --- | 里的 --- 被换掉破坏结构）
-  html = renderTables(html);
 
   // 提取围栏代码块
   html = renderFencedBlocks(html);
@@ -200,8 +201,10 @@ async function renderMermaidContainers(containers) {
 //   LLM 常输出「| 日期 | 天气 |」「|---|---|---|」等紧凑格式 → 正则不匹配 → 表格显示为原始文本
 //   新正则: 表头/分隔行/数据行都可选前导尾随 |,分隔行允许 `---` / `:--:` / `| --- |` 变体
 function renderTables(html) {
-  // v1.0 (Phase 10b): 加强版正则 — 分隔行允许空格 (| --- | --- |) 和紧凑格式 (|---|---|)
-  const tableRegex = /((?:^|\n)\|?[^\n]+\|?\n\|?[-:|\s]+\|?\n(?:(?:\|?[^\n]+\|?)\n?)+)/g;
+  // 🆕 fix: 流式累积中间态（只有表头+分隔行）也能匹配，rows 为空则保留原样
+  //   旧: ...+（至少 1 数据行）→ 2 行不匹配 → 表格保留原文本 → 后续 --- 替换破坏分隔行
+  //   新: ...*（0+ 数据行）→ 2 行匹配但 rows 为空 return match → 保持原文本待下一段累积
+  const tableRegex = /((?:^|\n)\|?[^\n]+\|?\n\|?[-:|\s]+\|?\n(?:(?:\|?[^\n]+\|?)\n?)*)/g;
   return html.replace(tableRegex, (match) => {
     const lines = match.trim().split('\n').map(l => l.trim()).filter(Boolean);
     if (lines.length < 2) return match;
