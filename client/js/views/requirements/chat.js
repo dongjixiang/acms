@@ -118,10 +118,18 @@ function startChatPolling(reqId) {
     try {
       const container = document.getElementById(`chat-stream-msgs-${reqId}`);
       if (!container) { clearInterval(_chatPollers[reqId]); delete _chatPollers[reqId]; return; }
-      const state = _chatState[reqId];
-      if (!state) return;
+      // v0.120 fix: _chatState[reqId] 兜底初始化
+      //   修复"剧本/场景/音乐等辅助工具：标记选中后 toast 显示成功但聊天流卡片不渲染"
+      //   根因：自由对话新开窗口走 initChatWindow 的 new-xxx 分支，不调 loadChatSessionMessages →
+      //         _chatState[realSid] 永远未初始化 → startChatPolling 静默 return
+      //   解决：state 缺失时创建兜底（histCount=0 走正常增量路径，第一次 tick 会渲染所有历史条目）
+      let state = _chatState[reqId];
+      if (!state) {
+        _chatState[reqId] = { histCount: 0, briefRound: 0 };
+        state = _chatState[reqId];
+      }
 
-// 增量：只拉新增的 supplement_history
+      // 增量：只拉新增的 supplement_history
       // v0.101 fix: 合并拉 chat session reqId + sessionRequirementId（hidden reqId）—— 工具结果写后者
       console.log('🔧 ACMS_DEBUG: startChatPolling 启动 reqId=' + reqId + ' sessionRequirementId=' + state.sessionRequirementId);
       const pollReqIds = [reqId];

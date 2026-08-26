@@ -1,6 +1,8 @@
 // 统一错误处理中间件
 module.exports = (err, req, res, next) => {
   console.error(`[Error] ${req.method} ${req.path}:`, err.message);
+  // v0.119.1 诊断: 打印堆栈定位 "Cannot read properties of null (reading 'title')"
+  if (err && err.stack) console.error(`[ErrorStack] ${err.stack.split('\n').slice(0, 8).join('\n')}`);
   const status = err.status || 500;
   const body = {
     error: err.code || 'INTERNAL_ERROR',
