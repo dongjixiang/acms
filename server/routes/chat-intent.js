@@ -146,6 +146,9 @@ function buildIntentSystemPrompt(req) {
 //   多次轮询日志显示 LLM 倾向于在第一轮 final answer 中描述"动作"但**不真调用 tool**，
 //   导致用户看不到任何输出（图片/视频/搜索结果都不存在），不得不催第二轮。
 function buildFreeChatSystemPrompt(req) {
+  // v0.119.2 fix: Qwen 失败走旧引擎 fallback 时传 null（line 404）→ req.title 崩
+  //   "Cannot read properties of null (reading 'title')" 遗留 bug（8/24 就有）
+  req = req || {};
   return `你是 ACMS 自由对话助手。当前用户正在与你自由对话，可能让你总结附件、解读资料、对比方案、画图、生成视频、搜索信息、发送邮件、找歌曲等。
 
 # 需求上下文（仅作背景，不要当成对话主线）
