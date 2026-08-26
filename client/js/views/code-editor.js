@@ -131,12 +131,13 @@
     h += '<div id="code-editor-mount" style="flex:1;min-height:0"></div>';
     // AI 结果面板
     h += '<div id="code-ai-panel" style="display:none;flex-shrink:0;max-height:200px;overflow:auto;background:var(--bg2,#f5f5f7);border-top:1px solid var(--office-divider,#ddd);padding:8px;font-size:13px"></div>';
-    h += '</div>';
+h += '</div>';
     w.$c.innerHTML = h;
 
     var mountEl = w.$c.querySelector('#code-editor-mount');
     var aiPanel = w.$c.querySelector('#code-ai-panel');
     var editor = null;
+    var initialContentStr = initialContent || ''; // 顶层 var：setNameStatus / 保存按钮 onclick 都引用
 
 // 状态标记辅助函数（clean / modified / saved）
     var nameStatusEl = null;
@@ -185,7 +186,7 @@
       // 文件修改标记：Monaco onDidChangeModelContent → 标题栏 ●
       nameStatusEl = w.$c.querySelector('#code-name-status');
       var model = editor.getModel();
-      var initialContentStr = initialContent || '';
+      // initialContentStr 已在 openCodeEditor 顶层声明，不在这里重复 var（避免 shadow）
       model.onDidChangeContent(function () {
         // 任何编辑都进入 modified 状态（即便改回原内容，也保持 modified 直到下次保存）
         setNameStatus('modified');
