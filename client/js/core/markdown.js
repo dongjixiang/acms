@@ -35,11 +35,11 @@ function renderMarkdown(md) {
   // 转换分隔线为 <hr>
   html = html.replace(/---/g, '<hr>');
 
-  // 提取围栏代码块（在转义前处理原始内容）
-  html = renderFencedBlocks(html);
-
-  // 表格（必须在其他行级处理之前）
+  // 表格（必须在 --- 替换为 <hr> 之前执行，否则分隔行 | --- | --- | 里的 --- 被换掉破坏结构）
   html = renderTables(html);
+
+  // 提取围栏代码块
+  html = renderFencedBlocks(html);
 
   // 标题（### → h3, ## → h2, # → h1）
   html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
@@ -217,15 +217,24 @@ function renderTables(html) {
 
     if (rows.length === 0) return match;
 
+    // 🆕 fix: 单元格内容做轻量 markdown（粗体/斜体/行内代码）—— renderMarkdown 整体调用会重复 escHtml
+    const renderCell = (text) => {
+      let s = text;
+      s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
+      s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+      return s;
+    };
+
     let table = '<table><thead><tr>';
     for (const h of headers) {
-      table += `<th>${h}</th>`;
+      table += `<th>${renderCell(h)}</th>`;
     }
     table += '</tr></thead><tbody>';
     for (const row of rows) {
       table += '<tr>';
       for (const c of row) {
-        table += `<td>${c}</td>`;
+        table += `<td>${renderCell(c)}</td>`;
       }
       table += '</tr>';
     }
