@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<title>ACMS 自由对话 UI · v0.121 现状 vs v0.122 优化对比</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; }
+
+/* ===== 主题变量 — ACMS 实际校准值（acms-chat-flow-ui skill §2） ===== */
+:root, [data-theme="dark"] {
+  --bg: #0f0f1a;
+  --bg2: #1a1a2e;
+  --bg3: #252540;
+  --bg4: #2e2e4a;
+  --text: #e0e0e0;
+  --text2: #9090a0;
+  --text3: #777;
+  --accent: #4ecdc4;
+  --accent2: #ff6b6b;
+  --accent3: #ffd93d;
+  --green: #6bff6b;
+  --blue: #6baaff;
+  --highlight: rgba(255,217,61,0.10);
+  --border: rgba(78,205,196,0.20);
+  --border1: rgba(255,255,255,0.08);
+}
+[data-theme="light"] {
+  --bg: #f5f5f7;
+  --bg2: #ffffff;
+  --bg3: #eeeef1;
+  --bg4: #e2e2e8;
+  --text: #1a1a2e;
+  --text2: #6e6e80;
+  --text3: #8a8a98;
+  --accent: #0ea89d;
+  --accent2: #e04545;
+  --accent3: #c8a008;
+  --green: #2ea043;
+  --blue: #2b7bd6;
+  --highlight: #fff8d8;
+  --border: rgba(10,120,110,0.18);
+  --border1: rgba(0,0,0,0.08);
+}
+[data-theme="cream"] {
+  --bg: #fef9ef;
+  --bg2: #fffbf0;
+  --bg3: #f5eedc;
+  --bg4: #ece2cc;
+  --text: #3d3022;
+  --text2: #8b7b65;
+  --text3: #a0917a;
+  --accent: #5b8c5a;
+  --accent2: #d4785c;
+  --accent3: #c8960a;
+  --green: #3c8c40;
+  --blue: #4a7ab5;
+  --highlight: #faf0d0;
+  --border: rgba(90,130,80,0.18);
+  --border1: rgba(80,60,30,0.12);
+}
+
+body {
+  background: var(--bg); color: var(--text); margin: 0;
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  transition: background 0.3s, color 0.3s;
+  padding: 24px 0 60px;
+}
+
+/* ===== 主题切换器 ===== */
+.theme-switcher {
+  position: fixed; top: 14px; right: 14px; z-index: 999;
+  display: flex; gap: 4px;
+  background: var(--bg2); padding: 4px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.10);
+}
+.theme-switcher button {
+  padding: 6px 12px; border: 1px solid transparent;
+  background: transparent; color: var(--text);
+  cursor: pointer; border-radius: 6px;
+  font-size: 12px;
+}
+.theme-switcher button.active { background: var(--accent); color: #fff; }
+
+.page-title {
+  text-align: center; font-size: 14px; color: var(--text2);
+  margin: 6px 0 18px; letter-spacing: 0.5px;
+}
+.page-title b { color: var(--accent); }
+
+/* ===== 左右对比布局 ===== */
+.compare {
+  display: flex; gap: 18px; justify-content: center;
+  flex-wrap: wrap; padding: 0 16px;
+}
+.panel {
+  width: 430px; flex-shrink: 0;
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 14px; overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.08);
+  display: flex; flex-direction: column;
+}
+.panel-badge {
+  padding: 7px 14px; font-size: 12px; font-weight: 600;
+  letter-spacing: 0.5px; text-align: center;
+}
+.panel-badge.now { background: var(--bg3); color: var(--text2); }
+.panel-badge.next { background: var(--accent); color: #fff; }
+.panel-badge small { font-weight: 400; opacity: 0.75; }
+
+.panel-title {
+  padding: 8px 16px; font-size: 13px; color: var(--text2);
+  border-bottom: 1px dashed var(--border);
+}
+
+/* ===== chat-stream 容器（模拟窗口） ===== */
+.chat-stream {
+  display: flex; flex-direction: column;
+  padding: 16px 14px;
+  min-height: 460px;
+  gap: 12px;
+  font-size: 13px;
+}
+
+/* ================================================================
+   现状还原（v0.121 实际：chat-bubble 用户 + ap-msg AI + ap-tool-card）
+   ================================================================ */
+/* ---- 用户气泡（chat-bubble v0.121）---- */
+.cb-user {
+  display: flex; gap: 10px; align-items: flex-start;
+  align-self: flex-end; flex-direction: row;
+}
+.cb-avatar {
+  width: 30px; height: 30px; border-radius: 50%;
+  background: var(--accent); color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 600; flex-shrink: 0;
+}
+.cb-inner {
+  background: var(--accent); color: #fff;
+  border-radius: 14px 4px 14px 14px;
+  padding: 9px 13px; font-size: 13px; line-height: 1.5;
+}
+.cb-meta { font-size: 10px; opacity: 0.75; margin-bottom: 2px; }
+
+/* ---- AI 气泡（ap-msg v0.121 实际：无头像）---- */
+.am-ai {
+  display: flex; align-items: flex-start; gap: 6px;
+}
+.am-text {
+  background: var(--bg3); color: var(--text);
+  border-radius: 6px 6px 6px 2px;
+  padding: 5px 8px; font-size: 12px; line-height: 1.5;
+  max-width: 82%;
+}
+
+/* ---- 工具卡片（ap-tool-card v0.121 实际）---- */
+.atc {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 10px; font-size: 12px; overflow: hidden;
+  max-width: 85%; align-self: flex-start;
+}
+.atc-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px 8px 12px;
+  background: var(--bg3);
+  cursor: pointer; user-select: none;
+  border-left: 3px solid var(--blue);
+}
+.atc[data-status="done"] .atc-head { border-left-color: var(--green); }
+.atc[data-status="awaiting"] .atc-head { border-left-color: var(--accent3); }
+.atc[data-status="failed"] .atc-head { border-left-color: var(--accent2); }
+.atc-icon { font-size: 14px; }
+.atc-name { color: var(--accent); font-family: "Consolas", monospace; font-weight: 600; font-size: 13px; }
+.atc-label { color: var(--text3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.atc-status { font-size: 11px; margin-left: auto; }
+.atc[data-status="done"] .atc-status { color: var(--green); }
+.atc[data-status="awaiting"] .atc-status { color: var(--accent3); font-weight: 600; }
+.atc[data-status="failed"] .atc-status { color: var(--accent2); font-weight: 600; }
+.atc-toggle { color: var(--text3); font-size: 11px; transition: transform 0.2s; }
+.atc.expanded .atc-toggle { transform: rotate(90deg); }
+.atc-body { display: none; padding: 8px 12px 10px; border-top: 1px solid var(--border); }
+.atc.expanded .atc-body { display: block; }
+.atc-code {
+  background: var(--bg3); padding: 6px 8px; border-radius: 4px;
+  font-family: "Consolas", monospace; font-size: 11px;
+  max-height: 140px; overflow: auto; white-space: pre-wrap;
+  word-break: break-all; margin: 0; color: var(--text);
+}
+
+/* ================================================================
+   优化版（v0.122 提案：统一气泡语言）
+   ================================================================ */
+/* ---- 用户气泡（保持，微调） ---- */
+.opt .cb-inner {
+  border-radius: 14px 4px 14px 14px;
+}
+/* ---- AI 气泡：加头像 + 统一圆角/字号/padding ---- */
+.opt .am-ai { gap: 10px; }
+.opt .am-avatar {
+  width: 30px; height: 30px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), var(--blue));
+  color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 600; flex-shrink: 0;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+}
+.opt .am-text {
+  border-radius: 4px 14px 14px 14px;   /* 贴边角 4px（左上）→ 与用户镜像 */
+  padding: 9px 13px;                   /* 与用户对齐 */
+  font-size: 13px;                     /* 与用户对齐 */
+  line-height: 1.55;
+  max-width: 82%;
+}
+/* ---- 工具卡片：宽度对齐气泡 + 视觉减层 ---- */
+.opt .atc { max-width: calc(82% + 40px); box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+.opt .atc-head { background: var(--bg2); border-bottom: 1px solid var(--border1); }
+.opt .atc.expanded .atc-head { border-bottom: 1px solid var(--border); }
+.opt .atc-body { background: var(--bg2); }
+.opt .atc-code { background: var(--bg3); }
+
+/* ---- 思考中（两版共用样式，优化版圆角对齐） ---- */
+.thinking {
+  display: flex; gap: 8px; align-items: center;
+  background: var(--bg3); padding: 8px 13px;
+  font-size: 12px; color: var(--text2);
+}
+.now .thinking { border-radius: 6px 6px 6px 2px; }
+.opt .thinking { border-radius: 4px 14px 14px 14px; padding: 9px 13px; }
+.thinking-dots { display: flex; gap: 4px; }
+.thinking-dots span {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+  animation: pulse 1.4s infinite;
+}
+.thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
+.thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
+.thinking-elapsed { color: var(--text3); font-size: 11px; margin-left: auto; padding-left: 10px; }
+@keyframes pulse {
+  0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-2px); }
+}
+
+/* 流式光标 */
+.cursor { display: inline-block; width: 8px; height: 14px;
+  background: currentColor; margin-left: 2px;
+  animation: cursor-blink 1s infinite;
+  vertical-align: -2px; opacity: 0.7; }
+@keyframes cursor-blink { 0%, 50% { opacity: 0.7; } 50.1%, 100% { opacity: 0; } }
+
+/* 系统消息 */
+.sys {
+  display: flex; justify-content: center;
+}
+.sys-bubble {
+  background: var(--highlight); color: var(--text2);
+  font-size: 11px; text-align: center;
+  border-radius: 14px; padding: 5px 14px;
+}
+
+/* markdown 示例 */
+.md b { color: var(--accent); }
+.md code {
+  background: var(--bg3); padding: 1px 5px;
+  border-radius: 4px; font-family: "Consolas", monospace; font-size: 12px;
+}
+
+/* 差异说明 */
+.diff-note {
+  max-width: 900px; margin: 22px auto 0;
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 14px; padding: 14px 18px;
+  font-size: 12px; color: var(--text2); line-height: 1.7;
+}
+.diff-note h3 { margin: 0 0 8px; font-size: 13px; color: var(--accent); }
+.diff-note li { margin: 3px 0; }
+.diff-note .fix { color: var(--green); }
+</style>
+</head>
+<body>
+
+<div class="theme-switcher">
+  <button data-set-theme="light" class="active">☀ 浅色</button>
+  <button data-set-theme="cream">☕ 奶油</button>
+  <button data-set-theme="dark">🌙 深色</button>
+</div>
+
+<div class="page-title">ACMS 自由对话 UI · <b>v0.121 现状</b> vs <b>v0.122 优化提案</b> — 右上角切三主题对比</div>
+
+<div class="compare">
+
+<!-- ================= 左：现状 v0.121 ================= -->
+<div class="panel">
+  <div class="panel-badge now">现状 · v0.121（今早改的）<small> — 用户新气泡 + AI 老气泡混搭</small></div>
+  <div class="chat-stream">
+
+    <div class="cb-user">
+      <div class="cb-inner">
+        <div class="cb-meta">💬 你 23:14</div>
+        帮我查一下 ACMS 今天有哪些待办
+      </div>
+      <div class="cb-avatar">P</div>
+    </div>
+
+    <div class="am-ai">
+      <div class="am-text">好的，我帮你查一下。<span class="cursor"></span></div>
+    </div>
+
+    <div class="am-ai">
+      <div class="thinking">
+        <div class="thinking-dots"><span></span><span></span><span></span></div>
+        <span>正在整理任务列表…</span>
+        <span class="thinking-elapsed">3.2s</span>
+      </div>
+    </div>
+
+    <div class="atc" data-status="done">
+      <div class="atc-head">
+        <span class="atc-icon">⚡</span>
+        <span class="atc-name">bash</span>
+        <span class="atc-label">ls workspace/</span>
+        <span class="atc-status">✅ 0.4s</span>
+        <span class="atc-toggle">▶</span>
+      </div>
+      <div class="atc-body">
+        <pre class="atc-code">agent-buddy-test
+chat-demo
+onboarding-v0.95
+prospect-tracking</pre>
+      </div>
+    </div>
+
+    <div class="atc expanded" data-status="awaiting">
+      <div class="atc-head">
+        <span class="atc-icon">📝</span>
+        <span class="atc-name">write_file</span>
+        <span class="atc-label">/todo.md</span>
+        <span class="atc-status">⏳ 待审批</span>
+        <span class="atc-toggle">▶</span>
+      </div>
+      <div class="atc-body">
+        <pre class="atc-code">{ "path": "/todo.md",
+  "content": "# 待办\n\n- 自由聊天 UI\n- 工具卡片" }</pre>
+      </div>
+    </div>
+
+    <div class="am-ai">
+      <div class="am-text md">已查到今天 <b>5 个待办</b>：<br>
+        1. 自由聊天 UI 改造（高优）<br>
+        2. 工具卡片视觉打磨<br>
+        3. <code>utils.js</code> 公共函数抽离<br>
+        4. 测试用例补充<br>
+        5. 120 服务器部署验证
+      </div>
+    </div>
+
+    <div class="cb-user">
+      <div class="cb-inner">
+        <div class="cb-meta">💬 你 23:15</div>
+        参考这个 UI 设计稿
+      </div>
+      <div class="cb-avatar">P</div>
+    </div>
+
+    <div class="atc expanded" data-status="failed" data-tool="web_search">
+      <div class="atc-head">
+        <span class="atc-icon">🔍</span>
+        <span class="atc-name">web_search</span>
+        <span class="atc-label">"Qwen Code 0.21"</span>
+        <span class="atc-status">❌ 超时</span>
+        <span class="atc-toggle">▶</span>
+      </div>
+      <div class="atc-body">
+        <pre class="atc-code" style="color:var(--accent2)">Error: ETIMEDOUT (30s)</pre>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ================= 右：优化 v0.122 ================= -->
+<div class="panel opt">
+  <div class="panel-badge next">优化 · v0.122 提案<small> — AI 补头像 + 气泡语言统一</small></div>
+  <div class="chat-stream">
+
+    <div class="cb-user">
+      <div class="cb-inner">
+        <div class="cb-meta" style="opacity:0.6">你 · 23:14</div>
+        帮我查一下 ACMS 今天有哪些待办
+      </div>
+      <div class="cb-avatar">P</div>
+    </div>
+
+    <div class="am-ai">
+      <div class="am-avatar">Q</div>
+      <div class="am-text">好的，我帮你查一下。<span class="cursor"></span></div>
+    </div>
+
+    <div class="am-ai">
+      <div class="am-avatar">Q</div>
+      <div class="thinking">
+        <div class="thinking-dots"><span></span><span></span><span></span></div>
+        <span>正在整理任务列表…</span>
+        <span class="thinking-elapsed">3.2s</span>
+      </div>
+    </div>
+
+    <div class="atc" data-status="done">
+      <div class="atc-head">
+        <span class="atc-icon">⚡</span>
+        <span class="atc-name">bash</span>
+        <span class="atc-label">ls workspace/</span>
+        <span class="atc-status">✅ 0.4s</span>
+        <span class="atc-toggle">▶</span>
+      </div>
+      <div class="atc-body">
+        <pre class="atc-code">agent-buddy-test
+chat-demo
+onboarding-v0.95
+prospect-tracking</pre>
+      </div>
+    </div>
+
+    <div class="atc expanded" data-status="awaiting">
+      <div class="atc-head">
+        <span class="atc-icon">📝</span>
+        <span class="atc-name">write_file</span>
+        <span class="atc-label">/todo.md</span>
+        <span class="atc-status">⏳ 待审批</span>
+        <span class="atc-toggle">▶</span>
+      </div>
+      <div class="atc-body">
+        <pre class="atc-code">{ "path": "/todo.md",
+  "content": "# 待办\n\n- 自由聊天 UI\n- 工具卡片" }</pre>
+      </div>
+    </div>
+
+    <div class="am-ai">
+      <div class="am-avatar">Q</div>
+      <div class="am-text md">已查到今天 <b>5 个待办</b>：<br>
+        1. 自由聊天 UI 改造（高优）<br>
+        2. 工具卡片视觉打磨<br>
+        3. <code>utils.js</code> 公共函数抽离<br>
+        4. 测试用例补充<br>
+        5. 120 服务器部署验证
+      </div>
+    </div>
+
+    <div class="cb-user">
+      <div class="cb-inner">
+        <div class="cb-meta" style="opacity:0.6">你 · 23:15</div>
+        参考这个 UI 设计稿
+      </div>
+      <div class="cb-avatar">P</div>
+    </div>
+
+    <div class="atc expanded" data-status="failed" data-tool="web_search">
+      <div class="atc-head">
+        <span class="atc-icon">🔍</span>
+        <span class="atc-name">web_search</span>
+        <span class="atc-label">"Qwen Code 0.21"</span>
+        <span class="atc-status">❌ 超时</span>
+        <span class="atc-toggle">▶</span>
+      </div>
+      <div class="atc-body">
+        <pre class="atc-code" style="color:var(--accent2)">Error: ETIMEDOUT (30s)</pre>
+      </div>
+    </div>
+
+    <div class="sys">
+      <div class="sys-bubble">已保存到聊天会话，下次自动加载</div>
+    </div>
+
+  </div>
+</div>
+
+</div>
+
+<div class="diff-note">
+  <h3>v0.122 优化点（右 vs 左）</h3>
+  <ul>
+    <li><span class="fix">① AI 气泡补头像</span> — 用户有 30px 圆形 P 头像，AI 却光秃秃 → AI 加 Q 渐变圆形头像（accent→blue 渐变），左右镜像对称</li>
+    <li><span class="fix">② 圆角统一</span> — AI 气泡 6px 小方角 → 14px 圆角 + 左上 4px 贴边角（和用户气泡同语言，镜像对称）</li>
+    <li><span class="fix">③ 字号/padding 统一</span> — AI 12px 字 + 5x8 padding（又小又挤）→ 13px + 9x13，与用户气泡一致</li>
+    <li><span class="fix">④ meta 行瘦身</span> — 用户气泡内 "💬 你" emoji 标签去掉（头像已表达角色）→ 只留 "你 · 23:14" 弱化小字</li>
+    <li><span class="fix">⑤ 工具卡片减层</span> — head 与 body 双层灰 → head 同底色 + 细分割线，宽度放宽对齐气泡</li>
+    <li><span class="fix">⑥ 思考中占位对齐</span> — 圆角/padding 与 AI 气泡同规则，视觉连续</li>
+  </ul>
+</div>
+
+<script>
+document.querySelectorAll('[data-set-theme]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.documentElement.setAttribute('data-theme', btn.dataset.setTheme);
+    document.querySelectorAll('[data-set-theme]').forEach(b => b.classList.toggle('active', b === btn));
+  });
+});
+document.querySelectorAll('.atc-head').forEach(head => {
+  head.addEventListener('click', () => head.closest('.atc').classList.toggle('expanded'));
+});
+</script>
+
+</body>
+</html>

@@ -139,11 +139,7 @@ async function reloadFreeChatStream(reqId) {
     const messages = (r && r.messages) || [];
     container.innerHTML = '';
     if (messages.length === 0) {
-      container.innerHTML = '<div class="chat-free-welcome" style="text-align:center;padding:40px 20px;color:var(--text2)">'
-        + '<div style="font-size:32px;margin-bottom:8px">💬</div>'
-        + '<div style="font-size:15px;font-weight:500;color:var(--text);margin-bottom:4px">新对话</div>'
-        + '<div style="font-size:12px">问我任何问题，AI 会基于知识库和互联网帮你解答</div>'
-        + '</div>';
+      // 空 session：不显示欢迎（保留空容器）
       if (window._chatState && window._chatState[reqId]) window._chatState[reqId].histCount = 0;
       return;
     }

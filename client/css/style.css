@@ -19,11 +19,12 @@
   --office-pptx-primary: #c46e54;
   --office-pptx-header:  #974434;
   --office-pptx-soft:    rgba(196,110,84,0.18);
-  --accent: #4ecdc4;
+--accent: #4ecdc4;
   --accent2: #ff6b6b;
   --accent3: #ffd93d;
   --green: #6bff6b;
   --blue: #6baaff;
+  --highlight: rgba(255,217,61,0.10);  /* 🆕 v0.121: 聊天流 system bubble 背景 */
   --border: rgba(78, 205, 196, 0.2);
   --radius: 8px;
   --shadow: 0 4px 16px rgba(0,0,0,0.3);
@@ -54,6 +55,7 @@
   --accent3: #c8a008;
   --green: #2ea043;
   --blue: #2b7bd6;
+  --highlight: #fff8d8;  /* 🆕 v0.121: 浅色主题 system bubble 背景（柔和奶油黄） */
   --border: rgba(10, 120, 110, 0.18);
   --shadow: 0 4px 16px rgba(0,0,0,0.08);
   --window-bg: #ffffff;
@@ -83,6 +85,7 @@
   --accent3: #c8960a;
   --green: #3c8c40;
   --blue: #4a7ab5;
+  --highlight: #faf0d0;  /* 🆕 v0.121: 奶油主题 system bubble 背景（浅金） */
   --border: rgba(90, 130, 80, 0.18);
   --shadow: 0 4px 16px rgba(0,0,0,0.06);
   --window-bg: #fffbf0;
@@ -2191,22 +2194,137 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
   margin: 4px 0;
 }
 
-/* Chat bubbles */
-.chat-bubble { max-width: 88%; padding: 10px 12px; border-radius: 10px; font-size: 13px; line-height: 1.6; animation: chatFadeIn .2s ease; }
-@keyframes chatFadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-.chat-bubble-ai { align-self: flex-start; background: rgba(78,205,196,0.07); border: 1px solid rgba(78,205,196,0.15); color: var(--text); }
-.chat-bubble-user { align-self: flex-end; background: rgba(100,149,237,0.09); border: 1px solid rgba(100,149,237,0.18); color: var(--text); }
-.chat-bubble-system { align-self: flex-start; background: rgba(255,217,61,0.06); border: 1px solid rgba(255,217,61,0.12); color: var(--text2); font-size: 12px; }
-.chat-system-msg { line-height: 1.6; }
-.chat-system-msg a { color: var(--accent, #4ecdc4); text-decoration: underline; }
+/* 🆕 v0.121: 气泡重设计 — 头像圆形 + 圆角气泡 + 贴边角缩进
+   保留 chat-bubble 类名（避免破坏历史回放 / chat-mode 现有代码），
+   内部结构改为：.chat-bubble-avatar + .chat-bubble-inner（包 meta + 内容 + 附件） */
+.chat-bubble {
+  display: flex; gap: 10px; align-items: flex-start;
+  max-width: 92%;
+  background: transparent;
+  padding: 0; border: none;
+  font-size: 13px;
+  line-height: 1.55;
+  animation: chatFadeIn .2s ease;
+}
+/* 🆕 v0.121 fix: 用户气泡贴右 + 头像/内容左右调换（之前漏了 align-self:flex-end,
+   导致用户和 AI 一起都在容器左边） */
+.chat-bubble-user { align-self: flex-end; }
+.chat-bubble-user .chat-bubble-avatar { order: 2; }  /* 头像排到右边 */
+.chat-bubble-user .chat-bubble-inner { order: 1; }   /* 内容排到左边（紧贴右边头像） */
+.chat-bubble-avatar {
+  width: 30px; height: 30px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 600; flex-shrink: 0;
+  margin-top: 1px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.10);
+}
+.chat-bubble-ai .chat-bubble-avatar {
+  background: linear-gradient(135deg, var(--accent, #0ea89d), var(--blue, #4b8fd4));
+  color: #fff;
+}
+.chat-bubble-user .chat-bubble-avatar {
+  background: var(--accent, #0ea89d);
+  color: #fff;
+}
+.chat-bubble-system .chat-bubble-avatar {
+  background: var(--accent3, #c89432);
+  color: #fff; font-size: 14px;
+}
+
+.chat-bubble-inner {
+  flex: 1; min-width: 0;     /* min-width:0 防 flex 子项 width:max-content 撑爆 */
+  padding: 9px 13px;
+  border-radius: 14px;
+  word-wrap: break-word;
+}
+.chat-bubble-ai .chat-bubble-inner {
+  background: var(--bg3, #eeeef1);
+  color: var(--text);
+  border-top-left-radius: 4px;
+}
+.chat-bubble-user .chat-bubble-inner {
+  background: var(--accent, #0ea89d);
+  color: #fff;
+  border-top-right-radius: 4px;
+}
+.chat-bubble-system .chat-bubble-inner {
+  background: var(--highlight, rgba(255,217,61,0.10));
+  color: var(--text2);
+  font-size: 12px;
+  border-top-left-radius: 4px;
+}
 .chat-bubble-meta { font-size: 10px; color: var(--text3); margin-bottom: 3px; display: flex; align-items: center; gap: 6px; }
 .chat-bubble-meta .chat-label { font-weight: 600; }
-.chat-bubble-ai .chat-label { color: #4ecdc4; }
-.chat-bubble-user .chat-label { color: #7a9ef5; }
+/* v0.122: meta 行瘦身 — emoji 标签去掉（头像已表达角色），label 与时间用 · 分隔弱化 */
+.chat-bubble-meta .chat-meta-sep { opacity: 0.45; font-size: 9px; }
+/* v0.121: AI 气泡的标签染色保留（标签在 inner 内顶部） */
+.chat-bubble-ai .chat-bubble-meta .chat-label { color: var(--accent, #0ea89d); }
+.chat-bubble-user .chat-bubble-meta .chat-label { color: #fff; opacity: 0.85; }
+/* v0.121: 用户气泡内 meta 用半透明白（之前是浅蓝，浅色主题下糊掉） */
+.chat-bubble-user .chat-bubble-meta { color: rgba(255,255,255,0.75); }
+.chat-bubble-user .chat-bubble-meta .chat-time { color: rgba(255,255,255,0.65); }
 .chat-bubble-meta .chat-time { font-family: monospace; color: var(--text3); }
+
+/* 🆕 v0.121: 用户气泡内附件 chip 用反白色 */
+.chat-bubble-user .bubble-attachments .chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: rgba(255,255,255,0.22);
+  padding: 2px 8px; border-radius: 999px;
+  font-size: 11px; margin-top: 6px; color: #fff;
+}
+
+/* 🆕 v0.121: 用户气泡 markdown code 反白 */
+.chat-bubble-user .chat-bubble-inner code {
+  background: rgba(255,255,255,0.25); color: #fff;
+}
+
+/* 保留旧 .chat-bubble / .chat-bubble-ai / .chat-bubble-user / .chat-bubble-system
+   兼容旧版字段（如果某个 JS 还在用旧结构比如直接 style.background）— 不删，
+   新结构由 chat.js renderChatBubble 写入新模板。 */
+
+.chat-system-msg { line-height: 1.6; }
+.chat-system-msg a { color: var(--accent, #4ecdc4); text-decoration: underline; }
 
 /* AI part labels (开场/理解/追问) */
 .chat-part { margin-top: 4px; }
+
+/* 🆕 v0.121: 思考中态气泡（替代历史"⏳ 等待中"字符气泡） */
+.chat-thinking-bubble {
+  display: flex; gap: 10px; align-items: flex-start;
+  max-width: 92%; background: transparent; padding: 0; border: none;
+  animation: chatFadeIn .2s ease;
+}
+.chat-thinking-bubble .chat-thinking-inner {
+  flex: 1; min-width: 0;
+  display: flex; gap: 8px; align-items: center;
+  background: var(--bg3);
+  padding: 9px 13px;
+  border-radius: 14px;
+  border-top-left-radius: 4px;
+  font-size: 12px; color: var(--text2);
+}
+.chat-thinking-dots { display: flex; gap: 4px; flex-shrink: 0; }
+.chat-thinking-dots span {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+  animation: chat-think-pulse 1.4s infinite;
+}
+.chat-thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
+.chat-thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
+.chat-thinking-elapsed { color: var(--text3); font-size: 11px; margin-left: auto; padding-left: 10px; }
+@keyframes chat-think-pulse {
+  0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-2px); }
+}
+
+/* 🆕 v0.121: 流式光标（替代 ▍ 字符） */
+.chat-stream-cursor {
+  display: inline-block; width: 8px; height: 14px;
+  background: currentColor;
+  margin-left: 2px;
+  animation: chat-cursor-blink 1s infinite;
+  vertical-align: -2px; opacity: 0.6;
+}
+@keyframes chat-cursor-blink { 0%, 50% { opacity: 0.6; } 50.1%, 100% { opacity: 0; } }
 .chat-part:first-child { margin-top: 0; }
 .chat-part-tag {
   display: inline-block; font-size: 10px; font-weight: 600;
@@ -2639,6 +2757,8 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
 .chat-input-row textarea::placeholder { color: var(--text3); }
 .chat-input-actions { display: flex; gap: 4px; align-items: center; position: relative; }
 .chat-input-actions .btn { padding: 5px 11px; font-size: 12px; }
+/* v0.122: 输入区按钮圆角统一 4px → 8px（与输入框/附件按钮一致） */
+.chat-input-actions .btn-small { border-radius: 8px; }
 
 /* ── v0.13 B5：AI 回复模式按钮（3 态）+ popover ── */
 .btn-ai-mode {
@@ -2651,7 +2771,7 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
   font-size: 15px;
   position: relative;
   border: 1px solid var(--border);
-  background: white;
+  background: var(--bg2);  /* v0.122: 原 white 硬编码在深色主题下纯白突兀 → 主题变量 */
   color: var(--text2);
   border-radius: 6px;
   cursor: pointer;
@@ -4202,35 +4322,123 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
 .ap-tool-name { color:var(--accent, #0ea89d); font-family:monospace; }
 .ap-tool-result { color:var(--text3, #777); }
 
-/* 🆕 P1 方案B（卡片化）：Qwen 内核工具调用卡片 */
+/* 🆕 P1 方案B（卡片化）：Qwen 内核工具调用卡片
+   🆕 v0.121: 升级 — head 左边 3px 状态条 + 工具类型配色 + 圆角 10px + 折叠箭头 CSS rotate */
 .ap-tool-card {
-  margin: 6px 0; padding: 0;
-  background: var(--bg3, rgba(37,37,64,.5));
+  margin: 4px 0;
+  padding: 0;
+  background: var(--bg2, #1a1a2e);
   border: 1px solid var(--border1, rgba(255,255,255,.08));
-  border-radius: 6px;
+  border-left: 3px solid var(--blue, #4b8fd4);  /* 🆕 v0.121: 默认 pending 蓝色状态条 */
+  border-radius: 10px;  /* 🆕 6px → 10px 更柔和 */
   font-size: 12px;
   text-align: left;
-  min-height: 40px;  /* 🆕 v0.117l: 防止 body 折叠时卡片被压塌 */
-  max-width: 100%;  /* 🆕 v0.117n: 限制宽度防止横向撑开 */
-  box-sizing: border-box;  /* 🆕 padding 计入宽度 */
-  /* 🆕 v0.117q: 移除 overflow: hidden，允许 body 展开时卡片高度自适应 */
+  min-height: 40px;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;  /* 🆕 v0.121 重设 overflow（之前为了展开高度自适应移除，加 expanded class 后用 max-height/scale 替代）*/
+  transition: box-shadow 0.2s ease;
 }
+.ap-tool-card:hover {
+  box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+}
+/* 🆕 v0.121: 状态条配色（data-status 与 ap-tool-status-* 类同步） */
+.ap-tool-card[data-status="pending"],
+.ap-tool-status-pending { border-left-color: var(--blue, #4b8fd4); }
+.ap-tool-card[data-status="awaiting"],
+.ap-tool-status-awaiting { border-left-color: var(--accent3, #ffd93d); background: rgba(255,217,61,0.04); }
+.ap-tool-card[data-status="done"],
+.ap-tool-status-done,
+.ap-tool-card[data-status="allowed"],
+.ap-tool-status-allowed { border-left-color: var(--green, #51cf66); }
+.ap-tool-card[data-status="failed"],
+.ap-tool-status-failed { border-left-color: var(--accent2, #ff6b6b); animation: ap-card-failed-pulse 1.2s ease-out 2; }
+.ap-tool-card[data-status="denied"],
+.ap-tool-status-denied { border-left-color: var(--text3, #888); opacity: 0.75; }
+
+/* 🆕 v0.121: 工具类型配色（data-tool 走下规则 — 图标染色） */
+.ap-tool-card[data-tool="bash"] .ap-tool-card-icon { color: var(--accent2, #ff6b6b); }
+.ap-tool-card[data-tool="read"] .ap-tool-card-icon,
+.ap-tool-card[data-tool="glob"] .ap-tool-card-icon { color: var(--accent3, #ffd93d); }
+.ap-tool-card[data-tool="write"] .ap-tool-card-icon { color: var(--green, #51cf66); }
+.ap-tool-card[data-tool="edit"] .ap-tool-card-icon,
+.ap-tool-card[data-tool="multiedit"] .ap-tool-card-icon { color: var(--blue, #4b8fd4); }
+.ap-tool-card[data-tool="web_search"] .ap-tool-card-icon,
+.ap-tool-card[data-tool="webfetch"] .ap-tool-card-icon { color: var(--accent, #0ea89d); }
+.ap-tool-card[data-tool^="acms_"] .ap-tool-card-icon,
+.ap-tool-card[data-tool^="mcp_"] .ap-tool-card-icon { color: #c084fc; }
+
 .ap-tool-card-head {
   display: flex; align-items: center; gap: 8px;
-  padding: 10px 12px;  /* 🆕 v0.117i: 增加 padding 让卡片更明显 */
-  background: var(--bg4, rgba(20,20,40,.6));
-  border-bottom: 1px solid var(--border1, rgba(255,255,255,.06));
-  min-height: 40px;  /* 🆕 最小高度确保可见 */
+  padding: 8px 14px 8px 12px;  /* 🆕 v0.121: 调整 padding 让左侧 border 有呼吸感 */
+  background: var(--bg3, #eeeef1);
+  cursor: pointer;
+  border-bottom: 1px solid transparent;  /* 🆕 展开时再显示分隔线 */
+  min-height: 40px;
+  user-select: none;
+  transition: border-color 0.15s ease;
+  /* v0.122 fix: relative + padding-right 给 absolute toggle 让位 —— toggle 钉死最右，不再依赖 flex 剩余空间（长工具名曾把剩余空间吃光导致折叠按钮漂移） */
+  position: relative;
+  padding-right: 34px;
 }
-.ap-tool-card-icon { font-size: 13px; }
-.ap-tool-card-name { color: var(--accent, #0ea89d); font-family: monospace; font-weight: 600; }
+/* v0.122: 自由对话工具卡减层 — head 与卡片同底色（去掉双层灰），展开时才用分割线区分 */
+.chat-stream .ap-tool-card-head {
+  background: var(--bg2, #1a1a2e);
+}
+.ap-tool-card.expanded .ap-tool-card-head {
+  border-bottom-color: var(--border1, rgba(0,0,0,.08));
+}
+.ap-tool-card-icon { font-size: 14px; flex-shrink: 0; }  /* 🆕 v0.121: 13px → 14px */
+.ap-tool-card-name { color: var(--accent, #0ea89d); font-family: "Consolas", monospace; font-weight: 600; font-size: 13px; }  /* 🆕 v0.121: 12px → 13px */
+/* v0.122 fix: name 可收缩 + 省略号 —— 长工具名(run_shell_command 等)撑满 head，margin-left:auto 的 toggle 只剩 0-11px 剩余空间 → 折叠按钮贴左、名称/状态右移。max-width 强制留出剩余空间，toggle 永远在右 */
+.ap-tool-card-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .ap-tool-card-label { color: var(--text3, #888); font-size: 11px; }
 .ap-tool-card-err { margin-left: auto; color: #ff6b6b; font-size: 10px; }
+
+/* 🆕 v0.121: 状态标签按 status 染色 */
+.ap-tool-card-status-text { font-size: 11px; color: var(--text3); }
+.ap-tool-card[data-status="awaiting"] .ap-tool-card-status-text { color: var(--accent3, #ffd93d); font-weight: 600; }
+.ap-tool-card[data-status="done"] .ap-tool-card-status-text,
+.ap-tool-card[data-status="allowed"] .ap-tool-card-status-text { color: var(--green, #51cf66); }
+.ap-tool-card[data-status="failed"] .ap-tool-card-status-text { color: var(--accent2, #ff6b6b); font-weight: 600; }
+
 .ap-tool-card-body {
-  padding: 6px 10px;
-  width: 100%;  /* 🆕 v0.117n: 确保 body 占满卡片宽度 */
+  padding: 8px 12px 10px;
+  width: 100%;
   box-sizing: border-box;
+  display: none;  /* 🆕 v0.121: 默认折叠（之前是 inline style display:none 现在改为 CSS） */
+  background: var(--bg2, #1a1a2e);
 }
+.ap-tool-card.expanded .ap-tool-card-body { display: block; }
+
+/* 🆕 v0.121: 折叠箭头 ▶ 用 CSS rotate（不再切字符 ▼）
+   v0.122 fix: absolute 钉在 head 右侧 —— 彻底不依赖 flex 剩余空间，名称/状态永远在左、按钮永远在右 */
+.ap-tool-card-toggle {
+  font-size: 10px;
+  color: var(--text3, #888);
+  display: inline-block;
+  user-select: none;
+  cursor: pointer;
+  width: 12px;
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  transition: transform 0.2s ease;
+}
+.ap-tool-card.expanded .ap-tool-card-toggle {
+  transform: translateY(-50%) rotate(90deg);
+  color: var(--accent, #0ea89d);
+}
+.ap-tool-card-toggle:hover { color: var(--accent, #0ea89d); }
+.ap-tool-card-head { cursor: pointer; }
 .ap-tool-card-section { margin-top: 4px; }
 .ap-tool-card-section-head { color: var(--text3, #888); font-size: 10px; margin-bottom: 3px; }
 .ap-tool-card-path { color: var(--text2, #ccc); font-family: monospace; font-size: 11px; margin-bottom: 2px; word-break: break-all; }
@@ -4323,16 +4531,7 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
   white-space: pre-wrap; word-break: break-word;
 }
 
-/* 🆕 P2 打磨：折叠箭头（▶/▼）+ 状态切换 */
-.ap-tool-card-toggle {
-  cursor: pointer; user-select: none;
-  color: var(--text3, #888);
-  font-size: 10px;
-  width: 12px; display: inline-block;
-  transition: transform 0.15s ease;
-}
-.ap-tool-card-toggle:hover { color: var(--accent, #0ea89d); }
-.ap-tool-card-head { cursor: pointer; }  /* 整行可点 */
+/* 🆕 P2 打磨：折叠箭头（▶/▼）+ 状态切换 — v0.122 已合并进上方 v0.121 定义（此处重复定义无 margin-left:auto 会覆盖新版导致布局错乱，删除） */
 
 /* 🆕 P2 打磨：失败态红色脉冲（治"装睡 v13"看不到错误）*/
 @keyframes ap-tool-card-error-pulse {
@@ -4349,39 +4548,63 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
   color: #ff6b6b;
 }
 
-/* 🆕 P2 打磨：多工具 group 容器 */
+/* 🆕 P2 打磨：多工具 group 容器
+   🆕 v0.121: 配色用主题变量统一（之前 rgba 硬编码，浅色/奶油主题下糊掉） */
 .ap-tool-group {
   margin: 6px 0; padding: 0;
-  background: rgba(20,20,40,.3);
+  background: var(--bg2, #1a1a2e);
   border: 1px solid var(--border1, rgba(255,255,255,.08));
-  border-radius: 6px;
+  border-radius: 10px;
   font-size: 12px;
   text-align: left;
   overflow: hidden;
 }
 .ap-tool-group-head {
   display: flex; align-items: center; gap: 6px;
-  padding: 5px 10px;
-  background: var(--bg4, rgba(20,20,40,.6));
-  color: var(--text2, #ccc);
+  padding: 7px 12px;  /* 🆕 v0.121: 5px → 7px 让 head 更明显 */
+  background: var(--bg3, #eeeef1);
+  color: var(--text2);
   cursor: pointer;
   user-select: none;
+  transition: background 0.15s ease;
 }
-.ap-tool-group-head:hover { background: rgba(40,40,80,.6); }
-.ap-tool-group-toggle { font-size: 10px; color: var(--text3, #888); width: 12px; }
+.ap-tool-group-head:hover { background: var(--bg4, #e2e2e8); }
+/* 🆕 v0.121: 折叠箭头 ▶ 用 CSS rotate */
+.ap-tool-group-toggle {
+  font-size: 10px; color: var(--text3, #888);
+  width: 12px;
+  display: inline-block;
+  transition: transform 0.2s ease;
+  user-select: none;
+}
+.ap-tool-group.expanded .ap-tool-group-toggle { transform: rotate(90deg); color: var(--accent, #0ea89d); }
 .ap-tool-group-title { font-size: 12px; font-weight: 600; color: var(--accent, #0ea89d); }
 .ap-tool-group-stats {
   margin-left: auto;
-  font-size: 10px;
-  color: var(--text3, #888);
-  font-family: monospace;
+  font-size: 11px;
+  color: var(--text3);
   display: flex;
-  gap: 6px;
+  gap: 8px;
+  align-items: center;
 }
-.ap-tool-group-stat-awaiting { color: #ffd93d; font-weight: 600; }
-.ap-tool-group-stat-done { color: #51cf66; }
-.ap-tool-group-stat-failed { color: #ff6b6b; font-weight: 600; }
-.ap-tool-group-body { padding: 6px 10px; }
+/* 🆕 v0.121: stats 徽章用统一语义色变量（带半透明背景胶囊） */
+.ap-tool-group-stat-awaiting {
+  color: var(--accent3, #ffd93d); font-weight: 600;
+  background: rgba(255,217,61,0.10); padding: 1px 6px; border-radius: 999px;
+}
+.ap-tool-group-stat-done {
+  color: var(--green, #51cf66); font-weight: 500;
+  background: rgba(81,207,102,0.10); padding: 1px 6px; border-radius: 999px;
+}
+.ap-tool-group-stat-failed {
+  color: var(--accent2, #ff6b6b); font-weight: 600;
+  background: rgba(255,107,107,0.10); padding: 1px 6px; border-radius: 999px;
+}
+.ap-tool-group-body { display: none; padding: 6px 8px; background: var(--bg2); }  /* 🆕 v0.121: 加 display:none 默认折叠 */
+.ap-tool-group.expanded .ap-tool-group-body { display: block; }
+.ap-tool-group-body > .ap-tool-card { margin: 4px 0; }
+.ap-tool-group-body > .ap-tool-card:first-child { margin-top: 0; }
+.ap-tool-group-body > .ap-tool-card:last-child { margin-bottom: 0; }
 
 /* 🆕 A2 修复（2026-08-23）：head 内审批按钮（不依赖 body 展开，group 折叠时也能点） */
 .ap-tool-card-head-actions {
@@ -4444,8 +4667,17 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
   color: var(--text3, #888);
   font-family: monospace;
 }
-.ap-cursor { display:inline-block; animation: ap-blink 0.8s step-end infinite; color:var(--accent, #0ea89d); font-weight:bold; margin-left:1px; }
-@keyframes ap-blink { 50% { opacity:0; } }
+/* 🆕 v0.121: 流式光标（CSS 渲染短竖线，替代 | ▍ 等字符，跨字体一致） */
+.ap-cursor {
+  display: inline-block;
+  width: 8px; height: 14px;
+  background: var(--accent, #0ea89d);
+  vertical-align: -2px;
+  margin-left: 2px;
+  animation: ap-cursor-pulse 1s infinite;
+  border-radius: 1px;
+}
+@keyframes ap-cursor-pulse { 0%, 50% { opacity: 0.7; } 50.1%, 100% { opacity: 0; } }
 .ap-action-imggrid { display:grid; grid-template-columns:repeat(3,1fr); gap:5px; margin:6px 0; }
 .ap-action-imgitem { display:block; border-radius:5px; overflow:hidden; background:var(--bg3, #252540); aspect-ratio:1; }
 .ap-action-imgitem img { width:100%; height:100%; object-fit:cover; display:block; }
@@ -4537,8 +4769,7 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
 .ap-msg-text h2, .chat-bubble h2 { font-size: 14px; margin: 5px 0 2px; }
 .ap-msg-text h3, .chat-bubble h3 { font-size: 13px; margin: 4px 0 2px; }
 .ap-msg-text h4, .chat-bubble h4 { font-size: 12px; margin: 3px 0 1px; }
-  4534|
-  4535|.ap-msg-user {
+.ap-msg-user {
   justify-content: flex-end;
 }
 .ap-msg-user .ap-msg-text {
@@ -4551,6 +4782,26 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
 }
 .ap-msg-thinking .ap-msg-text {
   animation: ap-think-pulse 1.2s ease-in-out infinite;
+}
+
+/* ===== v0.122: 自由对话流式 AI 气泡统一语言（ap-msg-free，限定自由对话不波及小吉） =====
+   与历史消息 chat-bubble-ai 对齐：Q 渐变头像 + 14px 圆角（左上贴边 4px）+ 13px 字 + 9x13 padding */
+.ap-msg-free {
+  gap: 10px;
+}
+.ap-msg-free .ap-msg-avatar {
+  width: 30px; height: 30px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent, #0ea89d), var(--blue, #4b8fd4));
+  color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 600; flex-shrink: 0;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+}
+.ap-msg-free .ap-msg-text {
+  padding: 9px 13px;
+  font-size: 13px;
+  line-height: 1.55;
+  border-radius: 4px 14px 14px 14px;
 }
 
 /* v0.96: 操作日志条 — 小吉后台执行的实时反馈 */
@@ -6650,6 +6901,11 @@ body { padding-bottom: 40px; }
   opacity: 0.6;
   cursor: wait !important;
 }
+/* 🆕 v0.123：summarizing 状态 —— 灰、disabled（用户在 AI 总结时不能操作）*/
+.chat-send-summarizing {
+  opacity: 0.6;
+  cursor: wait !important;
+}
 @keyframes chat-send-pulse {
   0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--red2) 40%, transparent); }
   50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--red2) 0%, transparent); }
@@ -6707,6 +6963,81 @@ body { padding-bottom: 40px; }
 @keyframes chat-interrupted-fade {
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* ===== v0.123：中断总结卡片（替代 v0.119 的"已中断"卡片）=====
+   两阶段：
+   - chat-summary-loading: AI 总结进行中（灰色背景 + typing dots）
+   - chat-summary-done: 总结完成 + 用户决策按钮（[继续] / [放弃]）
+   - chat-summary-error: 总结失败（罕见）
+   与 .chat-interrupted-card 视觉相似但语义不同 —— 总结卡片是"分析已完成"，是积极的；
+   interrupt 卡片是"任务被放弃"，是消极的。
+*/
+.chat-summary-card {
+  margin: 10px 14px 14px;
+  padding: 12px 14px;
+  background: var(--bg2);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text);
+  animation: chat-interrupted-fade 0.3s ease-out;
+}
+/* loading 状态：左边框用主题强调色（区别于中断的灰色）+ typing dots */
+.chat-summary-card.chat-summary-loading {
+  border-left-color: var(--accent);
+}
+.chat-summary-card .csc-head {
+  font-weight: 500;
+  margin-bottom: 8px;
+  color: var(--text);
+}
+.chat-summary-card .csc-body {
+  font-size: 12px;
+  color: var(--text2);
+  margin-bottom: 8px;
+  line-height: 1.6;
+}
+.chat-summary-card .csc-hint {
+  font-size: 11px;
+  color: var(--text2);
+  margin-bottom: 8px;
+}
+.chat-summary-card .csc-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+/* 🆕 v0.123：决策按钮 —— 复用 .cic-btn 视觉但用 .csc- 前缀（命名清晰） */
+.chat-summary-card .csc-btn {
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.12s;
+}
+.chat-summary-card .csc-btn:hover {
+  background: var(--bg2);
+  border-color: var(--text2);
+}
+.chat-summary-card .csc-continue {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.chat-summary-card .csc-continue:hover {
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg));
+}
+.chat-summary-card .csc-discard {
+  color: var(--text2);
+}
+/* error 状态：红色左边框 + 警告头部 */
+.chat-summary-card.chat-summary-error {
+  border-left-color: var(--red2, #e85d5d);
+}
+.chat-summary-card.chat-summary-error .csc-head {
+  color: var(--red2, #e85d5d);
 }
 
 /* ===== v0.119：小吉面板（agent-buddy）的 send 按钮多态 + 已中断卡片 ===== */

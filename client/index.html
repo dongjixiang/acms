@@ -8,7 +8,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>ACMS — 智能体协同管理系统</title>
-<link rel="stylesheet" href="/client/css/style.css?v=0.86.14.20260826">
+<link rel="stylesheet" href="/client/css/style.css?v=0.86.22.20260827">  <!-- v0.86.22 fix: 清理行号垃圾污染（4535|.ap-msg-user → namespace 前缀规则失效）→ 小吉用户消息恢复右对齐 -->
 <!-- v=0.86.14 inline override: 表格边框/字体覆盖 chat-bubble + ap-msg-text 双路径 -->
 <style>
 .chat-bubble table, .ap-msg-text table { display: table !important; border-collapse: collapse !important; width: 100%; margin: 4px 0; font-size: 11px; line-height: 1.3; }
@@ -387,11 +387,7 @@ document.addEventListener('DOMContentLoaded', () => {
       </div>
       <div id="chat-stream-container-__free__" class="chat-stream-container" style="flex:1;overflow:hidden;display:flex;flex-direction:column">
         <div class="chat-stream" id="chat-stream-msgs-__free__" style="flex:1;overflow-y:auto">
-          <div class="chat-free-welcome" style="text-align:center;padding:40px 20px;color:var(--text2)">
-            <div style="font-size:32px;margin-bottom:8px">💬</div>
-            <div style="font-size:15px;font-weight:500;color:var(--text);margin-bottom:4px">自由对话</div>
-            <div style="font-size:12px">问我任何问题，AI 会基于知识库和互联网帮你解答</div>
-          </div>
+          
         </div>
         <button class="chat-scroll-top-btn" id="chat-scroll-top-btn-__free__"
           onclick="chatScrollToggle('__free__')" title="滚到顶部">📜</button>
@@ -502,7 +498,7 @@ document.addEventListener('DOMContentLoaded', () => {
     <script src="/client/js/views/dashboard.js"></script>
 <!-- v0.13 拆分：12 个子模块在 requirements.js 之前加载（HTML onclick 跨文件按名查找） -->
 <!-- v0.21.4 fix: 双卡清理范围扩大到 assist-loading-card.method-music（旧 v0.21.3 漏了真正的旧卡所在位置） -->
-<script src="/client/js/views/requirements/chat.js?v=0.22.42"></script>
+<script src="/client/js/views/requirements/chat.js?v=0.22.47"></script>  <!-- v0.22.47 中断后自动让 AI 总结已完成工作 + 决策卡（v0.123：summarizing/summarized 两态，取代 v0.119 已中断卡片） -->
 <script src="/client/js/views/requirements/idea-panel.js?v=0.13.0"></script>
 <!-- v0.18 chat 模式切换器（clarify ↔ free）—— idea-panel.js 之后加载，引用 toggleChatMode -->
 <script src="/client/js/views/requirements/chat-mode.js?v=0.18.0"></script>
@@ -537,7 +533,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/assists/music.js?v=0.21.0"></script>  <!-- v0.21 音乐播放 — 多数据源切换（assist 侧栏；聊天流走 chat.js renderMusicBubble） -->
 <script src="/client/js/views/assists/video.js?v=0.22.20"></script>  <!-- v0.22.20: 修 query 错误提示字段（r.message → r.error，避免"查询失败：undefined"） -->
 <script src="/client/js/views/assists/image-gen.js?v=0.22.21"></script>  <!-- v0.22.21: 预览图加 onerror fallback + previewImage 支持 CDN 回退 -->
-<script src="/client/js/views/assists/clean.js?v=0.19.2"></script>  <!-- v0.19.2 修 free chat 清理后 REQ_NOT_FOUND：独立 reloadFreeChatStream（不走 loadChatStream 的 /requirements/:id/supplement-history） -->
+<script src="/client/js/views/assists/clean.js?v=0.19.3"></script>  <!-- v0.19.3 clean 后 reloadFreeChatStream 空 session 也去掉欢迎块 -->
 <script src="/client/js/views/assists/ip-dict.js?v=0.22.31"></script>  <!-- v0.22.31 IP 词典：用户输入"擎天柱"→ 锁定到 Transformers G1 Optimus Prime；含 20+ 知名 IP（中英文 + 视觉关键词） -->
 <script src="/client/js/views/assists/screenplay-core.js?v=0.22.31"></script>  <!-- v0.22.31 剧本卡片：加 IP 锚定 + art_style 风格硬约束（解决"擎天柱→机甲人"+"角色风格不一致"） -->
 <script src="/client/js/views/assists/screenplay.js?v=0.22.31"></script>  <!-- v0.22.31 剧本表单加 art_style 下拉（写实/3D/G1/日漫/国风水墨） -->
@@ -669,8 +665,8 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/core/command-palette.js?v=0.58.4"></script>
 <script src="/client/js/core/notification-center.js?v=0.58"></script>
 <!-- 🆕 P1 方案B（卡片化）→ 🆕 P2 打磨 → 🆕 A 修复（2026-08-23）：必须在 agent-buddy.js 之前加载 -->
-<script src="/client/js/core/agent-buddy-tool-card.js?v=0.115.18"></script>
-<script src="/client/js/core/agent-buddy.js?v=0.99.5"></script>
+<script src="/client/js/core/agent-buddy-tool-card.js?v=0.115.19"></script>  <!-- v0.115.19 data-status/data-tool + .expanded class toggle（v0.121 UI 优化） -->
+<script src="/client/js/core/agent-buddy.js?v=0.99.6"></script>  <!-- v0.99.6 ap-cursor 用 CSS 渲染（v0.121 UI 优化） -->
 <!-- v0.62.5: Office 编辑器 OO 风格主题 + 标题栏 (学 colors-table-classic.less + FileMenu.js) -->
 <link rel="stylesheet" href="/client/css/office-theme.css?v=0.66.0">
 <!-- v0.62.5: Ribbon TabBar 组件（学 OO TabBar.js API, 简化重写）— 必须在 office-editor.js 之前 -->

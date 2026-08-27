@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Table Border Debug</title>
+<style>
+/* Simulate dark theme */
+:root {
+  --bg: #0f0f1a;
+  --bg2: #1a1a2e;
+  --bg3: #252540;
+  --text: #e0e0e0;
+  --text2: #9090a0;
+  --border: rgba(78, 205, 196, 0.2);
+}
+body { background: var(--bg); color: var(--text); font-family: 'Microsoft YaHei', sans-serif; padding: 20px; }
+
+/* === 这是当前 style.css 里的规则（从服务器抓的） === */
+.ap-msg-text {
+  background: var(--bg3, #252540);
+  padding: 5px 8px;
+  border-radius: 6px;
+  color: var(--text, #e0e0f0);
+  max-width: 600px;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.ap-msg-text table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 4px 0;
+  font-size: 11px;
+  line-height: 1.3;
+  table-layout: auto;
+}
+.ap-msg-text th,
+.ap-msg-text td {
+  border: 1px solid var(--border, rgba(255,255,255,0.18));
+  padding: 2px 6px;
+  text-align: left;
+  white-space: nowrap;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text, #e0e0f0);
+}
+.ap-msg-text th {
+  background: var(--bg3, rgba(255, 255, 255, 0.08));
+  font-weight: 600;
+}
+.ap-msg-text tr:nth-child(even) td {
+  background: var(--bg3-alt, rgba(255, 255, 255, 0.03));
+}
+
+/* Debug helpers */
+.debug-border { outline: 2px dashed red !important; }
+</style>
+</head>
+<body>
+<h2>表格边框调试 — 深色主题</h2>
+<p>如果下面表格看不到边框，说明 CSS 变量没生效或被覆盖了</p>
+<hr>
+
+<div class="ap-msg-text">
+好的，随便填一组：
+
+| 姓名 | 年龄 | 城市 | 职业 |
+|------|------|------|------|
+| 张三 | 28 | 深圳 | 产品经理 |
+| 李四 | 35 | 北京 | 架构师 |
+| 王五 | 22 | 杭州 | 前端开发 |
+| 赵六 | 31 | 上海 | 数据分析师 |
+| 陈七 | 40 | 广州 | 运营总监 |
+
+需要填什么主题的数据？
+</div>
+
+<hr>
+<h2>模拟 ACMS 渲染后的 HTML（经过 renderTables 处理）</h2>
+<div class="ap-msg-text" id="rendered"></div>
+
+<script>
+// Simulate what markdown.js renderTables does
+const md = `好的，随便填一组：
+
+| 姓名 | 年龄 | 城市 | 职业 |
+|------|------|------|------|
+| 张三 | 28 | 深圳 | 产品经理 |
+| 李四 | 35 | 北京 | 架构师 |
+| 王五 | 22 | 杭州 | 前端开发 |
+| 赵六 | 31 | 上海 | 数据分析师 |
+| 陈七 | 40 | 广州 | 运营总监 |
+
+需要填什么主题的数据？`;
+
+function renderTables(html) {
+  const tableRegex = /((?:^|\n)\|?[^\n]+\|?\n\|?[-:|\s]+\|?\n(?:(?:\|?[^\n]+\|?)\n?)*)/g;
+  return html.replace(tableRegex, (match) => {
+    const lines = match.trim().split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.length < 2) return match;
+    const headers = lines[0].split('|').map(s => s.trim()).filter(s => s && !/^[-:]+$/.test(s));
+    if (headers.length === 0) return match;
+    const rows = lines.slice(2)
+      .map(l => l.split('|').map(s => s.trim()).filter(s => s && !/^[-:]+$/.test(s)))
+      .filter(r => r.length > 0);
+    if (rows.length === 0) return match;
+    const renderCell = (text) => {
+      let s = text;
+      s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
+      s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+      return s;
+    };
+    let table = '<table><thead><tr>';
+    for (const h of headers) table += `<th>${renderCell(h)}</th>`;
+    table += '</tr></thead><tbody>';
+    for (const row of rows) {
+      table += '<tr>';
+      for (const c of row) table += `<td>${renderCell(c)}</td>`;
+      table += '</tr>';
+    }
+    table += '</tbody></table>';
+    return table;
+  });
+}
+
+const rendered = renderTables(md);
+document.getElementById('rendered').innerHTML = rendered;
+
+// Debug: show computed style of first td
+setTimeout(() => {
+  const td = document.querySelector('#rendered td');
+  if (td) {
+    const cs = getComputedStyle(td);
+    console.log('TD computed border:', cs.borderTopColor, cs.borderTopWidth, cs.borderTopStyle);
+    console.log('TD computed color:', cs.color);
+    console.log('TD computed background:', cs.backgroundColor);
+  }
+}, 100);
+</script>
+</body>
+</html>

@@ -626,10 +626,27 @@ function renderChatBubble(container, entry) {
   const hasThinking = isAI && entry.understanding;
   // v0.17：AI 历史气泡显示「第N轮 · 时间」前缀（让旧数据也能看到轮次 — backfillChatRounds 已补算）
   const roundPrefix = (isAI && entry.chat_round) ? `第${entry.chat_round}轮 · ` : '';
+// 🆕 v0.121: 升级气泡结构 — avatar + inner（代替旧 emoji 标签 + 圆角胖气泡）
+  //   多多反馈: "用户和LLM工具调用都不那么好看和协调" → 参考 _demo_chat_ui.html
+  const avatarLetter = isAI ? 'Q' : isSystem ? '·' : 'P';
   const div = document.createElement('div');
   div.className = `chat-bubble ${isAI ? 'chat-bubble-ai' : isSystem ? 'chat-bubble-system' : 'chat-bubble-user'}`;
   div.dataset.chatRound = entry.chat_round || '';
-  div.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">${isAI ? '🤖 AI' : isSystem ? '📎 参考' : '💬 你'}</span><span class="chat-time">${roundPrefix}${fmtLocalTime(entry.at)}</span>${hasThinking ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}${isAI ? '<span class="chat-export-btn" onclick="chatExportWord(this)" title="导出为 Word 文档">📄</span>' : ''}</div>${bodyHtml}${userAttachHtml}`;
+  // 头像 + body（meta 行在 inner 内顶部）
+  div.innerHTML = `
+    <div class="chat-bubble-avatar" aria-hidden="true">${avatarLetter}</div>
+    <div class="chat-bubble-inner">
+      <div class="chat-bubble-meta">
+        <span class="chat-label">${isAI ? 'AI' : isSystem ? '参考' : '你'}</span>
+        <span class="chat-meta-sep">·</span>
+        <span class="chat-time">${roundPrefix}${fmtLocalTime(entry.at)}</span>
+        ${hasThinking ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}
+        ${isAI ? '<span class="chat-export-btn" onclick="chatExportWord(this)" title="导出为 Word 文档">📄</span>' : ''}
+      </div>
+      ${bodyHtml}
+      ${userAttachHtml}
+    </div>
+  `;
   container.appendChild(div);
   // v0.21：音乐卡片首次插入 DOM 后挂进度条事件
   if (isSystem && div.querySelector('[data-music-card="1"]') && window.ACMSMusicCard) {
@@ -828,17 +845,21 @@ document.addEventListener('click', function(e) {
 window._chatAttachments = window._chatAttachments || {};
 
 // 🆕 v0.119：聊天 send 按钮多态状态机（每 reqId 一份状态）
-//   idle:        正常状态，[📤 发送] 蓝
-//   generating:  SSE 流式进行中，[⏹ 停止] 红边（输入框空 = 纯 interrupt，有内容 = interrupt-and-send）
+//   idle:         正常状态，[📤 发送] 蓝
+//   generating:   SSE 流式进行中，[⏹ 停止] 红边（输入框空 = 纯 interrupt，有内容 = interrupt-and-send）
 //   interrupting: interrupt 已发，等 result，[⋯ 中断中] 灰 disabled
-//   interrupted: result.interrupted=true 到达，渲染"已中断"卡片 + 续转按钮（输入框激活可发新指令）
+//   interrupted:  result.interrupted=true 到达，已渲染"已中断"卡片（v0.123 已基本不再触发，因引入 summarizing）
+//   summarizing:  v0.123 新增 —— 自动让 AI 总结已完成工作中（[⋯ 总结中] 灰 disabled）
+//   summarized:   v0.123 新增 —— 总结完成，渲染决策卡（[📤 发送] 激活）
 //   状态转移点：
 //     idle → generating：SSE 第一条 text_delta（或 tool_card）到达
 //     generating → interrupting：用户点 ⏹ 停止
-//     interrupting → interrupted：SSE end 事件 interrupted=true
+//     interrupting → summarizing：SSE end 事件 interrupted=true（v0.123 新增自动总结）
 //     interrupting → idle：SSE end 事件 interrupted=false
-//     interrupted → generating：用户发新消息（chatSend 路径）
-//     interrupted → idle：用户点 [继续] 后正常流式
+//     summarizing → summarized：总结 SSE end 事件（interrupted=false，正常完成）
+//     summarizing → idle：总结 SSE 出错（罕见）
+//     summarized → generating：用户点 ↻ 继续（chatContinueLastTurn）
+//     summarized → idle：用户点 ✕ 放弃
 window._chatSendState = window._chatSendState || {};
 window._chatInterrupted = window._chatInterrupted || {};  // reqId → { lastUserInput: '', interruptedAt: ts }
 window._chatContinueTimer = window._chatContinueTimer || {};  // reqId → setInterval handle（倒计时）
@@ -849,20 +870,26 @@ function setChatSendState(reqId, state) {
   var btnText = btn && btn.querySelector('.chat-send-btn-text');
   var input = document.getElementById('chat-input-' + reqId);
   if (btn) {
-    btn.classList.remove('chat-send-idle', 'chat-send-generating', 'chat-send-interrupting');
+    btn.classList.remove('chat-send-idle', 'chat-send-generating', 'chat-send-interrupting', 'chat-send-summarizing');
     if (state === 'generating') btn.classList.add('chat-send-generating');
     else if (state === 'interrupting') btn.classList.add('chat-send-interrupting');
+    else if (state === 'summarizing') btn.classList.add('chat-send-summarizing');
     else btn.classList.add('chat-send-idle');
-    btn.disabled = state === 'interrupting';
+    // 🆕 v0.123：summarizing 也 disabled（用户在 AI 总结时不能发新指令或中断）
+    btn.disabled = (state === 'interrupting' || state === 'summarizing');
   }
   if (btnText) {
     btnText.textContent = state === 'generating' ? '⏹ 停止'
       : state === 'interrupting' ? '⋯ 中断中'
+      : state === 'summarizing' ? '⋯ 总结中'
       : '📤 发送';
   }
   if (input) {
+    // 🆕 v0.123：summarized 状态：用户可发新指令
     input.placeholder = state === 'generating'
       ? '输入新内容并点发送可替换当前任务…'
+      : state === 'summarizing'
+      ? 'AI 正在总结已完成的工作…'
       : '问我任何问题…（可直接 Ctrl+V 粘贴截图）';
   }
 }
@@ -913,29 +940,185 @@ function renderChatInterruptedCard(reqId, opts) {
   if (typeof chatScrollToBottom === 'function') chatScrollToBottom(c);
 }
 
-// 🆕 v0.119：调后端 /api/qwen/continue
+// 🆕 v0.122：自由对话续转（v0.119 agent-buddy.js buddyContinueLastTurn+startContinueStream 的同款移植）
+//   agent-buddy 走 _continue__ 标记 + 独立 /chat?stream=1；自由对话走独立 /chat/continue（v0.122 新增）
+//   关键设计：
+//   1. 移除"已中断"卡片
+//   2. fetch POST /api/chat/continue {reqId} → 后端一次性完成 control_request + SSE 流推送
+//   3. resp 是 SSE 流 → 复用 handleFreeChatSSE（与 chatSendDetect 同一路径，render 行为完全一致）
+//   4. 端事件 interrupted=true（极罕见：续转时被新 interrupt 打断）→ handleFreeChatSSE 自动渲染新"已中断"卡片
+//   5. 端事件 interrupted=false → handleFreeChatSSE 正常 finalize，状态自动切 idle
 async function chatContinueLastTurn(reqId) {
+  // 1. 移除"已中断"卡片
   var c = document.getElementById('chat-stream-msgs-' + reqId);
   var card = c && c.querySelector('.chat-interrupted-card[data-req-id="' + reqId + '"]');
   if (card) card.remove();
+  // 2. 状态切 generating（按钮变 ⏹ 停止），与 chatSend 路径行为一致
+  setChatSendState(reqId, 'generating');
+  // 3. 插入 typing dots（用户期望看到"AI 思考中"反馈，与 chatSend 一致）
+  var typingEl = null;
+  if (c) {
+    typingEl = document.createElement('div');
+    typingEl.className = 'chat-typing';
+    typingEl.id = 'chat-typing-continue-' + reqId;
+    typingEl.innerHTML = '<span></span><span></span><span></span>';
+    c.appendChild(typingEl);
+    chatScrollToBottom(c);
+  }
   try {
-    const r = await api('POST', '/qwen/continue', { userId: reqId });
-    if (r && r.ok) {
-      setChatSendState(reqId, 'generating');
-      // 续转的输出会通过同 reqId 的 SSE 流回来 —— 但当前 SSE 连接已断（end 事件已发）
-      // 需要让前端去 fetch 续转的事件流；简化方案：toast 让用户知道已续转
-      // TODO v0.120：续转结果通过 SSE 同通道回来，需要 chat-intent.js 加 continue 端点
-      toast('已发送续转请求', 'info');
-    } else if (r && r.reason === 'no_session') {
-      toast('会话已过期，无法续转，请重新发送', 'warning');
+    const resp = await fetch('/api/chat/continue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+      body: JSON.stringify({ reqId }),
+    });
+    if (!resp.ok) {
+      if (typingEl) typingEl.remove();
+      // 404 → no_session；其他 → 通用错误
+      const errData = await resp.json().catch(() => ({}));
+      if (resp.status === 404 && errData.error === 'no_session') {
+        toast('会话已过期，无法续转，请重新发送', 'warning');
+      } else {
+        toast('续转失败：' + (errData.error || `HTTP ${resp.status}`), 'error');
+      }
       setChatSendState(reqId, 'idle');
-    } else {
-      toast('续转失败：' + (r && r.error || '未知'), 'error');
-      setChatSendState(reqId, 'idle');
+      return;
     }
-  } catch (e) {
+    // 4. SSE 流复用 handleFreeChatSSE（与 chatSendDetect 完全相同的事件格式 + B10 渲染）
+    await handleFreeChatSSE(reqId, resp, typingEl);
+    // handleFreeChatSSE 内部已处理状态切换：
+    //   - 第一个事件 → setChatSendState('generating') 兜底
+    //   - end.interrupted=true → 渲染新"已中断"卡片
+    //   - end.interrupted=false → 正常 finalize（但状态没自动切 idle，下面手动补）
+    // 注：handleFreeChatSSE 不负责切 idle（正常 chatSendDetect 也不切；是 polling 完成后切的）
+    //   这里我们需要手动切回 idle，因为续转流的 end 是真正的"完成"信号
+    var finalState = getChatSendState(reqId);
+    if (finalState === 'generating') setChatSendState(reqId, 'idle');
+} catch (e) {
+    if (typingEl) typingEl.remove();
     toast('续转请求异常：' + e.message, 'error');
     setChatSendState(reqId, 'idle');
+  }
+}
+
+// 🆕 v0.123：中断后自动让 AI 总结已完成工作 + 用户决策（[继续] / [放弃]）
+//   触发时机：handleFreeChatSSE end 事件 interrupted=true
+//   流程：
+//     1. 渲染 "⏸ AI 正在总结..." loading 卡（灰色背景 + typing dots）
+//     2. 渲染 user 气泡（"📋 请总结刚才中断的任务进度"）+ 调 chatSendDetect 走 SSE 流
+//     3. AI 总结回复渲染成普通 assistant 气泡（在 loading 卡上方）
+//     4. SSE 流完成后 → 替换 loading 卡为 done 卡 + 决策按钮（[继续][放弃]）
+//     5. 状态切 summarized
+//     6. 如果用户在中断前发了新指令（pending），自动 dispatch chatSendAfterInterrupt
+//
+//   总结消息写库（B 选项：写库）—— 历史可查，未来 LLM 也能看到总结内容
+//   "放弃" 仅 UI 清理（C 选项：仅 UI 清理）—— 不污染 history
+//   总结消息措辞（D 选项：中文 markdown 3 节结构）—— 信息密度最高
+async function triggerInterruptSummary(reqId, pending) {
+  var c = document.getElementById('chat-stream-msgs-' + reqId);
+  if (!c) return;
+
+  // 1. 渲染 loading 卡片
+  var loadingCard = document.createElement('div');
+  loadingCard.className = 'chat-summary-card chat-summary-loading';
+  loadingCard.setAttribute('data-req-id', reqId);
+  loadingCard.innerHTML =
+    '<div class="csc-head">⏸ AI 正在总结已完成的工作…</div>' +
+    '<div class="csc-body">' +
+      '<span class="chat-typing"><span></span><span></span><span></span></span>' +
+    '</div>';
+  c.appendChild(loadingCard);
+  chatScrollToBottom(c);
+
+  // 2. 构造总结消息（D 选项：中文 markdown 3 节结构）
+  var summaryPrompt =
+    '请用简洁的中文 markdown 总结：\n' +
+    '1) 你已完成的工作\n' +
+    '2) 还剩什么没做\n' +
+    '3) 下一步打算做什么\n\n' +
+    '不要超过 300 字。';
+
+  // 3. 渲染 user 气泡（让用户能看到"我刚才让 AI 总结" + history 留底）
+  renderChatBubble(c, {
+    role: 'user',
+    text: '📋 请总结刚才中断的任务进度',
+    at: new Date().toISOString(),
+  });
+  // 清掉旧 typing dots（避免与 loading 卡重叠）
+  var oldTyping = c.querySelector('#chat-typing-detect-' + reqId);
+  if (oldTyping) oldTyping.remove();
+  chatScrollToBottom(c);
+
+  // 4. 状态切 summarizing（按钮变 "⋯ 总结中" + disabled）—— 已在 end 事件 handler 里设置
+
+  // 5. 调 chatSendDetect 走正常 SSE 流（AI 总结回复会渲染成普通 assistant 气泡）
+  var summaryOk = false;
+  try {
+    await chatSendDetect(reqId, summaryPrompt);
+    summaryOk = true;
+  } catch (e) {
+    console.error('[chat-summary] 总结失败:', e);
+    if (loadingCard.parentNode) {
+      loadingCard.classList.remove('chat-summary-loading');
+      loadingCard.classList.add('chat-summary-error');
+      loadingCard.innerHTML =
+        '<div class="csc-head">⚠️ 总结失败</div>' +
+        '<div class="csc-body">' + escHtml(String(e && e.message || e).slice(0, 200)) + '</div>' +
+        '<div class="csc-actions">' +
+          '<button class="csc-btn csc-continue" type="button">↻ 继续刚才的任务</button>' +
+          '<button class="csc-btn csc-discard" type="button">✕ 放弃，彻底结束</button>' +
+        '</div>';
+      bindSummaryCardButtons(loadingCard, reqId);
+    }
+    setChatSendState(reqId, 'idle');
+    return;
+  }
+
+  // 6. 总结成功 → 替换 loading 卡为 done 卡
+  if (loadingCard.parentNode) {
+    loadingCard.classList.remove('chat-summary-loading');
+    loadingCard.classList.add('chat-summary-done');
+    loadingCard.innerHTML =
+      '<div class="csc-head">📋 已总结完成</div>' +
+      '<div class="csc-hint">查看上方的 AI 总结，或选择下一步：</div>' +
+      '<div class="csc-actions">' +
+        '<button class="csc-btn csc-continue" type="button">↻ 继续刚才的任务</button>' +
+        '<button class="csc-btn csc-discard" type="button">✕ 放弃，彻底结束</button>' +
+      '</div>';
+    bindSummaryCardButtons(loadingCard, reqId);
+    chatScrollToBottom(c);
+  }
+
+  // 7. 状态切 summarized（覆盖 handleFreeChatSSE 内部的 idle）
+  setChatSendState(reqId, 'summarized');
+
+  // 8. 如果用户在中断前发了新指令（pending），自动 dispatch
+  //   调 chatSendAfterInterrupt（v0.119 已实现）渲染 user 气泡 + 调 chatSendDetect
+  if (pending && (pending.text || (pending.attachments && pending.attachments.length))) {
+    setTimeout(function() {
+      // 再次确认 pending 仍有效（防止按钮被用户提前点掉）
+      chatSendAfterInterrupt(reqId, pending.text, pending.attachments || []);
+    }, 100);
+  }
+}
+
+// 绑定 summary 卡片的 [继续][放弃] 按钮事件
+function bindSummaryCardButtons(card, reqId) {
+  var continueBtn = card.querySelector('.csc-continue');
+  var discardBtn = card.querySelector('.csc-discard');
+  if (continueBtn) {
+    continueBtn.onclick = function() { chatContinueLastTurn(reqId); };
+  }
+  if (discardBtn) {
+    discardBtn.onclick = function() {
+      var c = document.getElementById('chat-stream-msgs-' + reqId);
+      card.remove();
+      // 清理可能的残留 typing dots
+      if (c) {
+        var typing = c.querySelector('.chat-typing-continue-' + reqId);
+        if (typing) typing.remove();
+      }
+      setChatSendState(reqId, 'idle');
+    };
   }
 }
 
@@ -1346,9 +1529,10 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
     if (streamBubbleEl) return streamBubbleEl;
     if (!c) return null;
     var bubble = document.createElement('div');
-    bubble.className = 'ap-msg ap-msg-buddy ap-stream-bubble';
+    bubble.className = 'ap-msg ap-msg-buddy ap-stream-bubble ap-msg-free';
     bubble.id = 'ap-stream-bubble';   // 当前流式气泡 = 卡片插入锚点（小吉模式）
-    bubble.innerHTML = '<div class="ap-msg-text"></div><span class="ap-cursor">▍</span>';
+    // v0.122: AI 流式气泡补 Q 头像（与历史消息 chat-bubble-ai 同款），class ap-msg-free 走统一气泡语言
+    bubble.innerHTML = '<div class="ap-msg-avatar" aria-hidden="true">Q</div><div class="ap-msg-text"></div><span class="ap-cursor"></span>';
     c.appendChild(bubble);
     streamBubbleEl = bubble.querySelector('.ap-msg-text');
     if (typeof chatScrollToBottom === 'function') chatScrollToBottom(c);
@@ -1414,21 +1598,25 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
           } else if (evt.type === 'progress') {
             if (_lastBubbleEvent === 'text') finalizeCurrentBubble();
             _lastBubbleEvent = 'progress';
-          } else if (evt.type === 'end') {
+} else if (evt.type === 'end') {
             sessionReqId = evt.sessionRequirementId || null;
             musicCardJson = evt.musicCardJson || null;
-            // 🆕 v0.119：中断触发的 end → 渲染"已中断"卡片 + 切状态
+            // 🆕 v0.119：中断触发的 end → 触发自动总结流程
+            //   v0.123 重大升级：不再直接渲染"已中断"卡片
+            //   而是触发 triggerInterruptSummary → AI 总结已完成工作 → 总结完后渲染决策卡
+            //   pending send（用户在 generating 状态发了新指令等中断后接续）保留原逻辑：
+            //   由 triggerInterruptSummary 在总结完成后自动 dispatch
             if (evt.interrupted === true) {
               finalizeCurrentBubble();  // 封存未完成的流式气泡
-              renderChatInterruptedCard(reqId, { leftText: '已中断当前回复' });
-              setChatSendState(reqId, 'interrupted');
-              // pending send（用户在 generating 状态发了新指令等中断后接续）
+              // 提取 pending send（在切 summarizing 之前）
+              var pending = null;
               if (window._chatPendingSend && window._chatPendingSend[reqId]) {
-                var pending = window._chatPendingSend[reqId];
+                pending = window._chatPendingSend[reqId];
                 delete window._chatPendingSend[reqId];
-                // 异步触发（让当前 SSE 处理完再开新连接）
-                setTimeout(function() { chatSendAfterInterrupt(reqId, pending.text, pending.attachments || []); }, 50);
               }
+              setChatSendState(reqId, 'summarizing');
+              // 异步触发（让当前 SSE 处理完再开新连接）
+              setTimeout(function() { triggerInterruptSummary(reqId, pending); }, 50);
             } else if (evt.error) {
               // 🆕 v0.117x: error 安全转换 —— 后端可能传对象（String(对象)=[object Object]）
               finalizeCurrentBubble();
@@ -2609,12 +2797,8 @@ async function loadChatSessionMessages(w, sid) {
     _chatState[sid].histCount = messages.length;
     container.innerHTML = '';
     if (messages.length === 0) {
-      // 空 session：显示欢迎
-      container.innerHTML = '<div class="chat-free-welcome" style="text-align:center;padding:40px 20px;color:var(--text2)">'
-        + '<div style="font-size:32px;margin-bottom:8px">💬</div>'
-        + '<div style="font-size:15px;font-weight:500;color:var(--text);margin-bottom:4px">新对话</div>'
-        + '<div style="font-size:12px">问我任何问题，AI 会基于知识库和互联网帮你解答</div>'
-        + '</div>';
+      // 空 session：不显示欢迎（保留空容器，用户直接看输入框）
+      container.innerHTML = '';
       return;
     }
     // 渲染历史 messages

@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<title>ACMS 自由对话 UI Demo</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; }
+
+/* ===== 主题变量 — 仿 ACMS 主题系统 ===== */
+:root {
+  --bg: #f5f5f7;
+  --bg2: #ffffff;
+  --bg3: #eeeef1;
+  --bg3-alt: #f7f7f9;
+  --text: #1a1a2e;
+  --text2: #555568;
+  --text3: #9090a0;
+  --border: rgba(10,120,110,0.18);
+  --accent: #0ea89d;
+  --accent-soft: rgba(14,168,157,0.10);
+  --highlight: #fef4d9;
+  --warn: #c89432;
+  --err: #d04848;
+  --ok: #36a854;
+  --info: #4b8fd4;
+}
+[data-theme="dark"] {
+  --bg: #1a1a28;
+  --bg2: #232336;
+  --bg3: #2a2a40;
+  --bg3-alt: #303045;
+  --text: #e8e8f0;
+  --text2: #b8b8c8;
+  --text3: #888898;
+  --border: rgba(255,255,255,0.12);
+  --highlight: #3a3020;
+  --warn: #ffd93d;
+  --err: #ff6b6b;
+  --ok: #51cf66;
+  --info: #5fa8e0;
+}
+[data-theme="cream"] {
+  --bg: #fef9ef;
+  --bg2: #fdf6e3;
+  --bg3: #f5eedc;
+  --bg3-alt: #ede5cf;
+  --text: #3d3022;
+  --text2: #6b5a47;
+  --text3: #998870;
+  --border: rgba(90,130,80,0.18);
+  --accent: #5b8c5a;
+  --accent-soft: rgba(91,140,90,0.12);
+  --highlight: #faf0d0;
+  --warn: #c89432;
+  --err: #c04848;
+  --ok: #5a8c4a;
+  --info: #5188a8;
+}
+
+body {
+  background: var(--bg); color: var(--text); margin: 0;
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  transition: background 0.3s, color 0.3s;
+  padding: 30px 0 60px;
+}
+
+/* 主题切换器 */
+.theme-switcher {
+  position: fixed; top: 14px; right: 14px; z-index: 999;
+  display: flex; gap: 4px;
+  background: var(--bg2); padding: 4px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.10);
+}
+.theme-switcher button {
+  padding: 6px 12px; border: 1px solid transparent;
+  background: transparent; color: var(--text);
+  cursor: pointer; border-radius: 6px;
+  font-size: 12px;
+}
+.theme-switcher button.active { background: var(--accent); color: #fff; }
+
+.chat-window {
+  max-width: 760px; margin: 0 auto;
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 14px; padding: 22px 22px 18px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.08);
+}
+.chat-window-title { font-size: 13px; color: var(--text3); margin-bottom: 16px;
+  text-align: center; letter-spacing: 0.5px; }
+
+.chat-stream {
+  display: flex; flex-direction: column; gap: 14px;
+  max-height: 75vh; overflow-y: auto; padding-right: 6px;
+}
+
+/* ===== 消息气泡 ===== */
+.msg {
+  display: flex; gap: 10px; align-items: flex-start;
+  animation: fade-in 0.2s ease;
+}
+.msg-user { justify-content: flex-end; }
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.avatar {
+  width: 32px; height: 32px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 600; flex-shrink: 0;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.10);
+}
+.avatar-user { background: var(--accent); color: #fff; font-size: 13px; }
+.avatar-ai {
+  background: linear-gradient(135deg, var(--accent), var(--info));
+  color: #fff;
+}
+
+.bubble {
+  max-width: 78%; padding: 9px 13px;
+  border-radius: 14px;
+  line-height: 1.55;
+  font-size: 13px;
+  word-wrap: break-word;
+}
+.bubble-ai {
+  background: var(--bg3); color: var(--text);
+  border-top-left-radius: 4px;
+}
+.bubble-user {
+  background: var(--accent); color: #fff;
+  border-top-right-radius: 4px;
+}
+.bubble-system {
+  background: var(--highlight); color: var(--text2);
+  font-size: 12px;
+  text-align: center;
+  border-radius: 14px;
+  padding: 6px 14px;
+}
+
+.bubble code {
+  background: rgba(0,0,0,0.15); padding: 1px 5px;
+  border-radius: 3px; font-family: "Consolas", "Monaco", monospace;
+  font-size: 12px;
+}
+.bubble-user code { background: rgba(255,255,255,0.25); color: #fff; }
+
+.chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: rgba(255,255,255,0.25);
+  padding: 2px 8px; border-radius: 999px;
+  font-size: 11px; margin-top: 6px;
+}
+
+/* ===== 思考中 ===== */
+.thinking {
+  display: flex; gap: 8px; align-items: center;
+  background: var(--bg3); padding: 8px 13px;
+  border-radius: 14px; border-top-left-radius: 4px;
+  font-size: 12px; color: var(--text2);
+}
+.thinking-dots { display: flex; gap: 4px; }
+.thinking-dots span {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+  animation: pulse 1.4s infinite;
+}
+.thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
+.thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
+.thinking-elapsed { color: var(--text3); font-size: 11px; margin-left: auto; padding-left: 10px; }
+@keyframes pulse {
+  0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-2px); }
+}
+
+/* 流式光标 */
+.cursor { display: inline-block; width: 8px; height: 14px;
+  background: currentColor; margin-left: 2px;
+  animation: cursor-blink 1s infinite;
+  vertical-align: -2px; opacity: 0.7; }
+@keyframes cursor-blink { 0%, 50% { opacity: 0.7; } 50.1%, 100% { opacity: 0; } }
+
+/* ===== 工具卡片 ===== */
+.tool-card {
+  margin: 4px 0 4px 42px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 12px;
+  overflow: hidden;
+  max-width: 85%;
+}
+.tool-card-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px 8px 12px;
+  background: var(--bg3);
+  cursor: pointer;
+  border-left: 3px solid var(--info);
+  user-select: none;
+}
+.tool-card[data-status="awaiting"] .tool-card-head { border-left-color: var(--warn); background: rgba(200,148,50,0.06); }
+.tool-card[data-status="done"] .tool-card-head { border-left-color: var(--ok); }
+.tool-card[data-status="failed"] .tool-card-head { border-left-color: var(--err); }
+.tool-card[data-status="denied"] .tool-card-head { border-left-color: var(--text3); opacity: 0.75; }
+
+.tool-icon { font-size: 14px; flex-shrink: 0; }
+.tool-name { color: var(--accent); font-family: "Consolas", monospace;
+  font-weight: 600; font-size: 13px; }
+.tool-label { color: var(--text3); font-size: 11px; }
+.tool-status-text { font-size: 11px; }
+.tool-card[data-status="awaiting"] .tool-status-text { color: var(--warn); font-weight: 600; }
+.tool-card[data-status="done"] .tool-status-text { color: var(--ok); }
+.tool-card[data-status="failed"] .tool-status-text { color: var(--err); font-weight: 600; }
+
+.tool-toggle {
+  margin-left: auto;
+  color: var(--text3);
+  transition: transform 0.2s;
+  font-size: 11px;
+}
+.tool-card.expanded .tool-toggle { transform: rotate(90deg); }
+.tool-body {
+  padding: 10px 14px;
+  display: none;
+  border-top: 1px solid var(--border);
+}
+.tool-card.expanded .tool-body { display: block; }
+.tool-section { margin-top: 6px; }
+.tool-section:first-child { margin-top: 0; }
+.tool-section-head { color: var(--text3); font-size: 10px; margin-bottom: 3px;
+  font-weight: 600; letter-spacing: 0.3px; text-transform: uppercase; }
+.tool-code {
+  background: var(--bg3); padding: 6px 8px; border-radius: 4px;
+  font-family: "Consolas", monospace; font-size: 11px;
+  max-height: 200px; overflow: auto; white-space: pre-wrap;
+  word-break: break-all; margin: 0;
+  color: var(--text);
+}
+
+/* 工具类型色（图标） */
+.tool-card[data-tool="bash"] .tool-icon { color: var(--err); }
+.tool-card[data-tool="read"] .tool-icon { color: var(--warn); }
+.tool-card[data-tool="write"] .tool-icon { color: var(--ok); }
+.tool-card[data-tool="edit"] .tool-icon { color: var(--info); }
+.tool-card[data-tool="web_search"] .tool-icon { color: var(--accent); }
+.tool-card[data-tool="mcp"] .tool-icon { color: #c084fc; }
+.tool-card[data-tool="ask"] .tool-icon { color: #ec4899; }
+
+/* 工具组 */
+.tool-group {
+  margin: 4px 0 4px 42px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg2);
+  overflow: hidden;
+  max-width: 85%;
+  font-size: 12px;
+}
+.tool-group-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 14px; background: var(--bg3);
+  cursor: pointer; user-select: none;
+}
+.tool-group-toggle { transition: transform 0.2s; color: var(--text3); font-size: 11px; }
+.tool-group.expanded .tool-group-toggle { transform: rotate(90deg); }
+.tool-group-title { font-weight: 600; color: var(--accent); }
+.tool-group-stats { font-size: 11px; color: var(--text3); margin-left: auto;
+  display: flex; gap: 8px; }
+.tool-group-stats .stat-done { color: var(--ok); font-weight: 600; }
+.tool-group-stats .stat-failed { color: var(--err); font-weight: 600; }
+.tool-group-stats .stat-awaiting { color: var(--warn); font-weight: 600; }
+.tool-group-body { display: none; padding: 6px; }
+.tool-group.expanded .tool-group-body { display: block; }
+.tool-group-body > .tool-card { margin-left: 0; margin-top: 4px; max-width: none; }
+.tool-group-body > .tool-card:first-child { margin-top: 0; }
+
+.demo-note {
+  text-align: center; font-size: 11px; color: var(--text3);
+  margin-top: 14px; padding-top: 14px;
+  border-top: 1px dashed var(--border);
+}
+</style>
+</head>
+<body>
+
+<div class="theme-switcher">
+  <button data-set-theme="light" class="active">☀ 浅色</button>
+  <button data-set-theme="cream">☕ 奶油</button>
+  <button data-set-theme="dark">🌙 深色</button>
+</div>
+
+<div class="chat-window">
+  <div class="chat-window-title">ACMS 自由对话 UI 优化 · 样式 Demo</div>
+  
+  <div class="chat-stream">
+
+    <!-- 用户简短 -->
+    <div class="msg msg-user">
+      <div class="bubble bubble-user">帮我查一下 ACMS 今天有哪些待办</div>
+      <div class="avatar avatar-user">P</div>
+    </div>
+
+    <!-- AI 短回复 + 流式光标 -->
+    <div class="msg msg-ai">
+      <div class="avatar avatar-ai">Q</div>
+      <div class="bubble bubble-ai">好的，我帮你查一下。<span class="cursor"></span></div>
+    </div>
+
+    <!-- AI 思考中 -->
+    <div class="msg msg-ai">
+      <div class="avatar avatar-ai">Q</div>
+      <div class="thinking">
+        <div class="thinking-dots"><span></span><span></span><span></span></div>
+        <span>正在整理任务列表…</span>
+        <span class="thinking-elapsed">3.2s</span>
+      </div>
+    </div>
+
+    <!-- 工具卡：折叠态（done bash） -->
+    <div class="tool-card" data-status="done" data-tool="bash">
+      <div class="tool-card-head">
+        <span class="tool-icon">⚡</span>
+        <span class="tool-name">bash</span>
+        <span class="tool-label">ls workspace/</span>
+        <span class="tool-status-text">0.4s</span>
+        <span class="tool-toggle">▶</span>
+      </div>
+      <div class="tool-body">
+        <div class="tool-section">
+          <div class="tool-section-head">输出</div>
+          <pre class="tool-code">agent-buddy-test
+chat-demo
+onboarding-v0.95
+prospect-tracking</pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- 工具卡：展开态（awaiting write_file） -->
+    <div class="tool-card expanded" data-status="awaiting" data-tool="write">
+      <div class="tool-card-head">
+        <span class="tool-icon">📝</span>
+        <span class="tool-name">write_file</span>
+        <span class="tool-label">/todo.md</span>
+        <span class="tool-status-text">⏳ 待审批</span>
+        <span class="tool-toggle">▶</span>
+      </div>
+      <div class="tool-body">
+        <div class="tool-section">
+          <div class="tool-section-head">参数</div>
+          <pre class="tool-code">{ "path": "/todo.md",
+  "content": "# 待办\n\n- 自由聊天 UI\n- 工具卡片" }</pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- 工具组：折叠头，内含 1 个 done + 1 个 failed -->
+    <div class="tool-group expanded">
+      <div class="tool-group-head">
+        <span class="tool-group-toggle">▶</span>
+        <span class="tool-group-title">🔧 工具调用</span>
+        <span class="tool-group-stats">
+          <span class="stat-done">✅ 3</span>
+          <span class="stat-failed">❌ 1</span>
+          <span class="stat-awaiting">⏳ 1</span>
+        </span>
+      </div>
+      <div class="tool-group-body">
+        <div class="tool-card expanded" data-status="done" data-tool="read">
+          <div class="tool-card-head">
+            <span class="tool-icon">📖</span>
+            <span class="tool-name">read_file</span>
+            <span class="tool-label">/spec.md</span>
+            <span class="tool-status-text">✅ 0.2s</span>
+            <span class="tool-toggle">▶</span>
+          </div>
+          <div class="tool-body">
+            <div class="tool-section">
+              <div class="tool-section-head">预览</div>
+              <pre class="tool-code"># Project Spec
+
+## Features
+- Web research
+- Email automation</pre>
+            </div>
+          </div>
+        </div>
+        <div class="tool-card" data-status="failed" data-tool="bash">
+          <div class="tool-card-head">
+            <span class="tool-icon">⚡</span>
+            <span class="tool-name">bash</span>
+            <span class="tool-label">curl https://api...</span>
+            <span class="tool-status-text">❌ timeout</span>
+            <span class="tool-toggle">▶</span>
+          </div>
+          <div class="tool-body">
+            <div class="tool-section">
+              <div class="tool-section-head">错误</div>
+              <pre class="tool-code">Error: ETIMEDOUT (30s)</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI 长 markdown 回复 -->
+    <div class="msg msg-ai">
+      <div class="avatar avatar-ai">Q</div>
+      <div class="bubble bubble-ai">
+        已查到今天 <b>5 个待办</b>：<br>
+        1. 自由聊天 UI 改造（高优）<br>
+        2. 工具卡片视觉打磨<br>
+        3. <code>utils.js</code> 公共函数抽离<br>
+        4. 测试用例补充<br>
+        5. 120 服务器部署验证<br><br>
+        其中 1 和 2 是这次 UI 优化的核心。其他可以并到下个迭代。
+      </div>
+    </div>
+
+    <!-- 用户带附件 chip -->
+    <div class="msg msg-user">
+      <div>
+        <div class="bubble bubble-user">
+          参考这个 UI 设计稿
+          <br><span class="chip">📎 chat-design.figma · 2.4 MB</span>
+        </div>
+      </div>
+      <div class="avatar avatar-user">P</div>
+    </div>
+
+    <!-- 系统消息（居中胶囊） -->
+    <div style="display:flex; justify-content:center;">
+      <div class="bubble bubble-system">已保存到聊天会话，下次自动加载</div>
+    </div>
+
+    <!-- 工具卡：错误态 (展开) -->
+    <div class="tool-card expanded" data-status="failed" data-tool="web_search">
+      <div class="tool-card-head">
+        <span class="tool-icon">🔍</span>
+        <span class="tool-name">web_search</span>
+        <span class="tool-label">"Qwen Code 0.21"</span>
+        <span class="tool-status-text">❌ 连接超时</span>
+        <span class="tool-toggle">▶</span>
+      </div>
+      <div class="tool-body">
+        <div class="tool-section">
+          <div class="tool-section-head">错误</div>
+          <pre class="tool-code" style="color:var(--err)">Error: ETIMEDOUT (timeout 30s)
+建议：检查网络或切换搜索引擎</pre>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="demo-note">↑ 切右上角三主题对比 · 点 ▶ 试展开/折叠 · 状态条和类型配色是核心改进</div>
+</div>
+
+<script>
+document.querySelectorAll('[data-set-theme]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.documentElement.setAttribute('data-theme', btn.dataset.setTheme);
+    document.querySelectorAll('[data-set-theme]').forEach(b => b.classList.toggle('active', b === btn));
+  });
+});
+document.querySelectorAll('.tool-card-head').forEach(head => {
+  head.addEventListener('click', () => head.closest('.tool-card').classList.toggle('expanded'));
+});
+document.querySelectorAll('.tool-group-head').forEach(head => {
+  head.addEventListener('click', () => head.closest('.tool-group').classList.toggle('expanded'));
+});
+</script>
+
+</body>
+</html>

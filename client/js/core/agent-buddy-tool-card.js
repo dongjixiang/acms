@@ -176,15 +176,14 @@
       + '<span class="ap-tool-group-title">🔧 工具调用</span>'
       + '<span class="ap-tool-group-stats"></span>'
       + '</div>'
-      + '<div class="ap-tool-group-body" style="display:none"></div>';
++ '<div class="ap-tool-group-body"></div>';  /* 🆕 v0.121: 移除 inline style display:none（CSS 默认折叠 + .expanded class 控制） */
     var head = group.querySelector('.ap-tool-group-head');
     head.addEventListener('click', function () {
-      var body = group.querySelector('.ap-tool-group-body');
-      var hidden = body.style.display === 'none';
-      body.style.display = hidden ? 'block' : 'none';
-      head.querySelector('.ap-tool-group-toggle').textContent = hidden ? '▼' : '▶';
+      // 🆕 v0.121: CSS .expanded class toggle（不用 inline style + 字符切换）
+      var willExpand = !group.classList.contains('expanded');
+      group.classList.toggle('expanded', willExpand);
       // 🆕 v0.114w：group 展开后滚到可见（group 在底部时展开内容展示不全）
-      if (hidden) scrollCardIntoView(group);
+      if (willExpand) scrollCardIntoView(group);
     });
     return group;
   }
@@ -312,11 +311,13 @@
   }
 
   // ============ DOM helpers ============
-  function createCardEl(toolName, toolUseId) {
+function createCardEl(toolName, toolUseId) {
     var el = document.createElement('div');
     el.className = 'ap-tool-card ap-tool-status-pending';
     el.setAttribute('data-tool-use-id', toolUseId);
     el.setAttribute('data-tool-name', toolName || '');
+    el.setAttribute('data-status', 'pending');  /* 🆕 v0.121: CSS 状态条 selector */
+    el.setAttribute('data-tool', toolName || '');  /* 🆕 v0.121: CSS 类型配色 selector */
     return el;
   }
 
@@ -330,6 +331,8 @@ function paintHead(card) {
     var icon = statusMap[card.status] || '⏳';
     var label = statusLabel[card.status] || card.status;
     card.el.className = 'ap-tool-card ap-tool-status-' + card.status;
+    card.el.setAttribute('data-status', card.status);  /* 🆕 v0.121: 同步 data-status */
+    card.el.setAttribute('data-tool', card.toolName || '');  /* 🆕 v0.121: 同步 data-tool */
 
     // 🆕 P2：保留 body innerHTML（重画 head 不丢 body 内容）
     var existingBody = card.el.querySelector('.ap-tool-card-body');
@@ -347,16 +350,17 @@ function paintHead(card) {
         + '</span>';
     }
 
-    // 🆕 P2：head 加 ▶/▼ 折叠按钮（v0.18 极简偏好：默认折叠，看详情点开）
+    // 🆕 v0.121: 折叠箭头 ▶ 用 CSS rotate（统一字符，不再切 ▼）
+    // 🆕 v0.121: status label 加 class ap-tool-card-status-text（CSS 状态色染色）
     card.el.innerHTML = '<div class="ap-tool-card-head">'
       + '<span class="ap-tool-card-toggle" data-action="toggle">▶</span>'
       + '<span class="ap-tool-card-icon">' + icon + '</span>'
       + '<span class="ap-tool-card-name">' + escHtml(card.toolName) + '</span>'
-      + '<span class="ap-tool-card-label">' + label + '</span>'
+      + '<span class="ap-tool-card-label"><span class="ap-tool-card-status-text">' + escHtml(label) + '</span></span>'
       + (card.isError ? '<span class="ap-tool-card-err">错误</span>' : '')
       + headActionsHtml
       + '</div>'
-      + '<div class="ap-tool-card-body" style="display:none"></div>';
+      + '<div class="ap-tool-card-body"></div>';  /* 🆕 v0.121: 移除 inline style display:none（CSS 默认折叠 + .expanded class 控制） */
 
     // 还原 body 内容
     if (preservedBodyHtml) {
@@ -392,16 +396,15 @@ function paintHead(card) {
       });
     });
 
-    // 绑定折叠按钮
+// 绑定折叠按钮
     var toggleBtn = card.el.querySelector('.ap-tool-card-toggle');
     if (toggleBtn) {
       toggleBtn.style.cursor = 'pointer';
       toggleBtn.title = '点击展开/折叠';
       toggleBtn.addEventListener('click', function (e) {
         e.stopPropagation();
-        var body = card.el.querySelector('.ap-tool-card-body');
-        var hidden = body.style.display === 'none';
-        setBodyVisible(card, hidden);
+        // 🆕 v0.121: 用 .expanded class 判断（不再读 inline display）
+        setBodyVisible(card, !card.el.classList.contains('expanded'));
       });
     }
     // 点 head 也能折叠/展开（除了 toggle / head-btn 按钮）
@@ -412,15 +415,14 @@ function paintHead(card) {
       // head-btn 已 stopPropagation 自处理；这里兜底
       if (typeof t.closest === 'function' && t.closest('.ap-tool-card-head-btn')) return;
       if (t.classList && t.classList.contains('ap-tool-card-toggle')) return;
-      var body = card.el.querySelector('.ap-tool-card-body');
-      var hidden = body.style.display === 'none';
-      setBodyVisible(card, hidden);
+      // 🆕 v0.121: 用 .expanded class 判断（不再读 inline display）
+      setBodyVisible(card, !card.el.classList.contains('expanded'));
     });
   }
 
   // 🆕 A1（2026-08-23）：确保 card 所在的 group body 可见（含 awaiting 时自动展开）
   // 🆕 v0.114w：展开 group 后滚到卡片可见 —— group 展开会改变卡片位置，
-  //   之前 setBodyVisible 的滚动基于折叠态算的位置不准，这里以展开后为准。
+//   之前 setBodyVisible 的滚动基于折叠态算的位置不准，这里以展开后为准。
   function ensureGroupVisible(card) {
     // 找到 card.el 的最近 group 祖先
     var parent = card.el && card.el.parentNode;
@@ -431,14 +433,9 @@ function paintHead(card) {
     if (!parent || !parent.classList || !parent.classList.contains('ap-tool-group-body')) return;  // 不在 group 内
     var groupEl = parent.parentNode;  // .ap-tool-group
     if (!groupEl) return;
-    var body = parent;  // .ap-tool-group-body
-    if (body.style.display === 'none') {
-      body.style.display = 'block';
-      var head = groupEl.querySelector('.ap-tool-group-head');
-      if (head) {
-        var t = head.querySelector('.ap-tool-group-toggle');
-        if (t) t.textContent = '▼';
-      }
+    // 🆕 v0.121: 用 .expanded class（CSS 默认折叠 + .expanded 显示）
+    if (!groupEl.classList.contains('expanded')) {
+      groupEl.classList.add('expanded');
     }
     // 🆕 v0.114w：group body 已展开 → 滚动到卡片可见（覆盖底部展示不全）
     scrollCardIntoView(card.el);
@@ -447,12 +444,11 @@ function paintHead(card) {
   // 🆕 P2：body 显示/隐藏 helper（统一管理 ▶/▼ + body display）
   // 🆕 v0.114w：展开后自动滚动到卡片可见 —— 卡片在对话流底部时，
   //   展开的 body 可能超出容器可视区（用户实报"扩展出来的内容展示不全"）。
+  // 🆕 v0.121: 用 .expanded class（CSS rotate + display）替代 inline style + textContent
   function setBodyVisible(card, visible) {
     var body = card.el.querySelector('.ap-tool-card-body');
-    var toggleBtn = card.el.querySelector('.ap-tool-card-toggle');
     if (!body) return;
-    body.style.display = visible ? 'block' : 'none';
-    if (toggleBtn) toggleBtn.textContent = visible ? '▼' : '▶';
+    card.el.classList.toggle('expanded', !!visible);
     if (visible) {
       // 🆕 v0.117p: 展开后添加短暂的高亮效果，帮助用户注意到卡片已展开
       card.el.style.boxShadow = '0 0 0 2px rgba(78, 205, 196, 0.5)';

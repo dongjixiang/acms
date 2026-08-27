@@ -1734,7 +1734,7 @@ function isNonPlanTerminal(state) {
         msgEl.className = 'ap-msg ap-msg-buddy';
         container.appendChild(msgEl);
       }
-      msgEl.innerHTML = '<span class="ap-msg-text">' + mdFn(cleanText) + '<span class="ap-cursor">|</span></span>';
+      msgEl.innerHTML = '<span class="ap-msg-text">' + mdFn(cleanText) + '<span class="ap-cursor"></span></span>';
       container.scrollTop = container.scrollHeight;
     }
 
@@ -2247,7 +2247,7 @@ function handleStream(r) {
         //   所以新 bubble 自然在它们之后；streamBubble 元素 ID 在 finalizeCurrentBubble 时被清空）
         container.appendChild(msgEl);
       }
-      msgEl.innerHTML = '<span class="ap-msg-text">' + mdFn(cleanText) + '<span class="ap-cursor">|</span></span>';
+      msgEl.innerHTML = '<span class="ap-msg-text">' + mdFn(cleanText) + '<span class="ap-cursor"></span></span>';
       container.scrollTop = container.scrollHeight;
     }
 

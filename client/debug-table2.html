@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Table + Heading Debug - Simulate ACMS</title>
+<style>
+[data-theme="dark"] {
+  --bg: #0f0f1a; --bg2: #1a1a2e; --bg3: #252540;
+  --text: #e0e0e0; --text2: #9090a0;
+  --border: rgba(78, 205, 196, 0.2);
+}
+body { background: var(--bg); color: var(--text); font-family: 'Microsoft YaHei', sans-serif; padding: 20px; }
+.ap-msg-text { background: var(--bg3, #252540); padding: 5px 8px; border-radius: 6px; color: var(--text, #e0e0f0); max-width: 600px; word-break: break-word; white-space: pre-wrap; }
+
+/* === Current style.css rules (exactly as deployed) === */
+.ap-msg-text table { width: 100%; border-collapse: collapse; margin: 4px 0; font-size: 11px; line-height: 1.3; table-layout: auto; }
+.ap-msg-text th, .ap-msg-text td { border: 1px solid var(--border, rgba(255,255,255,0.18)); padding: 2px 6px; text-align: left; white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis; color: var(--text, #e0e0f0); }
+.ap-msg-text th { background: var(--bg3, rgba(255,255,255,0.08)); font-weight: 600; }
+.ap-msg-text tr:nth-child(even) td { background: var(--bg3-alt, rgba(255,255,255,0.03)); }
+</style>
+</head>
+<body>
+<h2>Case A: Table wrapped in <p> (CURRENT behavior)</h2>
+<div class="ap-msg-text" id="case-a"></div>
+
+<hr>
+<h2>Case B: Table NOT wrapped in <p> (FIXED)</h2>
+<div class="ap-msg-text" id="case-b"></div>
+
+<script>
+// Real LLM content from the session
+const md = `多多，今日财经要闻汇总如下：
+
+---
+
+## 📈 A股市场（8月26日）
+
+**三大指数全线收红**，沪指低开高走收复20日线，市场热度 48.0°
+
+### 🔥 今日热门板块
+| 板块 | 涨幅 | 备注 |
+|------|------|------|
+| **证券** | +3.01% | 锦龙股份、湘财股份涨停 |
+| **工业金属** | +2.25% | 江西铜业涨停，LME期铜创收盘价历史新高 |
+| **非银金融** | +2.59% | |
+| **黄金** | — | Comex黄金重返4700美元上方 |
+| **金融科技** | — | 楚天龙涨停 |
+| **钢铁** | +1.51% | |`;
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function renderTables(html) {
+  const tableRegex = /((?:^|\n)\|?[^\n]+\|?\n\|?[-:|\s]+\|?\n(?:(?:\|?[^\n]+\|?)\n?)*)/g;
+  return html.replace(tableRegex, (match) => {
+    const lines = match.trim().split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.length < 2) return match;
+    const headers = lines[0].split('|').map(s => s.trim()).filter(s => s && !/^[-:]+$/.test(s));
+    if (headers.length === 0) return match;
+    const rows = lines.slice(2).map(l => l.split('|').map(s => s.trim()).filter(s => s && !/^[-:]+$/.test(s))).filter(r => r.length > 0);
+    if (rows.length === 0) return match;
+    let table = '<table><thead><tr>';
+    for (const h of headers) table += `<th>${h}</th>`;
+    table += '</tr></thead><tbody>';
+    for (const row of rows) { table += '<tr>'; for (const c of row) table += `<td>${c}</td>`; table += '</tr>'; }
+    table += '</tbody></table>';
+    return table;
+  });
+}
+
+function renderMarkdownCurrent(md) {
+  // This is the CURRENT renderMarkdown (identical to markdown.js lines 10-92)
+  let html = escHtml(md);
+  html = html.replace(/\n\s*---\s*\n/g, '\n<hr>\n');
+  html = renderTables(html);
+  html = html.replace(/---/g, '<hr>');
+  html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  html = html.replace(/^[\-\*] (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/^(\d+)\. (.+)$/gm, '<li>$1. $2</li>');
+  html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
+  html = html.replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>');
+  html = html.replace(/\n\n/g, '</p><p>');
+  html = html.replace(/\n/g, '<br>');
+  // Line 78: WRAP ALL IN <p>
+  html = '<p>' + html + '</p>';
+  // Line 81-88: try to unwrap but ONLY exact match
+  html = html.replace(/<p><\/p>/g, '');
+  html = html.replace(/<p><h([1-4])>/g, '<h$1>');
+  html = html.replace(/<\/h([1-4])><\/p>/g, '</h$1>');
+  html = html.replace(/<p><ul>/g, '<ul>');
+  html = html.replace(/<\/ul><\/p>/g, '</ul>');
+  html = html.replace(/<p><blockquote>/g, '<blockquote>');
+  html = html.replace(/<\/blockquote><\/p>/g, '</blockquote>');
+  html = html.replace(/<p><table>/g, '<table>');
+  html = html.replace(/<\/table><\/p>/g, '</table>');
+  return html;
+}
+
+document.getElementById('case-a').innerHTML = renderMarkdownCurrent(md);
+document.getElementById('case-b').innerHTML = renderMarkdownCurrent(md)
+  .replace(/<p>(<table[^>]*>.*<\/table>)<\/p>/gs, '$1');
+
+// Also show what the regex actually matched
+console.log('=== Case A HTML (first 500 chars) ===');
+console.log(document.getElementById('case-a').innerHTML.slice(0, 500));
+console.log('=== Case B HTML (first 500 chars) ===');
+console.log(document.getElementById('case-b').innerHTML.slice(0, 500));
+</script>
+</body>
+</html>
