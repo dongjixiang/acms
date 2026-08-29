@@ -431,20 +431,21 @@
       const v = state[f.key];
       let label = f.label;
       let active = false, badge = '';
+      // v0.27: label 不再拼接 icon（icon 由 .geo-filter-icon span 单独渲染，避免「🔍🔍 引擎」双图标）
       if (f.type === 'multi') {
         const arr = Array.isArray(v) ? v : [];
         active = arr.length > 0;
         if (arr.length === 1) {
           const opt = f.options.find(o => o.value === arr[0]);
-          if (opt) label = `${f.icon || ''} ${f.label}: ${opt.label}`;
+          if (opt) label = `${f.label}: ${opt.label}`;
         } else if (arr.length > 1) {
-          label = `${f.icon || ''} ${f.label}: ${arr.length}`;
+          label = `${f.label}: ${arr.length}`;
           badge = arr.length;
         }
       } else {
         const opt = f.options.find(o => o.value === v);
         active = !!v && v !== '' && v !== 'all';
-        if (opt) label = `${f.icon || ''} ${f.label}: ${opt.label}`;
+        if (opt) label = `${f.label}: ${opt.label}`;
       }
       const badgeHtml = badge ? `<span class="geo-filter-badge">${badge}</span>` : '';
       return `<button type="button" class="geo-filter-chip${active ? ' active' : ''}" data-filter-key="${f.key}"><span class="geo-filter-icon">${f.icon || ''}</span><span>${esc(label)}</span>${badgeHtml}<span style="opacity:.5;font-size:10px">▾</span></button>`;
@@ -1230,6 +1231,7 @@
   // === Tab 4: 追踪记录 ===
   let _trackResponses = []; // v0.13: 缓存当前追踪记录（回答快照浏览用）
   let _queryMap = {};       // query_id → prompt 文本
+  let _brandMap = {};       // v0.27: brand_id → brand 对象（responses 只存 brand_id，渲染品牌名/域名/高亮用映射）
   let _trackEngineFilter = ''; // v0.26: 引擎 filter 值（来自 geo-filter-bar 组件）
 
   // v0.26: 初始化 Track Tab 引擎 filter bar（chip 风格，替代原 <select>）
@@ -1269,13 +1271,16 @@
       const url = currentBrandId
         ? `/api/geo/responses?brand_id=${currentBrandId}&engine=${_trackEngineFilter}`
         : `/api/geo/responses?engine=${_trackEngineFilter}`;
-      const [r, qRes] = await Promise.all([
+      const [r, qRes, bRes] = await Promise.all([
         api('GET', url),
         api('GET', '/api/geo/queries' + (currentBrandId ? '?brand_id=' + currentBrandId : '')),
+        api('GET', '/api/geo/brands'),
       ]);
       _trackResponses = r.data?.responses || [];
       _queryMap = {};
       (qRes.data?.queries || []).forEach(q => { if (q.id) _queryMap[q.id] = q.prompt || q.text || ''; });
+      _brandMap = {};
+      (bRes.data?.brands || []).forEach(b => { if (b.id) _brandMap[b.id] = b; });
       renderTrackTable(_trackResponses);
       setStatus(`已加载 ${_trackResponses.length} 条记录`, 'success');
     } catch (e) {
@@ -1304,7 +1309,7 @@
       return `
         <tr>
           <td>${dt}</td>
-          <td>${esc(r.brand_name || r.brand_id)}</td>
+          <td>${esc(_brandMap[r.brand_id]?.name || r.brand_name || r.brand_id)}</td>
           <td><span class="geo-badge geo-badge-${r.engine}">${esc(r.engine)}${capMark}</span></td>
           <td><span class="geo-lang-badge" title="语言: ${esc(r.language || 'zh')}">${esc(langLabel)}</span></td>
           <td title="${esc(queryText)}">${esc(queryText.slice(0, 60))}${queryText.length > 60 ? '...' : ''}</td>
@@ -1333,21 +1338,38 @@
     ].filter(Boolean).join('　');
     const qText = _queryMap[r.query_id] || r.query || '（模板已删）';
     const answer = r.raw_answer || '（空）';
+    // v0.27: 品牌名/域名从 brandMap 取（responses 只存 brand_id，后端不存 name/domain）
+    const brand = _brandMap[r.brand_id] || {};
+    const brandName = brand.name || r.brand_name || '';
+    const brandDomain = brand.domain || r.brand_domain || '';
     // 构造高亮列表：品牌名（蓝）、品牌域名（绿）
     const highlights = [];
-    if (r.brand_name && r.brand_name.trim()) {
+    if (brandName && brandName.trim()) {
       highlights.push({
-        text: r.brand_name,
+        text: brandName,
         style: 'background:#dbeafe;color:#1e3a8a;padding:0 2px;border-radius:2px;font-weight:600',
       });
     }
-    if (r.brand_domain && r.brand_domain.trim()) {
+    if (brandDomain && brandDomain.trim()) {
       highlights.push({
-        text: r.brand_domain,
+        text: brandDomain,
         style: 'background:#dcfce7;color:#14532d;padding:0 2px;border-radius:2px',
       });
     }
-    const answerHtml = highlightText(answer.slice(0, 12000), highlights);
+    // v0.27: 完整回答按 Markdown 渲染（复用 ACMS 全局 renderMarkdown，md-content 样式排版）
+    //   先 renderMarkdown 得到已转义的 HTML，再对品牌名/域名做高亮（安全替换，品牌名不含 HTML 特殊字符）
+    let answerHtml;
+    if (typeof renderMarkdown === 'function') {
+      answerHtml = renderMarkdown(answer.slice(0, 12000));
+      for (const h of highlights) {
+        const safe = esc(String(h.text));
+        if (!safe.trim()) continue;
+        const re = new RegExp('(' + safe.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+        answerHtml = answerHtml.replace(re, `<mark style="${h.style}">$1</mark>`);
+      }
+    } else {
+      answerHtml = highlightText(answer.slice(0, 12000), highlights);
+    }
     // 拼接完整 HTML（meta + 提问 + 完整回答 + Query Fan-out + 预览按钮）
     const body = `
       <div style="font-size:12px;opacity:.7;margin-bottom:10px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">${esc(meta)}${createInfoTip('元信息：本次追踪的时间、AI 引擎、耗时、token 消耗。点击摘要可查看完整 AI 回答。')}</div>
@@ -1356,7 +1378,7 @@
         <div style="font-size:13px;line-height:1.5">${esc(qText)}</div>
       </div>
       <div style="font-size:11px;opacity:.6;margin-bottom:4px">【完整回答】${answer.length > 12000 ? '（已截断到 12000 字）' : ''}</div>
-      <div style="font-size:13px;line-height:1.65;white-space:pre-wrap;word-break:break-word;background:var(--bg,rgba(255,255,255,0.04));padding:12px;border-radius:6px;max-height:60vh;overflow-y:auto">${answerHtml}</div>
+      <div class="md-content" style="font-size:13px;line-height:1.65;max-height:60vh;overflow-y:auto">${answerHtml}</div>
       <div id="geo-fanout-section" data-prompt="${esc(qText)}" data-raw='${esc(JSON.stringify(r.web_queries || []))}'></div>
       <div style="margin-top:14px;padding-top:12px;border-top:1px dashed var(--geo-border,#333);display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <button type="button" id="geo-fanout-preview-btn" class="geo-btn geo-btn-sm" style="font-size:11px" title="前端 mock 数据预览 fanout 组件（不写入数据库）">🧪 注入预览 web_queries（仅前端）</button>
@@ -1364,7 +1386,7 @@
       </div>
     `;
     await showModal({
-      title: `📄 AI 回答快照 — ${esc(r.brand_name || r.brand_id)}`,
+      title: `📄 AI 回答快照 — ${esc(brandName || r.brand_id)}`,
       html: body,
       size: 'xl',
     });
