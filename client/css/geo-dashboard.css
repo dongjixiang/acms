@@ -342,7 +342,12 @@
 .geo-dim-fill {
   height: 100%;
   background: linear-gradient(90deg, var(--geo-accent) 0%, var(--geo-accent-2) 100%);
-  transition: width 0.3s;
+  transition: width 0.3s ease;
+}
+/* v0.26 C3: null 值（无数据）时 — 空条 */
+.geo-dim-fill-empty {
+  background: var(--geo-border, #555);
+  opacity: 0.25;
 }
 
 .geo-dim-value {
@@ -361,7 +366,117 @@
   grid-column: 1 / -1;
 }
 
+/* === Tooltip（v0.12 — 全指标悬停说明）===
+   用法：元素加 class="geo-tip" data-tip="说明文字"
+   三主题通用（跟随 --geo-tip-bg 变量）
+   v0.26: 弹层前加 ⓘ 前缀 + i 圆圈样式 — 与 InfoTip 风格统一（不破坏 50+ 处现有用法） */
+.geo-tip {
+  position: relative;
+  cursor: help;
+  border-bottom: 1px dotted var(--geo-text-2);
+}
+/* v0.26: 静态 ⓘ 标识 — 在文字末尾加 i 圆圈，提示「这里有解释」 */
+.geo-tip::after {
+  content: 'i' !important; /* 覆盖 hover::after 的 content（CSS 级联顺序：非 hover 优先显示静态标识） */
+  position: static !important;
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  margin-left: 3px;
+  border-radius: 50%;
+  background: var(--bg, rgba(255, 255, 255, 0.06));
+  color: var(--geo-text-2, #888);
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-weight: 700;
+  font-size: 9px;
+  line-height: 13px;
+  text-align: center;
+  vertical-align: middle;
+  cursor: help;
+  border: none;
+  transform: none;
+  padding: 0;
+  /* 阻止 ::after 自身的 tooltip 弹层（在 ::after 内） */
+  pointer-events: none;
+}
+/* v0.26: hover 时，::after 切换为「真 tooltip 弹层」（覆盖静态 i 圆圈） */
+.geo-tip:hover::after {
+  content: 'ⓘ  ' attr(data-tip) !important;
+  position: absolute !important;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--geo-tip-bg, #1c1f26);
+  color: var(--geo-tip-text, #f0f0f0);
+  padding: 7px 11px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.55;
+  font-family: inherit;
+  font-style: normal;
+  font-weight: 400;
+  white-space: normal;
+  width: max-content;
+  max-width: 280px;
+  z-index: 9999;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+  text-align: left;
+  display: block;
+  width: max-content;
+  height: auto;
+  margin: 0;
+  border: none;
+  vertical-align: baseline;
+}
+.geo-tip:hover::before {
+  content: '';
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: var(--geo-tip-bg, #1c1f26);
+  pointer-events: none;
+  z-index: 9999;
+}
+/* 三主题下 tip 背景自动跟随 */
+[data-theme="light"] .geo-tip:hover::after,
+[data-theme="light"] .geo-tip:hover::before { --geo-tip-bg: #2b2f38; }
+[data-theme="cream"] .geo-tip:hover::after,
+[data-theme="cream"] .geo-tip:hover::before { --geo-tip-bg: #3a3f4b; }
+
 /* === Engine Grid === */
+/* v0.16: 引用源分类徽章（elmo 移植） */
+.geo-cat-badge {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  margin-left: 4px;
+  vertical-align: 1px;
+  opacity: .9;
+}
+.geo-cat-brand { background: #2563eb33; color: #60a5fa; }
+.geo-cat-editorial { background: #a463f233; color: #c084fc; }
+.geo-cat-reviews { background: #efb11833; color: #fbbf24; }
+.geo-cat-social { background: #ff8ab733; color: #f472b6; }
+.geo-cat-forum { background: #3ca95133; color: #4ade80; }
+.geo-cat-ecommerce { background: #36b39a33; color: #2dd4bf; }
+.geo-cat-reference { background: #b279a233; color: #d8b4fe; }
+.geo-cat-institutional { background: #79a8e833; color: #93c5fd; }
+.geo-cat-other { background: #88888833; color: #9ca3af; }
+.geo-bar-fill.geo-cat-brand { background: #2563eb; }
+.geo-bar-fill.geo-cat-editorial { background: #a463f2; }
+.geo-bar-fill.geo-cat-reviews { background: #efb118; }
+.geo-bar-fill.geo-cat-social { background: #ff8ab7; }
+.geo-bar-fill.geo-cat-forum { background: #3ca951; }
+.geo-bar-fill.geo-cat-ecommerce { background: #36b39a; }
+.geo-bar-fill.geo-cat-reference { background: #b279a2; }
+.geo-bar-fill.geo-cat-institutional { background: #79a8e8; }
+.geo-bar-fill.geo-cat-other { background: #888; }
+
 .geo-engine-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -435,6 +550,10 @@
 .geo-badge-ok { background: var(--geo-success-bg); color: var(--geo-success); }
 .geo-badge-gray { background: var(--geo-hover-strong); color: var(--geo-text-2); }
 .geo-badge-err { background: var(--geo-error-bg); color: var(--geo-error); }
+/* v0.25: 引擎联网能力徽章 */
+.geo-badge-search { background: rgba(74,222,128,.12); color: #4ade80; border: 1px solid rgba(74,222,128,.35); padding: 1px 7px; border-radius: 9px; font-size: 10px; vertical-align: 2px; margin-left: 5px; white-space: nowrap; }
+.geo-badge-llm { background: rgba(148,163,184,.14); color: #94a3b8; border: 1px solid rgba(148,163,184,.3); padding: 1px 7px; border-radius: 9px; font-size: 10px; vertical-align: 2px; margin-left: 5px; white-space: nowrap; }
+.geo-lang-badge { background: rgba(56,189,248,.12); color: #38bdf8; border: 1px solid rgba(56,189,248,.3); padding: 0 6px; border-radius: 8px; font-size: 11px; }
 .geo-badge-deepseek { background: var(--geo-hover-strong); color: var(--geo-accent); }
 .geo-badge-openai { background: var(--geo-success-bg); color: var(--geo-success); }
 .geo-badge-claude { background: var(--geo-warning-bg); color: var(--geo-warning); }
@@ -546,6 +665,350 @@
 
 .geo-radar-container svg {
   max-width: 100%;
+}
+
+/* v0.26: Section header（标题 + 工具栏并排）*/
+.geo-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 24px;
+}
+.geo-section-header h3 {
+  margin: 0; /* 容器已加 margin-top，避免重复 */
+}
+
+/* v0.26: InfoTip（借鉴 elmo InfoTip 极简模式）— 显式 ℹ️ 小图标 + hover tooltip */
+.geo-info-tip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin: 0 2px;
+  border-radius: 50%;
+  background: var(--bg, rgba(255, 255, 255, 0.06));
+  color: var(--geo-text-2, #888);
+  font-size: 10px;
+  font-style: italic;
+  font-weight: 700;
+  font-family: Georgia, serif;
+  cursor: help;
+  position: relative;
+  vertical-align: middle;
+  user-select: none;
+  transition: all 0.15s;
+}
+.geo-info-tip:hover {
+  background: var(--accent1, #6366f1);
+  color: #fff;
+}
+/* tooltip 弹层：使用与 .geo-tip 一致的 hover 行为（继承同样的 data-tip 显示） */
+.geo-info-tip[data-tip]:hover::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg2, #1a1a1a);
+  color: var(--geo-text, #eee);
+  border: 1px solid var(--geo-border, #555);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 400;
+  font-family: inherit;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  max-width: 280px;
+  width: max-content;
+  z-index: 9999;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+.geo-info-tip[data-tip]:hover::before {
+  content: '';
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 4px solid transparent;
+  border-top-color: var(--geo-border, #555);
+  z-index: 9999;
+  pointer-events: none;
+}
+
+/* v0.26: Query Fan-out（借鉴 elmo fanout-sections.tsx） */
+.geo-fanout {
+  margin-top: 16px;
+  padding: 14px;
+  background: var(--bg, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--geo-border, #333);
+  border-radius: 8px;
+}
+.geo-fanout-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.geo-fanout-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--geo-text, #eee);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.geo-fanout-title .geo-fanout-pill {
+  font-size: 10px;
+  padding: 1px 6px;
+  background: #8b5cf6;
+  color: #fff;
+  border-radius: 8px;
+  font-weight: 500;
+}
+.geo-fanout-empty {
+  padding: 16px;
+  text-align: center;
+  color: var(--geo-text-2, #888);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.geo-fanout-variation {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+  border-bottom: 1px dashed var(--geo-border, #333);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.geo-fanout-variation:last-child {
+  border-bottom: none;
+}
+.geo-fanout-variation-text {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+.geo-fanout-variation-text .kw {
+  color: var(--geo-text, #eee);
+  font-weight: 600;
+}
+.geo-fanout-variation-text .non-kw {
+  color: var(--geo-text-2, #888);
+}
+.geo-fanout-variation-count {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--geo-text-2, #888);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.geo-fanout-words {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  font-size: 11px;
+}
+.geo-fanout-words-col {
+  padding: 8px 10px;
+  background: var(--bg2, rgba(255, 255, 255, 0.02));
+  border-radius: 6px;
+  border-left: 3px solid;
+}
+.geo-fanout-words-col.added {
+  border-left-color: #10b981;
+}
+.geo-fanout-words-col.preserved {
+  border-left-color: #6366f1;
+}
+.geo-fanout-words-col.dropped {
+  border-left-color: #f59e0b;
+}
+.geo-fanout-words-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--geo-text-2, #888);
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+.geo-fanout-word {
+  display: inline-block;
+  padding: 2px 6px;
+  margin: 2px;
+  background: var(--bg, rgba(255, 255, 255, 0.06));
+  border-radius: 4px;
+  color: var(--geo-text, #eee);
+  font-size: 11px;
+}
+.geo-fanout-word .share {
+  color: var(--geo-text-2, #888);
+  font-size: 10px;
+  margin-left: 3px;
+}
+.geo-fanout-note {
+  font-size: 11px;
+  color: var(--geo-text-2, #888);
+  font-style: italic;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--geo-border, #333);
+}
+.geo-fanout-preview-badge {
+  background: #f59e0b;
+  color: #fff;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  margin-left: 6px;
+}
+
+/* v0.26: Lookback selector（借鉴 elmo lookback-selector.tsx）— segmented control */
+.geo-lookback {
+  display: inline-flex;
+  background: var(--bg, rgba(255, 255, 255, 0.05));
+  border: 1px solid var(--geo-border, #333);
+  border-radius: 8px;
+  padding: 2px;
+  font-size: 12px;
+}
+.geo-lookback-btn {
+  background: transparent;
+  border: none;
+  color: var(--geo-text-2, #888);
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  transition: all 0.15s;
+}
+.geo-lookback-btn:hover {
+  color: var(--geo-text, #eee);
+}
+.geo-lookback-btn.active {
+  background: var(--bg2, #1a1a1a);
+  color: var(--geo-text, #eee);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+/* v0.26: Filter bar（借鉴 elmo filter-bar.tsx）— 统一筛选条 */
+.geo-filter-bar {
+  position: relative; /* v0.27: dropdown absolute 定位的包含块（缺它 → dropdown 相对更外层容器定位，视觉上「嵌套 2 层」） */
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--bg, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--geo-border, #333);
+  border-radius: 8px;
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+.geo-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: transparent;
+  border: 1px solid var(--geo-border, #555);
+  border-radius: 16px;
+  color: var(--geo-text-2, #aaa);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  transition: all 0.15s;
+  user-select: none;
+}
+.geo-filter-chip:hover {
+  border-color: var(--geo-text-2, #888);
+  color: var(--geo-text, #eee);
+}
+.geo-filter-chip.active {
+  background: rgba(99, 102, 241, 0.15);
+  border-color: var(--accent1, #6366f1);
+  color: var(--geo-text, #eee);
+}
+.geo-filter-chip .geo-filter-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+.geo-filter-chip .geo-filter-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  margin-left: 2px;
+  background: var(--accent1, #6366f1);
+  color: #fff;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.geo-filter-dropdown {
+  position: absolute;
+  background: var(--bg2, #1a1a1a);
+  border: 1px solid var(--geo-border, #555);
+  border-radius: 8px;
+  padding: 4px 0;
+  min-width: 160px;
+  max-height: 240px;
+  overflow-y: auto;
+  z-index: 1000;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  display: none;
+}
+.geo-filter-dropdown.open {
+  display: block;
+}
+.geo-filter-dropdown-item {
+  padding: 6px 12px;
+  cursor: pointer;
+  color: var(--geo-text, #eee);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.geo-filter-dropdown-item:hover {
+  background: var(--accent1, #6366f1);
+  color: #fff;
+}
+.geo-filter-dropdown-item.selected {
+  font-weight: 600;
+}
+.geo-filter-dropdown-item.selected::before {
+  content: '✓';
+  color: var(--accent1, #6366f1);
+}
+.geo-filter-clear {
+  background: none;
+  border: none;
+  color: var(--geo-text-2, #888);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.geo-filter-clear:hover {
+  color: var(--geo-text, #eee);
+  background: rgba(255, 255, 255, 0.05);
 }
 
 /* === 品牌对比条形图 === */

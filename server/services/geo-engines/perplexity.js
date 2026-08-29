@@ -5,7 +5,7 @@
 // Perplexity API 关键事实：
 //   - 协议：OpenAI Chat Completions 兼容
 //   - baseUrl：https://api.perplexity.ai
-//   - 鉴权：Authorization: Bearer <api_key>
+//   - 鉴权：Authorization: Bearer ***
 //   - 模型：sonar / sonar-pro / sonar-reasoning / sonar-deep-research
 //   - **关键能力**：自带 web search → 响应里返回 citations[]（每个含 url/title）
 //
@@ -14,6 +14,8 @@
 //   或者顶层 data.citations（API 文档有歧义，以实际响应为准）
 
 const GEO_CONFIG = require('../geo-config');
+// v0.26: 统一引用解析派发（借鉴 elmo text-extraction.ts）
+const { extractCitations, normalizeCitations } = require('../geo-citation-extractor');
 
 const TIMEOUT_MS = 90000; // Perplexity web search 可能较慢
 
@@ -81,19 +83,39 @@ async function query(prompt, options = {}) {
     const data = await response.json();
     const text = data.choices?.[0]?.message?.content || '';
 
-    // Citations 解析：可能在 message 顶层或 choices 顶层
-    let citations = [];
-    if (Array.isArray(data.choices?.[0]?.message?.citations)) {
-      citations = data.choices[0].message.citations;
-    } else if (Array.isArray(data.citations)) {
-      citations = data.citations;
-    }
-    // 规范化 citation 结构
-    citations = citations.map(c => ({
-      url: c.url || '',
+    // v0.26: Citations 解析走统一派发（替换原内联解析）
+    // 原逻辑：data.choices[0].message.citations[] 或 data.citations[]
+    // 新逻辑：extractCitations(data, 'perplexity') 走归一化 + 去重 + 域名解析
+    const citationObjs = extractCitations(data, 'perplexity');
+    const citations = citationObjs.map(c => ({
+      url: c.url,
       title: c.title || '',
-      snippet: c.snippet || c.text || '',
-    })).filter(c => c.url); // 只保留有 URL 的
+      domain: c.domain,
+      snippet: '', // Perplexity API 不返回 snippet（前端从 answer_text 渲染时拿）
+    }));
+
+    // v0.26: 尝试提取 web_queries（不同 Perplexity API 版本可能字段不同）
+    // 实际：当前 Perplexity 公开 API 不返回 search query 文本（只返 citations URL）
+    // 这里探测多种可能位置，有就提取
+    const webQueries = [];
+    // 1) data.search_results[*].query
+    if (Array.isArray(data.search_results)) {
+      for (const r of data.search_results) {
+        if (typeof r?.query === 'string' && r.query.trim()) webQueries.push(r.query);
+      }
+    }
+    // 2) data.choices[0].message.search_queries[]
+    if (Array.isArray(data.choices?.[0]?.message?.search_queries)) {
+      for (const q of data.choices[0].message.search_queries) {
+        if (typeof q === 'string' && q.trim()) webQueries.push(q);
+      }
+    }
+    // 3) data.choices[0].search_queries[]
+    if (Array.isArray(data.choices?.[0]?.search_queries)) {
+      for (const q of data.choices[0].search_queries) {
+        if (typeof q === 'string' && q.trim()) webQueries.push(q);
+      }
+    }
 
     return {
       ok: true,
@@ -101,6 +123,7 @@ async function query(prompt, options = {}) {
       model,
       text,
       citations,
+      web_queries: [...new Set(webQueries)], // 去重
       search_metadata: {
         // Perplexity 可能在响应里包含搜索元数据
         recency_filter: options.search_recency_filter || null,
@@ -125,6 +148,7 @@ async function query(prompt, options = {}) {
 }
 
 module.exports = {
+  capability: { search: 'native', note: 'sonar 自带 web search → citations[]' },
   name: 'perplexity',
   query,
   models: [],

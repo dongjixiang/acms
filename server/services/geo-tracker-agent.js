@@ -22,10 +22,39 @@
 const GEO_STORE = require('./geo-store');
 const GEO_ENGINES = require('./geo-engines');
 const GEO_CONFIG = require('./geo-config');
+const LLM_TOOLS = require('./geo-llm-tools');
+
+// v0.24: 多语言支持——语言代码 → 语言名（翻译 prompt 用）
+const LANGUAGES = {
+  zh: '中文', en: '英文', th: '泰文', ja: '日文', ko: '韩文',
+  vi: '越南文', id: '印尼文', ms: '马来文', fr: '法文', de: '德文',
+  es: '西班牙文', ru: '俄文', ar: '阿拉伯文', pt: '葡萄牙文',
+};
+
+// 翻译缓存（queryText:lang → 译文），避免重复翻译
+const _translateCache = new Map();
+
+async function translateQuery(text, lang) {
+  const cacheKey = `${text}:${lang}`;
+  if (_translateCache.has(cacheKey)) return _translateCache.get(cacheKey);
+  const langName = LANGUAGES[lang] || lang;
+  const r = await LLM_TOOLS.generate(
+    `把下面这句话翻译成${langName}。只输出翻译结果，不要解释、不要引号。\n\n${text}`,
+    { temperature: 0.2, maxTokens: 500 }
+  );
+  const t = r.ok ? String(r.text || '').trim() : text; // 失败 fallback 原文
+  _translateCache.set(cacheKey, t);
+  return t;
+}
+
+// 清空翻译缓存（测试用）
+function _clearTranslateCache() {
+  _translateCache.clear();
+}
 const GEO_SCORING = require('./geo-scoring');
 const TEMPLATES = require('./geo-query-templates');
 
-const DEFAULT_ENGINES = ['deepseek', 'openai', 'claude', 'perplexity', 'gemini', 'grok']; // copilot 排除（不稳定）
+const DEFAULT_ENGINES = ['deepseek', 'openai', 'claude', 'perplexity', 'gemini', 'grok', 'minimax'];
 
 async function runTracker(brandId, options = {}) {
   const {
@@ -33,6 +62,8 @@ async function runTracker(brandId, options = {}) {
     maxQueries = 10,
     dryRun = false,
     autoGenerateQueries = false,
+    language = 'zh', // v0.24: 多语言——非 zh 时翻译 query
+    rag = false,     // v0.25: DeepSeek 检索增强（先真实检索再回答，慢~18s/条但真实）
   } = options;
 
   const startTs = Date.now();
@@ -41,7 +72,7 @@ async function runTracker(brandId, options = {}) {
     return { ok: false, error: 'BRAND_NOT_FOUND', message: `Brand ${brandId} 不存在` };
   }
 
-  console.log(`[geo-tracker] Start: brand=${brand.name} (${brandId}) engines=${engines.join(',')} dryRun=${dryRun}`);
+  console.log(`[geo-tracker] Start: brand=${brand.name} (${brandId}) engines=${engines.join(',')} dryRun=${dryRun} language=${language}`);
 
   // 1. 获取或生成 queries
   let queries = GEO_STORE.listQueries(brandId);
@@ -54,18 +85,31 @@ async function runTracker(brandId, options = {}) {
         prompt: q.prompt,
         category: q.category,
         engine_targets: q.engines,
+        source: 'template', // v0.26 C1a
       });
     }
     queries = GEO_STORE.listQueries(brandId);
   }
 
+  // v0.26 C2b: 只跑 enabled 的 queries（用户可停用单条 prompt）
+  const enabledQueries = queries.filter(q => q.enabled !== false);
+  if (enabledQueries.length !== queries.length) {
+    console.log(`[geo-tracker] Skipping ${queries.length - enabledQueries.length} disabled queries`);
+  }
+  queries = enabledQueries;
+
   if (queries.length === 0) {
     return {
       ok: false,
       error: 'NO_QUERIES',
-      message: `Brand ${brand.name} 没有 query 模板。请先调用 geo-query-templates 生成，或手动添加。`,
+      message: `Brand ${brand.name} 没有 enabled 的 query 模板。请先调用 geo-query-templates 生成，或手动添加。`,
       brand_id: brandId,
     };
+  }
+
+  // v0.24: 挂语言到每个 query（非 zh 时 tracker 内翻译）
+  if (language && language !== 'zh') {
+    queries = queries.map(q => ({ ...q, language }));
   }
 
   const queriesToRun = queries.slice(0, maxQueries);
@@ -88,14 +132,23 @@ async function runTracker(brandId, options = {}) {
     const eng = GEO_ENGINES.getEngine(engine);
     const taskStart = Date.now();
     try {
-      const result = await eng.query(query.prompt);
+      // v0.24: 多语言支持——query.language 非 zh 时先 LLM 翻译
+      const lang = query.language || 'zh';
+      let promptToUse = query.prompt;
+      if (lang !== 'zh') {
+        promptToUse = await translateQuery(query.prompt, lang);
+      }
+      const result = await eng.query(promptToUse, options.rag ? { rag: true } : {});
       const latency = Date.now() - taskStart;
       return {
         query_id: query.id,
         engine,
+        language: lang,
         ok: result.ok,
         raw_answer: result.text || '',
         citations: result.citations || [],
+        web_queries: result.web_queries || [], // v0.26: 透传 web search queries（Claude/OpenAI 升级后才有）
+        web_search_enabled: result.web_search_enabled || false,
         error: result.error || null,
         message: result.message || null,
         model: result.model || null,
@@ -106,6 +159,7 @@ async function runTracker(brandId, options = {}) {
       return {
         query_id: query.id,
         engine,
+        language: query.language || 'zh',
         ok: false,
         error: 'EXCEPTION',
         message: e.message,
@@ -124,16 +178,43 @@ async function runTracker(brandId, options = {}) {
           brand_id: brandId,
           query_id: d.query_id,
           engine: d.engine,
+          language: d.language || 'zh',
           raw_answer: d.raw_answer,
-          citations: d.citations,
+          citations: d.citations || [],
+          web_queries: d.web_queries || [], // v0.26: Query Fan-out 通道（默认空，待 engine 升级 grounding 后填充）
           latency_ms: d.latency_ms,
           usage: d.usage,
-          model: d.model,
           error: d.error,
+          model: d.model,
         });
         responsesWritten++;
       }
     }
+  }
+
+  // v0.26 C6: 跑完后自动刷新 systemTags（high/low-performing 由真实 mentionRate 驱动）
+  try {
+    const brandName2 = brand.name || '';
+    const allResponses2 = GEO_STORE.listResponses({ brand_id: brandId });
+    const byQuery2 = {};
+    for (const r of allResponses2) {
+      if (!r.query_id || r.error) continue;
+      if (!byQuery2[r.query_id]) byQuery2[r.query_id] = [];
+      byQuery2[r.query_id].push(r);
+    }
+    for (const q of queriesToRun) {
+      const runs = byQuery2[q.id] || [];
+      if (runs.length === 0) continue;
+      const mentioned = runs.filter(r => {
+        const text = (r.raw_answer || '').toLowerCase();
+        return brandName2 && text.includes(brandName2.toLowerCase());
+      }).length;
+      const mentionRate = mentioned / runs.length;
+      const sysTags = GEO_STORE.computeSystemTags(q.prompt, brandName2, { mentionRate });
+      GEO_STORE.updateQuery(q.id, { systemTags: sysTags });
+    }
+  } catch (e) {
+    console.log(`[geo-tracker] systemTags refresh failed: ${e.message}`);
   }
 
   // 4. 算分（基于刚写入的数据）
@@ -191,4 +272,7 @@ module.exports = {
   runTracker,
   runTrackerAll,
   DEFAULT_ENGINES,
+  LANGUAGES,
+  translateQuery,
+  _clearTranslateCache,
 };

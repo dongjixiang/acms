@@ -1,29 +1,27 @@
-// ACMS GEO 引擎适配器 — Microsoft Copilot（v0.1 — Phase 1 Week 2）
-// 用途：调用 Microsoft Copilot API（Azure OpenAI 兼容）
-// 路径：server/services/geo-engines/copilot.js
+// ACMS GEO 引擎适配器 — MiniMax（v0.27）
+// 用途：调用 MiniMax API（OpenAI 兼容协议）做 AI 搜索可见性追踪
+// 路径：server/services/geo-engines/minimax.js
 //
-// Copilot API 关键事实：
-//   - 协议：Azure OpenAI Chat Completions（OpenAI 兼容变体）
-//   - baseUrl：https://api.copilot.microsoft.com 或 Azure 资源 endpoint
-//   - 鉴权：api-key header（不是 Bearer）
-//   - 模型：copilot-gpt-4 / copilot-gpt-3.5
-//   - 端点：{baseUrl}/chat/completions
-//
-// 注意：Copilot 的公开 API 不稳定，Microsoft 可能限制第三方访问。
-//   如果不可用，返回 NOT_SUPPORTED_IN_API 错误，Phase 1 标记为「待验证」。
+// MiniMax API 关键事实：
+//   - 协议：OpenAI Chat Completions 兼容（/v1/chat/completions）
+//   - baseUrl：国内 https://api.minimax.chat/v1，国际 https://api.minimaxi.com/v1（modelStore 里配置）
+//   - 模型：MiniMax-Text-01（文本旗舰）、abab6.5s-chat（旧）
+//   - 鉴权：Authorization: Bearer ***
+//   - 注意：MiniMax-Text-01 默认可能开启 thinking/reasoning（同 DeepSeek V4 的 P183 教训），
+//     显式传 thinking:{type:'disabled'} 保证 content 直接返回回答文本
 
 const GEO_CONFIG = require('../geo-config');
 
 const TIMEOUT_MS = 60000;
 
 async function query(prompt, options = {}) {
-  const modelInfo = GEO_CONFIG.getModelInfo('copilot');
+  const modelInfo = GEO_CONFIG.getModelInfo('minimax');
   if (!modelInfo) {
     return {
       ok: false,
-      engine: 'copilot',
+      engine: 'minimax',
       error: 'API_KEY_NOT_CONFIGURED',
-      message: 'Microsoft Copilot 未在模型管理里配置。Copilot API 不稳定且公开访问受限，建议在系统管理 → AI 模型配置里添加 OpenAI 兼容协议模型（provider=openai 但 baseUrl 是 Azure endpoint）。',
+      message: 'MiniMax 未在模型管理里配置。请先在系统管理 → AI 模型配置里添加 MiniMax 模型（provider=minimax + baseUrl=https://api.minimax.chat/v1 + MiniMax 的 API Key）。',
     };
   }
 
@@ -38,20 +36,22 @@ async function query(prompt, options = {}) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        // Copilot 用 api-key header 而非 Authorization: Bearer
-        'api-key': modelInfo.apiKey,
+        'Authorization': `Bearer ${modelInfo.apiKey}`,
       },
       body: JSON.stringify({
         model,
         messages: [
           {
             role: 'system',
-            content: 'You are an expert assistant helping analyze brand/product visibility in AI search engines. Provide direct, accurate answers.',
+            content: '你是一个帮助分析品牌/产品在 AI 搜索中可见性的助手。请直接、准确地回答问题，不要回避。',
           },
           { role: 'user', content: prompt },
         ],
         temperature: options.temperature ?? 0.5,
         max_tokens: options.max_tokens ?? 2000,
+        // MiniMax-Text-01 支持 thinking 开关：显式关闭，避免 reasoning tokens 占满 max_tokens 导致 content 为空
+        thinking: { type: 'disabled' },
+        stream: false,
       }),
       signal: controller.signal,
     });
@@ -62,7 +62,7 @@ async function query(prompt, options = {}) {
       const errText = await response.text();
       return {
         ok: false,
-        engine: 'copilot',
+        engine: 'minimax',
         error: `HTTP_${response.status}`,
         message: errText.slice(0, 500),
         latency_ms: Date.now() - startTs,
@@ -73,7 +73,7 @@ async function query(prompt, options = {}) {
     const text = data.choices?.[0]?.message?.content || '';
     return {
       ok: true,
-      engine: 'copilot',
+      engine: 'minimax',
       model,
       text,
       citations: [],
@@ -87,7 +87,7 @@ async function query(prompt, options = {}) {
     const isAbort = e.name === 'AbortError';
     return {
       ok: false,
-      engine: 'copilot',
+      engine: 'minimax',
       error: isAbort ? 'TIMEOUT' : 'NETWORK_ERROR',
       message: isAbort ? `请求超时（${TIMEOUT_MS / 1000}s）` : e.message,
       latency_ms: Date.now() - startTs,
@@ -96,17 +96,17 @@ async function query(prompt, options = {}) {
 }
 
 module.exports = {
-  capability: { search: 'none', note: 'Copilot 无公开搜索 API，裸 LLM' },
-  name: 'copilot',
+  capability: { search: 'planned', note: 'MiniMax 官方 API 无联网搜索参数；当前裸 chat completions（OpenAI 兼容协议）' },
+  name: 'minimax',
   query,
   models: [],
   defaultModel: null,
   getModels() {
-    const info = GEO_CONFIG.getModelInfo('copilot');
+    const info = GEO_CONFIG.getModelInfo('minimax');
     return info ? [info.model] : [];
   },
   getDefaultModel() {
-    const info = GEO_CONFIG.getModelInfo('copilot');
+    const info = GEO_CONFIG.getModelInfo('minimax');
     return info ? info.model : null;
   },
 };

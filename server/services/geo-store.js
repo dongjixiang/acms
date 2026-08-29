@@ -24,6 +24,7 @@ const COLLECTIONS = {
   RESPONSES: 'geo_responses',
   SCORES: 'geo_scores',
   SNAPSHOTS: 'geo_snapshots',
+  WATCH: 'geo_watch',
 };
 
 // === ID 生成 ===
@@ -47,7 +48,7 @@ function findBrandByDomain(domain) {
   return collection(COLLECTIONS.BRANDS).findOne(b => b.domain === domain);
 }
 
-function createBrand({ name, domain, llms_txt_url = '', settings = {} }) {
+function createBrand({ name, domain, llms_txt_url = '', settings = {}, industry = '' }) {
   if (!name || !domain) throw new Error('createBrand: name 和 domain 必填');
   const existing = findBrandByDomain(domain);
   if (existing) {
@@ -58,6 +59,7 @@ function createBrand({ name, domain, llms_txt_url = '', settings = {} }) {
     name,
     domain,
     llms_txt_url: llms_txt_url || `https://${domain}/llms.txt`,
+    industry: industry || '',
     settings: settings || {},
     status: 'active',
     created_at: new Date().toISOString(),
@@ -92,7 +94,13 @@ function listQueries(brandId) {
   return brandId ? all.filter(q => q.brand_id === brandId) : all;
 }
 
-function createQuery({ brand_id, prompt, category = 'general', engine_targets = ['deepseek'] }) {
+// v0.26 C1a: 数据模型升级（借鉴 elmo prompts 表）
+//   - enabled    : bool，单条启用/停用（tracker 只跑 enabled）
+//   - tags       : text[]，用户标签（可多标签，替代单值 category）
+//   - persona    : text，生成时的角色（legacy 数据兼容）
+//   - source     : 'manual' | 'ai_generated' | 'bulk_import' | 'legacy' | 'template'
+//   - systemTags : text[]，系统自动计算（branded/unbranded/low-performing/high-performing/opportunity）
+function createQuery({ brand_id, prompt, category = 'general', engine_targets = ['deepseek'], enabled = true, tags = [], persona = null, source = 'manual', systemTags = [] }) {
   if (!brand_id) throw new Error('createQuery: brand_id 必填');
   if (!prompt) throw new Error('createQuery: prompt 必填');
   const q = {
@@ -102,14 +110,90 @@ function createQuery({ brand_id, prompt, category = 'general', engine_targets = 
     category,
     engine_targets: Array.isArray(engine_targets) ? engine_targets : ['deepseek'],
     status: 'active',
+    // v0.26 C1a 新字段
+    enabled: enabled !== false,
+    tags: Array.isArray(tags) ? tags : [],
+    persona: persona || null,
+    source: source || 'manual',
+    systemTags: Array.isArray(systemTags) ? systemTags : [],
     created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
   };
   collection(COLLECTIONS.QUERIES).insert(q);
   return q;
 }
 
-function deleteQuery(id) {
+// v0.26 C1a: 更新 query（新增，支持部分字段更新）
+function updateQuery(id, updates) {
+  const result = collection(COLLECTIONS.QUERIES).update(q => q.id === id, {
+    ...updates,
+    updated_at: new Date().toISOString(),
+  });
+  return result;
+}
+
+// v0.26 C1a: 批量创建 queries（bulk import 用 — 每个 line 一条，返回已创建 + skipped 报告）
+function bulkCreateQueries({ brand_id, prompts, engine_targets = ['deepseek'], source = 'bulk_import', tags = [] }) {
+  const created = [];
+  for (const p of prompts) {
+    if (!p || !p.trim()) continue;
+    created.push(createQuery({ brand_id, prompt: p.trim(), engine_targets, source, tags }));
+  }
+  return created;
+}
+
+function deleteQuery(id, options = {}) {
+  const { cascade = true } = options;
+  // v0.26: 级联删除关联 responses（防 query_id 悬空）
+  if (cascade) {
+    collection(COLLECTIONS.RESPONSES).remove(r => r.query_id === id);
+  }
   return collection(COLLECTIONS.QUERIES).remove(q => q.id === id);
+}
+
+// v0.26: 批量删除 queries（cleanup 用 — 级联删 responses）
+function deleteQueries(ids, options = {}) {
+  const { cascade = true } = options;
+  let removed = 0;
+  for (const id of ids) {
+    if (deleteQuery(id, { cascade })) removed++;
+  }
+  return removed;
+}
+
+// v0.26: 清理 legacy 模板（完整问句 — 指标失真根源）
+// options.alsoTest = true 时连 test-brand 一起清
+function cleanupLegacyQueries(options = {}) {
+  const { includeTest = false } = options;
+  const migrate = require('./geo-migrate');
+  const allQueries = collection(COLLECTIONS.QUERIES).all();
+  const legacy = allQueries.filter(q => {
+    if (!includeTest && q.brand_id === 'test-brand') return false;
+    return migrate.isLegacyFullSentence(q.prompt);
+  });
+  const ids = legacy.map(q => q.id);
+  const removed = deleteQueries(ids, { cascade: true });
+  return { ok: true, removed, legacy_count: legacy.length, brand_ids: [...new Set(legacy.map(q => q.brand_id))] };
+}
+
+// v0.26 C1a: 计算 systemTags（branded 自动分类 — 借鉴 elmo「系统自动算 branded/unbranded」）
+// 之后可在 tracker/scoring 里调用
+function computeSystemTags(promptText, brandName, { mentionRate = null } = {}) {
+  const tags = [];
+  const lower = String(promptText || '').toLowerCase();
+  const brandLower = String(brandName || '').toLowerCase();
+  // branded = prompt 文本包含品牌名 → 品牌搜索意图（自然发现排除）
+  if (brandLower && lower.includes(brandLower)) {
+    tags.push('branded');
+  } else {
+    tags.push('unbranded');
+  }
+  // 表现类标签（由评分数据驱动，mentionRate 传入时才算）
+  if (mentionRate != null) {
+    if (mentionRate >= 0.7) tags.push('high-performing');
+    else if (mentionRate <= 0.3) tags.push('low-performing');
+  }
+  return tags;
 }
 
 // === geo_responses ===
@@ -121,7 +205,7 @@ function listResponses(filter = {}) {
   return all.sort((a, b) => (b.ts || 0) - (a.ts || 0));
 }
 
-function createResponse({ brand_id, query_id, engine, raw_answer = '', citations = [], latency_ms = null, usage = null, error = null, model = '' }) {
+function createResponse({ brand_id, query_id, engine, raw_answer = '', citations = [], web_queries = [], latency_ms = null, usage = null, error = null, model = '', language = 'zh' }) {
   if (!brand_id || !query_id || !engine) {
     throw new Error('createResponse: brand_id, query_id, engine 必填');
   }
@@ -131,8 +215,10 @@ function createResponse({ brand_id, query_id, engine, raw_answer = '', citations
     query_id,
     engine,
     model,
+    language: language || 'zh',
     raw_answer: raw_answer || '',
     citations: Array.isArray(citations) ? citations : [],
+    web_queries: Array.isArray(web_queries) ? web_queries : [], // v0.26: AI 引擎 grounding 时跑的搜索 query（Query Fan-out 基础数据）
     latency_ms,
     usage: usage || null,
     error: error || null,
@@ -154,6 +240,12 @@ function listScores(filter = {}) {
 
 function createScore({ brand_id, dimension, score, snapshot_id = null, details = {} }) {
   if (!brand_id || !dimension || score == null) {
+    // v0.26: 防御 — null score（无数据维度：单引擎一致性/无竞品 SoV/无品牌词查询）跳过写入
+    // 不抛错（避免整个跟踪/快照失败）；null ≠ 0（"无数据" ≠ "表现差"）
+    if (score == null) {
+      console.log(`[geo-store] createScore skip: dimension=${dimension} score=null (no data)`);
+      return null;
+    }
     throw new Error('createScore: brand_id, dimension, score 必填');
   }
   const s = {
@@ -178,6 +270,14 @@ function listSnapshots(brandId) {
 
 function createSnapshot({ brand_id, week, summary_json = {} }) {
   if (!brand_id || !week) throw new Error('createSnapshot: brand_id 和 week 必填');
+  const coll = collection(COLLECTIONS.SNAPSHOTS);
+  // v0.27: upsert — 同一品牌同一周只保留一份快照（同周重复跑 tracker 时更新而非新增，治「2 个周快照」）
+  const existing = coll.findOne(s => s.brand_id === brand_id && s.week === week);
+  if (existing) {
+    const merged = { ...existing, summary_json, computed_at: new Date().toISOString() };
+    coll.update(s => s.id === existing.id, merged);
+    return merged;
+  }
   const s = {
     id: makeId('snap'),
     brand_id,
@@ -185,8 +285,58 @@ function createSnapshot({ brand_id, week, summary_json = {} }) {
     summary_json,
     computed_at: new Date().toISOString(),
   };
-  collection(COLLECTIONS.SNAPSHOTS).insert(s);
+  coll.insert(s);
   return s;
+}
+
+// === geo_watch（竞品 Watch，Phase 4 v0.11）===
+function listWatches() {
+  return collection(COLLECTIONS.WATCH).all()
+    .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+}
+
+function getWatch(id) {
+  return collection(COLLECTIONS.WATCH).findOne(w => w.id === id);
+}
+
+function createWatch({ focus_brand_id, competitor_ids = [], enabled = true }) {
+  if (!focus_brand_id) throw new Error('createWatch: focus_brand_id 必填');
+  const w = {
+    id: makeId('watch'),
+    focus_brand_id,
+    competitor_ids: Array.isArray(competitor_ids) ? competitor_ids.filter(Boolean) : [],
+    enabled: !!enabled,
+    last_run: null,
+    last_result: null,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  collection(COLLECTIONS.WATCH).insert(w);
+  return w;
+}
+
+function updateWatch(id, updates = {}) {
+  const coll = collection(COLLECTIONS.WATCH);
+  const existing = coll.findOne(w => w.id === id);
+  if (!existing) return null;
+  const merged = { ...existing, ...updates, updated_at: new Date().toISOString() };
+  if (updates.competitor_ids !== undefined) {
+    merged.competitor_ids = Array.isArray(updates.competitor_ids) ? updates.competitor_ids.filter(Boolean) : [];
+  }
+  coll.update(w => w.id === id, merged);
+  return coll.findOne(w => w.id === id);
+}
+
+function deleteWatch(id) {
+  const coll = collection(COLLECTIONS.WATCH);
+  const existing = coll.findOne(w => w.id === id);
+  if (!existing) return false;
+  coll.remove(w => w.id === id);
+  return true;
+}
+
+function setWatchLastRun(id, result) {
+  return updateWatch(id, { last_run: new Date().toISOString(), last_result: result });
 }
 
 // === 统计辅助 ===
@@ -241,13 +391,15 @@ module.exports = {
   // brands
   listBrands, getBrand, findBrandByDomain, createBrand, updateBrand, deleteBrand,
   // queries
-  listQueries, createQuery, deleteQuery,
+  listQueries, createQuery, updateQuery, bulkCreateQueries, computeSystemTags, deleteQuery, deleteQueries, cleanupLegacyQueries,
   // responses
   listResponses, createResponse,
   // scores
   listScores, createScore,
   // snapshots
   listSnapshots, createSnapshot,
+  // watch
+  listWatches, getWatch, createWatch, updateWatch, deleteWatch, setWatchLastRun,
   // stats
   getBrandStats,
   // utility

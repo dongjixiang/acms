@@ -22,6 +22,7 @@ const PROVIDER_MODEL_MAP = {
   google: 'google',
   copilot: 'openai',      // 协议同 OpenAI（baseUrl 不同）
   grok: 'openai',         // 协议同 OpenAI（baseUrl 不同）
+  minimax: 'minimax',     // v0.27: MiniMax 独立 provider（OpenAI 兼容协议，但独立 provider 名避免与 openai/copilot/grok 抢第一个模型）
   google_ai_mode: 'google', // 协议同 Google
 };
 

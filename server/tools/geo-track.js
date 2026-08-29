@@ -17,7 +17,7 @@ const { registerTool } = require('../services/tool-registry');
 const GEO_ENGINES = require('../services/geo-engines');
 const GEO_CONFIG = require('../services/geo-config');
 
-const SUPPORTED_ENGINES = ['deepseek', 'openai', 'claude', 'perplexity', 'gemini', 'copilot', 'grok', 'google_ai_mode'];
+const SUPPORTED_ENGINES = ['deepseek', 'openai', 'claude', 'perplexity', 'gemini', 'copilot', 'grok', 'minimax', 'google_ai_mode'];
 
 // === 工具 1: geo_track_brand（单引擎） ===
 registerTool({
@@ -193,6 +193,73 @@ registerTool({
   },
 });
 
+// === 工具 5: geo_score_brand（查评分，Phase 4 新增）===
+registerTool({
+  name: 'geo_score_brand',
+  description: '查询品牌/产品的 GEO cite-ability 评分（AI 搜索引擎可见性综合分）。'
+    + '当用户问"XX 的 GEO 评分是多少""XX 在 AI 引擎里的可见性""哪个品牌 GEO 表现最好"等时使用。'
+    + '返回综合分(0-100) + 等级(A-F) + 5 维度（mention_rate 提及率 / position_score 位置分 / context_score 上下文分 / engine_consistency 引擎一致性 / freshness 新鲜度）+ 多品牌对比排序。'
+    + '无数据时提示先跑 GEO 跟踪（geo_track_brand）。',
+  parameters: {
+    type: 'object',
+    properties: {
+      brand: { type: 'string', description: '品牌名或域名（模糊匹配，如 "MiniMax" 或 "minimax.com"）' },
+      brand_ids: { type: 'array', items: { type: 'string' }, description: '指定品牌 id 列表（可选，与 brand 二选一）' },
+      lookback_days: { type: 'integer', description: '统计窗口天数，默认 30', default: 30 },
+    },
+  },
+  pool: { domain: 'data', risk: 'read' },
+  async handler(args = {}) {
+    const store = require('../services/geo-store');
+    const scoring = require('../services/geo-scoring');
+    const lookbackDays = parseInt(args.lookback_days || '30', 10);
+
+    let brands = [];
+    if (Array.isArray(args.brand_ids) && args.brand_ids.length) {
+      brands = args.brand_ids.map(id => store.getBrand(id)).filter(Boolean);
+    } else if (args.brand) {
+      const q = String(args.brand).toLowerCase();
+      brands = store.listBrands().filter(b =>
+        (b.name || '').toLowerCase().includes(q) || (b.domain || '').toLowerCase().includes(q));
+    } else {
+      brands = store.listBrands();
+    }
+
+    if (brands.length === 0) {
+      const all = store.listBrands();
+      return {
+        ok: false,
+        error: 'BRAND_NOT_FOUND',
+        message: `未找到品牌「${args.brand || ''}」。已注册品牌: ${all.map(b => b.name).join('、') || '（无，先在 GEO 应用创建品牌）'}`,
+      };
+    }
+
+    const results = brands.map(b => {
+      const score = scoring.calculateCiteAbilityScore(b, { lookbackDays });
+      return {
+        brand_id: b.id,
+        name: b.name,
+        domain: b.domain,
+        status: score.ok ? 'ok' : 'no_data',
+        message: score.message || '',
+        score: score.ok ? score.score : null,
+        grade: score.ok ? score.grade : null,
+        components: score.ok ? score.components : null,
+        engines_used: score.ok ? (score.engines_used || []) : [],
+      };
+    });
+    results.sort((a, b) => (b.score || -1) - (a.score || -1));
+
+    return {
+      ok: true,
+      count: results.length,
+      lookback_days: lookbackDays,
+      results,
+      hint: '无数据(status=no_data)的品牌需先跑 geo_track_brand 或 GEO 仪表盘「跑跟踪」生成响应数据',
+    };
+  },
+});
+
 // === 工具 4: geo_list_engines ===
 registerTool({
   name: 'geo_list_engines',
@@ -220,4 +287,4 @@ registerTool({
   },
 });
 
-console.log('[geo-track] GEO 工具已注册: geo_track_brand, geo_track_brand_multi, geo_check_visibility, geo_list_engines');
+console.log('[geo-track] GEO 工具已注册: geo_track_brand, geo_track_brand_multi, geo_check_visibility, geo_score_brand, geo_list_engines');

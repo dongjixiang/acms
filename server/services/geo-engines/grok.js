@@ -5,7 +5,7 @@
 // Grok API 关键事实：
 //   - 协议：OpenAI Chat Completions 完全兼容
 //   - baseUrl：https://api.x.ai/v1
-//   - 鉴权：Authorization: Bearer <api_key>
+//   - 鉴权：Authorization: Bearer ***
 //   - 模型：grok-beta / grok-vision-beta / grok-2
 //   - 端点：{baseUrl}/chat/completions
 //
@@ -96,6 +96,7 @@ async function query(prompt, options = {}) {
 }
 
 module.exports = {
+  capability: { search: 'planned', note: 'xAI 官方支持 web_search tool，当前裸 chat completions，待改造' },
   name: 'grok',
   query,
   models: [],

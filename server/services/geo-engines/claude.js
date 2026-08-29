@@ -36,6 +36,26 @@ async function query(prompt, options = {}) {
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   try {
+    // v0.26: 启用 web_search tool（Anthropic 原生支持）— 让 Claude 实际跑 web search 并返回 search queries
+    // 借鉴 elmo 真实拿到 web_queries 数据（之前 capability: { search: 'planned' } — 现在升级到 'native'）
+    // Feature flag：options.enableWebSearch = true（默认） / false（关掉走裸 API）
+    const enableWebSearch = options.enableWebSearch !== false;
+    const body = {
+      model,
+      system: 'You are an expert assistant helping analyze brand/product visibility in AI search engines. Provide direct, accurate answers with citations.',
+      messages: [
+        { role: 'user', content: prompt },
+      ],
+      temperature: options.temperature ?? 0.5,
+      max_tokens: options.max_tokens ?? 2000,
+    };
+    if (enableWebSearch) {
+      body.tools = [{
+        type: 'web_search_20250305',
+        name: 'web_search',
+        max_uses: 5, // 最多跑 5 次 web search（够用，省 token）
+      }];
+    }
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: {
@@ -43,15 +63,7 @@ async function query(prompt, options = {}) {
         'x-api-key': modelInfo.apiKey,
         'anthropic-version': ANTHROPIC_VERSION,
       },
-      body: JSON.stringify({
-        model,
-        system: 'You are an expert assistant helping analyze brand/product visibility in AI search engines. Provide direct, accurate answers.',
-        messages: [
-          { role: 'user', content: prompt },
-        ],
-        temperature: options.temperature ?? 0.5,
-        max_tokens: options.max_tokens ?? 2000,
-      }),
+      body: JSON.stringify(body),
       signal: controller.signal,
     });
 
@@ -69,13 +81,57 @@ async function query(prompt, options = {}) {
     }
 
     const data = await response.json();
-    const text = data.content?.[0]?.text || '';
+
+    // v0.26: 解析 content[] 数组（启用 web_search 后有多类型 block）
+    // - type: 'text' → 主回答文本
+    // - type: 'web_search_tool_result' → web search 实际跑的搜索结果（带 query 字段）
+    // - type: 'server_tool_use' → 服务端工具调用（query 在 input.query）
+    let text = '';
+    const webQueries = [];
+    const citations = [];
+    if (Array.isArray(data.content)) {
+      for (const block of data.content) {
+        if (block?.type === 'text' && typeof block.text === 'string') {
+          text += (text ? '\n\n' : '') + block.text;
+          // v0.26: 提取 text block 的 citations 字段（Anthropic web_search 返回的位置引用）
+          if (Array.isArray(block.citations)) {
+            for (const c of block.citations) {
+              if (c?.type === 'web_search_result_location') {
+                citations.push({
+                  url: c.url,
+                  title: c.title || c.cited_text?.slice(0, 60) || '',
+                  domain: (() => { try { return new URL(c.url).hostname.replace(/^www\./, ''); } catch (_) { return ''; } })(),
+                });
+              }
+            }
+          }
+        } else if (block?.type === 'web_search_tool_result') {
+          // web_search 实际跑过的搜索 query 都在 content[].content[].query
+          const results = Array.isArray(block.content) ? block.content : [];
+          for (const r of results) {
+            if (r?.type === 'web_search_result' && typeof r?.query === 'string') {
+              webQueries.push(r.query);
+            }
+          }
+        } else if (block?.type === 'server_tool_use' && block?.name === 'web_search') {
+          // 服务端工具调用记录（input.query 是 web search 的 query）
+          if (typeof block?.input?.query === 'string') {
+            webQueries.push(block.input.query);
+          }
+        }
+      }
+    }
+    // 去重
+    const uniqueWebQueries = [...new Set(webQueries)];
+
     return {
       ok: true,
       engine: 'claude',
       model,
       text,
-      citations: [], // Claude API 不返回 citations
+      citations,
+      web_queries: uniqueWebQueries, // v0.26: 实际 web search queries（之前永远是 []，现在能拿到真数据）
+      web_search_enabled: enableWebSearch,
       usage: data.usage ? {
         prompt_tokens: data.usage.input_tokens,
         completion_tokens: data.usage.output_tokens,
@@ -99,6 +155,7 @@ async function query(prompt, options = {}) {
 }
 
 module.exports = {
+  capability: { search: 'native', note: 'web_search_20250305 tool（v0.26 启用）→ 返回 web_queries + citations' },
   name: 'claude',
   query,
   models: [],

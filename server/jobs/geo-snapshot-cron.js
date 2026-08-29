@@ -92,6 +92,33 @@ async function runScheduled() {
       },
     });
 
+    // v0.11 (Phase 4): 竞品 Watch 对比（有 enabled watch 时）
+    try {
+      const watchSvc = require('../services/geo-watch-service');
+      const watches = require('../services/geo-store').listWatches().filter(w => w.enabled);
+      if (watches.length) {
+        const wr = await watchSvc.runAllWatches();
+        lastResult.watch_results = wr.results;
+        // 变化告警推通知
+        for (const item of wr.results) {
+          if (item.ok && item.changes > 0) {
+            const watch = require('../services/geo-store').getWatch(item.watch_id);
+            const focusName = watch ? (require('../services/geo-store').getBrand(watch.focus_brand_id)?.name || watch.focus_brand_id) : item.watch_id;
+            await eventBus.emit('geo.watch.alert', {
+              payload: {
+                title: `👁 竞品 Watch 变化: ${focusName}`,
+                desc: `${item.changes} 处显著变化（|Δ| ≥ 5 分），详见 GEO 应用`,
+                type: 'warning',
+              },
+            });
+          }
+        }
+        console.log(`[geo-cron] 👁 Watch 对比完成: ${wr.total} 组`);
+      }
+    } catch (e) {
+      console.error('[geo-cron] Watch 对比失败:', e.message);
+    }
+
     console.log(`[geo-cron] ✅ Run completed: ${result.total_brands} brands`);
     return lastResult;
   } catch (e) {

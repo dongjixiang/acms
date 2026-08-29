@@ -106,6 +106,7 @@ async function query(prompt, options = {}) {
 }
 
 module.exports = {
+  capability: { search: 'planned', note: 'Gemini 官方支持 google_search grounding，当前裸 generateContent，待改造' },
   name: 'gemini',
   query,
   models: [],

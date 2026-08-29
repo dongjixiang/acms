@@ -13,6 +13,7 @@ const ENGINES = {
   google: require('./google'),         // Phase 1 Week 2 — Gemini
   copilot: require('./copilot'),       // Phase 1 Week 2 — Microsoft Copilot
   grok: require('./grok'),             // Phase 1 Week 2 — xAI Grok
+  minimax: require('./minimax'),       // v0.27 — MiniMax（OpenAI 兼容协议）
   // Phase 1 Week 2+: google_ai_mode（特殊 — web scraping，Google 反爬严，待评估）
 };
 
@@ -32,6 +33,7 @@ function getEngineInfo(name) {
     models: eng.models || [],
     defaultModel: eng.defaultModel,
     endpoint: eng.endpoint,
+    capability: eng.capability || { search: 'none' },
   };
 }
 

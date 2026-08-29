@@ -15,6 +15,7 @@
 
 const GEO_STORE = require('./geo-store');
 const SCORING = require('./geo-scoring');
+const PROMPT_REPORT = require('./geo-prompt-report'); // v0.26: 代表 prompt 算法（借鉴 elmo）
 
 function generateWeeklyReport(brandId, options = {}) {
   const { week = null, includeRawStats = true } = options;
@@ -23,6 +24,20 @@ function generateWeeklyReport(brandId, options = {}) {
 
   const score = SCORING.calculateCiteAbilityScore(brand);
   if (!score.ok) return `# GEO 报告 — ${brand.name}\n\n错误: ${score.message}`;
+
+  // v0.26: 拉 watch 竞品（用作 selectRepresentativePrompts 的 competitors）
+  let watchCompetitors = [];
+  try {
+    const watches = GEO_STORE.listWatches ? GEO_STORE.listWatches() : [];
+    const myWatches = watches.filter(w => w.focus_brand_id === brandId);
+    const allBrands = GEO_STORE.listBrands();
+    for (const w of myWatches) {
+      for (const cid of (w.competitor_ids || [])) {
+        const b = allBrands.find(x => x.id === cid);
+        if (b && b.name) watchCompetitors.push({ name: b.name, domain: b.domain || '' });
+      }
+    }
+  } catch (_) { /* 拉取失败不阻塞周报主体 */ }
 
   const weekStr = week || currentWeek();
   const md = [];
@@ -34,7 +49,7 @@ function generateWeeklyReport(brandId, options = {}) {
   md.push(`**生成时间**: ${new Date().toISOString()}  `);
   md.push('');
 
-  // 综合分
+  // 综合分（v0.26 C3: 新指标）
   md.push(`## 综合分：${score.score} / 100（${score.grade}）`);
   md.push('');
   md.push('| 维度 | 分数 | 权重 |');
@@ -42,9 +57,36 @@ function generateWeeklyReport(brandId, options = {}) {
   for (const [dim, val] of Object.entries(score.components)) {
     const w = score.weights[dim];
     const wStr = w != null ? `${(w * 100).toFixed(0)}%` : '—（参考指标）';
-    md.push(`| ${labelOf(dim)} | ${(val * 100).toFixed(0)}% | ${wStr} |`);
+    const valStr = val == null ? '—' : `${(val * 100).toFixed(0)}%`;
+    md.push(`| ${labelOf(dim)} | ${valStr} | ${wStr} |`);
   }
   md.push('');
+  // v0.26 C3: 指标口径说明
+  md.push(`> **指标口径（v0.26 重定义）**：综合分基于**自然发现**（非品牌词查询）计算 — 用户搜行业词时品牌被 AI 主动提及的可见性。自然提及率 50% + 自然SoV 20% + 位置 15% + 上下文 15%。品牌词查询单独看（品牌搜索提及率 ${score.components.branded_mention_rate == null ? '—' : (score.components.branded_mention_rate * 100).toFixed(0) + '%'}，占比 ${score.components.branded_ratio == null ? '—' : (score.components.branded_ratio * 100).toFixed(0) + '%'}）。`);
+  md.push('');
+
+  // v0.23: 行业地位（排名/指数/分位）
+  try {
+    const ranking = require('./geo-ranking');
+    const rk = ranking.computeIndustryRanking(brandId, { lookbackDays: 30 });
+    if (rk.ok) {
+      md.push(`## 🏆 行业地位`);
+      md.push('');
+      md.push(`- **行业排名**: 第 ${rk.rank} / ${rk.total} 名（基准池：${rk.industry}）`);
+      md.push(`- **行业指数**: ${rk.index ?? '—'}（行业中位数 = ${rk.median_score ?? '—'}，指数 >100 领先行业典型水平）`);
+      md.push(`- **分位**: P${rk.percentile ?? '—'}（超过 ${rk.percentile ?? 0}% 同行）`);
+      if (rk.delta_vs_median != null) md.push(`- **vs 行业平均**: ${rk.delta_vs_median >= 0 ? '+' : ''}${rk.delta_vs_median} 分`);
+      if (rk.sov != null) md.push(`- **SoV 提及份额**: ${rk.sov}%（第 ${rk.sov_rank} 名）`);
+      md.push('');
+      md.push('| 排名 | 品牌 | 分数 | 等级 |');
+      md.push('|------|------|------|------|');
+      rk.pool.slice(0, 8).forEach((p, i) => {
+        const focus = p.brand_id === brandId ? ' ⭐' : '';
+        md.push(`| ${i + 1} | ${p.name}${focus} | ${p.score ?? '—'} | ${p.grade || '—'} |`);
+      });
+      md.push('');
+    }
+  } catch (e) { /* 行业排名失败不影响周报主体 */ }
 
   // 引擎拆解
   md.push(`## 引擎拆解（${score.engines_used.length} 个引擎）`);
@@ -58,6 +100,12 @@ function generateWeeklyReport(brandId, options = {}) {
     md.push(`| ${eng} | ${rs.length} | ${mentioned} | ${rate}% |`);
   }
   md.push('');
+
+  // v0.26: 代表 prompt 表现（借鉴 elmo selectRepresentativePrompts）— 引擎拆解后、关键发现前
+  md.push(PROMPT_REPORT.generateRepresentativePromptsSection(brandId, { competitors: watchCompetitors }));
+
+  // v0.26: 内容缺口（借鉴 elmo findContentGaps）— 数据驱动的优化建议，紧跟代表 prompt
+  md.push(PROMPT_REPORT.generateContentGapsSection(brandId, { competitors: watchCompetitors }));
 
   // 关键发现
   const insights = generateInsights(brand, score);
@@ -162,11 +210,14 @@ function currentWeek() {
 
 function labelOf(dim) {
   const labels = {
-    mention_rate: '提及率',
+    mention_rate: '自然提及率',
     position_score: '位置分',
     context_score: '上下文分',
     engine_consistency: '引擎一致性',
     freshness: '时效性',
+    sov_natural: '自然SoV',
+    branded_mention_rate: '品牌搜索提及率',
+    branded_ratio: '品牌词占比',
   };
   return labels[dim] || dim;
 }

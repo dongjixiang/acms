@@ -141,6 +141,8 @@
     const {
       title = '',
       message = '',
+      html = null,            // v0.26: 信任的 HTML 字符串（替代 message）
+      size = 'md',            // v0.26: 'md' (520) | 'lg' (760) | 'xl' (960) — 大内容如快照浏览用 lg/xl
       fields = [],
       actions = null,
       root = null,
@@ -154,6 +156,8 @@
 
       const modal = document.createElement('div');
       modal.className = 'acms-modal';
+      if (size === 'lg') modal.style.maxWidth = '760px';
+      else if (size === 'xl') modal.style.maxWidth = '960px';
 
       if (title) {
         const t = document.createElement('div');
@@ -165,7 +169,13 @@
       const body = document.createElement('div');
       body.className = 'acms-modal-body';
 
-      if (message) {
+      if (html != null) {
+        // 信任模式：调用方自负 XSS 责任（用于快照浏览等自己拼接的内容）
+        const m = document.createElement('div');
+        m.className = 'acms-modal-message acms-modal-html';
+        m.innerHTML = html;
+        body.appendChild(m);
+      } else if (message) {
         const m = document.createElement('div');
         m.className = 'acms-modal-message';
         m.textContent = message;
@@ -188,6 +198,23 @@
         input.placeholder = field.placeholder || '';
         input.value = field.value || '';
         if (field.required) input.required = true;
+        // v0.26 C7: select 下拉字段
+        if (field.type === 'select') {
+          const select = document.createElement('select');
+          select.className = 'acms-modal-input';
+          select.name = field.name;
+          (field.options || []).forEach(opt => {
+            const o = document.createElement('option');
+            o.value = opt.value;
+            o.textContent = opt.label;
+            if (String(opt.value) === String(field.value || '')) o.selected = true;
+            select.appendChild(o);
+          });
+          inputs[field.name] = select;
+          wrap.appendChild(select);
+          body.appendChild(wrap);
+          continue; // 跳过下面 appendChild(input)
+        }
         wrap.appendChild(input);
         inputs[field.name] = input;
         body.appendChild(wrap);
@@ -214,7 +241,16 @@
               }
             }
             const result = {};
-            for (const field of fields) result[field.name] = inputs[field.name].value.trim();
+            for (const field of fields) {
+              // v0.26 C7: checkbox 用 checked 属性（value 恒为 'on'，checked 才是状态）
+              if (field.type === 'checkbox') {
+                result[field.name] = inputs[field.name].checked;
+              } else if (field.type === 'select') {
+                result[field.name] = inputs[field.name].value;
+              } else {
+                result[field.name] = inputs[field.name].value.trim();
+              }
+            }
             cleanup(result);
           } else {
             cleanup(b.value);

@@ -10,6 +10,7 @@
 const GEO_STORE = require('./geo-store');
 const SCORING = require('./geo-scoring');
 const REPORTER = require('./geo-reporter-agent');
+const PROMPT_REPORT = require('./geo-prompt-report'); // v0.26: 代表 prompt 算法（借鉴 elmo）
 const path = require('path');
 const fs = require('fs').promises;
 
@@ -60,14 +61,17 @@ function generateMonthlyReport(brandId, options = {}) {
   md.push(`**生成时间**: ${new Date().toISOString()}  `);
   md.push('');
 
-  // 综合分 + 趋势
+  // 综合分 + 趋势（v0.26 C3: 新指标）
   md.push(`## 月度综合分：${currentScore.score}（${currentScore.grade}）`);
   md.push('');
   md.push('| 维度 | 月末分 |');
   md.push('|------|--------|');
   for (const [dim, val] of Object.entries(currentScore.components)) {
-    md.push(`| ${labelOf(dim)} | ${(val * 100).toFixed(0)}% |`);
+    const valStr = val == null ? '—' : `${(val * 100).toFixed(0)}%`;
+    md.push(`| ${labelOf(dim)} | ${valStr} |`);
   }
+  md.push('');
+  md.push(`> **指标口径（v0.26 重定义）**：综合分基于**自然发现**（非品牌词查询）计算 — 用户搜行业词时品牌被 AI 主动提及的可见性。自然提及率 50% + 自然SoV 20% + 位置 15% + 上下文 15%。`);
   md.push('');
 
   // 周对比
@@ -82,6 +86,24 @@ function generateMonthlyReport(brandId, options = {}) {
     });
     md.push('');
   }
+
+  // v0.26: 代表 prompt 表现（借鉴 elmo selectRepresentativePrompts）— 复用 weekly 同一函数
+  let monthlyWatchCompetitors = [];
+  try {
+    const watches = GEO_STORE.listWatches ? GEO_STORE.listWatches() : [];
+    const myWatches = watches.filter(w => w.focus_brand_id === brandId);
+    const allBrands = GEO_STORE.listBrands();
+    for (const w of myWatches) {
+      for (const cid of (w.competitor_ids || [])) {
+        const b = allBrands.find(x => x.id === cid);
+        if (b && b.name) monthlyWatchCompetitors.push({ name: b.name, domain: b.domain || '' });
+      }
+    }
+  } catch (_) { /* 拉取失败不阻塞 */ }
+  md.push(PROMPT_REPORT.generateRepresentativePromptsSection(brandId, { competitors: monthlyWatchCompetitors }));
+
+  // v0.26: 内容缺口（借鉴 elmo findContentGaps）— 月报也展示
+  md.push(PROMPT_REPORT.generateContentGapsSection(brandId, { competitors: monthlyWatchCompetitors }));
 
   // 关键发现（基于当前分）
   md.push(`## 月度关键发现`);
@@ -162,11 +184,14 @@ function generateMonthlyInsights(brand, currentScore, snapshots) {
 
 function labelOf(dim) {
   const labels = {
-    mention_rate: '提及率',
+    mention_rate: '自然提及率',
     position_score: '位置分',
     context_score: '上下文分',
     engine_consistency: '引擎一致性',
     freshness: '时效性',
+    sov_natural: '自然SoV',
+    branded_mention_rate: '品牌搜索提及率',
+    branded_ratio: '品牌词占比',
   };
   return labels[dim] || dim;
 }

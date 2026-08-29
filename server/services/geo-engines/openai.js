@@ -1,19 +1,15 @@
-// ACMS GEO 引擎适配器 — OpenAI（v0.1 — Phase 1 Week 1）
-// 用途：调用 OpenAI Chat Completions API（含可选 web search tool）
+// ACMS GEO 引擎适配器 — OpenAI（v0.1 — Phase 1 Week 1，v0.26 升级 web_search）
+// 用途：调用 OpenAI API（Chat Completions + Responses API 双模式，含可选 web search tool）
 // 路径：server/services/geo-engines/openai.js
 //
-// OpenAI API 关键事实：
-//   - 协议：OpenAI Chat Completions（与 DeepSeek 兼容）
-//   - baseUrl：从 modelStore 读（model.provider='openai'）
-//   - 模型：gpt-4o / gpt-4-turbo / gpt-3.5-turbo / gpt-4o-mini
-//   - 鉴权：Authorization: Bearer <api_key>
-//   - 可选 Web Search：tool choice 'web_search_preview'（OpenAI Responses API，需要不同端点）
-//
-// 当前实现：仅 Chat Completions（最广泛兼容）。Web Search 需要切 Responses API，Phase 1 后续支持。
+// v0.26 升级要点（借鉴 elmo 真实 web_queries 数据）：
+//   - 默认走 Responses API（OpenAI 2024+ 主推端点），支持 web_search_preview tool
+//   - 可选 Chat Completions 模式（options.useChatCompletions = true，保留兼容）
+//   - web_search_preview tool 返回 web_queries + citations
 //
 // 参考：
-//   - https://platform.openai.com/docs/api-reference/chat
-//   - Phase 0 deepseek.js（OpenAI 兼容协议参考）
+//   - https://platform.openai.com/docs/api-reference/responses
+//   - https://platform.openai.com/docs/guides/tools-web-search
 
 const GEO_CONFIG = require('../geo-config');
 
@@ -31,31 +27,94 @@ async function query(prompt, options = {}) {
   }
 
   const model = options.model || modelInfo.model;
-  const endpoint = `${modelInfo.baseUrl.replace(/\/$/, '')}/chat/completions`;
+  const enableWebSearch = options.enableWebSearch !== false;
+  const useChatCompletions = options.useChatCompletions === true; // v0.26: 旧模式备选
+
+  const baseUrl = modelInfo.baseUrl.replace(/\/$/, '');
   const startTs = Date.now();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   try {
+    let endpoint, body, parseResponse;
+    if (useChatCompletions) {
+      // 旧模式：Chat Completions API（不返回 web_queries）
+      endpoint = `${baseUrl}/chat/completions`;
+      body = {
+        model,
+        messages: [
+          { role: 'system', content: 'You are an expert assistant helping analyze brand/product visibility in AI search engines. Provide direct, accurate answers.' },
+          { role: 'user', content: prompt },
+        ],
+        temperature: options.temperature ?? 0.5,
+        max_tokens: options.max_tokens ?? 2000,
+      };
+      parseResponse = (data) => ({
+        text: data.choices?.[0]?.message?.content || '',
+        webQueries: [],
+        citations: [],
+      });
+    } else {
+      // v0.26: 新模式 — Responses API（支持 web_search_preview tool）
+      endpoint = `${baseUrl}/responses`;
+      body = {
+        model,
+        input: prompt,
+        temperature: options.temperature ?? 0.5,
+        max_output_tokens: options.max_tokens ?? 2000,
+      };
+      if (enableWebSearch) {
+        body.tools = [{ type: 'web_search_preview' }];
+        // web_search_preview 用户位置提示（影响结果本地化）
+        body.tool_choice = 'auto';
+      }
+      parseResponse = (data) => {
+        // Responses API 输出结构：
+        //   output: [
+        //     { type: 'web_search_call', action: { query: '...' } },
+        //     { type: 'message', content: [
+        //       { type: 'output_text', text: '...', annotations: [{type: 'url_citation', url, title}] }
+        //     ]}
+        //   ]
+        let text = '';
+        const webQueries = [];
+        const citations = [];
+        const output = Array.isArray(data.output) ? data.output : [];
+        for (const item of output) {
+          if (item?.type === 'web_search_call' && item?.action?.query) {
+            webQueries.push(item.action.query);
+          } else if (item?.type === 'message') {
+            const content = Array.isArray(item.content) ? item.content : [];
+            for (const c of content) {
+              if (c?.type === 'output_text' && typeof c.text === 'string') {
+                text += (text ? '\n\n' : '') + c.text;
+                // 提取 annotations 中的 url_citation
+                if (Array.isArray(c.annotations)) {
+                  for (const ann of c.annotations) {
+                    if (ann?.type === 'url_citation') {
+                      citations.push({
+                        url: ann.url,
+                        title: ann.title || '',
+                        domain: (() => { try { return new URL(ann.url).hostname.replace(/^www\./, ''); } catch (_) { return ''; } })(),
+                      });
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        return { text, webQueries: [...new Set(webQueries)], citations };
+      };
+    }
+
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${modelInfo.apiKey}`,
       },
-      body: JSON.stringify({
-        model,
-        messages: [
-          {
-            role: 'system',
-            content: 'You are an expert assistant helping analyze brand/product visibility in AI search engines. Provide direct, accurate answers.',
-          },
-          { role: 'user', content: prompt },
-        ],
-        temperature: options.temperature ?? 0.5,
-        max_tokens: options.max_tokens ?? 2000,
-        stream: false,
-      }),
+      body: JSON.stringify(body),
       signal: controller.signal,
     });
 
@@ -73,15 +132,21 @@ async function query(prompt, options = {}) {
     }
 
     const data = await response.json();
-    const text = data.choices?.[0]?.message?.content || '';
+    const parsed = parseResponse(data);
     return {
       ok: true,
       engine: 'openai',
       model,
-      text,
-      citations: [], // Chat Completions API 不返回 citations（仅 Responses API + web_search tool）
-      usage: data.usage || null,
-      finish_reason: data.choices?.[0]?.finish_reason || null,
+      text: parsed.text,
+      citations: parsed.citations,
+      web_queries: parsed.webQueries, // v0.26: 实际 web search queries
+      web_search_enabled: enableWebSearch && !useChatCompletions,
+      usage: data.usage ? {
+        prompt_tokens: data.usage.input_tokens || data.usage.prompt_tokens || 0,
+        completion_tokens: data.usage.output_tokens || data.usage.completion_tokens || 0,
+        total_tokens: data.usage.total_tokens || ((data.usage.input_tokens || data.usage.prompt_tokens || 0) + (data.usage.output_tokens || data.usage.completion_tokens || 0)),
+      } : null,
+      finish_reason: data.status || data.choices?.[0]?.finish_reason || null,
       latency_ms: Date.now() - startTs,
       raw: data,
     };
@@ -99,9 +164,10 @@ async function query(prompt, options = {}) {
 }
 
 module.exports = {
+  capability: { search: 'native', note: 'web_search_preview tool（v0.26 启用）→ Responses API 返回 web_queries + url_citation annotations' },
   name: 'openai',
   query,
-  models: [], // 动态从 modelStore 读
+  models: [],
   defaultModel: null,
   getModels() {
     const info = GEO_CONFIG.getModelInfo('openai');
