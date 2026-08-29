@@ -70,7 +70,8 @@ function connectWebSocket() {
           ACMSWin.dispatchEvent(m.type, m.payload || {});
         }
         // v0.64: Agent 事件通过 window CustomEvent 广播（给小吉等系统组件订阅）
-        if (m.type && (m.type.startsWith('task.') || m.type.startsWith('agent.'))) {
+        // v0.63b: geo.* 事件同样广播（GEO cron 通知等，供任何全局监听器使用）
+        if (m.type && (m.type.startsWith('task.') || m.type.startsWith('agent.') || m.type.startsWith('geo.'))) {
           window.dispatchEvent(new CustomEvent('acms:' + m.type, { detail: m.payload || {} }));
         }
       } catch (err) { /* */ }

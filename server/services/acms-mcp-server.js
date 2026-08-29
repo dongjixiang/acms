@@ -151,6 +151,23 @@ const TOOLS = [
       required: ['path'],
     },
   },
+  // ── v0.119：网络搜图（百度图片）+ 自动 vision 描述 ──
+  //   单一原子：搜图 + 下载 + 描述，返回 image 列表含视觉描述（≤400 字）。
+  //   describe 默认 true（用户调此工具的主诉就是"把搜到的图带到对话里"）；
+  //   设 false 时只返 URL+thumb，让 Agent 决定要不要进一步处理。
+  {
+    name: 'acms_search_images',
+    description: '从网络（百度图片）搜图并自动返回每张图的视觉描述，让你像看本地图片一样"看到"搜到的内容。默认 describe=true 时，每张图会被下载并由 vision 模型生成中文描述（≤400 字），返回的 description 字段就是你能直接引用的视觉信息；设 describe=false 只返 URL/thumb/title（自己后续 decide）。典型场景：用户要"找一些 XX 图""搜 XX 素材""有什么好看的 XX 图"，或需要分析/比较一组网络图片。注意：受 8MB 上限 + SSRF 内网拦截；下载失败的图会跳过并附 fetch_error。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query:      { type: 'string', description: '搜图关键词（中文优先，如"夏日海滩壁纸""ACMS 系统截图"）' },
+        maxResults: { type: 'number', description: '返回张数（默认 6，上限 9）' },
+        describe:   { type: 'boolean', description: '是否自动下载 + vision 描述（默认 true）' },
+      },
+      required: ['query'],
+    },
+  },
 ];
 
 // ---------- 工具实现 ----------
@@ -271,6 +288,83 @@ async function handleCall(toolName, args) {
           return toolResult({ error: r.error || 'VISION_FAILED', size: r.size, mime: r.mime, policy: r.policy }, true);
         }
         return toolResult({ path: args.path, mime: r.mime, size: r.size, description: r.description });
+      }
+      // ── v0.119：网络搜图 + 自动 vision 描述 ──
+      case 'acms_search_images': {
+        const ws = require('../services/web-search');
+        const visionService = require('../services/vision-service');
+        const maxResults = Math.min(args.maxResults || 6, 9);
+        const describe = args.describe !== false;   // 默认 true
+        console.log(`[acms_search_images] query="${args.query}" max=${maxResults} describe=${describe}`);
+
+        // 1) 搜图
+        let imgResult;
+        try {
+          imgResult = await ws.browserSearchBaiduImage(args.query, maxResults);
+        } catch (e) {
+          return toolResult({ error: 'SEARCH_FAIL', hint: e.message, images: [] }, true);
+        }
+        if (imgResult && imgResult.error) {
+          return toolResult({ error: imgResult.error, images: [] }, true);
+        }
+        const rawImages = Array.isArray(imgResult.images) ? imgResult.images : [];
+        if (rawImages.length === 0) {
+          return toolResult({ query: args.query, count: 0, images: [], hint: '未搜到结果，试试换个关键词' });
+        }
+
+        // 2) 不描述就直接返
+        if (!describe) {
+          return toolResult({
+            query: args.query, count: rawImages.length,
+            images: rawImages.map((i) => ({ thumb: i.thumb, url: i.url, title: i.title })),
+            note: 'describe=false，仅返回 URL/thumb/title；如需视觉描述请重调并设 describe=true',
+          });
+        }
+
+        // 3) 并发下载 + 描述（concurrency=3，避免 vision API 被打爆）
+        const describeOne = async (img) => {
+          const out = { thumb: img.thumb, url: img.url, title: img.title };
+          try {
+            const fr = await visionService.fetchImageBuffer(img.url);
+            if (!fr.ok) {
+              out.fetch_error = fr.error;
+              if (fr.hint) out.fetch_hint = fr.hint;
+              return out;
+            }
+            const dr = await visionService.describeImage(fr.buffer, {}, {});
+            if (dr.ok) {
+              out.description = dr.description;
+              out.mime = dr.mime;
+              out.size = dr.size;
+            } else {
+              out.describe_error = dr.error || 'VISION_FAIL';
+            }
+          } catch (e) {
+            out.describe_error = e.message || 'UNKNOWN';
+          }
+          return out;
+        };
+
+        const concurrency = 3;
+        const described = [];
+        for (let i = 0; i < rawImages.length; i += concurrency) {
+          const batch = rawImages.slice(i, i + concurrency);
+          const batchResults = await Promise.all(batch.map(describeOne));
+          described.push(...batchResults);
+        }
+
+        const describedCount = described.filter((d) => d.description).length;
+        return toolResult({
+          query: args.query,
+          count: rawImages.length,
+          described_count: describedCount,
+          images: described,
+          hint: describedCount === 0
+            ? '所有图片都未能成功描述，详见各 image.fetch_error / describe_error 字段'
+            : (describedCount < rawImages.length
+                ? `成功描述 ${describedCount}/${rawImages.length} 张；其余失败原因见各 image.fetch_error / describe_error 字段`
+                : `成功描述全部 ${describedCount} 张图`),
+        });
       }
       default:
         return toolResult({ error: `未知工具: ${toolName}` }, true);

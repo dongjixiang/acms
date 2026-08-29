@@ -49,6 +49,10 @@ require('./plan-execute');
 require('./send-email');
 // v0.88: delegate_subtasks 从 task-agent.js 抽出独立注册（任何入口可见，小吉可委派）
 require('./delegate-subtasks');
+// v0.X: GEO 应用工具（Phase 0 — D2）
+require('./geo-track');
+// v0.X: GEO 应用工具（Phase 0 — D3 — llms.txt 生成器）
+require('./llms-txt-generator');
 
 console.log('[tools] 内建工具注册完成:', listBuiltinTools().join(', '));
 function listBuiltinTools() { return require('../services/tool-registry').listTools().map(t => t.name); }

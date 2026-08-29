@@ -24,6 +24,7 @@
           '<button class="af-btn" data-hint="搜索信息" style="padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);cursor:pointer;font-size:12px">🔍 搜索</button>' +
           '<button class="af-btn" data-hint="生成文档" style="padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);cursor:pointer;font-size:12px">📄 文档</button>' +
           '<button class="af-btn" data-hint="发邮件" style="padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);cursor:pointer;font-size:12px">📧 邮件</button>' +
+          '<button class="af-btn" data-geo-open="geo-dashboard" style="padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);cursor:pointer;font-size:12px">🌐 GEO 应用</button>' +
         '</div>' +
         // 结果容器
         '<div id="af-results" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding:4px 0"></div>' +
@@ -83,6 +84,13 @@
       if (hint) {
         input.value = hint + ' ';
         input.focus();
+        return;
+      }
+      // v0.X: GEO 应用直接打开浮动窗口（不经过输入框）
+      var geoOpen = btn.getAttribute('data-geo-open');
+      if (geoOpen === 'geo-dashboard' && window.ACMSWin) {
+        ACMSWin.open('geo-dashboard', { w: 1200, h: 800, title: 'GEO 仪表盘' });
+        return;
       }
     });
   };

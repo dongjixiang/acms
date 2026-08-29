@@ -46,7 +46,19 @@ const store = {
     if (updates.capabilities) updates.capabilities = JSON.stringify(updates.capabilities);
     const now = new Date().toISOString();
     const result = collection('llm_models').update(m => m.id === id, { ...updates, updated_at: now });
-    if (result) return { ...result, apiKey: '***', capabilities: JSON.parse(result.capabilities || '["text"]') };
+    if (result) {
+      // 修复（2026-08-29）：collection.update 已经 parseDoc 把 capabilities 从 JSON 字符串解析成 array
+      //   旧代码 JSON.parse(array) 会 throw（array.toString() === 'text,json-mode' 不是合法 JSON）
+      //   → silent write：line 48 UPDATE 已生效，但 return 时 throw 让调用方误以为没写
+      //   修复：try/catch 包 JSON.parse，失败时用 result.capabilities 直接（（array）或兜底 ['text']
+      let caps = ['text'];
+      if (Array.isArray(result.capabilities)) {
+        caps = result.capabilities;
+      } else if (typeof result.capabilities === 'string') {
+        try { caps = JSON.parse(result.capabilities); } catch { /* 兜底 */ }
+      }
+      return { ...result, apiKey: '***', capabilities: caps };
+    }
     return null;
   },
 

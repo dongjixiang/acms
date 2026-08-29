@@ -114,6 +114,12 @@ class QwenSession {
     this.events = [];   // 事件流缓冲（trace）
     this.lastResult = null;
     this._initTimeout = null;
+    // 🆕 v0.118.5 (2026-08-29): 无事件守护 —— 记录最近一次收到 CLI 事件的时间
+    //   OOM/卡死场景 worker 被内核杀但 wrapper 活着 → child.on('exit') 不触发 →
+    //   ask 挂满 600s。守护定时器用它判定"CLI 已无响应"并快速失败。
+    this._lastEventAt = 0;
+    // 🆕 v0.118.5: stderr 尾部缓冲（exit 诊断 —— 区分 V8 heap OOM / GLIBC 噪声 / 真崩溃）
+    this._stderrTail = [];
     // 🆕 P0 方案B（卡片化）：流式累积工具调用 input_json（CLI 按 Anthropic stream 协议发 input_json_delta）
     this._toolUseAccum = new Map();  // tool_use_id → { tool_name, input_json }
     this._lastToolUseId = null;      // 当前正在 input 流式的 tool_use_id
@@ -124,9 +130,36 @@ class QwenSession {
     if (!this.cliPath) throw new Error('Qwen Code CLI 未找到。请先在 ACMS server 目录执行 npm install @qwen-code/qwen-code');
     if (!this.apiKey) throw new Error('Qwen Session: apiKey 为空');
 
+    // 🆕 v0.118.5 (2026-08-29): Linux 低内存守门 —— spawn 前检查 MemAvailable
+    //   120 实踩：1.8Gi 机器 Qwen CLI 单会话峰值 700MB+，8/28 内核 OOM killer 连环杀 12 次
+    //   （dmesg: "Out of memory: Killed process XXXX (MainThread)"）。
+    //   内存不够时明确报错让用户稍后再试，而不是 spawn 后让 OS OOM killer 杀（exit code 更友好）。
+    //   阈值 300MB：ACMS 主进程 ~115MB + 系统 ~400MB + Qwen 512MB 堆上限的余量。
+    if (process.platform === 'linux') {
+      try {
+        const meminfo = fs.readFileSync('/proc/meminfo', 'utf8');
+        const m = /MemAvailable:\s+(\d+)\s+kB/.exec(meminfo);
+        if (m) {
+          const availMB = Math.round(parseInt(m[1], 10) / 1024);
+          const MIN_AVAIL_MB = 300;
+          if (availMB < MIN_AVAIL_MB) {
+            throw new Error(`系统内存紧张（可用 ${availMB} MB < ${MIN_AVAIL_MB} MB），请稍后再试`);
+          }
+          debug(`MemAvailable=${availMB}MB 通过守门`);
+        }
+      } catch (e) {
+        if (/系统内存紧张/.test(e.message)) throw e;
+        debug('MemAvailable 检查失败(忽略):', e.message);
+      }
+    }
+
     const env = { ...process.env };
-    // B5: 限制子进程堆内存（120 低内存服务器防 OOM；CLI bundle 256MB 足够）
-    env.NODE_OPTIONS = process.env.NODE_OPTIONS || '--max-old-space-size=256';
+    // B5: 限制子进程堆内存（120 低内存服务器防系统级 OOM）
+    //   v0.118.5 (2026-08-29): 256MB → 512MB —— 实测 256MB 对 Qwen Code 长任务不够：
+    //   V8 FATAL "Reached heap limit" → CLI exited with code 1（8/29 120 实踩：
+    //   worker 跑 25 分钟堆涨到 275~330MB 撞 256MB 上限）。512MB 在 1.8Gi 机器可行：
+    //   worker 512 + ACMS ~115 + 系统 ~400 ≈ 1.0GB，且配合上面 MemAvailable 守门防系统 OOM。
+    env.NODE_OPTIONS = process.env.NODE_OPTIONS || '--max-old-space-size=512';
     if (this.authType === 'anthropic') {
       env.ANTHROPIC_BASE_URL = this.baseUrl;
       env.ANTHROPIC_API_KEY = this.apiKey;
@@ -174,13 +207,19 @@ class QwenSession {
 
     this.rl = readline.createInterface({ input: this.child.stdout });
     this.rl.on('line', (line) => this._handleLine(line));
-this.child.stderr.on('data', (d) => {
+    this.child.stderr.on('data', (d) => {
       const s = d.toString().trim();
       // v0.118 临时诊断：stderr 全量输出，不受 DEBUG 门控
       //   （之前 MCP config 错误 silent fail —— agent 找不到 acms_describe_image 看不到原因）
       if (s) {
         const tag = '[cli-stderr]';
         console.log(tag, s.slice(0, 400));
+        // 🆕 v0.118.5: 维护非噪声 tail 缓冲（exit 诊断用 —— 区分 V8 heap OOM / 真崩溃）
+        //   120 特有噪声：cua-driver-rs GLIBC 错误每次 spawn 刷屏 6 行，过滤掉
+        if (!/GLIBC|cua-driver/.test(s)) {
+          this._stderrTail.push(s.slice(0, 250));
+          if (this._stderrTail.length > 3) this._stderrTail.shift();
+        }
         // 同时追加到 data/qwen-spawn.log（之前 stderr 完全丢失）
         try {
           const fs = require('fs');
@@ -204,7 +243,10 @@ this.child.stderr.on('data', (d) => {
       if (this._pendingResolve) {
         const r = this._pendingResolve;
         this._pendingResolve = null;
-        r({ type: 'result', subtype: 'cli_exit', is_error: true, error: { message: `CLI exited with code ${code}` } });
+        // 🆕 v0.118.5: 附 stderr 尾部（让用户/日志一眼看出是 V8 heap OOM 还是别的）
+        const tail = this._stderrTail.filter((l) => /heap|FATAL|Error|error|Out of memory/i.test(l)).join(' | ');
+        const msg = `CLI exited with code ${code}${tail ? ' — ' + tail.slice(0, 200) : ''}`;
+        r({ type: 'result', subtype: 'cli_exit', is_error: true, error: { message: msg } });
       }
       // 🆕 修复（2026-08-23）：CLI 退出 → 队列中排队的 ask 全部 reject（否则永远挂起）
       this._flushQueue(new Error(`CLI exited with code ${code}`));
@@ -265,6 +307,26 @@ return this._doAsk(prompt, opts);
     this._inFlight = true;
     this._onDelta = opts.onDelta || null;  // B7: 真流式回调（text_delta 实时）
 
+    // 🆕 v0.118.5 (2026-08-29): 无事件守护 —— ask 在飞但 120s 无任何 CLI 事件 → 判定卡死
+    //   场景：OOM killer 杀了 V8 worker（MainThread）但 wrapper 活着 → child.on('exit') 不触发
+    //   → _pendingResolve 永远挂着 → 只能等 600s 总超时（8/25-8/26 实踩 12 次）。
+    //   守护每 30s 检查一次：ask 在飞 + 120s 无事件 → kill 进程树 + 快速失败（等 120s 而非 600s）。
+    //   正常 Qwen 首 token < 60s（thinking 模式也 < 120s），120s 阈值不会误杀。
+    this._lastEventAt = Date.now();
+    const NO_EVENT_TIMEOUT_MS = 120 * 1000;
+    const noEventGuard = setInterval(() => {
+      if (!this._pendingResolve) return;
+      if (Date.now() - this._lastEventAt > NO_EVENT_TIMEOUT_MS) {
+        const r = this._pendingResolve;
+        this._pendingResolve = null;
+        debug(`无事件 ${NO_EVENT_TIMEOUT_MS / 1000}s，判定 CLI 卡死，kill 进程树`);
+        log(`会话 ${this.sessionId.slice(0, 8)} 无事件 ${NO_EVENT_TIMEOUT_MS / 1000}s，强制终止 CLI（rss=${(process.memoryUsage().rss / 1048576) | 0}MB, turn=${this.turnCount})`);
+        try { if (this.child && this.child.exitCode === null) this.child.kill('SIGKILL'); } catch (e) { /* ignore */ }
+        r({ type: 'result', subtype: 'stall', is_error: true, error: { message: `CLI 无响应超过 ${NO_EVENT_TIMEOUT_MS / 1000}s，已强制终止（可能内存不足）` } });
+      }
+    }, 30000);
+    noEventGuard.unref?.();
+
     const resultPromise = new Promise((resolve) => { this._pendingResolve = resolve; });
 
     // 🆕 v0.118：attachments 多模态（base64 图）—— 与 prompt 一起 POST
@@ -290,6 +352,7 @@ return this._doAsk(prompt, opts);
 
     const result = await resultPromise;
     clearTimeout(timer);
+    clearInterval(noEventGuard);  // 🆕 v0.118.5: ask 完成 → 停无事件守护
     this._inFlight = false;
     this._onDelta = null;
     this.lastResult = result;
@@ -453,6 +516,8 @@ return this._doAsk(prompt, opts);
 
   _handleLine(line) {
     if (!line.trim()) return;
+    // 🆕 v0.118.5: 无事件守护 —— 任何 CLI 事件都算"活着"（stream_event/control_response/result…）
+    this._lastEventAt = Date.now();
     let msg;
     try { msg = JSON.parse(line); } catch { return; }
 

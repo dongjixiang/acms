@@ -56,6 +56,9 @@ httpServer.on('error', (err) => {
 // 创建默认管理员（首次启动）
 try { require('./services/user-service').ensureDefaultAdmin(); } catch (e) { /* DB 未就绪时跳过 */ }
 
+// v0.X: GEO Task Executor（Kanban GEO 任务自动执行）
+try { require('./services/geo-task-executor').startGeoTaskExecutor(); } catch (e) { console.warn('[GEO] task executor start skipped:', e.message); }
+
 httpServer.listen(config.port, () => {
   console.log(`[ACMS] HTTP API: http://localhost:${config.port}`);
   console.log(`[ACMS] Web UI:  http://localhost:${config.port}/client/index.html`);

@@ -162,61 +162,65 @@
         label: '新建对话',
         icon: '💬',
         action: function() {
-          if (typeof window.createNewChatWindow === 'function') {
+if (typeof window.createNewChatWindow === 'function') {
             window.createNewChatWindow();
           }
         },
       },
-      {
-        id: 'file-manager',
-        label: '文件浏览器',
-        icon: '📂',
-        action: function() {
-          if (window.ACMSWin) {
-            if (!ACMSWin.isActive()) ACMSWin.enable();
-            ACMSWin.open('file-manager', { w: 720, h: 500 });
-          }
-        },
-      },
-      {
-        id: 'web-browser',
-        label: '浏览器',
-        icon: '🌐',
-        action: function() {
-          if (typeof window.openWebBrowser === 'function') {
-            window.openWebBrowser();
-          }
-        },
-      },
       null, // separator
+      // v0.X: 应用中心（Phase 0 D5 — 收纳相关应用到二级 hover，治 P55 红线）
+      //   原一级菜单 file-manager / web-browser / game-center / GEO 应用 4 项
+      //   都收纳到这里，**一级不再重复这些项**（否则分散 2 处违反 P55）
       {
-        id: 'game-center',
-        label: '游戏中心',
-        icon: '🎮',
+        id: 'app-center',
+        label: '应用中心',
+        icon: '📦',
         children: [
           {
-            id: 'game-2048',
-            label: '2048',
-            icon: '🔢',
-            action: function() { openGameWindow('2048', 360, 480, '2048'); },
+            id: 'app-file-manager',
+            label: '文件浏览器',
+            icon: '📁',
+            action: function() {
+              if (window.ACMSWin) {
+                if (!ACMSWin.isActive()) ACMSWin.enable();
+                ACMSWin.open('file-manager', { w: 720, h: 500 });
+              }
+            },
           },
           {
-            id: 'game-snake',
-            label: '贪吃蛇',
-            icon: '🐍',
-            action: function() { openGameWindow('snake', 420, 480, '贪吃蛇'); },
+            id: 'app-web-browser',
+            label: '浏览器',
+            icon: '🌐',
+            action: function() {
+              if (typeof window.openWebBrowser === 'function') {
+                window.openWebBrowser();
+              }
+            },
           },
           {
-            id: 'game-pong',
-            label: 'Pong',
-            icon: '🏓',
-            action: function() { openGameWindow('pong', 480, 380, 'Pong'); },
+            id: 'app-game-center',
+            label: '游戏中心',
+            icon: '🎮',
+            children: [
+              { id: 'game-2048', label: '2048', icon: '🔢',
+                action: function() { openGameWindow('2048', 360, 480, '2048'); } },
+              { id: 'game-snake', label: '贪吃蛇', icon: '🐍',
+                action: function() { openGameWindow('snake', 420, 480, '贪吃蛇'); } },
+              { id: 'game-pong', label: 'Pong', icon: '🏓',
+                action: function() { openGameWindow('pong', 480, 380, 'Pong'); } },
+              { id: 'game-tetris', label: '俄罗斯方块', icon: '🧱',
+                action: function() { openGameWindow('tetris', 320, 500, '俄罗斯方块'); } },
+            ],
           },
           {
-            id: 'game-tetris',
-            label: '俄罗斯方块',
-            icon: '🧱',
-            action: function() { openGameWindow('tetris', 320, 500, '俄罗斯方块'); },
+            id: 'app-geo-dashboard',
+            label: 'GEO 应用',
+            icon: '🌐',
+            action: function() {
+              if (typeof window.ACMSWin !== 'undefined') {
+                ACMSWin.open('geo-dashboard', { w: 1200, h: 800, title: 'GEO 仪表盘' });
+              }
+            },
           },
         ],
       },

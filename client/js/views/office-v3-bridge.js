@@ -1322,7 +1322,9 @@
         console.log('[IMG-DEBUG] targetPos for replacement:', targetPos, 'foundNode:', !!foundNode);
         if (targetPos >= 0) {
           // 删除旧节点，插入新节点
-          var nodeSize = child.nodeSize;
+          // 🆕 fix (2026-08-29): 用 foundNode 替代 child —— forEach 已结束，child 是 undefined
+          //   抛 ReferenceError: child is not defined，每次生图都炸
+          var nodeSize = foundNode.nodeSize;
           editor.chain().focus().deleteRange({ from: targetPos, to: targetPos + nodeSize }).run();
           editor.chain().focus().insertContentAt(targetPos, node).run();
         } else {

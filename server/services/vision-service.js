@@ -201,12 +201,70 @@ function extFromMime(mime) {
   return m[mime] || '.img';
 }
 
+// ---------- v0.119：URL → Buffer 原子（SSRF 防护 + 8MB 上限 + magic-bytes sniff）----------
+//   给 acms_search_images MCP 工具调用：搜到图 → 自动下载到 Buffer → 调 describeImage
+//   不落 chat-upload 盘（仅做 vision 描述用，无需持久化）；超时 15s
+
+const FETCH_TIMEOUT_MS = 15_000;
+const PRIVATE_HOST_RE = /^(localhost|.*\.local|127\.|::1|0\.0\.0\.0|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.|fe80:|fc..:|fd..:)/i;
+
+/**
+ * 从 URL 抓图到 Buffer（带 SSRF 防护 + 大小限制）
+ * @returns {Promise<{ok:true, buffer:Buffer, mime:string, size:number} | {ok:false, error:string, hint?:string}>}
+ */
+async function fetchImageBuffer(url, opts = {}) {
+  if (!url || typeof url !== 'string') return { ok: false, error: 'URL_REQUIRED' };
+  let parsed;
+  try { parsed = new URL(url); } catch (e) { return { ok: false, error: 'INVALID_URL' }; }
+  if (!/^https?:$/.test(parsed.protocol)) return { ok: false, error: 'NON_HTTP_URL' };
+  if (PRIVATE_HOST_RE.test(parsed.hostname)) {
+    return { ok: false, error: 'SSRF_BLOCKED', hint: '拒绝内网 / loopback 地址' };
+  }
+
+  let resp;
+  try {
+    const { http1Fetch } = require('../tools/http1-fetch');
+    resp = await http1Fetch(url, { method: 'GET', timeout: FETCH_TIMEOUT_MS, binary: true });
+  } catch (e) {
+    return { ok: false, error: 'FETCH_FAIL', hint: e.message };
+  }
+  if (!resp || !resp.ok) {
+    return { ok: false, error: 'HTTP_FAIL', hint: `status=${resp?.status} ${resp?.error || ''}`.trim() };
+  }
+
+  // http1Fetch binary 模式返回 { ok, status, headers, body: <base64 string>, _binary: true }
+  //   兼容老调用方误传 binary=false 的情况（body 是 utf-8 字符串），按 base64 fallback
+  let buffer;
+  if (resp._binary && typeof resp.body === 'string') {
+    buffer = Buffer.from(resp.body, 'base64');
+  } else if (Buffer.isBuffer(resp.body)) {
+    buffer = resp.body;
+  } else if (Buffer.isBuffer(resp)) {
+    buffer = resp;
+  } else if (resp.body && typeof resp.body === 'string') {
+    // 兜底：当成 base64 解
+    buffer = Buffer.from(resp.body, 'base64');
+  } else {
+    return { ok: false, error: 'BAD_RESPONSE', hint: '未拿到二进制内容' };
+  }
+
+  if (buffer.length > MAX_IMAGE_BYTES) {
+    return { ok: false, error: 'TOO_LARGE', size: buffer.length, maxBytes: MAX_IMAGE_BYTES };
+  }
+  const mime = sniffMimeFromBuffer(buffer);
+  if (!mime || !SUPPORTED_MIME.has(mime)) {
+    return { ok: false, error: 'UNSUPPORTED_MIME', size: buffer.length };
+  }
+  return { ok: true, buffer, mime, size: buffer.length };
+}
+
 module.exports = {
   describeImage,
   isPathAllowed,
   checkPathPolicy,        // 🆕 v0.118：三态路径政策 API（替代 isPathAllowed 的二态语义）
   resolveImageSource,
   sniffMimeFromBuffer,
+  fetchImageBuffer,       // 🆕 v0.119：URL → Buffer 原子（给搜图工具用）
   SUPPORTED_MIME,
   MAX_IMAGE_BYTES,
 };

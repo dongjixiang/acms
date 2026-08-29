@@ -1,0 +1,307 @@
+<!-- ACMS GEO 应用 — 仪表盘 v0.2（Phase 1 Week 5 — 真实数据填充）
+     4 个 active tab（总览/品牌/追踪/llms.txt）+ 4 个占位
+     每个 tab 是独立 section，CSS class .geo-pane.active 控制可见性 -->
+<div class="geo-shell">
+  <header class="geo-header">
+    <div class="geo-header-left">
+      <span class="geo-logo">🌐 GEO</span>
+      <select class="geo-brand-select" id="geo-brand-select">
+        <option value="">— 所有品牌 —</option>
+      </select>
+      <span class="geo-brand-meta" id="geo-brand-meta"></span>
+    </div>
+    <div class="geo-header-right">
+      <span class="geo-health-badge" id="geo-health-badge" title="点击查看引擎状态">●</span>
+      <button class="geo-btn geo-btn-primary" id="geo-refresh-btn" title="刷新数据">🔄</button>
+    </div>
+  </header>
+
+  <nav class="geo-tabs" id="geo-tabs">
+    <button class="geo-tab active" data-tab="overview">📊 总览</button>
+    <button class="geo-tab" data-tab="brand">🏢 品牌管理</button>
+    <button class="geo-tab" data-tab="queries">❓ 提问模板</button>
+    <button class="geo-tab" data-tab="track">🔍 追踪记录</button>
+    <button class="geo-tab" data-tab="scores">⭐ 评分</button>
+    <button class="geo-tab" data-tab="snapshots">📅 快照</button>
+    <button class="geo-tab" data-tab="llms">📝 llms.txt</button>
+    <button class="geo-tab" data-tab="settings">⚙️ 设置</button>
+  </nav>
+
+  <main class="geo-main">
+    <!-- Tab 1: 总览（v0.2 — 真实数据） -->
+    <section class="geo-pane active" id="geo-pane-overview">
+      <h2>📊 总览</h2>
+      <div class="geo-kpi-grid">
+        <div class="geo-kpi-card" id="geo-kpi-brands">
+          <div class="geo-kpi-label">活跃品牌</div>
+          <div class="geo-kpi-value">—</div>
+        </div>
+        <div class="geo-kpi-card" id="geo-kpi-score">
+          <div class="geo-kpi-label">综合分（当前品牌）</div>
+          <div class="geo-kpi-value">—</div>
+          <div class="geo-kpi-sub">—</div>
+        </div>
+        <div class="geo-kpi-card" id="geo-kpi-responses">
+          <div class="geo-kpi-label">总响应数（30天）</div>
+          <div class="geo-kpi-value">—</div>
+        </div>
+        <div class="geo-kpi-card" id="geo-kpi-engines">
+          <div class="geo-kpi-label">已配置引擎</div>
+          <div class="geo-kpi-value">—</div>
+          <div class="geo-kpi-sub">—</div>
+        </div>
+      </div>
+
+      <h3 style="margin-top:24px">维度明细（当前品牌）</h3>
+      <div class="geo-dim-grid" id="geo-dim-grid">
+        <div class="geo-dim-empty">选择品牌后查看维度</div>
+      </div>
+
+      <h3 style="margin-top:24px">维度雷达图（当前品牌）</h3>
+      <div class="geo-radar-container" id="geo-radar-container">
+        <div class="geo-dim-empty">选择品牌后查看雷达图</div>
+      </div>
+
+      <h3 style="margin-top:24px">品牌综合分对比</h3>
+      <div class="geo-compare-container" id="geo-compare-container">
+        <div class="geo-dim-empty">加载中...</div>
+      </div>
+
+      <h3 style="margin-top:24px">引擎状态</h3>
+      <div class="geo-engine-grid" id="geo-engine-grid">
+        <div class="geo-dim-empty">加载中...</div>
+      </div>
+
+      <h3 style="margin-top:24px">🤖 AI 优化建议（点击生成）</h3>
+      <div class="geo-pane-header" style="margin-bottom:8px">
+        <div class="geo-pane-actions">
+          <button class="geo-btn geo-btn-primary" id="geo-optimize-btn">✨ 生成建议（LLM 分析）</button>
+          <button class="geo-btn" id="geo-optimize-refresh-btn" style="display:none">🔄 重新生成</button>
+        </div>
+      </div>
+      <div class="geo-opt-container" id="geo-opt-container">
+        <div class="geo-dim-empty">选择品牌后点击「✨ 生成建议」，AI 会分析 GEO 数据并给出可执行优化建议（约 5-10 秒）</div>
+      </div>
+    </section>
+
+    <!-- Tab 2: 品牌管理（v0.2 — CRUD 表格） -->
+    <section class="geo-pane" id="geo-pane-brand">
+      <div class="geo-pane-header">
+        <h2>🏢 品牌管理</h2>
+        <button class="geo-btn geo-btn-primary" id="geo-brand-create-btn">➕ 新建品牌</button>
+      </div>
+      <table class="geo-table" id="geo-brand-table">
+        <thead>
+          <tr>
+            <th>名称</th>
+            <th>域名</th>
+            <th>状态</th>
+            <th>创建时间</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="geo-brand-tbody">
+          <tr><td colspan="5" class="geo-empty-cell">加载中...</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- Tab 3: 提问模板（v0.5 — 真实数据） -->
+    <section class="geo-pane" id="geo-pane-queries">
+      <div class="geo-pane-header">
+        <h2>❓ 提问模板</h2>
+        <div class="geo-pane-actions">
+          <button class="geo-btn" id="geo-queries-generate-btn">✨ 生成模板（4角色×6类）</button>
+        </div>
+      </div>
+      <div class="geo-dim-empty" id="geo-queries-empty">选择品牌后查看该品牌的提问模板</div>
+      <table class="geo-table" id="geo-queries-table" style="display:none">
+        <thead>
+          <tr>
+            <th style="width:60px">类别</th>
+            <th>Prompt</th>
+            <th style="width:120px">目标引擎</th>
+          </tr>
+        </thead>
+        <tbody id="geo-queries-tbody"></tbody>
+      </table>
+    </section>
+
+    <!-- Tab 5: 评分（v0.5 — 真实数据） -->
+    <section class="geo-pane" id="geo-pane-scores">
+      <div class="geo-pane-header">
+        <h2>⭐ 评分历史</h2>
+        <div class="geo-pane-actions">
+          <button class="geo-btn" id="geo-scores-refresh-btn">🔄</button>
+        </div>
+      </div>
+      <div class="geo-dim-empty" id="geo-scores-empty">选择品牌后查看评分记录（最近 20 条）</div>
+      <table class="geo-table" id="geo-scores-table" style="display:none">
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>维度</th>
+            <th>分数</th>
+            <th>快照</th>
+          </tr>
+        </thead>
+        <tbody id="geo-scores-tbody"></tbody>
+      </table>
+    </section>
+
+    <!-- Tab 6: 快照（v0.5 — 真实数据） -->
+    <section class="geo-pane" id="geo-pane-snapshots">
+      <div class="geo-pane-header">
+        <h2>📅 周快照</h2>
+        <div class="geo-pane-actions">
+          <button class="geo-btn" id="geo-snapshots-refresh-btn">🔄</button>
+        </div>
+      </div>
+      <div class="geo-dim-empty" id="geo-snapshots-empty">选择品牌后查看周快照（分数趋势）</div>
+      <table class="geo-table" id="geo-snapshots-table" style="display:none">
+        <thead>
+          <tr>
+            <th>周</th>
+            <th>综合分</th>
+            <th>等级</th>
+            <th>提及率</th>
+            <th>位置分</th>
+            <th>一致性</th>
+            <th>生成时间</th>
+          </tr>
+        </thead>
+        <tbody id="geo-snapshots-tbody"></tbody>
+      </table>
+    </section>
+
+    <!-- Tab 8: 设置（v0.5 — 引擎状态 + 导出 + 调度） -->
+    <section class="geo-pane" id="geo-pane-settings">
+      <div class="geo-pane-header">
+        <h2>⚙️ 设置</h2>
+      </div>
+
+      <h3>引擎配置</h3>
+      <div class="geo-engine-grid" id="geo-settings-engine-grid"></div>
+
+      <h3 style="margin-top:20px">调度设置（Phase 3）</h3>
+      <div class="geo-info-card">
+        <div class="geo-info-label">自动跟踪频率</div>
+        <div class="geo-settings-row" style="margin-top:6px">
+          <input type="number" class="geo-input" id="geo-track-interval-input" min="1" max="90" style="width:80px" value="7">
+          <span class="geo-settings-hint">天（每周六自动跑一次跟踪；1-90）</span>
+          <button class="geo-btn" id="geo-save-interval-btn">💾 保存频率</button>
+        </div>
+      </div>
+      <div class="geo-info-card">
+        <div class="geo-info-label">引擎白名单（勾选跟踪时使用的引擎）</div>
+        <div class="geo-engine-check-grid" id="geo-engine-check-grid" style="margin-top:6px"></div>
+        <div class="geo-settings-row" style="margin-top:6px">
+          <button class="geo-btn" id="geo-save-whitelist-btn">💾 保存白名单</button>
+          <button class="geo-btn" id="geo-reset-whitelist-btn">🔄 重置（全部）</button>
+        </div>
+      </div>
+
+      <h3 style="margin-top:20px">数据导出</h3>
+      <div class="geo-settings-row">
+        <button class="geo-btn" id="geo-export-responses-btn">📤 追踪记录 (XLSX)</button>
+        <button class="geo-btn" id="geo-export-scores-btn">📤 评分 (XLSX)</button>
+        <button class="geo-btn" id="geo-export-responses-csv-btn">CSV</button>
+        <button class="geo-btn" id="geo-export-scores-csv-btn">CSV</button>
+        <span class="geo-settings-hint" id="geo-export-hint"></span>
+      </div>
+
+      <h3 style="margin-top:20px">自动调度</h3>
+      <div class="geo-info-card" id="geo-cron-status-card">
+        <div class="geo-info-label">Cronjob 状态</div>
+        <div class="geo-info-value" id="geo-cron-status-value">加载中...</div>
+      </div>
+    </section>
+
+    <!-- Tab 4: 追踪记录（v0.2 — 真实数据） -->
+    <section class="geo-pane" id="geo-pane-track">
+      <div class="geo-pane-header">
+        <h2>🔍 追踪记录</h2>
+        <div class="geo-pane-actions">
+          <button class="geo-btn" id="geo-track-run-btn" id="geo-brand-select-tab4">▶ 跑一次跟踪</button>
+          <select class="geo-engine-filter" id="geo-track-engine-filter">
+            <option value="">所有引擎</option>
+            <option value="deepseek">deepseek</option>
+            <option value="openai">openai</option>
+            <option value="claude">claude</option>
+            <option value="perplexity">perplexity</option>
+            <option value="gemini">gemini</option>
+            <option value="copilot">copilot</option>
+            <option value="grok">grok</option>
+          </select>
+        </div>
+      </div>
+      <table class="geo-table" id="geo-track-table">
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>品牌</th>
+            <th>引擎</th>
+            <th>查询</th>
+            <th>状态</th>
+            <th>耗时</th>
+            <th>Tokens</th>
+            <th>摘要</th>
+          </tr>
+        </thead>
+        <tbody id="geo-track-tbody">
+          <tr><td colspan="8" class="geo-empty-cell">加载中...</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- Tab 5: 评分（占位） -->
+    <section class="geo-pane" id="geo-pane-scores">
+      <h2>⭐ 评分</h2>
+      <div class="geo-empty">
+        <p>Phase 1 Week 5 后续接入</p>
+        <p>5 个维度的时间序列图 + 引擎拆解</p>
+      </div>
+    </section>
+
+    <!-- Tab 6: 快照（占位） -->
+    <section class="geo-pane" id="geo-pane-snapshots">
+      <h2>📅 周快照</h2>
+      <div class="geo-empty">
+        <p>Phase 1 Week 5 后续接入</p>
+        <p>周快照历史 + 趋势曲线</p>
+      </div>
+    </section>
+
+    <!-- Tab 7: llms.txt（v0.2 — 真实数据） -->
+    <section class="geo-pane" id="geo-pane-llms">
+      <div class="geo-pane-header">
+        <h2>📝 llms.txt</h2>
+        <div class="geo-pane-actions">
+          <input type="text" class="geo-input" id="geo-llms-url-input" placeholder="https://example.com" style="width:300px">
+          <button class="geo-btn geo-btn-primary" id="geo-llms-generate-btn">🔧 生成</button>
+        </div>
+      </div>
+      <div class="geo-llms-status" id="geo-llms-status">
+        <p class="geo-empty">请先生成 llms.txt</p>
+      </div>
+      <h3 style="margin-top:16px">本地生成记录</h3>
+      <ul class="geo-llms-list" id="geo-llms-list">
+        <li class="geo-empty">无记录</li>
+      </ul>
+    </section>
+
+    <!-- Tab 8: 设置（占位） -->
+    <section class="geo-pane" id="geo-pane-settings">
+      <h2>⚙️ 设置</h2>
+      <div class="geo-empty">
+        <p>Phase 1 Week 5 后续接入</p>
+        <p>调度频率 / 引擎白名单 / 数据导出</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="geo-footer">
+    <span class="geo-footer-text">ACMS GEO v0.2 (Phase 1 W5)</span>
+    <span class="geo-footer-status" id="geo-status">就绪</span>
+  </footer>
+</div>
