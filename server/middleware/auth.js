@@ -12,7 +12,11 @@ function authMiddleware(req, res, next) {
       || req.path === '/api/proxy-settings'  // 浏览器读代理状态
       || /\/api\/chat\/upload\/[^/]+\/raw$/.test(req.path)
       || req.path === '/api/files/asset'        // v0.73: workspace 资源文件（img 标签免鉴权加载）
-      || req.path === '/api/files/proxy-image') return next();  // v0.77: CDN 图片代理（同源 <img> 标签免鉴权；同 /api/files/asset）
+      || req.path === '/api/files/proxy-image' // v0.77: CDN 图片代理（同源 <img> 标签免鉴权；同 /api/files/asset）
+      // v0.29: GEO PDF 周报/月报/对比报告下载（文件名为 {brand_id}_{type}_{time}.pdf 高熵 + path.basename 防御；
+      //  window.open(_blank) 是裸 GET 不带 Authorization 头，必须白名单豁免，否则多多的「PDF 找不到」 bug 又复发）
+      || /^\/api\/geo\/reports\/download\/[^/]+$/.test(req.path)
+     ) return next();
 
   // 1. 尝试 JWT token（Authorization: Bearer <token>）
   const authHeader = req.headers['authorization'];

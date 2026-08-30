@@ -193,7 +193,48 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
     }
     toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el); });
 
+    // 处理图片：cid: 引用 → 附件下载链接；相对路径 → 补全 base href
+    // 需要邮件的 attachments 列表和 uid 来构建下载 URL
+    if (attachments && attachments.length && uid) {
+      var imgNodes = doc.querySelectorAll('img[src]');
+      for (var i = 0; i < imgNodes.length; i++) {
+        var img = imgNodes[i];
+        var src = img.getAttribute('src') || '';
+        // cid: 引用 → 查找对应附件 partID → 生成下载 URL
+        if (/^cid:/i.test(src)) {
+          var cid = src.slice(4).replace(/[<>]/g, ''); // 去掉 cid: 和可能的 < >
+          // 在 attachments 中找匹配的 partID 或 name
+          var matchedAtt = null;
+          for (var ai = 0; ai < attachments.length; ai++) {
+            var att = attachments[ai];
+            // partID 可能包含 cid 的内容，或 name 匹配
+            if (att.partID && (att.partID.indexOf(cid) >= 0 || cid.indexOf(att.partID) >= 0)) {
+              matchedAtt = att; break;
+            }
+            if (att.name && (att.name.indexOf(cid) >= 0 || cid.indexOf(att.name) >= 0)) {
+              matchedAtt = att; break;
+            }
+          }
+          if (matchedAtt) {
+            var downloadUrl = buildUrl('/api/emails/' + uid + '/attachment/' + encodeURIComponent(matchedAtt.partID), {
+              mailbox: mailbox,
+              api_key: API_KEY,
+              name: matchedAtt.name,
+              type: matchedAtt.type,
+            });
+            img.setAttribute('src', downloadUrl);
+          } else {
+            // 找不到对应附件，移除 src 避免破碎图标
+            img.removeAttribute('src');
+          }
+        }
+        // 相对路径（非 http/https/data/cid）保留，靠 base href 解析
+      }
+    }
+
     // 补全 base href（让相对路径图片/CSS 能按邮件域名解析）——留空 target=_blank 让链接在新标签页打开
+    // 注意：无法获知邮件原始域名，base href 留空则相对路径按当前 origin (ACMS) 解析，可能 404
+    // 这里不设置 href，仅设 target；若邮件 HTML 含 <base href="..."> 会被保留
     var base = doc.createElement('base');
     base.setAttribute('target', '_blank');
     if (doc.head) doc.head.insertBefore(base, doc.head.firstChild);
@@ -549,9 +590,15 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
         return _decodeUtf8(decoded);
       } catch (e) { return s; }
     }
-    if (/=[0-9A-Fa-f]{2}/.test(s)) {
+    // quoted-printable 检测：含 =XX 或 =_ 或软换行
+    if (/=[0-9A-Fa-f]{2}/.test(s) || /=_/.test(s) || /=\r?\n/.test(s)) {
       try {
-        var q = s.replace(/=([0-9A-Fa-f]{2})/g, function(_x, h) { return String.fromCharCode(parseInt(h, 16)); }).replace(/=_/g, ' ');
+        // 1) 先处理软换行 =CRLF / =LF → 直接删除（不加空格）
+        var q = s.replace(/=\r?\n/g, '');
+        // 2) =_ → 空格
+        q = q.replace(/=_/g, ' ');
+        // 3) =XX → 字节
+        q = q.replace(/=([0-9A-Fa-f]{2})/g, function(_x, h) { return String.fromCharCode(parseInt(h, 16)); });
         return _decodeUtf8(q);
       } catch (e) { return s; }
     }
@@ -1150,34 +1197,8 @@ EmailApp.prototype.renderDetail = function () {
     var decodedText = decodeEmailBody(email.text, 'utf-8');
     var decodedHtml = decodeEmailBody(email.html, 'utf-8');
 
-    // 方案 B：用 sandbox iframe 隔离渲染 HTML 邮件（保留完整样式/布局/相对路径图片，完全隔离 ACMS CSS）
-    var bodyHtml;
-    if (decodedHtml) {
-      var sanitizedHtml = sanitizeEmailHtmlForIframe(decodedHtml);
-      var iframeId = 'em-iframe-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
-      bodyHtml =
-        '<iframe id="' + iframeId + '" class="em-body-iframe" sandbox="allow-same-origin allow-forms allow-pointer-lock" style="width:100%;border:none;min-height:200px;background:transparent;"></iframe>' +
-        '<script>(function(){' +
-          'var iframe = document.getElementById("' + iframeId + '");' +
-          'var doc = iframe.contentDocument || iframe.contentWindow.document;' +
-          'doc.open();' +
-          'doc.write(' + JSON.stringify(sanitizedHtml) + ');' +
-          'doc.close();' +
-          // 自动调整高度
-          'function resizeIframe(){' +
-          '  try { iframe.style.height = (iframe.contentWindow.document.body.scrollHeight + 20) + "px"; } catch(e) {}' +
-          '}' +
-          'iframe.onload = resizeIframe;' +
-          'doc.addEventListener("DOMContentLoaded", resizeIframe);' +
-          // 监听图片加载完成再调整高度
-          'var imgs = doc.querySelectorAll("img");' +
-          'for(var i=0;i<imgs.length;i++){ imgs[i].addEventListener("load", resizeIframe); }' +
-        '})();</script>';
-    } else {
-      bodyHtml = '<pre class="em-text-body">' + escHtml(decodedText || '(无正文)') + '</pre>';
-    }
-
-var self = this;
+    var self = this;
+    var mailbox = self.state.mailbox;
     var attachments = (email.attachments || []).map(function (att) {
       var url = buildUrl('/api/emails/' + email.uid + '/attachment/' + encodeURIComponent(att.partID), {
         mailbox: self_currentMailbox(self),
@@ -1198,6 +1219,12 @@ var self = this;
 
     function self_currentMailbox(app) { return app.state.mailbox; }
 
+    // 先渲染外层结构，iframe 占位
+    var iframeId = 'em-iframe-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    var iframeHtml = decodedHtml
+      ? '<iframe id="' + iframeId + '" class="em-body-iframe" sandbox="allow-same-origin allow-forms allow-pointer-lock" style="width:100%;border:none;min-height:200px;background:transparent;"></iframe>'
+      : '<pre class="em-text-body">' + escHtml(decodedText || '(无正文)') + '</pre>';
+
     pane.innerHTML = [
       '<header class="em-detail-head">',
       '  <div class="em-detail-title">',
@@ -1216,12 +1243,37 @@ var self = this;
       '    <tr><th>时间</th><td>' + escHtml(dateStr) + '</td></tr>',
       '  </table>',
       '</header>',
-      '<article class="em-body" data-role="body">' + bodyHtml + '</article>',
+      '<article class="em-body" data-role="body">' + iframeHtml + '</article>',
       attachments ? '<section class="em-att-list"><h3>📎 附件 (' + email.attachments.length + ')</h3><ul>' + attachments + '</ul></section>' : '',
     ].join('');
 
+    // DOM 就绪后，初始化 iframe 内容（innerHTML 里的 script 不会执行，必须单独跑）
+    if (decodedHtml) {
+      var sanitizedHtml = sanitizeEmailHtmlForIframe(decodedHtml);
+      var iframe = document.getElementById(iframeId);
+      if (iframe) {
+        initEmailIframe(iframe, sanitizedHtml);
+      }
+    }
+
     this.renderRemoteImagePrompt();
   };
+
+  // 单独函数：初始化邮件 iframe 内容 + 自动高度
+  function initEmailIframe(iframe, html) {
+    var doc = iframe.contentDocument || iframe.contentWindow.document;
+    doc.open();
+    doc.write(html);
+    doc.close();
+
+    function resizeIframe() {
+      try { iframe.style.height = (iframe.contentWindow.document.body.scrollHeight + 20) + 'px'; } catch (e) {}
+    }
+    iframe.onload = resizeIframe;
+    doc.addEventListener('DOMContentLoaded', resizeIframe);
+    var imgs = doc.querySelectorAll('img');
+    for (var i = 0; i < imgs.length; i++) { imgs[i].addEventListener('load', resizeIframe); }
+  }
 
   EmailApp.prototype.closeDetail = function () {
     this.state.selectedUid = null;
