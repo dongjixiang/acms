@@ -59,7 +59,7 @@ const DEFAULT_ENGINES = ['deepseek', 'openai', 'claude', 'perplexity', 'gemini',
 async function runTracker(brandId, options = {}) {
   const {
     engines = GEO_CONFIG.getTrackEngines(),
-    maxQueries = 10,
+    maxQueries = 50, // v0.29: 配合 LLM 生成 12-16 条 + elmo 推荐 25-50（之前硬钉 10 — 新生成的 prompts 会漏跑）
     dryRun = false,
     autoGenerateQueries = false,
     language = 'zh', // v0.24: 多语言——非 zh 时翻译 query
@@ -74,8 +74,10 @@ async function runTracker(brandId, options = {}) {
 
   console.log(`[geo-tracker] Start: brand=${brand.name} (${brandId}) engines=${engines.join(',')} dryRun=${dryRun} language=${language}`);
 
-  // 1. 获取或生成 queries
-  let queries = GEO_STORE.listQueries(brandId);
+  // 1. 获取或生成 queries — v0.29: 显式按 created_at 升序排序（之前 listQueries 无排序，
+  //   SQLite 按 ROWID 返回，稳定的「前 N 条」隐藏了「新加的 prompt 被截断」的现象）
+  let queries = GEO_STORE.listQueries(brandId)
+    .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
   if (queries.length === 0 && autoGenerateQueries) {
     console.log(`[geo-tracker] No queries found, generating via TEMPLATES...`);
     const generated = TEMPLATES.generateBrandQueries(brand.name).slice(0, maxQueries);

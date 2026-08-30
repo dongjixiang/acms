@@ -133,8 +133,72 @@
       }
       node = walker.nextNode();
     }
-    toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el); });
+toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el); });
     return doc.body.innerHTML;
+  }
+
+  // 方案 B：iframe 渲染专用 sanitize —— 保留 <style>/<link>/内联 style/class，只清理脚本/危险属性
+  function sanitizeEmailHtmlForIframe(html) {
+    if (!html) return '';
+    var doc;
+    try {
+      doc = new DOMParser().parseFromString(String(html), 'text/html');
+    } catch (err) {
+      return escHtml(String(html));
+    }
+    if (!doc || !doc.body) return escHtml(String(html));
+    var walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_ELEMENT, null, false);
+    var toRemove = [];
+    var node = walker.currentNode;
+    while (node) {
+      var tag = node.tagName ? node.tagName.toUpperCase() : '';
+      // 只移除真正危险的标签
+      if (['SCRIPT', 'IFRAME', 'OBJECT', 'EMBED', 'FORM', 'INPUT', 'BUTTON', 'TEXTAREA', 'SELECT'].indexOf(tag) >= 0) {
+        toRemove.push(node);
+      } else if (tag === 'A') {
+        // 链接安全处理
+        for (var i = node.attributes.length - 1; i >= 0; i--) {
+          var attr = node.attributes[i];
+          if (attr.name.indexOf('on') === 0) node.removeAttribute(attr.name);
+        }
+        var href = node.getAttribute('href') || '';
+        if (/^\s*javascript:/i.test(href)) node.removeAttribute('href');
+        if (!node.getAttribute('rel')) node.setAttribute('rel', 'noopener noreferrer');
+        if (!node.getAttribute('target')) node.setAttribute('target', '_blank');
+      } else if (tag === 'LINK') {
+        // 允许 stylesheet，清理危险属性
+        var rel = node.getAttribute('rel') || '';
+        if (!/stylesheet/i.test(rel)) { toRemove.push(node); continue; }
+        for (var j = node.attributes.length - 1; j >= 0; j--) {
+          var at = node.attributes[j];
+          if (at.name.indexOf('on') === 0) node.removeAttribute(at.name);
+        }
+      } else if (tag === 'STYLE') {
+        // 保留 style 标签，但清理危险内容（如 expression()、@import javascript:）
+        var css = node.textContent || '';
+        node.textContent = css.replace(/expression\s*\(/gi, 'blocked-expression(')
+                             .replace(/@import\s+["']?\s*javascript:/gi, '@import blocked:');
+      } else if (tag === 'META') {
+        // 允许 viewport/charset，移除 http-equiv=refresh 等
+        var httpEquiv = node.getAttribute('http-equiv');
+        if (httpEquiv && /refresh/i.test(httpEquiv)) toRemove.push(node);
+      } else {
+        // 通用：移除所有 on* 事件属性
+        for (var k = node.attributes.length - 1; k >= 0; k--) {
+          var ak = node.attributes[k];
+          if (ak.name.indexOf('on') === 0) node.removeAttribute(ak.name);
+        }
+      }
+      node = walker.nextNode();
+    }
+    toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el); });
+
+    // 补全 base href（让相对路径图片/CSS 能按邮件域名解析）——留空 target=_blank 让链接在新标签页打开
+    var base = doc.createElement('base');
+    base.setAttribute('target', '_blank');
+    if (doc.head) doc.head.insertBefore(base, doc.head.firstChild);
+
+    return '<!DOCTYPE html><html><head>' + (doc.head ? doc.head.innerHTML : '') + '</head><body>' + doc.body.innerHTML + '</body></html>';
   }
 
   function isAttrAllowed(tag, attr) {
@@ -1074,7 +1138,7 @@
       });
   };
 
-  EmailApp.prototype.renderDetail = function () {
+EmailApp.prototype.renderDetail = function () {
     var pane = this.root.querySelector('[data-role="pane"]');
     if (!pane) return;
     var email = this.state.detail;
@@ -1085,9 +1149,33 @@
     // v0.74.1: client-side body decode（兜底 server 端可能没按 Content-Transfer-Encoding 解码）
     var decodedText = decodeEmailBody(email.text, 'utf-8');
     var decodedHtml = decodeEmailBody(email.html, 'utf-8');
-    var bodyHtml = decodedHtml
-      ? sanitizeEmailHtml(decodedHtml)
-      : '<pre class="em-text-body">' + escHtml(decodedText || '(无正文)') + '</pre>';
+
+    // 方案 B：用 sandbox iframe 隔离渲染 HTML 邮件（保留完整样式/布局/相对路径图片，完全隔离 ACMS CSS）
+    var bodyHtml;
+    if (decodedHtml) {
+      var sanitizedHtml = sanitizeEmailHtmlForIframe(decodedHtml);
+      var iframeId = 'em-iframe-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+      bodyHtml =
+        '<iframe id="' + iframeId + '" class="em-body-iframe" sandbox="allow-same-origin allow-forms allow-pointer-lock" style="width:100%;border:none;min-height:200px;background:transparent;"></iframe>' +
+        '<script>(function(){' +
+          'var iframe = document.getElementById("' + iframeId + '");' +
+          'var doc = iframe.contentDocument || iframe.contentWindow.document;' +
+          'doc.open();' +
+          'doc.write(' + JSON.stringify(sanitizedHtml) + ');' +
+          'doc.close();' +
+          // 自动调整高度
+          'function resizeIframe(){' +
+          '  try { iframe.style.height = (iframe.contentWindow.document.body.scrollHeight + 20) + "px"; } catch(e) {}' +
+          '}' +
+          'iframe.onload = resizeIframe;' +
+          'doc.addEventListener("DOMContentLoaded", resizeIframe);' +
+          // 监听图片加载完成再调整高度
+          'var imgs = doc.querySelectorAll("img");' +
+          'for(var i=0;i<imgs.length;i++){ imgs[i].addEventListener("load", resizeIframe); }' +
+        '})();</script>';
+    } else {
+      bodyHtml = '<pre class="em-text-body">' + escHtml(decodedText || '(无正文)') + '</pre>';
+    }
 
 var self = this;
     var attachments = (email.attachments || []).map(function (att) {

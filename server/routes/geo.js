@@ -467,13 +467,13 @@ router.get('/export', (req, res) => {
   }
 });
 
-// === Tracker Agent（手动触发跑跟踪）===
+// === Tracker Agent（手动触发跑跟踪）— v0.29: 透传 maxQueries 给前端可控 ===
 router.post('/tracker/run', async (req, res) => {
   try {
-    const { brand_id, language = 'zh', rag = false } = req.body || {}; // v0.24: 多语言 / v0.25: RAG 检索增强
+    const { brand_id, language = 'zh', rag = false, maxQueries } = req.body || {}; // v0.24: 多语言 / v0.25: RAG 检索增强 / v0.29: maxQueries 透传（默认 50）
     if (!brand_id) return res.status(400).json({ ok: false, error: 'BRAND_ID_REQUIRED' });
     const tracker = require('../services/geo-tracker-agent');
-    const result = await tracker.runTracker(brand_id, { language, rag });
+    const result = await tracker.runTracker(brand_id, { language, rag, maxQueries });
     res.json(result);
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
