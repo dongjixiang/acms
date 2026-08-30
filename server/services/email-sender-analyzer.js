@@ -25,6 +25,7 @@
 const runtime = require('./agent-runtime');
 const { createImapService } = require('./imap-service');
 const config = require('../config');
+const categoryStore = require('./email-sender-category-store'); // v0.33 跳过已分类
 
 // 复用 email-classifier 的 DEFAULT_CATEGORIES + 静态规则
 const { DEFAULT_CATEGORIES, matchStaticRule } = require('./email-classifier');
@@ -177,9 +178,23 @@ async function analyzeSendersBatch({ mailbox = 'INBOX', maxSenders = 20, modelId
   const validNames = new Set(categories.map((c) => c.name));
 
   // 3. 先用静态规则试（0 LLM 调用消耗）
+  // v0.33: 先用 store 中已有的分类跳过 — 直接标 source='persisted'
+  //         （避免重复分析；用户可见"上次分类是营销订阅"但本次不再调 LLM）
+  const alreadyCategorized = categoryStore.bulkGet(mailbox, topSenders.map(s => s.sender));
   const results = [];
   const needAi = [];
   for (const s of topSenders) {
+    const existing = alreadyCategorized[s.sender];
+    if (existing) {
+      results.push({
+        sender: s.sender,
+        count: s.count,
+        category: existing.category,
+        rationale: `已持久化（${existing.count} 次确认 · 上次 ${existing.last_updated || '时间未知'}）— 跳过 LLM`,
+        source: 'persisted',
+      });
+      continue;
+    }
     const subject = s.recent[0]?.subject || '';
     const staticCat = matchStaticRule(s.sender, subject);
     if (staticCat) {
@@ -260,10 +275,21 @@ async function analyzeSendersBatch({ mailbox = 'INBOX', maxSenders = 20, modelId
     }
   }
 
+  // v0.33: 把 AI 推断结果也持久化进 store — 下次同 sender 自动跳过 LLM
+  for (const r of results.filter(r => r.source === 'ai' || r.source === 'static')) {
+    try {
+      categoryStore.saveCategory({
+        sender: r.sender, mailbox,
+        category: r.category, source: r.source, rationale: r.rationale,
+      });
+    } catch (e) { console.warn('[email-sender-analyzer] 持久化失败:', e.message); }
+  }
+
   return {
     ok: true,
     analyzed: topSenders.length,
     total_senders: aggregated.length,
+    persisted_count: results.filter(r => r.source === 'persisted').length,
     senders: results.sort((a, b) => b.count - a.count),
     note: '借鉴 inbox-zero ai-categorize-senders.ts 批量模式（1 次 LLM 分类 N 个 sender · NOASSERTION license · 重写为 JS）',
   };

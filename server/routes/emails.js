@@ -197,19 +197,47 @@ router.post('/:uid/read', async (req, res) => {
   }
 });
 
-// v0.30: AI 智能分类（借鉴 elie222/inbox-zero@main ai-categorize-single-sender.ts）
-// 设计：static rules first → AI fallback → 防类目扩散 → 全程显式 confidence + source
-// body: { from, subject, snippet, categories?, modelId? }
-// 返回：{ ok, category, rationale, confidence, source: 'static'|'ai'|'fallback' }
+// v0.30: AI 智能分类（借鉴 inbox-zero@main ai-categorize-single-sender.ts）
+// v0.33: 持久化版 — 分类结果自动写 store，下次同发件人直接命中
 router.post('/classify', async (req, res) => {
   try {
-    const { from, subject, snippet, categories, modelId } = req.body || {};
+    const { from, subject, snippet, categories, modelId, mailbox } = req.body || {};
     if (!from && !subject) {
       return res.status(400).json({ ok: false, error: 'MISSING_INPUT', message: 'from 与 subject 不能都为空' });
     }
     const classifier = require('../services/email-classifier');
-    const result = await classifier.classifyEmail({ from, subject, snippet, categories, modelId });
+    // 用 classifyEmailAndPersist — 内部调 classifyEmail + 自动 saveCategory
+    const result = mailbox
+      ? await classifier.classifyEmailAndPersist({ from, mailbox, subject, snippet, categories, modelId })
+      : await classifier.classifyEmail({ from, subject, snippet, categories, modelId });
     res.json(result);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// v0.33: GET /sender-categories?mailbox=INBOX — 一次性拉所有已分类发件人
+// 前端用此 API 在邮件列表行渲染"已分类 chip"
+router.get('/sender-categories', (req, res) => {
+  try {
+    const mailbox = req.query.mailbox || 'INBOX';
+    const store = require('../services/email-sender-category-store');
+    const map = store.listByMailbox(mailbox);
+    res.json({ ok: true, mailbox, count: Object.keys(map).length, categories: map });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// v0.33: DELETE /sender-categories?mailbox=INBOX&sender=xxx — 撤销分类
+// 给将来加撤销按钮用（本轮不上 UI）
+router.delete('/sender-categories', (req, res) => {
+  try {
+    const { sender, mailbox } = req.query;
+    if (!sender || !mailbox) return res.status(400).json({ ok: false, error: 'MISSING_ARGS' });
+    const store = require('../services/email-sender-category-store');
+    const removed = store.removeBySender(sender, mailbox);
+    res.json({ ok: true, removed });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }

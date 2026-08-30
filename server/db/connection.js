@@ -22,6 +22,8 @@ const KNOWN_COLLECTIONS = [
   'buddy_memory',
   // v0.79 Agent Buddy 聊天历史（持久化 + 自动摘要）
   'buddy_chat_history',
+  // v0.33 邮箱 AI：发件人分类持久化（sender → category 映射，按 mailbox 维度隔离）
+  'email_sender_categories',
 ];
 
 // === 初始化 ===

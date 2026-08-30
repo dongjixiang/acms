@@ -20,6 +20,7 @@
 //   出参：{ ok, category, rationale, confidence, source: 'static' | 'ai' | 'fallback' }
 
 const runtime = require('./agent-runtime');
+const categoryStore = require('./email-sender-category-store'); // v0.33 持久化发件人分类
 
 // === 预置类目（v0.30 内置 — 用户可在 v0.31 自定义扩展） ===
 // 设计依据：常见邮件分类 + inbox-zero 的 defaultCategory 模式（newsletter/receipt/other）
@@ -252,11 +253,31 @@ async function classifyEmail({ from, subject, snippet, categories, modelId } = {
     rationale: parsed.rationale,
     confidence: 'medium', // LLM 推断中等可信
     source: 'ai',
+    _persisted: false, // v0.33: 真实持久化由调用方处理（路由层或前端）
   };
+}
+
+// v0.33: 包装函数 — 分类后自动写 store（供路由层调用）
+// 对比上方的 classifyEmail 返回 ok:false/fallback 时不写
+async function classifyEmailAndPersist({ from, mailbox, subject, snippet, categories, modelId } = {}) {
+  const r = await classifyEmail({ from, subject, snippet, categories, modelId });
+  if (r.ok && r.source !== 'fallback' && from && mailbox) {
+    try {
+      categoryStore.saveCategory({
+        sender: from, mailbox,
+        category: r.category, source: r.source, rationale: r.rationale || '',
+      });
+      r._persisted = true;
+    } catch (e) {
+      console.warn('[email-classifier] 持久化失败:', e.message);
+    }
+  }
+  return r;
 }
 
 module.exports = {
   classifyEmail,
+  classifyEmailAndPersist,
   matchStaticRule,
   DEFAULT_CATEGORIES,
 };
