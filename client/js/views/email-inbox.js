@@ -1005,7 +1005,7 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
   EmailApp.prototype.aiBulkAnalyze = function () {
     var self = this;
     self.setStatus('AI 批量分析中（拉 IMAP + 1 次 LLM 推断）…', 'loading');
-    apiFetch('POST', '/api/emails/analyze-senders', {}).then(function (r) { return r.json(); }).then(function (data) {
+    apiFetch('POST', '/api/emails/analyze-senders', {}).then(function (data) {
       self.setStatus('');
       self.showBulkAnalyzeModal(data);
     }).catch(function (err) {
@@ -1084,7 +1084,7 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
       body: (email.text || '').toString().slice(0, 3000),
     };
     self.setStatus('AI 草拟回复中…', 'loading');
-    apiFetch('POST', '/api/emails/draft-reply', payload).then(function (r) { return r.json(); }).then(function (data) {
+    apiFetch('POST', '/api/emails/draft-reply', payload).then(function (data) {
       self.setStatus('');
       self.showDraftReplyModal(uid, data);
     }).catch(function (err) {
@@ -1162,7 +1162,7 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
       snippet: (email.snippet || email.text || '').toString().slice(0, 500),
     };
     self.setStatus('AI 分类中…', 'loading');
-    apiFetch('POST', '/api/emails/classify', payload).then(function (r) { return r.json(); }).then(function (data) {
+    apiFetch('POST', '/api/emails/classify', payload).then(function (data) {
       self.setStatus('');
       self.showClassifyResult(uid, data);
     }).catch(function (err) {
