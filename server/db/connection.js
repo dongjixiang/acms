@@ -24,6 +24,12 @@ const KNOWN_COLLECTIONS = [
   'buddy_chat_history',
   // v0.33 邮箱 AI：发件人分类持久化（sender → category 映射，按 mailbox 维度隔离）
   'email_sender_categories',
+  // v0.35 自然语言规则引擎：规则配置 + 执行日志（参考 Inbox-Zero plain English rules 模式）
+  'email_rules', 'email_rule_logs',
+  // v0.38 用户维护的邮件分类（AI 自动分类依据 — 替代硬编码 8 类别）
+  'email_categories',
+  // v0.99: 自动回复模板（每个规则可引用不同模板）
+  'email_templates',
 ];
 
 // === 初始化 ===

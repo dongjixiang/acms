@@ -1,8 +1,8 @@
 // ACMS · IMAP 收件箱服务（v0.73）
-// 在 ACMS 进程内连接 IMAP，查看/搜索邮件
-// 依赖：npm install imap
+// 阶段2/阶段3：接入规则引擎（参考 P177 链路：IMAP 收到邮件 → 分类 → 规则匹配 → 执行动作 → 日志）
 const Imap = require('imap');
 const { EventEmitter } = require('events');
+const emailImapRuleIntegration = require('./email-imap-rule-integration');
 
 // ── RFC 2047 encoded-word 解码（修复 Imap.parseHeader 把 base64 解码字节当 latin1 的 bug）──
 const iconv = require('iconv-lite');
@@ -587,6 +587,123 @@ function createImapService(config) {
   service.moveMessages = moveMessages;
   service.setFlags = setFlags;
   service._getImap = () => _imap;
+
+  // 阶段2/阶段3：接入规则引擎（实际调用 email-imap-rule-integration，参考 P177 链路完整性）
+  // 提供手动触发规则处理的接口（默认不在每次获取邮件时自动触发，避免性能问题；可在需要时手动调用）
+  service.processEmailWithRules = async function (emailData, opts) {
+    try {
+      const mailbox = (opts && opts.mailbox) || 'INBOX';
+      const result = await emailImapRuleIntegration.processEmailWithRules({
+        mailbox,
+        emailData,
+        modelId: (opts && opts.modelId) || null,
+        imapService: service,
+      });
+      return result;
+    } catch (e) {
+      console.warn('[imap-service] 规则处理异常:', e.message);
+      return { ok: false, error: 'RULE_INTEGRATION_ERROR', message: e.message };
+    }
+  };
+  service.processEmailBatchWithRules = async function (emails, opts) {
+    try {
+      const mailbox = (opts && opts.mailbox) || 'INBOX';
+      return await emailImapRuleIntegration.processEmailBatchWithRules({
+        mailbox,
+        emails,
+        modelId: (opts && opts.modelId) || null,
+        imapService: service,
+      });
+    } catch (e) {
+      console.warn('[imap-service] 批量规则处理异常:', e.message);
+      return { ok: false, error: 'RULE_BATCH_INTEGRATION_ERROR', message: e.message };
+    }
+  };
+
+  // v0.37: 集成 mailparser — 用 Nodemailer 团队维护的 mailparser 替代自研 ~150 行 MIME 解析（参考集成决策矩阵 Tier 1-推荐2）
+  // 提供 getEmailParsed 方法（用完整 IMAP fetch + mailparser），保留旧 getEmail API 向后兼容，让多多对比测试
+  const emailParserIntegration = require('./email-parser-integration');
+  service.getEmailParsed = async function (uid, mailbox) {
+    try {
+      mailbox = mailbox || 'INBOX';
+      await openBox(mailbox);
+      const raw = await new Promise(function (resolve, reject) {
+        const chunks = [];
+        _imap.fetch([uid], { bodies: '' }).on('message', function (msg) {
+          msg.on('body', function (stream) {
+            stream.on('data', function (c) { chunks.push(c); });
+            stream.on('end', function () {});
+          });
+          msg.once('end', function () { resolve(Buffer.concat(chunks)); });
+          msg.once('error', reject);
+        }).once('error', reject);
+      });
+      const parsed = await emailParserIntegration.parseEmailBuffer(raw);
+      return { ok: true, uid: uid, mailbox: mailbox, ...parsed };
+    } catch (e) {
+      return { ok: false, error: 'PARSE_ERROR', message: e.message, uid: uid };
+    }
+  };
+
+  // v0.37: 集成 mail-listener — 实现 IMAP IDLE 实时监听（参考集成决策矩阵 Tier 1-推荐1）
+  // 监听器状态保存在内存（activeListeners Map），可同时监听多个 mailbox
+  // 新邮件到达 → 触发 onEmail callback → 调用方决定（规则引擎 / UI 通知 / 持久化）
+  const emailListenerIntegration = require('./email-listener-integration');
+  const activeListeners = new Map();
+
+  service.startListening = function (config) {
+    try {
+      config = config || {};
+      const mailbox = config.mailbox || 'INBOX';
+      if (activeListeners.has(mailbox)) {
+        return { ok: false, error: 'ALREADY_LISTENING', message: mailbox + ' 已在监听', mailbox: mailbox };
+      }
+      var imapConf = {
+        user: config.user,
+        password: config.password,
+        host: config.host,
+        port: config.port,
+        tls: config.tls,
+      };
+      if (!imapConf.host && service._getImap && service._getImap()) {
+        const cur = service._getImap();
+        imapConf.host = cur._config && cur._config.host;
+        imapConf.user = cur._config && cur._config.user;
+        imapConf.port = cur._config && cur._config.port;
+        imapConf.tls = cur._config && cur._config.tls;
+      }
+      const listener = emailListenerIntegration.createListener({
+        user: imapConf.user,
+        password: imapConf.password,
+        host: imapConf.host,
+        port: imapConf.port,
+        tls: imapConf.tls,
+        mailbox: mailbox,
+        onEmail: config.onEmail || function () {},
+        onError: config.onError || function () {},
+      });
+      listener.start();
+      activeListeners.set(mailbox, listener);
+      return { ok: true, mailbox: mailbox, message: '监听器已启动（IMAP IDLE）' };
+    } catch (e) {
+      return { ok: false, error: 'LISTEN_START_ERROR', message: e.message };
+    }
+  };
+
+  service.stopListening = function (mailbox) {
+    mailbox = mailbox || 'INBOX';
+    const listener = activeListeners.get(mailbox);
+    if (!listener) {
+      return { ok: false, error: 'NOT_LISTENING', message: mailbox + ' 未在监听' };
+    }
+    try { listener.stop(); } catch (_) { /* 忽略停止异常 */ }
+    activeListeners.delete(mailbox);
+    return { ok: true, mailbox: mailbox, message: '监听器已停止' };
+  };
+
+  service.listListening = function () {
+    return { ok: true, listening: Array.from(activeListeners.keys()) };
+  };
 
   return service;
 }

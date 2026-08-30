@@ -24,6 +24,7 @@
 //   branded_ratio        - branded query 占全部 query 比例
 
 const GEO_STORE = require('./geo-store');
+const { getMatchTerms, normalizeAliases } = require('./geo-match');
 
 // === 评分维度工具函数 ===
 
@@ -31,6 +32,9 @@ const GEO_STORE = require('./geo-store');
 function getResponseText(r) {
   return r.text || r.raw_answer || '';
 }
+
+// === 别名匹配（v0.30 — 治「一个品牌多个名字漏匹配」）===
+// 工具函数在 ./geo-match.js：ALIAS_STOPWORDS / normalizeAliases / getMatchTerms
 
 // 1. 提及率
 function calculateMentionRate(brand, responses) {
@@ -81,18 +85,23 @@ function detectSentiment(text) {
 
 // v0.26 C3: SoV（自然发现份额）
 // 每个 query 跑出来的回答里，品牌被提及的次数 vs 竞品被提及的次数
+// v0.30 fix: 原算法 brandMentions 恒为 0/1，导致 SoV 严重失真（1/8=0.125 vs 真实 41/44=0.93）
+// 改为：按回答条数统计（每个 response 独立计数，不聚合）
 function calculateSoV(brand, responses, competitorNames) {
   if (!responses || responses.length === 0) return null;
-  const text = responses.map(getResponseText).join('\n').toLowerCase();
-  const brandMentions = isMentioned(brand, text) ? 1 : 0;
-  // 竞品提及（每个 query 统计一次 — 回答里出现就算）
-  let competitorMentions = 0;
-  for (const comp of competitorNames || []) {
-    if (comp && text.includes(comp.toLowerCase())) competitorMentions += 1;
+  let brandHitCount = 0;
+  let totalWithEither = 0;
+  for (const r of responses) {
+    const text = getResponseText(r).toLowerCase();
+    const hasBrand = isMentioned(brand, text);
+    const hasComp = competitorNames && competitorNames.some(c => c && text.includes(c.toLowerCase()));
+    if (hasBrand || hasComp) {
+      totalWithEither += 1;
+      if (hasBrand) brandHitCount += 1;
+    }
   }
-  const total = brandMentions + competitorMentions;
-  if (total === 0) return null;
-  return brandMentions / total;
+  if (totalWithEither === 0) return null;
+  return brandHitCount / totalWithEither;
 }
 
 // 4. 引擎一致性（多引擎提及率的 stdDev，越低越一致）
@@ -129,10 +138,12 @@ function calculateFreshness(responses, daysWindow = 30) {
 }
 
 // v0.26 C3: 判断 query 是否 branded（含品牌名 — 系统自动算）
+// v0.30: 遍历别名（"中展" 也能让 prompt "中展怎么样" 判定为 branded）
 function isBrandedPrompt(promptText, brand) {
-  const brandName = (typeof brand === 'string' ? brand : (brand.name || brand.domain || '')).toLowerCase();
-  if (!brandName) return false;
-  return String(promptText || '').toLowerCase().includes(brandName);
+  const terms = getMatchTerms(brand).map(t => t.toLowerCase()).filter(Boolean);
+  if (terms.length === 0) return false;
+  const lower = String(promptText || '').toLowerCase();
+  return terms.some(t => lower.includes(t));
 }
 
 // v0.26 C3: 按 query 分层计算（核心新算法）
@@ -154,8 +165,8 @@ function computeLayeredMetrics(brand, responses, queries) {
   for (const q of allQueries) {
     const runs = byQuery[q.id] || [];
     if (runs.length === 0) continue;
-    const branded = isBrandedPrompt(q.prompt, brandName);
-    const mentioned = runs.filter(r => isMentioned(brandName, getResponseText(r))).length;
+    const branded = isBrandedPrompt(q.prompt, brand);
+    const mentioned = runs.filter(r => isMentioned(brand, getResponseText(r))).length;
     const mentionRate = mentioned / runs.length;
     queryStats.push({
       id: q.id,
@@ -173,37 +184,41 @@ function computeLayeredMetrics(brand, responses, queries) {
   // natural 聚合
   const naturalRuns = allResponses.filter(r => {
     const q = allQueries.find(x => x.id === r.query_id);
-    return q && !isBrandedPrompt(q.prompt, brandName);
+    return q && !isBrandedPrompt(q.prompt, brand);
   });
   // branded 聚合
   const brandedRuns = allResponses.filter(r => {
     const q = allQueries.find(x => x.id === r.query_id);
-    return q && isBrandedPrompt(q.prompt, brandName);
+    return q && isBrandedPrompt(q.prompt, brand);
   });
 
   // natural 指标（核心）
+  // v0.30 fix: 传完整 brand 对象（含 aliases），不能用 brandName 字符串 — 否则 getMatchTerms 只返回 [name]，跳过分词匹配
   const naturalMentionRate = naturalRuns.length > 0
-    ? naturalRuns.filter(r => isMentioned(brandName, getResponseText(r))).length / naturalRuns.length
+    ? naturalRuns.filter(r => isMentioned(brand, getResponseText(r))).length / naturalRuns.length
     : null;
-  const naturalPosition = naturalRuns.length > 0 ? calculatePositionScore(brandName, naturalRuns) : null;
-  const naturalContext = naturalRuns.length > 0 ? calculateContextScore(brandName, naturalRuns) : null;
-  const naturalConsistency = naturalRuns.length > 0 ? calculateEngineConsistency(brandName, naturalRuns) : null;
+  const naturalPosition = naturalRuns.length > 0 ? calculatePositionScore(brand, naturalRuns) : null;
+  const naturalContext = naturalRuns.length > 0 ? calculateContextScore(brand, naturalRuns) : null;
+  const naturalConsistency = naturalRuns.length > 0 ? calculateEngineConsistency(brand, naturalRuns) : null;
   const naturalFreshness = naturalRuns.length > 0 ? calculateFreshness(naturalRuns) : null;
 
   // natural SoV：竞品名单 = 所有其他 brands（从 store 拉）
-  let competitorNames = [];
+  // v0.30: 竞品名也要展开别名（"振威" 命中算竞品；品牌自己的别名要排除，防自指）
+  let competitorTerms = [];
   try {
     const allBrands = GEO_STORE.listBrands();
-    competitorNames = allBrands
+    const selfMatchTerms = new Set(getMatchTerms(brand).map(t => t.toLowerCase()));
+    competitorTerms = allBrands
       .filter(b => b.id !== (typeof brand === 'string' ? brand : brand.id))
-      .map(b => b.name)
-      .filter(Boolean);
+      .flatMap(b => getMatchTerms(b).map(t => t.toLowerCase()))
+      // 过滤掉"其实是品牌自身别名"的竞品名（防自指 + 防重复计数）
+      .filter(t => t && !selfMatchTerms.has(t));
   } catch (_) { /* 拉取失败 → SoV 只算品牌自身 */ }
-  const naturalSoV = naturalRuns.length > 0 ? calculateSoV(brandName, naturalRuns, competitorNames) : null;
+  const naturalSoV = naturalRuns.length > 0 ? calculateSoV(brand, naturalRuns, competitorTerms) : null;
 
   // branded 指标（次要）
   const brandedMentionRate = brandedRuns.length > 0
-    ? brandedRuns.filter(r => isMentioned(brandName, getResponseText(r))).length / brandedRuns.length
+    ? brandedRuns.filter(r => isMentioned(brand, getResponseText(r))).length / brandedRuns.length
     : null;
   const brandedRatio = queryStats.length > 0 ? brandedQ.length / queryStats.length : 0;
 
@@ -279,14 +294,14 @@ function calculateCiteAbilityScore(brand, options = {}) {
     components.branded_ratio = Math.round(layered.branded.ratio * 1000) / 1000;
   } else {
     // fallback：全部数据（旧算法）
-    const mentionRate = calculateMentionRate(brandName, allResponses);
-    const positionScore = calculatePositionScore(brandName, allResponses);
-    const contextScore = calculateContextScore(brandName, allResponses);
-    const consistency = calculateEngineConsistency(brandName, allResponses);
+    const mentionRate = calculateMentionRate(brand, allResponses);
+    const positionScore = calculatePositionScore(brand, allResponses);
+    const contextScore = calculateContextScore(brand, allResponses);
+    const consistency = calculateEngineConsistency(brand, allResponses);
     const freshness = calculateFreshness(allResponses, lookbackDays);
     totalScore = (
       mentionRate * 0.5 +
-      (calculateSoV(brandName, allResponses, []) ?? 0) * 0.2 +
+      (calculateSoV(brand, allResponses, []) ?? 0) * 0.2 +
       positionScore * 0.15 +
       contextScore * 0.15
     ) * 100;
@@ -327,42 +342,69 @@ function calculateCiteAbilityScore(brand, options = {}) {
 
 // === 工具函数 ===
 
+// v0.30: 遍历 brand.name + aliases 任一命中即算 mention
 function isMentioned(brand, text) {
-  if (!text || !brand) return false;
-  const escaped = brand.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return text.toLowerCase().includes(brand.toLowerCase());
+  if (!text) return false;
+  const terms = getMatchTerms(brand);
+  if (terms.length === 0) return false;
+  const lower = text.toLowerCase();
+  return terms.some(t => t && lower.includes(t.toLowerCase()));
 }
 
-// 获取品牌在文本中的位置（0-1, 0 = 最开始）
+// 获取品牌在文本中的位置（0-1, 0 = 最开始）— 遍历别名取最早命中位置
 function getBrandPosition(brand, text) {
   const lower = text.toLowerCase();
-  const brandLower = brand.toLowerCase();
-  const idx = lower.indexOf(brandLower);
-  if (idx < 0) return 1; // 找不到 → 末尾
-  return idx / text.length;
+  const terms = getMatchTerms(brand).map(t => t.toLowerCase()).filter(Boolean);
+  if (terms.length === 0) return 1;
+  let earliest = -1;
+  for (const term of terms) {
+    const idx = lower.indexOf(term);
+    if (idx >= 0 && (earliest < 0 || idx < earliest)) earliest = idx;
+  }
+  if (earliest < 0) return 1; // 找不到 → 末尾
+  return earliest / text.length;
 }
 
 // v0.26 C3: 相对位置分 — 品牌第一次出现的词序号倒数（回答长短不偏）
+// v0.30: 遍历别名取最早命中位置（让"中展"命中也能拿到合理分）
 // 词序号 0（第一个词）= 1.0；第 5 个词 = 0.2；第 10 个词 = 0.1
 function getBrandRelativePosition(brand, text) {
   const lower = text.toLowerCase();
-  const brandLower = brand.toLowerCase();
-  const idx = lower.indexOf(brandLower);
-  if (idx < 0) return 0;
-  // 计算品牌出现位置之前有几个词
-  const before = text.slice(0, idx);
-  const wordCount = before.split(/\s+/).filter(Boolean).length;
-  return 1 / (wordCount + 1);
+  const terms = getMatchTerms(brand).map(t => t.toLowerCase()).filter(Boolean);
+  if (terms.length === 0) return 0;
+  let earliest = -1;
+  for (const term of terms) {
+    const idx = lower.indexOf(term);
+    if (idx >= 0 && (earliest < 0 || idx < earliest)) earliest = idx;
+  }
+  if (earliest < 0) return 0;
+  // v0.30 fix: 用字符位置比例代替词计数 — 英文按空格分词，中文按字符比例
+  // 原因：split(/\s+/) 对纯中文会把整段算成1词（position 虚高）；按字符数又对英文过长（position 虚低）
+  // 统一方案：品牌在回答文本中的相对位置 = earliest / text.length（0=开头, 1=末尾）
+  // 再映射到 score：1 - relativePosition（开头=1.0，末尾=0.0）
+  const before = text.slice(0, earliest);
+  const wordCount = text.length > 0 ? earliest / text.length : 0;
+  return 1 - wordCount;
 }
 
-// 提取品牌上下文（前后各 50 字）
+// 提取品牌上下文（前后各 50 字）— 遍历别名取最早命中位置
 function extractBrandContext(brand, text) {
   const lower = text.toLowerCase();
-  const brandLower = brand.toLowerCase();
-  const idx = lower.indexOf(brandLower);
-  if (idx < 0) return '';
-  const start = Math.max(0, idx - 50);
-  const end = Math.min(text.length, idx + brandLower.length + 50);
+  const terms = getMatchTerms(brand);
+  if (terms.length === 0) return '';
+  let earliest = -1;
+  let matchLen = 0;
+  for (const term of terms) {
+    const termLower = term.toLowerCase();
+    const idx = lower.indexOf(termLower);
+    if (idx >= 0 && (earliest < 0 || idx < earliest)) {
+      earliest = idx;
+      matchLen = termLower.length;
+    }
+  }
+  if (earliest < 0) return '';
+  const start = Math.max(0, earliest - 50);
+  const end = Math.min(text.length, earliest + matchLen + 50);
   return text.slice(start, end);
 }
 
@@ -438,6 +480,9 @@ module.exports = {
   calculateCiteAbilityScore,
   generateSnapshotSummary,
   compareBrands,
+  // v0.30: 别名匹配工具（外部也用得到 — 比如 audit agent / 高亮匹配）
+  getMatchTerms,
+  normalizeAliases,
   // 内部工具（测试用）
   _internal: {
     isMentioned,
@@ -453,5 +498,7 @@ module.exports = {
     isBrandedPrompt,
     computeLayeredMetrics,
     calculateSoV,
+    getMatchTerms,
+    normalizeAliases,
   },
 };

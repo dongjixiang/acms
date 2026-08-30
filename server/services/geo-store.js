@@ -17,6 +17,7 @@
 // 参考：ACMS §38 db-json-schema.md（JSON 集合文档）+ §P152 collection API 注意
 
 const { collection } = require('../db/connection');
+const { normalizeAliases } = require('./geo-match'); // v0.30: 别名清洗（写入端）
 
 const COLLECTIONS = {
   BRANDS: 'geo_brands',
@@ -48,19 +49,27 @@ function findBrandByDomain(domain) {
   return collection(COLLECTIONS.BRANDS).findOne(b => b.domain === domain);
 }
 
-function createBrand({ name, domain, llms_txt_url = '', settings = {}, industry = '' }) {
+function createBrand({ name, domain, llms_txt_url = '', settings = {}, industry = '', aliases = [] }) {
   if (!name || !domain) throw new Error('createBrand: name 和 domain 必填');
   const existing = findBrandByDomain(domain);
   if (existing) {
     throw new Error(`createBrand: domain="${domain}" 已存在 (id=${existing.id})`);
   }
+  // v0.30: 顶层 aliases 字段（替代 settings.aliases — 写入端清洗一次）
+  // 同时保留 settings.aliases 兼容 legacy 读取路径
+  const cleanedAliases = normalizeAliases(aliases, name);
+  const mergedSettings = { ...(settings || {}) };
+  // 写入端只保留一份到顶层 aliases；settings.aliases 留着不影响读取（getMatchTerms 优先读顶层）
+  if (cleanedAliases.length > 0) mergedSettings._legacy_aliases = cleanedAliases;
   const brand = {
     id: makeId('brand'),
     name,
     domain,
     llms_txt_url: llms_txt_url || `https://${domain}/llms.txt`,
     industry: industry || '',
-    settings: settings || {},
+    settings: mergedSettings,
+    // v0.30: 顶层别名（mention 检测主路径）
+    aliases: cleanedAliases,
     status: 'active',
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
@@ -71,8 +80,24 @@ function createBrand({ name, domain, llms_txt_url = '', settings = {}, industry 
 
 function updateBrand(id, updates) {
   const c = collection(COLLECTIONS.BRANDS);
+  // v0.30: 白名单字段过滤（防恶意/手滑覆盖 id / created_at 等）
+  const allowed = ['name', 'domain', 'llms_txt_url', 'industry', 'settings', 'aliases', 'status'];
+  const filtered = {};
+  for (const k of allowed) {
+    if (k in updates) filtered[k] = updates[k];
+  }
+  // v0.30: aliases 更新时清洗 + 保留 settings._legacy_aliases 镜像（双写兼容）
+  if ('aliases' in filtered) {
+    const existing = c.findOne(b => b.id === id);
+    const currentName = filtered.name || (existing && existing.name) || '';
+    const cleanedAliases = normalizeAliases(filtered.aliases, currentName);
+    filtered.aliases = cleanedAliases;
+    const mergedSettings = { ...((existing && existing.settings) || {}), ...(filtered.settings || {}) };
+    mergedSettings._legacy_aliases = cleanedAliases;
+    filtered.settings = mergedSettings;
+  }
   const result = c.update(b => b.id === id, {
-    ...updates,
+    ...filtered,
     updated_at: new Date().toISOString(),
   });
   return result;
@@ -100,7 +125,7 @@ function listQueries(brandId) {
 //   - persona    : text，生成时的角色（legacy 数据兼容）
 //   - source     : 'manual' | 'ai_generated' | 'bulk_import' | 'legacy' | 'template'
 //   - systemTags : text[]，系统自动计算（branded/unbranded/low-performing/high-performing/opportunity）
-function createQuery({ brand_id, prompt, category = 'general', engine_targets = ['deepseek'], enabled = true, tags = [], persona = null, source = 'manual', systemTags = [] }) {
+function createQuery({ brand_id, prompt, category = 'general', engine_targets = ['deepseek'], enabled = true, tags = [], persona = null, source = 'manual', systemTags = [], meta = null }) {
   if (!brand_id) throw new Error('createQuery: brand_id 必填');
   if (!prompt) throw new Error('createQuery: prompt 必填');
   const q = {
@@ -116,6 +141,7 @@ function createQuery({ brand_id, prompt, category = 'general', engine_targets = 
     persona: persona || null,
     source: source || 'manual',
     systemTags: Array.isArray(systemTags) ? systemTags : [],
+    meta: meta || null,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };

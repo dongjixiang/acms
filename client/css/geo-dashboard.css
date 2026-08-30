@@ -190,6 +190,74 @@
   margin-right: 4px;
 }
 
+/* v0.30: 别名编辑按钮 — header 左侧，紧跟 brand-meta */
+.geo-btn-alias {
+  background: var(--geo-bg-3);
+  border: 1px solid var(--geo-border);
+  color: var(--geo-text);
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: 4px;
+  margin-left: 4px;
+}
+.geo-btn-alias:hover {
+  border-color: var(--geo-accent);
+  background: var(--geo-hover-strong);
+}
+.geo-btn-alias:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* v0.30: 别名编辑 modal（html 模式）内部样式 */
+.geo-alias-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 420px;
+}
+.geo-alias-edit-hint {
+  font-size: 12px;
+  color: var(--geo-text-2);
+  line-height: 1.5;
+}
+.geo-alias-edit-hint code {
+  background: var(--geo-bg-3);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+.geo-alias-edit-textarea {
+  width: 100%;
+  min-height: 80px;
+  background: var(--geo-bg-3);
+  border: 1px solid var(--geo-border);
+  border-radius: 4px;
+  padding: 8px;
+  color: var(--geo-text);
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+}
+.geo-alias-edit-preview {
+  font-size: 11px;
+  color: var(--geo-text-2);
+  padding: 6px 10px;
+  background: var(--geo-bg-2);
+  border-radius: 4px;
+  min-height: 18px;
+}
+.geo-alias-edit-preview strong {
+  color: var(--geo-accent);
+}
+.geo-alias-edit-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
 /* === Tabs === */
 .geo-tabs {
   display: flex;

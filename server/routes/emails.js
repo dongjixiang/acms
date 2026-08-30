@@ -123,6 +123,67 @@ router.get('/:uid', async (req, res) => {
   }
 });
 
+// v0.37: 用 mailparser 解析邮件（推荐 2 集成 — 参考集成决策矩阵 Tier 1-推荐2）
+// 与 /:uid 区别：用 mailparser 替代自研 ~150 行 MIME 解析，更标准化、支持更多边界 case
+router.get('/:uid/parsed', async (req, res) => {
+  try {
+    const uid = parseInt(req.params.uid);
+    if (!uid) return res.status(400).json({ ok: false, error: 'INVALID_UID', message: '邮件编号无效' });
+    const result = await getImap().getEmailParsed(uid, req.query.mailbox || 'INBOX');
+    res.json(result);
+  } catch (error) {
+    errorResponse(res, error, 'EMAIL_PARSED_FAILED');
+  }
+});
+
+// v0.37: 启动 IMAP IDLE 实时监听（推荐 1 集成 — 参考集成决策矩阵 Tier 1-推荐1）
+// 新邮件到达 → 后端规则引擎自动匹配 → 写入执行日志 → 可选通知前端
+router.post('/listen/start', async (req, res) => {
+  try {
+    const mailbox = (req.body && req.body.mailbox) || 'INBOX';
+    const imap = getImap();
+    const result = imap.startListening({
+      mailbox: mailbox,
+      // 当调用方没传 user/password/host 时，startListening 内部会自动从当前 IMAP 服务提取
+      onEmail: async function (parsed) {
+        // 新邮件到达 → 触发规则引擎（参考 P177 事件广播链路）
+        try {
+          await imap.processEmailWithRules(parsed, { mailbox: parsed.mailbox });
+          console.log('[listen] 新邮件已触发规则匹配 — UID=' + parsed.uid + ' from=' + parsed.from);
+        } catch (e) {
+          console.warn('[listen] 规则处理异常:', e.message);
+        }
+      },
+      onError: function (err) {
+        console.warn('[listen] 监听错误:', err.message);
+      },
+    });
+    res.json(result);
+  } catch (error) {
+    errorResponse(res, error, 'LISTEN_START_FAILED');
+  }
+});
+
+// v0.37: 停止 IMAP IDLE 监听
+router.post('/listen/stop', async (req, res) => {
+  try {
+    const mailbox = (req.body && req.body.mailbox) || 'INBOX';
+    const result = getImap().stopListening(mailbox);
+    res.json(result);
+  } catch (error) {
+    errorResponse(res, error, 'LISTEN_STOP_FAILED');
+  }
+});
+
+// v0.37: 列出当前正在监听的 mailbox
+router.get('/listen/list', async (req, res) => {
+  try {
+    res.json(getImap().listListening());
+  } catch (error) {
+    errorResponse(res, error, 'LISTEN_LIST_FAILED');
+  }
+});
+
 // GET /api/emails/:uid/attachment/:partId — 下载附件
 router.get('/:uid/attachment/:partId', async (req, res) => {
   try {

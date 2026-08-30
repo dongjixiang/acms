@@ -11,6 +11,7 @@ const router = express.Router();
 const path = require('path');
 const fs = require('fs');
 const store = require('../services/geo-store');
+const onboarding = require('../services/geo-onboarding'); // v0.30: inferAliases
 const llmsGen = require('../services/geo-llms-txt-generator');
 const geoConfig = require('../services/geo-config');
 const geoEngines = require('../services/geo-engines');
@@ -132,6 +133,32 @@ router.delete('/brands/:id', (req, res) => {
     const ok = store.deleteBrand(req.params.id);
     if (!ok) return res.status(404).json({ ok: false, error: 'BRAND_NOT_FOUND' });
     res.json({ ok: true, deleted: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// v0.30: LLM 推断别名（补齐老品牌 aliases — 不跑完整 onboarding）
+router.post('/brands/:id/infer-aliases', async (req, res) => {
+  try {
+    const brand = store.getBrand(req.params.id);
+    if (!brand) return res.status(404).json({ ok: false, error: 'BRAND_NOT_FOUND' });
+
+    const infer = await onboarding.inferAliases(brand);
+    if (!infer.ok) {
+      return res.status(500).json({ ok: false, error: infer.error, message: infer.message });
+    }
+
+    // 合并到现有 aliases（去重 + 清洗 — store.updateBrand 会再过一次 normalizeAliases）
+    const existing = Array.isArray(brand.aliases) ? brand.aliases : [];
+    const merged = [...new Set([...existing, ...infer.aliases])];
+    const updated = store.updateBrand(brand.id, { aliases: merged });
+    res.json({
+      ok: true,
+      inferred: infer.aliases,
+      merged: merged,
+      brand: updated,
+    });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }

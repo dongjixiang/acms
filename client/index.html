@@ -668,7 +668,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/core/notification-center.js?v=0.58"></script>
 <!-- 🆕 P1 方案B（卡片化）→ 🆕 P2 打磨 → 🆕 A 修复（2026-08-23）：必须在 agent-buddy.js 之前加载 -->
 <script src="/client/js/core/agent-buddy-tool-card.js?v=0.115.19"></script>  <!-- v0.115.19 data-status/data-tool + .expanded class toggle（v0.121 UI 优化） -->
-<script src="/client/js/core/agent-buddy.js?v=0.99.6"></script>  <!-- v0.99.6 ap-cursor 用 CSS 渲染（v0.121 UI 优化） -->
+<script src="/client/js/core/agent-buddy.js?v=0.99.9"></script>  <!-- v0.99.9 去掉面板模板里硬编码的"hi～" -->
 <!-- v0.62.5: Office 编辑器 OO 风格主题 + 标题栏 (学 colors-table-classic.less + FileMenu.js) -->
 <link rel="stylesheet" href="/client/css/office-theme.css?v=0.66.0">
 <!-- v0.62.5: Ribbon TabBar 组件（学 OO TabBar.js API, 简化重写）— 必须在 office-editor.js 之前 -->
@@ -724,7 +724,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/game-pong.js?v=0.1"></script>
 <script src="/client/js/views/game-tetris.js?v=0.1"></script>
 <!-- v0.X: GEO 应用仪表盘（Phase 3 v0.7 — AI 优化建议 + 一键建任务） -->
-<script src="/client/js/views/geo-dashboard.js?v=0.29"></script>
+<script src="/client/js/views/geo-dashboard.js?v=0.30"></script>
 <script>
 // v0.58：视图加载器注册 — 通过 ACMS.registerPackage 统一注册
 // 包注册系统自动同步到 ACMSWin.registerViewLoader + labels + 命令面板
@@ -1255,11 +1255,11 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- v0.61 辅助工具浮动窗口（启动菜单 + 命令面板入口）-->
 <script src="/client/js/core/assist-launcher.js?v=0.62"></script>
 <!-- v0.1 (Phase 2 #9): 通用 Modal 弹窗组件（替换 prompt/confirm/alert，任意视图可复用）-->
-<script src="/client/js/core/acms-modal.js?v=0.4"></script>
+<script src="/client/js/core/acms-modal.js?v=0.30"></script>
 <!-- v0.74.1: 通用文件→应用 registry（file-browser / email-inbox 共用）-->
 <script src="/client/js/core/file-app-registry.js?v=0.74.1"></script>
 <!-- v0.73: 邮件收件箱 (IMAP) -->
-<link rel="stylesheet" href="/client/css/email-inbox.css?v=0.81" />
-<script src="/client/js/views/email-inbox.js?v=0.81"></script>
+<link rel="stylesheet" href="/client/css/email-inbox.css?v=1.00" />
+<script src="/client/js/views/email-inbox.js?v=1.00"></script>
 </body>
 </html>

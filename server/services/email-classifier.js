@@ -259,8 +259,27 @@ async function classifyEmail({ from, subject, snippet, categories, modelId } = {
 
 // v0.33: 包装函数 — 分类后自动写 store（供路由层调用）
 // 对比上方的 classifyEmail 返回 ok:false/fallback 时不写
+// v0.38: 自动从 email_categories collection 加载用户维护的分类（替代硬编码 DEFAULT_CATEGORIES）
 async function classifyEmailAndPersist({ from, mailbox, subject, snippet, categories, modelId } = {}) {
-  const r = await classifyEmail({ from, subject, snippet, categories, modelId });
+  // 加载用户自定义分类（按 mailbox 隔离 + fallback 到默认 8 类别）
+  let effectiveCategories = categories;
+  if (!effectiveCategories && mailbox) {
+    try {
+      const { collection } = require('../db/connection');
+      const coll = collection('email_categories');
+      const userCats = coll.find
+        ? coll.find(c => (c.mailbox === mailbox || c.mailbox === '*' || !c.mailbox) && c.enabled !== false)
+        : (coll.all ? coll.all().filter(c => (c.mailbox === mailbox || c.mailbox === '*' || !c.mailbox) && c.enabled !== false) : []);
+      if (userCats.length > 0) {
+        // 转换为 classifier 期望的格式 { name, description }
+        effectiveCategories = userCats.map(c => ({ name: c.name, description: c.description || '' }));
+      }
+    } catch (e) {
+      console.warn('[email-classifier] 加载用户分类失败，回退到默认:', e.message);
+    }
+  }
+
+  const r = await classifyEmail({ from, subject, snippet, categories: effectiveCategories, modelId });
   if (r.ok && r.source !== 'fallback' && from && mailbox) {
     try {
       categoryStore.saveCategory({
@@ -272,6 +291,8 @@ async function classifyEmailAndPersist({ from, mailbox, subject, snippet, catego
       console.warn('[email-classifier] 持久化失败:', e.message);
     }
   }
+  // v0.38: 返回时附带用户分类来源信息（让前端能显示"使用了用户自定义分类"）
+  r.userCategoriesUsed = effectiveCategories ? effectiveCategories.length : 0;
   return r;
 }
 

@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ACMS 邮件自然语言规则引擎 — 界面原型</title>
+<style>
+:root{--bg:#0f1115;--bg2:#161820;--bg3:#1c1f26;--text:#e8e6e3;--text2:#9ca3af;--text3:#6b6b7b;--accent1:#0ea89d;--accent2:#2a6b5e;--border:#2a2d36;--green:#10b981;--red:#ef4444;--yellow:#f59e0b;--font:system-ui,"PingFang SC","Hiragino Sans GB","Noto Sans SC",sans-serif;}
+[data-theme="light"]{--bg:#faf8f5;--bg2:#f3efe8;--bg3:#ebe7db;--text:#2d2a26;--text2:#6b635c;--text3:#a0988e;--border:#ddd8ce;--accent1:#1a8b75;--accent2:#e0ebe7;}
+[data-theme="cream"]{--bg:#fdf9f0;--bg2:#f5efe5;--bg3:#ebe5d5;--text:#3d3830;--text2:#7a7265;--text3:#b0a898;--border:#ddd6c8;--accent1:#1a7a6b;--accent2:#ebe7db;}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:1.55;font-size:14px}
+.wrapper{max-width:1200px;margin:0 auto;padding:24px 20px}
+header{margin-bottom:28px;border-bottom:1px solid var(--border);padding-bottom:16px}
+header h1{font-size:22px;font-weight:700;color:var(--text);letter-spacing:.02em}
+header .subtitle{font-size:13px;color:var(--text2);margin-top:4px}
+header .badge{display:inline-block;padding:2px 8px;border-radius:12px;background:var(--accent2);color:var(--accent1);font-size:11px;font-weight:600;margin-left:8px;border:1px solid rgba(13,168,157,.25)}
+
+/* 三栏布局（参考 email-inbox.js 现有结构） */
+.app-grid{display:grid;grid-template-columns:260px 1fr 380px;gap:16px;height:calc(100vh - 160px);min-height:600px}
+
+/* 左栏：规则列表 + 新建 */
+.side-panel{background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:16px;overflow:hidden;display:flex;flex-direction:column}
+.side-panel h2{font-size:14px;font-weight:700;margin-bottom:12px;color:var(--text);letter-spacing:.04em}
+.rule-list{flex:1;overflow-y:auto}
+.rule-card{border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px;background:var(--bg3);transition:all .15s}
+.rule-card.active{border-color:var(--accent1);background:rgba(13,168,157,.06);box-shadow:0 0 0 1px rgba(13,168,157,.15)}
+.rule-card .rule-title{font-weight:600;font-size:13px;color:var(--text);margin-bottom:4px;display:flex;align-items:center;gap:6px}
+.rule-card .rule-desc{font-size:12px;color:var(--text2);margin-bottom:6px;line-height:1.45}
+.rule-card .rule-meta{display:flex;gap:8px;font-size:11px;color:var(--text3)}
+.rule-card .rule-meta span{padding:1px 6px;border-radius:4px;background:var(--bg);border:1px solid var(--border)}
+.rule-card .rule-meta .priority{color:var(--accent1);font-weight:700}
+.rule-card .rule-meta .enabled{color:var(--green)}
+.btn-new{width:100%;margin-top:12px;padding:10px;border-radius:10px;border:1px solid var(--accent1);background:var(--accent1);color:#fff;font-weight:600;font-size:13px;cursor:pointer;transition:background .15s}
+.btn-new:hover{background:var(--accent2)}
+
+/* 中栏：自然语言规则输入 + 解析预览 */
+.main-panel{background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:20px;display:flex;flex-direction:column;overflow:hidden}
+.panel-section{margin-bottom:20px}
+.panel-section h3{font-size:14px;font-weight:700;margin-bottom:10px;color:var(--text);letter-spacing:.03em;display:flex;align-items:center;gap:6px}
+.panel-section h3::before{content:"";display:block;width:3px;height:16px;border-radius:2px;background:var(--accent1)}
+
+/* 自然语言输入区（核心交互） */
+.rule-input-box{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 14px 10px}
+.rule-input-box label{display:block;font-size:11px;color:var(--text2);font-weight:600;margin-bottom:6px;letter-spacing:.02em}
+.rule-input-box textarea{width:100%;min-height:72px;background:transparent;border:none;color:var(--text);font-size:13px;line-height:1.6;resize:vertical;font-family:inherit;outline:none}
+.rule-input-box .hint{font-size:11px;color:var(--text3);margin-top:6px;display:flex;justify-content:space-between;align-items:center}
+.rule-input-box .hint a{color:var(--accent1);text-decoration:none;font-size:11px}
+
+/* 解析预览卡片 */
+.parse-preview{margin-top:12px;border:1px dashed var(--border);border-radius:10px;padding:14px;background:rgba(13,168,157,.03)}
+.parse-preview .parse-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.parse-preview .parse-header strong{font-size:12px;color:var(--text);font-weight:700}
+.parse-preview .parse-header .confidence{font-size:11px;padding:2px 6px;border-radius:10px;background:rgba(245,158,11,.12);color:var(--yellow);font-weight:700}
+.parse-preview .parse-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:12px}
+.parse-preview .parse-grid .col{border:1px solid var(--border);border-radius:8px;padding:10px;background:var(--bg);}
+.parse-preview .parse-grid .col h4{font-size:11px;color:var(--text2);margin-bottom:6px;font-weight:700;letter-spacing:.03em;text-transform:uppercase}
+.parse-preview .parse-grid .col .tag-list{display:flex;flex-wrap:wrap;gap:4px}
+.parse-preview .parse-grid .col .tag{padding:2px 6px;border-radius:4px;background:var(--bg3);border:1px solid var(--border);font-size:11px;color:var(--text2);font-family:monospace}
+.parse-preview .parse-grid .col .tag.active{color:var(--accent1);border-color:rgba(13,168,157,.4);background:rgba(13,168,157,.08)}
+.parse-preview .parse-actions{margin-top:10px;display:flex;gap:8px;align-items:center}
+.parse-preview .parse-actions .btn-confirm{padding:6px 14px;border-radius:8px;background:var(--green);color:#fff;font-size:12px;font-weight:600;border:none;cursor:pointer}
+.parse-preview .parse-actions .btn-confirm:hover{filter:brightness(1.08)}
+
+/* 规则执行状态栏 */
+.status-bar{margin-top:16px;padding:12px 14px;background:var(--bg);border:1px solid var(--border);border-radius:10px;display:flex;align-items:center;gap:12px;font-size:12px;color:var(--text2)}
+.status-bar .dot{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
+.status-bar .dot.idle{background:var(--text3);animation:none}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+/* 右栏：规则执行日志 + 当前匹配状态 */
+.right-panel{background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:16px;overflow:hidden;display:flex;flex-direction:column}
+.right-panel h2{font-size:14px;font-weight:700;margin-bottom:12px;color:var(--text);letter-spacing:.04em}
+.log-entry{border-bottom:1px solid var(--border);padding:10px 0;font-size:12px}
+.log-entry:last-child{border-bottom:none}
+.log-entry .log-time{font-size:11px;color:var(--text3);font-family:monospace;margin-bottom:4px}
+.log-entry .log-rule{font-weight:600;color:var(--text);margin-bottom:2px}
+.log-entry .log-action{font-size:11px;color:var(--text2);line-height:1.4}
+.log-entry .log-result{font-size:11px;padding:1px 5px;border-radius:4px;display:inline-block;margin-top:4px}
+.log-entry .log-result.ok{background:rgba(16,185,129,.12);color:var(--green);border:1px solid rgba(16,185,129,.25)}
+.log-entry .log-result.fail{background:rgba(239,68,68,.1);color:var(--red);border:1px solid rgba(239,68,68,.25)}
+
+/* 规则匹配预览（模拟收到一封邮件后的规则匹配结果） */
+.sim-match{margin-top:12px;padding:14px;background:var(--bg);border:1px solid var(--border);border-radius:10px}
+.sim-match .sim-header{font-size:11px;color:var(--text3);font-weight:700;margin-bottom:8px;letter-spacing:.04em}
+.sim-match .sim-email{font-size:13px;color:var(--text);margin-bottom:6px;padding-bottom:6px;border-bottom:1px dashed var(--border)}
+.sim-match .sim-email strong{color:var(--accent1)}
+.sim-match .sim-match-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px dotted var(--border)}
+.sim-match .sim-match-row:last-child{border-bottom:none}
+.sim-match .sim-match-row .match-tag{font-size:11px;padding:2px 6px;border-radius:4px;background:var(--accent2);color:var(--accent1);font-weight:600;white-space:nowrap}
+.sim-match .sim-match-row .match-desc{font-size:12px;color:var(--text2);flex:1}
+.sim-match .sim-match-row .match-action{font-size:11px;color:var(--text3);font-family:monospace}
+
+/* 底部操作栏 */
+.bottom-bar{margin-top:20px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--text2)}
+.bottom-bar .version{font-family:monospace;color:var(--text3)}
+
+/* 响应式 */
+@media(max-width:1000px){.app-grid{grid-template-columns:1fr;grid-template-rows:auto 1fr auto;height:auto}}
+</style>
+</head>
+<body>
+<div class="wrapper">
+
+<header>
+  <h1>📬 邮件规则引擎 <span class="badge">v0.35 完全内嵌模式</span></h1>（与现有 email-inbox.js 三栏布局集成，不新增独立应用窗口）
+  <div class="subtitle">规则引擎完全内嵌到现有邮箱应用（email-inbox.js 三栏）· 无浮窗 · 不新增应用窗口</div>
+</header>
+
+
+<!-- 视图切换栏（3 个视图：规则配置 / 规则监控 / 收件箱增强） -->
+<div style="margin-bottom:16px;display:flex;gap:6px;border-bottom:1px solid var(--border);padding-bottom:8px;">
+  <button onclick="switchView('config')" id="tab-config" style="padding:6px 16px;border-radius:8px;background:var(--accent1);color:#fff;font-size:12px;font-weight:600;border:none;cursor:pointer;">✏ 规则配置</button>
+  <button onclick="switchView('monitor')" id="tab-monitor" style="padding:6px 16px;border-radius:8px;background:var(--bg3);color:var(--text2);font-size:12px;font-weight:600;border:1px solid var(--border);cursor:pointer;">📊 规则监控</button>
+  <button onclick="switchView('inbox')" id="tab-inbox" style="padding:6px 16px;border-radius:8px;background:var(--bg3);color:var(--text2);font-size:12px;font-weight:600;border:1px solid var(--border);cursor:pointer;">📬 收件箱增强</button>
+</div>
+
+<div class="app-grid" id="view-wrapper">
+
+
+  <!-- 左栏：规则列表 -->
+  <aside class="side-panel">
+    <h2>规则列表</h2>
+    <div class="rule-list">
+      <div class="rule-card active">
+        <div class="rule-title">📧 营销订阅自动归档 <span style="font-size:10px;color:var(--accent1);font-weight:600;margin-left:auto">高优先级</span></div>
+        <div class="rule-desc">如果收到营销订阅类别的邮件，自动归档到"已处理"文件夹，不要自动回复。</div>
+        <div class="rule-meta"><span class="priority">10</span><span class="enabled">已启用</span><span>INBOX</span></div>
+      </div>
+      <div class="rule-card">
+        <div class="rule-title">💼 客户咨询生成草稿</div>
+        <div class="rule-desc">客户咨询类邮件自动生成回复草稿（放入草稿箱），不自动发送。使用简洁商务语气。</div>
+        <div class="rule-meta"><span class="priority">8</span><span class="enabled">已启用</span><span>INBOX</span></div>
+      </div>
+      <div class="rule-card">
+        <div class="rule-title">📢 老板邮件重要标记</div>
+        <div class="rule-desc">发件人包含老板邮箱或关键词"紧急"的邮件，标记为重要并通知。</div>
+        <div class="rule-meta"><span class="priority">15</span><span class="enabled">已启用</span><span>INBOX</span></div>
+      </div>
+    </div>
+    <button class="btn-new" onclick="document.getElementById('rule-desc').focus()">+ 新建自然语言规则</button>
+  </aside>
+
+  <!-- 中栏：规则输入 + 解析预览 -->
+  <main class="main-panel">
+
+    <section class="panel-section" data-view="config">
+      <h3>自然语言规则输入</h3>
+      <div class="rule-input-box">
+        <label for="rule-desc">用自然语言描述规则（参考 Inbox-Zero 模式）</label>
+        <textarea id="rule-desc" placeholder="例如：如果收到营销订阅的邮件，自动归档到已处理文件夹，不要回复。或者：客户咨询类邮件生成草稿放入草稿箱，使用简洁商务语气。"></textarea>
+        <div class="hint">
+          <span>支持条件：类别、发件人关键词、主题关键词</span>
+          <a href="#">查看示例规则</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel-section">
+      <h3>解析预览</h3>
+      <div class="parse-preview" id="parse-preview">
+        <div class="parse-header">
+          <strong>解析结果</strong>
+          <span class="confidence">置信度：高</span>
+        </div>
+        <div class="parse-grid">
+          <div class="col">
+            <h4>匹配条件</h4>
+            <div class="tag-list">
+              <span class="tag active">营销订阅</span>
+              <span class="tag">关键词: unsubscribe</span>
+            </div>
+          </div>
+          <div class="col">
+            <h4>执行动作</h4>
+            <div class="tag-list">
+              <span class="tag active">归档</span>
+              <span class="tag">不自动回复</span>
+            </div>
+          </div>
+        </div>
+        <div class="parse-actions">
+          <button class="btn-confirm" onclick="this.textContent='已保存到规则'">确认并保存规则</button>
+          <span style="font-size:11px;color:var(--text3)">解析后规则将保存到 email_rules 表，执行前需要用户确认</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 自动回复安全控制区（高风险动作必须显式确认 — 参考 agent-buddy-action.js email_send 确认模式） -->
+    <section class="panel-section" style="margin-top:16px;border-top:1px dashed var(--border);padding-top:16px;">
+      <h3>⚠️ 自动回复安全控制</h3>
+      <div style="background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.25);border-radius:10px;padding:14px;font-size:12px;color:var(--text2);line-height:1.6;">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;font-weight:700;color:var(--yellow);font-size:13px;">
+          <span>🔒 自动回复必须用户确认</span> <span style="margin-left:auto;font-size:10px;background:rgba(245,158,11,.15);padding:1px 6px;border-radius:4px;color:var(--yellow);">参考 agent-buddy-action.js line 120</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;">
+          <div style="border:1px solid var(--border);border-radius:8px;padding:8px;background:var(--bg);">
+            <strong style="font-size:11px;color:var(--text);display:block;margin-bottom:4px;">规则条件示例</strong>
+            <span style="font-size:11px;color:var(--text3);font-family:monospace;">类别=客户咨询 + 关键词=报价请求</span>
+          </div>
+          <div style="border:1px solid var(--border);border-radius:8px;padding:8px;background:var(--bg);">
+            <strong style="font-size:11px;color:var(--text);display:block;margin-bottom:4px;">动作设置</strong>
+            <span class="tag active" style="font-size:10px;">auto_reply: false (默认关闭)</span><br>
+            <span class="tag" style="font-size:10px;color:var(--red);border-color:rgba(239,68,68,.3);">auto_reply: true → 必须有 reply_template</span>
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">当规则包含 auto_reply=true 时，执行引擎不会直接发送。系统会先生成草稿并在右栏详情面板显示确认卡片（内嵌到现有 em-pane），用户点击【✅ 确认发送】后才调用 email-sender 发送。</div>
+        <div style="display:flex;gap:6px;align-items:center;padding-top:6px;border-top:1px dashed var(--border);">
+          <button disabled style="padding:5px 12px;border-radius:6px;background:var(--bg3);color:var(--text3);font-size:11px;border:1px solid var(--border);cursor:not-allowed;" title="自动回复默认关闭（安全）">🔒 自动回复：已关闭（安全默认）</button>
+          <span style="font-size:10px;color:var(--text3);">开启需同时提供 reply_template + 用户每次确认（参考 P151 异步卡片确认模式）</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 回复模板设置区（与规则绑定 — 参考 email-drafter.js 借鉴 inbox-zero draft-reply 完整 prompt + P151 确认模式） -->
+    <section class="panel-section" data-view="config" style="border-top:1px dashed var(--border);padding-top:16px;">
+      <h3>✍️ 自动回复模板设置（规则动作：auto_reply / draft_only）</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px;">
+          <div style="font-size:11px;color:var(--text2);font-weight:700;margin-bottom:6px;letter-spacing:.03em;">规则绑定的回复模板（reply_template 字段）</div>
+          <textarea id="reply-template" style="width:100%;min-height:100px;background:transparent;border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text);font-size:12px;line-height:1.55;resize:vertical;font-family:inherit;outline:none;" placeholder="例如：感谢您的咨询。我们已收到您的报价请求，团队将在24小时内回复您具体方案和报价。如需加急处理，请直接拨打客服热线。">感谢您的咨询。我们已收到您的报价请求，团队将在24小时内回复您具体方案和报价。如需加急处理，请直接拨打客服热线。</textarea>
+          <div style="font-size:10px;color:var(--text3);margin-top:6px;line-height:1.4;">
+            📌 模板由规则解析引擎解析为 <code style="font-family:monospace;background:var(--bg3);padding:1px 4px;border-radius:3px;font-size:10px;">parsed_actions.reply_template</code>，执行时传入 <code style="font-family:monospace;background:var(--bg3);padding:1px 4px;border-radius:3px;font-size:10px;">email-drafter.draftReply()</code> 生成草稿（借鉴 inbox-zero draft-reply.ts 10 条核心纪律：不重复对方内容、不加签名、长度自约束、无占位符）。
+          </div>
+        </div>
+        <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px;display:flex;flex-direction:column;">
+          <div style="font-size:11px;color:var(--text2);font-weight:700;margin-bottom:6px;letter-spacing:.03em;">执行时确认卡片（auto_reply 必须用户确认）</div>
+          <div style="border:1px dashed var(--border);border-radius:8px;padding:10px;background:rgba(245,158,11,.06);flex:1;">
+            <div style="font-size:10px;color:var(--yellow);font-weight:700;margin-bottom:6px;">⚠️ 规则包含 auto_reply=true → 执行前必须弹出确认卡片（参考 agent-buddy-action.js line 120 requires_confirmation + P151 异步卡片确认模式）</div>
+            <div style="font-size:12px;color:var(--text);line-height:1.5;margin-bottom:8px;">
+              匹配规则：<strong style="color:var(--accent1);">客户咨询生成草稿</strong><br>
+              条件：类别=客户咨询 + 关键词=报价请求
+            </div>
+            <div style="font-size:11px;color:var(--text2);background:var(--bg2);padding:8px;border-radius:6px;border:1px solid var(--border);line-height:1.45;margin-bottom:8px;">
+              生成草稿预览：<span style="color:var(--text3);font-family:monospace;">"感谢您的咨询。我们已收到您的报价请求，团队将在24小时内回复您具体方案和报价..."</span>
+            </div>
+            <div style="display:flex;gap:6px;">
+              <button style="padding:5px 12px;border-radius:6px;background:var(--green);color:#fff;font-size:11px;font-weight:600;border:none;cursor:pointer;">✅ 确认发送（email-sender）</button>
+              <button style="padding:5px 12px;border-radius:6px;background:var(--bg3);color:var(--text2);font-size:11px;border:1px solid var(--border);cursor:pointer;">✏ 编辑草稿（email-drafter 重生成）</button>
+              <button style="padding:5px 12px;border-radius:6px;background:var(--red);color:#fff;font-size:11px;border:none;cursor:pointer;opacity:.55;">❌ 取消</button>
+            </div>
+          </div>
+          <div style="font-size:10px;color:var(--text3);margin-top:8px;line-height:1.35;">
+            执行链路（内嵌）：规则匹配 → <code style="font-family:monospace;background:var(--bg3);padding:1px 3px;border-radius:3px;font-size:9px;">email-drafter.draftReply()</code> 生成草稿 → 右栏详情面板显示确认卡片（内嵌到 em-pane）→ 用户点✅ → <code style="font-family:monospace;background:var(--bg3);padding:1px 3px;border-radius:3px;font-size:9px;">email-sender.sendEmail()</code> 发送 → 写入 <code style="font-family:monospace;background:var(--bg3);padding:1px 3px;border-radius:3px;font-size:9px;">email_rule_logs</code>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel-section">
+      <h3>规则执行状态</h3>
+      <div class="status-bar">
+        <span class="dot"></span>
+        <span>规则引擎就绪</span>
+        <span style="margin-left:auto;color:var(--text3)">上次执行：刚才</span>
+        <span style="font-family:monospace;color:var(--text3)">mailbox: INBOX</span>
+      </div>
+    </section>
+
+    <!-- 层2：详情面板分类卡片（参考 Inbox-Zero 分类可见性设计） -->
+    <section class="panel-section" style="border-top:1px dashed var(--border);padding-top:16px;">
+      <h3>📋 分类详情卡片（右栏 em-pane 顶部展示）</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px;">
+          <div style="font-size:11px;color:var(--text2);font-weight:700;margin-bottom:8px;letter-spacing:.03em;">当前邮件分类信息</div>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+            <span style="font-size:20px;font-weight:800;color:var(--yellow);letter-spacing:-.02em;">营销订阅</span>
+            <span style="padding:2px 6px;border-radius:10px;background:rgba(13,168,157,.12);color:var(--green);font-size:10px;font-weight:700;border:1px solid rgba(16,185,129,.3);">● 高置信度</span>
+            <span style="font-size:10px;color:var(--text3);font-family:monospace;">static</span>
+          </div>
+          <div style="font-size:11px;color:var(--text2);line-height:1.5;margin-bottom:8px;">
+            <strong style="color:var(--text);font-size:11px;">分类理由：</strong>发件人地址包含 newsletter 关键词，主题包含"优惠"和"活动"，匹配内嵌静态规则（无 LLM 调用）。
+          </div>
+          <div style="font-size:11px;color:var(--text3);line-height:1.4;">
+            数据来源：<code style="font-family:monospace;background:var(--bg3);padding:1px 3px;border-radius:3px;font-size:9px;">email-classifier.js</code> 静态规则命中 → 持久化到 <code style="font-family:monospace;background:var(--bg3);padding:1px 3px;border-radius:3px;font-size:9px;">email_sender_categories</code>（按 sender+mailbox 维度）。
+          </div>
+        </div>
+        <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px;">
+          <div style="font-size:11px;color:var(--text2);font-weight:700;margin-bottom:8px;letter-spacing:.03em;">基于分类的快捷操作</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;">
+            <button style="padding:5px 10px;border-radius:6px;background:var(--bg3);color:var(--text2);font-size:11px;border:1px solid var(--border);cursor:pointer;">📂 归档到已处理</button>
+            <button style="padding:5px 10px;border-radius:6px;background:var(--bg3);color:var(--text2);font-size:11px;border:1px solid var(--border);cursor:pointer;">✉ 生成回复草稿</button>
+            <button style="padding:5px 10px;border-radius:6px;background:var(--bg3);color:var(--text2);font-size:11px;border:1px solid var(--border);cursor:pointer;">🏷 标记重要</button>
+            <button style="padding:5px 10px;border-radius:6px;background:var(--bg3);color:var(--text2);font-size:11px;border:1px solid var(--border);cursor:pointer;">🗑 批量取消订阅</button>
+          </div>
+          <div style="font-size:10px;color:var(--text3);margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);line-height:1.35;">
+            这些快捷按钮由规则引擎根据匹配结果动态生成（参考规则动作：archive / draft_only / notify / unsubscribe）。点击后执行对应 IMAP 操作并写入执行日志。
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 规则匹配模拟（收到一封邮件后显示匹配结果） -->
+    <section class="panel-section">
+      <h3>最近邮件规则匹配模拟</h3>
+      <div class="sim-match">
+        <div class="sim-header">模拟收到新邮件后的规则匹配结果（基于 email-classifier 分类 + 规则引擎匹配）</div>
+        <div class="sim-email">
+          <strong>来自：</strong>newsletter@acme.com · <strong>主题：</strong>每周精选优惠与活动通知
+          <!-- 层1：列表行内分类 chip（参考 email-inbox.js refreshSenderCategories 逻辑） -->
+          <div style="margin-top:6px;display:flex;gap:6px;align-items:center;font-size:11px;">
+            <span style="padding:2px 6px;border-radius:10px;background:rgba(245,158,11,.12);color:var(--yellow);border:1px solid rgba(245,158,11,.25);font-weight:600;">营销订阅</span>
+            <span style="padding:2px 6px;border-radius:10px;background:rgba(13,168,157,.1);color:var(--accent1);border:1px solid rgba(13,168,157,.25);font-weight:700;font-size:9px;">● 高</span>
+            <span style="color:var(--text3);font-family:monospace;font-size:10px;">来源: static | 置信度: high | 规则 #1 匹配</span>
+          </div>
+        </div>
+        <div class="sim-match-row">
+          <span class="match-tag">匹配规则</span>
+          <span class="match-desc">规则 #1：营销订阅自动归档（高优先级 10）→ 条件匹配：类别=营销订阅</span>
+          <span class="match-action">执行：归档</span>
+        </div>
+        <div class="sim-match-row">
+          <span class="match-tag">分类结果</span>
+          <span class="match-desc">LLM 分类：营销订阅（来源：static 规则命中，置信度：高）</span>
+          <span class="match-action">无冲突</span>
+        </div>
+        <div class="sim-match-row">
+          <span class="match-tag">执行状态</span>
+          <span class="match-desc">动作已执行：邮件已移动到"已处理"文件夹（IMAP UID: 2847）</span>
+          <span class="match-action">已记录到日志</span>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- 层1：左栏分类过滤标签（参考 Inbox-Zero 分类浏览模式 + email-sender-category-store 持久化数据） -->
+  <aside data-view="monitor" class="side-panel" style="margin-top:12px;">
+    <h2 style="font-size:13px;color:var(--text2);letter-spacing:.02em;margin-bottom:8px;">按分类浏览（层3）</h2>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;font-size:11px;">
+      <a href="#" style="padding:3px 8px;border-radius:12px;background:var(--accent2);color:var(--accent1);text-decoration:none;font-weight:600;border:1px solid rgba(13,168,157,.3);">全部</a>
+      <a href="#" style="padding:3px 8px;border-radius:12px;background:var(--bg3);color:var(--text2);text-decoration:none;border:1px solid var(--border);">客户咨询 (12)</a>
+      <a href="#" style="padding:3px 8px;border-radius:12px;background:var(--bg3);color:var(--text2);text-decoration:none;border:1px solid var(--border);">会议邀请 (8)</a>
+      <a href="#" style="padding:3px 8px;border-radius:12px;background:var(--bg3);color:var(--text2);text-decoration:none;border:1px solid var(--border);">营销订阅 (34)</a>
+      <a href="#" style="padding:3px 8px;border-radius:12px;background:var(--bg3);color:var(--text2);text-decoration:none;border:1px solid var(--border);">自动通知 (56)</a>
+      <a href="#" style="padding:3px 8px;border-radius:12px;background:var(--bg3);color:var(--text2);text-decoration:none;border:1px solid var(--border);">财务发票 (5)</a>
+    </div>
+    <div style="font-size:10px;color:var(--text3);margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);line-height:1.4;">
+      数据来源：<code style="font-family:monospace;background:var(--bg3);padding:1px 3px;border-radius:3px;">email-sender-analyzer.js</code> 批量分析 + <code style="font-family:monospace;background:var(--bg3);padding:1px 3px;border-radius:3px;">email-sender-category-store.js</code> 持久化。点击分类可在现有左栏直接过滤邮件列表（内嵌到 email-inbox.js，不切换应用窗口）。后端可扩展 /api/emails?mailbox=INBOX&category=营销订阅。
+    </div>
+  </aside>
+
+  <!-- 右栏：执行日志 + 当前状态 -->
+  <aside data-view="monitor" class="right-panel">
+    <h2>规则执行日志</h2>
+    <div style="flex:1;overflow-y:auto;font-size:12px;">
+      <div class="log-entry">
+        <div class="log-time">2026-08-30 16:23:41</div>
+        <div class="log-rule">规则 #1：营销订阅自动归档</div>
+        <div class="log-action">匹配：类别=营销订阅（LLM 推断，置信度: 高）→ 执行动作：归档到"已处理" → 结果：成功（IMAP UID 2847）</div>
+        <span class="log-result ok">成功</span>
+      </div>
+      <div class="log-entry">
+        <div class="log-time">2026-08-30 15:58:12</div>
+        <div class="log-rule">规则 #3：老板邮件重要标记</div>
+        <div class="log-action">匹配：关键词=紧急 + 发件人=ceo@company.com → 执行动作：标记重要 + 通知 → 结果：通知已发送</div>
+        <span class="log-result ok">成功</span>
+      </div>
+      <div class="log-entry">
+        <div class="log-time">2026-08-30 14:32:05</div>
+        <div class="log-rule">规则 #2：客户咨询生成草稿</div>
+        <div class="log-action">匹配：类别=客户咨询 → 执行动作：生成草稿（draft_only=true）→ 结果：草稿已保存到 Drafts 文件夹</div>
+        <span class="log-result ok">成功</span>
+      </div>
+      <div class="log-entry">
+        <div class="log-time">2026-08-30 12:10:33</div>
+        <div class="log-rule">规则 #4（测试）：自动回复模板</div>
+        <div class="log-action">匹配：类别=会议邀请 → 执行动作：尝试自动回复（被用户确认机制拦截，未发送）→ 结果：已跳过（需要确认）</div>
+        <span class="log-result fail">已跳过（需确认）</span>
+      </div>
+    </div>
+  </aside>
+
+</div>
+
+<div class="bottom-bar">
+  <div>自然语言规则引擎原型 — 完全内嵌到现有 email-inbox.js（无独立浮窗，不新增应用窗口）· 基于 Inbox-Zero 模式 + ACMS 现有代码（v0.35 设计阶段）</div>
+  <div class="version">设计参考代码：email-classifier.js / email-drafter.js / routes/emails.js</div>
+</div>
+
+</div>
+
+<script>
+function switchView(name) {
+  // 按钮样式切换
+  ['config','monitor','inbox'].forEach(function(v) {
+    var btn = document.getElementById('tab-'+v);
+    if (btn) {
+      btn.style.background = (v === name ? 'var(--accent1)' : 'var(--bg3)');
+      btn.style.color = (v === name ? '#fff' : 'var(--text2)');
+    }
+  });
+  // 内容区域切换（通过隐藏/显示包含内容的容器实现）
+  // 规则配置视图：规则输入 + 解析预览 + 自动回复模板
+  // 规则监控视图：规则执行状态 + 匹配模拟 + 分类浏览
+  // 收件箱增强视图：分类详情卡片（已在中栏）+ 列表模拟
+  // 精细化内容分组切换：根据 data-view 属性控制每个区域的显示/隐藏
+  // 规则配置区域（data-view="config"）：规则输入、解析预览、自动回复、安全控制
+  // 规则监控区域（data-view="monitor"）：规则执行状态、匹配模拟、执行日志、分类浏览
+  // 收件箱增强区域（data-view="inbox"）：分类详情卡片
+  document.querySelectorAll('[data-view]').forEach(function(el) {
+    var elView = el.getAttribute('data-view');
+    // 如果当前区域属于选中的视图，或者不属于任何特定视图（通用内容），则显示
+    if (elView === name || (!elView && ['main-panel','side-panel'].includes(el.tagName.toLowerCase()))) {
+      el.style.display = 'block';
+    } else {
+      el.style.display = 'none';
+    }
+  });
+  // 特殊处理：左栏规则列表在所有视图都显示（通用），分类浏览只在监控视图显示
+  // 中栏内容在不同视图显示不同内容（由上面的逻辑处理）
+  console.log('已切换到视图:', name, '- 显示 data-view="' + name + '" 区域');
+  // 默认显示对应内容区域
+  console.log('切换到视图:', name);
+}
+// 初始化：默认显示规则配置视图内容
+window.addEventListener('DOMContentLoaded', function() {
+  switchView('config');
+});
+</script>
+</body>
+
+</html>

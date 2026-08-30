@@ -54,6 +54,12 @@
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
   min-width: 360px;
   max-width: 520px;
+  /* v0.30: 治「modal 巨大不可滚动」bug — 之前只设了 max-width，body 内容超长时
+     把整个 modal 撑到 viewport 之外，底部按钮（取消/确定）被推到屏幕外。
+     修法：modal 整体 max-height 限制，body flex:1 + min-height:0 + overflow-y:auto
+     让超长内容在 body 内滚动，title/actions 保持可见。
+     min-height:0 是关键 — flex 子元素默认 min-height:auto，会拒绝 shrink */
+  max-height: calc(100vh - 40px);
   display: flex;
   flex-direction: column;
 }
@@ -63,12 +69,17 @@
   font-weight: 600;
   color: var(--text, #222);
   border-bottom: 1px solid var(--border, #ddd);
+  flex-shrink: 0;  /* v0.30: title 不被压缩 */
 }
 .acms-modal-body {
   padding: 18px;
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* v0.30: 内容超长时在 body 内滚动（modal 不会撑到屏幕外） */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 .acms-modal-message {
   font-size: 13px;
@@ -106,6 +117,7 @@
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+  flex-shrink: 0;  /* v0.30: 底部按钮固定不被压缩（关键 — 否则超长内容会推按钮出屏幕） */
 }
 .acms-modal-btn {
   background: var(--bg3, #f0f0f0);

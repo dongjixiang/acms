@@ -9,6 +9,8 @@
         <option value="">— 所有品牌 —</option>
       </select>
       <span class="geo-brand-meta" id="geo-brand-meta"></span>
+      <!-- v0.30: 别名编辑入口（治「一个品牌多个名字漏匹配」） -->
+      <button class="geo-btn geo-btn-sm geo-btn-alias" id="geo-brand-alias-btn" title="请先在左侧选一个具体品牌，再点 ✎ 别名 编辑别名（缩写/常用名）" disabled>✎ 别名</button>
     </div>
     <div class="geo-header-right">
       <span class="geo-health-badge" id="geo-health-badge" title="点击查看引擎状态">●</span>
@@ -164,6 +166,8 @@
       </div>
       <div class="geo-dim-empty" id="geo-queries-empty">选择品牌后查看该品牌的提问模板</div>
       <div id="geo-queries-filterbar" style="margin-bottom:12px;display:none"></div>
+      <!-- v0.31: 四类意图覆盖率统计 -->
+      <div id="geo-intent-dist" style="margin-bottom:12px;padding:8px 12px;background:rgba(255,255,255,.03);border-radius:6px;display:none"></div>
       <table class="geo-table" id="geo-queries-table" style="display:none">
         <thead>
           <tr>

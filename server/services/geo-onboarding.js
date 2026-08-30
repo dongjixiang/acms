@@ -169,6 +169,7 @@ function applyOnboarding(brandId, data = {}) {
   const results = { ok: true, brand: null, watch: null, prompts_count: 0, competitors_created: 0 };
 
   // 1. brand 更新（name / aliases / additionalDomains 存 settings）
+  // v0.30: aliases 双写到顶层 + settings（兼容老读取路径 + 顶层别名主路径）
   const brandUpdates = {};
   if (data.brandName && data.brandName.trim() && data.brandName.trim() !== brand.name) {
     brandUpdates.name = data.brandName.trim();
@@ -177,8 +178,9 @@ function applyOnboarding(brandId, data = {}) {
   if (Array.isArray(data.additionalDomains)) settings.additional_domains = data.additionalDomains;
   if (Array.isArray(data.aliases)) settings.aliases = data.aliases;
   brandUpdates.settings = settings;
+  if (Array.isArray(data.aliases)) brandUpdates.aliases = data.aliases;
   GEO_STORE.updateBrand(brandId, brandUpdates);
-  results.brand = { id: brandId, name: brandUpdates.name || brand.name, settings };
+  results.brand = { id: brandId, name: brandUpdates.name || brand.name, settings, aliases: data.aliases || [] };
 
   // 2. competitors → watch（复用 watch 系统：focus=当前 brand，全部竞品加入 competitor_ids）
   if (Array.isArray(data.competitors) && data.competitors.length > 0) {
@@ -229,9 +231,85 @@ function applyOnboarding(brandId, data = {}) {
   return results;
 }
 
+// =====================================================================
+// inferAliases — v0.30 轻量别名推断（不跑完整 onboarding）
+// =====================================================================
+//
+// 用例：老品牌已经创建但没跑过 onboarding、aliases 字段为空
+//       → POST /api/geo/brands/:id/infer-aliases 一次 LLM 调用补齐
+// 与 analyzeBrand 的区别：
+//   - analyzeBrand 输出 5 类（brandName/additionalDomains/aliases/competitors/prompts），~4000 tokens
+//   - inferAliases 只输出 aliases，~500 tokens，省 80% token
+// 输出：aliases 数组（≤6 条），落库到 brand.aliases（写入端自动过 normalizeAliases 清洗）
+
+function buildInferAliasesPrompt(brand) {
+  return [
+    '# 别名推断（仅输出 JSON）',
+    '',
+    `品牌名: ${brand.name}`,
+    `域名: ${brand.domain}`,
+    brand.industry ? `行业: ${brand.industry}` : '',
+    '',
+    '## 任务',
+    '推断该品牌在 AI 搜索回答里"用户/AI 实际使用"的其他名称（缩写、母公司名、常见错拼、英文名）。',
+    '',
+    '## 要求',
+    '- 3-6 个最常用的别名',
+    '- 跳过与主名有子串关系的（"中展" ⊂ "中展集团" — 子串匹配已覆盖）',
+    '- 跳过通用词（公司/集团/Co/Ltd/AI/IT 等）',
+    '- 输出 JSON 数组，不要 markdown',
+    '',
+    '## 输出格式',
+    '["别名1", "别名2", "别名3"]',
+  ].filter(Boolean).join('\n');
+}
+
+/**
+ * @param {Object} brand - brand 对象（id/name/domain/industry）
+ * @returns {Promise<{ok: true, aliases: string[]} | {ok: false, error, message}>}
+ */
+async function inferAliases(brand) {
+  const runtime = require('./agent-runtime');
+  const prompt = buildInferAliasesPrompt(brand);
+
+  try {
+    const result = await runtime.execute({
+      messages: [
+        { role: 'system', content: '你是 GEO 专家。严格输出 JSON 数组（不要 markdown 代码块、不要任何解释）。' },
+        { role: 'user', content: prompt },
+      ],
+      toolNames: [],
+      maxRounds: 1,
+      caller: 'geo-onboarding-infer-aliases',
+      maxTokens: 500,
+      temperature: 0.3,
+    });
+
+    const raw = String(result.content || '').trim();
+    // 解析 JSON 数组（容错：去 markdown + 取 [...] 段）
+    let jsonText = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
+    const start = jsonText.indexOf('[');
+    const end = jsonText.lastIndexOf(']');
+    if (start >= 0 && end > start) jsonText = jsonText.slice(start, end + 1);
+    const parsed = JSON.parse(jsonText);
+    const aliases = Array.isArray(parsed)
+      ? parsed.slice(0, 6).map(s => String(s || '').trim()).filter(Boolean)
+      : [];
+    if (aliases.length === 0) {
+      return { ok: false, error: 'EMPTY_RESULT', message: 'LLM 未返回任何别名' };
+    }
+    return { ok: true, aliases };
+  } catch (e) {
+    return { ok: false, error: 'LLM_CALL_FAILED', message: e.message };
+  }
+}
+
 module.exports = {
   buildAnalyzePrompt,
   analyzeBrand,
   parseAnalyzeOutput,
   applyOnboarding,
+  // v0.30: 轻量别名推断（独立调用，补齐老品牌 aliases）
+  buildInferAliasesPrompt,
+  inferAliases,
 };

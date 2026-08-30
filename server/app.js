@@ -5,6 +5,10 @@ const fs = require('fs');
 const config = require('./config');
 const { authMiddleware, agentMiddleware } = require('./middleware/auth');
 
+// v0.99: 初始化邮件模板（首次运行自动填充）
+const { seedTemplates } = require('./seed-email-templates');
+seedTemplates();
+
 // v0.4 Phase 0.4：启动时 elicitor SKILL 健康检查（不健康只 warn 不 throw）
 const elicitorAdapter = require('./services/elicitor-adapter');
 elicitorAdapter.startupHealthCheck();
@@ -275,6 +279,12 @@ app.use('/api/apps', require('./routes/apps'));
 app.use('/api/agent-buddy', require('./routes/agent-buddy'));
 // v0.73: 邮件收件箱 API（IMAP）
 app.use('/api/emails', require('./routes/emails'));
+// v0.38: 用户维护的邮件分类（AI 自动分类依据 — 替代硬编码 8 类别）
+app.use('/api/email-categories', require('./routes/email-categories'));
+// v0.38: 邮件规则引擎 API（自然语言规则解析 + CRUD + 执行日志）
+app.use('/api/email-rules', require('./routes/email-rules'));
+// v0.99: 自动回复模板管理 API
+app.use('/api/email-templates', require('./routes/email-templates'));
 // v0.61 辅助工具自由对话接口（轻量版 chat-intent，无 requirement 依赖）
 app.use('/api/assist-free', require('./routes/assist-free'));
 // v0.59 appRuntime — 把外部网页装进「本地应用壳」（chrome CDP screencast 流推送 + input 桥接）

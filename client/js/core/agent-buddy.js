@@ -416,11 +416,7 @@ var _streamSpeed = 30;           // v0.80: 流式速度（ms/块）
         '<button class="ap-stream-btn" id="ap-stream-speed" title="调节速度">⚡</button>' +
         '<button class="ap-close">✕</button>' +
       '</div>' +
-      '<div class="ap-messages" id="ap-messages">' +
-        '<div class="ap-msg ap-msg-buddy">' +
-          '<span class="ap-msg-text">hi～ 我一直在呢</span>' +
-        '</div>' +
-      '</div>' +
+      '<div class="ap-messages" id="ap-messages"></div>' +
       '<div class="ap-score-bar"><div class="ap-score-fill"></div></div>' +
       '<div class="ap-input-row">' +
         '<input type="text" class="ap-input" id="ap-input" placeholder="问小吉问题..." autocomplete="off">' +
@@ -2320,11 +2316,16 @@ var faceMatch = raw.match(/【face:(\w+)】/);
     // 🆕 v0.114x 修复：**不再清空容器** —— 历史工具卡片/消息是聊天记录，
     //   打开面板/问候触发时清空会把它们全删（多多实报"工具调用卡片又没了"）。
     //   改为：容器已有内容则保留，只在空容器时渲染问候。
+    // 🆕 修复（2026-08-30）：问候场景无条件渲染——entry.message==='……' 是小吉问候标记，
+    //   无论容器是否为空都追加问候消息（之前只判断 children.length===0 导致有历史时静默跳过）。
     var container = document.querySelector('#ap-messages');
-    if (container && container.children.length === 0) {
-      var msg = entry && entry.message;
-      if (msg) renderMessage(msg);
-      else renderMessage('hi～ 我一直在呢');
+    var isGreeting = (entry && entry.message === '……');
+    if (!container || container.children.length === 0 || isGreeting) {
+      // 问候场景不渲染占位符，直接让 LLM 回复接管
+      if (!isGreeting) {
+        var msg = entry && entry.message;
+        renderMessage(msg || 'hi～ 我一直在呢');
+      }
     }
 
     renderScoreBar();
@@ -2507,7 +2508,7 @@ var faceMatch = raw.match(/【face:(\w+)】/);
     fetch('/api/agent-buddy/chat', {
       method: 'POST',
       headers: getAuthHeaders(),
-      body: JSON.stringify({ message: '__greeting__', context: context }),
+      body: JSON.stringify({ message: '__greeting__', context: Object.assign({}, context, { _useNewSkill: true }) }),
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
@@ -2515,20 +2516,23 @@ var faceMatch = raw.match(/【face:(\w+)】/);
       var faceMatch = raw.match(/【face:(\w+)】/);
       if (faceMatch) setFace(faceMatch[1]);
       var reply = raw.replace(/【[^】]+】/g, '').trim();
+      // 🆕 修复（2026-08-30）：有历史消息时也追加问候（不再只判断 children.length===0）
       var container = document.querySelector('#ap-messages');
-      // 🆕 v0.114x 修复：不再清空容器（历史卡片/消息保留，问候追加到末尾）
-      if (container && container.children.length === 0) renderMessage(reply);
+      renderMessage(reply);
     })
     .catch(function() {
+      // 🆕 修复（2026-08-30）：有历史消息时也显示兜底问候
       var container = document.querySelector('#ap-messages');
-      // 🆕 v0.114x 修复：不再清空容器
-      if (container && container.children.length === 0) renderMessage(getBuddyUserName() + ' 欢迎回来～');
+      renderMessage(getBuddyUserName() + ' 欢迎回来～');
     });
 
-    // 5 秒超时兜底
+    // 5 秒超时兜底（LLM 没响应时显示简单问候）
     setTimeout(function() {
       var msgs = document.querySelector('#ap-messages');
-      if (msgs && msgs.children.length === 1 && msgs.children[0].textContent.trim() === '……') {
+      if (!msgs) return;
+      // 只有占位符"……"或只有一条消息且是问候才替换
+      var lastText = msgs.lastElementChild && msgs.lastElementChild.textContent ? msgs.lastElementChild.textContent.trim() : '';
+      if (lastText === '……') {
         msgs.innerHTML = '';
         renderMessage('欢迎回来～有什么需要帮忙的吗？');
       }

@@ -1,4 +1,4 @@
-// ACMS GEO 应用 — 仪表盘逻辑（v0.2 — Phase 1 Week 5，真实数据）
+// ACMS GEO 应用 — 仪表盘逻辑（v0.31 — Yao Open Prompts 借鉴版）
 // 路径：client/js/views/geo-dashboard.js
 //
 // 4 个 active tab 数据加载：
@@ -1010,7 +1010,131 @@
   async function selectBrand(brandId) {
     currentBrandId = brandId;
     switchTab('overview');
+    // v0.30: 显隐别名编辑按钮 — 默认 disabled（灰色 + tooltip 提示），选具体品牌才启用
+    // 选「所有品牌」时按钮可见但不可点（让用户知道功能存在 + 知道怎么启用）
+    const aliasBtn = _byId('geo-brand-alias-btn');
+    if (aliasBtn) {
+      if (brandId) {
+        aliasBtn.disabled = false;
+        aliasBtn.title = '编辑当前品牌别名（缩写/常用名）';
+        aliasBtn.dataset.brandId = brandId;
+      } else {
+        aliasBtn.disabled = true;
+        aliasBtn.title = '请先在左侧选一个具体品牌，再点 ✎ 别名 编辑别名（缩写/常用名）';
+        aliasBtn.dataset.brandId = '';
+      }
+    }
     await loadOverview();
+  }
+
+  // v0.30: 编辑当前品牌别名（治「一个品牌多个名字漏匹配」 — 用户随时补别名）
+  async function editBrandAliases() {
+    const aliasBtn = _byId('geo-brand-alias-btn');
+    const brandId = aliasBtn?.dataset.brandId;
+    if (!brandId) return;
+    // 拉最新 brand（含 aliases）
+    setStatus('加载品牌信息...', 'loading');
+    const r = await api('GET', `/api/geo/brands/${brandId}`);
+    if (!r.data?.ok) {
+      setStatus('加载失败: ' + (r.data?.error || r.status), 'error');
+      return;
+    }
+    const brand = r.data.brand;
+    const currentAliases = Array.isArray(brand.aliases) ? brand.aliases : [];
+
+    // html 模式：自己渲染 textarea + 实时预览（清洗后的别名）
+    // 用 actions 区分按钮（v0.27 坑：ACMSModal 不支持 textarea 字段，必须自己读 DOM）
+    const safeName = esc(brand.name);
+    const initialText = currentAliases.join('、');
+    const html = `
+      <div class="geo-alias-edit">
+        <div class="geo-alias-edit-hint">
+          <strong>${safeName}</strong> 的其他常用名称。<br>
+          例如品牌「中展集团」可填：<code>中展</code> <code>CIEC</code> <code>中展股份</code>。<br>
+          用于 AI 引擎回答里的 mention 检测（治「AI 只提简称/全称」的漏匹配）。
+        </div>
+        <textarea id="geo-alias-edit-input" class="geo-alias-edit-textarea"
+          placeholder="多个别名用「、」或「,」分隔">${esc(initialText)}</textarea>
+        <div class="geo-alias-edit-preview" id="geo-alias-edit-preview">
+          保存后将以 <strong id="geo-alias-edit-count">${currentAliases.length}</strong> 个别名参与评分
+        </div>
+        <div class="geo-alias-edit-actions">
+          <button class="geo-btn geo-btn-sm" data-action="ai" style="margin-right:auto">🧠 AI 推断</button>
+          <span style="font-size:11px;color:var(--geo-text-2)">≤6 条，去重 + 子串压扁</span>
+        </div>
+      </div>
+    `;
+    const result = await showModal({
+      title: '✎ 编辑品牌别名',
+      html,
+      size: 'md',
+      actions: [
+        { label: '取消', value: null, className: 'geo-btn' },
+        { label: '保存', value: 'SAVE', className: 'geo-btn geo-btn-primary' },
+      ],
+    });
+
+    // AI 推断按钮（在 modal 内部触发 — 弹回新模态覆盖在原模态上）
+    if (result !== null) {
+      // 走 ai 按钮的会在 result 之前自己处理；result 走 SAVE 或 null
+    }
+    if (result !== 'SAVE') {
+      // 检查是否 AI 推断按钮触发了关闭（result === null 但 AI 已处理过）
+      // 通过 DOM 检查 _aliasAiApplied 标记避免重做
+      if (window._aliasAiApplied && window._aliasAiApplied[brandId]) {
+        delete window._aliasAiApplied[brandId];
+      }
+      return;
+    }
+
+    // 读 DOM 拿 textarea 内容（ACMSModal html 模式不会回传字段值，必须自己读）
+    const root = wRef?.$c || document;
+    const input = root.querySelector('#geo-alias-edit-input');
+    if (!input) return;
+    const raw = input.value || '';
+    // 多种分隔符兼容（、 , ，）
+    const aliases = raw.split(/[、,,，]/).map(s => s.trim()).filter(Boolean);
+
+    // 乐观更新本地预览 + 实际保存
+    setStatus('保存别名...', 'loading');
+    const saveRes = await api('PATCH', `/api/geo/brands/${brandId}`, { aliases });
+    if (saveRes.data?.ok) {
+      const saved = Array.isArray(saveRes.data.brand?.aliases) ? saveRes.data.brand.aliases : [];
+      setStatus(`已保存 ${saved.length} 个别名`, 'success');
+      notify(`✎ ${brand.name} 别名已更新 (${saved.length} 条)`, 'success');
+      // 重新渲染 overview（mention_rate 立即反映新别名）
+      await loadOverview();
+    } else {
+      setStatus('保存失败: ' + (saveRes.data?.error || saveRes.status), 'error');
+      notify('✎ 别名保存失败', 'error');
+    }
+  }
+
+  // v0.30: AI 推断别名（轻量 LLM 调用 — POST /api/geo/brands/:id/infer-aliases）
+  // modal 内「🧠 AI 推断」按钮触发
+  async function inferAliasesViaAI() {
+    const aliasBtn = _byId('geo-brand-alias-btn');
+    const brandId = aliasBtn?.dataset.brandId;
+    if (!brandId) return;
+    setStatus('AI 推断别名中...', 'loading');
+    const root = wRef?.$c || document;
+    const input = root.querySelector('#geo-alias-edit-input');
+    const preview = root.querySelector('#geo-alias-edit-preview');
+    const countEl = root.querySelector('#geo-alias-edit-count');
+    const r = await api('POST', `/api/geo/brands/${brandId}/infer-aliases`);
+    if (r.data?.ok) {
+      const inferred = r.data.inferred || [];
+      const existing = (input.value || '').split(/[、,,，]/).map(s => s.trim()).filter(Boolean);
+      // 合并去重 — 用户已有 + AI 新增
+      const merged = [...new Set([...existing, ...inferred])];
+      if (input) input.value = merged.join('、');
+      if (preview) preview.innerHTML = `AI 已推断 <strong>${inferred.length}</strong> 个新别名（合并后共 <strong id="geo-alias-edit-count">${merged.length}</strong> 条，已写入下方输入框，点击「保存」生效）`;
+      setStatus(`AI 推断 ${inferred.length} 个别名`, 'success');
+      notify(`🧠 ${inferred.length} 个新别名已填入（点击保存生效）`, 'success');
+    } else {
+      setStatus('AI 推断失败: ' + (r.data?.error || r.status), 'error');
+      notify('🧠 AI 推断失败: ' + (r.data?.message || r.data?.error || ''), 'error');
+    }
   }
 
   async function deleteBrand(brandId, name) {
@@ -1596,6 +1720,7 @@
   // === Tab 3: 提问模板 ===
   let _queriesAllData = [];        // v0.26: 缓存所有 query（filter 用）
   let _queriesCategoryFilter = 'all'; // v0.26: 'all' | category 名
+  let _queriesIntentFilter = 'all';   // v0.31: 'all' | informational|comparative|implementation|troubleshooting
 
   async function loadQueries() {
     setStatus('加载提问模板...', 'loading');
@@ -1626,6 +1751,9 @@
       renderQueriesFilterBar();    // v0.26: 渲染 filter bar
       applyQueriesFilters();       // v0.26: 应用过滤 + 渲染
 
+      // v0.31: 意图分布统计
+      renderIntentDistribution(queries);
+
       // v0.24: 模板健康度（触发率判定）
       loadQueriesHealth();
     } catch (e) {
@@ -1634,6 +1762,7 @@
   }
 
   // v0.26: 渲染 queries filter bar（按 category 过滤）
+  // v0.31: 增加意图过滤 + 覆盖率统计
   function renderQueriesFilterBar() {
     const cats = { brand_intro: '🏷️ 品牌', product: '🛠️ 产品', comparison: '⚖️ 对比', pricing: '💰 价格', use_case: '💡 场景', industry: '📈 行业', custom: '✏️ 自定义' };
     // 从 _queriesAllData 统计有数据的 category
@@ -1650,14 +1779,99 @@
         value: _queriesCategoryFilter, options,
         onChange: (v) => { _queriesCategoryFilter = v; applyQueriesFilters(); },
       },
+      {
+        key: 'intent', label: '意图', icon: '🎯', type: 'single',
+        value: _queriesIntentFilter,
+        options: [
+          { value: 'all', label: '全部' },
+          { value: 'informational', label: 'ℹ️ 信息型' },
+          { value: 'comparative', label: '⚖️ 比较型' },
+          { value: 'implementation', label: '🔧 实施型' },
+          { value: 'troubleshooting', label: '⚠️ 排错型' },
+        ],
+        onChange: (v) => { _queriesIntentFilter = v; applyQueriesFilters(); },
+      },
     ]);
   }
 
-  // v0.26: 按 category filter 过滤 + 渲染
+  // v0.31: 渲染意图分布统计（环形进度条）
+  function renderIntentDistribution(queries) {
+    const container = _byId('geo-intent-dist');
+    if (!container) return;
+    if (!queries || queries.length === 0) {
+      container.innerHTML = '';
+      return;
+    }
+    const intentMap = { informational: 0, comparative: 0, implementation: 0, troubleshooting: 0, branded: 0 };
+    for (const q of queries) {
+      // v0.31: 优先从 tags 读取 intent:xxx 格式（后端 inferIntentAndTags 写入）
+      const intentTag = (q.tags || []).find(t => /^intent:(informational|comparative|implementation|troubleshooting)$/.test(t));
+      let intent = intentTag ? intentTag.replace('intent:', '') : null;
+      // fallback: 从 tags 关键词推断（兼容旧数据）
+      if (!intent) {
+        const tagStr = (q.tags || []).join(' ').toLowerCase();
+        if (tagStr.includes('informational') || tagStr.includes('best-for') || tagStr.includes('editorial') || tagStr.includes('discovery'))
+          intent = 'informational';
+        else if (tagStr.includes('comparative') || tagStr.includes('comparison') || tagStr.includes('alternative'))
+          intent = 'comparative';
+        else if (tagStr.includes('implementation') || tagStr.includes('how-to'))
+          intent = 'implementation';
+        else if (tagStr.includes('troubleshooting') || tagStr.includes('risk'))
+          intent = 'troubleshooting';
+        else intent = 'informational';
+      }
+      if (intent === 'branded' || (q.systemTags || []).includes('branded'))
+        intentMap['branded']++;
+      else if (intentMap.hasOwnProperty(intent))
+        intentMap[intent]++;
+    }
+    const total = queries.length;
+    const unbranded = total - intentMap['branded'];
+    const colors = { informational: '#6366f1', comparative: '#f59e0b', implementation: '#10b981', troubleshooting: '#ef4444' };
+    const labels = { informational: '信息型', comparative: '比较型', implementation: '实施型', troubleshooting: '排错型' };
+    const rows = Object.entries(intentMap)
+      .filter(([k]) => k !== 'branded')
+      .map(([k, v]) => {
+        const pct = unbranded > 0 ? (v / unbranded * 100).toFixed(0) : 0;
+        const color = colors[k] || '#888';
+        return `<div style="display:flex;align-items:center;gap:6px;font-size:11px;margin-bottom:2px">
+          <span style="width:8px;height:8px;border-radius:50%;background:${color};display:inline-block"></span>
+          <span style="width:52px;opacity:.7">${labels[k] || k}</span>
+          <div style="flex:1;height:6px;background:rgba(255,255,255,.08);border-radius:3px;overflow:hidden">
+            <div style="width:${pct}%;height:100%;background:${color};border-radius:3px"></div>
+          </div>
+          <span style="width:28px;text-align:right;opacity:.8">${v}</span>
+        </div>`;
+      }).join('');
+    container.innerHTML = `
+      <div style="font-size:11px;opacity:.5;margin-bottom:4px">四类意图覆盖（unbranded ${unbranded} 条 / 总计 ${total} 条）</div>
+      ${rows}
+      <div style="font-size:10px;opacity:.4;margin-top:3px">branded ${intentMap['branded']} 条</div>
+    `;
+  }
+
+  // v0.26: 按 category + intent filter 过滤 + 渲染
   function applyQueriesFilters() {
     let filtered = _queriesAllData;
     if (_queriesCategoryFilter !== 'all') {
       filtered = filtered.filter(q => q.category === _queriesCategoryFilter);
+    }
+    if (_queriesIntentFilter !== 'all') {
+      filtered = filtered.filter(q => {
+        // v0.31: 优先从 tags 读取 intent:xxx 格式
+        const intentTag = (q.tags || []).find(t => t === `intent:${_queriesIntentFilter}`);
+        if (intentTag) return true;
+        // fallback: 从 tags 关键词推断（兼容旧数据）
+        const tagStr = (q.tags || []).join(' ').toLowerCase();
+        let intent = 'informational';
+        if (tagStr.includes('comparative') || tagStr.includes('comparison') || tagStr.includes('alternative'))
+          intent = 'comparative';
+        else if (tagStr.includes('implementation') || tagStr.includes('how-to'))
+          intent = 'implementation';
+        else if (tagStr.includes('troubleshooting') || tagStr.includes('risk'))
+          intent = 'troubleshooting';
+        return intent === _queriesIntentFilter;
+      });
     }
     renderQueriesTable(filtered);
   }
@@ -2983,11 +3197,11 @@
       const link = document.createElement('link');
       link.id = 'geo-dashboard-css';
       link.rel = 'stylesheet';
-      link.href = '/client/css/geo-dashboard.css?v=0.27';
+      link.href = '/client/css/geo-dashboard.css?v=0.31';
       document.head.appendChild(link);
     }
 
-      fetch('/client/views/geo-dashboard.html?v=0.29')
+      fetch('/client/views/geo-dashboard.html?v=0.31')
       .then(r => r.text())
       .then(html => {
         if (w.$c) w.$c.innerHTML = html;
@@ -3012,13 +3226,10 @@
     const select = _byId('geo-brand-select');
     if (select) {
       const handler = () => {
-        currentBrandId = select.value;
-        const meta = _byId('geo-brand-meta');
-        if (meta) {
-          const opt = select.options[select.selectedIndex];
-          meta.textContent = opt && opt.value ? `(${opt.text})` : '';
-        }
-        loadOverview();
+        // v0.30 修复：之前是 inline 写（设 currentBrandId + meta + loadOverview），绕过了 selectBrand
+        // 导致 selectBrand 里的「aliasBtn 启用/禁用」逻辑永远不执行。
+        // 统一走 selectBrand —— 它封装了所有切换品牌的副作用（启用 aliasBtn + meta + loadOverview + switchTab）
+        selectBrand(select.value);
       };
       select.addEventListener('change', handler);
       cleanupFns.push(() => select.removeEventListener('change', handler));
@@ -3042,6 +3253,30 @@
       createBtn.addEventListener('click', handler);
       cleanupFns.push(() => createBtn.removeEventListener('click', handler));
     }
+
+    // v0.30: 别名编辑按钮（治「一个品牌多个名字漏匹配」）
+    const aliasBtn = _byId('geo-brand-alias-btn');
+    if (aliasBtn) {
+      const handler = () => {
+        if (aliasBtn.disabled) return;  // 防御 — 浏览器 native 不会触发，但保险
+        editBrandAliases();
+      };
+      aliasBtn.addEventListener('click', handler);
+      cleanupFns.push(() => aliasBtn.removeEventListener('click', handler));
+    }
+
+    // v0.30: 别名编辑 modal 内部「🧠 AI 推断」按钮 — 用 document 委托
+    // （ACMSModal html 模式渲染在 overlay 容器中，mount 时尚未在 DOM；用事件冒泡）
+    const aiInferHandler = (e) => {
+      const target = e.target;
+      if (target && target.dataset && target.dataset.action === 'ai') {
+        e.preventDefault();
+        e.stopPropagation();
+        inferAliasesViaAI();
+      }
+    };
+    document.addEventListener('click', aiInferHandler);
+    cleanupFns.push(() => document.removeEventListener('click', aiInferHandler));
 
     // 跑跟踪按钮
     const runTrackBtn = _byId('geo-track-run-btn');
