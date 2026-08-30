@@ -642,3 +642,37 @@
   }
   .em-side { display: none; }
 }
+
+/* v0.30: AI 智能分类（借鉴 inbox-zero@main ai-categorize-single-sender.ts） */
+.em-act-classify { color: var(--accent, #0ea89d); }
+.em-act-classify:hover { background: var(--accent, #0ea89d); color: #fff; border-radius: 4px; }
+.em-btn-ai { background: linear-gradient(135deg, #0ea89d 0%, #0891b2 100%); color: #fff; border-color: transparent; }
+.em-btn-ai:hover { background: linear-gradient(135deg, #0891b2 0%, #0e7490 100%); color: #fff; }
+.em-classify-modal {
+  background: var(--bg1, #fff);
+  border-radius: 12px;
+  padding: 20px 24px;
+  min-width: 380px;
+  max-width: 560px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.25);
+  font-family: inherit;
+  color: var(--text1, #222);
+  animation: emClassifyIn 0.18s ease-out;
+}
+.em-classify-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: emClassifyFade 0.15s ease-out;
+}
+@keyframes emClassifyIn { from { transform: scale(0.96); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+@keyframes emClassifyFade { from { opacity: 0; } to { opacity: 1; } }
+.em-classify-chip {
+  display: inline-block;
+  user-select: none;
+  white-space: nowrap;
+}

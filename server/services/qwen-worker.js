@@ -118,6 +118,15 @@ class QwenSession {
     //   OOM/卡死场景 worker 被内核杀但 wrapper 活着 → child.on('exit') 不触发 →
     //   ask 挂满 600s。守护定时器用它判定"CLI 已无响应"并快速失败。
     this._lastEventAt = 0;
+    // 🆕 v0.118.6 (2026-08-30): 无事件守护改造 —— 心跳探测回调 + 防重入标志
+    //   根因（多多实测）：写大文件时 LLM 生成超大 write_file input，provider 端
+    //   tool_use 参数非流式（OpenAI 兼容 API 常见：完整 JSON 一次性返回），
+    //   Qwen CLI stdout 长时间零输出 → 旧守护 120s 无条件 SIGKILL 误杀。
+    //   改造：无事件 120s 后先发 get_usage_info control_request 心跳，CLI 活着
+    //   就回 control_response → 判定"正在生成大输出"继续等；心跳无响应再查
+    //   CPU 活性；两者都无才杀。总超时 600s 仍是最终兜底。
+    this._probeAckCb = null;      // 心跳 ACK 回调（_handleLine control_response 触发）
+    this._probeInFlight = false;  // 探测进行中（interval 防重入）
     // 🆕 v0.118.5: stderr 尾部缓冲（exit 诊断 —— 区分 V8 heap OOM / GLIBC 噪声 / 真崩溃）
     this._stderrTail = [];
     // 🆕 P0 方案B（卡片化）：流式累积工具调用 input_json（CLI 按 Anthropic stream 协议发 input_json_delta）
@@ -307,22 +316,21 @@ return this._doAsk(prompt, opts);
     this._inFlight = true;
     this._onDelta = opts.onDelta || null;  // B7: 真流式回调（text_delta 实时）
 
-    // 🆕 v0.118.5 (2026-08-29): 无事件守护 —— ask 在飞但 120s 无任何 CLI 事件 → 判定卡死
-    //   场景：OOM killer 杀了 V8 worker（MainThread）但 wrapper 活着 → child.on('exit') 不触发
-    //   → _pendingResolve 永远挂着 → 只能等 600s 总超时（8/25-8/26 实踩 12 次）。
-    //   守护每 30s 检查一次：ask 在飞 + 120s 无事件 → kill 进程树 + 快速失败（等 120s 而非 600s）。
-    //   正常 Qwen 首 token < 60s（thinking 模式也 < 120s），120s 阈值不会误杀。
+    // 🆕 v0.118.5 + v0.118.6 (2026-08-29/30): 无事件守护 —— ask 在飞但 120s 无任何 CLI 事件
+    //   v0.118.5 初衷：OOM killer 杀了 V8 worker（MainThread）但 wrapper 活着 → child.on('exit')
+    //   不触发 → _pendingResolve 永远挂着 → 只能等 600s 总超时（8/25-8/26 实踩 12 次）。
+    //   v0.118.6 修正误杀（多多实测）：写大文件时 LLM 生成超大 tool_use input，provider 端
+    //   非流式 → CLI 合法静默 > 120s，旧逻辑无条件 SIGKILL 误杀（120 日志 2 次实锤）。
+    //   现在：无事件 120s → 先心跳探测（get_usage_info control_request，CLI 活着必回 ACK）
+    //   → 活着 = 生成大输出中，重置计时继续等；心跳无响应再查进程 CPU 活性；都无才杀。
     this._lastEventAt = Date.now();
     const NO_EVENT_TIMEOUT_MS = 120 * 1000;
     const noEventGuard = setInterval(() => {
       if (!this._pendingResolve) return;
       if (Date.now() - this._lastEventAt > NO_EVENT_TIMEOUT_MS) {
-        const r = this._pendingResolve;
-        this._pendingResolve = null;
-        debug(`无事件 ${NO_EVENT_TIMEOUT_MS / 1000}s，判定 CLI 卡死，kill 进程树`);
-        log(`会话 ${this.sessionId.slice(0, 8)} 无事件 ${NO_EVENT_TIMEOUT_MS / 1000}s，强制终止 CLI（rss=${(process.memoryUsage().rss / 1048576) | 0}MB, turn=${this.turnCount})`);
-        try { if (this.child && this.child.exitCode === null) this.child.kill('SIGKILL'); } catch (e) { /* ignore */ }
-        r({ type: 'result', subtype: 'stall', is_error: true, error: { message: `CLI 无响应超过 ${NO_EVENT_TIMEOUT_MS / 1000}s，已强制终止（可能内存不足）` } });
+        if (this._probeInFlight) return;  // 🆕 v0.118.6: 上次探测未完成，防重入
+        this._probeInFlight = true;
+        this._probeAndMaybeKill(NO_EVENT_TIMEOUT_MS).finally(() => { this._probeInFlight = false; });
       }
     }, 30000);
     noEventGuard.unref?.();
@@ -363,6 +371,74 @@ return this._doAsk(prompt, opts);
       this._doAsk(next.prompt, next.opts).then(next.resolve, next.reject);
     }
     return result;
+  }
+
+  // ---------- 无事件守护探测（v0.118.6） ----------
+  /**
+   * 无事件超时后的活性探测决策：
+   *   1. 心跳：发 get_usage_info control_request，3s 内收到任意 control_response → CLI 活着
+   *   2. 心跳无响应 → Linux 查进程 CPU 时间（wrapper + 子进程）两次采样是否有增长
+   *   3. 两者都无 → 判定卡死 → SIGKILL + stall 快速失败（保留 v0.118.5 的 OOM 兜底）
+   *   4. 探测异常/平台不支持 → **保守不杀**（重置计时继续等，总超时 600s 兜底）
+   *      —— 误杀（写大文件合法静默）比慢失败（OOM 等 600s）伤害大，多多 2026-08-30 实踩
+   */
+  async _probeAndMaybeKill(timeoutMs) {
+    const probeOk = await this._cliHasActivity();
+    if (probeOk) {
+      debug(`无事件 ${timeoutMs / 1000}s，探测：CLI 存活（可能正在生成大输出），继续等待`);
+      log(`会话 ${this.sessionId.slice(0, 8)} 无事件 ${timeoutMs / 1000}s，心跳/CPU 探测存活，继续等待（turn=${this.turnCount})`);
+      this._lastEventAt = Date.now();  // 重置计时 → 下一个 120s 窗口
+      return;
+    }
+    // 探测无活性：再确认一次仍然无事件（避免探测期间 CLI 恰好恢复）
+    if (Date.now() - this._lastEventAt <= timeoutMs) return;
+    if (!this._pendingResolve) return;
+    const r = this._pendingResolve;
+    this._pendingResolve = null;
+    debug(`无事件 ${timeoutMs / 1000}s 且探测无活性，判定 CLI 卡死，kill 进程树`);
+    log(`会话 ${this.sessionId.slice(0, 8)} 无事件 ${timeoutMs / 1000}s 且心跳/CPU 无活性，强制终止 CLI（rss=${(process.memoryUsage().rss / 1048576) | 0}MB, turn=${this.turnCount})`);
+    try { if (this.child && this.child.exitCode === null) this.child.kill('SIGKILL'); } catch (e) { /* ignore */ }
+    r({ type: 'result', subtype: 'stall', is_error: true, error: { message: `CLI 无响应超过 ${timeoutMs / 1000}s（无事件且探测无活性），已强制终止` } });
+  }
+
+  /**
+   * CLI 活性探测（跨平台）。
+   *   true  = CLI 活着（生成大输出中 / 正常等待中）→ 不杀
+   *   false = 探测确认无活性（可能 OOM 杀 worker 或真卡死）→ 杀
+   * 探测自身失败（/proc 不可读、平台不支持）→ 返回 true（保守不杀，等总超时）。
+   */
+  async _cliHasActivity() {
+    // 0. wrapper 进程已死 → 无活性（exit 事件会走 cli_exit 快速失败）
+    if (!this.child || this.child.exitCode !== null) return false;
+    // 1. 心跳：get_usage_info（SystemController 只读子类型，CLI 活着必回 control_response）
+    const heartbeat = await new Promise((resolve) => {
+      let done = false;
+      const finish = (ok) => { if (!done) { done = true; resolve(ok); } };
+      this._probeAckCb = () => finish(true);
+      try {
+        if (this.child.stdin && !this.child.stdin.destroyed) {
+          this._sendControl({ subtype: 'get_usage_info' });
+        } else { finish(false); return; }
+      } catch (e) { finish(false); return; }
+      setTimeout(() => finish(false), 3000).unref?.();
+    });
+    if (heartbeat) return true;
+    debug('心跳无响应，尝试 CPU 活性探测');
+    // 2. CPU 兜底（Linux /proc；其他平台无可靠手段 → 保守返回 true 等总超时）
+    if (process.platform !== 'linux') return true;
+    try {
+      const pids = [this.child.pid, ...readChildrenPids(this.child.pid)];
+      const sumTicks = () => pids.reduce((acc, pid) => acc + (readProcCpuTicks(pid) ?? 0), 0);
+      const t1 = sumTicks();
+      await new Promise((r2) => setTimeout(r2, 800));
+      const t2 = sumTicks();
+      if (t2 - t1 > 0) return true;
+      debug(`CPU 无增长（wrapper=${this.child.pid}, children=${pids.slice(1).join(',') || '无'}）`);
+    } catch (e) {
+      debug('CPU 活性探测异常（保守不杀）:', e.message);
+      return true;
+    }
+    return false;
   }
 
   // ---------- 审批 ----------
@@ -542,6 +618,14 @@ return this._doAsk(prompt, opts);
             this._continueAckCb = null;
           }
         }
+        // 🆕 v0.118.6：心跳探测 ACK —— 收到**任意** control_response 都证明 CLI 活着
+        //   （ACMS 发 control_request 后 CLI 才回 response，不会无缘无故发）。
+        //   探测期间 CLI 可能回 error（不认识 get_usage_info）—— 也算活着。
+        if (this._probeAckCb) {
+          const cb = this._probeAckCb;
+          this._probeAckCb = null;
+          cb(true);
+        }
         break;
       }
       case 'system':
@@ -702,6 +786,45 @@ return this._doAsk(prompt, opts);
       }, 3000).unref();
     }
 log(`会话关闭 ${this.sessionId.slice(0, 8)}`);
+  }
+}
+
+// ============================================================
+// v0.118.6: 无事件守护的进程活性探测 helpers（Linux /proc）
+// ============================================================
+
+/**
+ * 读进程 CPU 时间（utime+stime，单位 jiffies）。
+ * /proc/<pid>/stat 格式：pid (comm) state ppid ... utime stime ...
+ * comm 可能含空格/括号，从最后一个 ')' 后解析。
+ * @returns {number|null} CPU ticks；进程不存在/读取失败 → null
+ */
+function readProcCpuTicks(pid) {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const idx = stat.lastIndexOf(')');
+    if (idx < 0) return null;
+    const parts = stat.slice(idx + 2).split(' ');
+    // parts[0]=state(字段3) parts[1]=ppid ... parts[11]=utime(字段14) parts[12]=stime(字段15)
+    const utime = parseInt(parts[11], 10) || 0;
+    const stime = parseInt(parts[12], 10) || 0;
+    return utime + stime;
+  } catch (e) {
+    return null;  // 进程不存在（已被 OOM 杀）或 /proc 不可读
+  }
+}
+
+/**
+ * 读进程的直接子进程 pid 列表（Linux）。
+ * /proc/<pid>/task/<pid>/children 列出所有直接子进程。
+ * @returns {number[]} 子进程 pid 数组（读失败 → []）
+ */
+function readChildrenPids(pid) {
+  try {
+    const content = fs.readFileSync(`/proc/${pid}/task/${pid}/children`, 'utf8');
+    return content.trim().split(/\s+/).filter(Boolean).map(Number);
+  } catch (e) {
+    return [];
   }
 }
 

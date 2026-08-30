@@ -719,6 +719,8 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
         if (action === 'email-delete') return self.deleteEmail(target.getAttribute('data-uid'), target);
         if (action === 'email-move') return self.pickMoveTarget(target.getAttribute('data-uid'), target);
         if (action === 'email-toggle-read') return self.toggleRead(target);
+        // v0.30: AI 智能分类（借鉴 inbox-zero@main）
+        if (action === 'email-ai-classify') return self.aiClassifyEmail(target.getAttribute('data-uid'));
         return;
       }
       var folder = event.target.closest('[data-role="folder"]');
@@ -955,6 +957,7 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
       '  </div>',
       email.hasAttachments ? '  <span class="em-att-mark" title="含附件">📎</span>' : '',
       '  <div class="em-item-actions" data-role="item-actions">',
+      '    <button type="button" class="em-item-action em-act-classify" data-action="email-ai-classify" data-uid="' + escAttr(email.uid) + '" title="AI 智能分类">📂</button>',
       '    <button type="button" class="em-item-action em-act-move" data-action="email-move" data-uid="' + escAttr(email.uid) + '" title="移动到文件夹">📁</button>',
       '    <button type="button" class="em-item-action em-act-read" data-action="email-toggle-read" data-uid="' + escAttr(email.uid) + '" data-read="' + (read ? '1' : '0') + '" title="' + escAttr(readBtnTitle) + '">' + readBtnLabel + '</button>',
       '    <button type="button" class="em-item-action em-act-del" data-action="email-delete" data-uid="' + escAttr(email.uid) + '" title="删除邮件">🗑</button>',
@@ -990,6 +993,65 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
     if (!body) return;
     var hasMore = body.scrollHeight > body.clientHeight + 4;
     list.classList.toggle('has-more', hasMore);
+  };
+
+  // v0.30: AI 智能分类（借鉴 inbox-zero@main ai-categorize-single-sender.ts + 防止 toast 骗人）
+  EmailApp.prototype.aiClassifyEmail = function (uid) {
+    var self = this;
+    uid = parseInt(uid, 10);
+    if (!uid) { self.setStatus('分类失败：无效邮件编号'); return; }
+    // 从列表状态找邮件元数据（避免额外 fetch /api/emails/:uid — 列表已含 from + subject + snippet）
+    var email = (this.state.emails || []).find(function (e) { return e.uid === uid; });
+    if (!email && this.state.detail && this.state.detail.uid === uid) email = this.state.detail;
+    if (!email) { self.setStatus('分类失败：找不到邮件数据，请先点开邮件'); return; }
+    var payload = {
+      from: email.from || '',
+      subject: email.subject || '',
+      snippet: (email.snippet || email.text || '').toString().slice(0, 500),
+    };
+    self.setStatus('AI 分类中…', 'loading');
+    apiFetch('POST', '/api/emails/classify', payload).then(function (r) { return r.json(); }).then(function (data) {
+      self.setStatus('');
+      self.showClassifyResult(uid, data);
+    }).catch(function (err) {
+      self.setStatus('分类失败: ' + err.message, 'error');
+      self.showClassifyResult(uid, { ok: false, category: '其他', rationale: '', confidence: 'low', source: 'fallback', error: err.message });
+    });
+  };
+
+  // v0.30: 弹窗显示 AI 分类结果（自建 modal，不依赖 ACMSModal — 类目 chip + rationale + confidence + source）
+  EmailApp.prototype.showClassifyResult = function (uid, result) {
+    var old = document.querySelector('.em-classify-modal-backdrop');
+    if (old) old.remove();
+    var srcLabel = ({'static':'静态规则匹配','ai':'AI 推断','fallback':'降级返回'})[result.source] || result.source || '未知';
+    var confLabel = ({'high':'高','medium':'中','low':'低'})[result.confidence] || result.confidence || '-';
+    var confColor = ({'high':'#22c55e','medium':'#eab308','low':'#ef4444'})[result.confidence] || '#888';
+    var cat = result.category || '其他';
+    var backdrop = document.createElement('div');
+    backdrop.className = 'em-classify-modal-backdrop';
+    var modal = document.createElement('div');
+    modal.className = 'em-classify-modal';
+    modal.innerHTML = [
+      '<h3 style="margin:0 0 12px;font-size:16px">📂 AI 智能分类结果</h3>',
+      '<div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">',
+      '  <span class="em-classify-chip" style="background:var(--accent,#0ea89d);color:#fff;padding:4px 12px;border-radius:16px;font-size:13px;font-weight:600">' + escHtml(cat) + '</span>',
+      '  <span style="font-size:12px;color:var(--text3,#888)">' + escHtml(srcLabel) + ' · 置信度 <span style="color:' + confColor + ';font-weight:600">' + escHtml(confLabel) + '</span></span>',
+      '</div>',
+      result.rationale ? '<div style="background:var(--bg3,#f5f5f7);border-left:3px solid var(--accent,#0ea89d);padding:10px 12px;border-radius:6px;font-size:13px;margin-bottom:12px;line-height:1.5">💡 ' + escHtml(result.rationale) + '</div>' : '',
+      result.error ? '<div style="color:#a00;font-size:12px;margin-bottom:12px">⚠️ ' + escHtml(result.error) + '</div>' : '',
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">',
+      '  <span style="font-size:11px;color:var(--text3,#888)">💡 借鉴 inbox-zero（NOASSERTION license · 重写为 JS）</span>',
+      '  <button type="button" class="em-btn em-btn-tiny em-classify-close">关闭</button>',
+      '</div>'
+    ].join('');
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+    var close = function () { backdrop.remove(); };
+    modal.querySelector('.em-classify-close').onclick = close;
+    backdrop.onclick = function (ev) { if (ev.target === backdrop) close(); };
+    document.addEventListener('keydown', function esc(e) {
+      if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc); }
+    });
   };
 
   // v0.74.2: 删除邮件（带二次确认 + 乐观更新）
@@ -1234,6 +1296,7 @@ EmailApp.prototype.renderDetail = function () {
       '      <button type="button" class="em-btn" data-action="reply">↩ 回复</button>',
       '      <button type="button" class="em-btn" data-action="reply-all">↩ 全部回复</button>',
       '      <button type="button" class="em-btn" data-action="forward">↪ 转发</button>',
+      '      <button type="button" class="em-btn em-btn-ai" data-action="email-ai-classify" data-uid="' + escAttr(email.uid) + '" title="AI 智能分类（借鉴 inbox-zero）">📂 AI 分类</button>',
       '    </div>',
       '  </div>',
       '  <table class="em-meta">',
