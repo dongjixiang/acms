@@ -221,7 +221,7 @@ router.post('/classify', async (req, res) => {
 // 返回：{ ok, draft, reason, source: 'ai'|'fallback' }
 router.post('/draft-reply', async (req, res) => {
   try {
-    const { from, subject, body, toneHints, modelId, skip_tone_sample } = req.body || {};
+    const { from, subject, body, toneHints, modelId, skip_tone_sample, previousDraft, retryHint } = req.body || {};
     if (!from && !subject && !body) {
       return res.status(400).json({ ok: false, error: 'MISSING_INPUT', message: '请提供 from / subject / body 至少一项' });
     }
@@ -236,7 +236,8 @@ router.post('/draft-reply', async (req, res) => {
         console.warn('[emails.draft-reply] tone sample 失败（fallback）:', e.message);
       }
     }
-    const result = await drafter.draftReply({ from, subject, body, toneHints, toneSamples, modelId });
+    // v0.32: 重新生成时把上一版草稿 + 用户修改意见传给 LLM 避免重复
+    const result = await drafter.draftReply({ from, subject, body, toneHints, toneSamples, previousDraft, retryHint, modelId });
     res.json(result);
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });

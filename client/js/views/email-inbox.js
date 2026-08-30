@@ -1070,8 +1070,9 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
   };
 
   // v0.30: AI 草拟回复（借鉴 inbox-zero draft-reply 完整 system prompt）
-  EmailApp.prototype.aiDraftReply = function (uid) {
+  EmailApp.prototype.aiDraftReply = function (uid, options) {
     var self = this;
+    options = options || {};
     uid = parseInt(uid, 10);
     if (!uid) { self.setStatus('草拟失败：无效邮件编号'); return; }
     if (!this.state.detail || this.state.detail.uid !== uid) {
@@ -1083,7 +1084,11 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
       subject: email.subject || '',
       body: (email.text || '').toString().slice(0, 3000),
     };
-    self.setStatus('AI 草拟回复中…', 'loading');
+    // v0.32: 重新生成时把上一版 + retryHint 传给后端，让 LLM 换角度
+    if (options.previousDraft) payload.previousDraft = options.previousDraft;
+    if (options.retryHint) payload.retryHint = options.retryHint;
+    var loadingText = options.previousDraft ? '🔄 AI 重新生成中…' : 'AI 草拟回复中…';
+    self.setStatus(loadingText, 'loading');
     apiFetch('POST', '/api/emails/draft-reply', payload).then(function (data) {
       self.setStatus('');
       self.showDraftReplyModal(uid, data);
@@ -1114,8 +1119,9 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
       draftHtml,
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">',
       '  <span style="font-size:11px;color:var(--text3,#888)">💡 借鉴 inbox-zero draft-reply 完整 prompt（NOASSERTION license · 重写为 JS）</span>',
-      '  <div style="display:flex;gap:8px">',
+ '      <div style="display:flex;gap:8px">',
       '    <button type="button" class="em-btn em-btn-tiny em-draft-close">关闭</button>',
+      result.ok && draft ? '    <button type="button" class="em-btn em-btn-tiny em-btn-primary em-draft-retry" title="重写一版（明显不同角度，但保留语气）">🔄 重写</button>' : '',
       result.ok && draft ? '    <button type="button" class="em-btn em-btn-tiny em-btn-primary em-draft-fill">📋 填入 Composer</button>' : '',
       '  </div>',
       '</div>'
@@ -1143,6 +1149,20 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
         }, 60);
         close();
         self.setStatus('已填入 Composer — 修改后发送');
+      };
+    }
+    // v0.32: 重新生成按钮（借鉴 inbox-zero — 草稿不满意点 🔄 重写）
+    var retryBtn = modal.querySelector('.em-draft-retry');
+    if (retryBtn) {
+      retryBtn.onclick = function () {
+        var sid = self.state.detail && self.state.detail.uid ? self.state.detail.uid : null;
+        if (!sid) { self.setStatus('重新生成失败：邮件详情已变更'); return; }
+        close();
+        // 用 aiDraftReply options 注入（不用临时替换 prototype）
+        self.aiDraftReply(sid, {
+          previousDraft: draft,
+          retryHint: '请重新写一版：与上一版明显不同（不同开场/不同重点/不同结构），但保持语气一致。如果上一版已经够好就微调细节。',
+        });
       };
     }
   };

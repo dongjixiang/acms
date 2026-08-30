@@ -89,7 +89,7 @@ function parseDraftReplyOutput(raw) {
  *   error?: string
  * }>}
  */
-async function draftReply({ from, subject, body, toneHints, toneSamples, modelId } = {}) {
+async function draftReply({ from, subject, body, toneHints, toneSamples, previousDraft, retryHint, modelId } = {}) {
   if (!from && !subject && !body) {
     return { ok: false, draft: '', reason: '缺少邮件内容', source: 'fallback' };
   }
@@ -106,7 +106,13 @@ async function draftReply({ from, subject, body, toneHints, toneSamples, modelId
 """
 ${truncBody}
 """
+${previousDraft ? `
 
+【上一版你生成的草稿（用户不满意的）】
+"""
+${previousDraft}
+"""${retryHint ? '\n\n用户的具体修改意见：' + retryHint : '\n\n请生成一个明显不同、更符合用户期望的版本（不要重复上一版的角度、用词、结构）。'}`
+  : ''}
 ${toneSamples ? toneSamples + '\n' : ''}请按上述设计原则及用户语气样本撰写一封回复。${toneHints ? `\n额外要求：${toneHints}` : ''}
 
 正文：`;
