@@ -233,4 +233,19 @@ router.post('/draft-reply', async (req, res) => {
   }
 });
 
+// v0.30: 批量分析发件人（借鉴 inbox-zero ai-categorize-senders.ts 批量模式）
+// 拉 INBOX 最近 50 封 → 频次聚合 → static 规则 + 1 次 LLM 推断（top 20 sender）
+// body: { mailbox?, maxSenders?, modelId? }
+// 返回：{ ok, analyzed, total_senders, senders: [{from, count, category, rationale, source}] }
+router.post('/analyze-senders', async (req, res) => {
+  try {
+    const { mailbox = 'INBOX', maxSenders = 20, modelId } = req.body || {};
+    const analyzer = require('../services/email-sender-analyzer');
+    const result = await analyzer.analyzeSendersBatch({ mailbox, maxSenders, modelId });
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 module.exports = router;

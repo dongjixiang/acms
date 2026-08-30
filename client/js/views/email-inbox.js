@@ -666,6 +666,8 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
       '      <button type="button" class="em-btn" data-action="refresh" title="刷新">↻</button>',
       // v0.74.1: 写信按钮移到邮件列表栏顶部（紧邻搜索框）— 之前在左侧底部，被邮件列表挡住一半
       '      <button type="button" class="em-btn em-btn-primary em-btn-compose" data-action="compose" title="写新邮件">✉ 写信</button>',
+      // v0.30: AI 批量分析所有发件人（借鉴 inbox-zero ai-categorize-senders.ts 批量模式）
+      '      <button type="button" class="em-btn em-btn-ai" data-action="email-ai-bulk-analyze" title="拉 INBOX 最近 50 封 → 频次聚合 → static 规则 + LLM 批量分析 top 20 sender">🔍 AI 批量分析</button>',
       '    </div>',
       '    <div class="em-list-body" data-role="list"></div>',
       '    <div class="em-list-foot" data-role="pager">',
@@ -723,6 +725,8 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
         if (action === 'email-ai-classify') return self.aiClassifyEmail(target.getAttribute('data-uid'));
         // v0.30: AI 建议回复（借鉴 inbox-zero@main draft-reply）
         if (action === 'email-ai-draft-reply') return self.aiDraftReply(target.getAttribute('data-uid'));
+        // v0.30: AI 批量分析所有发件人
+        if (action === 'email-ai-bulk-analyze') return self.aiBulkAnalyze();
         return;
       }
       var folder = event.target.closest('[data-role="folder"]');
@@ -995,6 +999,74 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
     if (!body) return;
     var hasMore = body.scrollHeight > body.clientHeight + 4;
     list.classList.toggle('has-more', hasMore);
+  };
+
+  // v0.30: AI 草拟回复（借鉴 inbox-zero draft-reply 完整 system prompt）
+  EmailApp.prototype.aiBulkAnalyze = function () {
+    var self = this;
+    self.setStatus('AI 批量分析中（拉 IMAP + 1 次 LLM 推断）…', 'loading');
+    apiFetch('POST', '/api/emails/analyze-senders', {}).then(function (r) { return r.json(); }).then(function (data) {
+      self.setStatus('');
+      self.showBulkAnalyzeModal(data);
+    }).catch(function (err) {
+      self.setStatus('批量分析失败: ' + err.message, 'error');
+      self.showBulkAnalyzeModal({ ok: false, senders: [], error: err.message });
+    });
+  };
+
+  // v0.30: 弹窗显示批量分析结果（每个 sender 1 行 — sender · 频次 · 类目 chip · rationale）
+  EmailApp.prototype.showBulkAnalyzeModal = function (result) {
+    var old = document.querySelector('.em-bulk-modal-backdrop');
+    if (old) old.remove();
+    var backdrop = document.createElement('div');
+    backdrop.className = 'em-bulk-modal-backdrop';
+    var modal = document.createElement('div');
+    modal.className = 'em-bulk-modal';
+    var sendersHtml = '';
+    if (result.senders && result.senders.length > 0) {
+      var rows = result.senders.map(function (s) {
+        var sc = s.source === 'static' ? '#22c55e' : (s.source === 'ai' ? '#0891b2' : '#888');
+        var srcLabel = ({'static':'静态','ai':'AI','fallback':'降级'})[s.source] || '未知';
+        return '<tr style="border-bottom:1px solid var(--border,#e5e7eb)">' +
+          '<td style="padding:8px 6px;font-size:12px;color:var(--text2,#555);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml(s.sender) + '">' + escHtml(s.sender) + '</td>' +
+          '<td style="padding:8px 6px;text-align:center;font-size:12px"><b>' + (s.count || 0) + '</b></td>' +
+          '<td style="padding:8px 6px"><span class="em-classify-chip" style="background:' + sc + ';color:#fff;padding:3px 8px;border-radius:12px;font-size:11px;font-weight:600">' + escHtml(s.category) + '</span><div style="font-size:10px;color:var(--text3,#888);margin-top:2px">' + srcLabel + '</div></td>' +
+          '<td style="padding:8px 6px;font-size:11px;color:var(--text2,#555);max-width:280px;line-height:1.4">' + escHtml(s.rationale || '') + '</td>' +
+          '</tr>';
+      }).join('');
+      sendersHtml = '<div style="max-height:380px;overflow:auto;border:1px solid var(--border,#e5e7eb);border-radius:6px;margin-bottom:12px">' +
+        '<table style="width:100%;border-collapse:collapse">' +
+        '<thead style="position:sticky;top:0;background:var(--bg1,#fff);border-bottom:1px solid var(--border,#e5e7eb)">' +
+        '<tr style="font-size:11px;color:var(--text3,#888);text-align:left">' +
+        '<th style="padding:6px 6px;font-weight:600">发件人</th>' +
+        '<th style="padding:6px 6px;font-weight:600;text-align:center">频次</th>' +
+        '<th style="padding:6px 6px;font-weight:600">类目</th>' +
+        '<th style="padding:6px 6px;font-weight:600">推理依据</th>' +
+        '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+    } else {
+      sendersHtml = '<div style="padding:24px;text-align:center;color:var(--text3,#888)">' +
+        (result.error ? '⚠️ ' + escHtml(result.error) : '暂无 sender 数据') + '</div>';
+    }
+    modal.innerHTML = [
+      '<h3 style="margin:0 0 12px;font-size:16px">🔍 AI 批量分析结果</h3>',
+      '<div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;font-size:12px;color:var(--text3,#888)">' +
+        (result.analyzed ? '<span>分析 <b>' + result.analyzed + '</b> 个 sender（总 <b>' + (result.total_senders || 0) + '</b> 个）</span>' : '') +
+        (result.note ? ' <span style="margin-left:8px">' + escHtml(result.note) + '</span>' : '') +
+      '</div>',
+      sendersHtml,
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">' +
+        '<span style="font-size:11px;color:var(--text3,#888)">💡 借鉴 inbox-zero ai-categorize-senders.ts（1 次 LLM 批量推断 N 个 sender · NOASSERTION license · 重写为 JS）</span>' +
+        '<button type="button" class="em-btn em-btn-tiny em-bulk-close">关闭</button>' +
+      '</div>'
+    ].join('');
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+    var close = function () { backdrop.remove(); };
+    modal.querySelector('.em-bulk-close').onclick = close;
+    backdrop.onclick = function (ev) { if (ev.target === backdrop) close(); };
+    document.addEventListener('keydown', function esc(e) {
+      if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc); }
+    });
   };
 
   // v0.30: AI 草拟回复（借鉴 inbox-zero draft-reply 完整 system prompt）
