@@ -278,6 +278,14 @@ async function loadDelivery() {
           if (el.getAttribute('data-dirpath') === path) el.open = true;
         });
       });
+      // 恢复选中文件状态
+      if (window._deliverySelectedFile) {
+        document.querySelectorAll('.delivery-file-row').forEach(r => {
+          if (r.getAttribute('data-filepath') === window._deliverySelectedFile) {
+            r.classList.add('selected');
+          }
+        });
+      }
     }
     const filesResp = await fetch('/api/workspace/files/' + App.currentProjectId, { headers: { 'X-API-Key': 'dev-key-001' } });
     const filesData = await filesResp.json();
@@ -308,7 +316,7 @@ async function loadDelivery() {
       actionsHtml += '<span style="display:flex;align-items:center;gap:8px">';
       if (htmls.length === 1) {
         // 只有一个 HTML → 直接按钮
-        actionsHtml += '<button class="btn-experience" onclick="openExperienceFile(\'' + escHtml(htmls[0].path).replace(/'/g, "\\'") + '\')">🌐 一键体验</button>';
+        actionsHtml += '<button class="btn-experience" onclick="openExperienceFile(window._deliverySelectedFile || \'' + escHtml(htmls[0].path).replace(/'/g, "\\'") + '\')">🌐 一键体验</button>';
       } else {
         // 多个 HTML → 下拉选择器 + 按钮（风格统一）
         const defaultSel = overview.defaultPreviewFile || htmls[0].path;
@@ -318,7 +326,7 @@ async function loadDelivery() {
           actionsHtml += '<option value="' + escHtml(h.path) + '"' + sel + '>' + escHtml(h.name) + '</option>';
         });
         actionsHtml += '</select>';
-        actionsHtml += '<button class="btn-experience" onclick="openExperienceFile(document.getElementById(\'preview-file-select\').value)">🌐 一键体验</button>';
+        actionsHtml += '<button class="btn-experience" onclick="openExperienceFile(window._deliverySelectedFile || document.getElementById(\'preview-file-select\').value)">🌐 一键体验</button>';
       }
       if (overview.previewEntry) {
         actionsHtml += '<span style="font-size:12px;color:var(--text2);cursor:help" title="项目配置指定入口">⚙️</span>';
@@ -355,6 +363,25 @@ async function loadDelivery() {
 
     // ── 文件列表 ──
     renderDeliveryFiles(files, false);
+    // 恢复选中文件状态
+    if (window._deliverySelectedFile) {
+      setTimeout(() => {
+        document.querySelectorAll('.delivery-file-row').forEach(r => {
+          if (r.getAttribute('data-filepath') === window._deliverySelectedFile) {
+            r.classList.add('selected');
+          }
+        });
+        const sel = document.getElementById('preview-file-select');
+        if (sel && window._deliverySelectedFile) {
+          for (let i = 0; i < sel.options.length; i++) {
+            if (sel.options[i].value === window._deliverySelectedFile) {
+              sel.selectedIndex = i;
+              break;
+            }
+          }
+        }
+      }, 0);
+    }
 
   } catch (e) {
     document.getElementById('delivery-overview').innerHTML = '<div class="stat-card" style="grid-column:1/-1"><div class="stat-num" style="color:var(--accent2)">加载失败</div><div class="stat-label">' + escHtml(e.message) + '</div></div>';
@@ -431,7 +458,8 @@ function _renderTreeNode(node) {
         actions += '<button class="btn-icon" onclick="event.stopPropagation();editFile(\'' + escHtml(child.path).replace(/'/g, "\\'") + '\',\'' + escHtml(child.name).replace(/'/g, "\\'") + '\')" title="编辑">✏️</button>';
       }
       actions += '<button class="btn-icon delete" onclick="event.stopPropagation();deleteFile(\'' + escHtml(child.path).replace(/'/g, "\\'") + '\')" title="删除">🗑</button>';
-      html += '<div class="delivery-file-row" style="padding-left:' + filePad + 'px" data-filepath="' + escHtml(child.path) + '" data-filename="' + escHtml(child.name).toLowerCase() + '">' +
+      const rowClickPath = escHtml(child.path).replace(/'/g, "\\'");
+      html += '<div class="delivery-file-row" style="padding-left:' + filePad + 'px" data-filepath="' + escHtml(child.path) + '" data-filename="' + escHtml(child.name).toLowerCase() + '" onclick="selectDeliveryFile(\'' + rowClickPath + '\')">' +
         '<span class="delivery-file-name">' + icon + ' ' + escHtml(child.name) + '</span>' +
         '<span class="delivery-file-meta">' +
           '<span class="delivery-file-size">' + _fmtSize(child.size) + '</span>' +
@@ -447,6 +475,22 @@ function _renderTreeNode(node) {
 function _dirIcon(name) {
   const map = { code: '💻', src: '📦', public: '🌍', data: '📊', docs: '📝', dist: '🚀', node_modules: '📦' };
   return map[name] || '📁';
+}
+
+function selectDeliveryFile(filePath) {
+  window._deliverySelectedFile = filePath;
+  document.querySelectorAll('.delivery-file-row').forEach(row => {
+    row.classList.toggle('selected', row.getAttribute('data-filepath') === filePath);
+  });
+  const sel = document.getElementById('preview-file-select');
+  if (sel) {
+    for (let i = 0; i < sel.options.length; i++) {
+      if (sel.options[i].value === filePath) {
+        sel.selectedIndex = i;
+        break;
+      }
+    }
+  }
 }
 
 function renderDeliveryFiles(files, showAll) {
@@ -493,8 +537,9 @@ function renderDeliveryFiles(files, showAll) {
     } else {
       // 根目录下的文件
       const icon = _getFileIcon(child.type);
+      const rootRowClickPath = escHtml(child.path).replace(/'/g, "\\'");
       // v0.58.3: 顶层文件 padding-left=24px（depth=1 基准，base 24px）
-      html += '<div class="delivery-file-row" style="padding-left:24px" data-filepath="' + escHtml(child.path) + '" data-filename="' + escHtml(child.name).toLowerCase() + '">' +
+      html += '<div class="delivery-file-row" style="padding-left:24px" data-filepath="' + escHtml(child.path) + '" data-filename="' + escHtml(child.name).toLowerCase() + '" onclick="selectDeliveryFile(\'' + rootRowClickPath + '\')">' +
         '<span class="delivery-file-name">' + icon + ' ' + escHtml(child.name) + '</span>' +
         '<span class="delivery-file-meta">' +
           '<span class="delivery-file-size">' + _fmtSize(child.size) + '</span>' +

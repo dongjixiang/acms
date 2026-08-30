@@ -1016,6 +1016,8 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
   cursor: default;
 }
 .delivery-file-row:hover { background: var(--bg3); }
+.delivery-file-row.selected { background: var(--accent); color: #0f0f1a; }
+.delivery-file-row.selected .delivery-file-meta { color: rgba(255,255,255,0.85); }
 .delivery-file-name {
   flex: 1;
   min-width: 0;
