@@ -215,4 +215,22 @@ router.post('/classify', async (req, res) => {
   }
 });
 
+// v0.30: AI 草拟回复（借鉴 inbox-zero@main draft-reply.ts 完整 system prompt）
+// 设计：用户主动触发 → 输出给弹窗显示 → 用户手动确认填入 composer（绝不自动发）
+// body: { from, subject, body, toneHints?, modelId? }
+// 返回：{ ok, draft, reason, source: 'ai'|'fallback' }
+router.post('/draft-reply', async (req, res) => {
+  try {
+    const { from, subject, body, toneHints, modelId } = req.body || {};
+    if (!from && !subject && !body) {
+      return res.status(400).json({ ok: false, error: 'MISSING_INPUT', message: '请提供 from / subject / body 至少一项' });
+    }
+    const drafter = require('../services/email-drafter');
+    const result = await drafter.draftReply({ from, subject, body, toneHints, modelId });
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 module.exports = router;

@@ -676,3 +676,26 @@
   user-select: none;
   white-space: nowrap;
 }
+
+/* v0.30: AI 草拟回复弹窗（借鉴 inbox-zero draft-reply） */
+.em-draft-modal {
+  background: var(--bg1, #fff);
+  border-radius: 12px;
+  padding: 20px 24px;
+  min-width: 420px;
+  max-width: 640px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.25);
+  font-family: inherit;
+  color: var(--text1, #222);
+  animation: emClassifyIn 0.18s ease-out;
+}
+.em-draft-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 10001;  /* 高于 classify modal */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: emClassifyFade 0.15s ease-out;
+}

@@ -721,6 +721,8 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
         if (action === 'email-toggle-read') return self.toggleRead(target);
         // v0.30: AI 智能分类（借鉴 inbox-zero@main）
         if (action === 'email-ai-classify') return self.aiClassifyEmail(target.getAttribute('data-uid'));
+        // v0.30: AI 建议回复（借鉴 inbox-zero@main draft-reply）
+        if (action === 'email-ai-draft-reply') return self.aiDraftReply(target.getAttribute('data-uid'));
         return;
       }
       var folder = event.target.closest('[data-role="folder"]');
@@ -993,6 +995,84 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
     if (!body) return;
     var hasMore = body.scrollHeight > body.clientHeight + 4;
     list.classList.toggle('has-more', hasMore);
+  };
+
+  // v0.30: AI 草拟回复（借鉴 inbox-zero draft-reply 完整 system prompt）
+  EmailApp.prototype.aiDraftReply = function (uid) {
+    var self = this;
+    uid = parseInt(uid, 10);
+    if (!uid) { self.setStatus('草拟失败：无效邮件编号'); return; }
+    if (!this.state.detail || this.state.detail.uid !== uid) {
+      self.setStatus('请先打开邮件详情'); return;
+    }
+    var email = this.state.detail;
+    var payload = {
+      from: email.from || '',
+      subject: email.subject || '',
+      body: (email.text || '').toString().slice(0, 3000),
+    };
+    self.setStatus('AI 草拟回复中…', 'loading');
+    apiFetch('POST', '/api/emails/draft-reply', payload).then(function (r) { return r.json(); }).then(function (data) {
+      self.setStatus('');
+      self.showDraftReplyModal(uid, data);
+    }).catch(function (err) {
+      self.setStatus('草拟失败: ' + err.message, 'error');
+      self.showDraftReplyModal(uid, { ok: false, draft: '', reason: '', source: 'fallback', error: err.message });
+    });
+  };
+
+  // v0.30: 弹窗显示 AI 草拟回复（含「填入 Composer」按钮 — 绝不自动发）
+  EmailApp.prototype.showDraftReplyModal = function (uid, result) {
+    var old = document.querySelector('.em-draft-modal-backdrop');
+    if (old) old.remove();
+    var backdrop = document.createElement('div');
+    backdrop.className = 'em-draft-modal-backdrop';
+    var modal = document.createElement('div');
+    modal.className = 'em-draft-modal';
+    var draft = (result.draft || '').slice(0, 4000);
+    var draftHtml = draft
+      ? '<pre style="background:var(--bg3,#f5f5f7);border-left:3px solid var(--accent2,#0891b2);padding:12px 14px;border-radius:6px;font-size:13px;line-height:1.6;max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-word;margin:0 0 12px">' + escHtml(draft) + '</pre>'
+      : '';
+    modal.innerHTML = [
+      '<h3 style="margin:0 0 12px;font-size:16px">✍️ AI 建议回复</h3>',
+      result.ok
+        ? '<div style="display:flex;gap:8px;align-items:center;margin-bottom:12px"><span class="em-classify-chip" style="background:var(--accent2,#0891b2);color:#fff;padding:3px 10px;border-radius:14px;font-size:12px">AI 推断</span><span style="font-size:12px;color:var(--text3,#888)">' + escHtml(result.reason || '') + '</span></div>'
+        : '',
+      result.error ? '<div style="color:#a00;font-size:12px;margin-bottom:12px">⚠️ ' + escHtml(result.error) + '（' + escHtml(result.reason || '') + '）</div>' : '',
+      draftHtml,
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">',
+      '  <span style="font-size:11px;color:var(--text3,#888)">💡 借鉴 inbox-zero draft-reply 完整 prompt（NOASSERTION license · 重写为 JS）</span>',
+      '  <div style="display:flex;gap:8px">',
+      '    <button type="button" class="em-btn em-btn-tiny em-draft-close">关闭</button>',
+      result.ok && draft ? '    <button type="button" class="em-btn em-btn-tiny em-btn-primary em-draft-fill">📋 填入 Composer</button>' : '',
+      '  </div>',
+      '</div>'
+    ].join('');
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+    var close = function () { backdrop.remove(); };
+    modal.querySelector('.em-draft-close').onclick = close;
+    backdrop.onclick = function (ev) { if (ev.target === backdrop) close(); };
+    document.addEventListener('keydown', function esc(e) {
+      if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc); }
+    });
+    var fillBtn = modal.querySelector('.em-draft-fill');
+    if (fillBtn) {
+      fillBtn.onclick = function () {
+        // 打开 composer (复用现有 reply 流程），然后直接覆盖 body textarea
+        self.openComposer({ kind: 'reply' });
+        // 等下一帧让 composer 渲染
+        setTimeout(function () {
+          var textarea = self.root.querySelector('[data-role="body"]');
+          if (textarea) {
+            textarea.value = draft;
+            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+        }, 60);
+        close();
+        self.setStatus('已填入 Composer — 修改后发送');
+      };
+    }
   };
 
   // v0.30: AI 智能分类（借鉴 inbox-zero@main ai-categorize-single-sender.ts + 防止 toast 骗人）
@@ -1297,6 +1377,7 @@ EmailApp.prototype.renderDetail = function () {
       '      <button type="button" class="em-btn" data-action="reply-all">↩ 全部回复</button>',
       '      <button type="button" class="em-btn" data-action="forward">↪ 转发</button>',
       '      <button type="button" class="em-btn em-btn-ai" data-action="email-ai-classify" data-uid="' + escAttr(email.uid) + '" title="AI 智能分类（借鉴 inbox-zero）">📂 AI 分类</button>',
+      '      <button type="button" class="em-btn em-btn-ai" data-action="email-ai-draft-reply" data-uid="' + escAttr(email.uid) + '" title="AI 草拟回复（借鉴 inbox-zero draft-reply prompt）">✍️ AI 建议回复</button>',
       '    </div>',
       '  </div>',
       '  <table class="em-meta">',
