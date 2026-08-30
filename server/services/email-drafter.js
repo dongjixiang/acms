@@ -37,7 +37,10 @@ const SYSTEM_PROMPT = `你是一名专业的邮件回复撰写助理。
 - 不要使用 em dashes（— 字符），除非用户写作风格明确要求
 - 长度规则：默认简洁、直接、友好、口语化。回复长度跟对方邮件成比例（对方 2 句话 → 你也 2 句话；对方 5 段 → 你可以 1-2 段）。不要堆砌废话或主动加"如有问题随时联系"
 
-语气：商务邮件，默认简明扼要。不要口语化过度。`;
+语气：商务邮件，默认简明扼要。不要口语化过度。
+
+【用户语气模仿】
+如果用户提供了历史回复样本（<user_tone_samples>...</user_tone_samples>），必须严格按照样本的语气、长度、打招呼方式、标点风格、用词偏好来撰写回复。样本的优先级最高 — 用户的真实风格胜过上面的默认规则。`;
 
 const LENGTH_DISCIPLINE = `Don't pad with filler or restate the incoming message. Match the reply length to what was actually asked.`;
 
@@ -86,7 +89,7 @@ function parseDraftReplyOutput(raw) {
  *   error?: string
  * }>}
  */
-async function draftReply({ from, subject, body, toneHints, modelId } = {}) {
+async function draftReply({ from, subject, body, toneHints, toneSamples, modelId } = {}) {
   if (!from && !subject && !body) {
     return { ok: false, draft: '', reason: '缺少邮件内容', source: 'fallback' };
   }
@@ -104,7 +107,7 @@ async function draftReply({ from, subject, body, toneHints, modelId } = {}) {
 ${truncBody}
 """
 
-请按上述设计原则撰写一封回复。${toneHints ? `\n额外要求：${toneHints}` : ''}
+${toneSamples ? toneSamples + '\n' : ''}请按上述设计原则及用户语气样本撰写一封回复。${toneHints ? `\n额外要求：${toneHints}` : ''}
 
 正文：`;
 
