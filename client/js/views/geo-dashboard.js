@@ -2613,6 +2613,7 @@
     }
   }
 
+  // v0.29: PDF 报告生成 — 触发浏览器原生下载（修多多「PDF 找不到」toast 骗人 bug）
   async function generateReportPdf(type) {
     if (!requireBrand()) return;
     setStatus(`生成${type} PDF...`, 'loading');
@@ -2621,8 +2622,13 @@
     else if (type === 'monthly') r = await api('POST', '/api/geo/report/pdf/monthly', { brand_id: currentBrandId });
     else if (type === 'monthly_persist') r = await api('POST', '/api/geo/report/monthly', { brand_id: currentBrandId, persist: true });
     if (r.data?.ok) {
-      setStatus(`PDF 已生成: ${r.data.file || r.data.path || 'ok'}`, 'success');
-      notify(`📊 ${type === 'weekly' ? '周报' : '月报'} PDF 已生成`, 'success');
+      // v0.29: 触发浏览器原生下载（之前只 toast 路径，多多「PDF 找不到」根因）
+      const filename = r.data.saved_path ? String(r.data.saved_path).split(/[\\/]/).pop() : null;
+      if (filename) {
+        window.open(`/api/geo/reports/download/${encodeURIComponent(filename)}`, '_blank');
+      }
+      setStatus(`📥 已开始下载: ${filename || (type === 'weekly' ? '周报' : '月报')} PDF`, 'success');
+      notify(`📥 ${type === 'weekly' ? '周报' : '月报'} PDF 下载已开始`, 'success');
     } else {
       setStatus(`生成失败: ${r.data?.error || r.data?.message || r.status}`, 'error');
     }
@@ -2647,8 +2653,13 @@
     setStatus('生成对比 PDF...', 'loading');
     const r = await api('POST', '/api/geo/report/pdf/comparison', { brand_ids: list.map(b => b.id) });
     if (r.data?.ok) {
-      setStatus(`对比 PDF 已生成: ${r.data.file || r.data.path || 'ok'}`, 'success');
-      notify(`📊 对比 PDF 已生成（${list.length} 品牌）`, 'success');
+      // v0.29: 同样触发浏览器下载（之前同样漏掉 — 同 bug）
+      const filename = r.data.saved_path ? String(r.data.saved_path).split(/[\\/]/).pop() : null;
+      if (filename) {
+        window.open(`/api/geo/reports/download/${encodeURIComponent(filename)}`, '_blank');
+      }
+      setStatus(`📥 对比 PDF 已开始下载: ${filename || 'ok'}`, 'success');
+      notify(`📥 对比 PDF 下载已开始（${list.length} 品牌）`, 'success');
     } else {
       setStatus(`生成失败: ${r.data?.error || r.data?.message || r.status}`, 'error');
     }

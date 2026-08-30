@@ -8,11 +8,14 @@
 
 const express = require('express');
 const router = express.Router();
+const path = require('path');
+const fs = require('fs');
 const store = require('../services/geo-store');
 const llmsGen = require('../services/geo-llms-txt-generator');
 const geoConfig = require('../services/geo-config');
 const geoEngines = require('../services/geo-engines');
 const eventBus = require('../services/event-bus');
+const pdfReport = require('../services/geo-pdf-report'); // v0.29: PDF 报告下载用 (OUTPUT_DIR)
 
 // v0.3 (Phase 4): 报告生成完成 → 前端通知（链路见 P177）
 async function notifyReportDone(title, desc, type) {
@@ -1041,6 +1044,31 @@ router.post('/report/pdf/monthly', async (req, res) => {
     res.json(result);
   } catch (e) {
     await notifyReportDone(`📊 GEO 月报 PDF 生成失败`, e.message, 'error');
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// === v0.29: PDF 报告下载（前端从 POST /report/pdf/* 拿到 saved_path 后触发） ===
+// 多多报「导出 PDF 不知道在哪里」根因：之前 PDF 写盘后只 res.json(saved_path)，前端没下载动作。
+// 修法：前端拿到 saved_path → 提取 basename → window.open 这个 URL，浏览器原生下载。
+// 防 path traversal：path.basename + startsWith(OUTPUT_DIR + sep)
+router.get('/reports/download/:filename', (req, res) => {
+  try {
+    const filename = path.basename(req.params.filename); // 防 ../ 注入
+    const fullPath = path.join(pdfReport.OUTPUT_DIR, filename);
+    const expected = pdfReport.OUTPUT_DIR.endsWith(path.sep)
+      ? pdfReport.OUTPUT_DIR
+      : pdfReport.OUTPUT_DIR + path.sep;
+    if (!fullPath.startsWith(expected)) {
+      return res.status(400).json({ ok: false, error: 'INVALID_PATH' });
+    }
+    if (!fs.existsSync(fullPath)) {
+      return res.status(404).json({ ok: false, error: 'FILE_NOT_FOUND', message: fullPath });
+    }
+    res.download(fullPath, filename, (err) => {
+      if (err) console.error('[geo-pdf-download] error:', err);
+    });
+  } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
