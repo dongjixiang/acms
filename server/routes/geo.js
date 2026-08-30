@@ -144,13 +144,13 @@ router.get('/queries', (req, res) => {
   }
 });
 
-// v0.26 C2a: LLM 自动生成 prompts（借鉴 elmo onboarding analyze）
+// v0.26 C2a: LLM 自动生成 prompts（借鉴 elmo onboarding analyze）— v0.29 增 replace 选项
 router.post('/queries/ai-generate', async (req, res) => {
   try {
-    const { brand_id, engine_targets } = req.body || {};
+    const { brand_id, engine_targets, replace = false } = req.body || {};
     if (!brand_id) return res.status(400).json({ ok: false, error: 'BRAND_ID_REQUIRED' });
     const promptLLM = require('../services/geo-prompt-llm');
-    const result = await promptLLM.generateAndPersistPrompts(brand_id, { engine_targets });
+    const result = await promptLLM.generateAndPersistPrompts(brand_id, { engine_targets, replace });
     res.json(result);
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });

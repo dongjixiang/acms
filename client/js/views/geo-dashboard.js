@@ -1779,26 +1779,41 @@
     }
   }
 
-  // v0.26 C2a: LLM 自动生成 prompts
+  // v0.29: LLM 自动生成 prompts（升级 — 加 replace 开关 + 新句式说明）
   async function generateQueriesAI() {
     if (!currentBrandId) {
       await showModal({ title: '提示', message: '请先选择品牌' });
       return;
     }
-    const confirm = await showModal({
-      title: '🧠 AI 生成提问模板',
-      message: `将调用 LLM 为当前品牌生成 8-12 个真实搜索片段（短查询 + 品牌定制标签）。\n\n会新增到模板库（不覆盖已有模板）。继续？`,
+    const result = await showModal({
+      title: '🧠 AI 生成提问模板（v0.29 结构化句式版）',
+      message: `LLM 会按 elmo/Profound 最佳实践生成 12-16 个真实搜索片段：
+• 70% unbranded（best X / X for [persona] / alternatives / where to find X 等结构化句式）
+• 30% branded（X 怎么样 / X alternatives / X vs 竞品 / is X worth it）`,
+      fields: [
+        {
+          name: 'replace',
+          label: '清空旧模板后再生成（避免累积膨胀）',
+          type: 'checkbox',
+          placeholder: '勾选后先删除现有 ai_generated/template/onboarding 来源模板再生成新批',
+          checked: true,
+        },
+      ],
       actions: [
         { label: '取消', value: null },
         { label: '生成', value: 'GO', className: 'acms-modal-btn acms-modal-btn-primary' },
       ],
     });
-    if (confirm !== 'GO') return;
-    setStatus('LLM 生成中（10-30 秒）...', 'loading');
+    if (result !== 'GO' && result?.action !== 'GO') return;
+    const replace = !!(result && typeof result === 'object' ? result.replace : true);
+    // 兼容旧版 modal（resolve 'GO' 字符串）— 也走 replace，因为多多的根因就是累积
+    const shouldReplace = (result && typeof result === 'object') ? replace : true;
+    setStatus(`LLM 生成中（10-30 秒）${shouldReplace ? '，将先清空旧模板' : ''}...`, 'loading');
     try {
-      const r = await api('POST', '/api/geo/queries/ai-generate', { brand_id: currentBrandId });
+      const r = await api('POST', '/api/geo/queries/ai-generate', { brand_id: currentBrandId, replace: shouldReplace });
       if (r.data?.ok) {
-        setStatus(`✅ AI 生成 ${r.data.count} 个模板`, 'success');
+        const replaceNote = shouldReplace && r.data.replaced ? `（先清空了 ${r.data.replaced} 条旧模板）` : '';
+        setStatus(`✅ AI 生成 ${r.data.count} 个模板${replaceNote}`, 'success');
         loadQueries();
       } else {
         setStatus('AI 生成失败: ' + (r.data?.message || r.data?.error || ''), 'error');
