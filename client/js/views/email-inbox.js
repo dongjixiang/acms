@@ -138,7 +138,7 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
   }
 
   // 方案 B：iframe 渲染专用 sanitize —— 保留 <style>/<link>/内联 style/class，只清理脚本/危险属性
-  function sanitizeEmailHtmlForIframe(html) {
+  function sanitizeEmailHtmlForIframe(html, attachments, uid, mailbox) {
     if (!html) return '';
     var doc;
     try {
@@ -1249,7 +1249,7 @@ EmailApp.prototype.renderDetail = function () {
 
     // DOM 就绪后，初始化 iframe 内容（innerHTML 里的 script 不会执行，必须单独跑）
     if (decodedHtml) {
-      var sanitizedHtml = sanitizeEmailHtmlForIframe(decodedHtml);
+      var sanitizedHtml = sanitizeEmailHtmlForIframe(decodedHtml, email.attachments || [], email.uid, mailbox);
       var iframe = document.getElementById(iframeId);
       if (iframe) {
         initEmailIframe(iframe, sanitizedHtml);
@@ -1259,7 +1259,7 @@ EmailApp.prototype.renderDetail = function () {
     this.renderRemoteImagePrompt();
   };
 
-  // 单独函数：初始化邮件 iframe 内容 + 自动高度
+  // 单独函数：初始化邮件 iframe 内容 + 自动高度（多重兜底：立即 + 延迟 + 事件 + MutationObserver + 最小高度）
   function initEmailIframe(iframe, html) {
     var doc = iframe.contentDocument || iframe.contentWindow.document;
     doc.open();
@@ -1267,12 +1267,30 @@ EmailApp.prototype.renderDetail = function () {
     doc.close();
 
     function resizeIframe() {
-      try { iframe.style.height = (iframe.contentWindow.document.body.scrollHeight + 20) + 'px'; } catch (e) {}
+      try {
+        var body = iframe.contentWindow.document.body;
+        var htmlEl = iframe.contentWindow.document.documentElement;
+        var h = Math.max(body ? body.scrollHeight : 0, htmlEl ? htmlEl.scrollHeight : 0, 300);
+        iframe.style.height = h + 'px';
+      } catch (e) {}
     }
+    // 立即尝试（内容刚写入）
+    resizeIframe();
+    // 延迟多次重算（内容渐进渲染、字体加载、图片加载）
+    setTimeout(resizeIframe, 50);
+    setTimeout(resizeIframe, 300);
+    setTimeout(resizeIframe, 800);
+    setTimeout(resizeIframe, 1500);
     iframe.onload = resizeIframe;
     doc.addEventListener('DOMContentLoaded', resizeIframe);
+    // 图片加载触发
     var imgs = doc.querySelectorAll('img');
-    for (var i = 0; i < imgs.length; i++) { imgs[i].addEventListener('load', resizeIframe); }
+    for (var i = 0; i < imgs.length; i++) { imgs[i].addEventListener('load', resizeIframe); imgs[i].addEventListener('error', resizeIframe); }
+    // 内容变化（动态插入内容、样式计算变化）触发重算
+    try {
+      var observer = new MutationObserver(function () { resizeIframe(); });
+      observer.observe(doc.body || doc, { childList: true, subtree: true, attributes: true });
+    } catch (e) {}
   }
 
   EmailApp.prototype.closeDetail = function () {

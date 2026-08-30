@@ -197,4 +197,22 @@ router.post('/:uid/read', async (req, res) => {
   }
 });
 
+// v0.30: AI 智能分类（借鉴 elie222/inbox-zero@main ai-categorize-single-sender.ts）
+// 设计：static rules first → AI fallback → 防类目扩散 → 全程显式 confidence + source
+// body: { from, subject, snippet, categories?, modelId? }
+// 返回：{ ok, category, rationale, confidence, source: 'static'|'ai'|'fallback' }
+router.post('/classify', async (req, res) => {
+  try {
+    const { from, subject, snippet, categories, modelId } = req.body || {};
+    if (!from && !subject) {
+      return res.status(400).json({ ok: false, error: 'MISSING_INPUT', message: 'from 与 subject 不能都为空' });
+    }
+    const classifier = require('../services/email-classifier');
+    const result = await classifier.classifyEmail({ from, subject, snippet, categories, modelId });
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 module.exports = router;
