@@ -15,7 +15,8 @@
 //   2. 取 top 20 sender → 1 次 LLM 调用（省钱 + 类目一致）
 //   3. 防 LLM hallucination：返回结果必须匹配原始输入 sender（normalize 后）
 //   4. 防类目扩散：LLM 返回的 category 必须 ∈ 用户类目，否则降级 "其他"
-//   5. token 过长 fallback：返回降级结果（对每 sender 跑 static rules + 简单 score）
+//   5. imap-service.listEmails 内部自动 openBox（imap-service.js line 206）
+//      —— 不能再额外调不存在的 imap.openBox
 //
 // 调用方：routes/emails.js POST /analyze-senders
 //   入参：{ mailbox?, maxSenders?, modelId? }
@@ -139,8 +140,9 @@ function parseAiOutput(raw) {
 
 // === 主入口 ===
 async function analyzeSendersBatch({ mailbox = 'INBOX', maxSenders = 20, modelId } = {}) {
-  // 1. 拉 IMAP 当前可见邮件
+  // 1. 拉 IMAP 当前可见邮件（listEmails 内部已自动 openBox — 见 imap-service.js line 206）
   let imap;
+  let emails;
   try {
     const smtpCfg = config.smtp || {};
     imap = createImapService({
@@ -151,19 +153,6 @@ async function analyzeSendersBatch({ mailbox = 'INBOX', maxSenders = 20, modelId
       tls: config.imapTls !== false,
     });
     await imap.connect();
-    await imap.openBox(mailbox);
-  } catch (e) {
-    return {
-      ok: false,
-      senders: [],
-      analyzed: 0,
-      error: 'IMAP 连接失败: ' + e.message,
-      reason: 'IMAP_UNREACHABLE',
-    };
-  }
-
-  let emails;
-  try {
     const list = await imap.listEmails({ mailbox, limit: 50, offset: 0 });
     emails = list.emails || [];
   } catch (e) {
@@ -171,7 +160,8 @@ async function analyzeSendersBatch({ mailbox = 'INBOX', maxSenders = 20, modelId
       ok: false,
       senders: [],
       analyzed: 0,
-      error: 'IMAP listEmails 失败: ' + e.message,
+      error: 'IMAP 连接或拉取失败: ' + e.message,
+      reason: 'IMAP_UNREACHABLE',
     };
   }
 
@@ -190,7 +180,6 @@ async function analyzeSendersBatch({ mailbox = 'INBOX', maxSenders = 20, modelId
   const results = [];
   const needAi = [];
   for (const s of topSenders) {
-    // 静态规则需要 subject — 用最近一封 subject
     const subject = s.recent[0]?.subject || '';
     const staticCat = matchStaticRule(s.sender, subject);
     if (staticCat) {
@@ -206,7 +195,7 @@ async function analyzeSendersBatch({ mailbox = 'INBOX', maxSenders = 20, modelId
     }
   }
 
-  // 4. 剩余的批量送 LLM（1 次调用，多 sender）
+  // 4. 剩余的批量送 LLM（1 次调用 N 个 sender）
   if (needAi.length > 0) {
     try {
       const result = await runtime.execute({

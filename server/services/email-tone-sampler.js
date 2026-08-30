@@ -77,7 +77,8 @@ async function sampleUserToneViaImap(opts = {}) {
     const candidates = opts.mailbox ? [opts.mailbox] : SENT_MAILBOX_CANDIDATES;
     for (const mb of candidates) {
       try {
-        await imap.openBox(mb);
+        // imap-service.listEmails 内部已经 openBox（imap-service.js line 206）
+        // 直接传 mailbox 参数，不要调不存在的 imap.openBox()
         const list = await imap.listEmails({ mailbox: mb, limit, offset: 0 });
         emails = list.emails || [];
         if (emails.length > 0) break;
