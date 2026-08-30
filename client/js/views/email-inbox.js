@@ -880,6 +880,8 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
         // v0.74.1: client-side RFC 2047 decode（兜底 server 端可能没解码）
         self.state.emails.forEach(function (em) { em.subject = decodeEmailHeader(em.subject); em.from = decodeEmailHeader(em.from); });
         self.renderList();
+        // v0.33: 加载邮件后拉一次已持久化的 sender categories（chip 渲染用）
+        self.refreshSenderCategories();
         self.setStatus(self.state.total + ' 封邮件，显示 ' + self.state.emails.length + ' 封');
       })
       .catch(function (err) {
@@ -902,6 +904,8 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
         // v0.74.1: client-side RFC 2047 decode（兜底 server 端可能没解码）
         self.state.emails.forEach(function (em) { em.subject = decodeEmailHeader(em.subject); em.from = decodeEmailHeader(em.from); });
         self.renderList();
+        // v0.33: 搜索结果也要拉 categories
+        self.refreshSenderCategories();
       })
       .catch(function (err) {
         self.setStatus('搜索失败: ' + err.message, 'error');
@@ -941,6 +945,7 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
   };
 
   EmailApp.prototype.renderListItem = function (email) {
+    var self = this; // v0.33: chip 渲染用到
     var initial = avatarLetter(email.from);
     var subject = email.subject || '(无主题)';
     var fromName = extractName(email.from) || formatAddress(email.from) || '(未知发件人)';
@@ -959,7 +964,14 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
       '  <div class="em-item-body">',
       '    <div class="em-item-row"><b class="em-from">' + escHtml(fromName) + '</b>',
       '      <span class="em-time">' + escHtml(dateStr) + '</span></div>',
-      '    <div class="em-subject">' + escHtml(subject) + '</div>',
+      '    <div class="em-subject">' +
+            (() => {
+              // v0.33: 在主题前缀显示已持久化 chip（按 sender 查 store）
+              var cat = self.senderCategoryForEmail(email.from);
+              return (cat ? '<span class="em-classify-chip em-sender-chip" style="background:var(--accent,#0ea89d);color:#fff;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;margin-right:6px" title="' + escHtml(cat.category) + ' · ' + (cat.count || 1) + ' 次确认">' + escHtml(cat.category) + '</span>' : '') +
+                     escHtml(subject);
+            })() +
+            '</div>',
       '  </div>',
       email.hasAttachments ? '  <span class="em-att-mark" title="含附件">📎</span>' : '',
       '  <div class="em-item-actions" data-role="item-actions">',
@@ -1168,11 +1180,35 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
   };
 
   // v0.30: AI 智能分类（借鉴 inbox-zero@main ai-categorize-single-sender.ts + 防止 toast 骗人）
+  // v0.33: AI 智能分类（按 inbox-zero 完整 system prompt + 持久化到 store）
+  EmailApp.prototype.senderCategoryForEmail = function (from) {
+    if (!from || !this.state || !this.state.senderCategories) return null;
+    var key = String(from).toLowerCase().trim();
+    return this.state.senderCategories[key] || null;
+  };
+  EmailApp.prototype.refreshSenderCategories = function () {
+    var self = this;
+    var mailbox = self.state && self.state.mailbox ? self.state.mailbox : 'INBOX';
+    apiFetch('GET', '/api/emails/sender-categories?mailbox=' + encodeURIComponent(mailbox), null)
+      .then(function (data) {
+        if (data && data.categories) {
+          // apiFetch 已 await response.json() — data 是解析后的对象
+          self.state.senderCategories = data.categories || {};
+          // 重渲染列表让 chip 出现
+          if (self.state.emails && self.state.emails.length > 0) {
+            var body = self.root.querySelector('[data-role="list"]');
+            if (body && body.innerHTML.indexOf('em-sender-chip') < 0) {
+              self.renderList();
+            }
+          }
+        }
+      })
+      .catch(function (err) { console.warn('[email] refreshSenderCategories:', err.message); });
+  };
   EmailApp.prototype.aiClassifyEmail = function (uid) {
     var self = this;
     uid = parseInt(uid, 10);
     if (!uid) { self.setStatus('分类失败：无效邮件编号'); return; }
-    // 从列表状态找邮件元数据（避免额外 fetch /api/emails/:uid — 列表已含 from + subject + snippet）
     var email = (this.state.emails || []).find(function (e) { return e.uid === uid; });
     if (!email && this.state.detail && this.state.detail.uid === uid) email = this.state.detail;
     if (!email) { self.setStatus('分类失败：找不到邮件数据，请先点开邮件'); return; }
@@ -1180,11 +1216,16 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
       from: email.from || '',
       subject: email.subject || '',
       snippet: (email.snippet || email.text || '').toString().slice(0, 500),
+      mailbox: self.state.mailbox || 'INBOX', // v0.33: 传 mailbox 让后端持久化
     };
     self.setStatus('AI 分类中…', 'loading');
     apiFetch('POST', '/api/emails/classify', payload).then(function (data) {
       self.setStatus('');
       self.showClassifyResult(uid, data);
+      // v0.33: 分类成功后立刻刷新 sender categories 缓存 + 主动写入（即使后端失败也前端能存）
+      if (data && data.ok && data.source !== 'fallback' && payload.from) {
+        self.refreshSenderCategories(); // 重新拉 hashmap 让该 email 行 chip 立刻出现
+      }
     }).catch(function (err) {
       self.setStatus('分类失败: ' + err.message, 'error');
       self.showClassifyResult(uid, { ok: false, category: '其他', rationale: '', confidence: 'low', source: 'fallback', error: err.message });
