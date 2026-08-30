@@ -139,6 +139,24 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     check('D1 探测期间恢复 → 不杀', !killed && !stallResult, `killed=${killed} stall=${JSON.stringify(stallResult)}`);
   }
 
+  // ---------- 场景 E：ask 总超时 → 自动清理 CLI 进程树（v0.118.7） ----------
+  console.log('\n[场景 E] ask 超时 → SIGKILL 清理 CLI（防僵尸泄漏）');
+  {
+    const s = makeSession();
+    let killed = false;
+    s.ready = true;
+    s.child = {
+      pid: 5,
+      exitCode: null,
+      stdin: { write: () => {}, destroyed: false },
+      kill: () => { killed = true; },
+    };
+    const result = await s._doAsk('hi', { timeoutMs: 150 });
+    check('E1 超时 resolve subtype=timeout', result && result.subtype === 'timeout', JSON.stringify(result));
+    check('E2 CLI 进程树被 SIGKILL（防 17 分钟僵尸）', killed);
+    check('E3 _pendingResolve 已清空', s._pendingResolve === null);
+  }
+
   console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
   process.exit(failed === 0 ? 0 : 1);
 })().catch((e) => {

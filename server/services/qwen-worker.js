@@ -354,6 +354,13 @@ return this._doAsk(prompt, opts);
       if (this._pendingResolve) {
         const r = this._pendingResolve;
         this._pendingResolve = null;
+        // 🆕 v0.118.7 (2026-08-30): 超时后清理 CLI 进程树 —— 防僵尸泄漏
+        //   多多实测：agnès API 断连后 worker 半死（进程活、CPU 0、无连接、无输出），
+        //   ask 600s 超时旧逻辑只 resolve 不杀进程 → CLI 白挂 17 分钟占 ~180MB。
+        //   超时 = 前端已拿到失败，无消费者 → SIGKILL 进程树（exit 事件会清 session
+        //   + flushQueue reject 排队 ask；manager getSession 下次自动重建）。
+        log(`会话 ${this.sessionId.slice(0, 8)} ask 超时 (${timeoutMs / 1000}s)，清理 CLI 进程树`);
+        try { if (this.child && this.child.exitCode === null) this.child.kill('SIGKILL'); } catch (e) { /* ignore */ }
         r({ type: 'result', subtype: 'timeout', is_error: true, error: { message: `ask 超时 (${timeoutMs / 1000}s)` } });
       }
     }, timeoutMs);
