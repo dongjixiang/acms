@@ -254,6 +254,8 @@ app.use('/api/files', require('./routes/files'));
 app.use('/api/desktop-config', require('./routes/desktop-config'));  // v0.75: 桌面配置服务端同步（壁纸+图标位置等）
 // v0.X: GEO 应用 REST API（Phase 0 D5）
 app.use('/api/geo', require('./routes/geo'));
+// v0.1: 跨应用浏览器自动化 REST API（browser-agent）
+app.use('/api/browser-agent', require('./routes/browser-agent'));
 
 // Webhook 服务初始化
 const eventBus = require('./services/event-bus');
@@ -285,6 +287,8 @@ app.use('/api/email-categories', require('./routes/email-categories'));
 app.use('/api/email-rules', require('./routes/email-rules'));
 // v0.99: 自动回复模板管理 API
 app.use('/api/email-templates', require('./routes/email-templates'));
+// v1.02: 通用应用偏好（按 app_id + key 隔离）— 邮箱 AI 模型选择 / 分类敏感度 / 主题 等
+app.use('/api/app-settings', require('./routes/app-settings'));
 // v0.61 辅助工具自由对话接口（轻量版 chat-intent，无 requirement 依赖）
 app.use('/api/assist-free', require('./routes/assist-free'));
 // v0.59 appRuntime — 把外部网页装进「本地应用壳」（chrome CDP screencast 流推送 + input 桥接）

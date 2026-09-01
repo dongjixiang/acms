@@ -213,6 +213,19 @@ if (typeof window.createNewChatWindow === 'function') {
             ],
           },
           {
+            id: 'app-browser-console',
+            label: 'Web机器人',
+            icon: '🦾',
+            action: function() {
+              if (typeof window.openBrowserConsole === 'function') {
+                window.openBrowserConsole();
+              } else if (window.ACMSWin) {
+                if (!ACMSWin.isActive()) ACMSWin.enable();
+                ACMSWin.open('browser-console', { w: 1000, h: 700, title: 'Web机器人' });
+              }
+            },
+          },
+          {
             id: 'app-geo-dashboard',
             label: 'GEO 应用',
             icon: '🌐',

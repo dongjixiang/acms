@@ -24,6 +24,10 @@ const PROVIDER_MODEL_MAP = {
   grok: 'openai',         // 协议同 OpenAI（baseUrl 不同）
   minimax: 'minimax',     // v0.27: MiniMax 独立 provider（OpenAI 兼容协议，但独立 provider 名避免与 openai/copilot/grok 抢第一个模型）
   google_ai_mode: 'google', // 协议同 Google
+  // v0.1: DeepSeek 网页版引擎（browser-agent 自动化）。
+  //   不走 modelStore API key —— 凭据是 agent-browser auth save（chat.deepseek.com 账号密码）。
+  //   getModelInfo('deepseek-web') 会返回 null（无 modelStore 记录），由 getProviderStatus 特殊分支处理。
+  'deepseek-web': 'deepseek-web',
 };
 
 function listProviders() {
@@ -93,12 +97,15 @@ function setSettings(updates) {
 }
 
 // 实际跟踪用引擎列表（白名单优先，空则全部）
+// v0.1: 默认排除 slow 的网页版引擎（deepseek-web 30-60s/轮），
+//       用户在白名单显式勾选后才参与追踪
+const WEB_ONLY_ENGINES = ['deepseek-web'];
 function getTrackEngines() {
   const settings = getSettings();
   if (settings.engine_whitelist && settings.engine_whitelist.length > 0) {
     return settings.engine_whitelist;
   }
-  return Object.keys(PROVIDER_MODEL_MAP);
+  return Object.keys(PROVIDER_MODEL_MAP).filter(e => !WEB_ONLY_ENGINES.includes(e));
 }
 
 // 找到某 provider 在 modelStore 里的 active model id
@@ -165,6 +172,17 @@ function setApiKey(provider, apiKey) {
 function getProviderStatus() {
   const result = {};
   for (const name of Object.keys(PROVIDER_MODEL_MAP)) {
+    // v0.1: 网页版引擎特殊分支 —— 不走 modelStore，凭据是 agent-browser auth save
+    if (name === 'deepseek-web') {
+      result[name] = {
+        configured: true,
+        web: true,
+        model_name: 'chat.deepseek.com（网页版 + 智能搜索）',
+        base_url: 'https://chat.deepseek.com/',
+        note: '凭据走 agent-browser auth save（DeepSeek 账号密码，2026-08-31 已配置）。每轮 30-60s，适合抽样追踪。',
+      };
+      continue;
+    }
     const info = getModelInfo(name);
     if (info) {
       const key = info.apiKey;

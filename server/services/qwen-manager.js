@@ -28,6 +28,11 @@ const DEFAULT_PERSONA = `你是「小吉」，ACMS（智能体协同管理系统
 - 视觉理解：
   - 消息中含本地图片路径（.png / .jpg / .jpeg / .gif / .webp）且用户表达"看图 / 里面有什么 / 讲一下"等意图时，调 acms_describe_image 工具读取视觉描述。仅"提及"图片（如"我昨天画了张图"）不调，避免浪费 token。
   - 用户要"找 / 搜 / 推荐 / 看看"网络图片（关键词含图片 / 照片 / 壁纸 / 头像 / 海报 / 素材 / 截图等）时，调 acms_search_images 工具，自动下载并返回每张图的视觉描述——这就是"把搜到的图带到对话里"的入口。describe 默认 true（用户主诉就是要看到图），只有明确"只列 URL"才传 false。
+- 浏览器自动化（真实浏览器操作，web_* 工具）：
+  - 用户明确要求"通过 DeepSeek 查 / 用 DeepSeek（网页版）搜 / 去某网站查或操作 / 网页版 AI 提问"时，先调 _expand_tools({category:'web'}) 加载 web_* 工具，再执行：
+    · "用 DeepSeek 联网搜索 X" → web_ai_search({site:'deepseek', prompt:'X', webSearch:true})（DeepSeek 网页版原生问答，含智能搜索，比 web_search 引擎搜索更符合"通过 DeepSeek 查"的意图；返回完整回答，约 30-60s）
+    · 操作任意网页（打开/点击/输入/读内容）→ web_open + web_snapshot 看结构 + web_click/web_type 操作 + web_read 读正文 + web_screenshot 截图
+  - 网页内容抓取优先用 web_search / fetch_url（快）；只有需要登录态、操作表单、或明确要走 AI 网页版时才用 web_* 浏览器自动化。
 
 风格：
 - 用中文回复，简洁清晰，不啰嗦。
@@ -251,7 +256,7 @@ async function chat(userId, prompt, opts = {}) {
 //     - `computer_use__*` 全放行：Qwen CLI 自带权限查询工具（get_cursor_position /
 //       check_permissions / get_accessibility_tree 等），无副作用只是 Qwen 内部机制，
 //       之前每次都弹审批（实测一次对话 11 次噪音审批）→ 全部自动 allow
-const isReadOnly = /^(web_search|web_fetch|fetch_url|get_current_time|get_available_models|read|list|search|grep|glob|ls|cat|head|tail|todo_read|agent_read|agent_list|agent_search|agent_git_status|agent_git_log|agent_git_diff|agent_db_query|computer_use__|acms_.*(list|get|read|search|query|status|describe)|mcp__acms__acms_.*(list|get|read|search|query|status|describe))/i.test(tname)
+const isReadOnly = /^(web_search|web_fetch|fetch_url|get_current_time|get_available_models|read|list|search|grep|glob|ls|cat|head|tail|todo_read|agent_read|agent_list|agent_search|agent_git_status|agent_git_log|agent_git_diff|agent_db_query|computer_use__|acms_.*(list|get|read|search|query|status|describe)|mcp__acms__acms_.*(list|get|read|search|query|status|describe)|web_(open|snapshot|click|type|press|read|eval|find|screenshot|ai_search))/i.test(tname)
         || (toolCall && Array.isArray(toolCall.permission_suggestions) && toolCall.permission_suggestions.length === 0 && /query|search|read|list|get|status|fetch|check/i.test(tname));
       if (isReadOnly) {
         console.log(`[qwen] [审批] ${tname} → 只读安全工具自动 allow`);

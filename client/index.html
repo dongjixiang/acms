@@ -628,6 +628,8 @@ document.addEventListener('DOMContentLoaded', () => {
       <div class="launcher-item" onclick="launchView('web-browser')"><span class="li-icon">🌐</span><span class="li-label">浏览器</span></div>
       <div class="launcher-item" onclick="launchWeChat()" title="打开微信网页版"><span class="li-icon">💚</span><span class="li-label">微信</span></div>
       <div class="launcher-item" onclick="openTerminal()"><span class="li-icon">⌨️</span><span class="li-label">终端</span></div>
+      <!-- v0.97.1：Web 机器人（浏览器智能体，原"浏览器控制台"改名为 Web机器人） -->
+      <div class="launcher-item" onclick="launchView('browser-console')" title="浏览器智能体 —— 给目标它自动达成（CDP 精准控制 + AI 决策 + 求助暂停）"><span class="li-icon">🦾</span><span class="li-label">Web机器人</span></div>
       <div class="divider"></div>
       <div class="launcher-item" onclick="launchView('geo-dashboard')" title="GEO 应用仪表盘"><span class="li-icon">🌐</span><span class="li-label">GEO 应用</span></div>
     </div>
@@ -724,7 +726,9 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/game-pong.js?v=0.1"></script>
 <script src="/client/js/views/game-tetris.js?v=0.1"></script>
 <!-- v0.X: GEO 应用仪表盘（Phase 3 v0.7 — AI 优化建议 + 一键建任务） -->
-<script src="/client/js/views/geo-dashboard.js?v=0.30"></script>
+<script src="/client/js/views/geo-dashboard.js?v=0.31"></script>
+<!-- v0.1: 跨应用浏览器自动化控制台（browser-agent 可视化操作台） -->
+<script src="/client/js/views/browser-console.js?v=0.7"></script>
 <script>
 // v0.58：视图加载器注册 — 通过 ACMS.registerPackage 统一注册
 // 包注册系统自动同步到 ACMSWin.registerViewLoader + labels + 命令面板
@@ -1259,7 +1263,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- v0.74.1: 通用文件→应用 registry（file-browser / email-inbox 共用）-->
 <script src="/client/js/core/file-app-registry.js?v=0.74.1"></script>
 <!-- v0.73: 邮件收件箱 (IMAP) -->
-<link rel="stylesheet" href="/client/css/email-inbox.css?v=1.00" />
-<script src="/client/js/views/email-inbox.js?v=1.00"></script>
+<link rel="stylesheet" href="/client/css/email-inbox.css?v=1.07" />
+    <script src="/client/js/views/email-inbox.js?v=1.07"></script>
 </body>
 </html>

@@ -42,7 +42,7 @@ def run_command(args, timeout=45):
         env = os.environ.copy()
         env['AGENT_BROWSER_SOCKET_DIR'] = SOCKET_DIR
         env['AGENT_BROWSER_SESSION'] = SESSION
-        env['AGENT_BROWSER_IDLE_TIMEOUT_MS'] = '300000'  # 5分钟空闲超时
+        env['AGENT_BROWSER_IDLE_TIMEOUT_MS'] = '1800000'  # 30 分钟保活（原 5 分钟 → 控制台挂着画面 5 分钟无操作 daemon 退出 → 流断，2026-08-31 实踩）
         
         # 重定向子进程的 stdout/stderr 到文件 fd
         proc = subprocess.Popen(
@@ -68,10 +68,10 @@ def run_command(args, timeout=45):
             proc.wait()
             return json.dumps({'success': False, 'error': 'timeout', 'output': ''})
         
-        # 读取输出
-        with open(stdout_path, 'r', encoding='utf-8') as f:
+        # 读取输出（errors=replace 容错：agent-browser 个别输出可能含 GBK 字节，2026-08-31 实测）
+        with open(stdout_path, 'r', encoding='utf-8', errors='replace') as f:
             stdout = f.read().strip()
-        with open(stderr_path, 'r', encoding='utf-8') as f:
+        with open(stderr_path, 'r', encoding='utf-8', errors='replace') as f:
             stderr = f.read().strip()
         
         # 清理临时文件

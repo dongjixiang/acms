@@ -14,6 +14,7 @@ const ENGINES = {
   copilot: require('./copilot'),       // Phase 1 Week 2 — Microsoft Copilot
   grok: require('./grok'),             // Phase 1 Week 2 — xAI Grok
   minimax: require('./minimax'),       // v0.27 — MiniMax（OpenAI 兼容协议）
+  'deepseek-web': require('./deepseek-web'), // v0.1 — DeepSeek 网页版（browser-agent 自动化，原生智能搜索）
   // Phase 1 Week 2+: google_ai_mode（特殊 — web scraping，Google 反爬严，待评估）
 };
 

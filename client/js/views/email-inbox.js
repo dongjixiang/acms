@@ -138,7 +138,7 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
   }
 
   // 方案 B：iframe 渲染专用 sanitize —— 保留 <style>/<link>/内联 style/class，只清理脚本/危险属性
-  function sanitizeEmailHtmlForIframe(html, attachments, uid, mailbox) {
+  function sanitizeEmailHtmlForIframe(html, email) {
     if (!html) return '';
     var doc;
     try {
@@ -147,6 +147,9 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
       return escHtml(String(html));
     }
     if (!doc || !doc.body) return escHtml(String(html));
+    var attachments = email && email.attachments ? email.attachments : [];
+    var uid = email && email.uid;
+    var mailbox = email && email.mailbox;
     var walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_ELEMENT, null, false);
     var toRemove = [];
     var node = walker.currentNode;
@@ -193,38 +196,38 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
     }
     toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el); });
 
-    // 处理图片：cid: 引用 → 附件下载链接；相对路径 → 补全 base href
-    // 需要邮件的 attachments 列表和 uid 来构建下载 URL
+    // 处理图片：cid: 引用 → base64 data URL 内联；相对路径 → 补全 base href
+    // cid 图片直接内联，无需额外请求，iframe sandbox 无跨域问题
     if (attachments && attachments.length && uid) {
+      // 构建 cid/partID → data URL 映射
+      var cidToDataUrl = {};
+      var cidImages = email.cidImages || {};
+      Object.keys(cidImages).forEach(function (partID) {
+        cidToDataUrl[partID] = cidImages[partID];
+        // 也用 cid value 做 key（去掉 <>）
+        var att = attachments.find(function (a) { return a.partID === partID; });
+        if (att && att.cid) cidToDataUrl[att.cid] = cidImages[partID];
+      });
       var imgNodes = doc.querySelectorAll('img[src]');
       for (var i = 0; i < imgNodes.length; i++) {
         var img = imgNodes[i];
         var src = img.getAttribute('src') || '';
-        // cid: 引用 → 查找对应附件 partID → 生成下载 URL
         if (/^cid:/i.test(src)) {
-          var cid = src.slice(4).replace(/[<>]/g, ''); // 去掉 cid: 和可能的 < >
-          // 在 attachments 中找匹配的 partID 或 name
-          var matchedAtt = null;
-          for (var ai = 0; ai < attachments.length; ai++) {
-            var att = attachments[ai];
-            // partID 可能包含 cid 的内容，或 name 匹配
-            if (att.partID && (att.partID.indexOf(cid) >= 0 || cid.indexOf(att.partID) >= 0)) {
-              matchedAtt = att; break;
-            }
-            if (att.name && (att.name.indexOf(cid) >= 0 || cid.indexOf(att.name) >= 0)) {
-              matchedAtt = att; break;
+          var cid = src.slice(4).replace(/[<>]/g, '');
+          // 先按 cid 值找，再按 partID 模糊匹配
+          var dataUrl = cidToDataUrl[cid];
+          if (!dataUrl) {
+            for (var ai = 0; ai < attachments.length; ai++) {
+              var att = attachments[ai];
+              if (att.partID && (att.partID.indexOf(cid) >= 0 || cid.indexOf(att.partID) >= 0)) {
+                dataUrl = cidToDataUrl[att.partID] || cidToDataUrl[att.cid];
+                if (dataUrl) break;
+              }
             }
           }
-          if (matchedAtt) {
-            var downloadUrl = buildUrl('/api/emails/' + uid + '/attachment/' + encodeURIComponent(matchedAtt.partID), {
-              mailbox: mailbox,
-              api_key: API_KEY,
-              name: matchedAtt.name,
-              type: matchedAtt.type,
-            });
-            img.setAttribute('src', downloadUrl);
+          if (dataUrl) {
+            img.setAttribute('src', dataUrl);
           } else {
-            // 找不到对应附件，移除 src 避免破碎图标
             img.removeAttribute('src');
           }
         }
@@ -274,10 +277,23 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
     return n + ' B';
   }
 
-  function formatAddress(value) {
+function formatAddress(value) {
     if (!value) return '';
     var angle = String(value).match(/<\s*([^<>]+)\s*>\s*$/);
     return angle ? angle[1] : value;
+  }
+
+  // v1.06: 从 from 字符串提取纯邮箱（与 server/services/email-sender-analyzer.js extractEmailAddress 完全等价）
+  // 修复「分类标签没显示」: 之前用 email.from 原字符串匹配 store key，但 store key 是纯邮箱（已 extract），永远匹配不上
+  function extractEmailAddress(from) {
+    if (!from) return '';
+    var s = String(from).trim();
+    // 1) <john@example.com> 形式
+    var angle = s.match(/<\s*([^<>]+@[^<>]+)\s*>/);
+    if (angle) return angle[1].trim().toLowerCase();
+    // 2) 字符串中含 email 子串
+    var m = s.match(/([a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
+    return m ? m[1].trim().toLowerCase() : s.toLowerCase();
   }
 
   function extractName(value) {
@@ -594,11 +610,13 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
     if (/=[0-9A-Fa-f]{2}/.test(s) || /=_/.test(s) || /=\r?\n/.test(s)) {
       try {
         // 1) 先处理软换行 =CRLF / =LF → 直接删除（不加空格）
-        var q = s.replace(/=\r?\n/g, '');
+        var q = s.replace(/\=\r?\n/g, '');
         // 2) =_ → 空格
         q = q.replace(/=_/g, ' ');
         // 3) =XX → 字节
         q = q.replace(/=([0-9A-Fa-f]{2})/g, function(_x, h) { return String.fromCharCode(parseInt(h, 16)); });
+        var cs = String(mime || '').toLowerCase().replace(/^[\"']|[\"']$/g, '');
+        if (cs === 'gb2312' || cs === 'gbk' || cs === 'gb18030') return _decodeGbk(q);
         return _decodeUtf8(q);
       } catch (e) { return s; }
     }
@@ -639,8 +657,10 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
       sendInFlight: false,
       // v0.37: AI 分类筛选（'' 表示全部；其他值来自 email-classifier 8 类别）
       categoryFilter: '',
-      // v0.37: 当前邮件所有已分类集合（用于筛选 chip 显示）
+// v0.37: 当前邮件所有已分类集合（用于筛选 chip 显示）
       availableCategories: ['客户咨询','会议邀请','工作协作','财务发票','营销订阅','求职招聘','自动通知','其他'],
+      // v1.01: 用户维护的分类缓存（editCategory 从这里查原值预填表单，避免来回 GET）
+      allCategories: [],
       // v0.37: 视图状态：'main' | 'settings'
       currentView: 'main',
       settingsCategory: 'rules',
@@ -673,7 +693,9 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
       '  <section class="em-list" aria-label="邮件列表">',
       '    <div class="em-list-head">',
       '      <input type="search" class="em-input" data-role="search" placeholder="搜索主题、邮件地址、正文…" />',
-      '      <button type="button" class="em-btn" data-action="refresh" title="刷新">↻</button>',
+'      <button type="button" class="em-btn" data-action="refresh" title="刷新">↻</button>',
+      // v1.03: AI 批量分析按钮（用户主动触发，不自动跑 — 参考 v0.37 多多原话「去掉主动触发入口但保留能力」改为「保留能力 + 用户主动触发」）
+      '      <button type="button" class="em-btn" data-action="ai-bulk-analyze" style="background:#7c3aed;color:#ffffff;font-weight:700;border:none;" title="批量分析当前邮箱发件人：拉 INBOX 最近 50 封 → 频次聚合 → static 规则 + 1 次 LLM 推断 top 20 sender，分类结果写入 email_sender_categories 缓存（之后列表 chip 显示 + 按分类筛选才有数据）">🔮 AI 批量分析</button>',
       // v0.74.1: 写信按钮移到邮件列表栏顶部（紧邻搜索框）— 之前在左侧底部，被邮件列表挡住一半
       '      <button type="button" class="em-btn em-btn-primary em-btn-compose" data-action="compose" title="写新邮件">✉ 写信</button>',
 
@@ -714,6 +736,8 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
         var action = target.getAttribute('data-action');
         if (action === 'compose') return self.openComposer();
         if (action === 'refresh') return self.refresh();
+        // v1.03: AI 批量分析按钮
+        if (action === 'ai-bulk-analyze') return self.aiBulkAnalyze();
         if (action === 'prev') return self.gotoPage(-1);
         if (action === 'next') return self.gotoPage(1);
         if (action === 'back-to-list') return self.closeDetail();
@@ -753,6 +777,9 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
         if (action === 'delete-category') return self.deleteCategory(target.getAttribute('data-cat-id'));
         if (action === 'refresh-categories') return self.loadCategories();
         if (action === 'seed-categories') return self.seedCategories();
+        // v1.02: AI 偏好保存 / 重置
+        if (action === 'save-ai-prefs') return self.saveAIPrefs();
+        if (action === 'reset-ai-prefs') return self.resetAIPrefs();
         // v0.38: 启动/停止 IMAP IDLE 实时监听（集成 mail-listener — 推荐1）
         if (action === 'start-listening') return self.startListening();
         if (action === 'stop-listening') return self.stopListening();
@@ -1010,7 +1037,7 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
     body.onscroll = function () { self.updateListMoreHint(); };
   };
 
-  EmailApp.prototype.renderListItem = function (email) {
+EmailApp.prototype.renderListItem = function (email) {
     var self = this; // v0.33: chip 渲染用到
     var initial = avatarLetter(email.from);
     var subject = email.subject || '(无主题)';
@@ -1024,18 +1051,21 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
     // v0.74.2: hover 操作条（删除/移动/标已读）— 不占用布局空间，hover 时才显出
     var readBtnLabel = read ? '已读' : '标已读';
     var readBtnTitle = read ? '标记为未读' : '标记为已读';
+    // v1.05: 渲染 AI 分类 chip（按 sender 查 state.senderCategories — v0.33 注释遗留未实现，这里补上）
+    var senderCat = self.senderCategoryForEmail(email.from);
+    var senderChipHtml = '';
+    if (senderCat && senderCat.category) {
+      var srcBg = senderCat.source === 'static' ? '#22c55e' : (senderCat.source === 'ai' ? '#0891b2' : '#7c3aed');
+      var srcLabel = senderCat.source === 'static' ? '静态' : (senderCat.source === 'ai' ? 'AI' : '批量');
+      senderChipHtml = '<span class="em-classify-chip" style="display:inline-block;margin-right:6px;padding:2px 8px;border-radius:10px;background:' + srcBg + ';color:#ffffff;font-size:10px;font-weight:600;letter-spacing:.02em;vertical-align:middle" title="AI 分类：' + escAttr(senderCat.category) + '（来源：' + srcLabel + '）">🏷 ' + escHtml(senderCat.category) + '</span>';
+    }
     return [
       '<article class="' + classes.join(' ') + '" data-role="item" data-uid="' + escAttr(email.uid) + '">',
       '  <div class="em-avatar">' + escHtml(initial) + '</div>',
       '  <div class="em-item-body">',
       '    <div class="em-item-row"><b class="em-from">' + escHtml(fromName) + '</b>',
       '      <span class="em-time">' + escHtml(dateStr) + '</span></div>',
-      '    <div class="em-subject">' +
-            (() => {
-              // v0.33: 在主题前缀显示已持久化 chip（按 sender 查 store）
-              return escHtml(subject);
-            })() +
-            '</div>',
+      '    <div class="em-subject">' + senderChipHtml + escHtml(subject) + '</div>',
       '  </div>',
       email.hasAttachments ? '  <span class="em-att-mark" title="含附件">📎</span>' : '',
       '  <div class="em-item-actions" data-role="item-actions">',
@@ -1076,17 +1106,37 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
     list.classList.toggle('has-more', hasMore);
   };
 
-  // v0.30: AI 草拟回复（借鉴 inbox-zero draft-reply 完整 system prompt）
+// v1.03: AI 批量分析（用户主动触发 — 读 user prefs 模型 + 阈值，分类结果自动写入缓存并刷新列表）
   EmailApp.prototype.aiBulkAnalyze = function () {
     var self = this;
-    self.setStatus('AI 批量分析中（拉 IMAP + 1 次 LLM 推断）…', 'loading');
-    apiFetch('POST', '/api/emails/analyze-senders', {}).then(function (data) {
-      self.setStatus('');
-      self.showBulkAnalyzeModal(data);
-    }).catch(function (err) {
-      self.setStatus('批量分析失败: ' + err.message, 'error');
-      self.showBulkAnalyzeModal({ ok: false, senders: [], error: err.message });
-    });
+    self.setStatus('🔮 AI 批量分析中（拉 IMAP 最近 50 封 + LLM 推断 top 20 发件人）…', 'loading');
+    // 先读用户保存的 AI 偏好 → 传给后端
+    var payload = {};
+    apiFetch('GET', '/api/app-settings?app_id=email')
+      .then(function (data) {
+        var s = (data && data.settings) || {};
+        if (s.classify_model_id) payload.modelId = s.classify_model_id;
+        if (s.classify_threshold != null) payload.threshold = Number(s.classify_threshold);
+        payload.mailbox = self.state.mailbox || 'INBOX';
+        payload.maxSenders = 20;
+        return apiFetch('POST', '/api/emails/analyze-senders', payload);
+      })
+      .then(function (data) {
+        self.setStatus('');
+        self.showBulkAnalyzeModal(data);
+        // v1.03: 批量分析完成后刷新 sender categories 缓存 → 列表 chip 自动显示 + 筛选器有数据
+        self.refreshSenderCategories().then(function () {
+          self.renderList();
+          var cat = (data && data.analyzed) || 0;
+          self.setStatus('✅ AI 批量分析完成：' + cat + ' 个发件人已分类（写入缓存）');
+          showToast('已分析 ' + cat + ' 个发件人，列表分类已更新', 'success');
+        });
+      })
+      .catch(function (err) {
+        self.setStatus('❌ 批量分析失败: ' + (err.message || String(err)), 'error');
+        showToast('批量分析失败：' + (err.message || String(err)), 'error');
+        self.showBulkAnalyzeModal({ ok: false, senders: [], error: err.message || String(err) });
+      });
   };
 
   // v0.30: 弹窗显示批量分析结果（每个 sender 1 行 — sender · 频次 · 类目 chip · rationale）
@@ -1244,22 +1294,26 @@ toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el
 
   // v0.30: AI 智能分类（借鉴 inbox-zero@main ai-categorize-single-sender.ts + 防止 toast 骗人）
   // v0.33: AI 智能分类（按 inbox-zero 完整 system prompt + 持久化到 store）
-  EmailApp.prototype.senderCategoryForEmail = function (from) {
+EmailApp.prototype.senderCategoryForEmail = function (from) {
     if (!from || !this.state || !this.state.senderCategories) return null;
-    var key = String(from).toLowerCase().trim();
+    // v1.06 修复: 用 extractEmailAddress 归一化（与后端 store key 格式一致）
+    var key = extractEmailAddress(from);
+    if (!key) return null;
     return this.state.senderCategories[key] || null;
   };
-  EmailApp.prototype.refreshSenderCategories = function () {
+EmailApp.prototype.refreshSenderCategories = function () {
     var self = this;
     var mailbox = self.state && self.state.mailbox ? self.state.mailbox : 'INBOX';
-    apiFetch('GET', '/api/emails/sender-categories?mailbox=' + encodeURIComponent(mailbox), null)
+    // v1.04 修复: 加 return（之前没有，aiBulkAnalyze 链 .then() 时报 "Cannot read properties of undefined"）
+    return apiFetch('GET', '/api/emails/sender-categories?mailbox=' + encodeURIComponent(mailbox), null)
       .then(function (data) {
         if (data && data.categories) {
           // apiFetch 已 await response.json() — data 是解析后的对象
           self.state.senderCategories = data.categories || {};
-          // 重渲染列表让 chip 出现
+          // v1.05 修复: 重渲染列表让分类 chip 出现（之前只填 state 不重渲染 → 用户看不到 chip）
           // v0.37: AI 分类 chip 已从列表项移除 — 改用顶部 AI 分类筛选器（filter-by-category）
-          // 此处保留空判断，刷新分类缓存后无需重渲染（筛选器会重新读取 availableCategories）
+          // v1.05: 列表项重新加入 sender chip（renderListItem），所以这里必须重渲染
+          self.renderList();
         }
       })
       .catch(function (err) { console.warn('[email] refreshSenderCategories:', err.message); });
@@ -1575,7 +1629,15 @@ EmailApp.prototype.renderDetail = function () {
       '    <tr><th>发件人</th><td>' + escHtml(fromDisplay) + '</td></tr>',
       email.to ? '    <tr><th>收件人</th><td>' + escHtml(email.to) + '</td></tr>' : '',
       email.cc ? '    <tr><th>抄送</th><td>' + escHtml(email.cc) + '</td></tr>' : '',
-      '    <tr><th>时间</th><td>' + escHtml(dateStr) + '</td></tr>',
+'    <tr><th>时间</th><td>' + escHtml(dateStr) + '</td></tr>',
+      // v1.05: AI 分类 chip（按 sender 查 state.senderCategories — 多多原话「标签没有体现在邮件内容里面」）
+      (function () {
+        var sc = self.senderCategoryForEmail(email.from);
+        if (!sc || !sc.category) return '';
+        var srcBg = sc.source === 'static' ? '#22c55e' : (sc.source === 'ai' ? '#0891b2' : '#7c3aed');
+        var srcLabel = sc.source === 'static' ? '静态规则' : (sc.source === 'ai' ? 'AI 推断' : '批量分析');
+        return '<tr><th>AI 分类</th><td><span class="em-classify-chip" style="display:inline-block;padding:4px 12px;border-radius:12px;background:' + srcBg + ';color:#ffffff;font-size:12px;font-weight:600;letter-spacing:.02em" title="来源：' + escAttr(srcLabel) + (sc.rationale ? '\n依据：' + escAttr(sc.rationale) : '') + '">🏷 ' + escHtml(sc.category) + '</span> <span style="font-size:11px;color:var(--text3,#888);margin-left:6px">' + srcLabel + (sc.rationale ? ' · ' + escHtml(sc.rationale.slice(0, 80)) : '') + '</span></td></tr>';
+      })(),
       '  </table>',
       '</header>',
       '<article class="em-body" data-role="body">' + iframeHtml + '</article>',
@@ -1584,7 +1646,7 @@ EmailApp.prototype.renderDetail = function () {
 
     // DOM 就绪后，初始化 iframe 内容（innerHTML 里的 script 不会执行，必须单独跑）
     if (decodedHtml) {
-      var sanitizedHtml = sanitizeEmailHtmlForIframe(decodedHtml, email.attachments || [], email.uid, mailbox);
+      var sanitizedHtml = sanitizeEmailHtmlForIframe(decodedHtml, email);
       var iframe = document.getElementById(iframeId);
       if (iframe) {
         initEmailIframe(iframe, sanitizedHtml);
@@ -2602,10 +2664,11 @@ EmailApp.prototype.loadRuleList = function () {
       '  <section style="margin-bottom:20px;padding:16px;background:var(--bg2);border:1px solid var(--border);border-radius:12px;">',
       '    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">',
       '      <h3 style="font-size:14px;font-weight:700;color:var(--text);">📋 你的分类体系（用户维护 — AI 自动分类依据）</h3>',
-      '      <div style="display:flex;gap:6px;">',
-      '        <button data-action="seed-categories" style="padding:5px 12px;border-radius:6px;background:var(--bg3);color:var(--text);font-size:11px;font-weight:600;border:1px solid var(--border);cursor:pointer;" title="首次使用初始化默认 8 分类（已有则跳过）">🌱 初始化默认</button>',
-      '        <button data-action="add-category" style="padding:5px 12px;border-radius:6px;background:var(--accent1);color:#fff;font-size:11px;font-weight:600;border:none;cursor:pointer;" title="新增自定义分类">+ 新增分类</button>',
-      '        <button data-action="refresh-categories" style="padding:5px 12px;border-radius:6px;background:var(--bg3);color:var(--text);font-size:11px;font-weight:600;border:1px solid var(--border);cursor:pointer;" title="刷新分类列表">🔄</button>',
+'      <div style="display:flex;gap:6px;">',
+      // v1.01.1: 显式深底白字 + border（不依赖 var()，主题变量没激活时也保证对比度）
+      '        <button data-action="seed-categories" style="padding:6px 14px;border-radius:6px;background:#2a2a40;color:#ffffff;font-size:12px;font-weight:600;border:1px solid rgba(255,255,255,0.25);cursor:pointer;" title="首次使用初始化默认 8 分类（已有则跳过）">🌱 初始化默认</button>',
+      '        <button data-action="add-category" style="padding:6px 14px;border-radius:6px;background:#0ea89d;color:#ffffff;font-size:12px;font-weight:700;border:none;cursor:pointer;" title="新增自定义分类">+ 新增分类</button>',
+      '        <button data-action="refresh-categories" style="padding:6px 14px;border-radius:6px;background:#2a2a40;color:#ffffff;font-size:12px;font-weight:600;border:1px solid rgba(255,255,255,0.25);cursor:pointer;" title="刷新分类列表">🔄 刷新</button>',
       '      </div>',
       '    </div>',
       '    <div class="categories-list-container" data-role="categories-list" style="font-size:11px;color:var(--text2);">',
@@ -2613,24 +2676,36 @@ EmailApp.prototype.loadRuleList = function () {
       '    </div>',
       '    <div style="font-size:9px;color:var(--text3);margin-top:8px;" title="参考 v0.38：用户维护分类 + AI 自动分类（参考 email-classifier.js classifyEmailAndPersist）">参考 v0.38：AI 收到新邮件时，会自动从你的分类列表中选择最合适的（参考 email-classifier.js + email_categories collection）。</div>',
       '  </section>',
+// v1.02: AI 自动分类偏好（LLM 模型 + 敏感度 合并到一个 section + 加保存按钮 + GET 加载默认值）
+      '  <section data-role="ai-prefs" style="margin-bottom:20px;padding:16px;background:var(--bg2);border:1px solid var(--border);border-radius:12px;">',
+      '    <h3 style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:12px;">🤖 AI 自动分类偏好</h3>',
       // LLM 模型选择
-      '  <section style="margin-bottom:20px;padding:16px;background:var(--bg2);border:1px solid var(--border);border-radius:12px;">',
-      '    <h3 style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:12px;">🤖 LLM 模型选择</h3>',
-      '    <select style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;">',
-      '      <option>anthropic/claude-sonnet-4</option>',
-      '      <option>openai/gpt-4o-mini</option>',
-      '      <option selected>agnes-2.5-flash（默认）</option>',
-      '      <option>Qwen Code（本地模型）</option>',
-      '    </select>',
-      '  </section>',
-      // 分类敏感度
-      '  <section style="padding:16px;background:var(--bg2);border:1px solid var(--border);border-radius:12px;">',
-      '    <h3 style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:12px;">📊 分类敏感度</h3>',
-      '    <div style="display:flex;gap:12px;align-items:center;">',
-      '      <input type="range" min="0.3" max="0.9" step="0.05" value="0.6" style="flex:1;" />',
-      '      <span style="font-size:12px;color:var(--text);min-width:40px;">0.60</span>',
+      '    <div style="margin-bottom:14px;">',
+      '      <label style="display:block;font-size:11px;color:var(--text2);font-weight:600;margin-bottom:6px;" title="AI 分类使用的 LLM 模型（参考 email-classifier.js modelId 参数）">分类使用的 LLM 模型</label>',
+      '      <select id="ai-llm-model-select" data-role="ai-pref-model" style="width:100%;padding:8px;background:#1a1a2e;color:#ffffff;border:1px solid rgba(255,255,255,0.25);border-radius:6px;font-size:12px;" title="选择 AI 分类时调用的 LLM 模型">',
+      '        <option value="anthropic/claude-sonnet-4">anthropic/claude-sonnet-4（精确）</option>',
+      '        <option value="openai/gpt-4o-mini">openai/gpt-4o-mini（快速）</option>',
+      '        <option value="agnes-2.5-flash">agnes-2.5-flash（默认）</option>',
+      '        <option value="qwen-code">Qwen Code（本地模型）</option>',
+      '        <option value="__custom__">自定义模型…</option>',
+      '      </select>',
+      '      <input id="ai-llm-model-custom" data-role="ai-pref-model-custom" placeholder="自定义模型 ID（例：openai/gpt-4o）" style="display:none;width:100%;margin-top:6px;padding:8px;background:#1a1a2e;color:#ffffff;border:1px solid rgba(255,255,255,0.25);border-radius:6px;font-size:12px;" />',
       '    </div>',
-      '    <div style="margin-top:6px;font-size:10px;color:var(--text3);">低（0.3）= 更多分类触发 / 高（0.9）= 仅高置信度分类</div>',
+      // 分类敏感度
+      '    <div style="margin-bottom:14px;">',
+      '      <label style="display:block;font-size:11px;color:var(--text2);font-weight:600;margin-bottom:6px;" title="AI 分类阈值：置信度低于此值则不分类（参考 email-classifier.js confidence）">分类阈值（仅置信度 ≥ 此值才分类）</label>',
+      '      <div style="display:flex;gap:12px;align-items:center;">',
+      '        <input id="ai-classify-threshold" data-role="ai-pref-threshold" type="range" min="0.3" max="0.9" step="0.05" value="0.6" style="flex:1;" />',
+      '        <span id="ai-classify-threshold-label" data-role="ai-pref-threshold-label" style="font-size:12px;color:#ffffff;font-weight:600;min-width:44px;text-align:right;font-family:monospace;">0.60</span>',
+      '      </div>',
+      '      <div style="margin-top:6px;font-size:10px;color:var(--text3);">低（0.3）= 更多邮件触发分类 / 高（0.9）= 仅高置信度才分类</div>',
+      '    </div>',
+      // 保存按钮 + 状态
+      '    <div style="display:flex;gap:8px;align-items:center;padding-top:10px;border-top:1px dashed var(--border);">',
+      '      <button data-action="save-ai-prefs" style="padding:8px 18px;border-radius:6px;background:#0ea89d;color:#ffffff;font-size:12px;font-weight:700;border:none;cursor:pointer;" title="保存 LLM 模型和分类阈值到服务端（持久 app_settings collection）">💾 保存偏好</button>',
+      '      <button data-action="reset-ai-prefs" style="padding:8px 14px;border-radius:6px;background:#2a2a40;color:#ffffff;font-size:12px;font-weight:600;border:1px solid rgba(255,255,255,0.25);cursor:pointer;" title="恢复默认（agnes-2.5-flash + 阈值 0.6）">↺ 恢复默认</button>',
+      '      <span data-role="ai-prefs-status" style="font-size:11px;color:var(--text3);"></span>',
+      '    </div>',
       '  </section>',
       '</div>',
     ].join('');
@@ -2907,15 +2982,22 @@ EmailApp.prototype.renderCategoryRules = function () {
 
 EmailApp.prototype.renderSettingsCategory = function (category) {
     var self = this;
+    var result;
     switch (category) {
-      case 'rules': return this.renderCategoryRules();
-      case 'account': return this.renderCategoryAccount();
-      case 'ai': return this.renderCategoryAI();
-      case 'notify': return this.renderCategoryNotify();
-      case 'display': return this.renderCategoryDisplay();
-      case 'advanced': return this.renderCategoryAdvanced();
-      default: return this.renderCategoryRules();
+      case 'rules': result = this.renderCategoryRules(); break;
+      case 'account': result = this.renderCategoryAccount(); break;
+      // v1.01 修复: 进入「AI 与分类」自动加载分类列表（之前 renderCategoryAI 只渲染空占位"点击初始化默认..."，导致多多看到的"分类没法编辑"）
+      case 'ai':
+        result = this.renderCategoryAI();
+        // v1.02: 同时加载分类列表 + AI 偏好
+        setTimeout(function () { self.loadCategories(); self.loadAIPrefs(); }, 60);
+        break;
+      case 'notify': result = this.renderCategoryNotify(); break;
+      case 'display': result = this.renderCategoryDisplay(); break;
+      case 'advanced': result = this.renderCategoryAdvanced(); break;
+      default: result = this.renderCategoryRules();
     }
+    return result;
   };
 
 EmailApp.prototype.showRulesPanel = function () {
@@ -2986,11 +3068,13 @@ EmailApp.prototype.showRulesPanel = function () {
           html += '<td style="padding:8px 4px;color:var(--text);font-weight:600;">' + self.escapeHtml(c.name) + '</td>';
           html += '<td style="padding:8px 4px;color:var(--text2);">' + self.escapeHtml((c.description || '').slice(0, 40)) + '</td>';
           html += '<td style="padding:8px 4px;color:var(--accent1);font-family:monospace;">' + (c.priority || 0) + '</td>';
-          html += '<td style="padding:8px 4px;"><button data-action="edit-category" data-cat-id="' + self.escapeHtml(c.id) + '" style="margin-right:4px;padding:3px 8px;border-radius:4px;background:var(--accent1);color:#fff;font-size:10px;font-weight:600;border:none;cursor:pointer;">✎ 编辑</button><button data-action="delete-category" data-cat-id="' + self.escapeHtml(c.id) + '" style="padding:3px 8px;border-radius:4px;background:var(--red);color:#fff;font-size:10px;font-weight:600;border:none;cursor:pointer;">🗑 删除</button></td>';
+          html += '<td style="padding:8px 4px;"><button data-action="edit-category" data-cat-id="' + self.escapeHtml(c.id) + '" style="margin-right:4px;padding:4px 10px;border-radius:4px;background:#0ea89d;color:#ffffff;font-size:11px;font-weight:600;border:none;cursor:pointer;">✎ 编辑</button><button data-action="delete-category" data-cat-id="' + self.escapeHtml(c.id) + '" style="padding:4px 10px;border-radius:4px;background:#e53935;color:#ffffff;font-size:11px;font-weight:600;border:none;cursor:pointer;">🗑 删除</button></td>';
           html += '</tr>';
         }
-        html += '</tbody></table>';
+html += '</tbody></table>';
         container.innerHTML = html;
+        // v1.01: 缓存到 state，供 editCategory 预填表单
+        self.state.allCategories = data.categories || [];
       })
       .catch(function (err) {
         container.innerHTML = '<div style="font-size:11px;color:var(--red);padding:8px;">加载失败：' + self.escapeHtml(err.message || String(err)) + '</div>';
@@ -3016,69 +3100,279 @@ EmailApp.prototype.showRulesPanel = function () {
       });
   };
 
-  // v0.38: 新增分类（弹窗输入）
+// v1.01: 新增分类（ACMSModal 表单 — name + description + color + priority，去掉 v0.38 的 arguments.callee strict-mode throw 死代码）
   EmailApp.prototype.addCategory = function () {
     var self = this;
-    showPrompt('新增分类\n\n输入分类名称（例如：紧急事务）', '')
-      .then(function (name) {
-        if (!name || !String(name).trim()) return;
-        return showPrompt('分类描述（帮助 AI 理解这个分类 — 参考原型描述）', '');
-      })
-      .then(function (description) {
-        if (description === undefined) return; // 用户取消了第二次 prompt
-        return apiFetch('POST', '/api/email-categories', {
-          mailbox: self.state.mailbox || 'INBOX',
-          name: arguments[0] || (arguments.callee && arguments.callee.caller && arguments.callee.caller.arguments && arguments.callee.caller.arguments[0]) || '',
-          description: description,
-          priority: 5,
-        });
-      })
-      .catch(function (err) {
+    var mailbox = this.state.mailbox || 'INBOX';
+    if (typeof ACMSModal === 'undefined') {
+      showToast('ACMSModal 未加载，无法新增分类', 'error');
+      return;
+    }
+    ACMSModal.show({
+      title: '新增分类',
+      size: 'lg',
+      fields: [
+        { name: 'name', label: '分类名（必填，例如：紧急事务）', type: 'text', required: true, placeholder: '例如：紧急事务' },
+        { name: 'description', label: '描述（帮助 AI 理解这个分类）', type: 'text', placeholder: '例如：客户加急请求 / 投诉' },
+        { name: 'color', label: '颜色', type: 'select', value: 'var(--accent1)', options: [
+          { value: 'var(--green)', label: '🟢 绿（推荐：客户咨询）' },
+          { value: 'var(--accent1)', label: '🔵 蓝（推荐：会议邀请）' },
+          { value: 'var(--accent2)', label: '🟣 紫（推荐：工作协作）' },
+          { value: 'var(--yellow)', label: '🟡 黄（推荐：财务发票）' },
+          { value: 'var(--red)', label: '🔴 红（推荐：紧急）' },
+          { value: 'var(--text2)', label: '⚪ 中性（求职招聘）' },
+          { value: 'var(--text3)', label: '⚫ 弱化（营销订阅 / 自动通知 / 其他）' },
+        ]},
+        { name: 'priority', label: '优先级（0-10，越高 AI 越优先匹配）', type: 'text', value: '5', placeholder: '0-10' },
+      ],
+      actions: [
+        { label: '取消', value: null },
+        { label: '新增', value: 'SUBMIT', className: 'acms-modal-btn-primary' },
+      ],
+    }).then(function (vals) {
+      if (!vals) return;
+      var payload = {
+        mailbox: mailbox,
+        name: vals.name,
+        description: vals.description || '',
+        color: vals.color || 'var(--accent1)',
+        priority: Number(vals.priority || 0),
+      };
+      return apiFetch('POST', '/api/email-categories', payload).then(function (result) {
+        if (result && result.ok) {
+          showToast('已新增分类：' + result.category.name, 'success');
+          self.setStatus('✅ 分类已新增（ID=' + result.category.id + '）');
+          self.loadCategories();
+        } else {
+          showToast('新增失败：' + (result && (result.message || result.error) || '未知错误'), 'error');
+        }
+      }).catch(function (err) {
         showToast('新增失败：' + (err.message || String(err)), 'error');
       });
+    });
   };
 
-  // v0.38: 编辑分类
+  // v1.01: 编辑分类（ACMSModal 全字段编辑 — name/description/color/priority/enabled，参考后端 PATCH 支持全字段）
   EmailApp.prototype.editCategory = function (catId) {
     var self = this;
     if (!catId) return;
-    showPrompt('编辑分类名称', '')
-      .then(function (newName) {
-        if (!newName) return;
-        return apiFetch('PATCH', '/api/email-categories/' + encodeURIComponent(catId), { name: newName });
-      })
-      .then(function (result) {
+    var cat = (this.state.allCategories || []).find(function (c) { return c.id === catId; });
+    if (!cat) {
+      showToast('分类不存在（请刷新列表）', 'error');
+      self.loadCategories();
+      return;
+    }
+    if (typeof ACMSModal === 'undefined') {
+      showToast('ACMSModal 未加载，无法编辑分类', 'error');
+      return;
+    }
+    ACMSModal.show({
+      title: '编辑分类 · ' + cat.name,
+      size: 'lg',
+      fields: [
+        { name: 'name', label: '分类名', type: 'text', required: true, value: cat.name || '' },
+        { name: 'description', label: '描述（帮助 AI 理解）', type: 'text', value: cat.description || '' },
+        { name: 'color', label: '颜色', type: 'select', value: cat.color || 'var(--accent1)', options: [
+          { value: 'var(--green)', label: '🟢 绿' },
+          { value: 'var(--accent1)', label: '🔵 蓝' },
+          { value: 'var(--accent2)', label: '🟣 紫' },
+          { value: 'var(--yellow)', label: '🟡 黄' },
+          { value: 'var(--red)', label: '🔴 红' },
+          { value: 'var(--text2)', label: '⚪ 中性' },
+          { value: 'var(--text3)', label: '⚫ 弱化' },
+        ]},
+        { name: 'priority', label: '优先级（0-10）', type: 'text', value: String(cat.priority != null ? cat.priority : 0) },
+        { name: 'enabled', label: '启用此分类（AI 自动分类时纳入）', type: 'checkbox', value: cat.enabled !== false },
+      ],
+      actions: [
+        { label: '取消', value: null },
+        { label: '保存', value: 'SUBMIT', className: 'acms-modal-btn-primary' },
+      ],
+    }).then(function (vals) {
+      if (!vals) return;
+      var payload = {
+        name: vals.name,
+        description: vals.description || '',
+        color: vals.color || 'var(--accent1)',
+        priority: Number(vals.priority || 0),
+        enabled: !!vals.enabled,
+      };
+      return apiFetch('PATCH', '/api/email-categories/' + encodeURIComponent(catId), payload).then(function (result) {
         if (result && result.ok) {
-          showToast('已更新', 'success');
+          showToast('已更新分类：' + payload.name, 'success');
+          self.setStatus('✅ 分类已更新（ID=' + catId + '）');
           self.loadCategories();
+        } else {
+          showToast('编辑失败：' + (result && (result.message || result.error) || '未知错误'), 'error');
         }
-      })
-      .catch(function (err) {
+      }).catch(function (err) {
         showToast('编辑失败：' + (err.message || String(err)), 'error');
       });
+    });
   };
 
-  // v0.38: 删除分类（显式确认 — 防 silent write）
+  // v1.01: 删除分类（ACMSModal 确认 — 防 P163 silent write；显示分类名而非 ID，提升确认准确度）
   EmailApp.prototype.deleteCategory = function (catId) {
     var self = this;
     if (!catId) return;
-    showConfirm('删除分类？\n\nID: ' + catId + '\n\n此操作不可恢复（防 P163 silent write — 需显式确认）。', { okText: '删除', cancelText: '取消' })
-      .then(function (ok) {
-        if (!ok) return;
-        return apiFetch('DELETE', '/api/email-categories/' + encodeURIComponent(catId));
-      })
-      .then(function (result) {
+    var cat = (this.state.allCategories || []).find(function (c) { return c.id === catId; });
+    var label = cat ? cat.name : catId;
+    var doDelete = function () {
+      return apiFetch('DELETE', '/api/email-categories/' + encodeURIComponent(catId)).then(function (result) {
         if (result && result.ok) {
-          showToast('已删除', 'success');
+          showToast('已删除分类：' + label, 'success');
+          self.setStatus('🗑 分类已删除（ID=' + catId + '）');
           self.loadCategories();
+        } else {
+          showToast('删除失败：' + (result && (result.message || result.error) || '未知错误'), 'error');
+        }
+      }).catch(function (err) {
+        showToast('删除失败：' + (err.message || String(err)), 'error');
+      });
+    };
+    if (typeof ACMSModal === 'undefined') {
+      // fallback 到 showConfirm（避免系统原生弹窗）
+      showConfirm('删除分类「' + label + '」？\n\n此操作不可恢复（防 P163 silent write — 需显式确认）。', { okText: '删除', cancelText: '取消' }).then(function (ok) {
+        if (ok) return doDelete();
+      });
+      return;
+    }
+    ACMSModal.show({
+      title: '删除分类',
+      message: '删除分类「' + label + '」？\n\n此操作不可恢复（防 P163 silent write — 需显式确认）。',
+      actions: [
+        { label: '取消', value: null },
+        { label: '删除', value: 'DELETE', className: 'acms-modal-btn-primary' },
+      ],
+    }).then(function (v) {
+      if (v === 'DELETE') return doDelete();
+    });
+  };
+
+// v1.02: AI 自动分类偏好 — 加载（GET /api/app-settings?app_id=email）
+  EmailApp.prototype.loadAIPrefs = function () {
+    var self = this;
+    var sec = this.root.querySelector('[data-role="ai-prefs"]');
+    if (!sec) return;
+    var status = sec.querySelector('[data-role="ai-prefs-status"]');
+    apiFetch('GET', '/api/app-settings?app_id=email')
+      .then(function (data) {
+        if (!data || !data.ok) return;
+        var s = data.settings || {};
+        // 模型
+        var modelSel = sec.querySelector('[data-role="ai-pref-model"]');
+        var modelCustom = sec.querySelector('[data-role="ai-pref-model-custom"]');
+        if (modelSel) {
+          var savedModel = s.classify_model_id || 'agnes-2.5-flash';
+          var opts = modelSel.querySelectorAll('option');
+          var matched = false;
+          for (var i = 0; i < opts.length; i++) {
+            if (opts[i].value === savedModel) { modelSel.value = savedModel; matched = true; }
+          }
+          if (!matched) {
+            // 自定义模型：选 __custom__ + 填到 custom input
+            modelSel.value = '__custom__';
+            if (modelCustom) {
+              modelCustom.style.display = 'block';
+              modelCustom.value = savedModel;
+            }
+          }
+          // 监听 select 变化 → __custom__ 时显示 custom input
+          modelSel.onchange = function () {
+            if (modelSel.value === '__custom__') {
+              modelCustom.style.display = 'block';
+              setTimeout(function () { modelCustom.focus(); }, 50);
+            } else {
+              modelCustom.style.display = 'none';
+            }
+          };
+        }
+        // 阈值
+        var thr = sec.querySelector('[data-role="ai-pref-threshold"]');
+        var thrLabel = sec.querySelector('[data-role="ai-pref-threshold-label"]');
+        if (thr) {
+          thr.value = (s.classify_threshold != null) ? s.classify_threshold : 0.6;
+          if (thrLabel) thrLabel.textContent = Number(thr.value).toFixed(2);
+          // 实时更新 label
+          thr.oninput = function () {
+            if (thrLabel) thrLabel.textContent = Number(thr.value).toFixed(2);
+          };
+        }
+        // 状态
+        if (status) {
+          status.textContent = '已加载（' + Object.keys(s).length + ' 条偏好）';
+          status.style.color = 'var(--text3)';
         }
       })
       .catch(function (err) {
-        showToast('删除失败：' + (err.message || String(err)), 'error');
+        if (status) {
+          status.textContent = '加载失败：' + (err.message || String(err));
+          status.style.color = '#e53935';
+        }
       });
   };
 
-EmailApp.prototype.renderCategoryFilterChips = function () {
+  // v1.02: AI 自动分类偏好 — 保存（POST /api/app-settings/bulk?app_id=email）
+  EmailApp.prototype.saveAIPrefs = function () {
+    var self = this;
+    var sec = this.root.querySelector('[data-role="ai-prefs"]');
+    if (!sec) return;
+    var status = sec.querySelector('[data-role="ai-prefs-status"]');
+    var modelSel = sec.querySelector('[data-role="ai-pref-model"]');
+    var modelCustom = sec.querySelector('[data-role="ai-pref-model-custom"]');
+    var thr = sec.querySelector('[data-role="ai-pref-threshold"]');
+    var modelValue = (modelSel && modelSel.value === '__custom__') ? (modelCustom && modelCustom.value || '').trim() : (modelSel && modelSel.value || 'agnes-2.5-flash');
+    if (!modelValue) {
+      if (status) { status.textContent = '❌ 请填写模型 ID'; status.style.color = '#e53935'; }
+      showToast('请填写自定义模型 ID', 'error');
+      return;
+    }
+    var payload = {
+      settings: {
+        classify_model_id: modelValue,
+        classify_threshold: Number(thr ? thr.value : 0.6),
+      },
+    };
+    if (status) { status.textContent = '保存中…'; status.style.color = 'var(--text3)'; }
+    apiFetch('POST', '/api/app-settings/bulk?app_id=email', payload)
+      .then(function (result) {
+        if (result && result.ok) {
+          if (status) { status.textContent = '✅ 已保存（' + result.count + ' 项）'; status.style.color = '#0ea89d'; }
+          self.setStatus('✅ AI 偏好已保存（模型：' + modelValue + '，阈值：' + payload.settings.classify_threshold.toFixed(2) + '）');
+          showToast('已保存 AI 分类偏好', 'success');
+        } else {
+          if (status) { status.textContent = '❌ 保存失败'; status.style.color = '#e53935'; }
+          showToast('保存失败', 'error');
+        }
+      })
+      .catch(function (err) {
+        if (status) { status.textContent = '❌ ' + (err.message || String(err)); status.style.color = '#e53935'; }
+        showToast('保存失败：' + (err.message || String(err)), 'error');
+      });
+  };
+
+  // v1.02: AI 自动分类偏好 — 恢复默认
+  EmailApp.prototype.resetAIPrefs = function () {
+    var self = this;
+    var sec = this.root.querySelector('[data-role="ai-prefs"]');
+    if (!sec) return;
+    var modelSel = sec.querySelector('[data-role="ai-pref-model"]');
+    var modelCustom = sec.querySelector('[data-role="ai-pref-model-custom"]');
+    var thr = sec.querySelector('[data-role="ai-pref-threshold"]');
+    var thrLabel = sec.querySelector('[data-role="ai-pref-threshold-label"]');
+    if (modelSel) modelSel.value = 'agnes-2.5-flash';
+    if (modelCustom) { modelCustom.style.display = 'none'; modelCustom.value = ''; }
+    if (thr) thr.value = 0.6;
+    if (thrLabel) thrLabel.textContent = '0.60';
+    showToast('已恢复默认值（点击【💾 保存偏好】持久化）', 'info');
+    // 自动触发保存（防 P163 silent write 但这是 reset 操作，用户已显式确认 → 直接 save）
+    setTimeout(function () { self.saveAIPrefs(); }, 50);
+  };
+
+  // v1.02: 路由 AI 与分类时同时加载分类 + AI 偏好
+  // 注：renderSettingsCategory 中 'ai' case 已调 loadCategories；这里再触发 loadAIPrefs
+
+  EmailApp.prototype.renderCategoryFilterChips = function () {
     var self = this;
     var currentFilter = this.state.categoryFilter || '';
     var cats = (this.state.availableCategories || []);

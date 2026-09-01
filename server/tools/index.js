@@ -53,6 +53,8 @@ require('./delegate-subtasks');
 require('./geo-track');
 // v0.X: GEO 应用工具（Phase 0 — D3 — llms.txt 生成器）
 require('./llms-txt-generator');
+// v0.1: 跨应用浏览器自动化工具组（web_*，小吉/任务 agent 操作真实浏览器）
+require('./web-agent');
 
 console.log('[tools] 内建工具注册完成:', listBuiltinTools().join(', '));
 function listBuiltinTools() { return require('../services/tool-registry').listTools().map(t => t.name); }

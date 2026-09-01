@@ -72,6 +72,42 @@ async function ensureConnected(req, res, next) {
 }
 router.use(ensureConnected);
 
+// 静态路由必须在动态路由（/:uid）之前注册，否则 /sender-categories 会被 :uid=NaN 拦截
+// v0.33: GET /sender-categories?mailbox=INBOX — 一次性拉所有已分类发件人
+router.get('/sender-categories', (req, res) => {
+  try {
+    const mailbox = req.query.mailbox || 'INBOX';
+    const store = require('../services/email-sender-category-store');
+    const map = store.listByMailbox(mailbox);
+    res.json({ ok: true, mailbox, count: Object.keys(map).length, categories: map });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+// v0.33: DELETE /sender-categories?mailbox=INBOX&sender=xxx — 撤销分类
+router.delete('/sender-categories', (req, res) => {
+  try {
+    const { sender, mailbox } = req.query;
+    if (!sender || !mailbox) return res.status(400).json({ ok: false, error: 'MISSING_ARGS' });
+    const store = require('../services/email-sender-category-store');
+    const removed = store.removeBySender(sender, mailbox);
+    res.json({ ok: true, removed });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+// v0.30: 批量分析发件人
+router.post('/analyze-senders', async (req, res) => {
+  try {
+    const { mailbox = 'INBOX', maxSenders = 20, modelId } = req.body || {};
+    const analyzer = require('../services/email-sender-analyzer');
+    const result = await analyzer.analyzeSendersBatch({ mailbox, maxSenders, modelId });
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // GET /api/emails/mailboxes — 列出邮箱
 router.get('/mailboxes', async (req, res) => {
   try {
@@ -277,34 +313,7 @@ router.post('/classify', async (req, res) => {
   }
 });
 
-// v0.33: GET /sender-categories?mailbox=INBOX — 一次性拉所有已分类发件人
-// 前端用此 API 在邮件列表行渲染"已分类 chip"
-router.get('/sender-categories', (req, res) => {
-  try {
-    const mailbox = req.query.mailbox || 'INBOX';
-    const store = require('../services/email-sender-category-store');
-    const map = store.listByMailbox(mailbox);
-    res.json({ ok: true, mailbox, count: Object.keys(map).length, categories: map });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
-  }
-});
 
-// v0.33: DELETE /sender-categories?mailbox=INBOX&sender=xxx — 撤销分类
-// 给将来加撤销按钮用（本轮不上 UI）
-router.delete('/sender-categories', (req, res) => {
-  try {
-    const { sender, mailbox } = req.query;
-    if (!sender || !mailbox) return res.status(400).json({ ok: false, error: 'MISSING_ARGS' });
-    const store = require('../services/email-sender-category-store');
-    const removed = store.removeBySender(sender, mailbox);
-    res.json({ ok: true, removed });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
-  }
-});
-
-// v0.30: AI 草拟回复（借鉴 inbox-zero@main draft-reply.ts 完整 system prompt）
 // 设计：用户主动触发 → 输出给弹窗显示 → 用户手动确认填入 composer（绝不自动发）
 // body: { from, subject, body, toneHints?, modelId? }
 // 返回：{ ok, draft, reason, source: 'ai'|'fallback' }
@@ -327,21 +336,6 @@ router.post('/draft-reply', async (req, res) => {
     }
     // v0.32: 重新生成时把上一版草稿 + 用户修改意见传给 LLM 避免重复
     const result = await drafter.draftReply({ from, subject, body, toneHints, toneSamples, previousDraft, retryHint, modelId });
-    res.json(result);
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
-  }
-});
-
-// v0.30: 批量分析发件人（借鉴 inbox-zero ai-categorize-senders.ts 批量模式）
-// 拉 INBOX 最近 50 封 → 频次聚合 → static 规则 + 1 次 LLM 推断（top 20 sender）
-// body: { mailbox?, maxSenders?, modelId? }
-// 返回：{ ok, analyzed, total_senders, senders: [{from, count, category, rationale, source}] }
-router.post('/analyze-senders', async (req, res) => {
-  try {
-    const { mailbox = 'INBOX', maxSenders = 20, modelId } = req.body || {};
-    const analyzer = require('../services/email-sender-analyzer');
-    const result = await analyzer.analyzeSendersBatch({ mailbox, maxSenders, modelId });
     res.json(result);
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });

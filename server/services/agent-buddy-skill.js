@@ -221,7 +221,10 @@ const CATEGORY_TOOLS = {
   'office':      ['generate_docx', 'generate_xlsx', 'generate_pptx', 'document_edit'],
   'project':     ['list_projects', 'create_project'],
   'media':       ['play_video', 'agnes_generate_video', 'agnes_query_video'],
-  'web':         ['web_search', 'fetch_url', 'web_research', 'get_current_time'],
+  'web':         ['web_search', 'fetch_url', 'web_research', 'get_current_time',
+                  // v0.1 浏览器自动化（browser-agent）：真实浏览器操作 + AI 网页版问答
+                  'web_open', 'web_snapshot', 'web_click', 'web_type', 'web_press',
+                  'web_read', 'web_eval', 'web_find', 'web_screenshot', 'web_ai_search'],
 };
 
 // v0.66: L2 'app' category 动态加载所有 app-tool（前端应用通过 WS 暴露的能力）

@@ -107,6 +107,19 @@ async function execute(opts = {}) {
       usage: null,
     };
   } else {
+    // v0.2: 求助暂停透传（runToolLoop 返回 status='waiting_user' + question + messages）
+    if (raw.status === 'waiting_user') {
+      rawDiag = {
+        _shape: 'waiting_user',
+        status: 'waiting_user',
+        question: raw.question || '需要你的帮助',
+        messages: raw.messages || null, // resume 时从此继续
+        content: '',
+        finishReason: 'waiting_user',
+        toolCalls: 0,
+        usage: null,
+      };
+    } else {
     // 兼容两种 object 形态：
     //   1. 正常 LLM 响应（callAnthropic/callOpenAI 返回）: {content, toolCalls, finishReason, usage}
     //   2. runToolLoop 最终答案（v0.63 新形态）: {content, finishReason, toolCalls:[], toolCallCount:N}
@@ -119,6 +132,19 @@ async function execute(opts = {}) {
       finishReason: raw.finishReason || null,
       toolCalls: toolCallCount,
       usage: raw.usage || null,
+    };
+    }
+  }
+
+  // v0.2: 求助暂停时 execute 返回值直接带 status/question/messages（调用方 resume 用）
+  if (rawDiag && rawDiag.status === 'waiting_user') {
+    return {
+      status: 'waiting_user',
+      question: rawDiag.question,
+      messages: rawDiag.messages,
+      content: '',
+      modelUsed: model.id,
+      raw: rawDiag,
     };
   }
 

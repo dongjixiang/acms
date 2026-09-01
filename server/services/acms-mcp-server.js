@@ -110,6 +110,109 @@ const TOOLS = [
       required: ['query'],
     },
   },
+  // ── v0.1：浏览器自动化（browser-agent）—— 真实浏览器操作 + AI 网页版问答 ──
+  {
+    name: 'web_ai_search',
+    description: '去 AI 网站（当前支持 DeepSeek 网页版）提问并返回完整回答。自动处理登录（账号凭据已配置）、可选开启联网搜索（DeepSeek 叫「智能搜索」）、输入问题、等待生成完成、提取回答。用户说「通过 DeepSeek 查 / 用 DeepSeek 联网搜 X」时调用。返回约 30-60s。\n\n【受限工具】仅在用户**明确要求**用 AI 搜索/AI 问答时调用。\n**禁止**在主任务遇到障碍时自作主张调用本工具"绕开"问题（如登录墙改用 DeepSeek 间接获取）—— 此类场景必须先调 request_user_help 询问用户，由用户选择三选一（A 登录/B 换数据源/C 取消）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        site: { type: 'string', description: 'AI 网站（当前仅 deepseek）' },
+        prompt: { type: 'string', description: '要问的问题' },
+        webSearch: { type: 'boolean', description: '是否开启联网搜索（DeepSeek 网页版「智能搜索」）', default: false },
+      },
+      required: ['site', 'prompt'],
+    },
+  },
+  {
+    name: 'web_open',
+    description: '打开一个网页（真实浏览器，可过多数反爬）。打开后如需理解页面结构调 web_snapshot，读正文用 web_read。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: '要打开的完整 URL（含 https://）' },
+      },
+      required: ['url'],
+    },
+  },
+  {
+    name: 'web_read',
+    description: '读取当前浏览器页面的正文文本（agent 可读格式，非 HTML）。用于获取文章内容、搜索结果、AI 回答等。',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'web_snapshot',
+    description: '获取当前浏览器页面的无障碍树（accessibility tree），返回带编号的可交互元素（如 [ref=e1]）。用于理解页面结构、找按钮/输入框/链接，然后 web_click / web_type 按 ref 操作。',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'web_click',
+    description: '点击页面元素。selector 支持：@ref（web_snapshot 里的编号，如 @e5）或 CSS 选择器。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: '@ref 编号或 CSS 选择器' },
+      },
+      required: ['selector'],
+    },
+  },
+  {
+    name: 'web_type',
+    description: '向输入框输入文本（自动聚焦）。selector 同 web_click（@ref 或 CSS）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: '@ref 编号或 CSS 选择器' },
+        text: { type: 'string', description: '要输入的文本' },
+      },
+      required: ['selector', 'text'],
+    },
+  },
+  {
+    name: 'web_press',
+    description: '向当前聚焦元素发送按键。常用：Enter（提交/发送）、Tab、Escape、ArrowDown。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        key: { type: 'string', description: '按键名，如 Enter / Tab / Escape' },
+      },
+      required: ['key'],
+    },
+  },
+  {
+    name: 'web_find',
+    description: '按文本/占位符语义定位元素并操作。locator: text/placeholder/role/label/alt。action: click（默认）/hover/focus。示例：web_find({"locator":"text","value":"登录","action":"click"})',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        locator: { type: 'string', description: '定位方式：text/placeholder/role/label/alt/title/testid' },
+        value: { type: 'string', description: '目标文本' },
+        action: { type: 'string', description: 'click（默认）/hover/focus' },
+      },
+      required: ['locator', 'value'],
+    },
+  },
+  {
+    name: 'web_screenshot',
+    description: '截取当前浏览器页面截图，保存到服务器并返回图片地址。用于视觉验证页面状态。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'string', description: '可选，截图分组标识' },
+      },
+    },
+  },
+  {
+    name: 'web_eval',
+    description: '在当前页面执行 JavaScript 表达式并返回结果。用于处理复杂 DOM：查元素状态、读动态内容。表达式用 IIFE：(() => { return document.title })()',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        expression: { type: 'string', description: 'JavaScript 表达式' },
+      },
+      required: ['expression'],
+    },
+  },
   {
     name: 'acms_workspace_read_file',
     description: '读取 ACMS 项目工作区中的文件内容。',
@@ -365,6 +468,76 @@ async function handleCall(toolName, args) {
                 ? `成功描述 ${describedCount}/${rawImages.length} 张；其余失败原因见各 image.fetch_error / describe_error 字段`
                 : `成功描述全部 ${describedCount} 张图`),
         });
+      }
+      // ── v0.1：浏览器自动化（browser-agent）—— 真实浏览器操作 + AI 网页版问答 ──
+      case 'web_ai_search': {
+        const ai = require('../services/ai-web-chat');
+        if (args.site !== 'deepseek') return toolResult({ error: `暂不支持站点: ${args.site}` }, true);
+        const r = await ai.deepSeekAsk(args.prompt, { webSearch: !!args.webSearch });
+        if (!r.ok) return toolResult({ error: r.error || 'DeepSeek 提问失败', step: r.step }, true);
+        return toolResult({
+          ok: true, answer: r.answer, elapsedMs: r.elapsedMs,
+          screenshot: r.screenshot || '',
+          note: r.timeout ? '回答可能未完整生成（超时）' : '',
+        });
+      }
+      case 'web_open': {
+        const ba = require('../services/browser-agent');
+        const r = await ba.open(args.url);
+        if (!r.ok) return toolResult({ error: r.error }, true);
+        return toolResult({ ok: true, title: r.title || '', url: r.url || args.url });
+      }
+      case 'web_read': {
+        const ba = require('../services/browser-agent');
+        const r = await ba.readText();
+        if (!r.ok) return toolResult({ error: r.error }, true);
+        return toolResult({ ok: true, text: r.output });
+      }
+      case 'web_snapshot': {
+        const ba = require('../services/browser-agent');
+        const r = await ba.snapshot();
+        if (!r.ok) return toolResult({ error: r.error }, true);
+        return toolResult({ ok: true, snapshot: r.output });
+      }
+      case 'web_click': {
+        const ba = require('../services/browser-agent');
+        const r = await ba.click(args.selector);
+        if (!r.ok) return toolResult({ error: r.error }, true);
+        return toolResult({ ok: true });
+      }
+      case 'web_type': {
+        const ba = require('../services/browser-agent');
+        const r = await ba.typeText(args.selector, args.text);
+        if (!r.ok) return toolResult({ error: r.error }, true);
+        return toolResult({ ok: true });
+      }
+      case 'web_press': {
+        const ba = require('../services/browser-agent');
+        const r = await ba.press(args.key);
+        if (!r.ok) return toolResult({ error: r.error }, true);
+        return toolResult({ ok: true });
+      }
+      case 'web_find': {
+        const ba = require('../services/browser-agent');
+        const r = await ba.find(args.locator, args.value, args.action || 'click');
+        if (!r.ok) return toolResult({ error: r.error }, true);
+        return toolResult({ ok: true });
+      }
+      case 'web_screenshot': {
+        const ba = require('../services/browser-agent');
+        const pathMod = require('path');
+        const tid = String(args.taskId || 'mcp').replace(/[^a-zA-Z0-9_-]/g, '');
+        const ts = Date.now();
+        const filePath = pathMod.join(ba.SESSION_ROOT, tid, `step-${ts}.png`);
+        const r = await ba.screenshotToFile(filePath);
+        if (!r.ok) return toolResult({ error: r.error }, true);
+        return toolResult({ ok: true, file: filePath, imageUrl: `/api/browser-agent/screenshots/${tid}/step-${ts}.png` });
+      }
+      case 'web_eval': {
+        const ba = require('../services/browser-agent');
+        const r = await ba.evalJs(args.expression);
+        if (!r.ok) return toolResult({ error: r.error }, true);
+        return toolResult({ ok: true, output: r.output });
       }
       default:
         return toolResult({ error: `未知工具: ${toolName}` }, true);

@@ -757,7 +757,7 @@ registerTool({
   parameters: {
     type: 'object',
     properties: {
-      category: { type: 'string', description: '要扩载的 category：requirement/task/bug/agent/window/system/dashboard/office/project/media/app/web（web 含 web_search/fetch_url 联网工具）' }
+      category: { type: 'string', description: '要扩载的 category：requirement/task/bug/agent/window/system/dashboard/office/project/media/app/web（web 含 web_search/fetch_url 联网工具 + web_* 浏览器自动化：web_open/web_click/web_read/web_ai_search 等，可操作真实浏览器 / DeepSeek 网页版问答）' }
     },
     required: ['category']
   },

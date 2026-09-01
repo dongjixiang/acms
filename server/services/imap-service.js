@@ -7,11 +7,33 @@ const emailImapRuleIntegration = require('./email-imap-rule-integration');
 // ── RFC 2047 encoded-word 解码（修复 Imap.parseHeader 把 base64 解码字节当 latin1 的 bug）──
 const iconv = require('iconv-lite');
 
-function decodeMimeWord(text) {
-  if (!text) return '';
+const { simpleParser } = require('mailparser');
+const emailParser = require('./email-parser-integration'); // v1.07: mailparser fallback
+
+// v1.07: mailparser fallback 后缓存原始 Buffer（key: mailbox+uid）— 让下载端点能用 mailparser 的附件 Buffer
+// 不缓存会导致 'mp_X' partID 走 IMAP fetch 失败（IMAP 不认识 mailparser 的 partID）
+const _parsedEmailCache = new Map(); // key: `${mailbox}:${uid}` → { rawBuf, parsed, timestamp }
+const _PARSED_CACHE_TTL = 5 * 60 * 1000; // 5 分钟
+
+function setParsedCache(mMailbox, mUid, rawBuf, parsed) {
+  _parsedEmailCache.set(mMailbox + ':' + mUid, { rawBuf: rawBuf, parsed: parsed, timestamp: Date.now() });
+}
+function getParsedCache(mMailbox, mUid) {
+  var k = mMailbox + ':' + mUid;
+  var entry = _parsedEmailCache.get(k);
+  if (!entry) return null;
+  if (Date.now() - entry.timestamp > _PARSED_CACHE_TTL) {
+    _parsedEmailCache.delete(k);
+    return null;
+  }
+  return entry;
+}
+
+function decodeMimeWord(s) {
+  if (!s) return '';
   // 匹配 =?charset?encoding?text?= （B 或 Q），允许 \\r\\n + WSP 折叠
-  const re = /=\\?([^?]+)\\?([BbQq])\\?([^?]*?)\\?=/g;
-  return String(text).replace(re, function(_m, charset, enc, data) {
+  const re = /=\?([^?]+)\?([BbQq])\?([^?]*?)\?=/g;
+  return String(s).replace(re, function(_m, charset, enc, data) {
     try {
       const encUpper = enc.toUpperCase();
       let buf;
@@ -45,8 +67,15 @@ function decodeBodyBuffer(buf, encoding) {
   const enc = String(encoding || '').toLowerCase();
   try {
     if (enc === 'base64') return Buffer.from(buf.toString('latin1').replace(/\\s+/g, ''), 'base64');
-    if (enc === 'quoted-printable') return Buffer.from(buf.toString('binary')
-      .replace(/=([0-9A-Fa-f]{2})/g, (_x, h) => String.fromCharCode(parseInt(h, 16))), 'binary');
+    if (enc === 'quoted-printable') {
+      // QP 解码前先剥离软换行 =\r\n / =\n（RFC 2045 §6.7：软换行不加空格，直接删除）
+      var qpStr = buf.toString('binary')
+        .replace(/=\r\n/g, '')
+        .replace(/=\n/g, '');
+      return Buffer.from(qpStr
+        .replace(/=_/g, ' ')
+        .replace(/=([0-9A-Fa-f]{2})/g, (_x, h) => String.fromCharCode(parseInt(h, 16))), 'binary');
+    }
     // 7bit / 8bit / binary：原样
     return buf;
   } catch (e) { return buf; }
@@ -343,6 +372,10 @@ function createImapService(config) {
 
             const textPartId = findTextPartId(attrs.struct, '', 'plain');
             const htmlPartId = findTextPartId(attrs.struct, '', 'html');
+            // v1.07: 调试日志 — 看 struct 实际结构 + 找到啥
+            try {
+              console.log('[imap getEmail] uid=' + uid + ' textPartId=' + textPartId + ' htmlPartId=' + htmlPartId + ' structLen=' + (Array.isArray(attrs.struct) ? attrs.struct.length : 'n/a'));
+            } catch (_) {}
 
             // 解析附件
             var attachments = [];
@@ -386,6 +419,28 @@ function createImapService(config) {
             findAttachments(attrs.struct, '');
             email.attachments = attachments;
 
+            // 收集 inline 图片附件（cid 内联图），避免 fetch2 冲突
+            var cidPartIds = [];
+            function findInlineImageParts(parts, prefix) {
+              if (!Array.isArray(parts)) return;
+              for (var i = 0; i < parts.length; i++) {
+                var p = parts[i];
+                if (!p) continue;
+                if (Array.isArray(p)) { findInlineImageParts(p, prefix + (i + 1) + '.'); continue; }
+                var disp = p.disposition;
+                var isInline = disp && (disp.type || '').toLowerCase() === 'inline';
+                var isImage = (p.type === 'image');
+                var hasCid = p.params && p.params.cid;
+                if (isInline && isImage && hasCid) {
+                  var pid = p.partID || (prefix + (i + 1));
+                  cidPartIds.push({ partID: pid, cid: hasCid.replace(/[<>]/g, '') });
+                }
+                if (p.parts && Array.isArray(p.parts)) findInlineImageParts(p.parts, prefix + (i + 1) + '.');
+              }
+            }
+            findInlineImageParts(attrs.struct, '');
+            email.cidImages = {}; // partID → base64 data URL
+
             // Phase 2: 只取具体的文本部分（避免 base64 混入）
             var bodyParts = [];
             if (textPartId) bodyParts.push(textPartId);
@@ -406,7 +461,8 @@ function createImapService(config) {
                     const charset = partInfo && partInfo.params && partInfo.params.charset;
                     const decoded = decodeBodyBuffer(rawBuf, encoding);
                     const body2 = charsetToString(decoded, charset);
-                    if (htmlPartId && info2.which === htmlPartId) {
+                    // 用 partInfo.subtype 判断而非字符串 partID 比较（partID 可能为 undefined）
+                    if (partInfo && partInfo.subtype === 'html') {
                       email.html = body2;
                     } else {
                       email.text = body2;
@@ -414,7 +470,7 @@ function createImapService(config) {
                     partsFetched++;
                     if (partsFetched >= bodyParts.length) {
                       textDone = true;
-                      checkResolve();
+                      // 不立即 resolve，等 Phase 3 图片拉完再一起 resolve
                     }
                   });
                 });
@@ -422,7 +478,134 @@ function createImapService(config) {
               fetch2.on('error', () => { textDone = true; checkResolve(); });
             } else {
               textDone = true;
-              checkResolve();
+              // 无文本部分且无 inline 图片时直接 resolve
+              if (cidPartIds.length === 0) { checkResolve(); }
+            }
+
+            // Phase 3: 并行拉取 inline 图片，转为 base64 data URL（阻塞 resolve，确保前端拿到完整数据）
+            if (cidPartIds.length > 0) {
+              var cidFetched = 0;
+              var cidTimeout = setTimeout(function() {
+                // 图片拉取超时（5s），不阻塞正文展示
+                if (cidFetched < cidPartIds.length) {
+                  console.warn('[imap] getEmail Phase 3 cid 图片拉取超时，uid=' + uid + ' 已拉 ' + cidFetched + '/' + cidPartIds.length);
+                  textDone = true;
+                  checkResolve();
+                }
+              }, 5000);
+              cidPartIds.forEach(function (item) {
+                _imap.fetch([uid], { bodies: [item.partID] }).on('message', (msg) => {
+                  msg.on('body', (stream, info) => {
+                    const chunks = [];
+                    stream.on('data', chunk => chunks.push(chunk));
+                    stream.on('end', () => {
+                      const rawBuf = Buffer.concat(chunks);
+                      const partInfo = findPartInStruct(attrs.struct, info.which);
+                      const encoding = partInfo && partInfo.encoding;
+                      let imgBuf;
+                      try {
+                        imgBuf = decodeBodyBuffer(rawBuf, encoding);
+                      } catch (e) { imgBuf = rawBuf; }
+                      const b64 = imgBuf.toString('base64');
+                      const mime = (partInfo && partInfo.type === 'image' ? 'image/' + (partInfo.subtype || 'png') : 'application/octet-stream');
+                      email.cidImages[item.partID] = 'data:' + mime + ';base64,' + b64;
+                      cidFetched++;
+                      if (cidFetched >= cidPartIds.length) {
+                        clearTimeout(cidTimeout);
+                        textDone = true;
+                        checkResolve();
+                      }
+                    });
+                  });
+                }).on('error', () => {
+                  cidFetched++;
+                  if (cidFetched >= cidPartIds.length) {
+                    clearTimeout(cidTimeout);
+                    textDone = true;
+                    checkResolve();
+                  }
+                });
+              });
+            } else {
+              // v1.07: 原解析找不到 text/plain 或 text/html part（findTextPartId 都返回 null）
+              // → fallback: 拉完整 BODY[] + 用 mailparser 兜底解析（仅当无 inline 图片时才走，避免与 cidPartIds 冲突）
+              textDone = true;
+              if (cidPartIds.length === 0) {
+                var fallbackFetch = _imap.fetch([uid], { bodies: '' });
+                fallbackFetch.on('message', function (fbMsg) {
+                  fbMsg.on('body', function (stream) {
+                    var chunks = [];
+                    stream.on('data', function (c) { chunks.push(c); });
+                    stream.on('end', function () {
+                      var rawBuf = Buffer.concat(chunks);
+emailParser.parseEmailSource(rawBuf).then(function (parsed) {
+                      try {
+                        if (!email.subject && parsed.subject) email.subject = parsed.subject;
+                        if (!email.from && parsed.from) email.from = parsed.from;
+                        if (!email.to && parsed.to) email.to = parsed.to;
+                        if (!email.cc && parsed.cc) email.cc = parsed.cc;
+                        if (!email.date && parsed.date) email.date = parsed.date;
+                        if (!email.messageId && parsed.messageId) email.messageId = parsed.messageId;
+                        if (!email.text && parsed.text) email.text = parsed.text;
+                        if (!email.html && parsed.html) email.html = parsed.html;
+                        // v1.07: mailparser fallback 也把附件转成 cidImages（电子发票邮件常见 cid: 引用附件）
+                        var mailparserAttachments = (parsed && parsed.attachments) || [];
+                        var mailparserCidImages = {};
+                        var mailparserAtts = [];
+                        for (var mi = 0; mi < mailparserAttachments.length; mi++) {
+                          var ma = mailparserAttachments[mi];
+                          var mName = ma.filename || ('mailparser-att-' + mi);
+                          var mType = ma.contentType || 'application/octet-stream';
+                          var mSize = ma.size || 0;
+                          var mCid = ma.cid || null;
+                          // 生成 data URL（仅 image 类型；其他附件也存 base64 备用）
+                          if (ma.content && Buffer.isBuffer(ma.content)) {
+                            var b64 = ma.content.toString('base64');
+                            var dataUrl = 'data:' + mType + ';base64,' + b64;
+                            var partKey = mCid ? ('mp_' + mi) : ('mp_' + mi);
+                            mailparserCidImages[partKey] = dataUrl;
+                            if (mCid) {
+                              // 同时用 cid 原始值 + 去 <> 后的值存（兼容 RFC 2392 带 <> 与简化两种格式）
+                              mailparserCidImages[mCid] = dataUrl;
+                              mailparserCidImages[mCid.replace(/[<>]/g, '')] = dataUrl;
+                            }
+                          }
+                          mailparserAtts.push({
+                            id: mi,
+                            name: mName,
+                            size: mSize,
+                            type: mType,
+                            partID: 'mp_' + mi,
+                            cid: mCid ? mCid.replace(/[<>]/g, '') : null,
+                          });
+                        }
+                        if (!email.cidImages || Object.keys(email.cidImages).length === 0) {
+                          email.cidImages = mailparserCidImages;
+                        } else {
+                          // merge（保留原值优先）
+                          email.cidImages = Object.assign(mailparserCidImages, email.cidImages);
+                        }
+                        if (mailparserAtts.length > 0 && (!email.attachments || email.attachments.length === 0)) {
+                          email.attachments = mailparserAtts;
+                        }
+                        console.log('[imap getEmail] v1.07 mailparser fallback 成功 uid=' + uid + ' text=' + (email.text || '').length + ' html=' + (email.html || '').length + ' atts=' + mailparserAtts.length + ' cidImages=' + Object.keys(email.cidImages || {}).length);
+                        // v1.07: 缓存原始 Buffer 让下载端点能拿到 mailparser 附件的 content
+                        setParsedCache(mailbox, uid, rawBuf, parsed);
+                      } catch (e) {
+                        console.warn('[imap getEmail] mailparser fallback merge 失败:', e.message);
+                      }
+                      checkResolve();
+                      }).catch(function (e) {
+                        console.warn('[imap getEmail] mailparser fallback 失败 uid=' + uid + ':', e.message);
+                        checkResolve();
+                      });
+                    });
+                  });
+                });
+                fallbackFetch.on('error', function () { checkResolve(); });
+              } else {
+                checkResolve();
+              }
             }
           });
         });
@@ -438,6 +621,19 @@ function createImapService(config) {
   // ── 获取附件内容（返回 buffer） ──
   function getAttachment(uid, partID, mailbox) {
     mailbox = mailbox || 'INBOX';
+    // v1.07: 如果 partID 是 mailparser 来的（'mp_X'），从缓存拿附件 content（不需 IMAP fetch）
+    if (partID && /^mp_\d+$/.test(partID)) {
+      var cacheEntry = getParsedCache(mailbox, uid);
+      if (cacheEntry && cacheEntry.parsed && cacheEntry.parsed.attachments) {
+        var idx = parseInt(partID.slice(3), 10);
+        var att = cacheEntry.parsed.attachments[idx];
+        if (att && att.content && Buffer.isBuffer(att.content)) {
+          return Promise.resolve(att.content);
+        }
+      }
+      // cache miss 或 content 不在 → fallback 到 IMAP（也可能失败，但保持原有行为）
+      console.warn('[imap getAttachment] mailparser cache miss for ' + mailbox + ':' + uid + ' partID=' + partID);
+    }
     return new Promise((resolve, reject) => {
       openBox(mailbox).then(() => {
         const fetch = _imap.fetch([uid], { bodies: [partID], struct: true });

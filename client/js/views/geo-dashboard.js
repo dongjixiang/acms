@@ -1363,6 +1363,7 @@
     const engineOptions = [
       { value: '', label: '所有引擎' },
       { value: 'deepseek', label: 'deepseek' },
+      { value: 'deepseek-web', label: 'deepseek-web 🔍' }, // v0.1: 网页版引擎（browser-agent）
       { value: 'openai', label: 'openai' },
       { value: 'claude', label: 'claude' },
       { value: 'perplexity', label: 'perplexity' },
@@ -1426,7 +1427,7 @@
       const langLabel = langMap[r.language] || r.language || 'zh';
       // v0.25: 引擎联网能力徽章（native=🔍 真联网 / 其余=🧠 裸模型）
       // v0.26: Claude + OpenAI 升级到 web_search tool → native（之前 planned）
-      const engineCap = { perplexity: 'native', deepseek: 'none', openai: 'native', google: 'planned', claude: 'native', grok: 'planned', copilot: 'none' };
+      const engineCap = { perplexity: 'native', deepseek: 'none', openai: 'native', google: 'planned', claude: 'native', grok: 'planned', copilot: 'none', 'deepseek-web': 'native' };
       const capMark = engineCap[r.engine] === 'native' ? ' 🔍' : ' 🧠';
       const queryText = _queryMap[r.query_id] || r.query || '(模板已删)';
       const answerText = r.raw_answer || '';
@@ -2928,6 +2929,7 @@
     const labels = {
       deepseek: 'DeepSeek', openai: 'OpenAI', claude: 'Claude', perplexity: 'Perplexity',
       google: 'Gemini', copilot: 'Copilot', grok: 'Grok', google_ai_mode: 'AI Mode',
+      'deepseek-web': 'DeepSeek 网页版 🔍', minimax: 'MiniMax',
     };
     grid.innerHTML = all.map(name => `
       <label class="geo-check-item">

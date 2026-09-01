@@ -198,7 +198,9 @@ async function callOpenAI(model, messages, opts, apiKey, tools) {
       /<\s*[\s\u200b_]*tool[\s\u200b_]*_?[\s\u200b_]*call[\s\u200b_]*\s*>/.test(msg.content) ||
       /<function[\s=>(]*\w+[\s=)>]*>/.test(msg.content) ||
       // v0.85: openapi<tool_sep> 变体（Agnes AI 第 5 种格式漂移）
-      msg.content.indexOf('openapi<tool_sep>') >= 0
+      msg.content.indexOf('openapi<tool_sep>') >= 0 ||
+      // v0.2: MiniMax/DeepSeek 文本格式工具调用（[工具调用] 标签 / {"tool":..} JSON 块）
+      msg.content.indexOf('工具调用') >= 0 || /\{\s*"tool"\s*:/.test(msg.content)
     )) {
       // v0.75: 某些模型用内联标签格式返回工具调用（非标准 OpenAI tool_calls）
       //   格式: <|tool_begin|>tool_name<|tool_param_begin|>{"arg":"val"}<|tool_end|>
@@ -290,6 +292,15 @@ async function callAnthropic(model, messages, opts, apiKey, tools) {
     if (tools && tools.length > 0 && data.content?.some(c => c.type === 'tool_use')) {
       result.toolCalls = toolRegistry.extractToolCalls('anthropic-messages', data);
       result.finishReason = data.stop_reason || 'tool_use';
+    } else if (tools && tools.length > 0 && textContent && (
+      // v0.2: MiniMax(anthropic-messages) 不返回原生 tool_use，只输出文本格式伪调用
+      textContent.indexOf('工具调用') >= 0 || /\{\s*"tool"\s*:/.test(textContent) ||
+      /<\s*[\s\u200b_]*tool[\s\u200b_]*_?[\s\u200b_]*call[\s\u200b_]*\s*>/.test(textContent) ||
+      /<function[\s=>(]*\w+[\s=)>]*>/.test(textContent) || textContent.indexOf('openapi<tool_sep>') >= 0
+    )) {
+      result.toolCalls = parseInlineToolCalls(textContent);
+      result.finishReason = 'tool_calls';
+      result.content = '';  // 工具调用文本不进入对话气泡
     }
 
     return result;
@@ -544,6 +555,24 @@ function parseInlineToolCalls(content) {
         args: toolArgs,
       });
     }
+  }
+  // v0.2 (2026-08-31): MiniMax 等模型输出「文本格式」工具调用（不走原生 tool_calls/tool_use）
+  //   格式 A（JSON 块）: { "tool": "web_open", "params": {"url": "..."} }
+  //   格式 B（标签）:  [工具调用] web_open({"url":"..."}) [/工具调用]
+  //   🔴 不传 tools 或模型协议适配弱时模型会退化为这种文本输出 —— 必须能解析
+  var jsonToolRe = /\{\s*"tool"\s*:\s*"([^"]+)"\s*,\s*"params"\s*:\s*(\{[\s\S]*?\})\s*\}/g;
+  var jm;
+  while ((jm = jsonToolRe.exec(stripped)) !== null) {
+    var jArgs = {};
+    try { jArgs = JSON.parse(jm[2]); } catch (e) { jArgs = { _raw: jm[2] }; }
+    results.push({ id: 'inline_json_' + Date.now() + '_' + results.length, name: jm[1], args: jArgs });
+  }
+  var tagToolRe = /\[\s*工具调用\s*\]\s*(\w+)\s*\(\s*(\{[\s\S]*?\})\s*\)\s*(?:\[\s*\/\s*工具调用\s*\])?/g;
+  var tm;
+  while ((tm = tagToolRe.exec(stripped)) !== null) {
+    var tArgs = {};
+    try { tArgs = JSON.parse(tm[2]); } catch (e) { tArgs = { _raw: tm[2] }; }
+    results.push({ id: 'inline_tag_' + Date.now() + '_' + results.length, name: tm[1], args: tArgs });
   }
   return results;
 }
@@ -882,6 +911,15 @@ async function runToolLoop(modelId, messages, options = {}) {
       }
       const finalArgs = pre.args || tc.args;
       const toolResult = await tool.handler(finalArgs, ctx);
+      // v0.2 (2026-08-31): 求助信号 —— 工具返回 needUserHelp 时暂停循环等用户
+      //   配合 request_user_help 工具：LLM 遇到登录/验证码/需要决策时调它
+      if (toolResult && toolResult.needUserHelp) {
+        const q = toolResult.question || '需要你的帮助';
+        console.log(`[runToolLoop] ⏸ 等待用户帮助: ${q}`);
+        if (trace) trace.addNote(rnd + 1, 'waiting_user', q);
+        hist.push({ round: rnd + 1, tool: tc.name, args: argsPreview, result: 'WAITING_USER' });
+        return { __pause: { question: q, tool: tc.name } };
+      }
       const resultPreview = JSON.stringify(toolResult).slice(0, 300);
       const postResult = await runPostHooks(tc.name, finalArgs, toolResult, ctx);
       const truncated = truncateToolResult(tc.name, postResult);
@@ -946,6 +984,7 @@ async function runToolLoop(modelId, messages, options = {}) {
 
 
 
+  let pauseSignal = null; // v0.2: 求助信号（request_user_help），for 循环内赋值、结束后返回
   for (let round = 0; round < maxRounds; round++) {
     console.log(`[runToolLoop] round=${round + 1}/${maxRounds} | messages=${messages.length} | taskId=${context.taskId || '?'}`);
 
@@ -1322,8 +1361,10 @@ Round ${round + 1}/${maxRounds}。
 // 串行组
     for (const _tc of serialCalls) {
       const sres = await _execToolCall(_tc, toolRegistry, api, messages, toolCallHistory, round, context);
+      if (sres && sres.__pause) { pauseSignal = sres.__pause; break; }
       if (sres) for (const m of sres) messages.push(m);
     }
+    if (pauseSignal) break; // ⏸ 需要用户帮助：跳出 round 循环
 
     // v1.0 (Phase 2-D): plan_execute 调通后锁子工具
     //   治 mszcfa4s_kiyo 类失败: plan_execute 创建 plan 后,LLM 又单独调 generate_image/send_email
@@ -1378,6 +1419,22 @@ Round ${round + 1}/${maxRounds}。
       }
     } catch (e) { /* 异步检测失败不应影响主流程 */ }
 
+  } // end for round
+
+  // v0.2: 求助暂停返回（携带 messages 供 resume 继续循环）
+  if (pauseSignal) {
+    console.log(`[runToolLoop] ⏸ 任务暂停等待用户: ${pauseSignal.question}`);
+    if (trace) { trace.addNote(maxRounds, 'waiting_user', pauseSignal.question); trace.finish({ content: '', finishReason: 'waiting_user' }); }
+    return {
+      status: 'waiting_user',
+      question: pauseSignal.question,
+      content: '',
+      finishReason: 'waiting_user',
+      toolCalls: [],
+      toolCallCount: toolCallHistory.length,
+      usage: null,
+      messages, // resume 时从此继续
+    };
   }
   console.error(`[runToolLoop] Tool loop exceeded max rounds (${maxRounds}). 完整 tool call history (${toolCallHistory.length} 条):\n${toolCallHistory.map(h => `  r${h.round} ${h.tool}(${(h.args||'').slice(0, 80)}) → ${h.resultPreview ? h.resultPreview.slice(0, 80) : (h.result || h.error || '?')}`).join('\n')}`);
   if (trace) trace.fail(new Error('Tool loop exceeded max rounds (' + maxRounds + ')'));
