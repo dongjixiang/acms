@@ -3247,11 +3247,11 @@
       const link = document.createElement('link');
       link.id = 'geo-dashboard-css';
       link.rel = 'stylesheet';
-      link.href = '/client/css/geo-dashboard.css?v=0.31';
+      link.href = '/client/css/geo-dashboard.css?v=0.32';
       document.head.appendChild(link);
     }
 
-      fetch('/client/views/geo-dashboard.html?v=0.31')
+      fetch('/client/views/geo-dashboard.html?v=0.32')
       .then(r => r.text())
       .then(html => {
         if (w.$c) w.$c.innerHTML = html;

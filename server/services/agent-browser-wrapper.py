@@ -21,28 +21,37 @@ def ensure_socket_dir():
     """确保 socket 目录存在"""
     os.makedirs(SOCKET_DIR, mode=0o700, exist_ok=True)
 
+# 🆕 2026-09-01：Chrome 111+ DevTools Protocol 默认拒绝非 localhost Origin（403）
+#     ACMS 浏览器从 120.24.204.130:3300 加载 → WebSocket 到 127.0.0.1:<daemon-port>
+#     Origin 不在 chromium 默认白名单 → handshake 403 → connectCDP 失败
+#     修法：让 wrapper 默认给 chromium 加 --remote-allow-origins=*
+#     agent-browser 通过 --args 或 AGENT_BROWSER_ARGS 环境变量接收
+DEFAULT_LAUNCH_ARGS = '--remote-allow-origins=*'
+
 def run_command(args, timeout=45):
     """运行 agent-browser 命令"""
     cmd = f'npx agent-browser {args}'
-    
+
     # 创建临时文件（使用唯一文件名避免冲突）
     unique_id = f'{int(time.time()*1000)}_{uuid.uuid4().hex[:8]}'
     stdout_path = os.path.join(SOCKET_DIR, f'stdout_{unique_id}.txt')
     stderr_path = os.path.join(SOCKET_DIR, f'stderr_{unique_id}.txt')
-    
+
     # 确保 socket 目录存在
     ensure_socket_dir()
-    
+
     # 打开文件获取 fd
     stdout_fd = os.open(stdout_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    
+
     try:
-        # 设置环境变量，确保会话复用
+        # 设置环境变量，确保会话复用 + Chromium Origin 白名单
         env = os.environ.copy()
         env['AGENT_BROWSER_SOCKET_DIR'] = SOCKET_DIR
         env['AGENT_BROWSER_SESSION'] = SESSION
         env['AGENT_BROWSER_IDLE_TIMEOUT_MS'] = '1800000'  # 30 分钟保活（原 5 分钟 → 控制台挂着画面 5 分钟无操作 daemon 退出 → 流断，2026-08-31 实踩）
+        # 🆕 默认追加 launch args；外部可通过 AGENT_BROWSER_ARGS 环境变量覆盖
+        env['AGENT_BROWSER_ARGS'] = os.environ.get('AGENT_BROWSER_ARGS', DEFAULT_LAUNCH_ARGS)
         
         # 重定向子进程的 stdout/stderr 到文件 fd
         proc = subprocess.Popen(
