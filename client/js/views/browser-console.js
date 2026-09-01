@@ -46,6 +46,10 @@
 
     .wb-body { display:flex; flex:1; min-height:0; min-width:0; }
 
+    /* 主区（column：main 在上 + bottombar 在底固定） */
+    .wb-content { flex:1; display:flex; flex-direction:column; min-width:0; min-height:0; }
+    .wb-main { flex:1; display:flex; min-width:0; min-height:0; position:relative; }
+
     /* 左栏：会话列表 */
     .wb-sidebar { width:180px; flex-shrink:0; border-right:1px solid var(--border,#333);
       display:flex; flex-direction:column; background:var(--bg2,#23262e); }
@@ -68,7 +72,6 @@
     .wb-sidebar-footer { padding:6px; border-top:1px solid var(--border); flex-shrink:0; }
 
     /* 主区 */
-    .wb-main { flex:1; display:flex; min-width:0; min-height:0; position:relative; }
     .wb-preview { flex:1; background:var(--bg2,#23262e); display:flex; align-items:center;
       justify-content:center; position:relative; overflow:hidden; }
     .wb-preview img { max-width:100%; max-height:100%; object-fit:contain; display:block; }
@@ -180,6 +183,7 @@
             <button class="wb-btn-mini" id="wb-clear-all" title="清空所有会话">🗑 清空全部</button>
           </div>
         </aside>
+        <div class="wb-content">
         <main class="wb-main">
           <div class="wb-preview" id="wb-preview">
             <img id="wb-live" src="" alt="" style="display:none">
@@ -196,6 +200,7 @@
             </div>
             <div class="wb-drawer-messages" id="wb-drawer-messages"></div>
           </aside>
+        </main>
           <div class="wb-bottombar">
             <button class="wb-btn-mini" id="wb-screenshot" title="截图">📷</button>
             <button class="wb-btn-mini" id="wb-stop" title="停止">⏹</button>
@@ -204,7 +209,7 @@
             <textarea class="wb-input" id="wb-input" placeholder="输入目标或继续问（Enter 发送 / Shift+Enter 换行）…" rows="1"></textarea>
             <button class="wb-btn-primary" id="wb-send">发送</button>
           </div>
-        </main>
+        </div>
       </div>
     </div>`;
 
