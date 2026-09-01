@@ -221,4 +221,139 @@ function getTask(taskId) {
   return TASKS.get(taskId) || null;
 }
 
-module.exports = { runGoalTask, resumeGoalTask, getTask, BROWSER_AGENT_PROMPT, TASKS };
+// ============================================================
+// v1.0：会话多轮（多轮上下文累积）
+//   sessionStore 维护 messages[] → 每次 user msg 累积进 messages
+//   再调 runtime.execute 跑一轮 → 完成后 append assistant 内容
+//   waiting_user 状态保留 messages + pendingQuestion → 用户回复后 resume
+// ============================================================
+const sessionStore = require('./session-store');
+
+const SESSION_TOOL_NAMES = [
+  'web_open', 'web_snapshot', 'web_click', 'web_type', 'web_press',
+  'web_read', 'web_eval', 'web_find', 'web_screenshot', 'web_ai_search',
+  'request_user_help',
+];
+
+async function runSessionTurn(sessionId, userMsg, opts = {}) {
+  if (!sessionId || !userMsg) return { sessionId, status: 'error', error: '缺少 sessionId 或 userMsg' };
+  const session = sessionStore.getOrCreate(sessionId, { title: opts.title });
+  // push user message（累积上下文）
+  session.addMessage({ role: 'user', content: userMsg, ts: Date.now() });
+
+  // 构造完整 messages：system + 累积历史
+  const messages = [
+    { role: 'system', content: BROWSER_AGENT_PROMPT },
+    ...session.messages,
+  ];
+
+  const taskId = opts.taskId || ('ws-' + Date.now().toString(36));
+  session.currentTaskId = taskId;
+  session.status = 'running';
+  session.pendingQuestion = null;
+
+  let result;
+  try {
+    result = await runtime.execute({
+      modelId: opts.modelId, // 默认跟随系统默认生成模型
+      messages,
+      toolNames: SESSION_TOOL_NAMES,
+      maxRounds: opts.maxRounds || 20,
+      caller: 'browser-agent-session',
+      context: { sessionId, taskId },
+      onProgress: (step) => {
+        // 追加工具调用记录（前端步骤卡用）
+        session.addToolCall({ ...step, ts: step.ts || Date.now() });
+        if (opts.onStep) opts.onStep({ ...step, sessionId, taskId });
+      },
+    });
+  } catch (e) {
+    session.status = 'error';
+    session.error = e.message;
+    if (opts.onDone) opts.onDone({ sessionId, status: 'error', error: e.message });
+    return { sessionId, status: 'error', error: e.message };
+  }
+
+  // waiting_user：保留 messages + question，等用户回复
+  if (result.status === 'waiting_user') {
+    session.status = 'waiting_user';
+    session.pendingQuestion = result.question;
+    session.messages = result.messages || session.messages;
+    if (opts.onWaiting) opts.onWaiting({ sessionId, taskId, question: session.pendingQuestion });
+    return { sessionId, taskId, status: 'waiting_user', question: session.pendingQuestion };
+  }
+
+  session.status = result.error ? 'error' : 'done';
+  // push assistant 回复到 session.messages（下次 turn 自动看到）
+  session.addMessage({ role: 'assistant', content: result.content || '', ts: Date.now() });
+  if (opts.onDone) opts.onDone({ sessionId, taskId, status: session.status, content: session.content, error: session.error });
+  return { sessionId, taskId, status: session.status, content: session.content, error: session.error };
+}
+
+async function resumeSessionTurn(sessionId, userReply, opts = {}) {
+  if (!sessionId) return { sessionId, status: 'error', error: '缺少 sessionId' };
+  const session = sessionStore.get(sessionId);
+  if (!session) return { sessionId, status: 'error', error: '会话不存在' };
+  if (session.status !== 'waiting_user') return { sessionId, status: 'error', error: `会话不在等待状态（当前 ${session.status}）` };
+
+  // push user reply
+  session.addMessage({ role: 'user', content: '[用户回复] ' + String(userReply || ''), ts: Date.now() });
+
+  const messages = [
+    { role: 'system', content: BROWSER_AGENT_PROMPT },
+    ...session.messages,
+  ];
+
+  session.status = 'running';
+  session.pendingQuestion = null;
+
+  let result;
+  try {
+    result = await runtime.execute({
+      modelId: opts.modelId,
+      messages,
+      toolNames: SESSION_TOOL_NAMES,
+      maxRounds: opts.maxRounds || 10,
+      caller: 'browser-agent-session-resume',
+      context: { sessionId, taskId: session.currentTaskId },
+      onProgress: (step) => {
+        session.addToolCall({ ...step, ts: step.ts || Date.now() });
+        if (opts.onStep) opts.onStep({ ...step, sessionId, taskId: session.currentTaskId });
+      },
+    });
+  } catch (e) {
+    session.status = 'error';
+    session.error = e.message;
+    if (opts.onDone) opts.onDone({ sessionId, status: 'error', error: e.message });
+    return { sessionId, status: 'error', error: e.message };
+  }
+
+  if (result.status === 'waiting_user') {
+    session.status = 'waiting_user';
+    session.pendingQuestion = result.question;
+    session.messages = result.messages || session.messages;
+    if (opts.onWaiting) opts.onWaiting({ sessionId, taskId: session.currentTaskId, question: session.pendingQuestion });
+    return { sessionId, taskId: session.currentTaskId, status: 'waiting_user', question: session.pendingQuestion };
+  }
+
+  session.status = result.error ? 'error' : 'done';
+  session.addMessage({ role: 'assistant', content: result.content || '', ts: Date.now() });
+  if (opts.onDone) opts.onDone({ sessionId, taskId: session.currentTaskId, status: session.status, content: session.content, error: session.error });
+  return { sessionId, taskId: session.currentTaskId, status: session.status, content: session.content, error: session.error };
+}
+
+function getSession(sessionId) {
+  return sessionStore.get(sessionId);
+}
+function listSessions() {
+  return sessionStore.list();
+}
+function deleteSession(sessionId) {
+  return sessionStore.delete(sessionId);
+}
+
+module.exports = {
+  runGoalTask, resumeGoalTask, getTask,
+  runSessionTurn, resumeSessionTurn, getSession, listSessions, deleteSession,
+  BROWSER_AGENT_PROMPT, TASKS, sessionStore,
+};

@@ -1231,6 +1231,24 @@
   accent-color: var(--geo-accent);
 }
 
+/* v0.32: 「本次跑」checkbox 用琥珀色跟「启用」列做视觉区分
+   「启用」= 默认全表行为（持续）  vs  「本次跑」= 单次选择（临时） */
+.geo-q-runnow {
+  accent-color: #f59e0b;
+  cursor: pointer;
+}
+
+.geo-q-runnow:hover {
+  transform: scale(1.15);
+  transition: transform .12s ease;
+}
+
+/* v0.32: helper bar 跟表格上沿紧凑对齐 */
+#geo-queries-runnow-bar .geo-btn-sm {
+  font-size: 11px;
+  padding: 3px 8px;
+}
+
 /* ============================================
    Modal 弹窗（替换 prompt/confirm）
    ============================================ */

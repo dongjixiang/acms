@@ -497,13 +497,18 @@ router.get('/export', (req, res) => {
   }
 });
 
-// === Tracker Agent（手动触发跑跟踪）— v0.29: 透传 maxQueries 给前端可控 ===
+// === Tracker Agent（手动触发跑跟踪）— v0.32: query_ids[] 用户手工选 ===
 router.post('/tracker/run', async (req, res) => {
   try {
-    const { brand_id, language = 'zh', rag = false, maxQueries } = req.body || {}; // v0.24: 多语言 / v0.25: RAG 检索增强 / v0.29: maxQueries 透传（默认 50）
+    const { brand_id, language = 'zh', rag = false, maxQueries, query_ids } = req.body || {}; // v0.24: 多语言 / v0.25: RAG / v0.29: maxQueries / v0.32: query_ids[]（不传=全 enabled）
     if (!brand_id) return res.status(400).json({ ok: false, error: 'BRAND_ID_REQUIRED' });
     const tracker = require('../services/geo-tracker-agent');
-    const result = await tracker.runTracker(brand_id, { language, rag, maxQueries });
+    const result = await tracker.runTracker(brand_id, {
+      language,
+      rag,
+      maxQueries,
+      queryIds: Array.isArray(query_ids) ? query_ids : undefined, // v0.32: 用户手工选的提问模板 id 列表；undefined=沿用旧行为（全 enabled）
+    });
     res.json(result);
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });

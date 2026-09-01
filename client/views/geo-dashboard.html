@@ -168,10 +168,20 @@
       <div id="geo-queries-filterbar" style="margin-bottom:12px;display:none"></div>
       <!-- v0.31: 四类意图覆盖率统计 -->
       <div id="geo-intent-dist" style="margin-bottom:12px;padding:8px 12px;background:rgba(255,255,255,.03);border-radius:6px;display:none"></div>
+      <!-- v0.32: 本次跑 helper bar（独立于「启用」列；未勾 = 跑全部 enabled，向后兼容） -->
+      <div id="geo-queries-runnow-bar" style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+        <span style="font-size:12px;opacity:.85;font-weight:600">📌 本次跑跟踪：</span>
+        <button type="button" class="geo-btn geo-btn-sm" id="geo-q-runnow-all-btn" title="勾选当前可见的全部提问">☑ 全选当前</button>
+        <button type="button" class="geo-btn geo-btn-sm" id="geo-q-runnow-none-btn" title="取消全部勾选">☐ 全不选</button>
+        <button type="button" class="geo-btn geo-btn-sm" id="geo-q-runnow-enabled-btn" title="只勾启用状态的（停用保持不勾）">仅启用</button>
+        <span id="geo-q-runnow-count" style="font-size:11px;opacity:.75;margin-left:6px">已选 0 / 可见 0</span>
+        <span style="font-size:11px;opacity:.55;margin-left:auto" class="geo-tip" data-tip="不勾任何提问 = 跑全部启用的（兼容老行为）">未勾选 = 跑全部启用</span>
+      </div>
       <table class="geo-table" id="geo-queries-table" style="display:none">
         <thead>
           <tr>
-            <th style="width:44px" class="geo-tip" data-tip="单条启用/停用（停用后「跑跟踪」会跳过）">启用</th>
+            <th style="width:36px" class="geo-tip" data-tip="单条启用/停用（停用后跑跟踪默认跳过）">✓</th>
+            <th style="width:40px" class="geo-tip" data-tip="📌 本次跑跟踪：只跑勾上的提问▶。未勾任何 = 跑全部启用（兼容老行为）">▶</th>
             <th style="width:60px">类别</th>
             <th class="geo-tip" data-tip="向 AI 引擎提出的搜索片段（短查询风格 — 用户在 ChatGPT 真实输入的样子）">Prompt</th>
             <th style="width:100px">标签</th>

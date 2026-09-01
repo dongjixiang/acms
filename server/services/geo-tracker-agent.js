@@ -93,14 +93,49 @@ async function runTracker(brandId, options = {}) {
     queries = GEO_STORE.listQueries(brandId);
   }
 
-  // v0.26 C2b: 只跑 enabled 的 queries（用户可停用单条 prompt）
-  const enabledQueries = queries.filter(q => q.enabled !== false);
-  if (enabledQueries.length !== queries.length) {
-    console.log(`[geo-tracker] Skipping ${queries.length - enabledQueries.length} disabled queries`);
-  }
-  queries = enabledQueries;
+  // v0.32: 用户手工选 vs 默认全 enabled —— 二选一
+  const hasUserChoices = Array.isArray(options.queryIds) && options.queryIds.length > 0;
+  let queriesToRun;
+  let skipReport = null;
 
-  if (queries.length === 0) {
+  if (hasUserChoices) {
+    // 用户手工选 → 精确按 id 跑（用户意图优先），但 disabled 要跳过并反馈
+    const idSet = new Set(options.queryIds);
+    const matched = queries.filter(q => idSet.has(q.id));
+    const enabledMatched = matched.filter(q => q.enabled !== false);
+    queriesToRun = enabledMatched;
+    skipReport = {
+      chosen: options.queryIds.length,
+      matched: matched.length,
+      ran: enabledMatched.length,
+      skipped_disabled: matched.length - enabledMatched.length,
+      skipped_missing: options.queryIds.length - matched.length,
+    };
+    console.log(`[geo-tracker] User chose ${skipReport.chosen} queries: ran=${skipReport.ran}, skipped_disabled=${skipReport.skipped_disabled}, skipped_missing=${skipReport.skipped_missing}`);
+  } else {
+    // 旧逻辑：全 enabled + maxQueries 截断（向后兼容）
+    const enabledQueries = queries.filter(q => q.enabled !== false);
+    if (enabledQueries.length !== queries.length) {
+      console.log(`[geo-tracker] Skipping ${queries.length - enabledQueries.length} disabled queries`);
+    }
+    queries = enabledQueries;
+    queriesToRun = queries.slice(0, maxQueries);
+  }
+
+  if (queriesToRun.length === 0) {
+    if (hasUserChoices) {
+      // v0.32: 用户选了但全部不可执行 → 区分原因
+      const msgs = [];
+      if (skipReport.skipped_missing > 0) msgs.push(`${skipReport.skipped_missing} 条不属于本品牌`);
+      if (skipReport.skipped_disabled > 0) msgs.push(`${skipReport.skipped_disabled} 条已停用`);
+      return {
+        ok: false,
+        error: 'NO_QUERIES_RUNNABLE',
+        message: `你选了 ${skipReport.chosen} 条提问模板 —— ${msgs.join(' + ')} —— 没有可执行的`,
+        brand_id: brandId,
+        skip_report: skipReport,
+      };
+    }
     return {
       ok: false,
       error: 'NO_QUERIES',
@@ -111,16 +146,15 @@ async function runTracker(brandId, options = {}) {
 
   // v0.24: 挂语言到每个 query（非 zh 时 tracker 内翻译）
   if (language && language !== 'zh') {
-    queries = queries.map(q => ({ ...q, language }));
+    queriesToRun = queriesToRun.map(q => ({ ...q, language }));
   }
-
-  const queriesToRun = queries.slice(0, maxQueries);
   const enginesToUse = engines.filter(e => {
     const eng = GEO_ENGINES.getEngine(e);
     return eng != null;
   });
 
-  // 2. 并发跑所有 queries × engines（用 Promise.allSettled 不让一个失败拖垮）
+  // 2. 准备 task 列表 —— 按引擎类型分组：singleton（独占浏览器/会话）
+  //    串行跑避免互相抢资源；其它 API 引擎继续并发 pool（v0.x 改造 2026-09-01）
   const tasks = [];
   for (const query of queriesToRun) {
     for (const engine of enginesToUse) {
@@ -128,9 +162,31 @@ async function runTracker(brandId, options = {}) {
     }
   }
 
-  console.log(`[geo-tracker] Running ${tasks.length} tasks (${queriesToRun.length} queries × ${enginesToUse.length} engines)`);
+  // helper：识别「独占浏览器/session」类引擎
+  // 依据：eng.capability.singleton === true（仅 deepseek-web 等少数浏览器自动化引擎标 true）
+  const isSingletonEngine = (engineName) => {
+    try {
+      const eng = GEO_ENGINES.getEngine(engineName);
+      return !!(eng && eng.capability && eng.capability.singleton === true);
+    } catch (_) {
+      return false;
+    }
+  };
 
-  const results = await Promise.allSettled(tasks.map(async ({ query, engine }) => {
+  const singletonTasks = tasks.filter(t => isSingletonEngine(t.engine));
+  const parallelTasks = tasks.filter(t => !isSingletonEngine(t.engine));
+
+  console.log(`[geo-tracker] Running ${tasks.length} tasks (${queriesToRun.length} queries × ${enginesToUse.length} engines)`);
+  if (singletonTasks.length > 0) {
+    const singletonEngines = [...new Set(singletonTasks.map(t => t.engine))].join(',');
+    console.log(`[geo-tracker]   ↳ ${singletonTasks.length} singleton tasks (${singletonEngines}) will run SERIALLY (独占浏览器)`);
+  }
+  if (parallelTasks.length > 0) {
+    console.log(`[geo-tracker]   ↳ ${parallelTasks.length} parallel tasks will run via Promise.allSettled`);
+  }
+
+  // 单条 task 执行器 —— 抽出来让 singleton/parallel 共享；内吞异常保证 fulfilled 语义
+  async function runSingleTask({ query, engine }) {
     const eng = GEO_ENGINES.getEngine(engine);
     const taskStart = Date.now();
     try {
@@ -168,7 +224,27 @@ async function runTracker(brandId, options = {}) {
         latency_ms: Date.now() - taskStart,
       };
     }
-  }));
+  }
+
+  // singleton 串行跑（一个吃完下一个，避免抢同一个浏览器 daemon session）
+  const results = [];
+  for (const t of singletonTasks) {
+    try {
+      const value = await runSingleTask(t);
+      results.push({ status: 'fulfilled', value });
+      // 顺手 console.log 当前进度（30+ queries 时方便观察没卡）
+      console.log(`[geo-tracker]   ↳ ${t.engine}/${t.query.id?.slice(0, 8) || '-'} done (${value.ok ? 'ok' : value.error || 'fail'}) latency=${value.latency_ms}ms`);
+    } catch (e) {
+      // runSingleTask 内吞异常，理论上到不了这里；防御性保留
+      results.push({ status: 'rejected', reason: e });
+    }
+  }
+
+  // 其它并发跑
+  if (parallelTasks.length > 0) {
+    const parallelResults = await Promise.allSettled(parallelTasks.map(runSingleTask));
+    results.push(...parallelResults);
+  }
 
   // 3. 写 geo_responses（除非 dryRun）
   let responsesWritten = 0;
@@ -238,6 +314,9 @@ async function runTracker(brandId, options = {}) {
     error_count: results.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && !r.value.ok)).length,
     dry_run: dryRun,
     duration_ms: Date.now() - startTs,
+    // v0.32: 透出运行模式 + 跳过报告（仅 user_choice 时有值）
+    mode: hasUserChoices ? 'user_choice' : 'all_enabled',
+    skip_report: skipReport,
     score: score.ok ? {
       score: score.score,
       grade: score.grade,

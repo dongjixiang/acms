@@ -1707,14 +1707,44 @@
     }
     const language = _byId('geo-track-language-select')?.value || 'zh';
     const rag = _byId('geo-track-rag-check')?.checked || false;
-    setStatus(`跑跟踪中（语言: ${language}${rag ? ' + 🔍检索增强' : ''}，可能 10-60 秒）...`, 'loading');
-    const r = await api('POST', '/api/geo/tracker/run', { brand_id: currentBrandId, language, rag });
+
+    // v0.32: 收集「本次跑」勾选的提问 id 列表（空 = 全 enabled，向后兼容）
+    const chosenIds = Array.from(document.querySelectorAll('.geo-q-runnow:checked'))
+      .map(cb => cb.dataset.qid)
+      .filter(Boolean);
+    const userChoiceMode = chosenIds.length > 0;
+
+    const modeLabel = userChoiceMode
+      ? `（语言: ${language}${rag ? ' + 🔍检索增强' : ''}，手工选 ${chosenIds.length} 条提问）`
+      : `（语言: ${language}${rag ? ' + 🔍检索增强' : ''}，跑全部启用模板，可能 10-60 秒）`;
+
+    setStatus(`跑跟踪中${modeLabel}...`, 'loading');
+
+    const r = await api('POST', '/api/geo/tracker/run', {
+      brand_id: currentBrandId,
+      language,
+      rag,
+      query_ids: userChoiceMode ? chosenIds : undefined, // 不传 = 后端走全 enabled 路径
+    });
+
     if (r.data?.ok) {
-      setStatus(`跟踪完成: ${r.data.success_count}/${r.data.tasks_run} 成功`, 'success');
-      notify(`🔍 跟踪完成: ${r.data.success_count}/${r.data.tasks_run} 成功`, 'success');
+      // v0.32: 反馈跳过数（disabled / missing）
+      let skipSuffix = '';
+      const sr = r.data.skip_report;
+      if (sr && sr.chosen > 0) {
+        const parts = [];
+        if (sr.skipped_disabled > 0) parts.push(`${sr.skipped_disabled} 条已停用`);
+        if (sr.skipped_missing > 0) parts.push(`${sr.skipped_missing} 条不属于本品牌`);
+        if (parts.length > 0) skipSuffix = `（跳过 ${parts.join(' + ')}）`;
+      }
+      const msg = `跟踪完成: ${r.data.success_count}/${r.data.tasks_run} 成功${skipSuffix}`;
+      setStatus(msg, 'success');
+      notify(`🔍 ${msg}`, 'success');
       await loadTracks();
     } else {
-      setStatus('跟踪失败: ' + (r.data?.error || r.status), 'error');
+      // 错误也透出后端 message（如 NO_QUERIES_RUNNABLE 的友好提示）
+      const tail = r.data?.message ? ` — ${r.data.message}` : '';
+      setStatus('跟踪失败: ' + (r.data?.error || r.status) + tail, 'error');
     }
   }
 
@@ -1885,6 +1915,8 @@
     if (!tbody) return;
     if (queries.length === 0) {
       tableEl.style.display = 'none';
+      const runnowBar = _byId('geo-queries-runnow-bar');
+      if (runnowBar) runnowBar.style.display = 'none'; // v0.32: 没数据时隐 helper bar
       if (emptyEl) {
         emptyEl.style.display = '';
         emptyEl.textContent = '该类别下没有模板';
@@ -1893,12 +1925,16 @@
     }
     if (emptyEl) emptyEl.style.display = 'none';
     tableEl.style.display = '';
+    const runnowBar = _byId('geo-queries-runnow-bar');
+    if (runnowBar) runnowBar.style.display = ''; // v0.32: 有数据时显 helper bar
+    updateRunNowCount();
     const cats = { brand_intro: '🏷️ 品牌', product: '🛠️ 产品', comparison: '⚖️ 对比', pricing: '💰 价格', use_case: '💡 场景', industry: '📈 行业', custom: '✏️ 自定义' };
     // v0.26 C4: systemTags 徽章（branded/unbranded 自动算）
     const sysTagMap = { branded: '🔵 品牌词', unbranded: '🟢 自然', 'high-performing': '⭐ 高表现', 'low-performing': '⚠️ 低表现' };
     tbody.innerHTML = queries.slice(0, 200).map(q => `
       <tr style="${q.enabled === false ? 'opacity:.55' : ''}">
-        <td><input type="checkbox" class="geo-q-enable" data-qid="${esc(q.id)}" ${q.enabled !== false ? 'checked' : ''} title="启用/停用（停用后跑跟踪跳过）"></td>
+        <td><input type="checkbox" class="geo-q-enable" data-qid="${esc(q.id)}" ${q.enabled !== false ? 'checked' : ''} title="启用/停用（停用后跑跟踪默认跳过）"></td>
+        <td><input type="checkbox" class="geo-q-runnow" data-qid="${esc(q.id)}" title="本次跑跟踪只跑勾上的（不勾任何 = 跑全部启用）"></td>
         <td><span class="geo-badge geo-badge-gray">${esc(cats[q.category] || q.category)}</span></td>
         <td>${esc(q.prompt)}
           ${(q.systemTags || []).map(t => `<span class="geo-cat-badge" style="background:rgba(99,102,241,.15);color:#818cf8">${sysTagMap[t] || esc(t)}</span>`).join('')}
@@ -1916,12 +1952,24 @@
         toggleQueryEnabled(cb.dataset.qid, cb.checked);
       });
     });
+    // v0.32: 绑定「本次跑」checkbox —— 仅触发 count 更新（不调 API，无后端写入）
+    tbody.querySelectorAll('.geo-q-runnow').forEach(cb => {
+      cb.addEventListener('change', updateRunNowCount);
+    });
     // v0.26: 绑定删除按钮
     tbody.querySelectorAll('.geo-q-del').forEach(btn => {
       btn.addEventListener('click', () => {
         deleteQueryTemplate(btn.dataset.qid, btn.dataset.prompt);
       });
     });
+  }
+
+  // v0.32: helper bar 计数函数（每次勾动 / 渲染 / filter 都重算）
+  function updateRunNowCount() {
+    const all = document.querySelectorAll('.geo-q-runnow');
+    const picked = document.querySelectorAll('.geo-q-runnow:checked');
+    const el = _byId('geo-q-runnow-count');
+    if (el) el.textContent = `已选 ${picked.length} / 可见 ${all.length}`;
   }
 
   // v0.26: 删除单条模板（确认 + 级联删 responses）
@@ -3286,6 +3334,41 @@
       const handler = () => runTracker();
       runTrackBtn.addEventListener('click', handler);
       cleanupFns.push(() => runTrackBtn.removeEventListener('click', handler));
+    }
+
+    // v0.32: helper bar 三按钮（仅 init 一次性绑 —— 按钮 DOM 持久存在）
+    const runnowAllBtn = _byId('geo-q-runnow-all-btn');
+    if (runnowAllBtn) {
+      const h = () => {
+        document.querySelectorAll('.geo-q-runnow').forEach(cb => { cb.checked = true; });
+        updateRunNowCount();
+      };
+      runnowAllBtn.addEventListener('click', h);
+      cleanupFns.push(() => runnowAllBtn.removeEventListener('click', h));
+    }
+    const runnowNoneBtn = _byId('geo-q-runnow-none-btn');
+    if (runnowNoneBtn) {
+      const h = () => {
+        document.querySelectorAll('.geo-q-runnow').forEach(cb => { cb.checked = false; });
+        updateRunNowCount();
+      };
+      runnowNoneBtn.addEventListener('click', h);
+      cleanupFns.push(() => runnowNoneBtn.removeEventListener('click', h));
+    }
+    const runnowEnabledBtn = _byId('geo-q-runnow-enabled-btn');
+    if (runnowEnabledBtn) {
+      // 「仅启用」= 勾上所有 .geo-q-enable 同行的「本次跑」checkbox。
+      // 通过 sibling 关系：找到同一行 tr 内的两个 checkbox。
+      const h = () => {
+        document.querySelectorAll('.geo-q-runnow').forEach(cb => {
+          const tr = cb.closest('tr');
+          const enableCb = tr ? tr.querySelector('.geo-q-enable') : null;
+          cb.checked = !!(enableCb && enableCb.checked);
+        });
+        updateRunNowCount();
+      };
+      runnowEnabledBtn.addEventListener('click', h);
+      cleanupFns.push(() => runnowEnabledBtn.removeEventListener('click', h));
     }
 
     // 引擎过滤（v0.26: 由 geo-filter-bar 组件内部 onChange 触发 loadTracks，无需在此绑定）
