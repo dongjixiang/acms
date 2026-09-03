@@ -107,17 +107,48 @@ router.post('/sender-categories/clear', (req, res) => {
     res.status(500).json({ ok: false, error: e.message || 'CLEAR_SENDER_CATEGORIES_FAILED' });
   }
 });
+
+  // v1.22: per-email 分类（权威）路由组 — 必须放在 GET/DELETE /:uid 之前避免被拦截
+  // P58 教训：'/:uid' 是 wildcard 单段匹配，'/email-classifications' 这类静态路径必须先注册
+  router.get('/email-classifications', (req, res) => {
+    try {
+      const mailbox = req.query.mailbox || 'INBOX';
+      const store = require('../services/email-classification-store');
+      let map;
+      if (req.query.uids) {
+        const uids = String(req.query.uids).split(',').map(function (s) { return parseInt(s.trim(), 10); }).filter(function (n) { return !Number.isNaN(n); });
+        map = store.bulkGetByUids(mailbox, uids);
+      } else {
+        map = store.listByMailbox(mailbox);
+      }
+      res.json({ ok: true, mailbox, count: Object.keys(map).length, classifications: map });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+  // v1.22: DELETE /api/emails/email-classifications?mailbox=INBOX&uid=xxx — 撤销单封邮件分类
+  router.delete('/email-classifications', (req, res) => {
+    try {
+      const { mailbox, uid } = req.query;
+      if (!mailbox || !uid) return res.status(400).json({ ok: false, error: 'MISSING_ARGS' });
+      const store = require('../services/email-classification-store');
+      const ok = store.removeByUid(mailbox, parseInt(uid, 10));
+      res.json({ ok, removed: ok });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
   // v1.22: POST /api/emails/email-classifications/clear — 清空全部单封邮件分类缓存
   router.post('/email-classifications/clear', (req, res) => {
-  try {
-    const store = require('../services/email-classification-store');
-    const removed = store.clearAll();
-    console.log('[email-classifications] 清空全部分类缓存，移除 ' + removed + ' 条');
-    res.json({ ok: true, removed });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message || 'CLEAR_EMAIL_CLASSIFICATIONS_FAILED' });
-  }
-});
+    try {
+      const store = require('../services/email-classification-store');
+      const removed = store.clearAll();
+      console.log('[email-classifications] 清空全部分类缓存，移除 ' + removed + ' 条');
+      res.json({ ok: true, removed });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message || 'CLEAR_EMAIL_CLASSIFICATIONS_FAILED' });
+    }
+  });
 // v0.30: 批量分析发件人
 router.post('/analyze-senders', async (req, res) => {
   try {
@@ -332,38 +363,6 @@ router.post('/:uid/read', async (req, res) => {
       ? await classifier.classifyEmailAndPersist({ from, mailbox, uid, subject, snippet, categories, modelId })
       : await classifier.classifyEmail({ from, subject, snippet, categories, modelId });
     res.json(result);
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
-  }
-});
-
-  // v1.22: GET /api/emails/email-classifications?mailbox=INBOX — 列出某 mailbox 下所有 per-email 分类
-//   前端 loadEmails 后调用一次 → state.emailClassifications[uid] 用于 chip 渲染
-//   可选参数 uids=1,2,3 — 只取指定 uid（避免拉全集）
-router.get('/email-classifications', (req, res) => {
-  try {
-    const mailbox = req.query.mailbox || 'INBOX';
-    const store = require('../services/email-classification-store');
-    let map;
-    if (req.query.uids) {
-      const uids = String(req.query.uids).split(',').map(function (s) { return parseInt(s.trim(), 10); }).filter(function (n) { return !Number.isNaN(n); });
-      map = store.bulkGetByUids(mailbox, uids);
-    } else {
-      map = store.listByMailbox(mailbox);
-    }
-    res.json({ ok: true, mailbox, count: Object.keys(map).length, classifications: map });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
-  }
-});
-  // v1.22: DELETE /api/emails/email-classifications?mailbox=INBOX&uid=xxx — 撤销单封邮件分类
-router.delete('/email-classifications', (req, res) => {
-  try {
-    const { mailbox, uid } = req.query;
-    if (!mailbox || !uid) return res.status(400).json({ ok: false, error: 'MISSING_ARGS' });
-    const store = require('../services/email-classification-store');
-    const ok = store.removeByUid(mailbox, parseInt(uid, 10));
-    res.json({ ok, removed: ok });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
