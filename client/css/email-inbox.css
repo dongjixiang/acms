@@ -137,6 +137,72 @@
 }
 .em-list-foot .em-btn[disabled] { opacity: 0.45; cursor: not-allowed; }
 .em-list-foot > span { flex: 1; text-align: center; }
+/* v1.15: 更多文件夹折叠项 — 区别于普通文件夹，悬浮/点击态明显 */
+.em-folder-more {
+  cursor: pointer;
+  color: var(--text3, #888);
+}
+.em-folder-more:hover {
+  background: var(--bg2, #f5f5f7);
+  color: var(--accent1, #6366f1);
+}
+.em-folder-more .em-folder-name::after {
+  content: ' ▸';
+  font-size: 10px;
+}
+.em-folder-more.em-folder-expanded .em-folder-name::after {
+  content: ' ▴';
+}
+.em-folder-more .em-folder-icon { opacity: 0.7; }
+/* v1.17: 原邮件 HTML 预览（reply/forward 时内嵌在 composer 下方） */
+.em-composer-preview {
+  margin-top: 12px;
+  border: 1px dashed var(--border, #d0d0d8);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg, #fff);
+}
+.em-composer-preview-head {
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text3, #888);
+  background: var(--bg2, #f5f5f7);
+  border-bottom: 1px dashed var(--border, #d0d0d8);
+  letter-spacing: .02em;
+}
+.em-composer-preview-iframe {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  min-height: 120px;
+  max-height: 600px;
+  overflow: auto;
+}
+/* v1.18: reply Composer 里原邮件引用区（分割线 + iframe） */
+.em-composer-original-divider {
+  margin: 12px 0 4px;
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text3, #888);
+  background: var(--bg2, #f5f5f7);
+  border-top: 1px dashed var(--border, #d0d0d8);
+  border-bottom: 1px dashed var(--border, #d0d0d8);
+  text-align: center;
+  letter-spacing: .04em;
+}
+.em-composer-original-iframe {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  min-height: 120px;
+  max-height: 600px;
+  overflow: auto;
+  border-radius: 0 0 6px 6px;
+}
 
 .em-item {
   display: flex;
@@ -533,6 +599,56 @@
   box-sizing: border-box;
 }
 .em-textarea-html { min-height: 280px; }
+
+/* v1.19: contenteditable 富文本编辑器 */
+.em-composer-editor {
+  min-height: 180px;
+  max-height: 400px;
+  overflow-y: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 6px;
+  background: var(--bg, #fff);
+  color: var(--text, #222);
+  font-size: 13px;
+  line-height: 1.7;
+  word-break: break-word;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.em-composer-editor:focus {
+  border-color: var(--accent, #0ea89d);
+}
+.em-composer-editor.em-editor-empty:before {
+  content: attr(placeholder);
+  color: var(--text3, #aaa);
+  pointer-events: none;
+}
+.em-composer-editor img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+  margin: 4px 0;
+}
+.em-composer-editor blockquote {
+  border-left: 3px solid var(--accent, #0ea89d);
+  margin: 8px 0;
+  padding-left: 12px;
+  color: var(--text2, #555);
+}
+.em-composer-editor ul, .em-composer-editor ol {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+.em-font-size-select {
+  padding: 2px 4px;
+  border: 1px solid var(--border, #d0d0d8);
+  border-radius: 4px;
+  font-size: 11px;
+  background: var(--bg, #fff);
+  color: var(--text, #222);
+  cursor: pointer;
+}
 
 .em-att-chips {
   list-style: none;

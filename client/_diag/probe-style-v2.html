@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>DOMPurify style probe v2</title>
+<script src="/client/lib/dompurify.min.js?v=3.0"></script>
+</head>
+<body>
+<h1>DOMPurify style 标签过滤诊断 v2</h1>
+<div id="out"></div>
+<script>
+(async function () {
+  const KEY = 'dev-key-001';
+  const res = await fetch('/api/emails/3339?mailbox=INBOX', { headers: { 'x-api-key': KEY } });
+  const email = await res.json();
+  const html = email.html;
+  const lines = [];
+
+  const IFRAME_CONFIG = {
+    ALLOWED_TAGS: ['p','br','span','div','b','strong','i','em','u','s','strike','ul','ol','li','blockquote','pre','code','h1','h2','h3','h4','h5','h6','a','img','table','thead','tbody','tr','th','td','col','colgroup','hr','mark','small','sub','sup','del','ins','style','link','base','meta'],
+    ALLOWED_ATTR: ['href','name','target','rel','title','alt','width','height','style','colspan','rowspan','align','valign','border','cellpadding','cellspacing','src','bgcolor','color','face','size'],
+    ALLOW_DATA_ATTR: false,
+    KEEP_CONTENT: true,
+    RETURN_DOM: false,
+    SANITIZE_DOM: true,
+    FORBID_TAGS: ['script','iframe','object','embed','form','input','button','textarea','select'],
+    FORBID_ATTR: ['on*']
+  };
+
+  lines.push('原 html <style> 数: ' + (html.match(/<style/g) || []).length);
+  lines.push('原 html 含 #c00403: ' + (html.match((/<style/g) || []).length));
+
+  const step1 = DOMPurify.sanitize(html, IFRAME_CONFIG);
+  lines.push('IFRAME_CONFIG 一次 sanitize 后 <style> 数: ' + (step1.match(/<style/g) || []).length);
+  lines.push('IFRAME_CONFIG 一次 sanitize 后 含 #c00403: ' + (step1.match(/#c00403/g) || []).length);
+
+  const cfgNoSD = Object.assign({}, IFRAME_CONFIG, { SANITIZE_DOM: false });
+  const step2 = DOMPurify.sanitize(html, cfgNoSD);
+  lines.push('SANITIZE_DOM=false 后 <style> 数: ' + (step2.match(/<style/g) || []).length);
+
+  // DOMPurify 默认
+  const step3 = DOMPurify.sanitize(html);
+  lines.push('默认配置后 <style> 数: ' + (step3.match(/<style/g) || []).length);
+  lines.push('默认配置 ALLOWED_TAGS 含 style? ' + DOMPurify.defaultConfig.ALLOWED_TAGS.includes('style'));
+  lines.push('默认配置 ALLOWED_ATTR 含 class? ' + DOMPurify.defaultConfig.ALLOWED_ATTR.includes('class'));
+
+  document.getElementById('out').textContent = lines.join('\n');
+  console.log('PROBE_RESULT_START\n' + lines.join('\n') + '\nPROBE_RESULT_END');
+})();
+</script>
+</body>
+</html>

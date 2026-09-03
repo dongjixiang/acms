@@ -236,6 +236,61 @@ router.post('/close', async (req, res) => {
   }
 });
 
+// ── POST /api/browser-agent/restart ──
+// v1.0 修复：daemon 半死不活时一键恢复（2026-09-02 实测 tab list 60s 超时 / 20+ chrome.exe 累积）
+//   close --all 用 5s 超时（daemon hang 时不等结果）+ open about:blank 兜底
+// v1.1 加强：close 超时后 taskkill /F /IM chrome.exe /T 兜底杀残留 Chrome 进程
+//   （根因：daemon 内部状态错乱，close 不响应，残留 Chrome 累积到 40+ 个，CDP 命令发到 stale target）
+const { spawn: _spawn } = require('child_process');
+function _taskkillChrome() {
+  return new Promise((resolve) => {
+    let stdout = '', stderr = '';
+    const p = _spawn('taskkill', ['/F', '/IM', 'chrome.exe', '/T'], { stdio: 'pipe' });
+    p.stdout.on('data', (d) => stdout += d.toString());
+    p.stderr.on('data', (d) => stderr += d.toString());
+    p.on('close', (code) => resolve({ code, stdout: stdout.trim(), stderr: stderr.trim() }));
+    p.on('error', (e) => resolve({ code: -1, error: e.message }));
+  });
+}
+router.post('/restart', async (req, res) => {
+  const log = (m) => { try { console.log('[browser-agent] /restart:', m); } catch (e) {} };
+  log('开始重启远程浏览器');
+  // 1. close --all 限时（daemon hang 时不等结果，Promise.race 兜底）
+  const closePromise = ba.closeAll();
+  const closeTimeout = new Promise((r) => setTimeout(() => r({ ok: false, error: 'close 超时（daemon hang）' }), 5000));
+  const closeR = await Promise.race([closePromise, closeTimeout]);
+  log('close --all 结果: ' + JSON.stringify(closeR));
+  // 2. v1.1 兜底：taskkill /F /IM chrome.exe（残留 Chrome 进程累积到 40+ 个时必须清）
+  let killResult = null;
+  if (!closeR.ok) {
+    log('close 失败，兜底 taskkill chrome.exe');
+    killResult = await _taskkillChrome();
+    const killedMatches = (killResult.stdout || '').match(/SUCCESS:.*terminated/g) || [];
+    log('taskkill chrome.exe 杀进程数: ' + killedMatches.length + ' (code=' + killResult.code + ')');
+    // 等 Chrome 完全退出
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  // 3. open about:blank 拉起新 page（让 daemon 重新 attach 到新 Chrome）
+  let openR = { ok: false, error: 'open 未执行' };
+  try {
+    openR = await ba.tryExec('open "about:blank" --json', 15000);
+  } catch (e) {
+    openR = { ok: false, error: e.message };
+  }
+  log('open about:blank 结果: ' + JSON.stringify(openR).slice(0, 200));
+  // 4. 即便中间失败，也给前端 ok（前端会自己 scheduleCdpRetry 重连 CDP）
+  const killedCount = killResult ? ((killResult.stdout || '').match(/SUCCESS:.*terminated/g) || []).length : 0;
+  res.json({
+    ok: true,
+    note: killedCount > 0
+      ? `已重启远程浏览器（close 超时 + taskkill 杀掉 ${killedCount} 个残留 Chrome + open about:blank）`
+      : '已重启远程浏览器（close + open about:blank）；前端 CDP 会自动重连',
+    close: closeR,
+    chromeKilled: killResult ? { count: killedCount, code: killResult.code } : null,
+    open: openR.ok ? { ok: true, url: 'about:blank' } : openR,
+  });
+});
+
 // ── POST /api/browser-agent/deepseek/ask ──
 // DeepSeek 网页版问答（ai-web-chat 语义接口）
 // body: { prompt: string, webSearch?: boolean, taskId?: string }

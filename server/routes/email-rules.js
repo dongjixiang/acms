@@ -109,7 +109,21 @@ router.get('/logs', (req, res) => {
   }
 });
 
-// POST /api/email-rules/test — 测试规则（用 mock 数据，不触碰真实邮件，防 P164 实踩）
+// v1.20: POST /api/email-rules/logs/clear — 清空执行日志
+router.post('/logs/clear', (req, res) => {
+  try {
+    const logsColl = collection('email_rule_logs');
+    const all = logsColl.all ? logsColl.all() : [];
+    const count = all.length;
+    all.forEach(function (doc) {
+      logsColl.remove(d => d.id === doc.id);
+    });
+    console.log('[email-rule-logs] 清空执行日志，移除 ' + count + ' 条');
+    res.json({ ok: true, removed: count });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message || 'CLEAR_LOGS_ERROR' });
+  }
+});
 router.post('/test', async (req, res) => {
   try {
     const { description, mailbox, mockEmail } = req.body || {};

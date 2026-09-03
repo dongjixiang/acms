@@ -16,6 +16,8 @@ function authMiddleware(req, res, next) {
       // v0.29: GEO PDF 周报/月报/对比报告下载（文件名为 {brand_id}_{type}_{time}.pdf 高熵 + path.basename 防御；
       //  window.open(_blank) 是裸 GET 不带 Authorization 头，必须白名单豁免，否则多多的「PDF 找不到」 bug 又复发）
       || /^\/api\/geo\/reports\/download\/[^/]+$/.test(req.path)
+      // v0.33: GEO Opportunities 智能推荐（前端 drawer 面板用 window.open 触发，无 Authorization 头）
+      || /^\/api\/geo\/opportunities\/[^/]+$/.test(req.path)
      ) return next();
 
   // 1. 尝试 JWT token（Authorization: Bearer <token>）

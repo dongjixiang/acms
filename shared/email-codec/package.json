@@ -1,0 +1,15 @@
+{
+  "name": "email-codec",
+  "version": "1.0.0",
+  "description": "RFC 2047 / RFC 5322 / RFC 2045 email decoding utilities (shared between ACMS frontend & backend)",
+  "main": "index.js",
+  "scripts": {
+    "test": "node test.js"
+  },
+  "keywords": ["email", "rfc2047", "rfc5322", "mime", "charset", "decoding"],
+  "license": "MIT",
+  "dependencies": {
+    "iconv-lite": "^0.6.3"
+  },
+  "devDependencies": {}
+}

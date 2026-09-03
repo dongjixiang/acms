@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>DOMPurify probe (inline)</title>
+<script src="/client/lib/dompurify.min.js?v=3.0"></script>
+</head>
+<body>
+<h1>DOMPurify probe (HTML inline)</h1>
+<div id="out" style="white-space:pre-wrap;font-family:Consolas,monospace;font-size:12px"></div>
+<script src="/client/_diag/_mail-3339.jsonp.js"></script>
+<script>
+(function () {
+  const html = window.__MAIL_HTML__;
+  const lines = [];
+
+  const IFRAME_CONFIG = {
+    ALLOWED_TAGS: ['p','br','span','div','b','strong','i','em','u','s','strike','ul','ol','li','blockquote','pre','code','h1','h2','h3','h4','h5','h6','a','img','table','thead','tbody','tr','th','td','col','colgroup','hr','mark','small','sub','sup','del','ins','style','link','base','meta'],
+    ALLOWED_ATTR: ['href','name','target','rel','title','alt','width','height','style','colspan','rowspan','align','valign','border','cellpadding','cellspacing','src','bgcolor','color','face','size'],
+    ALLOW_DATA_ATTR: false,
+    KEEP_CONTENT: true,
+    RETURN_DOM: false,
+    SANITIZE_DOM: true,
+    FORBID_TAGS: ['script','iframe','object','embed','form','input','button','textarea','select'],
+    FORBID_ATTR: ['on*']
+  };
+
+  lines.push('原 html <style> 数: ' + (html.match(/<style/g) || []).length);
+  lines.push('原 html 含 #c00403: ' + (html.match(/#c00403/g) || []).length);
+  lines.push('原 html 含 table1x: ' + (html.match(/table1x/g) || []).length);
+
+  const step1 = DOMPurify.sanitize(html, IFRAME_CONFIG);
+  lines.push('---IFRAME_CONFIG 一次 sanitize---');
+  lines.push('<style> 数: ' + (step1.match(/<style/g) || []).length);
+  lines.push('含 #c00403: ' + (step1.match(/#c00403/g) || []).length);
+  lines.push('含 table1x: ' + (step1.match(/table1x/g) || []).length);
+  lines.push('含 class="table1x": ' + (step1.match(/class="table1x"/g) || []).length);
+  lines.push('含 class= : ' + (step1.match(/class=/g) || []).length);
+
+  const cfgNoSD = Object.assign({}, IFRAME_CONFIG, { SANITIZE_DOM: false });
+  const step2 = DOMPurify.sanitize(html, cfgNoSD);
+  lines.push('---SANITIZE_DOM=false---');
+  lines.push('<style> 数: ' + (step2.match(/<style/g) || []).length);
+  lines.push('含 #c00403: ' + (step2.match(/#c00403/g) || []).length);
+  lines.push('含 class= : ' + (step2.match(/class=/g) || []).length);
+
+  // 默认
+  const step3 = DOMPurify.sanitize(html);
+  lines.push('---默认配置---');
+  lines.push('<style> 数: ' + (step3.match(/<style/g) || []).length);
+  lines.push('含 #c00403: ' + (step3.match(/#c00403/g) || []).length);
+  lines.push('含 class= : ' + (step3.match(/class=/g) || []).length);
+  lines.push('含 src= : ' + (step3.match(/src=/g) || []).length);
+  lines.push('默认 ALLOWED_TAGS 含 style? ' + DOMPurify.defaultConfig.ALLOWED_TAGS.includes('style'));
+
+  document.getElementById('out').textContent = lines.join('\n');
+})();
+</script>
+</body>
+</html>

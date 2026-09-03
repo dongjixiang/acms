@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>DOMPurify style tag probe</title>
+<script src="/client/lib/dompurify.min.js?v=3.0"></script>
+<script src="/client/js/utils/sanitize-email.js?v=1.10"></script>
+</head>
+<body>
+<h1>DOMPurify style 标签过滤诊断</h1>
+<pre id="out"></pre>
+<script>
+(async function () {
+  const KEY = 'dev-key-001';
+  const res = await fetch('/api/emails/3339?mailbox=INBOX', { headers: { 'x-api-key': KEY } });
+  const email = await res.json();
+  const html = email.html;
+
+  // 完整复刻 IFRAME_CONFIG
+  const INLINE_CONFIG = {
+    ALLOWED_TAGS: [
+      'p','br','span','div','b','strong','i','em','u','s','strike',
+      'ul','ol','li','blockquote','pre','code','h1','h2','h3','h4','h5','h6',
+      'a','img','table','thead','tbody','tr','th','td','col','colgroup',
+      'hr','mark','small','sub','sup','del','ins'
+    ],
+    ALLOWED_ATTR: [
+      'href','name','target','rel','title','alt','width','height',
+      'style','colspan','rowspan','align','valign','border','cellpadding','cellspacing',
+      'src','bgcolor','color','face','size'
+    ],
+    ALLOW_DATA_ATTR: false,
+    KEEP_CONTENT: true,
+    RETURN_DOM: false,
+    SANITIZE_DOM: true
+  };
+  const IFRAME_CONFIG = {
+    ...INLINE_CONFIG,
+    ALLOWED_TAGS: [...INLINE_CONFIG.ALLOWED_TAGS, 'style','link','base','meta'],
+    ALLOWED_ATTR: [...INLINE_CONFIG.ALLOWED_ATTR, 'rel','media','href','type','charset','http-equiv','content'],
+    FORBID_TAGS: ['script','iframe','object','embed','form','input','button','textarea','select'],
+    FORBID_ATTR: ['on*']
+  };
+
+  const lines = [];
+
+  lines.push('=== Step 1: 原 html <style> 数: ' + (html.match(/<style/g) || []).length);
+  const step1 = DOMPurify.sanitize(html, IFRAME_CONFIG);
+  lines.push('=== Step 2: IFRAME_CONFIG 一次 sanitize 后 <style> 数: ' + (step1.match(/<style/g) || []).length);
+
+  // 不带 SANITIZE_DOM 试试
+  const cfgNoSD = { ...IFRAME_CONFIG, SANITIZE_DOM: false };
+  const step2 = DOMPurify.sanitize(html, cfgNoSD);
+  lines.push('=== Step 3: SANITIZE_DOM=false 后 <style> 数: ' + (step2.match(/<style/g) || []).length);
+
+  // 全默认配置
+  const step3 = DOMPurify.sanitize(html);
+  lines.push('=== Step 4: 纯默认（无 config）<style> 数: ' + (step3.match(/<style/g) || []).length);
+
+  // ALLOWED_TAGS 包含 style 但用默认 ALLOWED_ATTR
+  const cfgTagsOnly = { ALLOWED_TAGS: [...IFRAME_CONFIG.ALLOWED_TAGS] };
+  const step4 = DOMPurify.sanitize(html, cfgTagsOnly);
+  lines.push('=== Step 5: 只 ALLOWED_TAGS 含 style（默认 attr）<style> 数: ' + (step4.match(/<style/g) || []).length);
+
+  // 检查 DOMPurify 默认 ALLOWED_TAGS
+  lines.push('\n=== DOMPurify 默认 ALLOWED_TAGS 含 style? ' + DOMPurify.defaultConfig.ALLOWED_TAGS.includes('style'));
+  lines.push('=== DOMPurify 默认 ALLOWED_ATTR 含 class? ' + DOMPurify.defaultConfig.ALLOWED_ATTR.includes('class'));
+  lines.push('=== DOMPurify 默认 ALLOWED_ATTR 含 src? ' + DOMPurify.defaultConfig.ALLOWED_ATTR.includes('src'));
+
+  // 输出 step2 第一个 800 字看 style 标签内容
+  lines.push('\n=== Step 3 (SANITIZE_DOM=false) 第一段: ===');
+  lines.push(step2.slice(0, 1500));
+
+  document.getElementById('out').textContent = lines.join('\n');
+})();
+</script>
+</body>
+</html>

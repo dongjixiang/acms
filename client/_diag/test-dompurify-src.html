@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>DOMPurify src filter test</title>
+<script src="/client/lib/dompurify.min.js?v=3.0"></script>
+</head>
+<body>
+<h1>DOMPurify src attribute filter test</h1>
+<div id="result"></div>
+<script>
+// 复刻 ACMS sanitize-email.js v1.00 的 IFRAME_CONFIG
+const INLINE_CONFIG = {
+  ALLOWED_TAGS: [
+    'p', 'br', 'span', 'div', 'b', 'strong', 'i', 'em', 'u', 's', 'strike',
+    'ul', 'ol', 'li', 'blockquote', 'pre', 'code', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'a', 'img', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'col', 'colgroup',
+    'hr', 'mark', 'small', 'sub', 'sup', 'del', 'ins'
+  ],
+  ALLOWED_ATTR: [
+    'href', 'name', 'target', 'rel', 'title', 'alt', 'width', 'height',
+    'style', 'colspan', 'rowspan', 'align', 'valign', 'border', 'cellpadding', 'cellspacing'
+  ],
+  ALLOW_DATA_ATTR: false,
+  KEEP_CONTENT: true,
+  RETURN_DOM: false,
+  RETURN_DOM_FRAGMENT: false,
+  SANITIZE_DOM: true
+};
+const IFRAME_CONFIG = {
+  ...INLINE_CONFIG,
+  ALLOWED_TAGS: [...INLINE_CONFIG.ALLOWED_TAGS, 'style', 'link', 'base', 'meta'],
+  ALLOWED_ATTR: [...INLINE_CONFIG.ALLOWED_ATTR, 'rel', 'media', 'href', 'type', 'charset', 'http-equiv', 'content'],
+  FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'input', 'button', 'textarea', 'select'],
+  FORBID_ATTR: ['on*']
+};
+
+const sampleHtml = '<p>头部</p>' +
+  '<img style="width: 100px;height: 100px;" src="https://amc.cmschina.com/csmap/am/am_bill/bill_qrcode.png" alt="QR码" />' +
+  '<table class="table1x"><tr><th>客户</th><td>张三</td></tr></table>' +
+  '<img src="cid:logo123" alt="logo">';
+
+const out = DOMPurify.sanitize(sampleHtml, IFRAME_CONFIG);
+document.getElementById('result').innerHTML =
+  '<h3>ORIGINAL:</h3><pre>' + sampleHtml.replace(/</g,'&lt;') + '</pre>' +
+  '<h3>AFTER DOMPurify:</h3><pre>' + out.replace(/</g,'&lt;') + '</pre>';
+
+console.log('OUT:', out);
+</script>
+</body>
+</html>

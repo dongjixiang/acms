@@ -28,6 +28,7 @@
     <button class="geo-tab" data-tab="watch">👁 竞品 Watch</button>
     <button class="geo-tab" data-tab="llms">📝 llms.txt</button>
     <button class="geo-tab" data-tab="settings">⚙️ 设置</button>
+    <button class="geo-tab" data-tab="opportunities">💡 智能推荐</button>
   </nav>
 
   <main class="geo-main">
@@ -118,6 +119,7 @@
         <div class="geo-pane-actions">
           <button class="geo-btn geo-tip" id="geo-audit-btn" data-tip="对当前品牌跑完整审计：cite-ability 评分 + 5 维度 + 内容缺口建议 + llms.txt 健康度（约 5-15 秒）">🔍 跑审计</button>
           <button class="geo-btn geo-btn-primary geo-tip" id="geo-optimize-btn" data-tip="AI 分析 GEO 数据（含审计），生成可执行的优化建议清单。建议可一键落地为 Kanban 任务自动执行（约 5-10 秒，消耗 LLM token）">✨ 生成建议（LLM 分析）</button>
+          <button class="geo-btn geo-tip" id="geo-opp-trigger-btn" data-tip="💡 智能推荐：AI 自动分析 GEO 数据，生成可执行机会（creation/existing/outreach/social）+ 内容缺口 + 难度标签。约 5 秒，消耗 LLM token。">💡 智能推荐</button>
           <button class="geo-btn" id="geo-optimize-refresh-btn" style="display:none">🔄 重新生成</button>
         </div>
       </div>
@@ -450,6 +452,20 @@
     </section>
 
   </main>
+
+  <!-- v0.33: Opportunities 智能推荐面板 -->
+  <div class="geo-opp-panel" id="geo-opp-panel" style="display:none">
+    <div class="geo-opp-header">
+      <h3>💡 智能推荐</h3>
+      <div class="geo-opp-actions">
+        <button class="geo-btn geo-btn-sm" id="geo-opp-refresh-btn" title="重新生成推荐（消耗 LLM token）">🔄 刷新</button>
+        <button class="geo-btn geo-btn-sm" id="geo-opp-close-btn">✕</button>
+      </div>
+    </div>
+    <div class="geo-opp-content" id="geo-opp-content">
+      <div class="geo-dim-empty">选择品牌后点击「💡 智能推荐」查看 AI 生成的优化机会</div>
+    </div>
+  </div>
 
   <footer class="geo-footer">
     <span class="geo-footer-text">ACMS GEO v0.2 (Phase 1 W5)</span>

@@ -96,6 +96,17 @@ router.delete('/sender-categories', (req, res) => {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
+// v1.20: POST /api/emails/sender-categories/clear — 清空全部发件人分类缓存
+router.post('/sender-categories/clear', (req, res) => {
+  try {
+    const store = require('../services/email-sender-category-store');
+    const removed = store.clearAll();
+    console.log('[email-sender-categories] 清空全部分类缓存，移除 ' + removed + ' 条');
+    res.json({ ok: true, removed });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message || 'CLEAR_SENDER_CATEGORIES_FAILED' });
+  }
+});
 // v0.30: 批量分析发件人
 router.post('/analyze-senders', async (req, res) => {
   try {

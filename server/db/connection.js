@@ -28,8 +28,13 @@ const KNOWN_COLLECTIONS = [
   'email_rules', 'email_rule_logs',
   // v0.38 用户维护的邮件分类（AI 自动分类依据 — 替代硬编码 8 类别）
   'email_categories',
-  // v0.99: 自动回复模板（每个规则可引用不同模板）
+// v0.99: 自动回复模板（每个规则可引用不同模板）
   'email_templates',
+  // v1.13: 自有草稿箱（ACMS 内 draft_only / auto_reply 生成的草稿持久化，等待人工编辑发送）
+  // 走 stores/email-draft-store.js + routes/email-drafts.js，**不**依赖邮箱 IMAP Drafts 文件夹
+  'email_drafts',
+  // v0.33: GEO 智能推荐
+  'geo_opportunities',
 ];
 
 // === 初始化 ===
@@ -190,20 +195,20 @@ function collection(name) {
         return deleted > 0;
       },
 
-    /** 返回所有文档（浅拷贝，防止调用者 mutate 影响缓存）*/
-    all() {
-      return db.prepare(`SELECT id, doc FROM "${name}"`).all().map(r => parseDoc(r));
-    },
+      /** 返回所有文档（浅拷贝，防止调用者 mutate 影响缓存）*/
+      all() {
+        return db.prepare(`SELECT id, doc FROM "${name}"`).all().map(r => parseDoc(r));
+      },
 
-    /** 计数 */
-    count(predicate) {
-      if (!predicate) {
-        return db.prepare(`SELECT COUNT(*) as cnt FROM "${name}"`).get().cnt;
-      }
-      return this.find(predicate).length;
-    },
+      /** 计数 */
+      count(predicate) {
+        if (!predicate) {
+          return db.prepare(`SELECT COUNT(*) as cnt FROM "${name}"`).get().cnt;
+        }
+        return this.find(predicate).length;
+      },
+    };
   };
-}
 
 // 关闭数据库（进程退出时）
 function close() {

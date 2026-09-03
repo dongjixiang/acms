@@ -64,7 +64,7 @@ const STATIC_RULES = [
       const f = (from || '').toLowerCase();
       const s = (subject || '').toLowerCase();
       return /noreply|no-reply|@notify|@alert|@bot|@daemon/i.test(f)
-        || /\bverification|code|验证码|通知|提醒|alert|signal|ping/i.test(s);
+        || /\bverification\b|验证码|提醒|alert|signal|ping/i.test(s);
     },
   },
 ];

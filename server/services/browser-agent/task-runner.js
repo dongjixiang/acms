@@ -238,8 +238,8 @@ const SESSION_TOOL_NAMES = [
 async function runSessionTurn(sessionId, userMsg, opts = {}) {
   if (!sessionId || !userMsg) return { sessionId, status: 'error', error: '缺少 sessionId 或 userMsg' };
   const session = sessionStore.getOrCreate(sessionId, { title: opts.title });
-  // push user message（累积上下文）
-  session.addMessage({ role: 'user', content: userMsg, ts: Date.now() });
+  // push user message（累积上下文）—— v1.0 修复：addMessage 是 store 类方法，不是 session 实例方法
+  sessionStore.addMessage(sessionId, { role: 'user', content: userMsg, ts: Date.now() });
 
   // 构造完整 messages：system + 累积历史
   const messages = [
@@ -261,10 +261,17 @@ async function runSessionTurn(sessionId, userMsg, opts = {}) {
       maxRounds: opts.maxRounds || 20,
       caller: 'browser-agent-session',
       context: { sessionId, taskId },
-      onProgress: (step) => {
-        // 追加工具调用记录（前端步骤卡用）
-        session.addToolCall({ ...step, ts: step.ts || Date.now() });
-        if (opts.onStep) opts.onStep({ ...step, sessionId, taskId });
+      onProgress: (round, maxRounds, message, toolNames) => {
+        // 修复：runToolLoop 传入 4 个独立参数，不是对象；包装成 step 对象再保存
+        const step = { round: round || 0, maxRounds: maxRounds || 20, message: message || '', toolNames: Array.isArray(toolNames) ? toolNames : [] };
+        const taskIdVal = session.currentTaskId || taskId || sessionId;
+        const roundNum = step.round || round || 1;
+        const shotPath = path.join(ba.SESSION_ROOT || require('path').resolve('data/browser-sessions'), taskIdVal, `step-${roundNum}.png`);
+        // 完整执行链路可视化：实际生成截图文件（与 runGoalTask 对齐，不阻塞 loop）
+        ba.screenshotToFile(shotPath).catch(() => {});
+        const shotUrl = `/api/browser-agent/screenshots/${taskIdVal}/step-${roundNum}.png`;
+        sessionStore.addToolCall(sessionId, { ...step, ts: Date.now(), screenshot: shotUrl });
+        if (opts.onStep) opts.onStep({ ...step, sessionId, taskId, screenshot: shotUrl });
       },
     });
   } catch (e) {
@@ -284,8 +291,8 @@ async function runSessionTurn(sessionId, userMsg, opts = {}) {
   }
 
   session.status = result.error ? 'error' : 'done';
-  // push assistant 回复到 session.messages（下次 turn 自动看到）
-  session.addMessage({ role: 'assistant', content: result.content || '', ts: Date.now() });
+  // push assistant 回复到 session.messages（下次 turn 自动看到）—— v1.0 修复：addMessage 是 store 类方法
+  sessionStore.addMessage(sessionId, { role: 'assistant', content: result.content || '', ts: Date.now() });
   if (opts.onDone) opts.onDone({ sessionId, taskId, status: session.status, content: session.content, error: session.error });
   return { sessionId, taskId, status: session.status, content: session.content, error: session.error };
 }
@@ -296,8 +303,8 @@ async function resumeSessionTurn(sessionId, userReply, opts = {}) {
   if (!session) return { sessionId, status: 'error', error: '会话不存在' };
   if (session.status !== 'waiting_user') return { sessionId, status: 'error', error: `会话不在等待状态（当前 ${session.status}）` };
 
-  // push user reply
-  session.addMessage({ role: 'user', content: '[用户回复] ' + String(userReply || ''), ts: Date.now() });
+  // push user reply —— v1.0 修复：addMessage 是 store 类方法
+  sessionStore.addMessage(sessionId, { role: 'user', content: '[用户回复] ' + String(userReply || ''), ts: Date.now() });
 
   const messages = [
     { role: 'system', content: BROWSER_AGENT_PROMPT },
@@ -316,8 +323,12 @@ async function resumeSessionTurn(sessionId, userReply, opts = {}) {
       maxRounds: opts.maxRounds || 10,
       caller: 'browser-agent-session-resume',
       context: { sessionId, taskId: session.currentTaskId },
-      onProgress: (step) => {
-        session.addToolCall({ ...step, ts: step.ts || Date.now() });
+      onProgress: (round, maxRounds, message, toolNames) => {
+        // 修复：runToolLoop 传入 4 个独立参数，包装成对象
+        const step = { round: round || 0, maxRounds: maxRounds || 10, message: message || '', toolNames: Array.isArray(toolNames) ? toolNames : [] };
+        const taskIdVal = session.currentTaskId || sessionId;
+        const shotUrl = `/api/browser-agent/screenshots/${taskIdVal}/step-${step.round || round || 1}.png`;
+        sessionStore.addToolCall(sessionId, { ...step, ts: Date.now(), screenshot: shotUrl });
         if (opts.onStep) opts.onStep({ ...step, sessionId, taskId: session.currentTaskId });
       },
     });
@@ -337,7 +348,8 @@ async function resumeSessionTurn(sessionId, userReply, opts = {}) {
   }
 
   session.status = result.error ? 'error' : 'done';
-  session.addMessage({ role: 'assistant', content: result.content || '', ts: Date.now() });
+  // v1.0 修复：addMessage 是 store 类方法
+  sessionStore.addMessage(sessionId, { role: 'assistant', content: result.content || '', ts: Date.now() });
   if (opts.onDone) opts.onDone({ sessionId, taskId: session.currentTaskId, status: session.status, content: session.content, error: session.error });
   return { sessionId, taskId: session.currentTaskId, status: session.status, content: session.content, error: session.error };
 }

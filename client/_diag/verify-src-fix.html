@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>sanitize-email v1.10 修复验证</title>
+<script src="/client/lib/dompurify.min.js?v=3.0"></script>
+<script src="/client/js/utils/sanitize-email.js?v=1.11"></script>
+</head>
+<body>
+<h1>sanitize-email v1.10 — 招商证券对账单 HTML 修复验证</h1>
+<pre id="result"></pre>
+<script>
+(async function () {
+  const KEY = 'dev-key-001';
+  const res = await fetch('/api/emails/3339?mailbox=INBOX', { headers: { 'x-api-key': KEY } });
+  const email = await res.json();
+  const html = email.html;
+  const sanitized = window.EmailSanitize.sanitizeEmailHtmlForIframe(html, email);
+
+  // 统计 img + src
+  const beforeImgs = (html.match(/<img[^>]*>/gi) || []).length;
+  const afterImgs = (sanitized.match(/<img[^>]*>/gi) || []).length;
+  const afterWithSrc = (sanitized.match(/<img[^>]*src=/gi) || []).length;
+  const afterEmptySrc = (sanitized.match(/<img(?![^>]*src=)[^>]*>/gi) || []).length;
+
+  document.getElementById('result').textContent =
+    'BEFORE: ' + beforeImgs + ' imgs in original html\n' +
+    'AFTER:  ' + afterImgs + ' imgs after sanitizeEmailHtmlForIframe\n' +
+    '        ' + afterWithSrc + ' have src attr (should be 2)\n' +
+    '        ' + afterEmptySrc + ' lost src attr (should be 0)\n\n' +
+    '--- AFTER sanitizeEmailHtmlForIframe (first 3000 chars) ---\n' +
+    sanitized.slice(0, 3000);
+})();
+</script>
+</body>
+</html>

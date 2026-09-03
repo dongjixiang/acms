@@ -726,7 +726,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/game-pong.js?v=0.1"></script>
 <script src="/client/js/views/game-tetris.js?v=0.1"></script>
 <!-- v0.X: GEO 应用仪表盘（Phase 3 v0.7 — AI 优化建议 + 一键建任务） -->
-<script src="/client/js/views/geo-dashboard.js?v=0.32"></script>
+<script src="/client/js/views/geo-dashboard.js?v=0.33"></script>
 <!-- v0.1: 跨应用浏览器自动化控制台（browser-agent 可视化操作台） -->
 <script src="/client/js/views/browser-console.js?v=1.0"></script>
 <script>
@@ -1262,8 +1262,12 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/core/acms-modal.js?v=0.30"></script>
 <!-- v0.74.1: 通用文件→应用 registry（file-browser / email-inbox 共用）-->
 <script src="/client/js/core/file-app-registry.js?v=0.74.1"></script>
+<!-- v0.74: 邮件 HTML 过滤工具（DOMPurify 封装）依赖 -->
+<script src="/client/lib/dompurify.min.js?v=3.0"></script>
+<!-- v0.74: 邮件 HTML 过滤工具 -->
+<script src="/client/js/utils/sanitize-email.js?v=1.11"></script>
 <!-- v0.73: 邮件收件箱 (IMAP) -->
-<link rel="stylesheet" href="/client/css/email-inbox.css?v=1.07" />
-    <script src="/client/js/views/email-inbox.js?v=1.07"></script>
+<link rel="stylesheet" href="/client/css/email-inbox.css?v=1.11" />
+    <script src="/client/js/views/email-inbox.js?v=1.21"></script>
 </body>
 </html>

@@ -1,12 +1,13 @@
-// ACMS GEO 数据存储服务（v0.1 — Phase 0 D4）
+// ACMS GEO 数据存储服务（v0.1 — Phase 0 D4，v0.33 新增 opportunities 表）
 // 路径：server/services/geo-store.js
 //
-// 5 张表（用现有 collection API 自动建表，无需手写 SQL）：
+// 6 张表（用现有 collection API 自动建表，无需手写 SQL）：
 //   geo_brands      — 品牌/项目（agency 多品牌场景的核心）
 //   geo_queries     — 提问模板库（每个品牌 N 个 query）
 //   geo_responses   — AI 引擎原始回答（每次 query + engine 一条）
 //   geo_scores      — 评分历史（每个 brand + dimension + snapshot）
 //   geo_snapshots   — 周快照（每周聚合）
+//   geo_opportunities — AI 推荐机会（每个 brand 追加写入）
 //
 // 关键决策（v0.1）：
 //   - 复用 db/connection.collection API（自动 ensureTable JSON schema 模式）
@@ -26,6 +27,7 @@ const COLLECTIONS = {
   SCORES: 'geo_scores',
   SNAPSHOTS: 'geo_snapshots',
   WATCH: 'geo_watch',
+  OPPORTUNITIES: 'geo_opportunities', // v0.33: AI 推荐机会
 };
 
 // === ID 生成 ===
@@ -430,4 +432,7 @@ module.exports = {
   getBrandStats,
   // utility
   _clearAll,
+  // v0.33: opportunities
+  makeId: (prefix) => `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+  collection: (name) => collection(name),
 };

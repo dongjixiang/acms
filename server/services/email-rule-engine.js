@@ -7,6 +7,8 @@ const parser = require('./email-rule-parser');
 
 // 阶段3：接入 email-drafter（参考 P151 异步卡片确认模式 + agent-buddy-action.js requires_confirmation）
 const drafter = require('./email-drafter');
+// v1.13: 草稿持久化（draft_only / auto_reply 写到 email_drafts collection，等待人工编辑发送）
+const draftStore = require('./email-draft-store');
 
 // === 规则匹配逻辑（参考 Inbox-Zero 规则匹配：先按优先级排序，再逐条匹配条件） ===
 function matchRule(rule, emailData) {
@@ -106,40 +108,61 @@ async function executeActions(rule, emailData, mailbox, imapService = null) {
       });
 
       if (draftResult.ok && draftResult.draft) {
+        // v1.13: 把草稿写入 email_drafts collection，状态：
+        //   - draft_only → status='draft'（规则只生成草稿，可直接编辑发送）
+        //   - auto_reply → status='pending_confirmation'（必须用户确认 / 编辑后才发送）
+        //   草稿字段从 emailData 提取（uid / messageId / from / subject / mailbox / In-Reply-To / References）
+        const draftRecord = draftStore.createDraft({
+          originalEmailUid: emailData.uid || null,
+          originalMailbox: mailbox || 'INBOX',
+          replyTo: emailData.from || '',
+          subject: emailData.subject ? ('Re: ' + emailData.subject) : '(无主题)',
+          body: draftResult.draft,
+          source: actions.auto_reply ? 'auto_reply' : 'draft_only',
+          status: actions.auto_reply ? 'pending_confirmation' : 'draft',
+          ruleId: rule.id,
+          ruleDescription: rule.user_description || '',
+          tone: actions.auto_reply ? '商务邮件，简洁直接，友好口语化' : '',
+          modelId: emailData.modelId || null,
+          inReplyTo: emailData.messageId || '',
+          references: emailData.references || '',
+        });
+
         if (actions.draft_only) {
-          // draft_only：直接保存草稿（不需要发送确认）
+          // draft_only：草稿入库（status='draft'），用户后续在草稿箱里编辑发送
           logEntry.executed_actions.draft_only = {
             ok: true,
             action: 'draft_only',
+            draft_id: draftRecord.id,
             draftLength: draftResult.draft.length,
             savedToDraft: true,
-            note: '阶段3：草稿已生成并保存到草稿箱（不涉及发送，无需 requires_confirmation）',
+            note: 'v1.13：草稿已写入 email_drafts collection（status=draft），等用户在草稿箱里编辑/发送',
             draftPreview: draftResult.draft.slice(0, 200),
           };
           results.push({
-            action: 'draft_only', ok: true, draftLength: draftResult.draft.length,
-            savedToDraft: true, draftPreview: draftResult.draft.slice(0, 200),
-            note: '草稿已保存（参考 email-drafter 完整 prompt 模式，不加签名、不含占位符、长度自约束）',
+            action: 'draft_only', ok: true, draftId: draftRecord.id,
+            draftLength: draftResult.draft.length,
+            note: '草稿已保存到「📝 草稿箱」（可编辑、可发送）',
           });
         } else if (actions.auto_reply) {
-          // auto_reply：生成草稿后需要用户确认（参考 agent-buddy-action.js requires_confirmation + P151 异步卡片确认模式）
-          // 阶段3实现：不直接发送，记录为待确认状态，前端显示确认卡片
+          // auto_reply：草稿入库（status='pending_confirmation'），前端草稿箱显示「待确认」徽章
           logEntry.executed_actions.auto_reply = {
             ok: true,
             action: 'auto_reply',
-            requires_confirmation: true,  // 参考 agent-buddy-action.js：email_send 能力必须 requires_confirmation
+            requires_confirmation: true,
+            draft_id: draftRecord.id,
             draftLength: draftResult.draft.length,
             status: 'pending_user_confirmation',
-            note: '阶段3：草稿已生成（参考 inbox-zero 完整 prompt），但需要用户确认后才发送（参考 P151 异步卡片确认模式 + agent-buddy-action.js requires_confirmation 机制）。不自动发送。',
+            note: 'v1.13：草稿已写入 email_drafts collection（status=pending_confirmation），等用户在草稿箱里点「确认发送」（参考 P151 异步卡片确认模式 + agent-buddy-action.js requires_confirmation 机制）。',
             draftPreview: draftResult.draft.slice(0, 200),
           };
           results.push({
             action: 'auto_reply', ok: true, pendingConfirmation: true,
             requires_confirmation: true,
+            draftId: draftRecord.id,
             draftLength: draftResult.draft.length,
             status: 'pending_user_confirmation',
-            draftPreview: draftResult.draft.slice(0, 200),
-            note: '草稿已生成，等待用户确认发送（参考 P151 确认卡片模式：展示草稿内容 + 确认/拒绝按钮，确认后才执行 email_send 动作）。未确认前不发送。',
+            note: '草稿已保存到「📝 草稿箱 - 待确认」（必须点确认才发送，防 silent write）',
           });
         }
       } else {

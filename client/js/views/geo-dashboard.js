@@ -3204,6 +3204,123 @@
     }
   }
 
+  // === v0.33: Opportunities 智能推荐面板 ===
+  async function loadOpportunities(brandId, forceRefresh = false) {
+    const container = _byId('geo-opp-content');
+    if (!container) return;
+
+    const bid = brandId || currentBrandId;
+    if (!bid) {
+      container.innerHTML = '<div class="geo-dim-empty">请先选择一个品牌</div>';
+      return;
+    }
+
+    container.innerHTML = '<div class="geo-opp-loading">AI 正在分析数据生成推荐...</div>';
+
+    try {
+      // 先获取已有数据
+      const listR = await api('GET', `/api/geo/opportunities/${bid}?limit=1`);
+      const existing = listR.data?.opportunities || [];
+
+      let record;
+      if (existing.length > 0 && !forceRefresh) {
+        record = existing[0];
+      } else {
+        const genR = await api('POST', '/api/geo/opportunities/generate', {
+          brand_id: bid,
+          lookbackDays: 30,
+          force_refresh: forceRefresh,
+        });
+        if (!genR.data?.ok) throw new Error(genR.data?.error || '生成失败');
+        record = genR.data.data;
+      }
+
+      const data = record.data || {};
+      renderOpportunitiesPanel(data, record);
+      notify('💡 智能推荐已生成', 'success');
+    } catch (e) {
+      container.innerHTML = `<div class="geo-dim-empty">❌ 生成失败: ${esc(e.message)}</div>`;
+    }
+  }
+
+  function renderOpportunitiesPanel(data, record) {
+    const container = _byId('geo-opp-content');
+    if (!container) return;
+
+    const { summary = [], opportunities = [], risks = [], contentGaps = [] } = data;
+    const generatedAt = record?.created_at ? new Date(record.created_at).toLocaleString('zh-CN') : '';
+
+    let html = '';
+
+    // Summary
+    if (summary.length > 0) {
+      html += `<div class="geo-opp-summary"><h4>📋 核心洞察</h4><ul>${summary.map(s => `<li>${esc(s)}</li>`).join('')}</ul></div>`;
+    }
+
+    // Opportunities
+    if (opportunities.length > 0) {
+      html += '<div class="geo-opp-list">';
+      for (const opp of opportunities) {
+        const catLabel = { creation: '新建内容', 'existing-content': '优化现有', outreach: '外部引用', social: '社区曝光' }[opp.category] || opp.category;
+        const diffLabel = { 'wide-open': '容易突破', contested: '有一定竞争', 'locked-in': '难以突破' }[opp.difficulty] || opp.difficulty;
+        const diffClass = opp.difficulty || 'contested';
+
+        html += `
+          <div class="geo-opp-card">
+            <div class="geo-opp-card-header">
+              <h4 class="geo-opp-card-title">${esc(opp.title || '')}</h4>
+              <span class="geo-opp-category ${esc(opp.category || '')}">${esc(catLabel)}</span>
+            </div>
+            <p class="geo-opp-card-why">${esc(opp.why || '')}</p>
+            <div class="geo-opp-card-meta">
+              <span class="geo-opp-difficulty ${diffClass}">🎯 ${esc(diffLabel)}</span>
+              ${(opp.relatedPrompts || []).length > 0 ? `<span>关联 ${opp.relatedPrompts.length} 个 prompt</span>` : ''}
+            </div>
+            ${(opp.relatedPrompts || []).length > 0 ? `
+              <div class="geo-opp-related-prompts">
+                <strong>关联 Prompt:</strong><br>
+                ${(opp.relatedPrompts || []).map(p => esc(p.text || p)).join('<br>')}
+              </div>
+            ` : ''}
+          </div>
+        `;
+      }
+      html += '</div>';
+    } else {
+      html += '<div class="geo-dim-empty">暂无推荐机会（可能需要更多数据）</div>';
+    }
+
+    // Content Gaps
+    if (contentGaps && contentGaps.length > 0) {
+      html += `
+        <div class="geo-opp-gaps">
+          <h4>🔴 内容缺口（竞品被提但品牌未提）</h4>
+          ${contentGaps.map(g => `
+            <div class="geo-opp-gap-item">
+              <div class="geo-opp-gap-prompt">${esc(g.prompt || '')}</div>
+              <div class="geo-opp-gap-meta">${g.runs || 0} 次追踪 · ${esc(g.category || '')}</div>
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    // Risks
+    if (risks && risks.length > 0) {
+      html += `
+        <div class="geo-opp-risks">
+          <h4>⚠️ 风险提示</h4>
+          <ul>${risks.map(r => `<li>${esc(r)}</li>`).join('')}</ul>
+        </div>
+      `;
+    }
+
+    // 生成时间
+    html += `<div style="margin-top:16px;font-size:11px;color:var(--geo-text-2);text-align:right">${generatedAt}</div>`;
+
+    container.innerHTML = html;
+  }
+
   // === 通用 ===
   // v0.26: 文本高亮工具（借鉴 elmo text-highlighter.tsx）
   // 先 escape 整个 text，再用循环正则 replace 包裹 <mark> — 避免 XSS + 多次替换安全
@@ -3247,11 +3364,11 @@
       const link = document.createElement('link');
       link.id = 'geo-dashboard-css';
       link.rel = 'stylesheet';
-      link.href = '/client/css/geo-dashboard.css?v=0.32';
+      link.href = '/client/css/geo-dashboard.css?v=0.33';
       document.head.appendChild(link);
     }
 
-      fetch('/client/views/geo-dashboard.html?v=0.32')
+      fetch('/client/views/geo-dashboard.html?v=0.33')
       .then(r => r.text())
       .then(html => {
         if (w.$c) w.$c.innerHTML = html;
@@ -3533,7 +3650,49 @@
     bindBtn('geo-tools-titles-btn', () => runGeoTool('titles'));
     bindBtn('geo-tools-kb-btn', () => runGeoTool('kb'));
 
-    // v0.11: 竞品 Watch 按钮
+    // v0.33: Opportunities 智能推荐面板
+    const oppPanel = _byId('geo-opp-panel');
+    const oppContent = _byId('geo-opp-content');
+    const oppRefreshBtn = _byId('geo-opp-refresh-btn');
+    const oppCloseBtn = _byId('geo-opp-close-btn');
+
+    if (oppCloseBtn) {
+      oppCloseBtn.addEventListener('click', () => {
+        oppPanel?.classList.remove('open');
+        setTimeout(() => oppPanel?.style.setProperty('display', 'none'), 250);
+      });
+      cleanupFns.push(() => oppCloseBtn.removeEventListener('click', () => {}));
+    }
+
+    if (oppRefreshBtn) {
+      oppRefreshBtn.addEventListener('click', () => loadOpportunities(currentBrandId, true));
+      cleanupFns.push(() => oppRefreshBtn.removeEventListener('click', () => {}));
+    }
+
+    // 在品牌选择器 change 时自动关闭面板
+    const brandSelect = _byId('geo-brand-select');
+    if (brandSelect) {
+      brandSelect.addEventListener('change', () => {
+        if (oppPanel?.classList.contains('open')) {
+          oppPanel.classList.remove('open');
+          setTimeout(() => oppPanel?.style.setProperty('display', 'none'), 250);
+        }
+      });
+      cleanupFns.push(() => brandSelect.removeEventListener('change', () => {}));
+    }
+
+    // v0.33: Opportunities 触发按钮
+    const oppTriggerBtn = _byId('geo-opp-trigger-btn');
+    if (oppTriggerBtn) {
+      oppTriggerBtn.addEventListener('click', () => {
+        if (currentBrandId) {
+          window.toggleOpportunitiesPanel(currentBrandId);
+        } else {
+          alert('请先选择一个品牌');
+        }
+      });
+      cleanupFns.push(() => oppTriggerBtn.removeEventListener('click', () => {}));
+    }
     bindBtn('geo-watch-create-btn', () => toggleWatchForm(true));
     bindBtn('geo-watch-cancel-btn', () => toggleWatchForm(false));
     bindBtn('geo-watch-save-btn', () => saveWatch());
@@ -3578,16 +3737,20 @@
     ACMSWin.registerViewLoader(VIEW_NAME, loader);
   }
 
+  // v0.33: 暴露 Opportunities 接口到全局
   if (typeof window !== 'undefined') {
-    window.GEODashboard = {
-      switchTab, loadOverview, loadBrands, loadTracks, loadLLMS,
-      loadQueries, loadScores, loadSnapshots, loadSettings,
-      generateQueries, exportData,
-      generateQueriesAI, importBulkQueries, toggleQueryEnabled, openOnboardingWizard, deleteQueryTemplate, cleanupLegacyTemplates, // v0.26 C4/C7
-      generateOptimization, applyRecommendation,
-      saveTrackInterval, saveEngineWhitelist, resetEngineWhitelist,
-      selectBrand, deleteBrand, runTracker, generateLLMS,
-      editBrandIndustry,
+    window.toggleOpportunitiesPanel = function (brandId) {
+      const panel = _byId('geo-opp-panel');
+      if (!panel) return;
+      if (panel.classList.contains('open')) {
+        panel.classList.remove('open');
+        setTimeout(() => panel.style.setProperty('display', 'none'), 250);
+      } else {
+        panel.style.setProperty('display', 'flex');
+        setTimeout(() => panel.classList.add('open'), 10);
+        loadOpportunities(brandId || currentBrandId);
+      }
     };
   }
+
 })();

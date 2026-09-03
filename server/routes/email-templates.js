@@ -9,9 +9,10 @@ const { collection } = require('../db/connection');
 router.get('/', (req, res) => {
   try {
     const templatesColl = collection('email_templates');
-    const allTemplates = templatesColl.find
-      ? templatesColl.find()
-      : (templatesColl.all ? templatesColl.all() : []);
+    // v1.12 修复：原代码 templatesColl.find() 不传 predicate → Node 24 起 Array.prototype.filter(undefined)
+    // 抛 TypeError "undefined is not a function"（旧 Node 版本会当 identity function 返回所有行）。
+    // 改用 templatesColl.all()（专门返回所有文档，不走 predicate 路径）更稳定且意图明确
+    const allTemplates = typeof templatesColl.all === 'function' ? templatesColl.all() : [];
     res.json({ ok: true, count: allTemplates.length, templates: allTemplates });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message || 'LIST_TEMPLATES_ERROR' });

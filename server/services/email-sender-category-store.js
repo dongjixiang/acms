@@ -116,11 +116,26 @@ function removeBySender(sender, mailbox) {
   return collection(COL).remove(d => d.sender === target && d.mailbox === mailbox);
 }
 
+/**
+ * v1.20: 清空全部发件人分类记录（数据管理 → 清理发件人分类 按钮用）
+ */
+function clearAll() {
+  const all = collection(COL).all ? collection(COL).all() : [];
+  const count = all.length;
+  if (count === 0) return 0;
+  // 批量 remove（collection API 可能不支持 deleteMany，逐条 remove）
+  all.forEach(function (doc) {
+    collection(COL).remove(d => d.id === doc.id);
+  });
+  return count;
+}
+
 module.exports = {
   getBySender,
   saveCategory,
   bulkGet,
   listByMailbox,
   removeBySender,
+  clearAll,
   COL,
 };

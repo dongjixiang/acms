@@ -10,19 +10,41 @@
   var API_KEY = (root.ACMSConfig && root.ACMSConfig.apiKey) || 'dev-key-001';
   var DRAFT_KEY = 'acms.email-draft.v1';
   var MAX_BODY_LENGTH = 5000;
-  var HTML_LIKE_TAGS = {
-    'SCRIPT': true, 'STYLE': true, 'IFRAME': true, 'OBJECT': true,
-    'EMBED': true, 'LINK': true, 'META': true, 'FORM': true, 'INPUT': true,
-    'BUTTON': true, 'TEXTAREA': true, 'SELECT': true, 'BASE': true,
-  };
-  var ALLOWED_ATTRS = {
-    '*': ['style', 'title', 'lang'],
-    'A': ['href', 'name', 'target', 'rel'],
-    'IMG': ['src', 'alt', 'width', 'height'],
-    'TABLE': ['align', 'border', 'cellpadding', 'cellspacing', 'width'],
-    'TH': ['colspan', 'rowspan', 'align', 'valign', 'width'],
-    'TD': ['colspan', 'rowspan', 'align', 'valign', 'width'],
-  };
+
+  // 统一 HTML 过滤（DOMPurify 替代自研 sanitize，详见 client/js/utils/sanitize-email.js）
+  var _sanitizeModule = null;
+  function getSanitizeModule() {
+    if (!_sanitizeModule) {
+      // 浏览器端：require 会被打包工具解析，运行时由 window.DOMPurify 提供
+      // 这里做兼容：若已全局注册则直接用，否则 require
+      if (typeof window !== 'undefined' && window.EmailSanitize) {
+        _sanitizeModule = window.EmailSanitize;
+      } else {
+        try { _sanitizeModule = require('../utils/sanitize-email'); } catch (e) { /* ignore */ }
+      }
+    }
+    return _sanitizeModule;
+  }
+
+  function sanitizeEmailHtml(html) {
+    var mod = getSanitizeModule();
+    return mod ? mod.sanitizeEmailHtml(html, 'inline') : fallbackSanitize(html);
+  }
+
+  function sanitizeEmailHtmlForIframe(html, email) {
+    var mod = getSanitizeModule();
+    return mod ? mod.sanitizeEmailHtmlForIframe(html, email) : fallbackSanitize(html);
+  }
+
+  // 兜底：极简过滤（DOMPurify 未加载时）
+  function fallbackSanitize(html) {
+    if (!html) return '';
+    return String(html)
+      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+      .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, '')
+      .replace(/on\w+\s*=\s*["'][^"']*["']/gi, '')
+      .replace(/javascript:/gi, 'blocked:');
+  }
 
   function escHtml(value) {
     if (value === null || value === undefined) return '';
@@ -32,6 +54,22 @@
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;');
+  }
+
+  // v1.20: 纯文本 → 富文本 HTML（保留 \n 换行 + 缩进）
+  //   背景：contenteditable innerHTML 直接塞纯文本时，\n 被当空白折叠、连续空格也被折叠
+  //   多多原话：「AI 生成的换行和缩进在填入邮件编辑区后都消失了」（2026-09-03）
+  //   用法：AI 草拟回复 / 模板 / 任何纯文本写入 contenteditable 时都走这个
+  function plainTextToHtml(text) {
+    return String(text || '').split('\n').map(function (line) {
+      var escaped = escHtml(line);
+      // 每对 2 空格 → &nbsp;&nbsp;（保留缩进；HTML 折叠连续空格）
+      return escaped.replace(/( {2,})/g, function (spaces) {
+        var out = '';
+        for (var i = 0; i < spaces.length; i += 2) out += '&nbsp;&nbsp;';
+        return out + (spaces.length % 2 ? ' ' : '');
+      });
+    }).join('<br>');
   }
 
   function escAttr(value) {
@@ -84,174 +122,12 @@
     if (typeof root.showConfirm === 'function') return root.showConfirm(message, opts);
     if (root.ACMS && typeof root.ACMS.showConfirm === 'function') return root.ACMS.showConfirm(message, opts);
     return Promise.resolve(root.confirm(message));
-  }
+}
 
   function showPrompt(message, defaultValue) {
     if (typeof root.showPrompt === 'function') return root.showPrompt(message, defaultValue);
     if (root.ACMS && typeof root.ACMS.showPrompt === 'function') return root.ACMS.showPrompt(message, defaultValue);
     return Promise.resolve(root.prompt(message, defaultValue || ''));
-  }
-
-  function sanitizeEmailHtml(html) {
-    if (!html) return '';
-    var doc;
-    try {
-      doc = new DOMParser().parseFromString(String(html), 'text/html');
-    } catch (err) {
-      return escHtml(String(html));
-    }
-    if (!doc || !doc.body) return escHtml(String(html));
-    var walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_ELEMENT, null, false);
-    var toRemove = [];
-    var node = walker.currentNode;
-    while (node) {
-      var tag = node.tagName ? node.tagName.toUpperCase() : '';
-      if (HTML_LIKE_TAGS[tag]) {
-        toRemove.push(node);
-      } else if (tag === 'A') {
-        for (var i = node.attributes.length - 1; i >= 0; i--) {
-          var attr = node.attributes[i];
-          if (!isAttrAllowed(tag, attr.name)) node.removeAttribute(attr.name);
-        }
-        var href = node.getAttribute('href') || '';
-        if (/^\s*javascript:/i.test(href)) node.removeAttribute('href');
-        if (!node.getAttribute('rel')) node.setAttribute('rel', 'noopener noreferrer');
-        if (!node.getAttribute('target')) node.setAttribute('target', '_blank');
-      } else if (tag === 'IMG') {
-        for (var j = node.attributes.length - 1; j >= 0; j--) {
-          var a = node.attributes[j];
-          if (!isAttrAllowed(tag, a.name)) node.removeAttribute(a.name);
-        }
-        var src = node.getAttribute('src') || '';
-        if (!/^(https?:|data:image\/|cid:)/i.test(src)) node.removeAttribute('src');
-        if (!node.getAttribute('alt')) node.setAttribute('alt', '');
-      } else {
-        for (var k = node.attributes.length - 1; k >= 0; k--) {
-          var at = node.attributes[k];
-          if (!isAttrAllowed(tag, at.name)) node.removeAttribute(at.name);
-        }
-      }
-      node = walker.nextNode();
-    }
-toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el); });
-    return doc.body.innerHTML;
-  }
-
-  // 方案 B：iframe 渲染专用 sanitize —— 保留 <style>/<link>/内联 style/class，只清理脚本/危险属性
-  function sanitizeEmailHtmlForIframe(html, email) {
-    if (!html) return '';
-    var doc;
-    try {
-      doc = new DOMParser().parseFromString(String(html), 'text/html');
-    } catch (err) {
-      return escHtml(String(html));
-    }
-    if (!doc || !doc.body) return escHtml(String(html));
-    var attachments = email && email.attachments ? email.attachments : [];
-    var uid = email && email.uid;
-    var mailbox = email && email.mailbox;
-    var walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_ELEMENT, null, false);
-    var toRemove = [];
-    var node = walker.currentNode;
-    while (node) {
-      var tag = node.tagName ? node.tagName.toUpperCase() : '';
-      // 只移除真正危险的标签
-      if (['SCRIPT', 'IFRAME', 'OBJECT', 'EMBED', 'FORM', 'INPUT', 'BUTTON', 'TEXTAREA', 'SELECT'].indexOf(tag) >= 0) {
-        toRemove.push(node);
-      } else if (tag === 'A') {
-        // 链接安全处理
-        for (var i = node.attributes.length - 1; i >= 0; i--) {
-          var attr = node.attributes[i];
-          if (attr.name.indexOf('on') === 0) node.removeAttribute(attr.name);
-        }
-        var href = node.getAttribute('href') || '';
-        if (/^\s*javascript:/i.test(href)) node.removeAttribute('href');
-        if (!node.getAttribute('rel')) node.setAttribute('rel', 'noopener noreferrer');
-        if (!node.getAttribute('target')) node.setAttribute('target', '_blank');
-      } else if (tag === 'LINK') {
-        // 允许 stylesheet，清理危险属性
-        var rel = node.getAttribute('rel') || '';
-        if (!/stylesheet/i.test(rel)) { toRemove.push(node); continue; }
-        for (var j = node.attributes.length - 1; j >= 0; j--) {
-          var at = node.attributes[j];
-          if (at.name.indexOf('on') === 0) node.removeAttribute(at.name);
-        }
-      } else if (tag === 'STYLE') {
-        // 保留 style 标签，但清理危险内容（如 expression()、@import javascript:）
-        var css = node.textContent || '';
-        node.textContent = css.replace(/expression\s*\(/gi, 'blocked-expression(')
-                             .replace(/@import\s+["']?\s*javascript:/gi, '@import blocked:');
-      } else if (tag === 'META') {
-        // 允许 viewport/charset，移除 http-equiv=refresh 等
-        var httpEquiv = node.getAttribute('http-equiv');
-        if (httpEquiv && /refresh/i.test(httpEquiv)) toRemove.push(node);
-      } else {
-        // 通用：移除所有 on* 事件属性
-        for (var k = node.attributes.length - 1; k >= 0; k--) {
-          var ak = node.attributes[k];
-          if (ak.name.indexOf('on') === 0) node.removeAttribute(ak.name);
-        }
-      }
-      node = walker.nextNode();
-    }
-    toRemove.forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el); });
-
-    // 处理图片：cid: 引用 → base64 data URL 内联；相对路径 → 补全 base href
-    // cid 图片直接内联，无需额外请求，iframe sandbox 无跨域问题
-    if (attachments && attachments.length && uid) {
-      // 构建 cid/partID → data URL 映射
-      var cidToDataUrl = {};
-      var cidImages = email.cidImages || {};
-      Object.keys(cidImages).forEach(function (partID) {
-        cidToDataUrl[partID] = cidImages[partID];
-        // 也用 cid value 做 key（去掉 <>）
-        var att = attachments.find(function (a) { return a.partID === partID; });
-        if (att && att.cid) cidToDataUrl[att.cid] = cidImages[partID];
-      });
-      var imgNodes = doc.querySelectorAll('img[src]');
-      for (var i = 0; i < imgNodes.length; i++) {
-        var img = imgNodes[i];
-        var src = img.getAttribute('src') || '';
-        if (/^cid:/i.test(src)) {
-          var cid = src.slice(4).replace(/[<>]/g, '');
-          // 先按 cid 值找，再按 partID 模糊匹配
-          var dataUrl = cidToDataUrl[cid];
-          if (!dataUrl) {
-            for (var ai = 0; ai < attachments.length; ai++) {
-              var att = attachments[ai];
-              if (att.partID && (att.partID.indexOf(cid) >= 0 || cid.indexOf(att.partID) >= 0)) {
-                dataUrl = cidToDataUrl[att.partID] || cidToDataUrl[att.cid];
-                if (dataUrl) break;
-              }
-            }
-          }
-          if (dataUrl) {
-            img.setAttribute('src', dataUrl);
-          } else {
-            img.removeAttribute('src');
-          }
-        }
-        // 相对路径（非 http/https/data/cid）保留，靠 base href 解析
-      }
-    }
-
-    // 补全 base href（让相对路径图片/CSS 能按邮件域名解析）——留空 target=_blank 让链接在新标签页打开
-    // 注意：无法获知邮件原始域名，base href 留空则相对路径按当前 origin (ACMS) 解析，可能 404
-    // 这里不设置 href，仅设 target；若邮件 HTML 含 <base href="..."> 会被保留
-    var base = doc.createElement('base');
-    base.setAttribute('target', '_blank');
-    if (doc.head) doc.head.insertBefore(base, doc.head.firstChild);
-
-    return '<!DOCTYPE html><html><head>' + (doc.head ? doc.head.innerHTML : '') + '</head><body>' + doc.body.innerHTML + '</body></html>';
-  }
-
-  function isAttrAllowed(tag, attr) {
-    var name = String(attr || '').toLowerCase();
-    if (name.indexOf('on') === 0) return false;
-    var allow = ALLOWED_ATTRS[tag] || [];
-    if (allow.indexOf(name) >= 0) return true;
-    var any = ALLOWED_ATTRS['*'] || [];
-    return any.indexOf(name) >= 0;
   }
 
   function formatDate(dateValue) {
@@ -644,6 +520,10 @@ function formatAddress(value) {
       total: 0,
       offset: 0,
       limit: 30,
+      // v1.15: 邮件文件夹首屏只展示 6 个，剩余折叠进「更多文件夹」项
+      foldersExpanded: false,
+      // v1.17: reply/forward 时是否自动开启富文本（原邮件有 HTML 时默认开）
+      autoHtmlMode: false,
       selectedUid: null,
       detail: null,
       composerOpen: false,
@@ -661,10 +541,13 @@ function formatAddress(value) {
       availableCategories: ['客户咨询','会议邀请','工作协作','财务发票','营销订阅','求职招聘','自动通知','其他'],
       // v1.01: 用户维护的分类缓存（editCategory 从这里查原值预填表单，避免来回 GET）
       allCategories: [],
-      // v0.37: 视图状态：'main' | 'settings'
+// v0.37: 视图状态：'main' | 'settings' | 'drafts'（v1.13 加 drafts）
       currentView: 'main',
       settingsCategory: 'rules',
       rulesSubTab: 'config',
+      // v1.13: 草稿箱视图
+      drafts: [],
+      selectedDraftId: null,
     };
     this.templates = {};
   }
@@ -740,6 +623,9 @@ function formatAddress(value) {
         if (action === 'ai-bulk-analyze') return self.aiBulkAnalyze();
         if (action === 'prev') return self.gotoPage(-1);
         if (action === 'next') return self.gotoPage(1);
+        // v1.15: 展开/收起邮件文件夹
+        if (action === 'show-more-folders') return self.showMoreFolders();
+        if (action === 'collapse-folders') return self.collapseFolders();
         if (action === 'back-to-list') return self.closeDetail();
         if (action === 'composer-discard') return self.discardComposer();
         if (action === 'composer-send') return self.submitComposer();
@@ -772,11 +658,20 @@ function formatAddress(value) {
         // v0.36: 切换设置分类
         if (action === 'settings-category') return self.showSettingsCategory(target.getAttribute('data-category'));
         // v0.38: 用户维护的分类管理（CRUD）
-        if (action === 'add-category') return self.addCategory();
+if (action === 'add-category') return self.addCategory();
         if (action === 'edit-category') return self.editCategory(target.getAttribute('data-cat-id'));
         if (action === 'delete-category') return self.deleteCategory(target.getAttribute('data-cat-id'));
         if (action === 'refresh-categories') return self.loadCategories();
         if (action === 'seed-categories') return self.seedCategories();
+        // v1.13: 草稿箱视图操作
+        if (action === 'open-drafts') return self.openDrafts();
+        if (action === 'back-to-emails') return self.backToEmails();
+        if (action === 'open-draft') return self.openDraft(target.getAttribute('data-draft-id'));
+        if (action === 'send-draft') return self.sendDraft(target.getAttribute('data-draft-id'));
+        if (action === 'reject-draft') return self.rejectDraft(target.getAttribute('data-draft-id'));
+        if (action === 'delete-draft') return self.deleteDraft(target.getAttribute('data-draft-id'));
+        if (action === 'refresh-drafts') return self.loadDrafts();
+        if (action === 'edit-draft-save') return self.saveDraftEdits(target.getAttribute('data-draft-id'));
         // v1.02: AI 偏好保存 / 重置
         if (action === 'save-ai-prefs') return self.saveAIPrefs();
         if (action === 'reset-ai-prefs') return self.resetAIPrefs();
@@ -797,6 +692,10 @@ function formatAddress(value) {
         if (action === 'template-delete') return self.deleteTemplate(target.getAttribute('data-tpl-id'));
         // v0.36: 按 AI 分类筛选邮件
         if (action === 'filter-by-category') return self.filterByCategory(target.getAttribute('data-category'));
+        // v1.20: 数据管理按钮
+        if (action === 'clear-sender-categories') return self.clearSenderCategories();
+        if (action === 'clear-rule-logs') return self.clearRuleLogs();
+        if (action === 'export-data') return self.exportData();
         return;
       }
       var folder = event.target.closest('[data-role="folder"]');
@@ -909,10 +808,16 @@ function formatAddress(value) {
     });
   };
 
-  EmailApp.prototype.renderFolders = function () {
+EmailApp.prototype.renderFolders = function () {
     var list = this.root.querySelector('[data-role="folders"]');
     if (!list) return;
-    var html = this.state.mailboxes.map(function (box) {
+    var self = this;
+    var boxes = this.state.mailboxes || [];
+    var expanded = !!this.state.foldersExpanded;
+    // v1.15: 超过 6 个时只显示前 6 个 + 「更多文件夹」入口
+    var visibleBoxes = expanded ? boxes : boxes.slice(0, 6);
+    var hasMore = boxes.length > 6 && !expanded;
+    var html = visibleBoxes.map(function (box) {
       var label = box.name || 'INBOX';
       var marker = box.flags && box.flags.indexOf('\\Noselect') >= 0 ? ' (只读)' : '';
       return '<li class="em-folder" data-role="folder" data-mailbox="' + escAttr(label) + '">'
@@ -920,8 +825,60 @@ function formatAddress(value) {
         + '<span class="em-folder-name">' + escHtml(label) + escHtml(marker) + '</span>'
         + '</li>';
     }).join('');
+    // v1.15: 「更多文件夹」折叠项（置于草稿箱之前，便于用户展开）
+    if (hasMore) {
+      var remaining = boxes.length - 6;
+      html += '<li class="em-folder em-folder-more" data-role="folder-more" data-action="show-more-folders" title="邮箱共有 ' + boxes.length + ' 个文件夹，已隐藏 ' + remaining + ' 个。点击展开所有文件夹。">'
+        + '<span class="em-folder-icon">⋯</span>'
+        + '<span class="em-folder-name">更多文件夹 (' + remaining + ')</span>'
+        + '</li>';
+    }
+    // v1.13: 草稿箱伪文件夹（ACMS 自有草稿，非邮箱 IMAP 文件夹）
+    // — 紧跟邮箱文件夹列表底部，独立视觉风格（紫色 📝 标识 + 显式颜色，参考 acms-view-architecture §10.5 浮窗防隐形）
+    html += ''
+      + '<li class="em-folder em-folder-special" data-role="folder-special" data-action="open-drafts" '
+      + '    title="ACMS 自有草稿箱 — draft_only / auto_reply 规则生成的草稿等待人工编辑发送（不依赖邮箱 IMAP Drafts）" '
+      + '    style="margin-top:10px;border-top:1px dashed var(--border);padding-top:10px;cursor:pointer;">'
+      + '  <span class="em-folder-icon">📝</span>'
+      + '  <span class="em-folder-name">草稿箱</span>'
+      + '  <span class="em-folder-count" data-role="draft-count" style="margin-left:auto;background:#7c3aed;color:#ffffff;font-size:10px;font-weight:700;padding:2px 7px;border-radius:9px;display:none;">0</span>'
+      + '</li>';
     list.innerHTML = html;
     this.highlightFolder();
+    // 草稿数 badge（异步加载，不阻塞渲染）
+    this.refreshDraftCount();
+  };
+
+  // v1.15: 展开所有邮件文件夹（用户点击「更多文件夹」后调用）
+  EmailApp.prototype.showMoreFolders = function () {
+    this.state.foldersExpanded = true;
+    this.renderFolders();
+  };
+
+  // v1.15: 折叠回前 6 个（用户点击「收起文件夹 ▴」后调用）
+  EmailApp.prototype.collapseFolders = function () {
+    this.state.foldersExpanded = false;
+    this.renderFolders();
+  };
+
+  // v1.13: 拉取草稿数（按状态统计），写到左栏 badge
+  EmailApp.prototype.refreshDraftCount = function () {
+    var self = this;
+    var badge = this.root.querySelector('[data-role="draft-count"]');
+    if (!badge) return;
+    apiFetch('GET', '/api/email-drafts').then(function (data) {
+      var pending = 0, draft = 0;
+      var counts = (data && data.counts) || {};
+      pending = counts.pending_confirmation || 0;
+      draft = counts.draft || 0;
+      var total = pending + draft;
+      if (total > 0) {
+        badge.textContent = pending > 0 ? (pending + ' 待确认') : total;
+        badge.style.display = 'inline-block';
+      } else {
+        badge.style.display = 'none';
+      }
+    }).catch(function () { /* 静默 — badge 拉不到不阻塞 */ });
   };
 
   EmailApp.prototype.highlightFolder = function () {
@@ -1225,6 +1182,7 @@ EmailApp.prototype.renderListItem = function (email) {
 
   // v0.30: 弹窗显示 AI 草拟回复（含「填入 Composer」按钮 — 绝不自动发）
   EmailApp.prototype.showDraftReplyModal = function (uid, result) {
+    var self = this;
     var old = document.querySelector('.em-draft-modal-backdrop');
     if (old) old.remove();
     var backdrop = document.createElement('div');
@@ -1262,16 +1220,21 @@ EmailApp.prototype.renderListItem = function (email) {
     var fillBtn = modal.querySelector('.em-draft-fill');
     if (fillBtn) {
       fillBtn.onclick = function () {
-        // 打开 composer (复用现有 reply 流程），然后直接覆盖 body textarea
+        // 打开 composer (复用现有 reply 流程），然后直接覆盖 body editor
         self.openComposer({ kind: 'reply' });
-        // 等下一帧让 composer 渲染
+        // 等 composer 渲染完成（contenteditable div）
         setTimeout(function () {
-          var textarea = self.root.querySelector('[data-role="body"]');
-          if (textarea) {
-            textarea.value = draft;
-            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+          var editor = self.root.querySelector('[data-role="body"]');
+          if (editor) {
+            // v1.20: 走 plainTextToHtml 保留 \n 换行 + 缩进
+            //   原代码 editor.innerHTML = draft 把 \n 当空白折叠，多多反馈「换行和缩进都消失了」
+            editor.innerHTML = plainTextToHtml(draft);
+            // v1.20: 移除 em-editor-empty class（否则 CSS ::before 还会显示 placeholder）
+            //   原代码没移，placeholder 文字"写回复…（原邮件会在下方预览…）"盖在内容前面
+            editor.classList.remove('em-editor-empty');
+            editor.dispatchEvent(new Event('input', { bubbles: true }));
           }
-        }, 60);
+        }, 80);
         close();
         self.setStatus('已填入 Composer — 修改后发送');
       };
@@ -1610,7 +1573,7 @@ EmailApp.prototype.renderDetail = function () {
     // 先渲染外层结构，iframe 占位
     var iframeId = 'em-iframe-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
     var iframeHtml = decodedHtml
-      ? '<iframe id="' + iframeId + '" class="em-body-iframe" sandbox="allow-same-origin allow-forms allow-pointer-lock" style="width:100%;border:none;min-height:200px;background:transparent;"></iframe>'
+      ? '<iframe id="' + iframeId + '" class="em-body-iframe" sandbox="allow-same-origin allow-scripts allow-forms allow-pointer-lock" style="width:100%;border:none;min-height:200px;background:transparent;"></iframe>'
       : '<pre class="em-text-body">' + escHtml(decodedText || '(无正文)') + '</pre>';
 
     pane.innerHTML = [
@@ -1731,9 +1694,364 @@ EmailApp.prototype.renderDetail = function () {
     if (!body) return;
     if (err && err.code === 'IMAP_CONNECT_FAILED') {
       body.innerHTML = '<div class="em-error">❌ ' + escHtml(err.message) + '<br/>请确认 config.json 中 smtp 配置了正确的邮箱和密码。</div>';
-    } else {
+} else {
       body.innerHTML = '<div class="em-error">❌ ' + escHtml(err.message || '加载失败') + '</div>';
     }
+  };
+
+  // ════════════════════════════════════════════════════════════════════
+  // v1.13: 自有草稿箱视图（ACMS 自有 draft_only / auto_reply 草稿持久化）
+  // — 参考 acms-view-architecture §5.5 占位 ≠ 自动加载；render 后必须 schedule load
+  // ════════════════════════════════════════════════════════════════════
+
+  // 切换到草稿箱视图
+  EmailApp.prototype.openDrafts = function () {
+    var self = this;
+    self.state.currentView = 'drafts';
+    self.state.selectedDraftId = null;
+    self.refreshDraftCount(); // 更新左栏计数
+    // 复用 email main view 的三栏布局，但中间栏显示草稿列表，右侧显示草稿详情（编辑 + 发送按钮）
+    // 注：布局根是 .em-app，没有 .em-main/.em-content——直接调用 renderDraftsView 即可
+    self.renderDraftsView();
+    self.setStatus('草稿箱 — 待人工处理');
+  };
+
+  // 回到邮件视图
+  EmailApp.prototype.backToEmails = function () {
+    var self = this;
+    self.state.currentView = 'main';
+    self.state.selectedDraftId = null;
+    self.refreshDraftCount();
+    self.render();
+    // 重新拉邮件列表（恢复 main 视图）
+    self.loadEmails();
+    self.setStatus('已返回邮件视图');
+  };
+
+  // 渲染草稿箱视图（中间栏列表 + 右侧详情 + 编辑表单）
+  EmailApp.prototype.renderDraftsView = function () {
+    var self = this;
+    var listBody = this.root.querySelector('[data-role="list"]');
+    var pane = this.root.querySelector('[data-role="pane"]');
+    if (!listBody || !pane) {
+      // 主布局 DOM 缺失 — 整页重渲染
+      this.render();
+      listBody = this.root.querySelector('[data-role="list"]');
+      pane = this.root.querySelector('[data-role="pane"]');
+      if (!listBody || !pane) return;
+    }
+
+    // 中间栏 header：标题 + 操作
+    var headEl = listBody.parentElement.querySelector('.em-list-head');
+    if (headEl) {
+      headEl.innerHTML = ''
+        + '<div style="display:flex;align-items:center;gap:8px;flex:1;">'
+        + '  <span style="font-size:13px;font-weight:700;color:var(--text);">📝 草稿箱</span>'
+        + '  <button type="button" class="em-btn" data-action="back-to-emails" title="返回邮件视图">← 邮件</button>'
+        + '  <button type="button" class="em-btn" data-action="refresh-drafts" title="刷新草稿列表" style="margin-left:auto;">🔄 刷新</button>'
+        + '</div>';
+    }
+
+    // 隐藏分类筛选行（草稿视图不需要）
+    var catFilter = this.root.querySelector('[data-role="category-filter"]');
+    if (catFilter) catFilter.style.display = 'none';
+
+    // schedule load（占位 ≠ 自动加载 — §5.5）
+    setTimeout(function () { self.loadDrafts(); }, 60);
+
+    // 右侧详情面板：占位
+    pane.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--text3);font-size:13px;padding:20px;text-align:center;">'
+      + '<div style="font-size:48px;margin-bottom:12px;opacity:.5;">📝</div>'
+      + '<div>选中左侧草稿查看 / 编辑 / 发送</div>'
+      + '</div>';
+  };
+
+  // 加载草稿列表（拉后端 + 渲染中间栏）
+  EmailApp.prototype.loadDrafts = function () {
+    var self = this;
+    var listBody = this.root.querySelector('[data-role="list"]');
+    if (!listBody) return;
+    listBody.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text3);font-size:12px;">⏳ 加载草稿中…</div>';
+    apiFetch('GET', '/api/email-drafts').then(function (data) {
+      var drafts = (data && data.drafts) || [];
+      self.state.drafts = drafts;
+      self.refreshDraftCount();
+      self.renderDraftsList(drafts, data && data.counts);
+    }).catch(function (err) {
+      listBody.innerHTML = '<div style="padding:20px;text-align:center;color:var(--red);font-size:12px;">加载失败：' + escHtml(err.message || String(err)) + '</div>';
+    });
+  };
+
+  // 渲染草稿列表卡片
+  EmailApp.prototype.renderDraftsList = function (drafts, counts) {
+    var listBody = this.root.querySelector('[data-role="list"]');
+    if (!listBody) return;
+    var self = this;
+
+    // 顶部按状态汇总
+    var countsHtml = '';
+    if (counts) {
+      countsHtml = '<div style="padding:8px 14px;background:var(--bg3);border-bottom:1px solid var(--border);font-size:11px;color:var(--text3);display:flex;gap:12px;flex-wrap:wrap;">'
+        + '<span title="待人工确认发送">⏳ 待确认：' + (counts.pending_confirmation || 0) + '</span>'
+        + '<span title="规则自动生成的草稿，可直接编辑发送">📝 草稿：' + (counts.draft || 0) + '</span>'
+        + '<span title="已发送">✅ 已发送：' + (counts.sent || 0) + '</span>'
+        + '<span title="已拒绝">❌ 已拒绝：' + (counts.rejected || 0) + '</span>'
+        + '</div>';
+    }
+
+    if (!drafts.length) {
+      listBody.innerHTML = countsHtml + '<div style="padding:30px 20px;text-align:center;color:var(--text3);font-size:12px;">'
+        + '<div style="font-size:32px;margin-bottom:8px;opacity:.5;">📝</div>'
+        + '<div>草稿箱为空</div>'
+        + '<div style="margin-top:6px;color:var(--text3);opacity:.7;font-size:11px;">draft_only / auto_reply 规则触发后会在此生成草稿</div>'
+        + '</div>';
+      return;
+    }
+
+    var cards = drafts.map(function (d) {
+      var status = d.status || 'draft';
+      var statusBadge = status === 'pending_confirmation'
+        ? '<span style="background:#f59e0b;color:#ffffff;padding:2px 8px;border-radius:9px;font-size:10px;font-weight:700;" title="规则生成的草稿，待人工确认发送">⏳ 待确认</span>'
+        : status === 'draft'
+          ? '<span style="background:#7c3aed;color:#ffffff;padding:2px 8px;border-radius:9px;font-size:10px;font-weight:700;" title="草稿，可直接编辑发送">📝 草稿</span>'
+          : status === 'sent'
+            ? '<span style="background:#22c55e;color:#ffffff;padding:2px 8px;border-radius:9px;font-size:10px;font-weight:700;">✅ 已发送</span>'
+            : '<span style="background:var(--text3);color:#ffffff;padding:2px 8px;border-radius:9px;font-size:10px;font-weight:700;">' + escHtml(status) + '</span>';
+
+      var sourceBadge = d.source === 'auto_reply'
+        ? '<span style="background:#7c3aed;color:#ffffff;padding:1px 6px;border-radius:6px;font-size:9px;font-weight:600;" title="auto_reply 规则生成">🤖 自动回复</span>'
+        : d.source === 'draft_only'
+          ? '<span style="background:#0ea89d;color:#ffffff;padding:1px 6px;border-radius:6px;font-size:9px;font-weight:600;" title="draft_only 规则生成">📝 规则生成</span>'
+          : '<span style="background:#2a2a40;color:#ffffff;padding:1px 6px;border-radius:6px;font-size:9px;font-weight:600;" title="用户手动写">✍ 手动</span>';
+
+      var dateStr = d.updated_at ? new Date(d.updated_at).toLocaleString('zh-CN') : '';
+      var preview = (d.draft_preview || d.body || '').slice(0, 80);
+      var ruleDesc = d.rule_description ? '<div style="font-size:10px;color:var(--accent1);margin-top:2px;" title="触发此草稿的规则描述">📋 ' + escHtml(d.rule_description.slice(0, 60)) + '</div>' : '';
+      var isActive = self.state.selectedDraftId === d.id;
+
+      return ''
+        + '<div class="em-draft-card' + (isActive ? ' em-draft-active' : '') + '" '
+        + '     data-draft-id="' + escAttr(d.id) + '" '
+        + '     data-action="open-draft" '
+        + '     style="padding:12px;border-bottom:1px solid var(--border);cursor:pointer;' + (isActive ? 'background:var(--bg3);border-left:3px solid var(--accent1);' : '') + '" '
+        + '     title="点击查看 / 编辑 / 发送此草稿">'
+        + '  <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap;">'
+        + '    ' + statusBadge
+        + '    ' + sourceBadge
+        + '  </div>'
+        + '  <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escAttr(d.subject || '') + '">' + escHtml(d.subject || '(无主题)') + '</div>'
+        + '  <div style="font-size:11px;color:var(--text2);margin-bottom:4px;">收件人：<b>' + escHtml(d.reply_to || '') + '</b></div>'
+        + '  <div style="font-size:11px;color:var(--text3);margin-bottom:4px;line-height:1.4;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;">' + escHtml(preview) + '</div>'
+        + ruleDesc
+        + '  <div style="font-size:10px;color:var(--text3);margin-top:4px;display:flex;justify-content:space-between;">'
+        + '    <span>' + escHtml(dateStr) + '</span>'
+        + '    <span>' + (d.draft_length || 0) + ' 字</span>'
+        + '  </div>'
+        + '</div>';
+    }).join('');
+
+    listBody.innerHTML = countsHtml + '<div class="em-drafts-list">' + cards + '</div>';
+  };
+
+  // 打开草稿详情（右侧详情面板：编辑表单 + 发送按钮）
+  EmailApp.prototype.openDraft = function (draftId) {
+    var self = this;
+    if (!draftId) return;
+    self.state.selectedDraftId = draftId;
+    // 重新渲染列表以高亮当前选中
+    self.renderDraftsList(self.state.drafts);
+    var pane = self.root.querySelector('[data-role="pane"]');
+    if (!pane) return;
+    pane.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text3);font-size:12px;">⏳ 加载草稿…</div>';
+    apiFetch('GET', '/api/email-drafts/' + encodeURIComponent(draftId)).then(function (data) {
+      var d = (data && data.draft) || null;
+      if (!d) {
+        pane.innerHTML = '<div style="padding:20px;color:var(--red);">草稿不存在</div>';
+        return;
+      }
+      self.renderDraftDetail(d);
+    }).catch(function (err) {
+      pane.innerHTML = '<div style="padding:20px;color:var(--red);">加载失败：' + escHtml(err.message || String(err)) + '</div>';
+    });
+  };
+
+  // 渲染草稿详情（编辑表单 + 发送按钮 + 删除按钮）
+  EmailApp.prototype.renderDraftDetail = function (d) {
+    var self = this;
+    var pane = self.root.querySelector('[data-role="pane"]');
+    if (!pane) return;
+
+    var status = d.status || 'draft';
+    var canEdit = status !== 'sent';
+    var canSend = status === 'draft' || status === 'pending_confirmation' || status === 'rejected';
+    var readOnly = !canEdit;
+
+    var statusBadge = status === 'pending_confirmation'
+      ? '<span style="background:#f59e0b;color:#ffffff;padding:3px 10px;border-radius:10px;font-size:11px;font-weight:700;">⏳ 待确认</span>'
+      : status === 'draft'
+        ? '<span style="background:#7c3aed;color:#ffffff;padding:3px 10px;border-radius:10px;font-size:11px;font-weight:700;">📝 草稿</span>'
+        : status === 'sent'
+          ? '<span style="background:#22c55e;color:#ffffff;padding:3px 10px;border-radius:10px;font-size:11px;font-weight:700;">✅ 已发送</span>'
+          : '<span style="background:var(--text3);color:#ffffff;padding:3px 10px;border-radius:10px;font-size:11px;font-weight:700;">' + escHtml(status) + '</span>';
+
+    var sentInfo = '';
+    if (status === 'sent' && d.sent_at) {
+      sentInfo = '<div style="margin-bottom:12px;padding:10px;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.3);border-radius:6px;font-size:12px;color:var(--text);">'
+        + '<b>✅ 已发送</b> · ' + escHtml(new Date(d.sent_at).toLocaleString('zh-CN'))
+        + (d.sent_message_id ? '<div style="font-size:10px;color:var(--text3);margin-top:4px;font-family:monospace;">messageId: ' + escHtml(d.sent_message_id) + '</div>' : '')
+        + '</div>';
+    }
+    var errorInfo = '';
+    if (d.error && status !== 'sent') {
+      errorInfo = '<div style="margin-bottom:12px;padding:10px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:6px;font-size:12px;color:var(--red);">'
+        + '<b>⚠️ 上次错误</b>：' + escHtml(d.error) + '</div>';
+    }
+
+    pane.innerHTML = ''
+      + '<header class="em-detail-head">'
+      + '  <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">'
+      + '    <button type="button" class="em-btn" data-action="back-to-emails">← 邮件</button>'
+      + '    ' + statusBadge
+      + '  </div>'
+      + '  <div class="em-detail-title"><h2>📝 ' + escHtml(d.subject || '(无主题)') + '</h2></div>'
+      + '  <table class="em-meta">'
+      + '    <tr><th>收件人</th><td>' + escHtml(d.reply_to || '') + '</td></tr>'
+      + '    <tr><th>来源</th><td>' + escHtml(d.source || '') + (d.rule_description ? ' · ' + escHtml(d.rule_description.slice(0, 60)) : '') + '</td></tr>'
+      + '    <tr><th>原始邮件</th><td>' + escHtml(d.original_mailbox || '') + ' #' + escHtml(String(d.original_email_uid || '-')) + '</td></tr>'
+      + '    <tr><th>创建时间</th><td>' + escHtml(new Date(d.created_at).toLocaleString('zh-CN')) + '</td></tr>'
+      + '    <tr><th>更新时间</th><td>' + escHtml(new Date(d.updated_at).toLocaleString('zh-CN')) + '</td></tr>'
+      + (d.model_id ? '<tr><th>生成模型</th><td>' + escHtml(d.model_id) + '</td></tr>' : '')
+      + '  </table>'
+      + '</header>'
+      + '<article class="em-body" style="padding:0 16px;">'
+      + sentInfo
+      + errorInfo
+      + '  <div style="margin-bottom:12px;">'
+      + '    <label style="display:block;font-size:11px;color:var(--text2);margin-bottom:4px;font-weight:600;">主题</label>'
+      + '    <input id="draft-subject" type="text" value="' + escAttr(d.subject || '') + '" ' + (readOnly ? 'readonly' : '') + ' style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;"/>'
+      + '  </div>'
+      + '  <div style="margin-bottom:12px;">'
+      + '    <label style="display:block;font-size:11px;color:var(--text2);margin-bottom:4px;font-weight:600;">收件人</label>'
+      + '    <input id="draft-to" type="text" value="' + escAttr(d.reply_to || '') + '" ' + (readOnly ? 'readonly' : '') + ' style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;font-family:monospace;"/>'
+      + '  </div>'
+      + '  <div style="margin-bottom:12px;">'
+      + '    <label style="display:block;font-size:11px;color:var(--text2);margin-bottom:4px;font-weight:600;">正文</label>'
+      + '    <textarea id="draft-body" ' + (readOnly ? 'readonly' : '') + ' style="width:100%;min-height:300px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;color:var(--text);font-size:12px;line-height:1.6;resize:vertical;font-family:inherit;">' + escHtml(d.body || '') + '</textarea>'
+      + '  </div>'
+      + '  <div style="display:flex;gap:8px;flex-wrap:wrap;">'
+      + (canEdit ? '    <button type="button" class="em-btn" data-action="edit-draft-save" data-draft-id="' + escAttr(d.id) + '" style="background:#2a2a40;color:#ffffff;font-weight:600;border:1px solid rgba(255,255,255,.25);" title="保存修改到草稿（不发送）">💾 保存修改</button>' : '')
+      + (canSend ? '    <button type="button" class="em-btn em-btn-primary" data-action="send-draft" data-draft-id="' + escAttr(d.id) + '" style="background:#22c55e;color:#ffffff;font-weight:700;border:none;" title="真实发送邮件（调 email-sender）">📤 确认发送</button>' : '')
+      + (canEdit ? '    <button type="button" class="em-btn" data-action="reject-draft" data-draft-id="' + escAttr(d.id) + '" style="background:#f59e0b;color:#ffffff;font-weight:600;border:none;" title="拒绝此草稿（auto_reply 场景下用户主动放弃）">🚫 拒绝</button>' : '')
+      + '    <button type="button" class="em-btn" data-action="delete-draft" data-draft-id="' + escAttr(d.id) + '" style="background:#e53935;color:#ffffff;font-weight:600;border:none;margin-left:auto;" title="永久删除草稿（不可恢复）">🗑 删除</button>'
+      + '  </div>'
+      + '</article>';
+  };
+
+  // 保存草稿编辑（不发送）
+  EmailApp.prototype.saveDraftEdits = function (draftId) {
+    var self = this;
+    if (!draftId) return;
+    var subjectEl = document.getElementById('draft-subject');
+    var toEl = document.getElementById('draft-to');
+    var bodyEl = document.getElementById('draft-body');
+    if (!subjectEl || !toEl || !bodyEl) return;
+    var payload = {
+      subject: subjectEl.value,
+      to: toEl.value,
+      body: bodyEl.value,
+    };
+    apiFetch('POST', '/api/email-drafts/' + encodeURIComponent(draftId) + '/update', payload).then(function (data) {
+      self.setStatus('✅ 草稿已保存（ID=' + draftId + '）', 'success');
+      showToast('草稿修改已保存', 'success');
+      self.loadDrafts();
+    }).catch(function (err) {
+      self.setStatus('保存失败：' + err.message, 'error');
+      showToast('保存失败：' + err.message, 'error');
+    });
+  };
+
+  // 发送草稿（真实调 SMTP）
+  EmailApp.prototype.sendDraft = function (draftId) {
+    var self = this;
+    if (!draftId) return;
+    // 二次确认防误发（参考 P163 silent write 防御 + agent-buddy-action.js requires_confirmation）
+    ACMSModal.show({
+      title: '确认发送草稿',
+      size: 'md',
+      html: '<div style="font-size:13px;line-height:1.6;">'
+        + '<p>即将通过 <b style="color:#22c55e;">' + escHtml(self.state.account && self.state.account.email || '当前邮箱') + '</b> 真实发送此草稿。</p>'
+        + '<p style="color:var(--text3);font-size:11px;margin-top:8px;">⚠️ 发送后对方会立即收到邮件，不可撤回（除非另发撤回请求）。</p>'
+        + '</div>',
+      actions: [
+        { label: '取消', value: 'cancel', className: 'acms-modal-btn' },
+        { label: '📤 确认发送', value: 'send', className: 'acms-modal-btn acms-modal-btn-primary' },
+      ],
+    }).then(function (result) {
+      if (result !== 'send') return;
+      self.setStatus('📤 正在发送…');
+      apiFetch('POST', '/api/email-drafts/' + encodeURIComponent(draftId) + '/send').then(function (data) {
+        var messageId = (data && data.sent && data.sent.messageId) || '';
+        self.setStatus('✅ 已发送：messageId=' + messageId, 'success');
+        showToast('✅ 草稿已发送', 'success');
+        // 刷新详情 + 列表
+        self.openDraft(draftId);
+        self.loadDrafts();
+      }).catch(function (err) {
+        self.setStatus('❌ 发送失败：' + err.message, 'error');
+        showToast('❌ 发送失败：' + err.message, 'error');
+      });
+    });
+  };
+
+  // 拒绝草稿（auto_reply 场景用户主动放弃）
+  EmailApp.prototype.rejectDraft = function (draftId) {
+    var self = this;
+    if (!draftId) return;
+    ACMSModal.show({
+      title: '拒绝草稿',
+      size: 'md',
+      html: '<div style="font-size:13px;">拒绝后此草稿标记为已拒绝，不再发送。可在列表里删除。</div>',
+      actions: [
+        { label: '取消', value: 'cancel', className: 'acms-modal-btn' },
+        { label: '拒绝', value: 'reject', className: 'acms-modal-btn', style: 'background:#f59e0b;' },
+      ],
+    }).then(function (result) {
+      if (result !== 'reject') return;
+      apiFetch('POST', '/api/email-drafts/' + encodeURIComponent(draftId) + '/reject').then(function () {
+        self.setStatus('草稿已拒绝', 'success');
+        self.loadDrafts();
+        self.openDraft(draftId);
+      }).catch(function (err) {
+        self.setStatus('拒绝失败：' + err.message, 'error');
+      });
+    });
+  };
+
+  // 删除草稿
+  EmailApp.prototype.deleteDraft = function (draftId) {
+    var self = this;
+    if (!draftId) return;
+    ACMSModal.show({
+      title: '确认删除草稿',
+      size: 'md',
+      html: '<div style="font-size:13px;">删除后无法恢复。确定删除草稿 ID=<b>' + escHtml(draftId) + '</b>？</div>',
+      actions: [
+        { label: '取消', value: 'cancel', className: 'acms-modal-btn' },
+        { label: '🗑 删除', value: 'delete', className: 'acms-modal-btn', style: 'background:#e53935;' },
+      ],
+    }).then(function (result) {
+      if (result !== 'delete') return;
+      apiFetch('DELETE', '/api/email-drafts/' + encodeURIComponent(draftId)).then(function () {
+        self.setStatus('草稿已删除', 'success');
+        if (self.state.selectedDraftId === draftId) self.state.selectedDraftId = null;
+        self.loadDrafts();
+        // 右侧详情清空
+        var pane = self.root.querySelector('[data-role="pane"]');
+        if (pane) pane.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text3);font-size:12px;">草稿已删除</div>';
+      }).catch(function (err) {
+        self.setStatus('删除失败：' + err.message, 'error');
+      });
+    });
   };
 
   // ── 写信：草稿、模板、附件、HTML 切换、发送 ──
@@ -1773,6 +2091,13 @@ EmailApp.prototype.renderDetail = function () {
         var from = formatAddress(email.from);
         var prefix = options.kind === 'forward' ? 'Fwd: ' : 'Re: ';
         data.subject = email.subject && email.subject.indexOf(prefix) === 0 ? email.subject : prefix + (email.subject || '');
+        // v1.17: 保留原邮件的 HTML 内容（用于下方预览），避免 reply 后"风格丢失"
+        if (email.html) {
+          data.originalHtml = decodeEmailBody(email.html, 'utf-8');
+          // 原邮件有 HTML → 自动开富文本模式，用户可直接在 composer 里编辑 HTML
+          data.isHtml = true;
+          data.autoHtmlMode = true;
+        }
         if (options.kind === 'reply') {
           data.to = from;
         } else if (options.kind === 'reply-all') {
@@ -1787,8 +2112,10 @@ EmailApp.prototype.renderDetail = function () {
             + 'To: ' + (email.to || '') + '\n\n'
             + (email.text || email.html || '');
         } else {
-          var quote = (email.text || '').split('\n').map(function (line) { return '> ' + line; }).join('\n');
-          data.body = '\n\n' + (quote || '(无原文)') + '\n';
+          // v1.18: reply/reply-all 优先保留原邮件 HTML 格式
+          // — textarea 里只放用户的新回复（空或用户输入），原邮件 HTML 作为引用区放在下方
+          // — 发送时组装：新内容 + 分割线 + 原邮件 HTML（保持格式）
+          data.body = '';
         }
       }
     }
@@ -1827,18 +2154,37 @@ EmailApp.prototype.renderDetail = function () {
       '        <button type="button" class="em-btn em-btn-tiny" data-action="composer-template" data-template="apology">致歉</button>',
       '      </div>',
       '      <div class="em-toolbar-group">',
-      '        <button type="button" class="em-btn em-btn-tiny" data-action="composer-format" data-format="bold"><b>B</b></button>',
-      '        <button type="button" class="em-btn em-btn-tiny" data-action="composer-format" data-format="italic"><i>I</i></button>',
-      '        <button type="button" class="em-btn em-btn-tiny" data-action="composer-format" data-format="link">🔗 链接</button>',
-      '        <button type="button" class="em-btn em-btn-tiny" data-action="composer-format" data-format="list">• 列表</button>',
-      '        <label class="em-toggle"><input type="checkbox" data-role="html-toggle"' + (data.isHtml ? ' checked' : '') + ' />富文本</label>',
+      '        <button type="button" class="em-btn em-btn-tiny" data-action="composer-format" data-format="bold" title="粗体 Ctrl+B"><b>B</b></button>',
+      '        <button type="button" class="em-btn em-btn-tiny" data-action="composer-format" data-format="italic" title="斜体 Ctrl+I"><i>I</i></button>',
+      '        <button type="button" class="em-btn em-btn-tiny" data-action="composer-format" data-format="underline" title="下划线 Ctrl+U"><u>U</u></button>',
+      '        <button type="button" class="em-btn em-btn-tiny" data-action="composer-format" data-format="strikethrough" title="删除线"><s>S</s></button>',
+      '        <button type="button" class="em-btn em-btn-tiny" data-action="composer-format" data-format="link" title="插入链接 Ctrl+K">🔗</button>',
+      '        <button type="button" class="em-btn em-btn-tiny" data-action="composer-format" data-format="list" title="列表">• 列表</button>',
+      '        <button type="button" class="em-btn em-btn-tiny" data-action="composer-format" data-format="insertimage" title="粘贴/插入图片（支持 Ctrl+V 粘贴剪贴板图片）">🖼 图片</button>',
+      '        <select class="em-font-size-select" data-role="font-size" title="字号" style="padding:2px 4px;border:1px solid var(--border);border-radius:4px;font-size:11px;background:var(--bg);color:var(--text);">',
+      '          <option value="">字号</option>',
+      '          <option value="1">小</option>',
+      '          <option value="3" selected>正常</option>',
+      '          <option value="5">大</option>',
+      '          <option value="7">特大</option>',
+      '        </select>',
+      '        <input type="color" data-role="text-color" title="文字颜色" style="width:24px;height:20px;border:none;padding:0;cursor:pointer;">',
       '      </div>',
       '      <div class="em-toolbar-group">',
       '        <button type="button" class="em-btn em-btn-tiny" data-action="composer-attach">📎 添加附件</button>',
       '        <input type="file" multiple class="em-file-input" data-role="file-input" hidden />',
       '      </div>',
       '    </div>',
-      '    <textarea class="em-textarea" data-role="body" rows="14" placeholder="邮件正文…">' + escHtml(data.body || '') + '</textarea>',
+      '    <div class="em-composer-editor" data-role="body" contenteditable="true" role="textbox" aria-multiline="true" aria-label="邮件正文" placeholder="写回复…（原邮件会在下方预览，发送时自动附带）"></div>',
+      // v1.18: 回复时原邮件以分割线 + iframe 渲染区展示在 textarea 下方（参考 Gmail/Outlook 引用样式）
+      (function () {
+        if (!data.originalHtml) return '';
+        var pid = 'em-reply-original-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+        return ''
+          + '  <div class="em-composer-original-divider">—— 原始邮件 ——</div>'
+          + '  <iframe id="' + pid + '" class="em-composer-original-iframe" sandbox="allow-same-origin allow-scripts" title="原邮件引用"></iframe>'
+          ;
+      })(),
       '    <ul class="em-att-chips" data-role="attachments"></ul>',
       '    <div class="em-send-status" data-role="send-status" aria-live="polite"></div>',
       '  </div>',
@@ -1854,27 +2200,119 @@ EmailApp.prototype.renderDetail = function () {
       });
     }
 
-    var htmlToggle = pane.querySelector('[data-role="html-toggle"]');
-    if (htmlToggle) {
-      htmlToggle.addEventListener('change', function (event) {
-        var checked = event.target.checked;
-        var body = pane.querySelector('[data-role="body"]');
-        if (checked) {
-          body.classList.add('em-textarea-html');
-        } else {
-          body.classList.remove('em-textarea-html');
-        }
-        self_capture().state.composerData.isHtml = checked;
-        self_capture().scheduleDraftSave();
+    // v1.19: contenteditable 编辑器——不再需要 htmlToggle（始终 HTML 模式）
+    var editor = pane.querySelector('[data-role="body"]');
+    if (editor) {
+      // 初始内容（reply 时可能有 originalHtml，但 body 本身为空；originalHtml 在下方 iframe 里）
+      if (data.body) {
+        editor.innerHTML = data.body;
+      }
+      editor.addEventListener('input', function () {
+        self.state.composerData = self.readComposerInputs();
+        self.scheduleDraftSave();
       });
+      // v1.19: 粘贴剪贴板图片 → base64 内嵌
+      editor.addEventListener('paste', function (event) {
+        var items = (event.clipboardData || event.originalEvent.clipboardData).items;
+        var hasImage = false;
+        for (var i = 0; i < items.length; i++) {
+          if (items[i].type.indexOf('image') !== -1) {
+            hasImage = true;
+            var blob = items[i].getAsFile();
+            var reader = new FileReader();
+            reader.onload = function (e) {
+              var imgSrc = e.target.result;
+              // 插入 <img> 标签
+              var sel = root.getSelection && root.getSelection();
+              if (sel && sel.rangeCount) {
+                var range = sel.getRangeAt(0);
+                range.deleteContents();
+                var img = document.createElement('img');
+                img.src = imgSrc;
+                img.style.maxWidth = '100%';
+                range.insertNode(img);
+                range.setStartAfter(img);
+                range.collapse(true);
+                sel.removeAllRanges();
+                sel.addRange(range);
+              } else {
+                editor.innerHTML += '<img src="' + imgSrc + '" style="max-width:100%;">';
+              }
+              self.state.composerData = self.readComposerInputs();
+              self.scheduleDraftSave();
+            };
+            reader.readAsDataURL(blob);
+          }
+        }
+        if (hasImage) event.preventDefault();
+      });
+      // v1.19: placeholder 行为（contenteditable 不支持 placeholder 属性，用 CSS + JS 模拟）
+      editor.addEventListener('focus', function () {
+        if (!editor.innerHTML || editor.innerHTML === '<br>') editor.innerHTML = '';
+        editor.classList.remove('em-editor-empty');
+      });
+      editor.addEventListener('blur', function () {
+        if (!editor.innerHTML || editor.innerHTML.trim() === '<br>' || editor.innerHTML.trim() === '') {
+          editor.innerHTML = '<br>';
+          editor.classList.add('em-editor-empty');
+        } else {
+          editor.classList.remove('em-editor-empty');
+        }
+      });
+      // 初始空态
+      if (!editor.innerHTML || editor.innerHTML.trim() === '') {
+        editor.innerHTML = '<br>';
+        editor.classList.add('em-editor-empty');
+      }
     }
 
-    ['to', 'cc', 'bcc', 'reply-to', 'subject', 'body'].forEach(function (role) {
+    ['to', 'cc', 'bcc', 'reply-to', 'subject'].forEach(function (role) {
       var input = pane.querySelector('[data-role="' + role + '"]');
       if (input) {
-        input.addEventListener('input', self_capture().scheduleDraftSave.bind(self_capture()));
+        input.addEventListener('input', function () { self.state.composerData = self.readComposerInputs(); self.scheduleDraftSave(); });
       }
     });
+
+    // v1.18: 写入 reply 原邮件 iframe 内容（DOM API，不在 innerHTML 里内联 script）
+    if (data.originalHtml) {
+      var previewEl = pane.querySelector('[class*="composer-original-divider"]');
+      if (previewEl) {
+        var iframeEl = previewEl.nextSibling;
+        while (iframeEl && iframeEl.tagName !== 'IFRAME') iframeEl = iframeEl.nextSibling;
+        if (iframeEl) {
+          var sanitized = sanitizeEmailHtmlForIframe(data.originalHtml, this.state.detail);
+          (function (f, html) {
+            var doc = f.contentDocument || f.contentWindow.document;
+            doc.open();
+            doc.write(html);
+            doc.close();
+            f.style.height = (doc.body.scrollHeight + 2) + 'px';
+          })(iframeEl, sanitized);
+        }
+      }
+    }
+
+    // v1.19: font-size select + text-color input 事件（在 renderComposer 内部，pane 可用）
+    (function patchComposerControls(p) {
+      var fs = p.querySelector('[data-role="font-size"]');
+      if (fs) {
+        fs.addEventListener('change', function () {
+          if (!this.value) return;
+          document.execCommand('fontSize', false, this.value);
+          self.state.composerData = self.readComposerInputs();
+          self.scheduleDraftSave();
+        });
+      }
+      var tc = p.querySelector('[data-role="text-color"]');
+      if (tc) {
+        tc.addEventListener('input', function () {
+          if (!this.value) return;
+          document.execCommand('foreColor', false, this.value);
+          self.state.composerData = self.readComposerInputs();
+          self.scheduleDraftSave();
+        });
+      }
+    })(pane);
   };
 
   EmailApp.prototype.hydrateComposer = function () {
@@ -1898,33 +2336,98 @@ EmailApp.prototype.renderDetail = function () {
     };
     var body = this.root.querySelector('[data-role="body"]');
     if (!body) return;
-    body.value = (body.value ? body.value + '\n\n' : '') + (templates[name] || '');
-    this.state.composerData.body = body.value;
+    var existing = body.innerHTML.trim() === '<br>' ? '' : body.innerHTML;
+    // v1.20: 走 plainTextToHtml 保留 \n 换行（同 fillBtn 同款 bug — 多多 2026-09-03 反馈）
+    body.innerHTML = (existing ? existing + '<br><br>' : '') + plainTextToHtml(templates[name] || '');
+    // v1.20: 移除 em-editor-empty class（点了模板就肯定不空了，placeholder 别再显示）
+    body.classList.remove('em-editor-empty');
+    this.state.composerData.body = body.innerHTML;
     this.scheduleDraftSave();
   };
 
   EmailApp.prototype.toggleFormat = function (format) {
-    var body = this.root.querySelector('[data-role="body"]');
-    if (!body) return;
-    var htmlToggle = this.root.querySelector('[data-role="html-toggle"]');
-    if (!htmlToggle.checked) htmlToggle.checked = true;
+    var editor = this.root.querySelector('[data-role="body"]');
+    if (!editor || editor.tagName !== 'DIV') return;
     this.state.composerData.isHtml = true;
-    body.classList.add('em-textarea-html');
-    var start = body.selectionStart || 0;
-    var end = body.selectionEnd || 0;
-    var selected = body.value.slice(start, end) || (format === 'link' ? '链接文字' : format === 'list' ? '条目' : '文字');
-    var wrapped;
-    if (format === 'bold') wrapped = '<b>' + selected + '</b>';
-    else if (format === 'italic') wrapped = '<i>' + selected + '</i>';
-    else if (format === 'link') {
+    editor.focus();
+    // restore selection（contenteditable 可能因 blur 丢失）
+    var sel = root.getSelection && root.getSelection();
+    if (!sel || sel.rangeCount === 0) {
+      // 没有选区，追加到末尾
+      var range = document.createRange();
+      range.selectNodeContents(editor);
+      range.collapse(false);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+    var range = sel.getRangeAt(0);
+    var selected = range.toString() || '';
+    if (format === 'bold') document.execCommand('bold', false, null);
+    else if (format === 'italic') document.execCommand('italic', false, null);
+    else if (format === 'underline') document.execCommand('underline', false, null);
+    else if (format === 'strikethrough') document.execCommand('strikeThrough', false, null);
+    else if (format === 'list') {
+      var tag = selected.indexOf('\n') >= 0 ? '' : '<li>' + selected + '</li>';
+      if (selected) {
+        range.deleteContents();
+        var li = document.createElement('li');
+        li.textContent = selected;
+        range.insertNode(li);
+      } else {
+        document.execCommand('insertUnorderedList', false, null);
+      }
+    } else if (format === 'link') {
       var url = root_prompt('链接地址：', 'https://');
       if (!url) return;
-      wrapped = '<a href="' + escAttr(url) + '">' + selected + '</a>';
-    } else if (format === 'list') {
-      wrapped = '<ul><li>' + selected + '</li></ul>';
-    } else wrapped = selected;
-    body.value = body.value.slice(0, start) + wrapped + body.value.slice(end);
-    this.state.composerData.body = body.value;
+      if (selected) {
+        var a = document.createElement('a');
+        a.href = url;
+        a.target = '_blank';
+        a.rel = 'noopener';
+        a.textContent = selected;
+        range.deleteContents();
+        range.insertNode(a);
+        range.setStartAfter(a);
+        range.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } else {
+        document.execCommand('createLink', false, url);
+      }
+    } else if (format === 'insertimage') {
+      // 弹出文件选择器插入图片
+      var input = this.root.querySelector('[data-role="file-input-image"]');
+      if (!input) {
+        input = document.createElement('input');
+        input.type = 'file';
+        input.setAttribute('data-role', 'file-input-image');
+        input.setAttribute('accept', 'image/*');
+        input.style.display = 'none';
+        this.root.appendChild(input);
+        input.addEventListener('change', function (e) {
+          var file = e.target.files && e.target.files[0];
+          if (!file) return;
+          var reader = new FileReader();
+          reader.onload = function (ev) {
+            var img = document.createElement('img');
+            img.src = ev.target.result;
+            img.style.maxWidth = '100%';
+            range.deleteContents();
+            range.insertNode(img);
+            range.setStartAfter(img);
+            range.collapse(true);
+            sel.removeAllRanges();
+            sel.addRange(range);
+            self.state.composerData = self.readComposerInputs();
+            self.scheduleDraftSave();
+          };
+          reader.readAsDataURL(file);
+          input.remove();
+        });
+      }
+      input.click();
+    }
+    this.state.composerData = this.readComposerInputs();
     this.scheduleDraftSave();
   };
 
@@ -2066,9 +2569,9 @@ EmailApp.prototype.refreshAttachment = function (item) {
     data.bcc = valueOf('bcc');
     data.replyTo = valueOf('reply-to');
     data.subject = valueOf('subject');
-    data.body = valueOf('body');
-    var htmlToggle = root.querySelector('[data-role="html-toggle"]');
-    if (htmlToggle) data.isHtml = htmlToggle.checked;
+    var bodyEl = root.querySelector('[data-role="body"]');
+    data.body = bodyEl ? (bodyEl.innerHTML.trim() === '<br>' ? '' : bodyEl.innerHTML) : '';
+    data.isHtml = true; // contenteditable 始终 HTML 模式
     return data;
   };
 
@@ -2111,12 +2614,16 @@ EmailApp.prototype.refreshAttachment = function (item) {
       status.innerHTML = '<span class="em-status-error">请输入收件人</span>';
       return;
     }
-    if (data.body.length > MAX_BODY_LENGTH && !data.isHtml) {
-      status.innerHTML = '<span class="em-status-error">正文不能超过 ' + MAX_BODY_LENGTH + ' 字符</span>';
+    // v1.19: contenteditable 模式下 body 是 HTML，按纯文本字符数估算（去掉 HTML 标签）
+    var plainTextLen = data.body.replace(/<[^>]+>/g, '').replace(/&[a-z]+;/g, ' ').length;
+    if (plainTextLen > MAX_BODY_LENGTH * 2) {
+      status.innerHTML = '<span class="em-status-error">正文过长（约 ' + plainTextLen + ' 字符，上限约 ' + (MAX_BODY_LENGTH*2) + '）</span>';
       return;
     }
     if (data.isHtml) {
-      data.body = sanitizeEmailHtml(data.body);
+      // v1.18: 用 IFRAME 模式 sanitize（WHOLE_DOCUMENT + 保留 <style>），让回复里的原邮件格式（表格配色/字体）不丢失
+      // 注：INLINE 模式会剥掉 <style> 标签，导致带 CSS 的邮件渲染扁平化
+      data.body = sanitizeEmailHtmlForIframe(data.body, null);
     }
     self.state.sendInFlight = true;
     self.setStatus('发送中…');
@@ -2354,19 +2861,62 @@ EmailApp.prototype.refreshAttachment = function (item) {
     self.setStatus('规则引擎：检测到 auto_reply — 显示确认卡片（参考 P151 + agent-buddy-action.js requires_confirmation）');
   };
 
-  EmailApp.prototype.confirmAutoReply = function () {
-    // 阶段3 前端：用户确认后执行发送（参考 agent-buddy-action.js requires_confirmation 机制）
-    // 实际发送逻辑应调用后端 /api/email-rules/confirm-auto-reply 或类似端点
-    showToast('已确认发送（阶段3：参考 P151 确认模式 + agent-buddy-action requires_confirmation 机制）— 实际发送需接入后端确认端点', 'success');
+EmailApp.prototype.confirmAutoReply = function () {
+    // v1.13: confirmAutoReply 重构 — 旧版是「fake toast」假装发送（违反多多「toast 骗人」零容忍）
+    // 新版：引导用户到「📝 草稿箱」视图，对 auto_reply 生成的草稿点「📤 确认发送」按钮完成真实 SMTP 发送
+    // 流程：
+    //   1. 拉 pending_confirmation 状态草稿（最近的 1 条就是当前 email 触发的）
+    //   2. 如果有 → openDrafts() + openDraft(id)
+    //   3. 如果没有 → toast 提示去草稿箱自己挑
+    var self = this;
     var card = this.root.querySelector('#em-confirm-card-auto_reply');
-    if (card) card.style.opacity = '0.5';
+    if (card) card.remove();
+    apiFetch('GET', '/api/email-drafts?status=pending_confirmation&limit=5').then(function (data) {
+      var drafts = (data && data.drafts) || [];
+      if (drafts.length > 0) {
+        self.openDrafts();
+        setTimeout(function () { self.openDraft(drafts[0].id); }, 200);
+        self.setStatus('已打开草稿箱，请编辑后点「📤 确认发送」（不再是 fake toast）', 'success');
+        showToast('已跳到草稿箱 — 编辑后点「确认发送」完成 SMTP 发送', 'success');
+      } else {
+        self.openDrafts();
+        self.setStatus('草稿箱暂无 pending 草稿', 'info');
+      }
+    }).catch(function (err) {
+      self.setStatus('查询草稿失败：' + err.message, 'error');
+    });
   };
 
   EmailApp.prototype.rejectAutoReply = function () {
-    // 阶段3 前端：用户拒绝后不执行任何发送动作（参考 P163 silent write 防御）
-    showToast('已拒绝自动回复（阶段3：参考 P163 安全控制，不执行任何发送动作，防 silent write）', 'info');
+    // v1.13: rejectAutoReply 重构 — 拉 pending_confirmation 草稿调 reject 端点
+    var self = this;
     var card = this.root.querySelector('#em-confirm-card-auto_reply');
     if (card) card.remove();
+    apiFetch('GET', '/api/email-drafts?status=pending_confirmation&limit=5').then(function (data) {
+      var drafts = (data && data.drafts) || [];
+      if (drafts.length === 0) {
+        self.setStatus('草稿箱暂无 pending 草稿可拒绝', 'info');
+        return;
+      }
+      var draftId = drafts[0].id;
+      ACMSModal.show({
+        title: '拒绝草稿',
+        size: 'md',
+        html: '<div style="font-size:13px;">拒绝草稿 ID=<b>' + escHtml(draftId) + '</b>？拒绝后可在草稿箱列表删除。</div>',
+        actions: [
+          { label: '取消', value: 'cancel', className: 'acms-modal-btn' },
+          { label: '拒绝', value: 'reject', className: 'acms-modal-btn', style: 'background:#f59e0b;' },
+        ],
+      }).then(function (result) {
+        if (result !== 'reject') return;
+        apiFetch('POST', '/api/email-drafts/' + encodeURIComponent(draftId) + '/reject').then(function () {
+          self.setStatus('草稿已拒绝', 'success');
+          showToast('草稿已拒绝（v1.13：不再是 fake toast）', 'info');
+        }).catch(function (err) {
+          self.setStatus('拒绝失败：' + err.message, 'error');
+        });
+      });
+    });
   };
 
   // v0.36: 规则引擎快速入口（点击后右栏内嵌显示 — 主入口在设置界面内的「规则引擎」分类）
@@ -2467,28 +3017,31 @@ EmailApp.prototype.loadRuleList = function () {
       });
   };
 
-  // 子页面 3：自动回复模板管理 — v0.99（独立维护模板，规则引用模板 ID）
+// 子页面 3：自动回复模板管理 — v0.99（独立维护模板，规则引用模板 ID）
   EmailApp.prototype.renderRulesSubTemplate = function () {
     var self = this;
-    return [
+    var html = [
       '<section>',
       '  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">',
       '    <h3 style="font-size:13px;font-weight:700;color:var(--text);margin:0;"><span style="width:3px;height:16px;border-radius:2px;background:var(--accent1);display:inline-block;margin-right:6px;"></span>✉️ 自动回复模板库</h3>',
-      '    <button data-action="template-add" style="padding:6px 14px;border-radius:6px;background:var(--accent1);color:#fff;font-size:11px;font-weight:600;border:none;cursor:pointer;" title="新建回复模板">+++ 新建模板</button>',
+      '    <button data-action="template-add" style="padding:6px 14px;border-radius:6px;background:#0ea89d;color:#fff;font-size:11px;font-weight:600;border:none;cursor:pointer;" title="新建回复模板">+++ 新建模板</button>',
       '  </div>',
       '  <div data-role="template-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;" title="自动回复模板列表（每个规则可引用一个模板）">',
-      '    <div style="font-size:11px;color:var(--text3);text-align:center;padding:20px;background:var(--bg);border:1px solid var(--border);border-radius:8px;grid-column:1/-1;">Loading...</div>',
+      '    <div style="font-size:11px;color:var(--text3);text-align:center;padding:20px;background:var(--bg);border:1px solid var(--border);border-radius:8px;grid-column:1/-1;">⏳ 加载中…</div>',
       '  </div>',
       '  <div style="margin-top:12px;padding:10px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;font-size:11px;color:var(--text2);line-height:1.5;" title="模板使用说明：规则配置时从下拉菜单选择模板，不直接在规则中编写回复内容">',
       '    💡 <strong>Usage:</strong> Templates are reusable reply content. Rules reference templates via dropdown.',
       '  </div>',
       '</section>',
     ].join('');
-    // Load templates after render
+    // v1.12 修复：必须 return 前 schedule load — 旧代码 setTimeout 写在 return 后面是死代码，
+    // 导致「自动回复模板」永远停在 "Loading..." 占位。配合 showRulesSubTab(template) 的 schedule load 双重触发，
+    // 避免单点遗漏（占位 ≠ 自动加载 — §5.5）
     setTimeout(function () { self.loadTemplates(); }, 50);
+    return html;
   };
 
-  // v0.99: Load template list
+// v0.99: Load template list
   EmailApp.prototype.loadTemplates = function () {
     var self = this;
     var container = this.root.querySelector('[data-role="template-list"]');
@@ -2496,14 +3049,27 @@ EmailApp.prototype.loadRuleList = function () {
     apiFetch('GET', '/api/email-templates').then(function (data) {
       var templates = (data && data.templates) || [];
       if (!templates.length) {
-        container.innerHTML = '<div style="font-size:11px;color:var(--text3);text-align:center;padding:20px;background:var(--bg);border:1px solid var(--border);border-radius:8px;grid-column:1/-1;">No templates yet. Click "New Template" to add one.</div>';
+        container.innerHTML = '<div style="font-size:11px;color:var(--text3);text-align:center;padding:20px;background:var(--bg);border:1px solid var(--border);border-radius:8px;grid-column:1/-1;">No templates yet. Click "+ New Template" to add one.</div>';
         return;
       }
+      // v1.12 修复：map callback 之前只返回了 <div ...> 开始标签（无内容、无关闭标签），
+      // 即使 load 触发，模板卡片也是空 div。补完整卡片：标题 + 内容预览 + 编辑/删除按钮
       container.innerHTML = templates.map(function (t) {
-        return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;" title="ID: ' + escHtml(t.id) + '">';
+        var name = escHtml(t.name || '(未命名)');
+        var content = escHtml(t.content || '');
+        var preview = content.length > 120 ? content.slice(0, 120) + '…' : content;
+        return ''
+          + '<div data-tpl-id="' + escAttr(t.id) + '" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:8px;" title="ID: ' + escHtml(t.id) + '">'
+          + '  <div style="font-size:13px;font-weight:700;color:var(--text);">' + name + '</div>'
+          + '  <div style="font-size:11px;color:var(--text2);line-height:1.5;white-space:pre-wrap;word-break:break-word;min-height:32px;">' + preview + '</div>'
+          + '  <div style="display:flex;gap:6px;margin-top:auto;">'
+          + '    <button data-action="template-edit" data-tpl-id="' + escAttr(t.id) + '" style="flex:1;padding:5px 10px;border-radius:6px;background:#2a2a40;color:#fff;font-size:11px;font-weight:600;border:1px solid rgba(255,255,255,.25);cursor:pointer;">✎ 编辑</button>'
+          + '    <button data-action="template-delete" data-tpl-id="' + escAttr(t.id) + '" style="flex:1;padding:5px 10px;border-radius:6px;background:#e53935;color:#fff;font-size:11px;font-weight:600;border:none;cursor:pointer;">🗑 删除</button>'
+          + '  </div>'
+          + '</div>';
       }).join('');
     }).catch(function (err) {
-      container.innerHTML = '<div style="font-size:11px;color:var(--red);text-align:center;padding:20px;">Failed: ' + escHtml(err.message) + '</div>';
+      container.innerHTML = '<div style="font-size:11px;color:var(--red);text-align:center;padding:20px;">加载失败：' + escHtml(err.message || String(err)) + '</div>';
     });
   };
 
@@ -2788,9 +3354,9 @@ EmailApp.prototype.loadRuleList = function () {
       '  <section style="margin-bottom:20px;padding:16px;background:var(--bg2);border:1px solid var(--border);border-radius:12px;">',
       '    <h3 style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:12px;">🗑️ 数据管理</h3>',
       '    <div style="display:flex;gap:8px;flex-wrap:wrap;">',
-      '      <button style="padding:6px 12px;border-radius:6px;background:var(--bg3);color:var(--text);font-size:11px;font-weight:600;border:1px solid var(--border);cursor:pointer;" title="清理执行日志（参考 email_rule_logs DB）">清理执行日志</button>',
-      '      <button style="padding:6px 12px;border-radius:6px;background:var(--bg3);color:var(--text);font-size:11px;font-weight:600;border:1px solid var(--border);cursor:pointer;" title="清理发件人分类缓存（参考 email_sender_categories）">清理发件人分类</button>',
-      '      <button style="padding:6px 12px;border-radius:6px;background:var(--bg3);color:var(--text);font-size:11px;font-weight:600;border:1px solid var(--border);cursor:pointer;" title="导出所有规则和日志">导出数据</button>',
+      '      <button data-action="clear-rule-logs" style="padding:6px 12px;border-radius:6px;background:var(--bg3);color:var(--text);font-size:11px;font-weight:600;border:1px solid var(--border);cursor:pointer;" title="清理执行日志（参考 email_rule_logs DB）">清理执行日志</button>',
+      '      <button data-action="clear-sender-categories" style="padding:6px 12px;border-radius:6px;background:var(--bg3);color:var(--text);font-size:11px;font-weight:600;border:1px solid var(--border);cursor:pointer;" title="清理发件人分类缓存（参考 email_sender_categories）">清理发件人分类</button>',
+      '      <button data-action="export-data" style="padding:6px 12px;border-radius:6px;background:var(--bg3);color:var(--text);font-size:11px;font-weight:600;border:1px solid var(--border);cursor:pointer;" title="导出所有规则和日志">导出数据</button>',
       '    </div>',
       '  </section>',
       '  <section style="padding:16px;background:var(--bg2);border:1px solid var(--border);border-radius:12px;">',
@@ -2902,11 +3468,8 @@ EmailApp.prototype.loadRuleList = function () {
 EmailApp.prototype.renderCategoryRules = function () {
     var self = this;
     var sub = this.state.rulesSubTab || 'config';
-    return [
-      '<div style="max-width:1000px;">',
-      '  <h2 style="font-size:18px;font-weight:700;color:var(--text);margin-bottom:6px;">规则引擎</h2>',
-      '  <p style="font-size:12px;color:var(--text3);margin-bottom:14px;line-height:1.6;" title="自然语言规则引擎（参考 Inbox-Zero plain English rules 模式 + email-classifier.js 8 类别 + email-drafter.js 完整 prompt）">自然语言规则引擎 — 用自然语言描述规则，自动解析为条件+动作，匹配邮件后自动执行（参考 Inbox-Zero plain English rules + prototype-email-rules.html 完整原型）。</p>',
-      '  <div style="display:flex;gap:6px;margin-bottom:18px;border-bottom:1px solid var(--border);padding-bottom:8px;">',
+    var html = [
+      '<div>',
       self.renderRulesSubTab('config', '✏️ 规则配置 + 规则列表', '自然语言输入 + 解析预览 + 安全控制 + 已保存规则（同页签合并）'),
       self.renderRulesSubTab('template', '✉️ 自动回复模板', 'reply_template 编辑 + 确认卡片 + 执行链路'),
       self.renderRulesSubTab('logs', '📊 执行日志', '规则执行历史（log-entry 卡片，含结果标签）'),
@@ -2920,6 +3483,11 @@ EmailApp.prototype.renderCategoryRules = function () {
       '  </div>',
       '</div>',
     ].join('');
+    // v1.12 修复：进规则引擎分类时自动加载规则列表 — 否则 config 子页签里"已保存的规则"区一直停在占位文字，
+    // 用户必须手动点 🔄 刷新（违反 §5.5「占位 ≠ 自动加载」）。不论 sub 是什么都先预加载 rules 列表，
+    // loadRuleList 会按 [data-role="rules-list"] 容器自动定位到当前显示的那个
+    setTimeout(function () { self.loadRuleList(); }, 60);
+    return html;
   };
 
   // 子页面：规则配置 — 简版（完整版在后面会用更好的实现替换）
@@ -3230,26 +3798,97 @@ html += '</tbody></table>';
         showToast('删除失败：' + (err.message || String(err)), 'error');
       });
     };
-    if (typeof ACMSModal === 'undefined') {
-      // fallback 到 showConfirm（避免系统原生弹窗）
-      showConfirm('删除分类「' + label + '」？\n\n此操作不可恢复（防 P163 silent write — 需显式确认）。', { okText: '删除', cancelText: '取消' }).then(function (ok) {
-        if (ok) return doDelete();
-      });
-      return;
-    }
-    ACMSModal.show({
-      title: '删除分类',
-      message: '删除分类「' + label + '」？\n\n此操作不可恢复（防 P163 silent write — 需显式确认）。',
-      actions: [
-        { label: '取消', value: null },
-        { label: '删除', value: 'DELETE', className: 'acms-modal-btn-primary' },
-      ],
-    }).then(function (v) {
-      if (v === 'DELETE') return doDelete();
+    var ok = showConfirm('确定删除分类「' + label + '」？此操作不可撤销。').then(function (confirmed) { return confirmed; });
+    ok.then(function (confirmed) {
+      if (!confirmed) return;
+      doDelete();
     });
   };
 
-// v1.02: AI 自动分类偏好 — 加载（GET /api/app-settings?app_id=email）
+  // v1.20: 清空全部发件人分类缓存
+  EmailApp.prototype.clearSenderCategories = function () {
+    var self = this;
+    var ok = showConfirm('确定清空全部发件人分类缓存？\n\n这会删除所有已记录的发件人分类（AI 推断 + 手动修改），下次收到邮件会重新推断。\n\n此操作不可撤销。').then(function (confirmed) { return confirmed; });
+    ok.then(function (confirmed) {
+      if (!confirmed) return;
+      showToast('正在清空发件人分类...', 'loading');
+      apiFetch('POST', '/api/emails/sender-categories/clear')
+        .then(function (result) {
+          if (result && result.ok) {
+            showToast('✅ 已清空 ' + (result.removed || 0) + ' 条发件人分类缓存', 'success');
+            self.setStatus('🗑 已清空 ' + (result.removed || 0) + ' 条发件人分类');
+            self.refreshSenderCategories();
+          } else {
+            showToast('清空失败：' + (result && (result.error || result.message) || '未知错误'), 'error');
+          }
+        })
+        .catch(function (err) {
+          showToast('清空失败：' + (err.message || String(err)), 'error');
+        });
+    });
+  };
+
+  // v1.20: 清空执行日志
+  EmailApp.prototype.clearRuleLogs = function () {
+    var self = this;
+    var ok = showConfirm('确定清空全部执行日志？\n\n这会删除所有邮件规则执行记录。\n\n此操作不可撤销。').then(function (confirmed) { return confirmed; });
+    ok.then(function (confirmed) {
+      if (!confirmed) return;
+      showToast('正在清空执行日志...', 'loading');
+      apiFetch('POST', '/api/email-rules/logs/clear')
+        .then(function (result) {
+          if (result && result.ok) {
+            showToast('✅ 已清空 ' + (result.removed || 0) + ' 条执行日志', 'success');
+            self.setStatus('🗑 已清空 ' + (result.removed || 0) + ' 条执行日志');
+          } else {
+            showToast('清空失败：' + (result && (result.error || result.message) || '未知错误'), 'error');
+          }
+        })
+        .catch(function (err) {
+          showToast('清空失败：' + (err.message || String(err)), 'error');
+        });
+    });
+  };
+
+  // v1.20: 导出所有规则和日志为 JSON
+  EmailApp.prototype.exportData = function () {
+    var self = this;
+    var ok = showConfirm('导出当前所有规则配置和执行日志为 JSON 文件（保存到本地）。').then(function (confirmed) { return confirmed; });
+    ok.then(function (confirmed) {
+      if (!confirmed) return;
+      showToast('正在导出数据...', 'loading');
+      Promise.all([
+        apiFetch('GET', '/api/email-rules'),
+        apiFetch('GET', '/api/email-rules/logs?mailbox=INBOX'),
+        apiFetch('GET', '/api/email-rules/logs?mailbox=Sent'),
+      ]).then(function (results) {
+        var rules = (results[0] && results[0].rules) || [];
+        var logsInbox = (results[1] && results[1].logs) || [];
+        var logsSent = (results[2] && results[2].logs) || [];
+        var payload = {
+          exported_at: new Date().toISOString(),
+          rules_count: rules.length,
+          rules: rules,
+          logs_count: logsInbox.length + logsSent.length,
+          logs_inbox: logsInbox,
+          logs_sent: logsSent,
+        };
+        var blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = 'acms-email-data-' + new Date().toISOString().slice(0, 10) + '.json';
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast('✅ 已导出 ' + rules.length + ' 条规则 + ' + (logsInbox.length + logsSent.length) + ' 条日志', 'success');
+        self.setStatus('📦 已导出数据到本地');
+      }).catch(function (err) {
+        showToast('导出失败：' + (err.message || String(err)), 'error');
+      });
+    });
+  };
+
+  // v1.02: AI 自动分类偏好 — 加载（GET /api/app-settings?app_id=email）
   EmailApp.prototype.loadAIPrefs = function () {
     var self = this;
     var sec = this.root.querySelector('[data-role="ai-prefs"]');
@@ -3422,8 +4061,11 @@ html += '</tbody></table>';
       else if (sub === 'list') subContent.innerHTML = this.renderRulesSubList();
       else if (sub === 'template') subContent.innerHTML = this.renderRulesSubTemplate();
       else if (sub === 'logs') subContent.innerHTML = this.renderRulesSubLogs();
-      if (sub === 'list') setTimeout(function () { self.loadRuleList(); }, 200);
+if (sub === 'list') setTimeout(function () { self.loadRuleList(); }, 200);
       if (sub === 'logs') setTimeout(function () { self.loadRuleLogs(); }, 200);
+      // v1.12 修复：补 template 的 schedule load — 旧版本漏掉，自动回复模板 tab 永远停在 Loading...
+      // （renderRulesSubTemplate 里也加了 setTimeout 双重保险，showRulesSubTab + render 双触发避免单点遗漏）
+      if (sub === 'template') setTimeout(function () { self.loadTemplates(); }, 200);
     }
     this.setStatus('规则引擎子页签：' + sub);
   };

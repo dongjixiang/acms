@@ -287,6 +287,8 @@ app.use('/api/email-categories', require('./routes/email-categories'));
 app.use('/api/email-rules', require('./routes/email-rules'));
 // v0.99: 自动回复模板管理 API
 app.use('/api/email-templates', require('./routes/email-templates'));
+// v1.13: 自有草稿箱 API（draft_only / auto_reply 草稿持久化 + 人工编辑发送）
+app.use('/api/email-drafts', require('./routes/email-drafts'));
 // v1.02: 通用应用偏好（按 app_id + key 隔离）— 邮箱 AI 模型选择 / 分类敏感度 / 主题 等
 app.use('/api/app-settings', require('./routes/app-settings'));
 // v0.61 辅助工具自由对话接口（轻量版 chat-intent，无 requirement 依赖）

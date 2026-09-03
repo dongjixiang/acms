@@ -1155,4 +1155,29 @@ router.post('/llms-txt/validate', (req, res) => {
   }
 });
 
+// === v0.33: Opportunities 智能推荐 ===
+router.post('/opportunities/generate', async (req, res) => {
+  try {
+    const { brand_id, lookbackDays = 30, force_refresh = false } = req.body || {};
+    if (!brand_id) return res.status(400).json({ ok: false, error: 'BRAND_ID_REQUIRED' });
+    const opps = require('../services/geo-opportunities');
+    const result = await opps.generateOpportunities(brand_id, { lookbackDays, forceRefresh: force_refresh });
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+router.get('/opportunities/:brand_id', (req, res) => {
+  try {
+    const { brand_id } = req.params;
+    const { limit = 10 } = req.query;
+    const opps = require('../services/geo-opportunities');
+    const records = opps.listOpportunities(brand_id, parseInt(limit) || 10);
+    res.json({ ok: true, opportunities: records, count: records.length });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 module.exports = router;

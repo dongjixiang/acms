@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>v1.11 — 表格样式 iframe 真实渲染</title>
+<script src="/client/lib/dompurify.min.js?v=3.0"></script>
+<script src="/client/js/utils/sanitize-email.js?v=1.11"></script>
+<style>
+  body { font-family: -apple-system, sans-serif; padding: 12px; }
+  h3 { margin: 6px 0; }
+  iframe { width: 100%; height: 800px; border: 1px solid #888; background: #fff; }
+  pre { background: #f4f4f4; padding: 8px; max-height: 200px; overflow: auto; font-size: 11px; }
+</style>
+</head>
+<body>
+<h1>v1.11 — 招商证券对账单 iframe 真实渲染</h1>
+<p>左：iframe（用户看到的样子） / 右：DOMPurify 输出 + 关键检查</p>
+<div style="display:grid;grid-template-columns:2fr 1fr;gap:12px">
+  <div>
+    <h3>iframe 实际渲染</h3>
+    <iframe id="ifr"></iframe>
+  </div>
+  <div>
+    <h3>关键检查点</h3>
+    <pre id="checks"></pre>
+    <h3>输出 HTML（前 1500 字）</h3>
+    <pre id="raw"></pre>
+  </div>
+</div>
+<script src="/client/_diag/_mail-3339.jsonp.js"></script>
+<script>
+(function () {
+  const email = { html: window.__MAIL_HTML__, cidImages: {}, attachments: [] };
+  const out = window.EmailSanitize.sanitizeEmailHtmlForIframe(email.html, email);
+
+  // 1) iframe 真实渲染
+  const ifr = document.getElementById('ifr');
+  ifr.contentDocument.open();
+  ifr.contentDocument.write(out);
+  ifr.contentDocument.close();
+
+  // 2) 检查点
+  const c = [];
+  c.push('<style> 数: ' + (out.match(/<style/g) || []).length);
+  c.push('<th> 数: ' + (out.match(/<th/g) || []).length);
+  c.push('含 #c00403 (红色): ' + (out.match(/#c00403/g) || []).length);
+  c.push('含 background-color: ' + (out.match(/background-color/g) || []).length);
+  c.push('含 font-size: ' + (out.match(/font-size/g) || []).length);
+  c.push('含 nth-child: ' + (out.match(/nth-child/g) || []).length);
+  c.push('含 table1x class: ' + (out.match(/class="table1x"/g) || []).length);
+  c.push('含 class= 总数: ' + (out.match(/class=/g) || []).length);
+  c.push('<img> 数: ' + (out.match(/<img/g) || []).length);
+  c.push('<img 有 src>: ' + (out.match(/<img[^>]*src=/g) || []).length);
+
+  // 检查 iframe 内 th 实际样式（应该红底白字）
+  setTimeout(function () {
+    try {
+      const idoc = ifr.contentDocument;
+      const firstTh = idoc.querySelector('th');
+      if (firstTh) {
+        const cs = ifr.contentWindow.getComputedStyle(firstTh);
+        c.push('\n=== iframe 内第一个 <th> 实际样式 ===');
+        c.push('background-color: ' + cs.backgroundColor + '（应该红/类似 rgb(192,4,3)）');
+        c.push('color: ' + cs.color + '（应该白色）');
+        c.push('font-size: ' + cs.fontSize + '（应该 12px）');
+        c.push('text-align: ' + cs.textAlign + '（应该 center）');
+      } else {
+        c.push('\n❌ iframe 内找不到 th');
+      }
+    } catch (e) {
+      c.push('\n⚠️ 跨域错误（不影响渲染）');
+    }
+    document.getElementById('checks').textContent = c.join('\n');
+  }, 600);
+
+  document.getElementById('raw').textContent = out.slice(0, 1500);
+})();
+</script>
+</body>
+</html>
