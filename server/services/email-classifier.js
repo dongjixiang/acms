@@ -20,7 +20,10 @@
 //   出参：{ ok, category, rationale, confidence, source: 'static' | 'ai' | 'fallback' }
 
 const runtime = require('./agent-runtime');
-const categoryStore = require('./email-sender-category-store'); // v0.33 持久化发件人分类
+  // v1.22: per-email 分类 store（替代 sender-only 假设 — 同一发件人可发不同类型邮件）
+const perEmailStore = require('./email-classification-store');
+  // v0.33: sender cache（保留作为兜底，AI 批量分析还会写它）
+const categoryStore = require('./email-sender-category-store');
 
 // === 预置类目（v0.30 内置 — 用户可在 v0.31 自定义扩展） ===
 // 设计依据：常见邮件分类 + inbox-zero 的 defaultCategory 模式（newsletter/receipt/other）
@@ -260,7 +263,8 @@ async function classifyEmail({ from, subject, snippet, categories, modelId } = {
 // v0.33: 包装函数 — 分类后自动写 store（供路由层调用）
 // 对比上方的 classifyEmail 返回 ok:false/fallback 时不写
 // v0.38: 自动从 email_categories collection 加载用户维护的分类（替代硬编码 DEFAULT_CATEGORIES）
-async function classifyEmailAndPersist({ from, mailbox, subject, snippet, categories, modelId } = {}) {
+// v1.22: 优先写 per-email（uid 必传）；uid 缺失时 fallback 写 sender cache（向后兼容老调用）
+async function classifyEmailAndPersist({ from, mailbox, uid, subject, snippet, categories, modelId } = {}) {
   // 加载用户自定义分类（按 mailbox 隔离 + fallback 到默认 8 类别）
   let effectiveCategories = categories;
   if (!effectiveCategories && mailbox) {
@@ -280,13 +284,25 @@ async function classifyEmailAndPersist({ from, mailbox, subject, snippet, catego
   }
 
   const r = await classifyEmail({ from, subject, snippet, categories: effectiveCategories, modelId });
+  // v1.22: per-email 优先（uid 必传）；fallback 写 sender cache 保证向后兼容
   if (r.ok && r.source !== 'fallback' && from && mailbox) {
     try {
-      categoryStore.saveCategory({
-        sender: from, mailbox,
-        category: r.category, source: r.source, rationale: r.rationale || '',
-      });
-      r._persisted = true;
+      if (uid !== null && uid !== undefined && uid !== '') {
+        // 新路径：per-email（chip 渲染直接读这封邮件的分类，不再受 sender 兜底污染）
+        perEmailStore.setByUid({
+          mailbox, uid,
+          from, subject,
+          category: r.category, source: r.source, rationale: r.rationale || '',
+        });
+        r._persisted = 'per-email';
+      } else {
+        // 老路径兼容：没传 uid 时写 sender cache（AI 批量分析走这里）
+        categoryStore.saveCategory({
+          sender: from, mailbox,
+          category: r.category, source: r.source, rationale: r.rationale || '',
+        });
+        r._persisted = 'sender';
+      }
     } catch (e) {
       console.warn('[email-classifier] 持久化失败:', e.message);
     }

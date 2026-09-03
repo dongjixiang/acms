@@ -107,6 +107,17 @@ router.post('/sender-categories/clear', (req, res) => {
     res.status(500).json({ ok: false, error: e.message || 'CLEAR_SENDER_CATEGORIES_FAILED' });
   }
 });
+  // v1.22: POST /api/emails/email-classifications/clear — 清空全部单封邮件分类缓存
+  router.post('/email-classifications/clear', (req, res) => {
+  try {
+    const store = require('../services/email-classification-store');
+    const removed = store.clearAll();
+    console.log('[email-classifications] 清空全部分类缓存，移除 ' + removed + ' 条');
+    res.json({ ok: true, removed });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message || 'CLEAR_EMAIL_CLASSIFICATIONS_FAILED' });
+  }
+});
 // v0.30: 批量分析发件人
 router.post('/analyze-senders', async (req, res) => {
   try {
@@ -305,20 +316,54 @@ router.post('/:uid/read', async (req, res) => {
   }
 });
 
-// v0.30: AI 智能分类（借鉴 inbox-zero@main ai-categorize-single-sender.ts）
-// v0.33: 持久化版 — 分类结果自动写 store，下次同发件人直接命中
-router.post('/classify', async (req, res) => {
+  // v0.30: AI 智能分类（借鉴 inbox-zero@main ai-categorize-single-sender.ts）
+  // v0.33: 持久化版 — 分类结果自动写 store，下次同发件人直接命中
+  // v1.22: 接受 uid — 写 per-email（per-email 优先 → sender cache 兜底）
+  router.post('/classify', async (req, res) => {
   try {
-    const { from, subject, snippet, categories, modelId, mailbox } = req.body || {};
+    const { from, subject, snippet, categories, modelId, mailbox, uid } = req.body || {};
     if (!from && !subject) {
       return res.status(400).json({ ok: false, error: 'MISSING_INPUT', message: 'from 与 subject 不能都为空' });
     }
     const classifier = require('../services/email-classifier');
-    // 用 classifyEmailAndPersist — 内部调 classifyEmail + 自动 saveCategory
+    // 用 classifyEmailAndPersist — 内部调 classifyEmail + 自动写 store
+    //   uid 存在 → 写 per-email（v1.22）；uid 缺失 → 写 sender cache（向后兼容）
     const result = mailbox
-      ? await classifier.classifyEmailAndPersist({ from, mailbox, subject, snippet, categories, modelId })
+      ? await classifier.classifyEmailAndPersist({ from, mailbox, uid, subject, snippet, categories, modelId })
       : await classifier.classifyEmail({ from, subject, snippet, categories, modelId });
     res.json(result);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+  // v1.22: GET /api/emails/email-classifications?mailbox=INBOX — 列出某 mailbox 下所有 per-email 分类
+//   前端 loadEmails 后调用一次 → state.emailClassifications[uid] 用于 chip 渲染
+//   可选参数 uids=1,2,3 — 只取指定 uid（避免拉全集）
+router.get('/email-classifications', (req, res) => {
+  try {
+    const mailbox = req.query.mailbox || 'INBOX';
+    const store = require('../services/email-classification-store');
+    let map;
+    if (req.query.uids) {
+      const uids = String(req.query.uids).split(',').map(function (s) { return parseInt(s.trim(), 10); }).filter(function (n) { return !Number.isNaN(n); });
+      map = store.bulkGetByUids(mailbox, uids);
+    } else {
+      map = store.listByMailbox(mailbox);
+    }
+    res.json({ ok: true, mailbox, count: Object.keys(map).length, classifications: map });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+  // v1.22: DELETE /api/emails/email-classifications?mailbox=INBOX&uid=xxx — 撤销单封邮件分类
+router.delete('/email-classifications', (req, res) => {
+  try {
+    const { mailbox, uid } = req.query;
+    if (!mailbox || !uid) return res.status(400).json({ ok: false, error: 'MISSING_ARGS' });
+    const store = require('../services/email-classification-store');
+    const ok = store.removeByUid(mailbox, parseInt(uid, 10));
+    res.json({ ok, removed: ok });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }

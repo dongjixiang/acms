@@ -537,8 +537,12 @@ function formatAddress(value) {
       sendInFlight: false,
       // v0.37: AI 分类筛选（'' 表示全部；其他值来自 email-classifier 8 类别）
       categoryFilter: '',
-// v0.37: 当前邮件所有已分类集合（用于筛选 chip 显示）
+  // v0.37: 当前邮件所有已分类集合（用于筛选 chip 显示）
       availableCategories: ['客户咨询','会议邀请','工作协作','财务发票','营销订阅','求职招聘','自动通知','其他'],
+      // v0.33: sender 分类缓存（兜底用 — per-email 优先，sender 没值再退回这个）
+      senderCategories: {},
+      // v1.22: per-email 分类缓存（每封邮件自己的分类，不被同发件人其他邮件污染）
+      emailClassifications: {},
       // v1.01: 用户维护的分类缓存（editCategory 从这里查原值预填表单，避免来回 GET）
       allCategories: [],
 // v0.37: 视图状态：'main' | 'settings' | 'drafts'（v1.13 加 drafts）
@@ -918,8 +922,13 @@ EmailApp.prototype.renderFolders = function () {
         // v0.74.1: client-side RFC 2047 decode（兜底 server 端可能没解码）
         self.state.emails.forEach(function (em) { em.subject = decodeEmailHeader(em.subject); em.from = decodeEmailHeader(em.from); });
         self.renderList();
-        // v0.33: 加载邮件后拉一次已持久化的 sender categories（chip 渲染用）
+        // v0.33: 加载邮件后拉一次已持久化的 sender categories（chip 渲染用 — 兜底）
         self.refreshSenderCategories();
+        // v1.22: per-email 分类（权威）— 优先于 sender cache
+        self.refreshEmailClassifications().then(function () {
+          // 拉完 per-email 后重渲染（让 per-email chip 覆盖 sender cache）
+          self.renderList();
+        });
         self.setStatus(self.state.total + ' 封邮件，显示 ' + self.state.emails.length + ' 封');
       })
       .catch(function (err) {
@@ -974,7 +983,8 @@ EmailApp.prototype.renderFolders = function () {
     var emailsToShow = this.state.emails || [];
     if (this.state.categoryFilter) {
       emailsToShow = emailsToShow.filter(function (email) {
-        var cat = self.senderCategoryForEmail(email.from);
+        // v1.22: 分类筛选看 per-email 优先（避免 sender cache 误导）
+        var cat = self.emailCategoryForEmail(email.uid, email.from);
         return cat && cat.category === self.state.categoryFilter;
       });
     }
@@ -1008,13 +1018,16 @@ EmailApp.prototype.renderListItem = function (email) {
     // v0.74.2: hover 操作条（删除/移动/标已读）— 不占用布局空间，hover 时才显出
     var readBtnLabel = read ? '已读' : '标已读';
     var readBtnTitle = read ? '标记为未读' : '标记为已读';
-    // v1.05: 渲染 AI 分类 chip（按 sender 查 state.senderCategories — v0.33 注释遗留未实现，这里补上）
-    var senderCat = self.senderCategoryForEmail(email.from);
+    // v1.05 + v1.22: per-email 优先 → sender cache 兜底（chip 加 ~ 表示是发件人默认，非这封真实分类）
+    var senderCat = self.emailCategoryForEmail(email.uid, email.from);
     var senderChipHtml = '';
     if (senderCat && senderCat.category) {
       var srcBg = senderCat.source === 'static' ? '#22c55e' : (senderCat.source === 'ai' ? '#0891b2' : '#7c3aed');
       var srcLabel = senderCat.source === 'static' ? '静态' : (senderCat.source === 'ai' ? 'AI' : '批量');
-      senderChipHtml = '<span class="em-classify-chip" style="display:inline-block;margin-right:6px;padding:2px 8px;border-radius:10px;background:' + srcBg + ';color:#ffffff;font-size:10px;font-weight:600;letter-spacing:.02em;vertical-align:middle" title="AI 分类：' + escAttr(senderCat.category) + '（来源：' + srcLabel + '）">🏷 ' + escHtml(senderCat.category) + '</span>';
+      // v1.22: isDefault=true 时加 ~ 后缀 + tooltip 说明（避免误读）
+      var chipSuffix = senderCat.isDefault ? '~' : '';
+      var tipSuffix = senderCat.isDefault ? '（发件人默认分类 — 这封邮件可能类型不同，点击 AI 分类修正）' : '';
+      senderChipHtml = '<span class="em-classify-chip' + (senderCat.isDefault ? ' em-classify-default' : '') + '" style="display:inline-block;margin-right:6px;padding:2px 8px;border-radius:10px;background:' + srcBg + ';color:#ffffff;font-size:10px;font-weight:600;letter-spacing:.02em;vertical-align:middle' + (senderCat.isDefault ? ';opacity:0.7;' : '') + '" title="AI 分类：' + escAttr(senderCat.category) + '（来源：' + srcLabel + tipSuffix + '）">🏷 ' + escHtml(senderCat.category) + chipSuffix + '</span>';
     }
     return [
       '<article class="' + classes.join(' ') + '" data-role="item" data-uid="' + escAttr(email.uid) + '">',
@@ -1281,6 +1294,43 @@ EmailApp.prototype.refreshSenderCategories = function () {
       })
       .catch(function (err) { console.warn('[email] refreshSenderCategories:', err.message); });
   };
+
+  // v1.22: per-email 分类（权威）— 写时由 AI 分类单封邮件触发，读时由 loadEmails 触发
+  //   优先于 sender cache（解决"同一发件人发不同类型邮件"误分类）
+  EmailApp.prototype.refreshEmailClassifications = function () {
+    var self = this;
+    var mailbox = self.state && self.state.mailbox ? self.state.mailbox : 'INBOX';
+    // 只拉当前页邮件的分类（避免全集拉取，按 uid 批量 join）
+    var emails = self.state && self.state.emails ? self.state.emails : [];
+    var uids = emails.map(function (e) { return e.uid; }).filter(function (n) { return n !== null && n !== undefined; });
+    if (uids.length === 0) return Promise.resolve();
+    return apiFetch('GET', '/api/emails/email-classifications?mailbox=' + encodeURIComponent(mailbox) + '&uids=' + encodeURIComponent(uids.join(',')), null)
+      .then(function (data) {
+        if (data && data.classifications) {
+          self.state.emailClassifications = data.classifications || {};
+          // 不调 renderList — loadEmails 后已经调过，避免重复
+        }
+      })
+      .catch(function (err) { console.warn('[email] refreshEmailClassifications:', err.message); });
+  };
+
+  // v1.22: 取邮件的分类（per-email 优先 → sender cache 兜底）
+  //   返回 { category, source, rationale, isDefault: bool, key }
+  //   isDefault=true 表示这是 sender 默认分类（chip 加 ~ 后缀表示非真实分类）
+  EmailApp.prototype.emailCategoryForEmail = function (uid, from) {
+    if (!this.state) return null;
+    // 1) per-email 优先（权威）
+    var perEmail = this.state.emailClassifications && this.state.emailClassifications[uid];
+    if (perEmail && perEmail.category) {
+      return { category: perEmail.category, source: perEmail.source, rationale: perEmail.rationale || '', isDefault: false };
+    }
+    // 2) sender cache 兜底（带 ~ 后缀标识）
+    var senderCat = this.senderCategoryForEmail(from);
+    if (senderCat && senderCat.category) {
+      return { category: senderCat.category, source: senderCat.source, rationale: senderCat.rationale || '', isDefault: true };
+    }
+    return null;
+  };
   EmailApp.prototype.aiClassifyEmail = function (uid) {
     var self = this;
     uid = parseInt(uid, 10);
@@ -1292,15 +1342,20 @@ EmailApp.prototype.refreshSenderCategories = function () {
       from: email.from || '',
       subject: email.subject || '',
       snippet: (email.snippet || email.text || '').toString().slice(0, 500),
-      mailbox: self.state.mailbox || 'INBOX', // v0.33: 传 mailbox 让后端持久化
+      mailbox: self.state.mailbox || 'INBOX',
+      uid: uid, // v1.22: 传 uid 让后端写 per-email（而非 sender cache）
     };
     self.setStatus('AI 分类中…', 'loading');
     apiFetch('POST', '/api/emails/classify', payload).then(function (data) {
       self.setStatus('');
       self.showClassifyResult(uid, data);
-      // v0.33: 分类成功后立刻刷新 sender categories 缓存 + 主动写入（即使后端失败也前端能存）
-      if (data && data.ok && data.source !== 'fallback' && payload.from) {
-        self.refreshSenderCategories(); // 重新拉 hashmap 让该 email 行 chip 立刻出现
+      // v1.22: 分类成功后立刻刷新 per-email 分类（覆盖 sender cache chip）
+      if (data && data.ok && data.source !== 'fallback') {
+        self.refreshEmailClassifications().then(function () {
+          self.renderList(); // 让 chip 立刻显示这封邮件的真实分类
+        });
+        // 同时刷新 sender cache（其他邮件可能也会受影响）
+        self.refreshSenderCategories();
       }
     }).catch(function (err) {
       self.setStatus('分类失败: ' + err.message, 'error');
@@ -1592,14 +1647,16 @@ EmailApp.prototype.renderDetail = function () {
       '    <tr><th>发件人</th><td>' + escHtml(fromDisplay) + '</td></tr>',
       email.to ? '    <tr><th>收件人</th><td>' + escHtml(email.to) + '</td></tr>' : '',
       email.cc ? '    <tr><th>抄送</th><td>' + escHtml(email.cc) + '</td></tr>' : '',
-'    <tr><th>时间</th><td>' + escHtml(dateStr) + '</td></tr>',
-      // v1.05: AI 分类 chip（按 sender 查 state.senderCategories — 多多原话「标签没有体现在邮件内容里面」）
+      '    <tr><th>时间</th><td>' + escHtml(dateStr) + '</td></tr>',
+      // v1.22: AI 分类 chip — per-email 优先 → sender cache 兜底（带 ~ 表示发件人默认）
       (function () {
-        var sc = self.senderCategoryForEmail(email.from);
+        var sc = self.emailCategoryForEmail(email.uid, email.from);
         if (!sc || !sc.category) return '';
         var srcBg = sc.source === 'static' ? '#22c55e' : (sc.source === 'ai' ? '#0891b2' : '#7c3aed');
         var srcLabel = sc.source === 'static' ? '静态规则' : (sc.source === 'ai' ? 'AI 推断' : '批量分析');
-        return '<tr><th>AI 分类</th><td><span class="em-classify-chip" style="display:inline-block;padding:4px 12px;border-radius:12px;background:' + srcBg + ';color:#ffffff;font-size:12px;font-weight:600;letter-spacing:.02em" title="来源：' + escAttr(srcLabel) + (sc.rationale ? '\n依据：' + escAttr(sc.rationale) : '') + '">🏷 ' + escHtml(sc.category) + '</span> <span style="font-size:11px;color:var(--text3,#888);margin-left:6px">' + srcLabel + (sc.rationale ? ' · ' + escHtml(sc.rationale.slice(0, 80)) : '') + '</span></td></tr>';
+        var chipSuffix = sc.isDefault ? '~' : '';
+        var tipDefault = sc.isDefault ? '（发件人默认分类 — 这封邮件可能类型不同）' : '';
+        return '<tr><th>AI 分类</th><td><span class="em-classify-chip' + (sc.isDefault ? ' em-classify-default' : '') + '" style="display:inline-block;padding:4px 12px;border-radius:12px;background:' + srcBg + ';color:#ffffff;font-size:12px;font-weight:600;letter-spacing:.02em' + (sc.isDefault ? ';opacity:0.7;' : '') + '" title="来源：' + escAttr(srcLabel) + (sc.rationale ? '\n依据：' + escAttr(sc.rationale) : '') + tipDefault + '">🏷 ' + escHtml(sc.category) + chipSuffix + '</span> <span style="font-size:11px;color:var(--text3,#888);margin-left:6px">' + srcLabel + (sc.rationale ? ' · ' + escHtml(sc.rationale.slice(0, 80)) : '') + '</span></td></tr>';
       })(),
       '  </table>',
       '</header>',
@@ -3805,26 +3862,30 @@ html += '</tbody></table>';
     });
   };
 
-  // v1.20: 清空全部发件人分类缓存
+  // v1.20 + v1.22: 清空全部发件人分类缓存 + per-email 分类缓存（一起清）
   EmailApp.prototype.clearSenderCategories = function () {
     var self = this;
-    var ok = showConfirm('确定清空全部发件人分类缓存？\n\n这会删除所有已记录的发件人分类（AI 推断 + 手动修改），下次收到邮件会重新推断。\n\n此操作不可撤销。').then(function (confirmed) { return confirmed; });
+    var ok = showConfirm('确定清空全部发件人分类缓存？\n\n这会删除：\n1. 所有发件人默认分类缓存（AI 批量分析结果）\n2. 所有单封邮件分类缓存（AI 单封分类结果）\n\n下次收到邮件会重新推断。此操作不可撤销。').then(function (confirmed) { return confirmed; });
     ok.then(function (confirmed) {
       if (!confirmed) return;
-      showToast('正在清空发件人分类...', 'loading');
-      apiFetch('POST', '/api/emails/sender-categories/clear')
-        .then(function (result) {
-          if (result && result.ok) {
-            showToast('✅ 已清空 ' + (result.removed || 0) + ' 条发件人分类缓存', 'success');
-            self.setStatus('🗑 已清空 ' + (result.removed || 0) + ' 条发件人分类');
-            self.refreshSenderCategories();
-          } else {
-            showToast('清空失败：' + (result && (result.error || result.message) || '未知错误'), 'error');
-          }
-        })
-        .catch(function (err) {
-          showToast('清空失败：' + (err.message || String(err)), 'error');
+      showToast('正在清空分类缓存...', 'loading');
+      // 并发清两个 collection（v1.22: 各自独立路由）
+      Promise.all([
+        apiFetch('POST', '/api/emails/sender-categories/clear').catch(function () { return { ok: false }; }),
+        apiFetch('POST', '/api/emails/email-classifications/clear').catch(function () { return { ok: false }; }),
+      ]).then(function (results) {
+        var senderResult = results[0] || {};
+        var perEmailResult = results[1] || {};
+        var senderCount = senderResult.removed || 0;
+        var perEmailCount = perEmailResult.removed || 0;
+        showToast('✅ 已清空 ' + (senderCount + perEmailCount) + ' 条分类缓存（发件人 ' + senderCount + ' + 单封邮件 ' + perEmailCount + '）', 'success');
+        self.setStatus('🗑 已清空 ' + senderCount + ' 条发件人分类 + ' + perEmailCount + ' 条单封邮件分类');
+        // 两个都刷新 + 重渲染（chip 立刻消失）
+        self.refreshSenderCategories();
+        self.refreshEmailClassifications().then(function () {
+          self.renderList();
         });
+      });
     });
   };
 
