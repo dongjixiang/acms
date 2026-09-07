@@ -124,8 +124,12 @@ async function runGoalTask(goal, opts = {}) {
     steps.push(step);
     // fire-and-forget 截图（不阻塞 loop；截图 ~1s）
     const shotPath = path.join(shotDir, `step-${round}.png`);
-    ba.screenshotToFile(shotPath).catch(() => {});
-    if (task._onStep) task._onStep({ ...step, screenshot: `/api/browser-agent/screenshots/${taskId}/step-${round}.png` });
+    ba.screenshotToFile(shotPath).then(() => {
+      if (task._onStep) task._onStep({ ...step, screenshot: `/api/browser-agent/screenshots/${taskId}/step-${round}.png` });
+    }).catch(() => {
+      // 截图失败：传 null，前端不渲染破图
+      if (task._onStep) task._onStep({ ...step, screenshot: null });
+    });
   };
 
   try {
@@ -179,8 +183,11 @@ async function resumeGoalTask(taskId, userReply) {
     const step = { round, maxRounds: maxR, message, toolNames: toolNames || [], ts: Date.now() };
     steps.push(step);
     const shotPath = path.join(shotDir, `step-${round}.png`);
-    ba.screenshotToFile(shotPath).catch(() => {});
-    if (task._onStep) task._onStep({ ...step, screenshot: `/api/browser-agent/screenshots/${taskId}/step-${round}.png` });
+    ba.screenshotToFile(shotPath).then(() => {
+      if (task._onStep) task._onStep({ ...step, screenshot: `/api/browser-agent/screenshots/${taskId}/step-${round}.png` });
+    }).catch(() => {
+      if (task._onStep) task._onStep({ ...step, screenshot: null });
+    });
   };
 
   try {
@@ -268,10 +275,15 @@ async function runSessionTurn(sessionId, userMsg, opts = {}) {
         const roundNum = step.round || round || 1;
         const shotPath = path.join(ba.SESSION_ROOT || require('path').resolve('data/browser-sessions'), taskIdVal, `step-${roundNum}.png`);
         // 完整执行链路可视化：实际生成截图文件（与 runGoalTask 对齐，不阻塞 loop）
-        ba.screenshotToFile(shotPath).catch(() => {});
-        const shotUrl = `/api/browser-agent/screenshots/${taskIdVal}/step-${roundNum}.png`;
-        sessionStore.addToolCall(sessionId, { ...step, ts: Date.now(), screenshot: shotUrl });
-        if (opts.onStep) opts.onStep({ ...step, sessionId, taskId, screenshot: shotUrl });
+        ba.screenshotToFile(shotPath).then(() => {
+          const su = `/api/browser-agent/screenshots/${taskIdVal}/step-${roundNum}.png`;
+          sessionStore.addToolCall(sessionId, { ...step, ts: Date.now(), screenshot: su });
+          if (opts.onStep) opts.onStep({ ...step, sessionId, taskId, screenshot: su });
+        }).catch(() => {
+          // 截图失败：不传截图 URL，避免前端显示破图
+          sessionStore.addToolCall(sessionId, { ...step, ts: Date.now(), screenshot: null });
+          if (opts.onStep) opts.onStep({ ...step, sessionId, taskId, screenshot: null });
+        });
       },
     });
   } catch (e) {

@@ -63,6 +63,7 @@ async function query(prompt, options = {}) {
       engine: 'deepseek-web',
       model: 'chat.deepseek.com（网页版 + 智能搜索）',
       text: r.answer,
+      citations: r.references || [],  // v0.44: 把 ai-web-chat 抓到的 references 透传出去（之前完全丢，citations 永远空）
       latency_ms: r.elapsedMs || Date.now() - startTs,
       screenshot: r.screenshot || '',
       timeout: !!r.timeout, // 下层 waitAnswerComplete 自己的兜底超时标记（与 TASK_TIMEOUT 不同）

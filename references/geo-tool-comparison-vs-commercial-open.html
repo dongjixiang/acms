@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ACMS GEO 工具能力 vs 商业/开源竞品 — 细项对比</title>
+<style>
+  :root{--bg:#0b0d12;--card:#12141f;--border:#23263a;--text:#e6e6f0;--muted:#8a8fa8;--accent:#4f8cff;--warn:#f0a030;--danger:#e05a5a;--good:#3dcf6e}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:system-ui,-apple-system,"Segoe UI","PingFang SC","Noto Sans SC",sans-serif;background:var(--bg);color:var(--text);line-height:1.55;padding:28px 24px;max-width:1180px;margin:0 auto}
+  h1{font-size:26px;font-weight:800;letter-spacing:-0.02em;margin-bottom:6px;background:linear-gradient(135deg,#4f8cff 0%,#b47fff 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+  .subtitle{color:var(--muted);font-size:14px;margin-bottom:28px}
+  .meta{font-size:12px;color:var(--muted);margin-bottom:32px;border-bottom:1px solid var(--border);padding-bottom:14px}
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  thead th{position:sticky;top:0;background:#16182a;text-align:left;padding:10px 12px;color:var(--accent);font-weight:700;border-bottom:2px solid var(--accent);font-size:12px;letter-spacing:.04em;text-transform:uppercase}
+  tbody tr{border-bottom:1px solid var(--border);transition:background .12s}
+  tbody tr:hover{background:#16182a6e}
+  td{padding:12px;vertical-align:top}
+  .cap{font-weight:700;color:#fff;margin-right:4px;white-space:nowrap}
+  .good{color:var(--good);font-weight:600}
+  .bad{color:var(--danger);font-weight:600}
+  .warn{color:var(--warn)}
+  .note{color:var(--muted);font-size:12px}
+  .cell{max-width:420px;word-break:break-word}
+  .label{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;background:#1a1c2e;border:1px solid var(--border);white-space:nowrap}
+  .label.acms{background:#14294a;border-color:#2a4a78;color:#7fb3ff}
+  .label.open{background:#123318;border-color:#2a5a2a;color:#7fff9e}
+  .label.comm{background:#2a1a14;border-color:#6a3a28;color:#ffb07a}
+  h2{font-size:18px;margin:32px 0 14px;padding-left:10px;border-left:3px solid var(--accent);font-weight:700;color:#f0f0ff}
+  .summary-box{background:#141628;border:1px solid var(--border);border-radius:14px;padding:20px 22px;margin-bottom:28px}
+  .summary-box strong{color:#fff}
+  .row-num{font-size:11px;color:#555;font-family:monospace;padding-right:6px;user-select:none}
+</style>
+</head>
+<body>
+<h1>ACMS GEO 工具能力 — 商业 & 开源细项对比</h1>
+<div class="subtitle">基于 ACMS v0.45（2026-09-06 实测）与公开文档 / 代码审计数据</div>
+<div class="meta">数据来源：ACMS 前端代码（client/js/views/geo-dashboard.js / geo-tools）、后端服务（server/services/geo-*）、参考文档（docs/geo-app-redesign-architecture.md、references/oneglanse-final-report-2026-09-06.md）、开源项目（OneGlanse / GEORank / TagSpaces）。对比对象：开源 = OneGlanse、GEORank（Elmo）、TagSpaces、TOAST UI Image Editor；商业/服务 = DeepSeek（LLM 引擎）、Perplexity（搜索引擎）、GEOVisibilityTool（借鉴卡片模式）。</div>
+
+<div class="summary-box">
+<strong>结论先说（多多拍板风格）</strong>：ACMS GEO 在“结构化数据生成（JSON-LD / Schema）+ 内容缺口分析（content gap）+ 品牌感知 LLM 评审 + 国内双引擎（豆包/元宝）DOM 追踪”四个维度上已形成闭环，超过单一开源工具（OneGlanse 只做可见性分析、GEORank 只做评分、TagSpaces 只做文件浏览）；但在“原生联网搜索引擎接入（native search）”和“多引擎实时并发监控”上仍落后 Perplexity / DeepSeek 原生能力。当前 v0.45 的核心差距是：<strong>GEO 工具（JSON-LD / 标题 / KB）是 LLM 单次调用生成，非真实搜索引擎数据驱动</strong>；而 OneGlanse / GEORank 的分析结果直接来自引擎响应数据（更真实但无生成能力）。这是“生成型”与“监测型”的根本差异，不是简单功能缺失。
+</div>
+
+<table>
+<thead>
+<tr><th>#</th><th>能力细项（ACMS GEO）</th><th>ACMS 实现状态（v0.45）</th><th>开源对标（OneGlanse / GEORank / Elmo / TagSpaces）</th><th>商业/服务对标（Perplexity / DeepSeek / GEOVisibilityTool）</th><th>差距判断</th></tr>
+</thead>
+<tbody>
+<tr><td><span class="row-num">1</span></td><td class="cell"><span class="label acms">核心</span> <strong>品牌 AI 可见性追踪</strong>（多引擎自然发现回答采集 + 提及率 / SoV 计算）</td><td class="cell"><span class="good">已落地（v0.2 深度集成）</span><br>deepseek / deepseek-web / doubao / yuanbao 注册；`geo-scoring.js` v0.38 计算 `mention_rate`、`position_score`、`context_score`、`industry_percentile`；SQLite 持久化 `geo_responses` / `geo_queries` / `geo_scores`</td><td class="cell"><span class="good">OneGlanse 完整实现（BrandAnalysisResult）</span>；GEORank 有 `visibility-stats`；ACMS 借鉴了 `BrandAnalysisResult.competitors[]` / `perception[]` / `risks[]` 字段结构，数据模型对齐度高</td><td class="cell"><span class="warn">Perplexity 只提供搜索结果，无品牌提及统计；DeepSeek 只提供聊天，无结构化可见性指标</span></td><td class="cell"><strong>持平/略优</strong>：数据模型对齐 OneGlanse，国内引擎覆盖（豆包/元宝 DOM placeholder v0.1）超过纯全球工具</td></tr>
+
+<tr><td><span class="row-num">2</span></td><td class="cell"><span class="label acms">工具</span> <strong>JSON-LD 生成（Schema.org）</strong>（`geo-tools-jsonld-btn`）</td><td class="cell"><span class="good">已落地（v0.21）</span><br>`geo-tools.js` / `runGeoTool('jsonld')` 调用 `LLM_TOOLS.generate()`（DeepSeek 模型）；输入为品牌 brief（名称/官网/业务描述）；输出为纯 JSON-LD 代码块（Organization + WebSite 优先，不编造具体客户/价格）</td><td class="cell"><span class="bad">无直接对应</span>：OneGlanse 只做可见性分析，无内容生成；TagSpaces 只做文件浏览，无 LLM 生成</td><td class="cell"><span class="good">GEOVisibilityTool 有借鉴卡片模式（结构化简报）</span>，但无 JSON-LD 生成能力；DeepSeek 本身可生成 JSON-LD 但无品牌约束</td><td class="cell"><strong>领先</strong>：ACMS 将 LLM 生成与品牌约束（不编造客户/价格/证书）结合，形成可直接部署的 Schema 代码，比通用 LLM 更安全可用</td></tr>
+
+<tr><td><span class="row-num">3</span></td><td class="cell"><span class="label acms">工具</span> <strong>GEO 标题生成（8 个标题建议）</strong>（`geo-tools-titles-btn`）</td><td class="cell"><span class="good">已落地（v0.21）</span><br>`runGeoTool('titles')` 生成 8 个适合 AI 引用/比较页/解释页/采购页的标题，含核心关键词、目标用户、发布建议</td><td class="cell"><span class="bad">无直接对应</span>：OneGlanse 无内容生成；GEORank 无标题优化</td><td class="cell"><span class="warn">DeepSeek / 通用 LLM 可生成标题，但无“GEO 适合 AI 引用”维度约束</span>；无行业标准对比基准</td><td class="cell"><strong>差异化</strong>：ACMS 将“AI 引擎引用适配”作为生成约束，商业 SEO 工具（如 Ahrefs / Semrush）有关键词优化但无 LLM 引用优化</td></tr>
+
+<tr><td><span class="row-num">4</span></td><td class="cell"><span class="label acms">工具</span> <strong>知识库草稿生成（品牌简介/能力/FAQ/关键事实）</strong>（`geo-tools-kb-btn`）</td><td class="cell"><span class="good">已落地（v0.21）</span><br>`runGeoTool('kb')` 生成 Markdown 知识库草稿，含 5-8 条 Q&A（面向 AI 引擎可能被问到的问题）、2-3 段含具体数据与第三方背书的引用段落</td><td class="cell"><span class="bad">无直接对应</span>：OneGlanse 只分析外部可见性，无内部知识库建设</td><td class="cell"><span class="warn">通用 LLM（ChatGPT / Claude）可生成 KB 草稿，但无“仅限输入信息、不编造”约束</span>；无标准化格式</td><td class="cell"><strong>领先</strong>：ACMS 的 KB 生成严格遵循“不编造”规则（仅限输入中提供的信息），比通用 LLM 更适合企业合规场景</td></tr>
+
+<tr><td><span class="row-num">5</span></td><td class="cell"><span class="label acms">评分</span> <strong>L3 评分扩展：竞品共现分析（competitors[]）</strong></td><td class="cell"><span class="good">已落地（v0.38）</span><br>`geo-scoring.js` 新增 `calculateCompetitors()`，统计每个竞品在自然发现回答中的出现次数、情感倾向、是否被推荐；前端 `geo-v038-card` 显示竞品卡片</td><td class="cell"><span class="good">OneGlanse 完整实现（BrandAnalysisResult.competitors[] 字段）</span>；ACMS 直接借鉴该字段结构并集成到 `geo-scoring.js`</td><td class="cell"><span class="bad">无</span>：商业 SEO 工具无“竞品在 AI 回答中的共现”维度</td><td class="cell"><strong>持平</strong>：数据模型与 OneGlanse 对齐，计算方法（情感倾向、提及次数、是否推荐）一致</td></tr>
+
+<tr><td><span class="row-num">6</span></td><td class="cell"><span class="label acms">评分</span> <strong>L3 评分扩展：品牌感知 + 风险信号（perception + risks）</strong></td><td class="cell"><span class="good">已落地（v0.38）</span><br>`geo-perception-judge.js` 新建（250 行），LLM-as-judge 分析品牌叙事画像（核心主张、差异化优势、定价感知）和风险信号（过时信息、负面关联、竞品优势）；7 天缓存；`geo-dashboard.html` 新增 `geo-v038-card` 感知卡片</td><td class="cell"><span class="good">OneGlanse 完整实现（BrandAnalysisResult.perception[] + risks[]）</span>；ACMS 直接借鉴字段命名和分析维度</td><td class="cell"><span class="bad">无</span>：商业 SEO 工具无“AI 回答中品牌叙事画像”的 LLM 评审能力</td><td class="cell"><strong>持平/领先</strong>：数据模型与 OneGlanse 完全对齐（借鉴卡片模式）；缓存机制（7 天）比 OneGlanse 的实时分析更节省成本</td></tr>
+
+<tr><td><span class="row-num">7</span></td><td class="cell"><span class="label acms">引擎适配</span> <strong>国内 DOM 驱动引擎（豆包 doubao / 元宝 yuanbao）</strong></td><td class="cell"><span class="warn">已注册（v0.2 placeholder）</span><br>`geo-engines/doubao.js` / `yuanbao.js` 新建（120/130 行），标记为 `v0.1 placeholder`（需要真实浏览器自动化和登录态）；`capabilities` 标注为 `search: dom`、`singleton: true`、`timeoutMs: 120000`</td><td class="cell"><span class="bad">无</span>：OneGlanse 只覆盖全球引擎（Perplexity / ChatGPT / Grok），无国内引擎适配</td><td class="cell"><span class="warn">DeepSeek / Perplexity 提供官方 API，无需 DOM 驱动</span>；豆包/元宝目前无公开搜索 API，需要浏览器自动化</td><td class="cell"><strong>差距明显</strong>：ACMS 已注册引擎结构，但实际 DOM 选择器和登录态未实现（placeholder）；这是从“架构就绪”到“生产可用”的最大差距</td></tr>
+
+<tr><td><span class="row-num">8</span></td><td class="cell"><span class="label acms">数据存储</span> <strong>SQLite 持久化（6 张表：brands / queries / responses / scores / snapshots / opportunities / watches）</strong></td><td class="cell"><span class="good">已落地（v0.1 → v0.45 持续演进）</span><br>`geo-store.js` 使用 `collection()` API（自动建表）；`geo-opportunities.js` 使用 `collection('geo_opportunities')` 持久化记录（append-only）；`geo-channels.js` 使用缓存机制</td><td class="cell"><span class="warn">OneGlanse 使用 PostgreSQL（原生关系型）</span>；GEORank 可能使用 SQLite 或文件存储；TagSpaces 使用文件系统 + 标签</td><td class="cell"><span class="bad">无统一数据模型</span>：商业 SEO 工具多为 SaaS 云端数据库，无本地 SQLite 持久化能力</td><td class="cell"><strong>差异</strong>：SQLite 更适合本地/单用户部署（无服务器依赖），但不支持高并发多用户场景（与 OneGlanse 的 PG 形成对比）</td></tr>
+
+<tr><td><span class="row-num">9</span></td><td class="cell"><span class="label acms">文件应用</span> <strong>三栏文件浏览器（借鉴 TagSpaces v0.73）</strong></td><td class="cell"><span class="good">已落地（v0.73 深度风格）</span><br>`client/views/file-browser.html` / `client/css/file-browser.css` 实现三栏布局（标签第一导航 + 文件列表 + 预览）；支持多视角、多标签</td><td class="cell"><span class="good">TagSpaces 完整实现（MIT 协议）</span>；ACMS 借鉴了布局模式和标签导航</td><td class="cell"><span class="bad">无</span>：商业工具无文件浏览功能</td><td class="cell"><strong>持平</strong>：布局和交互模式直接借鉴，功能完整度与原版一致</td></tr>
+
+<tr><td><span class="row-num">10</span></td><td class="cell"><span class="label acms">图片应用</span> <strong>图片编辑器（借鉴 TOAST UI Image Editor MIT）</strong></td><td class="cell"><span class="good">已落地（v0.2 集成）</span><br>`client/css/image-editor.css` / `client/js/image-editor.js` 集成 TOAST UI Image Editor</td><td class="cell"><span class="good">TOAST UI Image Editor 完整实现（MIT 协议）</span>；ACMS 直接集成</td><td class="cell"><span class="bad">无</span>：商业工具无图片编辑</td><td class="cell"><strong>持平</strong>：直接集成，无功能差异</td></tr>
+
+<tr><td><span class="row-num">11</span></td><td class="cell"><span class="label acms">反爬/数据采集</span> <strong>双通道反爬（web_search 工具：puppeteer + stealth + DDG 独立工作流）</strong></td><td class="cell"><span class="good">已落地（v0.25+）</span><br>`acms-browser-anti-crawl` 技能覆盖；`agent-browser` CLI 提供浏览器自动化</td><td class="cell"><span class="warn">OneGlanse 无公开反爬文档</span>；GEORank 无相关能力</td><td class="cell"><span class="good">Perplexity / DeepSeek 提供官方 API（无需反爬）</span>；豆包/元宝需要反爬（ACMS 已准备 DOM 驱动 placeholder）</td><td class="cell"><strong>领先</strong>：ACMS 的反爬能力（stealth + DDG 独立通道）比纯依赖官方 API 的工具更多样化（可处理无 API 的引擎），但比官方 API 更脆弱</td></tr>
+
+<tr><td><span class="row-num">12</span></td><td class="cell"><span class="label acms">应用注册</span> <strong>公共文件→应用 registry（v0.74.1 抽出）</strong></td><td class="cell"><span class="good">已落地（v0.74.1 抽出）</span><br>`client/js/file-app-registry.js` 实现文件类型到应用（图片/文件/终端）的映射</td><td class="cell"><span class="bad">无直接对应</span>：OneGlanse 无文件应用注册概念</td><td class="cell"><span class="bad">无</span></td><td class="cell"><strong>独有</strong>：ACMS 的应用注册模式（文件→应用映射）在 GEO 工具中形成独特工作流（如文件浏览 → 图片编辑 → GEO 内容生成）</td></tr>
+
+<tr><td><span class="row-num">13</span></td><td class="cell"><span class="label acms">终端窗口</span> <strong>xterm.js 5.3.0 + node-pty + WebSocket 集成</strong></td><td class="cell"><span class="good">已落地（v0.2 集成）</span><br>`server/services/terminal-ws.js` 提供 WebSocket 终端服务</td><td class="cell"><span class="bad">无</span>：OneGlanse / GEORank 无终端集成</td><td class="cell"><span class="warn">无</span></td><td class="cell"><strong>独有</strong>：ACMS 的终端集成使 GEO 工具可直接运行命令（如浏览器自动化、数据清洗），形成“分析→执行”闭环</td></tr>
+
+<tr><td><span class="row-num">14</span></td><td class="cell"><span class="label acms">社会化内容平台自动发布（social-publisher v0.118）</span></td><td class="cell"><span class="good">已落地（v0.118 全部 PR 1-5 落地）</span><br>`server/services/social-publisher.js` 实现内容平台自动发布（微信公众号/小红书等）</td><td class="cell"><span class="bad">无</span>：OneGlanse 无内容发布能力</td><td class="cell"><span class="bad">无</span></td><td class="cell"><strong>独有</strong>：将 GEO 分析结果直接转化为内容平台发布（从“可见性分析”到“内容投放”的完整闭环）</td></tr>
+</tbody>
+</table>
+
+<h2>关键差距总结（按多多拍板风格）</h2>
+<div class="summary-box">
+<strong>1. 生成型 vs 监测型的本质差异</strong><br>
+ACMS GEO 工具（JSON-LD / 标题 / KB / 智能推荐 / 投放策略）全部是 <strong>LLM 生成型</strong>（基于品牌 brief 和已有数据生成结构化输出）；OneGlanse / GEORank 是 <strong>监测分析型</strong>（基于真实引擎响应数据计算指标）。这不是功能缺失，而是产品定位差异：ACMS 更偏向“从分析到执行”的闭环工具（生成 + 投放），OneGlanse 更偏向“纯可见性监控”。
+<br><br>
+<strong>2. 国内引擎适配（豆包/元宝）的最大差距</strong><br>
+`doubao.js` / `yuanbao.js` 标记为 `v0.1 placeholder`（需要真实浏览器自动化 + 登录态）。`capabilities` 已正确标注（`search: dom`、`maxConcurrent: 1`、`timeoutMs: 120000`），但实际 DOM 选择器和登录流程未实现。这是从“架构就绪”到“生产可用”的最大技术差距（约需 1-2 周真实选择器调试）。相比之下，DeepSeek / Perplexity 通过官方 API 已可直接使用，无需 DOM 驱动。
+<br><br>
+<strong>3. 数据持久化的架构差异</strong><br>
+ACMS 使用 SQLite（`geo-store.js` 的 `collection()` API），OneGlanse 使用 PostgreSQL。这对单用户/本地部署有利（无服务器依赖），但对多用户高并发场景不利（SQLite 锁机制限制并发写入）。如果 ACMS 未来需要支持多品牌并发分析（如 agency 场景），需要考虑从 SQLite 迁移到 PostgreSQL（参考 OneGlanse 架构）。
+<br><br>
+<strong>4. 前端布局的设计哲学（借鉴 oneglanse-v038 卡片模式）</strong><br>
+`geo-v038-card`（竞品共现 + 感知分析）的设计完全借鉴 OneGlanse 的 `BrandAnalysisResult` 卡片布局（数据字段命名一致、CSS 类名对齐 `.geo-v038-*`），这说明 ACMS 在“可借鉴的界面模式”上与 OneGlanse 高度一致。差异在于：ACMS 将这些卡片集成到现有 `geo-dashboard` 流程中（而不是独立页面），并增加了 `data-tip` 悬停说明（符合多多“每个界面指标要有悬停说明”的要求）。
+</div>
+
+<div style="margin-top:40px;padding-top:20px;border-top:1px solid var(--border);font-size:12px;color:var(--muted);">
+生成时间：2026-09-06（基于 ACMS v0.45 + OneGlanse 源码对照 + GEORank/TagSpaces 公开文档）<br>
+文件位置参考：C:\Users\swede\acms\client\js\views\geo-dashboard.js（工具按钮绑定）、C:\Users\swede\acms\server\services\geo-opportunities.js（LLM 生成逻辑）、C:\Users\swede\acms\references\oneglanse-final-report-2026-09-06.md（借鉴卡片模式记录）
+</div>
+
+</body>
+</html>

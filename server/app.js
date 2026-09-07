@@ -16,7 +16,7 @@ elicitorAdapter.startupHealthCheck();
 const app = express();
 
 // 基础中间件
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // CORS + UTF-8
@@ -256,6 +256,8 @@ app.use('/api/desktop-config', require('./routes/desktop-config'));  // v0.75: �
 app.use('/api/geo', require('./routes/geo'));
 // v0.1: 跨应用浏览器自动化 REST API（browser-agent）
 app.use('/api/browser-agent', require('./routes/browser-agent'));
+// v0.118: 多平台内容发布系统（PR 3 — 4 平台 provider + L3 App 内容运营平台）
+app.use('/api/social-publisher', require('./routes/social-publisher'));
 
 // Webhook 服务初始化
 const eventBus = require('./services/event-bus');
@@ -281,6 +283,9 @@ app.use('/api/apps', require('./routes/apps'));
 app.use('/api/agent-buddy', require('./routes/agent-buddy'));
 // v0.73: 邮件收件箱 API（IMAP）
 app.use('/api/emails', require('./routes/emails'));
+// v2.0: 邮件多账户体系 — Profile（身份）+ Account（邮箱凭证）
+app.use('/api/email-profiles', require('./routes/email-profiles'));
+app.use('/api/email-accounts', require('./routes/email-accounts'));
 // v0.38: 用户维护的邮件分类（AI 自动分类依据 — 替代硬编码 8 类别）
 app.use('/api/email-categories', require('./routes/email-categories'));
 // v0.38: 邮件规则引擎 API（自然语言规则解析 + CRUD + 执行日志）

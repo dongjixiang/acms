@@ -4,9 +4,10 @@
 .em-app {
   display: grid;
   grid-template-columns: 168px minmax(220px, 320px) 1fr;
-  grid-template-rows: 1fr auto;
+  grid-template-rows: 1fr auto auto;
   grid-template-areas:
     "side list pane"
+    "side list filter"
     "status status status";
   height: 100%;
   background: var(--bg, #fff);
@@ -91,8 +92,28 @@
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--text3, #aaa) var(--bg3, rgba(0,0,0,0.04));
+  min-height: 120px; /* v0.74.2 修复：确保邮件列表有足够滚动空间 */
 }
 .em-list-body::-webkit-scrollbar { width: 12px; }
+/* v0.74.2 增强：滚动条始终可见轨道（防止用户看不到可滚动） */
+.em-list-body::-webkit-scrollbar-track {
+  background: var(--bg3, rgba(0,0,0,0.08));
+  border-radius: 6px;
+}
+/* 底部渐变阴影提示：更强视觉提示（参考多多要求：每个指标必须带悬停说明） */
+.em-list { position: relative; }
+.em-list::after {
+  content: '';
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 20px;
+  pointer-events: none;
+  background: linear-gradient(to top, var(--bg, #fff) 0%, transparent 100%);
+  opacity: 0;
+  transition: opacity 0.2s;
+  z-index: 2;
+}
+.em-list.has-more::after { opacity: 1; }
 .em-list-body::-webkit-scrollbar-thumb {
   background: var(--text3, #aaa);
   border-radius: 6px;
@@ -215,8 +236,18 @@
   position: relative;
 }
 .em-item:hover { background: var(--bg2, #f5f5f7); }
-.em-item-unread { background: rgba(14, 168, 157, 0.05); }
+/* v2.4.1 未读/已读区分修复：
+   - 原 .em-from 用 <b> 渲染 → 已读也是粗体，未读 700 无区分度（已改 <span>）
+   - 已读：常规字重 + 灰一点（text2）；未读：粗体近黑 + 深主题 + 左侧指示条 + 淡青背景 */
+.em-from { font-weight: 400; }
+.em-item:not(.em-item-unread) .em-from { color: var(--text2, #555); }
+.em-item:not(.em-item-unread) .em-subject { color: var(--text3, #888); }
+.em-item-unread {
+  background: rgba(14, 168, 157, 0.07);
+  box-shadow: inset 3px 0 0 var(--accent, #0ea89d);
+}
 .em-item-unread .em-from { color: var(--text, #111); font-weight: 700; }
+.em-item-unread .em-subject { color: var(--text, #111); font-weight: 600; }
 .em-avatar {
   width: 32px;
   height: 32px;
@@ -840,3 +871,354 @@
 }
 .em-btn-bulk-analyze { background: linear-gradient(135deg, #f97316 0%, #ea580c 100%); color: #fff; border-color: transparent; }
 .em-btn-bulk-analyze:hover { background: linear-gradient(135deg, #ea580c 0%, #c2410c 100%); color: #fff; }
+
+/* ════════════════════════════════════════════════════════════════
+   v2.1 多账户体系 — 身份选择屏 / PIN 弹窗 / 抽屉式账户切换器
+   ════════════════════════════════════════════════════════════════ */
+
+/* 抽屉式 profile card（左栏顶部）— 风格对齐 ACMS teal #4ecdc4 */
+.em-profile-card {
+  position: relative;
+  margin: 8px 8px 6px;
+  padding: 8px 10px;
+  background: var(--bg3, #252540);
+  border: 1px solid var(--border1, rgba(255,255,255,.08));
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.em-profile-card:hover {
+  background: var(--bg4, #2e2e4a);
+  border-color: var(--accent, #4ecdc4);
+}
+.em-profile-card .em-profile-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--profile-color, #4ecdc4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  flex-shrink: 0;
+}
+.em-profile-card .em-profile-info { flex: 1; min-width: 0; }
+.em-profile-card .em-profile-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text, #e0e0e0);
+  line-height: 1.3;
+}
+.em-profile-card .em-profile-account {
+  font-size: 11px;
+  color: var(--text2, #9090a0);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.em-profile-card .em-profile-chevron {
+  color: var(--text3, #777);
+  font-size: 14px;
+  user-select: none;
+}
+
+/* 抽屉 dropdown */
+.em-account-dropdown {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 8px;
+  right: 8px;
+  background: var(--window-bg, #1e1e32);
+  border: 1px solid var(--border, rgba(78,205,196,0.2));
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.5);
+  z-index: 50;
+  overflow: hidden;
+}
+.em-account-dropdown.show { display: block; }
+.em-account-dropdown-section-title {
+  font-size: 10px;
+  color: var(--text3, #777);
+  text-transform: uppercase;
+  font-weight: 700;
+  padding: 8px 12px 4px;
+  letter-spacing: 0.04em;
+}
+.em-account-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: background 0.08s;
+}
+.em-account-dropdown-item:hover { background: var(--bg3, #252540); }
+.em-account-dropdown-item.active {
+  background: var(--accent, #4ecdc4);
+  color: var(--bg, #0f0f1a);
+}
+.em-account-dropdown-item.active .em-account-dropdown-sub { color: rgba(15,15,26,0.7); }
+.em-account-dropdown-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
+}
+.em-account-dropdown-info { flex: 1; min-width: 0; }
+.em-account-dropdown-name { font-size: 12px; font-weight: 600; }
+.em-account-dropdown-sub {
+  font-size: 10px;
+  color: var(--text3, #777);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.em-account-dropdown-divider {
+  border-top: 1px solid var(--border1, rgba(255,255,255,.08));
+  margin: 4px 6px;
+}
+.em-account-dropdown-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text2, #9090a0);
+  cursor: pointer;
+}
+.em-account-dropdown-action:hover {
+  background: var(--bg3, #252540);
+  color: var(--text, #e0e0e0);
+}
+.em-account-dropdown-empty {
+  padding: 12px;
+  font-size: 11px;
+  color: var(--text3, #777);
+  text-align: center;
+}
+
+/* 身份选择屏 — 全屏 grid 居中 */
+.em-profile-select {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  background: var(--bg, #0f0f1a);
+  overflow-y: auto;
+}
+.em-profile-select-inner {
+  max-width: 600px;
+  width: 100%;
+  padding: 32px 24px;
+}
+.em-profile-select-header { text-align: center; margin-bottom: 24px; }
+.em-profile-select-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--accent, #4ecdc4);
+  margin-bottom: 8px;
+}
+.em-profile-select-sub {
+  font-size: 12px;
+  color: var(--text2, #9090a0);
+  line-height: 1.6;
+}
+.em-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.em-profile-card-grid {
+  background: var(--bg2, #1a1a2e);
+  border: 2px solid var(--border1, rgba(255,255,255,.08));
+  border-radius: 12px;
+  padding: 16px;
+  cursor: pointer;
+  transition: all 0.15s;
+  position: relative;
+  overflow: hidden;
+}
+.em-profile-card-grid::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  background: var(--profile-color, #4ecdc4);
+}
+.em-profile-card-grid:hover {
+  border-color: var(--profile-color, #4ecdc4);
+  background: var(--bg3, #252540);
+  transform: translateY(-2px);
+}
+.em-profile-card-grid .em-profile-card-avatar {
+  font-size: 36px;
+  margin-bottom: 8px;
+  display: block;
+}
+.em-profile-card-grid .em-profile-card-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text, #e0e0e0);
+  margin-bottom: 6px;
+}
+.em-profile-card-grid .em-profile-card-meta {
+  font-size: 12px;
+  color: var(--text2, #9090a0);
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.em-profile-card-grid .em-profile-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  background: var(--bg3, #252540);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--accent, #4ecdc4);
+  border: 1px solid var(--border, rgba(78,205,196,0.2));
+}
+.em-profile-add {
+  background: transparent;
+  border: 2px dashed var(--border1, rgba(255,255,255,.08));
+  color: var(--text2, #9090a0);
+  text-align: center;
+  width: 100%;
+  padding: 18px;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.em-profile-add:hover {
+  border-color: var(--accent, #4ecdc4);
+  color: var(--text, #e0e0e0);
+  background: var(--bg2, #1a1a2e);
+}
+.em-profile-empty {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 32px;
+  font-size: 13px;
+  color: var(--text3, #777);
+}
+
+/* PIN 弹窗 */
+.em-pin-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+.em-pin-modal.show { display: flex; }
+.em-pin-box {
+  background: var(--window-bg, #1e1e32);
+  border: 1px solid var(--border, rgba(78,205,196,0.2));
+  border-radius: 14px;
+  padding: 28px 24px;
+  width: 360px;
+  text-align: center;
+  box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+}
+.em-pin-avatar { font-size: 48px; margin-bottom: 4px; }
+.em-pin-name {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text, #e0e0e0);
+  margin-bottom: 4px;
+}
+.em-pin-hint {
+  font-size: 11px;
+  color: var(--text3, #777);
+  margin-bottom: 18px;
+}
+.em-pin-inputs {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  margin-bottom: 12px;
+}
+.em-pin-input {
+  width: 48px;
+  height: 58px;
+  background: var(--bg2, #1a1a2e);
+  border: 2px solid var(--border, rgba(78,205,196,0.2));
+  border-radius: 8px;
+  color: var(--text, #e0e0e0);
+  font-size: 24px;
+  font-weight: 700;
+  text-align: center;
+  font-family: Consolas, monospace;
+}
+.em-pin-input:focus { outline: none; border-color: var(--accent, #4ecdc4); }
+.em-pin-input.error { border-color: var(--accent2, #ff6b6b); animation: emPinShake 0.3s; }
+@keyframes emPinShake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-6px); }
+  75% { transform: translateX(6px); }
+}
+.em-pin-error {
+  color: var(--accent2, #ff6b6b);
+  font-size: 12px;
+  min-height: 14px;
+  margin-bottom: 10px;
+}
+.em-pin-keypad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.em-pin-key {
+  background: var(--bg3, #252540);
+  border: 1px solid var(--border1, rgba(255,255,255,.08));
+  color: var(--text, #e0e0e0);
+  font-size: 20px;
+  font-weight: 600;
+  padding: 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.08s;
+}
+.em-pin-key:hover {
+  background: var(--accent, #4ecdc4);
+  color: var(--bg, #0f0f1a);
+  border-color: var(--accent, #4ecdc4);
+}
+.em-pin-key:active { transform: scale(0.96); }
+.em-pin-key-clear { color: var(--accent2, #ff6b6b); }
+.em-pin-key-empty { visibility: hidden; }
+.em-pin-actions { display: flex; gap: 8px; }
+.em-pin-btn {
+  flex: 1;
+  padding: 11px;
+  border-radius: 8px;
+  border: none;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity 0.12s;
+}
+.em-pin-btn-cancel {
+  background: var(--bg3, #252540);
+  color: var(--text, #e0e0e0);
+  border: 1px solid var(--border1, rgba(255,255,255,.08));
+}
+.em-pin-btn-confirm {
+  background: var(--accent, #4ecdc4);
+  color: var(--bg, #0f0f1a);
+}
+.em-pin-btn-confirm:disabled { opacity: 0.4; cursor: not-allowed; }

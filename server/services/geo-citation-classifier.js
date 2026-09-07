@@ -1,5 +1,6 @@
-// ACMS GEO 引用源分类器（v0.16 — 移植自 elmohq/elmo domain-categories.ts，MIT）
-// 用途：把 AI 回答中的引用 URL 归一化 + 分类（来源类型 × 页面类型）+ rollup 聚合
+// ACMS GEO 引用源分类器（v0.17 — 借鉴 oneglanse sourceUtils.ts：
+//   - 新增 PROVIDER_OWNED_SOURCE_DOMAINS 剔除自家引擎域名（如 chatgpt.com / openai.com）
+//   - 新增 normalizeSourceTitle() 去掉 "openai.com " 这类标题前缀
 // 路径：server/services/geo-citation-classifier.js
 //
 // 借鉴 elmo 的成熟体系（MIT 许可）：
@@ -7,6 +8,20 @@
 //   - 来源分类 CitationCategory：brand/editorial/reviews/social/forum/ecommerce/reference/institutional/other
 //   - 页面类型 CitationPageType：homepage/article/listicle/comparison/review/howto/forum/video/doc/product/info/other
 //   - rollup：URL 级折叠计数 → 域名级（取最高频 URL 的分类）→ 分类 tally
+//
+// 借鉴 oneglanse（MIT）2026-09-06：
+//   - PROVIDER_OWNED_SOURCE_DOMAINS: 剔除 AI 引擎自家域名，避免干扰数据来源分析
+//   - normalizeSourceTitle(): 去除标题前缀（如 "openai.com - ..." → "...")
+
+// === 可配置：AI 引擎自家域名白名单（避免把引擎站点自身算作"信源"）===
+// 格式：engineId -> [domain, ...]，由调用方传入；默认为空对象
+const DEFAULT_PROVIDER_OWNED_SOURCE_DOMAINS = {
+  perplexity: ['perplexity.ai'],
+  // chatgpt: ['chatgpt.com', 'openai.com'],     // 启用时需配对应 engineId
+  // gemini: ['gemini.google.com', 'google.com'],
+  // claude: ['claude.ai', 'anthropic.com'],
+  // 'ai-overview': ['google.com'],
+};
 
 // === URL 归一化 ===
 function normalizeUrl(url) {
@@ -41,6 +56,50 @@ const CATEGORY_LABELS = {
   forum: '论坛', ecommerce: '电商', reference: '百科/文档', institutional: '机构', other: '其他',
 };
 
+/**
+ * 剔除 AI 引擎自家域名（oneglanse sourceUtils.ts 借鉴，2026-09-06）
+ * 按 engineId 查 DEFAULT_PROVIDER_OWNED_SOURCE_DOMAINS，返回 { ownedDomains: Set, allDomains: [] }
+ */
+function resolveProviderOwnedDomains(engineId) {
+  const engineKey = String(engineId || '').toLowerCase();
+  const entries = DEFAULT_PROVIDER_OWNED_SOURCE_DOMAINS[engineKey] || [];
+  const owned = new Set(entries.map(d => String(d).toLowerCase().replace(/^www\./, '')));
+  return { owned, allDomains: [...owned] };
+}
+
+/**
+ * 判断域名是否属于某个 AI 引擎自家站点（oneglanse isProviderOwnedSource 等价实现）
+ */
+function isProviderOwnedDomain(domain, engineId) {
+  if (!domain || !engineId) return false;
+  const { owned } = resolveProviderOwnedDomains(engineId);
+  return owned.has(String(domain).toLowerCase());
+}
+
+/**
+ * 标题归一化：去掉 "openai.com - ..." 或 "Perplexity:" 这类引擎名称前缀
+ * 借鉴 oneglanse sourceUtils.ts normalizeSourceTitle()（2026-09-06）
+ */
+function normalizeSourceTitle(rawTitle, url = '') {
+  if (!rawTitle || typeof rawTitle !== 'string') return rawTitle;
+  let title = rawTitle.replace(/\s+/g, ' ').trim();
+  if (!title) return title;
+  // 尝试从 URL 提取主域名前缀（如 "openai.com" → "openai.com "）
+  let domainPrefix = '';
+  try {
+    const u = new URL(url.startsWith('http') ? url : `https://${url}`);
+    domainPrefix = u.hostname.replace(/^www\./, '').toLowerCase();
+  } catch (_) {}
+  const prefixes = domainPrefix ? [domainPrefix, domainPrefix.split('.')[0]] : [];
+  for (const p of prefixes) {
+    if (!p) continue;
+    // 匹配 "openai.com " / "openai.com-" / "openai.com:" 开头
+    const re = new RegExp(`^${p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s*[-:·]\\s*|\\s+)`, 'i');
+    title = title.replace(re, '').trim();
+  }
+  return title || rawTitle;
+}
+
 // 论坛域名（elmo FORUM_DOMAINS 精选 + 中文站）
 const FORUM_DOMAINS = new Set([
   'zhihu.com', 'news.ycombinator.com', 'reddit.com', 'quora.com', 'douban.com',
@@ -68,9 +127,11 @@ const REVIEW_HOST_RE = /(^|\.)(trustpilot\.com|g2\.com|gartner\.com|forrester\.c
 const EDITORIAL_HOST_RE = /(^|\.)(medium\.com|techcrunch\.com|theverge\.com|wired\.com|forbes\.com|bloomberg\.com|reuters\.com|ft\.com|wsj\.com|cnbc\.com|36kr\.com|ifeng\.com|sina\.com\.cn|sohu\.com|netease\.com|qq\.com|163\.com|huxiu\.com|geekpark\.net|ithome\.com|pingwest\.com)$/;
 
 // 来源分类（域名级启发式；自有品牌站由调用方传入 brandDomains 判定）
-function classifyDomain(domain, brandDomains = []) {
+function classifyDomain(domain, brandDomains = [], providerOwnedDomains = []) {
   const d = String(domain || '').toLowerCase();
   if (!d) return 'other';
+  // 剔除 AI 引擎自家域名（oneglanse 借鉴：chatgpt.com/openai.com/perplexity.ai 等不算信源）
+  if (providerOwnedDomains.includes(d)) return 'other';
   if (brandDomains.includes(d)) return 'brand';
   if (isForumDomain(d)) return 'forum';
   if (SOCIAL_HOST_RE.test(d)) return 'social';
@@ -132,11 +193,13 @@ function extractUrlsFromResponse(resp) {
  * rollup：把 responses 数组折叠成 URL 级 + 域名级 + 分类 tally
  * @param {Array} responses - geo_responses 数组（含 citations/raw_answer/ts/engine）
  * @param {Array} brandDomains - 自有品牌域名列表（判定 brand 类）
+ * @param {string} [engineId] - 可选引擎 ID，用于剔除自家域名（oneglanse 借鉴，v0.17）
  */
-function rollupCitations(responses, brandDomains = []) {
+function rollupCitations(responses, brandDomains = [], engineId) {
   // URL 级折叠
-  const folded = new Map(); // normalized -> {count, title, domain, engines:Set, positions:[]}
+  const folded = new Map(); // normalized -> {count, title, domain, engines:Set}
   const bd = brandDomains.map(d => extractDomain(d));
+  const ownedDomains = engineId ? resolveProviderOwnedDomains(engineId).allDomains : [];
 
   responses.forEach(resp => {
     if (resp.error) return;
@@ -145,6 +208,8 @@ function rollupCitations(responses, brandDomains = []) {
       const norm = normalizeUrl(u);
       if (!norm || !/^https?:/.test(norm)) return;
       const domain = extractDomain(norm);
+      // 剔除 AI 引擎自家域名（oneglanse sourceUtils.ts 借鉴）
+      if (engineId && isProviderOwnedDomain(domain, engineId)) return;
       const existing = folded.get(norm);
       if (existing) {
         existing.count++;
@@ -161,14 +226,14 @@ function rollupCitations(responses, brandDomains = []) {
     });
   });
 
-  // URL 级输出 + 分类
+  // URL 级输出 + 分类 + 标题归一
   const urls = Array.from(folded.values()).map(u => ({
     url: u.url,
     domain: u.domain,
-    title: u.title,
+    title: normalizeSourceTitle(u.title, u.url),
     count: u.count,
     engines: Array.from(u.engines),
-    category: classifyDomain(u.domain, bd),
+    category: classifyDomain(u.domain, bd, ownedDomains),
     pageType: inferPageType(u.url, u.title),
   })).sort((a, b) => b.count - a.count);
 
@@ -215,6 +280,11 @@ module.exports = {
   inferPageType,
   extractUrlsFromResponse,
   rollupCitations,
+  // v0.17 新增：oneglanse sourceUtils.ts 借鉴
+  normalizeSourceTitle,
+  isProviderOwnedDomain,
+  resolveProviderOwnedDomains,
+  DEFAULT_PROVIDER_OWNED_SOURCE_DOMAINS,
   CATEGORY_LABELS,
   PAGE_TYPE_LABELS,
 };

@@ -213,6 +213,124 @@ const TOOLS = [
       required: ['expression'],
     },
   },
+  // ── v0.118：社交平台自动发布（social-publisher）──
+  // 复用 web_* 工具实现 5 平台图文自动发布
+  // v0.1 stub：所有 publish_to_* 返回 not_implemented，PR 2 头条 → PR 3 三平台 → PR 5 抖音
+  {
+    name: 'publish_to_toutiao',
+    description: '自动发布图文到今日头条（mp.toutiao.com）。背后是 Playwright 模拟人工操作：登录 → 打开发文页 → 填标题 → 填正文 → 上传图片 → 填标签 → 预览 → 点发布 → 验证 post_url。\n\n参数：title（必填）/ content（必填，HTML 或纯文本）/ images（图片路径数组，可选）/ tags（标签数组，可选）/ account_id（必填，从 list_accounts 拿）/ options（schedule_at/require_approval/humanize）。\n\n返回 {ok, post_url, post_id, screenshots, steps, total_elapsed_ms}。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: '文章标题' },
+        content: { type: 'string', description: '文章正文' },
+        images: { type: 'array', items: { type: 'string' }, description: '图片路径数组（可选）' },
+        tags: { type: 'array', items: { type: 'string' }, description: '标签数组（可选）' },
+        account_id: { type: 'string', description: '账号 ID（必填）' },
+        options: { type: 'object', description: '高级选项' },
+      },
+      required: ['title', 'content', 'account_id'],
+    },
+  },
+  {
+    name: 'publish_to_xiaohongshu',
+    description: '自动发布图文到小红书。注意小红书风控极严，单账号每天上限 5 篇，必须开 humanize。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: '笔记标题（20 字内）' },
+        content: { type: 'string', description: '笔记正文' },
+        images: { type: 'array', items: { type: 'string' }, description: '图片数组（必填，建议 3-9 张）' },
+        account_id: { type: 'string', description: '账号 ID' },
+        options: { type: 'object', description: '高级选项' },
+      },
+      required: ['title', 'content', 'images', 'account_id'],
+    },
+  },
+  {
+    name: 'publish_to_wechat_oa',
+    description: '自动发布图文到微信公众号（mp.weixin.qq.com）。需要服务号 + 微信开放平台授权。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: '文章标题' },
+        content: { type: 'string', description: '文章正文（HTML）' },
+        images: { type: 'array', items: { type: 'string' }, description: '图片数组' },
+        summary: { type: 'string', description: '摘要（必填，列表展示）' },
+        account_id: { type: 'string', description: '公众号账号 ID' },
+        options: { type: 'object', description: '高级选项' },
+      },
+      required: ['title', 'content', 'summary', 'account_id'],
+    },
+  },
+  {
+    name: 'publish_to_zhihu',
+    description: '自动发布文章/回答到知乎。可发布专栏文章或某个问题下的回答（options.question_id）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: '文章/回答标题' },
+        content: { type: 'string', description: '正文（Markdown 或 HTML）' },
+        account_id: { type: 'string', description: '账号 ID' },
+        options: { type: 'object', description: '高级选项（含 question_id 走回答模式）' },
+      },
+      required: ['title', 'content', 'account_id'],
+    },
+  },
+  {
+    name: 'publish_to_douyin',
+    description: '自动发布视频到抖音。需要视频文件 + 文案 + 话题标签。视频平台风控比图文严，建议短视频 ≤ 60s。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        video_url: { type: 'string', description: '视频 URL 或本地路径' },
+        caption: { type: 'string', description: '视频文案/标题' },
+        hashtags: { type: 'array', items: { type: 'string' }, description: '话题标签' },
+        account_id: { type: 'string', description: '账号 ID' },
+        options: { type: 'object', description: '高级选项' },
+      },
+      required: ['video_url', 'caption', 'account_id'],
+    },
+  },
+  {
+    name: 'rewrite_content_for_platform',
+    description: '把素材按目标平台风格改写。调 modelStore 的 LLM（复用现有模型库）。\n\n平台风格：toutiao=长文+标题党 / xiaohongshu=短段+emoji+标签 / wechat_oa=故事化+金句 / zhihu=亮观点+引用 / douyin=钩子+互动。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        content: { type: 'string', description: '原始素材' },
+        platform: { type: 'string', enum: ['toutiao', 'xiaohongshu', 'wechat_oa', 'zhihu', 'douyin'], description: '目标平台' },
+        tone: { type: 'string', description: '语气（可选）' },
+        length: { type: 'string', description: '长度（短/中/长）' },
+      },
+      required: ['content', 'platform'],
+    },
+  },
+  {
+    name: 'upload_image_to_platform',
+    description: '把图片上传到目标平台图床，返回 CDN URL。可在 publish_to_xxx 之前单独调用。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        image_url_or_path: { type: 'string', description: '图片 URL 或本地路径' },
+        account_id: { type: 'string', description: '账号 ID' },
+        platform: { type: 'string', enum: ['toutiao', 'xiaohongshu', 'wechat_oa', 'zhihu', 'douyin'], description: '目标平台' },
+      },
+      required: ['image_url_or_path', 'account_id', 'platform'],
+    },
+  },
+  {
+    name: 'check_account_status',
+    description: '检查账号是否健康：Cookie 是否过期、是否被风控、最近一次使用时间。发之前必调。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account_id: { type: 'string', description: '账号 ID' },
+        platform: { type: 'string', description: '限定平台（可选）' },
+      },
+      required: ['account_id'],
+    },
+  },
   {
     name: 'acms_workspace_read_file',
     description: '读取 ACMS 项目工作区中的文件内容。',
@@ -538,6 +656,31 @@ async function handleCall(toolName, args) {
         const r = await ba.evalJs(args.expression);
         if (!r.ok) return toolResult({ error: r.error }, true);
         return toolResult({ ok: true, output: r.output });
+      }
+      // ── v0.118：社交平台自动发布（social-publisher）──
+      // v0.1 stub：转发到 service 层，service 层返回 not_implemented
+      // PR 2 起逐平台实现真实发布
+      case 'publish_to_toutiao':
+      case 'publish_to_xiaohongshu':
+      case 'publish_to_wechat_oa':
+      case 'publish_to_zhihu':
+      case 'publish_to_douyin':
+      case 'rewrite_content_for_platform':
+      case 'upload_image_to_platform':
+      case 'check_account_status': {
+        const sp = require('../services/social-publisher');
+        const platform = toolName.replace('publish_to_', '');
+        let result;
+        if (toolName === 'rewrite_content_for_platform') {
+          result = await sp.rewriteForPlatform(args);
+        } else if (toolName === 'upload_image_to_platform') {
+          result = await sp.uploadImage(args);
+        } else if (toolName === 'check_account_status') {
+          result = await sp.checkAccount(args);
+        } else {
+          result = await sp.publishTo(platform, args);
+        }
+        return toolResult(result, !result.ok);
       }
       default:
         return toolResult({ error: `未知工具: ${toolName}` }, true);

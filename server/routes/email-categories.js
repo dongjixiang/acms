@@ -14,37 +14,51 @@ function makeCategoryId() {
   return 'ec_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
 }
 
-// GET /api/email-categories?mailbox=INBOX — 列出分类（按 mailbox 隔离 + 全局默认）
+// GET /api/email-categories?mailbox=INBOX&profile_id=X — 列出分类（按 profile_id + mailbox 隔离）
 router.get('/', (req, res) => {
   try {
     const mailbox = req.query.mailbox || 'INBOX';
+    const profileId = req.query.profile_id || null;  // v2.3: profile 隔离
     const coll = collection('email_categories');
-    const all = coll.find ? coll.find(c => c.mailbox === mailbox || c.mailbox === '*' || !c.mailbox)
-                         : (coll.all ? coll.all().filter(c => c.mailbox === mailbox || c.mailbox === '*' || !c.mailbox) : []);
+    const all = coll.find ? coll.find(c => {
+        if (c.mailbox !== mailbox && c.mailbox !== '*' && c.mailbox) return false;
+        // v2.3: profile 过滤（无 profile_id 时兼容 legacy：返回 profile_id=null 或 profile_id='default' 的数据）
+        if (profileId) {
+          return c.profile_id === profileId;
+        }
+        return !c.profile_id || c.profile_id === 'default';
+      })
+                         : (coll.all ? coll.all().filter(c => {
+                             if (c.mailbox !== mailbox && c.mailbox !== '*' && c.mailbox) return false;
+                             if (profileId) return c.profile_id === profileId;
+                             return !c.profile_id || c.profile_id === 'default';
+                           }) : []);
     // 排序：priority 高的在前，name 字母序
     const sorted = all.slice().sort((a, b) => (b.priority || 0) - (a.priority || 0) || String(a.name).localeCompare(String(b.name)));
-    res.json({ ok: true, mailbox, count: sorted.length, categories: sorted });
+    res.json({ ok: true, mailbox, profile_id: profileId, count: sorted.length, categories: sorted });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message || 'LIST_CATEGORIES_ERROR' });
   }
 });
 
-// POST /api/email-categories — 创建分类（显式确认，防 silent write）
+// POST /api/email-categories — 创建分类（显式确认，防 silent write）— v2.3 加 profile_id
 router.post('/', (req, res) => {
   try {
     const { mailbox, name, description, color, examples, priority } = req.body || {};
+    const profileId = (req.body && req.body.profile_id) || req.query.profile_id || 'default';
     if (!name || !String(name).trim()) {
       return res.status(400).json({ ok: false, error: 'MISSING_NAME', message: '分类名称必填' });
     }
     const coll = collection('email_categories');
-    // 检查重名（同 mailbox 下不能重复）
-    const existing = coll.find ? coll.find(c => c.mailbox === (mailbox || 'INBOX') && c.name === String(name).trim())
-                              : (coll.all ? coll.all().filter(c => c.mailbox === (mailbox || 'INBOX') && c.name === String(name).trim()) : []);
+    // 检查重名（同 profile + mailbox 下不能重复）
+    const existing = coll.find ? coll.find(c => c.mailbox === (mailbox || 'INBOX') && c.name === String(name).trim() && c.profile_id === profileId)
+                              : (coll.all ? coll.all().filter(c => c.mailbox === (mailbox || 'INBOX') && c.name === String(name).trim() && c.profile_id === profileId) : []);
     if (existing.length > 0) {
-      return res.status(400).json({ ok: false, error: 'DUPLICATE_NAME', message: '同名分类已存在' });
+      return res.status(400).json({ ok: false, error: 'DUPLICATE_NAME', message: '同名分类已存在（同一身份+邮箱）' });
     }
     const doc = {
       id: makeCategoryId(),
+      profile_id: profileId,
       mailbox: mailbox || 'INBOX',
       name: String(name).trim(),
       description: String(description || '').slice(0, 200),
@@ -62,7 +76,7 @@ router.post('/', (req, res) => {
   }
 });
 
-// PATCH /api/email-categories/:id — 更新分类
+// PATCH /api/email-categories/:id — 更新分类（v2.3 加 profile_id 所有权检查）
 router.patch('/:id', (req, res) => {
   try {
     const id = String(req.params.id || '').trim();
@@ -70,6 +84,11 @@ router.patch('/:id', (req, res) => {
     const coll = collection('email_categories');
     const existing = coll.findOne ? coll.findOne(c => c.id === id) : null;
     if (!existing) return res.status(404).json({ ok: false, error: 'NOT_FOUND' });
+    // v2.3: 所有权检查（profile_id 不匹配则 403）
+    const requestProfileId = (req.body && req.body.profile_id) || req.query.profile_id;
+    if (requestProfileId && existing.profile_id && existing.profile_id !== requestProfileId) {
+      return res.status(403).json({ ok: false, error: 'PROFILE_MISMATCH', message: '该分类不属于你（profile 不匹配）' });
+    }
     const updates = {};
     ['name', 'description', 'color', 'priority', 'enabled'].forEach(function (k) {
       if (req.body[k] !== undefined) updates[k] = req.body[k];
@@ -85,12 +104,17 @@ router.patch('/:id', (req, res) => {
   }
 });
 
-// DELETE /api/email-categories/:id — 删除分类
+// DELETE /api/email-categories/:id — 删除分类（v2.3 加 profile_id 所有权检查）
 router.delete('/:id', (req, res) => {
   try {
     const id = String(req.params.id || '').trim();
     if (!id) return res.status(400).json({ ok: false, error: 'MISSING_ID' });
+    const requestProfileId = req.query.profile_id;
     const coll = collection('email_categories');
+    const existing = coll.findOne ? coll.findOne(c => c.id === id) : null;
+    if (existing && requestProfileId && existing.profile_id && existing.profile_id !== requestProfileId) {
+      return res.status(403).json({ ok: false, error: 'PROFILE_MISMATCH', message: '该分类不属于你（profile 不匹配）' });
+    }
     const removed = coll.remove(c => c.id === id);
     res.json({ ok: true, removed: !!removed, id });
   } catch (e) {
@@ -98,13 +122,14 @@ router.delete('/:id', (req, res) => {
   }
 });
 
-// POST /api/email-categories/seed — 种子数据（首次使用时初始化默认分类）
+// POST /api/email-categories/seed — 种子数据（首次使用时初始化默认分类）— v2.3 加 profile_id
 router.post('/seed', (req, res) => {
   try {
     const mailbox = (req.body && req.body.mailbox) || 'INBOX';
+    const profileId = (req.body && req.body.profile_id) || req.query.profile_id || 'default';
     const coll = collection('email_categories');
-    const existing = coll.find ? coll.find(c => c.mailbox === mailbox)
-                              : (coll.all ? coll.all().filter(c => c.mailbox === mailbox) : []);
+    const existing = coll.find ? coll.find(c => c.mailbox === mailbox && c.profile_id === profileId)
+                              : (coll.all ? coll.all().filter(c => c.mailbox === mailbox && c.profile_id === profileId) : []);
     if (existing.length > 0) {
       return res.json({ ok: true, message: '已存在分类，跳过种子', count: existing.length, skipped: true });
     }
@@ -123,6 +148,7 @@ router.post('/seed', (req, res) => {
     for (const d of defaults) {
       const doc = {
         id: makeCategoryId(),
+        profile_id: profileId,
         mailbox: mailbox,
         name: d.name,
         description: d.description,
@@ -137,7 +163,7 @@ router.post('/seed', (req, res) => {
       coll.insert(doc);
       inserted.push(doc);
     }
-    res.json({ ok: true, mailbox: mailbox, count: inserted.length, categories: inserted });
+    res.json({ ok: true, mailbox, profile_id: profileId, count: inserted.length, categories: inserted });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message || 'SEED_ERROR' });
   }

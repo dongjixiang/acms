@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ACMS GEO 投放策略原型</title>
+  <style>
+    :root {
+      --geo-primary: #1890ff;
+      --geo-success: #52c41a;
+      --geo-warning: #faad14;
+      --geo-error: #ff4d4f;
+      --geo-bg: #f5f7fa;
+      --geo-card-bg: #fff;
+      --geo-border: #e8e8e8;
+      --geo-text: #333;
+      --geo-text-2: #666;
+      --geo-badge-bg: #f0f0f0;
+    }
+    
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--geo-bg); color: var(--geo-text); }
+    
+    /* 布局 */
+    .app { display: flex; height: 100vh; }
+    .sidebar { width: 200px; background: #001529; color: #fff; padding: 16px 0; flex-shrink: 0; }
+    .sidebar-title { padding: 0 16px 16px; font-size: 16px; font-weight: 600; border-bottom: 1px solid rgba(255,255,255,0.1); }
+    .sidebar-nav { padding: 8px 0; }
+    .nav-item { padding: 10px 16px; cursor: pointer; font-size: 14px; color: rgba(255,255,255,0.65); transition: all 0.2s; }
+    .nav-item:hover { color: #fff; background: rgba(255,255,255,0.05); }
+    .nav-item.active { color: #fff; background: var(--geo-primary); }
+    
+    .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    .header { background: #fff; border-bottom: 1px solid var(--geo-border); padding: 16px 24px; display: flex; align-items: center; gap: 16px; }
+    .header-title { font-size: 18px; font-weight: 600; }
+    .header-brand { background: var(--geo-badge-bg); padding: 4px 12px; border-radius: 12px; font-size: 13px; color: var(--geo-text-2); }
+    .content { flex: 1; overflow-y: auto; padding: 24px; }
+    
+    /* Hero Metrics */
+    .hero-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+    .hero-card { background: var(--geo-card-bg); border: 1px solid var(--geo-border); border-radius: 8px; padding: 20px; text-align: center; }
+    .hero-value { font-size: 32px; font-weight: 700; color: var(--geo-primary); }
+    .hero-value.warning { color: var(--geo-warning); }
+    .hero-value.danger { color: var(--geo-error); }
+    .hero-label { font-size: 13px; color: var(--geo-text-2); margin-top: 8px; }
+    .hero-sub { font-size: 11px; color: var(--geo-text-2); margin-top: 4px; }
+    
+    /* Section */
+    .section { background: var(--geo-card-bg); border: 1px solid var(--geo-border); border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+    .section-title { font-size: 15px; font-weight: 600; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+    .section-badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--geo-badge-bg); color: var(--geo-text-2); }
+    
+    /* 🔥 Urgent Section */
+    .urgent-section { background: linear-gradient(135deg, #fff5f5 0%, #ffe0e0 100%); border: 2px solid #ff4d4f; }
+    .urgent-title { color: #ff4d4f; }
+    .urgent-list { display: flex; flex-direction: column; gap: 10px; }
+    .urgent-item { background: #fff; border-left: 3px solid #ff4d4f; padding: 12px 16px; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; }
+    .urgent-query { font-size: 13px; font-weight: 500; }
+    .urgent-meta { font-size: 12px; color: var(--geo-text-2); margin-top: 4px; }
+    .urgent-action { font-size: 12px; color: var(--geo-error); background: #fff1f0; padding: 4px 10px; border-radius: 4px; white-space: nowrap; }
+    
+    /* Channel Grid */
+    .channel-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+    .channel-card { background: var(--geo-card-bg); border: 1px solid var(--geo-border); border-radius: 8px; padding: 14px; transition: box-shadow 0.2s; position: relative; }
+    .channel-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+    .channel-domain { font-size: 14px; font-weight: 600; color: var(--geo-text); margin-bottom: 8px; }
+    .channel-badges { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+    .roi-pill { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+    .roi-high { background: #d4edda; color: #155724; }
+    .roi-med { background: #fff3cd; color: #856404; }
+    .roi-low { background: #f8d7da; color: #721c24; }
+    .form-pill { padding: 2px 8px; border-radius: 10px; font-size: 11px; background: var(--geo-badge-bg); color: var(--geo-text-2); }
+    .timeline-pill { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+    .timeline-urgent { background: #ff4d4f; color: #fff; }
+    .timeline-short { background: #faad14; color: #fff; }
+    .timeline-medium { background: #1890ff; color: #fff; }
+    .timeline-long { background: #d9d9d9; color: #666; }
+    .channel-meta { font-size: 12px; color: var(--geo-text-2); line-height: 1.6; }
+    .channel-reason { font-size: 12px; color: var(--geo-text); margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--geo-border); font-style: italic; }
+    
+    /* Per-Engine Matrix */
+    .engine-matrix { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .engine-matrix th { background: var(--geo-bg); padding: 10px 12px; text-align: left; font-weight: 600; border-bottom: 2px solid var(--geo-border); }
+    .engine-matrix td { padding: 10px 12px; border-bottom: 1px solid var(--geo-border); vertical-align: top; }
+    .engine-matrix tr:hover td { background: #fafafa; }
+    .engine-name { font-weight: 600; color: var(--geo-primary); }
+    .intent-tag { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; background: var(--geo-badge-bg); margin-right: 4px; margin-bottom: 4px; }
+    
+    /* Counter Placement */
+    .counter-list { display: flex; flex-direction: column; gap: 10px; }
+    .counter-item { display: flex; gap: 12px; padding: 12px; background: var(--geo-bg); border-radius: 6px; }
+    .counter-brand { font-weight: 600; color: var(--geo-error); min-width: 80px; }
+    .counter-domain { font-size: 12px; color: var(--geo-text-2); }
+    .counter-action { font-size: 12px; color: var(--geo-text); margin-top: 4px; }
+    
+    /* Zero Hit */
+    .zero-hit-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .zero-hit-item { padding: 12px; background: var(--geo-bg); border-radius: 6px; border-left: 3px solid var(--geo-warning); }
+    .zero-hit-query { font-size: 13px; font-weight: 500; margin-bottom: 4px; }
+    .zero-hit-meta { font-size: 12px; color: var(--geo-text-2); }
+    
+    /* Summary */
+    .summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .summary-card { padding: 16px; background: var(--geo-bg); border-radius: 6px; }
+    .summary-card-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--geo-text-2); }
+    .summary-card-value { font-size: 18px; font-weight: 700; color: var(--geo-text); }
+    
+    /* Tooltip */
+    [data-tip] { position: relative; cursor: help; }
+    [data-tip]:hover::after {
+      content: attr(data-tip);
+      position: absolute;
+      bottom: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #333;
+      color: #fff;
+      padding: 6px 10px;
+      border-radius: 4px;
+      font-size: 11px;
+      white-space: nowrap;
+      z-index: 100;
+      pointer-events: none;
+    }
+    
+    /* Legend */
+    .legend { display: flex; gap: 16px; padding: 12px 16px; background: var(--geo-bg); border-radius: 6px; margin-bottom: 16px; font-size: 12px; }
+    .legend-item { display: flex; align-items: center; gap: 6px; }
+    .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+    
+    /* Footer */
+    .footer { text-align: center; padding: 16px; font-size: 12px; color: var(--geo-text-2); }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <!-- Sidebar -->
+    <div class="sidebar">
+      <div class="sidebar-title">ACMS GEO</div>
+      <div class="sidebar-nav">
+        <div class="nav-item">总览</div>
+        <div class="nav-item">品牌管理</div>
+        <div class="nav-item">追踪</div>
+        <div class="nav-item">优化建议</div>
+        <div class="nav-item active">投放策略</div>
+      </div>
+    </div>
+    
+    <!-- Main -->
+    <div class="main">
+      <div class="header">
+        <div class="header-title">GEO 投放策略</div>
+        <div class="header-brand">🏢 卡司通展览</div>
+        <div style="flex:1"></div>
+        <div style="font-size:13px; color:var(--geo-text-2)">基于 DeepSeek / 千问 / Kimi × 30 条 query</div>
+      </div>
+      
+      <div class="content">
+        <!-- Hero Metrics -->
+        <div class="hero-grid">
+          <div class="hero-card">
+            <div class="hero-value">3</div>
+            <div class="hero-label">🔥 紧急处理项</div>
+            <div class="hero-sub">负面信号 / 误识别</div>
+          </div>
+          <div class="hero-card">
+            <div class="hero-value">8</div>
+            <div class="hero-label">📊 优先攻关 Channel</div>
+            <div class="hero-sub">知乎 3 / B站 2 / 36kr 1...</div>
+          </div>
+          <div class="hero-card">
+            <div class="hero-value">12</div>
+            <div class="hero-label">🕳️ 零命中 Query</div>
+            <div class="hero-sub">选型 5 / 采购 4 / 对比 3</div>
+          </div>
+          <div class="hero-card">
+            <div class="hero-value warning">42</div>
+            <div class="hero-label">📈 Visibility Score</div>
+            <div class="hero-sub">低于行业均值 58</div>
+          </div>
+        </div>
+        
+        <!-- Legend -->
+        <div class="legend">
+          <div class="legend-item"><div class="legend-dot" style="background:#ff4d4f"></div>紧急（立即处理）</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#faad14"></div>短期（30 天内）</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#1890ff"></div>中期（1-3 月）</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#d9d9d9"></div>长期（3 月+）</div>
+        </div>
+        
+        <!-- §1 紧急处理 -->
+        <div class="section urgent-section">
+          <div class="section-title urgent-title">🔥 紧急处理 — 负面信号 / 误识别（top priority）</div>
+          <div class="urgent-list">
+            <div class="urgent-item">
+              <div>
+                <div class="urgent-query">「展览设计公司 行业排名」</div>
+                <div class="urgent-meta">DeepSeek · 选型推荐 · 当前：AI 把卡司通识别为"上海卡司通装饰"（负面的装饰公司业务）</div>
+              </div>
+              <div class="urgent-action">反位投放 → 知乎</div>
+            </div>
+            <div class="urgent-item">
+              <div>
+                <div class="urgent-query">「展台搭建公司 报价」</div>
+                <div class="urgent-meta">千问 · 采购投资 · 当前：回答中含「卡司通口碑一般」（sentiment=negative）</div>
+              </div>
+              <div class="urgent-action">反位投放 → 大众点评</div>
+            </div>
+            <div class="urgent-item">
+              <div>
+                <div class="urgent-query">「卡司通展览 vs 中展集团」</div>
+                <div class="urgent-meta">Kimi · 对比评估 · 当前：AI 把卡司通排第 5，竞品排前 3</div>
+              </div>
+              <div class="urgent-action">反位投放 → 行业媒体</div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- §2 Top10 Channel -->
+        <div class="section">
+          <div class="section-title">📊 优先 Channel 投放清单 <span class="section-badge">Top 10</span></div>
+          <div class="channel-grid">
+            <div class="channel-card">
+              <div class="channel-domain">zhihu.com</div>
+              <div class="channel-badges">
+                <span class="roi-pill roi-high">高 ROI</span>
+                <span class="form-pill">深度回答</span>
+                <span class="timeline-pill timeline-short">短期</span>
+              </div>
+              <div class="channel-meta">出现 12 次 · 覆盖 3 个 LLM · 主要意图：选型推荐</div>
+              <div class="channel-reason">AI 在「展览设计公司 排名」类 query 高频引用知乎回答，是品牌缺位的最大缺口</div>
+            </div>
+            
+            <div class="channel-card">
+              <div class="channel-domain">bilibili.com</div>
+              <div class="channel-badges">
+                <span class="roi-pill roi-high">高 ROI</span>
+                <span class="form-pill">评测视频</span>
+                <span class="timeline-pill timeline-short">短期</span>
+              </div>
+              <div class="channel-meta">出现 8 次 · 覆盖 2 个 LLM · 主要意图：了解原理</div>
+              <div class="channel-reason">「如何选展览公司」类 query B站视频被 AI 引用，品牌无视频内容占位</div>
+            </div>
+            
+            <div class="channel-card">
+              <div class="channel-domain">36kr.com</div>
+              <div class="channel-badges">
+                <span class="roi-pill roi-med">中 ROI</span>
+                <span class="form-pill">科技媒体稿</span>
+                <span class="timeline-pill timeline-medium">中期</span>
+              </div>
+              <div class="channel-meta">出现 6 次 · 单 LLM · 主要意图：品牌识别</div>
+              <div class="channel-reason">36 氪在品牌搜索类 query 有引用，但频次不够稳定，需持续投放</div>
+            </div>
+            
+            <div class="channel-card">
+              <div class="channel-domain">juejin.cn</div>
+              <div class="channel-badges">
+                <span class="roi-pill roi-high">高 ROI</span>
+                <span class="form-pill">技术博客</span>
+                <span class="timeline-pill timeline-short">短期</span>
+              </div>
+              <div class="channel-meta">出现 9 次 · 覆盖 3 个 LLM · 主要意图：了解原理</div>
+              <div class="channel-reason">掘金在「展览设计趋势」类 query 高频出现，技术向内容缺口大</div>
+            </div>
+            
+            <div class="channel-card">
+              <div class="channel-domain">sohu.com</div>
+              <div class="channel-badges">
+                <span class="roi-pill roi-med">中 ROI</span>
+                <span class="form-pill">行业稿</span>
+                <span class="timeline-pill timeline-medium">中期</span>
+              </div>
+              <div class="channel-meta">出现 5 次 · 单 LLM · 主要意图：品牌识别</div>
+              <div class="channel-reason">搜狐号在品牌词搜索时有引用，但权重较低，适合作为辅助渠道</div>
+            </div>
+            
+            <div class="channel-card">
+              <div class="channel-domain">xiaohongshu.com</div>
+              <div class="channel-badges">
+                <span class="roi-pill roi-low">低 ROI</span>
+                <span class="form-pill">种草笔记</span>
+                <span class="timeline-pill timeline-long">长期</span>
+              </div>
+              <div class="channel-meta">出现 2 次 · 单 LLM · 主要意图：探索发现</div>
+              <div class="channel-reason">小红书在「展览公司 案例」类 query 偶有引用，B2B 属性弱，作为长期布局</div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- §3 Per-Engine 适配 -->
+        <div class="section">
+          <div class="section-title">🤖 Per-Engine 适配策略 <span class="section-badge">内容偏好 × 渠道偏好</span></div>
+          <table class="engine-matrix">
+            <thead>
+              <tr>
+                <th>LLM</th>
+                <th>内容偏好</th>
+                <th>渠道偏好</th>
+                <th>适配建议</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="engine-name">DeepSeek</span></td>
+                <td><span class="intent-tag">案例</span><span class="intent-tag">数据</span><span class="intent-tag">ROI</span></td>
+                <td><span class="intent-tag">知乎</span><span class="intent-tag">CSDN</span></td>
+                <td>投技术向案例文 + ROI 分析，放知乎深度回答</td>
+              </tr>
+              <tr>
+                <td><span class="engine-name">千问</span></td>
+                <td><span class="intent-tag">选型指南</span><span class="intent-tag">对比</span></td>
+                <td><span class="intent-tag">B站</span><span class="intent-tag">掘金</span></td>
+                <td>投视频内容 + 选型对比文，B站发评测视频</td>
+              </tr>
+              <tr>
+                <td><span class="engine-name">Kimi</span></td>
+                <td><span class="intent-tag">品牌故事</span><span class="intent-tag">权威性</span></td>
+                <td><span class="intent-tag">36kr</span><span class="intent-tag">搜狐</span></td>
+                <td>投品牌媒体稿 + 行业报道，提升权威信号</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        
+        <!-- §4 竞品反位 -->
+        <div class="section">
+          <div class="section-title">🎯 竞品反位攻关 <span class="section-badge">对手已占位的 Channel</span></div>
+          <div class="counter-list">
+            <div class="counter-item">
+              <div>
+                <div class="counter-brand">中展集团</div>
+                <div class="counter-domain">zhongzhan.com · 知乎 18 条回答 · 36kr 3 篇稿</div>
+                <div class="counter-action">→ 在「展览设计公司 排名」知乎问题下发布对比文，突出卡司通差异化优势</div>
+              </div>
+            </div>
+            <div class="counter-item">
+              <div>
+                <div class="counter-brand">上海会展协会</div>
+                <div class="counter-domain">shexpo.org · 千问引用 12 次 · 权威性信号</div>
+                <div class="counter-action">→ 申请加入协会会员 + 发布行业白皮书，获取权威背书</div>
+              </div>
+            </div>
+            <div class="counter-item">
+              <div>
+                <div class="counter-brand">易展网</div>
+                <div class="counter-domain">yizhan.cn · B站 8 个视频 · 案例展示</div>
+                <div class="counter-action">→ B站发「卡司通 vs 易展」对比评测，抢夺视频内容占位</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- §5 零命中攻关 -->
+        <div class="section">
+          <div class="section-title">🕳️ 零命中 Query 攻关 <span class="section-badge">该出现但没出现（12 条）</span></div>
+          <div class="zero-hit-list">
+            <div class="zero-hit-item">
+              <div class="zero-hit-query">「展览设计公司 哪家好」</div>
+              <div class="zero-hit-meta">选型推荐 · 竞品 3 个都被提，卡司通 0 次</div>
+            </div>
+            <div class="zero-hit-item">
+              <div class="zero-hit-query">「展台搭建公司 报价多少」</div>
+              <div class="zero-hit-meta">采购投资 · 商业意图 · 高价值</div>
+            </div>
+            <div class="zero-hit-item">
+              <div class="zero-hit-query">「上海展览设计公司 排名」</div>
+              <div class="zero-hit-meta">地域定位 · 竞品中展集团第 1</div>
+            </div>
+            <div class="zero-hit-item">
+              <div class="zero-hit-query">「会展服务公司 对比」</div>
+              <div class="zero-hit-meta">对比评估 · 竞品全面占位</div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- §6 总结 -->
+        <div class="section">
+          <div class="section-title">📋 总结与下一步</div>
+          <div class="summary-grid">
+            <div class="summary-card">
+              <div class="summary-card-title">核心问题</div>
+              <div class="summary-card-value">知乎 + B站 双缺口</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-card-title">30 天行动</div>
+              <div class="summary-card-value">发 5 篇知乎 + 2 个 B站视频</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-card-title">预期提升</div>
+              <div class="summary-card-value">Visibility +15~20 分</div>
+            </div>
+          </div>
+        </div>
+        
+        <div class="footer">
+          ACMS GEO · 投放策略 v0.45 原型 · 数据更新时间：2026-09-05 16:30
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

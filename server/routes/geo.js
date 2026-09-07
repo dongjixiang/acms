@@ -70,7 +70,8 @@ router.get('/engines', (req, res) => {
 // === Brands（增删改查）===
 router.get('/brands', (req, res) => {
   try {
-    res.json({ ok: true, brands: store.listBrands(), count: store.listBrands().length });
+    const brands = store.listBrands();
+    res.json({ ok: true, brands, count: brands.length });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
@@ -133,6 +134,18 @@ router.delete('/brands/:id', (req, res) => {
     const ok = store.deleteBrand(req.params.id);
     if (!ok) return res.status(404).json({ ok: false, error: 'BRAND_NOT_FOUND' });
     res.json({ ok: true, deleted: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// v0.45: 清除品牌数据（保留品牌，只清 responses/queries/scores/snapshots）
+router.post('/brands/:id/clear-data', (req, res) => {
+  try {
+    const brand = store.getBrand(req.params.id);
+    if (!brand) return res.status(404).json({ ok: false, error: 'BRAND_NOT_FOUND' });
+    store.clearBrandData(req.params.id);
+    res.json({ ok: true, cleared: true });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
@@ -500,7 +513,7 @@ router.get('/export', (req, res) => {
 // === Tracker Agent（手动触发跑跟踪）— v0.32: query_ids[] 用户手工选 ===
 router.post('/tracker/run', async (req, res) => {
   try {
-    const { brand_id, language = 'zh', rag = false, maxQueries, query_ids } = req.body || {}; // v0.24: 多语言 / v0.25: RAG / v0.29: maxQueries / v0.32: query_ids[]（不传=全 enabled）
+    const { brand_id, language = 'zh', rag = false, maxQueries, query_ids, engines, city } = req.body || {}; // v0.24: 多语言 / v0.25: RAG / v0.29: maxQueries / v0.32: query_ids[]（不传=全 enabled） / v0.43: city / v0.44: engines[]（不传=settings.engine_whitelist）
     if (!brand_id) return res.status(400).json({ ok: false, error: 'BRAND_ID_REQUIRED' });
     const tracker = require('../services/geo-tracker-agent');
     const result = await tracker.runTracker(brand_id, {
@@ -508,6 +521,8 @@ router.post('/tracker/run', async (req, res) => {
       rag,
       maxQueries,
       queryIds: Array.isArray(query_ids) ? query_ids : undefined, // v0.32: 用户手工选的提问模板 id 列表；undefined=沿用旧行为（全 enabled）
+      engines: Array.isArray(engines) && engines.length > 0 ? engines : undefined, // v0.44: 用户临时选的引擎（覆盖 settings.engine_whitelist）
+      city: (typeof city === 'string' && city.trim() !== '') ? city.trim() : undefined, // v0.43: 用户选的城市（注入到 query 前缀）；空 = 无地域限制
     });
     res.json(result);
   } catch (e) {
@@ -1008,6 +1023,33 @@ router.get('/score', (req, res) => {
   }
 });
 
+// === v0.36: 描述准确率 LLM 判定触发（异步 fire-and-forget） ===
+router.post('/brands/:brandId/judge-accuracy', (req, res) => {
+  const { brandId } = req.params;
+  const store = require('../services/geo-store');
+  const accuracy = require('../services/geo-accuracy-judge');
+  if (!store.getBrand(brandId)) return res.status(404).json({ ok: false, error: 'BRAND_NOT_FOUND' });
+  // 立即返回 accepted；后台异步跑 20 条 LLM 判定（约 30-60 秒）
+  // 跑完后下次 score API 调用会自动读到新缓存
+  accuracy.judgeResponsesAccuracy(brandId, { force: true })
+    .then(r => console.log('[geo] judge-accuracy done:', brandId, '→', r.accuracy_rate != null ? (r.accuracy_rate * 100).toFixed(0) + '%' : r.error))
+    .catch(e => console.error('[geo] judge-accuracy failed:', brandId, e.message));
+  res.json({ ok: true, accepted: true, message: '判定任务已启动，约 30-60 秒完成。下次刷新 score 即可看到结果。', brand_id: brandId });
+});
+
+// === v0.38: 品牌感知 + 风险信号 LLM 判定触发（异步 fire-and-forget） ===
+router.post('/brands/:brandId/judge-perception', (req, res) => {
+  const { brandId } = req.params;
+  const store = require('../services/geo-store');
+  const perception = require('../services/geo-perception-judge');
+  if (!store.getBrand(brandId)) return res.status(404).json({ ok: false, error: 'BRAND_NOT_FOUND' });
+  // 立即返回 accepted；后台异步跑 10 条自然发现回答的感知分析（约 30-60 秒）
+  perception.analyzePerceptionAndRisks(brandId, { force: true })
+    .then(r => console.log('[geo] judge-perception done:', brandId, '→', r.ok ? 'perception_risks cached' : r.error))
+    .catch(e => console.error('[geo] judge-perception failed:', brandId, e.message));
+  res.json({ ok: true, accepted: true, message: '感知分析任务已启动，约 30-60 秒完成。下次刷新 score 即可看到结果。', brand_id: brandId });
+});
+
 // === PDF 报告 ===
 router.post('/report/pdf/weekly', async (req, res) => {
   try {
@@ -1157,6 +1199,7 @@ router.post('/llms-txt/validate', (req, res) => {
 
 // === v0.33: Opportunities 智能推荐 ===
 router.post('/opportunities/generate', async (req, res) => {
+  console.log('[GEO-LOG] POST /api/geo/opportunities/generate body=', JSON.stringify(req.body));
   try {
     const { brand_id, lookbackDays = 30, force_refresh = false } = req.body || {};
     if (!brand_id) return res.status(400).json({ ok: false, error: 'BRAND_ID_REQUIRED' });
@@ -1175,6 +1218,57 @@ router.get('/opportunities/:brand_id', (req, res) => {
     const opps = require('../services/geo-opportunities');
     const records = opps.listOpportunities(brand_id, parseInt(limit) || 10);
     res.json({ ok: true, opportunities: records, count: records.length });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// v0.41 P2: Schema.org 输出建议（基于已有 queries + intent 分布）
+//   GET /api/geo/brands/:brand_id/schema-suggestions
+//   返回：建议生成的 Schema.org 类型 + 优先级 + 难度 + 影响 + 理由
+router.get('/brands/:brand_id/schema-suggestions', (req, res) => {
+  try {
+    const { brand_id } = req.params;
+    const brand = store.getBrand(brand_id);
+    if (!brand) return res.status(404).json({ ok: false, error: 'BRAND_NOT_FOUND', message: `Brand ${brand_id} 不存在` });
+
+    // 拉所有 queries（含 systemTags）用于 intent 统计
+    const queries = store.listQueries(brand_id) || [];
+
+    const { suggestSchemas, sortByQuickWin } = require('../services/geo-schema-suggest');
+    const result = suggestSchemas(brand, queries);
+    // 附加 quick-win 排序结果（前端"按优先级推荐"展示）
+    result.suggestionsSortedByQuickWin = sortByQuickWin(result.suggestions);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// === v0.45: GEO Channels 投放策略 ===
+router.get('/channels/:brand_id', async (req, res) => {
+  try {
+    const { brand_id } = req.params;
+    const { lookbackDays = 30 } = req.query;
+    const channels = require('../services/geo-channels');
+    const cached = channels.getCachedResult(brand_id);
+    if (cached) return res.json(cached);
+    const result = await channels.generateChannels(brand_id, { lookbackDays });
+    channels.setCachedResult(brand_id, result);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+router.post('/channels/generate', async (req, res) => {
+  try {
+    const { brand_id, lookbackDays = 30 } = req.body || {};
+    if (!brand_id) return res.status(400).json({ ok: false, error: 'BRAND_ID_REQUIRED' });
+    const channels = require('../services/geo-channels');
+    const result = await channels.generateChannels(brand_id, { lookbackDays });
+    channels.setCachedResult(brand_id, result);
+    res.json(result);
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }

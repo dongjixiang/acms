@@ -1,15 +1,14 @@
-// ACMS Web 机器人视图 v1.0 —— 多轮会话 + 最大化画面 + 抽屉对话流
+// ACMS Web 机器人视图 v1.5 —— 静态截图 + 右侧「执行步骤&对话」固定面板
 // ============================================================
-// v1.0 重构（多多要求）：
-//   - 布局：左栏会话列表 + 主区最大化画面（92% 高）+ 抽屉式对话流 + 固定底部输入条（48px）
-//   - 会话：localStorage 持久化会话索引（id/title/createdAt/updatedAt/messageCount），支持多轮对话
-//   - mini 气泡：右下角浮窗，对话流收起时显示最新 1 条消息摘要，新消息 pulse 动画
-//   - 保留 v0.7.1 的 CDP 精准控制 + 重试 3 次 + 降级 stream 逻辑（所有 connectCDP/CDP_Send/bindLivePreview）
-//
-// 后端：阶段 3 接 /api/browser-agent/session/*（task-runner 多轮 + session 持久化）
-// 当前（阶段1+2）：前端 UI + localStorage 会话管理 + mock 消息流，CDP/stream 真实联通
+// v1.5（多多要求）：
+//   - 布局：左栏会话列表 + 主区（左静态截图 / 右 340px 固定面板：执行步骤&对话流混排）
+//   - 删除浮动抽屉对话流 / mini 气泡 / chat-toggle 按钮 —— 对话流并入右侧固定面板
+//   - 删除 Puppeteer / 手动 URL / 重启远程浏览器 / 键盘输入 按钮及相关功能
+//   - 帧流全部移除：主画面显示最近一步静态截图（CDP 仅用于点击/键盘操控）
+//   - 气泡 ACMS chat-bubble 浅色风格（tool 气泡浅色，适配 ACMS 浅色主题）
+//   - CDP 精准控制保留：鼠标点击/悬停/滚动/键盘输入绑定到静态截图（坐标等比映射）
+//   - 会话 localStorage 持久化 + 多轮对话 + SSE 步骤进度（后端 session/*）
 // 主题：跟随 ACMS 三主题（var(--xxx)）
-
 (function () {
   'use strict';
 
@@ -17,7 +16,6 @@
   let _es = null;
   let _currentTaskId = null;
   let _stepCount = 0;
-  let _drawerOpen = false;
 
   // ── 会话存储（localStorage） ──
   const LS_KEY = 'web-robot-sessions-v1';
@@ -33,7 +31,7 @@
     .wb-topbar { display:flex; align-items:center; gap:8px; padding:8px 12px;
       border-bottom:1px solid var(--border,#333); flex-shrink:0; background:var(--bg2,#23262e); }
     .wb-title { font-weight:600; font-size:14px; }
-    /* v1.1 健康检查状态灯（顶部）：综合检测 ws+session+帧活跃+Chrome 响应 ping */
+    /* v1.1 健康检查状态灯（顶部）：v1.5 起检测 ws+session+Chrome 响应 ping */
     .wb-health { display:flex; align-items:center; gap:5px; padding:3px 8px; border-radius:10px;
       cursor:pointer; font-size:11px; user-select:none; background:#2a2e38; color:#c8ccd4;
       border:1px solid transparent; flex-shrink:0; transition:background .15s; }
@@ -86,50 +84,36 @@
     .wb-session-empty { padding:20px 10px; text-align:center; color:var(--text2,#777); font-size:11px; line-height:1.6; }
     .wb-sidebar-footer { padding:6px; border-top:1px solid var(--border); flex-shrink:0; }
 
-    /* 主区 */
+    /* 主区 — 左静态截图 + 右「执行步骤&对话」固定面板（v1.5） */
     .wb-preview { flex:1; background:var(--bg2,#23262e); display:flex; align-items:center;
-      justify-content:center; position:relative; overflow:hidden; }
-    .wb-preview img { max-width:100%; max-height:100%; object-fit:contain; display:block; }
+      justify-content:center; position:relative; overflow:hidden; min-width:0; }
+    .wb-preview img { max-width:100%; max-height:100%; object-fit:contain; display:block; cursor:zoom-in; }
     .wb-preview-ph { color:var(--text2,#777); font-size:13px; padding:20px; text-align:center; line-height:1.6; }
+    .wb-steps { flex:0 0 340px; min-width:280px; max-width:440px; border-left:1px solid var(--border,#333);
+      background:var(--bg,#1a1d23); display:flex; flex-direction:column; overflow:hidden; }
+    .wb-steps-header { padding:8px 12px; font-size:12px; color:var(--text2,#999); font-weight:600;
+      border-bottom:1px solid var(--border); flex-shrink:0; display:flex; justify-content:space-between; align-items:center; }
+    .wb-steps-body { flex:1; overflow-y:auto; padding:10px; display:flex; flex-direction:column; gap:8px; }
+    .wb-steps-empty { color:#888; font-size:11px; padding:16px 6px; text-align:center; line-height:1.6; }
 
-    /* mini 气泡（右下浮窗） */
-    .wb-mini-bubble { position:absolute; right:12px; bottom:12px; max-width:300px;
-      background:rgba(20,20,20,.94); color:#fff; border-radius:10px; padding:10px 14px;
-      font-size:12px; cursor:pointer; box-shadow:0 6px 18px rgba(0,0,0,.4);
-      border:1px solid rgba(255,255,255,.12); z-index:4; transition:transform .2s; }
-    .wb-mini-bubble:hover { transform:translateY(-2px); }
-    .wb-mini-bubble.pulse { animation:wb-pulse 1.2s ease-in-out 2; }
-    @keyframes wb-pulse { 0%,100% { box-shadow:0 6px 18px rgba(0,0,0,.4); }
-      50% { box-shadow:0 6px 22px rgba(79,140,255,.9); } }
-    .wb-mini-content { margin-bottom:6px; line-height:1.45; overflow:hidden;
-      text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; }
-    .wb-mini-toggle { background:transparent; border:1px solid rgba(255,255,255,.25);
-      color:#fff; border-radius:4px; padding:3px 10px; font-size:11px; cursor:pointer; }
-
-    /* 抽屉：对话流（默认收起，右侧滑入） */
-    .wb-drawer { position:absolute; right:0; top:0; bottom:0; width:340px;
-      background:var(--bg2,#23262e); border-left:1px solid var(--border,#333);
-      transform:translateX(100%); transition:transform .25s cubic-bezier(.4,.2,.2,1);
-      display:flex; flex-direction:column; z-index:5; box-shadow:-4px 0 12px rgba(0,0,0,.3); }
-    .wb-drawer.open { transform:translateX(0); }
-    .wb-drawer-header { padding:10px 14px; font-size:13px; font-weight:600;
-      border-bottom:1px solid var(--border); display:flex; justify-content:space-between;
-      align-items:center; flex-shrink:0; background:var(--bg2); }
-    .wb-drawer-messages { flex:1; overflow-y:auto; padding:14px;
-      display:flex; flex-direction:column; gap:10px; }
-    .wb-drawer-empty { text-align:center; color:var(--text2,#777); padding:40px 12px;
-      font-size:12px; line-height:1.7; }
-    .wb-msg { padding:8px 12px; border-radius:10px; font-size:12px; line-height:1.55;
-      max-width:88%; word-break:break-word; }
-    .wb-msg.user { background:var(--accent,#4f8cff); color:#fff; align-self:flex-end; border-bottom-right-radius:2px; }
-    .wb-msg.assistant { background:var(--bg3,#2a2e38); color:var(--text); align-self:flex-start;
-      border:1px solid var(--border,#444); border-bottom-left-radius:2px; }
-    .wb-msg.tool { background:rgba(255,255,255,.04); border:1px dashed var(--border);
-      color:var(--text2); font-family:monospace; font-size:11px; max-width:95%; align-self:flex-start; }
-    .wb-msg.waiting { background:#fff3cd; color:#856404; border:1px solid #ffc107;
-      align-self:stretch; max-width:100%; }
-    .wb-msg-bubble-name { font-size:10px; opacity:.7; margin-bottom:4px; font-weight:600; }
+    /* v1.5: ACMS chat-bubble 风格（浅色主题友好）—— 与主聊天流一致 */
+    .wb-msg { display:flex; gap:8px; align-items:flex-start; max-width:94%; font-size:13px; line-height:1.55; animation:wb-msg-in .18s ease; }
+    .wb-msg.user { align-self:flex-end; flex-direction:row-reverse; }
+    .wb-msg.assistant, .wb-msg.tool { align-self:flex-start; }
+    .wb-msg .wb-msg-avatar { width:28px; height:28px; border-radius:50%; flex-shrink:0;
+      display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:600; margin-top:2px; }
+    .wb-msg.user .wb-msg-avatar { background:var(--accent,#0ea89d); color:#fff; }
+    .wb-msg.assistant .wb-msg-avatar { background:linear-gradient(135deg,var(--accent,#0ea89d),var(--blue,#4b8fd4)); color:#fff; }
+    .wb-msg.tool .wb-msg-avatar { background:var(--bg3,#e8eaed); color:var(--text); border:1px solid var(--border); font-size:10px; }
+    .wb-msg .wb-msg-inner { flex:1; min-width:0; padding:8px 12px; border-radius:12px; word-break:break-word; }
+    .wb-msg.user .wb-msg-inner { background:var(--accent,#0ea89d); color:#fff; border-top-right-radius:4px; }
+    .wb-msg.assistant .wb-msg-inner { background:var(--bg3,#eceef1); color:var(--text); border:1px solid var(--border,#ddd); border-top-left-radius:4px; }
+    .wb-msg.tool .wb-msg-inner { background:var(--bg3,#f2f3f5); color:var(--text); border:1px solid var(--border,#ddd); border-radius:10px; font-size:12px; }
+    .wb-msg.waiting { align-self:stretch; max-width:100%; background:#fff3cd; color:#856404;
+      border:1px solid #ffc107; border-radius:10px; padding:8px 12px; font-size:12px; }
+    .wb-msg-bubble-name { font-size:10px; opacity:.65; margin-bottom:3px; font-weight:600; display:flex; align-items:center; gap:5px; }
     .wb-msg-meta { font-size:10px; opacity:.6; margin-top:4px; }
+    @keyframes wb-msg-in { from { opacity:0; transform:translateY(4px);} to { opacity:1; transform:none;} }
     .wb-help { display:flex; gap:6px; margin-top:8px; }
     .wb-help input { flex:1; min-width:0; padding:6px 10px; border:1px solid #856404;
       border-radius:4px; background:#fff; color:#333; font-size:12px; outline:none; }
@@ -144,19 +128,6 @@
     .wb-input:focus { border-color:var(--accent); }
     .wb-badge { background:var(--accent); color:#fff; border-radius:8px;
       padding:0 6px; font-size:10px; margin-left:2px; font-weight:600; }
-    /* v1.0 修复：键盘输入模态弹层 —— 显式色不依赖 var()（浮窗根不继承 data-theme，P118 教训） */
-    .wb-keyboard-modal { position:fixed; inset:0; z-index:9999; display:flex; align-items:center; justify-content:center; }
-    .wb-keyboard-backdrop { position:absolute; inset:0; background:rgba(0,0,0,0.55); }
-    .wb-keyboard-panel { position:relative; background:#2a2e38; color:#e8eaed;
-      border:1px solid #4a4e58; border-radius:8px; padding:16px;
-      width:480px; max-width:90vw; box-shadow:0 8px 32px rgba(0,0,0,0.5); }
-    .wb-keyboard-title { font-size:14px; font-weight:600; margin-bottom:10px; color:#e8eaed; }
-    .wb-keyboard-input { width:100%; min-height:100px; max-height:200px; padding:10px;
-      border:1px solid #4a4e58; border-radius:4px; background:#1a1d24; color:#e8eaed;
-      font-size:13px; resize:vertical; outline:none; font-family:inherit; box-sizing:border-box; }
-    .wb-keyboard-input:focus { border-color:#4f8cff; }
-    .wb-keyboard-actions { display:flex; gap:6px; margin-top:10px; align-items:center; flex-wrap:wrap; }
-    .wb-keyboard-status { flex:1; min-width:0; font-size:11px; color:#9aa0a6; margin-left:8px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   </style>`;
 
   // ── 工具函数 ──
@@ -213,10 +184,6 @@
         <span class="wb-status" id="wb-status">就绪</span>
         <button class="wb-btn" id="wb-new" title="新建会话">+ 新会话</button>
         <button class="wb-btn" id="wb-settings" title="设置">⚙️</button>
-        <button class="wb-btn wb-chat-toggle" id="wb-chat-toggle" title="展开/收起对话流">
-          💬 <span class="wb-badge" id="wb-msg-badge" style="display:none">0</span>
-          <span id="wb-chat-arrow">▶</span>
-        </button>
       </header>
       <div class="wb-body">
         <aside class="wb-sidebar">
@@ -229,53 +196,21 @@
         <div class="wb-content">
         <main class="wb-main">
           <div class="wb-preview" id="wb-preview">
-            <img id="wb-live" src="" alt="" style="display:none">
-            <div class="wb-preview-ph" id="wb-live-ph">🟢 实时画面（WebSocket 帧流）<br>连接中…</div>
+            <img id="wb-last-shot" src="" alt="最后截图" style="display:none" onclick="openImagePreview(this.src);event.stopPropagation();">
+            <div class="wb-preview-ph" id="wb-preview-ph">🖥️ Web 机器人<br>执行中自动更新步骤截图<br><span style="font-size:11px;opacity:.7">点击截图可放大 · 点击/滚轮可直接操控浏览器</span></div>
           </div>
-          <!-- 完整执行链路可视化：步骤时间线（每轮工具 + 描述 + 缩略图） -->
-          <div class="wb-steps" id="wb-steps" style="flex:0 0 140px;border-top:1px solid var(--border,#333);background:var(--bg2,#23262e);overflow-y:auto;padding:8px 10px;display:flex;flex-direction:column;gap:6px;">
-            <div class="wb-steps-header" style="font-size:10px;color:var(--text2,#777);font-weight:600;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;"><span>📋 执行步骤时间线</span><span id="wb-steps-progress" style="font-size:10px;color:#4f8cff;">等待开始</span></div>
-            <div id="wb-steps-list" style="flex:1;overflow-y:auto;font-size:11px;line-height:1.4;color:#c8ccd4;"></div>
+          <!-- v1.5: 右侧固定面板 —— 对话流 + 执行步骤（替代抽屉浮窗） -->
+          <div class="wb-steps" id="wb-steps">
+            <div class="wb-steps-header"><span>📋 执行步骤 &amp; 对话</span><span id="wb-steps-progress" style="font-size:10px;color:#4f8cff;">等待开始</span></div>
+            <div class="wb-steps-body" id="wb-steps-list"><div class="wb-steps-empty">等待智能体开始执行…<br>对话与每轮操作（工具调用、截图、描述）会在此显示</div></div>
           </div>
-          <div class="wb-mini-bubble" id="wb-mini-bubble" style="display:none">
-            <div class="wb-mini-content" id="wb-mini-content"></div>
-            <button class="wb-btn-mini" id="wb-mini-toggle">展开对话 ▶</button>
-          </div>
-          <aside class="wb-drawer" id="wb-drawer">
-            <div class="wb-drawer-header">
-              💬 对话流
-              <button class="wb-btn-mini" id="wb-drawer-close" title="收起">◀ 收起</button>
-            </div>
-            <div class="wb-drawer-messages" id="wb-drawer-messages"></div>
-          </aside>
         </main>
           <div class="wb-bottombar">
             <button class="wb-btn-mini" id="wb-screenshot" title="截图">📷</button>
             <button class="wb-btn-mini" id="wb-stop" title="停止">⏹</button>
             <button class="wb-btn-mini" id="wb-clear-conv" title="清空当前对话">🗑</button>
-            <button class="wb-btn-mini" id="wb-restart" title="重启远程浏览器（daemon 卡死时一键恢复，画面会刷新）">🔄</button>
-            <button class="wb-btn-mini" id="wb-keyboard" title="键盘输入到浏览器（绕开 AI 对话）">⌨️</button>
-            <button class="wb-btn-mini" id="wb-open-url" title="手动打开 URL">🔗</button>
-            <button class="wb-btn-mini" id="wb-puppeteer" title="用 Puppeteer 路径打开当前 URL（稳定，鼠标键盘可靠）">⤴ Puppeteer</button>
             <textarea class="wb-input" id="wb-input" placeholder="输入目标或继续问（Enter 发送 / Shift+Enter 换行）…" rows="1"></textarea>
             <button class="wb-btn-primary" id="wb-send">发送</button>
-          </div>
-          <!-- v1.0 修复：键盘输入模态弹层（v0.5 删了 v1.0 补回，CDP 精准 / 降级双路径） -->
-          <div class="wb-keyboard-modal" id="wb-keyboard-modal" style="display:none">
-            <div class="wb-keyboard-backdrop" id="wb-keyboard-backdrop"></div>
-            <div class="wb-keyboard-panel">
-              <div class="wb-keyboard-title">⌨️ 键盘输入到浏览器（绕开 AI 对话，直接给浏览器按键）</div>
-              <textarea class="wb-keyboard-input" id="wb-keyboard-input" placeholder="在此输入文本：CDP 精准模式直接 Unicode 插入（中文/emoji OK）；降级模式走 keyboard type（中文可能丢失）"></textarea>
-              <div class="wb-keyboard-actions">
-                <button class="wb-btn-mini" id="wb-kb-type" title="把文本输入到当前焦点（保留焦点位置）">输入</button>
-                <button class="wb-btn-mini" id="wb-kb-enter" title="回车键（提交表单/换行）">↵ 回车</button>
-                <button class="wb-btn-mini" id="wb-kb-backspace" title="退格一次">⌫ 退格</button>
-                <button class="wb-btn-mini" id="wb-kb-tab" title="Tab 切换焦点">⇥ Tab</button>
-                <button class="wb-btn-mini" id="wb-kb-escape" title="Esc 关闭弹窗/取消">⎋ Esc</button>
-                <span class="wb-keyboard-status" id="wb-kb-status"></span>
-                <button class="wb-btn-mini" id="wb-kb-close">关闭</button>
-              </div>
-            </div>
           </div>
         </div>
       </div>
@@ -284,7 +219,7 @@
     bindEvents(root);
     connectCDP(root);
     refreshViewport(root);
-    bindLivePreview(root);
+    bindPreviewControls(root);
     initSessionStore(root);
     startHealthCheck(root); // v1.1 健康检查：启动状态灯定时检测
     setStatus(root, '就绪 —— 🦾 给目标它自动做；多轮对话有上下文（阶段1+2：前端布局+会话管理，后端联调待阶段4）');
@@ -324,8 +259,7 @@
     }
     _currentMessages = []; // 阶段 4 从后端拉
     renderSessionList(root);
-    renderDrawerMessages(root);
-    updateBadge(root);
+    renderPanel(root);
   }
   function switchSession(root, sessionId) {
     if (_currentSessionId === sessionId) return;
@@ -351,9 +285,7 @@
       _currentMessages = [];
     }
     renderSessionList(root);
-    renderDrawerMessages(root);
-    updateBadge(root);
-    updateMiniBubble(root);
+    renderPanel(root);
     setStatus(root, '已删除会话');
   }
   function renderSessionList(root) {
@@ -390,11 +322,7 @@
   // ── 对话流 ──
   function appendMessage(root, msg) {
     _currentMessages.push(msg);
-    renderDrawerMessages(root);
-    updateBadge(root);
-    updateMiniBubble(root);
-    const box = el('wb-drawer-messages', root);
-    if (box) box.scrollTop = box.scrollHeight;
+    renderPanel(root);
     const sess = _sessions.find(s => s.id === _currentSessionId);
     if (sess) {
       sess.messageCount = _currentMessages.length;
@@ -402,101 +330,70 @@
       saveSessions();
     }
   }
-  function renderDrawerMessages(root) {
-    const box = el('wb-drawer-messages', root);
-    if (!box) return;
-    if (_currentMessages.length === 0) {
-      box.innerHTML = '<div class="wb-drawer-empty">还没有对话<br><br>底部输入框发个目标试试：<br>"去 DeepSeek 查深圳95油价"</div>';
-      return;
-    }
-    box.innerHTML = _currentMessages.map(renderMessageHtml).join('');
-  }
   function renderMessageHtml(m) {
     const ts = m.ts ? new Date(m.ts).toLocaleTimeString('zh-CN', { hour12: false }) : '';
     if (m.role === 'user') {
-      return `<div class="wb-msg user"><div class="wb-msg-bubble-name">我 · ${ts}</div>${esc(m.content || '')}</div>`;
+      return `<div class="wb-msg user"><div class="wb-msg-avatar">我</div><div class="wb-msg-inner"><div class="wb-msg-bubble-name">我 · ${ts}</div><div style="color:inherit;">${esc(m.content || '')}</div></div></div>`;
     } else if (m.role === 'assistant') {
       const meta = m.tools ? `<div class="wb-msg-meta">🔧 ${m.tools.length} 个工具调用 · ${m.rounds || ''} 步</div>` : '';
-      return `<div class="wb-msg assistant"><div class="wb-msg-bubble-name">🦾 Web机器人 · ${ts}</div>${esc(m.content || '')}${meta}</div>`;
+      return `<div class="wb-msg assistant"><div class="wb-msg-avatar">🦾</div><div class="wb-msg-inner"><div class="wb-msg-bubble-name">Web机器人 · ${ts}</div><div>${esc(m.content || '')}</div>${meta}</div></div>`;
     } else if (m.role === 'tool') {
       const desc = esc((m.content || '').slice(0, 200)) + ((m.content || '').length > 200 ? '…' : '');
-      const shotHtml = m.screenshot ? `<img src="${shotUrl(m.screenshot)}" onclick="openImagePreview('${shotUrl(m.screenshot)}');event.stopPropagation();" style="max-width:120px;max-height:70px;border-radius:4px;margin-top:4px;border:1px solid #444;object-fit:contain;display:block;cursor:zoom-in;" alt="步骤截图 - 点击放大" onerror="this.style.display='none'">` : `<div style="max-width:120px;height:50px;background:#2a2e38;border:1px dashed #555;border-radius:4px;margin-top:4px;display:flex;align-items:center;justify-content:center;color:#777;font-size:10px;text-align:center;padding:4px;">📷 步骤截图<br>（生成中或无截图）</div>`;
+      const shotHtml = m.screenshot ? `<img src="${shotUrl(m.screenshot)}" onclick="openImagePreview('${shotUrl(m.screenshot)}');event.stopPropagation();" style="max-width:120px;max-height:70px;border-radius:4px;margin-top:4px;border:1px solid var(--border,#ccc);object-fit:contain;display:block;cursor:zoom-in;" alt="步骤截图 - 点击放大" onerror="this.style.display='none'">` : '';
       const metaLine = m.round ? `<span style="font-size:9px;background:#4f8cff;color:#fff;padding:1px 4px;border-radius:4px;margin-left:4px;">R${m.round}</span>` : '';
-      return `<div class="wb-msg tool"><div class="wb-msg-bubble-name">🔧 ${esc(m.tool || '')} · ${ts} ${metaLine}</div><div style="color:#c8ccd4;font-size:11px;line-height:1.4;">${desc}</div>${shotHtml}</div>`;
+      return `<div class="wb-msg tool"><div class="wb-msg-avatar">🔧</div><div class="wb-msg-inner"><div class="wb-msg-bubble-name">🔧 ${esc(m.tool || 'step')} · ${ts} ${metaLine}</div><div>${desc}</div>${shotHtml}</div></div>`;
     } else if (m.role === 'waiting') {
-      return `<div class="wb-msg waiting"><div class="wb-msg-bubble-name">⏸ 需要你的帮助 · ${ts}</div>${esc(m.content || '')}<div class="wb-help"><input id="wb-help-input" placeholder="回复 A/B/C 或自定义指令…" /><button class="wb-btn-primary" id="wb-help-send">回复并继续</button></div></div>`;
+      return `<div class="wb-msg waiting"><div style="font-weight:600;margin-bottom:4px;">⏸ 需要你的帮助 · ${ts}</div>${esc(m.content || '')}<div class="wb-help"><input id="wb-help-input" placeholder="回复 A/B/C 或自定义指令…" /><button class="wb-btn-primary" id="wb-help-send">回复并继续</button></div></div>`;
     }
     return '';
   }
-  function updateBadge(root) {
-    const badge = el('wb-msg-badge', root);
-    if (!badge) return;
-    const n = _currentMessages.length;
-    if (n === 0) { badge.style.display = 'none'; return; }
-    badge.style.display = 'inline-block';
-    badge.textContent = n;
-  }
-  function updateMiniBubble(root) {
-    const bubble = el('wb-mini-bubble', root);
-    if (!bubble) return;
-    if (_currentMessages.length === 0 || _drawerOpen) {
-      bubble.style.display = 'none';
-      return;
-    }
-    const last = _currentMessages[_currentMessages.length - 1];
-    let preview = '';
-    if (last.role === 'user') preview = '💬 我：' + (last.content || '').slice(0, 80);
-    else if (last.role === 'assistant') preview = '🤖 ' + (last.content || '').slice(0, 80);
-    else if (last.role === 'tool') preview = '🔧 ' + (last.tool || '');
-    else if (last.role === 'waiting') preview = '⏸ 等待你的帮助';
-    el('wb-mini-content', root).textContent = preview;
-    bubble.style.display = 'block';
-    bubble.classList.remove('pulse');
-    setTimeout(() => bubble.classList.add('pulse'), 30);
-  }
-  function toggleDrawer(root, force) {
-    const drawer = el('wb-drawer', root);
-    if (!drawer) return;
-    if (typeof force === 'boolean') _drawerOpen = force;
-    else _drawerOpen = !_drawerOpen;
-    if (_drawerOpen) drawer.classList.add('open');
-    else drawer.classList.remove('open');
-    const arrow = el('wb-chat-arrow', root);
-    if (arrow) arrow.textContent = _drawerOpen ? '◀' : '▶';
-    updateMiniBubble(root);
-  }
 
-  // 完整执行链路可视化：步骤时间线（每轮工具 + 描述 + 缩略图 + 轮次进度）
-  function renderStepsTimeline(root, sessionId) {
+  // v1.5: 右侧固定面板渲染 —— 对话消息(user/assistant/waiting 气泡) + 执行步骤(tool 卡片) 混排
+  function renderPanel(root, sessionId) {
     const list = el('wb-steps-list', root);
     const progress = el('wb-steps-progress', root);
     if (!list) return;
-    // 从当前消息中提取所有 tool 步骤（完整执行链路）
-    const steps = _currentMessages.filter(m => m.role === 'tool').map((m, idx) => ({ ...m, idx: idx + 1 }));
-    if (steps.length === 0) {
-      list.innerHTML = '<div style="color:#666;font-size:11px;padding:4px;">等待智能体开始执行…<br>每轮操作（工具调用、截图、描述）会在此实时显示</div>';
+    if (_currentMessages.length === 0) {
+      list.innerHTML = '<div class="wb-steps-empty">还没有对话<br><br>底部输入框发个目标试试：<br>"去 DeepSeek 查深圳95油价"</div>';
       if (progress) progress.textContent = '等待开始';
       return;
     }
-    // 更新进度显示（取最新步骤的轮次信息）
+    const steps = _currentMessages.filter(m => m.role === 'tool');
     const lastStep = steps[steps.length - 1];
+    if (steps.length === 0) {
+      // 只有对话、还没有步骤 → 直接渲染消息气泡
+      list.innerHTML = _currentMessages.map(renderMessageHtml).join('');
+      if (progress) progress.textContent = '等待开始';
+      list.scrollTop = list.scrollHeight;
+      return;
+    }
+    // 有执行步骤 → 更新进度条
     const roundInfo = lastStep.round ? `第 ${lastStep.round} 轮` : '';
     const maxInfo = lastStep.maxRounds ? ` / 最多 ${lastStep.maxRounds}` : '';
     if (progress) progress.textContent = roundInfo + maxInfo || `已执行 ${steps.length} 步`;
 
-    // 渲染每步：工具 chip + 描述 + 截图缩略图（完整内容不截断，完整可视化）
-    list.innerHTML = steps.map(s => {
-      const toolText = esc(s.tool || 'step');
-      const desc = esc((s.fullMessage || s.content || '').slice(0, 120)) + ((s.fullMessage || s.content || '').length > 120 ? '…' : '');
-      const roundTag = s.round ? `<span style="font-size:9px;background:#4f8cff;color:#fff;padding:1px 4px;border-radius:4px;margin-left:4px;">R${s.round}</span>` : '';
-      // 截图：如果步骤包含截图路径，显示缩略图
-      const shotHtml = s.screenshot ? `<img src="${s.screenshot}" onclick="openImagePreview('${s.screenshot}');event.stopPropagation();" style="max-width:100px;max-height:60px;border-radius:4px;margin-top:4px;border:1px solid #444;object-fit:contain;cursor:zoom-in;" alt="步骤截图 - 点击放大">` : '';
-      return `<div style="padding:6px 8px;background:#1a1d24;border:1px solid #333;border-radius:6px;margin-bottom:4px;">` +
-        `<div style="font-weight:600;color:#4f8cff;font-size:11px;margin-bottom:2px;">${roundTag} 🔧 ${toolText}</div>` +
-        `<div style="color:#c8ccd4;font-size:11px;margin-bottom:2px;line-height:1.35;">${desc}</div>` +
-        `${shotHtml}` +
-        `</div>`;
-    }).join('');
+    // 混排：按 _currentMessages 顺序输出（user/assistant/waiting → 气泡；tool → 步骤卡）
+    let html = '';
+    for (const m of _currentMessages) {
+      if (m.role === 'tool') {
+        const toolText = esc(m.tool || 'step');
+        const desc = esc((m.fullMessage || m.content || '').slice(0, 300)) + ((m.fullMessage || m.content || '').length > 300 ? '…' : '');
+        const roundTag = m.round ? `<span style="font-size:9px;background:#4f8cff;color:#fff;padding:1px 5px;border-radius:4px;margin-left:4px;">R${m.round}</span>` : '';
+        const shotHtml = m.screenshot ? `<img src="${shotUrl(m.screenshot)}" onclick="openImagePreview('${shotUrl(m.screenshot)}');event.stopPropagation();" style="max-width:130px;max-height:80px;border-radius:4px;margin-top:4px;border:1px solid var(--border,#ccc);object-fit:contain;cursor:zoom-in;display:block;" alt="步骤截图 - 点击放大" onerror="this.style.display='none'">` : '';
+        html += `<div class="wb-msg tool"><div class="wb-msg-avatar">🔧</div><div class="wb-msg-inner">` +
+          `<div class="wb-msg-bubble-name">🔧 ${toolText}${roundTag}<span style="margin-left:auto;opacity:.6">${m.ts ? new Date(m.ts).toLocaleTimeString('zh-CN', { hour12: false }) : ''}</span></div>` +
+          `<div style="font-size:12px;line-height:1.45;color:var(--text);">${desc}</div>${shotHtml}</div></div>`;
+      } else {
+        html += renderMessageHtml(m);
+      }
+    }
+    list.innerHTML = html;
+    list.scrollTop = list.scrollHeight;
+
+    // v1.5: 最新带截图的步骤 → 更新主画面静态截图
+    const lastWithShot = steps.slice().reverse().find(s => s.screenshot || s.screenshotPath);
+    const shot = lastWithShot && (lastWithShot.screenshot || lastWithShot.screenshotPath);
+    if (shot) showLastScreenshot(root, shotUrl(shot));
   }
 
   // ── 发送消息（阶段4 接 task-runner session/*） ──
@@ -562,7 +459,7 @@
           fullMessage: step.message || '',
         });
         // 更新步骤时间线面板（实时渲染每轮操作）
-        renderStepsTimeline(root, sessionId);
+        renderPanel(root, sessionId);
       } catch (err) { /* ignore */ }
     });
 
@@ -574,7 +471,7 @@
           content: info.question || '需要你的帮助',
           ts: Date.now(),
         });
-        setStatus(root, '⏸ 智能体需要你的帮助，请在对话流面板回复');
+        setStatus(root, '⏸ 智能体需要你的帮助，请在右侧面板回复');
       } catch (err) {}
     });
 
@@ -604,7 +501,7 @@
         });
         const progressEl = el('wb-steps-progress', root);
         if (progressEl) progressEl.textContent = finalStatus === 'error' ? '❌ 执行中止' : `✅ 完成 · 共 ${toolSteps.length} 步`;
-        renderStepsTimeline(root, _currentSessionId);
+        renderPanel(root, _currentSessionId);
       } catch (err) {}
       el('wb-send', root).disabled = false;
       if (_es) { _es.close(); _es = null; }
@@ -670,7 +567,7 @@
         if (_sessions.length > 0 && _currentSessionId === sessionId) {
           _currentSessionId = _sessions[0].id;
           renderSessionList(root);
-          renderDrawerMessages(root);
+          renderPanel(root);
           // 递归加载第一个会话的消息
           return loadSessionMessages(root, _currentSessionId);
         } else if (_sessions.length === 0) {
@@ -678,15 +575,13 @@
           _currentSessionId = createSession('新会话');
           _currentMessages = [];
           renderSessionList(root);
-          renderDrawerMessages(root);
+          renderPanel(root);
         }
       } else {
         setStatus(root, '❌ 加载历史失败：' + (e.message || '网络错误'));
       }
     }
-    renderDrawerMessages(root);
-    updateBadge(root);
-    updateMiniBubble(root);
+    renderPanel(root);
   }
 
   // ── 事件绑定 ──
@@ -696,7 +591,7 @@
       const r = await healthCheck(root);
       if (r) {
         const lines = [
-          `ws=${r.wsOpen ? '✅' : '❌'} session=${r.hasSession ? '✅' : '❌'} ping=${r.pingOk ? '✅' : '❌'} 帧=${r.frameAge >= 0 ? r.frameAge + 's' : '无'}`,
+          `ws=${r.wsOpen ? '✅' : '❌'} session=${r.hasSession ? '✅' : '❌'} ping=${r.pingOk ? '✅' : '❌'}`,
           r.title,
         ];
         setStatus(root, '🩺 ' + lines.join(' | '));
@@ -709,19 +604,9 @@
       _currentSessionId = sid;
       _currentMessages = [];
       renderSessionList(root);
-      renderDrawerMessages(root);
-      updateBadge(root);
-      updateMiniBubble(root);
+      renderPanel(root);
       setStatus(root, '已创建新会话');
       el('wb-input', root).focus();
-    });
-
-    el('wb-chat-toggle', root).addEventListener('click', () => toggleDrawer(root));
-    el('wb-mini-toggle', root).addEventListener('click', (e) => { e.stopPropagation(); toggleDrawer(root, true); });
-    el('wb-drawer-close', root).addEventListener('click', () => toggleDrawer(root, false));
-    el('wb-mini-bubble', root).addEventListener('click', (e) => {
-      if (e.target.id === 'wb-mini-toggle') return;
-      toggleDrawer(root, true);
     });
 
     const doSend = () => sendMessage(root);
@@ -746,17 +631,13 @@
       _currentSessionId = createSession('新会话');
       _currentMessages = [];
       renderSessionList(root);
-      renderDrawerMessages(root);
-      updateBadge(root);
-      updateMiniBubble(root);
+      renderPanel(root);
       setStatus(root, '已清空所有会话');
     });
     el('wb-clear-conv', root).addEventListener('click', () => {
       if (!confirm('清空当前会话的对话？')) return;
       _currentMessages = [];
-      renderDrawerMessages(root);
-      updateBadge(root);
-      updateMiniBubble(root);
+      renderPanel(root);
       const sess = _sessions.find(s => s.id === _currentSessionId);
       if (sess) { sess.messageCount = 0; saveSessions(); renderSessionList(root); }
       setStatus(root, '已清空当前对话');
@@ -771,82 +652,20 @@
       if (_es) { _es.close(); _es = null; _currentTaskId = null; }
       setStatus(root, '⏹ 已停止当前任务');
     });
-    el('wb-open-url', root).addEventListener('click', async () => {
-      const url = prompt('输入要打开的 URL：');
-      if (!url) return;
-      try {
-        await api('POST', '/open', { url });
-        setStatus(root, '已打开：' + url);
-        refreshViewport(root);
-      } catch (e) { setStatus(root, '打开失败：' + e.message); }
-    });
-
-    // v1.0 修复：daemon 半死不活时一键恢复（close + open about:blank + CDP 重连）
-    el('wb-restart', root).addEventListener('click', async () => {
-      if (!confirm('重启远程浏览器？\n会关闭所有 page + 打开 about:blank + 自动重连 CDP。\n当前页面内容会丢失。')) return;
-      setStatus(root, '🔄 正在重启远程浏览器…');
-      try {
-        // 先主动断 CDP（让 scheduleCdpRetry 重新建链到新 page）
-        try { if (_cdp.ws) { _cdp.ws.close(); _cdp.ws = null; } } catch (e) {}
-        _cdp.sessionId = null; _cdp.viewport = null; _cdpRetry = 0;
-        const r = await api('POST', '/restart');
-        setStatus(root, '🔄 重启已发出，等待 CDP 重连…（' + (r.note || '') + '）');
-        // scheduleCdpRetry 会在 CDP 断时自动重试；这里强制触发一次以快速恢复
-        setTimeout(() => { if (!_cdp.ws && !_cdp.attempting && !_streamFallbackActive) connectCDP(root); }, 1500);
-      } catch (e) {
-        setStatus(root, '❌ 重启失败：' + e.message);
-      }
-    });
-
-    // v1.1：Web 机器人（agent-browser）有架构性 bug（chrome.exe 累积 daemon 卡死）——
-    //   一键切到 ACMS 浏览器（web-browser，Puppeteer 路径）打开当前 URL，鼠标键盘稳定可靠
-    el('wb-puppeteer', root).addEventListener('click', async () => {
-      try {
-        // 取当前远程 URL
-        const r = await api('GET', '/status');
-        const currentUrl = r && r.info && r.info.url ? r.info.url : 'https://example.com';
-        if (!window.ACMSWin) { setStatus(root, '❌ ACMSWin 不可用'); return; }
-        // 打开 ACMS 浏览器（web-browser 视图，Puppeteer 内嵌）
-        window.ACMSWin.open('web-browser', { w: 1100, h: 760, title: '🌐 ACMS浏览器 · ' + currentUrl, url: currentUrl });
-        setStatus(root, '⤴ 已用 Puppeteer 路径打开：' + currentUrl + '（鼠标键盘稳定）');
-      } catch (e) {
-        setStatus(root, '❌ 切换失败：' + e.message);
-      }
-    });
-
-    // v1.0 修复：键盘输入模态 —— v0.5 删了 v1.0 补回
-    el('wb-keyboard', root).addEventListener('click', () => openKeyboardModal(root));
-    el('wb-kb-close', root).addEventListener('click', () => closeKeyboardModal(root));
-    el('wb-keyboard-backdrop', root).addEventListener('click', () => closeKeyboardModal(root));
-    el('wb-kb-type', root).addEventListener('click', () => keyboardDoType(root));
-    el('wb-kb-enter', root).addEventListener('click', () => keyboardDoKey(root, 'enter'));
-    el('wb-kb-backspace', root).addEventListener('click', () => keyboardDoKey(root, 'backspace'));
-    el('wb-kb-tab', root).addEventListener('click', () => keyboardDoKey(root, 'tab'));
-    el('wb-kb-escape', root).addEventListener('click', () => keyboardDoKey(root, 'escape'));
-    const kbInput = el('wb-keyboard-input', root);
-    if (kbInput) {
-      kbInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-          e.preventDefault();
-          keyboardDoType(root);
-        }
-        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeKeyboardModal(root); }
-      });
-    }
     el('wb-settings', root).addEventListener('click', () => {
       // v1.1 设置面板：模型 / CDP / 浮窗显式颜色（替代暂未实现的 alert）
       const currentModel = (window.ACMSConfig && window.ACMSConfig.defaultModel) || '系统默认';
       const cdpRetry = (window._cdp && window._cdp.maxRetry) ? window._cdp.maxRetry : 3;
-      const panelHtml = `<div style="position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;" onclick="if(event.target===this)this.remove()"><div style="background:#23262e;color:#e8e8e8;border:1px solid #4a4e58;border-radius:10px;padding:20px;width:420px;max-width:90vw;box-shadow:0 12px 40px rgba(0,0,0,.6);font-size:13px;" onclick="event.stopPropagation()"><h3 style="margin:0 0 14px;font-size:15px;font-weight:600;color:#fff;">⚙️ Web机器人 设置</h3><div style="margin-bottom:12px;"><label style="display:block;font-weight:600;color:#c8ccd4;margin-bottom:4px;font-size:12px;">模型策略</label><select id="wb-set-model" style="width:100%;padding:6px 10px;background:#1a1d24;color:#e8e8e8;border:1px solid #4a4e58;border-radius:6px;font-size:12px;outline:none;"><option value="default" ${(currentModel==='系统默认')?'selected':''}>系统默认（跟随 ACMS 设置）</option><option value="deepseek" ${(currentModel==='deepseek')?'selected':''}>DeepSeek</option><option value="minimax" ${(currentModel==='minimax')?'selected':''}>MiniMax</option></select><div style="font-size:10px;color:#9aa0a6;margin-top:4px;">多多拍板：任务型 agent 优先跟随系统默认生成模型（v0.2）</div></div><div style="margin-bottom:12px;"><label style="display:block;font-weight:600;color:#c8ccd4;margin-bottom:4px;font-size:12px;">CDP 双向控制</label><div style="display:flex;gap:10px;align-items:center;font-size:12px;color:#c8ccd4;"><label><input type="checkbox" id="wb-set-cdp" checked> 启用精准控制</label><span>重试 <span id="wb-set-cdp-retry">${cdpRetry}</span> 次</span></div><div style="font-size:10px;color:#9aa0a6;margin-top:4px;">失败后自动降级为流式画面（只看模式），点击状态灯查看详情</div></div><div style="margin-bottom:16px;"><label style="display:block;font-weight:600;color:#c8ccd4;margin-bottom:6px;font-size:12px;">浮窗预览与颜色</label><div style="display:flex;gap:8px;flex-wrap:wrap;"><label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;"><input type="checkbox" id="wb-set-pulse" checked> 新消息 pulse 动画</label><label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;"><input type="checkbox" id="wb-set-explicit-color" checked> 浮窗显式颜色（不依赖 var()）</label></div><div style="font-size:10px;color:#9aa0a6;margin-top:4px;">P118 教训：浮窗根不继承 data-theme，必须显式写颜色值</div></div><div style="display:flex;gap:8px;justify-content:flex-end;border-top:1px solid #333;padding-top:12px;margin-top:4px;"><button onclick="this.closest('[style*=&quot;position:fixed&quot;]').remove()" style="padding:5px 14px;background:#333;border:1px solid #555;border-radius:6px;color:#e8e8e8;font-size:12px;cursor:pointer;">取消</button><button onclick="const m=document.getElementById('wb-set-model').value;const c=document.getElementById('wb-set-cdp').checked;const r=document.getElementById('wb-set-cdp-retry').textContent;const p=document.getElementById('wb-set-pulse').checked;const ec=document.getElementById('wb-set-explicit-color').checked;window._wbSettings={model:m,cdpEnabled:c,cdpRetry:parseInt(r)||3,pulse:p,explicitColor:ec};if(window.ACMSConfig)window.ACMSConfig.defaultModel=(m==='default')?'系统默认':m;(window.ACMSModal&&window.ACMSModal.show?window.ACMSModal.show({title:'设置已保存',message:'已保存：模型='+m+', CDP='+c+', 重试='+r+', pulse='+p+', 显式色='+ec,actions:[{label:'确定',value:'OK',className:'acms-modal-btn-primary'}]}).catch(function(){}):alert('已保存设置：模型='+m+', CDP='+c+', 重试='+r+', pulse='+p+', 显式色='+ec));this.closest('[style*=&quot;position:fixed&quot;]').remove();" style="padding:5px 14px;background:#4f8cff;border:none;border-radius:6px;color:#fff;font-size:12px;font-weight:500;cursor:pointer;">保存</button></div></div></div>`;
+      const panelHtml = `<div style="position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;" onclick="if(event.target===this)this.remove()"><div style="background:#23262e;color:#e8e8e8;border:1px solid #4a4e58;border-radius:10px;padding:20px;width:420px;max-width:90vw;box-shadow:0 12px 40px rgba(0,0,0,.6);font-size:13px;" onclick="event.stopPropagation()"><h3 style="margin:0 0 14px;font-size:15px;font-weight:600;color:#fff;">⚙️ Web机器人 设置</h3><div style="margin-bottom:12px;"><label style="display:block;font-weight:600;color:#c8ccd4;margin-bottom:4px;font-size:12px;">模型策略</label><select id="wb-set-model" style="width:100%;padding:6px 10px;background:#1a1d24;color:#e8e8e8;border:1px solid #4a4e58;border-radius:6px;font-size:12px;outline:none;"><option value="default" ${(currentModel==='系统默认')?'selected':''}>系统默认（跟随 ACMS 设置）</option><option value="deepseek" ${(currentModel==='deepseek')?'selected':''}>DeepSeek</option><option value="minimax" ${(currentModel==='minimax')?'selected':''}>MiniMax</option></select><div style="font-size:10px;color:#9aa0a6;margin-top:4px;">多多拍板：任务型 agent 优先跟随系统默认生成模型（v0.2）</div></div><div style="margin-bottom:12px;"><label style="display:block;font-weight:600;color:#c8ccd4;margin-bottom:4px;font-size:12px;">CDP 双向控制</label><div style="display:flex;gap:10px;align-items:center;font-size:12px;color:#c8ccd4;"><label><input type="checkbox" id="wb-set-cdp" checked> 启用精准控制</label><span>重试 <span id="wb-set-cdp-retry">${cdpRetry}</span> 次</span></div><div style="font-size:10px;color:#9aa0a6;margin-top:4px;">CDP 失败后仅展示步骤截图，无法直接操控</div></div><div style="margin-bottom:16px;"><label style="display:block;font-weight:600;color:#c8ccd4;margin-bottom:6px;font-size:12px;">浮窗预览与颜色</label><div style="display:flex;gap:8px;flex-wrap:wrap;"><label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;"><input type="checkbox" id="wb-set-explicit-color" checked> 浮窗显式颜色（不依赖 var()）</label></div><div style="font-size:10px;color:#9aa0a6;margin-top:4px;">P118 教训：浮窗根不继承 data-theme，必须显式写颜色值</div></div><div style="display:flex;gap:8px;justify-content:flex-end;border-top:1px solid #333;padding-top:12px;margin-top:4px;"><button onclick="this.closest('[style*=&quot;position:fixed&quot;]').remove()" style="padding:5px 14px;background:#333;border:1px solid #555;border-radius:6px;color:#e8e8e8;font-size:12px;cursor:pointer;">取消</button><button onclick="const m=document.getElementById('wb-set-model').value;const c=document.getElementById('wb-set-cdp').checked;const r=document.getElementById('wb-set-cdp-retry').textContent;const p=document.getElementById('wb-set-pulse').checked;const ec=document.getElementById('wb-set-explicit-color').checked;window._wbSettings={model:m,cdpEnabled:c,cdpRetry:parseInt(r)||3,pulse:p,explicitColor:ec};if(window.ACMSConfig)window.ACMSConfig.defaultModel=(m==='default')?'系统默认':m;(window.ACMSModal&&window.ACMSModal.show?window.ACMSModal.show({title:'设置已保存',message:'已保存：模型='+m+', CDP='+c+', 重试='+r+', pulse='+p+', 显式色='+ec,actions:[{label:'确定',value:'OK',className:'acms-modal-btn-primary'}]}).catch(function(){}):alert('已保存设置：模型='+m+', CDP='+c+', 重试='+r+', pulse='+p+', 显式色='+ec));this.closest('[style*=&quot;position:fixed&quot;]').remove();" style="padding:5px 14px;background:#4f8cff;border:none;border-radius:6px;color:#fff;font-size:12px;font-weight:500;cursor:pointer;">保存</button></div></div></div>`;
       const overlay = document.createElement('div');
       overlay.innerHTML = panelHtml;
       document.body.appendChild(overlay);
     });
 
     // ── 事件委托：waiting_user 气泡的 help 回复按钮 + 输入框 ──
-    const drawer = el('wb-drawer-messages', root);
-    if (drawer) {
-      drawer.addEventListener('click', (e) => {
+    const panelEl = el('wb-steps-list', root);
+    if (panelEl) {
+      panelEl.addEventListener('click', (e) => {
         const btn = e.target.closest('#wb-help-send');
         if (!btn) return;
         const input = btn.parentElement && btn.parentElement.querySelector('#wb-help-input');
@@ -856,7 +675,7 @@
         input.value = '';
         sendHelpReply(root, reply);
       });
-      drawer.addEventListener('keydown', (e) => {
+      panelEl.addEventListener('keydown', (e) => {
         if (e.key !== 'Enter') return;
         const input = e.target.closest('#wb-help-input');
         if (!input) return;
@@ -868,32 +687,28 @@
   }
 
   // ===========================================================
-  // CDP / Stream 双向控制（v0.7.1 完整保留）
+  // CDP 双向控制（v1.5：删帧流，仅保留 ws+session 控制链）
   // ===========================================================
-  let _ws = null;
-  let _streamRetry = 0;
-  let _noFrameT = 0;
   let _viewport = null;
   let _cdp = { ws: null, sessionId: null, viewport: null, reqId: 0, pending: new Map(), attempting: false };
   let _cdpRetry = 0;
   const CDP_MAX_RETRY = 3;
-  let _streamFallbackActive = false;
-  // v1.1 健康检查：综合检测 ws+session+帧活跃+Chrome 响应 ping
-  let _lastFrameTs = 0;
+  // v1.1 健康检查：v1.5 起检测 ws+session+Chrome ping
   let _lastPingOk = 0;
   let _lastPingSent = 0;
   let _lastPingLatency = 0;
   let _healthTimer = null;
   const HEALTH_INTERVAL_MS = 5000;   // 状态灯每 5s 轮询
-  const FRAME_STALE_MS = 10000;      // 帧超过 10s 算「帧卡住」
   const PING_OK_VALID_MS = 10000;    // 最近 10s ping 成功算「Chrome 响应」
 
-  function showLiveFrame(root, b64) {
-    const live = el('wb-live', root);
-    const ph = el('wb-live-ph', root);
-    if (!live) return;
-    live.src = 'data:image/jpeg;base64,' + b64;
-    live.style.display = 'block';
+  // v1.5: 显示最近一步静态截图（替代 v1.0 实时帧流）
+  function showLastScreenshot(root, urlOrDataUrl) {
+    const img = el('wb-last-shot', root);
+    const ph = el('wb-preview-ph', root);
+    if (!img || !urlOrDataUrl) return;
+    if (img.src === urlOrDataUrl) return;
+    img.src = urlOrDataUrl;
+    img.style.display = 'block';
     if (ph) ph.style.display = 'none';
   }
 
@@ -905,7 +720,7 @@
   }
 
   function mapImgCoord(e) {
-    const live = el('wb-live');
+    const live = el('wb-last-shot');
     if (!live) return null;
     const vp = _cdp.viewport || _viewport;
     if (!vp) return null;
@@ -971,41 +786,11 @@
     esc:      { windowsVirtualKeyCode: 27, key: 'Escape',   code: 'Escape' },
   };
 
-  function openKeyboardModal(root) {
-    const m = el('wb-keyboard-modal', root);
-    if (m) m.style.display = 'flex';
-    const input = el('wb-keyboard-input', root);
-    if (input) { input.value = ''; setTimeout(() => input.focus(), 50); }
-    const status = el('wb-kb-status', root);
-    if (status) status.textContent = _cdp.sessionId ? 'CDP 精准模式（中文 OK）' : '降级模式（走 keyboard type，中文可能丢失）';
-  }
-  function closeKeyboardModal(root) {
-    const m = el('wb-keyboard-modal', root);
-    if (m) m.style.display = 'none';
-  }
-  async function keyboardDoType(root) {
-    const input = el('wb-keyboard-input', root);
-    const text = (input && input.value) || '';
-    if (!text) { setKbStatus(root, '⚠️ 没有内容可输入'); return; }
-    setKbStatus(root, `⏳ 输入中：${text.slice(0, 20)}${text.length > 20 ? '…' : ''}`);
-    const r = await keyboardTypeText(text);
-    if (input) input.value = '';
-    setKbStatus(root, r.ok ? `✅ 已输入 ${text.length} 字符（${r.mode}）` : `❌ 失败：${r.error || '未知'}`);
-  }
-  async function keyboardDoKey(root, keyName) {
-    setKbStatus(root, `⏳ 按键：${keyName}`);
-    const r = await keyboardTypeText('', { key: keyName });
-    setKbStatus(root, r.ok ? `✅ 已按 ${keyName}（${r.mode}）` : `❌ 失败：${r.error || '未知'}`);
-  }
-  function setKbStatus(root, msg) {
-    const s = el('wb-kb-status', root);
-    if (s) s.textContent = msg;
-  }
-
-  function bindLivePreview(root) {
-    const live = el('wb-live', root);
-    if (!live) return;
-    live.addEventListener('click', (e) => {
+  // v1.5: 静态截图上的 CDP 操控（点击/滚轮/悬停 —— 坐标按 viewport 等比映射）
+  function bindPreviewControls(root) {
+    const img = el('wb-last-shot', root);
+    if (!img) return;
+    img.addEventListener('click', (e) => {
       const c = mapImgCoord(e);
       if (!c) return;
       if (clickAt(c.x, c.y)) setStatus(root, `👆 已点击 (${c.x}, ${c.y})`);
@@ -1013,19 +798,18 @@
         if (r.ok) setStatus(root, `👆 已点击 (${c.x}, ${c.y})`);
       }).catch(() => {});
     });
-    live.addEventListener('wheel', (e) => {
+    img.addEventListener('wheel', (e) => {
       e.preventDefault();
       const dy = e.deltaY > 0 ? 300 : -300;
       if (!wheelAt(dy)) api('POST', '/mouse', { action: 'wheel', dy }).catch(() => {});
     }, { passive: false });
     let _mvT = 0;
-    live.addEventListener('mousemove', (e) => {
+    img.addEventListener('mousemove', (e) => {
       const now = Date.now();
       if (now - _mvT < 100) return;
       _mvT = now;
       const c = mapImgCoord(e);
       if (!c) return;
-      // v1.0 修复：改用 32ms 节流的串行链发送（学 ACMS 浏览器模式）
       cdpMoveThrottled(c.x, c.y);
     });
   }
@@ -1075,7 +859,6 @@
 
   async function connectCDP(root) {
     if (_cdp.attempting) return;
-    if (_streamFallbackActive) { fallbackStream(root); return; }
     _cdp.attempting = true;
     let ws = null;
     let initialized = false;
@@ -1095,16 +878,6 @@
         let msg;
         try { msg = JSON.parse(e.data); } catch (err) { return; }
         if (msg.id && _cdp.pending.has(msg.id)) { _cdp.pending.get(msg.id)(msg.result); _cdp.pending.delete(msg.id); return; }
-        if (msg.method === 'Page.screencastFrame') {
-          const m = msg.params.metadata || {};
-          if (m.deviceWidth) _cdp.viewport = { width: m.deviceWidth, height: m.deviceHeight };
-          showLiveFrame(root, msg.params.data);
-          _noFrameT = 0;
-          _lastFrameTs = Date.now(); // v1.1 健康检查：跟踪最近收帧时间
-          if (_cdp.ws && _cdp.ws.readyState === 1) {
-            try { _cdp.ws.send(JSON.stringify({ method: 'Page.screencastFrameAck', params: { sessionId: msg.params.sessionId }, sessionId: _cdp.sessionId })); } catch (err) {}
-          }
-        }
       };
 
       ws.onopen = async () => {
@@ -1127,10 +900,9 @@
           if (!attached) throw new Error('attach 失败');
           _cdp.sessionId = attached.sessionId;
           await cdpSend('Page.enable', {});
-          await cdpSend('Page.startScreencast', { format: 'jpeg', quality: 60, everyNthFrame: 1 });
           initialized = true;
           _cdpRetry = 0;
-          setStatus(root, '🟢 CDP 双向控制已连接 —— 画面可直接点击/悬停/滚动/输入（与智能体同一浏览器）');
+          setStatus(root, '🟢 CDP 双向控制已连接 —— 静态截图可直接点击/悬停/滚动/输入（与智能体同一浏览器）');
           healthCheck(root); // v1.1 立即更新状态灯
         } catch (err) {
           console.log('[browser-console] CDP init 失败:', err.message);
@@ -1144,7 +916,6 @@
         _cdp.attempting = false;
         resetInputChain(); // v1.0 修复：CDP 断时清空 pending 串行任务
         healthCheck(root); // v1.1 立即更新状态灯
-        if (_streamFallbackActive) return;
         scheduleCdpRetry(root, wasInit ? 'CDP 已连后断开' : 'CDP 初始化失败或连接被拒');
       };
 
@@ -1160,56 +931,21 @@
 
   function scheduleCdpRetry(root, reason) {
     if (_cdpRetry >= CDP_MAX_RETRY) {
-      setStatus(root, `🟡 CDP 精准控制失败（${reason}，已重试 ${CDP_MAX_RETRY} 次）—— 已降级为「只看」流模式：画面可看，点击/输入可能不精准`);
-      _streamFallbackActive = true;
-      fallbackStream(root);
+      setStatus(root, `🟡 CDP 精准控制失败（${reason}，已重试 ${CDP_MAX_RETRY} 次）—— 仅展示智能体步骤截图，无法直接操控浏览器`);
       return;
     }
     _cdpRetry++;
     const delay = 800 * _cdpRetry;
     setTimeout(() => {
-      if (_cdp.ws || _cdp.attempting || _streamFallbackActive) return;
+      if (_cdp.ws || _cdp.attempting) return;
       connectCDP(root);
     }, delay);
   }
 
-  async function fallbackStream(root) {
-    try {
-      const r = await api('GET', '/stream-info');
-      if (!r.wsUrl) { setStatus(root, '⚠️ 实时画面不可用 —— CDP 和 stream 都没拿到，请刷新页面或检查 daemon'); return; }
-      const ws = new WebSocket(r.wsUrl);
-      _ws = ws;
-      ws.onopen = () => {
-        ws.send(JSON.stringify({ type: 'config', maxFps: 5 }));
-        _streamRetry = 0;
-        _noFrameT = 0;
-        setStatus(root, '🟡 降级 stream 帧流已连接 —— 画面可看，但点击/输入走的是非原子 CLI 路径，可能不精准');
-        healthCheck && healthCheck(root); // v1.1 fallback 模式也更新状态灯（不健康）
-      };
-      ws.onmessage = (e) => {
-        try {
-          const msg = JSON.parse(e.data);
-          if (msg && typeof msg.data === 'string' && msg.data.indexOf('/9j/') === 0) { showLiveFrame(root, msg.data); _noFrameT = 0; _lastFrameTs = Date.now(); } // v1.1 健康检查
-        } catch (err) {}
-      };
-      ws.onclose = () => { _ws = null; scheduleReconnect(root); };
-      ws.onerror = () => { try { ws.close(); } catch (e) {} };
-    } catch (e) { scheduleReconnect(root); }
-  }
-
-  function scheduleReconnect(root) {
-    if (_streamFallbackActive && _streamRetry >= 6) {
-      setStatus(root, '🟡 实时画面（stream）连接失败（已重试 6 次）—— 可刷新页面或重新打开 Web 机器人');
-      return;
-    }
-    const delay = Math.min(8000, 1000 * Math.pow(2, _streamRetry));
-    _streamRetry++;
-    setTimeout(() => { if (_ws && _ws.readyState === 1) return; fallbackStream(root); }, delay);
-  }
-
   // ===========================================================
-  // v1.1 健康检查状态灯（综合检测 ws+session+帧活跃+Chrome 响应 ping）
+  // v1.1 健康检查状态灯（v1.5：ws+session+Chrome ping）
   // ===========================================================
+
   async function healthCheck(root) {
     const box = el('wb-health', root);
     const txt = el('wb-health-text', root);
@@ -1219,10 +955,7 @@
     const wsOpen = !!(_cdp.ws && _cdp.ws.readyState === 1);
     // 维度 2: page session
     const hasSession = !!_cdp.sessionId;
-    // 维度 3: 帧活跃
-    const frameAge = _lastFrameTs ? Math.floor((now - _lastFrameTs) / 1000) : -1;
-    const frameFresh = frameAge >= 0 && frameAge < (FRAME_STALE_MS / 1000);
-    // 维度 4: 主动 ping（Runtime.evaluate 1+1）—— 测 Chrome 真响应
+    // 维度 3: 主动 ping（Runtime.evaluate 1+1）—— 测 Chrome 真响应
     let pingOk = (_lastPingOk > 0 && (now - _lastPingOk) < PING_OK_VALID_MS);
     if (wsOpen && hasSession && (_lastPingSent === 0 || now - _lastPingSent > HEALTH_INTERVAL_MS)) {
       _lastPingSent = now;
@@ -1235,7 +968,7 @@
         if (pingOk) { _lastPingOk = now; _lastPingLatency = Date.now() - t0; }
       } catch (e) { pingOk = false; }
     }
-    // 综合判定（5 档）
+    // 综合判定（4 档，v1.5 无帧维度）
     let level = 'gray', text = '检测中', title = '';
     if (!wsOpen) {
       level = 'red'; text = 'CDP 断';
@@ -1245,18 +978,15 @@
       title = 'CDP 已连但 page session 还没建立';
     } else if (!pingOk) {
       level = 'red'; text = 'Chrome 无响应';
-      title = 'Runtime.evaluate ping 失败 — daemon 可能卡死（点 🔄 重启）';
-    } else if (!frameFresh) {
-      level = 'yellow'; text = '帧卡住';
-      title = `CDP+Chrome 正常但帧 ${frameAge}s 没更新（可能页面渲染停）`;
+      title = 'Runtime.evaluate ping 失败 — daemon 可能卡死';
     } else {
       level = 'green'; text = '健康';
-      title = `ws=open session=ok 帧=${frameAge}s ping=${_lastPingLatency}ms`;
+      title = `ws=open session=ok ping=${_lastPingLatency}ms`;
     }
     box.className = 'wb-health ' + level;
     if (txt) txt.textContent = text;
     box.title = title;
-    return { level, text, title, wsOpen, hasSession, pingOk, frameAge };
+    return { level, text, title, wsOpen, hasSession, pingOk };
   }
   function startHealthCheck(root) {
     if (_healthTimer) clearInterval(_healthTimer);

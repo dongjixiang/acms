@@ -18,6 +18,9 @@ function authMiddleware(req, res, next) {
       || /^\/api\/geo\/reports\/download\/[^/]+$/.test(req.path)
       // v0.33: GEO Opportunities 智能推荐（前端 drawer 面板用 window.open 触发，无 Authorization 头）
       || /^\/api\/geo\/opportunities\/[^/]+$/.test(req.path)
+      // v0.45: GEO Channels 投放策略（前端 drawer 面板用 fetch 触发，无 Authorization 头）
+      || /^\/api\/geo\/channels\/[^/]+$/.test(req.path)  // v0.45: GEO 投放策略 drawer 面板（前端 fetch 无 Authorization）
+      || req.path.startsWith('/api/social-publisher/screenshots/')  // v0.118.6: 内容运营平台截图回看（浏览器 <img> 裸 GET；task_id 高熵随机安全）
      ) return next();
 
   // 1. 尝试 JWT token（Authorization: Bearer <token>）

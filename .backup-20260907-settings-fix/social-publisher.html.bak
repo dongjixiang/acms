@@ -1,0 +1,223 @@
+<!-- ACMS 内容运营平台 L3 App（v0.118 PR 3）
+     8 个 tab + 抽屉布局 + 审批弹窗 -->
+<div class="sp-shell">
+  <header class="sp-header">
+    <div style="display:flex;gap:12px;align-items:center">
+      <button class="sp-drawer-toggle" id="sp-drawer-toggle" title="显示/隐藏侧栏">☰</button>
+      <span class="sp-logo">📱 内容运营平台</span>
+      <select class="sp-platform-select" id="sp-platform-select" data-tip="选择要管理的平台。所有账号、发布历史、审批都按平台过滤">
+        <option value="all">所有平台</option>
+        <option value="toutiao">📰 头条</option>
+        <option value="xiaohongshu">📕 小红书</option>
+        <option value="wechat_oa">💬 公众号</option>
+        <option value="zhihu">❓ 知乎</option>
+        <option value="douyin">🎬 抖音</option>
+      </select>
+    </div>
+    <div class="sp-header-right">
+      <span class="sp-health-dot ok" id="sp-health-dot" title="整体健康度"></span>
+      <button class="sp-btn" id="sp-refresh-btn" title="刷新所有数据">🔄</button>
+    </div>
+  </header>
+
+  <nav class="sp-tabs" id="sp-tabs">
+    <button class="sp-tab active" data-tab="accounts">👤 账号管理</button>
+    <button class="sp-tab" data-tab="compose">✏️ 内容编辑</button>
+    <button class="sp-tab" data-tab="schedule">📅 排期</button>
+    <button class="sp-tab" data-tab="queue">📋 队列</button>
+    <button class="sp-tab" data-tab="approval">✅ 审批</button>
+    <button class="sp-tab" data-tab="history">📜 发布历史</button>
+    <button class="sp-tab" data-tab="screenshots">📸 截图回看</button>
+    <button class="sp-tab" data-tab="monitor">📊 监控</button>
+    <button class="sp-tab" data-tab="settings">⚙️ 设置</button>
+  </nav>
+
+  <main class="sp-main">
+    <!-- 抽屉：账号快速切换 + 平台限额概览 -->
+    <aside class="sp-drawer" id="sp-drawer">
+      <div class="sp-drawer-section">
+        <h3>快速操作 <span class="sp-info-tip" data-tip="一键发到所有已选平台。比单平台快，但每篇内容会被 5 个平台的 LLM 分别改写">i</span></h3>
+        <button class="sp-btn sp-btn-primary" id="sp-quick-publish" style="width:100%;margin-bottom:6px">🚀 一键发全平台</button>
+        <button class="sp-btn" id="sp-quick-rewrite" style="width:100%">✨ AI 改写</button>
+      </div>
+      <div class="sp-drawer-section">
+        <h3>今日已发</h3>
+        <div id="sp-drawer-today-count" style="font-size:24px;font-weight:600;color:var(--sp-accent)">0</div>
+        <div style="font-size:11px;color:var(--sp-text-2);margin-top:4px">/ 总上限 43 篇</div>
+      </div>
+      <div class="sp-drawer-section">
+        <h3>平台限额 <span class="sp-info-tip" data-tip="5 平台风控阈值：头条 10/天、小红书 5/天、公众号 8/天、知乎 15/天、抖音 5/天。超过上限的账号会被自动降权。">i</span></h3>
+        <div id="sp-drawer-platform-limits" style="display:flex;flex-direction:column;gap:6px"></div>
+      </div>
+      <div class="sp-drawer-section">
+        <h3>最近发布</h3>
+        <div id="sp-drawer-recent"></div>
+      </div>
+    </aside>
+
+    <div class="sp-content">
+      <!-- Tab 1: 账号管理 -->
+      <section class="sp-pane active" id="sp-pane-accounts">
+        <div class="sp-pane-header">
+          <h2>👤 平台账号 <span class="sp-info-tip" data-tip="添加新账号时，cookie 走 UI 粘贴（不让你手改文件）。appId/appSecret 走加密存储（AES-256-GCM）。">i</span></h2>
+          <div class="sp-pane-actions">
+            <button class="sp-btn sp-btn-primary" id="sp-add-account-btn">➕ 添加账号</button>
+          </div>
+        </div>
+        <div id="sp-accounts-list"></div>
+      </section>
+
+      <!-- Tab 2: 内容编辑 -->
+      <section class="sp-pane" id="sp-pane-compose">
+        <div class="sp-pane-header">
+          <h2>✏️ 内容编辑 <span class="sp-info-tip" data-tip="写一篇原始内容 → 选平台 → AI 改写成各平台风格 → 一键发布。所有平台用同一编辑器。">i</span></h2>
+          <div class="sp-pane-actions">
+            <select id="sp-compose-tone" data-tip="AI 改写时的语气基调" style="background:var(--sp-bg-2);border:1px solid var(--sp-border);color:var(--sp-text);padding:4px 8px;border-radius:4px;font-size:12px">
+              <option value="professional">专业</option>
+              <option value="casual">口语</option>
+              <option value="humorous">幽默</option>
+              <option value="educational">教学</option>
+            </select>
+            <button class="sp-btn" id="sp-compose-rewrite">✨ AI 改写</button>
+            <button class="sp-btn sp-btn-primary" id="sp-compose-publish">🚀 发布</button>
+          </div>
+        </div>
+        <div class="sp-form">
+          <div class="sp-form-row">
+            <label>标题 <span class="sp-info-tip" data-tip="小红书限 20 字、公众号 64 字、头条 30 字。超长会被 AI 改写时截断。">i</span></label>
+            <input id="sp-compose-title" placeholder="点我开始写…">
+          </div>
+          <div class="sp-form-row">
+            <label>正文 <span class="sp-info-tip" data-tip="支持富文本（HTML 格式）。可粘贴图片（Ctrl+V），图片支持拖拽调整位置。">i</span></label>
+            <div id="sp-compose-content" contenteditable="true" role="textbox" aria-multiline="true" aria-label="内容正文（支持富文本、图片粘贴与拖拽调整位置）" placeholder="在这里写原始内容…（支持粘贴图片，图片可拖拽调整位置）" style="min-height:200px;resize:vertical;background:var(--sp-bg-2);border:1px solid var(--sp-border);color:var(--sp-text);padding:10px 12px;border-radius:4px;font-size:13px;line-height:1.7;font-family:inherit;overflow-y:auto;outline:none;transition:border-color 0.15s;"></div>
+          </div>
+          <!-- v0.118 PR 6: 富文本预览（从 Word 导入时显示，含图片位置） -->
+          <div class="sp-form-row" id="sp-rich-preview-wrap" style="display:none">
+            <label>📝 富文本预览 <span class="sp-info-tip" data-tip="从 Word 导入的内容，含图片位置。表单提交时按富文本序列化（图片用 base64 直接嵌入）。">i</span></label>
+            <div id="sp-rich-preview" style="padding:12px;background:var(--sp-bg-2);border:1px solid var(--sp-border);border-radius:6px;min-height:80px;max-height:300px;overflow:auto;font-size:13px;line-height:1.6"></div>
+            <div id="sp-rich-stats" style="margin-top:4px;font-size:11px;color:var(--sp-text-2)"></div>
+          </div>
+          <div class="sp-form-row">
+            <label>图片 <span class="sp-info-tip" data-tip="小红书必传（1-9 张），其他平台可选。拖拽到下方或粘贴 URL。">i</span></label>
+            <input id="sp-compose-images" placeholder="图片 URL（逗号分隔）或本地路径">
+          </div>
+          <div class="sp-form-row">
+            <label>标签 <span class="sp-info-tip" data-tip="小红书自动转 #话题，其他平台写到底部。3-5 个最合适。">i</span></label>
+            <input id="sp-compose-tags" placeholder="如: AI, 内容运营, 副业">
+          </div>
+          <div class="sp-form-row">
+            <label>排期发布时间 <span class="sp-info-tip" data-tip="选未来时间 → 点发布 = 排期（到点自动执行）。留空 = 立即执行。">i</span></label>
+            <input id="sp-compose-schedule" type="datetime-local" placeholder="如要排期，选一个未来时间">
+          </div>
+          <div class="sp-form-row">
+            <label>发布账号 <span class="sp-info-tip" data-tip="每平台可选多个账号（默认勾选每平台第一个账号）。多平台时每平台用各自选中的账号。">i</span></label>
+            <div id="sp-compose-account-list" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          </div>
+          <div class="sp-form-row">
+            <label>目标平台 <span class="sp-info-tip" data-tip="勾选要发布的平台。AI 改写会按各平台风格生成不同版本。">i</span></label>
+            <div id="sp-compose-platforms" style="display:flex;gap:8px;flex-wrap:wrap">
+              <label><input type="checkbox" value="toutiao" checked> 头条</label>
+              <label><input type="checkbox" value="xiaohongshu"> 小红书</label>
+              <label><input type="checkbox" value="wechat_oa"> 公众号</label>
+              <label><input type="checkbox" value="zhihu"> 知乎</label>
+              <label><input type="checkbox" value="douyin"> 抖音</label>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tab 3: 排期 -->
+      <section class="sp-pane" id="sp-pane-schedule">
+        <div class="sp-pane-header">
+          <h2>📅 排期 <span class="sp-info-tip" data-tip="选未来时间发布。所有 schedule 任务走 Kanban 调度（任务到期自动执行）。">i</span></h2>
+        </div>
+        <div id="sp-schedule-list"></div>
+      </section>
+
+      <!-- Tab 4: 队列 -->
+      <section class="sp-pane" id="sp-pane-queue">
+        <div class="sp-pane-header">
+          <h2>📋 执行队列 <span class="sp-info-tip" data-tip="正在执行 / 等待中的任务。可取消。">i</span></h2>
+          <div class="sp-pane-actions">
+            <button class="sp-btn" id="sp-queue-clear-done">🧹 清空已完成</button>
+          </div>
+        </div>
+        <div id="sp-queue-list"></div>
+      </section>
+
+      <!-- Tab 5: 审批 -->
+      <section class="sp-pane" id="sp-pane-approval">
+        <div class="sp-pane-header">
+          <h2>✅ 待审批 <span class="sp-info-tip" data-tip="所有 publish_to_* 工具发前会弹审批（防误发 + 防被风控）。点详情看预览，批准/拒绝。">i</span></h2>
+        </div>
+        <div id="sp-approval-list"></div>
+      </section>
+
+      <!-- Tab 6: 发布历史 -->
+      <section class="sp-pane" id="sp-pane-history">
+        <div class="sp-pane-header">
+          <h2>📜 发布历史 <span class="sp-info-tip" data-tip="所有发布记录含 post_url、发布时间、耗时、每步截图。失败的任务可重试。">i</span></h2>
+        </div>
+        <div id="sp-history-list"></div>
+      </section>
+
+      <!-- Tab 7: 截图回看 -->
+      <section class="sp-pane" id="sp-pane-screenshots">
+        <div class="sp-pane-header">
+          <h2>📸 截图回看 <span class="sp-info-tip" data-tip="发布流程每步截图都在这。失败时一眼看出哪步崩了。">i</span></h2>
+        </div>
+        <div id="sp-screenshots-list"></div>
+      </section>
+
+      <!-- Tab 8: 监控（v0.118 PR 5-6）-->
+      <section class="sp-pane" id="sp-pane-monitor">
+        <div class="sp-pane-header">
+          <h2>📊 监控 <span class="sp-info-tip" data-tip="账号健康度 + 风控告警 + 今日发布统计。每小时自动扫一次，可手动触发。">i</span></h2>
+          <button class="sp-btn sp-btn-sm" id="sp-monitor-run">🔍 立即检查</button>
+        </div>
+        <div class="sp-monitor-stats" id="sp-monitor-stats"></div>
+        <h3 style="margin-top:24px">⚠️ 最近告警 <span class="sp-info-tip" data-tip="包含 risk_critical / risk_warning / daily_limit / account_disabled / recent_error 等。critical 级别自动封禁账号。">i</span></h3>
+        <div id="sp-monitor-alerts"></div>
+      </section>
+
+      <!-- Tab 8: 设置 -->
+      <section class="sp-pane" id="sp-pane-settings">
+        <div class="sp-pane-header">
+          <h2>⚙️ 设置 <span class="sp-info-tip" data-tip="风控阈值、行为模拟强度、审批门控、LLM 模型选择。">i</span></h2>
+        </div>
+        <div class="sp-form">
+          <div class="sp-form-row">
+            <label>默认 LLM 模型 <span class="sp-info-tip" data-tip="AI 改写用的模型。从已配的 modelStore 里选。">i</span></label>
+            <select id="sp-settings-llm"><option value="">加载中...</option></select>
+          </div>
+          <div class="sp-form-row">
+            <label>行为模拟强度 <span class="sp-info-tip" data-tip="模仿真人的鼠标轨迹 / 停顿 / 滚动。强度越高越不易被风控，但耗时也越长。">i</span></label>
+            <select id="sp-settings-humanize">
+              <option value="off">关（最快）</option>
+              <option value="low" selected>低（推荐）</option>
+              <option value="medium">中</option>
+              <option value="high">高（最严）</option>
+            </select>
+          </div>
+          <div class="sp-form-row">
+            <label>每步截图 <span class="sp-info-tip" data-tip="开启后每步操作后截图存到 data/social-publisher-screenshots/。方便回看 + 失败定位。">i</span></label>
+            <select id="sp-settings-screenshot">
+              <option value="false" selected>关</option>
+              <option value="true">开（推荐）</option>
+              <option value="error-only">仅失败时</option>
+            </select>
+          </div>
+          <div class="sp-form-row">
+            <label>审批门控 <span class="sp-info-tip" data-tip="开启后 publish_to_* 发前弹审批。生产环境必须开启。">i</span></label>
+            <select id="sp-settings-approval">
+              <option value="true" selected>开（推荐）</option>
+              <option value="false">关（仅调试）</option>
+            </select>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <div class="sp-status" id="sp-status" data-type="info">就绪 — 内容运营平台 v0.118.1</div>
+</div>

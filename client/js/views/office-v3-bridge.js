@@ -14,6 +14,8 @@
 
   var BASE = '/client/lib/office-v3/';
   var API_KEY = 'dev-key-001';
+  // PR H 修复：图片风格参考链式传递（第二张参考第一张风格 + 人物形象）
+  var OFFICE_PREVIOUS_IMAGE_REF = null;
 
   // ── 样式（动态注入，避免 index.html 多一个 link） ──
   function injectCss() {
@@ -892,9 +894,15 @@
           return;
         }
         var desc = sceneDescs[idx] || '一幅中国水墨风格插图，武侠场景';
+        // PR H 修复：链式传递 + 文档已有图片双参考（保证第二张参考第一张风格+人物）
         var recentImages = genOfficeCollectRecentImages(editor, 1);
         var body = { prompt: desc, n: 1, size: '1024x1024' };
-        if (recentImages.length > 0) body.referenceImage = recentImages[0];
+        // 优先用链式传递的上一张（风格+人物一致性最强），再回退到文档已有图片
+        if (OFFICE_PREVIOUS_IMAGE_REF) {
+          body.referenceImage = OFFICE_PREVIOUS_IMAGE_REF;
+        } else if (recentImages.length > 0) {
+          body.referenceImage = recentImages[0];
+        }
         
         fetch('/api/image-tools/ai-generate?api_key=dev-key-001', {
           method: 'POST',
@@ -937,6 +945,8 @@
             var pos = editor.state.doc.content.size;
             editor.chain().focus().insertContentAt(pos, node).run();
             imgCount++;
+            // PR H 修复：链式保存生成的图片数据，供下一张参考第一张风格+人物
+            OFFICE_PREVIOUS_IMAGE_REF = dataUrl;
             idx++;
             genNext();
           }).catch(function (err) {
@@ -1242,9 +1252,13 @@
     var recentImages = genOfficeCollectRecentImages(editor, 2);
     console.log('[IMG-DEBUG] recentImages count:', recentImages.length);
     var body = { prompt: prompt, n: 1, size: '1024x1024' };
-    if (recentImages.length > 0) {
+    // PR H 修复：链式传递优先（保证第二张参考第一张风格+人物），再回退到文档已有图片
+    if (OFFICE_PREVIOUS_IMAGE_REF) {
+      body.referenceImage = OFFICE_PREVIOUS_IMAGE_REF;
+      console.log('[IMG-DEBUG] using chain referenceImage, length:', OFFICE_PREVIOUS_IMAGE_REF.length);
+    } else if (recentImages.length > 0) {
       body.referenceImage = recentImages[recentImages.length - 1];
-      console.log('[IMG-DEBUG] using reference image, length:', body.referenceImage.length);
+      console.log('[IMG-DEBUG] using recent image reference, length:', body.referenceImage.length);
     }
     // 插入占位节点显示"生成中..."
     var placeholderNode = {
@@ -1345,6 +1359,8 @@
             }
           });
         }, 100);
+        // PR H 修复：链式保存生成的图片数据，供下一张参考第一张风格+人物
+        OFFICE_PREVIOUS_IMAGE_REF = dataUrl;
         return { ok: true, inserted: true, atPos: insertPos, imgSize: opt.size };
       });
     }).catch(function (err) {
@@ -1362,6 +1378,112 @@
       }
     });
     return paras;
+  }
+
+  // v0.118 PR 6: 导出 Word 文档为 rich_content 结构（文本 + 图片 + 位置 + 样式）
+  //   返回 { ok, rich_content, title, stats } — 给 social-publisher 接 L3 App 用
+  //   rich_content 是块数组 [{type:'text'|'image', ...}]，按文档原顺序
+  //   text 块带 subtype (heading/paragraph/list_item) + runs (含 marks)
+  //   image 块带 src (dataUrl) + mime + width/height + alt
+  function genOfficeExportRichContent(frame) {
+    var win = frame && frame.contentWindow;
+    var docEl = win && win.document ? win.document.querySelector('[contenteditable="true"]') : null;
+    var editor = docEl && docEl.editor;
+    if (!editor) return { ok: false, error: '编辑器未就绪' };
+
+    try {
+      var blocks = [];
+      var imageCount = 0;
+      var charCount = 0;
+
+      editor.state.doc.content.forEach(function (node) {
+        var n = node.type.name;
+
+        // 段落类（docParagraph / docHeading / docListItem）
+        if (n === 'docParagraph' || n === 'docHeading' || n === 'docListItem') {
+          var subtype = n === 'docHeading' ? 'heading'
+                      : n === 'docListItem' ? 'list_item'
+                      : 'paragraph';
+          // heading 级别（h1-h6）
+          var level = 1;
+          if (subtype === 'heading' && node.attrs && node.attrs.level) level = node.attrs.level;
+
+          // 提取 runs（text + marks）
+          var runs = [];
+          var text = '';
+          (node.content || []).forEach(function (child) {
+            if (child.type && child.type.name === 'text') {
+              var run = { text: child.text || '' };
+              // marks 转 inline style
+              (child.marks || []).forEach(function (m) {
+                if (m.type === 'bold') run.bold = true;
+                else if (m.type === 'italic') run.italic = true;
+                else if (m.type === 'underline') run.underline = true;
+                else if (m.type === 'strike') run.strike = true;
+                else if (m.type === 'code') run.code = true;
+                else if (m.type === 'link' && m.attrs && m.attrs.href) run.href = m.attrs.href;
+              });
+              runs.push(run);
+              text += child.text || '';
+            }
+          });
+
+          blocks.push({
+            type: 'text',
+            subtype: subtype,
+            level: subtype === 'heading' ? level : undefined,
+            text: text,
+            runs: runs,
+            // 段落级 attrs
+            align: (node.attrs && node.attrs.align) || undefined,
+          });
+          charCount += text.length;
+          return;
+        }
+
+        // docProtected 图片块
+        if (n === 'docProtected' && node.attrs && node.attrs.blockType === 'image') {
+          var gi = node.attrs.genImage;
+          var src = (gi && (gi.dataUrl || (gi.base64 ? 'data:' + (gi.mime || 'image/png') + ';base64,' + gi.base64 : null))) || node.attrs.imageDataUrl || null;
+          if (!src) return;  // 没图的 docProtected 节点跳过
+          imageCount++;
+          blocks.push({
+            type: 'image',
+            src: src,
+            mime: (gi && gi.mime) || 'image/png',
+            width: node.attrs.imageWidthPx || undefined,
+            height: node.attrs.imageHeightPx || undefined,
+            alt: node.attrs.label || node.attrs.previewText || undefined,
+          });
+        }
+      });
+
+      // 提取标题：第一个 heading 块 or 前 50 字
+      var title = '';
+      for (var i = 0; i < blocks.length; i++) {
+        if (blocks[i].type === 'text' && blocks[i].subtype === 'heading' && blocks[i].text) {
+          title = blocks[i].text.slice(0, 80);
+          break;
+        }
+      }
+      if (!title) {
+        for (var j = 0; j < blocks.length; j++) {
+          if (blocks[j].type === 'text' && blocks[j].text) {
+            title = blocks[j].text.slice(0, 50);
+            break;
+          }
+        }
+      }
+
+      return {
+        ok: true,
+        rich_content: blocks,
+        title: title || (editor.options && editor.options.documentName) || '未命名文档',
+        stats: { blocks: blocks.length, images: imageCount, chars: charCount },
+      };
+    } catch (e) {
+      return { ok: false, error: '导出失败: ' + e.message };
+    }
   }
 
   // GenOffice Word UI：批量替换多个段落文本（v0.96.7，润色全文/改写多处）
@@ -1734,8 +1856,89 @@
           makeWordSelfLoader()(w, { fileId: fid, fileName: fname });
         }
       };
+
+      // v0.118 PR 6: 标题栏注入"📤 发布到内容运营平台"按钮
+      //   不依赖 GenOffice 文件菜单（ACMS 控制标题栏即可，简单稳）
+      try {
+        injectPublishButton(w, 'word');
+      } catch (e) {
+        console.warn('[office-v3] 注入发布按钮失败:', e.message);
+      }
+
       return win;
     };
+  }
+
+  // PR 6: 注入"📤 发布到内容运营平台"按钮到标题栏（aw-titlebar）
+  //   避免依赖 GenOffice 文件菜单（patch GenOffice bundle 风险大）
+  //   流程：调 window.OfficeV3.exportRichContent(kind) → 跳转到内容运营平台 + prefill rich_content
+  function injectPublishButton(w, kind) {
+    if (!w || !w.el) return;
+    var tb = w.el.querySelector('.aw-titlebar');
+    if (!tb) return;
+    // 幂等
+    var existing = tb.querySelector('.sp-publish-btn');
+    if (existing) return;
+    // 插入位置：aw-title 之后，aw-controls 之前
+    var titleEl = tb.querySelector('.aw-title');
+    var btn = document.createElement('button');
+    btn.className = 'sp-publish-btn aw-publish-btn';
+    btn.title = '导出当前文档为富文本（含图片+位置）→ 内容运营平台';
+    btn.innerHTML = '📤 发布';
+    btn.style.cssText = 'background:transparent;border:1px solid color-mix(in srgb, var(--accent) 40%, transparent);color:var(--accent);font-size:11px;padding:2px 8px;margin-left:8px;cursor:pointer;border-radius:3px;line-height:1.4;font-family:inherit';
+    btn.addEventListener('mouseenter', function () { btn.style.background = 'color-mix(in srgb, var(--accent) 12%, transparent)'; });
+    btn.addEventListener('mouseleave', function () { btn.style.background = 'transparent'; });
+    btn.addEventListener('click', async function (e) {
+      e.stopPropagation();
+      e.preventDefault();
+      if (!window.OfficeV3 || !window.OfficeV3.exportRichContent) {
+        if (window.notify) window.notify('OfficeV3.exportRichContent 不可用，请刷新页面', 'error');
+        else alert('OfficeV3.exportRichContent 不可用，请刷新页面');
+        return;
+      }
+      btn.disabled = true;
+      btn.innerHTML = '⏳ 导出中...';
+      try {
+        var r = window.OfficeV3.exportRichContent(kind);
+        if (!r || !r.ok) {
+          if (window.notify) window.notify('导出失败: ' + (r && r.error ? r.error : '未知'), 'error');
+          else alert('导出失败: ' + (r && r.error ? r.error : '未知'));
+          return;
+        }
+        console.log('[sp-publish] 导出结果:', r);
+        if (window.notify) window.notify('导出 ' + r.stats.blocks + ' 块（含 ' + r.stats.images + ' 张图片）', 'success');
+        // 跳转内容运营平台，prefill rich_content
+        if (window.ACMSWin && ACMSWin.open) {
+          ACMSWin.open('social-publisher', {
+            w: 1200, h: 800,
+            title: '内容运营平台 — ' + (r.title || '未命名文档'),
+            prefill: {
+              source: kind, // 'word'
+              title: r.title,
+              rich_content: r.rich_content,
+              stats: r.stats,
+            },
+          });
+        } else {
+          if (window.notify) window.notify('ACMSWin.open 不可用', 'error');
+          else alert('ACMSWin.open 不可用');
+        }
+      } catch (err) {
+        if (window.notify) window.notify('发布异常: ' + err.message, 'error');
+        else alert('发布异常: ' + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '📤 发布';
+      }
+    });
+    // 插到 aw-title 后面（如果存在），否则 append 到 tb
+    if (titleEl && titleEl.nextSibling) {
+      tb.insertBefore(btn, titleEl.nextSibling);
+    } else if (titleEl) {
+      tb.appendChild(btn);
+    } else {
+      tb.appendChild(btn);
+    }
   }
 
   // 自渲染 v3（原 makeWordLoader 主体）
@@ -2032,6 +2235,20 @@
     listInstances: function () { return Object.keys(state.instances); },
     getState: function () { return state; },
     warmUp: function () { schedulePrefetch(); },
+    // v0.118 PR 6: 导出当前文档为 rich_content 结构（Word → 内容运营平台用）
+    exportRichContent: function (kind) {
+      var keys = Object.keys(state.instances);
+      for (var i = 0; i < keys.length; i++) {
+        var inst = state.instances[keys[i]].editor;
+        var matchKind = (kind === 'word' && inst.kind === 'word-ui')
+                     || (kind === 'slides' && inst.kind === 'slides-ui')
+                     || (kind === 'xlsx' && inst.kind === 'sheets-ui');
+        if (matchKind && inst.iframe) {
+          return genOfficeExportRichContent(inst.iframe);
+        }
+      }
+      return { ok: false, error: '没找到 ' + kind + ' 实例' };
+    },
     // P5：小吉统一动作入口 — 找到目标实例并执行编辑
     // action: { kind:'word'|'slides'|'xlsx', fileId?, op, args }
     runAction: function (action) {

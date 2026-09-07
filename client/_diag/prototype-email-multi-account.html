@@ -1,0 +1,1122 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<title>ACMS 邮件 · 多账户体系 Prototype v0.2 — 风格对齐 ACMS</title>
+<style>
+  /* ============================================================
+     ACMS 风格变量（对齐 client/css/style.css L2-33）
+     ============================================================ */
+  :root,
+  [data-theme="dark"] {
+    --bg: #0f0f1a;
+    --bg2: #1a1a2e;
+    --bg3: #252540;
+    --bg4: #2e2e4a;
+    --border1: rgba(255,255,255,.08);
+    --text3: #777;
+    --text: #e0e0e0;
+    --text2: #9090a0;
+    --accent: #4ecdc4;          /* 青绿（ACMS 主色） */
+    --accent2: #ff6b6b;         /* 珊瑚红 */
+    --accent3: #ffd93d;         /* 金黄 */
+    --green: #6bff6b;           /* ACMS 亮绿 */
+    --blue: #6baaff;
+    --border: rgba(78, 205, 196, 0.2);  /* teal 描边 */
+    --radius: 8px;              /* ACMS 默认圆角 */
+    --shadow: 0 4px 16px rgba(0,0,0,0.3);
+    --window-bg: #1e1e32;
+    --window-title: #16162a;
+  }
+  /* Light / Cream 主题（ACMS 同样支持 — 测试主题切换一致性） */
+  [data-theme="light"] {
+    --bg: #f5f5f7; --bg2: #ffffff; --bg3: #eeeef1; --bg4: #e2e2e8;
+    --text3: #8a8a98; --text: #1a1a2e; --text2: #6e6e80;
+    --accent: #0ea89d; --accent2: #e04545; --accent3: #c8a008;
+    --green: #2ea043; --blue: #2b7bd6;
+    --border: rgba(10, 120, 110, 0.18);
+  }
+  [data-theme="cream"] {
+    --bg: #fef9ef; --bg2: #fffbf0; --bg3: #f5eedc; --bg4: #ece2cc;
+    --text3: #a0917a; --text: #3d3022; --text2: #8b7b65;
+    --accent: #5b8c5a; --accent2: #d4785c; --accent3: #c8960a;
+    --green: #3c8c40; --blue: #4a7ab5;
+    --border: rgba(90, 130, 80, 0.18);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif;  /* ACMS 字体栈 */
+    background: var(--bg);
+    color: var(--text);
+    overflow: hidden;
+    height: 100vh;
+    line-height: 1.6;
+  }
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--bg3); border-radius: 3px; }
+
+  .screen { display: none; height: 100vh; overflow: hidden; }
+  .screen.active { display: flex; }
+
+  /* ============================================================
+     Screen 1: 身份选择屏（启动邮件应用时第一眼看到的）
+     ============================================================ */
+  #screen-profile-select {
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+  }
+  .profile-container { max-width: 580px; width: 100%; padding: 32px; }
+  .profile-header { text-align: center; margin-bottom: 32px; }
+  .profile-title {
+    font-size: 26px;
+    font-weight: 700;
+    margin-bottom: 10px;
+    color: var(--accent);  /* ACMS 主色，不再用渐变 */
+  }
+  .profile-subtitle { font-size: 13px; color: var(--text2); line-height: 1.6; }
+
+  .profile-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 14px;
+    margin-bottom: 14px;
+  }
+  .profile-card {
+    background: var(--bg2);
+    border: 2px solid var(--border1);
+    border-radius: var(--radius);
+    padding: 18px;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+    overflow: hidden;
+  }
+  /* 顶部色条 = profile 颜色（区别于 ACMS 通用卡片，但用 var() 兼容主题） */
+  .profile-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    background: var(--profile-color, var(--accent));
+  }
+  .profile-card:hover {
+    border-color: var(--profile-color, var(--accent));
+    background: var(--bg3);
+  }
+  .profile-card .avatar { font-size: 36px; margin-bottom: 8px; display: block; }
+  .profile-card .name {
+    font-size: 15px;
+    font-weight: 700;
+    margin-bottom: 6px;
+    color: var(--text);
+  }
+  .profile-card .meta {
+    font-size: 12px;
+    color: var(--text2);
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .profile-card .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    background: var(--bg3);
+    border-radius: 4px;
+    font-size: 11px;
+    color: var(--accent);
+    border: 1px solid var(--border);
+  }
+  .profile-card .emails {
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--text3);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .add-profile {
+    background: transparent;
+    border: 2px dashed var(--border1);
+    color: var(--text2);
+    text-align: center;
+    width: 100%;
+    padding: 22px;
+    font-size: 14px;
+    border-radius: var(--radius);
+  }
+  .add-profile:hover {
+    border-color: var(--accent);
+    color: var(--text);
+    background: var(--bg2);
+  }
+
+  /* ============================================================
+     PIN 弹窗（对齐 ACMSModal 风格）
+     ============================================================ */
+  .pin-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.7);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+  }
+  .pin-modal.show { display: flex; }
+  .pin-box {
+    background: var(--window-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 32px 28px;
+    width: 380px;
+    text-align: center;
+    box-shadow: var(--shadow);
+  }
+  .pin-avatar { font-size: 52px; margin-bottom: 6px; }
+  .pin-name { font-size: 17px; font-weight: 700; margin-bottom: 4px; color: var(--text); }
+  .pin-hint { font-size: 12px; color: var(--text3); margin-bottom: 20px; }
+  .pin-inputs { display: flex; gap: 10px; justify-content: center; margin-bottom: 12px; }
+  .pin-input {
+    width: 50px;
+    height: 62px;
+    background: var(--bg2);
+    border: 2px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 26px;
+    font-weight: 700;
+    text-align: center;
+    font-family: Consolas, monospace;
+  }
+  .pin-input:focus { outline: none; border-color: var(--accent); }
+  .pin-input.error { border-color: var(--accent2); animation: shake 0.3s; }
+  @keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-8px); }
+    75% { transform: translateX(8px); }
+  }
+  .pin-error {
+    color: var(--accent2);
+    font-size: 12px;
+    min-height: 14px;
+    margin-bottom: 10px;
+  }
+  .pin-keypad {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .pin-key {
+    background: var(--bg3);
+    border: 1px solid var(--border1);
+    color: var(--text);
+    font-size: 20px;
+    font-weight: 600;
+    padding: 14px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+  .pin-key:hover { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+  .pin-key:active { transform: scale(0.95); }
+  .pin-key.clear { color: var(--accent2); }
+  .pin-key.empty { visibility: hidden; }
+  .pin-actions { display: flex; gap: 8px; }
+  /* 对齐 ACMS .btn-primary / .btn-back 风格 */
+  .pin-btn {
+    flex: 1;
+    padding: 12px;
+    border-radius: var(--radius);
+    border: none;
+    font-size: 13px;
+    cursor: pointer;
+    font-weight: bold;
+    transition: opacity 0.2s;
+  }
+  .pin-btn.cancel {
+    background: var(--bg3);
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+  .pin-btn.confirm {
+    background: var(--accent);
+    color: var(--bg);
+  }
+  .pin-btn.confirm:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* ============================================================
+     Screen 3: 邮件应用（对齐 .em-app 三栏布局）
+     ============================================================ */
+  #screen-email-app {
+    display: none;
+    /* 对齐 email-inbox.css: 168px / 220-320px / 1fr — 但左栏要多承载账户切换器，调成 240px */
+    grid-template-columns: 240px minmax(220px, 320px) 1fr;
+    grid-template-rows: 1fr auto;
+    grid-template-areas:
+      "sidebar list detail"
+      "sidebar composer composer";
+    height: 100vh;
+  }
+  #screen-email-app.active { display: grid; }
+
+  /* Sidebar */
+  .sidebar {
+    grid-area: sidebar;
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .sidebar-titlebar {
+    padding: 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--window-title);
+    flex-shrink: 0;
+  }
+  .sidebar-title {
+    font-size: 13px;
+    font-weight: bold;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* Profile Switcher (顶部抽屉式 — ACMS 抽屉收纳哲学) */
+  .profile-switcher {
+    padding: 10px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    position: relative;
+  }
+  .profile-card-active {
+    background: var(--bg3);
+    border: 1px solid var(--border1);
+    border-radius: var(--radius);
+    padding: 8px 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .profile-card-active:hover { background: var(--bg4); border-color: var(--accent); }
+  .profile-card-active .avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: var(--profile-color);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    flex-shrink: 0;
+  }
+  .profile-card-active .info { flex: 1; min-width: 0; }
+  .profile-card-active .name {
+    font-size: 13px;
+    font-weight: bold;
+    color: var(--text);
+  }
+  .profile-card-active .account {
+    font-size: 11px;
+    color: var(--text2);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .profile-card-active .chevron {
+    color: var(--text3);
+    font-size: 12px;
+  }
+
+  /* Profile dropdown */
+  .profile-dropdown {
+    position: absolute;
+    top: 56px;
+    left: 10px;
+    right: 10px;
+    background: var(--window-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    z-index: 100;
+    display: none;
+    overflow: hidden;
+  }
+  .profile-dropdown.show { display: block; }
+  .dropdown-section { padding: 6px; }
+  .dropdown-section-title {
+    font-size: 11px;
+    color: var(--text3);
+    text-transform: uppercase;
+    font-weight: 700;
+    padding: 6px 10px;
+    letter-spacing: 0.05em;
+  }
+  .dropdown-item {
+    padding: 8px 10px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    transition: background 0.1s;
+  }
+  .dropdown-item:hover { background: var(--bg3); }
+  .dropdown-item.active {
+    background: var(--accent);
+    color: var(--bg);
+    border: 1px solid var(--accent);
+  }
+  .dropdown-item .item-avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--item-color, var(--accent));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 700;
+    color: white;
+    flex-shrink: 0;
+  }
+  .dropdown-item .item-info { flex: 1; min-width: 0; }
+  .dropdown-item .item-name { font-size: 12px; font-weight: 600; }
+  .dropdown-item .item-sub { font-size: 10px; color: var(--text3); }
+  .dropdown-item.active .item-sub { color: rgba(15,15,26,0.7); }
+  .dropdown-divider {
+    border-top: 1px solid var(--border);
+    margin: 4px 0;
+  }
+  .dropdown-action {
+    padding: 8px 10px;
+    font-size: 12px;
+    color: var(--text2);
+    cursor: pointer;
+    border-radius: var(--radius);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .dropdown-action:hover { background: var(--bg3); color: var(--text); }
+
+  /* Folders — 对齐 .em-folders / .em-folder / .em-folder-active */
+  .folders { flex: 1; overflow-y: auto; padding: 8px 0; }
+  .folder-section-title {
+    font-size: 11px;
+    color: var(--text3);
+    text-transform: uppercase;
+    font-weight: 700;
+    padding: 8px 12px 4px;
+    letter-spacing: 0.05em;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .folder-section-title .add {
+    color: var(--accent);
+    cursor: pointer;
+    font-weight: 700;
+  }
+  .folder-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    margin: 0 6px 2px;
+    font-size: 13px;
+    color: var(--text);
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .folder-item:hover { background: var(--bg3); }
+  .folder-item.active {
+    background: var(--accent) !important;
+    color: #fff;
+    font-weight: 600;
+  }
+  .folder-item .folder-icon { font-size: 14px; }
+  .folder-item .folder-count {
+    margin-left: auto;
+    background: var(--bg3);
+    color: var(--text2);
+    padding: 1px 8px;
+    border-radius: 8px;
+    font-size: 10px;
+    font-weight: 600;
+  }
+  .folder-item.active .folder-count {
+    background: rgba(255,255,255,0.25);
+    color: white;
+  }
+
+  /* Sidebar footer */
+  .sidebar-footer { padding: 10px; border-top: 1px solid var(--border); flex-shrink: 0; }
+  .switch-profile-btn {
+    width: 100%;
+    padding: 9px;
+    background: var(--bg3);
+    color: var(--text2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    transition: all 0.15s;
+  }
+  .switch-profile-btn:hover { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+
+  /* Mail List — 对齐 .em-list */
+  .mail-list-area {
+    grid-area: list;
+    background: var(--bg);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-width: 0;
+  }
+  .mail-list-head {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    background: var(--bg2);
+  }
+  .mail-list-head .title {
+    font-size: 13px;
+    font-weight: bold;
+    color: var(--accent);
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .head-btn {
+    padding: 4px 10px;
+    background: var(--bg3);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .head-btn.primary {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+    font-weight: bold;
+  }
+  .head-btn:hover { background: var(--bg4); }
+  .head-btn.primary:hover { opacity: 0.85; }
+
+  .mail-items { flex: 1; overflow-y: auto; }
+  .mail-item {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border1);
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+  .mail-item:hover { background: var(--bg2); }
+  .mail-item.active { background: var(--bg3); border-left: 3px solid var(--accent); }
+  .mail-from {
+    font-size: 12px;
+    font-weight: bold;
+    margin-bottom: 3px;
+    display: flex;
+    justify-content: space-between;
+    color: var(--text);
+  }
+  .mail-subject { font-size: 12px; margin-bottom: 3px; color: var(--text); }
+  .mail-snippet {
+    font-size: 11px;
+    color: var(--text2);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mail-time { color: var(--text3); font-size: 10px; font-weight: 400; }
+
+  /* Detail */
+  .mail-detail {
+    grid-area: detail;
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .detail-empty {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: var(--text3);
+    font-size: 13px;
+    padding: 40px;
+  }
+  .detail-empty .icon { font-size: 48px; margin-bottom: 12px; opacity: 0.5; }
+
+  /* ============================================================
+     Toast — 对齐 #toast-container (top:70px right:20px)
+     ============================================================ */
+  #toast-container {
+    position: fixed;
+    top: 70px;
+    right: 20px;
+    z-index: 9999;
+  }
+  .toast {
+    padding: 10px 20px;
+    margin-bottom: 8px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    animation: slideIn 0.3s;
+    max-width: 350px;
+  }
+  .toast-success {
+    background: rgba(107,255,107,0.15);
+    color: var(--green);
+    border: 1px solid rgba(107,255,107,0.3);
+  }
+  .toast-info {
+    background: rgba(78,205,196,0.15);
+    color: var(--accent);
+    border: 1px solid rgba(78,205,196,0.3);
+  }
+  .toast-error {
+    background: rgba(255,107,107,0.15);
+    color: var(--accent2);
+    border: 1px solid rgba(255,107,107,0.3);
+  }
+  @keyframes slideIn {
+    from { transform: translateX(100%); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+  }
+
+  /* Top toolbar (lock timer) */
+  .topbar {
+    position: fixed;
+    top: 12px;
+    right: 20px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    z-index: 500;
+  }
+  .lock-timer {
+    font-size: 11px;
+    color: var(--text2);
+    background: var(--bg2);
+    padding: 5px 10px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .lock-timer-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--green);
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .topbar-btn {
+    padding: 5px 10px;
+    background: var(--bg3);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .topbar-btn:hover { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+
+  /* Footer annotation */
+  .annot {
+    position: fixed;
+    bottom: 8px;
+    right: 12px;
+    color: var(--text3);
+    font-size: 10px;
+    font-family: Consolas, monospace;
+    opacity: 0.6;
+  }
+  .annot .theme-switch {
+    display: inline-block;
+    padding: 2px 8px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    margin-left: 6px;
+  }
+</style>
+</head>
+<body>
+
+<!-- Top toolbar (only shown on email app) -->
+<div class="topbar" id="topbar" style="display:none">
+  <div class="lock-timer">
+    <span class="lock-timer-dot"></span>
+    <span>下次锁定 <strong id="lock-countdown">28:43</strong></span>
+  </div>
+  <button class="topbar-btn" onclick="lockNow()">🔒 立即锁定</button>
+  <button class="topbar-btn" onclick="showScreen('screen-profile-select')">↩ 切换身份</button>
+  <button class="topbar-btn" onclick="showSettingsModal()">⚙ 设置</button>
+</div>
+
+<!-- ─── Screen 1: Profile Select ─── -->
+<div class="screen active" id="screen-profile-select">
+  <div class="profile-container">
+    <div class="profile-header">
+      <div class="profile-title">📬 ACMS 邮件 · 选择身份</div>
+      <div class="profile-subtitle">
+        每个身份的草稿、分类、规则、AI 偏好完全隔离<br>
+        进入需输入 PIN（4-6 位数字）
+      </div>
+    </div>
+    <div class="profile-grid" id="profile-grid"></div>
+    <button class="add-profile" onclick="showAddProfile()">
+      <div style="font-size:22px;margin-bottom:6px;">➕</div>
+      <div style="font-size:13px;font-weight:600;">新增身份</div>
+      <div style="font-size:11px;color:var(--text3);margin-top:4px;">为家庭成员 / 同事 / 角色创建独立身份</div>
+    </button>
+  </div>
+</div>
+
+<!-- ─── PIN Modal ─── -->
+<div class="pin-modal" id="pin-modal">
+  <div class="pin-box">
+    <div class="pin-avatar" id="pin-avatar">👨</div>
+    <div class="pin-name" id="pin-name">大多多</div>
+    <div class="pin-hint" id="pin-hint">输入 PIN 码进入</div>
+    <div class="pin-inputs">
+      <input type="password" class="pin-input" maxlength="1" data-idx="0" autofocus>
+      <input type="password" class="pin-input" maxlength="1" data-idx="1">
+      <input type="password" class="pin-input" maxlength="1" data-idx="2">
+      <input type="password" class="pin-input" maxlength="1" data-idx="3">
+    </div>
+    <div class="pin-error" id="pin-error">&nbsp;</div>
+    <div class="pin-keypad">
+      <button class="pin-key" data-num="1">1</button>
+      <button class="pin-key" data-num="2">2</button>
+      <button class="pin-key" data-num="3">3</button>
+      <button class="pin-key" data-num="4">4</button>
+      <button class="pin-key" data-num="5">5</button>
+      <button class="pin-key" data-num="6">6</button>
+      <button class="pin-key" data-num="7">7</button>
+      <button class="pin-key" data-num="8">8</button>
+      <button class="pin-key" data-num="9">9</button>
+      <button class="pin-key clear" data-num="clear">⌫</button>
+      <button class="pin-key" data-num="0">0</button>
+      <button class="pin-key empty">·</button>
+    </div>
+    <div class="pin-actions">
+      <button class="pin-btn cancel" onclick="hidePinModal()">取消</button>
+      <button class="pin-btn confirm" id="pin-confirm" onclick="confirmPin()" disabled>进入</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── Screen 3: Email App ─── -->
+<div class="screen" id="screen-email-app">
+  <div class="sidebar">
+    <div class="sidebar-titlebar">
+      <div class="sidebar-title">📬 邮件</div>
+    </div>
+
+    <!-- 抽屉式 Profile 切换器（顶栏） -->
+    <div class="profile-switcher">
+      <div class="profile-card-active" onclick="toggleProfileDropdown()" id="profile-card-active">
+        <div class="avatar" id="profile-active-avatar">👨</div>
+        <div class="info">
+          <div class="name" id="profile-active-name">大多多</div>
+          <div class="account" id="profile-active-account">sweden@263.net</div>
+        </div>
+        <span class="chevron">▾</span>
+        <div class="profile-dropdown" id="profile-dropdown">
+          <div class="dropdown-section">
+            <div class="dropdown-section-title">📧 我的账户（同一身份）</div>
+            <div id="account-list"></div>
+          </div>
+          <div class="dropdown-divider"></div>
+          <div class="dropdown-section">
+            <div class="dropdown-action" onclick="showAddAccount()">
+              <span>➕</span><span>新增账户</span>
+            </div>
+            <div class="dropdown-action" onclick="manageAccounts()">
+              <span>⚙</span><span>管理账户</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="folders" id="folders"></div>
+
+    <div class="sidebar-footer">
+      <button class="switch-profile-btn" onclick="showScreen('screen-profile-select')">
+        ↩ 切换身份
+      </button>
+    </div>
+  </div>
+
+  <!-- 邮件列表（中间栏，对齐 .em-list） -->
+  <div class="mail-list-area">
+    <div class="mail-list-head">
+      <div class="title" id="mail-list-title">📥 INBOX</div>
+      <button class="head-btn">🔄 刷新</button>
+      <button class="head-btn">🔍 搜索</button>
+      <button class="head-btn primary">✏️ 写邮件</button>
+    </div>
+    <div class="mail-items" id="mail-items"></div>
+  </div>
+
+  <!-- 邮件详情（右栏） -->
+  <div class="mail-detail">
+    <div class="detail-empty">
+      <div class="icon">📧</div>
+      <div>从左侧选一封邮件查看</div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast 容器（对齐 ACMS 右上角） -->
+<div id="toast-container"></div>
+
+<div class="annot">
+  prototype v0.2 · 2026-09-05 · 风格对齐 ACMS style.css L2-33
+  <span class="theme-switch" onclick="cycleTheme()">🎨 主题: dark</span>
+</div>
+
+<script>
+  // ─── Demo data ───
+  const PROFILES = [
+    {
+      id: 'p_duoduo', name: '大多多', avatar: '👨', color: '#4ecdc4',
+      type: 'personal', pin: '1234',
+      accounts: [
+        { id: 'a_sweden', email: 'sweden@263.net', name: '工作邮箱', color: '#4ecdc4' },
+        { id: 'a_qq',     email: 'duoduo@qq.com',   name: '个人邮箱', color: '#6baaff' },
+      ],
+    },
+    {
+      id: 'p_wife', name: '老婆', avatar: '👩', color: '#ff6b6b',
+      type: 'family', pin: '5678',
+      accounts: [
+        { id: 'a_wife_gmail', email: 'wife@gmail.com', name: 'Gmail', color: '#ff6b6b' },
+      ],
+    },
+    {
+      id: 'p_sales_a', name: '销售 A', avatar: '💼', color: '#6bff6b',
+      type: 'work', pin: '1111',
+      accounts: [
+        { id: 'a_sales_a', email: 'sales_a@company.com', name: '公司邮箱', color: '#ffd93d' },
+      ],
+    },
+    {
+      id: 'p_sales_b', name: '销售 B', avatar: '👜', color: '#ffd93d',
+      type: 'work', pin: '2222',
+      accounts: [
+        { id: 'a_sales_b', email: 'sales_b@company.com', name: '公司邮箱', color: '#6baaff' },
+      ],
+    },
+  ];
+
+  let currentProfile = null;
+  let currentAccount = null;
+  let pinProfile = null;
+  let lockInterval = null;
+  let currentTheme = 'dark';
+
+  // ─── Screen 1: Profile Grid ───
+  function renderProfileGrid() {
+    document.getElementById('profile-grid').innerHTML = PROFILES.map(p => `
+      <div class="profile-card" style="--profile-color:${p.color}" onclick="requestPin('${p.id}')">
+        <span class="avatar">${p.avatar}</span>
+        <div class="name">${p.name}</div>
+        <div class="meta">
+          <span class="badge">${typeLabel(p.type)}</span>
+          <span>${p.accounts.length} 个邮箱</span>
+        </div>
+        <div class="emails">${p.accounts.map(a => a.email).join(' · ')}</div>
+      </div>
+    `).join('');
+  }
+  function typeLabel(t) {
+    return ({ personal: '👤 个人', family: '👨‍👩‍👧 家人', work: '💼 同事' })[t] || t;
+  }
+
+  // ─── PIN Modal ───
+  function requestPin(profileId) {
+    pinProfile = PROFILES.find(p => p.id === profileId);
+    document.getElementById('pin-avatar').textContent = pinProfile.avatar;
+    document.getElementById('pin-name').textContent = pinProfile.name;
+    document.getElementById('pin-hint').innerHTML = `输入 PIN 码进入 &nbsp; <span style="color:var(--text3);">（demo: ${pinProfile.pin}）</span>`;
+    document.getElementById('pin-error').innerHTML = '&nbsp;';
+    document.querySelectorAll('.pin-input').forEach(i => { i.value = ''; i.classList.remove('error'); });
+    document.getElementById('pin-modal').classList.add('show');
+    document.getElementById('pin-confirm').disabled = true;
+    setTimeout(() => document.querySelectorAll('.pin-input')[0].focus(), 100);
+  }
+  function hidePinModal() {
+    document.getElementById('pin-modal').classList.remove('show');
+    pinProfile = null;
+  }
+
+  document.querySelectorAll('.pin-input').forEach((input, idx) => {
+    input.addEventListener('input', (e) => {
+      if (e.target.value && idx < 3) {
+        document.querySelectorAll('.pin-input')[idx + 1].focus();
+      }
+      updatePinConfirm();
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Backspace' && !e.target.value && idx > 0) {
+        document.querySelectorAll('.pin-input')[idx - 1].focus();
+      }
+      if (e.key === 'Enter') confirmPin();
+    });
+  });
+  document.querySelectorAll('.pin-key').forEach(key => {
+    key.addEventListener('click', () => {
+      const num = key.dataset.num;
+      if (!num || num === 'empty') return;
+      const inputs = document.querySelectorAll('.pin-input');
+      if (num === 'clear') {
+        const lastFilled = Array.from(inputs).map((i, idx) => i.value ? idx : -1).filter(i => i >= 0).pop();
+        if (lastFilled !== undefined) {
+          inputs[lastFilled].value = '';
+          inputs[lastFilled].focus();
+        }
+      } else {
+        const emptyIdx = Array.from(inputs).findIndex(i => !i.value);
+        if (emptyIdx >= 0) {
+          inputs[emptyIdx].value = num;
+          if (emptyIdx < 3) inputs[emptyIdx + 1].focus();
+        }
+      }
+      updatePinConfirm();
+    });
+  });
+  function updatePinConfirm() {
+    const pin = Array.from(document.querySelectorAll('.pin-input')).map(i => i.value).join('');
+    document.getElementById('pin-confirm').disabled = pin.length !== 4;
+  }
+  function confirmPin() {
+    if (!pinProfile) return;
+    const pin = Array.from(document.querySelectorAll('.pin-input')).map(i => i.value).join('');
+    if (pin === pinProfile.pin) {
+      hidePinModal();
+      enterEmailApp(pinProfile);
+    } else {
+      const inputs = document.querySelectorAll('.pin-input');
+      inputs.forEach(i => i.classList.add('error'));
+      document.getElementById('pin-error').textContent = 'PIN 错误，请重试';
+      setTimeout(() => {
+        inputs.forEach(i => { i.value = ''; i.classList.remove('error'); });
+        inputs[0].focus();
+        updatePinConfirm();
+      }, 500);
+    }
+  }
+
+  // ─── Email App ───
+  function enterEmailApp(profile) {
+    currentProfile = profile;
+    currentAccount = profile.accounts[0];
+
+    const card = document.getElementById('profile-card-active');
+    card.style.setProperty('--profile-color', profile.color);
+    document.getElementById('profile-active-avatar').textContent = profile.avatar;
+    document.getElementById('profile-active-name').textContent = profile.name;
+    document.getElementById('profile-active-account').textContent = currentAccount.email;
+
+    renderAccountList();
+    renderFolders();
+    renderMailList();
+    document.getElementById('topbar').style.display = 'flex';
+
+    showScreen('screen-email-app');
+    showToast(`✅ 进入身份「${profile.name}」· 默认账户 ${currentAccount.email}`, 'success');
+    startLockTimer();
+  }
+
+  function renderAccountList() {
+    document.getElementById('account-list').innerHTML = currentProfile.accounts.map(a => `
+      <div class="dropdown-item ${a.id === currentAccount.id ? 'active' : ''}"
+           style="--item-color:${a.color}"
+           onclick="switchAccount('${a.id}')">
+        <div class="item-avatar">${a.email[0].toUpperCase()}</div>
+        <div class="item-info">
+          <div class="item-name">${a.name}</div>
+          <div class="item-sub">${a.email}</div>
+        </div>
+      </div>
+    `).join('');
+  }
+  function switchAccount(accountId) {
+    if (accountId === currentAccount.id) {
+      document.getElementById('profile-dropdown').classList.remove('show');
+      return;
+    }
+    currentAccount = currentProfile.accounts.find(a => a.id === accountId);
+    document.getElementById('profile-active-account').textContent = currentAccount.email;
+    renderAccountList();
+    renderFolders();
+    renderMailList();
+    document.getElementById('profile-dropdown').classList.remove('show');
+    showToast(`📧 已切换到账户 ${currentAccount.email} · 重 load 邮件 + 分类 + 规则`, 'info');
+  }
+
+  function renderFolders() {
+    const folders = [
+      { name: 'INBOX', icon: '📥', count: 12 },
+      { name: '草稿箱', icon: '📝', count: 3 },
+      { name: '已发送', icon: '📤', count: 0 },
+      { name: '已删除', icon: '🗑', count: 0 },
+      { name: '垃圾邮件', icon: '🚫', count: 0 },
+      { name: '客户咨询', icon: '💼', count: 5 },
+      { name: '会议邀请', icon: '📅', count: 2 },
+      { name: '财务发票', icon: '💰', count: 1 },
+      { name: '营销订阅', icon: '📢', count: 8 },
+    ];
+    document.getElementById('folders').innerHTML = `
+      <div class="folder-section-title">
+        <span>📁 ${currentAccount.email}</span>
+        <span class="add">+ 新建</span>
+      </div>
+      ${folders.map(f => `
+        <div class="folder-item ${f.name === 'INBOX' ? 'active' : ''}">
+          <span class="folder-icon">${f.icon}</span>
+          <span>${f.name}</span>
+          ${f.count ? `<span class="folder-count">${f.count}</span>` : ''}
+        </div>
+      `).join('')}
+    `;
+  }
+
+  function renderMailList() {
+    document.getElementById('mail-list-title').textContent = '📥 ' + currentAccount.email + ' · INBOX';
+    const mailSets = {
+      'a_sweden': [
+        { from: '招商证券资管', subject: '对账单 - 2026年9月', snippet: '尊敬的客户，您本月的资产对账单已生成...', time: '10:32' },
+        { from: 'Oracle 中国', subject: '【邀请】Oracle 供应商大会 2026', snippet: '诚挚邀请贵公司参加 10 月 15 日在上海...', time: '09:14' },
+        { from: 'GitHub', subject: '[security] New SSH key added', snippet: 'A new SSH key was added to your account...', time: '昨天' },
+        { from: '钉钉', subject: '【项目群】今天下午同步会取消', snippet: '@所有人 通知：今天下午 3 点的项目同步会取消...', time: '昨天' },
+      ],
+      'a_qq': [
+        { from: 'QQ邮箱团队', subject: '您的邮箱安全提醒', snippet: '检测到您的账户在新设备登录...', time: '08:21' },
+        { from: '京东', subject: '【京东】订单已发货', snippet: '您的订单 JD20260905001 已由顺丰发出...', time: '昨天' },
+      ],
+      'a_wife_gmail': [
+        { from: '学校家长群', subject: '【通知】下周一家长会', snippet: '各位家长好，下周一上午 9 点在学校礼堂...', time: '今天' },
+        { from: 'Gmail', subject: 'Storage almost full', snippet: 'Your Google account storage is almost full...', time: '昨天' },
+      ],
+      'a_sales_a': [
+        { from: '客户 - 上海华瑞', subject: 'Re: 关于采购合同的细节', snippet: '附件合同已经法务审核，请确认以下几点...', time: '今天' },
+        { from: '客户 - 深圳前海', subject: '报价请求', snippet: '请提供产品 X 系列的企业级报价...', time: '昨天' },
+      ],
+      'a_sales_b': [
+        { from: '客户 - 北京云联', subject: '试用延期申请', snippet: '希望将试用账号延长到月底，方便内部评估...', time: '今天' },
+      ],
+    };
+    const mails = mailSets[currentAccount.id] || [];
+    document.getElementById('mail-items').innerHTML = mails.length ? mails.map(m => `
+      <div class="mail-item" onclick="this.classList.add('active')">
+        <div class="mail-from"><span>${m.from}</span><span class="mail-time">${m.time}</span></div>
+        <div class="mail-subject">${m.subject}</div>
+        <div class="mail-snippet">${m.snippet}</div>
+      </div>
+    `).join('') : '<div style="padding:40px;text-align:center;color:var(--text3);font-size:12px;">📭 收件箱为空</div>';
+  }
+
+  // ─── Dropdown ───
+  function toggleProfileDropdown() {
+    document.getElementById('profile-dropdown').classList.toggle('show');
+  }
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.profile-card-active')) {
+      document.getElementById('profile-dropdown').classList.remove('show');
+    }
+  });
+
+  // ─── Lock Timer ───
+  function startLockTimer() {
+    if (lockInterval) clearInterval(lockInterval);
+    let t = 28 * 60 + 43;
+    const el = document.getElementById('lock-countdown');
+    lockInterval = setInterval(() => {
+      t--;
+      const m = Math.floor(t / 60);
+      const s = t % 60;
+      el.textContent = `${m}:${String(s).padStart(2, '0')}`;
+      if (t <= 0) lockNow();
+    }, 1000);
+  }
+  function lockNow() {
+    if (lockInterval) clearInterval(lockInterval);
+    document.getElementById('lock-countdown').textContent = '0:00';
+    document.getElementById('topbar').style.display = 'none';
+    showScreen('screen-profile-select');
+    if (currentProfile) requestPin(currentProfile.id);
+    showToast('🔒 已锁定 · 请重新输入 PIN', 'info');
+  }
+
+  // ─── Screen Switch ───
+  function showScreen(id) {
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    if (id === 'screen-profile-select') {
+      document.getElementById('topbar').style.display = 'none';
+      if (lockInterval) clearInterval(lockInterval);
+    }
+  }
+
+  // ─── Toast（对齐 #toast-container 风格）───
+  function showToast(msg, type) {
+    type = type || 'info';
+    const container = document.getElementById('toast-container');
+    const t = document.createElement('div');
+    t.className = 'toast toast-' + type;
+    t.textContent = msg;
+    container.appendChild(t);
+    setTimeout(() => t.remove(), 3000);
+  }
+
+  // ─── Theme switcher (验证 light/cream 主题也对齐 ACMS) ───
+  function cycleTheme() {
+    const themes = ['dark', 'light', 'cream'];
+    currentTheme = themes[(themes.indexOf(currentTheme) + 1) % themes.length];
+    document.documentElement.setAttribute('data-theme', currentTheme);
+    document.querySelector('.theme-switch').textContent = '🎨 主题: ' + currentTheme;
+  }
+
+  // ─── Placeholder ───
+  function showAddProfile() { showToast('（demo）打开新增身份表单 — 名字/头像/类型/PIN', 'info'); }
+  function showAddAccount() { showToast('（demo）打开新增账户表单 — IMAP/SMTP/密码', 'info'); }
+  function manageAccounts() { showToast('（demo）打开账户管理', 'info'); }
+  function showSettingsModal() { showToast('（demo）打开设置面板 — 含 profile/账户/PIN/AI 偏好', 'info'); }
+
+  renderProfileGrid();
+</script>
+</body>
+</html>

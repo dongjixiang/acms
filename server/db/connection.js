@@ -36,6 +36,9 @@ const KNOWN_COLLECTIONS = [
   // v1.13: 自有草稿箱（ACMS 内 draft_only / auto_reply 生成的草稿持久化，等待人工编辑发送）
   // 走 stores/email-draft-store.js + routes/email-drafts.js，**不**依赖邮箱 IMAP Drafts 文件夹
   'email_drafts',
+  // v2.0 多账户体系：身份（Profile）+ 邮箱凭证（Account）
+  //   Profile 1:N Account；profile_id 隔离邮件数据（草稿/分类/规则等）
+  'email_profiles', 'email_accounts',
   // v0.33: GEO 智能推荐
   'geo_opportunities',
 ];
@@ -88,6 +91,9 @@ function ensureTable(name) {
     requirements: ['id', 'project_id', 'status'],
     agents: ['id'],
     webhooks: ['id'],
+    // v2.0 多账户：按 profile_id 查账户是热路径
+    email_accounts: ['profile_id'],
+    email_profiles: ['id'],
   };
   const fields = indexFields[name];
   if (fields) {

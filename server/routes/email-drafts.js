@@ -24,43 +24,54 @@ function errorResponse(res, error, fallbackCode) {
   return res.status(status).json({ ok: false, error: code, message });
 }
 
-// === GET /api/email-drafts — 列出草稿 ===
+// === GET /api/email-drafts — 列出草稿（v2.3 加 profile_id 隔离） ===
 router.get('/', (req, res) => {
   try {
     const result = draftStore.listDrafts({
       status: req.query.status || undefined,
       source: req.query.source || undefined,
       mailbox: req.query.mailbox || undefined,
+      profileId: req.query.profile_id || undefined,  // v2.3
       limit: req.query.limit || 200,
       offset: req.query.offset || 0,
     });
     res.json({
       ok: true,
       total: result.total,
+      profile_id: req.query.profile_id || null,  // v2.3: 回显便于调试
       drafts: result.drafts,
-      counts: draftStore.countByStatus(),
+      counts: draftStore.countByStatus({ profileId: req.query.profile_id || undefined }),
     });
   } catch (e) {
     errorResponse(res, e, 'LIST_DRAFTS_FAILED');
   }
 });
 
-// === GET /api/email-drafts/:id — 单条详情 ===
+// === GET /api/email-drafts/:id — 单条详情（v2.3 加 profile_id 所有权检查） ===
 router.get('/:id', (req, res) => {
   try {
     const draft = draftStore.getDraft(req.params.id);
     if (!draft) return res.status(404).json({ ok: false, error: 'NOT_FOUND', message: '草稿不存在' });
+    const requestProfileId = req.query.profile_id;
+    if (requestProfileId && draft.profile_id && draft.profile_id !== requestProfileId) {
+      return res.status(403).json({ ok: false, error: 'PROFILE_MISMATCH', message: '该草稿不属于你（profile 不匹配）' });
+    }
     res.json({ ok: true, draft });
   } catch (e) {
     errorResponse(res, e, 'GET_DRAFT_FAILED');
   }
 });
 
-// === POST /api/email-drafts — 新建草稿（manual 源） ===
+// === POST /api/email-drafts — 新建草稿（manual 源，v2.3 加 profile_id + account_id） ===
 router.post('/', (req, res) => {
   try {
     const body = req.body || {};
+    // v2.3: profile_id 优先从 body 取，缺失时从 query 兜底（让测试脚本和 GET/POST 都能用）
+    const profileId = body.profile_id || body.profileId || req.query.profile_id || req.query.profileId || undefined;
+    const accountId = body.account_id || body.accountId || req.query.account_id || req.query.accountId || undefined;
     const draft = draftStore.createDraft({
+      profileId: profileId,
+      accountId: accountId,
       replyTo: body.to || body.replyTo || '',
       subject: body.subject || '',
       body: body.body || '',
@@ -76,7 +87,7 @@ router.post('/', (req, res) => {
   }
 });
 
-// === POST /api/email-drafts/:id/update — 编辑草稿 ===
+// === POST /api/email-drafts/:id/update — 编辑草稿（v2.3 加 profile_id 所有权检查） ===
 router.post('/:id/update', (req, res) => {
   try {
     const body = req.body || {};
@@ -84,6 +95,10 @@ router.post('/:id/update', (req, res) => {
     if (!existing) return res.status(404).json({ ok: false, error: 'NOT_FOUND', message: '草稿不存在' });
     if (existing.status === 'sent') {
       return res.status(409).json({ ok: false, error: 'ALREADY_SENT', message: '已发送的草稿不能编辑' });
+    }
+    const requestProfileId = body.profile_id || req.query.profile_id;
+    if (requestProfileId && existing.profile_id && existing.profile_id !== requestProfileId) {
+      return res.status(403).json({ ok: false, error: 'PROFILE_MISMATCH', message: '该草稿不属于你（profile 不匹配）' });
     }
     // 只允许编辑这几个字段（其余是规则引擎元数据，不可改）
     const updates = {};
@@ -100,7 +115,7 @@ router.post('/:id/update', (req, res) => {
   }
 });
 
-// === POST /api/email-drafts/:id/send — 发送草稿（核心端点） ===
+// === POST /api/email-drafts/:id/send — 发送草稿（核心端点，v2.3 携带 profile_id 调 sender） ===
 router.post('/:id/send', async (req, res) => {
   try {
     const existing = draftStore.getDraft(req.params.id);
@@ -108,18 +123,23 @@ router.post('/:id/send', async (req, res) => {
     if (existing.status === 'sent') {
       return res.status(409).json({ ok: false, error: 'ALREADY_SENT', message: '已发送，不能重复发送' });
     }
+    const requestProfileId = req.body && req.body.profile_id || req.query.profile_id;
+    if (requestProfileId && existing.profile_id && existing.profile_id !== requestProfileId) {
+      return res.status(403).json({ ok: false, error: 'PROFILE_MISMATCH', message: '该草稿不属于你（profile 不匹配）' });
+    }
     if (!existing.reply_to) {
       return res.status(400).json({ ok: false, error: 'NO_RECIPIENT', message: '草稿缺少收件人' });
     }
 
-    // 调用 email-sender 真实发送
+    // v2.3: 携带 account_id 调 sender（用草稿所属账户的 transporter）
+    const sendDeps = existing.account_id ? { accountId: existing.account_id } : undefined;
     const result = await emailSender.sendEmail({
       to: existing.reply_to,
       subject: existing.subject,
       body: existing.body,
       inReplyTo: existing.in_reply_to || undefined,
       references: existing.references || undefined,
-    });
+    }, sendDeps);
 
     // 写回 sent 状态
     const sentMessageId = (result && result.info && (result.info.messageId || '')) || '';
@@ -130,7 +150,7 @@ router.post('/:id/send', async (req, res) => {
       error: null,
     });
 
-    console.log(`[email-drafts] sent draft id=${req.params.id} to=${existing.reply_to} subject="${existing.subject}" messageId=${sentMessageId}`);
+    console.log(`[email-drafts] sent draft id=${req.params.id} profile=${existing.profile_id || 'default'} account=${existing.account_id || 'default'} to=${existing.reply_to} subject="${existing.subject}" messageId=${sentMessageId}`);
     res.json({
       ok: true,
       draft: updated,
@@ -149,13 +169,17 @@ router.post('/:id/send', async (req, res) => {
   }
 });
 
-// === POST /api/email-drafts/:id/reject — 拒绝草稿（auto_reply 待确认时） ===
+// === POST /api/email-drafts/:id/reject — 拒绝草稿（v2.3 加 profile_id 所有权检查） ===
 router.post('/:id/reject', (req, res) => {
   try {
     const existing = draftStore.getDraft(req.params.id);
     if (!existing) return res.status(404).json({ ok: false, error: 'NOT_FOUND', message: '草稿不存在' });
     if (existing.status === 'sent') {
       return res.status(409).json({ ok: false, error: 'ALREADY_SENT', message: '已发送，不能拒绝' });
+    }
+    const requestProfileId = (req.body && req.body.profile_id) || req.query.profile_id;
+    if (requestProfileId && existing.profile_id && existing.profile_id !== requestProfileId) {
+      return res.status(403).json({ ok: false, error: 'PROFILE_MISMATCH', message: '该草稿不属于你（profile 不匹配）' });
     }
     const reason = (req.body && req.body.reason) || '';
     const updated = draftStore.updateDraft(req.params.id, {
@@ -168,9 +192,15 @@ router.post('/:id/reject', (req, res) => {
   }
 });
 
-// === DELETE /api/email-drafts/:id — 删除草稿 ===
+// === DELETE /api/email-drafts/:id — 删除草稿（v2.3 加 profile_id 所有权检查） ===
 router.delete('/:id', (req, res) => {
   try {
+    const requestProfileId = req.query.profile_id;
+    const existing = draftStore.getDraft(req.params.id);
+    if (!existing) return res.status(404).json({ ok: false, error: 'NOT_FOUND', message: '草稿不存在' });
+    if (requestProfileId && existing.profile_id && existing.profile_id !== requestProfileId) {
+      return res.status(403).json({ ok: false, error: 'PROFILE_MISMATCH', message: '该草稿不属于你（profile 不匹配）' });
+    }
     const removed = draftStore.deleteDraft(req.params.id);
     if (!removed) return res.status(404).json({ ok: false, error: 'NOT_FOUND', message: '草稿不存在' });
     res.json({ ok: true, id: req.params.id });

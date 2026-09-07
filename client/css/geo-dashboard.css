@@ -136,6 +136,7 @@
   color: var(--geo-success);
 }
 
+.geo-industry-select,
 .geo-brand-select,
 .geo-engine-filter,
 .geo-input {
@@ -148,9 +149,11 @@
   cursor: pointer;
 }
 
+.geo-industry-select { min-width: 160px; }
 .geo-brand-select { min-width: 200px; }
 .geo-input { cursor: text; }
 
+.geo-industry-select:focus,
 .geo-brand-select:focus,
 .geo-engine-filter:focus,
 .geo-input:focus {
@@ -355,8 +358,8 @@
 .geo-kpi-card {
   background: var(--geo-bg-3);
   border: 1px solid var(--geo-border);
-  border-radius: 8px;
-  padding: 14px 16px;
+  border-radius: 10px;  /* v0.45: 与 v034/v036 卡片统一圆角 */
+  padding: 16px 18px;   /* v0.45: 与 v034/v036 卡片统一内边距 */
 }
 
 .geo-kpi-label {
@@ -389,8 +392,8 @@
 .geo-dim-card {
   background: var(--geo-bg-3);
   border: 1px solid var(--geo-border);
-  border-radius: 6px;
-  padding: 10px 14px;
+  border-radius: 10px;  /* v0.45: 统一圆角 */
+  padding: 16px 18px;   /* v0.45: 统一内边距 */
 }
 
 .geo-dim-label {
@@ -554,8 +557,8 @@
 .geo-engine-card {
   background: var(--geo-bg-3);
   border: 1px solid var(--geo-border);
-  border-radius: 6px;
-  padding: 8px 10px;
+  border-radius: 10px;  /* v0.45: 统一圆角 */
+  padding: 12px 14px;   /* v0.45: 统一内边距 */
   text-align: center;
 }
 
@@ -1596,3 +1599,817 @@
 @keyframes geo-spin {
   to { transform: rotate(360deg); }
 }
+/* === v0.34 三大新指标金卡 === */
+.geo-v034-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:8px}
+.geo-v034-card{
+  background:var(--geo-bg-3);  /* v0.44: 改用 var(--geo-bg-3)（之前 var(--geo-bg-1) 没定义，fallback #111 纯黑——跟其他卡不一致） */
+  border:1px solid var(--geo-border,#333);
+  border-radius:10px;
+  padding:18px 20px;
+  display:flex;flex-direction:column;gap:8px;
+  position:relative;overflow:hidden;
+  transition:opacity .2s;
+}
+.geo-v034-card.v034-empty{opacity:.55}
+.geo-v034-card .v034-tag{
+  font:600 11px var(--font);letter-spacing:.1em;
+  color:var(--geo-accent,#818cf8);text-transform:uppercase;
+}
+.geo-v034-card .v034-value{
+  font:800 30px var(--font);letter-spacing:-.02em;line-height:1.15;
+  color:var(--geo-fg,#f5f5f5);
+  transition:color .2s;
+}
+.geo-v034-card .v034-sub{
+  font-size:11.5px;color:var(--geo-muted,#9ca3af);line-height:1.6;
+}
+.geo-v034-card .v034-engines{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+.geo-v034-card .v034-engine{
+  font-size:10.5px;color:var(--geo-fg-2,#d1d5db);
+  background:var(--geo-bg-2,#1f2937);padding:2px 8px;border-radius:4px;
+  border:1px solid var(--geo-border-2,#374151);
+}
+.geo-v034-card .v034-bar{position:relative;height:14px;margin-top:6px}
+.geo-v034-card .v034-bar-track{
+  position:absolute;left:0;right:0;top:5px;height:4px;
+  background:var(--geo-bg-2,#1f2937);border-radius:2px;
+}
+.geo-v034-card .v034-bar-self{
+  position:absolute;top:-3px;width:10px;height:20px;
+  background:#F59E0B;border-radius:3px;
+  transform:translateX(-50%);
+  box-shadow:0 0 8px rgba(245,158,11,.5);
+}
+.geo-v034-card .v034-bar-median{
+  position:absolute;top:0;bottom:0;left:50%;
+  width:1px;background:var(--geo-muted,#9ca3af);opacity:.6;
+}
+@media(max-width:900px){
+  .geo-v034-grid{grid-template-columns:1fr}
+}
+
+/* === v0.35 零点击决策叙事 === */
+.geo-narrative{
+  margin-top:24px;
+  background:linear-gradient(135deg,rgba(99,102,241,.06),rgba(8,145,178,.06));
+  border:1px solid var(--geo-border-2,#374151);
+  border-radius:12px;
+  padding:18px 22px;
+}
+.geo-narrative>h3{margin-top:0;margin-bottom:14px;font-size:17px}
+.geo-narrative-grid{
+  display:grid;grid-template-columns:repeat(3,1fr);gap:12px;
+  margin-bottom:14px;
+}
+.geo-narrative-card{
+  background:var(--geo-bg-3);  /* v0.44: 改用 var(--geo-bg-3)（之前 fallback #111，跟其他卡不一致） */
+  border:1px solid var(--geo-border,#333);
+  border-radius:10px;  /* v0.45: 统一圆角 */
+  padding:16px 18px;   /* v0.45: 统一内边距 */
+}
+.geo-narrative-card .narrative-tag{
+  font:600 10.5px var(--font);letter-spacing:.08em;
+  color:var(--geo-accent,#a78bfa);text-transform:uppercase;
+  margin-bottom:6px;
+}
+.geo-narrative-card .narrative-value{
+  font:800 24px var(--font);letter-spacing:-.01em;
+  color:var(--geo-fg,#f5f5f5);
+  line-height:1.2;
+}
+.geo-narrative-card .narrative-sub{
+  font-size:11px;color:var(--geo-muted,#9ca3af);
+  margin-top:4px;line-height:1.5;
+}
+.geo-narrative-explainer{
+  background:rgba(255,255,255,.04);
+  border-left:3px solid var(--brand,#818cf8);
+  border-radius:0 6px 6px 0;
+  padding:10px 14px;
+  margin-bottom:12px;
+  font-size:13px;line-height:1.75;
+  color:var(--geo-fg-2,#d1d5db);
+}
+.geo-narrative-explainer p{margin:4px 0}
+.geo-narrative-explainer b{color:var(--geo-fg,#f5f5f5)}
+.geo-narrative-tip{
+  background:rgba(245,158,11,.08);
+  border:1px solid rgba(245,158,11,.3);
+  border-radius:8px;
+  padding:10px 14px;
+  font-size:12.5px;line-height:1.7;
+  color:var(--geo-fg-2,#d1d5db);
+}
+.geo-narrative-tip b{color:#FCD34D}
+.geo-narrative-tip code{
+  background:rgba(0,0,0,.35);padding:2px 6px;border-radius:3px;
+  font-family:var(--font-mono,monospace);font-size:12px;
+  color:#FCD34D;
+}
+@media(max-width:900px){
+  .geo-narrative-grid{grid-template-columns:1fr}
+}
+
+/* === v0.36 描述准确率金卡 === */
+.geo-v036-card{
+  margin-top:14px;
+  background:var(--geo-bg-3);  /* v0.45: 改用 var(--geo-bg-3)，之前 --geo-bg-1 未定义 fallback #111 纯黑 */
+  border:1px solid var(--geo-border,#333);
+  border-radius:10px;
+  padding:18px 20px;
+  position:relative;overflow:hidden;
+  transition:opacity .2s;
+}
+.geo-v036-card.v036-empty{opacity:.55}
+.geo-v036-card .v036-tag{
+  font:600 11px var(--font);letter-spacing:.1em;
+  color:var(--geo-accent,#818cf8);text-transform:uppercase;
+  margin-bottom:6px;
+}
+.geo-v036-card .v036-value{
+  font:800 26px var(--font);letter-spacing:-.01em;line-height:1.15;
+  color:var(--geo-fg,#f5f5f5);
+  transition:color .2s;
+}
+.geo-v036-card .v036-sub{
+  font-size:11.5px;color:var(--geo-muted,#9ca3af);margin-top:4px;line-height:1.6;
+}
+.geo-v036-card .v036-issues{margin-top:10px;display:flex;flex-direction:column;gap:4px}
+.geo-v036-card .v036-issues-title{
+  font-size:11.5px;font-weight:700;color:#FCD34D;margin-bottom:2px;
+}
+.geo-v036-card .v036-issue{
+  font-size:11.5px;color:var(--geo-fg-2,#d1d5db);
+  background:rgba(245,158,11,.06);
+  border-left:2px solid #F59E0B;
+  padding:4px 8px;border-radius:0 4px 4px 0;
+  line-height:1.5;
+}
+.geo-v036-card .v036-issue-engine{
+  display:inline-block;background:rgba(0,0,0,.3);padding:1px 6px;border-radius:3px;
+  font-size:10px;font-weight:600;margin-right:6px;color:#a3a3a3;
+}
+.geo-v036-card .v036-actions{margin-top:10px}
+.geo-v036-card .v036-actions .geo-btn{
+  font-size:11.5px;padding:5px 12px;
+}
+
+/* === v0.38: 竞品共现 + 品牌感知卡片 === */
+.geo-v038-card{
+  margin-top:14px;
+  background:var(--geo-bg-3);
+  border:1px solid var(--geo-border,#333);
+  border-radius:10px;
+  padding:18px 20px;
+  position:relative;overflow:hidden;
+}
+.geo-v038-card.v038-empty{opacity:.55}
+.geo-v038-card .v038-tag{
+  font:600 11px var(--font);letter-spacing:.1em;
+  color:var(--geo-accent,#818cf8);text-transform:uppercase;
+  margin-bottom:6px;
+}
+.geo-v038-card .v038-value{
+  font:800 22px var(--font);letter-spacing:-.01em;line-height:1.15;
+  color:var(--geo-fg,#f5f5f5);
+}
+.geo-v038-card .v038-sub{
+  font-size:11.5px;color:var(--geo-muted,#9ca3af);margin-top:4px;line-height:1.6;
+}
+.geo-v038-comp-list{margin-top:12px;display:flex;flex-direction:column;gap:6px}
+.geo-v038-comp-item{
+  display:flex;align-items:center;gap:10px;
+  background:rgba(255,255,255,.03);border:1px solid var(--geo-border-2,#374151);
+  border-radius:6px;padding:8px 10px;font-size:12px;
+}
+.geo-v038-comp-rank{
+  width:20px;height:20px;border-radius:50%;
+  background:var(--geo-accent);color:var(--geo-bg);
+  display:flex;align-items:center;justify-content:center;
+  font-weight:700;font-size:11px;flex-shrink:0;
+}
+.geo-v038-comp-name{font-weight:600;color:var(--geo-fg);flex:1}
+.geo-v038-comp-domain{color:var(--geo-muted);font-size:11px}
+.geo-v038-comp-meta{display:flex;gap:8px;align-items:center}
+.geo-v038-comp-sentiment{
+  padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;
+}
+.geo-v038-comp-sentiment.positive{background:rgba(16,185,129,.15);color:#10b981}
+.geo-v038-comp-sentiment.neutral{background:rgba(107,114,128,.15);color:#9ca3af}
+.geo-v038-comp-sentiment.negative{background:rgba(239,68,68,.15);color:#ef4444}
+.geo-v038-recommended-badge{
+  background:rgba(245,158,11,.2);color:#f59e0b;
+  padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;
+}
+.geo-v038-perception-grid{
+  display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;
+}
+.geo-v038-perception-item{
+  background:rgba(255,255,255,.03);border:1px solid var(--geo-border-2,#374151);
+  border-radius:6px;padding:10px 12px;
+}
+.geo-v038-perception-label{
+  font-size:10px;color:var(--geo-muted);text-transform:uppercase;letter-spacing:.05em;
+  margin-bottom:6px;
+}
+.geo-v038-perception-value{
+  font-size:13px;color:var(--geo-fg);line-height:1.5;
+}
+.geo-v038-perception-value ul{margin:0;padding-left:16px;}
+.geo-v038-perception-value li{margin-bottom:2px;}
+.geo-v038-pricing-badge{
+  display:inline-block;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:600;
+  background:rgba(129,140,248,.15);color:#818cf8;
+}
+.geo-v038-risks-list{margin-top:10px;display:flex;flex-direction:column;gap:4px}
+.geo-v038-risk-item{
+  display:flex;align-items:flex-start;gap:8px;
+  padding:6px 10px;border-radius:4px;font-size:12px;line-height:1.5;
+}
+.geo-v038-risk-item.critical{background:rgba(239,68,68,.1);border-left:2px solid #ef4444}
+.geo-v038-risk-item.warning{background:rgba(245,158,11,.1);border-left:2px solid #f59e0b}
+.geo-v038-risk-item.info{background:rgba(107,114,128,.1);border-left:2px solid #6b7280}
+.geo-v038-risk-severity{
+  font-weight:700;font-size:10px;text-transform:uppercase;flex-shrink:0;margin-top:1px;
+}
+.geo-v038-risk-severity.critical{color:#ef4444}
+.geo-v038-risk-severity.warning{color:#f59e0b}
+.geo-v038-risk-severity.info{color:#6b7280}
+.geo-v038-actions{margin-top:10px}
+.geo-v038-actions .geo-btn{font-size:11.5px;padding:5px 12px}
+
+/* === v0.37 平台覆盖度视图 === */
+.geo-coverage{
+  margin-top:24px;
+  background:var(--geo-bg-3);  /* v0.45: 改用 var(--geo-bg-3)，之前 --geo-bg-1 fallback #111 纯黑 */
+  border:1px solid var(--geo-border,#333);
+  border-radius:12px;
+  padding:18px 22px;
+}
+.geo-coverage>h3{margin-top:0;margin-bottom:14px;font-size:17px}
+.geo-coverage-summary{
+  display:grid;grid-template-columns:1fr 1fr;gap:12px;
+  margin-bottom:14px;
+}
+.geo-coverage-stat{
+  background:rgba(255,255,255,.04);
+  border:1px solid var(--geo-border-2,#374151);
+  border-radius:8px;
+  padding:14px 16px;
+}
+.coverage-stat-label{
+  font:600 11px var(--font);letter-spacing:.06em;
+  color:var(--geo-muted,#9ca3af);text-transform:uppercase;
+  margin-bottom:6px;
+}
+.coverage-stat-value{
+  font:800 26px var(--font);letter-spacing:-.01em;
+  color:var(--geo-fg,#f5f5f5);line-height:1.15;
+}
+.coverage-stat-sub{
+  font-size:11.5px;color:var(--geo-muted,#9ca3af);margin-top:4px;
+}
+.geo-coverage-bars{
+  display:flex;flex-direction:column;gap:6px;
+  margin-bottom:14px;
+}
+.coverage-bar-row{
+  display:grid;
+  grid-template-columns:90px 1fr 60px 90px;
+  gap:10px;align-items:center;
+}
+.coverage-bar-label{
+  font-size:12.5px;color:var(--geo-fg-2,#d1d5db);font-weight:600;
+}
+.coverage-bar-track{
+  height:8px;background:rgba(255,255,255,.05);
+  border-radius:4px;overflow:hidden;
+}
+.coverage-bar-fill{
+  height:100%;border-radius:4px;
+  transition:width .3s ease;
+}
+.coverage-bar-value{
+  font:700 12px var(--font);color:var(--geo-fg,#f5f5f5);
+  text-align:right;font-variant-numeric:tabular-nums;
+}
+.coverage-bar-meta{
+  font-size:10.5px;color:var(--geo-faint,#9ca3af);
+  text-align:right;
+}
+.geo-coverage-hint{
+  background:rgba(99,102,241,.08);
+  border:1px solid rgba(99,102,241,.2);
+  border-radius:8px;
+  padding:10px 14px;
+  font-size:12px;color:var(--geo-fg-2,#d1d5db);line-height:1.65;
+}
+.geo-coverage-hint b{color:#a3a3a3}
+@media(max-width:900px){
+  .geo-coverage-summary{grid-template-columns:1fr}
+  .coverage-bar-row{grid-template-columns:70px 1fr 50px 70px;font-size:11px}
+}
+
+/* === v0.38 Opportunities 可持续性徽章 === */
+.geo-opp-sustain{
+  display:inline-flex;align-items:center;gap:3px;
+  font-size:11px;font-weight:700;
+  padding:2px 8px;border-radius:10px;
+  cursor:help;
+  border:1px solid transparent;
+  transition:opacity .2s;
+}
+.geo-opp-sustain.asset{
+  background:rgba(16,185,129,.12);
+  color:#059669;
+  border-color:rgba(16,185,129,.3);
+}
+.geo-opp-sustain.continuous{
+  background:rgba(245,158,11,.12);
+  color:#B45309;
+  border-color:rgba(245,158,11,.3);
+}
+.geo-opp-sustain.hybrid{
+  background:rgba(99,102,241,.10);
+  color:#4F46E5;
+  border-color:rgba(99,102,241,.25);
+}
+.geo-opp-sustain:hover{opacity:.85}
+.geo-opp-card-meta{
+  flex-wrap:wrap;
+}
+
+
+/* === v0.39 5 分钟自查 onboarding === */
+.geo-onboarding {
+  margin-bottom: 24px;
+}
+.onboarding-banner {
+  background: linear-gradient(135deg, rgba(59,130,246,.12) 0%, rgba(99,102,241,.12) 100%);
+  border: 1px solid rgba(99,102,241,.3);
+  border-radius: 10px;
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.onboarding-banner-content {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+}
+.onboarding-emoji {
+  font-size: 28px;
+  flex-shrink: 0;
+}
+.onboarding-text h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--geo-text, #e5e7eb);
+}
+.onboarding-text p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--geo-text-2, #9ca3af);
+  line-height: 1.5;
+}
+.onboarding-workflow {
+  background: rgba(255,255,255,.03);
+  border: 1px solid var(--geo-border, #333);
+  border-radius: 10px;
+  padding: 20px;
+}
+.onboarding-workflow > h3 {
+  margin: 0 0 16px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--geo-text, #e5e7eb);
+}
+.onboarding-progress {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin-bottom: 20px;
+}
+.onboarding-step-indicator {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  position: relative;
+  z-index: 1;
+}
+.onboarding-step-indicator span:first-child {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  border: 2px solid var(--geo-border, #333);
+  background: var(--surface, #1a1a2e);
+  color: var(--geo-text-2, #9ca3af);
+  transition: all .2s;
+}
+.onboarding-step-indicator span:last-child {
+  font-size: 10px;
+  color: var(--geo-text-2, #9ca3af);
+  white-space: nowrap;
+}
+.onboarding-step-indicator.active span:first-child {
+  border-color: #6366f1;
+  background: rgba(99,102,241,.2);
+  color: #a5b4fc;
+}
+.onboarding-step-indicator.active span:last-child {
+  color: #a5b4fc;
+}
+.onboarding-step-indicator.done span:first-child {
+  border-color: #22c55e;
+  background: rgba(34,197,94,.15);
+  color: #4ade80;
+}
+.onboarding-step-line {
+  flex: 1;
+  height: 2px;
+  background: var(--geo-border, #333);
+  margin: 0 8px;
+  margin-bottom: 20px;
+}
+.onboarding-steps {
+  min-height: 160px;
+}
+.onboarding-step h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--geo-text, #e5e7eb);
+}
+.onboarding-step p {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--geo-text-2, #9ca3af);
+  line-height: 1.6;
+}
+.onboarding-quote-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.onboarding-q-item {
+  background: rgba(255,255,255,.04);
+  border: 1px solid var(--geo-border, #333);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--geo-text, #e5e7eb);
+}
+.onboarding-q-item b {
+  color: #60a5fa;
+}
+.onboarding-q-hint {
+  float: right;
+  font-size: 11px;
+  color: var(--geo-text-3, #6b7280);
+  font-style: italic;
+}
+.onboarding-tip {
+  font-size: 11px !important;
+  color: var(--geo-text-2, #9ca3af) !important;
+  background: rgba(251,191,36,.06) !important;
+  border: 1px solid rgba(251,191,36,.2) !important;
+  border-radius: 6px !important;
+  padding: 8px 12px !important;
+  margin-top: 8px !important;
+}
+.onboarding-result-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.onboarding-result {
+  background: rgba(255,255,255,.03);
+  border: 1px solid var(--geo-border, #333);
+  border-radius: 8px;
+  padding: 12px;
+  text-align: center;
+}
+.onboarding-result-icon {
+  font-size: 24px;
+  margin-bottom: 6px;
+}
+.onboarding-result h5 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--geo-text, #e5e7eb);
+}
+.onboarding-result p {
+  margin: 0;
+  font-size: 11px;
+  color: var(--geo-text-2, #9ca3af);
+  line-height: 1.5;
+}
+.onboarding-mini {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: rgba(34,197,94,.06);
+  border: 1px solid rgba(34,197,94,.25);
+  border-radius: 8px;
+  padding: 10px 16px;
+  font-size: 12px;
+  color: var(--geo-text-2, #9ca3af);
+}
+.onboarding-mini .onboarding-emoji {
+  font-size: 18px;
+}
+.onboarding-redo-btn {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--geo-border, #333);
+  color: var(--geo-text-2, #9ca3af);
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.onboarding-redo-btn:hover {
+  border-color: #6366f1;
+  color: #a5b4fc;
+}
+.onboarding-dismiss-btn {
+  background: transparent;
+  border: 1px solid var(--geo-border, #333);
+  color: var(--geo-text-2, #9ca3af);
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+.onboarding-dismiss-btn:hover {
+  border-color: #f87171;
+  color: #f87171;
+}
+.onboarding-next-btn {
+  margin-top: 12px;
+}
+
+/* === v0.41 P2: Schema.org 建议面板（复用 geo-opp-panel 样式，新增 schema 卡片/徽章）=== */
+.geo-schema-summary {
+  background: var(--geo-bg-2, #f5f7fa);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+}
+.geo-schema-summary h4 {
+  margin: 0 0 8px 0;
+  font-size: 13px;
+  color: var(--geo-text-1, #1a1a1a);
+}
+.geo-schema-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.geo-schema-stat {
+  background: var(--geo-bg-1, #fff);
+  border: 1px solid var(--geo-border, #e5e7eb);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.geo-schema-stat .lbl {
+  color: var(--geo-text-2, #666);
+}
+.geo-schema-stat .val {
+  font-weight: 600;
+  color: var(--geo-text-1, #1a1a1a);
+}
+.geo-schema-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.geo-schema-list h4 {
+  margin: 0 0 8px 0;
+  font-size: 13px;
+}
+.geo-schema-card {
+  background: var(--geo-bg-1, #fff);
+  border: 1px solid var(--geo-border, #e5e7eb);
+  border-left: 4px solid var(--geo-primary, #3b82f6);
+  border-radius: 8px;
+  padding: 12px 14px;
+  transition: box-shadow 0.15s ease;
+}
+.geo-schema-card:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+.geo-schema-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  gap: 8px;
+}
+.geo-schema-card-header h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--geo-text-1, #1a1a1a);
+}
+.geo-schema-badges {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.geo-schema-priority,
+.geo-schema-difficulty,
+.geo-schema-impact {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.geo-schema-priority.p0 {
+  background: #fee2e2;
+  color: #991b1b;
+}
+.geo-schema-priority.p1 {
+  background: #fef3c7;
+  color: #92400e;
+}
+.geo-schema-priority.p2 {
+  background: #e5e7eb;
+  color: #4b5563;
+}
+.geo-schema-difficulty.easy {
+  background: #d1fae5;
+  color: #065f46;
+}
+.geo-schema-difficulty.medium {
+  background: #fef3c7;
+  color: #92400e;
+}
+.geo-schema-difficulty.hard {
+  background: #fee2e2;
+  color: #991b1b;
+}
+.geo-schema-impact.high {
+  background: #ddd6fe;
+  color: #5b21b6;
+}
+.geo-schema-impact.med {
+  background: #e0e7ff;
+  color: #3730a3;
+}
+.geo-schema-impact.low {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+.geo-schema-reason {
+  margin: 6px 0;
+  font-size: 12px;
+  color: var(--geo-text-2, #666);
+  line-height: 1.5;
+}
+.geo-schema-url {
+  margin: 6px 0 0 0;
+  font-size: 11px;
+  color: var(--geo-text-2, #666);
+}
+.geo-schema-note {
+  margin-top: 16px;
+  padding: 10px 14px;
+  background: #fef9c3;
+  border-left: 3px solid #facc15;
+  border-radius: 4px;
+  font-size: 11px;
+  color: #713f12;
+  line-height: 1.6;
+}
+.geo-schema-meta {
+  margin-top: 12px;
+  text-align: right;
+  font-size: 10px;
+  color: var(--geo-text-2, #999);
+}
+
+/* === v0.45: 投放策略面板 === */
+.geo-channels-hero {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.geo-channels-hero-card {
+  background: var(--geo-card-bg, #fff);
+  border: 1px solid var(--geo-border, #e8e8e8);
+  border-radius: 8px;
+  padding: 16px;
+  text-align: center;
+}
+.geo-channels-hero-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--geo-primary, #1890ff);
+}
+.geo-channels-hero-value.warning { color: var(--geo-warning, #faad14); }
+.geo-channels-hero-value.danger { color: var(--geo-error, #ff4d4f); }
+.geo-channels-hero-label { font-size: 12px; color: var(--geo-text-2, #666); margin-top: 6px; }
+.geo-channels-hero-sub { font-size: 10px; color: var(--geo-text-2, #999); margin-top: 3px; }
+
+/* 🔥 紧急处理 */
+.geo-urgent-section {
+  background: linear-gradient(135deg, #fff5f5 0%, #ffe0e0 100%);
+  border: 2px solid #ff4d4f;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 20px;
+}
+.geo-urgent-title { color: #ff4d4f; font-size: 14px; font-weight: 600; margin-bottom: 12px; }
+.urgent-list { display: flex; flex-direction: column; gap: 8px; }
+.urgent-item {
+  background: #fff;
+  border-left: 3px solid #ff4d4f;
+  padding: 10px 14px;
+  border-radius: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.urgent-query { font-size: 13px; font-weight: 500; }
+.urgent-meta { font-size: 11px; color: var(--geo-text-2, #666); margin-top: 3px; }
+.urgent-action { font-size: 11px; color: var(--geo-error, #ff4d4f); background: #fff1f0; padding: 3px 10px; border-radius: 4px; white-space: nowrap; }
+
+/* Channel Grid */
+.channel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.channel-card {
+  background: var(--geo-card-bg, #fff);
+  border: 1px solid var(--geo-border, #e8e8e8);
+  border-radius: 8px;
+  padding: 12px;
+  transition: box-shadow 0.2s;
+}
+.channel-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+.channel-domain { font-size: 13px; font-weight: 600; color: var(--geo-text, #333); margin-bottom: 6px; }
+.channel-badges { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 6px; }
+.roi-pill { padding: 1px 6px; border-radius: 10px; font-size: 10px; font-weight: 600; }
+.roi-high { background: #d4edda; color: #155724; }
+.roi-med { background: #fff3cd; color: #856404; }
+.roi-low { background: #f8d7da; color: #721c24; }
+.form-pill { padding: 1px 6px; border-radius: 10px; font-size: 10px; background: var(--geo-badge-bg, #f0f0f0); color: var(--geo-text-2, #666); }
+.timeline-pill { padding: 1px 6px; border-radius: 10px; font-size: 10px; font-weight: 600; }
+.timeline-urgent { background: #ff4d4f; color: #fff; }
+.timeline-short { background: #faad14; color: #fff; }
+.timeline-medium { background: #1890ff; color: #fff; }
+.timeline-long { background: #d9d9d9; color: #666; }
+.channel-meta { font-size: 11px; color: var(--geo-text-2, #666); line-height: 1.5; }
+.channel-reason { font-size: 11px; color: var(--geo-text, #333); margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--geo-border, #e8e8e8); font-style: italic; }
+
+/* Per-Engine Matrix */
+.engine-matrix { width: 100%; border-collapse: collapse; font-size: 12px; }
+.engine-matrix th { background: var(--geo-bg, #f5f7fa); padding: 8px 10px; text-align: left; font-weight: 600; border-bottom: 2px solid var(--geo-border, #e8e8e8); }
+.engine-matrix td { padding: 8px 10px; border-bottom: 1px solid var(--geo-border, #e8e8e8); vertical-align: top; }
+.engine-matrix tr:hover td { background: #fafafa; }
+.engine-name { font-weight: 600; color: var(--geo-primary, #1890ff); }
+.intent-tag { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 10px; background: var(--geo-badge-bg, #f0f0f0); margin-right: 3px; margin-bottom: 2px; }
+
+/* Counter Placement */
+.counter-list { display: flex; flex-direction: column; gap: 8px; }
+.counter-item { display: flex; gap: 10px; padding: 10px; background: var(--geo-bg, #f5f7fa); border-radius: 6px; }
+.counter-brand { font-weight: 600; color: var(--geo-error, #ff4d4f); min-width: 70px; font-size: 13px; }
+.counter-domain { font-size: 11px; color: var(--geo-text-2, #666); }
+.counter-action { font-size: 11px; color: var(--geo-text, #333); margin-top: 3px; }
+
+/* Zero Hit */
+.zero-hit-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.zero-hit-item { padding: 10px; background: var(--geo-bg, #f5f7fa); border-radius: 6px; border-left: 3px solid var(--geo-warning, #faad14); }
+.zero-hit-query { font-size: 12px; font-weight: 500; margin-bottom: 3px; }
+.zero-hit-meta { font-size: 11px; color: var(--geo-text-2, #666); }
+
+/* Summary */
+.summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.summary-card { padding: 14px; background: var(--geo-bg, #f5f7fa); border-radius: 6px; }
+.summary-card-title { font-size: 11px; font-weight: 600; margin-bottom: 6px; color: var(--geo-text-2, #666); }
+.summary-card-value { font-size: 14px; font-weight: 700; color: var(--geo-text, #333); line-height: 1.4; }

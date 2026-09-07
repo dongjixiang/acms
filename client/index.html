@@ -632,6 +632,7 @@ document.addEventListener('DOMContentLoaded', () => {
       <div class="launcher-item" onclick="launchView('browser-console')" title="浏览器智能体 —— 给目标它自动达成（CDP 精准控制 + AI 决策 + 求助暂停）"><span class="li-icon">🦾</span><span class="li-label">Web机器人</span></div>
       <div class="divider"></div>
       <div class="launcher-item" onclick="launchView('geo-dashboard')" title="GEO 应用仪表盘"><span class="li-icon">🌐</span><span class="li-label">GEO 应用</span></div>
+      <div class="launcher-item" onclick="launchView('social-publisher')" title="内容运营平台 — 多平台（头条/小红书/公众号/知乎/抖音）图文视频自动发布"><span class="li-icon">📱</span><span class="li-label">内容运营平台</span></div>
     </div>
   </div>
   <div class="divider"></div>
@@ -726,9 +727,11 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/game-pong.js?v=0.1"></script>
 <script src="/client/js/views/game-tetris.js?v=0.1"></script>
 <!-- v0.X: GEO 应用仪表盘（Phase 3 v0.7 — AI 优化建议 + 一键建任务） -->
-<script src="/client/js/views/geo-dashboard.js?v=0.33"></script>
+<script src="/client/js/views/geo-dashboard.js?v=0.45"></script>
+<!-- v0.118: 内容运营平台 L3 App（PR 3 — 4 平台 provider + 8 tab UI） -->
+<script src="/client/js/views/social-publisher.js?v=0.118.6"></script>
 <!-- v0.1: 跨应用浏览器自动化控制台（browser-agent 可视化操作台） -->
-<script src="/client/js/views/browser-console.js?v=1.0"></script>
+<script src="/client/js/views/browser-console.js?v=1.5"></script>
 <script>
 // v0.58：视图加载器注册 — 通过 ACMS.registerPackage 统一注册
 // 包注册系统自动同步到 ACMSWin.registerViewLoader + labels + 命令面板
@@ -1259,15 +1262,15 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- v0.61 辅助工具浮动窗口（启动菜单 + 命令面板入口）-->
 <script src="/client/js/core/assist-launcher.js?v=0.62"></script>
 <!-- v0.1 (Phase 2 #9): 通用 Modal 弹窗组件（替换 prompt/confirm/alert，任意视图可复用）-->
-<script src="/client/js/core/acms-modal.js?v=0.30"></script>
+<script src="/client/js/core/acms-modal.js?v=0.44"></script>
 <!-- v0.74.1: 通用文件→应用 registry（file-browser / email-inbox 共用）-->
 <script src="/client/js/core/file-app-registry.js?v=0.74.1"></script>
 <!-- v0.74: 邮件 HTML 过滤工具（DOMPurify 封装）依赖 -->
 <script src="/client/lib/dompurify.min.js?v=3.0"></script>
 <!-- v0.74: 邮件 HTML 过滤工具 -->
 <script src="/client/js/utils/sanitize-email.js?v=1.11"></script>
-<!-- v0.73: 邮件收件箱 (IMAP) -->
-<link rel="stylesheet" href="/client/css/email-inbox.css?v=1.11" />
-    <script src="/client/js/views/email-inbox.js?v=1.22"></script>
+<!-- v0.73: 邮件收件箱 (IMAP) — v2.2 profile/account CRUD -->
+<link rel="stylesheet" href="/client/css/email-inbox.css?v=2.4.1" />
+    <script src="/client/js/views/email-inbox.js?v=2.4.3"></script>
 </body>
 </html>

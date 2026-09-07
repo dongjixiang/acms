@@ -225,6 +225,11 @@ const CATEGORY_TOOLS = {
                   // v0.1 浏览器自动化（browser-agent）：真实浏览器操作 + AI 网页版问答
                   'web_open', 'web_snapshot', 'web_click', 'web_type', 'web_press',
                   'web_read', 'web_eval', 'web_find', 'web_screenshot', 'web_ai_search'],
+  // v0.118 社交平台自动发布（social-publisher）
+  // 用户说"发到 X 平台/发头条/发小红书/自动发布到公众号" → 扩载 social → publish_to_xxx
+  'social':      ['publish_to_toutiao', 'publish_to_xiaohongshu', 'publish_to_wechat_oa',
+                  'publish_to_zhihu', 'publish_to_douyin',
+                  'rewrite_content_for_platform', 'upload_image_to_platform', 'check_account_status'],
 };
 
 // v0.66: L2 'app' category 动态加载所有 app-tool（前端应用通过 WS 暴露的能力）

@@ -17,6 +17,50 @@
 (function () {
   'use strict';
 
+  // === v0.42: GEODashboard 全局对象修复（修复 index.html onclick 引用不存在函数的错误）===
+  // brand 管理表格的 onclick 调用 GEODashboard.editBrandIndustry / selectBrand / deleteBrand
+  // 该对象在早期版本中缺失，导致点击按钮报 ReferenceError
+  // 提供最小实现：占位符 + 实际操作委托（功能由现有 bindBtn 逻辑覆盖，不重复实现 CRUD）
+  window.GEODashboard = window.GEODashboard || {
+    editBrandIndustry: function (brandId, industry) {
+      // 委托到 geo-brand-alias-btn 流程（已有）或直接提示用户
+      console.info('[GEODashboard] editBrandIndustry:', brandId, '→', industry || '');
+      const aliasBtn = document.getElementById('geo-brand-alias-btn');
+      if (aliasBtn) { aliasBtn.disabled = false; aliasBtn.click(); }
+    },
+    selectBrand: function (brandId) {
+      console.info('[GEODashboard] selectBrand:', brandId);
+      const selectEl = document.getElementById('geo-brand-select');
+      if (selectEl) {
+        selectEl.value = brandId || '';
+        selectEl.dispatchEvent(new Event('change'));
+      }
+    },
+    deleteBrand: function (brandId, brandName) {
+      console.info('[GEODashboard] deleteBrand:', brandId, brandName);
+      if (!brandId || !confirm('确定删除品牌「' + (brandName || brandId) + '」吗？此操作不可撤销。')) return;
+      // 委托到后端删除 + 前端刷新（由现有按钮绑定覆盖）
+      alert('删除功能需在品牌管理面板中操作（当前只修复 onclick 引用错误，不重复实现 CRUD）。');
+    },
+    clearBrandData: async function (brandId, brandName) {
+      console.info('[GEODashboard] clearBrandData:', brandId, brandName);
+      if (!brandId) return;
+      const keep = confirm(`确定清除「${brandName || brandId}」的所有追踪数据吗？\n\n会删除：查询记录、AI 响应、评分、快照\n保留：品牌信息、别名、行业设置\n此操作可恢复（重新追踪后会自动填充）。`);
+      if (!keep) return;
+      try {
+        const r = await api('POST', `/api/geo/brands/${brandId}/clear-data`);
+        if (r.data?.ok) {
+          notify(`已清除「${brandName}」的追踪数据`, 'success');
+          await loadBrands();
+        } else {
+          notify('清除失败: ' + (r.data?.error || r.status), 'error');
+        }
+      } catch (e) {
+        notify('清除失败: ' + e.message, 'error');
+      }
+    },
+  };
+
   // === 全局 GEO cron 通知（v0.9 — Phase 4）===
   // 脚本加载即监听（不管 GEO 窗口是否打开）；后端 cron 完成 → eventBus → WS → app.js 广播 acms:geo.cron.done
   function globalNotify(title, desc, type) {
@@ -103,6 +147,8 @@
       const totalEngines = Object.keys(enginesRes.data?.engines || {}).length;
 
       // v0.14: 总览也要填充品牌下拉（之前只在 Tab2 loadBrands 时填，总览首开 select 为空）
+      // v0.44: 同时填充行业下拉（行业从 brands 缓存取 distinct industries）
+      populateIndustrySelector();
       populateBrandSelector(brands);
 
       // KPI 1: 活跃品牌数
@@ -164,11 +210,23 @@
         if (kpiScoreSub) kpiScoreSub.textContent = `${r.data.engines_used.length} 引擎 / ${r.data.sample_size} 响应`;
         renderDimGrid(r.data.components);
         renderRadar(r.data.components);
+        renderV034Highlights(r.data);
+        renderZeroClickNarrative(r.data);
+        renderAccuracyCard(r.data);
+        renderCompetitorsCard(r.data);
+        renderPerceptionCard(r.data);
+        renderCoverageView(r.data);
       } else {
         if (kpiScoreValue) kpiScoreValue.textContent = '—';
         if (kpiScoreSub) kpiScoreSub.textContent = r.data?.message?.slice(0, 50) || '无数据';
         renderDimGrid(null);
         renderRadar(null);
+        renderV034Highlights(null);
+        renderZeroClickNarrative(null);
+        renderAccuracyCard(null);
+        renderCompetitorsCard(null);
+        renderPerceptionCard(null);
+        renderCoverageView(null);
       }
     } else {
       // 多品牌概览
@@ -230,7 +288,7 @@
     container.innerHTML = svg;
   }
 
-  // === 品牌综合分对比（条形图）===
+  // === 品牌综合分对比（条形图）— v0.44: 按行业分组 ===
   async function renderBrandComparison(brands) {
     const container = _byId('geo-compare-container');
     if (!container) return;
@@ -252,23 +310,70 @@
       return;
     }
 
-    const max = Math.max(...scores.map(b => b.score || 0), 1);
-    container.innerHTML = scores.map(b => {
-      const hasScore = b.score != null;
-      const pct = hasScore ? Math.max(4, Math.round((b.score / max) * 100)) : 4;
+    // v0.44: 按行业分组（_currentIndustry='' 时所有行业都列，否则只列当前行业）
+    //   按 brand_id 把 scores 和 brands 拼起来
+    const scoreMap = new Map(scores.map(s => [s.brand_id, s]));
+    const enriched = brands.map(b => {
+      const s = scoreMap.get(b.id);
+      return {
+        ...b,
+        score: s?.score ?? null,
+        grade: s?.grade || '',
+        ok: !!s?.ok,
+        components: s?.components || null,
+      };
+    });
+    const withScore = enriched.filter(b => b.score != null);
+    if (withScore.length === 0) {
+      container.innerHTML = '<div class="geo-dim-empty">暂无评分数据。跑一次跟踪后显示对比。</div>';
+      return;
+    }
+
+    // 按行业分组
+    const groups = new Map();
+    for (const b of withScore) {
+      const ind = (b.industry || '（未设置行业）').trim();
+      if (!groups.has(ind)) groups.set(ind, []);
+      groups.get(ind).push(b);
+    }
+    // 排序：当前行业优先，其他行业按品牌数倒序
+    const sortedKeys = [...groups.keys()].sort((a, b) => {
+      if (a === _currentIndustry) return -1;
+      if (b === _currentIndustry) return 1;
+      return groups.get(b).length - groups.get(a).length;
+    });
+
+    // 渲染每个行业
+    const sections = sortedKeys.map(ind => {
+      const list = groups.get(ind).sort((a, b) => (b.score || 0) - (a.score || 0));
+      const max = Math.max(...list.map(b => b.score || 0), 1);
+      const isCurrent = ind === _currentIndustry;
       return `
-        <div class="geo-bar-row">
-          <div class="geo-bar-label" title="${esc(b.brand_name || '')}">${esc(b.brand_name || '?')}</div>
-          <div class="geo-bar-track">
-            <div class="geo-bar-fill${hasScore ? '' : ' geo-bar-fill-empty'}" style="width:${pct}%"></div>
+        <div class="geo-compare-group" style="margin-bottom:18px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:13px">
+            <span style="font-weight:600;color:var(--geo-text,#eee)">${esc(ind)}</span>
+            <span style="opacity:.5;font-size:11px">${list.length} 个品牌</span>
+            ${isCurrent ? '<span style="font-size:10px;color:#38bdf8;background:rgba(56,189,248,.15);padding:1px 6px;border-radius:3px">当前</span>' : ''}
           </div>
-          <div class="geo-bar-value">${hasScore ? b.score + ' (' + b.grade + ')' : '无数据'}</div>
+          ${list.map(b => {
+            const pct = Math.max(4, Math.round((b.score / max) * 100));
+            return `
+              <div class="geo-bar-row" style="height:24px;margin-bottom:3px">
+                <div class="geo-bar-label" title="${esc(b.name)}" style="font-size:11px">${esc(b.name)}</div>
+                <div class="geo-bar-track">
+                  <div class="geo-bar-fill" style="width:${pct}%;height:100%"></div>
+                </div>
+                <div class="geo-bar-value" style="font-size:11px">${b.score} (${b.grade})</div>
+              </div>
+            `;
+          }).join('')}
         </div>
       `;
     }).join('');
+    container.innerHTML = sections;
 
-    // v0.13: Share of Voice（各品牌提及率归一化份额）
-    renderSoV(scores);
+    // v0.13: Share of Voice（基于当前行业过滤后的 brand；_currentIndustry='' 时全局）
+    renderSoV(withScore);
   }
 
   // === Share of Voice（v0.13 — 差距分析 P0）===
@@ -296,7 +401,10 @@
     const rows = withMention
       .map(b => ({
         id: b.brand_id,
-        name: b.brand_name || b.brand_id,
+        // v0.45 fix: enrich 阶段把 brand.name (brands 表) 和 brand_name (score 端点) 都丢了交集，
+        // 当前 enriched 只剩 name（来自 ...b），但有些老路径只用 score 数据没有 .name
+        // → 兼容 name | brand_name | brand_id 三层 fallback
+        name: b.name || b.brand_name || b.brand_id,
         rate: b.components.mention_rate,
         share: (b.components.mention_rate / total) * 100,
         isFocus: currentBrandId ? b.brand_id === currentBrandId : false,
@@ -558,31 +666,68 @@
     }
     container.innerHTML = '<div class="geo-dim-empty">加载趋势...</div>';
 
-    // v0.26: 渲染 lookback selector（切换时重渲染本图）
-    renderLookbackSelector('geo-trend-lookback', () => loadTrendChart(brands));
+  // v0.43: 趋势图快照缓存（30 秒内复用，避免每次切换 tab 重拉 12 个品牌的 /snapshots 并发压垮后端）
+  // 只有在缓存过期或品牌列表变化时才重新拉取
+  const cacheKey = 'trend_' + JSON.stringify(brands.map(b => b.id).sort());
+  const now = Date.now();
+  if (_trendSnapshotCache && _trendSnapshotCache.key === cacheKey && (now - _trendSnapshotCache.at) < TREND_CACHE_MS) {
+    container.innerHTML = '';
+    renderTrendChart(container, _trendSnapshotCache.series);  // v0.45 fix: 现在函数真实存在
+    return;
+  }
 
-    // 拉每个品牌的快照（API 一次返回所有，前端按 lookback 截取）
-    const series = [];
-    await Promise.all(brands.map(async (b) => {
-      try {
-        const r = await api('GET', `/api/geo/snapshots?brand_id=${b.id}`);
-        let rawSnaps = applyLookback(r.data?.snapshots || []);
-        // v0.27: 按周去重（同周重复快照只保留最新一份）
-        const byWeek = new Map();
-        for (const s of rawSnaps) {
-          const cur = byWeek.get(s.week);
-          if (!cur || (s.computed_at || '') > (cur.computed_at || '')) byWeek.set(s.week, s);
-        }
-        const snaps = Array.from(byWeek.values());
-        const pts = snaps
-          .filter(s => s.summary_json && s.summary_json.score != null)
-          .map(s => ({ week: s.week, score: s.summary_json.score }))
-          .sort((a, b) => a.week.localeCompare(b.week));
-        if (pts.length) series.push({ name: b.name, color: pickColor(series.length), pts });
-      } catch (_) { /* 单品牌失败跳过 */ }
-    }));
+  // v0.26: 渲染 lookback selector（切换时重渲染本图）
+  renderLookbackSelector('geo-trend-lookback', () => loadTrendChart(brands));
 
-    if (series.length === 0) {
+  // v0.44: 一次拉全部 snapshots（实测 2ms 返回 12 条快照）→ 前端按 brand_id 分组
+  let allSnapshots = [];
+  try {
+    const r = await api('GET', '/api/geo/snapshots');
+    allSnapshots = r.data?.snapshots || [];
+  } catch (_) { /* 一次失败不阻塞；series 留空，UI 显示「暂无快照数据」*/ }
+
+  const byBrand = new Map();
+  for (const s of allSnapshots) {
+    if (!byBrand.has(s.brand_id)) byBrand.set(s.brand_id, []);
+    byBrand.get(s.brand_id).push(s);
+  }
+
+  const series = [];
+  for (const b of brands) {
+    let rawSnaps = applyLookback(byBrand.get(b.id) || []);
+    // v0.27: 按周去重（同周重复快照只保留最新一份）
+    const byWeek = new Map();
+    for (const s of rawSnaps) {
+      const cur = byWeek.get(s.week);
+      if (!cur || (s.computed_at || '') > (cur.computed_at || '')) byWeek.set(s.week, s);
+    }
+    const snaps = Array.from(byWeek.values());
+    const pts = snaps
+      .filter(s => s.summary_json && s.summary_json.score != null)
+      .map(s => ({ week: s.week, score: s.summary_json.score }))
+      .sort((a, b) => a.week.localeCompare(b.week));
+    if (pts.length) series.push({ name: b.name, color: pickColor(series.length), pts });
+  }
+
+  // 缓存成功结果（30 秒复用）
+  if (series.length > 0) {
+    _trendSnapshotCache = { at: now, key: cacheKey, series };
+  } else {
+    _trendSnapshotCache = null;
+  }
+
+  renderTrendChart(container, series);
+}
+
+  function pickColor(i) {
+    const palette = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16'];
+    return palette[i % palette.length];
+  }
+
+  // v0.45 修复：把 SVG 渲染逻辑从 loadTrendChart 内部提取出来（之前 v0.44 cache 改造时 inline 渲染但忘了调用 renderTrendChart，cache 命中时必崩）
+  // 函数签名 (container, series) — brands 字段不再需要（series 已含 name+color）
+  function renderTrendChart(container, series) {
+    if (!container || !series || series.length === 0) {
       container.innerHTML = '<div class="geo-dim-empty">暂无快照数据。每周六 cron 自动生成，或跑跟踪后手动生成。</div>';
       return;
     }
@@ -666,11 +811,6 @@
     }
     svg += '</svg>';
     container.innerHTML = svg;
-  }
-
-  function pickColor(i) {
-    const palette = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16'];
-    return palette[i % palette.length];
   }
 
   // === 行动→影响归因（v0.17 — Sitepoint 分析 P0）===
@@ -888,6 +1028,453 @@
     }
   }
 
+  // === v0.35 零点击决策叙事（联动 v0.34 三指标）===
+  // 目的：把"被推荐 ≠ 被点击，但客户已经做了决定"的故事打到 dashboard
+  // 数据：纯复用 v0.34 已有指标，不引入新算法
+  function renderZeroClickNarrative(score) {
+    const wrap = _byId('geo-narrative');
+    if (!wrap) return;
+    if (!score || !score.ok || !score.components) {
+      wrap.style.display = 'none';
+      return;
+    }
+    wrap.style.display = '';
+    const C = score.components || {};
+    const naturalSample = score.natural_sample_size || 0;
+
+    // 卡 1：被首次推荐（商业意图问题里，AI 第一个点名的次数）
+    const top1Rate = C.top1_rate, top1Sample = C.top1_sample_size;
+    if (top1Rate != null && top1Sample) {
+      const top1Count = Math.round(top1Sample * top1Rate);
+      _setNarrativeValue('geo-narrative-top1', top1Count + ' 次', `商业意图问题 · 首位率 ${(top1Rate * 100).toFixed(1)}% · 样本 ${top1Sample}`);
+    } else {
+      _setNarrativeValue('geo-narrative-top1', '样本不足', '需要 ≥ 20 条商业意图回答（v0.34 首位推荐率）');
+    }
+
+    // 卡 2：用户看到你（自然问题里，AI 答案中出现品牌的次数）
+    const mentionRate = C.mention_rate;
+    if (mentionRate != null && naturalSample > 0) {
+      const seenCount = Math.round(naturalSample * mentionRate);
+      _setNarrativeValue('geo-narrative-seen', seenCount + ' 次', `自然样本 · 提及率 ${(mentionRate * 100).toFixed(1)}% · 样本 ${naturalSample}`);
+    } else {
+      _setNarrativeValue('geo-narrative-seen', '样本不足', '需要自然样本 + 提及率');
+    }
+
+    // 卡 3：被 AI 引用（品牌内容被当作信源的次数）
+    const brandCite = C.citation_brand_count, totalCite = C.citation_total_count;
+    if (brandCite != null && totalCite) {
+      const share = C.citation_share != null ? (C.citation_share * 100).toFixed(1) + '%' : '—';
+      _setNarrativeValue('geo-narrative-cited', brandCite + ' 次', `总引用 ${totalCite} 次 · 占比 ${share} · 跨 ${C.citation_brand_domains || 0} 域`);
+    } else {
+      _setNarrativeValue('geo-narrative-cited', '无引用数据', '需要响应含 citations 字段（v0.34 引用占比）');
+    }
+  }
+
+  function _setNarrativeValue(id, value, sub) {
+    const v = _byId(id);
+    const s = _byId(id + '-sub');
+    if (v) v.textContent = value;
+    if (s) s.textContent = sub;
+  }
+
+  // === v0.34 三大新指标金卡（首位推荐率 / AI 引用占比 / 行业分位）===
+  // 设计原则：每个卡片独立可解释，样本不足时显示灰色占位；金色标记 = 核心指标
+  function renderV034Highlights(score) {
+    const grid = _byId('geo-v034-grid');
+    if (!grid) return;
+
+    // 数据未就绪或失败 → 三个卡全部回到 — 占位
+    if (!score || !score.ok || !score.components) {
+      _resetV034Card('geo-v034-top1', '样本不足', '需要 ≥ 20 条商业意图 query');
+      _resetV034Card('geo-v034-citation', '样本不足', '需要响应中含 citations 字段');
+      _resetV034Card('geo-v034-industry', '样本不足', '需要 ≥ 8 个同行业样本');
+      return;
+    }
+
+    const c = score.components;
+
+    // ★ 卡 1：首位推荐率（商业意图子集 + 首位判定）
+    _renderTop1Card(c);
+    // 🔗 卡 2：AI 引用占比
+    _renderCitationCard(c);
+    // 🏆 卡 3：行业分位
+    _renderIndustryCard(c);
+  }
+
+  function _resetV034Card(id, valueText, subText) {
+    const card = _byId(id);
+    if (!card) return;
+    const v = card.querySelector('.v034-value');
+    const s = card.querySelector('.v034-sub');
+    const e = card.querySelector('.v034-engines');
+    if (v) { v.textContent = valueText; v.style.color = 'var(--muted)'; }
+    if (s) { s.textContent = subText; }
+    if (e) { e.innerHTML = ''; }
+    card.classList.add('v034-empty');
+    // 行业卡恢复默认带状图（无 self marker）
+    if (id === 'geo-v034-industry') {
+      const bar = card.querySelector('.v034-bar');
+      if (bar) bar.innerHTML = '<div class="v034-bar-track"><div class="v034-bar-median"></div></div>';
+    }
+  }
+
+  function _renderTop1Card(c) {
+    const card = _byId('geo-v034-top1');
+    if (!card) return;
+    const v = card.querySelector('.v034-value');
+    const s = card.querySelector('.v034-sub');
+    const e = card.querySelector('.v034-engines');
+    if (c.top1_rate == null) { _resetV034Card('geo-v034-top1', '样本不足', '需要 ≥ 20 条商业意图 query'); return; }
+    card.classList.remove('v034-empty');
+    const pct = c.top1_rate;
+    v.textContent = (pct * 100).toFixed(1) + '%';
+    // 分位定性：≥50% 金（领先）/ 30-50% 品牌色（健康）/ <30% 灰（弱势）
+    v.style.color = pct >= 0.5 ? '#F59E0B' : pct >= 0.3 ? 'var(--brand,#38bdf8)' : 'var(--muted)';
+    s.innerHTML = `基于 ${c.top1_sample_size || 0} 条商业意图回答 · ${pct >= 0.5 ? '领先' : pct >= 0.3 ? '健康' : '待提升'}`;
+    if (e && c.top1_by_engine) {
+      e.innerHTML = Object.entries(c.top1_by_engine)
+        .filter(([_, val]) => val != null)
+        .map(([k, val]) => `<span class="v034-engine">${esc(k)}: ${(val * 100).toFixed(0)}%</span>`)
+        .join('');
+    }
+  }
+
+  function _renderCitationCard(c) {
+    const card = _byId('geo-v034-citation');
+    if (!card) return;
+    const v = card.querySelector('.v034-value');
+    const s = card.querySelector('.v034-sub');
+    if (c.citation_share == null) { _resetV034Card('geo-v034-citation', '无引用数据', '需要响应中含 citations 字段'); return; }
+    card.classList.remove('v034-empty');
+    const sh = c.citation_share;
+    v.textContent = (sh * 100).toFixed(1) + '%';
+    v.style.color = sh >= 0.3 ? 'var(--good,#10b981)' : sh >= 0.15 ? 'var(--brand,#38bdf8)' : 'var(--warn,#f59e0b)';
+    const coverage = c.citation_coverage != null ? Math.round(c.citation_coverage * 100) : 0;
+    s.innerHTML = `品牌被引 ${c.citation_brand_count || 0} / 总 ${c.citation_total_count || 0} · 跨 ${c.citation_brand_domains || 0} 域 · 覆盖 ${coverage}%`;
+  }
+
+  function _renderIndustryCard(c) {
+    const card = _byId('geo-v034-industry');
+    if (!card) return;
+    const v = card.querySelector('.v034-value');
+    const s = card.querySelector('.v034-sub');
+    const bar = card.querySelector('.v034-bar');
+    if (c.industry_percentile == null) { _resetV034Card('geo-v034-industry', '样本不足', '需要 ≥ 8 个同行业样本（先给品牌打行业类目）'); return; }
+    card.classList.remove('v034-empty');
+    const pct = c.industry_percentile;
+    v.textContent = '前 ' + Math.round((1 - pct) * 100) + '%';
+    // 分位定性：前 25% 金（领先）/ 25-50% 品牌色 / 后 50% 灰（弱势）
+    v.style.color = pct <= 0.25 ? '#F59E0B' : pct <= 0.5 ? 'var(--brand,#38bdf8)' : 'var(--warn,#f59e0b)';
+    s.textContent = `${c.industry_sample_size || 0} 个${c.industry_sample_size ? '同行业品牌' : '样本'} · 排名第 ${c.industry_rank || '?'} · 中位 ${(c.industry_median || 0).toFixed(1)} · 均值 ${(c.industry_mean || 0).toFixed(1)}`;
+    // 简易带状图（百分比越低位置越靠左 = 排名越前）
+    if (bar) {
+      bar.innerHTML = `
+        <div class="v034-bar-track">
+          <div class="v034-bar-median"></div>
+          <div class="v034-bar-self" style="left:${pct * 100}%;"></div>
+        </div>
+      `;
+    }
+  }
+
+  // === v0.36 描述准确率金卡（LLM-as-judge 抽样）===
+  // 数据来源：geo-scoring.js 在 components 里写入的缓存字段
+  // 触发：底部"🧠 抽样判定"按钮调用 POST /api/geo/brands/:id/judge-accuracy
+  function renderAccuracyCard(score) {
+    const card = _byId('geo-v036-accuracy');
+    if (!card) return;
+    const v = card.querySelector('.v036-value');
+    const s = card.querySelector('.v036-sub');
+    const issuesEl = card.querySelector('.v036-issues');
+    if (!score || !score.ok || !score.components || score.components.accuracy_rate == null) {
+      v.textContent = '未抽样';
+      v.style.color = 'var(--muted)';
+      s.textContent = '点击下方"🧠 抽样判定"用 LLM 判定 20 条回答（30-60 秒）';
+      if (issuesEl) issuesEl.innerHTML = '';
+      card.classList.add('v036-empty');
+      return;
+    }
+    card.classList.remove('v036-empty');
+    const c = score.components;
+    const rate = c.accuracy_rate;
+    const correct = c.accuracy_correct || 0;
+    const misleading = c.accuracy_misleading || 0;
+    const sample = c.accuracy_sample_size || (correct + misleading);
+    const den = correct + misleading;
+    v.textContent = (rate * 100).toFixed(1) + '%';
+    // 分位定性：≥80% 绿（健康）/ 50-80% 品牌色 / <50% 警示色
+    v.style.color = rate >= 0.8 ? 'var(--good,#10b981)' : rate >= 0.5 ? 'var(--brand,#38bdf8)' : 'var(--warn,#f59e0b)';
+    const computedAt = c.accuracy_computed_at ? new Date(c.accuracy_computed_at).toLocaleDateString('zh-CN') : '—';
+    s.textContent = `${correct} 正确 / ${misleading} misleading（样本 ${den}）· 判定于 ${computedAt}`;
+    // 错例摘要（最多 3 条）
+    if (issuesEl) {
+      const issues = c.accuracy_issues || [];
+      if (issues.length > 0) {
+        issuesEl.innerHTML = '<div class="v036-issues-title">⚠️ 错例摘要：</div>' +
+          issues.map(it => `<div class="v036-issue"><span class="v036-issue-engine">${esc(it.engine || '?')}</span>${esc(it.issue || '')}</div>`).join('');
+      } else {
+        issuesEl.innerHTML = '';
+      }
+    }
+  }
+
+  // v0.36: 触发描述准确率判定（异步 fire-and-forget）
+  async function triggerAccuracyJudge(brandId) {
+    const btn = _byId('geo-v036-judge-btn');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = '🧠 判定中...';
+    }
+    try {
+      const resp = await fetch('/api/geo/brands/' + encodeURIComponent(brandId) + '/judge-accuracy', { method: 'POST' });
+      const data = await resp.json();
+      if (data && data.ok) {
+        if (typeof notify === 'function') notify('🧠 描述准确率判定任务已启动', '约 30-60 秒完成。完成后下次刷新 score 即可看到结果。', 'success');
+        else if (typeof setStatus === 'function') setStatus('🧠 判定中... 约 30-60 秒', 'success');
+      } else {
+        if (typeof notify === 'function') notify('❌ 判定启动失败', data?.error || '未知错误', 'error');
+      }
+    } catch (e) {
+      if (typeof notify === 'function') notify('❌ 判定请求失败', e.message, 'error');
+    } finally {
+      setTimeout(function () {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = '🧠 抽样判定';
+        }
+      }, 5000);
+    }
+  }
+
+  // v0.38: 渲染竞品共现卡片（借鉴 oneglanse competitors[]）
+  function renderCompetitorsCard(score) {
+    const card = _byId('geo-v038-competitors');
+    const listEl = _byId('geo-v038-competitors-list');
+    if (!card || !listEl) return;
+    const comps = score && score.ok && score.components ? score.components.competitors : null;
+    if (!comps || comps.length === 0) {
+      card.classList.add('v038-empty');
+      listEl.innerHTML = '<div style="font-size:12px;color:var(--geo-muted);padding:8px 0">暂无竞品共现数据（需要先有竞品品牌 + 自然发现回答）</div>';
+      return;
+    }
+    card.classList.remove('v038-empty');
+    const valueEl = card.querySelector('.v038-value');
+    if (valueEl) valueEl.textContent = comps.length + ' 个竞品';
+    const subEl = card.querySelector('.v038-sub');
+    if (subEl) subEl.textContent = `基于 ${score.components.competitors_count || comps.length} 个竞品统计`;
+    listEl.innerHTML = comps.map((c, i) => {
+      const sentClass = c.sentiment >= 60 ? 'positive' : c.sentiment >= 40 ? 'neutral' : 'negative';
+      const sentLabel = c.sentiment >= 60 ? '正面' : c.sentiment >= 40 ? '中性' : '负面';
+      return `
+        <div class="geo-v038-comp-item">
+          <div class="geo-v038-comp-rank">${i + 1}</div>
+          <div style="flex:1">
+            <div class="geo-v038-comp-name">${escHtml(c.name || '未知')}</div>
+            <div class="geo-v038-comp-domain">${escHtml(c.domain || '')}</div>
+          </div>
+          <div class="geo-v038-comp-meta">
+            <span class="geo-v038-comp-sentiment ${sentClass}">${sentLabel} ${c.sentiment || 0}</span>
+            ${c.isRecommended ? '<span class="geo-v038-recommended-badge">推荐</span>' : ''}
+            <span style="font-size:10px;color:var(--geo-muted)">提及${c.mentions || 0}次</span>
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  // v0.38: 渲染品牌感知 + 风险卡片（借鉴 oneglanse perception[] + risks[]）
+  function renderPerceptionCard(score) {
+    const card = _byId('geo-v038-perception');
+    const gridEl = _byId('geo-v038-perception-grid');
+    const risksEl = _byId('geo-v038-risks-list');
+    if (!card || !gridEl || !risksEl) return;
+    const c = score && score.ok && score.components ? score.components : {};
+    const hasData = c.perception_core_claims != null;
+    if (!hasData) {
+      card.classList.add('v038-empty');
+      gridEl.innerHTML = '<div style="font-size:12px;color:var(--geo-muted);padding:8px 0">暂无感知数据（点击下方"🧠 触发感知分析"用 LLM 分析，约 30-60 秒）</div>';
+      risksEl.innerHTML = '';
+      return;
+    }
+    card.classList.remove('v038-empty');
+    const valueEl = card.querySelector('.v038-value');
+    if (valueEl) valueEl.textContent = c.perception_pricing || '—';
+    const subEl = card.querySelector('.v038-sub');
+    if (subEl) {
+      const computedAt = c.perception_computed_at ? new Date(c.perception_computed_at).toLocaleDateString('zh-CN') : '—';
+      subEl.textContent = `定价感知 · 分析于 ${computedAt}`;
+    }
+    // 感知网格
+    const coreClaims = c.perception_core_claims || [];
+    const differentiators = c.perception_differentiators || [];
+    const bestKnownFor = c.perception_best_known_for || '未识别';
+    gridEl.innerHTML = `
+      <div class="geo-v038-perception-item">
+        <div class="geo-v038-perception-label">💎 核心主张</div>
+        <div class="geo-v038-perception-value">${coreClaims.length > 0 ? '<ul>' + coreClaims.map(cl => `<li>${escHtml(cl)}</li>`).join('') + '</ul>' : '<span style="color:var(--geo-muted)">未识别</span>'}</div>
+      </div>
+      <div class="geo-v038-perception-item">
+        <div class="geo-v038-perception-label">⭐ 差异化优势</div>
+        <div class="geo-v038-perception-value">${differentiators.length > 0 ? '<ul>' + differentiators.map(d => `<li>${escHtml(d)}</li>`).join('') + '</ul>' : '<span style="color:var(--geo-muted)">未识别</span>'}</div>
+      </div>
+      <div class="geo-v038-perception-item" style="grid-column:span 2">
+        <div class="geo-v038-perception-label">🏆 最被认可特征</div>
+        <div class="geo-v038-perception-value"><span class="geo-v038-pricing-badge">${escHtml(bestKnownFor)}</span></div>
+      </div>
+    `;
+    // 风险列表
+    const risks = c.perception_risks || [];
+    if (risks.length > 0) {
+      risksEl.innerHTML = risks.map(r => `
+        <div class="geo-v038-risk-item ${r.severity || 'info'}">
+          <span class="geo-v038-risk-severity ${r.severity || 'info'}">${r.severity || 'info'}</span>
+          <span>${escHtml(r.description || '未分类风险')}</span>
+        </div>
+      `).join('');
+    } else {
+      risksEl.innerHTML = '<div style="font-size:12px;color:var(--geo-muted);padding:6px 0">暂无风险信号</div>';
+    }
+  }
+
+  // v0.38: 触发品牌感知 + 风险判定（异步 fire-and-forget）
+  async function triggerPerceptionJudge(brandId) {
+    const btn = _byId('geo-v038-perception-judge-btn');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = '🧠 分析中...';
+    }
+    try {
+      const resp = await fetch('/api/geo/brands/' + encodeURIComponent(brandId) + '/judge-perception', { method: 'POST' });
+      const data = await resp.json();
+      if (data && data.ok) {
+        if (typeof notify === 'function') notify('🧠 品牌感知分析任务已启动', '约 30-60 秒完成。完成后下次刷新 score 即可看到结果。', 'success');
+        else if (typeof setStatus === 'function') setStatus('🧠 感知分析中... 约 30-60 秒', 'success');
+      } else {
+        if (typeof notify === 'function') notify('❌ 感知分析启动失败', data?.error || '未知错误', 'error');
+      }
+    } catch (e) {
+      if (typeof notify === 'function') notify('❌ 感知分析请求失败', e.message, 'error');
+    } finally {
+      setTimeout(function () {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = '🧠 触发感知分析';
+        }
+      }, 5000);
+    }
+  }
+
+  // === v0.37 平台覆盖度视图 ===
+  // 数据来源：components.coverage_detail（每个引擎 mention_rate 列表）
+  function renderCoverageView(score) {
+    const wrap = _byId('geo-coverage');
+    if (!wrap) return;
+    const detail = score && score.ok && score.components ? score.components.coverage_detail : null;
+    if (!detail || !Array.isArray(detail) || detail.length === 0) {
+      wrap.style.display = 'none';
+      return;
+    }
+    wrap.style.display = '';
+    const countEl = _byId('geo-coverage-count');
+    const avgEl = _byId('geo-coverage-avg');
+    const barsEl = _byId('geo-coverage-bars');
+    if (countEl) countEl.textContent = (score.components.coverage_engine_count || detail.length) + '';
+    if (avgEl) {
+      const avg = score.components.coverage_avg_rate;
+      avgEl.textContent = avg != null ? (avg * 100).toFixed(1) + '%' : '—';
+      avgEl.style.color = avg >= 0.5 ? 'var(--good,#10b981)' : avg >= 0.2 ? 'var(--brand,#38bdf8)' : 'var(--warn,#f59e0b)';
+    }
+    if (barsEl) {
+      barsEl.innerHTML = detail.map(function (it) {
+        const pct = (it.rate * 100).toFixed(0);
+        const color = it.rate >= 0.5 ? 'var(--good,#10b981)' : it.rate >= 0.2 ? 'var(--brand,#38bdf8)' : 'var(--warn,#f59e0b)';
+        return '<div class="coverage-bar-row">' +
+          '<span class="coverage-bar-label">' + esc(it.engine) + '</span>' +
+          '<div class="coverage-bar-track"><div class="coverage-bar-fill" style="width:' + pct + '%;background:' + color + ';"></div></div>' +
+          '<span class="coverage-bar-value">' + pct + '%</span>' +
+          '<span class="coverage-bar-meta">' + it.mentioned + ' / ' + it.total + '</span>' +
+          '</div>';
+      }).join('');
+    }
+  }
+
+  // === v0.39 5 分钟自查 onboarding ===
+  // 状态机：banner（未开始）/ workflow(currentStep 进行中) / mini(已完成) / hidden(已 dismiss)
+  // localStorage key: acms-geo-onboarding-{brandId}
+  function obKey(brandId) { return 'acms-geo-onboarding-' + brandId; }
+  function readObState(brandId) {
+    try {
+      var raw = localStorage.getItem(obKey(brandId));
+      return raw ? JSON.parse(raw) : null;
+    } catch (_) { return null; }
+  }
+  function writeObState(brandId, state) {
+    try { localStorage.setItem(obKey(brandId), JSON.stringify(state)); } catch (_) {}
+  }
+  function clearObState(brandId) {
+    try { localStorage.removeItem(obKey(brandId)); } catch (_) {}
+  }
+  function showOnboardingStep(step) {
+    // 显示第 N 步，其它隐藏 + 更新进度条
+    document.querySelectorAll('.onboarding-step').forEach(function (el) {
+      el.style.display = (parseInt(el.getAttribute('data-step'), 10) === step) ? '' : 'none';
+    });
+    document.querySelectorAll('.onboarding-step-indicator').forEach(function (el) {
+      var n = parseInt(el.getAttribute('data-step'), 10);
+      el.classList.toggle('done', n < step);
+      el.classList.toggle('active', n === step);
+    });
+  }
+  function renderOnboarding(brandId) {
+    var banner = _byId('onboarding-banner');
+    var workflow = _byId('onboarding-workflow');
+    var mini = _byId('onboarding-mini');
+    if (!banner || !workflow || !mini) return;
+    // 无品牌时不显示任何东西
+    if (!brandId) {
+      banner.style.display = 'none';
+      workflow.style.display = 'none';
+      mini.style.display = 'none';
+      return;
+    }
+    var state = readObState(brandId);
+    // 已完成 → 显示 mini
+    if (state && state.completedAt) {
+      banner.style.display = 'none';
+      workflow.style.display = 'none';
+      mini.style.display = '';
+      var at = _byId('onboarding-completed-at');
+      if (at) at.textContent = new Date(state.completedAt).toLocaleDateString('zh-CN');
+      return;
+    }
+    // 已 dismiss（没完成就关掉）→ 全隐藏
+    if (state && state.dismissed) {
+      banner.style.display = 'none';
+      workflow.style.display = 'none';
+      mini.style.display = 'none';
+      return;
+    }
+    // 工作流进行中 → 显示 workflow
+    if (state && state.currentStep) {
+      banner.style.display = 'none';
+      workflow.style.display = '';
+      mini.style.display = 'none';
+      showOnboardingStep(state.currentStep);
+      return;
+    }
+    // 默认 → banner
+    banner.style.display = '';
+    workflow.style.display = 'none';
+    mini.style.display = 'none';
+  }
+  // 状态机行为（导出用于测试）
+  function _obResolveView(brandId, state) {
+    if (!brandId) return 'hidden';
+    if (state && state.completedAt) return 'mini';
+    if (state && state.dismissed) return 'hidden';
+    if (state && state.currentStep) return 'workflow';
+    return 'banner';
+  }
+
   function renderDimGrid(components) {
     const grid = _byId('geo-dim-grid');
     if (!grid) return;
@@ -951,6 +1538,8 @@
       const r = await api('GET', '/api/geo/brands');
       const brands = r.data?.brands || [];
       renderBrandTable(brands);
+      _allBrands = brands;  // v0.45: 同步刷新缓存（修复之前 loadBrands 不更缓存的漏洞）
+      populateIndustrySelector();  // v0.45: 品牌数据变化时同步刷新行业下拉（计数实时更新）
       populateBrandSelector(brands);
       setStatus(`已加载 ${brands.length} 个品牌`, 'success');
     } catch (e) {
@@ -974,6 +1563,7 @@
         <td>${(b.created_at || '').slice(0, 19).replace('T', ' ')}</td>
         <td>
           <button class="geo-btn geo-btn-sm" onclick="GEODashboard.selectBrand('${b.id}')">📊</button>
+          <button class="geo-btn geo-btn-sm" onclick="GEODashboard.clearBrandData('${b.id}', '${esc(b.name)}')" title="清除该品牌的所有追踪记录和评分（保留品牌和别名）">🧹</button>
           <button class="geo-btn geo-btn-sm" onclick="GEODashboard.deleteBrand('${b.id}', '${esc(b.name)}')">🗑️</button>
         </td>
       </tr>
@@ -998,17 +1588,92 @@
     }
   }
 
+  // v0.44: 品牌/行业选择状态（缓存 + 当前过滤）
+  let _allBrands = [];           // 所有 brand 缓存（从 /api/geo/brands 拉的）
+  let _currentIndustry = '';     // 当前行业过滤（'' = 所有行业）
+
+  // v0.44: 行业下拉：内置 7 行业 + default 枚举（不依赖 brand 缓存 — 即便没品牌也能选）
+  //   数据基础：server/services/geo-prompt-llm.js INDUSTRY_PROMPT_GUIDANCE 字典
+  //   v0.45+: 加 (n) 显示该行业已建品牌数（计数从 _allBrands 缓存取 — 仅展示用，不影响可选性）
+  const INDUSTRY_OPTIONS = [
+    { value: 'marketing',          label: '营销/广告/SEO' },
+    { value: 'exhibition',         label: '展览/展台/会展' },
+    { value: 'saas',               label: 'SaaS / B2B 软件' },
+    { value: 'pharma',             label: '医药/医疗健康' },
+    { value: 'banking',            label: '银行/金融' },
+    { value: 'ecommerce',          label: '电商/零售' },
+    { value: 'brand-design',       label: '品牌设计' },
+    { value: 'consumer-electronics', label: '消费电子' },
+  ];
+
+  function populateIndustrySelector() {
+    const select = _byId('geo-industry-select');
+    if (!select) return;
+    const currentValue = _currentIndustry || select.value || '';
+    // 统计 _allBrands 缓存里每个行业已有几个品牌（用于在 (n) 显示）
+    const counts = new Map();
+    for (const b of _allBrands) {
+      const ind = (b.industry || '').trim();
+      if (!ind) continue;
+      counts.set(ind, (counts.get(ind) || 0) + 1);
+    }
+    // 渲染：内置 7+default 行业 + 实时品牌计数；已有品牌的行业排前面（按计数倒序）
+    const sortedOpts = [...INDUSTRY_OPTIONS].sort((a, b) => {
+      const ca = counts.get(a.value) || 0;
+      const cb = counts.get(b.value) || 0;
+      if (ca !== cb) return cb - ca;
+      return a.label.localeCompare(b.label, 'zh-CN');
+    });
+    select.innerHTML = '<option value="">— 所有行业 —</option>' +
+      sortedOpts.map(o => {
+        const n = counts.get(o.value) || 0;
+        return `<option value="${esc(o.value)}">${esc(o.label)} (${n})</option>`;
+      }).join('');
+    // 兼容：若 _currentIndustry 不在内置列表（老数据用了没注册的 key），保留并追加
+    if (_currentIndustry && !INDUSTRY_OPTIONS.some(o => o.value === _currentIndustry)) {
+      const n = counts.get(_currentIndustry) || 0;
+      const extraOpt = document.createElement('option');
+      extraOpt.value = _currentIndustry;
+      extraOpt.textContent = `${_currentIndustry} (${n}) [自定义]`;
+      select.appendChild(extraOpt);
+    }
+    select.value = currentValue;
+    _currentIndustry = currentValue;
+  }
+
+  // v0.44: 改：按当前 _currentIndustry 过滤品牌后再填充
   function populateBrandSelector(brands) {
+    // 支持两种调用：传新 brands 数组（更新缓存 + 重渲染）或不传（仅按当前 industry 重渲染）
+    if (Array.isArray(brands)) _allBrands = brands;
     const select = _byId('geo-brand-select');
     if (!select) return;
     const currentValue = select.value;
+    const filtered = _currentIndustry
+      ? _allBrands.filter(b => (b.industry || '').trim() === _currentIndustry)
+      : _allBrands;
     select.innerHTML = '<option value="">— 所有品牌 —</option>' +
-      brands.map(b => `<option value="${b.id}">${esc(b.name)} (${esc(b.domain)})</option>`).join('');
-    select.value = currentValue || '';
+      filtered.map(b => {
+        const indLabel = b.industry ? ` <span style="opacity:.5;font-size:11px">[${esc(b.industry)}]</span>` : '';
+        return `<option value="${b.id}">${esc(b.name)} (${esc(b.domain)})${indLabel}</option>`;
+      }).join('');
+    select.value = (filtered.find(b => b.id === currentValue) || {}).id || '';
+    // 同步更新行业下拉（保证 industry select 显示 _currentIndustry）
+    const indSelect = _byId('geo-industry-select');
+    if (indSelect && indSelect.value !== _currentIndustry) indSelect.value = _currentIndustry;
   }
 
   async function selectBrand(brandId) {
     currentBrandId = brandId;
+    // v0.44: 联动 industry select（选 brand 时自动切到对应行业）
+    if (brandId) {
+      const b = _allBrands.find(x => x.id === brandId);
+      if (b && b.industry && b.industry !== _currentIndustry) {
+        _currentIndustry = b.industry;
+        const indSelect = _byId('geo-industry-select');
+        if (indSelect) indSelect.value = _currentIndustry;
+        populateBrandSelector(); // 重新过滤 brand select 以确保 brand 显示
+      }
+    }
     switchTab('overview');
     // v0.30: 显隐别名编辑按钮 — 默认 disabled（灰色 + tooltip 提示），选具体品牌才启用
     // 选「所有品牌」时按钮可见但不可点（让用户知道功能存在 + 知道怎么启用）
@@ -1064,6 +1729,10 @@
         </div>
       </div>
     `;
+    // v0.44 fix: modal 销毁前 textarea 也被 removeChild，必须用 beforeCleanup 钩子把值存到闭包
+    //   原代码: cleanup 时 textarea 已经从 DOM 移除 → _byId 找不到 → input=null → 直接 return → PATCH 没发
+    //   修法: 用 ACMSModal.beforeCleanup 钩子，在 modal 销毁前（DOM 还在）读 textarea.value 存到 _capturedText
+    let _capturedText = initialText;
     const result = await showModal({
       title: '✎ 编辑品牌别名',
       html,
@@ -1072,6 +1741,14 @@
         { label: '取消', value: null, className: 'geo-btn' },
         { label: '保存', value: 'SAVE', className: 'geo-btn geo-btn-primary' },
       ],
+      beforeCleanup: (v) => {
+        // 仅在点"保存"时捕获（取消/ESC/点遮罩不捕获）
+        if (v === 'SAVE') {
+          const ta = document.querySelector('#geo-alias-edit-input');
+          if (ta) _capturedText = ta.value || '';
+        }
+        return v;
+      },
     });
 
     // AI 推断按钮（在 modal 内部触发 — 弹回新模态覆盖在原模态上）
@@ -1087,11 +1764,8 @@
       return;
     }
 
-    // 读 DOM 拿 textarea 内容（ACMSModal html 模式不会回传字段值，必须自己读）
-    const root = wRef?.$c || document;
-    const input = root.querySelector('#geo-alias-edit-input');
-    if (!input) return;
-    const raw = input.value || '';
+    // 用 beforeCleanup 钩子捕获的值（modal 销毁后 DOM 找不到 input，绕开 bug）
+    const raw = _capturedText;
     // 多种分隔符兼容（、 , ，）
     const aliases = raw.split(/[、,,，]/).map(s => s.trim()).filter(Boolean);
 
@@ -1117,10 +1791,10 @@
     const brandId = aliasBtn?.dataset.brandId;
     if (!brandId) return;
     setStatus('AI 推断别名中...', 'loading');
-    const root = wRef?.$c || document;
-    const input = root.querySelector('#geo-alias-edit-input');
-    const preview = root.querySelector('#geo-alias-edit-preview');
-    const countEl = root.querySelector('#geo-alias-edit-count');
+    // v0.44 fix: 同 editBrandAliases — modal 在 document.body 下，用 _byId() 而非 wRef?.$c || document
+    const input = _byId('geo-alias-edit-input');
+    const preview = _byId('geo-alias-edit-preview');
+    const countEl = _byId('geo-alias-edit-count');
     const r = await api('POST', `/api/geo/brands/${brandId}/infer-aliases`);
     if (r.data?.ok) {
       const inferred = r.data.inferred || [];
@@ -1244,7 +1918,8 @@
     });
 
     // 4. 绑定 Apply
-    const applyBtn = (wRef?.$c || document).querySelector('#geo-onboarding-apply-btn');
+    // v0.44 fix: modal 在 document.body，用 _byId() 而非 wRef?.$c 查
+    const applyBtn = _byId('geo-onboarding-apply-btn');
     if (applyBtn) {
       applyBtn.onclick = async () => {
         const collected = collectOnboardingForm(pick.brand_id);
@@ -1327,26 +2002,31 @@
 
   // 收集 Review 表单 → apply 数据
   function collectOnboardingForm(brandId) {
-    const root = wRef?.$c || document;
-    const name = root.querySelector('#geo-obo-name')?.value.trim() || '';
-    const aliases = (root.querySelector('#geo-obo-aliases')?.value || '').split(/[，,、]/).map(s => s.trim()).filter(Boolean);
-    const addDomains = (root.querySelector('#geo-obo-domains')?.value || '').split(/[，,、]/).map(s => s.trim()).filter(Boolean);
-    // 竞品
+    // v0.44 fix: 同 editBrandAliases — modal 在 document.body 下，不在 GEO 浮窗内
+    //   原代码 const root = wRef?.$c || document; root.querySelector(...) 永远找不到 modal 里的元素（input/checkbox）
+    //   → 用户填的 name/aliases/competitors/prompts 全收集成空 → apply 时数据空 → 无效保存
+    //   改用 _byId() + querySelectorAll — _byId() 先查 wRef.$c 找不到再 fallback document
+    const name = (_byId('geo-obo-name')?.value || '').trim();
+    const aliases = (_byId('geo-obo-aliases')?.value || '').split(/[，,、]/).map(s => s.trim()).filter(Boolean);
+    const addDomains = (_byId('geo-obo-domains')?.value || '').split(/[，,、]/).map(s => s.trim()).filter(Boolean);
+    // 竞品（多元素，用 _byId 找第一个 + 用 document.querySelectorAll 全文档范围查）
+    const _docAll = (sel) => Array.from(document.querySelectorAll(sel));
+    const _docOne = (sel) => document.querySelector(sel);
     const competitors = [];
-    root.querySelectorAll('.geo-obo-comp-check').forEach(cb => {
+    _docAll('.geo-obo-comp-check').forEach(cb => {
       if (!cb.checked) return;
       const i = cb.dataset.idx;
-      const name = root.querySelector(`.geo-obo-comp-name[data-idx="${i}"]`)?.value.trim() || '';
-      const domains = (root.querySelector(`.geo-obo-comp-domain[data-idx="${i}"]`)?.value || '').split(/[，,、]/).map(s => s.trim()).filter(Boolean);
+      const name = _docOne(`.geo-obo-comp-name[data-idx="${i}"]`)?.value.trim() || '';
+      const domains = (_docOne(`.geo-obo-comp-domain[data-idx="${i}"]`)?.value || '').split(/[，,、]/).map(s => s.trim()).filter(Boolean);
       if (name) competitors.push({ name, domains, aliases: [] });
     });
     // prompts
     const suggestedPrompts = [];
-    root.querySelectorAll('.geo-obo-prompt-check').forEach(cb => {
+    _docAll('.geo-obo-prompt-check').forEach(cb => {
       if (!cb.checked) return;
       const i = cb.dataset.idx;
-      const prompt = root.querySelector(`.geo-obo-prompt-text[data-idx="${i}"]`)?.value.trim() || '';
-      const tags = (root.querySelector(`.geo-obo-prompt-tags[data-idx="${i}"]`)?.value || '').split(/[，,、]/).map(s => s.trim()).filter(Boolean);
+      const prompt = _docOne(`.geo-obo-prompt-text[data-idx="${i}"]`)?.value.trim() || '';
+      const tags = (_docOne(`.geo-obo-prompt-tags[data-idx="${i}"]`)?.value || '').split(/[，,、]/).map(s => s.trim()).filter(Boolean);
       if (prompt) suggestedPrompts.push({ prompt, tags });
     });
     return { brandName: name, additionalDomains: addDomains, aliases, competitors, suggestedPrompts };
@@ -1357,6 +2037,9 @@
   let _queryMap = {};       // query_id → prompt 文本
   let _brandMap = {};       // v0.27: brand_id → brand 对象（responses 只存 brand_id，渲染品牌名/域名/高亮用映射）
   let _trackEngineFilter = ''; // v0.26: 引擎 filter 值（来自 geo-filter-bar 组件）
+  // v0.43: 趋势图快照缓存（避免每次切换 tab 都重拉 12 个品牌的 /api/geo/snapshots，防止性能卡顿）
+  let _trendSnapshotCache = null; // { at: Date, series: [...] }
+  const TREND_CACHE_MS = 30000; // 30 秒内复用缓存
 
   // v0.26: 初始化 Track Tab 引擎 filter bar（chip 风格，替代原 <select>）
   function renderTrackFilterBar() {
@@ -1388,9 +2071,132 @@
     ]);
   }
 
+  // v0.44: 引擎 picker 状态（外部缓存，避免每次重新拉 settings）
+  let _geoEngineCatalog = null;
+  let _geoEngineSelected = null;
+  let _geoEngineCapabilities = null;  // v0.44: 用于标记 singleton 引擎（浏览器自动化，必须串行）
+
+  // v0.44: 渲染「本次跑用的引擎」dropdown picker（默认从 settings.engine_whitelist 加载；临时勾选不影响 settings）
+  //   治"用户在追踪 tab 选了 DeepSeek 但跑的是 DeepSeek Web"的根因——之前 engine_whitelist 在 设置 tab，追踪 tab 无 picker 可见，UI 误导
+  //   v0.44 改 dropdown：11 个 inline checkbox 太长 → 改成 button + 浮层多选下拉
+  function renderTrackEnginePicker() {
+    const container = _byId('geo-track-engine-pick');
+    if (!container) return;
+    const labels = {
+      deepseek: 'DeepSeek', openai: 'OpenAI', claude: 'Claude', perplexity: 'Perplexity',
+      google: 'Gemini', copilot: 'Copilot', grok: 'Grok', google_ai_mode: 'AI Mode',
+      'deepseek-web': 'DeepSeek 网页版 🔍', minimax: 'MiniMax',
+    };
+
+    if (_geoEngineCatalog === null) {
+      // 第一次渲染：从后端拉 settings（同时拉 engines 配置拿 singleton 标记）
+      Promise.all([
+        api('GET', '/api/geo/settings').catch(() => ({ data: { ok: false } })),
+        api('GET', '/api/geo/engines').catch(() => ({ data: { ok: false } })),
+      ]).then(([settingsRes, enginesRes]) => {
+        if (!settingsRes.data?.ok) return;
+        const s = settingsRes.data.settings || {};
+        _geoEngineCatalog = s.all_engines || [];
+        _geoEngineSelected = (s.engine_whitelist && s.engine_whitelist.length > 0)
+          ? [...s.engine_whitelist]
+          : [..._geoEngineCatalog];
+        // 缓存 singleton 标记用于提示
+        _geoEngineCapabilities = enginesRes.data?.capabilities || {};
+        renderTrackEnginePicker();
+      });
+      return;
+    }
+
+    const total = _geoEngineCatalog.length;
+    const picked = _geoEngineSelected.length;
+    container.innerHTML = `
+      <button type="button" id="geo-track-engine-pick-btn" class="geo-btn geo-btn-sm" data-tip="本次跑用的引擎（默认 = 设置 tab 的引擎白名单）。勾选改变仅本次生效，不写入 settings。" style="font-size:12px">
+        ⚙ 本次引擎 (${picked}/${total}) ▾
+      </button>
+      <div id="geo-track-engine-pick-dropdown" class="geo-engine-pick-dropdown" style="display:none;position:absolute;top:calc(100% + 4px);left:0;background:var(--geo-bg-2,#1a1a2e);border:1px solid var(--geo-border,#444);border-radius:6px;padding:8px;z-index:1000;min-width:220px;box-shadow:0 4px 16px rgba(0,0,0,.4)">
+        <div style="display:flex;gap:6px;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--geo-border,#333)">
+          <button type="button" class="geo-btn geo-btn-sm" id="geo-track-engine-pick-all" style="font-size:11px;padding:2px 8px">全选</button>
+          <button type="button" class="geo-btn geo-btn-sm" id="geo-track-engine-pick-none" style="font-size:11px;padding:2px 8px">清空</button>
+          <button type="button" class="geo-btn geo-btn-sm" id="geo-track-engine-pick-invert" style="font-size:11px;padding:2px 8px;margin-left:auto">反选</button>
+        </div>
+        <div id="geo-track-engine-pick-list" style="display:flex;flex-direction:column;gap:4px;max-height:280px;overflow-y:auto">
+          ${_geoEngineCatalog.map(name => {
+            const isSingleton = _geoEngineCapabilities && _geoEngineCapabilities[name] && _geoEngineCapabilities[name].singleton === true;
+            const note = isSingleton ? ' <span style="opacity:.5;font-size:10px">（浏览器自动化，必串行）</span>' : '';
+            return `
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:3px 4px;border-radius:3px;font-size:12px">
+                <input type="checkbox" data-engine="${name}" ${_geoEngineSelected.includes(name) ? 'checked' : ''}>
+                <span style="flex:1">${esc(labels[name] || name)}</span>${note}
+              </label>`;
+          }).join('')}
+        </div>
+        <div style="margin-top:8px;padding-top:6px;border-top:1px solid var(--geo-border,#333);font-size:10px;opacity:.55">
+          改这里仅本次生效；持久化请去「设置」tab
+        </div>
+      </div>
+    `;
+
+    // 绑定事件
+    const btn = _byId('geo-track-engine-pick-btn');
+    const dropdown = _byId('geo-track-engine-pick-dropdown');
+    if (btn && dropdown) {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const open = dropdown.style.display !== 'none';
+        dropdown.style.display = open ? 'none' : 'block';
+      };
+      // 点击 dropdown 内部不要关闭
+      dropdown.onclick = (e) => e.stopPropagation();
+      // 点其他位置关闭（用 document，但避免 picker 按钮/浮层被点时关闭）
+      document.addEventListener('click', closeOnOutside);
+      function closeOnOutside(e) {
+        if (!container.contains(e.target)) {
+          dropdown.style.display = 'none';
+          document.removeEventListener('click', closeOnOutside);
+        }
+      }
+    }
+    // 全选/清空/反选
+    const allBtn = _byId('geo-track-engine-pick-all');
+    const noneBtn = _byId('geo-track-engine-pick-none');
+    const invertBtn = _byId('geo-track-engine-pick-invert');
+    const updateList = () => {
+      const checked = new Set(Array.from(_byId('geo-track-engine-pick-list').querySelectorAll('input:checked')).map(el => el.dataset.engine));
+      _geoEngineSelected = [...checked];
+      // 更新按钮 label
+      if (btn) btn.innerHTML = `⚙ 本次引擎 (${_geoEngineSelected.length}/${total}) ▾`;
+    };
+    if (allBtn) allBtn.onclick = () => {
+      _byId('geo-track-engine-pick-list').querySelectorAll('input[data-engine]').forEach(el => { el.checked = true; });
+      updateList();
+    };
+    if (noneBtn) noneBtn.onclick = () => {
+      _byId('geo-track-engine-pick-list').querySelectorAll('input[data-engine]').forEach(el => { el.checked = false; });
+      updateList();
+    };
+    if (invertBtn) invertBtn.onclick = () => {
+      _byId('geo-track-engine-pick-list').querySelectorAll('input[data-engine]').forEach(el => { el.checked = !el.checked; });
+      updateList();
+    };
+    // checkbox 变化同步
+    _byId('geo-track-engine-pick-list').querySelectorAll('input[data-engine]').forEach(el => {
+      el.onchange = updateList;
+    });
+  }
+
+  // v0.44: 读 picker 当前勾选（被 runTracker 调用）
+  function readTrackEngineSelection() {
+    const list = _byId('geo-track-engine-pick-list');
+    if (!list) return null;
+    const checked = Array.from(list.querySelectorAll('input[data-engine]:checked')).map(el => el.dataset.engine);
+    return checked.length > 0 ? checked : null; // 全空 = null（让后端走默认）
+  }
+
   async function loadTracks() {
     // v0.26: 确保 filter bar 已渲染（首次进 Tab 时）
     renderTrackFilterBar();
+    // v0.44: 渲染本次跑用的引擎 picker（从 settings.engine_whitelist 加载，临时改不持久化）
+    renderTrackEnginePicker();
     setStatus('加载追踪记录...', 'loading');
     try {
       const url = currentBrandId
@@ -1706,7 +2512,8 @@
       return;
     }
     const language = _byId('geo-track-language-select')?.value || 'zh';
-    const rag = _byId('geo-track-rag-check')?.checked || false;
+    const city = _byId('geo-track-city-select')?.value || '';  // v0.44: 默认空 = 无地域限制（之前默认 '上海' 是个 bug）
+    // v0.44: 删掉 DeepSeek 检索增强 (rag) — 多多觉得没用，每次跑都多 18s/条且 LLM 没联网回答质量差异不大
 
     // v0.32: 收集「本次跑」勾选的提问 id 列表（空 = 全 enabled，向后兼容）
     const chosenIds = Array.from(document.querySelectorAll('.geo-q-runnow:checked'))
@@ -1715,16 +2522,20 @@
     const userChoiceMode = chosenIds.length > 0;
 
     const modeLabel = userChoiceMode
-      ? `（语言: ${language}${rag ? ' + 🔍检索增强' : ''}，手工选 ${chosenIds.length} 条提问）`
-      : `（语言: ${language}${rag ? ' + 🔍检索增强' : ''}，跑全部启用模板，可能 10-60 秒）`;
+      ? `（语言: ${language}，手工选 ${chosenIds.length} 条提问）`
+      : `（语言: ${language}，跑全部启用模板，可能 10-60 秒）`;
 
     setStatus(`跑跟踪中${modeLabel}...`, 'loading');
+
+    // v0.44: 读 picker 临时选的引擎（覆盖 settings.engine_whitelist，仅本次生效）
+    const engineSelection = readTrackEngineSelection();
 
     const r = await api('POST', '/api/geo/tracker/run', {
       brand_id: currentBrandId,
       language,
-      rag,
+      city, // v0.43: 用户选的城市（替换 [location] 占位符，关联地理信息到提问问题）
       query_ids: userChoiceMode ? chosenIds : undefined, // 不传 = 后端走全 enabled 路径
+      engines: engineSelection || undefined, // v0.44: 不传 = 后端走 settings.engine_whitelist；传 = 本次覆盖
     });
 
     if (r.data?.ok) {
@@ -3206,6 +4017,7 @@
 
   // === v0.33: Opportunities 智能推荐面板 ===
   async function loadOpportunities(brandId, forceRefresh = false) {
+    console.log('[GEO-FE-LOG] loadOpportunities called bid=', brandId || currentBrandId, 'force=', forceRefresh);
     const container = _byId('geo-opp-content');
     if (!container) return;
 
@@ -3243,12 +4055,113 @@
     }
   }
 
+  // === v0.41 P2: Schema.org 输出建议面板（纯规则，不调 LLM）===
+  async function loadSchemaSuggestions(brandId) {
+    const container = _byId('geo-schema-content');
+    if (!container) return;
+
+    const bid = brandId || currentBrandId;
+    if (!bid) {
+      container.innerHTML = '<div class="geo-dim-empty">请先选择一个品牌</div>';
+      return;
+    }
+
+    container.innerHTML = '<div class="geo-opp-loading">加载 Schema 建议...</div>';
+
+    try {
+      const r = await api('GET', `/api/geo/brands/${bid}/schema-suggestions`);
+      if (!r.data?.ok) throw new Error(r.data?.error || '加载失败');
+      renderSchemaSuggestionsPanel(r.data);
+    } catch (e) {
+      container.innerHTML = `<div class="geo-dim-empty">❌ 加载失败: ${esc(e.message)}</div>`;
+    }
+  }
+
+  function renderSchemaSuggestionsPanel(data) {
+    const container = _byId('geo-schema-content');
+    if (!container) return;
+
+    const { brand, stats, suggestions, suggestionsSortedByQuickWin, note, generatedAt } = data;
+
+    // 统计总览
+    const statRows = [
+      { label: '总 query 数', value: stats.totalQueries },
+      { label: 'unbranded', value: stats.unbrandedQueries },
+      { label: 'branded', value: stats.brandedQueries },
+      { label: '信息型', value: stats.intentDistribution.informational },
+      { label: '比较型', value: stats.intentDistribution.comparative },
+      { label: '实施型', value: stats.intentDistribution.implementation },
+      { label: '排错型', value: stats.intentDistribution.troubleshooting },
+    ];
+    const statsHtml = statRows.map(s =>
+      `<div class="geo-schema-stat"><span class="lbl">${s.label}</span><span class="val">${s.value}</span></div>`
+    ).join('');
+
+    // 按 quick-win 排序渲染
+    const sorted = suggestionsSortedByQuickWin || [];
+    const priorityBadge = (p) => {
+      const cls = p === 'P0' ? 'p0' : p === 'P1' ? 'p1' : 'p2';
+      return `<span class="geo-schema-priority ${cls}">${p}</span>`;
+    };
+    const difficultyBadge = (d) => {
+      const cls = d === 'EASY' ? 'easy' : d === 'MEDIUM' ? 'medium' : 'hard';
+      return `<span class="geo-schema-difficulty ${cls}">${d}</span>`;
+    };
+    const impactBadge = (i) => {
+      const cls = i === 'HIGH' ? 'high' : i === 'MEDIUM' ? 'med' : 'low';
+      return `<span class="geo-schema-impact ${cls}">影响 ${i}</span>`;
+    };
+    const cardsHtml = sorted.map(s => `
+      <div class="geo-schema-card">
+        <div class="geo-schema-card-header">
+          <h4>${esc(s.type)}</h4>
+          <div class="geo-schema-badges">
+            ${priorityBadge(s.priority)}
+            ${difficultyBadge(s.difficulty)}
+            ${impactBadge(s.impact)}
+          </div>
+        </div>
+        <p class="geo-schema-reason">${esc(s.reason)}</p>
+        <p class="geo-schema-url"><strong>建议挂在：</strong>${esc(s.urlPattern)}</p>
+      </div>
+    `).join('');
+
+    let html = `
+      <div class="geo-schema-summary">
+        <h4>📊 品牌 ${esc(brand.name || '(未命名)')} 当前状态</h4>
+        <div class="geo-schema-stats">${statsHtml}</div>
+        ${brand.domain ? `<p style="font-size:12px;color:var(--geo-text-2);margin-top:8px">🌐 域名: ${esc(brand.domain)}</p>` : '<p style="font-size:12px;color:var(--geo-warning);margin-top:8px">⚠️ 未填域名 — 部分 schema（WebSite/Product/BreadcrumbList）暂不推荐</p>'}
+      </div>
+      <div class="geo-schema-list">
+        <h4>📋 Schema.org 建议（共 ${suggestions.length} 项，按 quick-win 排序）</h4>
+        ${cardsHtml || '<div class="geo-dim-empty">无建议 — 请先在该品牌下生成 queries</div>'}
+      </div>
+      ${note ? `<div class="geo-schema-note">💡 ${esc(note)}</div>` : ''}
+      <div class="geo-schema-meta">⏱ 生成于 ${esc(generatedAt)}</div>
+    `;
+    container.innerHTML = html;
+  }
+
   function renderOpportunitiesPanel(data, record) {
     const container = _byId('geo-opp-content');
     if (!container) return;
 
     const { summary = [], opportunities = [], risks = [], contentGaps = [] } = data;
     const generatedAt = record?.created_at ? new Date(record.created_at).toLocaleString('zh-CN') : '';
+
+    // v0.38: 可持续性徽章（asset=一次建设 / continuous=需持续投入 / hybrid=混合）
+    const SUSTAIN_META = {
+      asset: { label: '🏛️ 一次建设', cls: 'asset', tip: '一次完成长期受益（如数据报告、FAQ 优化、第三方测评）—— "铺资产"打法' },
+      continuous: { label: '🔄 需持续', cls: 'continuous', tip: '需要持续投入（社交内容、社区参与、定期博客）—— 停下来就消失。警惕"铺量"陷阱' },
+      hybrid: { label: '🔀 混合', cls: 'hybrid', tip: '一次性建设 + 持续维护（如品牌 wiki + 行业新闻更新）' },
+    };
+    function sustainBadge(opp) {
+      const t = opp.sustain_type;
+      if (!t || !SUSTAIN_META[t]) return '';
+      const m = SUSTAIN_META[t];
+      const note = opp.sustain_note ? esc(opp.sustain_note) : '';
+      return `<span class="geo-opp-sustain ${m.cls} geo-tip" data-tip="${m.tip}${note ? '\\n\\n' + note : ''}">${m.label}</span>`;
+    }
 
     let html = '';
 
@@ -3274,6 +4187,7 @@
             <p class="geo-opp-card-why">${esc(opp.why || '')}</p>
             <div class="geo-opp-card-meta">
               <span class="geo-opp-difficulty ${diffClass}">🎯 ${esc(diffLabel)}</span>
+              ${sustainBadge(opp)}
               ${(opp.relatedPrompts || []).length > 0 ? `<span>关联 ${opp.relatedPrompts.length} 个 prompt</span>` : ''}
             </div>
             ${(opp.relatedPrompts || []).length > 0 ? `
@@ -3321,6 +4235,102 @@
     container.innerHTML = html;
   }
 
+  // === v0.45: 投放策略面板 ===
+  async function loadChannels(brandId, forceRefresh = false) {
+    console.log('[GEO-FE-LOG] loadChannels called bid=', brandId || currentBrandId);
+    const container = _byId('geo-channels-content');
+    if (!container) return;
+    const bid = brandId || currentBrandId;
+    if (!bid) {
+      container.innerHTML = '<div class="geo-dim-empty">请先选择一个品牌</div>';
+      return;
+    }
+    container.innerHTML = '<div class="geo-opp-loading">AI 正在分析投放策略...</div>';
+    try {
+      const r = await api('GET', `/api/geo/channels/${bid}`);
+      if (!r.ok) throw new Error(r.error || '生成失败');
+      renderChannelsPanel(r.data);
+    } catch (e) {
+      container.innerHTML = `<div class="geo-dim-empty">❌ 生成失败: ${esc(e.message)}</div>`;
+    }
+  }
+
+  function renderChannelsPanel(data) {
+    const container = _byId('geo-channels-content');
+    if (!container) return;
+    const { heroMetrics, urgent, topChannels, perEngineStrategy, counterPlacement, zeroHitPlan, summary } = data;
+
+    let html = '';
+
+    // §1 Hero Metrics
+    html += `<div class="geo-channels-hero">`;
+    const heroItems = [
+      { value: urgent.count, label: '🔥 紧急处理项', sub: '负面/误识别信号', cls: urgent.count > 0 ? 'danger' : '' },
+      { value: topChannels.length, label: '📊 优先 Channel', sub: 'Top10 投放清单', cls: '' },
+      { value: zeroHitPlan.length, label: '🕳️ 零命中 Query', sub: '高价值缺口', cls: 'warning' },
+      { value: heroMetrics?.totalResponses || 0, label: '📈 总响应数', sub: `近 30 天`, cls: '' },
+    ];
+    for (const h of heroItems) {
+      html += `<div class="geo-channels-hero-card"><div class="geo-channels-hero-value ${h.cls}">${h.value}</div><div class="geo-channels-hero-label">${h.label}</div><div class="geo-channels-hero-sub">${h.sub}</div></div>`;
+    }
+    html += `</div>`;
+
+    // §2 🔥 紧急处理
+    if (urgent.items.length > 0) {
+      html += `<div class="section geo-urgent-section">`;
+      html += `<div class="section-title urgent-title">🔥 紧急处理 — 负面信号 / 误识别（top priority）</div>`;
+      html += `<div class="urgent-list">`;
+      for (const u of urgent.items) {
+        html += `<div class="urgent-item"><div><div class="urgent-query">${esc(u.type === 'negative_sentiment' ? '含负面词的回答' : `${u.query}`)}</div><div class="urgent-meta">${esc(u.platform)} · ${esc(u.evidence)}</div></div><div class="urgent-action">${esc(u.action)}</div></div>`;
+      }
+      html += `</div></div>`;
+    }
+
+    // §3 Top Channel Grid
+    if (topChannels.length > 0) {
+      html += `<div class="section"><div class="section-title">📊 优先 Channel 投放清单 <span class="section-badge">Top ${topChannels.length}</span></div><div class="channel-grid">`;
+      for (const c of topChannels) {
+        const roiCls = c.roi === 'HIGH' ? 'roi-high' : c.roi === 'MED' ? 'roi-med' : 'roi-low';
+        const tlCls = c.timeline === 'URGENT' ? 'timeline-urgent' : c.timeline === 'SHORT' ? 'timeline-short' : c.timeline === 'MEDIUM' ? 'timeline-medium' : 'timeline-long';
+        html += `<div class="channel-card"><div class="channel-domain">${esc(c.domain)}</div><div class="channel-badges"><span class="roi-pill ${roiCls}">${c.roi}</span><span class="form-pill">${esc(c.contentForm)}</span><span class="timeline-pill ${tlCls}">${c.timeline}</span></div><div class="channel-meta">出现 ${c.appearanceCount} 次 · 覆盖 ${c.engines.length} 个引擎 · ${c.intents.join(', ')}</div><div class="channel-reason">AI 在该渠道高频引用，品牌占位不足</div></div>`;
+      }
+      html += `</div></div>`;
+    }
+
+    // §4 Per-Engine Strategy
+    if (perEngineStrategy.length > 0) {
+      html += `<div class="section"><div class="section-title">🤖 Per-Engine 适配策略</div><table class="engine-matrix"><thead><tr><th>LLM</th><th>内容偏好</th><th>渠道偏好</th></tr></thead><tbody>`;
+      for (const e of perEngineStrategy) {
+        html += `<tr><td class="engine-name">${esc(e.engine)}</td><td>${(e.intents || []).map(i => `<span class="intent-tag">${esc(i)}</span>`).join('')}</td><td>${(e.topChannels || []).map(d => `<span class="intent-tag">${esc(d)}</span>`).join('')}</td></tr>`;
+      }
+      html += `</tbody></table></div>`;
+    }
+
+    // §5 Counter Placement
+    if (counterPlacement.length > 0) {
+      html += `<div class="section"><div class="section-title">🎯 竞品反位攻关 <span class="section-badge">${counterPlacement.length} 个竞品</span></div><div class="counter-list">`;
+      for (const c of counterPlacement) {
+        html += `<div class="counter-item"><div><div class="counter-brand">${esc(c.competitor)}</div><div class="counter-domain">${esc(c.domain || '未知域名')}</div><div class="counter-action">${(c.counterChannels || []).map(x => `→ ${esc(x.action)}`).join('<br>')}</div></div></div>`;
+      }
+      html += `</div></div>`;
+    }
+
+    // §6 Zero Hit
+    if (zeroHitPlan.length > 0) {
+      html += `<div class="section"><div class="section-title">🕳️ 零命中 Query 攻关 <span class="section-badge">${zeroHitPlan.length} 条</span></div><div class="zero-hit-list">`;
+      for (const z of zeroHitPlan) {
+        html += `<div class="zero-hit-item"><div class="zero-hit-query">${esc(z.query)}</div><div class="zero-hit-meta">${esc(z.intent)} · 推荐：${esc(z.recommendedChannel)} (${esc(z.contentForm)})</div></div>`;
+      }
+      html += `</div></div>`;
+    }
+
+    // §7 Summary
+    html += `<div class="section"><div class="section-title">📋 总结与下一步</div><div class="summary-grid"><div class="summary-card"><div class="summary-card-title">核心问题</div><div class="summary-card-value" style="font-size:14px">${esc(summary?.coreProblem || '—')}</div></div><div class="summary-card"><div class="summary-card-title">30 天行动</div><div class="summary-card-value" style="font-size:14px">${esc(summary?.thirtyDayAction || '—')}</div></div><div class="summary-card"><div class="summary-card-title">预期提升</div><div class="summary-card-value">${esc(summary?.expectedImprovement || '—')}</div></div></div></div>`;
+
+    html += `<div style="text-align:center;padding:12px;font-size:11px;color:var(--geo-text-2)">ACMS GEO · 投放策略 v0.45 · 数据更新 ${data.generatedAt ? new Date(data.generatedAt).toLocaleString('zh-CN') : '—'}</div>`;
+    container.innerHTML = html;
+  }
+
   // === 通用 ===
   // v0.26: 文本高亮工具（借鉴 elmo text-highlighter.tsx）
   // 先 escape 整个 text，再用循环正则 replace 包裹 <mark> — 避免 XSS + 多次替换安全
@@ -3364,11 +4374,11 @@
       const link = document.createElement('link');
       link.id = 'geo-dashboard-css';
       link.rel = 'stylesheet';
-      link.href = '/client/css/geo-dashboard.css?v=0.33';
+      link.href = '/client/css/geo-dashboard.css?v=0.45';
       document.head.appendChild(link);
     }
 
-      fetch('/client/views/geo-dashboard.html?v=0.33')
+      fetch('/client/views/geo-dashboard.html?v=0.45')
       .then(r => r.text())
       .then(html => {
         if (w.$c) w.$c.innerHTML = html;
@@ -3388,6 +4398,60 @@
       tab.addEventListener('click', handler);
       cleanupFns.push(() => tab.removeEventListener('click', handler));
     });
+
+    // v0.36: 描述准确率抽样按钮
+    const judgeBtn = _byId('geo-v036-judge-btn');
+    if (judgeBtn) {
+      const handler = () => {
+        if (!currentBrandId) {
+          if (typeof notify === 'function') notify('⚠️ 请先选品牌', '点击顶部品牌选择器选一个具体品牌', 'warn');
+          else if (typeof setStatus === 'function') setStatus('请先选品牌', 'warn');
+          return;
+        }
+        triggerAccuracyJudge(currentBrandId);
+      };
+      judgeBtn.addEventListener('click', handler);
+      cleanupFns.push(() => judgeBtn.removeEventListener('click', handler));
+    }
+
+    // v0.38: 品牌感知分析按钮
+    const perceptionBtn = _byId('geo-v038-perception-judge-btn');
+    if (perceptionBtn) {
+      const handler = () => {
+        if (!currentBrandId) {
+          if (typeof notify === 'function') notify('⚠️ 请先选品牌', '点击顶部品牌选择器选一个具体品牌', 'warn');
+          else if (typeof setStatus === 'function') setStatus('请先选品牌', 'warn');
+          return;
+        }
+        triggerPerceptionJudge(currentBrandId);
+      };
+      perceptionBtn.addEventListener('click', handler);
+      cleanupFns.push(() => perceptionBtn.removeEventListener('click', handler));
+    }
+
+    // v0.44: 行业选择器（先选行业，再选品牌）
+    const indSelect = _byId('geo-industry-select');
+    if (indSelect) {
+      const handler = () => {
+        _currentIndustry = indSelect.value;
+        // 重渲染品牌下拉（按行业过滤）
+        populateBrandSelector();
+        // 如果当前 brand 不在新行业里 → 清空；保留就用
+        const brandSel = _byId('geo-brand-select');
+        const newBrandId = brandSel?.value || '';
+        // 切行业后强制刷新总览（避免"显示过期的旧行业数据"）
+        currentBrandId = newBrandId;
+        // 别名按钮跟着当前 brand 启/禁
+        const aliasBtn = _byId('geo-brand-alias-btn');
+        if (aliasBtn) {
+          aliasBtn.disabled = !currentBrandId;
+          aliasBtn.dataset.brandId = currentBrandId;
+        }
+        loadOverview();
+      };
+      indSelect.addEventListener('change', handler);
+      cleanupFns.push(() => indSelect.removeEventListener('change', handler));
+    }
 
     // 品牌选择器
     const select = _byId('geo-brand-select');
@@ -3681,10 +4745,74 @@
       cleanupFns.push(() => brandSelect.removeEventListener('change', () => {}));
     }
 
+    // v0.39: 5 分钟自查 onboarding 按钮绑定
+    const obStartBtn = _byId('onboarding-start-btn');
+    if (obStartBtn) {
+      obStartBtn.addEventListener('click', () => {
+        if (!currentBrandId) {
+          if (typeof notify === 'function') notify('⚠️ 请先选品牌', '', 'warn');
+          else setStatus('请先选品牌', 'warn');
+          return;
+        }
+        writeObState(currentBrandId, { currentStep: 1, dismissed: false });
+        renderOnboarding(currentBrandId);
+      });
+      cleanupFns.push(() => obStartBtn.removeEventListener('click', () => {}));
+    }
+
+    const obDismissBtn = _byId('onboarding-dismiss-btn');
+    if (obDismissBtn) {
+      obDismissBtn.addEventListener('click', () => {
+        if (currentBrandId) writeObState(currentBrandId, { dismissed: true });
+        renderOnboarding(currentBrandId);
+      });
+      cleanupFns.push(() => obDismissBtn.removeEventListener('click', () => {}));
+    }
+
+    const obStep1Btn = _byId('onboarding-step1-done');
+    if (obStep1Btn) {
+      obStep1Btn.addEventListener('click', () => {
+        if (!currentBrandId) return;
+        writeObState(currentBrandId, { currentStep: 2, dismissed: false });
+        renderOnboarding(currentBrandId);
+      });
+      cleanupFns.push(() => obStep1Btn.removeEventListener('click', () => {}));
+    }
+
+    const obStep2Btn = _byId('onboarding-step2-done');
+    if (obStep2Btn) {
+      obStep2Btn.addEventListener('click', () => {
+        if (!currentBrandId) return;
+        writeObState(currentBrandId, { currentStep: 3, dismissed: false });
+        renderOnboarding(currentBrandId);
+      });
+      cleanupFns.push(() => obStep2Btn.removeEventListener('click', () => {}));
+    }
+
+    const obCompleteBtn = _byId('onboarding-complete-btn');
+    if (obCompleteBtn) {
+      obCompleteBtn.addEventListener('click', () => {
+        if (!currentBrandId) return;
+        writeObState(currentBrandId, { currentStep: 3, dismissed: false, completedAt: new Date().toISOString() });
+        renderOnboarding(currentBrandId);
+      });
+      cleanupFns.push(() => obCompleteBtn.removeEventListener('click', () => {}));
+    }
+
+    const obRedoBtn = _byId('onboarding-redo-btn');
+    if (obRedoBtn) {
+      obRedoBtn.addEventListener('click', () => {
+        if (currentBrandId) clearObState(currentBrandId);
+        renderOnboarding(currentBrandId);
+      });
+      cleanupFns.push(() => obRedoBtn.removeEventListener('click', () => {}));
+    }
+
     // v0.33: Opportunities 触发按钮
     const oppTriggerBtn = _byId('geo-opp-trigger-btn');
     if (oppTriggerBtn) {
       oppTriggerBtn.addEventListener('click', () => {
+        console.log('[GEO-FE-LOG] 智能推荐按钮点击 currentBrandId=', currentBrandId);
         if (currentBrandId) {
           window.toggleOpportunitiesPanel(currentBrandId);
         } else {
@@ -3692,6 +4820,48 @@
         }
       });
       cleanupFns.push(() => oppTriggerBtn.removeEventListener('click', () => {}));
+    }
+
+    // v0.41 P2: Schema.org 建议触发按钮
+    const schemaTriggerBtn = _byId('geo-schema-trigger-btn');
+    if (schemaTriggerBtn) {
+      schemaTriggerBtn.addEventListener('click', () => {
+        if (currentBrandId) {
+          window.toggleSchemaPanel(currentBrandId);
+        } else {
+          alert('请先选择一个品牌');
+        }
+      });
+      cleanupFns.push(() => schemaTriggerBtn.removeEventListener('click', () => {}));
+    }
+    const schemaCloseBtn = _byId('geo-schema-close-btn');
+    if (schemaCloseBtn) {
+      schemaCloseBtn.addEventListener('click', () => window.toggleSchemaPanel());
+      cleanupFns.push(() => schemaCloseBtn.removeEventListener('click', () => {}));
+    }
+
+    // v0.45: 投放策略触发按钮
+    const channelsTriggerBtn = _byId('geo-channels-trigger-btn');
+    if (channelsTriggerBtn) {
+      channelsTriggerBtn.addEventListener('click', () => {
+        console.log('[GEO-FE-LOG] 投放策略按钮点击 currentBrandId=', currentBrandId);
+        if (currentBrandId) {
+          window.toggleChannelsPanel(currentBrandId);
+        } else {
+          alert('请先选择一个品牌');
+        }
+      });
+      cleanupFns.push(() => channelsTriggerBtn.removeEventListener('click', () => {}));
+    }
+    const channelsCloseBtn = _byId('geo-channels-close-btn');
+    if (channelsCloseBtn) {
+      channelsCloseBtn.addEventListener('click', () => window.toggleChannelsPanel());
+      cleanupFns.push(() => channelsCloseBtn.removeEventListener('click', () => {}));
+    }
+    const channelsRefreshBtn = _byId('geo-channels-refresh-btn');
+    if (channelsRefreshBtn) {
+      channelsRefreshBtn.addEventListener('click', () => loadChannels(currentBrandId, true));
+      cleanupFns.push(() => channelsRefreshBtn.removeEventListener('click', () => {}));
     }
     bindBtn('geo-watch-create-btn', () => toggleWatchForm(true));
     bindBtn('geo-watch-cancel-btn', () => toggleWatchForm(false));
@@ -3749,6 +4919,55 @@
         panel.style.setProperty('display', 'flex');
         setTimeout(() => panel.classList.add('open'), 10);
         loadOpportunities(brandId || currentBrandId);
+      }
+    };
+  }
+
+  // v0.41 P2: 暴露 Schema.org 建议面板接口到全局（复用 opp-panel 样式，独立抽屉）
+  if (typeof window !== 'undefined') {
+    window.toggleSchemaPanel = function (brandId) {
+      const panel = _byId('geo-schema-panel');
+      if (!panel) return;
+      if (panel.classList.contains('open')) {
+        panel.classList.remove('open');
+        setTimeout(() => panel.style.setProperty('display', 'none'), 250);
+      } else {
+        // 关闭 opp-panel（避免两个抽屉同时开）
+        const oppPanel = _byId('geo-opp-panel');
+        if (oppPanel && oppPanel.classList.contains('open')) {
+          oppPanel.classList.remove('open');
+          setTimeout(() => oppPanel.style.setProperty('display', 'none'), 250);
+        }
+        panel.style.setProperty('display', 'flex');
+        setTimeout(() => panel.classList.add('open'), 10);
+        loadSchemaSuggestions(brandId || currentBrandId);
+      }
+    };
+  }
+
+  // v0.45: 暴露投放策略面板接口到全局
+  if (typeof window !== 'undefined') {
+    window.toggleChannelsPanel = function (brandId) {
+      const panel = _byId('geo-channels-panel');
+      if (!panel) return;
+      if (panel.classList.contains('open')) {
+        panel.classList.remove('open');
+        setTimeout(() => panel.style.setProperty('display', 'none'), 250);
+      } else {
+        // 关闭其他面板
+        const oppPanel = _byId('geo-opp-panel');
+        if (oppPanel && oppPanel.classList.contains('open')) {
+          oppPanel.classList.remove('open');
+          setTimeout(() => oppPanel.style.setProperty('display', 'none'), 250);
+        }
+        const schemaPanel = _byId('geo-schema-panel');
+        if (schemaPanel && schemaPanel.classList.contains('open')) {
+          schemaPanel.classList.remove('open');
+          setTimeout(() => schemaPanel.style.setProperty('display', 'none'), 250);
+        }
+        panel.style.setProperty('display', 'flex');
+        setTimeout(() => panel.classList.add('open'), 10);
+        loadChannels(brandId || currentBrandId);
       }
     };
   }

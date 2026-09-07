@@ -40,15 +40,16 @@ function getBySender(sender, mailbox) {
 /**
  * 保存/累加某 sender 的分类
  */
-function saveCategory({ sender, mailbox, category, source, rationale }) {
+function saveCategory({ sender, mailbox, category, source, rationale, profileId }) {
   if (!sender || !mailbox || !category) {
     return { ok: false, error: 'MISSING_ARGS', message: 'sender / mailbox / category 必填' };
   }
   const target = String(sender).toLowerCase().trim();
+  const pid = profileId || 'default';  // v2.3: profile 隔离
   const now = nowIso();
-  const existing = collection(COL).findOne(d => d.sender === target && d.mailbox === mailbox);
+  const existing = collection(COL).findOne(d => d.sender === target && d.mailbox === mailbox && d.profile_id === pid);
   if (existing) {
-    collection(COL).update(d => d.sender === target && d.mailbox === mailbox, {
+    collection(COL).update(d => d.sender === target && d.mailbox === mailbox && d.profile_id === pid, {
       category, source: source || existing.source, rationale: rationale || existing.rationale,
       count: (existing.count || 1) + 1, last_updated: now,
     });
@@ -56,6 +57,7 @@ function saveCategory({ sender, mailbox, category, source, rationale }) {
   } else {
     collection(COL).insert({
       id: makeId(),
+      profile_id: pid,  // v2.3
       sender: target, mailbox,
       category, source: source || 'ai', rationale: rationale || '',
       count: 1, first_seen: now, last_updated: now,
@@ -90,18 +92,21 @@ function bulkGet(mailbox, senders) {
 /**
  * 列出某 mailbox 下所有已分类的 sender（hashmap 返回）
  * 给前端 GET /sender-categories 用
+ * v2.3: 接受 profileId 过滤
  */
-function listByMailbox(mailbox) {
+function listByMailbox(mailbox, profileId) {
   if (!mailbox) return {};
   const all = collection(COL).find(d => d.mailbox === mailbox);
   const out = {};
   for (const d of all) {
+    if (profileId && (d.profile_id || 'default') !== profileId) continue;
     out[d.sender] = {
       category: d.category,
       source: d.source,
       rationale: d.rationale,
       count: d.count || 1,
       last_updated: d.last_updated,
+      profile_id: d.profile_id || 'default',  // v2.3: 回显
     };
   }
   return out;
@@ -118,7 +123,18 @@ function removeBySender(sender, mailbox) {
 
 /**
  * v1.20: 清空全部发件人分类记录（数据管理 → 清理发件人分类 按钮用）
- */
+/** v2.3: 按 profile_id 清空（避免误删其他 profile 的数据） */
+function clearByProfile(profileId) {
+  if (!profileId) return 0;
+  const all = collection(COL).all ? collection(COL).all() : [];
+  const filtered = all.filter(d => (d.profile_id || 'default') === profileId);
+  filtered.forEach(function (doc) {
+    collection(COL).remove(d => d.id === doc.id);
+  });
+  return filtered.length;
+}
+
+/** v1.20: 清空全部发件人分类记录（数据管理 → 清理发件人分类 按钮用） */
 function clearAll() {
   const all = collection(COL).all ? collection(COL).all() : [];
   const count = all.length;
@@ -137,5 +153,6 @@ module.exports = {
   listByMailbox,
   removeBySender,
   clearAll,
+  clearByProfile,  // v2.3
   COL,
 };

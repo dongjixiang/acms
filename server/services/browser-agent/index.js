@@ -156,6 +156,75 @@ async function screenshotToFile(filePath, opts = {}, timeout = 20000) {
   return { ok: true, path: filePath, exists: fs.existsSync(filePath) };
 }
 
+// v0.118 PR 5: 文件上传（通过设置 file input 的 value 触发 change 事件）
+// 用于抖音视频上传、小红书图片上传等场景
+// 抖音/小红书的上传组件是隐藏的 <input type=file>，需要：
+//   1. 把 file 路径写到 DataTransfer → FileList
+//   2. 派发 change 事件
+// 浏览器限制：出于安全，set value 必须用 DataTransfer API + 模拟事件
+//
+// ⚠️ v0.118 PR 5 限制：base64 模式适合 <10MB（小红书图片、头像）
+//   抖音视频通常 50MB+，用 fetch 模式（video_url → fetch → Blob → File）
+async function uploadFile(selector, filePath, timeout = 120000) {
+  if (!fs.existsSync(filePath)) {
+    return { ok: false, error: `file_not_found: ${filePath}` };
+  }
+  const stat = fs.statSync(filePath);
+  const fileName = path.basename(filePath);
+  const fileSize = stat.size;
+  const ext = fileName.split('.').pop().toLowerCase();
+  const mimeMap = {
+    mp4: 'video/mp4', mov: 'video/quicktime', avi: 'video/x-msvideo',
+    jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp',
+  };
+  const mime = mimeMap[ext] || 'application/octet-stream';
+
+  // 大文件（>10MB）走 fetch 模式：先在浏览器里 fetch 同一个 video_url 转 Blob
+  // 小文件（<10MB）走 base64 模式：直接 set value
+  const useFetchMode = fileSize > 10 * 1024 * 1024;
+
+  const js = useFetchMode
+    ? `
+    (async () => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return { ok: false, error: 'input_not_found' };
+      if (el.type !== 'file') return { ok: false, error: 'not_a_file_input' };
+      try {
+        // 大文件用 fetch 模式：依赖 filePath 是 URL（file:// 或 http://）
+        const url = ${JSON.stringify(filePath)};
+        const resp = await fetch(url);
+        if (!resp.ok) return { ok: false, error: 'fetch_failed: ' + resp.status };
+        const blob = await resp.blob();
+        const file = new File([blob], ${JSON.stringify(fileName)}, { type: ${JSON.stringify(mime)} });
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        el.files = dt.files;
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return { ok: true, name: file.name, size: file.size, mime, mode: 'fetch' };
+      } catch (e) {
+        return { ok: false, error: 'fetch_mode_failed: ' + e.message };
+      }
+    })()
+  `
+    : `
+    (() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return { ok: false, error: 'input_not_found' };
+      if (el.type !== 'file') return { ok: false, error: 'not_a_file_input' };
+      const bin = atob(${JSON.stringify(fs.readFileSync(filePath).toString('base64'))});
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const file = new File([bytes], ${JSON.stringify(fileName)}, { type: ${JSON.stringify(mime)} });
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      el.files = dt.files;
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return { ok: true, name: file.name, size: file.size, mime, mode: 'base64' };
+    })()
+  `;
+  return await evalJs(js, timeout);
+}
+
 // 带编号标注的截图（--annotate）：截图 + 交互元素编号，对应 snapshot @eN
 async function screenshotAnnotated(filePath, timeout = 25000) {
   const dir = path.dirname(filePath);
@@ -273,6 +342,51 @@ async function deepSeekLogin(timeout = 60000) {
   return { ok: loggedIn, info, step: 'login' };
 }
 
+// ─────────────────────────────────────────────────────────────────
+// v0.118.1：auth 系列 — 给 social-publisher 账号管理用
+//   auth save → 保存账号密码到 agent-browser 全局 auth 系统（acms session 复用）
+//   auth login → 立即登录（打开登录页 + 自动填账号密码 + 等跳转；如需验证码用户去 Web 机器人手动点）
+//   auth list → 列出已保存 profile（仅名字 + URL，无密码）
+//   auth delete → 删除 profile（账号删除时调）
+// ─────────────────────────────────────────────────────────────────
+
+async function authSave({ name, url, username, password }) {
+  if (!name || !url || !username || password === undefined || password === null) {
+    return { ok: false, error: 'missing_fields: name/url/username/password 必填' };
+  }
+  // --password 命令行参数（密码走 stdin 在 Windows + agent-browser + wrapper 组合下卡 30s，2026-09-06 实测）
+  //   agent-browser 软警告"may be visible in process listings"——ACMS 单机部署瞬时暴露，可接受
+  const args = `auth save "${name}" --url "${url}" --username "${username}" --password "${String(password).replace(/"/g, '\\"')}"`;
+  const r = await execAgentBrowser(args, 15000);
+  if (!r.success) return { ok: false, error: r.error || 'auth_save_failed', output: r.output };
+  return { ok: true, name, output: r.output };
+}
+
+async function authLogin({ name, timeout = 45000 }) {
+  if (!name) return { ok: false, error: 'missing_name' };
+  // auth login 自动：打开登录页 → 等 username/password 表单 → 自动填 → 提交 → 等跳转
+  //   成功条件：URL 跳到登录后页面（如创作中心）
+  //   失败/超时：可能需要验证码 → 用户去 Web 机器人手动完成
+  const r = await execAgentBrowser(`auth login "${name}"`, timeout);
+  if (!r.success) return { ok: false, error: r.error || 'auth_login_failed', output: r.output, need_user: true };
+  return { ok: true, name, output: r.output };
+}
+
+async function authList() {
+  const r = await execAgentBrowser('auth list', 10000);
+  if (!r.success) return { ok: false, error: r.error || 'auth_list_failed' };
+  // 输出是文本，解析出 profile 列表（agent-browser 0.31 输出格式：<name>  <url>）
+  const lines = (r.output || '').split('\n').map(l => l.trim()).filter(Boolean);
+  return { ok: true, profiles: lines };
+}
+
+async function authDelete({ name }) {
+  if (!name) return { ok: false, error: 'missing_name' };
+  const r = await execAgentBrowser(`auth delete "${name}"`, 5000);
+  if (!r.success) return { ok: false, error: r.error || 'auth_delete_failed' };
+  return { ok: true, name };
+}
+
 module.exports = {
   execAgentBrowser,
   exec,
@@ -289,6 +403,7 @@ module.exports = {
   wait,
   screenshotToFile,
   screenshotAnnotated,
+  uploadFile,
   closeAll,
   mouseClick,
   mouseMove,
@@ -298,5 +413,9 @@ module.exports = {
   pageInfo,
   isDeepSeekLoggedIn,
   deepSeekLogin,
+  authSave,
+  authLogin,
+  authList,
+  authDelete,
   SESSION_ROOT,
 };

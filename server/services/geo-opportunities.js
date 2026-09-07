@@ -9,9 +9,19 @@
 //
 // 输出持久化到 geo_opportunities 表（append-only）
 
-const { collection } = require('./geo-store');
+const GEO_STORE = require('./geo-store');
 const SCORING = require('./geo-scoring');
-const LLM_TOOLS = require('./geo-llm-tools');
+const { callLLM } = require('./llm-adapter');
+const modelStore = require('../stores/model-store');
+
+function findChatModel() {
+  // 优先使用 ACMS 平台配置的默认生成模型（系统管理 → AI 模型管理），再回退到有 text 能力的 active 模型
+  const defaultModel = modelStore.getDefaultGenModel();
+  if (defaultModel && defaultModel.status === 'active') return defaultModel;
+  const models = modelStore.list();
+  const candidate = models.find(m => m.status === 'active' && (m.capabilities || []).includes('text'));
+  return candidate || models.find(m => m.status === 'active') || null;
+}
 
 const COLLECTION = 'geo_opportunities';
 
@@ -171,7 +181,9 @@ const OPPORTUNITIES_SYSTEM_PROMPT = `你是一个 GEO（Generative Engine Optimi
       "title": "简短具体的行动标题",
       "why": "解释为什么这个机会值得做（1-2 句话）",
       "relatedPrompts": ["关联的 prompt 文本"],
-      "difficulty": "wide-open|contested|locked-in"
+      "difficulty": "wide-open|contested|locked-in",
+      "sustain_type": "asset|continuous|hybrid",
+      "sustain_note": "为什么是这个类型（一句话）"
     }
   ],
   "risks": ["2-3 条风险提示"]
@@ -186,7 +198,47 @@ const OPPORTUNITIES_SYSTEM_PROMPT = `你是一个 GEO（Generative Engine Optimi
 difficulty 定义：
 - wide-open: 引用源经常变化，容易突破
 - contested: 有一定竞争，需要努力
-- locked-in: 引用源固定，很难突破`;
+- locked-in: 引用源固定，很难突破
+
+sustain_type 定义（v0.38：可持续性维度，区分"铺资产"vs"铺量"）：
+- asset: 一次建设长期受益（如发布一篇数据报告、争取一个第三方测评、做一次 FAQ 优化 —— 一次完成就持续产生引用）
+- continuous: 需要持续投入（如定期发社交内容、持续参与社区讨论、每周更新博客 —— 停下来就消失）
+- hybrid: 两者混合（如做一次品牌 wiki 站（asset）但需要定期更新行业新闻（continuous））
+
+判定原则（按 category 启发）：
+- existing-content/outreach 多数是 asset（一次完成长期有效）
+- creation/social 多数是 continuous（需要持续产出）
+- 但实际看具体动作（标题+why）灵活判定，hybrid 也常见`;
+
+// === v0.38: sustain_type 启发式 fallback（LLM 未填时按 category 补） ===
+const CATEGORY_SUSTAIN_DEFAULTS = {
+  creation: 'continuous',
+  'existing-content': 'asset',
+  outreach: 'asset',
+  social: 'continuous',
+};
+const SUSTAIN_TYPE_DEFAULT_TEXT = {
+  asset: '一次建设长期受益',
+  continuous: '需要持续投入',
+  hybrid: '混合模式',
+};
+function fillSustainDefaults(opportunities) {
+  return (opportunities || []).map(o => {
+    const t = o.sustain_type;
+    const valid = t === 'asset' || t === 'continuous' || t === 'hybrid';
+    const def = CATEGORY_SUSTAIN_DEFAULTS[o.category] || 'hybrid';
+    const finalType = valid ? t : def;
+    // note 永远 fallback（LLM 经常只填一个字段；前端需要稳定可显示的 note）
+    const hasNote = o.sustain_note && typeof o.sustain_note === 'string' && o.sustain_note.length > 0;
+    const finalNote = hasNote
+      ? o.sustain_note
+      : '按 category 启发式推断：' + SUSTAIN_TYPE_DEFAULT_TEXT[finalType];
+    return Object.assign({}, o, {
+      sustain_type: finalType,
+      sustain_note: finalNote,
+    });
+  });
+}
 
 // ===== 主函数 =====
 async function generateOpportunities(brandId, options = {}) {
@@ -194,7 +246,7 @@ async function generateOpportunities(brandId, options = {}) {
   
   // 检查是否需要刷新（默认 7 天缓存）
   if (!forceRefresh) {
-    const existing = collection('geo_opportunities').find(doc => doc.brand_id === brandId)
+    const existing = GEO_STORE.collection('geo_opportunities').find(doc => doc.brand_id === brandId)
       .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
     if (existing.length > 0) {
       const lastGen = new Date(existing[0].created_at);
@@ -222,17 +274,26 @@ async function generateOpportunities(brandId, options = {}) {
   };
   
   // 4. 调用 LLM（单次结构化输出）
-  console.log(`[geo-opportunities] Generating for ${brand.name}...`);
+  console.log(`[geo-opportunities] Generating for ${brand.name} (id=${brandId})`);
   
-  const llmResult = await LLM_TOOLS.callLLM({
-    model: 'deepseek',
-    messages: [
-      { role: 'system', content: OPPORTUNITIES_SYSTEM_PROMPT },
-      { role: 'user', content: JSON.stringify(llmInput, null, 2) },
-    ],
-    response_format: { type: 'json_object' },
-    maxTokens: 2000,
-  });
+  const chatModel = findChatModel();
+  if (!chatModel) {
+    console.error('[geo-opportunities] NO_CHAT_MODEL: 没有可用的 LLM 模型');
+    return { ok: false, error: 'NO_LLM_MODEL', message: '系统未配置 LLM 模型' };
+  }
+  console.log(`[geo-opportunities] Using chat model id=${chatModel.id} name=${chatModel.name}`);
+
+  const llmResultRaw = await callLLM(chatModel.id, [
+    { role: 'system', content: OPPORTUNITIES_SYSTEM_PROMPT },
+    { role: 'user', content: JSON.stringify(llmInput, null, 2) },
+  ], { response_format: { type: 'json_object' }, maxTokens: 2000 });
+
+  // 适配 llm-adapter 返回格式（{ ok, text, content, ... } → 统一为 { ok, content, ... }）
+  const llmResult = {
+    ok: llmResultRaw.ok,
+    content: llmResultRaw.text || llmResultRaw.content || llmResultRaw.raw_answer || '',
+    error: llmResultRaw.error || llmResultRaw.message,
+  };
   
   if (!llmResult.ok) {
     console.error('[geo-opportunities] LLM call failed:', llmResult.error);
@@ -243,8 +304,15 @@ async function generateOpportunities(brandId, options = {}) {
   let opportunities;
   try {
     const parsed = JSON.parse(llmResult.content);
+    // v0.38: sustain_type 启发式 fallback（LLM 不填时按 category 补）
+    const filledOpps = fillSustainDefaults(parsed.opportunities || []);
+    // 防御：确保 summary / risks 是字符串数组（防止 [object Object]）
+    const fixStringArray = (arr) => (Array.isArray(arr) ? arr.map(item => (typeof item === 'string' ? item : (item?.text || item?.message || item?.summary || JSON.stringify(item)))).filter(Boolean) : []);
     opportunities = {
       ...parsed,
+      summary: fixStringArray(parsed.summary),
+      risks: fixStringArray(parsed.risks),
+      opportunities: filledOpps,
       brandId,
       generatedAt: new Date().toISOString(),
       contentGaps,
@@ -270,7 +338,7 @@ async function generateOpportunities(brandId, options = {}) {
     lookbackDays,
   };
 
-  collection('geo_opportunities').insert(record);
+  GEO_STORE.collection('geo_opportunities').insert(record);
   
   console.log(`[geo-opportunities] Generated ${opportunities.opportunities?.length || 0} opportunities for ${brand.name}`);
   
@@ -279,7 +347,7 @@ async function generateOpportunities(brandId, options = {}) {
 
 // ===== List 接口 =====
 function listOpportunities(brandId, limit = 10) {
-  const coll = collection('geo_opportunities');
+  const coll = GEO_STORE.collection('geo_opportunities');
   // v0.33: find 需要传函数作为 predicate，不是对象
   const records = coll.find(doc => doc.brand_id === brandId)
     .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))

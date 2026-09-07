@@ -36,27 +36,26 @@ function getByUid(mailbox, uid) {
 }
 
 /**
- * 批量取一组邮件的分类
+ * 批量取一组邮件的分类（v2.3 加 profileId 过滤）
  * @returns {{ uid: classificationObj }} 缺省 uid 不在返回 map 里
  */
-function bulkGetByUids(mailbox, uids) {
+function bulkGetByUids(mailbox, uids, profileId) {
   const out = {};
   if (!mailbox || !Array.isArray(uids) || uids.length === 0) return out;
   const all = collection(COL).all ? collection(COL).all() : [];
   const idSet = new Set(uids.map(u => makeId(mailbox, u)));
   for (const d of all) {
-    if (idSet.has(d.id)) {
-      // d.id 格式 ecl_<mailbox>_<uid>，拆出 uid
-      const uid = parseInt(d.id.split('_').pop(), 10);
-      out[uid] = {
-        category: d.category,
-        source: d.source,
-        rationale: d.rationale || '',
-        classified_at: d.classified_at,
-        from: d.from || '',
-        subject: d.subject || '',
-      };
-    }
+    if (!idSet.has(d.id)) continue;
+    if (profileId && (d.profile_id || 'default') !== profileId) continue;
+    const uid = parseInt(d.id.split('_').pop(), 10);
+    out[uid] = {
+      category: d.category,
+      source: d.source,
+      rationale: d.rationale || '',
+      classified_at: d.classified_at,
+      from: d.from || '',
+      subject: d.subject || '',
+    };
   }
   return out;
 }
@@ -88,17 +87,21 @@ function listByMailbox(mailbox) {
 }
 
 /**
- * 写某封邮件的分类（upsert）
+ * 写某封邮件的分类（upsert，v2.3 加 profileId）
  */
-function setByUid({ mailbox, uid, from, subject, category, source, rationale }) {
+function setByUid({ mailbox, uid, from, subject, category, source, rationale, profileId }) {
   if (!mailbox || !uid || !category) {
     return { ok: false, error: 'MISSING_ARGS', message: 'mailbox / uid / category 必填' };
   }
   const id = makeId(mailbox, uid);
+  const pid = profileId || 'default';  // v2.3
   const now = nowIso();
   const existing = getByUid(mailbox, uid);
+  // v2.3: 跨 profile 同 (mailbox, uid) 是不同行（doc.id 已含 mailbox+uid，要加 profile）
+  const existingForProfile = existing && (existing.profile_id || 'default') === pid ? existing : null;
   const doc = {
-    id,
+    id: id + '_' + pid,  // v2.3: 不同 profile 不同 doc id
+    profile_id: pid,      // v2.3
     mailbox,
     uid,
     from: (from || '').toLowerCase().trim(),
@@ -106,11 +109,11 @@ function setByUid({ mailbox, uid, from, subject, category, source, rationale }) 
     category,
     source: source || 'ai',
     rationale: (rationale || '').slice(0, 200),
-    classified_at: existing ? now : now,
+    classified_at: existingForProfile ? now : now,
     updated_at: now,
   };
-  if (existing) {
-    collection(COL).update(d => d.id === id, doc);
+  if (existingForProfile) {
+    collection(COL).update(d => d.id === doc.id, doc);
     return { ok: true, action: 'updated' };
   } else {
     collection(COL).insert(doc);
@@ -144,6 +147,17 @@ function clearByMailbox(mailbox) {
   return count;
 }
 
+/** v2.3: 按 profile 清空（不误删其他 profile 的分类） */
+function clearByProfile(profileId) {
+  if (!profileId) return 0;
+  const all = collection(COL).all ? collection(COL).all() : [];
+  const filtered = all.filter(d => (d.profile_id || 'default') === profileId);
+  filtered.forEach(function (doc) {
+    collection(COL).remove(d => d.id === doc.id);
+  });
+  return filtered.length;
+}
+
 /**
  * 清空全部 per-email 分类（数据管理 → 清理发件人分类按钮也要清这个）
  */
@@ -164,6 +178,7 @@ module.exports = {
   removeByUid,
   clearByMailbox,
   clearAll,
+  clearByProfile,  // v2.3
   COL,
   makeId,
 };

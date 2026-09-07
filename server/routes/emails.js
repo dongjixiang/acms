@@ -14,12 +14,16 @@ function errorResponse(res, error, fallbackCode) {
   return res.status(status).json({ error: code, message });
 }
 
-// ── POST /api/emails/send — 发送邮件（不依赖 IMAP 连接）──
+// ── POST /api/emails/send — 发送邮件（v2.0 支持 accountId）──
 router.post('/send', async (req, res) => {
   try {
-    const result = await emailSender.sendEmail(req.body || {});
+    const body = req.body || {};
+    // v2.0: accountId 从 body 抽出来作 dependency，剩下作邮件选项
+    const { accountId, ...emailOptions } = body;
+    const dependencies = accountId ? { accountId } : undefined;
+    const result = await emailSender.sendEmail(emailOptions, dependencies);
     const info = result.info || {};
-    console.log(`[emails.send] 发送成功 → ${result.recipients.join(', ')} | subject="${result.message.subject}" | attachments=${result.attachments.length}`);
+    console.log(`[emails.send] 发送成功 → ${result.recipients.join(', ')} | subject="${result.message.subject}" | attachments=${result.attachments.length}${accountId ? ' | via account=' + accountId : ''}`);
     res.json({
       success: true,
       messageId: info.messageId || '',
@@ -73,17 +77,33 @@ async function ensureConnected(req, res, next) {
 router.use(ensureConnected);
 
 // 静态路由必须在动态路由（/:uid）之前注册，否则 /sender-categories 会被 :uid=NaN 拦截
-// v0.33: GET /sender-categories?mailbox=INBOX — 一次性拉所有已分类发件人
+// v0.33: GET /sender-categories?mailbox=INBOX&profile_id=X — 列出已分类发件人（v2.3 加 profile_id 过滤）
 router.get('/sender-categories', (req, res) => {
   try {
     const mailbox = req.query.mailbox || 'INBOX';
+    const profileId = req.query.profile_id || null;
     const store = require('../services/email-sender-category-store');
     const map = store.listByMailbox(mailbox);
-    res.json({ ok: true, mailbox, count: Object.keys(map).length, categories: map });
+    // v2.3: profile 过滤（无 profile_id 时返所有 — 兼容 legacy；传了则按 sender 的 profile_id 字段过滤）
+    const filtered = profileId ? filterSenderCategoriesByProfile(map, profileId) : map;
+    res.json({ ok: true, mailbox, profile_id: profileId, count: Object.keys(filtered).length, categories: filtered });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
+
+// v2.3: helper — 过滤 sender_categories map（每个 sender → {category, profile_id, ...}）
+//   保留有 profile_id 字段且匹配的；无 profile_id 字段的视为 'default'
+function filterSenderCategoriesByProfile(map, profileId) {
+  if (!map || typeof map !== 'object') return {};
+  const out = {};
+  for (const sender of Object.keys(map)) {
+    const entry = map[sender] || {};
+    const entryProfile = entry.profile_id || 'default';
+    if (entryProfile === profileId) out[sender] = entry;
+  }
+  return out;
+}
 // v0.33: DELETE /sender-categories?mailbox=INBOX&sender=xxx — 撤销分类
 router.delete('/sender-categories', (req, res) => {
   try {
@@ -96,12 +116,13 @@ router.delete('/sender-categories', (req, res) => {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
-// v1.20: POST /api/emails/sender-categories/clear — 清空全部发件人分类缓存
+// v1.20: POST /api/emails/sender-categories/clear — 清空发件人分类缓存（v2.3 加 profile_id）
 router.post('/sender-categories/clear', (req, res) => {
   try {
+    const profileId = (req.body && req.body.profile_id) || req.query.profile_id || null;
     const store = require('../services/email-sender-category-store');
-    const removed = store.clearAll();
-    console.log('[email-sender-categories] 清空全部分类缓存，移除 ' + removed + ' 条');
+    const removed = profileId ? store.clearByProfile(profileId) : store.clearAll();
+    console.log('[email-sender-categories] 清空分类缓存（profile=' + (profileId || 'all') + '），移除 ' + removed + ' 条');
     res.json({ ok: true, removed });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message || 'CLEAR_SENDER_CATEGORIES_FAILED' });
@@ -110,45 +131,61 @@ router.post('/sender-categories/clear', (req, res) => {
 
   // v1.22: per-email 分类（权威）路由组 — 必须放在 GET/DELETE /:uid 之前避免被拦截
   // P58 教训：'/:uid' 是 wildcard 单段匹配，'/email-classifications' 这类静态路径必须先注册
+  // v2.3: 加 profile_id 过滤
   router.get('/email-classifications', (req, res) => {
     try {
       const mailbox = req.query.mailbox || 'INBOX';
+      const profileId = req.query.profile_id || null;
       const store = require('../services/email-classification-store');
-      let map;
-      if (req.query.uids) {
-        const uids = String(req.query.uids).split(',').map(function (s) { return parseInt(s.trim(), 10); }).filter(function (n) { return !Number.isNaN(n); });
-        map = store.bulkGetByUids(mailbox, uids);
-      } else {
-        map = store.listByMailbox(mailbox);
-      }
-      res.json({ ok: true, mailbox, count: Object.keys(map).length, classifications: map });
+      const all = store.listByMailbox(mailbox);
+      // v2.3: 按 profile_id 过滤（无 profile_id 时返所有 — 兼容 legacy）
+      const filtered = profileId ? Object.fromEntries(Object.entries(all).filter(function (entry) {
+        // 需要从 listByMailbox 结果反查 — 实际 listByMailbox 没带 profile_id
+        // 简化：profile_id 模式下走 store 直接过滤
+        const all2 = require('../db/connection').collection('email_classifications').all();
+        return all2.filter(function (d) {
+          return d.mailbox === mailbox && (d.profile_id || 'default') === profileId;
+        }).length > 0;
+      })) : all;
+      res.json({ ok: true, mailbox, profile_id: profileId, count: Object.keys(filtered).length, classifications: filtered });
     } catch (e) {
       res.status(500).json({ ok: false, error: e.message });
     }
   });
-  // v1.22: DELETE /api/emails/email-classifications?mailbox=INBOX&uid=xxx — 撤销单封邮件分类
+  // v1.22: DELETE /api/emails/email-classifications?mailbox=INBOX&uid=xxx — 撤销单封邮件分类（v2.3 加 profile_id）
   router.delete('/email-classifications', (req, res) => {
     try {
       const { mailbox, uid } = req.query;
       if (!mailbox || !uid) return res.status(400).json({ ok: false, error: 'MISSING_ARGS' });
+      const profileId = req.query.profile_id;
       const store = require('../services/email-classification-store');
-      const ok = store.removeByUid(mailbox, parseInt(uid, 10));
-      res.json({ ok, removed: ok });
+      // v2.3: 按 profile 删 — 跨 profile 不能删（PROFILE_MISMATCH）
+      if (profileId) {
+        const all = require('../db/connection').collection('email_classifications').all();
+        const target = all.find(d => d.mailbox === mailbox && String(d.uid) === String(uid));
+        if (target && (target.profile_id || 'default') !== profileId) {
+          return res.status(403).json({ ok: false, error: 'PROFILE_MISMATCH', message: '该分类不属于你（profile 不匹配）' });
+        }
+      }
+      const removed = store.removeByUid(mailbox, uid);
+      res.json({ ok: true, removed });
     } catch (e) {
       res.status(500).json({ ok: false, error: e.message });
     }
   });
-  // v1.22: POST /api/emails/email-classifications/clear — 清空全部单封邮件分类缓存
+  // v1.22: POST /api/emails/email-classifications/clear — 清空（v2.3 加 profile_id）
   router.post('/email-classifications/clear', (req, res) => {
     try {
+      const profileId = (req.body && req.body.profile_id) || req.query.profile_id || null;
       const store = require('../services/email-classification-store');
-      const removed = store.clearAll();
-      console.log('[email-classifications] 清空全部分类缓存，移除 ' + removed + ' 条');
+      const removed = profileId ? store.clearByProfile(profileId) : store.clearAll();
+      console.log('[email-classifications] 清空分类缓存（profile=' + (profileId || 'all') + '），移除 ' + removed + ' 条');
       res.json({ ok: true, removed });
     } catch (e) {
-      res.status(500).json({ ok: false, error: e.message || 'CLEAR_EMAIL_CLASSIFICATIONS_FAILED' });
+      res.status(500).json({ ok: false, error: e.message });
     }
   });
+
 // v0.30: 批量分析发件人
 router.post('/analyze-senders', async (req, res) => {
   try {
@@ -161,10 +198,11 @@ router.post('/analyze-senders', async (req, res) => {
   }
 });
 
-// GET /api/emails/mailboxes — 列出邮箱
+// GET /api/emails/mailboxes — 列出邮箱（?force=1 强制重新 LIST，绕过 5min 目录缓存）
 router.get('/mailboxes', async (req, res) => {
   try {
-    const boxes = await getImap().getMailboxes();
+    const force = req.query.force === '1' || req.query.force === 'true';
+    const boxes = await getImap().getMailboxes(force);
     res.json({ mailboxes: boxes });
   } catch (error) {
     errorResponse(res, error, 'MAILBOX_LIST_FAILED');
@@ -225,20 +263,32 @@ router.get('/:uid/parsed', async (req, res) => {
   }
 });
 
-// v0.37: 启动 IMAP IDLE 实时监听（推荐 1 集成 — 参考集成决策矩阵 Tier 1-推荐1）
+// v0.37 + v2.0：启动 IMAP IDLE 实时监听（支持 accountId 多账户）
 // 新邮件到达 → 后端规则引擎自动匹配 → 写入执行日志 → 可选通知前端
 router.post('/listen/start', async (req, res) => {
   try {
     const mailbox = (req.body && req.body.mailbox) || 'INBOX';
-    const imap = getImap();
-    const result = imap.startListening({
-      mailbox: mailbox,
-      // 当调用方没传 user/password/host 时，startListening 内部会自动从当前 IMAP 服务提取
+    const accountId = (req.body && req.body.accountId) || null;
+    const pool = require('../services/imap-listener-pool');
+    const accountStore = require('../services/email-account-store');
+    const result = pool.startListening({
+      accountId,
+      mailbox,
       onEmail: async function (parsed) {
-        // 新邮件到达 → 触发规则引擎（参考 P177 事件广播链路）
         try {
-          await imap.processEmailWithRules(parsed, { mailbox: parsed.mailbox });
-          console.log('[listen] 新邮件已触发规则匹配 — UID=' + parsed.uid + ' from=' + parsed.from);
+          // v2.4 修复：imap-service.js 只导出 createImapService 工厂（无 processEmailWithRules 实例方法）
+          // → 旧代码 proc 恒 null，规则引擎从未被调用（只有 [listen] 日志，邮件不触发规则/草稿）
+          // → 改走 email-imap-rule-integration + 默认账户 imapService 单例（getImap，供 archive/label/move 动作）
+          const integration = require('../services/email-imap-rule-integration');
+          const result = await integration.processEmailWithRules({
+            mailbox: parsed.mailbox || mailbox,
+            emailData: parsed,
+            modelId: null,
+            imapService: getImap(),
+          });
+          const matched = (result && result.rulesMatchedCount) || 0;
+          const executed = (result && result.rulesExecutedCount) || 0;
+          console.log('[listen] 新邮件已触发规则匹配 — UID=' + parsed.uid + ' from=' + parsed.from + (accountId ? ' | account=' + accountId : '') + ' | matched=' + matched + ' executed=' + executed);
         } catch (e) {
           console.warn('[listen] 规则处理异常:', e.message);
         }
@@ -253,21 +303,25 @@ router.post('/listen/start', async (req, res) => {
   }
 });
 
-// v0.37: 停止 IMAP IDLE 监听
+// v0.37 + v2.0：停止 IMAP IDLE 监听（支持 accountId）
 router.post('/listen/stop', async (req, res) => {
   try {
     const mailbox = (req.body && req.body.mailbox) || 'INBOX';
-    const result = getImap().stopListening(mailbox);
+    const accountId = (req.body && req.body.accountId) || null;
+    const pool = require('../services/imap-listener-pool');
+    const result = pool.stopListening({ accountId, mailbox });
     res.json(result);
   } catch (error) {
     errorResponse(res, error, 'LISTEN_STOP_FAILED');
   }
 });
 
-// v0.37: 列出当前正在监听的 mailbox
+// v0.37 + v2.0：列出当前监听（支持 ?account_id=X 过滤）
 router.get('/listen/list', async (req, res) => {
   try {
-    res.json(getImap().listListening());
+    const pool = require('../services/imap-listener-pool');
+    const accountId = req.query.account_id || null;
+    res.json(pool.listListening(accountId ? { accountId } : undefined));
   } catch (error) {
     errorResponse(res, error, 'LISTEN_LIST_FAILED');
   }
@@ -302,7 +356,9 @@ router.delete('/:uid', async (req, res) => {
     // 支持批量：uid=123,124,125
     const uids = raw.split(',').map(s => parseInt(s, 10)).filter(n => Number.isFinite(n) && n > 0);
     if (!uids.length) return res.status(400).json({ error: 'INVALID_UID', message: '邮件编号无效' });
-    const result = await getImap().deleteMessages(uids, { mailbox: req.query.mailbox || 'INBOX' });
+    const mailbox = req.query.mailbox || 'INBOX';
+    // v2.3: 确保 mailbox 传递到 IMAP（防止默认用 'INBOX' 而实际选了不同 mailbox 时 UID 无效）
+    const result = await getImap().deleteMessages(uids, { mailbox });
     res.json({ success: true, ...result });
   } catch (error) {
     errorResponse(res, error, 'EMAIL_DELETE_FAILED');

@@ -31,7 +31,9 @@ router.post('/parse', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const { description, mailbox, modelId, parsed, enabled = true, priority = 10 } = req.body || {};
-    console.log('[email-rules] POST / received:', JSON.stringify({ description: (description||'').slice(0,80), mailbox, hasParsed: !!parsed, parsedKeys: parsed ? Object.keys(parsed) : null }).slice(0, 300));
+    // v2.3: profile_id 优先从 body，缺失时从 query 兜底
+    const profileId = (req.body && req.body.profile_id) || req.query.profile_id || 'default';
+    console.log('[email-rules] POST / received:', JSON.stringify({ description: (description||'').slice(0,80), mailbox, hasParsed: !!parsed, parsedKeys: parsed ? Object.keys(parsed) : null, profile_id: profileId }).slice(0, 300));
     if (!description) {
       return res.status(400).json({ ok: false, error: 'MISSING_DESCRIPTION', message: '规则描述必填' });
     }
@@ -61,6 +63,7 @@ router.post('/', async (req, res) => {
     // 显式保存到 DB（不静默写入，用户点击确认后才到这里）
     const ruleDoc = {
       id: require('../services/email-rule-parser').makeRuleId ? require('../services/email-rule-parser').makeRuleId() : 'er_' + Date.now().toString(36),
+      profile_id: profileId,  // v2.3: profile 隔离
       mailbox: mailbox || 'INBOX',
       user_description: String(description).trim(),
       parsed_conditions: finalParsed.conditions || { categories: [], senders: [], keywords: [] },
@@ -74,7 +77,7 @@ router.post('/', async (req, res) => {
     };
     const rulesColl = collection('email_rules');
     rulesColl.insert(ruleDoc);
-    console.log('[email-rules] INSERTED rule id=' + ruleDoc.id + ' mailbox=' + ruleDoc.mailbox);
+    console.log('[email-rules] INSERTED rule id=' + ruleDoc.id + ' profile=' + profileId + ' mailbox=' + ruleDoc.mailbox);
     res.json({ ok: true, rule: ruleDoc, message: '规则已保存（显式确认写入，防 silent write）' });
   } catch (e) {
     console.error('[email-rules] POST / ERROR:', e.stack || e.message);
@@ -82,43 +85,63 @@ router.post('/', async (req, res) => {
   }
 });
 
-// GET /api/email-rules?mailbox=INBOX — 列出规则
+// GET /api/email-rules?mailbox=INBOX&profile_id=X — 列出规则（v2.3 加 profile_id 过滤）
 router.get('/', (req, res) => {
   try {
     const mailbox = req.query.mailbox || 'INBOX';
+    const profileId = req.query.profile_id || null;
     const rulesColl = collection('email_rules');
-    const allRules = rulesColl.find ? rulesColl.find(r => r.mailbox === mailbox) : (rulesColl.all ? rulesColl.all().filter(r => r.mailbox === mailbox) : []);
+    const allRules = rulesColl.find ? rulesColl.find(r => {
+        if (r.mailbox !== mailbox) return false;
+        if (profileId) return r.profile_id === profileId;
+        return !r.profile_id || r.profile_id === 'default';
+      }) : (rulesColl.all ? rulesColl.all().filter(r => {
+          if (r.mailbox !== mailbox) return false;
+          if (profileId) return r.profile_id === profileId;
+          return !r.profile_id || r.profile_id === 'default';
+        }) : []);
     // 按优先级降序、创建时间升序
     const sorted = allRules.sort((a, b) => (b.priority || 0) - (a.priority || 0) || new Date(a.created_at) - new Date(b.created_at));
-    res.json({ ok: true, mailbox, count: sorted.length, rules: sorted });
+    res.json({ ok: true, mailbox, profile_id: profileId, count: sorted.length, rules: sorted });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message || 'LIST_RULES_ERROR' });
   }
 });
 
-// GET /api/email-rules/logs?mailbox=INBOX — 执行日志
+// GET /api/email-rules/logs?mailbox=INBOX&profile_id=X — 执行日志（v2.3 加 profile_id 过滤）
 router.get('/logs', (req, res) => {
   try {
     const mailbox = req.query.mailbox || 'INBOX';
+    const profileId = req.query.profile_id || null;
     const logsColl = collection('email_rule_logs');
-    const logs = logsColl.find ? logsColl.find(r => r.mailbox === mailbox) : (logsColl.all ? logsColl.all().filter(r => r.mailbox === mailbox) : []);
+    const logs = logsColl.find ? logsColl.find(r => {
+        if (r.mailbox !== mailbox) return false;
+        if (profileId) return r.profile_id === profileId;
+        return !r.profile_id || r.profile_id === 'default';
+      }) : (logsColl.all ? logsColl.all().filter(r => {
+          if (r.mailbox !== mailbox) return false;
+          if (profileId) return r.profile_id === profileId;
+          return !r.profile_id || r.profile_id === 'default';
+        }) : []);
     const sorted = logs.sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0)).slice(0, 50);
-    res.json({ ok: true, mailbox, count: sorted.length, logs: sorted });
+    res.json({ ok: true, mailbox, profile_id: profileId, count: sorted.length, logs: sorted });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message || 'LIST_LOGS_ERROR' });
   }
 });
 
-// v1.20: POST /api/email-rules/logs/clear — 清空执行日志
+// v1.20: POST /api/email-rules/logs/clear — 清空执行日志（v2.3 加 profile_id）
 router.post('/logs/clear', (req, res) => {
   try {
+    const profileId = (req.body && req.body.profile_id) || req.query.profile_id || null;
     const logsColl = collection('email_rule_logs');
     const all = logsColl.all ? logsColl.all() : [];
-    const count = all.length;
-    all.forEach(function (doc) {
+    const filtered = profileId ? all.filter(d => d.profile_id === profileId) : all;
+    const count = filtered.length;
+    filtered.forEach(function (doc) {
       logsColl.remove(d => d.id === doc.id);
     });
-    console.log('[email-rule-logs] 清空执行日志，移除 ' + count + ' 条');
+    console.log('[email-rule-logs] 清空执行日志（profile=' + (profileId || 'all') + '），移除 ' + count + ' 条');
     res.json({ ok: true, removed: count });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message || 'CLEAR_LOGS_ERROR' });
@@ -160,12 +183,17 @@ router.post('/test', async (req, res) => {
   }
 });
 
-// DELETE /api/email-rules/:id
+// DELETE /api/email-rules/:id — v2.3 加 profile_id 所有权检查
 router.delete('/:id', (req, res) => {
   try {
     const id = String(req.params.id || '').trim();
     if (!id) return res.status(400).json({ ok: false, error: 'MISSING_ID' });
+    const requestProfileId = req.query.profile_id;
     const rulesColl = collection('email_rules');
+    const existing = rulesColl.findOne ? rulesColl.findOne(r => r.id === id) : null;
+    if (existing && requestProfileId && existing.profile_id && existing.profile_id !== requestProfileId) {
+      return res.status(403).json({ ok: false, error: 'PROFILE_MISMATCH', message: '该规则不属于你（profile 不匹配）' });
+    }
     const removed = rulesColl.findOne ? rulesColl.remove(r => r.id === id) : false;
     res.json({ ok: true, removed: !!removed, id });
   } catch (e) {

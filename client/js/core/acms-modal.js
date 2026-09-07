@@ -158,6 +158,7 @@
       fields = [],
       actions = null,
       root = null,
+      beforeCleanup = null,  // v0.44: cleanup 钩子（modal 销毁前调用），可用于捕获 textarea/input 值
     } = options;
 
     injectStyle();
@@ -292,8 +293,18 @@
       const firstInput = Object.values(inputs)[0];
       if (firstInput) setTimeout(() => firstInput.focus(), 50);
 
-      function cleanup(value) {
+function cleanup(value) {
         document.removeEventListener('keydown', escHandler);
+        // v0.44: beforeCleanup 钩子（modal 销毁前调用，用于捕获 modal 内元素的值/状态）
+        //   治"html 模式 textarea 在 modal 内，modal 关闭后 DOM 找不到"的根因
+        //   调用方可在 beforeCleanup 里把 textarea/input 的值存到 closure，然后 cleanup 后从 closure 读
+        if (typeof options.beforeCleanup === 'function') {
+          try {
+            value = options.beforeCleanup(value);
+          } catch (e) {
+            console.warn('ACMSModal beforeCleanup error:', e);
+          }
+        }
         if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
         resolve(value);
       }

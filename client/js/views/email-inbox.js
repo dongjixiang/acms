@@ -206,14 +206,14 @@ function formatAddress(value) {
     { app: 'web-browser', label: '🎵 音频播放',
       mime: /^audio\//i,
       exts: ['mp3','wav','ogg','m4a','flac','aac','opus'] },
-    // Office: 需要先存 workspace 再用 office editor 打开（v0.74 暂未支持附件直传，留 TODO）
-    { app: 'office-word', label: '📝 Word 编辑器（暂未支持邮件附件，请下载）',
+    // Office 系列：v0.74.2 已修复附件直传（先存 workspace → fileId → office editor 打开，参考 file-browser.js 模式）
+    { app: 'office-word', label: '📝 Word 编辑器',
       mime: /(officedocument\.word|msword)/i,
       exts: ['docx','doc','odt','rtf'] },
-    { app: 'office-xlsx', label: '📊 Excel 编辑器（暂未支持邮件附件，请下载）',
+    { app: 'office-xlsx', label: '📊 Excel 编辑器',
       mime: /(officedocument\.spreadsheet|excel)/i,
       exts: ['xlsx','xls','ods'] },
-    { app: 'office-pptx', label: '📽️ PPT 编辑器（暂未支持邮件附件，请下载）',
+    { app: 'office-pptx', label: '📽️ PPT 编辑器',
       mime: /(officedocument\.presentation|powerpoint)/i,
       exts: ['pptx','ppt','odp'] },
   ];
@@ -237,7 +237,7 @@ function formatAddress(value) {
       if (!match) return;
       if (seen[rule.app]) return; // 去重：同一应用多条规则只取第一条 label
       seen[rule.app] = true;
-      apps.push({ name: rule.app, label: rule.label, supported: rule.app !== 'office-word' && rule.app !== 'office-xlsx' && rule.app !== 'office-pptx' });
+      apps.push({ name: rule.app, label: rule.label, supported: true });
     });
     return apps;
   }
@@ -280,6 +280,44 @@ function formatAddress(value) {
     if (!window.ACMSFileApps) {
       showToast('文件应用 registry 未加载', 'error');
       return Promise.resolve();
+    }
+    // v0.74.2 修复：Office 附件直传（参考 file-browser.js 第 487-540 行模式）
+    // 不再走 needs-download 提示，而是先将附件保存到 workspace，再用 fileId 打开编辑器
+    if (appName === 'office-word' || appName === 'office-xlsx' || appName === 'office-pptx') {
+      self.setStatus('正在将附件保存到编辑器工作区…');
+      return fetch(url, { headers: { 'X-API-Key': API_KEY } })
+        .then(function (r) { if (!r.ok) throw new Error('附件下载失败: HTTP ' + r.status); return r.arrayBuffer(); })
+        .then(function (buf) {
+          var bytes = new Uint8Array(buf);
+          var b64 = '';
+          var chunkSize = 8192;
+          for (var i = 0; i < bytes.length; i += chunkSize) {
+            var chunk = bytes.subarray(i, i + chunkSize);
+            b64 += String.fromCharCode.apply(null, chunk);
+          }
+          b64 = btoa(b64);
+          var typeMap = { 'office-word': 'docx', 'office-xlsx': 'xlsx', 'office-pptx': 'pptx' };
+          return fetch('/api/office/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
+            body: JSON.stringify({ type: typeMap[appName], name: att.name, content: b64 }),
+          }).then(function (sr) { return sr.json(); });
+        })
+        .then(function (resp) {
+          if (resp && resp.ok && resp.fileId) {
+            if (window.ACMSWin && window.ACMSWin.open) {
+              window.ACMSWin.open(appName, { w: 1000, h: 700, title: '📝 ' + att.name, fileId: resp.fileId, fileName: att.name });
+            }
+            self.setStatus('已在编辑器打开：' + att.name);
+            showToast('✅ 附件已在 ' + (appName === 'office-word' ? 'Word' : appName === 'office-xlsx' ? 'Excel' : 'PPT') + ' 编辑器中打开', 'success');
+          } else {
+            throw new Error('保存到编辑器工作区失败: ' + (resp && resp.error ? resp.error : JSON.stringify(resp)));
+          }
+        })
+        .catch(function (err) {
+          self.setStatus('附件打开失败: ' + (err && err.message ? err.message : String(err)), 'error');
+          showToast('附件打开失败: ' + (err && err.message ? err.message : String(err)), 'error');
+        });
     }
     self.setStatus('打开中…');
     return window.ACMSFileApps.openFileWith(appName, { url: url, name: att.name, mime: att.type })
@@ -514,6 +552,22 @@ function formatAddress(value) {
 
     this.state = {
       account: null,
+      // v2.1: 多账户体系 — Profile（身份）+ Account（邮箱凭证）
+      //   profiles = 后端 list（不含 pin_hash）
+      //   currentProfile = 当前激活的 profile（来自 /api/email-profiles/:id）
+      //   currentAccount = 当前激活的 account（来自 /api/email-accounts?profile_id=X）
+      //   locked = 是否锁屏（PIN 未验证或超时）
+      profiles: [],
+      currentProfile: null,
+      currentAccount: null,
+      accounts: [],   // 当前 profile 的所有账户（抽屉用）
+      locked: true,
+      autoLockMinutes: 30,
+      lastActivityAt: Date.now(),
+      autoLockTimer: null,
+      // v2.1: PIN 输入状态（防止重复打开）
+      pinInputInProgress: false,
+      pinAttempts: 0,
       mailboxes: [],
       mailbox: 'INBOX',
       emails: [],
@@ -552,29 +606,185 @@ function formatAddress(value) {
       // v1.13: 草稿箱视图
       drafts: [],
       selectedDraftId: null,
+      // v2.2: 邮箱账户 sub-tab 切换（profiles / accounts / listening）
+      accountSubTab: 'profiles',
     };
     this.templates = {};
   }
 
   EmailApp.prototype.init = function () {
     var self = this;
-    this.render();
-    this.loadAccount()
-      .then(function () { return self.loadMailboxes(); })
-      .then(function () { return self.loadEmails(); })
-      .catch(function (err) {
-        if (err && err.code === 'IMAP_CONNECT_FAILED') return;
-        self.setStatus('初始化失败: ' + (err && err.message || '未知错误'), 'error');
+    // v2.1: 入口判断 — 已解锁的 profile 可直接进，否则显示身份选择屏
+    var savedUnlock = this.readUnlockFromStorage();
+    if (savedUnlock && savedUnlock.profileId) {
+      // 已解锁 → 加载该 profile + 默认账户 → 进邮件应用
+      this.state.locked = false;
+      this.render();
+      this.bootstrapWithProfile(savedUnlock.profileId).catch(function (err) {
+        console.warn('[email] bootstrap with saved profile failed:', err.message);
+        self.clearUnlockStorage();
+        self.state.locked = true;
+        self.loadProfilesAndShowSelect();
       });
+    } else {
+      // 未解锁 → 显示身份选择屏
+      this.loadProfilesAndShowSelect();
+    }
+  };
+
+  // v2.1: 读 localStorage 里的 unlock key（profile_id + last_active_at）
+  EmailApp.prototype.readUnlockFromStorage = function () {
+    try {
+      var raw = (typeof localStorage !== 'undefined') ? localStorage.getItem('email_unlock') : null;
+      if (!raw) return null;
+      var data = JSON.parse(raw);
+      // 简单校验 + 30 分钟过期
+      if (!data || !data.profileId || !data.expiresAt) return null;
+      if (Date.now() > data.expiresAt) return null;
+      return data;
+    } catch (e) {
+      return null;
+    }
+  };
+
+  EmailApp.prototype.writeUnlockToStorage = function (profileId) {
+    try {
+      if (typeof localStorage === 'undefined') return;
+      var data = {
+        profileId: profileId,
+        unlockedAt: Date.now(),
+        expiresAt: Date.now() + 30 * 60 * 1000,  // 30 分钟
+      };
+      localStorage.setItem('email_unlock', JSON.stringify(data));
+    } catch (e) { /* ignore quota / private mode */ }
+  };
+
+  EmailApp.prototype.clearUnlockStorage = function () {
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.removeItem('email_unlock');
+    } catch (e) { /* ignore */ }
+  };
+
+  // v2.1: 进入邮件应用 — 用已解锁的 profile_id 加载账户 + 邮件数据
+  EmailApp.prototype.bootstrapWithProfile = function (profileId) {
+    var self = this;
+    self.state.locked = false;
+    return apiFetch('GET', '/api/email-accounts?profile_id=' + encodeURIComponent(profileId))
+      .then(function (data) {
+        var accounts = (data && data.accounts) || [];
+        if (accounts.length === 0) {
+          // 1) 真实身份（如 Crystal）没有账户时，不应降级到默认 Kuqi 邮箱（避免身份隔离被打破）
+          //    只有无 profile（向后兼容旧单账户模式）时才走 fallback
+          if (!profileId || profileId === 'legacy') {
+            return self.fallbackToLegacyAccount();
+          }
+          // 有身份但无账户：保留身份，账户为空，显示提示而非混入别的邮箱数据
+          self.state.accounts = [];
+          self.state.currentAccount = null;
+          return apiFetch('GET', '/api/email-profiles/' + encodeURIComponent(profileId));
+        }
+        // 默认账户 = sort_order 最小 + status=active（仅选 profile 本身的账户，不混入别的 profile 的数据）
+        self.state.accounts = accounts;
+        self.state.currentAccount = accounts.length > 0 ? accounts[0] : null;
+        return apiFetch('GET', '/api/email-profiles/' + encodeURIComponent(profileId));
+      })
+      .then(function (profileResp) {
+        if (profileResp && profileResp.profile) {
+          self.state.currentProfile = profileResp.profile;
+        }
+        // 解锁 + 渲染主视图 + 绑活动追踪 + 启动自动锁屏
+        self.startAutoLockTimer();
+        self.bindActivityTracking();
+        self.recordActivity();
+        self.render();
+        // 加载邮件数据（当前身份无账户时，不调用后端默认 IMAP，防止混入 Kuqi 邮箱数据）
+        if (!self.state.currentAccount) {
+          self.setStatus('该身份下还没有邮箱账户，请在设置 → 邮箱账户中添加');
+          self.render();  // 重新渲染，确保界面显示正确的身份名而非默认邮箱
+          return Promise.resolve();
+        }
+        return Promise.all([
+          self.loadMailboxes().catch(function (e) { console.warn('[email] loadMailboxes failed:', e.message); }),
+          self.loadEmails().catch(function (e) { console.warn('[email] loadEmails failed:', e.message); }),
+        ]);
+      });
+  };
+
+  // v2.1: 降级到 config.smtp 单账户（无 profile 时的兼容路径）
+  EmailApp.prototype.fallbackToLegacyAccount = function () {
+    var self = this;
+    return self.loadAccount().then(function () {
+      self.state.locked = false;
+      // 模拟一个 "legacy" profile 用于 UI 显示
+      if (!self.state.currentProfile && self.state.account && self.state.account.email) {
+        self.state.currentProfile = {
+          id: 'legacy',
+          name: '默认账户',
+          avatar: '👤',
+          color: '#4ecdc4',
+          type: 'personal',
+        };
+        self.state.currentAccount = {
+          id: 'legacy',
+          email: self.state.account.email,
+          name: '默认邮箱',
+          color: '#4ecdc4',
+        };
+        self.state.accounts = [self.state.currentAccount];
+      }
+      self.startAutoLockTimer();
+      self.recordActivity();
+      return Promise.all([
+        self.loadMailboxes().catch(function (e) { console.warn('[email] loadMailboxes failed:', e.message); }),
+        self.loadEmails().catch(function (e) { console.warn('[email] loadEmails failed:', e.message); }),
+      ]);
+    });
   };
 
   EmailApp.prototype.render = function () {
     var self = this;
-
+    // v2.1 fix: render 会 innerHTML 替换所有子节点 → PIN 输入框/keypad 节点都是新的
+    //   必须重置 flag 才能重新绑（_eventsBound 不重置，因为 click listener 在 root 上不是子节点）
+    self._pinInputBound = false;
+    self._pinKeypadBound = false;
+    // v2.1: 多账户 — 锁屏 / 未解锁时只显示身份选择屏 + PIN 弹窗
+    if (this.state.locked) {
+      this.root.innerHTML = this.renderProfileSelect();
+      this.bindEvents();   // v2.1 fix: locked 分支也要 bindEvents（之前提前 return 没绑）
+      this.bindPinInputEvents();
+      this.bindPinKeypadEvents();
+      return;
+    }
+    // v2.1: 已经解锁但还没 profile（兜底）— 同样显示选择屏
+    if (!this.state.currentProfile) {
+      this.root.innerHTML = this.renderProfileSelect();
+      this.bindEvents();
+      this.bindPinInputEvents();
+      this.bindPinKeypadEvents();
+      return;
+    }
     this.root.innerHTML = [
       '<div class="em-app" data-state="idle">',
 '  <aside class="em-side" aria-label="邮箱文件夹">',
-      '    <div class="em-side-head"><span>📬</span><b>邮件</b> <button type="button" class="em-btn" data-action="settings" title="设置：规则引擎（完整解析/预览/确认卡片/日志）· 邮箱账户 · 通知设置 — 每项带悬停说明（参考记忆：指标/按钮hover必须带说明）" style="margin-left:auto;padding:3px 8px;font-size:10px;">⚙️ 设置</button></div>',
+      // v2.1: 多账户 — 顶部抽屉式 profile card（显示当前身份 + 下拉切换账户）
+      '    <div class="em-profile-card" data-role="profile-card" style="--profile-color:' + escHtml((self.state.currentProfile && self.state.currentProfile.color) || '#4ecdc4') + '">',
+      '      <span class="em-profile-avatar">' + escHtml((self.state.currentProfile && self.state.currentProfile.avatar) || '👤') + '</span>',
+      '      <div class="em-profile-info">',
+      '        <div class="em-profile-name">' + escHtml((self.state.currentProfile && self.state.currentProfile.name) || '默认身份') + '</div>',
+      '        <div class="em-profile-account" data-role="current-account-email">' + escHtml((self.state.currentAccount && self.state.currentAccount.email) || '...') + '</div>',
+      '      </div>',
+      '      <span class="em-profile-chevron" data-action="toggle-account-dropdown" title="切换账户（同身份内）">▾</span>',
+      '      <div class="em-account-dropdown" data-role="account-dropdown">',
+      '        <div class="em-account-dropdown-section-title">我的账户（同身份）</div>',
+      '        <div data-role="account-dropdown-list"></div>',
+      '        <div class="em-account-dropdown-divider"></div>',
+      '        <div class="em-account-dropdown-action" data-action="switch-profile" title="切到另一个身份">↩ 切换身份</div>',
+      '      </div>',
+      '    </div>',
+      '    <div class="em-side-head">',
+      '      <button type="button" class="em-btn" data-action="settings" title="设置：规则引擎（完整解析/预览/确认卡片/日志）· 邮箱账户 · 通知设置 — 每项带悬停说明（参考记忆：指标/按钮hover必须带说明）" style="padding:3px 8px;font-size:10px;">⚙️ 设置</button>',
+      '      <button type="button" class="em-btn" data-action="lock-now" title="立即锁定（清除 PIN 解锁状态，下次需要重新输 PIN）" style="padding:3px 8px;font-size:10px;">🔒</button>',
+      '    </div>',
       '    <ul class="em-folders" data-role="folders"></ul>',
       '  </aside>',
       '  <section class="em-list" aria-label="邮件列表">',
@@ -589,10 +799,6 @@ function formatAddress(value) {
 
       '    </div>',
       '    <div class="em-list-body" data-role="list"></div>',
-      '    <div class="em-category-filter" data-role="category-filter" style="padding:8px 14px;border-top:1px solid var(--border);background:var(--bg3);display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:11px;">',
-      '      <span style="font-size:10px;color:var(--text3);font-weight:700;letter-spacing:.04em;margin-right:4px;" title="按 AI 分类筛选邮件（参考 email-classifier.js 8 类别，AI 自动分类的结果可在此筛选）">🗂 按分类筛选</span>',
-      self.renderCategoryFilterChips(),
-      '    </div>',
       '    <div class="em-list-foot" data-role="pager">',
       '      <button type="button" class="em-btn" data-action="prev" disabled>‹ 上一页</button>',
       '      <span data-role="pager-info">–</span>',
@@ -606,6 +812,10 @@ function formatAddress(value) {
       '      <p>选择左侧邮件查看详情，或点击列表栏上方「✉ 写信」。</p>',
       '    </div>',
       '  </main>',
+      '  <aside class="em-category-filter" data-role="category-filter" style="grid-area:filter;padding:8px 14px;border-top:1px solid var(--border);background:var(--bg3);display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:11px;" aria-label="按分类筛选">',
+      '    <span style="font-size:10px;color:var(--text3);font-weight:700;letter-spacing:.04em;margin-right:4px;" title="按 AI 分类筛选邮件（参考 email-classifier.js 8 类别，AI 自动分类的结果可在此筛选）">🗂 按分类筛选</span>',
+      self.renderCategoryFilterChips(),
+      '  </aside>',
       '  <div class="em-status" data-role="status" aria-live="polite">就绪</div>',
       '</div>',
     ].join('');
@@ -616,6 +826,12 @@ function formatAddress(value) {
   EmailApp.prototype.bindEvents = function () {
     var self = this;
     var root = this.root;
+    // v2.1: 防重复绑定（render 末尾都调 this.bindEvents，root 是同一个元素）
+    if (this._eventsBound) {
+      // 即使已绑，PIN 弹窗 input/keypad 节点是新建的，需要重新绑（由 loadProfilesAndShowSelect 显式调）
+      return;
+    }
+    this._eventsBound = true;
 
     root.addEventListener('click', function (event) {
       var target = event.target.closest('[data-action]');
@@ -700,6 +916,26 @@ if (action === 'add-category') return self.addCategory();
         if (action === 'clear-sender-categories') return self.clearSenderCategories();
         if (action === 'clear-rule-logs') return self.clearRuleLogs();
         if (action === 'export-data') return self.exportData();
+        // v2.1: 多账户体系 — 身份选择 / PIN / 锁屏 / 账户抽屉切换
+        if (action === 'select-profile') return self.requestPin(target.getAttribute('data-profile-id'));
+        if (action === 'confirm-pin') return self.confirmPin();
+        if (action === 'cancel-pin') return self.hidePinModal();
+        if (action === 'toggle-account-dropdown') return self.toggleAccountDropdown();
+        if (action === 'switch-account') return self.switchAccount(target.getAttribute('data-account-id'));
+        if (action === 'switch-profile') return self.switchProfile();
+        if (action === 'lock-now') return self.lockNow();
+        if (action === 'show-add-profile-hint') return self.showProfileFormModal(null);
+        // v2.2: 邮箱账户管理 UI — Profile/Account CRUD
+        if (action === 'account-subtab') return self.showAccountSubTab(target.getAttribute('data-subtab'));
+        if (action === 'add-profile') return self.showProfileFormModal(null);
+        if (action === 'edit-profile') return self.showProfileFormModal({ id: target.getAttribute('data-profile-id') });
+        if (action === 'delete-profile') return self.deleteProfileWithConfirm(target.getAttribute('data-profile-id'));
+        if (action === 'refresh-profiles') return self.loadProfilesForSettings();
+        if (action === 'add-account') return self.showAccountFormModal(null);
+        if (action === 'edit-account') return self.showAccountFormModal({ id: target.getAttribute('data-account-id') });
+        if (action === 'delete-account') return self.deleteAccountWithConfirm(target.getAttribute('data-account-id'));
+        if (action === 'refresh-accounts') return self.loadAccountsForSettings();
+        if (action === 'test-account') return self.testAccountConnection(target.getAttribute('data-account-id'));
         return;
       }
       var folder = event.target.closest('[data-role="folder"]');
@@ -737,6 +973,15 @@ if (action === 'add-category') return self.addCategory();
         event.preventDefault();
         self.discardComposer();
       }
+    });
+
+    // v2.2: select change 处理（account profile filter + listen account select）
+    root.addEventListener('change', function (event) {
+      var target = event.target;
+      if (!target || !target.getAttribute) return;
+      var role = target.getAttribute('data-role');
+      if (role === 'account-profile-filter') return self.filterAccountsByProfile();
+      // listen-account-select 不需要 change handler（只是占位）
     });
 
     root.addEventListener('dragover', function (event) {
@@ -797,18 +1042,37 @@ if (action === 'add-category') return self.addCategory();
     });
   };
 
-  EmailApp.prototype.loadMailboxes = function () {
+  EmailApp.prototype.loadMailboxes = function (forceRefresh) {
     var self = this;
-    return apiFetch('GET', '/api/emails/mailboxes').then(function (data) {
-      var mailboxes = (data && data.mailboxes) || [];
-      if (!mailboxes.length) {
-        mailboxes = [{ name: 'INBOX' }];
-      }
+    // v2.4.2: 目录不常改 → 「登录同步一次 + 缓存」：成功后写 localStorage（按账户隔离），
+    // 接口失败（LIST 超时/连接不稳）时用上次成功同步的目录兜底，避免目录区空白
+    var acctId = (self.state.currentAccount && self.state.currentAccount.id) || 'default';
+    var KEY = 'acms_email_mailboxes_cache_' + acctId;
+    var url = forceRefresh ? '/api/emails/mailboxes?force=1' : '/api/emails/mailboxes';
+    var applyBoxes = function (mailboxes, fromCache) {
+      if (!mailboxes || !mailboxes.length) mailboxes = [{ name: 'INBOX' }];
       self.state.mailboxes = mailboxes;
       if (!mailboxes.some(function (box) { return box.name === self.state.mailbox; })) {
         self.state.mailbox = mailboxes[0].name;
       }
       self.renderFolders();
+      if (fromCache) self.setStatus('⚠ 目录同步失败，已显示上次同步的目录（点 ↻ 刷新重试）', 'error');
+    };
+    return apiFetch('GET', url).then(function (data) {
+      var mailboxes = (data && data.mailboxes) || [];
+      if (mailboxes.length) {
+        try { localStorage.setItem(KEY, JSON.stringify({ ts: Date.now(), mailboxes: mailboxes })); } catch (e) { /* ignore */ }
+      }
+      applyBoxes(mailboxes, false);
+    }).catch(function (err) {
+      console.warn('[email] loadMailboxes failed:', err && err.message);
+      var cached = null;
+      try { cached = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (e) { /* ignore */ }
+      if (cached && cached.mailboxes && cached.mailboxes.length) {
+        applyBoxes(cached.mailboxes, true);
+      } else {
+        applyBoxes(null, true);
+      }
     });
   };
 
@@ -907,7 +1171,7 @@ EmailApp.prototype.renderFolders = function () {
 
   EmailApp.prototype.loadEmails = function () {
     var self = this;
-    if (self.state.loading) return;
+    if (self.state.loading) return Promise.resolve();
     self.state.loading = true;
     self.setStatus('加载邮件…');
     var query = {
@@ -964,6 +1228,9 @@ EmailApp.prototype.renderFolders = function () {
     if (this.state.searchKeyword) {
       return this.runSearch(this.state.searchKeyword);
     }
+    // v2.4.2: 刷新邮件列表的同时强制重同步目录（目录缓存 TTL 5min，用户主动刷新可绕过）
+    var self = this;
+    self.loadMailboxes(true).catch(function () {});
     return this.loadEmails();
   };
 
@@ -1033,7 +1300,7 @@ EmailApp.prototype.renderListItem = function (email) {
       '<article class="' + classes.join(' ') + '" data-role="item" data-uid="' + escAttr(email.uid) + '">',
       '  <div class="em-avatar">' + escHtml(initial) + '</div>',
       '  <div class="em-item-body">',
-      '    <div class="em-item-row"><b class="em-from">' + escHtml(fromName) + '</b>',
+      '    <div class="em-item-row"><span class="em-from">' + escHtml(fromName) + '</span>',
       '      <span class="em-time">' + escHtml(dateStr) + '</span></div>',
       '    <div class="em-subject">' + senderChipHtml + escHtml(subject) + '</div>',
       '  </div>',
@@ -1419,12 +1686,21 @@ EmailApp.prototype.refreshSenderCategories = function () {
             self.closeDetail();
           }
           self.renderList();
+          // v0.74.2 + v2.3 fix: 延迟 800ms 再刷新（让 IMAP 服务器 EXPUNGE 完成，避免 "UID STORE State error" 后重刷新立即看到已删邮件）
+          setTimeout(function () {
+            self.loadEmails().catch(function () {});
+          }, 800);
           self.setStatus('已删除 ' + (res.removed || 1) + ' 封');
           showToast('已删除 ' + (res.removed || 1) + ' 封邮件', 'success');
         })
         .catch(function (err) {
-          self.setStatus('删除失败: ' + err.message, 'error');
-          showToast('删除失败: ' + err.message, 'error');
+          var msg = err.message || '网络错误';
+          // v0.74.2 已知缺陷：IMAP 服务器在删除时可能返回 'UID STORE State error'（UID 状态不一致 — 建议刷新邮箱重试）
+          if (msg.indexOf('STORE') >= 0 || msg.indexOf('UID') >= 0) {
+            msg = msg + '（建议先刷新邮箱列表后重试，可能由于邮箱状态变化导致 UID 失效）';
+          }
+          self.setStatus('删除失败: ' + msg, 'error');
+          showToast('删除失败: ' + msg, 'error');
         });
     });
   };
@@ -1584,6 +1860,19 @@ EmailApp.prototype.refreshSenderCategories = function () {
         }
         self.renderDetail();
         self.setStatus('邮件已加载');
+        // v2.4.1: 打开详情 = 已读 → 自动同步服务器 \Seen（原实现只在点「标已读」按钮时同步，
+        // 用户阅读后服务器端仍显示未读）。判断依据用列表 flags（listEmails 的 attrs.flags 可靠；
+        // getEmail 详情不返回 flags，不能用 detail.flags）
+        var listEmail = self.state.emails.find(function (em) { return Number(em.uid) === uid; });
+        if (listEmail && (listEmail.flags || []).indexOf('\\Seen') < 0) {
+          apiFetch('POST', buildUrl('/api/emails/' + uid + '/read', { mailbox: self.state.mailbox }), { read: true })
+            .then(function () {
+              if (listEmail.flags.indexOf('\\Seen') < 0) listEmail.flags.push('\\Seen');
+              // 只重建列表区，不动详情 pane
+              self.renderList();
+            })
+            .catch(function () { /* 自动标读失败静默（阅读不受影响，可手动点按钮） */ });
+        }
       })
       .catch(function (err) {
         pane.innerHTML = '<div class="em-error">❌ ' + escHtml(err.message) + '</div>';
@@ -1729,10 +2018,17 @@ EmailApp.prototype.renderDetail = function () {
     var imgs = body.querySelectorAll('img[src^="http"]');
     if (!imgs.length) return;
     var count = imgs.length;
+    // v0.74.2 增强：显式 tooltip 说明 + 更明显的视觉提示（参考 .geo-tip 标准模式，防用户不知道要点击）
     var banner = document.createElement('div');
-    banner.className = 'em-remote-banner';
-    banner.innerHTML = '已隐藏 ' + count + ' 张远程图片以保护隐私。'
-      + '<button type="button" class="em-btn em-btn-tiny" data-action="load-remote">加载图片</button>';
+    banner.className = 'em-remote-banner geo-tip';
+    banner.setAttribute('data-tip', '邮件正文包含 ' + count + ' 张远程图片（如对账单表格中的图表/二维码/品牌横幅）。为保护隐私默认隐藏。点击【加载图片】后图片将正常显示，内容不会被修改。');
+    banner.innerHTML = '<div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:rgba(245,158,11,.1);border:1px solid #f59e0b;border-radius:8px;font-size:12px;color:var(--text);line-height:1.5;">'
+      + '<span style="font-size:18px;">🔒</span>'
+      + '<span><b>已隐藏 ' + count + ' 张远程图片</b>（保护隐私）。点击下方按钮可加载并查看完整内容（如招商证券对账单中的图表、二维码、表格样式等）。</span>'
+      + '</div>'
+      + '<div style="margin-top:8px;text-align:right;">'
+      + '<button type="button" class="em-btn em-btn-tiny" data-action="load-remote" title="加载远程图片：将 img[data-src-remote] 的源地址恢复为 src，图片立即显示（内容不会被修改，仅解除隐藏）">📷 加载图片</button>'
+      + '</div>';
     body.insertBefore(banner, body.firstChild);
     imgs.forEach(function (img) { img.dataset.srcRemote = img.getAttribute('src'); img.removeAttribute('src'); });
   };
@@ -2498,6 +2794,63 @@ EmailApp.prototype.renderDetail = function () {
     if (input) input.click();
   };
 
+  // v0.74.2 修复：模板附件上传（参考 uploadOne 模式，直接操作模板附件列表 #tpl-attachments）
+  EmailApp.prototype.uploadTemplateFile = function (input) {
+    var self = this;
+    var files = Array.prototype.slice.call(input.files || []);
+    if (!files.length) return;
+    var attStatus = document.getElementById('tpl-attachment-status');
+    files.forEach(function (file) {
+      var placeholder = { id: null, name: file.name, size: file.size, status: 'uploading' };
+      var list = document.getElementById('tpl-attachments');
+      if (list) {
+        var li = document.createElement('li');
+        li.className = 'em-att-chip em-att-uploading';
+        li.setAttribute('data-id', file.name);
+        li.setAttribute('data-att-name', file.name);
+        li.innerHTML = '<span style="font-size:11px;color:var(--text3);">上传中：' + escHtml(file.name) + '</span>';
+        list.appendChild(li);
+      }
+      if (attStatus) attStatus.textContent = '上传中：' + file.name;
+      var form = new FormData();
+      form.append('file', file, file.name);
+      fetch(buildUrl('/api/chat/upload', { api_key: API_KEY }), {
+        method: 'POST',
+        headers: { 'X-API-Key': API_KEY },
+        body: form,
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        if (data && data.error) throw new Error(data.message || data.error);
+        var info = data && data.files ? data.files[0] : data;
+        placeholder.id = info.id;
+        placeholder.status = 'done';
+        placeholder.name = info.name || file.name;
+        placeholder.size = info.size || file.size;
+        if (list) {
+          var chipName = file.name;
+          var chipEl = list.querySelector('[data-att-name="' + cssEscape(chipName) + '"]');
+          if (chipEl) {
+            chipEl.className = 'em-att-chip em-att-done';
+            chipEl.setAttribute('data-id', info.id);
+            chipEl.innerHTML = '<span style="font-size:11px;color:var(--text);">📎 ' + escHtml(file.name) + '</span><span style="font-size:11px;color:var(--text3);margin-left:4px;">' + (info.size ? formatSize(info.size) : '') + '</span>';
+          }
+        }
+        if (attStatus) attStatus.textContent = '附件已上传：' + file.name;
+        showToast('附件已上传：' + file.name, 'success');
+      }).catch(function (err) {
+        if (list) {
+          var chipName = file.name;
+          var chipEl = list.querySelector('[data-att-name="' + cssEscape(chipName) + '"]');
+          if (chipEl) {
+            chipEl.className = 'em-att-chip em-att-failed';
+            chipEl.innerHTML = '<span style="font-size:11px;color:var(--red);">❌ ' + escHtml(file.name) + ' 上传失败</span>';
+          }
+        }
+        if (attStatus) attStatus.textContent = '上传失败：' + file.name;
+        showToast('附件上传失败：' + file.name + ' — ' + (err && err.message ? err.message : String(err)), 'error');
+      });
+    });
+  };
+
   EmailApp.prototype.uploadFiles = function (fileList) {
     var self = this;
     var files = Array.prototype.slice.call(fileList || []);
@@ -2822,8 +3175,9 @@ EmailApp.prototype.refreshAttachment = function (item) {
     // v0.99: 使用选中的模板
     var selectedTplId = (self.root.querySelector('#rule-template-dropdown') || {}).value;
     if (selectedTplId) {
-      actions.reply_template_id = selectedTplId;
-      actions.reply_template = null; // 使用模板ID，不硬编码内容
+      // v0.99 修复：reply_template_id 是规则级字段（参考后端 email-rules.js v0.97），
+      // 不能放在 actions 内部（后端 ALLOWED_ACTIONS 无此 key → 报“无效动作”），
+      // 应放到 payload 顶层，不混入 actions
     }
     // v0.99: 检查 auto_reply 是否需要模板或回复内容
     if (actions.auto_reply === true && !tpl && !selectedTplId) {
@@ -2860,11 +3214,13 @@ EmailApp.prototype.refreshAttachment = function (item) {
       if (replyTemplate) delete actions.reply_template;
       var payload = {
           mailbox: self.state.mailbox || 'INBOX',
+          profile_id: (self.state.currentProfile && self.state.currentProfile.id) ? self.state.currentProfile.id : 'default',
           description: (parsed._originalDescription || parsed.description || '').trim(),
           parsed: parsed.parsed,
           parsed_conditions: parsed.parsed.conditions || {},
           parsed_actions: actions,
           reply_template: replyTemplate,  // v0.97: 规则级回复模板
+          reply_template_id: selectedTplId || null,  // v0.99 修复：规则级模板 ID（不混入 actions，避免“无效动作”错误）
           enabled: true,
           priority: (parsed.parsed.priority || 0),
         };
@@ -3028,7 +3384,11 @@ EmailApp.prototype.loadRuleList = function () {
     var container = this.root.querySelector('[data-role="rules-list"], [data-role="rules-list-inline"]');
     if (!container) return;
     container.innerHTML = '<div style="font-size:11px;color:var(--text3);padding:8px;text-align:center;">加载规则中...</div>';
-    apiFetch('GET', buildUrl('/api/email-rules', { mailbox: this.state.mailbox || 'INBOX' }))
+    var query = { mailbox: self.state.mailbox || 'INBOX' };
+    if (self.state.currentProfile && self.state.currentProfile.id) {
+      query.profile_id = self.state.currentProfile.id;
+    }
+    apiFetch('GET', buildUrl('/api/email-rules', query))
       .then(function (data) {
         var rules = (data && data.rules) || [];
         if (!rules.length) {
@@ -3152,15 +3512,39 @@ EmailApp.prototype.loadRuleList = function () {
   EmailApp.prototype.renderTemplateModal = function (tpl) {
     var self = this;
     var title = tpl ? '编辑模板' : '新建模板';
+    // v0.74.2 修复：自动回复模板维护改为富文本格式 + 允许增加附件（参考 renderComposer 模式）
+    var initialContent = tpl && tpl.content ? tpl.content : '';
+    var attachmentsHtml = (tpl && tpl.attachments && tpl.attachments.length) ? '<ul class="em-att-chips" style="display:flex;flex-wrap:wrap;gap:6px;padding:4px 0;margin-top:6px;">' + (tpl.attachments || []).map(function(a, idx) {
+      return '<li style="display:inline-flex;align-items:center;gap:4px;padding:3px 8px;background:var(--bg2);border:1px solid var(--border);border-radius:12px;font-size:11px;color:var(--text);"><span>📎</span><span>' + escHtml(a.name || ('附件' + (idx+1))) + '</span></li>';
+    }).join('') + '</ul>' : '';
     var html = '<div style="margin-bottom:12px;">'
       + '<label style="display:block;font-size:11px;color:var(--text2);margin-bottom:4px;font-weight:600;">模板名称</label>'
       + '<input id="tpl-name" type="text" placeholder="例如：客户咨询回复" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;" value="' + (tpl ? escHtml(tpl.name) : '') + '"/>'
       + '</div>'
+      // 富文本编辑器（contenteditable）— 参考 renderComposer 第 2182-2324 行模式
       + '<div style="margin-bottom:12px;">'
-      + '<label style="display:block;font-size:11px;color:var(--text2);margin-bottom:4px;font-weight:600;">模板内容</label>'
-      + '<textarea id="tpl-content" style="width:100%;min-height:120px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;color:var(--text);font-size:12px;line-height:1.5;resize:vertical;font-family:inherit;" placeholder="输入自动回复内容...">' + (tpl ? escHtml(tpl.content) : '') + '</textarea>'
+      + '<label style="display:block;font-size:11px;color:var(--text2);margin-bottom:4px;font-weight:600;">模板内容（富文本，可插入格式、链接、图片）</label>'
+      + '<div style="margin-bottom:4px;display:flex;gap:4px;flex-wrap:wrap;">'
+      + '  <button type="button" onclick="var ed=document.getElementById(\'tpl-body\');ed.focus();document.execCommand(\'bold\',false,null);" style="padding:3px 8px;border-radius:4px;background:var(--bg2);border:1px solid var(--border);font-size:11px;cursor:pointer;" title="粗体">B</button>'
+      + '  <button type="button" onclick="var ed=document.getElementById(\'tpl-body\');ed.focus();document.execCommand(\'italic\',false,null);" style="padding:3px 8px;border-radius:4px;background:var(--bg2);border:1px solid var(--border);font-size:11px;cursor:pointer;" title="斜体">I</button>'
+      + '  <button type="button" onclick="var ed=document.getElementById(\'tpl-body\');ed.focus();document.execCommand(\'underline\',false,null);" style="padding:3px 8px;border-radius:4px;background:var(--bg2);border:1px solid var(--border);font-size:11px;cursor:pointer;" title="下划线">U</button>'
+      + '  <button type="button" onclick="var ed=document.getElementById(\'tpl-body\');ed.focus();document.execCommand(\'insertUnorderedList\',false,null);" style="padding:3px 8px;border-radius:4px;background:var(--bg2);border:1px solid var(--border);font-size:11px;cursor:pointer;" title="列表">• 列表</button>'
+      + '  <button type="button" onclick="var url=prompt(\'链接地址：\',\'https://\');if(url){var ed=document.getElementById(\'tpl-body\');ed.focus();document.execCommand(\'createLink\',false,url);}" style="padding:3px 8px;border-radius:4px;background:var(--bg2);border:1px solid var(--border);font-size:11px;cursor:pointer;" title="插入链接">🔗 链接</button>'
       + '</div>'
-      + '<div style="font-size:10px;color:var(--text3);line-height:1.4;">💡 提示：模板内容会被用于 auto_reply 规则的回复。每个规则可引用不同模板。</div>';
+      + '<div id="tpl-body" contenteditable="true" role="textbox" aria-multiline="true" aria-label="自动回复模板正文" style="width:100%;min-height:220px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;color:var(--text);font-size:13px;line-height:1.6;resize:vertical;font-family:inherit;overflow-y:auto;" placeholder="输入自动回复内容（支持富文本格式、列表、链接、图片粘贴）…">' + (initialContent ? initialContent : '') + '</div>'
+      + '</div>'
+      // 附件上传区域（参考 renderComposer 附件链路）
+      + '<div style="margin-bottom:12px;">'
+      + '<label style="display:block;font-size:11px;color:var(--text2);margin-bottom:4px;font-weight:600;">模板附件（可选，发送自动回复时附带）</label>'
+      + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">'
+      + '  <input type="file" multiple id="tpl-file-input" style="display:none;" onchange="var self=window.templateSelf||this;self.uploadTemplateFile(this);this.value=\'\';" />'
+      + '  <button type="button" onclick="document.getElementById(\'tpl-file-input\').click();" style="padding:6px 14px;border-radius:6px;background:#2a2a40;color:#fff;font-size:11px;font-weight:600;border:1px solid rgba(255,255,255,.25);cursor:pointer;" title="为自动回复添加附件（发送时会附带）">📎 添加附件</button>'
+      + '  <span id="tpl-attachment-status" style="font-size:11px;color:var(--text3);">无附件</span>'
+      + '</div>'
+      + '<ul id="tpl-attachments" class="em-att-chips" style="display:flex;gap:6px;flex-wrap:wrap;padding:6px 0;margin-top:6px;" data-role="attachments"></ul>'
+      + '</div>'
+      + attachmentsHtml
+      + '<div style="font-size:10px;color:var(--text3);line-height:1.4;margin-top:4px;">💡 提示：模板内容支持富文本（粗体/斜体/列表/链接），可粘贴图片。规则引用模板时，内容和附件将一并用于自动回复。</div>';
     
     ACMSModal.show({
       title: title,
@@ -3227,51 +3611,87 @@ EmailApp.prototype.loadRuleList = function () {
     ].join('');
   };
 
-  // v0.36: 分类 2 - 邮箱账户
+  // v2.2: 邮箱账户分类 — 3 个 sub-tab（身份管理 / 账户管理 / 实时监听）
   EmailApp.prototype.renderCategoryAccount = function () {
+    var self = this;
+    var tab = self.state.accountSubTab || 'profiles';
     return [
       '<div style="max-width:900px;">',
       '  <h2 style="font-size:18px;font-weight:700;color:var(--text);margin-bottom:6px;">邮箱账户</h2>',
-      '  <p style="font-size:12px;color:var(--text3);margin-bottom:20px;line-height:1.6;" title="邮箱账户配置（参考 imap-service.js v0.73 + IMAP/SMTP 协议）">配置 IMAP 收信和 SMTP 发信服务器，管理邮箱文件夹列表，查看账户信息（连接状态、最近同步时间）。</p>',
-      // IMAP 配置
-      '  <section style="margin-bottom:20px;padding:16px;background:var(--bg2);border:1px solid var(--border);border-radius:12px;">',
-      '    <h3 style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:12px;">📥 IMAP 收信配置（参考 imap-service.js createImapService）</h3>',
-      '    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;">',
-      '      <div><label style="display:block;font-size:11px;color:var(--text2);margin-bottom:4px;font-weight:600;" title="IMAP 服务器地址（参考 imap-service.js host 配置）">服务器地址</label><input type="text" value="imap.263.net" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;" /></div>',
-      '      <div><label style="display:block;font-size:11px;color:var(--text2);margin-bottom:4px;font-weight:600;" title="IMAP 端口（SSL 默认 993）">端口</label><input type="number" value="993" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;" /></div>',
-      '      <div><label style="display:block;font-size:11px;color:var(--text2);margin-bottom:4px;font-weight:600;" title="邮箱账号">账号</label><input type="text" placeholder="user@example.com" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;" /></div>',
-      '      <div><label style="display:block;font-size:11px;color:var(--text2);margin-bottom:4px;font-weight:600;" title="邮箱密码 / 授权码">密码</label><input type="password" placeholder="••••••••" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;" /></div>',
-      '    </div>',
-      '    <div style="margin-top:10px;display:flex;gap:8px;align-items:center;">',
-      '      <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text2);" title="启用 SSL/TLS 加密连接"><input type="checkbox" checked /> 启用 SSL/TLS</label>',
-      '      <button style="padding:5px 12px;border-radius:6px;background:var(--accent1);color:#fff;font-size:11px;font-weight:600;border:none;cursor:pointer;" title="测试 IMAP 连接（参考 imap-service.js connect）">🧪 测试连接</button>',
-      '      <button style="padding:5px 12px;border-radius:6px;background:var(--green);color:#fff;font-size:11px;font-weight:600;border:none;cursor:pointer;" title="保存配置（显式确认写入，防 P163 silent write）">💾 保存</button>',
-      '    </div>',
-      '  </section>',
-      // 邮箱列表
-      '  <section style="padding:16px;background:var(--bg2);border:1px solid var(--border);border-radius:12px;">',
-      '    <h3 style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:12px;">📁 邮箱文件夹（参考 loadMailboxes）</h3>',
-      '    <div style="font-size:11px;color:var(--text2);" title="邮箱文件夹列表（INBOX、已处理、草稿、已发送等）">',
-      '      <div style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;"><span>📁 INBOX</span><span style="color:var(--text3);font-size:10px;">默认邮箱</span></div>',
-      '      <div style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;"><span>📁 已处理</span><span style="color:var(--text3);font-size:10px;">归档</span></div>',
-      '      <div style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;"><span>📁 草稿</span><span style="color:var(--text3);font-size:10px;">Drafts</span></div>',
-      '      <div style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;display:flex;justify-content:space-between;align-items:center;"><span>📁 已发送</span><span style="color:var(--text3);font-size:10px;">Sent</span></div>',
-      '    </div>',
-      '  </section>',
-      '  <section style="margin-top:20px;padding:16px;background:var(--bg2);border:1px solid var(--border);border-radius:12px;">',
-      '    <h3 style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:6px;">📡 实时监听（IMAP IDLE — 集成 mail-listener）</h3>',
-      '    <p style="font-size:11px;color:var(--text3);margin-bottom:12px;line-height:1.6;" title="启动后，新邮件到达时自动触发规则引擎匹配 + 写入执行日志（参考 P177 事件广播链路）">启动后，新邮件到达时会自动触发规则引擎匹配 + 写入执行日志（参考集成决策矩阵 Tier 1-推荐1）。监听器状态保存在内存，重启 ACMS 后需重新启动。</p>',
-      '    <div style="display:flex;gap:8px;margin-bottom:12px;">',
-      '      <button data-action="start-listening" style="padding:6px 14px;border-radius:6px;background:var(--green);color:#fff;font-size:12px;font-weight:600;border:none;cursor:pointer;" title="启动 IMAP IDLE 监听（集成 mail-listener）">▶ 启动实时监听</button>',
-      '      <button data-action="stop-listening" style="padding:6px 14px;border-radius:6px;background:var(--bg3);color:var(--text);font-size:12px;font-weight:600;border:1px solid var(--border);cursor:pointer;" title="停止监听">⏹ 停止监听</button>',
-      '      <button data-action="refresh-listening" style="padding:6px 14px;border-radius:6px;background:var(--accent1);color:#fff;font-size:12px;font-weight:600;border:none;cursor:pointer;" title="刷新监听状态（从后端拉取当前正在监听的 mailbox）">🔄 刷新状态</button>',
-      '    </div>',
-      '    <div data-role="listening-status" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;min-height:40px;">',
-      '      <div style="font-size:11px;color:var(--text3);">点击【刷新状态】查看当前监听情况</div>',
-      '    </div>',
-      '    <div style="font-size:9px;color:var(--text3);margin-top:8px;">参考代码：email-listener-integration.js + imap-service.js startListening/stopListening/listListening</div>',
-      '  </section>',
+      '  <p style="font-size:12px;color:var(--text3);margin-bottom:16px;line-height:1.6;">管理邮件身份（多账户隔离）和邮箱凭证（IMAP/SMTP）。凭证用 AES-256-GCM 加密存储在本地（密钥 data/email-cipher.key）。</p>',
+      // Sub-tab nav
+      '  <div style="display:flex;gap:6px;border-bottom:1px solid var(--border);margin-bottom:16px;">',
+      '    <button data-action="account-subtab" data-subtab="profiles" style="padding:8px 16px;background:' + (tab === 'profiles' ? 'var(--accent)' : 'transparent') + ';color:' + (tab === 'profiles' ? 'var(--bg)' : 'var(--text2)') + ';border:none;border-bottom:2px solid ' + (tab === 'profiles' ? 'var(--accent)' : 'transparent') + ';font-size:12px;font-weight:700;cursor:pointer;border-radius:8px 8px 0 0;" title="管理 Profile（多身份 — 家庭/同事/角色隔离）">📋 身份管理</button>',
+      '    <button data-action="account-subtab" data-subtab="accounts" style="padding:8px 16px;background:' + (tab === 'accounts' ? 'var(--accent)' : 'transparent') + ';color:' + (tab === 'accounts' ? 'var(--bg)' : 'var(--text2)') + ';border:none;border-bottom:2px solid ' + (tab === 'accounts' ? 'var(--accent)' : 'transparent') + ';font-size:12px;font-weight:700;cursor:pointer;border-radius:8px 8px 0 0;" title="管理 Account（邮箱凭证 — IMAP/SMTP）">📧 账户管理</button>',
+      '    <button data-action="account-subtab" data-subtab="listening" style="padding:8px 16px;background:' + (tab === 'listening' ? 'var(--accent)' : 'transparent') + ';color:' + (tab === 'listening' ? 'var(--bg)' : 'var(--text2)') + ';border:none;border-bottom:2px solid ' + (tab === 'listening' ? 'var(--accent)' : 'transparent') + ';font-size:12px;font-weight:700;cursor:pointer;border-radius:8px 8px 0 0;" title="IMAP IDLE 实时监听状态（v0.37 集成 mail-listener）">📡 实时监听</button>',
+      '  </div>',
+      // Sub-tab content
+      tab === 'profiles' ? self.renderAccountSubTabProfiles() :
+      tab === 'accounts' ? self.renderAccountSubTabAccounts() :
+      self.renderAccountSubTabListening(),
       '</div>',
+    ].join('');
+  };
+
+  // ── Sub-tab: 身份管理（profile CRUD）──
+  EmailApp.prototype.renderAccountSubTabProfiles = function () {
+    var self = this;
+    return [
+      '<section style="margin-bottom:20px;padding:16px;background:var(--bg2);border:1px solid var(--border);border-radius:12px;">',
+      '  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">',
+      '    <h3 style="font-size:14px;font-weight:700;color:var(--text);">📋 身份列表（每个身份 = 一个人）</h3>',
+      '    <div style="display:flex;gap:6px;">',
+      // v1.01.1: 显式深底白字 + border（防 §10.5 隐形）
+      '      <button data-action="add-profile" style="padding:6px 14px;border-radius:6px;background:#0ea89d;color:#ffffff;font-size:12px;font-weight:700;border:none;cursor:pointer;" title="新增身份（弹 ACMSModal 表单）">+ 新增身份</button>',
+      '      <button data-action="refresh-profiles" style="padding:6px 14px;border-radius:6px;background:#2a2a40;color:#ffffff;font-size:12px;font-weight:600;border:1px solid rgba(255,255,255,0.25);cursor:pointer;" title="刷新列表">🔄 刷新</button>',
+      '    </div>',
+      '  </div>',
+      '  <div data-role="profiles-list" style="font-size:12px;color:var(--text2);">',
+      '    <div style="text-align:center;padding:20px;color:var(--text3);">点击【🔄 刷新】加载身份列表</div>',
+      '  </div>',
+      '</section>',
+    ].join('');
+  };
+
+  // ── Sub-tab: 账户管理（account CRUD + 测试连接）──
+  EmailApp.prototype.renderAccountSubTabAccounts = function () {
+    var self = this;
+    return [
+      '<section style="margin-bottom:20px;padding:16px;background:var(--bg2);border:1px solid var(--border);border-radius:12px;">',
+      '  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">',
+      '    <h3 style="font-size:14px;font-weight:700;color:var(--text);">📧 邮箱账户列表（按身份分组）</h3>',
+      '    <div style="display:flex;gap:6px;">',
+      '      <select data-role="account-profile-filter" style="padding:6px 10px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:11px;cursor:pointer;" title="按身份筛选">',
+      '        <option value="">全部身份</option>',
+      '</select>',
+      '      <button data-action="add-account" style="padding:6px 14px;border-radius:6px;background:#0ea89d;color:#ffffff;font-size:12px;font-weight:700;border:none;cursor:pointer;" title="新增账户（弹 ACMSModal 表单 — 含 IMAP/SMTP 配置）">+ 新增账户</button>',
+      '      <button data-action="refresh-accounts" style="padding:6px 14px;border-radius:6px;background:#2a2a40;color:#ffffff;font-size:12px;font-weight:600;border:1px solid rgba(255,255,255,0.25);cursor:pointer;" title="刷新列表">🔄 刷新</button>',
+      '    </div>',
+      '  </div>',
+      '  <div data-role="accounts-list" style="font-size:12px;color:var(--text2);">',
+      '    <div style="text-align:center;padding:20px;color:var(--text3);">点击【🔄 刷新】加载账户列表</div>',
+      '  </div>',
+      '</section>',
+    ].join('');
+  };
+
+  // ── Sub-tab: 实时监听（保留旧 IMAP IDLE UI）──
+  EmailApp.prototype.renderAccountSubTabListening = function () {
+    return [
+      '<section style="margin-bottom:20px;padding:16px;background:var(--bg2);border:1px solid var(--border);border-radius:12px;">',
+      '  <h3 style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:6px;">📡 实时监听（IMAP IDLE — 集成 mail-listener）</h3>',
+      '  <p style="font-size:11px;color:var(--text3);margin-bottom:12px;line-height:1.6;">启动后，新邮件到达时自动触发规则引擎匹配 + 写入执行日志。监听器状态保存在内存，重启 ACMS 后需重新启动。<br>v2.2 提示：要监听具体账户，传 accountId（不传则用默认）</p>',
+      '  <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center;">',
+      '    <select data-role="listen-account-select" style="padding:6px 10px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:11px;min-width:160px;" title="选账户（v2.0+ 多账户支持）"></select>',
+      '    <input data-role="listen-mailbox-input" type="text" placeholder="INBOX" value="INBOX" style="padding:6px 10px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:11px;width:120px;" title="要监听的 mailbox（默认 INBOX）" />',
+      '    <button data-action="start-listening" style="padding:6px 14px;border-radius:6px;background:var(--green);color:#fff;font-size:12px;font-weight:600;border:none;cursor:pointer;" title="启动 IMAP IDLE 监听">▶ 启动</button>',
+      '    <button data-action="stop-listening" style="padding:6px 14px;border-radius:6px;background:var(--bg3);color:var(--text);font-size:12px;font-weight:600;border:1px solid var(--border);cursor:pointer;" title="停止监听">⏹ 停止</button>',
+      '    <button data-action="refresh-listening" style="padding:6px 14px;border-radius:6px;background:var(--accent);color:#fff;font-size:12px;font-weight:600;border:none;cursor:pointer;" title="刷新监听状态">🔄 刷新状态</button>',
+      '  </div>',
+      '  <div data-role="listening-status" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;min-height:40px;">',
+      '    <div style="font-size:11px;color:var(--text3);">点击【刷新状态】查看当前监听情况</div>',
+      '  </div>',
+      '</section>',
     ].join('');
   };
 
@@ -3495,19 +3915,27 @@ EmailApp.prototype.loadRuleList = function () {
     this.setStatus('设置分类已切换：' + category);
   };
 
-  // v0.36: 返回主界面（从设置界面回到邮件三栏布局）
+  // v0.36 + v2.4.2 修复: 返回主界面（从设置界面回到邮件三栏布局）
+  // 原实现: render() 空骨架 → loadAccount→loadMailboxes→loadEmails 全串完才渲染 →
+  //   中间/失败时目录和邮件都空白（用户反馈「点设置返回后目录和邮件都没有了」）
+  // 新实现: render() 后立即用内存态渲染（目录/列表秒回不空白），后台静默刷新；
+  //   状态栏诚实（先「正在恢复…」成功/失败再更新，不提前宣称已恢复）
   EmailApp.prototype.backToMainView = function () {
     var self = this;
     this.state.currentView = 'main';
     this.render();
-    this.loadAccount()
-      .then(function () { return self.loadMailboxes(); })
-      .then(function () { return self.loadEmails(); })
-      .catch(function (err) {
-        if (err && err.code === 'IMAP_CONNECT_FAILED') return;
-        self.setStatus('恢复数据失败: ' + (err && err.message || '未知错误'), 'error');
-      });
-    this.setStatus('已返回邮件主界面（已恢复邮件目录 + 邮件列表）');
+    // 1) 内存态立即渲染（进设置前的目录/邮件还在 state 里，秒回不空白）
+    if (self.state.mailboxes && self.state.mailboxes.length) self.renderFolders();
+    if (self.state.detail) self.renderDetail();
+    self.renderList(); // renderList 内部处理空列表空态（「暂无邮件」）
+    self.setStatus('正在恢复邮件数据…', 'loading');
+    // 2) 后台刷新（loadAccount 更新账户配置；loadMailboxes 走 TTL 缓存/降级，基本必成功）
+    self.loadAccount().catch(function () {});
+    self.loadMailboxes().catch(function () {});
+    self.loadEmails().catch(function (err) {
+      if (err && err.code === 'IMAP_CONNECT_FAILED') return;
+      self.setStatus('邮件刷新失败: ' + (err && err.message || '未知错误'), 'error');
+    });
   };
 
   // v0.37: 规则引擎分类 — 4 个子页签（参考 prototype-email-rules.html）
@@ -3606,24 +4034,32 @@ EmailApp.prototype.renderCategoryRules = function () {
   };
 
 EmailApp.prototype.renderSettingsCategory = function (category) {
-    var self = this;
-    var result;
-    switch (category) {
-      case 'rules': result = this.renderCategoryRules(); break;
-      case 'account': result = this.renderCategoryAccount(); break;
-      // v1.01 修复: 进入「AI 与分类」自动加载分类列表（之前 renderCategoryAI 只渲染空占位"点击初始化默认..."，导致多多看到的"分类没法编辑"）
-      case 'ai':
-        result = this.renderCategoryAI();
-        // v1.02: 同时加载分类列表 + AI 偏好
-        setTimeout(function () { self.loadCategories(); self.loadAIPrefs(); }, 60);
-        break;
-      case 'notify': result = this.renderCategoryNotify(); break;
-      case 'display': result = this.renderCategoryDisplay(); break;
-      case 'advanced': result = this.renderCategoryAdvanced(); break;
-      default: result = this.renderCategoryRules();
-    }
-    return result;
-  };
+  var self = this;
+  var result;
+  switch (category) {
+    case 'rules': result = this.renderCategoryRules(); break;
+    // v2.2: 进入邮箱账户分类时，自动 load 当前 sub-tab 的数据
+    case 'account':
+      result = this.renderCategoryAccount();
+      setTimeout(function () {
+        var tab = self.state.accountSubTab || 'profiles';
+        if (tab === 'profiles') self.loadProfilesForSettings();
+        else if (tab === 'accounts') self.loadAccountsForSettings();
+      }, 60);
+      break;
+    // v1.01 修复: 进入「AI 与分类」自动加载分类列表（之前 renderCategoryAI 只渲染空占位"点击初始化默认..."，导致多多看到的"分类没法编辑"）
+    case 'ai':
+      result = this.renderCategoryAI();
+      // v1.02: 同时加载分类列表 + AI 偏好
+      setTimeout(function () { self.loadCategories(); self.loadAIPrefs(); }, 60);
+      break;
+    case 'notify': result = this.renderCategoryNotify(); break;
+    case 'display': result = this.renderCategoryDisplay(); break;
+    case 'advanced': result = this.renderCategoryAdvanced(); break;
+    default: result = this.renderCategoryRules();
+  }
+  return result;
+};
 
 EmailApp.prototype.showRulesPanel = function () {
     var self = this;
@@ -3666,7 +4102,7 @@ EmailApp.prototype.showRulesPanel = function () {
   root.openEmailInbox = function () {
     if (!root.ACMSWin) return;
     if (typeof root.ACMSWin.isActive === 'function' && !root.ACMSWin.isActive()) root.ACMSWin.enable();
-    root.ACMSWin.open('email-inbox', { w: 960, h: 640, title: '📬 邮件' });
+    root.ACMSWin.open('email-inbox', { w: 960, h: 640, title: '邮件' });
   };
 
 
@@ -4152,78 +4588,977 @@ if (sub === 'list') setTimeout(function () { self.loadRuleList(); }, 200);
   };
 
 
-  // v0.38: 启动 IMAP IDLE 实时监听（集成 mail-listener — 推荐1，前端控制）
+  // v2.2: 启动 IMAP IDLE 实时监听（从 listen-account-select + listen-mailbox-input 读）
   EmailApp.prototype.startListening = function () {
     var self = this;
-    var mailbox = this.state.mailbox || 'INBOX';
-    showConfirm('启动实时监听（IMAP IDLE）？\n\n监听 mailbox：' + mailbox + '\n\n启动后，新邮件到达时会自动触发规则引擎匹配 + 写入执行日志（参考 P177 事件广播链路）。', { okText: '启动监听', cancelText: '取消' })
-      .then(function (ok) {
-        if (!ok) return;
-        return apiFetch('POST', '/api/emails/listen/start', { mailbox: mailbox });
-      })
+    var accSelect = this.root.querySelector('[data-role="listen-account-select"]');
+    var mbInput = this.root.querySelector('[data-role="listen-mailbox-input"]');
+    var accountId = accSelect ? (accSelect.value || null) : null;
+    var mailbox = mbInput ? (mbInput.value || 'INBOX') : 'INBOX';
+    if (typeof ACMSModal !== 'undefined') {
+      ACMSModal.show({
+        title: '启动实时监听',
+        size: 'md',
+        message: '启动 IMAP IDLE 监听？\n\n账户：' + (accountId || '(默认/未指定)') + '\nmailbox：' + mailbox + '\n\n启动后，新邮件到达时会自动触发规则引擎匹配 + 写入执行日志。',
+        actions: [
+          { label: '取消', value: null },
+          { label: '启动监听', value: 'CONFIRM', className: 'acms-modal-btn-primary' },
+        ],
+      }).then(function (v) {
+        if (v !== 'CONFIRM') return;
+        self._doStartListening(accountId, mailbox);
+      });
+    } else {
+      self._doStartListening(accountId, mailbox);
+    }
+  };
+
+  EmailApp.prototype._doStartListening = function (accountId, mailbox) {
+    var self = this;
+    var body = { mailbox: mailbox };
+    if (accountId) body.accountId = accountId;
+    apiFetch('POST', '/api/emails/listen/start', body)
       .then(function (result) {
         if (result && result.ok) {
-          showToast('✅ 实时监听已启动（' + mailbox + '）— 新邮件到达时会自动触发规则引擎', 'success');
-          self.setStatus('IMAP 实时监听运行中（' + mailbox + '）');
-          self.refreshListeningStatus();
+          self.setStatus('✅ 监听器已启动（account=' + (accountId || 'default') + ', mailbox=' + mailbox + '）', 'success');
+          if (typeof showToast === 'function') showToast('监听已启动', 'success');
         } else {
-          showToast('启动监听失败：' + (result && result.message || '未知错误'), 'error');
+          self.setStatus('❌ 启动失败：' + ((result && result.message) || '未知'), 'error');
         }
+        self.refreshListeningStatus();
       })
       .catch(function (err) {
-        showToast('启动监听失败：' + (err.message || String(err)), 'error');
+        self.setStatus('❌ 启动失败：' + (err.message || '网络错误'), 'error');
       });
   };
 
-  // v0.38: 停止 IMAP IDLE 实时监听
+  // v2.2: 停止 IMAP IDLE 实时监听（同样支持 accountId）
   EmailApp.prototype.stopListening = function () {
     var self = this;
-    var mailbox = this.state.mailbox || 'INBOX';
-    showConfirm('停止实时监听？\n\nmailbox：' + mailbox + '\n\n停止后，新邮件将不再自动触发规则引擎（需要手动触发或轮询）。', { okText: '停止', cancelText: '取消' })
-      .then(function (ok) {
-        if (!ok) return;
-        return apiFetch('POST', '/api/emails/listen/stop', { mailbox: mailbox });
-      })
+    var accSelect = this.root.querySelector('[data-role="listen-account-select"]');
+    var mbInput = this.root.querySelector('[data-role="listen-mailbox-input"]');
+    var accountId = accSelect ? (accSelect.value || null) : null;
+    var mailbox = mbInput ? (mbInput.value || 'INBOX') : 'INBOX';
+    if (typeof ACMSModal !== 'undefined') {
+      ACMSModal.show({
+        title: '停止实时监听',
+        size: 'md',
+        message: '停止 IMAP IDLE 监听？\n\n账户：' + (accountId || '(默认)') + '\nmailbox：' + mailbox,
+        actions: [
+          { label: '取消', value: null },
+          { label: '停止', value: 'CONFIRM', className: 'acms-modal-btn-danger' },
+        ],
+      }).then(function (v) {
+        if (v !== 'CONFIRM') return;
+        self._doStopListening(accountId, mailbox);
+      });
+    } else {
+      self._doStopListening(accountId, mailbox);
+    }
+  };
+
+  EmailApp.prototype._doStopListening = function (accountId, mailbox) {
+    var self = this;
+    var body = { mailbox: mailbox };
+    if (accountId) body.accountId = accountId;
+    apiFetch('POST', '/api/emails/listen/stop', body)
       .then(function (result) {
         if (result && result.ok) {
-          showToast('⏹ 监听已停止（' + mailbox + '）', 'info');
-          self.setStatus('IMAP 实时监听已停止');
-          self.refreshListeningStatus();
+          self.setStatus('✅ 监听已停止', 'success');
+          if (typeof showToast === 'function') showToast('监听已停止', 'info');
         } else {
-          showToast('停止监听失败：' + (result && result.message || '未知错误'), 'error');
+          self.setStatus('❌ 停止失败：' + ((result && result.message) || '未知'), 'error');
         }
+        self.refreshListeningStatus();
       })
       .catch(function (err) {
-        showToast('停止监听失败：' + (err.message || String(err)), 'error');
+        self.setStatus('❌ 停止失败：' + (err.message || '网络错误'), 'error');
       });
   };
 
-  // v0.38: 刷新监听状态（从后端拉取当前正在监听的 mailbox 列表）
+  // v2.2: 刷新监听状态（从后端拉取当前正在监听的 mailbox 列表）— 适配 v2.0 pool 多账户格式
   EmailApp.prototype.refreshListeningStatus = function () {
     var self = this;
+    // 同时拉账户列表填充 select
+    apiFetch('GET', '/api/email-accounts')
+      .then(function (data) {
+        var sel = self.root.querySelector('[data-role="listen-account-select"]');
+        if (sel) {
+          var accounts = (data && data.accounts) || [];
+          var opts = '<option value="">(默认账户)</option>';
+          accounts.forEach(function (a) {
+            opts += '<option value="' + escHtml(a.id) + '">' + escHtml(a.email) + '</option>';
+          });
+          sel.innerHTML = opts;
+        }
+      })
+      .catch(function (err) { console.warn('[refresh] load accounts failed:', err.message); });
     apiFetch('GET', '/api/emails/listen/list')
       .then(function (result) {
-        if (result && result.ok && result.listening) {
+        if (result && result.ok) {
           var container = self.root.querySelector('[data-role="listening-status"]');
-          if (container) {
-            if (result.listening.length === 0) {
-              container.innerHTML = '<div style="font-size:11px;color:var(--text3);">⏸ 未在监听（启动后新邮件将自动触发规则引擎）</div>';
-            } else {
-              var html = '<div style="font-size:11px;color:var(--green);font-weight:600;margin-bottom:4px;">🟢 正在监听：</div>';
-              for (var i = 0; i < result.listening.length; i++) {
-                html += '<div style="font-size:11px;color:var(--text2);padding:2px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;">';
-                html += '<span>' + self.escapeHtml(result.listening[i]) + '</span>';
-                html += '<span style="font-size:9px;color:var(--green);">● 运行中</span>';
-                html += '</div>';
-              }
-              container.innerHTML = html;
-            }
+          if (!container) return;
+          // v2.0 格式：result.listening = [{account_key, account_id, email, listening: [mailboxes]}]
+          var listening = result.listening || [];
+          if (result.listening === undefined && Array.isArray(result)) {
+            // 旧格式兼容：result = {listening: [mailbox names]}
+            listening = result.listening || [];
           }
+          if (listening.length === 0) {
+            container.innerHTML = '<div style="font-size:11px;color:var(--text3);">⏸ 未在监听（启动后新邮件将自动触发规则引擎）</div>';
+            return;
+          }
+          var html = '<div style="font-size:11px;color:var(--green);font-weight:600;margin-bottom:6px;">🟢 正在监听：</div>';
+          listening.forEach(function (entry) {
+            var label = entry.email || entry.account_key || entry.account_id || '(未知账户)';
+            var mailboxes = entry.listening || [];
+            html += '<div style="font-size:11px;color:var(--text2);padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;margin-bottom:6px;">';
+            html += '<div style="font-weight:600;color:var(--text);margin-bottom:3px;">📧 ' + escHtml(label) + '</div>';
+            if (mailboxes.length === 0) {
+              html += '<div style="color:var(--text3);font-size:10px;">（无监听 mailbox）</div>';
+            } else {
+              html += '<div style="display:flex;gap:4px;flex-wrap:wrap;">';
+              mailboxes.forEach(function (mb) {
+                html += '<span style="padding:2px 8px;background:var(--bg3);border-radius:4px;font-size:10px;">' + escHtml(mb) + '</span>';
+              });
+              html += '</div>';
+            }
+            html += '</div>';
+          });
+          container.innerHTML = html;
         }
       })
       .catch(function (err) {
         console.warn('[refresh-listening] 拉取监听状态失败:', err.message);
       });
+  };
+
+  // ════════════════════════════════════════════════════════════════
+  // v2.1: 多账户体系 — 身份选择 / PIN 验证 / 锁屏 / 抽屉切换
+  // ════════════════════════════════════════════════════════════════
+
+  // 加载 profiles 列表 → 渲染身份选择屏
+  EmailApp.prototype.loadProfilesAndShowSelect = function () {
+    var self = this;
+    self.state.locked = true;
+    self.state.currentProfile = null;
+    self.state.currentAccount = null;
+    self.clearAutoLockTimer();
+    self.unbindActivityTracking();
+    // 注意：PIN flag 重置由 render() 自动处理（每次 render 都会重置）
+    self.render();  // 先渲染骨架（loading 状态）
+    apiFetch('GET', '/api/email-profiles')
+      .then(function (data) {
+        self.state.profiles = (data && data.profiles) || [];
+        self.render();
+        // v2.1: 渲染后绑 PIN 弹窗事件（如果存在 modal 的话）
+        self.bindPinInputEvents();
+        self.bindPinKeypadEvents();
+      })
+      .catch(function (err) {
+        console.error('[email] loadProfiles failed:', err.message);
+        self.state.profiles = [];
+        self.render();
+        if (typeof showToast === 'function') {
+          showToast('加载身份列表失败：' + (err.message || '未知错误'), 'error');
+        }
+      });
+  };
+
+  // 渲染身份选择屏 HTML
+  EmailApp.prototype.renderProfileSelect = function () {
+    var self = this;
+    var profiles = self.state.profiles || [];
+    var profileCards = profiles.length === 0
+      ? '<div class="em-profile-empty">还没有任何身份，点击下方按钮新增</div>'
+      : profiles.map(function (p) {
+          return [
+            '<div class="em-profile-card-grid" data-action="select-profile" data-profile-id="' + escHtml(p.id) + '" style="--profile-color:' + escHtml(p.color || '#4ecdc4') + '" title="点击输入 PIN 进入「' + escHtml(p.name) + '」">',
+            '  <div class="em-profile-card-avatar">' + escHtml(p.avatar || '👤') + '</div>',
+            '  <div class="em-profile-card-name">' + escHtml(p.name) + '</div>',
+            '  <div class="em-profile-card-meta">',
+            '    <span class="em-profile-badge">' + self.profileTypeLabel(p.type) + '</span>',
+            '    <span>' + (p.id === 'legacy' ? '1 邮箱' : '...') + '</span>',
+            '  </div>',
+            '</div>',
+          ].join('');
+        }).join('');
+
+    return [
+      '<div class="em-profile-select">',
+      '  <div class="em-profile-select-inner">',
+      '    <div class="em-profile-select-header">',
+      '      <div class="em-profile-select-title">📬 ACMS 邮件 · 选择身份</div>',
+      '      <div class="em-profile-select-sub">每个身份的草稿、分类、规则、AI 偏好完全隔离<br>进入需输入 PIN（4-6 位数字）</div>',
+      '    </div>',
+      '    <div class="em-profile-grid">' + profileCards + '</div>',
+      '    <div class="em-profile-add" data-action="show-add-profile-hint" title="v2.2 才完整支持（profile 增删改 + account 增删改 + 测试连接）">',
+      '      <div style="font-size:22px;margin-bottom:6px;">➕</div>',
+      '      <div style="font-size:13px;font-weight:600;">新增身份</div>',
+      '      <div style="font-size:11px;color:var(--text3);margin-top:4px;">v2.2 完整支持（先复用迁移脚本创的「默认身份」）</div>',
+      '    </div>',
+      '  </div>',
+      '</div>',
+      // PIN 弹窗（默认隐藏）
+      self.renderPinModal(),
+    ].join('');
+  };
+
+  EmailApp.prototype.profileTypeLabel = function (t) {
+    return ({ personal: '👤 个人', family: '👨‍👩‍👧 家人', work: '💼 同事', other: '👤 其他' })[t] || '👤';
+  };
+
+  // 渲染 PIN 弹窗 HTML（始终返回，CSS 控制显隐）
+  EmailApp.prototype.renderPinModal = function () {
+    return [
+      '<div class="em-pin-modal" data-role="pin-modal">',
+      '  <div class="em-pin-box">',
+      '    <div class="em-pin-avatar" data-role="pin-avatar">👤</div>',
+      '    <div class="em-pin-name" data-role="pin-name">身份</div>',
+      '    <div class="em-pin-hint" data-role="pin-hint">输入 PIN 码进入</div>',
+      '    <div class="em-pin-inputs">',
+      '      <input type="password" class="em-pin-input" maxlength="1" data-idx="0" autocomplete="off" />',
+      '      <input type="password" class="em-pin-input" maxlength="1" data-idx="1" autocomplete="off" />',
+      '      <input type="password" class="em-pin-input" maxlength="1" data-idx="2" autocomplete="off" />',
+      '      <input type="password" class="em-pin-input" maxlength="1" data-idx="3" autocomplete="off" />',
+      '    </div>',
+      '    <div class="em-pin-error" data-role="pin-error">&nbsp;</div>',
+      '    <div class="em-pin-keypad">',
+      '      <button type="button" class="em-pin-key" data-num="1">1</button>',
+      '      <button type="button" class="em-pin-key" data-num="2">2</button>',
+      '      <button type="button" class="em-pin-key" data-num="3">3</button>',
+      '      <button type="button" class="em-pin-key" data-num="4">4</button>',
+      '      <button type="button" class="em-pin-key" data-num="5">5</button>',
+      '      <button type="button" class="em-pin-key" data-num="6">6</button>',
+      '      <button type="button" class="em-pin-key" data-num="7">7</button>',
+      '      <button type="button" class="em-pin-key" data-num="8">8</button>',
+      '      <button type="button" class="em-pin-key" data-num="9">9</button>',
+      '      <button type="button" class="em-pin-key em-pin-key-clear" data-num="clear">⌫</button>',
+      '      <button type="button" class="em-pin-key" data-num="0">0</button>',
+      '      <button type="button" class="em-pin-key em-pin-key-empty">·</button>',
+      '    </div>',
+      '    <div class="em-pin-actions">',
+      '      <button type="button" class="em-pin-btn em-pin-btn-cancel" data-action="cancel-pin">取消</button>',
+      '      <button type="button" class="em-pin-btn em-pin-btn-confirm" data-action="confirm-pin" disabled>进入</button>',
+      '    </div>',
+      '  </div>',
+      '</div>',
+    ].join('');
+  };
+
+  // 显示 PIN 弹窗（点 profile card 触发）
+  EmailApp.prototype.requestPin = function (profileId) {
+    var self = this;
+    if (self.state.pinInputInProgress) return;
+    var p = (self.state.profiles || []).find(function (x) { return x.id === profileId; });
+    if (!p) return;
+    self.state._pendingProfileId = profileId;
+    self.state.pinInputInProgress = true;
+    self.state.pinAttempts = 0;
+    var modal = self.root.querySelector('[data-role="pin-modal"]');
+    if (!modal) return;
+    modal.classList.add('show');
+    var avatar = modal.querySelector('[data-role="pin-avatar"]');
+    var name = modal.querySelector('[data-role="pin-name"]');
+    var hint = modal.querySelector('[data-role="pin-hint"]');
+    if (avatar) avatar.textContent = p.avatar || '👤';
+    if (name) name.textContent = p.name;
+    if (hint) hint.innerHTML = '输入 PIN 码进入 &nbsp; <span style="color:var(--text3);">（迁移默认身份 PIN=0000）</span>';
+    var error = modal.querySelector('[data-role="pin-error"]');
+    if (error) error.innerHTML = '&nbsp;';
+    var inputs = modal.querySelectorAll('.em-pin-input');
+    inputs.forEach(function (i) { i.value = ''; i.classList.remove('error'); });
+    var confirm = modal.querySelector('[data-action="confirm-pin"]');
+    if (confirm) confirm.disabled = true;
+    setTimeout(function () { if (inputs[0]) inputs[0].focus(); }, 60);
+  };
+
+  EmailApp.prototype.hidePinModal = function () {
+    var self = this;
+    var modal = self.root.querySelector('[data-role="pin-modal"]');
+    if (modal) modal.classList.remove('show');
+    self.state.pinInputInProgress = false;
+    self.state._pendingProfileId = null;
+  };
+
+  // 验证 PIN
+  EmailApp.prototype.confirmPin = function () {
+    var self = this;
+    var profileId = self.state._pendingProfileId;
+    if (!profileId) return;
+    var inputs = self.root.querySelectorAll('.em-pin-input');
+    var pin = '';
+    inputs.forEach(function (i) { pin += i.value; });
+    if (pin.length !== 4) return;
+    apiFetch('POST', '/api/email-profiles/' + encodeURIComponent(profileId) + '/verify-pin', { pin: pin })
+      .then(function (resp) {
+        if (resp && resp.ok) {
+          // 解锁成功
+          self.state.pinInputInProgress = false;
+          self.writeUnlockToStorage(profileId);
+          self.setStatus('✅ 已解锁身份', 'success');
+          self.bootstrapWithProfile(profileId);
+        } else {
+          self.state.pinAttempts++;
+          var error = self.root.querySelector('[data-role="pin-error"]');
+          if (error) error.textContent = 'PIN 错误，请重试';
+          inputs.forEach(function (i) { i.classList.add('error'); });
+          setTimeout(function () {
+            inputs.forEach(function (i) { i.value = ''; i.classList.remove('error'); });
+            if (inputs[0]) inputs[0].focus();
+            var confirm = self.root.querySelector('[data-action="confirm-pin"]');
+            if (confirm) confirm.disabled = true;
+          }, 400);
+        }
+      })
+      .catch(function (err) {
+        var error = self.root.querySelector('[data-role="pin-error"]');
+        if (error) error.textContent = '验证失败：' + (err.message || '网络错误');
+      });
+  };
+
+  // 处理 PIN 输入框事件（输入/退格/Enter）
+  EmailApp.prototype.bindPinInputEvents = function () {
+    var self = this;
+    // v2.1: 防重复绑定
+    if (this._pinInputBound) return;
+    var inputs = self.root.querySelectorAll('.em-pin-input');
+    if (!inputs || inputs.length === 0) return;  // 还没渲染
+    this._pinInputBound = true;
+    inputs.forEach(function (input, idx) {
+      input.addEventListener('input', function (e) {
+        if (e.target.value && idx < 3) {
+          inputs[idx + 1].focus();
+        }
+        self.updatePinConfirmButton();
+      });
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'Backspace' && !e.target.value && idx > 0) {
+          inputs[idx - 1].focus();
+        }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          if (!self.root.querySelector('[data-action="confirm-pin"]').disabled) {
+            self.confirmPin();
+          }
+        }
+      });
+    });
+  };
+
+  EmailApp.prototype.updatePinConfirmButton = function () {
+    var self = this;
+    var inputs = self.root.querySelectorAll('.em-pin-input');
+    var pin = '';
+    inputs.forEach(function (i) { pin += i.value; });
+    var btn = self.root.querySelector('[data-action="confirm-pin"]');
+    if (btn) btn.disabled = pin.length !== 4;
+    // 1) 输入 4 位 PIN 后自动进入（不需要点确定按钮）
+    if (pin.length === 4 && btn && !btn.disabled) {
+      // 短延迟避免输入最后一位时还没渲染完就触发
+      clearTimeout(self._pinAutoSubmitTimer);
+      self._pinAutoSubmitTimer = setTimeout(function () {
+        // 再次确认长度仍为 4，防止快速清空后误触
+        var currentPin = '';
+        var currentInputs = self.root.querySelectorAll('.em-pin-input');
+        currentInputs.forEach(function (i) { currentPin += i.value; });
+        if (currentPin.length === 4) {
+          self.confirmPin();
+        }
+      }, 120);
+    } else {
+      clearTimeout(self._pinAutoSubmitTimer);
+    }
+  };
+
+  // PIN 数字键盘
+  EmailApp.prototype.bindPinKeypadEvents = function () {
+    var self = this;
+    // v2.1: 防重复绑定
+    if (this._pinKeypadBound) return;
+    var keys = self.root.querySelectorAll('.em-pin-key');
+    if (!keys || keys.length === 0) return;
+    this._pinKeypadBound = true;
+    keys.forEach(function (key) {
+      key.addEventListener('click', function () {
+        var num = key.getAttribute('data-num');
+        if (!num || num === 'empty') return;
+        var inputs = self.root.querySelectorAll('.em-pin-input');
+        if (num === 'clear') {
+          var filled = Array.prototype.filter.call(inputs, function (i) { return i.value; });
+          if (filled.length === 0) return;
+          var lastFilledIdx = Array.prototype.indexOf.call(inputs, filled[filled.length - 1]);
+          inputs[lastFilledIdx].value = '';
+          inputs[lastFilledIdx].focus();
+        } else {
+          var emptyIdx = -1;
+          for (var i = 0; i < inputs.length; i++) { if (!inputs[i].value) { emptyIdx = i; break; } }
+          if (emptyIdx >= 0) {
+            inputs[emptyIdx].value = num;
+            if (emptyIdx < 3) inputs[emptyIdx + 1].focus();
+          }
+        }
+        self.updatePinConfirmButton();
+      });
+    });
+  };
+
+  // 立即锁定（清除 unlock → 显示选择屏 + 自动弹 PIN 给上次 profile）
+  EmailApp.prototype.lockNow = function () {
+    var self = this;
+    self.clearAutoLockTimer();
+    self.clearUnlockStorage();
+    self.state.locked = true;
+    self.state.currentProfile = null;
+    self.state.currentAccount = null;
+    self.state.emails = [];
+    self.state.detail = null;
+    self.state.selectedUid = null;
+    self.setStatus('🔒 已锁定');
+    self.loadProfilesAndShowSelect();
+  };
+
+  // 切换到另一个 profile（清除当前状态 → 选 → 输 PIN）
+  EmailApp.prototype.switchProfile = function () {
+    this.lockNow();
+    // 注意：loadProfilesAndShowSelect 完成后用户可以重新选 profile
+  };
+
+  // 切换账户（同 profile 内）
+  EmailApp.prototype.switchAccount = function (accountId) {
+    var self = this;
+    var acc = (self.state.accounts || []).find(function (a) { return a.id === accountId; });
+    if (!acc) return;
+    self.state.currentAccount = acc;
+    var emailEl = self.root.querySelector('[data-role="current-account-email"]');
+    if (emailEl) emailEl.textContent = acc.email;
+    // 重新加载邮件数据
+    self.setStatus('📧 已切换到账户 ' + acc.email);
+    self.loadMailboxes().then(function () { return self.loadEmails(); }).catch(function (err) {
+      console.warn('[email] switchAccount load error:', err.message);
+    });
+  };
+
+  // 自动锁屏倒计时（30 分钟无操作 → 锁）
+  EmailApp.prototype.startAutoLockTimer = function () {
+    var self = this;
+    self.clearAutoLockTimer();
+    var lockAfterMs = (self.state.autoLockMinutes || 30) * 60 * 1000;
+    // 30 分钟到点锁屏
+    self.state.autoLockTimer = setTimeout(function () {
+      self.lockNow();
+    }, lockAfterMs);
+    // 活动检测 — 重置倒计时（不在这里 attach，attach 在 enterMain 后调一次）
+  };
+
+  EmailApp.prototype.clearAutoLockTimer = function () {
+    if (this.state.autoLockTimer) {
+      clearTimeout(this.state.autoLockTimer);
+      this.state.autoLockTimer = null;
+    }
+  };
+
+  EmailApp.prototype.recordActivity = function () {
+    this.state.lastActivityAt = Date.now();
+    // 重置倒计时（用户活动了就重新 30 分钟）
+    if (!this.state.locked && this.state.currentProfile) {
+      this.startAutoLockTimer();
+    }
+  };
+
+  // 全局活动检测（mousemove/keydown 触发 recordActivity）
+  EmailApp.prototype.bindActivityTracking = function () {
+    var self = this;
+    if (self._activityBound) return;
+    self._activityBound = true;
+    var events = ['mousedown', 'keydown', 'touchstart'];
+    var lastRecord = 0;
+    var handler = function () {
+      var now = Date.now();
+      // 节流：每 30 秒最多触发一次（避免频繁重置 timer）
+      if (now - lastRecord < 30000) return;
+      lastRecord = now;
+      self.recordActivity();
+    };
+    events.forEach(function (evt) {
+      document.addEventListener(evt, handler, { passive: true });
+    });
+    self._activityHandler = handler;
+  };
+
+  EmailApp.prototype.unbindActivityTracking = function () {
+    var self = this;
+    if (!self._activityBound) return;
+    var events = ['mousedown', 'keydown', 'touchstart'];
+    if (self._activityHandler) {
+      events.forEach(function (evt) {
+        document.removeEventListener(evt, self._activityHandler);
+      });
+    }
+    self._activityBound = false;
+  };
+
+  // 抽屉切换账户下拉
+  EmailApp.prototype.toggleAccountDropdown = function () {
+    var dd = this.root.querySelector('[data-role="account-dropdown"]');
+    if (!dd) return;
+    var isOpen = dd.classList.toggle('show');
+    if (isOpen) {
+      this.renderAccountDropdownList();
+    }
+  };
+
+  EmailApp.prototype.renderAccountDropdownList = function () {
+    var self = this;
+    var list = self.root.querySelector('[data-role="account-dropdown-list"]');
+    if (!list) return;
+    var accounts = self.state.accounts || [];
+    if (accounts.length === 0) {
+      list.innerHTML = '<div class="em-account-dropdown-empty">该身份下还没有账户</div>';
+      return;
+    }
+    list.innerHTML = accounts.map(function (a) {
+      var active = self.state.currentAccount && self.state.currentAccount.id === a.id;
+      return [
+        '<div class="em-account-dropdown-item ' + (active ? 'active' : '') + '" data-action="switch-account" data-account-id="' + escHtml(a.id) + '">',
+        '  <span class="em-account-dropdown-avatar" style="background:' + escHtml(a.color || '#4ecdc4') + '">' + escHtml((a.email || '?')[0].toUpperCase()) + '</span>',
+        '  <div class="em-account-dropdown-info">',
+        '    <div class="em-account-dropdown-name">' + escHtml(a.name || a.email) + '</div>',
+        '    <div class="em-account-dropdown-sub">' + escHtml(a.email) + '</div>',
+        '  </div>',
+        '</div>',
+      ].join('');
+    }).join('');
+  };
+
+  // 关闭抽屉（点击其他区域时）
+  EmailApp.prototype.closeAccountDropdown = function () {
+    var dd = this.root.querySelector('[data-role="account-dropdown"]');
+    if (dd) dd.classList.remove('show');
+  };
+
+  // ════════════════════════════════════════════════════════════════
+  // v2.2: 邮箱账户管理 UI — Profile + Account CRUD + 测试连接
+  // ════════════════════════════════════════════════════════════════
+
+  // 切换邮箱账户 sub-tab
+  EmailApp.prototype.showAccountSubTab = function (tab) {
+    this.state.accountSubTab = tab;
+    // 3) 修复：实际更新设置内容区域（原代码只调 renderSettingsCategory 但没写入 DOM，
+    //    导致点“账户管理”/“实时监听”看不到变化；切到别的菜单再回来才生效）
+    var content = this.root.querySelector('[data-role="settings-content"]');
+    if (content) content.innerHTML = this.renderSettingsCategory('account');
+    // 同步更新左侧设置分类高亮（如当前不在 account 则也刷新左侧）
+    if (this.state.settingsCategory !== 'account') {
+      this.state.settingsCategory = 'account';
+      var navItems = this.root.querySelectorAll('nav button[data-action="settings-category"]');
+      for (var i = 0; i < navItems.length; i++) {
+        var item = navItems[i];
+        var cat = item.getAttribute('data-category');
+        var isActive = cat === 'account';
+        item.style.background = isActive ? 'var(--text)' : 'transparent';
+        item.style.color = isActive ? 'var(--bg)' : 'var(--text2)';
+        item.style.fontWeight = isActive ? '600' : '500';
+        item.style.borderLeft = isActive ? '3px solid var(--accent1)' : '3px solid transparent';
+      }
+      var catLabel = this.root.querySelector('[data-role="settings-current-cat"]');
+      if (catLabel) catLabel.textContent = 'account';
+    }
+    // 切到 profiles/accounts 时自动加载数据
+    if (tab === 'profiles') this.loadProfilesForSettings();
+    if (tab === 'accounts') this.loadAccountsForSettings();
+    if (tab === 'listening') this.refreshListeningStatus && this.refreshListeningStatus();
+    this.setStatus('邮箱账户子页签已切换：' + tab);
+  };
+
+  // ── Profile 管理 ──
+
+  EmailApp.prototype.loadProfilesForSettings = function () {
+    var self = this;
+    var list = self.root.querySelector('[data-role="profiles-list"]');
+    if (!list) return;
+    list.innerHTML = '<div style="text-align:center;padding:14px;color:var(--text3);font-size:11px;">加载中…</div>';
+    apiFetch('GET', '/api/email-profiles')
+      .then(function (data) {
+        self.state.profiles = (data && data.profiles) || [];
+        self.renderProfilesTable();
+      })
+      .catch(function (err) {
+        list.innerHTML = '<div style="text-align:center;padding:14px;color:var(--accent2);font-size:11px;">加载失败：' + escHtml(err.message || '未知错误') + '</div>';
+        if (typeof showToast === 'function') showToast('加载身份失败', 'error');
+      });
+  };
+
+  EmailApp.prototype.renderProfilesTable = function () {
+    var self = this;
+    var list = self.root.querySelector('[data-role="profiles-list"]');
+    if (!list) return;
+    var profiles = self.state.profiles || [];
+    if (profiles.length === 0) {
+      list.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text3);">还没有身份，点击【+ 新增身份】创建</div>';
+      return;
+    }
+    var html = '<table style="width:100%;border-collapse:collapse;font-size:12px;">';
+    html += '<thead><tr style="border-bottom:1px solid var(--border);color:var(--text);font-weight:700;">';
+    html += '<th style="text-align:left;padding:8px 6px;width:48px;">头像</th>';
+    html += '<th style="text-align:left;padding:8px 6px;">名字</th>';
+    html += '<th style="text-align:left;padding:8px 6px;">类型</th>';
+    html += '<th style="text-align:left;padding:8px 6px;color:var(--text3);">创建时间</th>';
+    html += '<th style="text-align:right;padding:8px 6px;width:140px;">操作</th>';
+    html += '</tr></thead><tbody>';
+    profiles.forEach(function (p) {
+      html += '<tr style="border-bottom:1px dashed var(--border);">';
+      html += '<td style="padding:8px 6px;"><span style="display:inline-block;width:32px;height:32px;line-height:32px;text-align:center;border-radius:50%;background:' + escHtml(p.color || '#4ecdc4') + ';font-size:18px;">' + escHtml(p.avatar || '👤') + '</span></td>';
+      html += '<td style="padding:8px 6px;color:var(--text);font-weight:600;">' + escHtml(p.name) + '</td>';
+      html += '<td style="padding:8px 6px;color:var(--text2);">' + escHtml(self.profileTypeLabel(p.type)) + '</td>';
+      html += '<td style="padding:8px 6px;color:var(--text3);font-size:11px;">' + escHtml((p.created_at || '').slice(0, 16).replace('T', ' ')) + '</td>';
+      html += '<td style="padding:8px 6px;text-align:right;">';
+      html += '<button data-action="edit-profile" data-profile-id="' + escHtml(p.id) + '" style="margin-right:4px;padding:4px 10px;border-radius:4px;background:#0ea89d;color:#ffffff;font-size:11px;font-weight:600;border:none;cursor:pointer;" title="编辑身份（名字/头像/颜色/PIN）">✎ 编辑</button>';
+      html += '<button data-action="delete-profile" data-profile-id="' + escHtml(p.id) + '" style="padding:4px 10px;border-radius:4px;background:#e53935;color:#ffffff;font-size:11px;font-weight:600;border:none;cursor:pointer;" title="删除身份（级联删账户 + 数据）">🗑 删除</button>';
+      html += '</td>';
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    list.innerHTML = html;
+  };
+
+  // 显示 profile 表单（新增/编辑）
+  EmailApp.prototype.showProfileFormModal = function (profile) {
+    var self = this;
+    if (typeof ACMSModal === 'undefined') {
+      if (typeof showToast === 'function') showToast('ACMSModal 未加载', 'error');
+      return;
+    }
+    var isNew = !profile || !profile.id;
+    var fields = [
+      { name: 'name', label: '名字（必填）', type: 'text', required: true, value: (profile && profile.name) || '' },
+      { name: 'avatar', label: '头像（emoji）', type: 'text', value: (profile && profile.avatar) || '👤', placeholder: '例如 👨 👩 💼' },
+      { name: 'color', label: '颜色', type: 'select', value: (profile && profile.color) || '#4ecdc4', options: [
+        { value: '#4ecdc4', label: '🟢 青绿（默认）' },
+        { value: '#ff6b6b', label: '🔴 珊瑚红' },
+        { value: '#6bff6b', label: '🟢 亮绿' },
+        { value: '#ffd93d', label: '🟡 金黄' },
+        { value: '#6baaff', label: '🔵 天蓝' },
+        { value: '#c084fc', label: '🟣 紫罗兰' },
+      ]},
+      { name: 'type', label: '类型', type: 'select', value: (profile && profile.type) || 'personal', options: [
+        { value: 'personal', label: '👤 个人' },
+        { value: 'family', label: '👨‍👩‍👧 家人' },
+        { value: 'work', label: '💼 同事/工作' },
+        { value: 'other', label: '其他' },
+      ]},
+      { name: 'pin', label: isNew ? 'PIN（4-6 位数字，必填）' : 'PIN（4-6 位数字，留空则不改）', type: 'text', required: isNew, placeholder: '例如 1234', value: '' },
+    ];
+    ACMSModal.show({
+      title: isNew ? '新增身份' : '编辑身份 — ' + (profile.name || ''),
+      size: 'md',
+      fields: fields,
+      actions: [
+        { label: '取消', value: null },
+        { label: isNew ? '新增' : '保存', value: 'SUBMIT', className: 'acms-modal-btn-primary' },
+      ],
+    }).then(function (vals) {
+      // v2.2 fix: ACMSModal 返回的是表单数据对象（含 SUBMIT 作为按钮值），不能只检查 SUBMIT 字段存在性
+      if (!vals) return;
+      var payload = {
+        name: vals.name,
+        avatar: vals.avatar,
+        color: vals.color,
+        type: vals.type,
+      };
+      if (isNew || (vals.pin && vals.pin.trim())) payload.pin = vals.pin;
+      var p = isNew
+        ? apiFetch('POST', '/api/email-profiles', payload)
+        : apiFetch('PATCH', '/api/email-profiles/' + encodeURIComponent(profile.id), payload);
+      p.then(function (resp) {
+        if (resp && resp.ok) {
+          self.setStatus('✅ ' + (isNew ? '身份已新增：' : '身份已更新：') + (resp.profile.name || vals.name), 'success');
+          if (typeof showToast === 'function') showToast(isNew ? '新增成功' : '已保存', 'success');
+          // v2.2 fix: 入口屏（locked）和设置页（main）用不同刷新路径
+          if (self.state.locked) {
+            self.loadProfilesAndShowSelect();
+          } else {
+            self.loadProfilesForSettings();
+          }
+        } else {
+          if (typeof showToast === 'function') showToast('失败：' + ((resp && (resp.message || resp.error)) || '未知'), 'error');
+        }
+      }).catch(function (err) {
+        if (typeof showToast === 'function') showToast('请求失败：' + (err.message || '网络错误'), 'error');
+      });
+    });
+  };
+
+  EmailApp.prototype.deleteProfileWithConfirm = function (profileId) {
+    var self = this;
+    if (typeof ACMSModal === 'undefined') return;
+    var profile = (self.state.profiles || []).find(function (p) { return p.id === profileId; });
+    var name = profile ? profile.name : profileId;
+    ACMSModal.show({
+      title: '删除身份',
+      size: 'md',
+      message: '确定删除身份「' + escHtml(name) + '」？\n\n此操作会级联删除：\n  · 该身份下的所有邮箱账户（凭证也一并删除）\n  · 该身份的所有邮件数据（草稿/分类/规则/AI 偏好/tone）\n\n此操作不可撤销。',
+      actions: [
+        { label: '取消', value: null },
+        { label: '永久删除', value: 'CONFIRM', className: 'acms-modal-btn-danger' },
+      ],
+    }).then(function (v) {
+      if (v !== 'CONFIRM') return;
+      apiFetch('DELETE', '/api/email-profiles/' + encodeURIComponent(profileId))
+        .then(function (resp) {
+          if (resp && resp.ok) {
+            self.setStatus('✅ 身份已删除：' + name + '（账户 ' + ((resp.removed && resp.removed.accounts) || 0) + ' 个）', 'success');
+            if (typeof showToast === 'function') showToast('已删除', 'success');
+            // 如果删除的是当前 profile，强制锁屏
+            if (self.state.currentProfile && self.state.currentProfile.id === profileId) {
+              self.lockNow();
+            } else {
+              // v2.2 fix: 入口屏和设置页刷新路径不同
+              if (self.state.locked) {
+                self.loadProfilesAndShowSelect();
+              } else {
+                self.loadProfilesForSettings();
+              }
+            }
+          } else {
+            if (typeof showToast === 'function') showToast('删除失败：' + ((resp && resp.message) || '未知'), 'error');
+          }
+        })
+        .catch(function (err) {
+          if (typeof showToast === 'function') showToast('请求失败：' + (err.message || '网络错误'), 'error');
+        });
+    });
+  };
+
+  // ── Account 管理 ──
+
+  EmailApp.prototype.loadAccountsForSettings = function () {
+    var self = this;
+    var list = self.root.querySelector('[data-role="accounts-list"]');
+    var filter = self.root.querySelector('[data-role="account-profile-filter"]');
+    if (!list) return;
+    list.innerHTML = '<div style="text-align:center;padding:14px;color:var(--text3);font-size:11px;">加载中…</div>';
+    // 同时加载 profiles（用于 filter dropdown + 新增时的 profile_id 选项）
+    apiFetch('GET', '/api/email-profiles')
+      .then(function (pd) {
+        self.state.profiles = (pd && pd.profiles) || [];
+        if (filter) {
+          var currentVal = filter.value || '';
+          var opts = '<option value="">全部身份（' + self.state.profiles.length + '）</option>';
+          self.state.profiles.forEach(function (p) {
+            opts += '<option value="' + escHtml(p.id) + '">' + escHtml(p.name) + '</option>';
+          });
+          filter.innerHTML = opts;
+          if (currentVal) filter.value = currentVal;
+        }
+        return apiFetch('GET', '/api/email-accounts' + (filter && filter.value ? '?profile_id=' + encodeURIComponent(filter.value) : ''));
+      })
+      .then(function (data) {
+        var accounts = (data && data.accounts) || [];
+        self.state.accounts = accounts;  // 缓存供后续用
+        self.renderAccountsTable();
+      })
+      .catch(function (err) {
+        list.innerHTML = '<div style="text-align:center;padding:14px;color:var(--accent2);font-size:11px;">加载失败：' + escHtml(err.message || '未知错误') + '</div>';
+        if (typeof showToast === 'function') showToast('加载账户失败', 'error');
+      });
+  };
+
+  EmailApp.prototype.renderAccountsTable = function () {
+    var self = this;
+    var list = self.root.querySelector('[data-role="accounts-list"]');
+    if (!list) return;
+    var accounts = self.state.accounts || [];
+    if (accounts.length === 0) {
+      list.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text3);">还没有账户，点击【+ 新增账户】配置 IMAP/SMTP</div>';
+      return;
+    }
+    var html = '<table style="width:100%;border-collapse:collapse;font-size:12px;">';
+    html += '<thead><tr style="border-bottom:1px solid var(--border);color:var(--text);font-weight:700;">';
+    html += '<th style="text-align:left;padding:8px 6px;">账户名</th>';
+    html += '<th style="text-align:left;padding:8px 6px;">邮箱</th>';
+    html += '<th style="text-align:left;padding:8px 6px;">所属身份</th>';
+    html += '<th style="text-align:left;padding:8px 6px;">IMAP / SMTP</th>';
+    html += '<th style="text-align:right;padding:8px 6px;width:200px;">操作</th>';
+    html += '</tr></thead><tbody>';
+    accounts.forEach(function (a) {
+      var profile = (self.state.profiles || []).find(function (p) { return p.id === a.profile_id; });
+      var profileLabel = profile ? profile.name : '(已删除)';
+      html += '<tr style="border-bottom:1px dashed var(--border);">';
+      html += '<td style="padding:8px 6px;color:var(--text);font-weight:600;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + escHtml(a.color || '#4ecdc4') + ';margin-right:6px;vertical-align:middle;"></span>' + escHtml(a.name || a.email) + '</td>';
+      html += '<td style="padding:8px 6px;color:var(--text2);">' + escHtml(a.email) + '</td>';
+      html += '<td style="padding:8px 6px;color:var(--text2);font-size:11px;">' + escHtml(profileLabel) + '</td>';
+      html += '<td style="padding:8px 6px;color:var(--text3);font-family:monospace;font-size:10px;">' + escHtml(a.imap.host) + ':' + escHtml(String(a.imap.port)) + ' / ' + escHtml(a.smtp.host) + ':' + escHtml(String(a.smtp.port)) + '</td>';
+      html += '<td style="padding:8px 6px;text-align:right;">';
+      html += '<button data-action="test-account" data-account-id="' + escHtml(a.id) + '" style="margin-right:4px;padding:4px 8px;border-radius:4px;background:#6baaff;color:#ffffff;font-size:11px;font-weight:600;border:none;cursor:pointer;" title="测试 IMAP + SMTP 连接">🧪 测试</button>';
+      html += '<button data-action="edit-account" data-account-id="' + escHtml(a.id) + '" style="margin-right:4px;padding:4px 8px;border-radius:4px;background:#0ea89d;color:#ffffff;font-size:11px;font-weight:600;border:none;cursor:pointer;" title="编辑账户">✎ 编辑</button>';
+      html += '<button data-action="delete-account" data-account-id="' + escHtml(a.id) + '" style="padding:4px 8px;border-radius:4px;background:#e53935;color:#ffffff;font-size:11px;font-weight:600;border:none;cursor:pointer;" title="删除账户">🗑 删除</button>';
+      html += '</td>';
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    list.innerHTML = html;
+  };
+
+  // 显示 account 表单（新增/编辑）
+  EmailApp.prototype.showAccountFormModal = function (account) {
+    var self = this;
+    // 2) 修复：编辑时只传 {id:...}，导致 name/email/imap/smtp 全为空无法修改
+    //    补查 self.state.accounts 找完整数据
+    if (account && account.id && (!account.email || !account.name)) {
+      var full = (self.state.accounts || []).find(function (a) { return a.id === account.id; });
+      if (full) account = full;
+    }
+    if (typeof ACMSModal === 'undefined') {
+      if (typeof showToast === 'function') showToast('ACMSModal 未加载', 'error');
+      return;
+    }
+    var isNew = !account || !account.id;
+    var profiles = self.state.profiles || [];
+    if (profiles.length === 0) {
+      if (typeof showToast === 'function') showToast('请先创建至少一个身份', 'error');
+      return;
+    }
+    var profileOpts = profiles.map(function (p) {
+      return { value: p.id, label: p.name + ' (' + (p.type === 'work' ? '同事' : p.type === 'family' ? '家人' : '个人') + ')' };
+    });
+    var fields = [
+      { name: 'profile_id', label: '所属身份', type: 'select', required: true, value: (account && account.profile_id) || profiles[0].id, options: profileOpts },
+      { name: 'name', label: '账户名（别名）', type: 'text', value: (account && account.name) || '', placeholder: '如：工作邮箱' },
+      { name: 'email', label: '邮箱地址', type: 'text', required: true, value: (account && account.email) || '', placeholder: 'user@example.com' },
+      { name: 'color', label: '头像色', type: 'select', value: (account && account.color) || '#4ecdc4', options: [
+        { value: '#4ecdc4', label: '🟢 青绿' },
+        { value: '#ff6b6b', label: '🔴 珊瑚红' },
+        { value: '#6bff6b', label: '🟢 亮绿' },
+        { value: '#ffd93d', label: '🟡 金黄' },
+        { value: '#6baaff', label: '🔵 天蓝' },
+      ]},
+      // IMAP
+      { name: 'imap_host', label: 'IMAP 主机', type: 'text', required: true, value: (account && account.imap && account.imap.host) || 'imap.263.net' },
+      { name: 'imap_port', label: 'IMAP 端口', type: 'text', required: true, value: (account && account.imap && String(account.imap.port)) || '993' },
+      { name: 'imap_user', label: 'IMAP 用户名（通常 = 邮箱）', type: 'text', required: true, value: (account && account.imap && account.imap.user) || '' },
+      { name: 'imap_pass', label: isNew ? 'IMAP 密码/授权码（必填）' : 'IMAP 密码/授权码（留空则不改）', type: 'password', required: isNew, placeholder: 'Gmail/QQ 用授权码' },
+      { name: 'imap_tls', label: 'IMAP SSL/TLS', type: 'select', value: (account && account.imap && String(account.imap.tls)) || 'true', options: [
+        { value: 'true', label: '✅ 启用（推荐）' },
+        { value: 'false', label: '❌ 关闭' },
+      ]},
+      // SMTP
+      { name: 'smtp_host', label: 'SMTP 主机', type: 'text', required: true, value: (account && account.smtp && account.smtp.host) || 'smtp.263.net' },
+      { name: 'smtp_port', label: 'SMTP 端口', type: 'text', required: true, value: (account && account.smtp && String(account.smtp.port)) || '465' },
+      { name: 'smtp_user', label: 'SMTP 用户名', type: 'text', required: true, value: (account && account.smtp && account.smtp.user) || '' },
+      { name: 'smtp_pass', label: isNew ? 'SMTP 密码/授权码（必填）' : 'SMTP 密码/授权码（留空则不改）', type: 'password', required: isNew },
+      { name: 'smtp_secure', label: 'SMTP SSL', type: 'select', value: (account && account.smtp && String(account.smtp.secure)) || 'true', options: [
+        { value: 'true', label: '✅ 启用（SSL，端口 465）' },
+        { value: 'false', label: '❌ 关闭（STARTTLS，端口 587）' },
+      ]},
+      { name: 'from_name', label: '发件人显示名（可选）', type: 'text', value: (account && account.smtp && account.smtp.from_name) || '', placeholder: '如：大多多' },
+    ];
+    ACMSModal.show({
+      title: isNew ? '新增账户' : '编辑账户 — ' + (account.email || ''),
+      size: 'lg',
+      fields: fields,
+      actions: [
+        { label: '取消', value: null },
+        { label: isNew ? '新增' : '保存', value: 'SUBMIT', className: 'acms-modal-btn-primary' },
+      ],
+    }).then(function (vals) {
+      if (!vals) return;
+      var payload = {
+        profile_id: vals.profile_id,
+        name: vals.name || vals.email,
+        email: vals.email,
+        color: vals.color,
+        imap: {
+          host: vals.imap_host,
+          port: parseInt(vals.imap_port, 10),
+          user: vals.imap_user,
+          tls: vals.imap_tls === 'true',
+        },
+        smtp: {
+          host: vals.smtp_host,
+          port: parseInt(vals.smtp_port, 10),
+          user: vals.smtp_user,
+          secure: vals.smtp_secure === 'true',
+          from_name: vals.from_name || '',
+        },
+      };
+      if (isNew || (vals.imap_pass && vals.imap_pass.trim())) payload.imap.pass = vals.imap_pass;
+      if (isNew || (vals.smtp_pass && vals.smtp_pass.trim())) payload.smtp.pass = vals.smtp_pass;
+      var p = isNew
+        ? apiFetch('POST', '/api/email-accounts', payload)
+        : apiFetch('PATCH', '/api/email-accounts/' + encodeURIComponent(account.id), payload);
+      p.then(function (resp) {
+        if (resp && resp.ok) {
+          self.setStatus('✅ 账户已' + (isNew ? '新增' : '更新') + '：' + resp.account.email, 'success');
+          if (typeof showToast === 'function') showToast(isNew ? '新增成功' : '已保存', 'success');
+          self.loadAccountsForSettings();
+        } else {
+          if (typeof showToast === 'function') showToast('失败：' + ((resp && (resp.message || resp.error)) || '未知'), 'error');
+        }
+      }).catch(function (err) {
+        if (typeof showToast === 'function') showToast('请求失败：' + (err.message || '网络错误'), 'error');
+      });
+    });
+  };
+
+  EmailApp.prototype.deleteAccountWithConfirm = function (accountId) {
+    var self = this;
+    if (typeof ACMSModal === 'undefined') return;
+    var acc = (self.state.accounts || []).find(function (a) { return a.id === accountId; });
+    ACMSModal.show({
+      title: '删除账户',
+      size: 'md',
+      message: '确定删除账户「' + escHtml(acc ? acc.email : accountId) + '」？\n\n此操作会从 DB 清除该账户的凭证（无法恢复，需要重新输入）。',
+      actions: [
+        { label: '取消', value: null },
+        { label: '永久删除', value: 'CONFIRM', className: 'acms-modal-btn-danger' },
+      ],
+    }).then(function (v) {
+      if (v !== 'CONFIRM') return;
+      apiFetch('DELETE', '/api/email-accounts/' + encodeURIComponent(accountId))
+        .then(function (resp) {
+          if (resp && resp.ok) {
+            self.setStatus('✅ 账户已删除', 'success');
+            if (typeof showToast === 'function') showToast('已删除', 'success');
+            self.loadAccountsForSettings();
+            // 如果删除的是当前账户，强制锁屏
+            if (self.state.currentAccount && self.state.currentAccount.id === accountId) {
+              self.lockNow();
+            }
+          } else {
+            if (typeof showToast === 'function') showToast('删除失败：' + ((resp && resp.message) || '未知'), 'error');
+          }
+        })
+        .catch(function (err) {
+          if (typeof showToast === 'function') showToast('请求失败：' + (err.message || '网络错误'), 'error');
+        });
+    });
+  };
+
+  EmailApp.prototype.testAccountConnection = function (accountId) {
+    var self = this;
+    if (typeof showToast === 'function') showToast('正在测试连接…', 'info');
+    apiFetch('POST', '/api/email-accounts/' + encodeURIComponent(accountId) + '/test', {})
+      .then(function (resp) {
+        if (resp && resp.ok) {
+          self.setStatus('✅ 连接测试成功：IMAP ' + (resp.imap.mailboxes || 0) + ' 文件夹 + SMTP 验证通过', 'success');
+          if (typeof showToast === 'function') showToast('✅ 连接成功', 'success');
+        } else {
+          var imapErr = resp && resp.imap && resp.imap.error ? ' IMAP: ' + resp.imap.error : '';
+          var smtpErr = resp && resp.smtp && resp.smtp.error ? ' SMTP: ' + resp.smtp.error : '';
+          self.setStatus('❌ 连接失败：' + imapErr + smtpErr, 'error');
+          if (typeof showToast === 'function') showToast('❌ 连接失败', 'error');
+        }
+      })
+      .catch(function (err) {
+        self.setStatus('❌ 测试请求失败：' + (err.message || '网络错误'), 'error');
+        if (typeof showToast === 'function') showToast('请求失败', 'error');
+      });
+  };
+
+  // account filter 改变时重新加载
+  EmailApp.prototype.filterAccountsByProfile = function () {
+    this.loadAccountsForSettings();
   };
 
   root.EM = { open: openEmailInbox, mount: mount };

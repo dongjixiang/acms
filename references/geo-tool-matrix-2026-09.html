@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GEO 软件能力矩阵 — 开源 vs 商业 vs ACMS 自研（2026-09）</title>
+<style>
+:root{--bg:#0b0d12;--card:#12141f;--card2:#16182a;--border:#23263a;--text:#e6e6f0;--muted:#8a8fa8;--accent:#4f8cff;--warn:#f0a030;--danger:#e05a5a;--good:#3dcf6e;--half:#f0c060}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,"Segoe UI","PingFang SC","Noto Sans SC",sans-serif;background:var(--bg);color:var(--text);line-height:1.6;padding:30px 26px;max-width:1360px;margin:0 auto;font-size:14px}
+h1{font-size:26px;font-weight:800;letter-spacing:-0.02em;margin-bottom:8px;background:linear-gradient(135deg,#4f8cff 0%,#b47fff 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.sub{color:var(--muted);font-size:13px;margin-bottom:6px}
+.meta{font-size:12px;color:var(--muted);border-bottom:1px solid var(--border);padding-bottom:14px;margin-bottom:22px}
+h2{font-size:17px;margin:34px 0 12px;padding-left:10px;border-left:3px solid var(--accent);font-weight:700}
+h3{font-size:14px;margin:22px 0 8px;color:#cfd6ea}
+.legend{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin:10px 0 6px}
+.legend span b{font-weight:700}
+.yes{color:var(--good);font-weight:700}
+.half{color:var(--half);font-weight:700}
+.no{color:var(--danger);font-weight:700}
+.unk{color:var(--muted)}
+.wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;min-width:1080px;font-size:12.5px}
+thead th{position:sticky;top:0;background:#0f1120;padding:9px 8px;color:var(--accent);border-bottom:2px solid var(--accent);font-weight:700;font-size:11px;letter-spacing:.03em;white-space:nowrap;text-align:center;z-index:2}
+thead th:first-child{text-align:left}
+tbody td{padding:7px 8px;border-bottom:1px solid var(--border);vertical-align:middle;text-align:center;white-space:nowrap}
+tbody td:first-child{text-align:left;white-space:normal;min-width:190px;max-width:260px;font-weight:600;color:#dfe4f5}
+tbody td.dim{color:var(--muted);font-weight:400;font-size:11px}
+tr:hover td{background:#15183020}
+tr.sec td{background:#0f1120;color:#7fb3ff;font-weight:800;font-size:11px;letter-spacing:.06em;padding:7px 8px;text-align:left;border-top:2px solid #2a3a5c}
+.label{display:inline-block;padding:1px 7px;border-radius:999px;font-size:10.5px;font-weight:700}
+.l-acms{background:#14294a;border:1px solid #2a4a78;color:#7fb3ff}
+.l-open{background:#123318;border:1px solid #2a5a2a;color:#7fff9e}
+.l-comm{background:#2a1a14;border:1px solid #6a3a28;color:#ffb07a}
+.l-dom{background:#241434;border:1px solid #5a3a7a;color:#d0a0ff}
+.card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:18px 20px;margin-bottom:18px}
+.card p{font-size:13px;color:#c9cfe2}
+.card strong{color:#fff}
+.foot{font-size:11.5px;color:var(--muted);margin-top:26px;padding-top:14px;border-top:1px solid var(--border)}
+.note-tag{display:inline-block;background:#1a1c2e;border:1px solid var(--border);border-radius:5px;padding:0 6px;font-size:10px;color:var(--muted);margin-left:4px}
+ul{margin:6px 0 0 18px;font-size:13px;color:#c9cfe2}
+li{margin:3px 0}
+</style>
+</head>
+<body>
+
+<h1>GEO 软件能力矩阵 — 开源 vs 商业 vs ACMS 自研</h1>
+<div class="sub">以 GEO 智能运营「八站旅程」为评估框架：建档 → 提问 → 测量 → 报告 → 诊断 → 处方 → 执行 → 复测（前 4 站=体检，后 4 站=治疗+验证）</div>
+<div class="meta">2026-09-06 · 评估基线：ACMS GEO v0.46 代码实况 / OneGlanse·Elmo 本地源码对照 / 商业工具官网与公开评测（标注出处）<br>说明：GEO=Generative Engine Optimization 生成式引擎优化；AEO=Answer Engine Optimization。⚠️ 商业工具细节来自官网首页/公开评测，未逐页深核的标「待核实」。</div>
+
+<div class="legend">
+  <span><b class="yes">✓</b> 已落地/明确具备</span>
+  <span><b class="half">◐</b> 部分/雏形/规划中</span>
+  <span><b class="no">✗</b> 无/不具备</span>
+  <span><b class="unk">—</b> 公开信息未覆盖</span>
+</div>
+
+<h2>结论先说</h2>
+<div class="card">
+<p><strong>1. 全球 GEO 软件普遍停留在「监测 + 报告」体检段（前 4 站）。</strong>无论开源（OneGlanse/Elmo）还是商业（Otterly/Peec/Profound/GEOBase/北瓜/触有），核心都是：探测 AI 回答 → 算提及/排名/SoV → 出报告。能走到「处方」的只有 Elmo（Opportunities 建议）、Ansvisor（Content Brief）等少数；<strong>能走到「执行 + 复测归因」闭环的，公开市场没有第二家</strong>——ACMS GEO 八站闭环是目前唯一代码落地形态（含自动生产线、人工发布门、URL↔引用复测）。</p>
+<p><strong>2. 开源整体成熟度低且清一色海外。</strong>OneGlanse（MIT，UI 级采集 ChatGPT/Gemini/Perplexity/Claude/G AIO + LLM 评审）与 Elmo（引用分类、SoV、query fan-out）都无中文引擎、无内容执行、无复测。开源适合做「引擎采集 + 评分口径」的参考实现，不适合直接做产品底座。</p>
+<p><strong>3. 国内商业化刚起步（2026 年前后才出现），全部监测型。</strong>GEOBase（免费排名检测，豆包/元宝/千问）等 3~4 家均无处方/执行/复测——「先做先占」窗口仍在。</p>
+<p><strong>4. ACMS 的差距不在体检段而在「证据链厚度」：</strong>引擎响应原文语料库、行业基线样本量、真实客户付费验证。以及海外商业工具的渠道（SEM/社媒整合）、大厂数据规模（Profound 号称百亿级引用库）。</p>
+</div>
+
+<h2>对象速览</h2>
+<table>
+<thead><tr><th>对象</th><th>类型</th><th>一句话定位</th><th>覆盖引擎（探测网络）</th><th>数据/授权来源</th></tr></thead>
+<tbody>
+<tr><td><span class="label l-acms">ACMS</span> ACMS GEO v0.46（自研）</td><td>自研·八站闭环</td><td>建档→提问→测量→报告→诊断→处方→执行→复测，一个平台</td><td>16 家：OpenAI/Claude/Perplexity/豆包/通义/Kimi/智谱(API) + DeepSeek 网页/元宝/文小言(DOM) + AI 答案监控 7 家</td><td>本地代码实况（acms/server/services/geo-*）</td></tr>
+<tr><td><span class="label l-open">OGS</span> OneGlanse</td><td>开源 · MIT · 自托管</td><td>GEO & AI 可见性追踪器（UI 级真实采集）</td><td>ChatGPT / Gemini / Perplexity / Claude / Google AI Overview（真浏览器 Camoufox，不用 API）</td><td>本地 clone + README</td></tr>
+<tr><td><span class="label l-open">ELM</span> Elmo (elmohq)</td><td>开源 · 自托管</td><td>AI visibility 优化平台（mention/cite/describe + 引用分析 + Opportunities）</td><td>ChatGPT / Claude / Perplexity / Gemini / Google AI Overviews</td><td>本地 clone + README</td></tr>
+<tr><td><span class="label l-open">ANS</span> Ansvisor</td><td>开源 · 近商业形态</td><td>全功能商业平台形态（话题聚合 / Content Brief / 行动闭环）</td><td>（本地未 clone，细节待核）</td><td>acms 架构文档引用</td></tr>
+<tr><td><span class="label l-comm">PRO</span> Profound</td><td>海外商业</td><td>企业级 GEO/AI 搜索优化（Answer Engine Insights、Agent 分析），号称百亿级 AI 引用语料</td><td>主要海外 answer engines</td><td>2025-10 公开评测 + elmo 官网对比页点名</td></tr>
+<tr><td><span class="label l-comm">PEE</span> Peec AI</td><td>海外商业</td><td>AEO/GEO 平台（elmo 对比页点名的主要竞品）</td><td>海外 answer engines</td><td>elmo 官网对比页点名；细节待核实</td></tr>
+<tr><td><span class="label l-comm">OTT</span> Otterly</td><td>海外商业</td><td>AI 可见性/品牌监控（"Start optimizing for AI Search"）</td><td>ChatGPT / Google AI Overviews 等</td><td>otterly.ai（403 反爬）+ 评测片段；细节待核实</td></tr>
+<tr><td><span class="label l-comm">SEM</span> Semrush（GEO 模块）</td><td>海外大厂</td><td>全渠道可见性套件，AI search 监测并入旗舰平台</td><td>AI search + Google AIO + SEO/PPC/社媒</td><td>semrush.com 首页</td></tr>
+<tr><td><span class="label l-comm">AIO</span> AIOSEO（WP 插件）</td><td>海外商业插件</td><td>WordPress SEO 插件 + AEO 模块（站内 Schema/FAQ/内容指令）</td><td>站内优化为主（非探测型）</td><td>公开资料；细节待核实</td></tr>
+<tr><td><span class="label l-dom">GBS</span> GEOBase（GEO 基地）</td><td>国内商业</td><td>免费 GEO 排名检测 / 指数查询 / 品牌监控</td><td>豆包 / 元宝 / 千问等（一键查询）</td><td>2026-01 公开文章 + PPT 2026-09 官网核实</td></tr>
+<tr><td><span class="label l-dom">BG</span> 北瓜 GEO</td><td>国内商业</td><td>GEO 监测 + 报告</td><td>国内主流 AI（官网核实）</td><td>PPT 2026-09 官网核实</td></tr>
+<tr><td><span class="label l-dom">CY</span> 触有数据</td><td>国内商业</td><td>GEO 监测 + 报告</td><td>国内主流 AI（官网核实）</td><td>PPT 2026-09 官网核实</td></tr>
+</tbody>
+</table>
+
+<h2>能力矩阵（按八站旅程 × 技术底座）</h2>
+<div class="wrap">
+<table>
+<thead><tr>
+<th style="min-width:220px">能力维度</th>
+<th><span class="label l-acms">ACMS</span></th>
+<th><span class="label l-open">OGS</span></th>
+<th><span class="label l-open">ELM</span></th>
+<th><span class="label l-open">ANS</span></th>
+<th><span class="label l-comm">PRO</span></th>
+<th><span class="label l-comm">PEE</span></th>
+<th><span class="label l-comm">OTT</span></th>
+<th><span class="label l-comm">SEM</span></th>
+<th><span class="label l-comm">AIO</span></th>
+<th><span class="label l-dom">GBS</span></th>
+<th><span class="label l-dom">BG</span></th>
+<th><span class="label l-dom">CY</span></th>
+</tr></thead>
+<tbody>
+
+<tr class="sec"><td colspan="13">① 建档 / ② 提问（测量基线质量）</td></tr>
+<tr><td>品牌档案（别名/行业/竞品/城市）<div class="dim">别名归一引擎决定识别正确率</div></td>
+<td class="yes">✓</td><td class="half">◐</td><td class="half">◐</td><td class="half">◐</td><td>—</td><td>—</td><td>—</td><td class="half">◐</td><td class="half">◐</td><td class="half">◐</td><td>—</td><td>—</td></tr>
+<tr><td>提问库：短搜索片段 + 四类意图 + branded/unbranded 分层<div class="dim">「问客户的话，不是客服的话」</div></td>
+<td class="yes">✓</td><td class="half">◐</td><td class="yes">✓</td><td class="yes">✓</td><td>—</td><td>—</td><td>—</td><td class="half">◐</td><td class="no">✗</td><td class="half">◐</td><td>—</td><td>—</td></tr>
+<tr><td>行业差异化提问模板 + 权重</td><td class="yes">✓</td><td class="no">✗</td><td class="half">◐</td><td class="half">◐</td><td class="half">◐</td><td>—</td><td>—</td><td class="half">◐</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
+<tr><td>地域解耦 + 确定性注入（不靠 LLM 夹带）</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td>—</td><td>—</td><td>—</td><td>—</td><td class="half">◐</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
+
+<tr class="sec"><td colspan="13">③ 测量（探测网络广度和采集方式）</td></tr>
+<tr><td>国内 AI 引擎覆盖（豆包/通义/Kimi/元宝/文小言/DeepSeek 网页/智谱）</td>
+<td class="yes">✓ 7+</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td><td class="half">◐ 部分</td><td class="no">✗</td><td class="yes">✓</td><td class="half">◐</td><td class="half">◐</td></tr>
+<tr><td>海外 AI 引擎覆盖（ChatGPT/Gemini/Perplexity/Claude/G AIO）</td>
+<td class="yes">✓ API</td><td class="yes">✓ UI 级</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
+<tr><td>「真实 UI 回答」采集（非 API 输出）<div class="dim">UI 层会增删引用/改排序，OneGlanse 核心卖点</div></td>
+<td class="half">◐ DOM 派</td><td class="yes">✓</td><td class="half">◐</td><td class="half">◐</td><td class="half">◐</td><td>—</td><td>—</td><td class="half">◐</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
+<tr><td>回答原文留档 + 可回看/可取证</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="half">◐</td><td>—</td><td>—</td><td class="half">◐</td><td class="no">✗</td><td class="half">◐</td><td class="half">◐</td><td class="half">◐</td></tr>
+<tr><td>采集调度纪律（API 并发 / DOM 串行 / 超时兜底 / 失败诚实降级）</td>
+<td class="yes">✓</td><td class="half">◐</td><td class="half">◐</td><td class="half">◐</td><td class="half">◐</td><td>—</td><td>—</td><td class="half">◐</td><td class="no">✗</td><td class="unk">—</td><td class="unk">—</td><td class="unk">—</td></tr>
+
+<tr class="sec"><td colspan="13">④ 报告（分层评分——不发明黑箱数字）</td></tr>
+<tr><td>L1 曝光：提及率 / 覆盖引擎数 / 稳定性</td>
+<td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">✗</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+<tr><td>L2 推荐：首位推荐率 / 相对位置分 / SoV 份额</td>
+<td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="half">◐</td><td class="half">◐</td><td class="half">◐</td><td class="yes">✓</td><td class="no">✗</td><td class="half">◐ 排名</td><td class="half">◐</td><td class="half">◐</td></tr>
+<tr><td>L3 内容：AI 评审 AI（描述准确率）+ 情感</td>
+<td class="yes">✓</td><td class="yes">✓</td><td class="half">◐</td><td class="half">◐</td><td class="half">◐</td><td>—</td><td>—</td><td class="half">◐</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
+<tr><td>L4 信源：官网/内容被引用次数与占比（citation 级）</td>
+<td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="half">◐</td><td class="half">◐</td><td class="half">◐</td><td class="no">✗</td><td class="unk">—</td><td class="unk">—</td><td class="unk">—</td></tr>
+<tr><td>口径纪律：branded/unbranded 分层 · null≠0 · 样本不足诚实标注</td>
+<td class="yes">✓</td><td class="half">◐</td><td class="half">◐</td><td class="half">◐</td><td class="unk">—</td><td class="unk">—</td><td class="unk">—</td><td class="half">◐</td><td class="no">✗</td><td class="unk">—</td><td class="unk">—</td><td class="unk">—</td></tr>
+
+<tr class="sec"><td colspan="13">⑤ 诊断（为什么——AI 信谁、差给谁）</td></tr>
+<tr><td>话题聚合：按主题聚类找丢分话题</td>
+<td class="yes">✓</td><td class="no">✗</td><td class="half">◐</td><td class="yes">✓</td><td class="half">◐</td><td>—</td><td>—</td><td class="half">◐</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
+<tr><td>竞品共现 / Watch 对比 / 行业分位</td>
+<td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓ SoV</td><td class="yes">✓</td><td class="half">◐</td><td class="half">◐</td><td class="half">◐</td><td class="yes">✓</td><td class="no">✗</td><td class="unk">—</td><td class="unk">—</td><td class="unk">—</td></tr>
+<tr><td>AI 信源榜单（AI 引用哪些域名/URL——信源武器库）</td>
+<td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="half">◐</td><td class="half">◐</td><td class="half">◐</td><td class="no">✗</td><td class="unk">—</td><td class="unk">—</td><td class="unk">—</td></tr>
+<tr><td>紧急信号（负面/误识别/竞品突进）</td>
+<td class="yes">✓</td><td class="half">◐</td><td class="half">◐</td><td class="half">◐</td><td class="half">◐</td><td>—</td><td>—</td><td class="half">◐</td><td class="no">✗</td><td class="unk">—</td><td class="unk">—</td><td class="unk">—</td></tr>
+
+<tr class="sec"><td colspan="13">⑥ 处方（做什么——问题清单变任务清单）</td></tr>
+<tr><td>机会识别：商业意图 ∩ 竞品占位 ∩ 我方无内容（三条件交集）</td>
+<td class="yes">✓</td><td class="no">✗</td><td class="half">◐ Opportunities</td><td class="yes">✓</td><td class="half">◐</td><td class="half">◐</td><td class="no">✗</td><td class="half">◐</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
+<tr><td>Content Brief 生成（标题/大纲/关键词/竞品角度）</td>
+<td class="yes">✓</td><td class="no">✗</td><td class="half">◐</td><td class="yes">✓</td><td class="half">◐</td><td class="half">◐</td><td class="no">✗</td><td class="half">◐</td><td class="half">◐ 站内</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
+<tr><td>技术处方：Schema.org JSON-LD / llms.txt 生成</td>
+<td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="half">◐</td><td class="half">◐</td><td class="half">◐</td><td class="no">✗</td><td class="half">◐</td><td class="yes">✓ 插件化</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
+
+<tr class="sec"><td colspan="13">⑦ 执行（把处方做成可发布成品）</td></tr>
+<tr><td>AI 起草 + 人工润色 + 多渠道变体</td>
+<td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="half">◐</td><td class="half">◐</td><td class="half">◐</td><td class="no">✗</td><td class="half">◐ 内容工具</td><td class="half">◐</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
+<tr><td>GEO 质检三查（关键词/结构/竞品角度）+ 自动重写</td>
+<td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="half">◐</td><td class="unk">—</td><td class="unk">—</td><td class="no">✗</td><td class="half">◐</td><td class="half">◐</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
+<tr><td>自动发布/分发 + 人工发布门（不冒充品牌发声）</td>
+<td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="half">◐</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td><td class="half">◐ WP 发布</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
+
+<tr class="sec"><td colspan="13">⑧ 复测（改了有没有用——数据纪律）</td></tr>
+<tr><td>同批复测（同批提问×引擎×地域）对比 delta</td>
+<td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="half">◐</td><td class="half">◐</td><td class="unk">—</td><td class="no">✗</td><td class="half">◐</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
+<tr><td>内容级归因：发布 URL ↔ 复测引用匹配</td>
+<td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="half">◐</td><td class="half">◐</td><td class="unk">—</td><td class="no">✗</td><td class="half">◐</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
+<tr><td>周快照 upsert + 趋势（同批口径）</td>
+<td class="yes">✓</td><td class="half">◐</td><td class="half">◐</td><td class="yes">✓ 日聚合</td><td class="half">◐</td><td class="unk">—</td><td class="half">◐</td><td class="half">◐</td><td class="no">✗</td><td class="unk">—</td><td class="unk">—</td><td class="unk">—</td></tr>
+<tr><td>归因纪律：无 A/B 只报「相关变化」，不称因果</td>
+<td class="yes">✓</td><td class="half">◐</td><td class="half">◐</td><td class="half">◐</td><td class="unk">—</td><td class="unk">—</td><td class="unk">—</td><td class="unk">—</td><td class="no">✗</td><td class="unk">—</td><td class="unk">—</td><td class="unk">—</td></tr>
+
+<tr class="sec"><td colspan="13">技术底座 / 形态</td></tr>
+<tr><td>自托管 / 数据自主（SQLite/PG，无外部 SaaS 依赖）</td>
+<td class="yes">✓ SQLite</td><td class="yes">✓ PG+CH</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">✗ SaaS</td><td class="no">✗ SaaS</td><td class="no">✗ SaaS</td><td class="no">✗ SaaS</td><td class="half">◐ 自装插件</td><td class="no">✗ SaaS</td><td class="no">✗ SaaS</td><td class="no">✗ SaaS</td></tr>
+<tr><td>开放/许可</td>
+<td class="yes">内研</td><td class="yes">MIT</td><td class="half">◐ 开源</td><td class="half">◐ 开源</td><td class="no">商业</td><td class="no">商业</td><td class="no">商业</td><td class="no">商业</td><td class="no">商业</td><td class="no">商业</td><td class="no">商业</td><td class="no">商业</td></tr>
+<tr><td>中文内容生态整合（官网 CMS/知乎/公众号/百科渠道）</td>
+<td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td><td class="half">◐</td><td class="no">✗</td><td class="unk">—</td><td class="unk">—</td><td class="unk">—</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>三句话解读</h2>
+<div class="card">
+<ul>
+<li><strong>体检段（前 4 站）已商品化</strong>：L1/L2 提及、排名、SoV 几乎人人有；差异只在引擎覆盖广度（海外工具无国内引擎）与「UI 级采集」真伪（OneGlanse 最诚实）。</li>
+<li><strong>治疗段（后 4 站）几乎空白</strong>：全球仅 ACMS 一家跑通 处方→执行→复测 代码闭环；Elmo/Ansvisor 摸到处方边缘（Opportunities/Content Brief），商业大厂全部停在建议层。</li>
+<li><strong>ACMS 真正该盯的对手不是 GEO 工具</strong>，而是「AI 时代的内容增长基础设施」：Semrush/Ahrefs 的数据规模与渠道广度、OpenAI 官方搜索生态、以及国内豆包/元宝们自己开放引用数据——那时监测工具都会被平台原生分析替代，护城河只有「行业语料 + 执行闭环 + 客户信任」。</li>
+</ul>
+</div>
+
+<h2>来源与待核实清单</h2>
+<div class="foot">
+- ACMS GEO：acms/server/services/geo-*（v0.46 代码实况）、docs/geo-app-redesign-architecture.md、PPT「GEO方案-PPT演示v3」八站框架<br>
+- OneGlanse：本地 clone C:/Users/swede/oneglanse README（MIT，Camoufox UI 采集，PG+ClickHouse，BYO LLM 分析）<br>
+- Elmo：本地 clone C:/Users/swede/elmo README（citation 分类 / SoV / query fan-out / Opportunities；官网对比页点名 Profound / Peec AI / Otterly 为竞品）<br>
+- Ansvisor：acms 架构文档二手引用（「话题聚合/日聚合/Content Brief/行动闭环」），<span class="note-tag">待 clone 核实</span><br>
+- Profound：2025-10 中文评测（「企业级 GEO 方案，Answer Engine Insights」）+ elmo 对比页；www.profound.com 为市场研究商非 GEO 平台，<span class="note-tag">官网待核实</span><br>
+- Peec AI / Otterly / AIOSEO：elmo 官网对比页 + otterly.ai（403 反爬）+ 公开评测，<span class="note-tag">细节待核实</span><br>
+- Semrush：semrush.com 首页（AI search 可见性并入旗舰）；国内 GEOBase/北瓜/触有：PPT 2026-09 官网核实结论 + 2026-01 公开文章（GEOBase 提供免费排名检测/指数查询，覆盖豆包/元宝/千问）
+</div>
+
+</body>
+</html>

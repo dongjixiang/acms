@@ -69,6 +69,8 @@ function createDraft(opts) {
   const now = new Date().toISOString();
   const doc = {
     id: genId(),
+    profile_id: (opts && opts.profileId) || (opts && opts.profile_id) || 'default',  // v2.3: profile 隔离
+    account_id: (opts && opts.accountId) || (opts && opts.account_id) || null,     // v2.3: 哪个账户的草稿
     original_email_uid: (opts && opts.originalEmailUid) || null,
     original_mailbox: (opts && opts.originalMailbox) || 'INBOX',
     from: (opts && opts.from) || '',  // 草稿 to（=原邮件 from，邮箱用户视角）
@@ -103,7 +105,7 @@ function getDraft(id) {
 }
 
 // === 列出草稿 ===
-// opts: { status?, source?, mailbox?, limit?, offset? }
+// opts: { status?, source?, mailbox?, profileId?, limit?, offset? }  ← v2.3 加 profileId
 function listDrafts(opts) {
   opts = opts || {};
   const coll = collection(COLL_NAME);
@@ -111,6 +113,11 @@ function listDrafts(opts) {
   if (opts.status) all = all.filter(d => d.status === opts.status);
   if (opts.source) all = all.filter(d => d.source === opts.source);
   if (opts.mailbox) all = all.filter(d => d.original_mailbox === opts.mailbox);
+  // v2.3: profile 隔离
+  if (opts.profileId || opts.profile_id) {
+    const pid = opts.profileId || opts.profile_id;
+    all = all.filter(d => d.profile_id === pid);
+  }
   // 按 updated_at 倒序（最近编辑的在前）
   all.sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
   const limit = Number(opts.limit) || 200;
@@ -146,10 +153,15 @@ function deleteDraft(id) {
   return coll.remove(d => d.id === id);
 }
 
-// === 统计（按状态） ===
-function countByStatus() {
+// === 统计（按状态）— v2.3 加 profileId 过滤 ===
+function countByStatus(opts) {
+  opts = opts || {};
   const coll = collection(COLL_NAME);
-  const all = coll.all ? coll.all() : (coll.find ? coll.find(() => true) : []);
+  let all = coll.all ? coll.all() : (coll.find ? coll.find(() => true) : []);
+  if (opts.profileId || opts.profile_id) {
+    const pid = opts.profileId || opts.profile_id;
+    all = all.filter(d => d.profile_id === pid);
+  }
   const counts = {};
   for (const d of all) {
     counts[d.status || 'draft'] = (counts[d.status || 'draft'] || 0) + 1;

@@ -235,6 +235,16 @@ if (typeof window.createNewChatWindow === 'function') {
               }
             },
           },
+          {
+            id: 'app-social-publisher',
+            label: '内容运营平台',
+            icon: '📱',
+            action: function() {
+              if (typeof window.ACMSWin !== 'undefined') {
+                ACMSWin.open('social-publisher', { w: 1200, h: 800, title: '内容运营平台' });
+              }
+            },
+          },
         ],
       },
       null, // separator

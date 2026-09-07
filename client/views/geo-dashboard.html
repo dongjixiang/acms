@@ -1,13 +1,17 @@
-<!-- ACMS GEO 应用 — 仪表盘 v0.2（Phase 1 Week 5 — 真实数据填充）
-     4 个 active tab（总览/品牌/追踪/llms.txt）+ 4 个占位
+<!-- ACMS GEO 应用 — 仪表盘 v0.45（Phase 1 Week 5 — 真实数据填充；2026-09-06 行业下拉独立化 + 视觉风格统一）
+     11 个 active tab（总览/品牌/追踪/评分/快照/查询/机会/监控/投放/llms.txt/设置）+ 1 个占位
      每个 tab 是独立 section，CSS class .geo-pane.active 控制可见性 -->
 <div class="geo-shell">
   <header class="geo-header">
-    <div class="geo-header-left">
-      <span class="geo-logo">🌐 GEO</span>
-      <select class="geo-brand-select" id="geo-brand-select">
-        <option value="">— 所有品牌 —</option>
-      </select>
+<div class="geo-header-left">
+    <span class="geo-logo">🌐 GEO</span>
+    <!-- v0.45: 行业下拉（内置 8 行业枚举 + 品牌计数）—— 不依赖 brand 缓存，没建品牌也能选 -->
+    <select class="geo-industry-select geo-tip" id="geo-industry-select" data-tip="先选行业，再选该行业下的品牌（可选）。行业选项不依赖品牌数据，没建品牌也能选。已有品牌的行业自动排在前面（带数字）。总览品牌比较自动按行业分组。">
+      <option value="">— 所有行业 —</option>
+    </select>
+    <select class="geo-brand-select geo-tip" id="geo-brand-select" data-tip="选一个具体品牌进入分析。可独立使用（不依赖行业下拉）。">
+      <option value="">— 所有品牌 —</option>
+    </select>
       <span class="geo-brand-meta" id="geo-brand-meta"></span>
       <!-- v0.30: 别名编辑入口（治「一个品牌多个名字漏匹配」） -->
       <button class="geo-btn geo-btn-sm geo-btn-alias" id="geo-brand-alias-btn" title="请先在左侧选一个具体品牌，再点 ✎ 别名 编辑别名（缩写/常用名）" disabled>✎ 别名</button>
@@ -28,13 +32,96 @@
     <button class="geo-tab" data-tab="watch">👁 竞品 Watch</button>
     <button class="geo-tab" data-tab="llms">📝 llms.txt</button>
     <button class="geo-tab" data-tab="settings">⚙️ 设置</button>
-    <button class="geo-tab" data-tab="opportunities">💡 智能推荐</button>
+
   </nav>
 
   <main class="geo-main">
     <!-- Tab 1: 总览（v0.2 — 真实数据） -->
     <section class="geo-pane active" id="geo-pane-overview">
       <h2>📊 总览</h2>
+      <!-- v0.39: 5 分钟自查 onboarding（首次进入 GEO 应用时引导客户自助判断） -->
+      <div class="geo-onboarding" id="geo-onboarding">
+        <div class="onboarding-banner" id="onboarding-banner" style="display:none">
+          <div class="onboarding-banner-content">
+            <span class="onboarding-emoji">🚀</span>
+            <div class="onboarding-text">
+              <h3>5 分钟自查：你该不该做 GEO</h3>
+              <p>动手测一测，三个 AI + 一篇文章清单，就能判断你现在在 AI 里的位置。</p>
+            </div>
+            <button class="geo-btn geo-btn-primary" id="onboarding-start-btn">开始自查 →</button>
+            <button class="geo-btn onboarding-dismiss-btn" id="onboarding-dismiss-btn" title="稍后再说">×</button>
+          </div>
+        </div>
+
+        <div class="onboarding-workflow" id="onboarding-workflow" style="display:none">
+          <h3 class="geo-tip" data-tip="v0.39 5 分钟自查：掏手机问 AI 三个问题 + 检查你最近一篇文章三样 = 判断你现在在 AI 里的入场状态。比任何"行业基准"都准——因为这是你自己的数据。">🚀 5 分钟自查：你在 AI 里现在是什么位置</h3>
+          <div class="onboarding-progress" id="onboarding-progress">
+            <div class="onboarding-step-indicator" data-step="1"><span>1</span><span>问 AI</span></div>
+            <div class="onboarding-step-line"></div>
+            <div class="onboarding-step-indicator" data-step="2"><span>2</span><span>查文章</span></div>
+            <div class="onboarding-step-line"></div>
+            <div class="onboarding-step-indicator" data-step="3"><span>3</span><span>对照结果</span></div>
+          </div>
+
+          <div class="onboarding-steps" id="onboarding-steps">
+            <!-- Step 1: 问 AI -->
+            <div class="onboarding-step" data-step="1">
+              <h4>第 1 步：问 AI 三个问题（1 分钟）</h4>
+              <p>掏出手机，在 <b>豆包</b> / <b>DeepSeek</b> / <b>Kimi</b> 里分别问：</p>
+              <div class="onboarding-quote-list">
+                <div class="onboarding-q-item">"城市 + 品类 + 哪家好"<span class="onboarding-q-hint">例如：上海展览设计公司哪家好</span></div>
+                <div class="onboarding-q-item">"你的品牌名 + 怎么样"<span class="onboarding-q-hint">例如：中展集团怎么样</span></div>
+                <div class="onboarding-q-item">"品类 + 推荐"<span class="onboarding-q-hint">例如：展览设计公司推荐</span></div>
+              </div>
+              <p class="onboarding-tip">💡 这三个问题覆盖了"商业意图"（哪家/推荐）和"品牌认知"（品牌名+怎么样）两种最关键的 AI 决策场景。</p>
+              <button class="geo-btn geo-btn-primary onboarding-next-btn" id="onboarding-step1-done">✓ 我问完了，下一步</button>
+            </div>
+
+            <!-- Step 2: 查文章 -->
+            <div class="onboarding-step" data-step="2" style="display:none">
+              <h4>第 2 步：检查你最近一篇文章（2 分钟）</h4>
+              <p>打开你最近发的 <b>1-3 篇文章</b>（公众号 / 网站），问自己三个问题：</p>
+              <div class="onboarding-quote-list">
+                <div class="onboarding-q-item">开头 200 字内直接给答案了吗？<span class="onboarding-q-hint">AI 抓不到结论 = 没人引用你</span></div>
+                <div class="onboarding-q-item">有数据表格吗？<span class="onboarding-q-hint">AI 做对比时直接引用表格</span></div>
+                <div class="onboarding-q-item">有来源标注吗？<span class="onboarding-q-hint">AI 判定你不可信 → 不引用</span></div>
+              </div>
+              <p class="onboarding-tip">💡 这三个是 E-E-A-T 框架的最小子集。三个都"否"= 你发的是自嗨，不是 GEO 内容。</p>
+              <button class="geo-btn geo-btn-primary onboarding-next-btn" id="onboarding-step2-done">✓ 我检查完了，下一步</button>
+            </div>
+
+            <!-- Step 3: 对照结果 -->
+            <div class="onboarding-step" data-step="3" style="display:none">
+              <h4>第 3 步：对照结果，判断入场状态（1 分钟）</h4>
+              <div class="onboarding-result-grid">
+                <div class="onboarding-result">
+                  <div class="onboarding-result-icon">🚨</div>
+                  <h5>三个 AI 都没提你</h5>
+                  <p>说明你连"<b>被看见</b>"的入场券都还没有——先做内容结构化，再谈 GEO 工具。</p>
+                </div>
+                <div class="onboarding-result">
+                  <div class="onboarding-result-icon">⚠️</div>
+                  <h5>AI 提了你但文章三样都没有</h5>
+                  <p>AI 在引用你的"<b>口碑</b>"，但你的内容不给力——这是最容易补的短板。</p>
+                </div>
+                <div class="onboarding-result">
+                  <div class="onboarding-result-icon">✅</div>
+                  <h5>AI 提了你 + 文章都有</h5>
+                  <p>入场 OK，可以开始精细化（v0.34 三指标帮你追"做得更好"）。</p>
+                </div>
+              </div>
+              <button class="geo-btn geo-btn-primary onboarding-complete-btn" id="onboarding-complete-btn">✓ 完成自查，关闭</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="onboarding-mini" id="onboarding-mini" style="display:none">
+          <span class="onboarding-emoji">✅</span>
+          <span>5 分钟自查已完成于 <span id="onboarding-completed-at">—</span></span>
+          <button class="geo-btn onboarding-redo-btn" id="onboarding-redo-btn">重做</button>
+        </div>
+      </div>
+
       <div class="geo-kpi-grid">
         <div class="geo-kpi-card geo-tip" id="geo-kpi-brands" data-tip="已注册且状态为 active 的品牌数量。品牌在「🏢 品牌管理」tab 创建。">
           <div class="geo-kpi-label">活跃品牌</div>
@@ -53,6 +140,59 @@
           <div class="geo-kpi-label">已配置引擎</div>
           <div class="geo-kpi-value">—</div>
           <div class="geo-kpi-sub">—</div>
+        </div>
+      </div>
+
+<!-- v0.34: 三大新指标金卡（让 GEO 从"能测"走向"能讲对外故事"） -->
+      <h3 style="margin-top:24px" class="geo-tip" data-tip="v0.34 三大新指标：商业意图首位推荐率（离转化最近的可见性信号）、AI 引用占比（你的内容被 AI 当作信源的份额）、行业分位（你在同行业里的排名分位）——把「被看见」变成「对外讲得清」的故事。">⭐ v0.34 三大新指标（当前品牌）</h3>
+      <div class="geo-v034-grid" id="geo-v034-grid">
+        <div class="geo-v034-card geo-tip" id="geo-v034-top1" data-tip="商业意图问题里你被 AI 第一个点名的占比——商业意图 = 问句含"哪家/推荐/对比/best"等关键词。被提到只是入场券，被当首是成交前奏。样本不足 20 时会显示灰色。">
+          <div class="v034-tag">★ 首位推荐率</div>
+          <div class="v034-value">—</div>
+          <div class="v034-sub">—</div>
+          <div class="v034-engines" id="geo-v034-top1-engines"></div>
+        </div>
+        <div class="geo-v034-card geo-tip" id="geo-v034-citation" data-tip="AI 回答里引用了你的内容（自营站点或含品牌别称的页面）占总引用数的比例——比 mention 更接近「AI 真的引用你网站」。覆盖 = 含引用字段的有效响应占比。">
+          <div class="v034-tag">🔗 AI 引用占比</div>
+          <div class="v034-value">—</div>
+          <div class="v034-sub">—</div>
+        </div>
+        <div class="geo-v034-card geo-tip" id="geo-v034-industry" data-tip="你在同行业（industry 字段相同）品牌里的综合分百分位排名。基于 ACMS 自有多品牌库计算（≥8 个行业样本才显示分位；否则显示「样本不足」灰色）。带状图标记 = 你的位置；竖线 = 行业中位。">
+          <div class="v034-tag">🏆 行业分位</div>
+          <div class="v034-value">—</div>
+          <div class="v034-sub">—</div>
+          <div class="v034-bar"><div class="v034-bar-track"><div class="v034-bar-median"></div></div></div>
+        </div>
+      </div>
+
+      <!-- v0.36: 描述准确率金卡（LLM-as-judge 抽样，竞品无的差异化指标） -->
+      <div class="geo-v036-card geo-tip" id="geo-v036-accuracy" data-tip="v0.36 描述准确率：AI 经常在回答里编造或夸大品牌事实（"X 公司成立 2005 年"但实际 2015），这种错误描述会反噬品牌信任。本指标抽样 20 条商业意图回答，用 LLM 判定哪些描述"事实正确 / misleading / unknown"，缓存 7 天。点击下方按钮可手动触发重新抽样（30-60 秒）。">
+        <div class="v036-tag">🎯 描述准确率</div>
+        <div class="v036-value">—</div>
+        <div class="v036-sub">—</div>
+        <div class="v036-issues" id="geo-v036-accuracy-issues"></div>
+        <div class="v036-actions">
+          <button class="geo-btn geo-btn-sm" id="geo-v036-judge-btn" title="抽样 20 条商业意图回答，用 LLM 判定描述准确率（30-60 秒）">🧠 抽样判定</button>
+        </div>
+      </div>
+
+      <!-- v0.38: 竞品共现分析（oneglanse competitors[] 借鉴） -->
+      <div class="geo-v038-card geo-tip v038-empty" id="geo-v038-competitors" data-tip="v0.38 竞品共现分析：统计每个竞品在自然发现回答中出现的次数、情感倾向、是否被推荐。借鉴 oneglanse BrandAnalysisResult.competitors[] 字段。数据来自 geo-scoring.js calculateCompetitors() 函数。">
+        <div class="v038-tag">🏷️ 竞品共现</div>
+        <div class="v038-value">—</div>
+        <div class="v038-sub">与你在同一篇 AI 回答里出现的竞品</div>
+        <div class="geo-v038-comp-list" id="geo-v038-competitors-list"></div>
+      </div>
+
+      <!-- v0.38: 品牌感知 + 风险信号（oneglanse perception[] + risks[] 借鉴） -->
+      <div class="geo-v038-card geo-tip v038-empty" id="geo-v038-perception" data-tip="v0.38 品牌感知 + 风险信号：用 LLM 分析 AI 回答里品牌的叙事画像（核心主张、差异化优势、定价感知）和风险信号（过时信息、负面关联、竞品优势）。借鉴 oneglanse BrandAnalysisResult.perception + risks 字段。异步触发，缓存 7 天。">
+        <div class="v038-tag">🧠 品牌感知</div>
+        <div class="v038-value">—</div>
+        <div class="v038-sub">AI 如何描述你的品牌</div>
+        <div class="geo-v038-perception-grid" id="geo-v038-perception-grid"></div>
+        <div class="geo-v038-risks-list" id="geo-v038-risks-list"></div>
+        <div class="geo-v038-actions">
+          <button class="geo-btn geo-btn-sm" id="geo-v038-perception-judge-btn" title="用 LLM 分析品牌感知 + 风险信号（30-60 秒）">🧠 触发感知分析</button>
         </div>
       </div>
 
@@ -114,12 +254,65 @@
         <div class="geo-dim-empty">加载中...</div>
       </div>
 
+      <!-- v0.37: 平台覆盖度视图（哪些主流 AI 在提你、提得多频繁） -->
+      <div class="geo-coverage" id="geo-coverage" style="display:none">
+        <h3 class="geo-tip" data-tip="平台覆盖度：你在哪些主流 AI 引擎里被提及、每个引擎的提及率。覆盖引擎越多 + 平均提及率越高 = "被 AI 看见"的广度越大（不止靠单一引擎）。">📡 平台覆盖度（你在哪些 AI 里有声音）</h3>
+        <div class="geo-coverage-summary">
+          <div class="geo-coverage-stat geo-tip" data-tip="覆盖引擎数 = 至少有一条响应的引擎数（数据中有提及记录的引擎）。多引擎覆盖 = 不押宝在单一模型。">
+            <div class="coverage-stat-label">覆盖引擎</div>
+            <div class="coverage-stat-value" id="geo-coverage-count">—</div>
+            <div class="coverage-stat-sub">个主流 AI 有你的声音</div>
+          </div>
+          <div class="geo-coverage-stat geo-tip" data-tip="平均提及率 = 各引擎 mention_rate 算术平均（不区分引擎权重）。0.5 = 半数回答含品牌。">
+            <div class="coverage-stat-label">平均提及率</div>
+            <div class="coverage-stat-value" id="geo-coverage-avg">—</div>
+            <div class="coverage-stat-sub">所有引擎回答中提你的比例</div>
+          </div>
+        </div>
+        <div class="geo-coverage-bars" id="geo-coverage-bars"></div>
+        <div class="geo-coverage-hint">
+          💡 <b>覆盖越广越稳</b>——押单一引擎有风险（模型升级/厂商策略变更/退出市场都可能让数据归零）。多引擎覆盖 = 抗风险能力。
+        </div>
+      </div>
+
+      <!-- v0.35: 零点击决策叙事（解释"被推荐 ≠ 被点击，但客户已经做了决定"） -->
+      <div class="geo-narrative" id="geo-narrative" style="display:none">
+        <h3 class="geo-tip" data-tip="AI 场景下，80%+ 用户看完答案就直接决策，不会点你的链接。这意味着"点击率"不再是 GEO 效果的核心指标——重要的是"被 AI 推荐"。v0.34 的首位推荐率 + 引用占比量化"被推荐"的强度；这一区告诉你"哪些场景你已经在影响用户决策"。">🧠 零点击决策：被推荐 = 影响成交（不是点击）</h3>
+        <div class="geo-narrative-grid">
+          <div class="geo-narrative-card geo-tip" data-tip="在"哪家好/推荐/对比"这类商业意图问题里，AI 第一个点名的就是你的次数。这是离"成交"最近的可见性指标（v0.34 首位推荐率 × 商业意图回答数）。">
+            <div class="narrative-tag">🎯 被首次推荐</div>
+            <div class="narrative-value" id="geo-narrative-top1">—</div>
+            <div class="narrative-sub" id="geo-narrative-top1-sub">—</div>
+          </div>
+          <div class="geo-narrative-card geo-tip" data-tip="在商业意图问题里，你的内容（含品牌名）出现在 AI 答案中的次数。= v0.34 提及率（natural）× 商业意图 query 数。哪怕不是首推，AI 也在把你纳入候选清单。">
+            <div class="narrative-tag">👀 用户看到你</div>
+            <div class="narrative-value" id="geo-narrative-seen">—</div>
+            <div class="narrative-sub" id="geo-narrative-seen-sub">—</div>
+          </div>
+          <div class="geo-narrative-card geo-tip" data-tip="你的内容被 AI 当作引用源的次数（v0.34 引用占比）。AI 真的引用了你的网站 = 强信任信号。">
+            <div class="narrative-tag">🔗 被 AI 引用</div>
+            <div class="narrative-value" id="geo-narrative-cited">—</div>
+            <div class="narrative-sub" id="geo-narrative-cited-sub">—</div>
+          </div>
+        </div>
+        <div class="geo-narrative-explainer">
+          <p><b>核心洞察：</b>大多数 AI 用户不会点链接——他们看完答案就做了决定。这意味着你的"GEO 流量"几乎全是 <b>无形的、被 AI 答案内化掉的曝光</b>。</p>
+          <p>如果客户跟你说"我投了 GEO 怎么没看到流量增长"——这就是原因。被推荐本身就在影响选择，点击率不是 GEO 的核心信号。</p>
+        </div>
+        <div class="geo-narrative-tip">
+          <b>📌 想追踪实际转化？</b>给你的官网链接加 UTM 参数：<code>?utm_source=chatgpt&utm_medium=ai_search</code>（按平台分别分 utm_source：chatgpt/deepseek/doubao/kimi），并在 CRM 备注线索来源。
+          但请记住：<b>这只是验证少数被点击的人</b>——大头的影响是"用户看完答案就决策"，这部分你看不到，但 v0.34 三指标会替你持续量化。
+        </div>
+      </div>
+
       <h3 style="margin-top:24px">🔍 审计 / 🤖 AI 优化建议</h3>
       <div class="geo-pane-header" style="margin-bottom:8px">
         <div class="geo-pane-actions">
           <button class="geo-btn geo-tip" id="geo-audit-btn" data-tip="对当前品牌跑完整审计：cite-ability 评分 + 5 维度 + 内容缺口建议 + llms.txt 健康度（约 5-15 秒）">🔍 跑审计</button>
           <button class="geo-btn geo-btn-primary geo-tip" id="geo-optimize-btn" data-tip="AI 分析 GEO 数据（含审计），生成可执行的优化建议清单。建议可一键落地为 Kanban 任务自动执行（约 5-10 秒，消耗 LLM token）">✨ 生成建议（LLM 分析）</button>
           <button class="geo-btn geo-tip" id="geo-opp-trigger-btn" data-tip="💡 智能推荐：AI 自动分析 GEO 数据，生成可执行机会（creation/existing/outreach/social）+ 内容缺口 + 难度标签。约 5 秒，消耗 LLM token。">💡 智能推荐</button>
+          <button class="geo-btn geo-tip" id="geo-schema-trigger-btn" data-tip="📋 Schema.org 建议：根据当前品牌的 queries + intent 分布，推荐该生成哪些 Schema.org 结构化数据（FAQPage/HowTo/Product 等），帮品牌从「测」走到「做」。纯规则，不调 LLM。">📋 Schema 建议</button>
+          <button class="geo-btn geo-tip" id="geo-channels-trigger-btn" data-tip="📊 投放策略：基于 citations 数据生成 7 节投放策略报告（紧急处理/Top10 Channel/Per-Engine 适配/竞品反位/零命中攻关）。数据驱动，ROI 公式公开。约 3-5 秒。">📊 投放策略</button>
           <button class="geo-btn" id="geo-optimize-refresh-btn" style="display:none">🔄 重新生成</button>
         </div>
       </div>
@@ -355,10 +548,22 @@
             <option value="ar">🌐 العربية</option>
             <option value="pt">🌐 Português</option>
           </select>
-          <button class="geo-btn geo-tip" id="geo-track-run-btn" data-tip="对当前品牌的所有提问模板 × 白名单引擎，实时向 AI 引擎发起查询（会消耗 API 额度，约 3-10 秒/引擎）">▶ 跑一次跟踪</button>
-          <label class="geo-tip" style="display:inline-flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;margin-left:4px" data-tip="DeepSeek 官方 API 无联网搜索参数。勾选后先用真实网页检索（Bing/头条多通道）再让 DeepSeek 回答——回答有实时依据，但每条慢约 18 秒">
-            <input type="checkbox" id="geo-track-rag-check" style="accent-color:#38bdf8"> 🔍 DeepSeek 检索增强
-          </label>
+          <select class="geo-engine-filter geo-tip" id="geo-track-city-select" data-tip="地域型提问（如「上海展台搭建公司」）的城市。影响 [location] 占位符替换，直接关联到生成的 query。选择「无地域限制」则保留通用形式。" style="margin-left:4px;min-width:120px">
+            <option value="">— 无地域限制 —</option>
+            <option value="上海">🏙️ 上海</option>
+            <option value="北京">🏙️ 北京</option>
+            <option value="广州">🏙️ 广州</option>
+            <option value="深圳">🏙️ 深圳</option>
+            <option value="成都">🏙️ 成都</option>
+            <option value="杭州">🏙️ 杭州</option>
+            <option value="武汉">🏙️ 武汉</option>
+            <option value="南京">🏙️ 南京</option>
+            <option value="重庆">🏙️ 重庆</option>
+            <option value="西安">🏙️ 西安</option>
+          </select>
+          <button class="geo-btn geo-tip" id="geo-track-run-btn" data-tip="对当前品牌的所有提问模板 × 本次选的引擎，实时向 AI 引擎发起查询（会消耗 API 额度，约 3-10 秒/引擎）">▶ 跑一次跟踪</button>
+          <!-- v0.44: 本次跑用的引擎 picker（dropdown 多选，默认从 settings.engine_whitelist 加载，临时勾选不影响 settings） -->
+          <div id="geo-track-engine-pick" style="position:relative;display:inline-block;margin-left:8px"></div>
           <div id="geo-track-engine-filterbar"></div>
         </div>
       </div>
@@ -464,6 +669,33 @@
     </div>
     <div class="geo-opp-content" id="geo-opp-content">
       <div class="geo-dim-empty">选择品牌后点击「💡 智能推荐」查看 AI 生成的优化机会</div>
+    </div>
+  </div>
+
+  <!-- v0.41 P2: Schema.org 输出建议面板（复用 opp-panel 样式，独立抽屉） -->
+  <div class="geo-opp-panel" id="geo-schema-panel" style="display:none">
+    <div class="geo-opp-header">
+      <h3>📋 Schema.org 建议</h3>
+      <div class="geo-opp-actions">
+        <button class="geo-btn geo-btn-sm" id="geo-schema-close-btn">✕</button>
+      </div>
+    </div>
+    <div class="geo-opp-content" id="geo-schema-content">
+      <div class="geo-dim-empty">选择品牌后点击「📋 Schema 建议」查看基于意图分布的结构化数据建议</div>
+    </div>
+  </div>
+
+  <!-- v0.45: 投放策略面板 -->
+  <div class="geo-opp-panel" id="geo-channels-panel" style="display:none">
+    <div class="geo-opp-header">
+      <h3>📊 投放策略</h3>
+      <div class="geo-opp-actions">
+        <button class="geo-btn geo-btn-sm" id="geo-channels-refresh-btn" title="重新生成策略（读取最新数据）">🔄 刷新</button>
+        <button class="geo-btn geo-btn-sm" id="geo-channels-close-btn">✕</button>
+      </div>
+    </div>
+    <div class="geo-opp-content" id="geo-channels-content">
+      <div class="geo-dim-empty">选择品牌后点击「📊 投放策略」查看 7 节投放策略报告</div>
     </div>
   </div>
 

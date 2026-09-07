@@ -181,14 +181,29 @@ function createTransporter(smtp, nodemailerImpl) {
 
 async function sendEmail(options, dependencies) {
   const deps = dependencies || {};
-  const smtp = deps.smtp || config.smtp;
-  if (!smtp || !smtp.host) {
-    throw new EmailSendError('SMTP_NOT_CONFIGURED', '未配置 SMTP', 400);
+  // v2.0 多账户：优先用 accountId 走 transport pool，否则降级到 config.smtp（向后兼容）
+  let smtp, transporter;
+  if (deps.accountId) {
+    const pool = require('./email-transport-pool');
+    const accountStore = require('./email-account-store');
+    const acc = accountStore.getDecrypted(deps.accountId);
+    if (!acc) throw new EmailSendError('ACCOUNT_NOT_FOUND', `account ${deps.accountId} 不存在`, 404);
+    smtp = {
+      host: acc.smtp.host, port: acc.smtp.port, secure: acc.smtp.secure !== false,
+      user: acc.smtp.user, pass: acc.smtp.pass,
+      from: acc.email, fromName: acc.smtp.from_name || '',
+    };
+    transporter = deps.transporter || (await pool.getTransport(deps.accountId));
+  } else {
+    smtp = deps.smtp || config.smtp;
+    if (!smtp || !smtp.host) {
+      throw new EmailSendError('SMTP_NOT_CONFIGURED', '未配置 SMTP（也未传 accountId）', 400);
+    }
+    transporter = deps.transporter || createTransporter(smtp, deps.nodemailer);
   }
 
   const normalized = normalizeSendOptions(options);
   const attachments = deps.attachments || resolveAttachments(normalized.file_ids, deps.uploadService);
-  const transporter = deps.transporter || createTransporter(smtp, deps.nodemailer);
   const fromAddress = smtp.from || smtp.user;
   const from = smtp.fromName ? `"${smtp.fromName}" <${fromAddress}>` : fromAddress;
 

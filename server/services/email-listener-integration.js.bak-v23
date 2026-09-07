@@ -1,0 +1,215 @@
+// ACMS Email Listener Integration — v2.3.2（弃用 mail-listener，node-imap 直连实现）
+// 路径：server/services/email-listener-integration.js
+//
+// 背景：mail-listener@0.7.1 与本环境 node-imap@0.8.19 存在三重不兼容，已不可用：
+//   ① 构造传 { username }，node-imap 只认 config.user → 认证不发出
+//   ② 构造传 { secure }，node-imap 只认 config.tls → 明文连 993 → timeout-auth
+//   ③ imap.connect(callback) 回调 API 已被新版移除 → 回调永不执行 → 永不 openBox/发事件（静默挂起）
+// v2.3.2 直接用 node-imap + mailparser 实现等价监听，对外保持原 API：
+//   createListener(opts) → { on('mail:parsed'), on('error'), on('server:connected'), on('server:disconnected'), start(), stop(), imap }
+//
+// 策略：保留 imap-service.js 不动（单例向后兼容）；本文件只服务 imap-listener-pool。
+
+'use strict';
+
+const Imap = require('imap');
+const { EventEmitter } = require('events');
+let SimpleParser = null;
+try {
+  // mailparser 3.x：simpleParser(raw) → Promise<mail>（老 API MailParser.on('end') 已失效）
+  const mailparser = require('mailparser');
+  SimpleParser = mailparser.simpleParser || null;
+  if (!SimpleParser) {
+    console.error('[email-listener-integration] mailparser 无 simpleParser（版本过旧）');
+  }
+} catch (e) {
+  console.error('[email-listener-integration] 无法加载 mailparser:', e.message);
+}
+
+/**
+ * 创建 IMAP 监听器（node-imap 直连，不依赖 mail-listener 库）
+ * @param {Object} opts - 配置
+ * @param {string} opts.user / opts.password / opts.host / opts.port / opts.tls / opts.mailbox
+ * @param {boolean} [opts.fetchOnStart=true] 启动时拉一次未读
+ * @param {Function} opts.onEmail 解析后回调（与旧版一致：{subject,from,to,date,messageId,text,html,snippet,uid,mailbox}）
+ * @param {Function} [opts.onError]
+ */
+function createListener(opts) {
+  opts = opts || {};
+  if (!opts.user || !opts.password) {
+    throw new Error('createListener: 缺少 user 或 password');
+  }
+  if (typeof opts.onEmail !== 'function') {
+    throw new Error('createListener: 缺少 onEmail 回调函数');
+  }
+  if (!SimpleParser) {
+    throw new Error('createListener: mailparser 不可用，无法解析邮件');
+  }
+
+  const listener = new EventEmitter();
+  const mailbox = opts.mailbox || 'INBOX';
+  const imap = new Imap({
+    user: opts.user,
+    password: opts.password,
+    host: opts.host || 'imap.263.net',
+    port: opts.port || 993,
+    tls: opts.tls !== false,
+    tlsOptions: { rejectUnauthorized: false },
+    connTimeout: (opts.connTimeout) || 20000,
+    authTimeout: (opts.authTimeout) || 20000,
+    keepalive: true,
+    debug: opts.debug,
+  });
+  listener.imap = imap;
+  listener.mailbox = mailbox;
+
+  let _started = false;
+  let _stopped = false;
+  let _fetching = false;
+  let _pollTimer = null;
+  const _handledUids = new Set(); // 已触发过的 UID（内存去重：存量只触发一次，轮询只收增量）
+
+  function emitParsedMail(mail, uid) {
+    try {
+      // mailparser 3.x：from/to 为 { value:[{address,name}], text }；老版本为数组——统一取值
+      const pickFirst = function (addr) {
+        if (!addr) return null;
+        if (Array.isArray(addr)) return addr[0] || null;
+        if (addr.value && Array.isArray(addr.value)) return addr.value[0] || null;
+        return addr;
+      };
+      const fromObj = pickFirst(mail.from);
+      const toObj = pickFirst(mail.to);
+      opts.onEmail({
+        subject: mail.subject || '',
+        from: fromObj ? (fromObj.address || fromObj.value || '') : '',
+        fromName: fromObj ? (fromObj.name || '') : '',
+        to: toObj ? (toObj.address || '') : '',
+        date: mail.date ? (mail.date.toISOString ? mail.date.toISOString() : String(mail.date)) : '',
+        messageId: mail.messageId || '',
+        text: (mail.text || '').slice(0, 2000),
+        html: (mail.html || '').slice(0, 2000),
+        snippet: String(mail.text || mail.html || '').replace(/<[^>]+>/g, ' ').slice(0, 500),
+        uid: uid || null,
+        mailbox,
+      });
+    } catch (e) {
+      console.error('[email-listener-integration] 处理新邮件失败:', e.message);
+      if (typeof opts.onError === 'function') opts.onError(e);
+    }
+  }
+
+  // 拉取未读邮件并逐封解析（IMAP IDLE 收到 mail 事件或启动时调用）
+  function fetchUnseen() {
+    // openBox 成功后 state 为 'selected'（非 'authenticated'），两者都允许
+    if (_fetching || _stopped || !imap || (imap.state !== 'authenticated' && imap.state !== 'selected')) return;
+    _fetching = true;
+    imap.search(['UNSEEN'], function (searchErr, results) {
+      _fetching = false;
+      if (searchErr) {
+        console.log('[email-listener-integration] fetchUnseen search 错误:', searchErr.message);
+        if (typeof opts.onError === 'function') opts.onError(searchErr);
+        return;
+      }
+      console.log('[email-listener-integration] fetchUnseen search 结果数:', Array.isArray(results) ? results.length : 0);
+      if (!Array.isArray(results) || results.length === 0) return;
+      doFetchBatch(results);
+    });
+
+    function doFetchBatch(results) {
+      if (_stopped || !imap) return;
+      // 未读可能很多（首次启动 20+ 封），每批 6 封串行拉完，避免单次大响应卡死
+      const BATCH = 6;
+      let idx = 0;
+      const fetchNext = function () {
+        if (_stopped || !imap) return;
+        let chunk = results.slice(idx, idx + BATCH).filter(function (u) { return !_handledUids.has(u); });
+        idx += BATCH;
+        if (chunk.length === 0) return;
+        // 预先登记，防止并发/重入重复处理
+        chunk.forEach(function (u) { _handledUids.add(u); });
+        const f = imap.fetch(chunk, { bodies: '' });
+        f.on('message', function (msg) {
+          let raw = '';
+          msg.on('body', function (stream) {
+            stream.on('data', function (ch) {
+              raw += ch.toString('utf8');
+              if (raw.length > 2000000) raw = raw.slice(0, 2000000); // 2MB 上限
+            });
+          });
+          msg.once('end', function () {
+            if (!SimpleParser) return;
+            const uid = (msg && msg.uid) || null;
+            SimpleParser(raw)
+              .then(function (mail) { emitParsedMail(mail, uid); })
+              .catch(function (pe) {
+                console.warn('[email-listener-integration] mailparser 解析失败:', (pe && pe.message) || pe);
+              });
+          });
+        });
+        f.once('end', fetchNext); // 完成一批继续下一批
+        f.once('error', function (fetchErr) {
+          console.warn('[email-listener-integration] fetch 错误:', fetchErr.message);
+          if (typeof opts.onError === 'function') opts.onError(fetchErr);
+          fetchNext(); // 出错不阻塞后续批
+        });
+      };
+      fetchNext();
+      console.log('[email-listener-integration] 开始拉取未读（共 ' + results.length + ' 封，每批 ' + BATCH + ' 封）');
+    }
+  }
+
+  listener.start = function () {
+    if (_started) return;
+    _started = true;
+
+    // 错误/关闭事件必挂（防 Unhandled 'error' event 崩进程）
+    imap.on('error', function (err) {
+      console.warn('[email-listener-integration] IMAP Connection error (' + (opts.user || '?') + '):', err && (err.message || err.source || err));
+      if (typeof opts.onError === 'function') {
+        try { opts.onError(err); } catch (e) { console.error('[email-listener-integration] onError 回调异常:', e.message); }
+      }
+    });
+    imap.on('close', function () {
+      listener.emit('server:disconnected');
+    });
+
+    imap.once('ready', function () {
+      if (_stopped) return;
+      listener.emit('server:connected');
+      imap.openBox(mailbox, false, function (boxErr) {
+        if (boxErr) {
+          console.warn('[email-listener-integration] openBox(' + mailbox + ') 失败:', boxErr.message);
+          if (typeof opts.onError === 'function') opts.onError(boxErr);
+          return;
+        }
+        // 新邮件检测：v2.3.2 用定时轮询（imap.on('mail') 会触发 node-imap 进入 IDLE，
+        // IDLE 期间 search/fetch 命令被阻塞 → 改用轮询最稳。规则引擎 30s 延迟可接受）
+        if (opts.fetchOnStart !== false) fetchUnseen();
+        const pollMs = Math.max(10000, opts.pollMs || 30000);
+        _pollTimer = setInterval(fetchUnseen, pollMs);
+        if (_pollTimer.unref) _pollTimer.unref();
+      });
+    });
+
+    try {
+      imap.connect();
+    } catch (e) {
+      console.error('[email-listener-integration] imap.connect 异常:', e.message);
+      if (typeof opts.onError === 'function') opts.onError(e);
+    }
+  };
+
+  listener.stop = function () {
+    _stopped = true;
+    if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+    try { imap.end(); } catch (e) { /* ignore */ }
+    listener.emit('server:disconnected');
+  };
+
+  return listener;
+}
+
+module.exports = {
+  createListener,
+};

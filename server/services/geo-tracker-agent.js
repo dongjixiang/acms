@@ -58,12 +58,13 @@ const DEFAULT_ENGINES = ['deepseek', 'openai', 'claude', 'perplexity', 'gemini',
 
 async function runTracker(brandId, options = {}) {
   const {
-    engines = GEO_CONFIG.getTrackEngines(),
+    engines = GEO_CONFIG.getTrackEngines(),  // v0.44: 默认 settings.engine_whitelist；前端可显式传 engines 覆盖（按本次跑临时选择）
     maxQueries = 50, // v0.29: 配合 LLM 生成 12-16 条 + elmo 推荐 25-50（之前硬钉 10 — 新生成的 prompts 会漏跑）
     dryRun = false,
     autoGenerateQueries = false,
     language = 'zh', // v0.24: 多语言——非 zh 时翻译 query
-    rag = false,     // v0.25: DeepSeek 检索增强（先真实检索再回答，慢~18s/条但真实）
+    rag = false,     // v0.25: DeepSeek 检索增强
+    city = null,     // v0.43: 城市替换（用户在追踪记录面板选城市后传入，替换 [location] 占位符）
   } = options;
 
   const startTs = Date.now();
@@ -190,9 +191,39 @@ async function runTracker(brandId, options = {}) {
     const eng = GEO_ENGINES.getEngine(engine);
     const taskStart = Date.now();
     try {
-      // v0.24: 多语言支持——query.language 非 zh 时先 LLM 翻译
+// v0.43: 城市替换——用户在追踪面板选城市后传入 city（非空则替换 [地域名]/[location] 占位符）；选「无地域限制」时保留通用形式
+      // v0.44: 双 replace 兼容 zh 占位符 [地域名] 和 en 占位符 [location]
+      // v0.44 二次修正（多多拍板）: LLM 阶段完全不生成地域型 prompt（删 zh/en 库 where-loc 模板 + 硬约束段）
+      //   → tracker 阶段改成"city 非空则给所有 prompt 加城市前缀"（兼容旧数据：先 replace 占位符，再判断是否需要加前缀）
+      // v0.44 三次修正（多多拍板）: 只给 UNBRANDED prompt 加城市前缀，BRANDED 不加
+      //   理由：branded query 含品牌名（"卡司通展览 报价"），卡司通展览可能本来就不在所选城市，
+      //         加"深圳 卡司通展览 报价"反而误导 AI（"深圳 有卡司通展览吗？"）
+      //   unbranded query（"展台搭建公司"）加"深圳 展台搭建公司"是合理的本地化搜索意图
       const lang = query.language || 'zh';
       let promptToUse = query.prompt;
+      if (city && String(city).trim() !== '') {
+        const cityStr = String(city).trim();
+        // 判断是否是 branded：优先用 query.systemTags / tags，fallback 用 GEO_STORE.computeSystemTags
+        let isBranded = false;
+        const sysTags = Array.isArray(query.systemTags) ? query.systemTags : [];
+        const userTags = Array.isArray(query.tags) ? query.tags : [];
+        isBranded = sysTags.includes('branded') || userTags.includes('branded');
+        if (!isBranded && sysTags.length === 0 && userTags.length === 0) {
+          // 历史数据没 systemTags — 现场算一次
+          try {
+            isBranded = GEO_STORE.computeSystemTags(query.prompt, brand.name).includes('branded');
+          } catch (_) { /* fallback 失败时按 unbranded 处理（加城市）*/ }
+        }
+        if (!isBranded) {
+          // 第一步: replace 旧版地域占位符（兼容旧数据）
+          promptToUse = promptToUse.replace(/\[location\]/g, cityStr).replace(/\[地域名\]/g, cityStr);
+          // 第二步: 不以 city 开头才加前缀
+          if (!promptToUse.startsWith(cityStr)) {
+            promptToUse = `${cityStr} ${promptToUse}`;
+          }
+        }
+        // branded：完全不动 prompt — 品牌本身可能不在所选城市
+      }
       if (lang !== 'zh') {
         promptToUse = await translateQuery(query.prompt, lang);
       }

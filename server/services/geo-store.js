@@ -115,6 +115,15 @@ function deleteBrand(id) {
   return c.remove(b => b.id === id);
 }
 
+// v0.45: 清除品牌数据（不删品牌，只清 responses/queries/scores/snapshots）
+function clearBrandData(brandId) {
+  collection(COLLECTIONS.QUERIES).remove(q => q.brand_id === brandId);
+  collection(COLLECTIONS.RESPONSES).remove(r => r.brand_id === brandId);
+  collection(COLLECTIONS.SCORES).remove(s => s.brand_id === brandId);
+  collection(COLLECTIONS.SNAPSHOTS).remove(s => s.brand_id === brandId);
+  return true;
+}
+
 // === geo_queries ===
 function listQueries(brandId) {
   const all = collection(COLLECTIONS.QUERIES).all();
@@ -430,6 +439,8 @@ module.exports = {
   listWatches, getWatch, createWatch, updateWatch, deleteWatch, setWatchLastRun,
   // stats
   getBrandStats,
+  // v0.45: 清除品牌数据（保留品牌本身）
+  clearBrandData,
   // utility
   _clearAll,
   // v0.33: opportunities

@@ -58,6 +58,10 @@ try { require('./services/user-service').ensureDefaultAdmin(); } catch (e) { /* 
 
 // v0.X: GEO Task Executor（Kanban GEO 任务自动执行）
 try { require('./services/geo-task-executor').startGeoTaskExecutor(); } catch (e) { console.warn('[GEO] task executor start skipped:', e.message); }
+// v0.118: social-publisher Task Executor（Kanban 社交发布任务自动执行）
+try { require('./services/social-publisher').startTaskExecutor(); } catch (e) { console.warn('[SP] task executor start skipped:', e.message); }
+// v0.118 PR 5-6: social-publisher Monitor（账号健康度 + 风控告警）
+try { require('./services/social-publisher').startMonitor(); } catch (e) { console.warn('[SP] monitor start skipped:', e.message); }
 
 httpServer.listen(config.port, () => {
   console.log(`[ACMS] HTTP API: http://localhost:${config.port}`);

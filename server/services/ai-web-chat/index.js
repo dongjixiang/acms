@@ -167,13 +167,42 @@ async function deepSeekAsk(prompt, opts = {}) {
     // 5. 等回答完成
     const waitR = await waitAnswerComplete(150000);
 
-    // 6. 截图存档（回答快照，供 GEO / 监控台复用）
+    // 6. v0.44: 抓 references section（DeepSeek 网页版的"参考来源"链接列表 — 之前完全没抓，导致 deepseek-web 的 citations 永远是空数组）
+    //   多 selector 兼容：DeepSeek 不同版本/不同账号可能 className 不同，常见候选全试一遍
+    let references = [];
+    try {
+      const refR = await ba.evalJs(`(() => {
+        const sels = [
+          '.ds-references a[href]',
+          '.ds-message-reference a[href]',
+          '[class*="reference"] a[href^="http"]',
+          '.ds-markdown + div a[href^="http"]',  // 紧跟在 markdown 后面的 div 里的链接
+          '[class*="Reference"] a[href^="http"]',
+        ];
+        for (const s of sels) {
+          const els = document.querySelectorAll(s);
+          if (els.length > 0) {
+            return JSON.stringify(Array.from(els).map(a => ({
+              url: a.href || a.getAttribute('data-url') || '',
+              title: (a.textContent || a.title || '').trim().slice(0, 100),
+            })));
+          }
+        }
+        return '[]';
+      })()`, 8000);
+      if (refR.ok && refR.data) {
+        references = JSON.parse(refR.data);
+      }
+    } catch (_) { /* references 抓不到不影响主流程 */ }
+
+    // 7. 截图存档（回答快照，供 GEO / 监控台复用）
     const shotPath = path.join(shotDir, 'answer.png');
     await ba.screenshotToFile(shotPath);
 
     return {
       ok: waitR.ok,
       answer: waitR.answer || '',
+      references,  // v0.44: 引用链接列表（geo-citation-extractor 后续可进一步规范化）
       elapsedMs: Date.now() - start,
       timeout: !!waitR.timeout,
       screenshot: `/api/browser-agent/screenshots/${taskId}/answer.png`,

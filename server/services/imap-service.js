@@ -182,11 +182,26 @@ function createImapService(config) {
   }
 
   // ── 获取邮箱列表 ──
-  function getMailboxes() {
+  // v2.4.2: TTL 缓存（目录结构不常改，避免每次进邮箱都 LIST——IMAP 往返失败/慢会导致前端目录空白）
+  //   命中缓存直接返回；LIST 失败且缓存非空 → 降级返回缓存（目录至少可见）
+  let _mailboxCacheTs = 0;
+  const MAILBOX_CACHE_TTL = 5 * 60 * 1000; // 5 分钟
+  function getMailboxes(forceRefresh) {
     return new Promise((resolve, reject) => {
+      const now = Date.now();
+      if (!forceRefresh && _mailboxCache.length && (now - _mailboxCacheTs) < MAILBOX_CACHE_TTL) {
+        return resolve(_mailboxCache);
+      }
       if (!_connected) return reject(new Error('NOT_CONNECTED'));
       _imap.getBoxes((err, boxes) => {
-        if (err) return reject(err);
+        if (err) {
+          // LIST 失败降级：有缓存用缓存，无缓存才报错
+          if (_mailboxCache.length) {
+            console.warn('[imap.getMailboxes] LIST 失败，降级返回缓存:', err.message);
+            return resolve(_mailboxCache);
+          }
+          return reject(err);
+        }
         const result = [];
         function flatten(prefix, obj) {
           Object.keys(obj).forEach(key => {
@@ -197,16 +212,20 @@ function createImapService(config) {
         }
         flatten('', boxes);
         _mailboxCache = result;
+        _mailboxCacheTs = now;
         resolve(result);
       });
     });
   }
 
   // ── 打开邮箱 ──
-  function openBox(mailbox) {
+  // v2.4.1 修复：第二参 readOnly 原为 true → 所有写操作（标已读/删除/移动的 STORE/EXPUNGE）
+  // 在只读 SELECT 上被服务器拒绝（263 返回 "UID STORE State error"）→ 用户操作不同步服务器端
+  // → 统一改读写模式（false）。IMAP 读写 SELECT 对读命令无副作用，多客户端并发安全。
+  function openBox(mailbox, readOnly) {
     return new Promise((resolve, reject) => {
       if (!_connected) return reject(new Error('NOT_CONNECTED'));
-      _imap.openBox(mailbox || 'INBOX', true, (err, box) => {
+      _imap.openBox(mailbox || 'INBOX', readOnly === true, (err, box) => {
         if (err) return reject(err);
         resolve(box);
       });
@@ -693,7 +712,7 @@ emailParser.parseEmailSource(rawBuf).then(function (parsed) {
     return { emails, total: sorted.length, mailbox, keyword };
   }
 
-  // ── 删除邮件（标记 \Deleted + EXPUNGE；返回删除数） ──
+  // ── 删除邮件（标记 \Deleted + EXPUNGE；如服务器拒绝 STORE 则兜底到 Trash 移动） ──
   function deleteMessages(uid, opts) {
     opts = opts || {};
     const mailbox = opts.mailbox || 'INBOX';
@@ -702,12 +721,42 @@ emailParser.parseEmailSource(rawBuf).then(function (parsed) {
       if (!_connected) return reject(new Error('NOT_CONNECTED'));
       openBox(mailbox).then(() => {
         _imap.addFlags(uids, ['\\Deleted'], (err) => {
-          if (err) return reject(err);
-          _imap.expunge(uids, (err2, removed) => {
-            if (err2) return reject(err2);
-            // 兼容 node-imap 不同版本：removed 可能为 undefined
-            resolve({ removed: Array.isArray(removed) ? removed.length : uids.length, mailbox, uids });
-          });
+          if (err) {
+            // v0.74.2 + v2.3 已知：部分 IMAP 服务器（263.net 等）在 UID 变更时拒绝 STORE → 兜底：用 COPY → Trash + EXPUNGE（服务器对 COPY 的接受度更高）
+            console.warn('[imap.deleteMessages] addFlags 失败（UID STORE State error 兜底中）：', err.message);
+            return openBox('Trash').then(function () {
+              // 兜底方案：先 COPY 到 Trash，再标记原 UID \Deleted，再 EXPUNGE
+              // 先 COPY
+              _imap.copy(uids, 'Trash', (copyErr) => {
+                if (copyErr) return reject({ message: '删除失败（STORE + COPY 均失败）: ' + copyErr.message, code: 'DELETE_STORE_COPY_FAILED' });
+                // 然后标记源 \Deleted
+                _imap.addFlags(uids, ['\\Deleted'], (flagErr) => {
+                  if (flagErr) {
+                    // 即使标记失败，COPY 已成功，视为部分成功
+                    console.warn('[imap.deleteMessages] 兜底 COPY 成功但标记删除失败:', flagErr.message);
+                    return resolve({ removed: uids.length, mailbox, uids, fallback: 'trash_copy_only', message: flagErr.message || '已移动到 Trash（原 UID 未完全删除）' });
+                  }
+                  // 最后 EXPUNGE 物理删除已标记邮件
+                  _imap.expunge(uids, (expErr, removed) => {
+                    if (expErr) {
+                      console.warn('[imap.deleteMessages] 兜底 EXPUNGE 失败（已 COPY 到 Trash）:', expErr.message);
+                      return resolve({ removed: uids.length, mailbox, uids, fallback: 'trash_copy', message: expErr.message || '已移动到 Trash' });
+                    }
+                    resolve({ removed: Array.isArray(removed) ? removed.length : uids.length, mailbox, uids, fallback: 'trash_move' });
+                  });
+                });
+              });
+            }).catch(function (trashErr) {
+              // Trash 也失败 → 原错误直接抛回（更真实，方便用户看控制台诊断）
+              console.error('[imap.deleteMessages] 兜底 Trash 也失败，原错误:', err.message, '兜底:', trashErr ? trashErr.message : 'none');
+              reject(err);  // 抛原 UID STORE State error（让用户看到真实原因 + 提示刷新重试）
+            });
+          } else {
+            _imap.expunge(uids, (err2, removed) => {
+              if (err2) return reject(err2);
+              resolve({ removed: Array.isArray(removed) ? removed.length : uids.length, mailbox, uids });
+            });
+          }
         });
       }).catch(reject);
     });
