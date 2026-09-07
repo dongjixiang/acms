@@ -170,7 +170,8 @@ class AppRuntimeService extends EventEmitter {
   // ── 会话管理 ──
   async openSession({ url, w = 1024, h = 700, headless = true } = {}) {
     if (!url) throw new Error('NO_URL');
-    if (!/^https?:\/\//i.test(url)) url = 'http://' + url;
+    // v0.119: 智能浏览器「远程预览」模式允许 from blank 起步（agent 后续 web_open 导航）
+    if (url !== 'about:blank' && !/^https?:\/\//i.test(url)) url = 'http://' + url;
 
     const browser = await this.ensureBrowser();
 
@@ -209,20 +210,28 @@ class AppRuntimeService extends EventEmitter {
     // v0.73: 拦截页面弹窗（window.open / target="_blank"）
     // Puppeteer 的 popup 事件在新页面创建时触发，我们拿到 URL 后关掉新页，
     // 把当前 session 导航过去，避免卡死。
+    // v0.119.1: 轮询等真实 URL（about:blank 起步 → JS 异步跳转也覆盖），最稳 8s；
+    //           防「只等一次 navigation、5s 拿不到真 URL 就当空白丢弃 → 点击弹窗链接没反应」
     page.on('popup', async (popupPage) => {
       try {
         var popupUrl = popupPage.url() || '';
+        // 弹窗常以 about:blank 起步再异步跳转 —— 轮询直到非空白或超时
+        for (var pi = 0; pi < 20 && (!popupUrl || popupUrl === 'about:blank'); pi++) {
+          await new Promise(r => setTimeout(r, 400));
+          try { popupUrl = popupPage.url() || ''; } catch (_e) { break; }
+        }
         if (!popupUrl) {
-          // 新页可能还没导航完，等一 navigation
-          try { await popupPage.waitForNavigation({ timeout: 5000 }); } catch {}
+          try { await popupPage.waitForNavigation({ timeout: 3000 }); } catch {}
           popupUrl = popupPage.url() || '';
         }
         if (popupUrl && popupUrl !== 'about:blank') {
           console.log(`[app-runtime] session ${sessionId.slice(0,8)} 拦截弹窗 → ${popupUrl.slice(0,100)}`);
-          // 把当前页导航到弹窗 URL
-          await page.goto(popupUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+          // 把当前页导航到弹窗 URL（同会话续载，画面/坐标/输入无缝切换 —— 与浏览器应用一致）
+          await page.goto(popupUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
           s.url = page.url();
           service._broadcast(s, { type: 'navigated', url: s.url });
+        } else {
+          console.warn(`[app-runtime] session ${sessionId.slice(0,8)} 弹窗未拿到有效 URL（保留空白弹窗并关闭）`);
         }
       } catch (e) {
         console.warn(`[app-runtime] session ${sessionId.slice(0,8)} 弹窗拦截异常:`, e.message);
@@ -407,6 +416,52 @@ class AppRuntimeService extends EventEmitter {
     }, run);
     s._inputQueue = queued.then(() => undefined, () => undefined);
     return queued;
+  }
+
+  // ── v0.119 智能浏览器 driver 原语（agent 直接驱动 Puppeteer 会话）──
+  // 与 input() 一样串行入队（_inputQueue），避免与前端人工操作并发 CDP 冲突。
+  // evalJs: 在页面上下文执行 JS（返回可 JSON 序列化的结果）
+  async evalJs(sessionId, code) {
+    const s = this.sessions.get(sessionId);
+    if (!s) return { error: 'NO_SESSION' };
+    this._touch(s);
+    const queued = s._inputQueue.then(async () => {
+      try {
+        const result = await s.page.evaluate(code);
+        // 结果尽量 JSON 化（undefined/函数/循环引用会破坏 SSE/HTTP）
+        let out = result;
+        try { out = JSON.parse(JSON.stringify(result)); } catch (e) { out = String(result).slice(0, 2000); }
+        return { ok: true, result: out };
+      } catch (e) {
+        return { error: 'EVAL_FAILED: ' + String(e.message || e).slice(0, 300) };
+      }
+    });
+    s._inputQueue = queued.then(() => undefined, () => undefined);
+    return queued;
+  }
+
+  // screenshotToFile: 把当前会话页面截图落盘（供步骤面板缩略图 / 证据）
+  async screenshotToFile(sessionId, filePath) {
+    const s = this.sessions.get(sessionId);
+    if (!s) return { ok: false, error: 'NO_SESSION' };
+    this._touch(s);
+    try {
+      await s.page.screenshot({ path: filePath, type: 'png' });
+      return { ok: true, path: filePath };
+    } catch (e) {
+      return { ok: false, error: 'SHOT_FAILED: ' + String(e.message || e).slice(0, 200) };
+    }
+  }
+
+  // pageInfo: 当前会话页面 URL + 标题（agent 确认导航结果用）
+  async pageInfo(sessionId) {
+    const s = this.sessions.get(sessionId);
+    if (!s) return { error: 'NO_SESSION' };
+    try {
+      return { ok: true, url: s.page.url() || s.url || '', title: (await s.page.title()).slice(0, 200) };
+    } catch (e) {
+      return { ok: true, url: s.url || '', title: '' };
+    }
   }
 
   async _safeClose(sessionId) {

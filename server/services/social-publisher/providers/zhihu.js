@@ -11,7 +11,7 @@
 'use strict';
 
 const ba = require('../../browser-agent');
-const { executeSteps, waitForElement } = require('../execute-steps');
+const { executeSteps, waitForElement, approvalStep, autoLoginStep } = require('../execute-steps');
 const humanizer = require('../humanizer');
 const accountStore = require('../account-store');
 
@@ -48,16 +48,17 @@ async function publish(params, ctx) {
     : ARTICLE_EDITOR_URL;
 
   const steps = [
+    // Step 1: 登录（v0.118.x: 调用共享 autoLoginStep，根治"假登录" bug）
+    //  实测 2026-09-07：之前所有 provider 都只 ba.open + 等 2-3 秒就当登录完了
     {
       name: 'login',
       retry: 1,
-      timeout: 30000,
-      run: async () => {
-        const r = await ba.open('https://www.zhihu.com/signin');
-        if (!r.ok) return { ok: false, error: r.error };
-        await humanizer.wait(2500, 4000);
-        return { ok: true };
-      },
+      timeout: 120000,
+      run: async () => autoLoginStep(account, {
+        login_url: 'https://www.zhihu.com/signin',
+        platform_hostname: 'zhihu.com',
+        already_logged_in_path_skip: ['/signin'],
+      }),
     },
     {
       name: 'open_editor',
@@ -174,6 +175,7 @@ async function publish(params, ctx) {
     account,
     params,
     ctx: { account, params, options, publish_type, question_id },
+    onProgress: params.onProgress,  // v0.118.x: 透传 step 级进度回调
   });
 
   if (result.ok) accountStore.recordSuccess(account_id);

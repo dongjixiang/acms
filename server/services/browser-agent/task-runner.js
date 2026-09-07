@@ -17,6 +17,9 @@
 const path = require('path');
 const runtime = require('../agent-runtime');
 const ba = require('./index');
+// v0.119: Puppeteer driver（远程预览引擎）—— session.appSessionId 存在时
+// 每步截图从该会话页截，而不是 CLI daemon（避免截到无关页面）
+const ppDriver = require('./puppeteer-driver');
 // 🔴 P178 防御：直调/独立进程时必须先触发工具注册，
 //    否则 toProviderFormat(toolNames) 返回空 → 模型看不到工具 → 文本伪调用死循环
 try { require('../../tools'); } catch (e) { /* 生产环境入口已注册，幂等 */ }
@@ -236,15 +239,208 @@ function getTask(taskId) {
 // ============================================================
 const sessionStore = require('./session-store');
 
+// v0.118.12: domain 级完成钩子（区别于 onDone SSE 回调）
+//   onDone 由 routes 每轮（首轮/resume）重新传入 → 只推 SSE；
+//   domainOnDone 只在首轮注册一次并存在 session 上 → resume 走 routes 后仍能在
+//   终态执行一次（go-publisher 落 history/platform-memory 依赖它），幂等置空。
+function invokeDomainDone(session, result) {
+  const fn = session && session.domainOnDone;
+  if (typeof fn !== 'function') return;
+  session.domainOnDone = null;  // 幂等：只落一次
+  try {
+    fn({
+      sessionId: session.id,
+      taskId: session.currentTaskId || null,
+      status: session.status || 'error',
+      content: (result && result.content) || '',
+      error: session.error || (result && result.error) || null,
+    });
+  } catch (e) {
+    console.error('[task-runner] domainOnDone failed:', e.message);
+  }
+}
+
+// v0.118.15: session 级 SSE 内建广播 —— 修复「service 直调 runSessionTurn 无事件」
+//   旧设计：SSE 客户端管理与广播在 routes 层（SESSION_SSE_CLIENTS + makeSessionCallbacks），
+//   靠 routes 创建 session 时传 onStep/onWaiting/onDone 才有事件。
+//   go-publisher service 直调 runSessionTurn（不经 routes /session/start）→ 没传回调 →
+//   前端订阅 /session/:id/stream 后永远收不到 step/done →「⏳ 等待 LLM 开始执行…」。
+//   现在：SSE 是 session 执行状态的一等通道 —— 客户端管理 + 广播内建在本模块，
+//   任何调用方（routes / 域服务）创建的 session 都能被订阅。opts.on* 回调保留兼容。
+const SESSION_SSE_CLIENTS = new Map(); // sessionId -> Set<res>
+
+function pushSessionSSE(sessionId, event, data) {
+  const clients = SESSION_SSE_CLIENTS.get(sessionId);
+  if (!clients || clients.size === 0) return;
+  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  clients.forEach((res) => { try { res.write(payload); } catch (e) {} });
+}
+
+function closeSessionSSE(sessionId) {
+  const clients = SESSION_SSE_CLIENTS.get(sessionId);
+  if (!clients) return;
+  clients.forEach((res) => { try { res.end(); } catch (e) {} });
+  SESSION_SSE_CLIENTS.delete(sessionId);
+}
+
+function scheduleCloseSessionSSE(sessionId, delayMs) {
+  setTimeout(() => closeSessionSSE(sessionId), delayMs || 1500);
+}
+
+function lastAssistantContent(session) {
+  try {
+    const msgs = session.messages || [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === 'assistant' && msgs[i].content) return msgs[i].content;
+    }
+  } catch (_) { /* ignore */ }
+  return '';
+}
+
+// 订阅 session 进度流（补发历史 toolCalls + 当前状态 + 挂客户端）
+function attachSessionStream(sessionId, res, req) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  });
+  res.write('retry: 3000\n\n');
+
+  const session = sessionStore.get(sessionId);
+  if (!session) {
+    try {
+      res.write(`event: error\ndata: ${JSON.stringify({ error: '会话不存在' })}\n\n`);
+      res.end();
+    } catch (_) { /* ignore */ }
+    return false;
+  }
+
+  // 补发已产生的工具调用 + 当前状态
+  if (session.toolCalls && session.toolCalls.length) {
+    session.toolCalls.forEach((s) => {
+      try { res.write(`event: step\ndata: ${JSON.stringify(s)}\n\n`); } catch (_) {}
+    });
+  }
+  try {
+    if (session.status === 'waiting_user') {
+      res.write(`event: waiting_user\ndata: ${JSON.stringify({ sessionId, question: session.pendingQuestion })}\n\n`);
+    } else if (session.status !== 'running' && session.status !== 'idle') {
+      // 已 done/error（补发带 content：从 messages 最后 assistant 取）
+      res.write(`event: done\ndata: ${JSON.stringify({ sessionId, status: session.status, content: lastAssistantContent(session), error: session.error || null })}\n\n`);
+      res.end();
+      return true;
+    }
+  } catch (_) { /* ignore */ }
+
+  if (!SESSION_SSE_CLIENTS.has(sessionId)) SESSION_SSE_CLIENTS.set(sessionId, new Set());
+  SESSION_SSE_CLIENTS.get(sessionId).add(res);
+  if (req) {
+    req.on('close', () => {
+      const set = SESSION_SSE_CLIENTS.get(sessionId);
+      if (set) { set.delete(res); if (set.size === 0) SESSION_SSE_CLIENTS.delete(sessionId); }
+    });
+  }
+  return true;
+}
+
+function broadcastStep(sessionId, stepObj, opts) {
+  sessionStore.addToolCall(sessionId, stepObj);
+  pushSessionSSE(sessionId, 'step', stepObj);
+  if (opts && typeof opts.onStep === 'function') opts.onStep(stepObj);
+}
+
+function broadcastWaiting(sessionId, question, opts, taskId) {
+  pushSessionSSE(sessionId, 'waiting_user', { sessionId, question });
+  if (opts && typeof opts.onWaiting === 'function') opts.onWaiting({ sessionId, taskId, question });
+}
+
+function broadcastDone(sessionId, taskId, status, content, error, opts) {
+  const data = { sessionId, taskId, status, content: content || '', error: error || null };
+  if (opts && typeof opts.onDone === 'function') opts.onDone(data);
+  pushSessionSSE(sessionId, 'done', data);
+  scheduleCloseSessionSSE(sessionId, 1500);
+}
+
 const SESSION_TOOL_NAMES = [
   'web_open', 'web_snapshot', 'web_click', 'web_type', 'web_press',
   'web_read', 'web_eval', 'web_find', 'web_screenshot', 'web_ai_search',
+  'web_auth_login',  // v0.118.16: 服务端 agent-browser auth login（LLM 不再用 web_eval execSync 死路）
   'request_user_help',
 ];
+
+// v0.119.2: 远程预览引擎锁 —— 同一 Puppeteer 会话（appSessionId）同时只允许一个查询驱动。
+//   Web机器人多个会话共享同一个 app-runtime 浏览器（localStorage 同 appSessionId），
+//   并行查询会互相抢页面/破坏登录态（多多要求：远程预览模式下禁止并行查询）。
+//   锁粒度 = appSessionId（不同浏览器实例互不阻塞）；waiting_user 期间保持占用（页面停留
+//   在登录/验证等敏感态，别人不许动），done/error 才释放；删除会话自动释放。
+const PP_LOCKS = new Map(); // appSessionId -> { ownerSessionId, ts }
+
+function acquirePpLock(appSessionId, sessionId) {
+  if (!appSessionId) return { ok: true };
+  const cur = PP_LOCKS.get(appSessionId);
+  if (!cur) {
+    PP_LOCKS.set(appSessionId, { ownerSessionId: sessionId, ts: Date.now() });
+    return { ok: true };
+  }
+  if (cur.ownerSessionId === sessionId) return { ok: true }; // 自己（resume / begin 已持有）
+  return { ok: false, error: `远程预览浏览器正被会话 ${cur.ownerSessionId} 的查询占用 —— 远程预览模式禁止并行查询：请先等它完成，或到该会话点 ⏹ 停止，再回来继续` };
+}
+
+function releasePpLock(appSessionId, sessionId) {
+  if (!appSessionId) return;
+  const cur = PP_LOCKS.get(appSessionId);
+  if (cur && cur.ownerSessionId === sessionId) PP_LOCKS.delete(appSessionId);
+}
+
+// routes 用：同步检查 —— busy 返回错误文案，否则 null（start/turn/reply 前置 gate）
+function checkPpBusy(appSessionId, sessionId) {
+  if (!appSessionId) return null;
+  const cur = PP_LOCKS.get(appSessionId);
+  if (cur && cur.ownerSessionId !== sessionId) {
+    return `远程预览浏览器正被会话 ${cur.ownerSessionId} 的查询占用 —— 远程预览模式禁止并行查询：请先等它完成，或到该会话点 ⏹ 停止`;
+  }
+  return null;
+}
+
+// v0.118.16: 人主动发起介入（对话框可由 Agent 发起 = request_user_help，也可由人发起 = interruptSession）
+//   写 session.pendingHuman → runToolLoop 每轮轮首经 context.humanSteerProvider 感知
+//   两种形态：
+//     interrupt {}（无 message）      → pause:true → Agent 当前动作结束后暂停（waiting_user 链路）等人工输入
+//     interrupt { message }           → 注入下轮（不暂停），Agent 立即响应人的指示
+function interruptSession(sessionId, payload = {}) {
+  const session = sessionStore.get(sessionId);
+  if (!session) return { ok: false, error: '会话不存在' };
+  if (session.status !== 'running') {
+    return { ok: false, error: `会话不在执行中（当前 ${session.status}）`, status: session.status };
+  }
+  const msg = payload.message ? String(payload.message).trim() : '';
+  session.pendingHuman = msg
+    ? { pause: false, message: msg, ts: Date.now() }
+    : { pause: true, question: payload.question || '用户请求暂停介入，请在下方输入指示，回复后 Agent 继续', ts: Date.now() };
+  return { ok: true, pause: !msg };
+}
+
+// 给 runtime.execute 的 context.humanSteerProvider（每轮被 runToolLoop 询问一次，读到即清）
+function makeHumanSteerProvider(session) {
+  return () => {
+    if (!session || !session.pendingHuman) return null;
+    const h = session.pendingHuman;
+    session.pendingHuman = null;
+    return h;
+  };
+}
 
 async function runSessionTurn(sessionId, userMsg, opts = {}) {
   if (!sessionId || !userMsg) return { sessionId, status: 'error', error: '缺少 sessionId 或 userMsg' };
   const session = sessionStore.getOrCreate(sessionId, { title: opts.title });
+  if (typeof opts.domainOnDone === 'function') session.domainOnDone = opts.domainOnDone;
+  // v0.119: 远程预览引擎 —— 记录/刷新 app-runtime 会话 id（web_* 动作驱动 Puppeteer）
+  if (opts.appSessionId) session.appSessionId = String(opts.appSessionId);
+  // v0.119.2: 远程预览引擎锁 —— 并行查询 gate（busy 时不 push 消息、不启动）
+  if (session.appSessionId) {
+    const g = acquirePpLock(session.appSessionId, sessionId);
+    if (!g.ok) return { sessionId, status: 'busy', error: g.error };
+  }
   // push user message（累积上下文）—— v1.0 修复：addMessage 是 store 类方法，不是 session 实例方法
   sessionStore.addMessage(sessionId, { role: 'user', content: userMsg, ts: Date.now() });
 
@@ -267,29 +463,34 @@ async function runSessionTurn(sessionId, userMsg, opts = {}) {
       toolNames: SESSION_TOOL_NAMES,
       maxRounds: opts.maxRounds || 20,
       caller: 'browser-agent-session',
-      context: { sessionId, taskId },
+      context: { sessionId, taskId, humanSteerProvider: makeHumanSteerProvider(session), appSessionId: session.appSessionId || null },
       onProgress: (round, maxRounds, message, toolNames) => {
         // 修复：runToolLoop 传入 4 个独立参数，不是对象；包装成 step 对象再保存
         const step = { round: round || 0, maxRounds: maxRounds || 20, message: message || '', toolNames: Array.isArray(toolNames) ? toolNames : [] };
         const taskIdVal = session.currentTaskId || taskId || sessionId;
         const roundNum = step.round || round || 1;
         const shotPath = path.join(ba.SESSION_ROOT || require('path').resolve('data/browser-sessions'), taskIdVal, `step-${roundNum}.png`);
-        // 完整执行链路可视化：实际生成截图文件（与 runGoalTask 对齐，不阻塞 loop）
-        ba.screenshotToFile(shotPath).then(() => {
-          const su = `/api/browser-agent/screenshots/${taskIdVal}/step-${roundNum}.png`;
-          sessionStore.addToolCall(sessionId, { ...step, ts: Date.now(), screenshot: su });
-          if (opts.onStep) opts.onStep({ ...step, sessionId, taskId, screenshot: su });
+        // v0.118.15: 完整执行链路可视化（截图成功/失败都广播 step；内建 SSE 不依赖 opts.onStep）
+        const emitStep = (screenshot) => {
+          broadcastStep(sessionId, { ...step, ts: Date.now(), screenshot }, opts);
+        };
+        const shotTask = session.appSessionId
+          ? ppDriver.screenshotToFile(session.appSessionId, shotPath)
+          : ba.screenshotToFile(shotPath);
+        shotTask.then(() => {
+          emitStep(`/api/browser-agent/screenshots/${taskIdVal}/step-${roundNum}.png`);
         }).catch(() => {
-          // 截图失败：不传截图 URL，避免前端显示破图
-          sessionStore.addToolCall(sessionId, { ...step, ts: Date.now(), screenshot: null });
-          if (opts.onStep) opts.onStep({ ...step, sessionId, taskId, screenshot: null });
+          emitStep(null);
         });
       },
     });
   } catch (e) {
     session.status = 'error';
     session.error = e.message;
-    if (opts.onDone) opts.onDone({ sessionId, status: 'error', error: e.message });
+    // v0.119.2: 异常也释放锁
+    releasePpLock(session.appSessionId || null, sessionId);
+    broadcastDone(sessionId, taskId, 'error', '', e.message, opts);
+    invokeDomainDone(session, null);
     return { sessionId, status: 'error', error: e.message };
   }
 
@@ -298,15 +499,20 @@ async function runSessionTurn(sessionId, userMsg, opts = {}) {
     session.status = 'waiting_user';
     session.pendingQuestion = result.question;
     session.messages = result.messages || session.messages;
-    if (opts.onWaiting) opts.onWaiting({ sessionId, taskId, question: session.pendingQuestion });
+    broadcastWaiting(sessionId, session.pendingQuestion, opts, taskId);
     return { sessionId, taskId, status: 'waiting_user', question: session.pendingQuestion };
   }
 
   session.status = result.error ? 'error' : 'done';
   // push assistant 回复到 session.messages（下次 turn 自动看到）—— v1.0 修复：addMessage 是 store 类方法
   sessionStore.addMessage(sessionId, { role: 'assistant', content: result.content || '', ts: Date.now() });
-  if (opts.onDone) opts.onDone({ sessionId, taskId, status: session.status, content: session.content, error: session.error });
-  return { sessionId, taskId, status: session.status, content: session.content, error: session.error };
+  // v0.119.2: 终态释放远程预览引擎锁（waiting_user 已在上文 return，不释放）
+  releasePpLock(session.appSessionId || null, sessionId);
+  // v0.118.12: onDone/return 补 content —— session 对象无 content 字段，此前 done 事件丢 LLM 总结
+  //   （go-publish 域壳依赖 content 提取 post_url / 写历史档案）
+  broadcastDone(sessionId, taskId, session.status, result.content || '', session.error, opts);
+  invokeDomainDone(session, result);
+  return { sessionId, taskId, status: session.status, content: result.content || '', error: session.error };
 }
 
 async function resumeSessionTurn(sessionId, userReply, opts = {}) {
@@ -314,6 +520,13 @@ async function resumeSessionTurn(sessionId, userReply, opts = {}) {
   const session = sessionStore.get(sessionId);
   if (!session) return { sessionId, status: 'error', error: '会话不存在' };
   if (session.status !== 'waiting_user') return { sessionId, status: 'error', error: `会话不在等待状态（当前 ${session.status}）` };
+
+  // v0.119.2: resume 也受远程预览引擎锁保护（owner=self 续用；ACMS 重启后锁空 → 允许重新持有）
+  if (opts.appSessionId) session.appSessionId = String(opts.appSessionId);
+  if (session.appSessionId) {
+    const g = acquirePpLock(session.appSessionId, sessionId);
+    if (!g.ok) return { sessionId, status: 'busy', error: g.error };
+  }
 
   // push user reply —— v1.0 修复：addMessage 是 store 类方法
   sessionStore.addMessage(sessionId, { role: 'user', content: '[用户回复] ' + String(userReply || ''), ts: Date.now() });
@@ -334,20 +547,34 @@ async function resumeSessionTurn(sessionId, userReply, opts = {}) {
       toolNames: SESSION_TOOL_NAMES,
       maxRounds: opts.maxRounds || 10,
       caller: 'browser-agent-session-resume',
-      context: { sessionId, taskId: session.currentTaskId },
+      context: { sessionId, taskId: session.currentTaskId, humanSteerProvider: makeHumanSteerProvider(session), appSessionId: session.appSessionId || null },
       onProgress: (round, maxRounds, message, toolNames) => {
         // 修复：runToolLoop 传入 4 个独立参数，包装成对象
         const step = { round: round || 0, maxRounds: maxRounds || 10, message: message || '', toolNames: Array.isArray(toolNames) ? toolNames : [] };
         const taskIdVal = session.currentTaskId || sessionId;
-        const shotUrl = `/api/browser-agent/screenshots/${taskIdVal}/step-${step.round || round || 1}.png`;
-        sessionStore.addToolCall(sessionId, { ...step, ts: Date.now(), screenshot: shotUrl });
-        if (opts.onStep) opts.onStep({ ...step, sessionId, taskId: session.currentTaskId });
+        const roundNum = step.round || round || 1;
+        const shotPath = path.join(ba.SESSION_ROOT || require('path').resolve('data/browser-sessions'), taskIdVal, `step-${roundNum}.png`);
+        // v0.118.15: 与 runSessionTurn 对齐 —— 等截图落盘再广播（防破图），内建 SSE 不依赖 opts.onStep
+        const emitStep = (screenshot) => {
+          broadcastStep(sessionId, { ...step, ts: Date.now(), screenshot }, opts);
+        };
+        const shotTask = session.appSessionId
+          ? ppDriver.screenshotToFile(session.appSessionId, shotPath)
+          : ba.screenshotToFile(shotPath);
+        shotTask.then(() => {
+          emitStep(`/api/browser-agent/screenshots/${taskIdVal}/step-${roundNum}.png`);
+        }).catch(() => {
+          emitStep(null);
+        });
       },
     });
   } catch (e) {
     session.status = 'error';
     session.error = e.message;
-    if (opts.onDone) opts.onDone({ sessionId, status: 'error', error: e.message });
+    // v0.119.2: 异常也释放锁
+    releasePpLock(session.appSessionId || null, sessionId);
+    broadcastDone(sessionId, session.currentTaskId, 'error', '', e.message, opts);
+    invokeDomainDone(session, null);
     return { sessionId, status: 'error', error: e.message };
   }
 
@@ -355,15 +582,19 @@ async function resumeSessionTurn(sessionId, userReply, opts = {}) {
     session.status = 'waiting_user';
     session.pendingQuestion = result.question;
     session.messages = result.messages || session.messages;
-    if (opts.onWaiting) opts.onWaiting({ sessionId, taskId: session.currentTaskId, question: session.pendingQuestion });
+    broadcastWaiting(sessionId, session.pendingQuestion, opts, session.currentTaskId);
     return { sessionId, taskId: session.currentTaskId, status: 'waiting_user', question: session.pendingQuestion };
   }
 
   session.status = result.error ? 'error' : 'done';
   // v1.0 修复：addMessage 是 store 类方法
   sessionStore.addMessage(sessionId, { role: 'assistant', content: result.content || '', ts: Date.now() });
-  if (opts.onDone) opts.onDone({ sessionId, taskId: session.currentTaskId, status: session.status, content: session.content, error: session.error });
-  return { sessionId, taskId: session.currentTaskId, status: session.status, content: session.content, error: session.error };
+  // v0.119.2: 终态释放远程预览引擎锁（waiting_user 已在上文 return，不释放）
+  releasePpLock(session.appSessionId || null, sessionId);
+  // v0.118.12: onDone/return 补 content（与 runSessionTurn 对齐，session 对象无 content 字段）
+  broadcastDone(sessionId, session.currentTaskId, session.status, result.content || '', session.error, opts);
+  invokeDomainDone(session, result);
+  return { sessionId, taskId: session.currentTaskId, status: session.status, content: result.content || '', error: session.error };
 }
 
 function getSession(sessionId) {
@@ -373,11 +604,21 @@ function listSessions() {
   return sessionStore.list();
 }
 function deleteSession(sessionId) {
+  // v0.118.15: 删除会话同时清 SSE 客户端（routes DELETE 不再显式 close）
+  closeSessionSSE(sessionId);
+  // v0.119.2: 删除会话释放远程预览引擎锁（防锁残留）
+  const s = sessionStore.get(sessionId);
+  if (s) releasePpLock(s.appSessionId || null, sessionId);
   return sessionStore.delete(sessionId);
 }
 
 module.exports = {
   runGoalTask, resumeGoalTask, getTask,
   runSessionTurn, resumeSessionTurn, getSession, listSessions, deleteSession,
+  interruptSession,  // v0.118.16: 人主动发起介入（暂停等输入 / 注入发言）
+  // v0.119.2: 远程预览引擎锁（routes start/turn/reply 前置 gate）
+  checkPpBusy, acquirePpLock, releasePpLock,
+  // v0.118.15: session SSE 订阅（routes /session/:id/stream 用）
+  attachSessionStream, closeSessionSSE,
   BROWSER_AGENT_PROMPT, TASKS, sessionStore,
 };

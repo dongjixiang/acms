@@ -490,43 +490,21 @@ router.get('/task/:taskId', (req, res) => {
 //   GET    /session/:id/stream            → SSE 订阅进度（step/waiting_user/done）
 //   DELETE /session/:id                   → 删会话
 // ═══════════════════════════════════════════
-const SESSION_SSE_CLIENTS = new Map(); // sessionId -> Set<res>
-
-function pushSessionSSE(sessionId, event, data) {
-  const clients = SESSION_SSE_CLIENTS.get(sessionId);
-  if (!clients || clients.size === 0) return;
-  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-  clients.forEach((res) => { try { res.write(payload); } catch (e) {} });
-}
-
-function closeSessionSSE(sessionId) {
-  const clients = SESSION_SSE_CLIENTS.get(sessionId);
-  if (!clients) return;
-  clients.forEach((res) => { try { res.end(); } catch (e) {} });
-  SESSION_SSE_CLIENTS.delete(sessionId);
-}
-
-function makeSessionCallbacks(sessionId) {
-  return {
-    onStep: (step) => pushSessionSSE(sessionId, 'step', step),
-    onWaiting: (info) => pushSessionSSE(sessionId, 'waiting_user', info),
-    onDone: (result) => {
-      pushSessionSSE(sessionId, 'done', result);
-      setTimeout(() => closeSessionSSE(sessionId), 1500);
-    },
-  };
-}
+// v0.118.15: SSE 客户端管理/广播已下沉到 task-runner（SESSION_SSE_CLIENTS +
+//   attachSessionStream）—— service 直调 runSessionTurn（如 go-publisher）创建的
+//   session 也能被订阅。本文件不再持有 SSE 客户端集合与 makeSessionCallbacks。
 
 // 创建 session + 首次 turn
 router.post('/session/start', (req, res) => {
   try {
-    const { sessionId, message, title, modelId, maxRounds } = req.body || {};
+    const { sessionId, message, title, modelId, maxRounds, appSessionId } = req.body || {};
     if (!sessionId) return res.status(400).json({ error: '缺少 sessionId' });
     if (!message || !String(message).trim()) return res.status(400).json({ error: '缺少 message' });
-    const cb = makeSessionCallbacks(sessionId);
+    // v0.119.2: 远程预览引擎锁 —— 并行查询禁止
+    const ppBusy = taskRunner.checkPpBusy(appSessionId, sessionId);
+    if (ppBusy) return res.status(409).json({ error: ppBusy, status: 'busy' });
     taskRunner.runSessionTurn(sessionId, String(message).trim(), {
-      title, modelId, maxRounds: parseInt(maxRounds, 10) || 20,
-      onStep: cb.onStep, onWaiting: cb.onWaiting, onDone: cb.onDone,
+      title, modelId, maxRounds: parseInt(maxRounds, 10) || 20, appSessionId,
     });
     res.json({ ok: true, sessionId, status: 'running', note: 'GET /api/browser-agent/session/' + sessionId + '/stream 订阅进度（SSE）' });
   } catch (e) {
@@ -538,7 +516,7 @@ router.post('/session/start', (req, res) => {
 router.post('/session/:id/turn', (req, res) => {
   try {
     const sessionId = req.params.id;
-    const { message, modelId, maxRounds } = req.body || {};
+    const { message, modelId, maxRounds, appSessionId } = req.body || {};
     if (!message || !String(message).trim()) return res.status(400).json({ error: '缺少 message' });
     const session = taskRunner.getSession(sessionId);
     if (!session) return res.status(404).json({ error: '会话不存在' });
@@ -550,10 +528,11 @@ router.post('/session/:id/turn', (req, res) => {
         hint: '请用 POST /session/:id/reply 端点回复（不是 /turn）',
       });
     }
-    const cb = makeSessionCallbacks(sessionId);
+    // v0.119.2: 远程预览引擎锁 —— 并行查询禁止
+    const ppBusy = taskRunner.checkPpBusy(appSessionId, sessionId);
+    if (ppBusy) return res.status(409).json({ error: ppBusy, status: 'busy' });
     taskRunner.runSessionTurn(sessionId, String(message).trim(), {
-      modelId, maxRounds: parseInt(maxRounds, 10) || 20,
-      onStep: cb.onStep, onWaiting: cb.onWaiting, onDone: cb.onDone,
+      modelId, maxRounds: parseInt(maxRounds, 10) || 20, appSessionId,
     });
     res.json({ ok: true, sessionId, status: 'running' });
   } catch (e) {
@@ -565,19 +544,36 @@ router.post('/session/:id/turn', (req, res) => {
 router.post('/session/:id/reply', (req, res) => {
   try {
     const sessionId = req.params.id;
-    const { message } = req.body || {};
+    const { message, appSessionId } = req.body || {};
     if (!message || !String(message).trim()) return res.status(400).json({ error: '缺少回复 message' });
     const session = taskRunner.getSession(sessionId);
     if (!session) return res.status(404).json({ error: '会话不存在' });
     if (session.status !== 'waiting_user') {
       return res.status(409).json({ error: `会话不在等待状态（当前 ${session.status}），请用 /turn 端点发新消息` });
     }
-    const cb = makeSessionCallbacks(sessionId);
+    // v0.119.2: 远程预览引擎锁 —— 并行查询禁止（resume 也 gate）
+    const ppBusy = taskRunner.checkPpBusy(appSessionId, sessionId);
+    if (ppBusy) return res.status(409).json({ error: ppBusy, status: 'busy' });
     // resumeSessionTurn 是 fire-and-forget：不 await 完成，前端通过 SSE 订阅
-    taskRunner.resumeSessionTurn(sessionId, String(message).trim(), {
-      onStep: cb.onStep, onWaiting: cb.onWaiting, onDone: cb.onDone,
-    });
+    taskRunner.resumeSessionTurn(sessionId, String(message).trim(), { appSessionId });
     res.json({ ok: true, sessionId, status: 'running' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 人主动发起介入（v0.118.16）—— 对话框双向：Agent 发起走 request_user_help；人发起走本端点
+//   POST /session/:id/interrupt {}            → 暂停：Agent 当前动作结束后进 waiting_user 等人工输入
+//   POST /session/:id/interrupt {message}     → 注入：Agent 下一轮立即响应人的指示（不暂停）
+router.post('/session/:id/interrupt', (req, res) => {
+  try {
+    const sessionId = req.params.id;
+    const { message, question } = req.body || {};
+    const session = taskRunner.getSession(sessionId);
+    if (!session) return res.status(404).json({ error: '会话不存在' });
+    const r = taskRunner.interruptSession(sessionId, { message, question });
+    if (!r.ok) return res.status(409).json({ error: r.error, status: r.status });
+    res.json({ ok: true, sessionId, pause: !!r.pause, note: r.pause ? 'Agent 将在当前动作结束后暂停，等待你的输入' : '你的消息已送达，Agent 下一轮会响应' });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -627,52 +623,25 @@ router.get('/session/:id/messages', (req, res) => {
   });
 });
 
-// SSE 订阅进度（step / waiting_user / done）
+// SSE 订阅进度（step / waiting_user / done）—— v0.118.15: 下沉到 task-runner.attachSessionStream
 router.get('/session/:id/stream', (req, res) => {
-  const sessionId = req.params.id;
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    Connection: 'keep-alive',
-  });
-  res.write('retry: 3000\n\n');
-
-  const session = taskRunner.getSession(sessionId);
-  if (!session) {
-    res.write(`event: error\ndata: ${JSON.stringify({ error: '会话不存在' })}\n\n`);
-    res.end();
-    return;
+  try {
+    taskRunner.attachSessionStream(req.params.id, res, req);
+  } catch (e) {
+    try {
+      res.writeHead(500, { 'Content-Type': 'text/event-stream' });
+      res.write(`event: error\ndata: ${JSON.stringify({ error: e.message })}\n\n`);
+      res.end();
+    } catch (_) { /* ignore */ }
   }
-
-  // 补发已产生的工具调用 + 当前状态
-  if (session.toolCalls && session.toolCalls.length) {
-    session.toolCalls.forEach((s) => {
-      res.write(`event: step\ndata: ${JSON.stringify(s)}\n\n`);
-    });
-  }
-  if (session.status === 'waiting_user') {
-    res.write(`event: waiting_user\ndata: ${JSON.stringify({ sessionId, question: session.pendingQuestion })}\n\n`);
-  } else if (session.status !== 'running' && session.status !== 'idle') {
-    // 已 done/error
-    res.write(`event: done\ndata: ${JSON.stringify({ sessionId, status: session.status })}\n\n`);
-    res.end();
-    return;
-  }
-
-  if (!SESSION_SSE_CLIENTS.has(sessionId)) SESSION_SSE_CLIENTS.set(sessionId, new Set());
-  SESSION_SSE_CLIENTS.get(sessionId).add(res);
-  req.on('close', () => {
-    const set = SESSION_SSE_CLIENTS.get(sessionId);
-    if (set) { set.delete(res); if (set.size === 0) SESSION_SSE_CLIENTS.delete(sessionId); }
-  });
 });
 
 // 删会话
 router.delete('/session/:id', (req, res) => {
   const sessionId = req.params.id;
   const existed = !!taskRunner.getSession(sessionId);
+  // v0.118.15: deleteSession 内部会 closeSessionSSE（清 SSE 客户端）
   taskRunner.deleteSession(sessionId);
-  closeSessionSSE(sessionId);
   res.json({ ok: true, sessionId, deleted: existed });
 });
 

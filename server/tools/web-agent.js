@@ -14,6 +14,9 @@
 
 const { registerTool } = require('../services/tool-registry');
 const ba = require('../services/browser-agent');
+// v0.119: Puppeteer driver —— ctx.appSessionId 存在时 web_* 动作驱动 app-runtime
+// 稳定 Puppeteer 会话（Web机器人「远程预览」模式，人与 agent 同屏同浏览器）。
+const pp = require('../services/browser-agent/puppeteer-driver');
 const aiWebChat = require('../services/ai-web-chat');
 
 // ── web_open ──
@@ -27,8 +30,9 @@ registerTool({
     },
     required: ['url'],
   },
-  async handler(args) {
-    const r = await ba.open(args.url);
+  async handler(args, ctx) {
+    const sess = (ctx && ctx.appSessionId) || null;
+    const r = sess ? await pp.open(sess, args.url) : await ba.open(args.url);
     if (!r.ok) return { error: r.error };
     return { ok: true, title: r.title || '', url: r.url || args.url };
   },
@@ -39,8 +43,9 @@ registerTool({
   name: 'web_snapshot',
   description: '获取当前浏览器页面的无障碍树（accessibility tree），返回带编号的可交互元素（如 [ref=e1]）。用它理解页面结构、找按钮/输入框/链接，然后 web_click / web_type 按 ref 或文本操作。',
   parameters: { type: 'object', properties: {}, required: [] },
-  async handler() {
-    const r = await ba.snapshot();
+  async handler(args, ctx) {
+    const sess = (ctx && ctx.appSessionId) || null;
+    const r = sess ? await pp.snapshot(sess) : await ba.snapshot();
     if (!r.ok) return { error: r.error };
     return { ok: true, snapshot: r.output };
   },
@@ -57,8 +62,9 @@ registerTool({
     },
     required: ['selector'],
   },
-  async handler(args) {
-    const r = await ba.click(args.selector);
+  async handler(args, ctx) {
+    const sess = (ctx && ctx.appSessionId) || null;
+    const r = sess ? await pp.click(sess, args.selector) : await ba.click(args.selector);
     if (!r.ok) return { error: r.error };
     return { ok: true };
   },
@@ -76,8 +82,9 @@ registerTool({
     },
     required: ['selector', 'text'],
   },
-  async handler(args) {
-    const r = await ba.typeText(args.selector, args.text);
+  async handler(args, ctx) {
+    const sess = (ctx && ctx.appSessionId) || null;
+    const r = sess ? await pp.typeText(sess, args.selector, args.text) : await ba.typeText(args.selector, args.text);
     if (!r.ok) return { error: r.error };
     return { ok: true };
   },
@@ -94,8 +101,9 @@ registerTool({
     },
     required: ['key'],
   },
-  async handler(args) {
-    const r = await ba.press(args.key);
+  async handler(args, ctx) {
+    const sess = (ctx && ctx.appSessionId) || null;
+    const r = sess ? await pp.press(sess, args.key) : await ba.press(args.key);
     if (!r.ok) return { error: r.error };
     return { ok: true };
   },
@@ -106,8 +114,9 @@ registerTool({
   name: 'web_read',
   description: '读取当前页面的正文文本（agent 可读格式，非 HTML）。用于获取文章内容、搜索结果、AI 回答等。',
   parameters: { type: 'object', properties: {}, required: [] },
-  async handler() {
-    const r = await ba.readText();
+  async handler(args, ctx) {
+    const sess = (ctx && ctx.appSessionId) || null;
+    const r = sess ? await pp.readText(sess) : await ba.readText();
     if (!r.ok) return { error: r.error };
     return { ok: true, text: r.output };
   },
@@ -124,11 +133,12 @@ registerTool({
     },
     required: [],
   },
-  async handler(args) {
+  async handler(args, ctx) {
     const tid = String(args.taskId || 'manual').replace(/[^a-zA-Z0-9_-]/g, '');
     const ts = Date.now();
     const filePath = require('path').join(ba.SESSION_ROOT, tid, `step-${ts}.png`);
-    const r = await ba.screenshotToFile(filePath);
+    const sess = (ctx && ctx.appSessionId) || null;
+    const r = sess ? await pp.screenshotToFile(sess, filePath) : await ba.screenshotToFile(filePath);
     if (!r.ok) return { error: r.error };
     return { ok: true, imagePath: `/api/browser-agent/screenshots/${tid}/step-${ts}.png` };
   },
@@ -145,8 +155,9 @@ registerTool({
     },
     required: ['expression'],
   },
-  async handler(args) {
-    const r = await ba.evalJs(args.expression);
+  async handler(args, ctx) {
+    const sess = (ctx && ctx.appSessionId) || null;
+    const r = sess ? await pp.evalJs(sess, args.expression) : await ba.evalJs(args.expression);
     if (!r.ok) return { error: r.error };
     return { ok: true, output: r.output };
   },
@@ -165,8 +176,9 @@ registerTool({
     },
     required: ['locator', 'value'],
   },
-  async handler(args) {
-    const r = await ba.find(args.locator, args.value, args.action || 'click');
+  async handler(args, ctx) {
+    const sess = (ctx && ctx.appSessionId) || null;
+    const r = sess ? await pp.find(sess, args.locator, args.value, args.action || 'click') : await ba.find(args.locator, args.value, args.action || 'click');
     if (!r.ok) return { error: r.error };
     return { ok: true };
   },
@@ -217,4 +229,44 @@ registerTool({
   },
 });
 
-console.log('[tools] 浏览器自动化工具注册完成: web_open, web_snapshot, web_click, web_type, web_press, web_read, web_screenshot, web_eval, web_find, web_ai_search, request_user_help');
+// ── web_auth_login（v0.118.16）──
+// 服务端执行 agent-browser auth login：用已保存的账号凭据自动填登录表单 + 提交 + 等跳转。
+// 替代「web_eval 里跑 execSync npx」死路（浏览器页面上下文没有 Node/child_process，必失败）。
+registerTool({
+  name: 'web_auth_login',
+  description: '用已保存的账号凭据自动登录当前网站（服务端调 agent-browser auth login，自动填账号密码 + 提交 + 等跳转）。\n\n【何时用】登录墙场景：先 web_open 登录页 + web_snapshot 确认页面结构，若登录页需要切 tab（如验证码 → 密码登录）先 web_click 切换，再调本工具。\n\n【参数】profile = agent-browser auth 里保存的账号名（对内容运营发布 = 账号 ID，见发布任务描述）。\n\n【注意】不要用 web_eval 尝试执行 shell/npx 命令（页面环境无 Node）；登录失败/需验证码 → 立即 request_user_help 三选一。\n\n示例：web_auth_login({"profile":"acct_toutiao_xxx"})',
+  parameters: {
+    type: 'object',
+    properties: {
+      profile: { type: 'string', description: 'agent-browser auth profile 名（账号 ID）' },
+    },
+    required: ['profile'],
+  },
+  async handler(args, ctx) {
+    const sess = (ctx && ctx.appSessionId) || null;
+    if (sess) return pp.authLogin(); // 远程预览引擎不支持 CLI auth，引导求助
+    try {
+      const ba = require('../services/browser-agent');
+      const name = String(args?.profile || '').trim();
+      if (!name) return { error: '缺少 profile' };
+      const r = await ba.authLogin({ name, timeout: 90000 });
+      // 等跳转稳定后返回页面状态（让 LLM 确认是否登录成功）
+      await new Promise(res => setTimeout(res, 2500));
+      let page = null;
+      try {
+        if (typeof ba.pageInfo === 'function') page = await ba.pageInfo();
+        else page = await ba.tryExec('page info --json', 8000).catch(() => null);
+      } catch (_) { /* page info optional */ }
+      return {
+        ok: true,
+        auth: r && (r.ok ? r : { output: String(r).slice(0, 300) }),
+        page: page || null,
+        hint: '请用 web_snapshot 确认是否已登录成功；若仍需验证码/二次验证 → request_user_help',
+      };
+    } catch (e) {
+      return { ok: false, error: e.message || 'auth login 失败', hint: '登录失败请调 request_user_help 三选一（A 手动登录 / B 换账号 / C 取消）' };
+    }
+  },
+});
+
+console.log('[tools] 浏览器自动化工具注册完成: web_open, web_snapshot, web_click, web_type, web_press, web_read, web_screenshot, web_eval, web_find, web_ai_search, request_user_help, web_auth_login');

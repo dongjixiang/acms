@@ -14,7 +14,9 @@
   'use strict';
 
   const VIEW_NAME = 'social-publisher';
-  const VERSION = '0.118.6';  // v0.118.6: 设置页接进配置链路（localStorage 持久化 + 发布任务自动 merge + 后端兜底）
+  const VERSION = '0.118.18';  // v0.118.18: 常驻输入条(求助随时可输入/介入发言)；0.118.17: 💬介入+web_auth_login；0.118.16: 截图 key
+  // SSE EventSource 无法带 Authorization header → query api_key（auth.js 认 config.apiKeys；dev-key-001 默认在列，与 browser-console 同款）
+  const SP_AK = (typeof window !== 'undefined' && window.AK) || 'dev-key-001';
   let wRef = null;
   let cleanupFns = [];
   let currentPlatform = 'all';
@@ -76,6 +78,11 @@
 
   function esc(s) {
     return String(s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  // 用于 onclick 字符串参数 — 转义 \ 和 单/双引号，防 URL/文件名含特殊字符把 onclick 字符串撑爆
+  function escJs(s) {
+    return String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"');
   }
 
   function setStatus(text, type = 'info') {
@@ -338,7 +345,19 @@
   }
 
   async function removeAccount(id) {
-    if (!confirm('确定删除此账号？')) return;
+    // P50b: 系统弹窗零容忍 → ACMSModal（v0.118.14 清理残留 confirm）
+    const v = await window.ACMSModal.show({
+      title: '🗑 删除账号',
+      size: 'md',
+      root: wRef && wRef.$c ? wRef.$c : undefined,
+      html: `<style>.sp-confirm-danger{background:#e74c3c;color:#fff;border-color:#e74c3c}.sp-confirm-danger:hover{background:#c0392b}</style>
+        <div style="font-size:13px;color:var(--sp-text-2);line-height:1.7">确定删除此账号？<br><span style="font-size:11px;color:var(--sp-text-3)">删除后无法恢复，该平台的发布任务将不可用。</span></div>`,
+      actions: [
+        { label: '取消', value: 'CANCEL', className: 'acms-modal-btn' },
+        { label: '🗑 删除', value: 'CONFIRM', className: 'acms-modal-btn sp-confirm-danger' },
+      ],
+    });
+    if (v !== 'CONFIRM') return;
     const r = await api('DELETE', `/api/social-publisher/accounts/${id}`);
     if (r.ok) {
       notify('已删除', 'success');
@@ -507,6 +526,449 @@
     } catch (e) {
       notify('改写失败: ' + e.message, 'error');
       setStatus('改写失败', 'error');
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // v0.118.x: 🤖 AI 发布（goal-driven 模式）
+  //   拿现有 compose 表单 → 调 /api/social-publisher/go-publish → 弹 modal 实时 SSE
+  // ─────────────────────────────────────────────────────────
+  let _aiEventSource = null;
+  let _aiCurrentTaskId = null;
+  // v0.118.x: 全局重连计数器（所有闭包共享，避免死循环）
+  let _aiReconnectTotal = 0;
+
+  function openAiModal() {
+    const overlay = _byId('sp-ai-overlay');
+    if (overlay) overlay.style.display = 'flex';
+    // v0.118.18: 打开即聚焦输入条（随时可输入）
+    setTimeout(() => {
+      const ta = _byId('sp-ai-input');
+      if (ta) { try { ta.focus(); } catch (_) {} }
+    }, 60);
+  }
+  function closeAiModal() {
+    const overlay = _byId('sp-ai-overlay');
+    if (overlay) overlay.style.display = 'none';
+    // v0.118.x: 不关 SSE + 不清 taskId
+    //   关闭 modal 不等于放弃任务；waiting_user 来时自动 reopen + 强提示
+  }
+  function forceCloseAiModal() {
+    const overlay = _byId('sp-ai-overlay');
+    if (overlay) overlay.style.display = 'none';
+    if (_aiEventSource) {
+      _aiEventSource._aiIntentional = true;  // 主动关，onerror 静默
+      _aiEventSource.close();
+      _aiEventSource = null;
+    }
+    _aiCurrentTaskId = null;
+    _aiReconnectTotal = 0;  // v0.118.x: 取消任务时重置计数，下次发布重新开始
+  }
+  function setAiStatus(text, kind) {
+    const dot = _byId('sp-ai-status-dot');
+    const txt = _byId('sp-ai-status-text');
+    if (dot) {
+      dot.className = 'sp-ai-status-dot';
+      if (kind) dot.classList.add(kind);
+    }
+    if (txt) txt.textContent = text;
+  }
+  function setAiTaskId(taskId) {
+    _aiCurrentTaskId = taskId;
+    const el = _byId('sp-ai-task-id');
+    if (el) el.textContent = taskId ? `task: ${taskId}` : '';
+  }
+  // v0.118.16: 💬 介入按钮可用态（running 可点；waiting/done 置灰）
+  function setAiInterruptEnabled(enabled) {
+    const btn = _byId('sp-ai-interrupt');
+    if (!btn) return;
+    btn.disabled = !enabled;
+    btn.style.opacity = enabled ? 1 : 0.45;
+    btn.style.cursor = enabled ? 'pointer' : 'not-allowed';
+  }
+  // v0.118.16: 人主动发起求助 —— Agent 当前动作结束后暂停（waiting_user 链路）等人工输入
+  async function requestAiInterrupt() {
+    const tid = _aiCurrentTaskId;
+    if (!tid) { notify('当前没有运行中的 AI 发布任务', 'warn'); return; }
+    try {
+      const r = await api('POST', `/api/browser-agent/session/${encodeURIComponent(tid)}/interrupt`, {});
+      if (r.ok) {
+        setAiStatus('⏸ 已请求 Agent 暂停…', 'waiting');
+        setAiInterruptEnabled(false);
+        notify(r.data?.pause ? '已请求 Agent 暂停 — 它停稳后会弹出输入框' : (r.data?.note || '已发送'), 'info', 6000);
+      } else {
+        if (r.data?.status === 'waiting_user') {
+          notify('Agent 正在等你回复（看上方输入框）', 'info');
+          setAiInterruptEnabled(false);
+        } else {
+          notify('暂停请求失败: ' + (r.data?.error || r.status), 'error');
+        }
+      }
+    } catch (e) {
+      notify('暂停请求失败: ' + e.message, 'error');
+    }
+  }
+  function renderAiSteps(steps) {
+    const container = _byId('sp-ai-steps');
+    if (!container) return;
+    if (!steps || steps.length === 0) {
+      container.innerHTML = '<div class="sp-ai-empty">⏳ 等待 LLM 开始执行…</div>';
+      return;
+    }
+    container.innerHTML = steps.map((s, i) => {
+      const tools = (s.toolNames || []).map(t => `<span class="sp-ai-step-tool">${esc(t)}</span>`).join('');
+      const shotHtml = s.screenshot ? `<img class="sp-ai-step-shot" src="${esc(s.screenshot)}?api_key=${esc(SP_AK)}" onclick="window.SPView?.viewScreenshot?.('${esc(s.screenshot)}','step-${s.round}.png','')" alt="step ${s.round}">` : '';
+      return `
+        <div class="sp-ai-step">
+          <div class="sp-ai-step-header">
+            <span class="sp-ai-step-num">${i+1}/${s.maxRounds || 25}</span>
+            <span style="flex:1;font-size:11px">${esc(s.message || '').slice(0, 200)}</span>
+          </div>
+          ${tools ? `<div class="sp-ai-step-tools">${tools}</div>` : ''}
+          ${shotHtml}
+        </div>`;
+    }).join('');
+    // 自动滚到底部
+    container.parentElement.scrollTop = container.parentElement.scrollHeight;
+  }
+  function showAiWaiting(question) {
+    const w = _byId('sp-ai-waiting');
+    const q = _byId('sp-ai-waiting-q');
+    if (q) q.textContent = question || '需要你的帮助';
+    if (w) w.style.display = 'block';
+  }
+  function hideAiWaiting() {
+    const w = _byId('sp-ai-waiting');
+    if (w) w.style.display = 'none';
+  }
+  function showAiDone(success, payload) {
+    const d = _byId('sp-ai-done');
+    const c = _byId('sp-ai-done-content');
+    if (!d || !c) return;
+    d.className = 'sp-ai-done ' + (success ? 'success' : 'error');
+    let html = '';
+    if (payload.post_url) {
+      html += `<div style="margin-bottom:6px">📎 <a href="${esc(payload.post_url)}" target="_blank" style="color:#10b981">${esc(payload.post_url)}</a></div>`;
+    }
+    if (payload.content) {
+      html += `<div style="white-space:pre-wrap;font-size:12px;color:var(--sp-text-2);margin-top:6px">${esc(payload.content).slice(0, 800)}</div>`;
+    }
+    if (payload.error) {
+      html += `<div style="margin-top:6px;font-size:12px;color:#ef4444">❌ ${esc(payload.error)}</div>`;
+    }
+    c.innerHTML = html;
+    d.style.display = 'block';
+  }
+
+  // ── v0.118.18: 常驻输入条 ──────────────────────────────────────
+  //   _aiPhase: idle | running | waiting | done —— 决定输入条是「介入发言」还是「回复」
+  let _aiPhase = 'idle';
+  function setAiPhase(phase) {
+    _aiPhase = phase;
+    const ta = _byId('sp-ai-input');
+    if (!ta) return;
+    if (phase === 'waiting') {
+      ta.placeholder = 'Agent 正在等你回复 — 输入验证码 / 指示 / 账号后按 Enter（或点上方 A/B/C 快捷回复）';
+    } else if (phase === 'running') {
+      ta.placeholder = '随时可介入：提要求 / 给验证码 / 纠正方向…（Enter 发送，Shift+Enter 换行）';
+    } else if (phase === 'done' || phase === 'idle') {
+      ta.placeholder = '本次发布已结束（新任务开始后可再发消息）';
+    }
+  }
+  // 发送：waiting = 回复（reply）；running = 介入发言（interrupt 注入，不暂停）
+  async function aiSendFromBar() {
+    const ta = _byId('sp-ai-input');
+    const msg = (ta && ta.value || '').trim();
+    if (!msg) { notify('请输入内容', 'warn'); return; }
+    const tid = _aiCurrentTaskId;
+    if (!tid) { notify('当前没有运行中的 AI 发布任务', 'warn'); return; }
+    const clearInput = () => { if (ta) ta.value = ''; };
+    if (_aiPhase === 'waiting') {
+      const r = await api('POST', `/api/browser-agent/session/${encodeURIComponent(tid)}/reply`, { message: msg });
+      if (r.ok) {
+        clearInput();
+        hideAiWaiting();
+        setAiStatus('🤖 Agent 收到回复，继续执行...', 'running');
+        setAiInterruptEnabled(true);
+        setAiPhase('running');
+      } else {
+        notify('回复失败: ' + (r.data?.error || r.status), 'error');
+      }
+    } else if (_aiPhase === 'running') {
+      // 介入发言：不暂停，Agent 下一轮立即响应（要暂停可用 💬 介入按钮）
+      const r = await api('POST', `/api/browser-agent/session/${encodeURIComponent(tid)}/interrupt`, { message: msg });
+      if (r.ok) {
+        clearInput();
+        setAiStatus('💬 已把你的指示发给 Agent…', 'running');
+        notify('已发送给 Agent — 它会先响应你的指示', 'info', 4000);
+      } else {
+        notify('发送失败: ' + (r.data?.error || r.status), 'error');
+      }
+    } else {
+      notify('任务已结束，无法发送（开新任务可再发）', 'warn');
+    }
+  }
+
+  function subscribeAiStream(taskId) {
+    // v0.118.12: SSE 收敛到 browser-agent session 通道（删除 go-publish 自建通道）
+    //   事件协议（与旧通道对齐）：step {round,maxRounds,message,toolNames,screenshot}
+    //   / waiting_user {sessionId,question} / done {sessionId,taskId,status,content,error}
+    //   session 通道原生处理：waiting_user 保活（订阅时若在等 → 立即推 waiting_user）、
+    //   断线补发历史 toolCalls、任务不存在推 error —— 不再需要自建 hello/心跳/恢复
+    if (_aiEventSource) {
+      _aiEventSource._aiIntentional = true;
+      _aiEventSource.close();
+      _aiEventSource = null;
+    }
+    const url = `/api/browser-agent/session/${encodeURIComponent(taskId)}/stream?api_key=${SP_AK}`;
+    const es = new EventSource(url);
+    _aiEventSource = es;
+    es._aiIntentional = false;
+    // 闭包内标志：这个 ES 是主动关的吗？
+    let intentional = false;
+    let lastSteps = [];  // 本地步骤累积（session 通道 done 不回带 steps；订阅补发按内容去重）
+
+    es.addEventListener('step', (ev) => {
+      try {
+        const step = JSON.parse(ev.data);
+        // 订阅时会补发历史 toolCalls（resume 后 round 会重置）→ 按内容去重，防重复渲染
+        const key = `${step.round}|${step.message}|${(step.toolNames || []).join(',')}`;
+        if (lastSteps.some(s => `${s.round}|${s.message}|${(s.toolNames || []).join(',')}` === key)) return;
+        lastSteps.push(step);
+        renderAiSteps(lastSteps);
+        setAiStatus(`🤖 步骤 ${lastSteps.length} · ${(step.toolNames || []).join(', ') || '...'}`, 'running');
+      } catch (e) {}
+    });
+    es.addEventListener('waiting_user', (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        setAiStatus('⏸ LLM 在等你回复', 'waiting');
+        setAiInterruptEnabled(false);  // waiting 中已有输入框，介入按钮置灰
+        setAiPhase('waiting');  // v0.118.18: 输入条切「回复」模式
+        showAiWaiting(data.question);
+        const overlay = _byId('sp-ai-overlay');
+        if (overlay && overlay.style.display === 'none') {
+          overlay.style.display = 'flex';
+          try {
+            if (window.Notification && Notification.permission === 'granted') {
+              new Notification('🤖 LLM 在等你协助', {
+                body: (data.question || '').slice(0, 100),
+                tag: 'sp-ai-waiting',
+              });
+            } else if (window.Notification && Notification.permission !== 'denied') {
+              Notification.requestPermission().then(p => {
+                if (p === 'granted') {
+                  new Notification('🤖 LLM 在等你协助', {
+                    body: (data.question || '').slice(0, 100),
+                    tag: 'sp-ai-waiting',
+                  });
+                }
+              });
+            }
+          } catch (e) {}
+          let blinkCount = 0;
+          const origTitle = document.title;
+          const blink = setInterval(() => {
+            document.title = blinkCount % 2 === 0 ? '🔔 LLM 在等你' : origTitle;
+            blinkCount++;
+            if (blinkCount >= 8) {
+              clearInterval(blink);
+              document.title = origTitle;
+            }
+          }, 1000);
+        }
+        notify('🔔 LLM 在等你回复 — 切回内容运营平台', 'info', 9000);
+      } catch (e) {}
+    });
+    es.addEventListener('done', (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        // v0.118.12: session 通道 done 不带 post_url → 从 LLM 总结里提取
+        if (!data.post_url && data.content) {
+          const m = String(data.content).match(/https?:\/\/[^\s)]+(?:toutiao|xiaohongshu|zhihu|douyin|weixin|mp\.[a-z]+\.com)[^\s)]*/);
+          if (m) data.post_url = m[0];
+        }
+        if (data.status === 'error') {
+          setAiStatus('❌ 发布失败', 'error');
+          showAiDone(false, data);
+        } else {
+          setAiStatus('✅ 发布完成', 'done');
+          showAiDone(true, data);
+          try {
+            if (window.Notification && Notification.permission === 'granted') {
+              new Notification(data.post_url ? '✅ 发布成功' : '⚠️ 发布未完成', {
+                body: data.post_url || (data.error || '任务结束'),
+                tag: 'sp-ai-done',
+              });
+            }
+          } catch (e) {}
+        }
+        notify(data.status === 'error' ? `❌ ${data.error || '失败'}` : '✅ 发布完成', data.status === 'error' ? 'error' : 'success');
+      } catch (e) {}
+      hideAiWaiting();
+      setAiInterruptEnabled(false);  // done/error 后介入无意义
+      setAiPhase('done');  // v0.118.18
+      // done 触发 → intentional 标 true → close → onerror 看到 intentional=true 静默
+      intentional = true;
+      es._aiIntentional = true;
+      es.close();
+    });
+
+    es.onerror = (e) => {
+      // 用闭包内的 intentional，不查 _aiEventSource（避免新旧 ES 错位）
+      if (intentional || es._aiIntentional) {
+        console.log('[sp-ai] SSE closed intentionally (this es), ignore onerror');
+        return;
+      }
+      // readyState=0 = 浏览器在自动重连，2 = CLOSED
+      if (es.readyState === EventSource.CONNECTING) {
+        console.log('[sp-ai] SSE browser-native reconnecting...');
+        return;
+      }
+      // 真断 (readyState=CLOSED)
+      const currentTaskId = _aiCurrentTaskId;  // 快照，避免 this._aiCurrentTaskId 变化
+      if (currentTaskId !== taskId) {
+        console.log('[sp-ai] task changed during reconnect, skip');
+        return;
+      }
+      // v0.118.12: 重连前先查 session 状态（done/error/waiting_user 都不重连，避免死循环）
+      api('GET', `/api/browser-agent/session/${encodeURIComponent(taskId)}`)
+        .then(async r => {
+          // 二次校验：闭包内 reconnect 期间用户可能又切换了 task
+          if (_aiCurrentTaskId !== taskId) {
+            console.log('[sp-ai] task changed during fetch, skip');
+            return;
+          }
+          const st = r.data || {};
+          if (r.ok && (st.status === 'done' || st.status === 'error')) {
+            console.log('[sp-ai] session terminal, skip reconnect');
+            // session 详情无 content → 从 messages 取最后 assistant 总结
+            const content = await fetchSessionFinalContent(taskId);
+            if (_aiCurrentTaskId !== taskId) return;
+            if (st.status === 'done') {
+              setAiStatus('✅ 发布完成', 'done');
+              showAiDone(true, { status: 'done', content, error: st.error || null });
+            } else {
+              setAiStatus('❌ 发布失败', 'error');
+              showAiDone(false, { status: 'error', content, error: st.error || '未知错误' });
+            }
+            return;
+          }
+          if (r.ok && st.status === 'waiting_user' && st.pendingQuestion) {
+            console.log('[sp-ai] session waiting_user, recover UI');
+            setAiStatus('⏸ LLM 在等你回复（恢复）', 'waiting');
+            setAiInterruptEnabled(false);
+            setAiPhase('waiting');  // v0.118.18
+            showAiWaiting(st.pendingQuestion);
+            return;
+          }
+          // 还在 running：重连一次（用全局计数器，所有闭包共享，避免死循环）
+          if (_aiReconnectTotal < 1) {
+            _aiReconnectTotal++;
+            setAiStatus('⚠️ SSE 连接断开，正在重连...', 'error');
+            console.warn('[sp-ai] SSE closed, retrying once in 2s...');
+            setTimeout(() => {
+              if (_aiCurrentTaskId === taskId) {
+                subscribeAiStream(taskId);
+                notify('🔄 SSE 自动重连中…', 'info', 3000);
+              }
+            }, 2000);
+          } else {
+            setAiStatus('❌ SSE 重连失败（任务可能仍在运行，去后端查 session 状态）', 'error');
+            notify('SSE 重连失败', 'error', 8000);
+          }
+        })
+        .catch(() => {
+          // GET 失败（比如 404 session 不存在）→ 当成已结束
+          setAiStatus('⚠️ 无法查询会话状态', 'error');
+        });
+    };
+  }
+
+  // v0.118.12: 从 session messages 取最后一条 assistant 总结（onerror 终态恢复用）
+  async function fetchSessionFinalContent(sessionId) {
+    try {
+      const r = await api('GET', `/api/browser-agent/session/${encodeURIComponent(sessionId)}/messages`);
+      if (!r.ok || !Array.isArray(r.data?.messages)) return '';
+      const msgs = r.data.messages;
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].role === 'assistant' && msgs[i].content) return msgs[i].content;
+      }
+      return '';
+    } catch (e) {
+      return '';
+    }
+  }
+
+  async function sendAiReply(reply) {
+    if (!_aiCurrentTaskId || !reply) return;
+    try {
+      // v0.118.12: 回复走 browser-agent session 通道（POST /session/:id/reply { message }）
+      const r = await api('POST', `/api/browser-agent/session/${encodeURIComponent(_aiCurrentTaskId)}/reply`, { message: reply });
+      if (!r.ok) {
+        notify('回复失败: ' + (r.data?.error || r.status), 'error');
+        return;
+      }
+      hideAiWaiting();
+      setAiStatus('🤖 LLM 收到回复，继续执行...', 'running');
+      setAiInterruptEnabled(true);  // v0.118.16: resume 后回到 running，可再次介入
+      setAiPhase('running');  // v0.118.18
+      const inBar = _byId('sp-ai-input');
+      if (inBar) inBar.value = '';
+    } catch (e) {
+      notify('回复失败: ' + e.message, 'error');
+    }
+  }
+
+  async function aiPublish() {
+    const data = getComposeData();
+    if (!data.title || !data.content) return notify('请先写标题和正文', 'warn');
+    // v0.118.13: AI 模式不支持排期 —— 用户选了未来时间点 AI 会静默变立即执行（行为不一致），先拦截并指路
+    const schedVal = _byId('sp-compose-schedule')?.value;
+    if (schedVal && new Date(schedVal).getTime() > Date.now() + 60000) {
+      return notify('🤖 AI 发布暂不支持排期 — 定时发布请用「🚀 传统发布」（排期走无人值守 Provider）', 'warn');
+    }
+    if (data.platforms.length === 0) return notify('请至少勾选一个平台', 'warn');
+    if (data.platforms.length > 1) return notify('🤖 AI 模式暂只支持单平台（多平台请逐个发布）', 'warn');
+    const platform = data.platforms[0];
+    const selectedIds = (data.selected_account_ids || []).filter(Boolean);
+    if (selectedIds.length === 0) return notify('请至少选一个发布账号', 'warn');
+    const accountId = selectedIds[0];
+
+    setStatus('创建 AI 发布任务...', 'loading');
+
+    // 打开 modal + 重置
+    openAiModal();
+    setAiTaskId(null);
+    setAiStatus('🚀 创建任务...', 'running');
+    renderAiSteps([]);
+    hideAiWaiting();
+    const doneEl = _byId('sp-ai-done');
+    if (doneEl) doneEl.style.display = 'none';
+    // v0.118.x: 重置全局重连计数
+    _aiReconnectTotal = 0;
+
+    try {
+      const r = await api('POST', '/api/social-publisher/go-publish', {
+        platform,
+        account_id: accountId,
+        title: data.title,
+        content: data.content,
+        tags: data.tags || [],
+        images: data.images || [],
+      });
+      if (!r.ok) {
+        closeAiModal();
+        notify('创建任务失败: ' + (r.data?.error || r.status), 'error');
+        return;
+      }
+      setAiTaskId(r.data.task_id);
+      setAiInterruptEnabled(true);  // v0.118.16: running 中可随时 💬 介入
+      setAiPhase('running');  // v0.118.18
+      subscribeAiStream(r.data.task_id);
+    } catch (e) {
+      closeAiModal();
+      notify('创建任务失败: ' + e.message, 'error');
     }
   }
 
@@ -821,7 +1283,19 @@
   }
 
   async function deleteTask(id) {
-    if (!confirm('确认删除任务 ' + id + '？')) return;
+    // P50b: 系统弹窗零容忍 → ACMSModal（v0.118.14 清理残留 confirm）
+    const v = await window.ACMSModal.show({
+      title: '🗑 删除任务',
+      size: 'md',
+      root: wRef && wRef.$c ? wRef.$c : undefined,
+      html: `<style>.sp-confirm-danger{background:#e74c3c;color:#fff;border-color:#e74c3c}.sp-confirm-danger:hover{background:#c0392b}</style>
+        <div style="font-size:13px;color:var(--sp-text-2);line-height:1.7">确认删除任务 <b style="font-family:monospace">${esc(id)}</b>？<br><span style="font-size:11px;color:var(--sp-text-3)">若任务正在执行，删除不会停止浏览器中的操作。</span></div>`,
+      actions: [
+        { label: '取消', value: 'CANCEL', className: 'acms-modal-btn' },
+        { label: '🗑 删除', value: 'CONFIRM', className: 'acms-modal-btn sp-confirm-danger' },
+      ],
+    });
+    if (v !== 'CONFIRM') return;
     const r = await api('DELETE', `/api/tasks/${id}`);
     if (r.ok || r.status === 200) {
       notify('已删除任务 ' + id, 'success');
@@ -917,6 +1391,7 @@
             <span class="sp-card-status ${it.ok ? 'ok' : 'err'}">${it.ok ? '✓ 已发布' : '✗ 失败'}</span>
           </div>
           <div class="sp-card-meta">
+            <span title="${it.source === 'goal-driven' ? 'Web 机器人 goal-driven 执行' : 'Provider 自动化执行'}" style="font-weight:600;color:${it.source === 'goal-driven' ? 'var(--sp-accent)' : 'var(--sp-text-2)'}">${it.source === 'goal-driven' ? '🤖 AI' : '⚙️'}</span>
             <span>📱 ${esc(it.platform)}</span>
             <span>🆔 ${esc(it.id.slice(-6))}</span>
             <span>🕐 ${esc(it.completed_at || '')}</span>
@@ -934,13 +1409,90 @@
     }
   }
 
+  // v0.118.14: 统一渲染历史步骤，兼容两种 schema（同一张表）：
+  //   provider:    {name, ok, error, elapsed_ms}
+  //   goal-driven: {round, maxRounds, message, toolNames, ts, screenshot?}
+  function renderHistoryStepsHtml(steps, isAi) {
+    if (!steps || steps.length === 0) {
+      return '<div style="color:var(--sp-text-2);font-size:12px;padding:6px 0">无步骤记录</div>';
+    }
+    return steps.map((st, i) => {
+      if (isAi) {
+        const tools = (st.toolNames || []).map(t =>
+          `<span style="display:inline-block;background:var(--sp-bg-3);padding:1px 7px;border-radius:8px;font-size:10px;margin:1px 4px 1px 0;color:var(--sp-text-2)">${esc(t)}</span>`
+        ).join('');
+        const msg = esc(String(st.message || '')).slice(0, 300);
+        const shot = st.screenshot
+          ? `<div style="margin-top:4px"><img src="${esc(st.screenshot)}?api_key=${esc(SP_AK)}" alt="step ${st.round}" style="max-width:220px;max-height:140px;border-radius:4px;cursor:zoom-in;border:1px solid var(--sp-border)" onclick="window.SPView.viewScreenshot('${esc(st.screenshot)}','step-${st.round}.png','');event.stopPropagation()"></div>`
+          : '';
+        return `<div class="sp-step">
+          <div style="font-size:11px;color:var(--sp-text-2);font-weight:600">第 ${i + 1} 步 · R${st.round != null ? st.round : (i + 1)}/${st.maxRounds || '-'}</div>
+          <div style="font-size:12px;margin-top:2px;word-break:break-word">${msg || '<span style="color:var(--sp-text-3)">（无描述）</span>'}</div>
+          ${tools ? `<div style="margin-top:3px">${tools}</div>` : ''}
+          ${shot}
+        </div>`;
+      }
+      // provider schema
+      return `<div class="sp-step ${st.ok === false ? 'err' : ''}">
+        <div style="font-size:12px;font-weight:600">${i + 1}. ${esc(st.name || st.step || '?')} ${st.ok === false ? '✗' : (st.ok ? '✓' : '·')}</div>
+        ${st.error ? `<div style="font-size:11px;color:#e74c3c;margin-top:2px;font-family:monospace">${esc(st.error)}</div>` : ''}
+        ${st.elapsed_ms ? `<div style="font-size:10px;color:var(--sp-text-3);margin-top:2px">⏱️ ${st.elapsed_ms}ms</div>` : ''}
+      </div>`;
+    }).join('');
+  }
+
   async function showHistoryDetail(id) {
     const r = await api('GET', `/api/social-publisher/task-history/${id}`);
     if (!r.ok) { notify('加载详情失败', 'error'); return; }
     const it = r.data.item;
+    const isAi = it.source === 'goal-driven';
     const steps = it.steps || [];
-    const detail = `📱 ${it.platform} | ${it.completed_at}\n${it.ok ? '✅ 成功' : '❌ 失败: ' + (it.error || '未知')}\n\n${it.post_url ? '🔗 ' + it.post_url + '\n' : ''}\n步骤 (${steps.length}):\n${steps.map((s, i) => `  ${i+1}. ${s.name || s.step || '?'} — ${s.ok ? '✓' : '✗'} ${s.elapsed_ms ? `(${s.elapsed_ms}ms)` : ''}`).join('\n')}`;
-    alert(detail);
+    const contentSnippet = String(it.content || '').slice(0, 400);
+    // v0.118.14: alert → ACMSModal（P50b 零容忍清理）
+    document.querySelectorAll('.acms-modal-overlay').forEach(el => el.remove());
+    await window.ACMSModal.show({
+      title: isAi ? '🤖 AI 发布详情' : '⚙️ 发布详情',
+      size: 'lg',
+      root: wRef && wRef.$c ? wRef.$c : undefined,
+      html: `
+        <style>
+          .sp-detail-row { display:flex;gap:8px;padding:5px 0;font-size:13px;border-bottom:1px solid var(--sp-border-soft) }
+          .sp-detail-row .lbl { color:var(--sp-text-2);min-width:90px;flex-shrink:0 }
+          .sp-detail-row .val { color:var(--sp-text);flex:1;word-break:break-all }
+          .sp-step { padding:6px 10px;border-left:3px solid #4ecdc4;margin-bottom:4px;background:var(--sp-bg-2);border-radius:3px }
+          .sp-step.err { border-left-color:#e74c3c }
+        </style>
+        <div class="sp-form">
+          <div class="sp-form-row">
+            <div class="sp-detail-row"><span class="lbl">状态</span><span class="val"><b style="color:${it.ok ? '#4ecdc4' : '#e74c3c'}">${it.ok ? '✅ 已发布' : '❌ 失败'}</b></span></div>
+            <div class="sp-detail-row"><span class="lbl">方式</span><span class="val">${isAi ? '🤖 Web 机器人（goal-driven）' : '⚙️ Provider 自动化'}</span></div>
+            <div class="sp-detail-row"><span class="lbl">平台</span><span class="val">${esc(it.platform)}</span></div>
+            <div class="sp-detail-row"><span class="lbl">任务 ID</span><span class="val" style="font-family:monospace;font-size:11px">${esc(it.task_id || '-')}</span></div>
+            <div class="sp-detail-row"><span class="lbl">账号</span><span class="val" style="font-family:monospace;font-size:11px">${esc(it.account_id || '-')}</span></div>
+            <div class="sp-detail-row"><span class="lbl">完成时间</span><span class="val" style="font-size:11px">${esc(it.completed_at || '-')}</span></div>
+            ${it.total_elapsed_ms ? `<div class="sp-detail-row"><span class="lbl">总耗时</span><span class="val" style="font-size:11px">${(it.total_elapsed_ms / 1000).toFixed(1)}s</span></div>` : ''}
+            ${it.post_url ? `<div class="sp-detail-row"><span class="lbl">链接</span><span class="val"><a href="${esc(it.post_url)}" target="_blank" style="color:var(--sp-accent)">${esc(it.post_url)}</a></span></div>` : ''}
+          </div>
+          ${it.error ? `
+          <div class="sp-form-row">
+            <label>❌ 错误</label>
+            <div style="padding:8px 10px;background:rgba(231,76,60,0.1);border:1px solid #e74c3c;border-radius:4px;color:#e74c3c;font-size:12px;font-family:monospace;white-space:pre-wrap;word-break:break-word">${esc(it.error)}</div>
+          </div>` : ''}
+          <div class="sp-form-row">
+            <label>🔧 执行步骤（${steps.length}）</label>
+            ${renderHistoryStepsHtml(steps, isAi)}
+          </div>
+          ${contentSnippet ? `
+          <div class="sp-form-row">
+            <label>📝 正文预览</label>
+            <div style="padding:8px;background:var(--sp-bg-2);border:1px solid var(--sp-border);border-radius:4px;max-height:160px;overflow:auto;font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word;font-family:inherit">${esc(contentSnippet)}</div>
+          </div>` : ''}
+        </div>
+      `,
+      actions: [
+        { label: '关闭', value: 'CANCEL', className: 'acms-modal-btn' },
+      ],
+    });
   }
 
   // === Tab 8: 监控（v0.118 PR 5-6）===
@@ -1020,7 +1572,7 @@
       const html = Object.entries(groups).map(([taskId, files]) => {
         const cards = files.map(it => `
         <div class="sp-card" style="display:flex;gap:12px;align-items:center;position:relative">
-          <img src="${esc(it.url)}" style="width:200px;border-radius:4px;border:1px solid var(--sp-border)" loading="lazy">
+          <img src="${esc(it.url)}" class="sp-screenshot-thumb" loading="lazy" alt="${esc(it.filename)}" title="点击查看大图" onclick="window.SPView.viewScreenshot('${escJs(it.url)}','${escJs(it.filename)}','${escJs(it.step || '')}')">
           <div style="flex:1">
             <div class="sp-card-title">${esc(it.filename)}</div>
             <div class="sp-card-meta">
@@ -1028,7 +1580,7 @@
               <span>🕐 ${esc(it.created_at || '')}</span>
             </div>
           </div>
-          <button class="sp-btn sp-btn-sm sp-btn-danger" style="position:absolute;top:6px;right:6px;padding:2px 8px;font-size:11px" onclick="window.SPView.deleteScreenshot('${esc(it.task_id)}','${esc(it.filename)}')" title="删除这张截图">🗑</button>
+          <button class="sp-btn sp-btn-sm sp-btn-danger" style="position:absolute;top:6px;right:6px;padding:2px 8px;font-size:11px" onclick="window.SPView.deleteScreenshot('${escJs(it.task_id)}','${escJs(it.filename)}')" title="删除这张截图">🗑</button>
         </div>`).join('');
         return `
         <div style="margin-bottom:14px">
@@ -1043,6 +1595,51 @@
     } catch (e) {
       container.innerHTML = `<div class="sp-empty">加载失败: ${esc(e.message)}</div>`;
     }
+  }
+
+  // 截图大图查看器（多多要求：点击缩略图看大图）—— 全屏 lightbox
+  // 参考 image-gen.js previewImage 模式：fixed overlay + ESC/点击关闭。增强：底部 caption 显示文件名 + 步骤。
+  function viewScreenshot(url, filename, step) {
+    if (!url) return;
+    if (document.getElementById('sp-img-overlay')) return; // 防重复
+
+    const overlay = document.createElement('div');
+    overlay.id = 'sp-img-overlay';
+    overlay.className = 'sp-img-overlay';
+
+    const img = document.createElement('img');
+    // v0.118.16: lightbox 大图补 api_key —— 截图 URL 走 /api/browser-agent/screenshots/
+    //   需要鉴权（不在 auth 白名单），而 onclick 传进来的 URL 不带 key
+    let shotSrc = url;
+    if (shotSrc.indexOf('/api/') === 0 && shotSrc.indexOf('api_key=') === -1) {
+      shotSrc += (shotSrc.indexOf('?') === -1 ? '?' : '&') + 'api_key=' + encodeURIComponent(SP_AK);
+    }
+    img.src = shotSrc;
+    img.alt = filename || '截图';
+
+    const caption = document.createElement('div');
+    caption.className = 'sp-img-overlay-caption';
+    const parts = [];
+    if (step) parts.push(`步骤 ${step}`);
+    if (filename) parts.push(filename);
+    caption.textContent = parts.length ? parts.join(' · ') + ' · 点击或 ESC 关闭' : '点击或 ESC 关闭';
+
+    overlay.appendChild(img);
+    overlay.appendChild(caption);
+
+    const close = () => {
+      const el = document.getElementById('sp-img-overlay');
+      if (el) el.remove();
+      document.removeEventListener('keydown', onEsc);
+    };
+    const onEsc = (e) => { if (e.key === 'Escape') close(); };
+
+    // 点击图片本身不关闭（用户可能想点开图片右键保存）；点击遮罩关闭
+    img.addEventListener('click', (e) => e.stopPropagation());
+    overlay.addEventListener('click', close);
+    document.addEventListener('keydown', onEsc);
+
+    document.body.appendChild(overlay);
   }
 
   // 删除单张截图（多多要求：截图回看记录允许删除）—— 用 ACMSModal 替代系统 confirm 弹窗
@@ -1472,6 +2069,69 @@
       publishBtn.addEventListener('click', composePublish);
       cleanupFns.push(() => publishBtn.removeEventListener('click', composePublish));
     }
+    // v0.118.x: 🤖 AI 发布按钮（goal-driven 模式）
+    const aiPublishBtn = _byId('sp-compose-ai-publish');
+    if (aiPublishBtn) {
+      aiPublishBtn.addEventListener('click', aiPublish);
+      cleanupFns.push(() => aiPublishBtn.removeEventListener('click', aiPublish));
+    }
+    // AI modal 关闭按钮：点 X 只软关（任务继续），再次点击 ✕ 彻底取消
+    let _aiCloseConfirm = false;
+    const aiClose = _byId('sp-ai-close');
+    if (aiClose) {
+      const closeHandler = () => {
+        if (_aiEventSource && !_aiCloseConfirm) {
+          // 第一次点 X：软关（modal 隐藏，SSE 继续，waiting_user 来会 reopen）
+          closeAiModal();
+          _aiCloseConfirm = true;
+          aiClose.textContent = '✕ 取消任务';
+          aiClose.title = '再点一次彻底关闭（放弃后台任务）';
+          notify('已隐藏 modal — 任务继续在后台，LLM 求助时会自动弹回', 'info', 5000);
+        } else {
+          // 第二次点 X：硬关
+          forceCloseAiModal();
+          _aiCloseConfirm = false;
+          aiClose.textContent = '✕';
+          aiClose.title = '关闭（任务继续在后台跑）';
+          notify('任务已取消', 'warn');
+        }
+      };
+      aiClose.addEventListener('click', closeHandler);
+      cleanupFns.push(() => aiClose.removeEventListener('click', closeHandler));
+    }
+    // v0.118.16: 💬 介入 —— 人主动发起求助（Agent 暂停等人工输入）
+    const aiInterruptBtn = _byId('sp-ai-interrupt');
+    if (aiInterruptBtn) {
+      aiInterruptBtn.addEventListener('click', requestAiInterrupt);
+      cleanupFns.push(() => aiInterruptBtn.removeEventListener('click', requestAiInterrupt));
+    }
+    // v0.118.18: 常驻输入条 —— 发送按钮 + Enter 快捷键（Shift+Enter 换行）
+    const aiSendBtn = _byId('sp-ai-input-send');
+    if (aiSendBtn) {
+      aiSendBtn.addEventListener('click', aiSendFromBar);
+      cleanupFns.push(() => aiSendBtn.removeEventListener('click', aiSendFromBar));
+    }
+    const aiInputEl = _byId('sp-ai-input');
+    if (aiInputEl) {
+      const keyHandler = (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          aiSendFromBar();
+        }
+      };
+      aiInputEl.addEventListener('keydown', keyHandler);
+      cleanupFns.push(() => aiInputEl.removeEventListener('keydown', keyHandler));
+      // 高度自适应（1-4 行）
+      aiInputEl.addEventListener('input', () => {
+        aiInputEl.style.height = 'auto';
+        aiInputEl.style.height = Math.min(aiInputEl.scrollHeight, 90) + 'px';
+      });
+    }
+    document.querySelectorAll('#sp-ai-waiting-options [data-reply]').forEach(btn => {
+      const handler = () => sendAiReply(btn.dataset.reply);
+      btn.addEventListener('click', handler);
+      cleanupFns.push(() => btn.removeEventListener('click', handler));
+    });
 
     // 队列
     const clearBtn = _byId('sp-queue-clear-done');
@@ -1769,6 +2429,7 @@
     showTaskDetail,  // v0.118.5: 任务详情弹窗（metadata + content + steps + error）
     deleteScreenshot,  // v0.118.2: 截图回看单条删除
     deleteScreenshotsByTask,  // v0.118.2: 截图回看整批删除
+    viewScreenshot,  // v0.118.x: 截图回看点击看大图（lightbox）
     refresh: () => { switchTab(currentTab); loadDrawer(); },
   };
 })();

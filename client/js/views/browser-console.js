@@ -1,5 +1,20 @@
-// ACMS Web 机器人视图 v1.5 —— 静态截图 + 右侧「执行步骤&对话」固定面板
+// ACMS Web 机器人视图 v1.6.6 —— 引擎可切换：内置(agent-browser) ⇄ 远程预览(稳定 Puppeteer 同屏)
 // ============================================================
+// v1.6.6（2026-09-07）：右侧步骤面板可折叠（◀/▶，localStorage 记忆）—— 收起后画面最大化，
+//   浏览体验对齐「浏览器应用」（画面实测 578px → ~918px 全宽）。
+// v1.6.5（2026-09-07 修复）：主画面 img 加 width/height:100% + min-width:0（flex min-width:auto
+//   撑爆容器 → 右侧被裁一条）；object-fit:contain 等比完整显示。
+// v1.6.4（2026-09-07）：底部加 ◀后退/▶前进/⟳刷新 导航键（远程预览模式可用，CLI 禁用）。
+// v1.6.3（2026-09-07）：浏览器应用同款「直接输入」—— 点画面后隐藏 IME textarea 桥，
+//   直接打字即上屏（中文 IME 合成 end 整段 / 英文 input 即发；控制键转发）。⌨️ 浮层保留备用。
+// v1.6.2（2026-09-07 修复）：点画面时清空本地焦点（否则打字被底部目标框吃掉）；
+//   ⌨️ 浮层 Enter=直接上屏、Esc=关闭、打开时自动抢占焦点。
+// v1.6.1（2026-09-07 修复）：主画面全链路按住-拖动-松开（百度滑块验证不再拖整图）；
+//   恢复 ⌨️ 键盘浮层（点画面输入框落位 → 打字上屏/回车/退格/Tab/Esc）。
+// v1.6（多多拍板 2026-09-07）：给 Web机器人加「远程预览」模式 —— agent 驱动 app-runtime 稳定
+//   Puppeteer 会话（人与 agent 同一浏览器同一画面），主画面 = 实时帧流；人可随时 ⏹停止 /
+//   上手操作（点击/滚轮/悬停走 /api/app-runtime/input）/ 给新指示（interrupt）；
+//   web_* 动作经 puppeteer-driver 落到该会话。CLI 内置引擎行为不变（无 appSessionId 时）。
 // v1.5（多多要求）：
 //   - 布局：左栏会话列表 + 主区（左静态截图 / 右 340px 固定面板：执行步骤&对话流混排）
 //   - 删除浮动抽屉对话流 / mini 气泡 / chat-toggle 按钮 —— 对话流并入右侧固定面板
@@ -22,6 +37,15 @@
   let _sessions = []; // [{id, title, createdAt, updatedAt, messageCount}]
   let _currentSessionId = null;
   let _currentMessages = []; // 当前会话的消息（in-memory）
+
+  // ── v1.6 引擎模式：内置(CLI agent-browser) ⇄ 远程预览(稳定 app-runtime Puppeteer 同屏) ──
+  const PP_LS_KEY = 'wb-engine-mode-v1';          // 'cli' | 'pp'
+  const PP_SESSION_LS_KEY = 'wb-pp-app-session-v1';
+  function loadEngineMode() {
+    try { return localStorage.getItem(PP_LS_KEY) === 'pp'; } catch (e) { return false; }
+  }
+  let _ppMode = loadEngineMode();                 // true = 远程预览（Puppeteer）模式
+  let _pp = { appSessionId: null, ws: null, ready: false, viewport: null, lastUrl: '', ensurePromise: null };
 
   const CSS = `
   <style>
@@ -52,9 +76,11 @@
     .wb-btn:hover { border-color:var(--accent,#4f8cff); }
     .wb-btn-mini { background:transparent; border:1px solid var(--border,#333); border-radius:6px;
       padding:4px 8px; font-size:14px; cursor:pointer; color:var(--text); line-height:1; }
-    .wb-btn-mini:hover { border-color:var(--accent); }
+    .wb-btn-mini:disabled { opacity:.35; cursor:not-allowed; }
+    .wb-btn-mini:hover:not(:disabled) { border-color:var(--accent); }
     .wb-btn-primary { background:var(--accent,#4f8cff); color:#fff; border:none; border-radius:6px;
       padding:6px 16px; font-size:13px; cursor:pointer; font-weight:500; white-space:nowrap; }
+    .wb-btn.on { background:var(--accent,#4f8cff); color:#fff; border-color:var(--accent,#4f8cff); }
     .wb-btn-primary:disabled { opacity:.45; cursor:not-allowed; }
 
     .wb-body { display:flex; flex:1; min-height:0; min-width:0; }
@@ -87,10 +113,18 @@
     /* 主区 — 左静态截图 + 右「执行步骤&对话」固定面板（v1.5） */
     .wb-preview { flex:1; background:var(--bg2,#23262e); display:flex; align-items:center;
       justify-content:center; position:relative; overflow:hidden; min-width:0; }
-    .wb-preview img { max-width:100%; max-height:100%; object-fit:contain; display:block; cursor:zoom-in; }
+    .wb-preview img { width:100%; height:100%; min-width:0; min-height:0; object-fit:contain; display:block; }
+    /* v1.6.5: 上面 img 必须 width/height:100% + min-width:0 —— flex item 对图片默认
+       min-width:auto=原始像素宽(1100+)，会把容器撑爆导致右侧被 overflow:hidden 裁掉一条 */
     .wb-preview-ph { color:var(--text2,#777); font-size:13px; padding:20px; text-align:center; line-height:1.6; }
     .wb-steps { flex:0 0 340px; min-width:280px; max-width:440px; border-left:1px solid var(--border,#333);
-      background:var(--bg,#1a1d23); display:flex; flex-direction:column; overflow:hidden; }
+      background:var(--bg,#1a1d23); display:flex; flex-direction:column; overflow:hidden; transition:flex-basis .18s ease, min-width .18s ease; }
+    /* v1.6.6: 右侧面板可折叠 —— 收起后画面最大化（浏览器应用式浏览） */
+    .wb-steps.collapsed { flex:0 0 26px; min-width:26px; max-width:26px; }
+    .wb-steps.collapsed .wb-steps-body { display:none; }
+    .wb-steps.collapsed .wb-steps-header { flex-direction:column; padding:6px 0; justify-content:flex-start; gap:8px; }
+    .wb-steps.collapsed .wb-steps-title,
+    .wb-steps.collapsed .wb-steps-progress { display:none; }
     .wb-steps-header { padding:8px 12px; font-size:12px; color:var(--text2,#999); font-weight:600;
       border-bottom:1px solid var(--border); flex-shrink:0; display:flex; justify-content:space-between; align-items:center; }
     .wb-steps-body { flex:1; overflow-y:auto; padding:10px; display:flex; flex-direction:column; gap:8px; }
@@ -118,6 +152,8 @@
     .wb-help input { flex:1; min-width:0; padding:6px 10px; border:1px solid #856404;
       border-radius:4px; background:#fff; color:#333; font-size:12px; outline:none; }
 
+    /* v1.6.1: 主画面 = 同屏操控面（禁原生拖图/选中；打字走 ⌨️ 浮层） */
+    #wb-last-shot { user-select:none; -webkit-user-drag:none; cursor:crosshair; }
     /* 底部固定：工具栏 + 输入条 */
     .wb-bottombar { padding:8px 12px; border-top:1px solid var(--border);
       display:flex; gap:6px; align-items:center; background:var(--bg2,#23262e);
@@ -173,6 +209,155 @@
     return Math.floor(diff / 86400000) + ' 天前';
   }
 
+  // ═══════════════════════════════════════════════════════
+  // v1.6 远程预览（Puppeteer app-runtime）引擎
+  //  agent 的 web_* 动作经 puppeteer-driver 驱动同一 app-runtime 会话，
+  //  前端只负责：建/复用会话 → 收实时帧上主画面 → 人工输入转发到该会话
+  // ═══════════════════════════════════════════════════════
+  function ppHeaders() { return { 'Content-Type': 'application/json', 'X-API-Key': AK_VALUE }; }
+  async function ppApi(method, path, body) {
+    const res = await fetch('/api/app-runtime' + path + '?api_key=' + encodeURIComponent(AK_VALUE), {
+      method, headers: ppHeaders(), body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    return data;
+  }
+  function ppActive() { return _ppMode && !!_pp.appSessionId; }
+  // 复用/新建 app-runtime 会话（幂等）。ACMS 重启后旧 appSessionId 已失效 → 自动新建。
+  function ensureAppSession(root) {
+    if (_pp.ensurePromise) return _pp.ensurePromise;
+    _pp.ensurePromise = (async () => {
+      let sid = null;
+      try { sid = localStorage.getItem(PP_SESSION_LS_KEY); } catch (e) {}
+      if (sid) {
+        try {
+          const lst = await ppApi('GET', '/sessions');
+          const arr = (lst && lst.sessions) || (Array.isArray(lst) ? lst : []);
+          const alive = arr.some(s => (s.sessionId || s.id) === sid);
+          if (!alive) sid = null;
+        } catch (e) { sid = null; }
+      }
+      if (!sid) {
+        const r = await ppApi('POST', '/open', { url: 'about:blank', w: 1100, h: 700 });
+        sid = (r && r.session && r.session.sessionId) || (r && r.sessionId);
+        if (!sid) throw new Error('app-runtime 会话创建失败');
+        try { localStorage.setItem(PP_SESSION_LS_KEY, sid); } catch (e) {}
+      }
+      _pp.appSessionId = sid;
+      if (!_pp.viewport) _pp.viewport = { width: 1100, height: 700 };
+      connectPpStream(root);
+      return sid;
+    })().finally(() => { _pp.ensurePromise = null; });
+    return _pp.ensurePromise;
+  }
+  function connectPpStream(root) {
+    if (!_pp.appSessionId) return;
+    try { if (_pp.ws) { _pp.ws.onclose = null; _pp.ws.close(); } } catch (e) {}
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(proto + '//' + location.host + '/ws/app-runtime/' + _pp.appSessionId);
+    _pp.ws = ws;
+    ws.onopen = () => {
+      _pp.ready = true;
+      setStatus(root, '🖥 远程预览已连接（实时同屏）—— 底部输入目标即可开始');
+      healthCheck(root);
+    };
+    ws.onmessage = (ev) => {
+      let msg; try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      if (msg.type === 'frame' && msg.data && _ppMode) {
+        showPpFrame(root, msg.data, msg.metadata);
+      } else if (msg.type === 'navigated' && msg.url) {
+        _pp.lastUrl = msg.url;
+        if (_ppMode) setStatus(root, '🌐 ' + String(msg.url).slice(0, 90));
+      } else if (msg.type === 'error') {
+        if (_ppMode) setStatus(root, '远程预览错误: ' + (msg.message || ''));
+      } else if (msg.type === 'closed' || msg.type === 'idle-closed') {
+        _pp.ready = false;
+        if (_ppMode) setStatus(root, '⚠️ 远程预览会话已关闭' + (msg.reason === 'idle-timeout' ? '（闲置超时）—— 重新发消息会自动重建' : ''));
+        healthCheck(root);
+      }
+    };
+    ws.onclose = () => {
+      _pp.ready = false;
+      if (_pp.ws === ws) _pp.ws = null;
+      if (_ppMode) healthCheck(root);
+    };
+    ws.onerror = () => { try { ws.close(); } catch (e) {} };
+  }
+  function showPpFrame(root, b64, metadata) {
+    const img = el('wb-last-shot', root);
+    const ph = el('wb-preview-ph', root);
+    if (!img) return;
+    if (metadata && metadata.deviceWidth) _pp.viewport = { width: metadata.deviceWidth, height: metadata.deviceHeight };
+    img.src = 'data:image/jpeg;base64,' + b64;
+    img.style.display = 'block';
+    if (ph) ph.style.display = 'none';
+  }
+  // 人工直接操控（远程预览模式）：与 agent 同一 Puppeteer 会话
+  function ppSendInput(ev) {
+    if (!_pp.appSessionId) return Promise.reject(new Error('无远程预览会话'));
+    return ppApi('POST', '/input', Object.assign({ sessionId: _pp.appSessionId }, ev))
+      .then(r => { if (r && r.error) throw new Error(r.error); return r; });
+  }
+  function setModeUi(root) {
+    const btn = el('wb-mode', root);
+    if (!btn) return;
+    btn.textContent = _ppMode ? '🖥 远程预览 ●' : '🖥 远程预览';
+    btn.classList.toggle('on', _ppMode);
+    btn.title = _ppMode
+      ? '当前：远程预览（稳定 Puppeteer，画面实时同屏，人可接管/停止/给指示）。点击切回内置引擎'
+      : '当前：内置引擎（agent-browser daemon）。点击切换「远程预览」—— 稳定 Puppeteer 会话，画面同屏实时';
+    // v1.6.4: 导航键（后退/前进/刷新）仅远程预览可用（CLI 引擎无历史 API）
+    const nav = ['wb-back', 'wb-forward', 'wb-reload'];
+    nav.forEach((id) => { const b = el(id, root); if (b) b.disabled = !_ppMode; });
+  }
+  async function togglePpMode(root) {
+    if (_es) {
+      setStatus(root, '任务执行中：先 ⏹ 停止（或等它完成）再切换引擎');
+      return;
+    }
+    _ppMode = !_ppMode;
+    try { localStorage.setItem(PP_LS_KEY, _ppMode ? 'pp' : 'cli'); } catch (e) {}
+    setModeUi(root);
+    if (_ppMode) {
+      // 进入远程预览：断开 CLI CDP 链（避免两套浏览器状态混淆）
+      try { if (_cdp.ws) _cdp.ws.close(); } catch (e) {}
+      _cdp.ws = null; _cdp.sessionId = null;
+      _pp.appSessionId = null; _pp.ready = false;
+      setStatus(root, '🖥 正在启动远程预览（Puppeteer 同屏）…');
+      ensureAppSession(root).then(() => {
+        if (_pp.ws && _pp.ws.readyState === 1) setStatus(root, '🖥 远程预览已连接 —— 可以给目标了');
+      }).catch(err => setStatus(root, '远程预览启动失败: ' + err.message));
+    } else {
+      // 退出远程预览：断开帧流；服务端会话保留（闲置 30min 自动回收），下次开启可复用登录态
+      try { if (_pp.ws) _pp.ws.close(); } catch (e) {}
+      _pp.ws = null; _pp.ready = false;
+      try { if (_imeTa) _imeTa.blur(); } catch (e) {} // v1.6.3: 让出页面输入焦点
+      connectCDP(root);
+      refreshViewport(root);
+      setStatus(root, '⚙️ 已切回内置引擎（agent-browser）');
+    }
+    healthCheck(root);
+  }
+  // 统一确认弹层（P50b：禁用 window.confirm —— ACMS 风格遮罩）
+  function askConfirm(title, desc, okLabel) {
+    return new Promise((resolve) => {
+      const ov = document.createElement('div');
+      ov.style.cssText = 'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;';
+      ov.innerHTML = '<div style="background:var(--bg2,#23262e);color:var(--text,#e8e8e8);border:1px solid var(--border,#4a4e58);border-radius:10px;padding:18px 22px;min-width:300px;max-width:440px;box-shadow:0 12px 40px rgba(0,0,0,.6);font-size:13px;">' +
+        '<div style="font-weight:600;font-size:14px;margin-bottom:8px;">' + esc(title) + '</div>' +
+        '<div style="color:var(--text2,#9aa0a6);margin-bottom:16px;line-height:1.5;">' + esc(desc) + '</div>' +
+        '<div style="display:flex;justify-content:flex-end;gap:10px;">' +
+        '<button data-v="0" style="padding:6px 14px;border-radius:6px;border:1px solid var(--border,#4a4e58);background:transparent;color:var(--text,#e8e8e8);cursor:pointer;">取消</button>' +
+        '<button data-v="1" style="padding:6px 14px;border-radius:6px;border:none;background:#e74c3c;color:#fff;cursor:pointer;">' + esc(okLabel || '确认') + '</button>' +
+        '</div></div>';
+      const done = (v) => { try { ov.remove(); } catch (e) {} resolve(v); };
+      ov.addEventListener('click', (e) => { if (e.target === ov) done(false); });
+      ov.querySelectorAll('button[data-v]').forEach(b => b.addEventListener('click', () => done(b.dataset.v === '1')));
+      document.body.appendChild(ov);
+    });
+  }
+
   // ── Render 入口 ──
   function render(w) {
     const root = w.$c || document;
@@ -183,6 +368,7 @@
         <span class="wb-health gray" id="wb-health" title="点击查看详细检测"><span class="wb-health-dot" id="wb-health-dot"></span><span class="wb-health-text" id="wb-health-text">检测中</span></span>
         <span class="wb-status" id="wb-status">就绪</span>
         <button class="wb-btn" id="wb-new" title="新建会话">+ 新会话</button>
+        <button class="wb-btn" id="wb-mode" title="切换引擎：内置(agent-browser) ⇄ 远程预览(稳定 Puppeteer 同屏)">🖥 远程预览</button>
         <button class="wb-btn" id="wb-settings" title="设置">⚙️</button>
       </header>
       <div class="wb-body">
@@ -196,19 +382,24 @@
         <div class="wb-content">
         <main class="wb-main">
           <div class="wb-preview" id="wb-preview">
-            <img id="wb-last-shot" src="" alt="最后截图" style="display:none" onclick="openImagePreview(this.src);event.stopPropagation();">
-            <div class="wb-preview-ph" id="wb-preview-ph">🖥️ Web 机器人<br>执行中自动更新步骤截图<br><span style="font-size:11px;opacity:.7">点击截图可放大 · 点击/滚轮可直接操控浏览器</span></div>
+            <img id="wb-last-shot" src="" alt="最后截图" draggable="false"
+              style="display:none;user-select:none;-webkit-user-drag:none;cursor:crosshair;touch-action:none">
+            <div class="wb-preview-ph" id="wb-preview-ph">🖥️ Web 机器人<br>执行中自动更新步骤截图<br><span style="font-size:11px;opacity:.7">画面可点击 / 按住拖动（滑块验证）/ 滚轮操控 · 打字请点 ⌨️</span></div>
           </div>
           <!-- v1.5: 右侧固定面板 —— 对话流 + 执行步骤（替代抽屉浮窗） -->
           <div class="wb-steps" id="wb-steps">
-            <div class="wb-steps-header"><span>📋 执行步骤 &amp; 对话</span><span id="wb-steps-progress" style="font-size:10px;color:#4f8cff;">等待开始</span></div>
+            <div class="wb-steps-header"><span class="wb-steps-title">📋 执行步骤 &amp; 对话</span><span class="wb-steps-progress" id="wb-steps-progress" style="font-size:10px;color:#4f8cff;">等待开始</span><button class="wb-btn-mini" id="wb-steps-toggle" title="折叠/展开右侧面板（折叠后画面最大化，像浏览器应用）" style="font-size:11px;padding:2px 6px;">◀</button></div>
             <div class="wb-steps-body" id="wb-steps-list"><div class="wb-steps-empty">等待智能体开始执行…<br>对话与每轮操作（工具调用、截图、描述）会在此显示</div></div>
           </div>
         </main>
           <div class="wb-bottombar">
+            <button class="wb-btn-mini" id="wb-back" title="◀ 后退（远程预览模式可用）">◀</button>
+            <button class="wb-btn-mini" id="wb-forward" title="▶ 前进（远程预览模式可用）">▶</button>
+            <button class="wb-btn-mini" id="wb-reload" title="⟳ 刷新（远程预览模式可用）">⟳</button>
             <button class="wb-btn-mini" id="wb-screenshot" title="截图">📷</button>
             <button class="wb-btn-mini" id="wb-stop" title="停止">⏹</button>
             <button class="wb-btn-mini" id="wb-clear-conv" title="清空当前对话">🗑</button>
+            <button class="wb-btn-mini" id="wb-keys" title="键盘输入 —— 先点画面里的输入框让光标落位，再打字上屏">⌨️</button>
             <textarea class="wb-input" id="wb-input" placeholder="输入目标或继续问（Enter 发送 / Shift+Enter 换行）…" rows="1"></textarea>
             <button class="wb-btn-primary" id="wb-send">发送</button>
           </div>
@@ -217,17 +408,36 @@
     </div>`;
 
     bindEvents(root);
-    connectCDP(root);
-    refreshViewport(root);
+    setModeUi(root);
+    if (_ppMode) {
+      // v1.6: 远程预览引擎 —— 建/复用 app-runtime Puppeteer 会话（主画面 = 实时帧流）
+      ensureAppSession(root).catch(e => setStatus(root, '远程预览浏览器启动失败: ' + e.message));
+    } else {
+      connectCDP(root);
+      refreshViewport(root);
+    }
     bindPreviewControls(root);
     initSessionStore(root);
+    applyStepsCollapsed(root); // v1.6.6
     startHealthCheck(root); // v1.1 健康检查：启动状态灯定时检测
-    setStatus(root, '就绪 —— 🦾 给目标它自动做；多轮对话有上下文（阶段1+2：前端布局+会话管理，后端联调待阶段4）');
+    setStatus(root, _ppMode
+      ? '🖥 远程预览模式 —— 给目标它自动做；画面实时同屏，可随时 ⏹停止 / 上手操作 / 给新指示'
+      : '就绪 —— 🦾 给目标它自动做；多轮对话有上下文；顶栏可切换「远程预览」引擎');
   }
 
   function setStatus(root, msg) {
     const s = el('wb-status', root);
     if (s) s.textContent = msg;
+  }
+
+  // v1.6.6: 右侧面板折叠状态（localStorage 记忆；收起后画面最大化）
+  function applyStepsCollapsed(root) {
+    const steps = el('wb-steps', root);
+    const btn = el('wb-steps-toggle', root);
+    let collapsed = false;
+    try { collapsed = localStorage.getItem('wb-steps-collapsed') === '1'; } catch (e) {}
+    if (steps) steps.classList.toggle('collapsed', collapsed);
+    if (btn) btn.textContent = collapsed ? '▶' : '◀';
   }
 
   // ── 会话管理 ──
@@ -271,8 +481,9 @@
     // 异步拉历史 messages（前端 localStorage 有但后端可能已丢；404 走空对话兜底）
     loadSessionMessages(root, sessionId);
   }
-  function deleteSession(root, sessionId) {
-    if (!confirm('删除这个会话？')) return;
+  async function deleteSession(root, sessionId) {
+    const ok = await askConfirm('删除会话', '删除这个会话？对话历史将从列表中移除（服务端记录同步删除）。', '删除');
+    if (!ok) return;
     _sessions = _sessions.filter(s => s.id !== sessionId);
     saveSessions();
     if (_currentSessionId === sessionId) {
@@ -390,18 +601,31 @@
     list.innerHTML = html;
     list.scrollTop = list.scrollHeight;
 
-    // v1.5: 最新带截图的步骤 → 更新主画面静态截图
+    // v1.5: 最新带截图的步骤 → 更新主画面静态截图（v1.6: 远程预览模式主画面是实时帧流，不被覆盖）
     const lastWithShot = steps.slice().reverse().find(s => s.screenshot || s.screenshotPath);
     const shot = lastWithShot && (lastWithShot.screenshot || lastWithShot.screenshotPath);
-    if (shot) showLastScreenshot(root, shotUrl(shot));
+    if (shot && !ppActive()) showLastScreenshot(root, shotUrl(shot));
   }
 
   // ── 发送消息（阶段4 接 task-runner session/*） ──
-  function sendMessage(root) {
+  async function sendMessage(root) {
     const input = el('wb-input', root);
     const text = (input.value || '').trim();
     if (!text) return;
     if (_es) { _es.close(); _es = null; _currentTaskId = null; }
+
+    if (_ppMode) {
+      // v1.6 远程预览：先确保 Puppeteer 会话活着（ACMS 重启后自动重建），再发目标
+      setStatus(root, '🔌 检查远程预览会话…');
+      el('wb-send', root).disabled = true;
+      try { await ensureAppSession(root); }
+      catch (e) {
+        el('wb-send', root).disabled = false;
+        setStatus(root, '远程预览浏览器启动失败：' + e.message);
+        appendMessage(root, { role: 'assistant', content: '⚠️ 远程预览启动失败：' + e.message, ts: Date.now() });
+        return;
+      }
+    }
 
     appendMessage(root, { role: 'user', content: text, ts: Date.now() });
     input.value = '';
@@ -414,7 +638,7 @@
       renderSessionList(root);
     }
 
-    setStatus(root, '🤖 启动智能体…');
+    setStatus(root, _ppMode ? '🤖 启动智能体（远程预览引擎）…' : '🤖 启动智能体…');
     el('wb-send', root).disabled = true;
 
     // 决定调用哪个端点：首个 turn 用 /session/start，后续用 /session/:id/turn
@@ -423,7 +647,10 @@
       ? '/session/start'
       : '/session/' + encodeURIComponent(_currentSessionId) + '/turn';
 
-    api('POST', url, { sessionId: _currentSessionId, message: text, title: sess ? sess.title : undefined })
+    api('POST', url, {
+      sessionId: _currentSessionId, message: text, title: sess ? sess.title : undefined,
+      appSessionId: _ppMode ? _pp.appSessionId : undefined,
+    })
       .then((r) => {
         if (!r || !r.ok) throw new Error(r && r.error || '启动失败');
         _currentTaskId = r.taskId || ('ws-' + Date.now().toString(36));
@@ -530,7 +757,10 @@
     }
     appendMessage(root, { role: 'user', content: '[回复] ' + reply, ts: Date.now() });
     setStatus(root, '🤖 已收到你的回复，智能体继续…');
-    api('POST', '/session/' + encodeURIComponent(_currentSessionId) + '/reply', { message: reply })
+    api('POST', '/session/' + encodeURIComponent(_currentSessionId) + '/reply', {
+      message: reply,
+      appSessionId: _ppMode ? _pp.appSessionId : undefined,
+    })
       .then((r) => {
         if (r && r.ok) {
           // resume 后 SSE 复用同一 stream（taskId 没变），新的 step/done 会继续推
@@ -608,10 +838,16 @@
       setStatus(root, '已创建新会话');
       el('wb-input', root).focus();
     });
+    // v1.6: 引擎切换 —— 内置(agent-browser) ⇄ 远程预览(稳定 Puppeteer 同屏)
+    el('wb-mode', root).addEventListener('click', () => togglePpMode(root));
 
     const doSend = () => sendMessage(root);
     el('wb-send', root).addEventListener('click', doSend);
     const input = el('wb-input', root);
+    input.addEventListener('focus', () => {
+      // v1.6.3: 用户要点底部框给智能体发消息 → 让出页面输入焦点（隐藏 IME 框 blur）
+      try { if (_imeTa) _imeTa.blur(); } catch (e) { /* ignore */ }
+    });
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
@@ -624,8 +860,9 @@
       input.style.height = Math.min(80, input.scrollHeight) + 'px';
     });
 
-    el('wb-clear-all', root).addEventListener('click', () => {
-      if (!confirm('清空所有会话？此操作不可恢复。')) return;
+    el('wb-clear-all', root).addEventListener('click', async () => {
+      const ok = await askConfirm('清空所有会话', '清空所有会话？此操作不可恢复。', '清空');
+      if (!ok) return;
       _sessions = [];
       saveSessions();
       _currentSessionId = createSession('新会话');
@@ -634,29 +871,61 @@
       renderPanel(root);
       setStatus(root, '已清空所有会话');
     });
-    el('wb-clear-conv', root).addEventListener('click', () => {
-      if (!confirm('清空当前会话的对话？')) return;
+    el('wb-clear-conv', root).addEventListener('click', async () => {
+      const ok = await askConfirm('清空当前对话', '清空当前会话的对话？右侧面板将重置。', '清空');
+      if (!ok) return;
       _currentMessages = [];
       renderPanel(root);
       const sess = _sessions.find(s => s.id === _currentSessionId);
       if (sess) { sess.messageCount = 0; saveSessions(); renderSessionList(root); }
       setStatus(root, '已清空当前对话');
     });
+    // v1.6.6: 折叠/展开右侧步骤面板
+    el('wb-steps-toggle', root).addEventListener('click', () => {
+      const steps = el('wb-steps', root);
+      const btn = el('wb-steps-toggle', root);
+      if (!steps) return;
+      const nowCollapsed = !steps.classList.contains('collapsed');
+      steps.classList.toggle('collapsed', nowCollapsed);
+      if (btn) btn.textContent = nowCollapsed ? '▶' : '◀';
+      try { localStorage.setItem('wb-steps-collapsed', nowCollapsed ? '1' : '0'); } catch (e) {}
+      setStatus(root, nowCollapsed ? '右侧面板已收起 —— 画面最大化（再点 ▶ 展开）' : '右侧面板已展开');
+    });
+    // v1.6.1: ⌨️ 键盘浮层 —— 直接给同屏浏览器输入文字/按键
+    el('wb-keys', root).addEventListener('click', () => openKeysModal(root));
+    // v1.6.4: 导航键（仅远程预览模式；setModeUi 控制 disabled）
+    const navDo = (type, doneMsg) => {
+      if (!ppActive()) { setStatus(root, '导航键仅远程预览模式可用'); return; }
+      ppSendInput({ type }).then(() => setStatus(root, doneMsg)).catch(err => setStatus(root, String(doneMsg || type) + ' 失败: ' + err.message));
+    };
+    el('wb-back', root).addEventListener('click', () => navDo('back', '◀ 后退'));
+    el('wb-forward', root).addEventListener('click', () => navDo('forward', '▶ 前进'));
+    el('wb-reload', root).addEventListener('click', () => navDo('reload', '⟳ 已刷新页面'));
     el('wb-screenshot', root).addEventListener('click', async () => {
+      if (_ppMode) {
+        setStatus(root, '🖥 远程预览为实时同屏画面 —— 每步执行会自动在右侧留截图证据');
+        return;
+      }
       try {
         const r = await api('POST', '/screenshot', {});
         setStatus(root, '📷 截图已存：' + (r.path || ''));
       } catch (e) { setStatus(root, '截图失败：' + e.message); }
     });
     el('wb-stop', root).addEventListener('click', () => {
-      if (_es) { _es.close(); _es = null; _currentTaskId = null; }
-      setStatus(root, '⏹ 已停止当前任务');
+      // v1.6: 真正请求停止 —— interrupt（Agent 当前动作结束后暂停进 waiting_user，
+      // 人在右侧面板回复新指示后继续；不再假装停止只关 SSE）
+      if (_es && _currentSessionId) {
+        setStatus(root, '⏹ 已请求停止，Agent 将在当前动作结束后暂停…可在右侧面板回复新指示');
+        api('POST', '/session/' + encodeURIComponent(_currentSessionId) + '/interrupt', {}).catch(() => {});
+      } else {
+        setStatus(root, '当前没有正在执行的任务');
+      }
     });
     el('wb-settings', root).addEventListener('click', () => {
       // v1.1 设置面板：模型 / CDP / 浮窗显式颜色（替代暂未实现的 alert）
       const currentModel = (window.ACMSConfig && window.ACMSConfig.defaultModel) || '系统默认';
       const cdpRetry = (window._cdp && window._cdp.maxRetry) ? window._cdp.maxRetry : 3;
-      const panelHtml = `<div style="position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;" onclick="if(event.target===this)this.remove()"><div style="background:#23262e;color:#e8e8e8;border:1px solid #4a4e58;border-radius:10px;padding:20px;width:420px;max-width:90vw;box-shadow:0 12px 40px rgba(0,0,0,.6);font-size:13px;" onclick="event.stopPropagation()"><h3 style="margin:0 0 14px;font-size:15px;font-weight:600;color:#fff;">⚙️ Web机器人 设置</h3><div style="margin-bottom:12px;"><label style="display:block;font-weight:600;color:#c8ccd4;margin-bottom:4px;font-size:12px;">模型策略</label><select id="wb-set-model" style="width:100%;padding:6px 10px;background:#1a1d24;color:#e8e8e8;border:1px solid #4a4e58;border-radius:6px;font-size:12px;outline:none;"><option value="default" ${(currentModel==='系统默认')?'selected':''}>系统默认（跟随 ACMS 设置）</option><option value="deepseek" ${(currentModel==='deepseek')?'selected':''}>DeepSeek</option><option value="minimax" ${(currentModel==='minimax')?'selected':''}>MiniMax</option></select><div style="font-size:10px;color:#9aa0a6;margin-top:4px;">多多拍板：任务型 agent 优先跟随系统默认生成模型（v0.2）</div></div><div style="margin-bottom:12px;"><label style="display:block;font-weight:600;color:#c8ccd4;margin-bottom:4px;font-size:12px;">CDP 双向控制</label><div style="display:flex;gap:10px;align-items:center;font-size:12px;color:#c8ccd4;"><label><input type="checkbox" id="wb-set-cdp" checked> 启用精准控制</label><span>重试 <span id="wb-set-cdp-retry">${cdpRetry}</span> 次</span></div><div style="font-size:10px;color:#9aa0a6;margin-top:4px;">CDP 失败后仅展示步骤截图，无法直接操控</div></div><div style="margin-bottom:16px;"><label style="display:block;font-weight:600;color:#c8ccd4;margin-bottom:6px;font-size:12px;">浮窗预览与颜色</label><div style="display:flex;gap:8px;flex-wrap:wrap;"><label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;"><input type="checkbox" id="wb-set-explicit-color" checked> 浮窗显式颜色（不依赖 var()）</label></div><div style="font-size:10px;color:#9aa0a6;margin-top:4px;">P118 教训：浮窗根不继承 data-theme，必须显式写颜色值</div></div><div style="display:flex;gap:8px;justify-content:flex-end;border-top:1px solid #333;padding-top:12px;margin-top:4px;"><button onclick="this.closest('[style*=&quot;position:fixed&quot;]').remove()" style="padding:5px 14px;background:#333;border:1px solid #555;border-radius:6px;color:#e8e8e8;font-size:12px;cursor:pointer;">取消</button><button onclick="const m=document.getElementById('wb-set-model').value;const c=document.getElementById('wb-set-cdp').checked;const r=document.getElementById('wb-set-cdp-retry').textContent;const p=document.getElementById('wb-set-pulse').checked;const ec=document.getElementById('wb-set-explicit-color').checked;window._wbSettings={model:m,cdpEnabled:c,cdpRetry:parseInt(r)||3,pulse:p,explicitColor:ec};if(window.ACMSConfig)window.ACMSConfig.defaultModel=(m==='default')?'系统默认':m;(window.ACMSModal&&window.ACMSModal.show?window.ACMSModal.show({title:'设置已保存',message:'已保存：模型='+m+', CDP='+c+', 重试='+r+', pulse='+p+', 显式色='+ec,actions:[{label:'确定',value:'OK',className:'acms-modal-btn-primary'}]}).catch(function(){}):alert('已保存设置：模型='+m+', CDP='+c+', 重试='+r+', pulse='+p+', 显式色='+ec));this.closest('[style*=&quot;position:fixed&quot;]').remove();" style="padding:5px 14px;background:#4f8cff;border:none;border-radius:6px;color:#fff;font-size:12px;font-weight:500;cursor:pointer;">保存</button></div></div></div>`;
+      const panelHtml = `<div style="position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;" onclick="if(event.target===this)this.remove()"><div style="background:#23262e;color:#e8e8e8;border:1px solid #4a4e58;border-radius:10px;padding:20px;width:420px;max-width:90vw;box-shadow:0 12px 40px rgba(0,0,0,.6);font-size:13px;" onclick="event.stopPropagation()"><h3 style="margin:0 0 14px;font-size:15px;font-weight:600;color:#fff;">⚙️ Web机器人 设置</h3><div style="margin-bottom:12px;"><label style="display:block;font-weight:600;color:#c8ccd4;margin-bottom:4px;font-size:12px;">模型策略</label><select id="wb-set-model" style="width:100%;padding:6px 10px;background:#1a1d24;color:#e8e8e8;border:1px solid #4a4e58;border-radius:6px;font-size:12px;outline:none;"><option value="default" ${(currentModel==='系统默认')?'selected':''}>系统默认（跟随 ACMS 设置）</option><option value="deepseek" ${(currentModel==='deepseek')?'selected':''}>DeepSeek</option><option value="minimax" ${(currentModel==='minimax')?'selected':''}>MiniMax</option></select><div style="font-size:10px;color:#9aa0a6;margin-top:4px;">多多拍板：任务型 agent 优先跟随系统默认生成模型（v0.2）</div></div><div style="margin-bottom:12px;"><label style="display:block;font-weight:600;color:#c8ccd4;margin-bottom:4px;font-size:12px;">CDP 双向控制</label><div style="display:flex;gap:10px;align-items:center;font-size:12px;color:#c8ccd4;"><label><input type="checkbox" id="wb-set-cdp" checked> 启用精准控制</label><span>重试 <span id="wb-set-cdp-retry">${cdpRetry}</span> 次</span></div><div style="font-size:10px;color:#9aa0a6;margin-top:4px;">CDP 失败后仅展示步骤截图，无法直接操控</div></div><div style="margin-bottom:16px;"><label style="display:block;font-weight:600;color:#c8ccd4;margin-bottom:6px;font-size:12px;">浮窗预览与颜色</label><div style="display:flex;gap:8px;flex-wrap:wrap;"><label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;"><input type="checkbox" id="wb-set-explicit-color" checked> 浮窗显式颜色（不依赖 var()）</label></div><div style="font-size:10px;color:#9aa0a6;margin-top:4px;">P118 教训：浮窗根不继承 data-theme，必须显式写颜色值</div></div><div style="display:flex;gap:8px;justify-content:flex-end;border-top:1px solid #333;padding-top:12px;margin-top:4px;"><button onclick="this.closest('[style*=&quot;position:fixed&quot;]').remove()" style="padding:5px 14px;background:#333;border:1px solid #555;border-radius:6px;color:#e8e8e8;font-size:12px;cursor:pointer;">取消</button><button onclick="const m=document.getElementById('wb-set-model').value;const c=document.getElementById('wb-set-cdp').checked;const r=document.getElementById('wb-set-cdp-retry').textContent;const p=document.getElementById('wb-set-pulse').checked;const ec=document.getElementById('wb-set-explicit-color').checked;window._wbSettings={model:m,cdpEnabled:c,cdpRetry:parseInt(r)||3,pulse:p,explicitColor:ec};if(window.ACMSConfig)window.ACMSConfig.defaultModel=(m==='default')?'系统默认':m;(window.ACMSModal&&window.ACMSModal.show?window.ACMSModal.show({title:'设置已保存',message:'已保存：模型='+m+', CDP='+c+', 重试='+r+', pulse='+p+', 显式色='+ec,actions:[{label:'确定',value:'OK',className:'acms-modal-btn-primary'}]}).catch(function(){}):0);this.closest('[style*=&quot;position:fixed&quot;]').remove();" style="padding:5px 14px;background:#4f8cff;border:none;border-radius:6px;color:#fff;font-size:12px;font-weight:500;cursor:pointer;">保存</button></div></div></div>`;
       const overlay = document.createElement('div');
       overlay.innerHTML = panelHtml;
       document.body.appendChild(overlay);
@@ -722,7 +991,8 @@
   function mapImgCoord(e) {
     const live = el('wb-last-shot');
     if (!live) return null;
-    const vp = _cdp.viewport || _viewport;
+    // v1.6: 远程预览模式用 app-runtime 会话 viewport；内置引擎用 CDP/status viewport
+    const vp = ppActive() ? _pp.viewport : (_cdp.viewport || _viewport);
     if (!vp) return null;
     const rect = live.getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
@@ -786,32 +1056,248 @@
     esc:      { windowsVirtualKeyCode: 27, key: 'Escape',   code: 'Escape' },
   };
 
-  // v1.5: 静态截图上的 CDP 操控（点击/滚轮/悬停 —— 坐标按 viewport 等比映射）
+  // v1.5: 静态截图上的操控（点击/滚轮/悬停 —— 坐标按 viewport 等比映射）
+  // v1.6: 远程预览模式下同一画面转发到 app-runtime（与 agent 同一 Puppeteer 会话）
+  // v1.6.1: 按住-拖动-松开 全链路转发（百度滑块验证等），禁 ACMS 侧 img 原生拖拽；
+  //         document 级 move/up（拖出画面不丢事件）；CLI 无 CDP 时退化为点按补发 click
+  let _ctrl = null;          // 当前活跃操控面 { img, root }
+  let _docCtrlBound = false; // document 级监听只绑一次（多窗口/重渲染不重复）
+  let _imeTa = null;         // v1.6.3 隐藏 IME textarea（浏览器应用同款「直接输入」桥）
+  function _toVp(e) {
+    if (!_ctrl || !_ctrl.img) return null;
+    const vp = ppActive() ? _pp.viewport : (_cdp.viewport || _viewport);
+    if (!vp) return null;
+    const img = _ctrl.img;
+    const rect = img.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const scale = Math.min(rect.width / vp.width, rect.height / vp.height);
+    const dispW = vp.width * scale, dispH = vp.height * scale;
+    const offX = (rect.width - dispW) / 2, offY = (rect.height - dispH) / 2;
+    const x = Math.max(0, Math.min(vp.width - 1, Math.round((e.clientX - rect.left - offX) / scale)));
+    const y = Math.max(0, Math.min(vp.height - 1, Math.round((e.clientY - rect.top - offY) / scale)));
+    return { x, y };
+  }
   function bindPreviewControls(root) {
     const img = el('wb-last-shot', root);
     if (!img) return;
-    img.addEventListener('click', (e) => {
-      const c = mapImgCoord(e);
-      if (!c) return;
-      if (clickAt(c.x, c.y)) setStatus(root, `👆 已点击 (${c.x}, ${c.y})`);
-      else api('POST', '/mouse', { x: c.x, y: c.y, action: 'click' }).then((r) => {
-        if (r.ok) setStatus(root, `👆 已点击 (${c.x}, ${c.y})`);
-      }).catch(() => {});
+    _ctrl = { img, root, dragging: false, moved: false, sx: 0, sy: 0 };
+    img.addEventListener('dragstart', (e) => e.preventDefault()); // 双保险：禁拖走主图
+
+    // v1.6.3: 「浏览器应用」同款直接输入 —— 隐藏 IME textarea 桥：
+    //   点画面 → 焦点进隐藏框 → 直接打字：中文 IME 合成 end 后整段上屏、英文 input 即发；
+    //   控制键（Enter/Backspace/Tab/Esc…）keydown/keyup 转发。参考 web-browser.js 远程预览。
+    let $ime = null;
+    let imeComposing = false, imeIgnoreNext = false;
+    _imeTa = null;
+    function focusIme() {
+      try { if ($ime && $ime.focus) $ime.focus({ preventScroll: true }); }
+      catch (e) { try { if ($ime) $ime.focus(); } catch (e2) { /* ignore */ } }
+    }
+    (function initImeBridge() {
+      $ime = document.createElement('textarea');
+      $ime.setAttribute('aria-label', 'Web机器人页面输入');
+      $ime.style.cssText = 'position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0;border:none;outline:none;background:transparent';
+      const parent = img.parentNode || document.body;
+      parent.appendChild($ime);
+      _imeTa = $ime;
+      const send = (ev) => { if (ppActive() && _pp.appSessionId) ppSendInput(ev).catch(() => {}); };
+      function kb(e, type) {
+        if (e.isComposing || imeComposing || e.key === 'Process' || e.keyCode === 229) return;
+        const printable = e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey;
+        if (printable) return; // 单字符交给 input / compositionend
+        e.preventDefault();
+        send({ type: type, key: e.key, code: e.code });
+      }
+      $ime.addEventListener('compositionstart', () => { imeComposing = true; });
+      $ime.addEventListener('compositionend', (e) => {
+        imeComposing = false;
+        const text = e.data || $ime.value;
+        if (text) send({ type: 'type', text });
+        $ime.value = '';
+        imeIgnoreNext = true;
+        setTimeout(() => { imeIgnoreNext = false; }, 0);
+      });
+      $ime.addEventListener('input', () => {
+        if (imeComposing || imeIgnoreNext) return;
+        const text = $ime.value;
+        if (text) send({ type: 'type', text });
+        $ime.value = '';
+      });
+      $ime.addEventListener('keydown', (e) => kb(e, 'keydown'));
+      $ime.addEventListener('keyup', (e) => kb(e, 'keyup'));
+    })();
+
+    img.addEventListener('mousedown', (e) => {
+      e.preventDefault(); // 关键：阻止浏览器把「按住拖动」当图片拖拽
+      // v1.6.2: 把本地焦点从底部「目标/继续问」输入框挪走 —— 否则用户点完画面直接打字，
+      //         按键会被底部框吃掉（页面输入框的光标在远程 Puppeteer 侧，本地焦点必须清空）
+      try {
+        const ae = document.activeElement;
+        if (ae && (ae.id === 'wb-input' || ae.id === 'wb-keys-text')) { ae.blur(); }
+      } catch (_e) { /* ignore */ }
+      if (ppActive()) focusIme(); // v1.6.3: 点画面 → 「直接打字」模式（焦点进隐藏 IME 框，中文合成即上屏）
+      if (e.button !== 0 && e.button !== 2 && e.button !== 1) return;
+      const c = _toVp(e); if (!c) return;
+      _ctrl.dragging = true; _ctrl.moved = false; _ctrl.sx = c.x; _ctrl.sy = c.y;
+      const btnName = e.button === 2 ? 'right' : (e.button === 1 ? 'middle' : 'left');
+      if (ppActive()) {
+        ppSendInput({ type: 'mousedown', x: c.x, y: c.y, button: btnName }).catch(() => {});
+      } else if (_cdp.sessionId) {
+        cdpSendSerial('Input.dispatchMouseEvent', { type: 'mouseMoved', x: c.x, y: c.y });
+        cdpSendSerial('Input.dispatchMouseEvent', { type: 'mousePressed', x: c.x, y: c.y, button: btnName, clickCount: 1 });
+      }
+      setStatus(root, `👇 按住 (${c.x}, ${c.y})${e.button !== 0 ? '（' + (e.button === 2 ? '右键' : '中键') + '）' : ''} —— 可拖动（滑块/选区），松开释放`);
     });
+
+    let _dT = 0;
+    const onMove = (e) => { // 拖动中：document 级转发（拖出画面不丢）
+      if (!_ctrl || !_ctrl.dragging) return;
+      const now0 = Date.now(); if (now0 - _dT < 24) return; _dT = now0; // 拖动节流 ~40Hz（滑块足够）
+      const c = _toVp(e); if (!c) return;
+      if (Math.abs(c.x - _ctrl.sx) + Math.abs(c.y - _ctrl.sy) > 3) _ctrl.moved = true;
+      if (ppActive()) ppSendInput({ type: 'mousemove', x: c.x, y: c.y }).catch(() => {});
+      else if (_cdp.sessionId) cdpSendSerial('Input.dispatchMouseEvent', { type: 'mouseMoved', x: c.x, y: c.y });
+    };
+    let _hvT = 0;
+    const onImgMove = (e) => { // 非拖动：hover 悬停转发（100ms 节流，页面 hover 菜单可用）
+      if (_ctrl && _ctrl.dragging) return;
+      const now = Date.now(); if (now - _hvT < 100) return; _hvT = now;
+      const c = _toVp(e); if (!c) return;
+      if (ppActive()) ppSendInput({ type: 'mousemove', x: c.x, y: c.y }).catch(() => {});
+      else if (_cdp.sessionId) cdpMoveThrottled(c.x, c.y);
+    };
+    const onUp = (e) => {
+      if (!_ctrl || !_ctrl.dragging) return;
+      _ctrl.dragging = false;
+      const c = _toVp(e) || { x: _ctrl.sx, y: _ctrl.sy };
+      const btnName = e.button === 2 ? 'right' : (e.button === 1 ? 'middle' : 'left');
+      if (ppActive()) {
+        ppSendInput({ type: 'mouseup', x: c.x, y: c.y, button: btnName }).catch(() => {});
+        setStatus((_ctrl && _ctrl.root) || root, _ctrl.moved ? `🖐 拖动完成 (${_ctrl.sx},${_ctrl.sy}) → (${c.x},${c.y})` : `👆 已点击 (${c.x}, ${c.y}) —— 直接打字即输入页面（中文 OK）；发消息给智能体请点底部输入框`);
+      } else if (_cdp.sessionId) {
+        cdpSendSerial('Input.dispatchMouseEvent', { type: 'mouseReleased', x: c.x, y: c.y, button: btnName, clickCount: 1 });
+        setStatus((_ctrl && _ctrl.root) || root, _ctrl.moved ? `🖐 拖动完成 (${_ctrl.sx},${_ctrl.sy}) → (${c.x},${c.y})` : `👆 已点击 (${c.x}, ${c.y})`);
+      } else if (!_ctrl.moved) {
+        // 内置引擎降级（无 CDP）：down 无法模拟，mouseup 时补发一次 click
+        api('POST', '/mouse', { x: c.x, y: c.y, action: 'click' }).then((r) => {
+          if (r.ok) setStatus((_ctrl && _ctrl.root) || root, `👆 已点击 (${c.x}, ${c.y})`);
+        }).catch(() => {});
+      }
+    };
+    const onBlur = () => { if (_ctrl) { _ctrl.dragging = false; _ctrl.moved = false; } };
+
+    img.addEventListener('mousemove', onImgMove);
+    img.addEventListener('mouseleave', () => { /* 拖出画面由 document 级 onMove 接管 */ });
+    if (!_docCtrlBound) {
+      _docCtrlBound = true;
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+      window.addEventListener('blur', onBlur);
+    }
+
     img.addEventListener('wheel', (e) => {
       e.preventDefault();
-      const dy = e.deltaY > 0 ? 300 : -300;
-      if (!wheelAt(dy)) api('POST', '/mouse', { action: 'wheel', dy }).catch(() => {});
+      const dx = Math.round(e.deltaX), dy = Math.round(e.deltaY);
+      if (ppActive()) ppSendInput({ type: 'wheel', dx, dy }).catch(() => {});
+      else if (_cdp.sessionId) cdpSendSerial('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 0, y: 0, deltaX: dx, deltaY: dy });
+      else api('POST', '/mouse', { action: 'wheel', dy: e.deltaY > 0 ? 300 : -300 }).catch(() => {});
     }, { passive: false });
-    let _mvT = 0;
-    img.addEventListener('mousemove', (e) => {
-      const now = Date.now();
-      if (now - _mvT < 100) return;
-      _mvT = now;
-      const c = mapImgCoord(e);
-      if (!c) return;
-      cdpMoveThrottled(c.x, c.y);
+  }
+
+  // ── ⌨️ 键盘浮层（v1.6.1 恢复）：先点画面里的输入框 → 打字 → 上屏/回车/退格
+  function openKeysModal(root) {
+    const ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;z-index:100001;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;';
+    ov.innerHTML = '<div style="background:var(--bg2,#23262e);color:var(--text,#e8e8e8);border:1px solid var(--border,#4a4e58);border-radius:10px;padding:18px 20px;width:480px;max-width:92vw;box-shadow:0 12px 40px rgba(0,0,0,.6);font-size:13px;">' +
+      '<div style="font-weight:600;font-size:14px;margin-bottom:6px;">⌨️ 键盘输入（' + (_ppMode ? '🖥 远程预览同屏浏览器' : '内置浏览器') + '）</div>' +
+      '<div style="font-size:11px;color:var(--text2,#9aa0a6);margin-bottom:10px;line-height:1.6;">' +
+      '· 底部那条输入框是给 <b>智能体</b> 的「目标/继续问」，不会进页面。<br>' +
+      '· 给<b>页面</b>打字：先在画面里点一下目标输入框（光标落位）→ 在本窗打字 → 按 <b>Enter 直接上屏</b>（或点「输入文字」）。<br>' +
+      '· 支持中文/emoji；Shift+Enter 换行。' + (_ppMode ? '也可以直接发目标给智能体，让它帮你填。' : '') + '</div>' +
+      '<textarea id="wb-keys-text" rows="2" placeholder="在这里打字，Enter 上屏…" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--border,#4a4e58);border-radius:6px;background:#1a1d24;color:#e8e8e8;font-size:13px;outline:none;resize:none;margin-bottom:10px;"></textarea>' +
+      '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">' +
+      '<button data-k="type" style="padding:6px 14px;border:none;border-radius:6px;background:var(--accent,#4f8cff);color:#fff;font-size:12px;cursor:pointer;font-weight:500;">输入文字 ↵</button>' +
+      '<button data-k="enter" style="padding:6px 12px;border:1px solid var(--border,#4a4e58);border-radius:6px;background:transparent;color:var(--text,#e8e8e8);font-size:12px;cursor:pointer;">↵ 仅回车</button>' +
+      '<button data-k="backspace" style="padding:6px 12px;border:1px solid var(--border,#4a4e58);border-radius:6px;background:transparent;color:var(--text,#e8e8e8);font-size:12px;cursor:pointer;">⌫ 退格</button>' +
+      '<button data-k="tab" style="padding:6px 12px;border:1px solid var(--border,#4a4e58);border-radius:6px;background:transparent;color:var(--text,#e8e8e8);font-size:12px;cursor:pointer;">⇥ Tab</button>' +
+      '<span style="flex:1"></span>' +
+      '<button data-k="close" style="padding:6px 14px;border:none;border-radius:6px;background:#333;color:#e8e8e8;font-size:12px;cursor:pointer;">关闭 Esc</button>' +
+      '</div></div>';
+    const done = () => { try { ov.remove(); } catch (e) {} };
+    ov.addEventListener('click', (e) => { if (e.target === ov) done(); });
+    ov.querySelectorAll('button[data-k]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const k = b.dataset.k;
+        if (k === 'close') { done(); return; }
+        const ta = ov.querySelector('#wb-keys-text');
+        const text = ta ? (ta.value || '') : '';
+        if (k === 'type') {
+          if (!text.trim()) { if (ta) ta.focus(); return; }
+          keysSendText(root, text);
+          if (ta) ta.value = '';
+          if (ta) ta.focus();
+        } else {
+          keysSendKey(root, k);
+          if (ta) ta.focus();
+        }
+      });
     });
+    // v1.6.2: Enter=上屏（不清空光标），Shift+Enter=换行；Esc=关闭
+    const ta0 = ov.querySelector('#wb-keys-text');
+    if (ta0) {
+      ta0.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); done(); return; }
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          const typeBtn = ov.querySelector('button[data-k="type"]');
+          if (typeBtn) typeBtn.click();
+        }
+      });
+    }
+    document.body.appendChild(ov);
+    // 抢占本地焦点：底部「目标」框 / 页面隐藏 IME 框 blur → 本窗 textarea focus
+    try {
+      const ae = document.activeElement;
+      if (ae && (ae.id === 'wb-input' || ae === _imeTa)) ae.blur();
+      if (_imeTa) _imeTa.blur();
+    } catch (_e) { /* ignore */ }
+    if (ta0) setTimeout(() => ta0.focus(), 50);
+  }
+  function keysSendText(root, text) {
+    const t = String(text || '');
+    if (!t) return;
+    if (ppActive()) {
+      ppSendInput({ type: 'type', text: t })
+        .then(() => setStatus(root, '⌨️ 已输入：' + t.slice(0, 20) + (t.length > 20 ? '…' : '')))
+        .catch(err => setStatus(root, '输入失败: ' + err.message));
+      return;
+    }
+    if (_cdp.sessionId) {
+      cdpSendSerial('Input.insertText', { text: t })
+        .then(() => setStatus(root, '⌨️ 已输入：' + t.slice(0, 20)));
+      return;
+    }
+    api('POST', '/keyboard', { text: t }).then(() => setStatus(root, '⌨️ 已输入')).catch(err => setStatus(root, '输入失败: ' + err.message));
+  }
+  function keysSendKey(root, key) {
+    if (ppActive()) {
+      // app-runtime 键盘通道用 CDP code 名（Enter/Backspace/Tab/Escape…）
+      const KEY_CODE = { enter: 'Enter', backspace: 'Backspace', tab: 'Tab', esc: 'Escape', escape: 'Escape',
+        arrowleft: 'ArrowLeft', arrowright: 'ArrowRight', arrowup: 'ArrowUp', arrowdown: 'ArrowDown' };
+      const code = KEY_CODE[String(key).toLowerCase()] || key;
+      ppSendInput({ type: 'keydown', code }).then(() => ppSendInput({ type: 'keyup', code })).catch(() => {});
+      setStatus(root, `⌨️ 已按键：${key}`);
+      return;
+    }
+    if (_cdp.sessionId) {
+      const k = KEY_MAP[key] || KEY_MAP[key.toLowerCase()];
+      if (k) {
+        cdpSendSerial('Input.dispatchKeyEvent', { type: 'keyDown', ...k });
+        cdpSendSerial('Input.dispatchKeyEvent', { type: 'keyUp', ...k });
+      }
+      return;
+    }
+    api('POST', '/press', { key }).catch(() => {});
   }
 
   function cdpSend(method, params) {
@@ -951,6 +1437,18 @@
     const txt = el('wb-health-text', root);
     if (!box) return;
     const now = Date.now();
+    // v1.6: 远程预览模式 —— 健康 = app-runtime Puppeteer 会话 WS 活着（不检测 CLI daemon）
+    if (_ppMode) {
+      const wsOpen = !!(_pp.ws && _pp.ws.readyState === 1) && !!_pp.appSessionId;
+      const level = wsOpen ? 'green' : 'red';
+      const text = wsOpen ? '远程预览' : '预览断';
+      box.className = 'wb-health ' + level;
+      if (txt) txt.textContent = text;
+      box.title = wsOpen
+        ? '远程预览 Puppeteer 会话已连接（同屏实时；右上可点详情）'
+        : '远程预览会话未连接 —— 重新发消息会自动重建；或切回内置引擎';
+      return { level, text, title: box.title, wsOpen, hasSession: wsOpen, pingOk: wsOpen };
+    }
     // 维度 1: ws 状态
     const wsOpen = !!(_cdp.ws && _cdp.ws.readyState === 1);
     // 维度 2: page session

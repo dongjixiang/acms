@@ -21,7 +21,7 @@
 'use strict';
 
 const ba = require('../../browser-agent');
-const { executeSteps, waitForElement, approvalStep } = require('../execute-steps');
+const { executeSteps, waitForElement, approvalStep, autoLoginStep } = require('../execute-steps');
 const humanizer = require('../humanizer');
 const accountStore = require('../account-store');
 
@@ -57,19 +57,17 @@ async function publish(params, ctx) {
 
   // 1. 构造步骤列表
   const steps = [
-    // Step 1: 登录（用 auth save 凭据）
+    // Step 1: 登录（v0.118.x: 调用共享 autoLoginStep，根治"假登录" bug）
+    //  实测 2026-09-07：头条默认手机验证码 tab，之前只 ba.open + 等 2-3 秒，账号没登进去
     {
       name: 'login',
       retry: 1,
-      timeout: 30000,
-      run: async (c) => {
-        const r = await ba.open(LOGIN_URL);
-        if (!r.ok) return { ok: false, error: r.error };
-        // auth save 的凭据 agent-browser 会自动填
-        // 等待登录完成（已登录会跳到首页）
-        await humanizer.wait(2000, 3000);
-        return { ok: true, title: r.title };
-      },
+      timeout: 120000,  // v0.118.x: 整个 login step 加到 120s（默认 45s 的 ba.open + 45s 的 ba.evalJs + 30s auth login 可能超 60s）
+      run: async (c) => autoLoginStep(account, {
+        login_url: LOGIN_URL,
+        platform_hostname: 'toutiao.com',
+        already_logged_in_path_skip: ['/auth/', '/login'],
+      }),
     },
     // Step 2: 打开发文台
     {
@@ -447,6 +445,7 @@ async function publish(params, ctx) {
     account,
     params,
     ctx: { account, params, options },
+    onProgress: params.onProgress,  // v0.118.x: 透传 step 级进度回调
   });
 
   // 3. 记录到账号

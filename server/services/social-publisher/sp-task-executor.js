@@ -98,6 +98,18 @@ async function executeSocialTask(task) {
       };
     } else {
       // 单平台发布
+      // v0.118.x: onProgress 回调 — 每个 step 跑完推一次 taskStore 进度
+      //  之前只有二态（10/100/0），中间几分钟没反馈 → "进度卡住"假象
+      //  现在 executeSteps 每跑完一个 step 会调 onProgress，这里立刻写回 taskStore
+      const onProgress = (p) => {
+        try {
+          taskStore.update(task.id, {
+            progress: p.progress,
+            progress_note: p.progress_note,
+            last_progress_update: new Date().toISOString(),
+          });
+        } catch (e) { /* 不能因为 progress 推失败阻断主流程 */ }
+      };
       result = await sp.publishTo(params.platform, {
         title: params.post_title,
         content: params.content,
@@ -105,6 +117,7 @@ async function executeSocialTask(task) {
         tags: params.tags,
         account_id: params.account_id,
         options: params.options,
+        onProgress,  // v0.118.x: 透传给 provider，再透传给 executeSteps
       });
     }
   } catch (e) {
@@ -135,8 +148,17 @@ async function executeSocialTask(task) {
     },
   };
 
+  // v0.118.x: 进度估算（不引入 totalSteps 字段，保持向后兼容）
+  //   失败时 progress = 10 + stepResults.length * 10（每步 +10%，上限 80%）
+  //   成功 = 100%
+  //   这样 UI 能看到"卡在 step X（约 X*10+10%）"而不是直接跳到 0%
+  //   修复 bug：之前 ok ? 100 : 0 会把中间 pushProgress 推的"卡在 step X"覆盖
+  const estimatedProgress = ok
+    ? 100
+    : Math.min(80, 10 + (stepResults.length * 10));
+
   taskStore.update(task.id, {
-    progress: ok ? 100 : 0,
+    progress: estimatedProgress,
     progress_note: ok
       ? `✅ ${task.type} 完成（${durationMs}ms）${result?.post_url ? ` → ${result.post_url}` : ''}`
       : `❌ ${task.type} 失败: ${result?.error || '未知错误'}`,

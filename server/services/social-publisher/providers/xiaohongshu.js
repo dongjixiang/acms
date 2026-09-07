@@ -20,7 +20,7 @@
 'use strict';
 
 const ba = require('../../browser-agent');
-const { executeSteps, waitForElement, approvalStep } = require('../execute-steps');
+const { executeSteps, waitForElement, approvalStep, autoLoginStep } = require('../execute-steps');
 const humanizer = require('../humanizer');
 const accountStore = require('../account-store');
 
@@ -57,16 +57,17 @@ async function publish(params, ctx) {
   }
 
   const steps = [
+    // Step 1: 登录（v0.118.x: 调用共享 autoLoginStep，根治"假登录" bug）
+    //  实测 2026-09-07：之前所有 provider 都只 ba.open + 等 2-3 秒就当登录完了
     {
       name: 'login',
       retry: 1,
-      timeout: 30000,
-      run: async () => {
-        const r = await ba.open(LOGIN_URL);
-        if (!r.ok) return { ok: false, error: r.error };
-        await humanizer.wait(2500, 4000);
-        return { ok: true };
-      },
+      timeout: 120000,
+      run: async () => autoLoginStep(account, {
+        login_url: LOGIN_URL,
+        platform_hostname: 'xiaohongshu.com',
+        already_logged_in_path_skip: ['/login'],
+      }),
     },
     {
       name: 'open_editor',
@@ -231,8 +232,10 @@ async function publish(params, ctx) {
     account,
     params,
     ctx: { account, params, options },
+    onProgress: params.onProgress,  // v0.118.x: 透传 step 级进度回调
   });
 
+  // 3. 记录到账号
   if (result.ok) {
     accountStore.recordSuccess(account_id);
   } else {

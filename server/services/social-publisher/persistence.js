@@ -81,6 +81,8 @@ function recordTaskHistory({ task_id, platform, account_id, title, content, resu
     media_id: result?.media_id || null,
     total_elapsed_ms: result?.total_elapsed_ms || null,
     error: result?.error || null,
+    // v0.118.14: 记录来源（goal-driven = Web 机器人 AI 发布；legacy/provider 老路径）
+    source: result?.source || 'provider',
     steps: result?.steps ? JSON.stringify(result.steps.slice(0, 20)) : null,
     sub_results: result?.sub_results ? JSON.stringify(result.sub_results) : null,
     completed_at: now,

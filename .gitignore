@@ -55,3 +55,16 @@ server/__tests__/tmp-*.js
 # v0.118 临时数据（用户隐私，不 commit）
 data/qwen-spawn.log
 spikes/chat-history-*-backup.json
+
+# ACMS v0.118.6+: 临时备份目录（修改前 cp .bak 备份）
+.backup-*/
+# 测试 / 调试临时文件
+test-build.js
+test-trigger-rule.js
+claim.json
+engines.json
+t333*.json
+tlist.json
+# 兄弟 agent 临时文件
+_diag/
+

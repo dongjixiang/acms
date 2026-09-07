@@ -79,7 +79,8 @@
               <option value="educational">教学</option>
             </select>
             <button class="sp-btn" id="sp-compose-rewrite">✨ AI 改写</button>
-            <button class="sp-btn sp-btn-primary" id="sp-compose-publish">🚀 发布</button>
+            <button class="sp-btn" id="sp-compose-ai-publish" style="background:linear-gradient(135deg,#8b5cf6,#ec4899);color:#fff;border:none;font-weight:600;box-shadow:0 2px 8px rgba(139,92,246,.35)" title="🤖 Web 机器人 goal-driven 发布：LLM 看页面自主操作（登录/验证码可求助你）＋发布前确认。推荐日常单篇。不支持排期与多平台">🤖 AI 发布</button>
+            <button class="sp-btn" id="sp-compose-publish" title="🚀 Provider 自动化：走平台选择器脚本，无 AI 确认。适合排期（表单选未来时间）与多平台批量、无人值守场景">🚀 传统发布</button>
           </div>
         </div>
         <div class="sp-form">
@@ -224,4 +225,44 @@
   </main>
 
   <div class="sp-status" id="sp-status" data-type="info">就绪 — 内容运营平台 v0.118.1</div>
+
+  <!-- v0.118.x: 🤖 AI 发布实时进度 modal（goal-driven 模式） -->
+  <div class="sp-ai-overlay" id="sp-ai-overlay" style="display:none">
+    <div class="sp-ai-modal">
+      <div class="sp-ai-header">
+        <h3>🤖 AI 发布 — 实时进度</h3>
+        <button class="sp-ai-close" id="sp-ai-close" title="关闭（任务继续在后台跑）">✕</button>
+      </div>
+      <div class="sp-ai-meta" id="sp-ai-meta">
+        <span class="sp-ai-status-dot" id="sp-ai-status-dot"></span>
+        <span id="sp-ai-status-text">准备中…</span>
+        <!-- v0.118.16: 💬 介入 —— 人主动发起求助（Agent 当前动作结束后暂停等人工输入） -->
+        <button class="sp-btn sp-btn-sm" id="sp-ai-interrupt" style="margin-left:8px;padding:2px 10px;font-size:11px" title="人主动发起求助：Agent 执行中你也可以叫停 —— 点这里让 Agent 停下等你输入（如：方向不对 / 想改内容 / 需要帮忙登录），输入后 Agent 继续">💬 介入</button>
+        <span style="margin-left:auto;font-size:11px;color:var(--sp-text-2)" id="sp-ai-task-id"></span>
+      </div>
+      <div class="sp-ai-body">
+        <div class="sp-ai-steps" id="sp-ai-steps">
+          <div class="sp-ai-empty">⏳ 等待 LLM 开始执行…</div>
+        </div>
+        <div class="sp-ai-waiting" id="sp-ai-waiting" style="display:none">
+          <div class="sp-ai-waiting-header">⏸ 需要你的帮助 — Agent 已暂停等你</div>
+          <div class="sp-ai-waiting-q" id="sp-ai-waiting-q"></div>
+          <div class="sp-ai-waiting-options">
+            <button class="sp-btn sp-btn-primary" data-reply="A" title="回复 A（按 Agent 选项 A 执行）">A</button>
+            <button class="sp-btn" data-reply="B" title="回复 B（按 Agent 选项 B 执行）">B</button>
+            <button class="sp-btn" data-reply="C" title="回复 C（取消）">C</button>
+            <span style="font-size:11px;color:var(--sp-text-2);margin-left:6px;align-self:center">点字母回复，或在下框直接输入（验证码 / 指示 / 账号）后按 Enter</span>
+          </div>
+        </div>
+        <div class="sp-ai-done" id="sp-ai-done" style="display:none">
+          <div class="sp-ai-done-content" id="sp-ai-done-content"></div>
+        </div>
+      </div>
+      <!-- v0.118.18: 常驻输入条 —— 任何状态都能给 Agent 发消息：running = 介入发言；waiting = 回复 -->
+      <div class="sp-ai-inputbar" id="sp-ai-inputbar">
+        <textarea id="sp-ai-input" rows="1" placeholder="随时可给 Agent 发消息：提要求 / 给验证码 / 纠正方向…（Enter 发送，Shift+Enter 换行）"></textarea>
+        <button class="sp-btn sp-btn-primary" id="sp-ai-input-send">📤 发送</button>
+      </div>
+    </div>
+  </div>
 </div>

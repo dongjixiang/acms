@@ -41,6 +41,7 @@ const path = require('path');
 const fs = require('fs');
 const router = express.Router();
 const sp = require('../services/social-publisher');
+const goPublisher = require('../services/social-publisher/go-publisher');  // v0.118.x: goal-driven 模式
 const accountStore = sp;
 const approval = sp.approval;
 // v0.118.1：调 agent-browser auth 系列（账号密码存到 agent-browser 全局 auth，不在 social_accounts 里）
@@ -670,3 +671,62 @@ router.post('/accounts/select-best', (req, res) => {
 });
 
 module.exports = router;
+
+// ─────────────────────────────────────────────────────────
+// v0.118.x: Web 机器人 goal-driven 模式（不再 hard-code 选择器，让 LLM 看 DOM 自己操作）
+//   之前 /publish 走 sp.publishTo → provider.publish，5 个平台 × 几百行脆弱选择器代码
+//   现在 /go-publish 调 runGoalTask(goal)，LLM 看 goal 自己操作 + request_user_help 兜底
+// ─────────────────────────────────────────────────────────
+
+// POST /api/social-publisher/go-publish — 创建发布任务（异步）
+router.post('/go-publish', async (req, res) => {
+  try {
+    const { title, content, platform, account_id, tags, images } = req.body || {};
+    if (!title || !content) return err(res, 'MISSING_FIELDS', 'title 和 content 必填');
+    if (!platform) return err(res, 'MISSING_PLATFORM', 'platform 必填');
+    if (!account_id) return err(res, 'MISSING_ACCOUNT', 'account_id 必填');
+
+    const account = accountStore.get(account_id);
+    if (!account) return err(res, 'ACCOUNT_NOT_FOUND', `账号 ${account_id} 不存在`, 404);
+    if (account.platform !== platform) {
+      return err(res, 'PLATFORM_MISMATCH', `账号是 ${account.platform} 不是 ${platform}`, 400);
+    }
+
+    const result = await goPublisher.goPublish(account, {
+      title,
+      content,
+      tags: tags || [],
+      images: images || [],
+      platform,
+    });
+    // v0.118.12: 执行/SSE/reply 全部收敛到 browser-agent session 通道
+    //   订阅: GET  /api/browser-agent/session/<task_id>/stream（step/waiting_user/done）
+    //   回复: POST /api/browser-agent/session/<task_id>/reply  { message }
+    //   查询: GET  /api/browser-agent/session/<task_id>
+    res.json({
+      ok: true,
+      task_id: result.taskId,
+      status: result.status,
+      stream: '/api/browser-agent/session/' + result.taskId + '/stream',
+    });
+  } catch (e) {
+    console.error('[go-publish] error:', e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ── v0.118.x: 平台经验库管理 ──
+//   GET    /platform-memory           — 列出所有平台的 memory 状态
+//   GET    /platform-memory/:platform — 看某个平台的详细经验
+//   DELETE /platform-memory/:platform — 清空某个平台的 memory（调试用）
+router.get('/platform-memory', (req, res) => {
+  res.json({ ok: true, list: require('../services/social-publisher/platform-memory').listAll() });
+});
+router.get('/platform-memory/:platform', (req, res) => {
+  const memory = require('../services/social-publisher/platform-memory');
+  res.json({ ok: true, memory: memory.read(req.params.platform) });
+});
+router.delete('/platform-memory/:platform', (req, res) => {
+  const memory = require('../services/social-publisher/platform-memory');
+  res.json(memory.clear(req.params.platform));
+});

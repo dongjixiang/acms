@@ -211,7 +211,11 @@ function checkHealth({ account_id, platform }) {
   }
 
   // 最小间隔检查
-  if (account.last_used_at) {
+  //  v0.118.x 修复：如果上次记录是失败（last_error 存在），豁免 too_frequent
+  //   之前逻辑：last_used_at 任意更新都会触发 30 分钟冷却，导致登录失败/选择器错等本地 bug 也要等 30 分钟
+  //   修复后：recordSuccess 会清 last_error，recordFailure 会写 last_error —— last_error 存在 = 上次失败 = 不算冷却
+  //   recordFailure 也已不再写 last_used_at（修复见 recordFailure），双重保险
+  if (account.last_used_at && !account.last_error) {
     const lastUsed = new Date(account.last_used_at);
     const intervalMin = (now - lastUsed) / 60000;
     if (intervalMin < account.limits.min_interval_minutes) {
@@ -244,12 +248,17 @@ function recordSuccess(account_id) {
 }
 
 // ── 记录发布失败（risk_level +10，封禁阈值 80）──
+//  v0.118.x 修复：不更新 last_used_at — 失败不消耗频率冷却
+//   bug 复现（2026-09-07）：发布失败几分钟后重试，checkHealth 返回 too_frequent 拒绝
+//   根因：recordFailure 也更新 last_used_at，导致本地失败（登录/选择器错）也进入 30 分钟冷却
+//   风控职责分离：
+//     - last_used_at 仅记录成功发布（防平台刷量）→ recordSuccess 维护
+//     - risk_level 累计失败风险 → recordFailure 维护（连败会自动到 banned）
 function recordFailure(account_id, error_msg) {
   const account = get(account_id);
   if (!account) return { ok: false };
   const newRisk = Math.min(100, (account.risk_level || 0) + 10);
   const updates = {
-    last_used_at: new Date().toISOString(),
     last_error: error_msg || 'unknown',
     risk_level: newRisk,
   };

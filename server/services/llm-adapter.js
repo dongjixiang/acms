@@ -988,6 +988,30 @@ async function runToolLoop(modelId, messages, options = {}) {
   for (let round = 0; round < maxRounds; round++) {
     console.log(`[runToolLoop] round=${round + 1}/${maxRounds} | messages=${messages.length} | taskId=${context.taskId || '?'}`);
 
+    // v0.118.16: 人主动发起介入/暂停 —— context.humanSteerProvider 每轮询问
+    //   （由 task-runner 提供：POST /session/:id/interrupt 写入 session.pendingHuman）
+    //   两种形态：pause（用户请求暂停 → 复用 waiting_user 链路等输入）/ message（用户发言 → 注入下轮，不暂停）
+    if (context && typeof context.humanSteerProvider === 'function') {
+      try {
+        const human = context.humanSteerProvider();
+        if (human) {
+          if (human.pause) {
+            pauseSignal = { question: human.question || '用户请求暂停介入，等待你的指示', fromHuman: true, tool: 'human_interrupt' };
+            console.log('[runToolLoop] ⏸ human interrupt requested, pausing after current round');
+            break;
+          }
+          if (human.message && String(human.message).trim()) {
+            const hmsg = String(human.message).trim();
+            const alreadyInjected = messages.some(m => m.content && String(m.content).includes(hmsg.slice(0, 50)));
+            if (!alreadyInjected) {
+              messages.push({ role: 'user', content: `# 用户介入\n\n${hmsg}\n\n请先响应用户的最新指示，再继续当前任务。` });
+              console.log(`[runToolLoop] human steer injected: ${hmsg.slice(0, 100)}`);
+            }
+          }
+        }
+      } catch (e) { /* human check failed, continue */ }
+    }
+
     // v0.45: 执行中途 steer 检查 — 如果 progress_note 中有新的 steer message，注入到 messages
     if (context.taskId && progressCallback) {
       try {
