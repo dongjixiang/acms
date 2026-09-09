@@ -14,6 +14,8 @@ const { browserSearch, launchBrowser } = require('./browser-fetch');
 const { searchBingCn: agentBrowserSearchBingCn } = require('./agent-browser-fetch');
 // v0.89: 成功经验持久化（让 web_search 成功路径能跨 session 复用）
 const successTracker = require('./search-success-tracker');
+// v0.119.4: 反爬指纹 stealth 脚本（百度图片搜索需要）
+const { STEALTH_INIT_SCRIPT } = require('./stealth-init');
 
 const SEARCH_TIMEOUT_MS = 10000;
 const MAX_RESULTS = 40;
@@ -1294,6 +1296,8 @@ async function browserSearchBaiduImage(query, maxResults = 9) {
   try {
     page = await browser.newPage();
     await page.setDefaultNavigationTimeout(30000);
+    // v0.119.4: 注入反爬指纹 stealth 脚本（否则百度图片搜索会被拦截返回 0 结果）
+    await page.evaluateOnNewDocument(STEALTH_INIT_SCRIPT);
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36');
     await page.setExtraHTTPHeaders({ 'Accept-Language': 'zh-CN,zh;q=0.9' });
 

@@ -17,11 +17,15 @@
 //   - `--no-sandbox`（Linux 服务器必须）
 //   - 页面关闭 + 异常处理（不泄漏 page 实例）
 
-const puppeteerExtra = require('puppeteer-extra');
-const stealthPlugin = require('puppeteer-extra-plugin-stealth');
-puppeteerExtra.use(stealthPlugin());
-// 保留原生 puppeteer 引用（部分功能如 executablePath 仍用原生）
+// v0.119.4: 用裸 puppeteer + 公共 stealth-init 模块（替换 puppeteer-extra-plugin-stealth@2.11.2）
+//   原因：puppeteer-extra-plugin-stealth@2.11.2 在 chrome 149 上严重过时：
+//     - navigator.webdriver 只能设成 false（真实浏览器是 undefined）
+//     - window.chrome.runtime 完全没注入
+//     - navigator.languages 不改中文
+//   手写 stealth（stealth-init.js）针对 chrome 149 优化，验证有效。
+//   与 app-runtime.js 共用同一份 STEALTH_INIT_SCRIPT，保证两条反爬路径一致。
 const puppeteer = require('puppeteer');
+const { STEALTH_INIT_SCRIPT } = require('./stealth-init');
 
 const BROWSER_TIMEOUT_MS = 45000;  // 45s（百度百科 JS 渲染慢 + 冷启动 3-5s）
 const PAGE_WAIT_SECONDS = 5;  // 等 JS 执行 + 反爬验证完成
@@ -72,10 +76,16 @@ async function launchBrowser() {
     _launching = (async () => {
     try {
       // 尝试 puppeteer 默认路径找 chrome.exe，如果缺文件则试 chrome-headless-shell
-      // v0.78: 使用用户 Chrome profile（持久化 cookies/session），绕过百度等站的人机验证
+      // v0.119.4: 改用独立临时目录（避免和用户 Chrome 的 User Data 冲突）
       const os = require('os');
       const path = require('path');
-      const userDataDir = path.join(os.homedir(), 'AppData', 'Local', 'Google', 'Chrome', 'User Data');
+      const fs = require('fs');
+      // 用 ACMS 数据目录下的独立 profile，不会和用户的 Chrome 冲突
+      const dataDir = process.env.ACMS_DATA_DIR || path.join(__dirname, '..', '..', 'data');
+      const userDataDir = path.join(dataDir, 'puppeteer-user-data');
+      if (!fs.existsSync(userDataDir)) {
+        fs.mkdirSync(userDataDir, { recursive: true });
+      }
 
       const launchOpts = {
         headless: 'new',
@@ -129,7 +139,7 @@ const verDir = entries.find(d => d.isDirectory() && d.name.startsWith('win64-'))
         console.warn('[browser-fetch] 未找到浏览器可执行文件');
       }
 
-      _browser = await puppeteerExtra.launch(launchOpts);
+      _browser = await puppeteer.launch(launchOpts);
       resetIdleTimer();  // v0.78: 启动保活定时器
       return _browser;
     } finally {
@@ -157,6 +167,8 @@ async function browserFetch(url) {
   let page = null;
   try {
     page = await browser.newPage();
+    // v0.119.4: 注入 stealth（必须在 setUserAgent/setExtraHTTPHeaders 之前，让 evaluateOnNewDocument 在首次 domcontentloaded 前生效）
+    await page.evaluateOnNewDocument(STEALTH_INIT_SCRIPT).catch(() => {});
     // 设置超时
     await page.setDefaultNavigationTimeout(BROWSER_TIMEOUT_MS);
     // 设置 User-Agent（与 url-fetch.js 保持一致）
@@ -255,6 +267,8 @@ async function browserSearch(query, maxResults = 8) {
   let page = null;
   try {
     page = await browser.newPage();
+    // v0.119.4: 注入 stealth（与 browserFetch 同源）
+    await page.evaluateOnNewDocument(STEALTH_INIT_SCRIPT).catch(() => {});
     await page.setDefaultNavigationTimeout(30000);
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36');
     await page.setExtraHTTPHeaders({ 'Accept-Language': 'zh-CN,zh;q=0.9' });
