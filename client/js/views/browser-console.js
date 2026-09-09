@@ -1,4 +1,16 @@
-// ACMS Web 机器人视图 v1.6.6 —— 引擎可切换：内置(agent-browser) ⇄ 远程预览(稳定 Puppeteer 同屏)
+// ACMS Web 机器人视图 v1.6.11 —— 引擎可切换：内置(agent-browser) ⇄ 远程预览(稳定 Puppeteer 同屏)
+// ============================================================
+// v1.6.11（2026-09-09）：修复「每次发消息都重展示历史工具调用」—— 服务端 attachSessionStream 会在
+//   每次新订阅时补发 session.toolCalls（v0.118.15 设计：客户端断开重连后能恢复上下文），
+//   但前端直接 appendMessage 会把同样的步骤再展示一次。前端按内容 key(round|toolNames|message)
+//   去重，done 事件同样去重（避免重连/切回老 session 重复显示 assistant 最终回复）。
+// ============================================================
+// v1.6.10（2026-09-09）：运行中可「提交信息打断」—— 底部输入框在 Agent 执行中不再被 disable，
+//   发送时短路走 POST /session/:id/interrupt {message}（注入下轮 LLM 响应）而非 /session/:id/turn
+//   （后者 409）。状态机：_sessionRunning（Agent 在跑）/ _sessionWaiting（Agent 已 paused 等人工）。
+//   等待中再发消息走 /session/:id/reply（与 waiting_user 气泡等价）。
+// ============================================================
+// v1.6.9（2026-09-09）：撤掉固定 1500/1100 宽度上限，恢复画面与浮窗同宽的自适应；远程画面仍由 Puppeteer viewport 驱动。
 // ============================================================
 // v1.6.6（2026-09-07）：右侧步骤面板可折叠（◀/▶，localStorage 记忆）—— 收起后画面最大化，
 //   浏览体验对齐「浏览器应用」（画面实测 578px → ~918px 全宽）。
@@ -31,6 +43,19 @@
   let _es = null;
   let _currentTaskId = null;
   let _stepCount = 0;
+  // v1.6.10：会话状态机（前端镜像后端 session.status）
+  //   _sessionRunning  Agent 在跑（可发 interrupt {message} 注入下轮 / ⏹ pause）
+  //   _sessionWaiting  Agent 已暂停等人工（需发 /reply 才会继续）
+  let _sessionRunning = false;
+  let _sessionWaiting = false;
+
+  // v1.6.11：SSE 事件去重 —— 服务端 attachSessionStream 每次新订阅都补发历史 toolCalls，
+  //   按内容 key(round|toolNames|message) 判重。done 事件用 content 片段做 key。
+  function stepKey(step) {
+    const tools = Array.isArray(step.toolNames) ? step.toolNames.join(',') : (step.tool || '');
+    const msg = (step.message || step.content || step.fullMessage || '').slice(0, 120);
+    return `tool|${step.round || 0}|${tools}|${msg}`;
+  }
 
   // ── 会话存储（localStorage） ──
   const LS_KEY = 'web-robot-sessions-v1';
@@ -45,7 +70,7 @@
     try { return localStorage.getItem(PP_LS_KEY) === 'pp'; } catch (e) { return false; }
   }
   let _ppMode = loadEngineMode();                 // true = 远程预览（Puppeteer）模式
-  let _pp = { appSessionId: null, ws: null, ready: false, viewport: null, lastUrl: '', ensurePromise: null };
+  let _pp = { appSessionId: null, ws: null, ready: false, viewport: null, lastUrl: '', ensurePromise: null, ro: null };
 
   const CSS = `
   <style>
@@ -108,16 +133,18 @@
     .wb-session-item:hover .wb-session-item-del { opacity:.6; }
     .wb-session-item-del:hover { background:rgba(255,80,80,.4); opacity:1; }
     .wb-session-empty { padding:20px 10px; text-align:center; color:var(--text2,#777); font-size:11px; line-height:1.6; }
-    .wb-sidebar-footer { padding:6px; border-top:1px solid var(--border); flex-shrink:0; }
-
-    /* 主区 — 左静态截图 + 右「执行步骤&对话」固定面板（v1.5） */
+.wb-sidebar-footer { padding:6px; border-top:1px solid var(--border); flex-shrink:0; }
+    .wb-shell { display:flex; flex-direction:column; height:100%; box-sizing:border-box;
+      background:var(--bg,#1a1d23); color:var(--text,#e8e8e8); font-size:13px; overflow:hidden; }
+    /* v1.6.5: 上面 img 必须 width/height:100% + min-width:0 —— flex item 对图片默认
+       min-width:auto=原始像素宽(1100+)，会把容器撑爆导致右侧被 overflow:hidden 裁掉一条 */
     .wb-preview { flex:1; background:var(--bg2,#23262e); display:flex; align-items:center;
       justify-content:center; position:relative; overflow:hidden; min-width:0; }
     .wb-preview img { width:100%; height:100%; min-width:0; min-height:0; object-fit:contain; display:block; }
-    /* v1.6.5: 上面 img 必须 width/height:100% + min-width:0 —— flex item 对图片默认
-       min-width:auto=原始像素宽(1100+)，会把容器撑爆导致右侧被 overflow:hidden 裁掉一条 */
     .wb-preview-ph { color:var(--text2,#777); font-size:13px; padding:20px; text-align:center; line-height:1.6; }
-    .wb-steps { flex:0 0 340px; min-width:280px; max-width:440px; border-left:1px solid var(--border,#333);
+    /* v1.6.7 (2026-09-08): steps 默认 340 → 220, 让画面最大化 (+21% 宽) —— 解决"远程预览右边缺一条"
+       （1100 像素源内容压进 578 像素显示）。保留展开对话能力 + 可折叠 ◀/▶ 仍可用。 */
+    .wb-steps { flex:0 0 220px; min-width:180px; max-width:300px; border-left:1px solid var(--border,#333);
       background:var(--bg,#1a1d23); display:flex; flex-direction:column; overflow:hidden; transition:flex-basis .18s ease, min-width .18s ease; }
     /* v1.6.6: 右侧面板可折叠 —— 收起后画面最大化（浏览器应用式浏览） */
     .wb-steps.collapsed { flex:0 0 26px; min-width:26px; max-width:26px; }
@@ -247,9 +274,34 @@
       _pp.appSessionId = sid;
       if (!_pp.viewport) _pp.viewport = { width: 1100, height: 700 };
       connectPpStream(root);
+      bindPpResizeObserver(root);
       return sid;
     })().finally(() => { _pp.ensurePromise = null; });
     return _pp.ensurePromise;
+  }
+  // v1.6.7: 监听 wb-preview 容器变化 → 通知 app-runtime resize viewport（防"画面两边多空白"）
+  //   之前 bug：app-runtime viewport 固定 1100x700，wb-preview  容器宽（如 1380）> 源图 1100
+  //   时 object-fit:contain 居中,左右留白 ~10% 容器宽。ResizeObserver + debounce 500ms 避免拖动风暴。
+  function bindPpResizeObserver(root) {
+    if (_pp.ro) try { _pp.ro.disconnect(); } catch (e) {}
+    const target = el('wb-preview', root);
+    if (!target || typeof ResizeObserver === 'undefined') return;
+    let timer = null;
+    _pp.ro = new ResizeObserver((entries) => {
+      for (const e of entries) {
+        const w = Math.round(e.contentRect.width);
+        const h = Math.round(e.contentRect.height);
+        if (w <= 0 || h <= 0) continue;
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          if (!_pp.appSessionId) return;
+          if (_pp.viewport && _pp.viewport.width === w && _pp.viewport.height === h) return;
+          _pp.viewport = { width: w, height: h };
+          ppSendInput({ type: 'resize', w, h }).catch(err => console.warn('[wb] resize send err:', err.message));
+        }, 500);
+      }
+    });
+    _pp.ro.observe(target);
   }
   function connectPpStream(root) {
     if (!_pp.appSessionId) return;
@@ -470,12 +522,16 @@
     _currentMessages = []; // 阶段 4 从后端拉
     renderSessionList(root);
     renderPanel(root);
+    // 首个列表项也是历史会话：不能只显示“等待开始”，必须立即拉取服务端内容。
+    if (_sessions.length > 0) loadSessionMessages(root, _currentSessionId);
   }
   function switchSession(root, sessionId) {
-    if (_currentSessionId === sessionId) return;
+    // 即使点的是当前列表项，也允许重新加载；否则首个历史会话会永久停在空面板。
     if (_es) { _es.close(); _es = null; _currentTaskId = null; }
     _currentSessionId = sessionId;
+    _currentMessages = [];
     renderSessionList(root);
+    renderPanel(root);
     setStatus(root, '已切换会话，加载历史对话…');
     el('wb-send', root).disabled = false;
     // 异步拉历史 messages（前端 localStorage 有但后端可能已丢；404 走空对话兜底）
@@ -608,10 +664,40 @@
   }
 
   // ── 发送消息（阶段4 接 task-runner session/*） ──
+  // v1.6.10：运行中提交信息 → 短路走 /session/:id/interrupt {message}（注入下轮）
+  //          等待中提交信息 → 走 /session/:id/reply（与 waiting_user help 同链路）
+  //          空闲提交信息   → 走 /session/start 或 /session/:id/turn（新增 turn）
   async function sendMessage(root) {
     const input = el('wb-input', root);
     const text = (input.value || '').trim();
     if (!text) return;
+
+    // ① 运行中：用户中途发言 → 注入到 Agent 下一轮（不结束当前动作）
+    if (_sessionRunning && _currentSessionId) {
+      appendMessage(root, { role: 'user', content: '✋ ' + text, ts: Date.now(), _interrupt: true });
+      input.value = '';
+      input.style.height = '38px';
+      setStatus(root, '✋ 消息已注入，Agent 将在当前动作结束后响应你的最新指示…');
+      try {
+        const r = await api('POST', '/session/' + encodeURIComponent(_currentSessionId) + '/interrupt', { message: text });
+        if (!r || !r.ok) throw new Error((r && r.error) || '注入失败');
+        setStatus(root, '✋ 消息已送达，Agent 当前轮结束后会立即响应');
+      } catch (err) {
+        setStatus(root, '❌ 注入失败：' + err.message);
+        appendMessage(root, { role: 'assistant', content: '⚠️ 注入失败：' + err.message, ts: Date.now() });
+      }
+      return;
+    }
+
+    // ② 等待用户：用户从主输入回复 → 等价于 waiting 气泡的 help reply
+    if (_sessionWaiting && _currentSessionId) {
+      input.value = '';
+      input.style.height = '38px';
+      sendHelpReply(root, text);
+      return;
+    }
+
+    // ③ 空闲：开新 turn
     if (_es) { _es.close(); _es = null; _currentTaskId = null; }
 
     if (_ppMode) {
@@ -654,6 +740,7 @@
       .then((r) => {
         if (!r || !r.ok) throw new Error(r && r.error || '启动失败');
         _currentTaskId = r.taskId || ('ws-' + Date.now().toString(36));
+        _sessionRunning = true; // v1.6.10：会话进入运行态（此时输入框也可发中断）
         setStatus(root, `会话 ${_currentSessionId} 启动，订阅进度…`);
         subscribeSessionSSE(root, _currentSessionId);
       })
@@ -668,10 +755,16 @@
   function subscribeSessionSSE(root, sessionId) {
     if (_es) { _es.close(); _es = null; }
     _es = new EventSource('/api/browser-agent/session/' + encodeURIComponent(sessionId) + '/stream?api_key=' + AK_VALUE);
+    _sessionRunning = true;  // v1.6.10：订阅开始 → 进入运行态（用户可发 interrupt 注入）
+    _sessionWaiting = false;
 
     _es.addEventListener('step', (e) => {
       try {
         const step = JSON.parse(e.data);
+        // v1.6.11：SSE 补发历史 toolCalls + 新订阅重发 —— 按内容 key 去重
+        //   （历史 / 切回老 session / 上一轮 / 页面刷新恢复都会触发重发）
+        const k = stepKey(step);
+        if (_currentMessages.some(m => m._dedupeKey === k)) return;
         const toolNames = step.toolNames || [];
         // 完整保存步骤信息（含截图、轮次、工具名、完整内容），用于步骤时间线渲染
         appendMessage(root, {
@@ -684,6 +777,7 @@
           maxRounds: step.maxRounds || null,
           screenshot: step.screenshot || step.screenshotPath || null,
           fullMessage: step.message || '',
+          _dedupeKey: k,
         });
         // 更新步骤时间线面板（实时渲染每轮操作）
         renderPanel(root, sessionId);
@@ -693,12 +787,15 @@
     _es.addEventListener('waiting_user', (e) => {
       try {
         const info = JSON.parse(e.data);
+        // v1.6.10：Agent 已暂停等人工 → 标记等待态（主输入框发消息会走 /reply）
+        _sessionRunning = false;
+        _sessionWaiting = true;
         appendMessage(root, {
           role: 'waiting',
           content: info.question || '需要你的帮助',
           ts: Date.now(),
         });
-        setStatus(root, '⏸ 智能体需要你的帮助，请在右侧面板回复');
+        setStatus(root, '⏸ 智能体已暂停等待你的指示 —— 在主输入框或右侧 help 框回复即可');
       } catch (err) {}
     });
 
@@ -717,15 +814,23 @@
         const shots = toolSteps.filter(s => s.screenshot || s.screenshotPath).length;
         if (shots > 0) summaryParts.push(`📷 生成 ${shots} 张步骤截图`);
         const fullContent = (result.content || (finalStatus === 'error' ? (result.error || '执行出错') : '（无内容）')) + (summaryParts.length > 0 ? '\n\n【执行总结】' + summaryParts.join(' · ') : '');
-        appendMessage(root, {
-          role: 'assistant',
-          content: fullContent,
-          ts: Date.now(),
-          rounds: lastTool ? lastTool.round : null,
-          maxRounds: lastTool ? lastTool.maxRounds : null,
-          toolCount: toolSteps.length,
-          screenshotCount: shots,
-        });
+        // v1.6.11：done 事件也按 content 去重 —— attachSessionStream 在 status=done/error
+        //   时重发 done（页面刷新 / 切回老 session 会触发），避免重复显示 assistant 最终回复
+        const doneKey = `done|${finalStatus}|${(result.content || '').slice(0, 200)}`;
+        if (_currentMessages.some(m => m._dedupeKey === doneKey)) {
+          // 已存在相同 final 回复，不重复 push
+        } else {
+          appendMessage(root, {
+            role: 'assistant',
+            content: fullContent,
+            ts: Date.now(),
+            rounds: lastTool ? lastTool.round : null,
+            maxRounds: lastTool ? lastTool.maxRounds : null,
+            toolCount: toolSteps.length,
+            screenshotCount: shots,
+            _dedupeKey: doneKey,
+          });
+        }
         const progressEl = el('wb-steps-progress', root);
         if (progressEl) progressEl.textContent = finalStatus === 'error' ? '❌ 执行中止' : `✅ 完成 · 共 ${toolSteps.length} 步`;
         renderPanel(root, _currentSessionId);
@@ -733,6 +838,9 @@
       el('wb-send', root).disabled = false;
       if (_es) { _es.close(); _es = null; }
       _currentTaskId = null;
+      // v1.6.10：终态归零（idle）—— 输入框再次回到开新 turn 状态
+      _sessionRunning = false;
+      _sessionWaiting = false;
     });
 
     _es.addEventListener('error', (e) => {
@@ -741,6 +849,9 @@
       if (_es && _es.readyState === EventSource.CLOSED) {
         el('wb-send', root).disabled = false;
         setStatus(root, '进度流断开 —— 可刷新页面或继续发新消息');
+        // v1.6.10：连接断了 → 归零状态机（用户从主输入发消息会走 /session/:id/turn 开新 turn）
+        _sessionRunning = false;
+        _sessionWaiting = false;
       }
     });
   }
@@ -775,11 +886,59 @@
       });
   }
 
+  // 后端把对话消息与执行步骤分开存储；历史视图必须先合并，再按时间线渲染。
+  // 旧会话里的 system 消息包含整段 system prompt，不应展示在产品 UI。
+  function mergeHistoryMessages(messages, toolCalls) {
+    const safeMessages = Array.isArray(messages) ? messages : [];
+    const safeTools = Array.isArray(toolCalls) ? toolCalls : [];
+    const merged = [];
+    safeMessages.forEach((m, index) => {
+      if (!m || m.role === 'system') return;
+      merged.push({ ...m, _historyIndex: index });
+    });
+    safeTools.forEach((step, index) => {
+      if (!step) return;
+      const hasToolNames = Array.isArray(step.toolNames) && step.toolNames.length > 0;
+      // 老版本 step 可能只有 ts；空壳步骤不要在历史面板里刷屏。
+      if (!(step.message || step.content || hasToolNames || step.screenshot || step.screenshotPath || step.round)) return;
+      const tool = hasToolNames
+        ? step.toolNames.join(', ')
+        : (step.tool || 'step');
+      merged.push({
+        role: 'tool',
+        tool,
+        content: step.message || step.content || '',
+        fullMessage: step.message || step.content || '',
+        ts: step.ts || 0,
+        round: step.round || null,
+        maxRounds: step.maxRounds || null,
+        screenshot: step.screenshot || step.screenshotPath || null,
+        _historyIndex: safeMessages.length + index,
+      });
+    });
+    // 消息与步骤没有统一来源时，以 ts + 原数组下标稳定排序；无 ts 的消息保持原顺序。
+    return merged.sort((a, b) => {
+      const at = Number(a && a.ts) || 0;
+      const bt = Number(b && b.ts) || 0;
+      if (at !== bt) return at - bt;
+      return (a && a._historyIndex || 0) - (b && b._historyIndex || 0);
+    });
+  }
+
   // ── 拉会话历史 messages（切会话时） ──
   async function loadSessionMessages(root, sessionId) {
     try {
       const r = await api('GET', '/session/' + encodeURIComponent(sessionId) + '/messages');
-      _currentMessages = r.messages || [];
+      _currentMessages = mergeHistoryMessages(r && r.messages, r && r.toolCalls);
+      // 历史加载完成后同步列表计数，避免用户看到的“条数”与面板内容不一致。
+      const sess = _sessions.find(s => s.id === sessionId);
+      if (sess) {
+        sess.messageCount = _currentMessages.length;
+        sess.updatedAt = Date.now();
+        saveSessions();
+        renderSessionList(root);
+      }
+      setStatus(root, `已加载历史对话 · ${_currentMessages.length} 条`);
       // 标记 active session（给 ACMS 跨视图联动用）
       try { localStorage.setItem('web-robot-active-session', sessionId); } catch (e) {}
     } catch (e) {

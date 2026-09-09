@@ -498,7 +498,7 @@ document.addEventListener('DOMContentLoaded', () => {
     <script src="/client/js/views/dashboard.js"></script>
 <!-- v0.13 拆分：12 个子模块在 requirements.js 之前加载（HTML onclick 跨文件按名查找） -->
 <!-- v0.21.4 fix: 双卡清理范围扩大到 assist-loading-card.method-music（旧 v0.21.3 漏了真正的旧卡所在位置） -->
-<script src="/client/js/views/requirements/chat.js?v=0.22.47"></script>  <!-- v0.22.47 中断后自动让 AI 总结已完成工作 + 决策卡（v0.123：summarizing/summarized 两态，取代 v0.119 已中断卡片） -->
+<script src="/client/js/views/requirements/chat.js?v=0.22.48"></script>  <!-- v0.22.47 中断后自动让 AI 总结已完成工作 + 决策卡（v0.123：summarizing/summarized 两态，取代 v0.119 已中断卡片） -->
 <script src="/client/js/views/requirements/idea-panel.js?v=0.13.0"></script>
 <!-- v0.18 chat 模式切换器（clarify ↔ free）—— idea-panel.js 之后加载，引用 toggleChatMode -->
 <script src="/client/js/views/requirements/chat-mode.js?v=0.18.0"></script>
@@ -670,7 +670,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/core/command-palette.js?v=0.58.4"></script>
 <script src="/client/js/core/notification-center.js?v=0.58"></script>
 <!-- 🆕 P1 方案B（卡片化）→ 🆕 P2 打磨 → 🆕 A 修复（2026-08-23）：必须在 agent-buddy.js 之前加载 -->
-<script src="/client/js/core/agent-buddy-tool-card.js?v=0.115.19"></script>  <!-- v0.115.19 data-status/data-tool + .expanded class toggle（v0.121 UI 优化） -->
+<script src="/client/js/core/agent-buddy-tool-card.js?v=0.115.20"></script>  <!-- v0.115.19 data-status/data-tool + .expanded class toggle（v0.121 UI 优化） -->
 <script src="/client/js/core/agent-buddy.js?v=0.99.9"></script>  <!-- v0.99.9 去掉面板模板里硬编码的"hi～" -->
 <!-- v0.62.5: Office 编辑器 OO 风格主题 + 标题栏 (学 colors-table-classic.less + FileMenu.js) -->
 <link rel="stylesheet" href="/client/css/office-theme.css?v=0.66.0">
@@ -731,7 +731,8 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- v0.118: 内容运营平台 L3 App（PR 3 — 4 平台 provider + 8 tab UI） -->
 <script src="/client/js/views/social-publisher.js?v=0.118.18"></script>
 <!-- v0.1: 跨应用浏览器自动化控制台（browser-agent 可视化操作台） -->
-<script src="/client/js/views/browser-console.js?v=1.6.6"></script>
+<!-- v1.6.11 (2026-09-09): 修复「每次发消息都重展示历史工具调用」—— SSE 补发按内容 key(round|toolNames|message) 去重；done 事件同样去重 -->
+<script src="/client/js/views/browser-console.js?v=1.6.11"></script>
 <script>
 // v0.58：视图加载器注册 — 通过 ACMS.registerPackage 统一注册
 // 包注册系统自动同步到 ACMSWin.registerViewLoader + labels + 命令面板

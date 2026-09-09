@@ -304,6 +304,8 @@ router.post('/detect-and-respond', async (req, res, next) => {
 
     let qwenAiReply = null;
     let qwenStreamed = false;
+    // v0.124: Qwen SSE 路径工具调用持久化
+    const _qwenToolTracker = Object.create(null);  // tool_use_id → { name, input, result, isError }
     if (qwenFreeAllowed) {
       // 🆕 v0.117f：自由对话 Qwen 内核走 SSE 流式事件（与小吉面板一致体验）
       //   之前一次性 res.json() 让 Qwen 内部 tool_card / approval / thinking 事件被吞
@@ -337,11 +339,17 @@ router.post('/detect-and-respond', async (req, res, next) => {
             try {
               let adapted = null;
               if (evt.type === 'tool_use_start') {
+                _qwenToolTracker[evt.tool_use_id] = { name: evt.tool_name, input: null, result: null, isError: false };
                 adapted = { type: 'tool_card', phase: 'start', tool_use_id: evt.tool_use_id, tool_name: evt.tool_name };
               } else if (evt.type === 'tool_use_end') {
+                if (_qwenToolTracker[evt.tool_use_id]) _qwenToolTracker[evt.tool_use_id].input = evt.input;
                 adapted = { type: 'tool_card', phase: 'input_complete', tool_use_id: evt.tool_use_id, tool_name: evt.tool_name, input: evt.input };
 // 分段8/20: onEvent后半+end事件+return (L336-370)
               } else if (evt.type === 'tool_result') {
+                if (_qwenToolTracker[evt.tool_use_id]) {
+                  _qwenToolTracker[evt.tool_use_id].result = evt.content;
+                  _qwenToolTracker[evt.tool_use_id].isError = !!evt.is_error;
+                }
                 adapted = { type: 'tool_card', phase: 'result', tool_use_id: evt.tool_use_id, tool_name: evt.tool_name || '', result: evt.content, error: evt.is_error ? 'tool error' : null };
               } else if (evt.type === 'thinking_delta') {
                 adapted = { type: 'thinking', thinking: evt.text };
@@ -389,6 +397,47 @@ router.post('/detect-and-respond', async (req, res, next) => {
           //   control_request {subtype:"interrupt"} → recoverableCancellation 路径
           //   JSON 序列化会丢 Error.name，所以只用 errText (message) 判定
           const isInterrupted = !!(errText && typeof errText === 'string' && errText.includes('Operation cancelled'));
+          // v0.124: Qwen SSE 路径 — end 时将工具调用结果持久化到 supplement_history
+          if (Object.keys(_qwenToolTracker).length > 0 && contextReqId) {
+            try {
+              const toolEntries = [];
+              for (const [tid, t] of Object.entries(_qwenToolTracker)) {
+                toolEntries.push({
+                  role: 'system',
+                  source: 'tool_call_result',
+                  tool_use_id: tid,
+                  tool_name: t.name || '',
+                  input: t.input || null,
+                  result: t.result || '',
+                  is_error: t.isError || false,
+                  at: new Date().toISOString(),
+                });
+              }
+              const hist = JSON.parse(req.supplement_history || '[]');
+              let insertAt = hist.length;
+              for (let i = hist.length - 1; i >= 0; i--) {
+                if (hist[i].role === 'user' || hist[i].role === 'assistant') {
+                  insertAt = i + 1;
+                  break;
+                }
+              }
+              hist.splice(insertAt, 0, ...toolEntries);
+              if (qwenAiReply) {
+                hist.splice(insertAt + toolEntries.length, 0, {
+                  role: 'assistant',
+                  source: 'intent_loop',
+                  text: qwenAiReply,
+                  chat_round: req.chat_round || 0,
+                  at: new Date().toISOString(),
+                });
+              }
+              const reqStore = require('../../data/requirement-store')();
+              reqStore.update(contextReqId, { supplement_history: JSON.stringify(hist) });
+            } catch (e) {
+              console.error('[detect-and-respond] 写 tool_call_result 失败:', e.message);
+            }
+          }
+
           res.write(`data: ${JSON.stringify({
             type: 'end',
             ok: qr.ok,

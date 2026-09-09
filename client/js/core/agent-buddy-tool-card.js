@@ -796,6 +796,35 @@ function paintHead(card) {
     return s.length > n ? s.slice(0, n) + '…' : s;
   }
 
+
+  // v0.124: 回放历史工具调用卡片（从 supplement_history 加载）
+  function replayCard(container, entry) {
+    if (!container || !entry || !entry.tool_use_id) return;
+    // 构建模拟事件对象，复用现有 phase 处理逻辑
+    var evt = {
+      tool_use_id: entry.tool_use_id,
+      tool_name: entry.tool_name || 'unknown',
+    };
+    // 先 phaseStart 创建卡片
+    phaseStart(evt);
+    var card = _cards[entry.tool_use_id];
+    if (!card) return;
+    // 设置 input
+    if (entry.input) {
+      try { card.input = typeof entry.input === 'string' ? JSON.parse(entry.input) : entry.input; } catch(e) { card.input = entry.input; }
+    }
+    // 设置 result
+    card.output = entry.result || '';
+    card.isError = !!entry.is_error;
+    card.status = card.isError ? 'failed' : 'done';
+    // 渲染 head + input + output
+    paintHead(card);
+    if (card.input) paintInput(card);
+    paintOutput(card);
+    // 插入容器（按时间顺序，append 到末尾）
+    container.appendChild(card.el);
+  }
+
 // ============ Expose ============
   window.ACMSQwenToolCard = {
     handleToolCard: handleToolCard,
@@ -805,5 +834,6 @@ function paintHead(card) {
     setContainer: function (c) { _container = c; },  // 🆕 v0.117f：自由对话窗口容器（#chat-stream-msgs-sess-xxx）也能渲染工具卡片
     setGroupEnabled: function (v) { _groupEnabled = !!v; },  // 🆕 v0.117aa: 自由对话穿插模式关闭 group 合并
     debugCount: function () { return _apInsertedAt; },
+    replayCard: replayCard,  // v0.124: 回放历史工具调用卡片
   };
 })();

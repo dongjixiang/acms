@@ -584,6 +584,13 @@ function renderChatBubble(container, entry) {
     return;
   }
   // plan_loading / plan_done / plan_warning / plan_validation_error 由 aggregateAndRender 聚合渲染
+  // v0.124: tool_call_result 来源的工具调用历史卡片
+  if (entry && entry.source === 'tool_call_result') {
+    if (window.ACMSQwenToolCard && window.ACMSQwenToolCard.replayCard) {
+      window.ACMSQwenToolCard.replayCard(container, entry);
+    }
+    return;
+  }
   if (entry && entry.source && entry.source.startsWith && entry.source.startsWith('plan_')) return;
   const isAI = entry.role === 'assistant';
   const isSystem = entry.role === 'system';

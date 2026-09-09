@@ -368,22 +368,39 @@ const SESSION_TOOL_NAMES = [
   'request_user_help',
 ];
 
-// v0.119.2: 远程预览引擎锁 —— 同一 Puppeteer 会话（appSessionId）同时只允许一个查询驱动。
-//   Web机器人多个会话共享同一个 app-runtime 浏览器（localStorage 同 appSessionId），
-//   并行查询会互相抢页面/破坏登录态（多多要求：远程预览模式下禁止并行查询）。
-//   锁粒度 = appSessionId（不同浏览器实例互不阻塞）；waiting_user 期间保持占用（页面停留
-//   在登录/验证等敏感态，别人不许动），done/error 才释放；删除会话自动释放。
+// v0.119.2: 远程预览引擎锁 —— 并行查询禁止
+// v0.119.3 (2026-09-09): stale lock auto-release —— owner session 消失/已 done/error 时
+//   强制释放并允许新请求接管；修复「跨 ACMS session 共享 appSessionId + 老 session 未正常
+//   releasePpLock 时新 session 永远拿不到锁」问题。
 const PP_LOCKS = new Map(); // appSessionId -> { ownerSessionId, ts }
+
+// 锁 owner 是否还活着？sessionStore 里有这个 sessionId 且状态是 running/waiting_user 才算活
+function isLockOwnerAlive(ownerSessionId) {
+  if (!ownerSessionId) return false;
+  const owner = sessionStore.get(ownerSessionId);
+  if (!owner) return false; // session 已被删除
+  if (owner.status === 'running' || owner.status === 'waiting_user') return true;
+  return false; // done / error / idle 都算 stale
+}
 
 function acquirePpLock(appSessionId, sessionId) {
   if (!appSessionId) return { ok: true };
   const cur = PP_LOCKS.get(appSessionId);
-  if (!cur) {
-    PP_LOCKS.set(appSessionId, { ownerSessionId: sessionId, ts: Date.now() });
+  if (cur && cur.ownerSessionId === sessionId) {
+    cur.ts = Date.now(); // 自己（resume / begin 已持有）→ 刷新时间戳
     return { ok: true };
   }
-  if (cur.ownerSessionId === sessionId) return { ok: true }; // 自己（resume / begin 已持有）
-  return { ok: false, error: `远程预览浏览器正被会话 ${cur.ownerSessionId} 的查询占用 —— 远程预览模式禁止并行查询：请先等它完成，或到该会话点 ⏹ 停止，再回来继续` };
+  if (cur) {
+    // v0.119.3: stale lock 检测 —— owner 已 gone/done/error → 强制释放并接管
+    if (!isLockOwnerAlive(cur.ownerSessionId)) {
+      console.warn(`[PP_LOCK] stale lock auto-release appSessionId=${appSessionId} owner=${cur.ownerSessionId} (已不再活跃)，接管 sessionId=${sessionId}`);
+      PP_LOCKS.delete(appSessionId);
+    } else {
+      return { ok: false, error: `远程预览浏览器正被会话 ${cur.ownerSessionId} 的查询占用 —— 远程预览模式禁止并行查询：请先等它完成，或到该会话点 ⏹ 停止，再回来继续` };
+    }
+  }
+  PP_LOCKS.set(appSessionId, { ownerSessionId: sessionId, ts: Date.now() });
+  return { ok: true };
 }
 
 function releasePpLock(appSessionId, sessionId) {
@@ -397,6 +414,12 @@ function checkPpBusy(appSessionId, sessionId) {
   if (!appSessionId) return null;
   const cur = PP_LOCKS.get(appSessionId);
   if (cur && cur.ownerSessionId !== sessionId) {
+    // v0.119.3: stale lock 检测 —— owner 已 gone/done/error → 强制释放并放行新请求
+    if (!isLockOwnerAlive(cur.ownerSessionId)) {
+      console.warn(`[PP_LOCK] stale lock auto-release (checkPpBusy) appSessionId=${appSessionId} owner=${cur.ownerSessionId}，放行 sessionId=${sessionId}`);
+      PP_LOCKS.delete(appSessionId);
+      return null;
+    }
     return `远程预览浏览器正被会话 ${cur.ownerSessionId} 的查询占用 —— 远程预览模式禁止并行查询：请先等它完成，或到该会话点 ⏹ 停止`;
   }
   return null;

@@ -2441,7 +2441,8 @@ EmailApp.prototype.renderDetail = function () {
       if (email) {
         data.inReplyTo = email.messageId || '';
         data.references = email.messageId || '';
-        var from = formatAddress(email.from);
+        var fromEmail = extractEmailAddress(email.from);
+        var fromName = formatAddress(email.from);
         var prefix = options.kind === 'forward' ? 'Fwd: ' : 'Re: ';
         data.subject = email.subject && email.subject.indexOf(prefix) === 0 ? email.subject : prefix + (email.subject || '');
         // v1.17: 保留原邮件的 HTML 内容（用于下方预览），避免 reply 后"风格丢失"
@@ -2452,9 +2453,9 @@ EmailApp.prototype.renderDetail = function () {
           data.autoHtmlMode = true;
         }
         if (options.kind === 'reply') {
-          data.to = from;
+          data.to = fromEmail || email.from || '';
         } else if (options.kind === 'reply-all') {
-          data.to = from;
+          data.to = fromEmail || email.from || '';
           data.cc = email.cc || '';
         }
         if (options.kind === 'forward') {
@@ -2982,6 +2983,8 @@ EmailApp.prototype.refreshAttachment = function (item) {
     var bodyEl = root.querySelector('[data-role="body"]');
     data.body = bodyEl ? (bodyEl.innerHTML.trim() === '<br>' ? '' : bodyEl.innerHTML) : '';
     data.isHtml = true; // contenteditable 始终 HTML 模式
+    // 保留原邮件 HTML（reply 时由 submitComposer 组装到 body 里发送）
+    data.originalHtml = this.state.composerData && this.state.composerData.originalHtml ? this.state.composerData.originalHtml : '';
     return data;
   };
 
@@ -3034,6 +3037,13 @@ EmailApp.prototype.refreshAttachment = function (item) {
       // v1.18: 用 IFRAME 模式 sanitize（WHOLE_DOCUMENT + 保留 <style>），让回复里的原邮件格式（表格配色/字体）不丢失
       // 注：INLINE 模式会剥掉 <style> 标签，导致带 CSS 的邮件渲染扁平化
       data.body = sanitizeEmailHtmlForIframe(data.body, null);
+    }
+    // v1.18 修复：回复时（非转发）把原邮件 HTML 组装进正文，否则回复不含原邮件
+    // 转发时 body 已包含完整转发内容，不能再重复追加 originalHtml
+    if (data.originalHtml && !(this.state.composerData && this.state.composerData.kind === 'forward')) {
+      var separator = '<hr style="border:none;border-top:1px dashed #ccc;margin:16px 0;">' +
+        '<div style="font-size:11px;color:#888;font-family:system-ui,sans-serif;">—— 原始邮件 ——</div>';
+      data.body = (data.body ? data.body + separator : '') + sanitizeEmailHtmlForIframe(data.originalHtml, null);
     }
     self.state.sendInFlight = true;
     self.setStatus('发送中…');

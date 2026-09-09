@@ -390,9 +390,16 @@ class AppRuntimeService extends EventEmitter {
         case 'reload':
           await page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 });
           return { ok: true };
-        case 'resize':
+case 'resize':
           s.w = event.w; s.h = event.h;
           await page.setViewport({ width: event.w, height: event.h });
+          // v1.6.7: restart screencast 让 metadata 跟随新 viewport（前端 ResizeObserver 触发，
+          //   防"画面两边多空白"bug —— 之前 viewport 固定 1100x700，ACMSWin 拖宽后 wbPreview > 1100，
+          //   object-fit:contain 居中导致左右各 ~10% 留白）
+          if (s.cdp && s.screencastOn) {
+            try { await s.cdp.send('Page.stopScreencast'); } catch {}
+            await s.cdp.send('Page.startScreencast', { format: 'jpeg', quality: 75, everyNthFrame: 1 });
+          }
           return { ok: true };
         case 'exec': {
           // 调试用：在页面上下文跑一段 JS（v0.59 加）
