@@ -1,4 +1,4 @@
-// ACMS Web 机器人视图 v1.6.11 —— 引擎可切换：内置(agent-browser) ⇄ 远程预览(稳定 Puppeteer 同屏)
+// ACMS Web 机器人视图 v1.6.12 —— 引擎可切换：内置(agent-browser) ⇄ 远程预览(稳定 Puppeteer 同屏)
 // ============================================================
 // v1.6.11（2026-09-09）：修复「每次发消息都重展示历史工具调用」—— 服务端 attachSessionStream 会在
 //   每次新订阅时补发 session.toolCalls（v0.118.15 设计：客户端断开重连后能恢复上下文），
@@ -142,9 +142,10 @@
       justify-content:center; position:relative; overflow:hidden; min-width:0; }
     .wb-preview img { width:100%; height:100%; min-width:0; min-height:0; object-fit:contain; display:block; }
     .wb-preview-ph { color:var(--text2,#777); font-size:13px; padding:20px; text-align:center; line-height:1.6; }
-    /* v1.6.7 (2026-09-08): steps 默认 340 → 220, 让画面最大化 (+21% 宽) —— 解决"远程预览右边缺一条"
-       （1100 像素源内容压进 578 像素显示）。保留展开对话能力 + 可折叠 ◀/▶ 仍可用。 */
-    .wb-steps { flex:0 0 220px; min-width:180px; max-width:300px; border-left:1px solid var(--border,#333);
+    /* v1.6.12 (2026-09-13): 用户要求右侧"执行步骤&对话"面板加宽 50%（220 → 330）
+       代价：画面（wb-preview）按 flex:1 自适应 → 宽度从 ~578px 降到 ~468px。
+       v1.6.7 那次 340 → 220 是为了让画面最大化；本次用户拍板反转，给步骤面板更多空间展示 Markdown 渲染后的 AI 回复 */
+    .wb-steps { flex:0 0 330px; min-width:270px; max-width:450px; border-left:1px solid var(--border,#333);
       background:var(--bg,#1a1d23); display:flex; flex-direction:column; overflow:hidden; transition:flex-basis .18s ease, min-width .18s ease; }
     /* v1.6.6: 右侧面板可折叠 —— 收起后画面最大化（浏览器应用式浏览） */
     .wb-steps.collapsed { flex:0 0 26px; min-width:26px; max-width:26px; }
@@ -174,6 +175,28 @@
       border:1px solid #ffc107; border-radius:10px; padding:8px 12px; font-size:12px; }
     .wb-msg-bubble-name { font-size:10px; opacity:.65; margin-bottom:3px; font-weight:600; display:flex; align-items:center; gap:5px; }
     .wb-msg-meta { font-size:10px; opacity:.6; margin-top:4px; }
+    /* v1.6.12: AI 回复 Markdown 渲染样式（与 chat-flow-ui 风格一致，深浅主题通用） */
+    .wb-msg-inner > div p { margin:4px 0; line-height:1.55; }
+    .wb-msg-inner > div p:first-child { margin-top:0; } .wb-msg-inner > div p:last-child { margin-bottom:0; }
+    .wb-msg-inner h1,.wb-msg-inner h2,.wb-msg-inner h3,.wb-msg-inner h4 { font-weight:600; margin:10px 0 4px; color:var(--text); line-height:1.3; }
+    .wb-msg-inner h1 { font-size:15px; } .wb-msg-inner h2 { font-size:14px; } .wb-msg-inner h3 { font-size:13px; } .wb-msg-inner h4 { font-size:12px; }
+    .wb-msg-inner strong { font-weight:600; color:var(--text); }
+    .wb-msg-inner em { font-style:italic; }
+    .wb-msg-inner ul,.wb-msg-inner ol { margin:4px 0; padding-left:20px; }
+    .wb-msg-inner li { margin:2px 0; }
+    .wb-msg-inner code { background:rgba(127,127,127,.15); padding:1px 5px; border-radius:3px;
+      font-family:ui-monospace,'Cascadia Code','Source Code Pro',Menlo,monospace; font-size:12px; }
+    .wb-msg-inner pre { background:rgba(127,127,127,.12); padding:8px 10px; border-radius:6px;
+      overflow-x:auto; font-size:12px; margin:6px 0; line-height:1.45; border:1px solid var(--border); }
+    .wb-msg-inner pre code { background:transparent; padding:0; font-size:12px; }
+    .wb-msg-inner blockquote { border-left:3px solid var(--border); padding:2px 0 2px 10px;
+      color:var(--text2); margin:6px 0; font-style:italic; }
+    .wb-msg-inner table { border-collapse:collapse; font-size:12px; margin:6px 0; width:100%; }
+    .wb-msg-inner th,.wb-msg-inner td { border:1px solid var(--border); padding:4px 8px; text-align:left; }
+    .wb-msg-inner th { background:var(--bg3); font-weight:600; }
+    .wb-msg-inner hr { border:none; border-top:1px solid var(--border); margin:8px 0; }
+    .wb-msg-inner a { color:var(--accent); text-decoration:none; }
+    .wb-msg-inner a:hover { text-decoration:underline; }
     @keyframes wb-msg-in { from { opacity:0; transform:translateY(4px);} to { opacity:1; transform:none;} }
     .wb-help { display:flex; gap:6px; margin-top:8px; }
     .wb-help input { flex:1; min-width:0; padding:6px 10px; border:1px solid #856404;
@@ -603,14 +626,19 @@
       return `<div class="wb-msg user"><div class="wb-msg-avatar">我</div><div class="wb-msg-inner"><div class="wb-msg-bubble-name">我 · ${ts}</div><div style="color:inherit;">${esc(m.content || '')}</div></div></div>`;
     } else if (m.role === 'assistant') {
       const meta = m.tools ? `<div class="wb-msg-meta">🔧 ${m.tools.length} 个工具调用 · ${m.rounds || ''} 步</div>` : '';
-      return `<div class="wb-msg assistant"><div class="wb-msg-avatar">🦾</div><div class="wb-msg-inner"><div class="wb-msg-bubble-name">Web机器人 · ${ts}</div><div>${esc(m.content || '')}</div>${meta}</div></div>`;
+      // v1.6.12: AI 回复走全局 renderMarkdown（已 escHtml，XSS 安全；支持 #/##/###/**bold**/`code`/列表/表格/引用/围栏代码/Mermaid）
+      //   fallback：renderMarkdown 不存在时退回 esc（防 silent failure）
+      const body = typeof renderMarkdown === 'function' ? renderMarkdown(m.content || '') : esc(m.content || '');
+      return `<div class="wb-msg assistant"><div class="wb-msg-avatar">🦾</div><div class="wb-msg-inner"><div class="wb-msg-bubble-name">Web机器人 · ${ts}</div><div>${body}</div>${meta}</div></div>`;
     } else if (m.role === 'tool') {
       const desc = esc((m.content || '').slice(0, 200)) + ((m.content || '').length > 200 ? '…' : '');
       const shotHtml = m.screenshot ? `<img src="${shotUrl(m.screenshot)}" onclick="openImagePreview('${shotUrl(m.screenshot)}');event.stopPropagation();" style="max-width:120px;max-height:70px;border-radius:4px;margin-top:4px;border:1px solid var(--border,#ccc);object-fit:contain;display:block;cursor:zoom-in;" alt="步骤截图 - 点击放大" onerror="this.style.display='none'">` : '';
       const metaLine = m.round ? `<span style="font-size:9px;background:#4f8cff;color:#fff;padding:1px 4px;border-radius:4px;margin-left:4px;">R${m.round}</span>` : '';
       return `<div class="wb-msg tool"><div class="wb-msg-avatar">🔧</div><div class="wb-msg-inner"><div class="wb-msg-bubble-name">🔧 ${esc(m.tool || 'step')} · ${ts} ${metaLine}</div><div>${desc}</div>${shotHtml}</div></div>`;
     } else if (m.role === 'waiting') {
-      return `<div class="wb-msg waiting"><div style="font-weight:600;margin-bottom:4px;">⏸ 需要你的帮助 · ${ts}</div>${esc(m.content || '')}<div class="wb-help"><input id="wb-help-input" placeholder="回复 A/B/C 或自定义指令…" /><button class="wb-btn-primary" id="wb-help-send">回复并继续</button></div></div>`;
+      // v1.6.12: AI 提问/等待输入也走 Markdown 渲染（用户经常让 AI 出选项清单）
+      const body = typeof renderMarkdown === 'function' ? renderMarkdown(m.content || '') : esc(m.content || '');
+      return `<div class="wb-msg waiting"><div style="font-weight:600;margin-bottom:4px;">⏸ 需要你的帮助 · ${ts}</div><div>${body}</div><div class="wb-help"><input id="wb-help-input" placeholder="回复 A/B/C 或自定义指令…" /><button class="wb-btn-primary" id="wb-help-send">回复并继续</button></div></div>`;
     }
     return '';
   }

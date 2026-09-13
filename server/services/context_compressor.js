@@ -199,8 +199,50 @@ async function compressMessages(messages, opts = {}) {
   messages.length = 0;
   messages.push(...compressed);
 
-  console.log(`[context_compressor] P159 压缩: ${beforeCount} → ${compressed.length} messages (pruned ${pruned} tool outputs, dropped ${droppedCount} middle msgs)`);
+  // v0.119.6: 裁剪边界可能切在 assistant(tool_calls) 与 tool 之间 → 修孤立 tool（防 OpenAI/DeepSeek 400）
+  const orphanFixed = sanitizeToolPairing(messages);
+
+  console.log(`[context_compressor] P159 压缩: ${beforeCount} → ${compressed.length} messages (pruned ${pruned} tool outputs, dropped ${droppedCount} middle msgs, sanitized ${orphanFixed} orphan tools)`);
   return true;
+}
+
+/**
+ * v0.119.6: 修「孤立 tool 消息」—— OpenAI/DeepSeek 严格校验 role='tool' 必须紧跟
+ *   带对应 tool_calls 的 assistant 消息。压缩裁剪边界若落在 assistant(tool_calls) 与 tool 之间
+ *   → 产生孤儿 tool → 400「Messages with role 'tool' must be a response to a preceding message with 'tool_calls'」
+ *   （MiniMax/Anthropic 端点不严格校验，换 DeepSeek 后暴露）
+ * @param {Array} messages - in-place 修改
+ * @returns {number} 删除的孤儿 tool 消息数
+ */
+function sanitizeToolPairing(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) return 0;
+  let removed = 0;
+  const out = [];
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (m && m.role === 'tool') {
+      // 向前找最近的非 tool 消息（支持多个 tool 响应同一 assistant(tool_calls) 的并行调用）
+      let j = out.length - 1;
+      while (j >= 0 && out[j] && out[j].role === 'tool') j--;
+      const prev = j >= 0 ? out[j] : null;
+      const ids = (prev && prev.role === 'assistant' && Array.isArray(prev.tool_calls))
+        ? prev.tool_calls.map((tc) => tc && tc.id).filter(Boolean)
+        : [];
+      const myId = m.tool_call_id;
+      // 无前置 assistant(tool_calls) 或 tool_call_id 不匹配 → 孤儿，丢弃
+      if (!ids.length || (myId && !ids.includes(myId))) {
+        removed++;
+        continue;
+      }
+    }
+    out.push(m);
+  }
+  if (removed > 0) {
+    messages.length = 0;
+    for (const m of out) messages.push(m);
+    console.warn(`[context_compressor] v0.119.6 sanitizeToolPairing: 删除 ${removed} 条孤儿 tool 消息（防 OpenAI/DeepSeek 400）`);
+  }
+  return removed;
 }
 
 /**
@@ -215,6 +257,7 @@ module.exports = {
   compressMessages,
   shouldCompress,
   pruneToolOutputs,
+  sanitizeToolPairing,
   estimateMessageTokens,
   resetRunState,
   // 常量导出方便测试

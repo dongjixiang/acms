@@ -157,11 +157,21 @@ function getCredentials(account_id) {
 }
 
 // ── 更新账号 ──
+// v0.119.6: credentials 字段特殊处理 —— 加密存（与 create 一致），防明文落库
+//   调用方传明文 credentials（{type, username, password, ...}）→ 自动加密成 ciphertext
+//   若传的已是加密形态（{type, ciphertext, meta}）→ 跳过（幂等）
 function update(account_id, updates) {
   if (!account_id) return { ok: false, error: 'missing_account_id' };
   try {
     const c = coll();
-    c.update(doc => doc.id === account_id, updates);
+    const safeUpdates = { ...updates };
+    if (safeUpdates.credentials && safeUpdates.credentials.type && !safeUpdates.credentials.ciphertext) {
+      const creds = safeUpdates.credentials;
+      const plaintext = JSON.stringify({ ...creds, meta: creds.meta || {} });
+      const ciphertext = cipher.encrypt(plaintext);
+      safeUpdates.credentials = { type: creds.type, ciphertext, meta: creds.meta || {} };
+    }
+    c.update(doc => doc.id === account_id, safeUpdates);
     return { ok: true, account_id };
   } catch (e) {
     return { ok: false, error: `db_update_failed: ${e.message}` };

@@ -550,7 +550,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/agents.js"></script>
 <script src="/client/js/views/settings.js"></script>
 <script src="/client/js/views/reports.js?v=0.22.4"></script>
-<script src="/client/js/views/admin.js?v=0.104"></script>
+<script src="/client/js/views/admin.js?v=0.22.73"></script>
 <!-- Agent Registry 管理页面 -->
 <script src="/client/js/views/agent-admin.js?v=0.110"></script>
 <!-- v0.XX: 代理设置（admin 高级 tab 内嵌卡片） -->
@@ -696,7 +696,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- v0.91.3: Office V2 bridge (Univer + Tiptap + Reveal, code-split, prefetch + dispose) -->
 <script src="/client/js/views/office-v2-bridge.js?v=0.92.7"></script>
 <!-- v0.93: Office V3 bridge (GenOffice docx engine, 中文一等公民, P1 Word; PPT/Excel P2/P3) -->
-<script src="/client/js/views/office-v3-bridge.js?v=0.97.13"></script>
+<script src="/client/js/views/office-v3-bridge.js?v=0.97.14"></script>
 <!-- P199: 角色档案库 API（生图一致性 — 多角色多图合成参考） -->
 <script src="/client/js/views/character-library.js?v=0.97.0"></script>
 <!-- P199: 场景档案库 API（生图一致性 — 场景环境一致性参考） -->
@@ -739,8 +739,8 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- v0.118: 内容运营平台 L3 App（PR 3 — 4 平台 provider + 8 tab UI） -->
 <script src="/client/js/views/social-publisher.js?v=0.118.18"></script>
 <!-- v0.1: 跨应用浏览器自动化控制台（browser-agent 可视化操作台） -->
-<!-- v1.6.11 (2026-09-09): 修复「每次发消息都重展示历史工具调用」—— SSE 补发按内容 key(round|toolNames|message) 去重；done 事件同样去重 -->
-<script src="/client/js/views/browser-console.js?v=1.6.11"></script>
+<!-- v1.6.12 (2026-09-13): 用户要求"执行步骤&对话"面板加宽 50%（220 → 330）+ AI 回复走全局 renderMarkdown（XSS 安全，支持 #/##/###/**bold**/`code`/列表/表格/引用/围栏代码/Mermaid）-->
+<script src="/client/js/views/browser-console.js?v=1.6.12"></script>
 <script>
 // v0.58：视图加载器注册 — 通过 ACMS.registerPackage 统一注册
 // 包注册系统自动同步到 ACMSWin.registerViewLoader + labels + 命令面板

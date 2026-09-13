@@ -180,4 +180,42 @@ router.post('/agnes-key', (req, res) => {
   res.json({ success: true, message: 'Agnes API Key 已保存' });
 });
 
+// v0.22.73: AI 生成模型配置（图像/视频）—— 之前模型名写死在代码里，换模型要改代码+重启
+const modelConfig = require('../services/ai-model-config');
+
+// 读：当前生效值 + 来源 + 官方可用清单
+router.get('/ai-models', async (req, res) => {
+  try {
+    const cfg = modelConfig.all();
+    const avail = await modelConfig.listAvailable({ fresh: req.query.fresh === '1' });
+    res.json({ ok: true, config: cfg, available: avail.models || [], available_source: avail.source });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// 写：{ image_model?, video_model?, legacy_video_model? }（空字符串 = 恢复默认）
+router.post('/ai-models', (req, res) => {
+  try {
+    const body = req.body || {};
+    const map = {
+      image_model: 'agnes_image_model',
+      video_model: 'agnes_video_model',
+      legacy_video_model: 'agnes_video_model_legacy',
+    };
+    const results = [];
+    for (const [field, key] of Object.entries(map)) {
+      if (body[field] === undefined) continue;
+      const r = modelConfig.set(key, body[field]);
+      if (!r.ok) return res.status(400).json({ ok: false, error: r.error, field });
+      results.push({ field, ...r });
+    }
+    if (!results.length) return res.status(400).json({ ok: false, error: '没有要更新的字段' });
+    console.log('[admin] AI 模型配置更新:', JSON.stringify(results.map(r => r.key + '=' + r.value)));
+    res.json({ ok: true, updated: results, config: modelConfig.all() });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 module.exports = router;

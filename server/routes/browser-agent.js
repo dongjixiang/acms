@@ -579,6 +579,47 @@ router.post('/session/:id/interrupt', (req, res) => {
   }
 });
 
+// v0.119.5: 用户接管浏览器（handoff）—— 让 AI 暂停 LLM + 释放 ppDriver 锁
+//   用户在 AI 发布 modal 点「⏸ 暂停让我接管」→ POST /session/:id/handoff
+//   行为：requestHandoff 自动判断 status —— running 走 pause 路径，waiting_user 直接做 handoff
+//   限制：仅 running / waiting_user 状态可调；其他状态返 409
+//   注：v0.119.5 修订后不再强求 appSessionId（任何 session 都能接管自己的浏览器；appSessionId 由 taskRunner 内部按需处理）
+router.post('/session/:id/handoff', (req, res) => {
+  try {
+    const sessionId = req.params.id;
+    const session = taskRunner.getSession(sessionId);
+    if (!session) return res.status(404).json({ error: '会话不存在' });
+    const r = taskRunner.requestHandoff(sessionId);
+    if (!r.ok) return res.status(409).json({ error: r.error, status: r.status });
+    res.json({ ok: true, sessionId, pause: true, fromWaiting: !!r.fromWaiting, appSessionId: session.appSessionId || null, note: r.fromWaiting ? '接管已激活，去 Web 机器人浏览器手动操作' : '已请求接管；LLM 当前轮结束后会暂停并释放浏览器' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// v0.119.5: 用户接管完，恢复 LLM
+//   用户在 Web 机器人浏览器里手动操作完 → POST /session/:id/resume-handoff
+//   行为：注入「用户已手动操作」note + 重新拿 ppDriver 锁 + 续跑
+//   限制：仅 handoff_paused 状态可调
+router.post('/session/:id/resume-handoff', async (req, res) => {
+  try {
+    const sessionId = req.params.id;
+    const session = taskRunner.getSession(sessionId);
+    if (!session) return res.status(404).json({ error: '会话不存在' });
+    if (session.status !== 'handoff_paused') {
+      return res.status(409).json({ error: `会话不在 handoff 暂停状态（当前 ${session.status}），无法恢复`, status: session.status });
+    }
+    taskRunner.broadcastResumed(sessionId, {}, session.currentTaskId);
+    // resumeHandoff 是 async（内部调 runtime.execute 续跑），不 await 让它跑在后台
+    taskRunner.resumeHandoff(sessionId).catch((e) => {
+      console.error(`[browser-agent-route] resumeHandoff failed for ${sessionId}:`, e.message);
+    });
+    res.json({ ok: true, sessionId, status: 'running', note: '已恢复 LLM 续跑' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // 列所有会话
 router.get('/sessions', (req, res) => {
   const list = taskRunner.listSessions().map((s) => ({

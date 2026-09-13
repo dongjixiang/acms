@@ -250,9 +250,14 @@ router.post('/accounts', async (req, res) => {
     }
 
     // 第一步：先创建 social-publisher 账号（拿到 id 作为 auth profile name）
+    // v0.119.6: password 也加密存进 accountStore（credentials.ciphertext，AES-256-GCM）——
+    //   原因：agent-browser `auth show` 明确不暴露密码（no passwords），
+    //   而 PP 模式（远程预览 Puppeteer）需要自己填表 → 必须 ACMS 侧存一份可解密的凭据。
+    //   安全：密码只在 server 端 getCredentials() 解密填表，LLM context / API 响应里永远不含密码。
     const tmpCredentials = {
       type: 'agent_browser',
       username: cred.username,
+      password: cred.password,
       auth_profile: '__pending__',  // 占位，第二步 auth save 成功后覆盖
       meta: { url: accountStore.PLATFORM_LIMITS[platform]?.login_url || '' },
     };
@@ -279,7 +284,8 @@ router.post('/accounts', async (req, res) => {
     }
 
     // 第三步：更新账号的 auth_profile 字段（标记已绑定）
-    accountStore.update(result.account.id, { credentials: { type: 'agent_browser', username: cred.username, auth_profile: result.account.id, meta: { url: loginUrl } } });
+    // v0.119.6: password 一并加密存（PP 模式自动登录用）——与 tmpCredentials 保持一致
+    accountStore.update(result.account.id, { credentials: { type: 'agent_browser', username: cred.username, password: cred.password, auth_profile: result.account.id, meta: { url: loginUrl } } });
 
     const finalAccount = accountStore.get(result.account.id);
     res.json({ ok: true, account: finalAccount });
@@ -330,6 +336,52 @@ router.get('/accounts/:id', (req, res) => {
     const a = accountStore.get(req.params.id);
     if (!a) return err(res, 'ACCOUNT_NOT_FOUND', 'account 不存在', 404);
     res.json({ ok: true, account: a });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// v0.119.6: 更新账号（重填 username/password —— PP 模式自动登录需要，之前无编辑端点只能删号重建）
+//   PATCH /accounts/:id  body: { username?, password?, display_name?, avatar? }
+//   只传 password（如重填密码）会用现有 username 补全
+router.patch('/accounts/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const acc = accountStore.get(id);
+    if (!acc) return err(res, 'ACCOUNT_NOT_FOUND', `账号 ${id} 不存在`, 404);
+    const { username, password, display_name, avatar } = req.body || {};
+
+    const updates = {};
+    if (display_name) updates.display_name = display_name;
+    if (avatar) updates.avatar = avatar;
+
+    const wantCredUpdate = (username !== undefined) || (password !== undefined && password !== null);
+    if (wantCredUpdate) {
+      const cur = accountStore.getCredentials(id) || {};
+      const newUser = (username !== undefined && username !== null && String(username).trim()) ? String(username).trim() : cur.username;
+      const newPass = (password !== undefined && password !== null) ? password : cur.password;
+      if (!newUser || newPass === undefined || newPass === null) {
+        return err(res, 'MISSING_FIELDS', '更新凭据需要 username 和 password（只传 password 会用现有 username 补全）', 400);
+      }
+      const loginUrl = (accountStore.PLATFORM_LIMITS[acc.platform] || {}).login_url || '';
+      updates.credentials = {
+        type: 'agent_browser',
+        username: newUser,
+        password: newPass,
+        auth_profile: id,
+        meta: { url: loginUrl },
+      };
+      // 同步刷新 agent-browser 全局 auth（CLI 内置引擎仍用它）
+      if (loginUrl) {
+        try { await browserAgent.authSave({ name: id, url: loginUrl, username: newUser, password: newPass }); }
+        catch (_) { /* auth save 失败不阻塞 —— PP 模式用 accountStore 的凭据 */ }
+      }
+    }
+
+    if (Object.keys(updates).length === 0) return err(res, 'NO_UPDATES', '没有要更新的字段', 400);
+    const r = accountStore.update(id, updates);
+    if (!r.ok) return err(res, 'UPDATE_FAILED', r.error, 500);
+    res.json({ ok: true, account: accountStore.get(id) });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
@@ -681,7 +733,7 @@ module.exports = router;
 // POST /api/social-publisher/go-publish — 创建发布任务（异步）
 router.post('/go-publish', async (req, res) => {
   try {
-    const { title, content, platform, account_id, tags, images } = req.body || {};
+    const { title, content, platform, account_id, tags, images, appSessionId } = req.body || {};
     if (!title || !content) return err(res, 'MISSING_FIELDS', 'title 和 content 必填');
     if (!platform) return err(res, 'MISSING_PLATFORM', 'platform 必填');
     if (!account_id) return err(res, 'MISSING_ACCOUNT', 'account_id 必填');
@@ -692,13 +744,15 @@ router.post('/go-publish', async (req, res) => {
       return err(res, 'PLATFORM_MISMATCH', `账号是 ${account.platform} 不是 ${platform}`, 400);
     }
 
+    // v0.119.5: appSessionId —— 前端可传用户的 ws-* Web 机器人 sessionId
+    //   让 gp-* session 共享那个浏览器，遇到登录墙/验证码用户可直接接管（handoff）
     const result = await goPublisher.goPublish(account, {
       title,
       content,
       tags: tags || [],
       images: images || [],
       platform,
-    });
+    }, { appSessionId: appSessionId || null });
     // v0.118.12: 执行/SSE/reply 全部收敛到 browser-agent session 通道
     //   订阅: GET  /api/browser-agent/session/<task_id>/stream（step/waiting_user/done）
     //   回复: POST /api/browser-agent/session/<task_id>/reply  { message }
@@ -707,6 +761,7 @@ router.post('/go-publish', async (req, res) => {
       ok: true,
       task_id: result.taskId,
       status: result.status,
+      appSessionId: result.appSessionId,  // v0.119.6: 透传给前端用于 AI modal 画面渲染 + 接管输入
       stream: '/api/browser-agent/session/' + result.taskId + '/stream',
     });
   } catch (e) {

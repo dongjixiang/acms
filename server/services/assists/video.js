@@ -321,8 +321,10 @@ async function runAssistJob(requirementId, opts = {}) {
   // v0.22.67: 2.5 系列（首尾帧）参数
   //   video_model: 'agnes-video-2.5-flash' 时走 seconds + first_frame/last_frame + aspect_ratio
   //   2.0 老链路（无 video_model）保持 num_frames + extra_body.image[] 不变
-  const videoModel = (opts.video_model || '').trim() || 'agnes-video-v2.0';
-  const is25 = /agnes-video-2\.5/.test(videoModel);
+  // v0.22.73: 默认模型从系统配置读（老链路默认 agnes-video-v2.0，可配置）
+  const videoModel = (opts.video_model || '').trim() || require('../ai-model-config').legacyVideoModel();
+  // v0.22.73: 除 v2.0 外都按新形态（seconds/first_frame/last_frame）
+  const is25 = !/v2\.0/.test(videoModel);
   const firstFrame = (opts.first_frame || '').trim();
   const lastFrame = (opts.last_frame || '').trim();
   const aspectRatio = (opts.aspect_ratio || '').trim() || null;
@@ -563,7 +565,7 @@ async function queryAssistJob(requirementId, sceneIdx = null) {
 
     // v0.22.67: 2.5 系列的 keyframe/reference 任务**必须**带 model_name 查询，否则查不到
     const queryArgs = { video_id: videoId, task_id: taskId };
-    if (assist.model && /agnes-video-2\.5/.test(assist.model)) queryArgs.model_name = assist.model;
+    if (assist.model && !/v2\.0/.test(assist.model)) queryArgs.model_name = assist.model;
     const result = await queryTool.handler(queryArgs);
     console.log(`[assist:video] ${requirementId} query result: status=${result.status} progress=${result.progress} kind=${result._query_kind || '?'} error=${result.error || '(none)'}`);
 

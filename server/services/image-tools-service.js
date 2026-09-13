@@ -231,7 +231,8 @@ async function coreGenerate(opts) {
 
   var body = {
   // v0.22.66: agnes-image-2.1-flash → agnes-image-2.5-flash（最新一代，能力全面超过 2.1；参数/尺寸/计费完全一致；当前免费）
-    model: 'agnes-image-2.5-flash',
+    // v0.22.73: 模型名改从系统配置读（管理后台可改，不再写死）
+    model: require('./ai-model-config').imageModel(),
     prompt: prompt,
     size: size,
     extra_body: { response_format: 'url' },

@@ -254,7 +254,8 @@ async function generateAgnesImage(projectSlug, provider, prompt, params) {
   const size = params.size || provider.config?.defaultParams?.size || '1024x1024';
   const body = {
 // v0.22.66: agnes-image-2.1-flash → agnes-image-2.5-flash（最新一代，能力全面超过 2.1；参数/尺寸/计费完全一致；当前免费）
-    model: 'agnes-image-2.5-flash',
+    // v0.22.73: 模型名从系统配置读
+    model: require('./ai-model-config').imageModel(),
     prompt,
     size,
     extra_body: { response_format: 'url' },
@@ -302,7 +303,8 @@ async function generateAgnesImage(projectSlug, provider, prompt, params) {
     return saveAsset(projectSlug, buffer, ext, mime, {
       prompt,
   // v0.22.66: agnes-image-2.1-flash → agnes-image-2.5-flash（最新一代，能力全面超过 2.1；参数/尺寸/计费完全一致；当前免费）
-    model: 'agnes-image-2.5-flash',
+    // v0.22.73: 模型名从系统配置读
+    model: require('./ai-model-config').imageModel(),
       size,
       img2img: inputImages.length > 0,
     });
@@ -313,7 +315,8 @@ async function generateAgnesImage(projectSlug, provider, prompt, params) {
   return saveAsset(projectSlug, buffer, '.png', 'image/png', {
     prompt,
 // v0.22.66: agnes-image-2.1-flash → agnes-image-2.5-flash（最新一代，能力全面超过 2.1；参数/尺寸/计费完全一致；当前免费）
-    model: 'agnes-image-2.5-flash',
+    // v0.22.73: 模型名从系统配置读
+    model: require('./ai-model-config').imageModel(),
     size,
     img2img: inputImages.length > 0,
   });

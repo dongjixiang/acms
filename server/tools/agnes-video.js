@@ -40,8 +40,11 @@ async function generateVideo(args) {
   //   2.5：seconds("4"-"12") + size(720P) + aspect_ratio + mode=text|keyframe|reference
   //        + keyframe 模式的 first_frame / last_frame（首尾帧控制）
   //   中文站可用 2.5-flash（当前 $0/秒）；国际站(apihub)用中文站 key 会 401
-  const model = args.model || 'agnes-video-v2.0';
-  const is25 = /agnes-video-2\.5/.test(model);
+  // v0.22.73: 默认模型从系统配置读（调用方一般会显式传 model）
+  const model = args.model || require('../services/ai-model-config').videoModel();
+  // v0.22.73: 判定改成「除 v2.0 外都按新形态」——原来写死 2.5 →
+  //   将来配 agnes-video-3.0 之类会静默走 2.0 参数（num_frames），坏得无声。
+  const is25 = !/v2\.0/.test(model);
 
   const body = { model, prompt: args.prompt };
 

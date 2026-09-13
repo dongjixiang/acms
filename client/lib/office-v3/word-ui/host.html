@@ -16,6 +16,65 @@
   // P200: 当前文档标识 —— 角色/场景档案库按文档隔离的依据（__init 时赋值）
   let acmsDocId = ''
   let acmsDocName = ''
+  // v0.22.74: 未保存文档也要有「本文档」身份 —— 否则新文档里生成的设定集档案全变成"未绑定"，
+  //   用户在插图面板选「本文档」什么都看不到（isVisibleInDoc 要求 !!docId，空 docId 一切不可见）。
+  //   策略：无 fileId 时给一个会话级 draft id；文档保存拿到真 fileId 后由 __setDocId 迁移过去。
+  let acmsDocIsDraft = false
+  function ensureDraftDocId() {
+    if (acmsDocId) return acmsDocId
+    acmsDocId = 'draft-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36)
+    acmsDocIsDraft = true
+    return acmsDocId
+  }
+  function acmsDocLabel() {
+    if (!acmsDocId) return '文档未保存'
+    if (acmsDocName) return acmsDocName
+    return acmsDocIsDraft ? '本文档（未保存）' : '当前文档'
+  }
+  function refreshDocScopeLabels() {
+    try {
+      document.querySelectorAll('.acms-scope-doc').forEach(function (el) {
+        el.textContent = '· ' + acmsDocLabel()
+        el.title = acmsDocName || ''
+      })
+      document.querySelectorAll('.acms-lib-scope-doc').forEach(function (el) {
+        el.textContent = '· ' + acmsDocLabel()
+      })
+    } catch (e) { /* 面板未打开时忽略 */ }
+  }
+  /**
+   * v0.22.74: 文档保存后由 bridge 回传真实 fileId（host.html 是 iframe，只能被通知）
+   *   ① 更新身份 ② 把本会话 draft 期间建的档案**迁移**到真实文档 → 保存后依然看得到
+   */
+  window.__setDocId = async function (fileId, fileName, opts) {
+    opts = opts || {}
+    try {
+      if (!fileId) return { ok: false, error: 'no fileId' }
+      var prev = acmsDocId
+      if (prev === fileId) return { ok: true, unchanged: true }
+      acmsDocId = fileId
+      if (fileName) acmsDocName = fileName
+      acmsDocIsDraft = false
+      var migrated = 0
+      if (prev && opts.migrate !== false) {
+        try {
+          var cl = acmsLib('acmsCharacterLib'), sl = acmsLib('acmsSceneLib')
+          for (var pair of [[cl, 'characters'], [sl, 'scenes']]) {
+            var lib = pair[0]
+            if (!lib || !lib.list) continue
+            var all = await lib.list('', 'all')
+            var arr = (all && (all.characters || all.scenes)) || []
+            var ids = arr.filter(function (x) { return x.sourceDocId === prev }).map(function (x) { return x.id })
+            if (ids.length) { await lib.assignDoc(ids, fileId, acmsDocName); migrated += ids.length }
+          }
+        } catch (e) { /* 迁移失败不阻塞：档案仍在「未绑定」里可手工认领 */ }
+      }
+      refreshDocScopeLabels()
+      return { ok: true, prev: prev, docId: fileId, migrated: migrated }
+    } catch (e) {
+      return { ok: false, error: e.message }
+    }
+  }
 
   // ── ACMS 补丁 (v0.96.3)：替换 GenSpark 内嵌 AI 按钮 → ACMS AI 入口 ──────
   //   调研发现 (2026-08-15)：
@@ -724,10 +783,10 @@
     var scopeDocLabel = panel.querySelector('.acms-scope-doc');
     if (scopeDocLabel) {
       if (acmsDocId) {
-        scopeDocLabel.textContent = '· ' + (acmsDocName || '当前文档');
-        scopeDocLabel.title = acmsDocName || '';
+        scopeDocLabel.textContent = '· ' + acmsDocLabel()
+        scopeDocLabel.title = acmsDocName || ''
       } else {
-        scopeDocLabel.textContent = '· 文档未保存（档案暂为全局）';
+        scopeDocLabel.textContent = '· 文档未保存（档案暂为全局）'
       }
     }
     panel.querySelectorAll('.acms-scope-btn').forEach(function (b) {
@@ -1341,8 +1400,8 @@
         '<button class="acms-lib-scope-btn" data-scope="all" type="button">全部</button>' +
         '<button class="acms-lib-scope-btn" data-scope="doc" type="button">本文档</button>' +
         '<button class="acms-lib-scope-btn" data-scope="unassigned" type="button">未绑定 <span class="acms-lib-scope-n">0</span></button>' +
-        '<span style="color:#999;font-size:11px;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
-          (acmsDocId ? ('· ' + acmsEscapeHtml(acmsDocName || '当前文档')) : '· 文档未保存') +
+        '<span class="acms-lib-scope-doc" style="color:#999;font-size:11px;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
+          '· ' + acmsEscapeHtml(acmsDocLabel()) +
         '</span>' +
       '</div>' +
       '<div class="acms-lib-list" style="padding:8px 16px;"></div>' +
@@ -2343,6 +2402,9 @@
       // P200: 记下当前文档标识（角色/场景库按文档隔离）
       acmsDocId = opts.fileId || ''
       acmsDocName = opts.fileName || ''
+      acmsDocIsDraft = false
+      // v0.22.74: 未保存文档也要有身份（否则设定集档案全落成"未绑定"，选「本文档」看不到）
+      if (!acmsDocId) ensureDraftDocId()
       if (!mod) mod = await import('/client/lib/office-v3/word-ui/office-word-ui.js?v=0.96.9c')
       // 卸载旧实例
       if (rootEl && mod.unmountWordUI) {

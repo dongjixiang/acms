@@ -348,6 +348,36 @@ async function loadAdminPage() {
             <button class="btn-small btn-reject" onclick="clearAgnesKey()">🗑 清除</button>
           </div>
         </div>
+
+        <!-- v0.22.73：AI 生成模型配置（图像/视频）—— 之前写死在代码里，现在后台可改、保存即生效 -->
+        <div class="config-row" style="margin-top:16px;border-top:1px solid var(--border);padding-top:16px">
+          <div>
+            <strong>🧠 AI 生成模型</strong>
+            <div style="font-size:11px;margin-top:3px;color:var(--text2)">
+              图像模型用于：角色图 / 场景图 / 分镜头首帧图 / 文生图。<br>
+              视频模型分两条链路：<b>首尾帧</b>（有首帧图时，2.5 系列）与 <b>老链路</b>（无首帧图时的多图关键帧，v2.0）。<br>
+              两条链路参数形态不同，<b>请分别配置</b>；留空 = 恢复内置默认。保存后立即生效，无需重启服务。
+            </div>
+            <div style="font-size:11px;margin-top:4px;color:var(--text3)" id="ai-models-source"></div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px;flex-shrink:0;min-width:320px">
+            <label style="font-size:11px;color:var(--text2)">图像模型
+              <input id="ai-model-image" list="ai-model-list" placeholder="agnes-image-2.5-flash" style="width:100%;margin-top:2px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px">
+            </label>
+            <label style="font-size:11px;color:var(--text2)">视频模型 · 首尾帧链路（2.5 系列）
+              <input id="ai-model-video" list="ai-model-list" placeholder="agnes-video-2.5-flash" style="width:100%;margin-top:2px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px">
+            </label>
+            <label style="font-size:11px;color:var(--text2)">视频模型 · 老链路（多图关键帧，v2.0）
+              <input id="ai-model-video-legacy" list="ai-model-list" placeholder="agnes-video-v2.0" style="width:100%;margin-top:2px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px">
+            </label>
+            <datalist id="ai-model-list"></datalist>
+            <div style="display:flex;gap:8px;align-items:center">
+              <button class="btn-small btn-primary" onclick="saveAiModels()">💾 保存模型配置</button>
+              <button class="btn-small" onclick="loadAiModels(true)">🔄 拉取官方模型清单</button>
+              <span id="ai-models-status" style="font-size:11px;color:var(--text2)"></span>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- Tab 5 · 数据 — 备份 + 清理 -->
@@ -525,6 +555,8 @@ async function loadAdminPage() {
     if (typeof loadProxySettings === 'function') loadProxySettings();
     // v0.101: Agent 运行追踪列表（高级 tab）
     loadTraceList();
+    // v0.22.73: AI 生成模型配置（图像/视频）—— hydrate 当前生效值 + 官方模型清单
+    if (typeof loadAiModels === 'function') loadAiModels(false);
   } catch (e) { document.getElementById('admin-content').innerHTML = `<div class="empty">加载失败: ${e.message}</div>`; }
 }
 
@@ -1153,6 +1185,53 @@ async function clearAgnesKey() {
     loadAdminPage();
   } catch (e) {
     toast('清除失败: ' + e.message, 'error');
+  }
+}
+
+// ═══ v0.22.73：AI 生成模型配置（图像 / 视频）═══
+//   之前模型名写死在代码里（图像 6 处 / 视频 3 处）→ 换模型要改代码 + 重启，还容易漏改。
+//   现在存 system_configs，后台可改，保存即生效（代码每次调用都实时读配置）。
+async function loadAiModels(fresh) {
+  try {
+    const r = await api('GET', '/admin/ai-models' + (fresh ? '?fresh=1' : ''));
+    if (!r || r.ok === false) throw new Error((r && r.error) || '读取失败');
+    const cfg = r.config || {};
+    const set = (id, val) => { const el = _byId(id); if (el && val != null) el.value = val; };
+    set('ai-model-image', cfg.agnes_image_model && cfg.agnes_image_model.value);
+    set('ai-model-video', cfg.agnes_video_model && cfg.agnes_video_model.value);
+    set('ai-model-video-legacy', cfg.agnes_video_model_legacy && cfg.agnes_video_model_legacy.value);
+    // 官方可用模型填进 datalist（下拉可点，也可手输新模型名）
+    const list = _byId('ai-model-list');
+    if (list) list.innerHTML = (r.available || []).map(m => `<option value="${escHtml(m.id)}">${m.kind === 'image' ? '图像' : m.kind === 'video' ? '视频' : '其他'}</option>`).join('');
+    const srcEl = _byId('ai-models-source');
+    if (srcEl) {
+      const parts = Object.keys(cfg).map(k => `${k}=${cfg[k].value}（${cfg[k].source === 'default' ? '内置默认' : cfg[k].source}）`);
+      srcEl.textContent = '当前生效：' + parts.join(' · ') + ' ｜ 清单来源：' + (r.available_source || '?');
+    }
+    const st = _byId('ai-models-status');
+    if (st && fresh) { st.textContent = '✅ 清单已刷新'; setTimeout(() => { st.textContent = ''; }, 2500); }
+    if (fresh) toast('🔄 已拉取官方模型清单（' + (r.available || []).length + ' 个）', 'success');
+  } catch (e) {
+    const st = _byId('ai-models-status');
+    if (st) st.textContent = '⚠️ ' + e.message;
+  }
+}
+
+async function saveAiModels() {
+  const val = (id) => { const el = _byId(id); return el ? el.value.trim() : undefined; };
+  const body = {
+    image_model: val('ai-model-image'),
+    video_model: val('ai-model-video'),
+    legacy_video_model: val('ai-model-video-legacy'),
+  };
+  try {
+    const r = await api('POST', '/admin/ai-models', body);
+    if (r && r.ok === false) return toast('保存失败: ' + (r.error || ''), 'error');
+    const parts = (r.updated || []).map(u => u.key + ' = ' + u.value + (u.source === 'default' ? '（默认）' : ''));
+    toast('💾 模型配置已保存，立即生效：' + parts.join(' ｜ '), 'success');
+    await loadAiModels(false);
+  } catch (e) {
+    toast('保存失败: ' + e.message, 'error');
   }
 }
 

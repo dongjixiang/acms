@@ -230,6 +230,103 @@ async function press(sessionId, key) {
   return { ok: true };
 }
 
+// ── v0.119.6: fillLogin（PP 模式自动登录）──
+// 自动探测登录表单的 用户名 / 密码 输入框 → 逐个聚焦+清空+输入 → Enter 提交 → 等跳转。
+// ⚠️ 密码由调用方（web-agent 的 web_auth_login）从 accountStore.getCredentials() 解密后传入；
+//    本函数不接触凭据存储，**返回值绝不含密码**（只返回 filled 布尔 + URL）→ LLM context 安全。
+async function fillLogin(sessionId, { username, password, timeoutMs = 15000 } = {}) {
+  if (!sessionId) return { ok: false, error: '缺少远程预览会话（appSessionId）' };
+  if (!username || password === undefined || password === null) return { ok: false, error: '缺少账号或密码（账号可能未保存凭据）' };
+
+  // 1) 探测可见的用户名 / 密码输入框（含坐标）
+  const probe = await evalSafe(sessionId, `(() => {
+    const all = [...document.querySelectorAll('input')].filter(el => {
+      if (el.type === 'hidden' || el.disabled) return false;
+      const r = el.getBoundingClientRect();
+      if (!r || r.width < 2 || r.height < 2) return false;
+      const cs = getComputedStyle(el);
+      return cs.visibility !== 'hidden' && cs.display !== 'none';
+    });
+    const pass = all.find(el => String(el.type || '').toLowerCase() === 'password');
+    const others = all.filter(el => el !== pass);
+    const user = others.find(el => /手机|邮箱|帐号|账号|用户名|phone|mail|user|account|login/i.test(
+                    (el.placeholder || '') + (el.name || '') + (el.id || '') + (el.getAttribute('aria-label') || '')))
+              || others.find(el => /^(text|tel|email)$/i.test(el.type || '') && el.value && el.value.trim())
+              || others.find(el => /^(text|tel|email)$/i.test(el.type || ''))
+              || others[0];
+    const rect = (el) => { if (!el) return null; const r = el.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; };
+    return {
+      hasUser: !!user, hasPass: !!pass,
+      userRect: rect(user), passRect: rect(pass),
+      userHint: user ? String(user.placeholder || user.name || user.id || '') : null,
+      passHint: pass ? String(pass.placeholder || pass.name || pass.id || '') : null,
+      url: location.href,
+    };
+  })()`);
+  if (!probe.ok) return { ok: false, error: '探测登录表单失败: ' + probe.error };
+  const info = probe.value || {};
+  if (!info.hasPass || !info.passRect) {
+    return { ok: false, error: '未找到密码输入框（可能不在登录页 / 页面结构变化）', pageUrl: info.url };
+  }
+
+  // 2) 聚焦+清空 辅助（用原型 value setter，React 受控组件也能清）
+  const clearActive = async () => {
+    await evalSafe(sessionId, `(() => {
+      const el = document.activeElement;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
+        const proto = el.tagName === 'INPUT' ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+        Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, '');
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        return 'cleared';
+      }
+      return 'no-active';
+    })()`).catch(() => ({ ok: false }));
+  };
+
+  // 3) 填用户名（如探测到）
+  if (info.userRect) {
+    await appRuntime.input(sessionId, { type: 'click', x: info.userRect.x, y: info.userRect.y });
+    await new Promise((r) => setTimeout(r, 120));
+    await clearActive();
+    await appRuntime.input(sessionId, { type: 'type', text: String(username) });
+    await new Promise((r) => setTimeout(r, 120));
+  }
+
+  // 4) 填密码
+  await appRuntime.input(sessionId, { type: 'click', x: info.passRect.x, y: info.passRect.y });
+  await new Promise((r) => setTimeout(r, 120));
+  await clearActive();
+  await appRuntime.input(sessionId, { type: 'type', text: String(password) });
+  await new Promise((r) => setTimeout(r, 150));
+
+  // 5) 提交（Enter —— 多数登录表单支持；避免点错「注册」按钮）
+  await appRuntime.input(sessionId, { type: 'keydown', code: 'Enter' });
+  await appRuntime.input(sessionId, { type: 'keyup', code: 'Enter' });
+
+  // 6) 等跳转（URL 变化 = 大概率登录成功）
+  const before = info.url;
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    await new Promise((r) => setTimeout(r, 1000));
+    const pi = await appRuntime.pageInfo(sessionId).catch(() => null);
+    if (pi && pi.url && pi.url !== before) break;
+  }
+  const after = await appRuntime.pageInfo(sessionId).catch(() => null);
+  const urlChanged = !!(after && after.url && after.url !== before);
+  return {
+    ok: true,
+    filled: { username: !!info.userRect, password: !!info.passRect },
+    userHint: info.userHint,
+    passHint: info.passHint,
+    urlBefore: before,
+    urlAfter: after ? after.url : null,
+    urlChanged,
+    note: urlChanged
+      ? '表单已提交且 URL 已变化（可能登录成功，请 web_snapshot 确认）'
+      : '表单已填并提交但 URL 未变（可能需要验证码 / 密码错误 / 登录失败）',
+  };
+}
+
 // readText: 页面正文（截断 8000）
 async function readText(sessionId) {
   const r = await evalSafe(sessionId, `(() => {
@@ -283,5 +380,5 @@ async function authLogin() {
 
 module.exports = {
   open, snapshot, click, typeText, press, readText, evalJs, find,
-  screenshotToFile, pageInfo, authLogin,
+  screenshotToFile, pageInfo, authLogin, fillLogin,
 };

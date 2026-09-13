@@ -846,7 +846,7 @@ async function runToolLoop(modelId, messages, options = {}) {
   //   4 个改进点:① 前置剪枝(pruneToolOutputs)不调 LLM ② token-based 触发 ③ 结构化 summary 模板
   //   ④ 失败冷却 10 分钟(避免反复重试失败摘要)
   //   治"runToolLoop 过度循环(22 轮重复验证)→ 信息爆炸 → LLM 注意力分散" bug
-  const { compressMessages, resetRunState: _resetCCState } = require('./context_compressor');
+  const { compressMessages, resetRunState: _resetCCState, sanitizeToolPairing: _sanitizeToolPairing } = require('./context_compressor');
   _resetCCState();  // 每次 runToolLoop 开始重置 per-run 状态
 
   // P160: 工具调用执行 helper — 返回 messages 数组
@@ -918,6 +918,19 @@ async function runToolLoop(modelId, messages, options = {}) {
         console.log(`[runToolLoop] ⏸ 等待用户帮助: ${q}`);
         if (trace) trace.addNote(rnd + 1, 'waiting_user', q);
         hist.push({ round: rnd + 1, tool: tc.name, args: argsPreview, result: 'WAITING_USER' });
+        // v0.119.6 修复：补 tool 响应消息 —— assistant(tool_calls=request_user_help) 之后
+        //   必须有对应 tool_call_id 的 tool 消息，否则 resume 时注入 user 消息 →
+        //   OpenAI/DeepSeek 400「An assistant message with 'tool_calls' must be followed by tool messages」
+        //   （MiniMax/Anthropic 端点不严格校验，换 DeepSeek 后暴露）
+        //   用同一工厂 makeToolResult 保证格式兼容 openai-chat / anthropic-messages
+        try {
+          msgs.push(toolRegistry.makeToolResult(api, tc.id, {
+            ok: true,
+            paused: true,
+            question: q,
+            note: '已暂停等待用户协助；用户回复后会继续。',
+          }));
+        } catch (_) { /* 工厂失败不阻塞暂停流程 */ }
         return { __pause: { question: q, tool: tc.name } };
       }
       const resultPreview = JSON.stringify(toolResult).slice(0, 300);
@@ -1037,6 +1050,12 @@ async function runToolLoop(modelId, messages, options = {}) {
 
     // P159: 阈值判断 + 摘要逻辑全部抽到 context-compressor.js(shouldCompress + compressMessages)
     await compressMessages(messages, { modelId });
+
+    // v0.119.6 总闸：每轮发 LLM 前再扫一遍孤儿 tool 消息 ——
+    //   压缩裁剪 / 并行工具 rejected / 别处 push 都可能造成「role='tool' 无前置 assistant(tool_calls)」
+    //   → OpenAI/DeepSeek 400「Messages with role 'tool' must be a response to a preceding message with 'tool_calls'」
+    //   sanitizeToolPairing 是幂等的（已合法的序列零改动），成本 O(n)
+    try { _sanitizeToolPairing(messages); } catch (_) { /* 清理失败不阻塞主流程 */ }
 
     // v0.44.4: 去掉 L576 的"模型思考中..."推送——它总是在每轮最后覆盖 tool call entry
     //   因为下一轮 L576 push 的时间戳 > 上一轮 L616 push 的时间戳
@@ -1382,6 +1401,8 @@ Round ${round + 1}/${maxRounds}。
         }
       }
     }
+    // 注：rejected 的并行调用不补 tool 响应 —— 由每轮 LLM 调用前的 sanitizeToolPairing 总闸兜底
+    //     （补不补都会让 assistant(tool_calls) 与 tool 数量不匹配，sanitize 会去掉配不上的孤儿 tool）
 // 串行组
     for (const _tc of serialCalls) {
       const sres = await _execToolCall(_tc, toolRegistry, api, messages, toolCallHistory, round, context);
@@ -1461,8 +1482,33 @@ Round ${round + 1}/${maxRounds}。
     };
   }
   console.error(`[runToolLoop] Tool loop exceeded max rounds (${maxRounds}). 完整 tool call history (${toolCallHistory.length} 条):\n${toolCallHistory.map(h => `  r${h.round} ${h.tool}(${(h.args||'').slice(0, 80)}) → ${h.resultPreview ? h.resultPreview.slice(0, 80) : (h.result || h.error || '?')}`).join('\n')}`);
+
+  // v0.119.6: 轮数用尽时给 LLM 最后一次总结机会（不再直接抛错）——
+  //   注入「轮数用尽」提示 + 最后一次 LLM 调用（**不带 tools**，防 LLM 又调工具）→ 拿到中文进度总结
+  //   成功：throw Error 带总结（前端 toast / 任务历史 / 日志都能看到「已完成 X，卡在 Y」）
+  //   失败：回退原 throw（不带总结）—— 总结只是增强，不能因总结失败掩盖原始错误
+  let _maxRoundsSummary = '';
+  try {
+    messages.push({
+      role: 'user',
+      content: `[系统] 你已经用完所有 ${maxRounds} 轮工具调用预算，**不能再调用任何工具**。请立即用中文输出一段总结（150-300 字），包含：\n1. 已完成哪些步骤（具体动作 + 结果）\n2. 当前卡在哪里（哪个操作失败 / 为什么失败）\n3. 若要继续需要什么（人工介入 / 换个方式 / 其他信息）\n不要再输出任何工具调用，只输出总结文本。`,
+    });
+    const sumResult = await callLLM(modelId, messages, { temperature: 0.3, maxTokens: 600 });
+    _maxRoundsSummary = typeof sumResult.content === 'string' ? sumResult.content.trim() : '';
+    if (_maxRoundsSummary) {
+      console.log(`[runToolLoop] 轮数用尽总结 (${_maxRoundsSummary.length} 字): ${_maxRoundsSummary.slice(0, 200).replace(/\n/g, ' ')}`);
+    } else {
+      console.warn('[runToolLoop] 轮数用尽总结返回空内容');
+    }
+  } catch (e) {
+    console.warn(`[runToolLoop] 轮数用尽总结失败: ${e.message}（回退原错误，不掩盖）`);
+  }
+
   if (trace) trace.fail(new Error('Tool loop exceeded max rounds (' + maxRounds + ')'));
-  throw new Error(`Tool loop exceeded max rounds (${maxRounds})`);
+  const _finalErrMsg = _maxRoundsSummary
+    ? `Tool loop exceeded max rounds (${maxRounds})。\n\n【Agent 进度总结】\n${_maxRoundsSummary}`
+    : `Tool loop exceeded max rounds (${maxRounds})`;
+  throw new Error(_finalErrMsg);
 }
 
 module.exports = { callLLM, callLLMStream, callLLMWithTools, runToolLoop, detectStreamStall };

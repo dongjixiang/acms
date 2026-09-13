@@ -324,6 +324,9 @@ function attachSessionStream(sessionId, res, req) {
   try {
     if (session.status === 'waiting_user') {
       res.write(`event: waiting_user\ndata: ${JSON.stringify({ sessionId, question: session.pendingQuestion })}\n\n`);
+    } else if (session.status === 'handoff_paused') {
+      // v0.119.5: 补发 handoff 事件 —— 重连时让前端立即切到「接管中」UI
+      res.write(`event: handoff\ndata: ${JSON.stringify({ sessionId, taskId: session.currentTaskId, status: 'handoff_paused', message: '已暂停，请去 Web 机器人浏览器手动操作' })}\n\n`);
     } else if (session.status !== 'running' && session.status !== 'idle') {
       // 已 done/error（补发带 content：从 messages 最后 assistant 取）
       res.write(`event: done\ndata: ${JSON.stringify({ sessionId, status: session.status, content: lastAssistantContent(session), error: session.error || null })}\n\n`);
@@ -359,6 +362,19 @@ function broadcastDone(sessionId, taskId, status, content, error, opts) {
   if (opts && typeof opts.onDone === 'function') opts.onDone(data);
   pushSessionSSE(sessionId, 'done', data);
   scheduleCloseSessionSSE(sessionId, 1500);
+}
+
+// v0.119.5: handoff（用户接管浏览器）事件广播
+//   用户主动点「⏸ 暂停让我接管」→ 等 LLM 当前轮结束 → status='handoff_paused'
+//   → 释放 ppDriver 锁 → 推 event: handoff → 前端切 UI 提示用户去 Web 机器人操作
+function broadcastHandoff(sessionId, opts, taskId) {
+  pushSessionSSE(sessionId, 'handoff', { sessionId, taskId, status: 'handoff_paused', message: '已暂停，请去 Web 机器人浏览器手动操作' });
+}
+
+// v0.119.5: 用户接管恢复事件
+//   用户点「▶ 操作完了继续」→ re-acquire 锁 → status='running' → 推 event: resumed
+function broadcastResumed(sessionId, opts, taskId) {
+  pushSessionSSE(sessionId, 'resumed', { sessionId, taskId, status: 'running', message: '已恢复 LLM 续跑' });
 }
 
 const SESSION_TOOL_NAMES = [
@@ -443,6 +459,59 @@ function interruptSession(sessionId, payload = {}) {
   return { ok: true, pause: !msg };
 }
 
+// v0.119.5: requestHandoff（用户接管浏览器请求）
+//   两种进入路径：
+//   - running：复用 interruptSession(pause:true) + 标 handoffRequested → LLM 当前轮结束后 runSessionTurn waiting_user 分支处理
+//   - waiting_user：直接做 handoff（不调 interruptSession —— LLM 已暂停，无需再触发 pause；用户接管场景的真正主入口）
+function requestHandoff(sessionId) {
+  const session = sessionStore.get(sessionId);
+  if (!session) return { ok: false, error: '会话不存在' };
+  if (session.status === 'running') {
+    const r = interruptSession(sessionId, { question: '用户请求暂停接管浏览器；恢复时 LLM 会重新观察页面继续' });
+    if (!r.ok) return r;
+    session.handoffRequested = true;  // 标记 —— runSessionTurn waiting_user 分支见到此标志切 handoff_paused
+    console.log(`[task-runner] v0.119.5 handoff requested (running) for ${sessionId} (will release ppDriver lock when LLM current round ends)`);
+    return { ok: true, pause: true };
+  }
+  if (session.status === 'waiting_user') {
+    // waiting_user 状态直接做 handoff（用户接管场景的真正主入口 —— LLM 触发 request_user_help 卡登录墙）
+    session.handoffRequested = false;
+    session.status = 'handoff_paused';
+    releasePpLock(session.appSessionId || null, sessionId);
+    broadcastHandoff(sessionId, null, session.currentTaskId);
+    console.log(`[task-runner] v0.119.5 handoff activated (waiting_user → handoff_paused) for ${sessionId}, ppDriver lock released`);
+    return { ok: true, pause: true, fromWaiting: true };
+  }
+  return { ok: false, error: `会话不在可接管状态（当前 ${session.status}）`, status: session.status };
+}
+
+// v0.119.5: resumeHandoff（用户接管完，恢复 LLM）
+//   用户在 Web 机器人浏览器里手动操作完 → 点「▶ 操作完了继续」→ 调这个 endpoint
+//   1. 注入一条 user 消息「用户已手动操作完当前页面」让 LLM 重新 web_snapshot
+//   2. 复用 resumeSessionTurn（含 acquirePpLock 重新拿锁）
+//   3. 清 handoffRequested 标志
+//   4. 推 broadcastResumed
+async function resumeHandoff(sessionId) {
+  const session = sessionStore.get(sessionId);
+  if (!session) return { sessionId, status: 'error', error: '会话不存在' };
+  if (session.status !== 'handoff_paused') {
+    return { sessionId, status: 'error', error: `会话不在 handoff 暂停状态（当前 ${session.status}），无法恢复`, statusCode: 409 };
+  }
+  // 注入「用户已手动操作」note —— LLM 续跑后第一件事会 web_snapshot 看新状态
+  sessionStore.addMessage(sessionId, {
+    role: 'user',
+    content: '【系统提示 · 用户已手动接管完成】用户在浏览器里手动操作了当前页面（可能：输了验证码/点了确认/跳过了风控/完成了其他手动步骤）。请先 web_snapshot 重新观察页面状态，然后继续按原目标推进。',
+    ts: Date.now(),
+  });
+  session.handoffRequested = false;
+  console.log(`[task-runner] v0.119.5 handoff resumed for ${sessionId} (will re-acquire ppDriver lock and continue LLM)`);
+  // resumeSessionTurn 内部 acquirePpLock + 调 runtime.execute 续跑
+  // v0.119.6 修订：显式传 maxRounds（session 上存的原始预算，默认 25）——
+  //   之前不传会掉到 resumeSessionTurn 的默认值 10，handoff 后续跑轮数不够直接 fail
+  const maxRounds = session.maxRounds || 25;
+  return resumeSessionTurn(sessionId, '', { maxRounds });
+}
+
 // 给 runtime.execute 的 context.humanSteerProvider（每轮被 runToolLoop 询问一次，读到即清）
 function makeHumanSteerProvider(session) {
   return () => {
@@ -457,6 +526,8 @@ async function runSessionTurn(sessionId, userMsg, opts = {}) {
   if (!sessionId || !userMsg) return { sessionId, status: 'error', error: '缺少 sessionId 或 userMsg' };
   const session = sessionStore.getOrCreate(sessionId, { title: opts.title });
   if (typeof opts.domainOnDone === 'function') session.domainOnDone = opts.domainOnDone;
+  // v0.119.6: 存原始 maxRounds 到 session —— handoff resume 时复用（否则掉到 resumeSessionTurn 默认 10）
+  if (opts.maxRounds) session.maxRounds = opts.maxRounds;
   // v0.119: 远程预览引擎 —— 记录/刷新 app-runtime 会话 id（web_* 动作驱动 Puppeteer）
   if (opts.appSessionId) session.appSessionId = String(opts.appSessionId);
   // v0.119.2: 远程预览引擎锁 —— 并行查询 gate（busy 时不 push 消息、不启动）
@@ -522,6 +593,16 @@ async function runSessionTurn(sessionId, userMsg, opts = {}) {
     session.status = 'waiting_user';
     session.pendingQuestion = result.question;
     session.messages = result.messages || session.messages;
+    // v0.119.5: handoff 接管 —— 用户主动请求接管浏览器时，waiting_user 状态切 handoff_paused
+    //   并释放 ppDriver 锁（让用户能直接操作那个浏览器，不再被 LLM 锁住）
+    if (session.handoffRequested) {
+      session.handoffRequested = false;
+      session.status = 'handoff_paused';
+      releasePpLock(session.appSessionId || null, sessionId);
+      broadcastHandoff(sessionId, opts, taskId);
+      console.log(`[task-runner] v0.119.5 handoff activated for ${sessionId}, ppDriver lock released`);
+      return { sessionId, taskId, status: 'handoff_paused', question: session.pendingQuestion };
+    }
     broadcastWaiting(sessionId, session.pendingQuestion, opts, taskId);
     return { sessionId, taskId, status: 'waiting_user', question: session.pendingQuestion };
   }
@@ -542,7 +623,9 @@ async function resumeSessionTurn(sessionId, userReply, opts = {}) {
   if (!sessionId) return { sessionId, status: 'error', error: '缺少 sessionId' };
   const session = sessionStore.get(sessionId);
   if (!session) return { sessionId, status: 'error', error: '会话不存在' };
-  if (session.status !== 'waiting_user') return { sessionId, status: 'error', error: `会话不在等待状态（当前 ${session.status}）` };
+  if (session.status !== 'waiting_user' && session.status !== 'handoff_paused') {
+    return { sessionId, status: 'error', error: `会话不在可恢复状态（当前 ${session.status}）` };
+  }
 
   // v0.119.2: resume 也受远程预览引擎锁保护（owner=self 续用；ACMS 重启后锁空 → 允许重新持有）
   if (opts.appSessionId) session.appSessionId = String(opts.appSessionId);
@@ -639,6 +722,8 @@ module.exports = {
   runGoalTask, resumeGoalTask, getTask,
   runSessionTurn, resumeSessionTurn, getSession, listSessions, deleteSession,
   interruptSession,  // v0.118.16: 人主动发起介入（暂停等输入 / 注入发言）
+  // v0.119.5: 用户接管浏览器（handoff）—— 暂停 LLM + 释放 ppDriver 锁 + 用户操作完恢复
+  requestHandoff, resumeHandoff, broadcastHandoff, broadcastResumed,
   // v0.119.2: 远程预览引擎锁（routes start/turn/reply 前置 gate）
   checkPpBusy, acquirePpLock, releasePpLock,
   // v0.118.15: session SSE 订阅（routes /session/:id/stream 用）

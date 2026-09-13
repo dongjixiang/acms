@@ -318,7 +318,8 @@ function writeScreenplayChatEntry(reqId, screenplay, meta = {}) {
     final_video: (currentAssist?.final_video) || null,
     // v0.22.67: 首帧图（每场一张）+ 视频选项（时长/画幅）——聊天流卡片也要能渲染
     scene_frames: (currentAssist?.scene_frames) || {},
-    video_opts: (currentAssist?.video_opts) || null,
+    // v0.22.73: 没设置过也带上生效默认值 → 前端显示的就是真实在用的模型
+    video_opts: (currentAssist?.video_opts) || defaultVideoOpts(currentAssist),
     saved_at: new Date().toISOString(),
   };
 
@@ -455,11 +456,13 @@ const ASPECT_DIMS = {
 const ALLOWED_ASPECTS = Object.keys(ASPECT_DIMS);
 
 function defaultVideoOpts(assist) {
-  const scenes = (assist.screenplays && assist.picked !== null && assist.picked !== undefined)
-    ? (assist.screenplays[assist.picked]?.scenes || []).length : 3;
-  const total = assist.target_seconds || 15;
+  const a = assist || {};
+  const scenes = (a.screenplays && a.picked !== null && a.picked !== undefined)
+    ? (a.screenplays[a.picked]?.scenes || []).length : 3;
+  const total = a.target_seconds || 15;
   const per = Math.max(4, Math.min(12, Math.round(total / Math.max(1, scenes)) || 5));
-  return { seconds_per_scene: per, aspect_ratio: '16:9', video_model: 'agnes-video-2.5-flash' };
+  // v0.22.73: 默认模型从系统配置读（管理后台「AI 模型」可改）
+  return { seconds_per_scene: per, aspect_ratio: '16:9', video_model: require('../ai-model-config').videoModel() };
 }
 
 function setVideoOpts(requirementId, payload = {}) {
@@ -479,8 +482,10 @@ function setVideoOpts(requirementId, payload = {}) {
     if (ALLOWED_ASPECTS.includes(a)) cur.aspect_ratio = a;
   }
   if (payload.video_model) {
-    const m = String(payload.video_model);
-    if (/^agnes-video-(2\.5|2\.5-flash|v2\.0)$/.test(m)) cur.video_model = m;
+    const m = String(payload.video_model).trim();
+    // v0.22.73: 改成前缀校验（原来是写死白名单 /^agnes-video-(2.5|2.5-flash|v2.0)$/ →
+    //   官方出新模型就得改代码；现在只要形如 agnes-video-xxx 都接受）
+    if (require('../ai-model-config').isVideoModel(m)) cur.video_model = m;
   }
   assist.video_opts = cur;
   reqStore.update(requirementId, { assist_screenplay: JSON.stringify(assist) });

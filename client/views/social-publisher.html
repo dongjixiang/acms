@@ -238,9 +238,26 @@
         <span id="sp-ai-status-text">准备中…</span>
         <!-- v0.118.16: 💬 介入 —— 人主动发起求助（Agent 当前动作结束后暂停等人工输入） -->
         <button class="sp-btn sp-btn-sm" id="sp-ai-interrupt" style="margin-left:8px;padding:2px 10px;font-size:11px" title="人主动发起求助：Agent 执行中你也可以叫停 —— 点这里让 Agent 停下等你输入（如：方向不对 / 想改内容 / 需要帮忙登录），输入后 Agent 继续">💬 介入</button>
+        <!-- v0.119.5: 🖐️ 接管 —— 让 AI 暂停 + 释放浏览器给你手动操作（输验证码/过风控/跳页） -->
+        <button class="sp-btn sp-btn-sm" id="sp-ai-handoff" style="margin-left:4px;padding:2px 10px;font-size:11px" title="🖐️ 暂停让我接管：把浏览器控制权交给你手动操作（输验证码/过风控/跳页），操作完点 ▶ 继续让 LLM 接着跑">🖐️ 接管</button>
+        <button class="sp-btn sp-btn-sm" id="sp-ai-resume-handoff" style="margin-left:4px;padding:2px 10px;font-size:11px;background:#16a34a;color:#fff" title="▶ 我在 Web 机器人浏览器里操作完了，让 LLM 接着跑">▶ 继续</button>
         <span style="margin-left:auto;font-size:11px;color:var(--sp-text-2)" id="sp-ai-task-id"></span>
       </div>
       <div class="sp-ai-body">
+        <!-- v0.119.6: 🖥️ AI 发布自带画面 —— gp-* session 启的 Puppeteer Chrome 实时帧流，handoff 接管时直接操作 -->
+        <div class="sp-ai-preview" id="sp-ai-preview" style="display:none">
+          <div class="sp-ai-preview-header" id="sp-ai-preview-header">
+            <span class="sp-ai-preview-dot" id="sp-ai-preview-dot"></span>
+            <span id="sp-ai-preview-url" class="sp-ai-preview-url">等待连接…</span>
+            <span style="margin-left:auto;font-size:11px;color:var(--sp-text-2)" id="sp-ai-preview-hint">🖐️ 接管后可直接在画面上点击/输入</span>
+          </div>
+          <div class="sp-ai-preview-frame" id="sp-ai-preview-frame">
+            <img id="sp-ai-preview-img" alt="AI 浏览器画面" style="display:block;width:100%;height:100%;object-fit:contain" />
+            <div class="sp-ai-preview-overlay" id="sp-ai-preview-overlay" style="display:none">
+              <div class="sp-ai-preview-overlay-text">🖐️ 接管中 —— 直接点画面操作（输验证码/过风控）</div>
+            </div>
+          </div>
+        </div>
         <div class="sp-ai-steps" id="sp-ai-steps">
           <div class="sp-ai-empty">⏳ 等待 LLM 开始执行…</div>
         </div>

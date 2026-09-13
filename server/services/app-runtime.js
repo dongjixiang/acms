@@ -372,6 +372,10 @@ class AppRuntimeService extends EventEmitter {
           await page.mouse.move(event.x, event.y);
           await page.mouse.up({ button: mouseButton(event.button) });
           return { ok: true };
+        // v0.119.6: 拖动滑块/hover 需要 mousemove —— page.mouse.move 会触发元素的 mousemove 事件
+        case 'mousemove':
+          await page.mouse.move(event.x, event.y);
+          return { ok: true };
         case 'click':
           await page.mouse.click(event.x, event.y);
           return { ok: true };
@@ -379,7 +383,8 @@ class AppRuntimeService extends EventEmitter {
           await page.mouse.click(event.x, event.y, { clickCount: 2 });
           return { ok: true };
         case 'wheel':
-          await page.mouse.wheel({ deltaX: event.dx || 0, deltaY: event.dy || 0 });
+          // v0.119.6: 兼容两种字段名（前端 task-runner 通道用 dx/dy；social-publisher 接管用 deltaX/deltaY）
+          await page.mouse.wheel({ deltaX: event.dx ?? event.deltaX ?? 0, deltaY: event.dy ?? event.deltaY ?? 0 });
           return { ok: true };
         case 'keydown': {
           const key = event.code || event.key;

@@ -55,6 +55,25 @@
     instances: {},     // { fileId: { editor, fileId, fileName, dirty } }
   };
 
+  /**
+   * v0.22.74: 把「真实 fileId」回传 iframe 里的 host.html
+   *   背景：host.html 的 acmsDocId 只在 __init 时赋值一次，而用户常在**未保存的新文档**里
+   *   直接生成「全文设定集」→ acmsDocId 空（现在给会话级 draft id）→ 若保存后不通知，
+   *   档案归属会与实际文档脱节 → 用户选「本文档」看不到自己刚生成的设定集。
+   *   保存成功后调用；host.html 侧会更新身份 + 把 draft 期间建的档案迁移到真实文档 id。
+   */
+  function notifyDocId(editor) {
+    try {
+      if (!editor || !editor.fileId) return;
+      var fr = editor.iframe;
+      var inner = fr && fr.querySelector ? fr.querySelector('iframe') : null;
+      var win = (fr && fr.contentWindow) || (inner && inner.contentWindow);
+      if (win && typeof win.__setDocId === 'function') {
+        Promise.resolve(win.__setDocId(editor.fileId, editor.fileName)).catch(function () {});
+      }
+    } catch (e) { /* iframe 未就绪 / 跨域 → 忽略（__init 会兜底设身份） */ }
+  }
+
   // ── Prefetch ──
   function prefetch(name) {
     if (state.prefetched[name]) return;
@@ -620,6 +639,7 @@
           if (r.ok) {
             editor.fileId = r.fileId;
             editor.fileName = r.fileName;
+            notifyDocId(editor);   // v0.22.74: 保存后回传真实 fileId（档案归属对齐）
             editor.dirtyEls.clear();
             setStatus('✅ 已保存 ' + r.fileName + ' (' + r.size + ' bytes)');
             toast('已保存 ✅ ' + r.fileName, 'success');
@@ -661,6 +681,7 @@
           editor.opened = await engine.openPptx(bin);
           editor.fileId = fileId2;
           editor.fileName = fileName2;
+          notifyDocId(editor);   // v0.22.74: 打开已有文档后同步身份
           editor.slideIdx = 0;
           renderCurrentSlide();
           var fnEl = w.$c.querySelector('.v3-tb-file');
@@ -1748,7 +1769,7 @@
     var frame = document.createElement('iframe');
     frame.className = 'v3-genoffice-frame';
     frame.style.cssText = 'width:100%;height:100%;border:0;display:block;';
-    frame.src = BASE + 'word-ui/host.html?v=0.97.8';
+    frame.src = BASE + 'word-ui/host.html?v=0.97.9';
     w.$c.appendChild(frame);
 
     function patchOpenDocx(win) {
@@ -2112,6 +2133,7 @@
           if (r.ok) {
             editor.fileId = r.fileId;
             editor.fileName = r.fileName;
+            notifyDocId(editor);   // v0.22.74: 保存后回传真实 fileId（档案归属对齐）
             setStatus('✅ 已保存 ' + r.fileName + ' (' + r.size + ' bytes, ' + built.editedCount + ' 段编辑 / ' + built.originalCount + ' 段保留)');
             toast('已保存 ✅ ' + r.fileName, 'success');
           } else {
@@ -2173,6 +2195,7 @@
           editor.parsed = parsed;
           editor.fileId = fileId2;
           editor.fileName = fileName2;
+          notifyDocId(editor);   // v0.22.74: 打开已有文档后同步身份
           renderBlocks(parsed.blocks);
           var zhCount = (parsed.blocks || []).reduce(function (n, b) {
             return n + (b.runs || []).filter(function (r) { return /[\u4e00-\u9fff]/.test(r.text || ''); }).length;

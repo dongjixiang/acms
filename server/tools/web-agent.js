@@ -244,7 +244,52 @@ registerTool({
   },
   async handler(args, ctx) {
     const sess = (ctx && ctx.appSessionId) || null;
-    if (sess) return pp.authLogin(); // 远程预览引擎不支持 CLI auth，引导求助
+    const profile = String((args && args.profile) || '').trim();
+
+    // v0.119.6: PP（远程预览 Puppeteer）模式 —— 用 accountStore 解密的凭据 + puppeteer 填表
+    //   背景：agent-browser `auth show` 不暴露密码，PP 模式无法走 CLI auth →
+    //         accountStore 现在加密存了一份凭据（credentials.ciphertext，AES-256-GCM）
+    //   安全：密码只在 server 端 getCredentials() 解密后传给 fillLogin，
+    //         **绝不进入本工具返回值**（LLM context 里永远看不到密码），也不出任何 API
+    if (sess) {
+      if (!profile) {
+        return { ok: false, error: '缺少 profile（账号 ID）', hint: '请按发布任务里的账号 ID 调本工具；或调 request_user_help' };
+      }
+      try {
+        const accountStore = require('../services/social-publisher/account-store');
+        const creds = accountStore.getCredentials(profile);
+        if (!creds || !creds.username || creds.password === undefined || creds.password === null) {
+          return {
+            ok: false,
+            error: '账号未保存可用凭据（PP 模式自动登录需要 username + password）',
+            hint: '该账号创建时未存密码 → 请在「内容运营平台 → 账号」编辑该账号、重新填写密码一次；或调 request_user_help（A 用户手动在画面上完成登录 / B 换账号 / C 取消）',
+          };
+        }
+        const r = await pp.fillLogin(sess, { username: creds.username, password: creds.password });
+        if (!r.ok) {
+          return {
+            ok: false,
+            error: r.error,
+            hint: '自动填表失败 → 调 request_user_help（A 用户手动在画面上登录 / B 换账号 / C 取消）',
+          };
+        }
+        return {
+          ok: true,
+          filled: r.filled,
+          urlChanged: r.urlChanged,
+          urlBefore: r.urlBefore,
+          urlAfter: r.urlAfter,
+          hint: r.note + '；若仍未登录（需验证码/密码错/风控）→ 立即调 request_user_help',
+        };
+      } catch (e) {
+        return {
+          ok: false,
+          error: e.message || 'PP 模式自动登录失败',
+          hint: '调 request_user_help（A 用户手动在画面上登录 / B 换账号 / C 取消）',
+        };
+      }
+    }
+
     try {
       const ba = require('../services/browser-agent');
       const name = String(args?.profile || '').trim();

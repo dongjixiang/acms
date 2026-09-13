@@ -25,6 +25,8 @@
 
 const taskRunner = require('../browser-agent/task-runner');
 const platformMemory = require('./platform-memory');  // v0.118.x: 平台经验库
+// v0.119.6: AI 发布自带远程预览浏览器 —— gp-* session 自动起 Puppeteer Chrome，画面直接渲染到 AI modal
+const appRuntime = require('../app-runtime');
 
 // ── 平台特定指令（告诉 LLM 每个平台要做什么、有什么坑）──
 //  不是选择器代码，是「自然语言指令 + 关键链接 + 已知陷阱」
@@ -38,6 +40,14 @@ const PLATFORM_INSTRUCTIONS = {
 【头条特有提示】
 - 登录页默认是"手机验证码"tab，**必须**先切换到"密码登录"再让 agent-browser 自动填账号密码
 - 切换方式：用 web_snapshot 看页面，找包含"密码登录"或"账号密码登录"文本的可点击元素（div/span/a），调 web_click
+- ⚠️ **标题输入框是 React 受控组件，web_type 打字不会进 value**（页面显示仍为空，浪费轮数）——
+  **必须**直接用 web_eval 原生 setter 赋值（一次成功，不要先试 web_type）：
+    (() => { const t = document.querySelector('textarea[placeholder*="文章标题"]'); if(!t) return 'NO_TITLE_INPUT';
+      const set = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+      set.call(t, '你的标题');
+      t.dispatchEvent(new Event('input', {bubbles:true})); t.dispatchEvent(new Event('change', {bubbles:true}));
+      return t.value; })()
+  验证：返回的 t.value 应等于你的标题；若返回 NO_TITLE_INPUT 说明还没切到编辑器页，先 web_open 编辑器 URL 再重试
 - 编辑器是 ProseMirror 富文本。填正文时用 web_eval 一次性 innerHTML 赋值（避免 ProseMirror 同步问题）：
     document.querySelector('.ProseMirror, .editor-content [contenteditable]').innerHTML = HTML_CONTENT
 - 发布按钮文本就是"发布"（可能在底部 toolbar 或右侧发布栏；用 web_find text='发布' click，但避开顶栏/营销区的"发布"链接）`.trim(),
@@ -131,9 +141,11 @@ ${cfg.tips}
 1. web_open 登录页 → humanizer.wait(2-3秒) 等页面加载
 2. web_snapshot 看登录页结构；如果默认是手机验证码/扫码，**必须**先 web_click 切换到"密码登录"tab
 3. 自动登录：调 web_auth_login({"profile": "${account.id}"})
-   - 服务端执行 agent-browser auth login（账号密码已 auth save）：自动填表单 + 提交 + 等跳转
+   - 当前是**远程预览（Puppeteer）模式**：服务端从本机加密凭据解密后，用真实鼠标+键盘填表 + Enter 提交 + 等跳转
+   - **凭据由服务端处理，你看不到账号密码**（不要向用户索要密码）
    - ⚠️ 绝对不要用 web_eval 执行 shell/npx 命令（浏览器页面环境没有 Node/child_process，必失败）
-   - 登录成功后用 web_snapshot 确认页面不再是登录页
+   - 返回 {ok:true, filled, urlChanged} → urlChanged=true 说明提交成功，接着 web_snapshot 确认；urlChanged=false（需验证码/密码错）→ 立即 request_user_help
+   - 返回 {ok:false, error:'账号未保存可用凭据'} → 告诉用户去「内容运营平台 → 账号 → ✏️ 编辑」重填一次密码
 4. 如果登录失败（验证码/风控/账号密码错/web_auth_login 返回 error）→ **立即**调 request_user_help（A 手动登录 / B 换账号 / C 取消）
 5. web_open 编辑器页 → 等编辑器加载（看到标题输入框）
 6. web_type 填标题（模拟人类打字，每次填 1-3 字，间隔 100-300ms）
@@ -157,28 +169,65 @@ ${cfg.tips}
 
 // ── 主入口 ──
 //  启动一次 goal-driven 发布（作为 browser-agent 的一次性 session 运行）
-async function goPublish(account, params) {
+//  opts.appSessionId（v0.119.5）—— 前端可传用户的 ws-* Web 机器人 sessionId，
+//    让 gp-* session 共享那个浏览器，触发登录墙/验证码时用户可直接接管（handoff）
+//  v0.119.6 强化 —— opts.appSessionId 为空时，服务端**自动起一个 Puppeteer Chrome** 作为
+//    gp-* session 自带的远程预览浏览器（接管时画面直接渲染到 AI modal，不依赖用户先开 Web 机器人）
+async function goPublish(account, params, opts = {}) {
   const sessionId = 'gp-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
   const goal = buildGoal(account, params);
+  let appSessionId = opts.appSessionId || null;
+
+  // v0.119.6: 自动起 PP 浏览器 —— 用户没指定就新建一个（AI 发布自带画面 + 接管能力）
+  if (!appSessionId) {
+    try {
+      const pp = await appRuntime.openSession({ url: 'about:blank', w: 1100, h: 700 });
+      appSessionId = pp && pp.sessionId;
+      if (appSessionId) {
+        console.log(`[go-publisher] v0.119.6 auto-started PP session ${appSessionId} for ${sessionId}`);
+      } else {
+        console.warn(`[go-publisher] v0.119.6 PP session open returned no sessionId — handoff will be disabled`);
+      }
+    } catch (e) {
+      console.error(`[go-publisher] v0.119.6 PP session open failed: ${e.message} — handoff will be disabled (will fall back to LLM-only)`);
+    }
+  }
 
   // 异步跑（不 await，前端经 /api/browser-agent/session/:id/stream 订阅进度）
   // onDone 只在终态（done/error）触发一次 —— waiting_user 状态由 resume 继续，不会重复落库
-  runPublishSession(sessionId, account, params, goal).catch(e => {
+  runPublishSession(sessionId, account, params, goal, appSessionId).catch((e) => {
     console.error('[go-publisher] session failed:', e.message);
     recordResult(sessionId, account, params, { status: 'error', content: '', error: e.message });
+    cleanupPpSession(appSessionId);  // 失败也要清 PP 浏览器
   });
 
-  return { taskId: sessionId, status: 'starting' };
+  return { taskId: sessionId, status: 'starting', appSessionId };
 }
 
-async function runPublishSession(sessionId, account, params, goal) {
+async function runPublishSession(sessionId, account, params, goal, appSessionId) {
   await taskRunner.runSessionTurn(sessionId, goal, {
     title: `${params.platform} AI 发布 · ${String(params.title || '').slice(0, 24)}`,
     maxRounds: 25,
+    appSessionId,  // v0.119.5+: 让 gp-* session 共享用户的 Web 机器人浏览器
     // v0.118.12: domainOnDone（非 onDone）——onDone 是 SSE 回调、resume 时被 routes 替换；
     //   domainOnDone 注册在 session 上，无论是否经过 waiting_user/resume 都只落库一次
-    domainOnDone: (r) => recordResult(sessionId, account, params, r),
+    domainOnDone: (r) => {
+      recordResult(sessionId, account, params, r);
+      // v0.119.6: 终态清理 PP 浏览器（自动起的 session —— handoff 续跑会重新拿锁）
+      cleanupPpSession(appSessionId);
+    },
   });
+}
+
+// v0.119.6: 清理 PP 浏览器 —— 自动起的 session 任务终态时关掉
+//   注意：只在 status=done/error 调，不在 waiting_user/handoff_paused 调（hendoff 续跑会复用）
+function cleanupPpSession(appSessionId) {
+  if (!appSessionId) return;
+  try {
+    appRuntime.closeSession(appSessionId).catch((e) => {
+      console.warn(`[go-publisher] v0.119.6 PP close failed for ${appSessionId}: ${e.message}`);
+    });
+  } catch (_) { /* ignore sync errors */ }
 }
 
 // ── 完成后落库（与老 provider 同一张 social_task_history + platform-memory）──

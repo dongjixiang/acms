@@ -166,6 +166,7 @@
           </div>
           <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
             ${isAgentBrowser ? `<button class="sp-btn sp-btn-sm sp-btn-primary" onclick="window.SPView.loginAccount('${esc(a.id)}')" title="打开浏览器登录页 + 自动填账号密码（agent-browser auth login）">🔑 立即登录</button>` : ''}
+            <button class="sp-btn sp-btn-sm" onclick="window.SPView.editAccount('${esc(a.id)}')" title="编辑账号 —— 修改显示名 / 重填用户名密码（PP 模式自动登录需要保存密码）">✏️ 编辑</button>
             <button class="sp-btn sp-btn-sm" onclick="window.SPView.checkHealth('${esc(a.id)}')">🔍 检查</button>
             <button class="sp-btn sp-btn-sm sp-btn-danger" onclick="window.SPView.removeAccount('${esc(a.id)}')">🗑️ 删除</button>
           </div>
@@ -245,16 +246,16 @@
             <input id="sp-acct-display-name" placeholder="如: 头条-多多">
           </div>
           <div class="sp-form-row" id="sp-acct-cred-username">
-            <label>用户名 / 登录账号 <span class="sp-info-tip" data-tip="你在平台登录用的账号（手机号/邮箱/用户名）。不会存到 social-publisher 数据库 —— 加密存在本机 agent-browser 全局 auth 系统。">i</span></label>
+            <label>用户名 / 登录账号 <span class="sp-info-tip" data-tip="你在平台登录用的账号（手机号/邮箱/用户名）。加密存本机（AES-256-GCM），供 AI 发布（远程预览模式）自动填表用；不进 AI 对话上下文。">i</span></label>
             <input id="sp-acct-username" placeholder="手机号 / 邮箱 / 用户名">
           </div>
           <div class="sp-form-row" id="sp-acct-cred-password">
-            <label>密码 <span class="sp-info-tip" data-tip="登录密码。不存到数据库（密码全程只在 agent-browser 内部）。公众号走 App ID + App Secret（API 模式不需要浏览器登录）。">i</span></label>
+            <label>密码 <span class="sp-info-tip" data-tip="登录密码。用 AES-256-GCM 加密存本机（密钥 data/email-cipher.key），供 AI 发布（远程预览模式）自动填登录表单；只在服务端解密，永远不会进入 AI 对话上下文。公众号走 App ID + App Secret（API 模式不需要浏览器登录）。">i</span></label>
             <input id="sp-acct-password" type="password" placeholder="登录密码">
           </div>
         </div>
         <div style="margin-top:8px;padding:8px;background:var(--sp-bg-2);border-radius:6px;font-size:11px;color:var(--sp-text-2);line-height:1.5">
-          💡 添加后点账号卡片的 <b>🔑 立即登录</b> 按钮，agent-browser 会自动打开登录页 + 填账号密码。如需扫码验证，去 <b>Web 机器人</b> 画面手动完成。Session 保留，后续发布自动复用。
+          💡 添加后点账号卡片的 <b>🔑 立即登录</b> 按钮可先验证凭据。AI 发布（🤖 AI 发布）会在内置浏览器里自动填表登录（远程预览模式），遇到验证码时你在画面上直接输即可。<b>凭据加密存在本机</b>，不会明文落盘、不会进入 AI 对话。
         </div>
       `,
       actions: [
@@ -317,6 +318,71 @@
       await loadAccounts();
     } else {
       notify('添加失败: ' + (r.data?.error || r.status), 'error');
+    }
+  }
+
+  // v0.119.6: 编辑账号 —— 改显示名 / 重填用户名密码
+  //   为什么需要：PP（远程预览）模式自动登录用 accountStore 里**加密存**的凭据；
+  //   老账号（v0.119.6 之前建的）DB 里没有密码 → 必须重填一次才能自动登录。
+  async function editAccount(id) {
+    const aR = await api('GET', `/api/social-publisher/accounts/${id}`);
+    if (!aR.ok || !aR.data?.account) { notify('账号不存在', 'error'); return; }
+    const a = aR.data.account;
+
+    let captured = null;
+    let validationError = null;
+    const showPromise = window.ACMSModal.show({
+      title: '✏️ 编辑平台账号',
+      size: 'md',
+      root: wRef && wRef.$c ? wRef.$c : undefined,
+      html: `
+        <div class="sp-form">
+          <div class="sp-form-row">
+            <label>平台</label>
+            <input value="${esc(a.platform)}" disabled style="opacity:.6">
+          </div>
+          <div class="sp-form-row">
+            <label>显示名</label>
+            <input id="sp-acct-edit-display-name" value="${esc(a.display_name || '')}">
+          </div>
+          <div class="sp-form-row">
+            <label>用户名 / 登录账号</label>
+            <input id="sp-acct-edit-username" value="${esc(a.credentials?.username || '')}" placeholder="手机号 / 邮箱 / 用户名">
+          </div>
+          <div class="sp-form-row">
+            <label>密码 <span class="sp-info-tip" data-tip="留空 = 不修改；重新填写 = 更新凭据。密码用 AES-256-GCM 加密存本机，供 AI 发布（远程预览模式）自动填表用 —— 不会进入 AI 对话上下文。">i</span></label>
+            <input id="sp-acct-edit-password" type="password" placeholder="留空=不修改；重填=更新（自动登录需要）">
+          </div>
+        </div>
+        <div style="margin-top:8px;padding:8px;background:var(--sp-bg-2);border-radius:6px;font-size:11px;color:var(--sp-text-2);line-height:1.5">
+          💡 <b>为什么建议重填密码</b>：AI 发布（远程预览模式）需要在本机加密保存一份凭据才能自动填登录表单。老账号若没存过密码，发布时会提示去「编辑」重填一次。密码全程只在服务端解密填表，AI 对话里看不到。
+        </div>
+      `,
+      actions: [
+        { label: '取消', value: 'CANCEL', className: 'acms-modal-btn' },
+        { label: '保存', value: 'CONFIRM', className: 'acms-modal-btn acms-modal-btn-primary' },
+      ],
+      beforeCleanup: (v) => {
+        if (v !== 'CONFIRM') return v;
+        const display_name = (document.getElementById('sp-acct-edit-display-name')?.value || '').trim();
+        const username = (document.getElementById('sp-acct-edit-username')?.value || '').trim();
+        const password = document.getElementById('sp-acct-edit-password')?.value || '';
+        if (!display_name) { validationError = '显示名必填'; return null; }
+        captured = { display_name };
+        if (username) captured.username = username;
+        if (password) captured.password = password;
+        return v;
+      },
+    });
+    await showPromise;
+    if (!captured) { if (validationError) notify(validationError, 'error'); return; }
+
+    const r = await api('PATCH', `/api/social-publisher/accounts/${id}`, captured);
+    if (r.ok) {
+      notify(`账号已更新：${captured.display_name}${captured.password ? '（密码已更新 → AI 发布可自动登录）' : ''}`, 'success');
+      await loadAccounts();
+    } else {
+      notify('更新失败: ' + (r.data?.error || r.status), 'error');
     }
   }
 
@@ -546,6 +612,8 @@
       const ta = _byId('sp-ai-input');
       if (ta) { try { ta.focus(); } catch (_) {} }
     }, 60);
+    // v0.119.6: 绑定画面区接管事件（每次 open 都重绑，防止 cleanup 漏解）
+    _bindPreviewHandoffEvents();
   }
   function closeAiModal() {
     const overlay = _byId('sp-ai-overlay');
@@ -608,6 +676,21 @@
       notify('暂停请求失败: ' + e.message, 'error');
     }
   }
+  // v0.119.6: 轮数用尽 / 失败时渲染 Agent 进度总结块（追加到步骤区末尾）
+  function renderAiSummaryBlock(text) {
+    const container = _byId('sp-ai-steps');
+    if (!container || !text) return;
+    // 清掉可能存在的旧总结块（防重复渲染）
+    const old = container.querySelector('.sp-ai-summary');
+    if (old) old.remove();
+    const div = document.createElement('div');
+    div.className = 'sp-ai-summary';
+    div.innerHTML = `<div class="sp-ai-summary-title">📋 Agent 进度总结</div>`
+      + `<div class="sp-ai-summary-body">${esc(text).replace(/\n/g, '<br>')}</div>`;
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+  }
+
   function renderAiSteps(steps) {
     const container = _byId('sp-ai-steps');
     if (!container) return;
@@ -661,7 +744,7 @@
   }
 
   // ── v0.118.18: 常驻输入条 ──────────────────────────────────────
-  //   _aiPhase: idle | running | waiting | done —— 决定输入条是「介入发言」还是「回复」
+  //   _aiPhase: idle | running | waiting | handoff_paused | done —— 决定输入条是「介入发言」还是「回复」
   let _aiPhase = 'idle';
   function setAiPhase(phase) {
     _aiPhase = phase;
@@ -671,8 +754,310 @@
       ta.placeholder = 'Agent 正在等你回复 — 输入验证码 / 指示 / 账号后按 Enter（或点上方 A/B/C 快捷回复）';
     } else if (phase === 'running') {
       ta.placeholder = '随时可介入：提要求 / 给验证码 / 纠正方向…（Enter 发送，Shift+Enter 换行）';
+    } else if (phase === 'handoff_paused') {
+      // v0.119.5: 接管中 —— LLM 已暂停，远端浏览器已释放给用户；输入条不能再用
+      ta.placeholder = '🖐️ 接管中：去 Web 机器人浏览器手动操作（输验证码 / 过风控 / 跳页），完了回这里点 ▶ 继续';
+      ta.disabled = true;
     } else if (phase === 'done' || phase === 'idle') {
       ta.placeholder = '本次发布已结束（新任务开始后可再发消息）';
+    }
+    if (phase !== 'handoff_paused' && ta.disabled) ta.disabled = false;
+  }
+
+  // v0.119.5: 用户接管按钮可用态
+  function setAiHandoffEnabled(enabled) {
+    const btn = _byId('sp-ai-handoff');
+    if (btn) {
+      btn.disabled = !enabled;
+      btn.style.opacity = enabled ? 1 : 0.45;
+      btn.style.cursor = enabled ? 'pointer' : 'not-allowed';
+    }
+    const rbtn = _byId('sp-ai-resume-handoff');
+    if (rbtn) {
+      rbtn.disabled = !!enabled;  // resume 按钮在 handoff_paused 时可用，否则置灰
+      rbtn.style.opacity = enabled ? 0.45 : 1;
+      rbtn.style.cursor = enabled ? 'not-allowed' : 'pointer';
+    }
+  }
+
+  // v0.119.5: 用户主动接管浏览器（AI 卡在登录墙/验证码时）
+  //   复用后端 interruptSession(pause:true) 机制，LLM 当前轮结束后会进 handoff_paused
+  async function requestAiHandoff() {
+    const tid = _aiCurrentTaskId;
+    if (!tid) { notify('当前没有运行中的 AI 发布任务', 'warn'); return; }
+    try {
+      const r = await api('POST', `/api/browser-agent/session/${encodeURIComponent(tid)}/handoff`, {});
+      if (r.ok) {
+        setAiStatus('🖐️ 已请求接管 — LLM 停稳后会切到「接管中」', 'handoff_paused');
+        setAiInterruptEnabled(false);
+        setAiHandoffEnabled(false);  // 接管中，h 按钮置灰
+        setAiPhase('handoff_paused');
+        notify(r.data?.note || '已请求接管，等 LLM 当前轮结束后释放远端浏览器', 'info', 6000);
+      } else {
+        notify('接管请求失败: ' + (r.data?.error || r.status), 'error');
+      }
+    } catch (e) {
+      notify('接管请求失败: ' + e.message, 'error');
+    }
+  }
+
+  // v0.119.5: 用户在 Web 机器人浏览器里手动操作完 → 恢复 LLM 续跑
+  async function resumeAiHandoff() {
+    const tid = _aiCurrentTaskId;
+    if (!tid) { notify('当前没有运行中的 AI 发布任务', 'warn'); return; }
+    try {
+      const r = await api('POST', `/api/browser-agent/session/${encodeURIComponent(tid)}/resume-handoff`, {});
+      if (r.ok) {
+        setAiStatus('▶ 已恢复 LLM 续跑...', 'running');
+        setAiInterruptEnabled(true);
+        setAiHandoffEnabled(true);  // 恢复后 h 按钮重新可用
+        setAiPhase('running');
+        notify(r.data?.note || '已恢复 LLM 续跑', 'info', 4000);
+      } else {
+        notify('恢复失败: ' + (r.data?.error || r.status), 'error');
+      }
+    } catch (e) {
+      notify('恢复失败: ' + e.message, 'error');
+    }
+  }
+
+  // v0.119.6: 获取当前用户活跃的 ws-* Web 机器人 session（用于绑定 appSessionId）
+  //   拿不到时返回 null（AI 发布退回到独立浏览器模式，不启用接管）
+  async function getActiveWbSessionId() {
+    try {
+      const r = await api('GET', '/api/browser-agent/sessions');
+      if (!r.ok || !Array.isArray(r.data?.sessions)) return null;
+      const list = r.data.sessions;
+      // 优先：status=running/waiting_user 且 id 前缀 ws-* 的最近一个
+      const candidates = list
+        .filter(s => typeof s.id === 'string' && s.id.startsWith('ws-'))
+        .filter(s => s.status === 'running' || s.status === 'waiting_user')
+        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      if (candidates.length > 0) return candidates[0].id;
+      // 退一步：任意 ws-* 最新会话
+      const anyWs = list
+        .filter(s => typeof s.id === 'string' && s.id.startsWith('ws-'))
+        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      return anyWs.length > 0 ? anyWs[0].id : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // ════════════════════════════════════════════════════════════════════
+  // v0.119.6: AI 发布自带画面 —— gp-* session 自动起的 Puppeteer Chrome 实时帧流
+  //   aiPublish 收到 response.appSessionId 后调用 startPpPreview(appSessionId) 启动
+  //   WebSocket 连 /ws/app-runtime/<appSessionId>，收到 frame 渲染到 sp-ai-preview-img
+  //   handoff 状态下用户可在画面上点击/输入（坐标换算后调 /api/app-runtime/input）
+  // ════════════════════════════════════════════════════════════════════
+  let _pp = { appSessionId: null, ws: null, ready: false, viewport: { width: 1100, height: 700 } };
+
+  function startPpPreview(appSessionId) {
+    if (!appSessionId) {
+      console.warn('[sp-ai-pp] v0.119.6 no appSessionId, preview disabled');
+      return;
+    }
+    _pp.appSessionId = appSessionId;
+    const previewEl = _byId('sp-ai-preview');
+    if (previewEl) previewEl.style.display = 'flex';
+    updatePreviewStatus('connecting', `连接远程浏览器 ${appSessionId.slice(0, 8)}…`);
+    try {
+      if (_pp.ws) { _pp.ws.onclose = null; _pp.ws.close(); }
+    } catch (_) {}
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(proto + '//' + location.host + '/ws/app-runtime/' + appSessionId);
+    _pp.ws = ws;
+    ws.onopen = () => {
+      _pp.ready = true;
+      updatePreviewStatus('connected', '🖥 远程浏览器已连接');
+      // 通知 Puppeteer 当前画面大小（与 LLM 操作共享）
+      ppSendInput({ type: 'resize', w: _pp.viewport.width, h: _pp.viewport.height }).catch(() => {});
+    };
+    ws.onmessage = (ev) => {
+      let msg; try { msg = JSON.parse(ev.data); } catch (_) { return; }
+      if (msg.type === 'frame' && msg.data) {
+        showPpFrame(msg.data, msg.metadata);
+      } else if (msg.type === 'navigated' && msg.url) {
+        const urlEl = _byId('sp-ai-preview-url');
+        if (urlEl) urlEl.textContent = String(msg.url).slice(0, 80);
+        if (msg.metadata && msg.metadata.viewport) {
+          _pp.viewport = msg.metadata.viewport;
+        }
+      } else if (msg.type === 'error') {
+        updatePreviewStatus('error', '❌ 远程浏览器错误: ' + (msg.error || 'unknown'));
+      }
+    };
+    ws.onerror = () => updatePreviewStatus('error', '❌ WebSocket 连接失败');
+    ws.onclose = () => {
+      _pp.ready = false;
+      updatePreviewStatus('disconnected', '⚠️ 远程浏览器已断开');
+    };
+  }
+
+  function showPpFrame(base64, metadata) {
+    const img = _byId('sp-ai-preview-img');
+    if (img) img.src = 'data:image/png;base64,' + base64;
+    if (metadata && metadata.viewport) {
+      _pp.viewport = metadata.viewport;
+    }
+  }
+
+  function updatePreviewStatus(kind, text) {
+    const dot = _byId('sp-ai-preview-dot');
+    if (dot) {
+      dot.classList.remove('connected', 'error', 'disconnected');
+      if (kind === 'connected') dot.classList.add('connected');
+      else if (kind === 'error') dot.classList.add('error');
+    }
+    const urlEl = _byId('sp-ai-preview-url');
+    if (urlEl) urlEl.textContent = text;
+  }
+
+  function stopPpPreview() {
+    try { if (_pp.ws) { _pp.ws.onclose = null; _pp.ws.close(); } } catch (_) {}
+    _pp.ws = null; _pp.ready = false; _pp.appSessionId = null;
+    const previewEl = _byId('sp-ai-preview');
+    if (previewEl) previewEl.style.display = 'none';
+  }
+
+  // v0.119.6: 接管输入 —— 把 AI modal 画面区的 click/keypress 转发给 Puppeteer
+  //   坐标换算：img 显示尺寸 vs Puppeteer viewport (object-fit:contain 居中缩放)
+  async function ppSendInput(event) {
+    if (!_pp.appSessionId) return;
+    try {
+      const r = await fetch('/api/app-runtime/input?api_key=' + SP_AK, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: _pp.appSessionId, ...event }),
+      });
+      if (!r.ok) console.warn('[sp-ai-pp] input send failed:', r.status);
+    } catch (e) {
+      console.warn('[sp-ai-pp] input send error:', e.message);
+    }
+  }
+
+  // v0.119.6: 把画面点击事件坐标换算成 Puppeteer viewport 坐标
+  function _ppFrameCoords(imgEl, clientX, clientY) {
+    const rect = imgEl.getBoundingClientRect();
+    // object-fit:contain —— img 实际显示区域在 rect 里居中（可能有 letterbox）
+    const imgAspect = _pp.viewport.width / _pp.viewport.height;
+    const rectAspect = rect.width / rect.height;
+    let dispW, dispH, offsetX, offsetY;
+    if (imgAspect > rectAspect) {
+      // img 比 rect 更宽 → 高度铺满，宽度居中
+      dispW = rect.width;
+      dispH = rect.width / imgAspect;
+      offsetX = 0;
+      offsetY = (rect.height - dispH) / 2;
+    } else {
+      // img 比 rect 更高 → 宽度铺满，高度居中
+      dispH = rect.height;
+      dispW = rect.height * imgAspect;
+      offsetX = (rect.width - dispW) / 2;
+      offsetY = 0;
+    }
+    const xInImg = clientX - rect.left - offsetX;
+    const yInImg = clientY - rect.top - offsetY;
+    // 边界检查
+    if (xInImg < 0 || yInImg < 0 || xInImg > dispW || yInImg > dispH) return null;
+    // 换算到 viewport 坐标
+    const scaleX = _pp.viewport.width / dispW;
+    const scaleY = _pp.viewport.height / dispH;
+    return { x: Math.round(xInImg * scaleX), y: Math.round(yInImg * scaleY) };
+  }
+
+  // v0.119.6: 接管时启用画面交互（参考 browser-console.js v1.6.1 全链路按住-拖动-松开）
+  //   关键：mousedown 记起点 → document 级 mousemove（拖动中转发，拖出画面不丢）→ document 级 mouseup
+  //   去重：每次 openAiModal 调这个，绑第二次前先 remove 旧 handler
+  let _ppDrag = { dragging: false, moved: false, sx: 0, sy: 0 };
+  let _ppDocBound = false;  // document 级 handler 只绑一次
+  function _bindPreviewHandoffEvents() {
+    const frame = _byId('sp-ai-preview-frame');
+    if (!frame) return;
+
+    // ── frame 级：mousedown（记起点 + 发 down）──
+    if (frame._ppDownHandler) frame.removeEventListener('mousedown', frame._ppDownHandler);
+    const onMouseDown = (e) => {
+      if (_aiPhase !== 'handoff_paused' || !_pp.ready) return;
+      e.preventDefault();  // 阻止浏览器把「按住拖动」当图片拖拽
+      const img = _byId('sp-ai-preview-img');
+      const c = img ? _ppFrameCoords(img, e.clientX, e.clientY) : null;
+      if (!c) return;
+      _ppDrag.dragging = true; _ppDrag.moved = false; _ppDrag.sx = c.x; _ppDrag.sy = c.y;
+      const btnName = e.button === 2 ? 'right' : (e.button === 1 ? 'middle' : 'left');
+      ppSendInput({ type: 'mousedown', x: c.x, y: c.y, button: btnName });
+    };
+    frame.addEventListener('mousedown', onMouseDown);
+    frame._ppDownHandler = onMouseDown;
+
+    // ── frame 级：hover mousemove（非拖动时 100ms 节流，页面 hover 菜单可用）──
+    if (frame._ppHoverHandler) frame.removeEventListener('mousemove', frame._ppHoverHandler);
+    let _hvT = 0;
+    const onImgMove = (e) => {
+      if (_aiPhase !== 'handoff_paused' || !_pp.ready) return;
+      if (_ppDrag.dragging) return;
+      const now = Date.now(); if (now - _hvT < 100) return; _hvT = now;
+      const img = _byId('sp-ai-preview-img');
+      const c = img ? _ppFrameCoords(img, e.clientX, e.clientY) : null;
+      if (!c) return;
+      ppSendInput({ type: 'mousemove', x: c.x, y: c.y });
+    };
+    frame.addEventListener('mousemove', onImgMove);
+    frame._ppHoverHandler = onImgMove;
+
+    // ── frame 级：keydown（键盘输入）──
+    if (frame._ppKeyHandler) frame.removeEventListener('keydown', frame._ppKeyHandler);
+    const onKeyDown = (e) => {
+      if (_aiPhase !== 'handoff_paused' || !_pp.ready) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.repeat) return;  // 跳过按住键的自动重复
+      const key = e.key;
+      if (key === 'Enter') ppSendInput({ type: 'keydown', key: 'Enter', code: 'Enter' });
+      else if (key === 'Backspace') ppSendInput({ type: 'keydown', key: 'Backspace', code: 'Backspace' });
+      else if (key === 'Tab') ppSendInput({ type: 'keydown', key: 'Tab', code: 'Tab' });
+      else if (key === 'Escape') ppSendInput({ type: 'keydown', key: 'Escape', code: 'Escape' });
+      else if (key.length === 1) ppSendInput({ type: 'type', text: key });
+    };
+    frame.addEventListener('keydown', onKeyDown);
+    frame._ppKeyHandler = onKeyDown;
+
+    // ── frame 级：滚轮 ──
+    if (frame._ppWheelHandler) frame.removeEventListener('wheel', frame._ppWheelHandler);
+    const onWheel = (e) => {
+      if (_aiPhase !== 'handoff_paused' || !_pp.ready) return;
+      e.preventDefault();
+      const img = _byId('sp-ai-preview-img');
+      const c = img ? _ppFrameCoords(img, e.clientX, e.clientY) : null;
+      if (c) ppSendInput({ type: 'wheel', x: c.x, y: c.y, deltaY: e.deltaY });
+    };
+    frame.addEventListener('wheel', onWheel, { passive: false });
+    frame._ppWheelHandler = onWheel;
+
+    // ── document 级：mousemove（拖动中转发，24ms 节流 ~40Hz）+ mouseup（拖出画面也能收尾）──
+    //   只绑一次（_ppDocBound 标志）—— document 级 handler 不随 modal 开关累积
+    if (!_ppDocBound) {
+      _ppDocBound = true;
+      let _dT = 0;
+      document.addEventListener('mousemove', (e) => {
+        if (!_ppDrag.dragging || _aiPhase !== 'handoff_paused' || !_pp.ready) return;
+        const now = Date.now(); if (now - _dT < 24) return; _dT = now;  // 拖动节流 ~40Hz（滑块足够）
+        const img = _byId('sp-ai-preview-img');
+        const c = img ? _ppFrameCoords(img, e.clientX, e.clientY) : null;
+        if (!c) return;
+        if (Math.abs(c.x - _ppDrag.sx) + Math.abs(c.y - _ppDrag.sy) > 3) _ppDrag.moved = true;
+        ppSendInput({ type: 'mousemove', x: c.x, y: c.y });
+      });
+      document.addEventListener('mouseup', (e) => {
+        if (!_ppDrag.dragging) return;
+        _ppDrag.dragging = false;
+        const img = _byId('sp-ai-preview-img');
+        const c = (img ? _ppFrameCoords(img, e.clientX, e.clientY) : null) || { x: _ppDrag.sx, y: _ppDrag.sy };
+        const btnName = e.button === 2 ? 'right' : (e.button === 1 ? 'middle' : 'left');
+        if (_aiPhase === 'handoff_paused' && _pp.ready) {
+          ppSendInput({ type: 'mouseup', x: c.x, y: c.y, button: btnName });
+        }
+      });
     }
   }
   // 发送：waiting = 回复（reply）；running = 介入发言（interrupt 注入，不暂停）
@@ -744,6 +1129,9 @@
         const data = JSON.parse(ev.data);
         setAiStatus('⏸ LLM 在等你回复', 'waiting');
         setAiInterruptEnabled(false);  // waiting 中已有输入框，介入按钮置灰
+        // v0.119.5 修订：waiting_user 状态 🖐️ 接管 按钮**亮**（这正是 LLM 卡登录墙让用户接管的场景）
+        // 文本回复（v0.118.17）和 handoff 接管浏览器是两个互斥操作，用户自己选
+        setAiHandoffEnabled(true);
         setAiPhase('waiting');  // v0.118.18: 输入条切「回复」模式
         showAiWaiting(data.question);
         const overlay = _byId('sp-ai-overlay');
@@ -780,9 +1168,67 @@
         notify('🔔 LLM 在等你回复 — 切回内容运营平台', 'info', 9000);
       } catch (e) {}
     });
+    // v0.119.5: handoff 接管事件 —— 用户接管中，提示去 Web 机器人操作
+    es.addEventListener('handoff', (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        setAiStatus('🖐️ 接管中 — 直接在 AI 模态框的画面上点击/输入', 'handoff_paused');
+        setAiInterruptEnabled(false);
+        setAiHandoffEnabled(false);  // h 按钮置灰，r 按钮亮
+        setAiPhase('handoff_paused');
+        // v0.119.6: 画面区显示绿色接管覆盖层 + frame 加 handoff-active class（cursor 变 crosshair）
+        const overlay = _byId('sp-ai-preview-overlay');
+        if (overlay) overlay.style.display = 'flex';
+        const frame = _byId('sp-ai-preview-frame');
+        if (frame) {
+          frame.classList.add('handoff-active');
+          frame.tabIndex = 0;
+          frame.focus();
+        }
+        // 不再自动弹 Web 机器人窗口（v0.119.6 自带画面）
+        notify('🖐️ LLM 已暂停，画面已释放给你 — 直接在 AI 模态框的画面上点/输验证码', 'info', 9000);
+        // 标题闪烁 + Notification（v0.118.18 同款，handoff 复用）
+        const modalOverlay = _byId('sp-ai-overlay');
+        if (modalOverlay && modalOverlay.style.display === 'none') {
+          modalOverlay.style.display = 'flex';
+        }
+        try {
+          if (window.Notification && Notification.permission === 'granted') {
+            new Notification('🖐️ LLM 已暂停 — 画面已释放给你', { body: '直接在 AI 模态框的画面上操作', tag: 'sp-ai-handoff' });
+          }
+        } catch (e) {}
+        let blinkCount = 0;
+        const origTitle = document.title;
+        const blink = setInterval(() => {
+          document.title = blinkCount % 2 === 0 ? '🖐️ 接管中' : origTitle;
+          blinkCount++;
+          if (blinkCount >= 8) { clearInterval(blink); document.title = origTitle; }
+        }, 1000);
+      } catch (e) {}
+    });
+    // v0.119.5: handoff 恢复事件 —— 用户操作完，LLM 续跑
+    es.addEventListener('resumed', (ev) => {
+      try {
+        setAiStatus('▶ LLM 续跑中...', 'running');
+        setAiInterruptEnabled(true);
+        setAiHandoffEnabled(true);
+        setAiPhase('running');
+        // v0.119.6: 关接管覆盖层 + 去掉 handoff-active class
+        const overlay = _byId('sp-ai-preview-overlay');
+        if (overlay) overlay.style.display = 'none';
+        const frame = _byId('sp-ai-preview-frame');
+        if (frame) {
+          frame.classList.remove('handoff-active');
+          frame.tabIndex = -1;
+        }
+        notify('▶ LLM 已重新观察页面并继续推进', 'info', 4000);
+      } catch (e) {}
+    });
     es.addEventListener('done', (ev) => {
       try {
         const data = JSON.parse(ev.data);
+        // v0.119.6: 终态关画面预览（WebSocket + DOM）
+        stopPpPreview();
         // v0.118.12: session 通道 done 不带 post_url → 从 LLM 总结里提取
         if (!data.post_url && data.content) {
           const m = String(data.content).match(/https?:\/\/[^\s)]+(?:toutiao|xiaohongshu|zhihu|douyin|weixin|mp\.[a-z]+\.com)[^\s)]*/);
@@ -803,10 +1249,25 @@
             }
           } catch (e) {}
         }
-        notify(data.status === 'error' ? `❌ ${data.error || '失败'}` : '✅ 发布完成', data.status === 'error' ? 'error' : 'success');
+        // v0.119.6: 轮数用尽总结 —— 从 error 里拆出【Agent 进度总结】渲染到步骤区，toast 只显示短标题
+        let errText = data.error || '';
+        let summaryText = '';
+        const sumMatch = errText.match(/【Agent 进度总结】\n?([\s\S]+)$/);
+        if (sumMatch) {
+          summaryText = sumMatch[1].trim();
+          errText = errText.replace(/【Agent 进度总结】[\s\S]*$/, '').trim();
+        }
+        if (summaryText) renderAiSummaryBlock(summaryText);
+        notify(
+          data.status === 'error'
+            ? `❌ ${errText || '失败'}${summaryText ? '（下方有 Agent 进度总结）' : ''}`
+            : '✅ 发布完成',
+          data.status === 'error' ? 'error' : 'success'
+        );
       } catch (e) {}
       hideAiWaiting();
       setAiInterruptEnabled(false);  // done/error 后介入无意义
+      setAiHandoffEnabled(false);  // done/error 后接管无意义
       setAiPhase('done');  // v0.118.18
       // done 触发 → intentional 标 true → close → onerror 看到 intentional=true 静默
       intentional = true;
@@ -949,6 +1410,13 @@
     _aiReconnectTotal = 0;
 
     try {
+      // v0.119.5: 自动获取用户当前 Web 机器人 ws-* session（让 gp-* 共享那个浏览器，启用 handoff 接管）
+      const userAppSessionId = await getActiveWbSessionId();
+      if (userAppSessionId) {
+        console.log('[aiPublish] v0.119.5 binding to user wb session:', userAppSessionId);
+      } else {
+        console.log('[aiPublish] v0.119.5 no active user wb session, will let server auto-start PP (v0.119.6)');
+      }
       const r = await api('POST', '/api/social-publisher/go-publish', {
         platform,
         account_id: accountId,
@@ -956,6 +1424,7 @@
         content: data.content,
         tags: data.tags || [],
         images: data.images || [],
+        appSessionId: userAppSessionId,  // v0.119.5: 传 null 时后端 v0.119.6 自动起 PP
       });
       if (!r.ok) {
         closeAiModal();
@@ -966,6 +1435,12 @@
       setAiInterruptEnabled(true);  // v0.118.16: running 中可随时 💬 介入
       setAiPhase('running');  // v0.118.18
       subscribeAiStream(r.data.task_id);
+      // v0.119.6: 启动画面预览（如果后端返回了 appSessionId —— 来自用户 ws-* 或服务端自动起）
+      if (r.data?.appSessionId) {
+        startPpPreview(r.data.appSessionId);
+      } else {
+        console.warn('[aiPublish] v0.119.6 no appSessionId returned, preview disabled');
+      }
     } catch (e) {
       closeAiModal();
       notify('创建任务失败: ' + e.message, 'error');
@@ -2105,6 +2580,21 @@
       aiInterruptBtn.addEventListener('click', requestAiInterrupt);
       cleanupFns.push(() => aiInterruptBtn.removeEventListener('click', requestAiInterrupt));
     }
+    // v0.119.5: 🖐️ 接管 —— 用户主动接管浏览器（输验证码/过风控）
+    const aiHandoffBtn = _byId('sp-ai-handoff');
+    if (aiHandoffBtn) {
+      aiHandoffBtn.addEventListener('click', requestAiHandoff);
+      cleanupFns.push(() => aiHandoffBtn.removeEventListener('click', requestAiHandoff));
+    }
+    const aiResumeHandoffBtn = _byId('sp-ai-resume-handoff');
+    if (aiResumeHandoffBtn) {
+      aiResumeHandoffBtn.addEventListener('click', resumeAiHandoff);
+      cleanupFns.push(() => aiResumeHandoffBtn.removeEventListener('click', resumeAiHandoff));
+    }
+    // v0.119.5: 初始 running 状态：🖐️ 接管亮，▶ 继续灰（要等 SSE onHandoff 切到 handoff_paused 状态）
+    setAiHandoffEnabled(true);  // true = h 亮 / r 灰
+    const initialResume = _byId('sp-ai-resume-handoff');
+    if (initialResume) initialResume.style.opacity = 0.45;
     // v0.118.18: 常驻输入条 —— 发送按钮 + Enter 快捷键（Shift+Enter 换行）
     const aiSendBtn = _byId('sp-ai-input-send');
     if (aiSendBtn) {
@@ -2422,6 +2912,7 @@
     checkHealth,
     removeAccount,
     loginAccount,  // v0.118.1: agent-browser auth login
+    editAccount,   // v0.119.6: 编辑账号（重填密码 → PP 模式自动登录）
     respondApproval,
     claimTask,
     cancelSchedule,
