@@ -13,6 +13,9 @@
   let mod = null
   let rootEl = null
   let acmsAiPatchInterval = null
+  // P200: 当前文档标识 —— 角色/场景档案库按文档隔离的依据（__init 时赋值）
+  let acmsDocId = ''
+  let acmsDocName = ''
 
   // ── ACMS 补丁 (v0.96.3)：替换 GenSpark 内嵌 AI 按钮 → ACMS AI 入口 ──────
   //   调研发现 (2026-08-15)：
@@ -187,37 +190,102 @@
         console.info('[acms-host] 选区 blocks:', selBlockIdx.join(','));
       }
 
-      // 调 ACMS Buddy office-action
+      // P198: 走流式（SSE）— 长文生成时 chunk 实时插入 Word + chat message 实时更新进度
       var summary = '';
       var errMsg = null;
+      var detectedOp = null;
+      var action = null;
+      var streamChars = 0;
+      var acmsAbort = null;
       try {
-        var resp = await fetch('/api/agent-buddy/office-action?api_key=dev-key-001', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
-          body: JSON.stringify({ kind: 'word', instruction: finalInstruction, docContext: docContext })
-        });
-        var data = await resp.json();
-        if (data && data.ok && data.action) {
-          summary = data.action.summary || 'AI 已应用编辑';
-          // 应用到 Word — 入口是父窗口 OfficeV3.runAction（agent-buddy.js 同款）
-          // ⚠️ 不要用 parent.ACMS.Buddy.runAction（Buddy 上没有这个方法，实测不存在）
-          // ⚠️ v0.96.9: generateImage 返回 Promise，统一 await
-          if (window.parent.OfficeV3 && typeof window.parent.OfficeV3.runAction === 'function') {
-            var r = await window.parent.OfficeV3.runAction(data.action);
-            if (r && r.ok) {
-              summary = (data.action.summary || 'AI 已应用编辑') + '（已写入 Word）';
-            } else {
-              errMsg = (r && r.error) || 'Word 应用失败';
+        acmsAbort = new AbortController();
+        var streamRet = await acmsCallOfficeActionStream({
+          docContext: docContext,
+          instruction: finalInstruction,
+          signal: acmsAbort.signal,
+          onMeta: function (data) {
+            detectedOp = data.op;
+            // 实时更新 chat message — 「正在生成 XXX (op=appendAll)」
+            if (chatSetter) {
+              try {
+                chatSetter(function (prev) {
+                  var next = prev.slice();
+                  for (var i = next.length - 1; i >= 0; i--) {
+                    if (next[i].role === 'assistant' && next[i].streaming) {
+                      next[i] = { ...next[i], text: '⏳ 正在生成（' + detectedOp + '）...' };
+                      break;
+                    }
+                  }
+                  return next;
+                });
+              } catch (_) { }
             }
-          } else {
-            errMsg = 'parent.OfficeV3.runAction 不可用';
+          },
+          onChunk: function (data) {
+            streamChars = data.chars || streamChars;
+            // 实时插入到 Word 文档末尾（host.html 自己在 word-ui iframe 内，直接拿编辑器）
+            try {
+              var ce = document.querySelector('[contenteditable="true"]');
+              var ed = ce && (ce.editor || ce._tiptapEditor);
+              if (ed && data.text) {
+                ed.commands.focus('end');
+                ed.chain().insertContentAt(ed.state.doc.content.size, data.text).run();
+              }
+            } catch (_) { }
+            // 更新 chat message 进度
+            if (chatSetter) {
+              try {
+                chatSetter(function (prev) {
+                  var next = prev.slice();
+                  for (var i = next.length - 1; i >= 0; i--) {
+                    if (next[i].role === 'assistant' && next[i].streaming) {
+                      next[i] = { ...next[i], text: '⏳ 正在生成... 已写入 ' + streamChars + ' 字' };
+                      break;
+                    }
+                  }
+                  return next;
+                });
+              } catch (_) { }
+            }
+          },
+          onError: function (data) {
+            errMsg = data.message || 'LLM 流式错误';
+          }
+        });
+        action = streamRet.action;
+        detectedOp = streamRet.detectedOp || detectedOp;
+      } catch (e) {
+        errMsg = e.message || '请求失败';
+        console.warn('[acms-host] office-action 流式异常:', e);
+      }
+
+      // P198: chunk 已实时插入 appendAll/insertAfter/insertAfterSelection 的内容，runAction 不重复执行这些 op
+      //   其他 op（proposeEdit / formatOps / generateImage / insertImagesAtContent 等）走 runAction
+      var skipRunAction = detectedOp && /(appendAll|insertAfter|insertAfterSelection)/.test(detectedOp);
+      if (!errMsg && action && action.op && !skipRunAction) {
+        // ⚠️ 应用到 Word — 入口是父窗口 OfficeV3.runAction
+        // ⚠️ 不要用 parent.ACMS.Buddy.runAction（不存在）
+        if (window.parent.OfficeV3 && typeof window.parent.OfficeV3.runAction === 'function') {
+          try {
+            var r = await window.parent.OfficeV3.runAction(action);
+            if (r && r.ok) {
+              summary = (action.summary || 'AI 已应用编辑') + '（已写入 Word）';
+            } else {
+              // runAction 失败 — chunk 已实时插入的内容**不会回滚**（Tiptap 历史保留），但提示错误
+              errMsg = (r && r.error) || 'Word 应用失败';
+              if (streamChars > 0) errMsg += '（前 ' + streamChars + ' 字已实时插入，请用 Ctrl+Z 回滚）';
+            }
+          } catch (e) {
+            errMsg = 'runAction 异常: ' + e.message;
           }
         } else {
-          errMsg = (data && data.error) || 'office-action 返回失败';
+          errMsg = 'parent.OfficeV3.runAction 不可用';
         }
-      } catch (e) {
-        errMsg = '请求失败: ' + e.message;
-        console.warn('[acms-host] office-action 异常:', e);
+      } else if (!errMsg && action && skipRunAction) {
+        // appendAll 等：chunk 已插入，summary 拼接字数
+        summary = (action.summary || '已追加到 Word') + '（共 ' + streamChars + ' 字）';
+      } else if (errMsg && streamChars > 0) {
+        errMsg += '（前 ' + streamChars + ' 字已实时插入，请用 Ctrl+Z 回滚）';
       }
 
       // 更新聊天消息列表 — 把最后那条 streaming assistant message 替换成完成提示
@@ -330,9 +398,105 @@
     return { doc: docContext, selBlockIdx: selBlockIdx };
   }
 
-  // ── v0.96.9b: 右键 AI 动作（润色/排版/总结/生成插图）──
+  // P200: host.html 运行在 iframe 内，而 character/scene-library.js 与 visual-bible.js 加载在主窗口
+  //   所以先查 window（同窗口场景），回退 window.parent（iframe 场景）
+  function acmsLib(name) {
+    try {
+      if (window[name]) return window[name];
+      if (window.parent && window.parent !== window && window.parent[name]) return window.parent[name];
+    } catch (e) { /* 跨域/沙箱 */ }
+    return null;
+  }
+
+  // P200: 抽取文档全文（不截断 — 视觉设定集分析用）
+  //   与 buildAcmsDocContext 的区别：那个每段 slice(0,200) 供 LLM 决策，这个要全文
+  function buildAcmsFullText() {
+    try {
+      var ce = document.querySelector('[contenteditable="true"]');
+      var editor = ce && (ce.editor || ce._tiptapEditor);
+      if (!editor || !editor.state || !editor.state.doc) return '';
+      var parts = [];
+      editor.state.doc.content.forEach(function (node) {
+        var n = node.type.name;
+        if (n === 'docParagraph' || n === 'docHeading' || n === 'docListItem') {
+          var t = String(node.textContent || '').trim();
+          if (t) parts.push(t);
+        }
+      });
+      return parts.join('\n\n');
+    } catch (e) {
+      console.warn('[acms-host] buildAcmsFullText 失败:', e.message);
+      return '';
+    }
+  }
+
+  // v0.96.9b: 右键 AI 动作（润色/排版/总结/生成插图）──
   // 注：v0.96.9 曾用自定义菜单替换原生右键菜单，用户指出应保留原生菜单、只在其上添加 AI 选项。
   // v0.96.9b 改为：不拦截原生右键（.ctx-menu 照常弹出），往菜单末尾注入 AI 动作项。
+
+  // P198: 流式调 office-action（SSE 协议解析）
+  // opts: { docContext, instruction, onMeta, onChunk, onDone, onError, signal }
+  //   onMeta({op}) — LLM 输出首个 { 后触发（含 op 类型）
+  //   onChunk({text, chars}) — 每 150 字 newText 增量触发
+  //   onDone({action}) — 流结束 + 完整 action
+  //   onError({message}) — 错误
+  // 返回 { action, detectedOp } 或 throw Error
+  async function acmsCallOfficeActionStream(opts) {
+    var docContext = opts.docContext;
+    var instruction = opts.instruction;
+    var onMeta = opts.onMeta;
+    var onChunk = opts.onChunk;
+    var onDone = opts.onDone;
+    var onError = opts.onError;
+    var signal = opts.signal;
+    var resp = await fetch('/api/agent-buddy/office-action?api_key=dev-key-001&stream=1', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+      body: JSON.stringify({ kind: 'word', instruction: instruction, docContext: docContext }),
+      signal: signal
+    });
+    if (!resp.ok || !resp.body) {
+      var errText = await resp.text().catch(function () { return 'HTTP ' + resp.status; });
+      throw new Error('office-action HTTP ' + resp.status + ': ' + errText.slice(0, 200));
+    }
+    var reader = resp.body.getReader();
+    var decoder = new TextDecoder('utf-8');
+    var buf = '';
+    var action = null;
+    var errorMsg = null;
+    var detectedOp = null;
+    while (true) {
+      var r = await reader.read();
+      if (r.done) break;
+      buf += decoder.decode(r.value, { stream: true });
+      // 按 \n\n 分块 — 每个 SSE event 是单独块
+      var events = buf.split('\n\n');
+      buf = events.pop() || '';
+      for (var i = 0; i < events.length; i++) {
+        var ev = events[i];
+        var m = ev.match(/^event:\s*(.+)\ndata:\s*([\s\S]+)$/);
+        if (!m) continue;
+        var evName = m[1].trim();
+        var data;
+        try { data = JSON.parse(m[2]); } catch (_) { continue; }
+        if (evName === 'meta') {
+          detectedOp = data.op;
+          if (onMeta) try { onMeta(data); } catch (_) {}
+        } else if (evName === 'chunk') {
+          if (onChunk) try { onChunk(data); } catch (_) {}
+        } else if (evName === 'done') {
+          action = data.action;
+          if (onDone) try { onDone(data); } catch (_) {}
+        } else if (evName === 'error') {
+          errorMsg = data.message || 'LLM 流式错误';
+          if (onError) try { onError(data); } catch (_) {}
+        }
+      }
+    }
+    if (errorMsg) throw new Error(errorMsg);
+    if (!action || !action.op) throw new Error('流式响应未返回有效 action');
+    return { action: action, detectedOp: detectedOp };
+  }
 
   // 右键动作执行（润色/排版/总结/生成插图）——与 runner.run 同构：instruction → office-action → OfficeV3.runAction
   async function acmsRunSelectionAction(type) {
@@ -349,17 +513,13 @@
     else return;
     showAcmsToast('⏳ 正在处理…', 'info');
     try {
-      var resp = await fetch('/api/agent-buddy/office-action?api_key=dev-key-001', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
-        body: JSON.stringify({ kind: 'word', instruction: instruction, docContext: ctx.doc })
+      // P198: 走流式（SSE）— 短 op 也走 streaming（只发 meta+done，不发 chunk，行为一致）
+      var streamRet = await acmsCallOfficeActionStream({
+        docContext: ctx.doc,
+        instruction: instruction,
+        onError: function (e) { showAcmsToast('❌ ' + (e.message || '生成失败'), 'error'); }
       });
-      var data = await resp.json();
-      if (!data || !data.ok || !data.action) {
-        showAcmsToast('❌ ' + ((data && data.error) || '生成失败'), 'error');
-        return;
-      }
-      var action = data.action;
+      var action = streamRet.action;
       var r = await window.parent.OfficeV3.runAction(action);
       if (r && r.ok) {
         showAcmsToast('✅ ' + (action.summary || r.summary || '完成'), 'ok');
@@ -370,6 +530,1420 @@
       showAcmsToast('❌ ' + e.message, 'error');
       console.warn('[acms-host] 右键动作异常:', e);
     }
+  }
+
+  // P198 增强：生成插图风格选择浮窗（mini 浮窗 + pulse 动画 + 边界检测）
+  //   6 个风格预设：国风水墨 / 赛博朋克 / 写实摄影 / 动漫二次元 / 油画古典 / 黑白线稿
+  //   自定义画面描述输入框（默认填选中文字）
+  //   提交后 → 拼 prompt = 风格前缀 + 自定义描述 → 调 OfficeV3.runAction({op:'generateImage', prompt}) 走 bridge 生图
+  var ACMS_IMAGE_STYLES = [
+    { key: 'shuimo',   label: '国风水墨',   icon: '🏯', prefix: '中国水墨画风格，留白构图，写意晕染，' },
+    { key: 'cyber',    label: '赛博朋克',   icon: '🌃', prefix: '赛博朋克风格，霓虹灯光，未来都市夜景，' },
+    { key: 'photo',    label: '写实摄影',   icon: '📷', prefix: '写实摄影风格，自然光线，高清细节，' },
+    { key: 'anime',    label: '动漫二次元', icon: '🎨', prefix: '动漫二次元风格，鲜艳色彩，精致线条，' },
+    { key: 'oilpaint', label: '油画古典',   icon: '🖼️', prefix: '油画风格，厚重笔触，古典构图，' },
+    { key: 'lineart',  label: '黑白线稿',   icon: '✏️', prefix: '黑白线稿风格，简洁线条，' }
+  ];
+
+  function acmsEscapeHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function acmsInjectImagePanelCss() {
+    if (document.getElementById('acms-image-style-css')) return;
+    var style = document.createElement('style');
+    style.id = 'acms-image-style-css';
+    style.textContent =
+      '@keyframes acmsPanelPulse {' +
+        '0% { box-shadow: 0 0 0 0 rgba(33,150,243,.55); }' +
+        '70% { box-shadow: 0 0 0 14px rgba(33,150,243,0); }' +
+        '100% { box-shadow: 0 0 0 0 rgba(33,150,243,0); }' +
+      '}' +
+      '#acms-image-style-panel { animation: acmsPanelPulse .45s ease-out; }' +
+      '#acms-image-style-panel .acms-panel-header { display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid #eee; }' +
+      '#acms-image-style-panel .acms-panel-title { font-size:14px;font-weight:600;color:#222; }' +
+      '#acms-image-style-panel .acms-panel-close { background:none;border:none;font-size:22px;color:#999;cursor:pointer;padding:0 4px;line-height:1;font-family:inherit; }' +
+      '#acms-image-style-panel .acms-panel-close:hover { color:#333; }' +
+      '#acms-image-style-panel .acms-panel-sel { padding:10px 16px;background:#fafafa;border-bottom:1px solid #f0f0f0; }' +
+      '#acms-image-style-panel .acms-panel-sel-label { font-size:11px;color:#999;margin-bottom:4px; }' +
+      '#acms-image-style-panel .acms-panel-sel-text { font-size:12.5px;color:#333;line-height:1.5;max-height:60px;overflow-y:auto;white-space:pre-wrap;word-break:break-word; }' +
+      '#acms-image-style-panel .acms-panel-styles-label, #acms-image-style-panel .acms-panel-prompt-label { padding:10px 16px 6px;font-size:12px;color:#666; }' +
+      '#acms-image-style-panel .acms-panel-styles { padding:0 16px 8px;display:flex;flex-wrap:wrap;gap:6px; }' +
+      '#acms-image-style-panel .acms-style-chip { display:inline-flex;align-items:center;gap:4px;padding:6px 11px;background:#f5f5f5;border:1px solid #e0e0e0;border-radius:16px;font-size:12.5px;cursor:pointer;color:#333;transition:all .15s;font-family:inherit; }' +
+      '#acms-image-style-panel .acms-style-chip:hover { background:#e3f2fd;border-color:#2196f3;transform:translateY(-1px); }' +
+      '#acms-image-style-panel .acms-style-chip.active { background:#2196f3;color:#fff;border-color:#2196f3; }' +
+      '#acms-image-style-panel .acms-panel-prompt { display:block;width:calc(100% - 32px);margin:0 16px 8px;padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit;resize:vertical;min-height:60px;color:#333;box-sizing:border-box; }' +
+      '#acms-image-style-panel .acms-panel-prompt:focus { outline:none;border-color:#2196f3; }' +
+      '#acms-image-style-panel .acms-panel-actions { position:sticky;bottom:0;background:#fff;border-top:1px solid #f0f0f0;box-shadow:0 -3px 10px rgba(0,0,0,.05);display:flex;gap:8px;justify-content:flex-end;padding:10px 16px 12px; }' +
+      '#acms-image-style-panel .acms-panel-cancel, #acms-image-style-panel .acms-panel-submit { padding:6px 16px;border-radius:6px;font-size:13px;cursor:pointer;border:none;font-family:inherit; }' +
+      '#acms-image-style-panel .acms-panel-cancel { background:#f5f5f5;color:#666; }' +
+      '#acms-image-style-panel .acms-panel-cancel:hover { background:#e0e0e0; }' +
+      '#acms-image-style-panel .acms-panel-submit { background:#2196f3;color:#fff;font-weight:500; }' +
+      '#acms-image-style-panel .acms-panel-submit:hover { background:#1976d2; }' +
+      '#acms-image-style-panel .acms-panel-submit:disabled { background:#ccc;cursor:not-allowed; }' +
+      // P199: 角色参考多选 chip
+      '#acms-image-style-panel .acms-panel-chars-label, #acms-image-style-panel .acms-panel-scenes-label { display:flex;align-items:center;justify-content:space-between;padding:12px 16px 6px;font-size:12px;color:#666; }' +
+      '#acms-image-style-panel .acms-panel-add-char, #acms-image-style-panel .acms-panel-add-scene { background:#fff;border:1px solid #4caf50;color:#2e7d32;padding:3px 10px;border-radius:4px;font-size:12px;cursor:pointer;font-family:inherit; }' +
+      '#acms-image-style-panel .acms-panel-add-char:hover, #acms-image-style-panel .acms-panel-add-scene:hover { background:#e8f5e9; }' +
+      '#acms-image-style-panel .acms-panel-manage-char, #acms-image-style-panel .acms-panel-manage-scene { background:#fff;border:1px solid #90caf9;color:#1565c0;padding:3px 8px;border-radius:4px;font-size:12px;cursor:pointer;font-family:inherit; }' +
+      '#acms-image-style-panel .acms-panel-manage-char:hover, #acms-image-style-panel .acms-panel-manage-scene:hover { background:#e3f2fd; }' +
+      '#acms-image-style-panel .acms-panel-chars, #acms-image-style-panel .acms-panel-scenes { padding:0 16px 8px;display:flex;flex-direction:column;gap:5px;max-height:200px;overflow-y:auto; }' +
+      '#acms-image-style-panel .acms-panel-chars-loading, #acms-image-style-panel .acms-panel-chars-empty, #acms-image-style-panel .acms-panel-scenes-loading, #acms-image-style-panel .acms-panel-scenes-empty { font-size:12px;color:#999;padding:10px;text-align:center;line-height:1.5; }' +
+      '#acms-image-style-panel .acms-char-chip { display:flex;align-items:center;gap:8px;padding:5px 8px;background:#fafafa;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;cursor:pointer;text-align:left;font-family:inherit;transition:all .15s;color:#333; }' +
+      '#acms-image-style-panel .acms-char-chip:hover { background:#f0f7ff;border-color:#90caf9; }' +
+      '#acms-image-style-panel .acms-char-chip.active { background:#e3f2fd;border-color:#2196f3;box-shadow:0 0 0 1px #2196f3; }' +
+      '#acms-image-style-panel .acms-char-thumb { width:36px;height:36px;border-radius:4px;object-fit:cover;flex-shrink:0; }' +
+      '#acms-image-style-panel .acms-char-thumb-empty { display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:4px;background:#eee;color:#999;font-size:10px;flex-shrink:0; }' +
+      '#acms-image-style-panel .acms-char-info { display:flex;flex-direction:column;gap:2px;flex:1;min-width:0; }' +
+      '#acms-image-style-panel .acms-char-name { font-weight:500;color:#222; }' +
+      '#acms-image-style-panel .acms-char-alias { font-weight:normal;color:#888;font-size:11px; }' +
+      '#acms-image-style-panel .acms-char-desc { color:#777;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }' +
+      // P200: 档案范围切换（按文档隔离）
+      '#acms-image-style-panel .acms-panel-scope { display:flex;align-items:center;gap:6px;padding:10px 16px 4px;font-size:12px;color:#666;flex-wrap:wrap; }' +
+      '#acms-image-style-panel .acms-scope-btn { padding:3px 10px;border:1px solid #ddd;background:#fff;border-radius:12px;font-size:12px;cursor:pointer;color:#555;font-family:inherit; }' +
+      '#acms-image-style-panel .acms-scope-btn:hover { border-color:#90caf9; }' +
+      '#acms-image-style-panel .acms-scope-btn.active { background:#e3f2fd;border-color:#2196f3;color:#0b62d6;font-weight:600; }' +
+      '#acms-image-style-panel .acms-scope-doc { color:#999;font-size:11px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }' +
+      '#acms-image-style-panel .acms-scope-hint { margin:2px 16px 6px;padding:7px 10px;background:#fff8e6;border:1px solid #ffe0a3;border-radius:5px;font-size:12px;color:#8a5a00;display:flex;align-items:center;justify-content:space-between;gap:8px;line-height:1.4; }' +
+      '#acms-image-style-panel .acms-scope-hint button { padding:3px 9px;border:1px solid #e0a800;background:#fff;border-radius:4px;font-size:12px;cursor:pointer;color:#8a5a00;white-space:nowrap;font-family:inherit; }' +
+      // P199: 新建角色快速面板
+      '#acms-char-quick-create .acms-panel-header { display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid #eee; }' +
+      '#acms-char-quick-create .acms-panel-title { font-size:14px;font-weight:600;color:#222; }' +
+      '#acms-char-quick-create .acms-panel-close { background:none;border:none;font-size:22px;color:#999;cursor:pointer;padding:0 4px;line-height:1;font-family:inherit; }' +
+      '#acms-char-quick-create .acms-panel-close:hover { color:#333; }';
+    document.head.appendChild(style);
+  }
+
+  function showImageStylePanel(opts) {
+    var selText = String(opts.selText || '').slice(0, 500);
+    var anchorX = opts.anchorX || 100;
+    var anchorY = opts.anchorY || 100;
+    var onSubmit = opts.onSubmit || function () { };
+    var onCancel = opts.onCancel || function () { };
+    var old = document.getElementById('acms-image-style-panel');
+    if (old) old.remove();
+    acmsInjectImagePanelCss();
+
+    var panel = document.createElement('div');
+    panel.id = 'acms-image-style-panel';
+    panel.setAttribute('data-acms-panel', 'image-style');
+    panel.style.cssText = 'position:fixed;z-index:100000;width:420px;max-height:80vh;overflow-y:auto;background:#fff;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,.18);padding:0;font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;border:2px solid rgba(33,150,243,.4);';
+
+    var escHandler = function (e) { if (e.key === 'Escape') close(); };
+    var outsideHandler = function (e) { if (!panel.contains(e.target)) close(); };
+
+    function close() {
+      panel.remove();
+      document.removeEventListener('keydown', escHandler);
+      document.removeEventListener('mousedown', outsideHandler);
+      try { onCancel(); } catch (_) { }
+    }
+
+    panel.innerHTML =
+      '<div class="acms-panel-header">' +
+        '<span class="acms-panel-title">🎨 为这段文字生成插图</span>' +
+        '<button class="acms-panel-close" type="button" title="关闭">×</button>' +
+      '</div>' +
+      '<div class="acms-panel-sel">' +
+        '<div class="acms-panel-sel-label">已选中文字：</div>' +
+        '<div class="acms-panel-sel-text">' + (selText ? acmsEscapeHtml(selText) : '<em style="color:#aaa">（无选中文字）</em>') + '</div>' +
+      '</div>' +
+      '<div class="acms-panel-bible-hint" style="display:none;"></div>' +
+      '<div class="acms-panel-styles-label">选择插图风格：</div>' +
+      '<div class="acms-panel-styles">' +
+        ACMS_IMAGE_STYLES.map(function (s) {
+          return '<button class="acms-style-chip" data-style="' + s.key + '" type="button">' +
+                   '<span class="acms-style-icon">' + s.icon + '</span>' +
+                   '<span class="acms-style-label">' + s.label + '</span>' +
+                 '</button>';
+        }).join('') +
+      '</div>' +
+      '<div class="acms-panel-scope">' +
+        '<span>📁 档案范围：</span>' +
+        '<button class="acms-scope-btn" data-scope="doc" type="button">本文档</button>' +
+        '<button class="acms-scope-btn" data-scope="all" type="button">全部</button>' +
+        '<button class="acms-scope-btn" data-scope="unassigned" type="button" style="display:none">未绑定 <span class="acms-scope-n">0</span></button>' +
+        '<span class="acms-scope-doc" title=""></span>' +
+      '</div>' +
+      '<div class="acms-scope-hint" style="display:none"></div>' +
+      '<div class="acms-panel-chars-label">' +
+        '<span>角色参考（多选 — 选中文字里的角色名/别名会自动勾选）</span>' +
+        '<span style="display:flex;gap:5px;">' +
+          '<button class="acms-panel-add-char" type="button" title="新建角色档案">+ 新建</button>' +
+          '<button class="acms-panel-manage-char" type="button" title="管理角色库（编辑/删除）">📚</button>' +
+        '</span>' +
+      '</div>' +
+      '<div class="acms-panel-chars"><div class="acms-panel-chars-loading">加载中…</div></div>' +
+      '<div class="acms-panel-scenes-label">' +
+        '<span>场景参考（单选 — 选中文字里的场景名/别名会自动勾选）</span>' +
+        '<span style="display:flex;gap:5px;">' +
+          '<button class="acms-panel-add-scene" type="button" title="新建场景档案">+ 新建</button>' +
+          '<button class="acms-panel-manage-scene" type="button" title="管理场景库（编辑/删除）">📚</button>' +
+        '</span>' +
+      '</div>' +
+      '<div class="acms-panel-scenes"><div class="acms-panel-scenes-loading">加载中…</div></div>' +
+      '<div class="acms-panel-prompt-label">画面描述（默认使用选中文字，可修改）：</div>' +
+      '<textarea class="acms-panel-prompt" rows="3" placeholder="例：江南水乡春景，烟雨朦胧...">' + acmsEscapeHtml(selText) + '</textarea>' +
+      '<div class="acms-panel-actions">' +
+        '<button class="acms-panel-cancel" type="button">取消</button>' +
+        '<button class="acms-panel-submit" type="button">✨ 生成</button>' +
+      '</div>';
+
+    // 风格选择事件
+    panel.querySelector('.acms-panel-close').onclick = close;
+    panel.querySelector('.acms-panel-cancel').onclick = close;
+
+    var selectedStyle = null;
+    panel.querySelectorAll('.acms-style-chip').forEach(function (chip) {
+      chip.onclick = function () {
+        panel.querySelectorAll('.acms-style-chip').forEach(function (c) { c.classList.remove('active'); });
+        chip.classList.add('active');
+        selectedStyle = chip.getAttribute('data-style');
+      };
+    });
+    var firstChip = panel.querySelector('.acms-style-chip');
+    if (firstChip) { firstChip.classList.add('active'); selectedStyle = firstChip.getAttribute('data-style'); }
+
+    // ── 角色档案多选加载 + 智能匹配 ──
+    var allChars = [];
+    var selectedCharIds = {}; // id → char
+    var charsContainer = panel.querySelector('.acms-panel-chars');
+
+    // ── 场景档案单选加载 + 智能匹配 ──
+    var allScenes = [];
+    var selectedSceneId = null;
+    var scenesContainer = panel.querySelector('.acms-panel-scenes');
+
+    // ── P200: 档案范围（按文档隔离）──
+    //   'doc'（默认，本文档 + 通用项）/ 'all' / 'unassigned'（未绑定文档的历史数据）
+    //   换了一篇文章却看到上一篇文章的人物 → 就是因为以前没有这个 docId 过滤
+    var acmsScope = acmsDocId ? 'doc' : 'all';
+    var scopeHint = panel.querySelector('.acms-scope-hint');
+    var scopeDocLabel = panel.querySelector('.acms-scope-doc');
+    if (scopeDocLabel) {
+      if (acmsDocId) {
+        scopeDocLabel.textContent = '· ' + (acmsDocName || '当前文档');
+        scopeDocLabel.title = acmsDocName || '';
+      } else {
+        scopeDocLabel.textContent = '· 文档未保存（档案暂为全局）';
+      }
+    }
+    panel.querySelectorAll('.acms-scope-btn').forEach(function (b) {
+      b.classList.toggle('active', b.getAttribute('data-scope') === acmsScope);
+      b.onclick = function () {
+        acmsScope = b.getAttribute('data-scope');
+        panel.querySelectorAll('.acms-scope-btn').forEach(function (x) { x.classList.toggle('active', x === b); });
+        // 切范围 → 之前选中的可能不在新范围里，清掉避免“幽灵引用图”
+        selectedCharIds = {};
+        selectedSceneId = null;
+        reloadChars();
+        reloadScenes();
+      };
+    });
+
+    // 未绑定文档的历史数据提示（在文档里才提示；用户在正确的文档里点「归到本文档」即完成归属）
+    var scopeHintDismissed = false;
+    var acmsUnassignedCount = 0; // 未绑定档案数（角色+场景）— 空态提示用
+    function refreshScopeHint(n) {
+      if (!scopeHint) return;
+      if (!acmsDocId || acmsScope === 'unassigned' || !n) { scopeHint.style.display = 'none'; return; }
+      scopeHint.innerHTML = '<span>⚠️ ' + n + ' 个档案未绑定文档（换文档时不会显示）</span>' +
+        '<span style="display:flex;gap:6px;">' +
+          '<button type="button" class="acms-scope-claim" title="用本文档正文匹配档案名/别名，命中的自动归到本文档">按本文档认领</button>' +
+          '<button type="button" class="acms-scope-assign" title="把全部未绑定档案都归到本文档（谨慎：可能把别的文章的角色也拉进来）">全部归本文档</button>' +
+          '<button type="button" class="acms-scope-dismiss">忽略</button>' +
+        '</span>';
+      scopeHint.style.display = 'flex';
+      // 智能认领：只把「名字出现在本文档正文里」的未绑定档案归到本文档
+      //   —— 逐篇打开时各认领各的，不用手工挑 26 次
+      scopeHint.querySelector('.acms-scope-claim').onclick = function () {
+        var fullText = '';
+        try { fullText = buildAcmsFullText() || ''; } catch (e) {}
+        if (!fullText || fullText.length < 20) {
+          showAcmsToast('⚠️ 文档正文太少，无法匹配 — 先去「📚 管理」手动归属', 'warn', 3200);
+          return;
+        }
+        var cl = acmsLib('acmsCharacterLib');
+        var sl = acmsLib('acmsSceneLib');
+        Promise.all([
+          (cl && cl.list) ? cl.list(null, 'unassigned') : Promise.resolve({ data: {} }),
+          (sl && sl.list) ? sl.list(null, 'unassigned') : Promise.resolve({ data: {} })
+        ]).then(function (arr) {
+          var uChars = (arr[0] && arr[0].data && arr[0].data.characters) || [];
+          var uScenes = (arr[1] && arr[1].data && arr[1].data.scenes) || [];
+          function hitsOf(items) {
+            return items.filter(function (it) {
+              var names = [it.name].concat(it.aliases || []);
+              for (var i = 0; i < names.length; i++) {
+                var nm = String(names[i] || '').trim();
+                if (nm && fullText.indexOf(nm) >= 0) return true;
+              }
+              return false;
+            });
+          }
+          var hc = hitsOf(uChars), hs = hitsOf(uScenes);
+          if (!hc.length && !hs.length) {
+            showAcmsToast('🔍 本文档里没找到未绑定档案的名字（共 ' + (uChars.length + uScenes.length) + ' 个待归属）', 'warn', 3600);
+            return;
+          }
+          return Promise.all([
+            (cl && hc.length) ? cl.assignDoc(hc.map(function (x) { return x.id; }), acmsDocId, acmsDocName) : Promise.resolve(),
+            (sl && hs.length) ? sl.assignDoc(hs.map(function (x) { return x.id; }), acmsDocId, acmsDocName) : Promise.resolve()
+          ]).then(function () {
+            var names = hc.map(function (x) { return x.name; }).concat(hs.map(function (x) { return x.name; }));
+            var rest = (uChars.length + uScenes.length) - names.length;
+            showAcmsToast('✅ 已认领 ' + names.length + ' 个：' + names.slice(0, 6).join('、') +
+              (names.length > 6 ? '…' : '') + (rest > 0 ? '（还有 ' + rest + ' 个待在其他文章里认领）' : ''), 'ok', 4200);
+            reloadChars();
+            reloadScenes();
+          });
+        }).catch(function (e) {
+          showAcmsToast('❌ ' + e.message, 'error', 3200);
+        });
+      };
+      scopeHint.querySelector('.acms-scope-assign').onclick = function () {
+        scopeHint.style.display = 'none';
+        var cl = acmsLib('acmsCharacterLib');
+        var sl = acmsLib('acmsSceneLib');
+        Promise.all([
+          cl ? cl.assignDoc([], acmsDocId, acmsDocName) : Promise.resolve(),
+          sl ? sl.assignDoc([], acmsDocId, acmsDocName) : Promise.resolve()
+        ]).then(function () {
+          showAcmsToast('✅ 已归到本文档「' + (acmsDocName || '当前文档') + '」', 'ok', 2600);
+          reloadChars();
+          reloadScenes();
+        }).catch(function (e) {
+          showAcmsToast('❌ 归属失败: ' + e.message, 'error', 3500);
+        });
+      };
+      scopeHint.querySelector('.acms-scope-dismiss').onclick = function () { scopeHintDismissed = true; scopeHint.style.display = 'none'; };
+      if (scopeHintDismissed) scopeHint.style.display = 'none';
+    }
+
+    // 统计未绑定数量（角色 + 场景），用于提示条
+    function countUnassigned() {
+      var cl = acmsLib('acmsCharacterLib');
+      var sl = acmsLib('acmsSceneLib');
+      var p1 = (cl && cl.list) ? cl.list(null, 'unassigned').then(function (r) { return ((r.data && r.data.characters) || []).length; }).catch(function () { return 0; }) : Promise.resolve(0);
+      var p2 = (sl && sl.list) ? sl.list(null, 'unassigned').then(function (r) { return ((r.data && r.data.scenes) || []).length; }).catch(function () { return 0; }) : Promise.resolve(0);
+      return Promise.all([p1, p2]).then(function (arr) { return (arr[0] || 0) + (arr[1] || 0); });
+    }
+
+    // 「未绑定」tab 可见性 + 计数
+    function syncScopeTabs(nUnassigned) {
+      var btn = panel.querySelector('.acms-scope-btn[data-scope="unassigned"]');
+      if (!btn) return;
+      var nEl = btn.querySelector('.acms-scope-n');
+      if (nEl) nEl.textContent = String(nUnassigned || 0);
+      btn.style.display = (nUnassigned > 0) ? '' : 'none';
+    }
+
+    // P200: 触发时机 B — 档案库全空时提示先建设定集（两个库都加载完后才判断）
+    //   库非空 → 触发 AI 自动匹配（阶段 2）；库全空 → 提示建设定集
+    var hintTimer = null;
+    var autoMatchDone = false;
+    function scheduleHintCheck() {
+      if (hintTimer) clearTimeout(hintTimer);
+      hintTimer = setTimeout(function () {
+        var hintEl = panel.querySelector('.acms-panel-bible-hint');
+        if (!hintEl) return;
+        if (allChars.length > 0 || allScenes.length > 0) {
+          hintEl.style.display = 'none';
+          // 两库都已加载且有内容 → 触发一次 AI 自动匹配
+          if (!autoMatchDone) { autoMatchDone = true; autoMatchSegment(); }
+          return;
+        }
+        hintEl.style.display = 'block';
+        hintEl.style.cssText = 'display:block;margin:10px 16px 0;padding:9px 11px;background:#f3e5f5;border:1px solid #ce93d8;border-radius:6px;font-size:12px;color:#4a148c;line-height:1.6;';
+        hintEl.innerHTML =
+          '📌 本文还没建立视觉设定集 —— 第一次配图建议先建（AI 自动从全文抽取人物/场景，生成统一风格的设定图，之后所有插图自动保持一致）。' +
+          '<button class="acms-panel-make-bible" type="button" style="display:block;margin-top:7px;padding:5px 12px;background:#9c27b0;color:#fff;border:none;border-radius:5px;font-size:12px;cursor:pointer;font-family:inherit;">🎬 立即生成设定集</button>';
+        hintEl.querySelector('.acms-panel-make-bible').onclick = function () {
+          panel.style.display = 'none';
+          runFullBibleFlow();
+        };
+      }, 120);
+    }
+
+    function renderChars() {
+      if (!allChars.length) {
+        // P200: 区分「真的没有」和「本文档没有但别处有未绑定的」—— 后者要让用户知道档案没丢
+        var emptyMsg;
+        if (acmsScope === 'doc' && acmsUnassignedCount > 0) {
+          emptyMsg = '本文档还没有角色档案。<br/>另有 <b>' + acmsUnassignedCount + '</b> 个档案未绑定文档（不在此显示）。<br/>点上面「按本文档认领」自动匹配，或切到「全部」。';
+        } else if (acmsScope === 'doc') {
+          emptyMsg = '本文档还没有角色档案。点「+ 新建」创建，第二次生图时复用 → 人物一致';
+        } else {
+          emptyMsg = '角色库为空。点「+ 新建」创建第一个角色，第二次生图时复用 → 人物/环境一致';
+        }
+        charsContainer.innerHTML = '<div class="acms-panel-chars-empty">' + emptyMsg + '</div>';
+        return;
+      }
+      charsContainer.innerHTML = allChars.map(function (c) {
+        var isSel = !!selectedCharIds[c.id];
+        var imgHtml = c.referenceImage
+          ? '<img class="acms-char-thumb" src="' + acmsEscapeHtml(c.referenceImage) + '" alt=""/>'
+          : '<span class="acms-char-thumb-empty">无图</span>';
+        var aliasStr = (c.aliases && c.aliases.length) ? ' <span class="acms-char-alias">（' + acmsEscapeHtml(c.aliases.join('/')) + '）</span>' : '';
+        return '<button class="acms-char-chip' + (isSel ? ' active' : '') + '" data-char-id="' + c.id + '" type="button">' +
+                 imgHtml +
+                 '<span class="acms-char-info">' +
+                   '<span class="acms-char-name">' + acmsEscapeHtml(c.name) + aliasStr + '</span>' +
+                   (c.description ? '<span class="acms-char-desc">' + acmsEscapeHtml(c.description.slice(0, 50)) + (c.description.length > 50 ? '…' : '') + '</span>' : '') +
+                 '</span>' +
+               '</button>';
+      }).join('');
+      charsContainer.querySelectorAll('.acms-char-chip').forEach(function (chip) {
+        chip.onclick = function () {
+          var id = chip.getAttribute('data-char-id');
+          if (selectedCharIds[id]) {
+            delete selectedCharIds[id];
+            chip.classList.remove('active');
+          } else {
+            var c = allChars.find(function (x) { return x.id === id; });
+            if (c) selectedCharIds[id] = c;
+            chip.classList.add('active');
+          }
+        };
+      });
+    }
+
+    function reloadChars() {
+      if (!acmsLib('acmsCharacterLib') || !acmsLib('acmsCharacterLib').list) {
+        charsContainer.innerHTML = '<div class="acms-panel-chars-empty">角色库 API 未加载</div>';
+        return;
+      }
+      acmsLib('acmsCharacterLib').list(acmsDocId, acmsScope).then(function (resp) {
+        allChars = (resp && resp.data && resp.data.characters) || [];
+        // 智能匹配：选中文字里含角色名/别名 → 自动勾选
+        if (selText && allChars.length) {
+          for (var i = 0; i < allChars.length; i++) {
+            var c = allChars[i];
+            var names = [c.name].concat(c.aliases || []);
+            var hit = false;
+            for (var j = 0; j < names.length; j++) {
+              var n = String(names[j] || '').trim();
+              if (n && selText.indexOf(n) >= 0) { hit = true; break; }
+            }
+            if (hit && c.referenceImage) selectedCharIds[c.id] = c; // 只勾有参考图的
+          }
+        }
+        renderChars();
+        scheduleHintCheck();
+        countUnassigned().then(function (n) {
+          acmsUnassignedCount = n || 0;
+          syncScopeTabs(n);
+          refreshScopeHint(n);
+          // 未绑定数影响空态文案 → 拿到后重渲染一次
+          if (!allChars.length || !allScenes.length) { renderChars(); renderScenes(); }
+        });
+      }).catch(function (e) {
+        charsContainer.innerHTML = '<div class="acms-panel-chars-empty">加载失败: ' + acmsEscapeHtml(e.message) + '</div>';
+      });
+    }
+
+    reloadChars();
+
+    function renderScenes() {
+      if (!allScenes.length) {
+        var emptyMsgS;
+        if (acmsScope === 'doc' && acmsUnassignedCount > 0) {
+          emptyMsgS = '本文档还没有场景档案。<br/>另有 <b>' + acmsUnassignedCount + '</b> 个档案未绑定文档（不在此显示）。<br/>点上面「按本文档认领」自动匹配，或切到「全部」。';
+        } else if (acmsScope === 'doc') {
+          emptyMsgS = '本文档还没有场景档案。点「+ 新建」创建场景（古镇/江湖客栈/竹林等），生图时复用 → 环境一致';
+        } else {
+          emptyMsgS = '场景库为空。点「+ 新建」创建场景（古镇/江湖客栈/竹林等），生图时复用 → 环境一致';
+        }
+        scenesContainer.innerHTML = '<div class="acms-panel-scenes-empty">' + emptyMsgS + '</div>';
+        return;
+      }
+      scenesContainer.innerHTML = allScenes.map(function (s) {
+        var isSel = s.id === selectedSceneId;
+        var imgHtml = s.referenceImage
+          ? '<img class="acms-char-thumb" src="' + acmsEscapeHtml(s.referenceImage) + '" alt=""/>'
+          : '<span class="acms-char-thumb-empty">无图</span>';
+        return '<button class="acms-char-chip' + (isSel ? ' active' : '') + '" data-scene-id="' + s.id + '" type="button">' +
+                 imgHtml +
+                 '<span class="acms-char-info">' +
+                   '<span class="acms-char-name">' + acmsEscapeHtml(s.name) + '</span>' +
+                   (s.description ? '<span class="acms-char-desc">' + acmsEscapeHtml(s.description.slice(0, 50)) + (s.description.length > 50 ? '…' : '') + '</span>' : '') +
+                 '</span>' +
+               '</button>';
+      }).join('');
+      scenesContainer.querySelectorAll('.acms-char-chip').forEach(function (chip) {
+        chip.onclick = function () {
+          var id = chip.getAttribute('data-scene-id');
+          if (selectedSceneId === id) {
+            selectedSceneId = null;
+            chip.classList.remove('active');
+          } else {
+            selectedSceneId = id;
+            scenesContainer.querySelectorAll('.acms-char-chip').forEach(function (c) { c.classList.remove('active'); });
+            chip.classList.add('active');
+          }
+        };
+      });
+    }
+
+    function reloadScenes() {
+      if (!acmsLib('acmsSceneLib') || !acmsLib('acmsSceneLib').list) {
+        scenesContainer.innerHTML = '<div class="acms-panel-scenes-empty">场景库 API 未加载</div>';
+        return;
+      }
+      acmsLib('acmsSceneLib').list(acmsDocId, acmsScope).then(function (resp) {
+        allScenes = (resp && resp.data && resp.data.scenes) || [];
+        if (selText && allScenes.length) {
+          for (var i = 0; i < allScenes.length; i++) {
+            var s = allScenes[i];
+            var names = [s.name].concat(s.aliases || []);
+            for (var j = 0; j < names.length; j++) {
+              var n = String(names[j] || '').trim();
+              if (n && selText.indexOf(n) >= 0 && s.referenceImage) { selectedSceneId = s.id; break; }
+            }
+            if (selectedSceneId) break;
+          }
+        }
+        renderScenes();
+        scheduleHintCheck();
+      }).catch(function (e) {
+        scenesContainer.innerHTML = '<div class="acms-panel-scenes-empty">加载失败: ' + acmsEscapeHtml(e.message) + '</div>';
+      });
+    }
+
+    reloadScenes();
+
+    // ── P200 阶段 2：AI 自动匹配 —— 选段后自动勾选相关角色/场景 + 预填镜头描述 ──
+    //   浮窗本身就是确认卡：AI 预填 → 用户可改勾选/改描述 → 点生成
+    function autoMatchSegment() {
+      if (!selText || selText.length < 4) return;
+      if (!acmsLib('acmsVisualBible') || !acmsLib('acmsVisualBible').matchSegment) return;
+      if (!allChars.length && !allScenes.length) return;
+      var bibleMeta = {
+        characters: allChars.map(function (c) { return { name: c.name, aliases: c.aliases || [], description: c.description || '' }; }),
+        scenes: allScenes.map(function (s) { return { name: s.name, aliases: s.aliases || [], description: s.description || '' }; })
+      };
+      var hintEl = panel.querySelector('.acms-panel-bible-hint');
+      var matchTimer = setTimeout(function () {
+        if (hintEl) {
+          hintEl.style.display = 'block';
+          hintEl.style.cssText = 'display:block;margin:10px 16px 0;padding:7px 11px;background:#e8f5e9;border:1px solid #a5d6a7;border-radius:6px;font-size:12px;color:#1b5e20;';
+          hintEl.textContent = '🤖 AI 正在匹配这段文字涉及的角色/场景…';
+        }
+      }, 400);
+
+      acmsLib('acmsVisualBible').matchSegment(selText, bibleMeta).then(function (resp) {
+        clearTimeout(matchTimer);
+        if (!resp || !resp.ok) { if (hintEl) hintEl.style.display = 'none'; return; }
+        var d = resp.data || {};
+        // 1. 勾选匹配到的角色
+        var matchedNames = [];
+        (d.characters || []).forEach(function (mc) {
+          var hit = allChars.find(function (c) { return c.name === mc.name; });
+          if (hit && hit.referenceImage) { selectedCharIds[hit.id] = hit; matchedNames.push(hit.name); }
+        });
+        // 2. 勾选匹配到的场景
+        var matchedSceneName = null;
+        if (d.scene) {
+          var hs = allScenes.find(function (s) { return s.name === d.scene.name; });
+          if (hs && hs.referenceImage) { selectedSceneId = hs.id; matchedSceneName = hs.name; }
+        }
+        renderChars();
+        renderScenes();
+        // 3. 预填画面描述（仅当用户还没改过 — textarea 仍是初始 selText 时）
+        var promptEl = panel.querySelector('.acms-panel-prompt');
+        if (promptEl && d.prompt && promptEl.value.trim() === selText.trim()) {
+          promptEl.value = d.prompt;
+        }
+        // 4. 提示匹配结果
+        if (hintEl) {
+          if (matchedNames.length || matchedSceneName) {
+            hintEl.style.display = 'block';
+            hintEl.style.cssText = 'display:block;margin:10px 16px 0;padding:7px 11px;background:#e8f5e9;border:1px solid #a5d6a7;border-radius:6px;font-size:12px;color:#1b5e20;line-height:1.5;';
+            hintEl.innerHTML = '🤖 AI 已匹配：' +
+              (matchedNames.length ? '角色「' + acmsEscapeHtml(matchedNames.join('、')) + '」' : '') +
+              (matchedSceneName ? (matchedNames.length ? ' · ' : '') + '场景「' + acmsEscapeHtml(matchedSceneName) + '」' : '') +
+              (d.shot ? '<br/><span style="color:#2e7d32;">📷 ' + acmsEscapeHtml(d.shot) + '</span>' : '') +
+              '<br/><span style="color:#666;">（可手动增减下方勾选，或修改画面描述）</span>';
+          } else {
+            hintEl.style.display = 'none';
+          }
+        }
+      }).catch(function (e) {
+        clearTimeout(matchTimer);
+        if (hintEl) hintEl.style.display = 'none';
+        console.warn('[visual-bible] match 失败:', e.message);
+      });
+    }
+    // 注意：autoMatchSegment 由 scheduleHintCheck 在两库加载完成后触发（见上），此处不直接调用
+
+    // 「+ 新建角色」入口 — 弹小窗编辑单字段
+    panel.querySelector('.acms-panel-add-char').onclick = function () {
+      showCharacterQuickCreatePanel({
+        anchorPanel: panel,
+        onCreated: function (newChar) {
+          allChars.push(newChar);
+          if (newChar.referenceImage) selectedCharIds[newChar.id] = newChar;
+          renderChars();
+        }
+      });
+    };
+
+    // 「+ 新建场景」入口 — 复用同一 quick-create 弹窗（kind='scene'）
+    panel.querySelector('.acms-panel-add-scene').onclick = function () {
+      showCharacterQuickCreatePanel({
+        anchorPanel: panel,
+        kind: 'scene',
+        onCreated: function (newScene) {
+          allScenes.push(newScene);
+          if (newScene.referenceImage) {
+            selectedSceneId = newScene.id;
+            scenesContainer.querySelectorAll('.acms-char-chip').forEach(function (c) { c.classList.remove('active'); });
+          }
+          renderScenes();
+        }
+      });
+    };
+
+    // P199: 「📚 管理」入口 — 打开角色/场景库管理视图（列表 + 编辑 + 删除）
+    panel.querySelector('.acms-panel-manage-char').onclick = function () {
+      showLibraryManagerPanel('character');
+    };
+    panel.querySelector('.acms-panel-manage-scene').onclick = function () {
+      showLibraryManagerPanel('scene');
+    };
+
+    panel.querySelector('.acms-panel-submit').onclick = function () {
+      if (!selectedStyle) { showAcmsToast('⚠️ 请先选择风格', 'warn'); return; }
+      var promptText = panel.querySelector('.acms-panel-prompt').value.trim();
+      if (!promptText) { showAcmsToast('⚠️ 画面描述不能为空', 'warn'); return; }
+      var styleObj = null;
+      for (var i = 0; i < ACMS_IMAGE_STYLES.length; i++) {
+        if (ACMS_IMAGE_STYLES[i].key === selectedStyle) { styleObj = ACMS_IMAGE_STYLES[i]; break; }
+      }
+      // 收集已选角色的 referenceImage（多图合成）
+      var referenceImages = [];
+      var selChars = Object.values(selectedCharIds);
+      for (var k = 0; k < selChars.length; k++) {
+        if (selChars[k] && selChars[k].referenceImage) referenceImages.push(selChars[k].referenceImage);
+      }
+      // 收集已选场景的 referenceImage（场景一致性）
+      var selScene = selectedSceneId ? allScenes.find(function (s) { return s.id === selectedSceneId; }) : null;
+      if (selScene && selScene.referenceImage) referenceImages.push(selScene.referenceImage);
+      // prompt 加角色/场景一致性约束（让 LLM 主导 prompt 描述）
+      var charNames = selChars.map(function (c) { return c.name; }).filter(Boolean);
+      if (charNames.length) {
+        promptText = '保持角色「' + charNames.join('、') + '」与各自参考图一致的形象（脸型/发型/服装/气质），' + promptText;
+      }
+      var sceneName = selScene ? selScene.name : null;
+      if (sceneName) {
+        promptText = '场景「' + sceneName + '」的环境/构图与参考图保持一致，' + promptText;
+      }
+      var finalPrompt = styleObj.prefix + promptText;
+      close();
+      try { onSubmit(finalPrompt, styleObj, referenceImages, charNames, sceneName); } catch (_) { }
+    };
+
+    setTimeout(function () {
+      document.addEventListener('keydown', escHandler);
+      document.addEventListener('mousedown', outsideHandler);
+    }, 120);
+
+    document.body.appendChild(panel);
+    // P200 修复：定位不能依赖 rect.height —— 角色/场景列表是【异步填充】的，
+    //   测量时还是「加载中…」的矮状态，等列表加载完浮窗变高 → 底部按钮溢出视口。
+    //   改用「视口剩余空间」算 max-height，保证底部永不出界（配合 actions sticky）。
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var PANEL_W = 420, GAP = 16;
+    var left = anchorX;
+    if (left + PANEL_W > vw - 8) left = Math.max(8, vw - PANEL_W - 8);
+    if (left < 8) left = 8;
+    var top = anchorY;
+    // 下方空间不足 360px → 上移，给浮窗留出 ~75vh 的空间
+    if (vh - top - GAP < 360) top = Math.max(GAP, vh - Math.round(vh * 0.75) - GAP);
+    if (top < GAP) top = GAP;
+    panel.style.left = left + 'px';
+    panel.style.top = top + 'px';
+    panel.style.maxHeight = Math.max(240, vh - top - GAP) + 'px';
+
+    setTimeout(function () { panel.querySelector('.acms-panel-prompt').focus(); }, 50);
+    return { close: close };
+  }
+
+  // P199: 快速创建角色/场景面板（浮窗内嵌弹小窗 — 不跳出主浮窗）
+  //   上传图片 → 转 dataUrl → 调 acmsCharacterLib.create / acmsSceneLib.create
+  //   onCreated(newItem) — 新建成功后回调（外层把 item 加入列表 + 自动勾选）
+  //   opts.kind: 'character'（默认）/ 'scene' — 决定存到哪个库
+  function showCharacterQuickCreatePanel(opts) {
+    var anchorPanel = opts.anchorPanel;
+    var onCreated = opts.onCreated || function () { };
+    var kind = opts.kind || 'character';
+    var isScene = kind === 'scene';
+    var apiLib = isScene ? acmsLib('acmsSceneLib') : acmsLib('acmsCharacterLib');
+    var editItem = opts.editItem || null;          // P199: 编辑模式（传现有 item）
+    var isEdit = !!editItem;
+    var prefillImage = opts.prefillImage || (editItem && editItem.referenceImage) || null;
+    var prefillName = opts.prefillName || (editItem && editItem.name) || '';
+    var prefillAliases = (editItem && editItem.aliases && editItem.aliases.length) ? editItem.aliases.join(', ') : '';
+    var prefillDesc = (editItem && editItem.description) || '';
+    var nameLabel = isScene ? '场景名 *（例：雨夜驿站、江南水乡）' : '角色名 *';
+    var namePlaceholder = isScene ? '例：雨夜驿站' : '例：林风';
+    var aliasLabel = isScene ? '别名（逗号分隔，用于智能匹配选中文字）' : '别名（逗号分隔，用于智能匹配选中文字）';
+    var aliasPlaceholder = isScene ? '例：驿站, 荒废驿站' : '例：林公子, 林少侠';
+    var descLabel = isScene ? '环境/氛围描述' : '外貌/服装描述';
+    var descPlaceholder = isScene ? '例：洛阳城外三十里，青石长街，冷雨夜' : '例：约莫二十七八岁，眉目清冷，腰间悬着一柄没有剑鞘的长剑';
+    var refLabel = isScene ? '场景参考图（PNG/JPG，多图合成时作为环境/构图参考）' : '参考图（PNG/JPG，做为多图合成的角色参考）';
+    var panel = document.createElement('div');
+    panel.id = isScene ? 'acms-scene-quick-create' : 'acms-char-quick-create';
+    panel.style.cssText = 'position:fixed;z-index:100001;width:380px;background:#fff;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.22);padding:0;font-family:inherit;border:2px solid rgba(76,175,80,.5);';
+
+    panel.innerHTML =
+      '<div class="acms-panel-header" style="background:#f5faf5;">' +
+        '<span class="acms-panel-title">' + (isEdit ? '✏️ 编辑' : '+ 新建') + (isScene ? '场景档案' : '角色档案') + '</span>' +
+        '<button class="acms-panel-close" type="button">×</button>' +
+      '</div>' +
+      '<div style="padding:14px 16px;">' +
+        '<div style="margin-bottom:8px;"><label style="font-size:12px;color:#666;display:block;margin-bottom:3px;">' + nameLabel + '</label>' +
+          '<input class="acms-char-name" type="text" placeholder="' + namePlaceholder + '" value="' + acmsEscapeHtml(prefillName) + '" style="width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:4px;font-size:13px;box-sizing:border-box;"/>' +
+        '</div>' +
+        '<div style="margin-bottom:8px;"><label style="font-size:12px;color:#666;display:block;margin-bottom:3px;">' + aliasLabel + '</label>' +
+          '<input class="acms-char-aliases" type="text" placeholder="' + aliasPlaceholder + '" value="' + acmsEscapeHtml(prefillAliases) + '" style="width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:4px;font-size:13px;box-sizing:border-box;"/>' +
+        '</div>' +
+        '<div style="margin-bottom:8px;"><label style="font-size:12px;color:#666;display:block;margin-bottom:3px;">' + descLabel + '</label>' +
+          '<textarea class="acms-char-desc" rows="2" placeholder="' + descPlaceholder + '" style="width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:4px;font-size:13px;box-sizing:border-box;resize:vertical;">' + acmsEscapeHtml(prefillDesc) + '</textarea>' +
+        '</div>' +
+        '<div style="margin-bottom:8px;"><label style="font-size:12px;color:#666;display:block;margin-bottom:3px;">' + refLabel + '</label>' +
+          '<input class="acms-char-file" type="file" accept="image/png,image/jpeg,image/jpg" style="font-size:12px;"/>' +
+        '</div>' +
+        '<div class="acms-char-preview" style="margin-bottom:8px;' + (prefillImage ? '' : 'display:none') + '"><img src="' + acmsEscapeHtml(prefillImage || '') + '" style="max-width:100%;max-height:160px;border-radius:6px;border:1px solid #eee;"/></div>' +
+        '<div style="display:flex;gap:8px;justify-content:flex-end;">' +
+          '<button class="acms-panel-cancel" type="button" style="padding:6px 14px;background:#f5f5f5;border:none;border-radius:5px;font-size:13px;cursor:pointer;">取消</button>' +
+          '<button class="acms-panel-save" type="button" style="padding:6px 14px;background:#4caf50;color:#fff;border:none;border-radius:5px;font-size:13px;cursor:pointer;font-weight:500;">保存</button>' +
+        '</div>' +
+      '</div>';
+
+    document.body.appendChild(panel);
+    var anchorRect = anchorPanel.getBoundingClientRect();
+    var left = anchorRect.right + 8;
+    var top = anchorRect.top;
+    if (left + 380 > window.innerWidth - 8) left = Math.max(8, anchorRect.left - 380 - 8);
+    if (top + 360 > window.innerHeight - 8) top = Math.max(8, window.innerHeight - 360 - 8);
+    panel.style.left = left + 'px';
+    panel.style.top = top + 'px';
+
+    function close() { panel.remove(); }
+
+    panel.querySelector('.acms-panel-close').onclick = close;
+    panel.querySelector('.acms-panel-cancel').onclick = close;
+
+    // 预填图（如果有）
+    var imageDataUrl = prefillImage || null;
+    var fileInput = panel.querySelector('.acms-char-file');
+    var previewEl = panel.querySelector('.acms-char-preview');
+    fileInput.onchange = function () {
+      var f = fileInput.files && fileInput.files[0];
+      if (!f) { previewEl.style.display = 'none'; imageDataUrl = null; return; }
+      if (f.size > 5 * 1024 * 1024) {
+        showAcmsToast('⚠️ 图片过大（>5MB），请压缩后再上传', 'warn');
+        fileInput.value = '';
+        return;
+      }
+      var fr = new FileReader();
+      fr.onload = function () {
+        imageDataUrl = fr.result;
+        previewEl.querySelector('img').src = imageDataUrl;
+        previewEl.style.display = 'block';
+      };
+      fr.readAsDataURL(f);
+    };
+
+    panel.querySelector('.acms-panel-save').onclick = function () {
+      var name = panel.querySelector('.acms-char-name').value.trim();
+      if (!name) { showAcmsToast('⚠️ ' + (isScene ? '场景' : '角色') + '名必填', 'warn'); return; }
+      var aliasesRaw = panel.querySelector('.acms-char-aliases').value.trim();
+      var aliases = aliasesRaw ? aliasesRaw.split(/[,，\s]+/).filter(Boolean) : [];
+      var desc = panel.querySelector('.acms-char-desc').value.trim();
+      if (!apiLib) {
+        showAcmsToast('❌ ' + (isScene ? '场景' : '角色') + '库 API 未加载', 'error'); return;
+      }
+      var payload = { name: name, aliases: aliases, description: desc, referenceImage: imageDataUrl || null };
+      // P200: 新建时打上当前文档标识（按文档隔离）；编辑时不动归属，避免把别的文档的档案抢过来
+      if (!isEdit) {
+        payload.sourceDocId = acmsDocId;
+        payload.sourceDocName = acmsDocName;
+      }
+      var p;
+      if (isEdit && editItem && apiLib.update) {
+        p = apiLib.update(editItem.id, payload);
+      } else if (apiLib.create) {
+        p = apiLib.create(payload);
+      } else {
+        showAcmsToast('❌ API 方法缺失', 'error'); return;
+      }
+      p.then(function (resp) {
+        if (resp && resp.ok && resp.data) {
+          close();
+          showAcmsToast('✅ ' + (isScene ? '场景' : '角色') + (isEdit ? '已更新: ' : '已保存: ') + name, 'ok', 2000);
+          onCreated(resp.data);
+        } else {
+          showAcmsToast('❌ ' + (resp && resp.error || '保存失败'), 'error');
+        }
+      }).catch(function (e) {
+        showAcmsToast('❌ ' + e.message, 'error');
+      });
+    };
+
+    // P199: 如果是从「存为参考」菜单打开的（预填了图），自动 focus 名称输入框 — 用户只需填名+保存
+    if (prefillImage) {
+      setTimeout(function () {
+        var nameInput = panel.querySelector('.acms-char-name');
+        if (nameInput) { nameInput.focus(); nameInput.select(); }
+      }, 50);
+    }
+  }
+
+  // P199: 角色/场景库管理视图（列表 + 编辑 + 删除 + 新建）
+  //   kind: 'character' | 'scene'
+  function showLibraryManagerPanel(kind) {
+    kind = kind || 'character';
+    var isScene = kind === 'scene';
+    var apiLib = isScene ? acmsLib('acmsSceneLib') : acmsLib('acmsCharacterLib');
+    var listKey = isScene ? 'scenes' : 'characters';
+    var title = isScene ? '🏞️ 场景库管理' : '🎭 角色库管理';
+    var itemWord = isScene ? '场景' : '角色';
+
+    var old = document.getElementById('acms-library-manager');
+    if (old) old.remove();
+    acmsInjectImagePanelCss();
+
+    var panel = document.createElement('div');
+    panel.id = 'acms-library-manager';
+    panel.setAttribute('data-acms-panel', 'library-manager');
+    panel.style.cssText = 'position:fixed;z-index:100000;width:460px;max-height:75vh;overflow-y:auto;background:#fff;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,.2);padding:0;font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;border:2px solid rgba(33,150,243,.4);';
+
+    var escHandler = function (e) { if (e.key === 'Escape') close(); };
+    var outsideHandler = function (e) { if (!panel.contains(e.target)) close(); };
+    function close() {
+      panel.remove();
+      document.removeEventListener('keydown', escHandler);
+      document.removeEventListener('mousedown', outsideHandler);
+    }
+
+    panel.innerHTML =
+      '<div class="acms-panel-header">' +
+        '<span class="acms-panel-title">' + title + ' <span class="acms-lib-count" style="font-weight:normal;font-size:12px;color:#888;"></span></span>' +
+        '<button class="acms-panel-close" type="button" title="关闭">×</button>' +
+      '</div>' +
+      // P200: 范围筛选（管理视图默认「全部」— 便于整理跨文档档案）
+      '<div class="acms-lib-scope" style="display:flex;align-items:center;gap:6px;padding:10px 16px 0;font-size:12px;color:#666;flex-wrap:wrap;">' +
+        '<span>范围：</span>' +
+        '<button class="acms-lib-scope-btn" data-scope="all" type="button">全部</button>' +
+        '<button class="acms-lib-scope-btn" data-scope="doc" type="button">本文档</button>' +
+        '<button class="acms-lib-scope-btn" data-scope="unassigned" type="button">未绑定 <span class="acms-lib-scope-n">0</span></button>' +
+        '<span style="color:#999;font-size:11px;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
+          (acmsDocId ? ('· ' + acmsEscapeHtml(acmsDocName || '当前文档')) : '· 文档未保存') +
+        '</span>' +
+      '</div>' +
+      '<div class="acms-lib-list" style="padding:8px 16px;"></div>' +
+      '<div style="padding:8px 16px 14px;border-top:1px solid #f0f0f0;">' +
+        '<button class="acms-lib-add" type="button" style="width:100%;padding:8px;background:#f5f5f5;border:1px dashed #bbb;border-radius:6px;font-size:13px;cursor:pointer;color:#555;font-family:inherit;">+ 新建' + itemWord + '档案</button>' +
+      '</div>';
+
+    document.body.appendChild(panel);
+    // 位置：屏幕中央偏右
+    var rect = panel.getBoundingClientRect();
+    var vw = window.innerWidth, vh = window.innerHeight;
+    panel.style.left = Math.max(8, (vw - rect.width) / 2) + 'px';
+    panel.style.top = Math.max(8, (vh - rect.height) / 2 - 30) + 'px';
+
+    function closeBtn() { close(); }
+    panel.querySelector('.acms-panel-close').onclick = closeBtn;
+    setTimeout(function () {
+      document.addEventListener('keydown', escHandler);
+      document.addEventListener('mousedown', outsideHandler);
+    }, 120);
+
+    var listEl = panel.querySelector('.acms-lib-list');
+    var countEl = panel.querySelector('.acms-lib-count');
+
+    // P200: 范围筛选 —— 管理视图默认「全部」（管理界面要能看到并整理所有文档的档案）
+    var mgrScope = 'all';
+    var scopeBtns = panel.querySelectorAll('.acms-lib-scope-btn');
+    function applyScopeBtnStyle(b, active) {
+      b.style.cssText = active
+        ? 'padding:3px 10px;border:1px solid #2196f3;background:#e3f2fd;border-radius:12px;font-size:12px;cursor:pointer;color:#0b62d6;font-weight:600;font-family:inherit;'
+        : 'padding:3px 10px;border:1px solid #ddd;background:#fff;border-radius:12px;font-size:12px;cursor:pointer;color:#555;font-family:inherit;';
+    }
+    scopeBtns.forEach(function (b) {
+      var sc = b.getAttribute('data-scope');
+      if (sc === 'doc' && !acmsDocId) { b.disabled = true; b.title = '当前文档未保存，无法按文档筛选'; }
+      applyScopeBtnStyle(b, sc === mgrScope);
+      b.onclick = function () {
+        if (b.disabled) return;
+        mgrScope = sc;
+        scopeBtns.forEach(function (x) { applyScopeBtnStyle(x, x.getAttribute('data-scope') === mgrScope); });
+        reload();
+      };
+    });
+
+    // 来源 badge：通用 / 本文档 / 其他文档 / 未绑定
+    function srcBadgeOf(it) {
+      if (it.shared === true) {
+        return '<span style="display:inline-block;margin-left:6px;padding:1px 6px;border-radius:8px;font-size:10.5px;white-space:nowrap;background:#f3e5f5;color:#7b1fa2;border:1px solid #ce93d8;">🌐 通用</span>';
+      }
+      if (it.sourceDocId) {
+        var isCur = it.sourceDocId === acmsDocId;
+        return '<span style="display:inline-block;margin-left:6px;padding:1px 6px;border-radius:8px;font-size:10.5px;white-space:nowrap;' +
+          (isCur ? 'background:#e8f5e9;color:#2e7d32;border:1px solid #a5d6a7;' : 'background:#f5f5f5;color:#888;border:1px solid #e0e0e0;') +
+          '">📄 ' + acmsEscapeHtml(it.sourceDocName || '其他文档') + (isCur ? ' · 本文档' : '') + '</span>';
+      }
+      return '<span style="display:inline-block;margin-left:6px;padding:1px 6px;border-radius:8px;font-size:10.5px;white-space:nowrap;background:#fff8e6;color:#8a5a00;border:1px solid #ffe0a3;">⚠️ 未绑定</span>';
+    }
+
+    function reload() {
+      if (!apiLib || !apiLib.list) {
+        listEl.innerHTML = '<div class="acms-panel-chars-empty">' + itemWord + '库 API 未加载</div>';
+        return;
+      }
+      apiLib.list(acmsDocId, mgrScope).then(function (resp) {
+        var items = (resp && resp.data && resp.data[listKey]) || [];
+        countEl.textContent = '（' + items.length + '）';
+        // 顺带刷新「未绑定」计数
+        apiLib.list(null, 'unassigned').then(function (r2) {
+          var nEl = panel.querySelector('.acms-lib-scope-n');
+          if (nEl) nEl.textContent = String(((r2 && r2.data && r2.data[listKey]) || []).length);
+        }).catch(function () {});
+        if (!items.length) {
+          var emptyMsg = mgrScope === 'doc'
+            ? ('本文档还没有' + itemWord + '档案。<br/>切到「全部」可看其他文档的，或点下方新建。')
+            : (mgrScope === 'unassigned'
+              ? ('没有未绑定文档的' + itemWord + '档案。')
+              : ('还没有' + itemWord + '档案。<br/>点下方「+ 新建' + itemWord + '档案」创建，或在文档里右键 AI 生成的图 → 「存为' + itemWord + '参考」。'));
+          listEl.innerHTML = '<div class="acms-panel-chars-empty">' + emptyMsg + '</div>';
+          return;
+        }
+        listEl.innerHTML = items.map(function (it) {
+          var thumb = it.referenceImage
+            ? '<img class="acms-char-thumb" src="' + acmsEscapeHtml(it.referenceImage) + '" style="width:48px;height:48px;" alt=""/>'
+            : '<span class="acms-char-thumb-empty" style="width:48px;height:48px;">无图</span>';
+          var aliasStr = (it.aliases && it.aliases.length) ? '<span class="acms-char-alias">（' + acmsEscapeHtml(it.aliases.join('/')) + '）</span>' : '';
+          // P200: 归属操作（三态）—— 通用 → 取消通用；本文档 → 设为通用；其他/未绑定 → 归到本文档
+          var ownBtn = '';
+          if (it.shared === true) {
+            ownBtn = '<button class="acms-lib-unshare" type="button" title="取消通用：之后只在它所属文档里出现" style="background:#fff;border:1px solid #ce93d8;color:#7b1fa2;border-radius:4px;padding:4px 8px;font-size:11.5px;cursor:pointer;font-family:inherit;white-space:nowrap;">取消通用</button>';
+          } else if (it.sourceDocId && it.sourceDocId === acmsDocId) {
+            ownBtn = '<button class="acms-lib-share" type="button" title="设为通用：所有文档都能引用（适合跨作品复用的角色）" style="background:#fff;border:1px solid #ce93d8;color:#7b1fa2;border-radius:4px;padding:4px 8px;font-size:11.5px;cursor:pointer;font-family:inherit;white-space:nowrap;">设为通用</button>';
+          } else if (acmsDocId) {
+            ownBtn = '<button class="acms-lib-bind" type="button" title="把这条档案归到当前文档（之后换文档不会再出现）" style="background:#e8f5e9;border:1px solid #a5d6a7;color:#2e7d32;border-radius:4px;padding:4px 8px;font-size:11.5px;cursor:pointer;font-family:inherit;white-space:nowrap;">归到本文档</button>';
+          }
+          return '<div class="acms-lib-item" data-id="' + it.id + '" style="display:flex;align-items:center;gap:10px;padding:8px;border:1px solid #eee;border-radius:8px;margin-bottom:6px;">' +
+                   thumb +
+                   '<div style="flex:1;min-width:0;">' +
+                     '<div style="font-size:13px;font-weight:500;color:#222;">' + acmsEscapeHtml(it.name) + aliasStr + srcBadgeOf(it) + '</div>' +
+                     (it.description ? '<div style="font-size:11.5px;color:#888;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + acmsEscapeHtml(it.description) + '</div>' : '') +
+                   '</div>' +
+                   ownBtn +
+                   '<button class="acms-lib-edit" type="button" title="编辑" style="background:#f0f7ff;border:1px solid #90caf9;color:#1565c0;border-radius:4px;padding:4px 8px;font-size:12px;cursor:pointer;font-family:inherit;">✏️</button>' +
+                   '<button class="acms-lib-del" type="button" title="删除" style="background:#fff5f5;border:1px solid #ef9a9a;color:#c62828;border-radius:4px;padding:4px 8px;font-size:12px;cursor:pointer;font-family:inherit;">🗑</button>' +
+                 '</div>';
+        }).join('');
+        // 绑事件
+        listEl.querySelectorAll('.acms-lib-item').forEach(function (row) {
+          var id = row.getAttribute('data-id');
+          var item = items.find(function (x) { return x.id === id; });
+          if (!item) return;
+          var bindBtn = row.querySelector('.acms-lib-bind');
+          if (bindBtn) {
+            bindBtn.onclick = function () {
+              apiLib.assignDoc([item.id], acmsDocId, acmsDocName).then(function (r) {
+                if (r && r.ok) { showAcmsToast('✅ 已归到本文档: ' + item.name, 'ok', 2000); reload(); }
+                else { showAcmsToast('❌ ' + ((r && r.error) || '归属失败'), 'error'); }
+              }).catch(function (e) { showAcmsToast('❌ ' + e.message, 'error'); });
+            };
+          }
+          var shareBtn = row.querySelector('.acms-lib-share');
+          if (shareBtn) {
+            shareBtn.onclick = function () {
+              apiLib.setShared([item.id], true).then(function (r) {
+                if (r && r.ok) { showAcmsToast('🌐 已设为通用（所有文档可见）: ' + item.name, 'ok', 2200); reload(); }
+                else { showAcmsToast('❌ ' + ((r && r.error) || '操作失败'), 'error'); }
+              }).catch(function (e) { showAcmsToast('❌ ' + e.message, 'error'); });
+            };
+          }
+          var unshareBtn = row.querySelector('.acms-lib-unshare');
+          if (unshareBtn) {
+            unshareBtn.onclick = function () {
+              apiLib.setShared([item.id], false).then(function (r) {
+                if (r && r.ok) { showAcmsToast('已取消通用: ' + item.name, 'ok', 2200); reload(); }
+                else { showAcmsToast('❌ ' + ((r && r.error) || '操作失败'), 'error'); }
+              }).catch(function (e) { showAcmsToast('❌ ' + e.message, 'error'); });
+            };
+          }
+          row.querySelector('.acms-lib-edit').onclick = function () {
+            showCharacterQuickCreatePanel({
+              anchorPanel: panel,
+              kind: kind,
+              editItem: item,
+              onCreated: function () { reload(); }
+            });
+          };
+          row.querySelector('.acms-lib-del').onclick = function () {
+            if (!window.confirm('确定删除' + itemWord + '「' + item.name + '」？此操作不可撤销。')) return;
+            apiLib.remove(item.id).then(function (r) {
+              if (r && r.ok) {
+                showAcmsToast('✅ 已删除: ' + item.name, 'ok', 1800);
+                reload();
+              } else {
+                showAcmsToast('❌ ' + ((r && r.error) || '删除失败'), 'error');
+              }
+            }).catch(function (e) { showAcmsToast('❌ ' + e.message, 'error'); });
+          };
+        });
+      }).catch(function (e) {
+        listEl.innerHTML = '<div class="acms-panel-chars-empty">加载失败: ' + acmsEscapeHtml(e.message) + '</div>';
+      });
+    }
+
+    reload();
+
+    panel.querySelector('.acms-lib-add').onclick = function () {
+      showCharacterQuickCreatePanel({
+        anchorPanel: panel,
+        kind: kind,
+        onCreated: function () { reload(); }
+      });
+    };
+
+    return { close: close, reload: reload };
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // P200: 视觉设定集（Visual Bible）— 全文抽取人物/场景 → 设定图 → 一致性基准
+  //   流程：抽全文 → SSE 分析 → 确认卡（可编辑）→ 串行生成设定图 → 入库 → 结果卡（可🎲换图）
+  // ══════════════════════════════════════════════════════════════
+
+  function acmsInjectBibleCss() {
+    if (document.getElementById('acms-bible-css')) return;
+    acmsInjectImagePanelCss();
+    var style = document.createElement('style');
+    style.id = 'acms-bible-css';
+    style.textContent =
+      '@keyframes acmsBiblePulse { 0% { box-shadow:0 0 0 0 rgba(156,39,176,.5);} 70% { box-shadow:0 0 0 14px rgba(156,39,176,0);} 100% { box-shadow:0 0 0 0 rgba(156,39,176,0);} }' +
+      '#acms-bible-progress, #acms-bible-confirm, #acms-bible-result { animation: acmsBiblePulse .45s ease-out; }' +
+      '.acms-bible-overlay { position:fixed;left:50%;transform:translateX(-50%);z-index:100002;background:#fff;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.25);font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;border:2px solid rgba(156,39,176,.45); }' +
+      '.acms-bible-overlay .acms-bible-head { display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid #eee; }' +
+      '.acms-bible-overlay .acms-bible-title { font-size:14px;font-weight:600;color:#222; }' +
+      '.acms-bible-overlay .acms-bible-x { background:none;border:none;font-size:22px;color:#999;cursor:pointer;padding:0 4px;line-height:1;font-family:inherit; }' +
+      '.acms-bible-overlay .acms-bible-x:hover { color:#333; }' +
+      '.acms-bible-bar { height:6px;background:#f0f0f0;border-radius:3px;overflow:hidden;margin:10px 16px; }' +
+      '.acms-bible-bar > i { display:block;height:100%;background:linear-gradient(90deg,#9c27b0,#2196f3);border-radius:3px;transition:width .3s; }' +
+      '.acms-bible-item { display:flex;gap:8px;align-items:flex-start;padding:8px;border:1px solid #e8e8e8;border-radius:8px;margin-bottom:6px;background:#fcfcfc; }' +
+      '.acms-bible-item input[type=checkbox] { margin-top:4px;flex-shrink:0; }' +
+      '.acms-bible-item .acms-bi-main { flex:1;min-width:0; }' +
+      '.acms-bible-item input[type=text] { width:100%;padding:5px 7px;border:1px solid #ddd;border-radius:4px;font-size:12.5px;box-sizing:border-box;font-family:inherit;margin-bottom:4px; }' +
+      '.acms-bible-item textarea { width:100%;padding:5px 7px;border:1px solid #ddd;border-radius:4px;font-size:11.5px;box-sizing:border-box;font-family:inherit;resize:vertical;color:#555; }' +
+      '.acms-bible-item .acms-bi-del { background:#fff5f5;border:1px solid #ef9a9a;color:#c62828;border-radius:4px;padding:3px 7px;font-size:11px;cursor:pointer;font-family:inherit;flex-shrink:0; }' +
+      '.acms-bible-sec { font-size:12px;color:#666;padding:10px 16px 4px;font-weight:500; }' +
+      '.acms-bible-result-item { display:flex;align-items:center;gap:10px;padding:8px;border:1px solid #eee;border-radius:8px;margin-bottom:6px; }' +
+      '.acms-bible-result-item img { width:64px;height:64px;object-fit:cover;border-radius:6px;flex-shrink:0; }' +
+      '.acms-bible-result-item .acms-bri-info { flex:1;min-width:0;font-size:12.5px; }' +
+      '.acms-bible-result-item .acms-bri-reroll { background:#f0f7ff;border:1px solid #90caf9;color:#1565c0;border-radius:4px;padding:4px 9px;font-size:12px;cursor:pointer;font-family:inherit;flex-shrink:0; }' +
+      '.acms-bible-hint { margin:0 16px 10px;padding:8px 10px;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;font-size:12px;color:#7a5c00;line-height:1.5; }';
+    document.head.appendChild(style);
+  }
+
+  // ── 进度浮窗（分析 / 生成共用）──
+  function showBibleProgressPanel(opts) {
+    opts = opts || {};
+    acmsInjectBibleCss();
+    var old = document.getElementById('acms-bible-progress');
+    if (old) old.remove();
+    var panel = document.createElement('div');
+    panel.id = 'acms-bible-progress';
+    panel.className = 'acms-bible-overlay';
+    panel.style.cssText = 'width:400px;top:25vh;';
+    panel.innerHTML =
+      '<div class="acms-bible-head">' +
+        '<span class="acms-bible-title">' + acmsEscapeHtml(opts.title || '🎬 分析全文…') + '</span>' +
+        (opts.cancel ? '<button class="acms-bible-x" type="button" title="取消">×</button>' : '<span style="width:20px;"></span>') +
+      '</div>' +
+      '<div class="acms-bible-bar"><i style="width:0%"></i></div>' +
+      '<div class="acms-bible-msg" style="padding:0 16px 14px;font-size:12.5px;color:#555;line-height:1.6;">准备中…</div>';
+    document.body.appendChild(panel);
+    var bar = panel.querySelector('.acms-bible-bar > i');
+    var msgEl = panel.querySelector('.acms-bible-msg');
+    var closed = false;
+    if (opts.cancel && panel.querySelector('.acms-bible-x')) {
+      panel.querySelector('.acms-bible-x').onclick = function () { closed = true; panel.remove(); if (opts.onCancel) opts.onCancel(); };
+    }
+    return {
+      update: function (p) {
+        if (closed) return;
+        var cur = (p && p.current) || 0, tot = (p && p.total) || 1;
+        bar.style.width = Math.max(3, Math.round(cur / tot * 100)) + '%';
+        msgEl.textContent = (p && p.message) || '';
+      },
+      setMessage: function (m) { if (!closed) msgEl.textContent = m; },
+      setPercent: function (pct) { if (!closed) bar.style.width = Math.max(3, Math.min(100, pct)) + '%'; },
+      close: function () { closed = true; panel.remove(); },
+      isClosed: function () { return closed; }
+    };
+  }
+
+  // ── 确认卡：设定集草案（可编辑）──
+  function showVisualBibleConfirmPanel(bible, opts) {
+    opts = opts || {};
+    acmsInjectBibleCss();
+    var old = document.getElementById('acms-bible-confirm');
+    if (old) old.remove();
+    var chars = (bible.characters || []).map(function (c) {
+      return { on: true, name: c.name, prompt: c.imagePrompt || c.description || '', aliases: c.aliases || [], description: c.description || '', appearances: c.appearances || [], kind: 'character' };
+    });
+    var scenes = (bible.scenes || []).map(function (s) {
+      return { on: true, name: s.name, prompt: s.imagePrompt || s.description || '', aliases: s.aliases || [], description: s.description || '', appearances: s.appearances || [], kind: 'scene' };
+    });
+    if (!chars.length && !scenes.length) {
+      showAcmsToast('⚠️ 全文没抽取到有视觉意义的人物或场景', 'warn', 3500);
+      return;
+    }
+
+    var panel = document.createElement('div');
+    panel.id = 'acms-bible-confirm';
+    panel.className = 'acms-bible-overlay';
+    panel.style.cssText = 'width:600px;top:8vh;max-height:82vh;overflow-y:auto;';
+
+    function statsLine() {
+      var s = bible.stats || {};
+      return '分析 ' + (s.segments || 1) + ' 段 · 共 ' + (s.chars || 0) + ' 字 · 发现 ' + chars.length + ' 个角色 / ' + scenes.length + ' 个场景';
+    }
+
+    function renderList() {
+      var chHtml = chars.map(function (c, i) {
+        return '<div class="acms-bible-item" data-kind="character" data-idx="' + i + '">' +
+          '<input type="checkbox" ' + (c.on ? 'checked' : '') + '/>' +
+          '<div class="acms-bi-main">' +
+            '<input type="text" class="acms-bi-name" value="' + acmsEscapeHtml(c.name) + '"/>' +
+            '<textarea class="acms-bi-prompt" rows="2">' + acmsEscapeHtml(c.prompt) + '</textarea>' +
+          '</div>' +
+          '<button class="acms-bi-del" type="button">删</button>' +
+        '</div>';
+      }).join('');
+      var scHtml = scenes.map(function (s, i) {
+        return '<div class="acms-bible-item" data-kind="scene" data-idx="' + i + '">' +
+          '<input type="checkbox" ' + (s.on ? 'checked' : '') + '/>' +
+          '<div class="acms-bi-main">' +
+            '<input type="text" class="acms-bi-name" value="' + acmsEscapeHtml(s.name) + '"/>' +
+            '<textarea class="acms-bi-prompt" rows="2">' + acmsEscapeHtml(s.prompt) + '</textarea>' +
+          '</div>' +
+          '<button class="acms-bi-del" type="button">删</button>' +
+        '</div>';
+      }).join('');
+
+      panel.innerHTML =
+        '<div class="acms-bible-head">' +
+          '<span class="acms-bible-title">🎬 视觉设定集草案</span>' +
+          '<button class="acms-bible-x" type="button" title="关闭">×</button>' +
+        '</div>' +
+        '<div style="padding:10px 16px 0;font-size:12px;color:#888;">' + statsLine() + '</div>' +
+        '<div class="acms-bible-hint">检查下面的人物和场景 —— 可改名字、改画面描述、取消勾选或删除。确认后会为每个条目生成一张「设定图」，作为后续所有插图的参考基准。</div>' +
+        (chars.length ? '<div class="acms-bible-sec">🎭 人物（' + chars.length + '）</div><div style="padding:0 16px;">' + chHtml + '</div>' : '') +
+        (scenes.length ? '<div class="acms-bible-sec">🏞️ 场景（' + scenes.length + '）</div><div style="padding:0 16px 4px;">' + scHtml + '</div>' : '') +
+        '<div class="acms-bible-sec">🎨 统一风格</div>' +
+        '<div style="padding:0 16px 8px;display:flex;flex-wrap:wrap;gap:6px;">' +
+          ACMS_IMAGE_STYLES.map(function (s, i) {
+            return '<button class="acms-style-chip' + (i === 0 ? ' active' : '') + '" data-style="' + s.key + '" type="button" style="display:inline-flex;align-items:center;gap:4px;padding:5px 10px;background:#f5f5f5;border:1px solid #e0e0e0;border-radius:16px;font-size:12px;cursor:pointer;font-family:inherit;">' +
+              '<span>' + s.icon + '</span><span>' + s.label + '</span></button>';
+          }).join('') +
+        '</div>' +
+        '<div style="display:flex;gap:8px;justify-content:flex-end;padding:8px 16px 14px;border-top:1px solid #f0f0f0;">' +
+          '<button class="acms-bible-cancel" type="button" style="padding:7px 16px;background:#f5f5f5;border:none;border-radius:6px;font-size:13px;cursor:pointer;font-family:inherit;">取消</button>' +
+          '<button class="acms-bible-go" type="button" style="padding:7px 16px;background:#9c27b0;color:#fff;border:none;border-radius:6px;font-size:13px;cursor:pointer;font-weight:500;font-family:inherit;">✅ 生成设定图</button>' +
+        '</div>';
+
+      // 事件
+      panel.querySelector('.acms-bible-x').onclick = close;
+      panel.querySelector('.acms-bible-cancel').onclick = close;
+      var selStyle = ACMS_IMAGE_STYLES[0].key;
+      panel.querySelectorAll('.acms-style-chip').forEach(function (chip) {
+        chip.onclick = function () {
+          panel.querySelectorAll('.acms-style-chip').forEach(function (c) { c.classList.remove('active'); c.style.background = '#f5f5f5'; c.style.color = '#333'; c.style.borderColor = '#e0e0e0'; });
+          chip.classList.add('active');
+          chip.style.background = '#2196f3'; chip.style.color = '#fff'; chip.style.borderColor = '#2196f3';
+          selStyle = chip.getAttribute('data-style');
+        };
+      });
+      // 默认第一个高亮
+      var first = panel.querySelector('.acms-style-chip');
+      if (first) { first.style.background = '#2196f3'; first.style.color = '#fff'; first.style.borderColor = '#2196f3'; }
+
+      panel.querySelectorAll('.acms-bible-item').forEach(function (row) {
+        var kind = row.getAttribute('data-kind');
+        var idx = parseInt(row.getAttribute('data-idx'), 10);
+        var arr = kind === 'character' ? chars : scenes;
+        row.querySelector('input[type=checkbox]').onchange = function () { arr[idx].on = this.checked; };
+        row.querySelector('.acms-bi-name').oninput = function () { arr[idx].name = this.value.trim() || arr[idx].name; };
+        row.querySelector('.acms-bi-prompt').oninput = function () { arr[idx].prompt = this.value; };
+        row.querySelector('.acms-bi-del').onclick = function () {
+          row.remove();
+          arr[idx]._deleted = true;
+          updateGoLabel();
+        };
+      });
+
+      function updateGoLabel() {
+        var n = chars.filter(function (c) { return c.on && !c._deleted; }).length +
+                scenes.filter(function (s) { return s.on && !s._deleted; }).length;
+        panel.querySelector('.acms-bible-go').textContent = '✅ 生成设定图（' + n + ' 张）';
+      }
+      panel.querySelectorAll('input[type=checkbox]').forEach(function (cb) { cb.onchange = function () { cb.__orig && cb.__orig(); updateGoLabel(); }; });
+      // 重新绑定 checkbox（保留上面的 handler 语义）
+      panel.querySelectorAll('.acms-bible-item').forEach(function (row) {
+        var kind = row.getAttribute('data-kind');
+        var idx = parseInt(row.getAttribute('data-idx'), 10);
+        var arr = kind === 'character' ? chars : scenes;
+        var cb = row.querySelector('input[type=checkbox]');
+        cb.onchange = function () { arr[idx].on = this.checked; updateGoLabel(); };
+      });
+
+      panel.querySelector('.acms-bible-go').onclick = function () {
+        // 收集确认后的设定集
+        var out = {
+          characters: chars.filter(function (c) { return c.on && !c._deleted; }).map(function (c) {
+            return { name: c.name, aliases: c.aliases, description: c.description, imagePrompt: c.prompt };
+          }),
+          scenes: scenes.filter(function (s) { return s.on && !s._deleted; }).map(function (s) {
+            return { name: s.name, aliases: s.aliases, description: s.description, imagePrompt: s.prompt };
+          })
+        };
+        var styleObj = null;
+        for (var i = 0; i < ACMS_IMAGE_STYLES.length; i++) {
+          if (ACMS_IMAGE_STYLES[i].key === selStyle) { styleObj = ACMS_IMAGE_STYLES[i]; break; }
+        }
+        close();
+        if (opts.onConfirm) opts.onConfirm(out, styleObj);
+      };
+      updateGoLabel();
+    }
+
+    function close() { panel.remove(); }
+    document.body.appendChild(panel);
+    renderList();
+    return { close: close };
+  }
+
+  // ── 结果卡：设定图（可🎲换图）──
+  function showBibleResultPanel(results, opts) {
+    opts = opts || {};
+    acmsInjectBibleCss();
+    var old = document.getElementById('acms-bible-result');
+    if (old) old.remove();
+    var panel = document.createElement('div');
+    panel.id = 'acms-bible-result';
+    panel.className = 'acms-bible-overlay';
+    panel.style.cssText = 'width:520px;top:10vh;max-height:78vh;overflow-y:auto;';
+
+    function render() {
+      var okCount = results.filter(function (r) { return r.ok; }).length;
+      panel.innerHTML =
+        '<div class="acms-bible-head">' +
+          '<span class="acms-bible-title">🎬 设定集已建立（' + okCount + '/' + results.length + '）</span>' +
+          '<button class="acms-bible-x" type="button" title="关闭">×</button>' +
+        '</div>' +
+        '<div style="padding:10px 16px 0;font-size:12px;color:#888;">已入库到角色/场景档案库 — 之后选中任意段落生成插图时会自动匹配。</div>' +
+        '<div style="padding:10px 16px 4px;">' +
+          results.map(function (r, i) {
+            if (!r.ok) {
+              return '<div class="acms-bible-result-item" style="border-color:#ef9a9a;background:#fff5f5;">' +
+                '<span style="width:64px;height:64px;display:flex;align-items:center;justify-content:center;background:#ffebee;border-radius:6px;font-size:22px;flex-shrink:0;">⚠️</span>' +
+                '<div class="acms-bri-info"><b>' + acmsEscapeHtml(r.name) + '</b><br/><span style="color:#c62828;">' + acmsEscapeHtml(r.error || '生成失败') + '</span></div>' +
+                '<button class="acms-bri-reroll" data-i="' + i + '" type="button">🎲 重试</button>' +
+              '</div>';
+            }
+            return '<div class="acms-bible-result-item">' +
+              (r.image ? '<img src="' + acmsEscapeHtml(r.image) + '" alt=""/>' : '<span style="width:64px;height:64px;background:#eee;border-radius:6px;flex-shrink:0;"></span>') +
+              '<div class="acms-bri-info"><b>' + acmsEscapeHtml(r.name) + '</b> <span style="color:#999;font-size:11px;">' + (r.kind === 'scene' ? '场景' : '角色') + '</span><br/>' +
+                '<span style="color:#777;font-size:11px;">' + acmsEscapeHtml(String(r.prompt || '').slice(0, 60)) + '…</span></div>' +
+              '<button class="acms-bri-reroll" data-i="' + i + '" type="button">🎲 换一张</button>' +
+            '</div>';
+          }).join('') +
+        '</div>' +
+        '<div style="padding:8px 16px 14px;text-align:right;border-top:1px solid #f0f0f0;">' +
+          '<button class="acms-bible-done" type="button" style="padding:7px 18px;background:#2196f3;color:#fff;border:none;border-radius:6px;font-size:13px;cursor:pointer;font-family:inherit;">完成</button>' +
+        '</div>';
+      panel.querySelector('.acms-bible-x').onclick = close;
+      panel.querySelector('.acms-bible-done').onclick = close;
+      panel.querySelectorAll('.acms-bri-reroll').forEach(function (btn) {
+        btn.onclick = function () {
+          var i = parseInt(btn.getAttribute('data-i'), 10);
+          var r = results[i];
+          btn.disabled = true;
+          btn.textContent = '生成中…';
+          regenerateOne(r, function (ok, err) {
+            if (ok) { render(); showAcmsToast('🎲 已换新：' + r.name, 'ok', 1800); }
+            else { btn.disabled = false; btn.textContent = '🎲 重试'; showAcmsToast('❌ ' + (err || '生成失败'), 'error'); }
+          });
+        };
+      });
+    }
+
+    function close() {
+      panel.remove();
+      if (opts.onClose) opts.onClose();
+    }
+    document.body.appendChild(panel);
+    render();
+    return { close: close, rerender: render };
+  }
+
+  // 生成单张设定图（不走 LLM，直接用确认卡里的 imagePrompt）
+  function generateOneBibleImage(item, styleObj) {
+    var prompt = (styleObj && styleObj.prefix ? styleObj.prefix : '') + String(item.imagePrompt || item.description || item.name);
+    return fetch('/api/image-tools/ai-generate?api_key=dev-key-001', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+      body: JSON.stringify({ prompt: prompt, n: 1, size: '1024x1024' })
+    }).then(function (r) { return r.json(); }).then(function (data) {
+      if (!data || !data.ok || !data.options || !data.options.length) {
+        throw new Error((data && data.error) || '生图失败');
+      }
+      var opt = data.options[0];
+      var img = opt.dataUrl || opt.image_url_output;
+      if (!img) throw new Error('生图返回缺少图片数据');
+      // 非 data URI → 前端 fetch 转 base64
+      if (img.indexOf('data:') !== 0) {
+        return fetch(img).then(function (r2) { return r2.blob(); }).then(function (blob) {
+          return new Promise(function (resolve) {
+            var fr = new FileReader();
+            fr.onload = function () { resolve(fr.result); };
+            fr.readAsDataURL(blob);
+          });
+        });
+      }
+      return img;
+    });
+  }
+
+  // 重新生成一张（🎲 换一张）：生成 → 更新档案库
+  function regenerateOne(result, cb) {
+    var lib = result.kind === 'scene' ? acmsLib('acmsSceneLib') : acmsLib('acmsCharacterLib');
+    generateOneBibleImage(result, result.styleObj).then(function (dataUrl) {
+      if (result.libraryId && lib && lib.update) {
+        return lib.update(result.libraryId, { referenceImage: dataUrl }).then(function () {
+          result.image = dataUrl; result.ok = true; result.error = null;
+          cb(true);
+        });
+      }
+      // 没有 libraryId（首次失败）→ 重新创建
+      if (lib && lib.create) {
+        return lib.create({
+          name: result.name,
+          aliases: result.aliases || [],
+          description: result.description || '',
+          referenceImage: dataUrl,
+          sourceDocId: acmsDocId,
+          sourceDocName: acmsDocName
+        }).then(function (resp) {
+          if (resp && resp.ok && resp.data) { result.libraryId = resp.data.id; }
+          result.image = dataUrl; result.ok = true; result.error = null;
+          cb(true);
+        });
+      }
+      throw new Error('档案库 API 不可用');
+    }).catch(function (e) { cb(false, e.message); });
+  }
+
+  // ── 主编排：全文 → 分析 → 确认 → 生成 → 入库 ──
+  async function runFullBibleFlow() {
+    var fullText = buildAcmsFullText();
+    if (!fullText || fullText.length < 100) {
+      showAcmsToast('⚠️ 文档内容太少（需 ≥100 字），先写点内容再建设定集', 'warn', 3500);
+      return;
+    }
+    if (!acmsLib('acmsVisualBible') || !acmsLib('acmsVisualBible').analyzeDocument) {
+      showAcmsToast('❌ 设定集 API 未加载（visual-bible.js 缺失？）', 'error');
+      return;
+    }
+    var progress = showBibleProgressPanel({ title: '🎬 分析全文…' });
+    progress.setMessage('正在分析 ' + fullText.length + ' 字…');
+    var bible;
+    try {
+      bible = await acmsLib('acmsVisualBible').analyzeDocument(fullText, {
+        onProgress: function (p) { progress.update(p); }
+      });
+    } catch (e) {
+      progress.close();
+      showAcmsToast('❌ 分析失败: ' + e.message, 'error', 4000);
+      return;
+    }
+    progress.close();
+
+    if (!bible.characters.length && !bible.scenes.length) {
+      showAcmsToast('⚠️ 没抽取到有视觉意义的人物或场景', 'warn', 4000);
+      return;
+    }
+
+    showVisualBibleConfirmPanel(bible, {
+      onConfirm: function (confirmed, styleObj) {
+        var items = [];
+        confirmed.characters.forEach(function (c) { items.push(Object.assign({ kind: 'character' }, c)); });
+        confirmed.scenes.forEach(function (s) { items.push(Object.assign({ kind: 'scene' }, s)); });
+        if (!items.length) { showAcmsToast('⚠️ 没有勾选任何条目', 'warn'); return; }
+        generateBibleImagesSerial(items, styleObj);
+      }
+    });
+  }
+
+  // 串行生成 + 入库 + 结果卡
+  async function generateBibleImagesSerial(items, styleObj) {
+    var progress = showBibleProgressPanel({
+      title: '🎬 生成设定图（' + items.length + ' 张）',
+      cancel: true,
+      onCancel: function () { /* 关窗即停（已在飞的请求不撤回） */ }
+    });
+    var results = [];
+    for (var i = 0; i < items.length; i++) {
+      if (progress.isClosed()) break;
+      var it = items[i];
+      progress.update({ current: i, total: items.length, message: '正在生成「' + it.name + '」（' + (i + 1) + '/' + items.length + '）…' });
+      progress.setPercent(Math.round(i / items.length * 100));
+      var r = { name: it.name, kind: it.kind, ok: false, image: null, error: null, prompt: it.imagePrompt, description: it.description, aliases: it.aliases, styleObj: styleObj, libraryId: null };
+      try {
+        var dataUrl = await generateOneBibleImage(it, styleObj);
+        // 落库
+        var lib = it.kind === 'scene' ? acmsLib('acmsSceneLib') : acmsLib('acmsCharacterLib');
+        if (lib && lib.create) {
+          var resp = await lib.create({
+            name: it.name,
+            aliases: it.aliases || [],
+            description: it.description || '',
+            referenceImage: dataUrl,
+            sourceDocId: acmsDocId,
+            sourceDocName: acmsDocName
+          });
+          if (resp && resp.ok && resp.data) r.libraryId = resp.data.id;
+          else r.error = (resp && resp.error) || '入库失败';
+        } else {
+          r.error = '档案库 API 不可用';
+        }
+        r.image = dataUrl;
+        r.ok = !r.error;
+      } catch (e) {
+        r.error = e.message;
+        console.warn('[visual-bible] 生成失败:', it.name, e.message);
+      }
+      results.push(r);
+    }
+    progress.update({ current: items.length, total: items.length, message: '完成' });
+    progress.close();
+
+    var okCount = results.filter(function (x) { return x.ok; }).length;
+    showAcmsToast('✅ 设定集已建立：' + okCount + '/' + results.length + ' 张入库', okCount === results.length ? 'ok' : 'warn', 3000);
+    showBibleResultPanel(results, {
+      onClose: function () {
+        // 刷新浮窗里的角色/场景列表（如果还开着）
+      }
+    });
   }
 
   function showAcmsToast(msg, kind) {
@@ -387,7 +1961,8 @@
     el.style.opacity = '1';
     el.style.display = 'block';
     clearTimeout(el.__t);
-    el.__t = setTimeout(function() { el.style.opacity = '0'; setTimeout(function() { el.style.display = 'none'; }, 300); }, 2600);
+    var duration = arguments[2] || 2600;
+    el.__t = setTimeout(function() { el.style.opacity = '0'; setTimeout(function() { el.style.display = 'none'; }, 300); }, duration);
   }
 
   // v0.96.9b: 往 GenOffice 原生右键菜单（.ctx-menu）注入 AI 动作项
@@ -433,11 +2008,67 @@
         subMenu.style.padding = '4px 0';
         subMenu.style.zIndex = '10000';
         document.body.appendChild(subMenu);
+        // 子项：润色/排版/总结走原 acmsRunSelectionAction；生成插图弹浮窗（不走 LLM，直接调 bridge 生图）
         var subItems = [
-          { key: 'polish', label: '✨ 润色' },
-          { key: 'format', label: '📐 排版' },
-          { key: 'summarize', label: '📝 总结' },
-          { key: 'image', label: '🎨 生成插图' }
+          { key: 'polish', label: '✨ 润色', run: function () { acmsRunSelectionAction('polish'); } },
+          { key: 'format', label: '📐 排版', run: function () { acmsRunSelectionAction('format'); } },
+          { key: 'summarize', label: '📝 总结', run: function () { acmsRunSelectionAction('summarize'); } },
+          {
+            key: 'image', label: '🎨 生成插图', run: function () {
+              var ctx = buildAcmsDocContext();
+              if (!ctx || !ctx.selBlockIdx || !ctx.selBlockIdx.length) {
+                showAcmsToast('⚠️ 请先在文档中选中文字', 'warn');
+                return;
+              }
+              var anchor = window.__acmsCtxMenuPos || { x: 100, y: 100 };
+              // P198 增强：弹 mini 浮窗让用户选风格 + 改画面描述
+              showImageStylePanel({
+                selText: ctx.doc.selectionText || '',
+                anchorX: anchor.x,
+                anchorY: anchor.y,
+                onSubmit: function (finalPrompt, style, referenceImages, charNames, sceneName) {
+                  // P198: 绕过 LLM，直接构造 generateImage action 走 bridge 生图（含 referenceImage 链式风格一致性）
+                  // P199: 角色档案库 + 场景档案库多图合成 — referenceImages 含多张角色/场景参考图（dataUrl 数组）
+                  var action = {
+                    op: 'generateImage',
+                    kind: 'word',
+                    prompt: finalPrompt,
+                    summary: '已生成 ' + style.label + ' 风格插图' +
+                      ((charNames && charNames.length) ? '（含 ' + charNames.join('、') + '）' : '') +
+                      (sceneName ? ' @ ' + sceneName : '')
+                  };
+                  if (referenceImages && referenceImages.length > 0) {
+                    action.referenceImages = referenceImages;
+                  }
+                  if (window.parent.OfficeV3 && typeof window.parent.OfficeV3.runAction === 'function') {
+                    showAcmsToast('⏳ 正在生成 ' + style.label + ' 插图...', 'info', 3000);
+                    window.parent.OfficeV3.runAction(action).then(function (r) {
+                      if (r && r.ok) {
+                        showAcmsToast('✅ ' + (action.summary || '插图已生成'), 'ok');
+                      } else {
+                        showAcmsToast('❌ ' + ((r && r.error) || '生成失败'), 'error');
+                      }
+                    }).catch(function (e) {
+                      showAcmsToast('❌ ' + e.message, 'error');
+                    });
+                  } else {
+                    showAcmsToast('❌ parent.OfficeV3.runAction 不可用', 'error');
+                  }
+                }
+              });
+            }
+          },
+          {
+            // P200: 全文视觉设定集 — AI 从全文抽取人物/场景 → 生成设定图 → 建立一致性基准
+            key: 'bible', label: '🎬 生成全文设定集', run: function () {
+              var fullText = buildAcmsFullText();
+              if (!fullText || fullText.length < 100) {
+                showAcmsToast('⚠️ 文档内容太少（需 ≥100 字）', 'warn');
+                return;
+              }
+              runFullBibleFlow();
+            }
+          }
         ];
         subItems.forEach(function (it) {
           var btn = document.createElement('button');
@@ -451,18 +2082,31 @@
             e.preventDefault();
             e.stopPropagation();
             subMenu.style.display = 'none';
-            acmsRunSelectionAction(it.key);
+            it.run();
           };
           subMenu.appendChild(btn);
         });
-        // 鼠标悬停显示子菜单（带延迟避免抖动）
+        // 鼠标悬停显示子菜单（带延迟避免抖动）— P198 增强：位置边界检测
         var subMenuTimer = null;
+        function positionSubMenu() {
+          var rect = aiMenuItem.getBoundingClientRect();
+          var subRect = subMenu.getBoundingClientRect();
+          var vw = window.innerWidth, vh = window.innerHeight;
+          // 默认贴右侧
+          var left = rect.right;
+          var top = rect.top;
+          // 右侧溢出 → 贴左侧
+          if (left + subRect.width > vw - 8) left = Math.max(8, rect.left - subRect.width);
+          // 下方溢出 → 上对齐菜单底部
+          if (top + subRect.height > vh - 8) top = Math.max(8, vh - subRect.height - 8);
+          subMenu.style.left = left + 'px';
+          subMenu.style.top = top + 'px';
+        }
         aiMenuItem.onmouseenter = function () {
           clearTimeout(subMenuTimer);
-          var rect = aiMenuItem.getBoundingClientRect();
           subMenu.style.display = 'block';
-          subMenu.style.left = rect.right + 'px';
-          subMenu.style.top = rect.top + 'px';
+          // 先放到位再读 rect（display:block 后才能拿到正确尺寸）
+          positionSubMenu();
         };
         aiMenuItem.onmouseleave = function (e) {
           // 如果鼠标移到了子菜单上，不隐藏
@@ -495,7 +2139,9 @@
     }
 
     // 每次右键后注入（菜单渲染完成时 .ctx-menu 已就位）
-    document.addEventListener('contextmenu', function () {
+    // P198 增强：记录右键点击位置，作为子菜单/浮窗定位锚点
+    document.addEventListener('contextmenu', function (e) {
+      window.__acmsCtxMenuPos = { x: e.clientX, y: e.clientY };
       setTimeout(injectAiMenuItems, 200);
     }, true);
     // MutationObserver 兜底：React 重渲染冲掉注入项后自动补回
@@ -518,6 +2164,8 @@
       patchACMSAiRunner();
       // 2.5 v0.96.9b: 挂原生右键菜单 AI 项注入器（不拦截原生菜单，追加 AI 动作）
       bindAcmsContextMenu();
+      // P199: 绑定 AI 生成图片右键「存为角色/场景参考」菜单
+      bindAiImageContextMenu();
     } catch(err) {
       console.warn('[acms-host] setupAcmsAiButton err:', err);
     }
@@ -559,13 +2207,142 @@
     if (acmsAiPatchInterval) { clearInterval(acmsAiPatchInterval); acmsAiPatchInterval = null; }
     if (window.__acmsAiPanelObserver) { window.__acmsAiPanelObserver.disconnect(); window.__acmsAiPanelObserver = null; }
     if (window.__acmsCtxMenuObserver) { window.__acmsCtxMenuObserver.disconnect(); window.__acmsCtxMenuObserver = null; }
+    if (window.__acmsAiImageObserver) { window.__acmsAiImageObserver.disconnect(); window.__acmsAiImageObserver = null; }
     var old = document.getElementById('acms-ai-btn');
     if (old) old.remove();
+  }
+
+  // P199: AI 生成图片右键「📌 存为角色/场景参考」快捷操作
+  //   检测 docProtected imageBlock（带 genImage.dataUrl 的真图，不是 loading 占位）
+  //   绑 contextmenu → 弹 mini 菜单 → 调 showCharacterQuickCreatePanel(kind + 预填图)
+  function bindAiImageContextMenu() {
+    if (window.__acmsAiImageBound) return;
+    window.__acmsAiImageBound = true;
+
+    function bindNode(node) {
+      if (!node || node.nodeType !== 1) return;
+      // 跳过已经绑过的
+      if (node.__acmsAiImageBound) return;
+      // 必须是 docProtected 容器 + blockType=image + 有 genImage.dataUrl
+      var isImageBlock = node.classList && node.classList.contains('doc-protected') &&
+                         node.getAttribute && node.getAttribute('data-block-type') === 'image';
+      if (!isImageBlock) {
+        // 也可能在子元素里（ProseMirror 节点结构）
+        var inner = node.querySelector && node.querySelector('.doc-protected[data-block-type="image"]');
+        if (inner && inner.__acmsAiImageBound) return;
+        node = inner || node;
+      }
+      if (!node || !node.getAttribute) return;
+      if (node.getAttribute('data-block-type') !== 'image') return;
+      // 必须有 dataUrl（真图，不是 loading 占位）
+      var dataUrl = node.getAttribute('data-image-dataurl') || node.getAttribute('data-genimage-dataurl');
+      if (!dataUrl) {
+        // 试从 inner 找
+        var img = node.querySelector && node.querySelector('img');
+        if (img) dataUrl = img.src || img.getAttribute('src');
+      }
+      if (!dataUrl || dataUrl.indexOf('data:image/') !== 0) return;
+      node.__acmsAiImageBound = true;
+      node.__acmsImageDataUrl = dataUrl;
+
+      node.addEventListener('contextmenu', function (e) {
+        // 如果右键命中原生菜单（GenOffice ctx-menu），放行
+        if (e.target.closest && e.target.closest('.ctx-menu')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        showAiImageContextMenu(e.clientX, e.clientY, dataUrl);
+      }, true);
+    }
+
+    function bindAll() {
+      var imgs = document.querySelectorAll('.doc-protected[data-block-type="image"]');
+      for (var i = 0; i < imgs.length; i++) bindNode(imgs[i]);
+    }
+
+    // MutationObserver：监听新插入的 imageBlock
+    window.__acmsAiImageObserver = new MutationObserver(function (muts) {
+      for (var i = 0; i < muts.length; i++) {
+        var m = muts[i];
+        for (var j = 0; j < m.addedNodes.length; j++) {
+          bindNode(m.addedNodes[j]);
+        }
+      }
+      // 兜底再扫一次（处理属性变化 — 比如 loading 状态切换到真图）
+      bindAll();
+    });
+    window.__acmsAiImageObserver.observe(document.body, { childList: true, subtree: true });
+    bindAll();
+  }
+
+  // AI 图片右键弹出的 mini 菜单 — 类似 ctx-menu 风格，但只含 2 个入库操作
+  function showAiImageContextMenu(x, y, dataUrl) {
+    var old = document.getElementById('acms-ai-image-menu');
+    if (old) old.remove();
+    var menu = document.createElement('div');
+    menu.id = 'acms-ai-image-menu';
+    menu.setAttribute('data-acms-ai-menu', 'true');
+    menu.style.cssText = 'position:fixed;z-index:10000;background:#fff;border:1px solid #ddd;border-radius:6px;padding:4px 0;box-shadow:0 4px 16px rgba(0,0,0,.15);font-family:inherit;min-width:200px;';
+    menu.innerHTML =
+      '<button class="acms-aimenu-item" data-act="save-char" type="button" style="display:flex;align-items:center;gap:8px;width:100%;padding:8px 14px;border:none;background:transparent;text-align:left;font-size:13px;cursor:pointer;color:#333;font-family:inherit;">' +
+        '<span style="font-size:16px;">📌</span>' +
+        '<span>存为角色参考</span>' +
+      '</button>' +
+      '<button class="acms-aimenu-item" data-act="save-scene" type="button" style="display:flex;align-items:center;gap:8px;width:100%;padding:8px 14px;border:none;background:transparent;text-align:left;font-size:13px;cursor:pointer;color:#333;font-family:inherit;">' +
+        '<span style="font-size:16px;">🏞️</span>' +
+        '<span>存为场景参考</span>' +
+      '</button>';
+    document.body.appendChild(menu);
+    // 边界检测
+    var rect = menu.getBoundingClientRect();
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var left = x, top = y;
+    if (left + rect.width > vw - 8) left = Math.max(8, vw - rect.width - 8);
+    if (top + rect.height > vh - 8) top = Math.max(8, vh - rect.height - 8);
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+
+    function close() {
+      menu.remove();
+      document.removeEventListener('mousedown', outsideHandler);
+      document.removeEventListener('keydown', escHandler);
+    }
+    function outsideHandler(e) {
+      if (!menu.contains(e.target)) close();
+    }
+    function escHandler(e) { if (e.key === 'Escape') close(); }
+    setTimeout(function () {
+      document.addEventListener('mousedown', outsideHandler);
+      document.addEventListener('keydown', escHandler);
+    }, 50);
+
+    menu.querySelectorAll('.acms-aimenu-item').forEach(function (btn) {
+      btn.onmouseenter = function () { btn.style.background = '#e3f2fd'; };
+      btn.onmouseleave = function () { btn.style.background = 'transparent'; };
+      btn.onclick = function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        var act = btn.getAttribute('data-act');
+        close();
+        var kind = act === 'save-char' ? 'character' : 'scene';
+        showCharacterQuickCreatePanel({
+          anchorPanel: { getBoundingClientRect: function () { return { right: left + rect.width / 2, left: left + rect.width / 2, top: top, width: 0, height: 0 }; } },
+          kind: kind,
+          prefillImage: dataUrl,
+          onCreated: function (item) {
+            showAcmsToast('✅ ' + (kind === 'scene' ? '场景' : '角色') + '已入库: ' + item.name, 'ok', 2000);
+          }
+        });
+        // quick-create 弹窗打开后，自动填名称 placeholder → 用户输入名即可
+      };
+    });
   }
 
   window.__init = async function (opts) {
     opts = opts || {}
     try {
+      // P200: 记下当前文档标识（角色/场景库按文档隔离）
+      acmsDocId = opts.fileId || ''
+      acmsDocName = opts.fileName || ''
       if (!mod) mod = await import('/client/lib/office-v3/word-ui/office-word-ui.js?v=0.96.9c')
       // 卸载旧实例
       if (rootEl && mod.unmountWordUI) {

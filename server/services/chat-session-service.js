@@ -215,10 +215,50 @@ function cleanSessionMessages(sessionId, opts = {}) {
     { updated_at: nowIso() }
   );
 
+  // ═══ v0.22.51：自由对话的工具结果卡片存在「隐藏 requirement 的 supplement_history」═══
+  //   清理必须一起覆盖，否则卡片永远清不掉（用户点「清理成功」但卡片仍在 = toast 骗人），
+  //   而且这些僵尸卡片会在水位线错位时被当成新消息重新刷进聊天框。
+  //   映射：mode='all' / 'system' / 'ai' → 清空全部卡片（卡片条目 role 都是 system）
+  //         mode='selected' + cardIndices → 精确删除
+  //         mode='user' / 'assistant'      → 卡片不动
+  //   只读查找隐藏 requirement（不去 getOrCreate，避免给没用过工具的会话凭空建记录）
+  let cardsRemoved = 0;
+  let cardsRemaining = 0;
+  try {
+    const mem = collection('buddy_memory').findOne(m => m.key === 'session_req:' + sessionId);
+    const sessionReq = mem ? reqStore.getById(mem.value) : null;
+    if (sessionReq) {
+      let hist = [];
+      try { hist = JSON.parse(sessionReq.supplement_history || '[]'); } catch { hist = []; }
+      if (Array.isArray(hist)) {
+        let keep = hist;
+        if (mode === 'all' || mode === 'system' || mode === 'ai') {
+          keep = [];
+        } else if (mode === 'selected') {
+          const rm = new Set((Array.isArray(opts.cardIndices) ? opts.cardIndices : [])
+            .map(n => parseInt(n, 10))
+            .filter(n => Number.isInteger(n) && n >= 0 && n < hist.length));
+          keep = hist.filter((_, i) => !rm.has(i));
+        }
+        cardsRemoved = hist.length - keep.length;
+        cardsRemaining = keep.length;
+        if (cardsRemoved > 0) {
+          reqStore.update(sessionReq.id, { supplement_history: JSON.stringify(keep) });
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[chat-sessions] 清理工具卡片失败:', e.message);
+  }
+
+  const totalRemoved = removed + cardsRemoved;
   return {
-    entries_removed: removed,
+    entries_removed: totalRemoved,
+    messages_removed: removed,
+    cards_removed: cardsRemoved,
     history_remaining: keepIndices.length,
-    note: `已清理 ${label} 共 ${removed} 条对话记录${keepIndices.length > 0 ? `，剩余 ${keepIndices.length} 条` : ''}`,
+    cards_remaining: cardsRemaining,
+    note: `已清理 ${label} 共 ${totalRemoved} 条记录（💬 文字 ${removed} · 🧩 卡片 ${cardsRemoved}）${keepIndices.length + cardsRemaining > 0 ? `，剩余 ${keepIndices.length + cardsRemaining} 条` : ''}`,
   };
 }
 

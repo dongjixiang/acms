@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>坦克大战 3D · TANK FRONT</title>
+<link rel="icon" href="data:," />
+<link rel="stylesheet" href="css/style.css" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three.module.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="app">
+  <canvas id="scene"></canvas>
+
+  <div id="hud" class="hud hidden">
+    <div class="hud-corner hud-tl">
+      <div class="panel">
+        <div class="label">装甲完整度</div>
+        <div class="bar"><div class="bar-fill" id="hp-fill"></div><span id="hp-text">100</span></div>
+        <div class="chips">
+          <span class="chip chip-shield hidden" id="chip-shield">护盾 <b>0</b></span>
+          <span class="chip chip-rapid hidden" id="chip-rapid">连发 <b>0</b></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="hud-top">
+      <div class="wave-badge">第 <b id="wave-num">1</b> 波</div>
+      <div class="enemy-left">剩余敌军 <b id="enemy-left">0</b></div>
+    </div>
+
+    <div class="hud-corner hud-tr">
+      <div class="panel panel-right">
+        <div class="label">得分</div>
+        <div class="score" id="score">0</div>
+        <div class="sub">最高 <span id="hiscore">0</span></div>
+        <div class="sub">击毁 <span id="kills">0</span></div>
+      </div>
+    </div>
+
+    <div class="hud-corner hud-bl">
+      <div class="radar-wrap">
+        <canvas id="radar" width="220" height="220"></canvas>
+        <div class="radar-ring"></div>
+        <div class="radar-label">雷达</div>
+      </div>
+    </div>
+
+    <div class="hud-corner hud-br">
+      <ul id="feed" class="feed"></ul>
+    </div>
+
+    <div class="hud-bottom" id="hint">WASD 驾驶 · 鼠标瞄准 · 左键开火 · P 暂停</div>
+
+    <div id="banner" class="banner"></div>
+    <div id="crosshair" class="crosshair hidden">
+      <span class="ch-dot"></span>
+      <span class="ch-tick t"></span><span class="ch-tick b"></span>
+      <span class="ch-tick l"></span><span class="ch-tick r"></span>
+      <span class="ch-reload" id="reload-ring"></span>
+    </div>
+  </div>
+
+  <div id="vignette" class="vignette"></div>
+  <div id="hit-dir" class="hit-dir"><i></i></div>
+
+  <div class="overlay" id="overlay-start">
+    <div class="card">
+      <div class="logo">TANK <span>FRONT</span></div>
+      <h1>坦克大战 3D</h1>
+      <p class="tagline">守住这片战场。敌军一波比一波凶，你能撑到第几波？</p>
+      <div class="keys">
+        <div class="key-row"><kbd>W</kbd><kbd>S</kbd><span>前进 / 后退</span></div>
+        <div class="key-row"><kbd>A</kbd><kbd>D</kbd><span>车体转向</span></div>
+        <div class="key-row"><kbd>🖱</kbd><span>鼠标瞄准炮塔 · 左键开火</span></div>
+        <div class="key-row"><kbd>Q</kbd><kbd>E</kbd><span>环视镜头</span></div>
+        <div class="key-row"><kbd>P</kbd><span>暂停</span></div>
+      </div>
+      <button class="btn" id="btn-start">开始战斗</button>
+      <div class="hintline">建议全屏 · 建议戴耳机</div>
+    </div>
+  </div>
+
+  <div class="overlay hidden" id="overlay-pause">
+    <div class="card">
+      <h2>已暂停</h2>
+      <div class="stats" id="pause-stats"></div>
+      <button class="btn" id="btn-resume">继续战斗</button>
+      <button class="btn btn-ghost" id="btn-quit">返回主菜单</button>
+    </div>
+  </div>
+
+  <div class="overlay hidden" id="overlay-over">
+    <div class="card">
+      <h2 class="over-title">战车被击毁</h2>
+      <div class="big-score" id="over-score">0</div>
+      <div class="stats" id="over-stats"></div>
+      <div class="record hidden" id="over-record">★ 新纪录 ★</div>
+      <button class="btn" id="btn-retry">再来一局</button>
+      <button class="btn btn-ghost" id="btn-menu">返回主菜单</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

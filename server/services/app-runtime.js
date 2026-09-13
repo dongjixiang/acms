@@ -38,6 +38,11 @@ function mouseButton(button) {
   return 'left';
 }
 
+// v0.119.4: 反爬指纹 stealth 抽到 server/services/stealth-init.js 公共模块
+//   app-runtime.js（远程预览）+ browser-fetch.js（web_search）共用同一份
+//   原因：puppeteer-extra-plugin-stealth@2.11.2 在 chrome 149 上严重过时，手写版更稳
+const { STEALTH_INIT_SCRIPT } = require('./stealth-init');
+
 class AppRuntimeService extends EventEmitter {
   constructor() {
     super();
@@ -70,6 +75,10 @@ class AppRuntimeService extends EventEmitter {
           '--disable-sync',
           '--enable-features=NetworkService',
           '--disable-features=Translate,BackForwardCache',
+          // v0.119.4: 反自动化指纹 flag（必须在 launch opts 加，单独 evaluateOnNewDocument 不够 —
+          //   Chrome 启动时会注入 AutomationControlled 特性，navigator.webdriver 默认 true。
+          //   此 flag 在 Blink 渲染层移除该特性，配合 STEALTH 注入才能彻底消除 webdriver=true）
+          '--disable-blink-features=AutomationControlled',
         ],
         timeout: 30000,
         // defaultViewport 留空，由每个 page 自己 setViewport（保证分流同步尺寸）
@@ -110,6 +119,20 @@ class AppRuntimeService extends EventEmitter {
 
     try { return await this.launching; }
     finally { this.launching = null; }
+  }
+
+  // v0.119.4: 反爬指纹 stealth 注入（每个新 page 创建后调一次）
+  //   必须在 page.setViewport/setUserAgent 之前调，
+  //   这样 evaluateOnNewDocument 在首次 domcontentloaded 时也能生效。
+  //   注入覆盖：navigator.webdriver / window.chrome.runtime / plugins / languages /
+  //   platform / WebGL vendor & renderer / permissions API。
+  //   配合 launch args 的 --disable-blink-features=AutomationControlled 双重保险。
+  async _applyStealth(page) {
+    try {
+      await page.evaluateOnNewDocument(STEALTH_INIT_SCRIPT);
+    } catch (e) {
+      console.warn('[app-runtime] evaluateOnNewDocument stealth 注入失败:', e.message);
+    }
   }
 
   // ── Native shell：真 Chromium app 窗口（微信默认模式）──
@@ -178,6 +201,9 @@ class AppRuntimeService extends EventEmitter {
     // 独立 cookie context（隔离登录态）— 关闭时自动清理
     const ctx = await browser.createBrowserContext();
     const page = await ctx.newPage();
+    // v0.119.4: 注入反爬指纹 stealth（在 page setViewport/setUserAgent 之前调，
+    //   evaluateOnNewDocument 在每次新文档加载前生效，包含 popup/about:blank 等）
+    await this._applyStealth(page);
     await page.setViewport({ width: w, height: h });
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
@@ -228,8 +254,8 @@ class AppRuntimeService extends EventEmitter {
           console.log(`[app-runtime] session ${sessionId.slice(0,8)} 拦截弹窗 → ${popupUrl.slice(0,100)}`);
           // 把当前页导航到弹窗 URL（同会话续载，画面/坐标/输入无缝切换 —— 与浏览器应用一致）
           await page.goto(popupUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
-          s.url = page.url();
-          service._broadcast(s, { type: 'navigated', url: s.url });
+          session.url = page.url();
+          service._broadcast(session, { type: 'navigated', url: session.url });
         } else {
           console.warn(`[app-runtime] session ${sessionId.slice(0,8)} 弹窗未拿到有效 URL（保留空白弹窗并关闭）`);
         }

@@ -64,9 +64,13 @@
     _assistPollers[reqId] = setInterval(() => poll(reqId), 2500);
   }
 
-async function poll(reqId) {
+  async function poll(reqId) {
     try {
       const resp = await api('GET', `/requirements/${reqId}/assist`);
+      // v0.22.52: 兜底写入 hiddenRequirementId（useAssist 之外的路径：loadAll 触发 / 切 tab 重拉 / 切窗口重拉）
+      if (resp && resp.hiddenRequirementId && resp.hiddenRequirementId !== reqId && window.ACMSChatState) {
+        window.ACMSChatState.setSessionRequirementId(reqId, resp.hiddenRequirementId);
+      }
       render(reqId, resp.assists || {});
       window._lastAssistCache[reqId] = resp.assists || {};
       // 停轮询条件：超过最小轮询时长 + 全 idle
@@ -206,7 +210,12 @@ async function poll(reqId) {
 
   async function useAssist(reqId, method, payload) {
     try {
-      await api('POST', `/requirements/${reqId}/assist/${method}/use`, payload || {});
+      const resp = await api('POST', `/requirements/${reqId}/assist/${method}/use`, payload || {});
+      // v0.22.52: 写入 hiddenRequirementId → _chatState.sessionRequirementId
+      //   让后续 startChatPolling 能拉到 hidden REQ 上的 supplement_history（工具结果卡片写在那里）
+      if (resp && resp.hiddenRequirementId && resp.hiddenRequirementId !== reqId && window.ACMSChatState) {
+        window.ACMSChatState.setSessionRequirementId(reqId, resp.hiddenRequirementId);
+      }
       poll(reqId);
     } catch (e) {
       toast('标记失败: ' + e.message, 'error');

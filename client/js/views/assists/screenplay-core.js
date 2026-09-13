@@ -56,30 +56,30 @@
       ipAnchor = ipDict.lookup(searchText);
     }
 
-    // v0.22.31: Subject 字段 — 如果有 IP 锚定，用 IP.nameEn；否则用 name
+    // v0.22.64: 全中文 prompt（多多 2026-09-13 要求「提示词都改成对应的中文」）
+    //   注：Agnes（国内模型）中文 prompt 效果已验证（历史中文 prompt 生成的图/视频都正常）
     const subjectLine = ipAnchor
-      ? `Subject: ${ipAnchor.nameEn}.`
-      : `Subject: ${name || 'a person'}.`;
+      ? `主体：${ipAnchor.nameEn}。`
+      : `主体：${name || '一个人物'}。`;
 
-    // v0.22.31: Appearance 字段 — 如果有 IP 锚定，用 IP.visualKeywords；否则用 desc
     const appearanceLine = ipAnchor
-      ? `Appearance: ${ipAnchor.visualKeywords}.`
-      : (desc ? `Appearance: ${desc}.` : 'Appearance: distinctive character design, expressive face.');
+      ? `外貌：${ipAnchor.visualKeywords}。`
+      : (desc ? `外貌：${desc}。` : '外貌：有辨识度的角色设计，表情生动。');
 
     // v0.22.23: 角色立绘只关注人物本身 — 不带 Scene mood / Story tone（类别错误）
     const lines = [
       subjectLine,
       appearanceLine,
-      'Pose: natural standing pose, facing camera with subtle 3/4 angle, full figure visible from head to below chest, confident posture.',
-      'View: medium close-up, eye-level camera, character-centered composition.',
-      'Expression: in-character facial expression matching personality.',
+      '姿态：自然站姿，正对镜头并略带四分之三侧身，全身可见（头顶到胸下），体态自信。',
+      '视角：中近景，平视镜头，人物居中构图。',
+      '表情：符合角色性格的入戏表情。',
       // 关键：背景必须简洁（角色立绘 ≠ narrative illustration）
-      'Background: clean neutral studio backdrop with soft gradient, no environment scenery, character-focused composition.',
+      '背景：干净的纯色影棚背景配柔和渐变，不出现环境景物，突出人物。',
       // v0.22.31: Style 字段前置硬约束（stylePrefix 强制锁死风格）+ 原有摄影描述 + styleSuffix 强化
-      `Style: ${styleTpl.stylePrefix} ${styleTpl.styleSuffix} Cinematic character portrait, ${ts}s short film character reference, soft studio key lighting with subtle rim light, sharp focus on face and outfit details, shallow depth of field.`,
-      'Quality: high detail, 4K, photorealistic, masterwork, clean composition.',
+      `风格：${styleTpl.stylePrefix} ${styleTpl.styleSuffix} 电影感人物肖像，${ts} 秒短片的角色设定参考图，影棚主光配细腻轮廓光，面部与服装细节清晰锐利，浅景深。`,
+      '质量：细节丰富，4K，写实，杰作级，画面干净。',
       // v0.22.31: negative 前置硬约束（negativePrefix 列出严禁项）+ 原有负面 + 防加戏
-      `Negative: ${styleTpl.negativePrefix} multiple characters, busy background, environment scenery, extra limbs, deformed hands, blurry face, extra fingers, disfigured, text, watermark, low quality.`,
+      `负面：${styleTpl.negativePrefix} 多个人物、杂乱背景、环境景物、多余肢体、畸形手、脸部模糊、多余手指、畸形、文字、水印、低质量。`,
     ];
     return lines.join(' ');
   }
@@ -102,24 +102,30 @@
       ipAnchor = ipDict.lookup(setting);
     }
 
-    // v0.22.31: Environment 字段 — IP 锚定时用 IP.visualKeywords + setting
+    // v0.22.64: 全中文（原英文见 git 历史）
     const envLine = ipAnchor
-      ? `Environment: ${setting || ''} (${ipAnchor.nameEn}). ${ipAnchor.visualKeywords}.`
-      : (setting ? `Environment: ${setting}.` : 'Environment: cinematic short film location, atmospheric.');
+      ? `环境：${setting || ''}（${ipAnchor.nameEn}）。${ipAnchor.visualKeywords}。`
+      : (setting ? `环境：${setting}。` : '环境：电影感短片取景地，氛围感强。');
 
-    const atmosphereLine = setting ? `Atmosphere: matching the environment (weather, time, mood of the place).` : 'Atmosphere: cinematic ambient mood.';
+    const atmosphereLine = setting ? '氛围：与所处环境一致（天气、时间、场地氛围）。' : '氛围：电影感的环境氛围。';
+
+    // v0.22.55 fix: 场景 prompt 不能直接用 styleTpl.styleSuffix
+    //   photorealistic 的 styleSuffix 含"人像"（原英文 'portrait'）—— 这是文生图模型的强人物信号，
+    //   即使 Scene:"画面中不出现人物" + Negative:"人物/人类/人群" 也压不住（positive 权重大于 negative）
+    //   修法：把"人像/肖像"替换成"环境摄影、空旷场景"（场景专属，不引导人物）
+    const sceneStyleSuffix = styleTpl.styleSuffix.replace(/人像|肖像|portrait/gi, '空镜');
 
     const lines = [
-      'Scene: environment establishing shot, no characters in frame.',
+      '场景：环境建立镜头，画面中不出现人物。',
       envLine,
       atmosphereLine,
-      'Composition: wide establishing shot, slight low angle or eye level, clear foreground-mid-background depth, environment-focused framing.',
-      'Lighting: natural ambient lighting consistent with environment and time of day, soft atmospheric haze, depth of field.',
-      // v0.22.31: Style 字段前置硬约束
-      `Style: ${styleTpl.stylePrefix} ${styleTpl.styleSuffix} Cinematic establishing shot, ${ts}s short film aesthetic, photorealistic, atmospheric lighting, professional cinematography.`,
-      'Quality: high detail, 4K, photorealistic, masterwork, wide composition.',
-      // v0.22.31: negative 前置硬约束 + 防角色/动物干扰
-      `Negative: ${styleTpl.negativePrefix} people, characters, humans, animals, pets, text, watermark, blurry, low quality.`,
+      '构图：广角建立镜头，略低角度或平视，前中后景层次清晰，以环境为主体。',
+      '光线：与环境及时间一致的自然环境光，柔和空气感，景深。',
+      // v0.22.55: 用 sceneStyleSuffix（不含"人像"）代替原 styleSuffix
+      `风格：${styleTpl.stylePrefix} ${sceneStyleSuffix} 电影感建立镜头，${ts} 秒短片质感，写实，氛围光效，专业摄影，空旷场地，无人物。`,
+      '质量：细节丰富，4K，写实，杰作级，广角构图。',
+      // v0.22.55: negative 加强 — 不只防"人"，还要明确"空镜 / 无人"
+      `负面：${styleTpl.negativePrefix} 人物、角色、人类、动物、宠物、人群、拥挤、有人、文字、水印、模糊、低质量。`,
     ];
     return lines.join(' ');
   }
@@ -148,23 +154,27 @@
       ipAnchor = ipDict.lookup(searchText);
     }
 
+    // v0.22.64: 全中文（原英文见 git 历史）
     const settingLine = ipAnchor
-      ? `Setting: ${setting} (${ipAnchor.nameEn}). ${ipAnchor.visualKeywords}.`
-      : (setting ? `Setting: ${setting}.` : '');
+      ? `场景：${setting}（${ipAnchor.nameEn}）。${ipAnchor.visualKeywords}。`
+      : (setting ? `场景：${setting}。` : '');
+
+    // 视频里可能有角色 → styleSuffix 里的"人像/肖像"改成中性"真实场景画面"（不误导为空镜）
+    const videoStyleSuffix = styleTpl.styleSuffix.replace(/人像|肖像|portrait/gi, '画面');
 
     const parts = [
       // v0.22.31: 场景环境（上下文锚定 — 跟当前剧本 setting 一致 + IP 视觉锚定）
       settingLine,
       // 镜头与构图
-      shot ? `Camera: ${shot}.` : 'Camera: cinematic medium shot, eye level, slight depth of field.',
+      shot ? `镜头：${shot}。` : '镜头：电影感中景，平视，适度景深。',
       // 动作（核心）
-      action ? `Action: ${action}.` : '',
+      action ? `动作：${action}。` : '',
       // 对白（如有）
-      dialogue ? `Dialogue: Character says: "${dialogue}".` : '',
+      dialogue ? `对白：角色说："${dialogue}"。` : '',
       // v0.22.31: 风格一致性（前置硬约束 + 原有描述）
-      `Style: ${styleTpl.stylePrefix} ${styleTpl.styleSuffix} Cinematic ${ts}s short film aesthetic, photorealistic, professional cinematography, smooth natural motion.`,
+      `风格：${styleTpl.stylePrefix} ${videoStyleSuffix} 电影感 ${ts} 秒短片质感，写实，专业摄影，动作流畅自然。`,
       // 质量
-      'Quality: high detail, 4K, sharp focus, coherent motion.',
+      '质量：细节丰富，4K，焦点锐利，动作连贯。',
     ].filter(Boolean);
     return parts.join(' ');
   }
@@ -253,13 +263,26 @@
     const assets = data.assets || { characters: {}, scenes: {} };
     const sceneVideos = data.scene_videos || {};
     const target = data.target_seconds || 30;
+    // v0.22.67: 首帧图 + 视频选项（每段时长/画幅）+ 项目 slug（拼本地资源 URL）
+    const sceneFrames = data.scene_frames || {};
+    const proj = encodeURIComponent(data.project_id || 'default');
+    const videoOpts = Object.assign(
+      { seconds_per_scene: Math.max(4, Math.min(12, Math.round(target / Math.max(1, scenes.length)) || 5)),
+        aspect_ratio: '16:9', video_model: 'agnes-video-2.5-flash' },
+      data.video_opts || {}
+    );
 
     // 统计资源就绪情况
     const charAssets = assets.characters || {};
     const sceneAssets = assets.scenes || {};
     const charsReady = characters.filter(c => charAssets[c.name]?.asset_path).length;
     const sceneReady = (sceneAssets['0']?.asset_path) ? 1 : 0;
-    const videoReady = scenes.filter((_, i) => sceneVideos[String(i)]?.video_url).length;
+    // v0.22.65: 计数口径与「是否已生成」一致 —— asset_path（已落本地）或 video_url（CDN）任一存在即算已生成
+    //   之前只认 video_url → 本地已下载但 video_url 为空的记录会被算成"未生成"（合成入口不出现）
+    const videoReady = scenes.filter((_, i) => {
+      const v = sceneVideos[String(i)];
+      return !!(v && (v.asset_path || v.video_url));
+    }).length;
     const charsTotal = characters.length;
     const sceneTotal = 1;
     const videoTotal = scenes.length;
@@ -286,10 +309,12 @@
       const hasMultipleOptions = options.length > 1;
 
       // 3 张候选缩略图（v0.22.11 换图功能）
+      // v0.22.57: 改 column 排列（之前 flex-wrap 横排 → 用户报"生成图片后由左向右"）
+      //   每张候选独立一行 + 左对齐（按 v1.0"section 完整对等"原则）
       const optionsHtml = hasMultipleOptions ? `
         <details style="margin-top:6px" data-screenplay-options="${escHtml(name).replace(/"/g, '&quot;')}">
           <summary style="font-size:11px;color:var(--accent);cursor:pointer;user-select:none">🔀 候选 ${options.length} 张（已选第 ${(asset.picked_idx || 0) + 1} 张 · 点切换）</summary>
-          <div style="display:flex;flex-wrap:wrap;gap:4px;padding:6px 0">
+          <div style="display:flex;flex-direction:column;align-items:flex-start;gap:6px;padding:6px 0">
             ${options.map((opt, i) => {
               const optSrc = opt.asset_path
                 ? `/api/generate/assets/${encodeURIComponent(data.project_id || 'default')}/${opt.asset_path}`
@@ -299,12 +324,13 @@
               const isSelected = (asset.picked_idx || 0) === i;
               return `
                 <div onclick="screenplayPickOption('${reqId}', 'character', '${escHtml(name).replace(/'/g, "\\'")}', ${i})" style="
-                  width:60px;height:60px;border-radius:4px;cursor:pointer;position:relative;
-                  border:2px solid ${isSelected ? 'var(--accent)' : 'var(--border)'};
+                  display:flex;align-items:center;gap:8px;
+                  padding:4px 6px;border-radius:4px;cursor:pointer;position:relative;
+                  border:1px solid ${isSelected ? 'var(--accent)' : 'var(--border)'};
                   background:${isSelected ? 'rgba(99,102,241,0.1)' : 'transparent'};
-                  display:flex;align-items:center;justify-content:center;
                 " title="候选 ${i + 1}">
-                  ${displayOptSrc ? `<img src="${escHtml(displayOptSrc)}" style="width:100%;height:100%;object-fit:cover;border-radius:2px" alt="候选 ${i + 1}" onerror="this.onerror=null;this.src='${escHtml(optCdn || '')}';" />` : '<span style="color:var(--text3);font-size:10px">无图</span>'}
+                  ${displayOptSrc ? `<img src="${escHtml(displayOptSrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:2px;flex-shrink:0" alt="候选 ${i + 1}" onerror="this.onerror=null;this.src='${escHtml(optCdn || '')}';" />` : '<span style="color:var(--text3);font-size:10px">无图</span>'}
+                  <span style="font-size:11px;color:var(--text2)">候选 ${i + 1}${isSelected ? ' · ✅ 已选' : ''}</span>
                   ${isSelected ? '<div style="position:absolute;top:2px;right:2px;background:var(--accent);color:white;border-radius:50%;width:14px;height:14px;display:flex;align-items:center;justify-content:center;font-size:9px">✓</div>' : ''}
                 </div>
               `;
@@ -320,18 +346,15 @@
 
       return `
         <div class="screenplay-asset-block" style="margin:8px 0;padding:8px;background:var(--bg);border:1px solid ${isReady ? 'var(--green)' : 'var(--border)'};border-radius:6px">
-          <div style="display:flex;align-items:center;gap:8px">
-            <div style="flex:1">
-              <div style="font-weight:600;font-size:13px">👤 ${escHtml(name)} ${isReady ? '<span style="color:var(--green)">✅</span>' : '<span style="color:var(--text3)">⏳</span>'}</div>
-              <!-- v0.22.22: 默认填入结构化 prompt（带名字/风格/负面提示），用户可改 -->
-              <textarea id="${taId}" rows="3" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit;margin-top:2px" placeholder="修改图片生成的提示词…">${escHtml(defaultPrompt)}</textarea>
-              <div style="font-size:10px;color:var(--text3);margin-top:1px">✏️ 默认已带角色名+描述+场景+风格，可自由修改后点下方按钮</div>
-            </div>
-            ${displaySrc ? `<img src="${escHtml(displaySrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px;cursor:zoom-in" onclick="event.stopPropagation();previewImage('${escHtml(displaySrc)}','${escHtml(cdnFallback || '')}')" alt="角色图" onerror="this.onerror=null;this.src='${escHtml(cdnFallback || '')}';" />` : ''}
-            <div style="display:flex;flex-direction:column;gap:3px">
-              ${isReady ? `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'character', '${escHtml(name)}', document.getElementById('${taId}').value)" style="font-size:10px">🎨 重新生成</button>` : `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'character', '${escHtml(name)}', document.getElementById('${taId}').value)">🎨 生成图</button>`}
-            </div>
+          <!-- v0.22.56: asset block 内部全 column（之前头行 [名字+图+按钮] 横排让"图"挤右边 → "由左向右"）
+               现在：头行 [名字 flex:1 + 按钮] + textarea 全宽 + 提示 + 图（次要预览，textarea 下方居左） + 候选 details -->
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+            <div style="font-weight:600;font-size:13px;flex:1;min-width:0">👤 ${escHtml(name)} ${isReady ? '<span style="color:var(--green)">✅</span>' : '<span style="color:var(--text3)">⏳</span>'}</div>
+            <button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'character', '${escHtml(name)}', document.getElementById('${taId}').value)" style="font-size:10px;flex-shrink:0">${isReady ? '🎨 重新生成' : '🎨 生成图'}</button>
           </div>
+          <textarea id="${taId}" rows="3" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit" placeholder="修改图片生成的提示词…">${escHtml(defaultPrompt)}</textarea>
+          <div style="font-size:10px;color:var(--text3);margin-top:1px">✏️ 默认已带角色名+描述+场景+风格，可自由修改后点下方按钮</div>
+          ${displaySrc ? `<div style="margin-top:6px"><img src="${escHtml(displaySrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px;cursor:zoom-in" onclick="event.stopPropagation();previewImage('${escHtml(displaySrc)}','${escHtml(cdnFallback || '')}')" alt="角色图" onerror="this.onerror=null;this.src='${escHtml(cdnFallback || '')}';" /></div>` : ''}
           ${optionsHtml}
         </div>
       `;
@@ -349,10 +372,11 @@
     const sceneIsReady = !!sceneImgAsset;
     const sceneOptions = sceneAsset?.options || [];
     const sceneHasMultipleOptions = sceneOptions.length > 1;
+    // v0.22.57: 候选 details 改 column 排列（之前 flex-wrap 横排 → "由左向右"）
     const sceneOptionsHtml = sceneHasMultipleOptions ? `
       <details style="margin-top:6px" data-screenplay-options="scene_0">
         <summary style="font-size:11px;color:var(--accent);cursor:pointer;user-select:none">🔀 候选 ${sceneOptions.length} 张（已选第 ${(sceneAsset.picked_idx || 0) + 1} 张 · 点切换）</summary>
-        <div style="display:flex;flex-wrap:wrap;gap:4px;padding:6px 0">
+        <div style="display:flex;flex-direction:column;align-items:flex-start;gap:6px;padding:6px 0">
           ${sceneOptions.map((opt, i) => {
             const optSrc = opt.asset_path
               ? `/api/generate/assets/${encodeURIComponent(data.project_id || 'default')}/${opt.asset_path}`
@@ -362,12 +386,13 @@
             const isSelected = (sceneAsset.picked_idx || 0) === i;
             return `
               <div onclick="screenplayPickOption('${reqId}', 'scene', '0', ${i})" style="
-                width:60px;height:60px;border-radius:4px;cursor:pointer;position:relative;
-                border:2px solid ${isSelected ? 'var(--accent)' : 'var(--border)'};
+                display:flex;align-items:center;gap:8px;
+                padding:4px 6px;border-radius:4px;cursor:pointer;position:relative;
+                border:1px solid ${isSelected ? 'var(--accent)' : 'var(--border)'};
                 background:${isSelected ? 'rgba(99,102,241,0.1)' : 'transparent'};
-                display:flex;align-items:center;justify-content:center;
               " title="候选 ${i + 1}">
-                ${displayOptSrc ? `<img src="${escHtml(displayOptSrc)}" style="width:100%;height:100%;object-fit:cover;border-radius:2px" alt="候选 ${i + 1}" onerror="this.onerror=null;this.src='${escHtml(optCdn || '')}';" />` : '<span style="color:var(--text3);font-size:10px">无图</span>'}
+                ${displayOptSrc ? `<img src="${escHtml(displayOptSrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:2px;flex-shrink:0" alt="候选 ${i + 1}" onerror="this.onerror=null;this.src='${escHtml(optCdn || '')}';" />` : '<span style="color:var(--text3);font-size:10px">无图</span>'}
+                <span style="font-size:11px;color:var(--text2)">候选 ${i + 1}${isSelected ? ' · ✅ 已选' : ''}</span>
                 ${isSelected ? '<div style="position:absolute;top:2px;right:2px;background:var(--accent);color:white;border-radius:50%;width:14px;height:14px;display:flex;align-items:center;justify-content:center;font-size:9px">✓</div>' : ''}
               </div>
             `;
@@ -380,18 +405,14 @@
     const sceneTaId = `spsc-${reqId}-scene-0`;
     const sceneBlock = `
       <div class="screenplay-asset-block" style="margin:8px 0;padding:8px;background:var(--bg);border:1px solid ${sceneIsReady ? 'var(--green)' : 'var(--border)'};border-radius:6px">
-        <div style="display:flex;align-items:center;gap:8px">
-          <div style="flex:1">
-            <div style="font-weight:600;font-size:13px">🎬 场景设定 ${sceneIsReady ? '<span style="color:var(--green)">✅</span>' : '<span style="color:var(--text3)">⏳</span>'}</div>
-            <!-- v0.22.22: 默认填入结构化场景 prompt（带环境+氛围+风格+负面），用户可改 -->
-            <textarea id="${sceneTaId}" rows="3" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit;margin-top:2px" placeholder="修改场景图的提示词…">${escHtml(sceneDefaultPrompt)}</textarea>
-            <div style="font-size:10px;color:var(--text3);margin-top:1px">✏️ 默认已带环境+氛围+风格，可自由修改后点下方按钮</div>
-          </div>
-          ${sceneDisplaySrc ? `<img src="${escHtml(sceneDisplaySrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px;cursor:zoom-in" onclick="event.stopPropagation();previewImage('${escHtml(sceneDisplaySrc)}','${escHtml(sceneCdnFallback || '')}')" alt="场景图" onerror="this.onerror=null;this.src='${escHtml(sceneCdnFallback || '')}';" />` : ''}
-          <div style="display:flex;flex-direction:column;gap:3px">
-            ${sceneIsReady ? `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'scene', '0', document.getElementById('${sceneTaId}').value)" style="font-size:10px">🎨 重新生成</button>` : `<button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'scene', '0', document.getElementById('${sceneTaId}').value)">🎨 生成图</button>`}
-          </div>
+        <!-- v0.22.56: 同角色块改全 column，头行 [名字+按钮] + textarea 全宽 + 提示 + 图（次要预览，textarea 下方） -->
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+          <div style="font-weight:600;font-size:13px;flex:1;min-width:0">🎬 场景设定 ${sceneIsReady ? '<span style="color:var(--green)">✅</span>' : '<span style="color:var(--text3)">⏳</span>'}</div>
+          <button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'scene', '0', document.getElementById('${sceneTaId}').value)" style="font-size:10px;flex-shrink:0">${sceneIsReady ? '🎨 重新生成' : '🎨 生成图'}</button>
         </div>
+        <textarea id="${sceneTaId}" rows="3" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit" placeholder="修改场景图的提示词…">${escHtml(sceneDefaultPrompt)}</textarea>
+        <div style="font-size:10px;color:var(--text3);margin-top:1px">✏️ 默认已带环境+氛围+风格，可自由修改后点下方按钮</div>
+        ${sceneDisplaySrc ? `<div style="margin-top:6px"><img src="${escHtml(sceneDisplaySrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px;cursor:zoom-in" onclick="event.stopPropagation();previewImage('${escHtml(sceneDisplaySrc)}','${escHtml(sceneCdnFallback || '')}')" alt="场景图" onerror="this.onerror=null;this.src='${escHtml(sceneCdnFallback || '')}';" /></div>` : ''}
         ${sceneOptionsHtml}
       </div>
     `;
@@ -405,12 +426,37 @@
       const hasVideo = !!videoSrc;
       const characterAsset = characters.length > 0 ? charAssets[characters[0].name] : null;
       const hasAllAssets = characterAsset?.asset_path && sceneImgAsset;
-      const disabledHint = hasAllAssets ? '' : '（需先生成角色图 + 场景图）';
+
+      // v0.22.67: 首帧图（本场起始定格）—— 作为本段 first_frame，同时作为上一段的 last_frame
+      // v0.22.70 fix: 破图 —— image-tools-service.coreGenerate 返回的 asset_path 自带了 workspace 前缀
+      //   （'agent-buddy-actions/assets/2026-09-13/x.png'），而这里拼 /api/generate/assets/<slug>/ 时又拼了一次
+      //   → 变成 /<slug>/<workspaceDir>/assets/... → 404 → 破图。统一剥掉到 'assets/' 开头。
+      const frameObj = sceneFrames[String(idx)];
+      const normAsset = (p) => {
+        if (!p) return '';
+        const i = String(p).indexOf('assets/');
+        return i > 0 ? String(p).slice(i) : String(p);
+      };
+      const frameSrc = frameObj
+        ? (frameObj.asset_path ? `/api/generate/assets/${proj}/${normAsset(frameObj.asset_path)}` : (frameObj.image_url_output || ''))
+        : '';
+      const nextFrameObj = sceneFrames[String(idx + 1)];
+      const isLastScene = idx === scenes.length - 1;
+      const canGenVideo = !!frameSrc || hasAllAssets;
+      const disabledHint = canGenVideo ? '' : '（需先生成角色图 + 场景图，或生成首帧图）';
       const statusBadge = hasVideo
         ? '<span style="color:var(--green)">✅</span>'
-        : hasAllAssets
+        : canGenVideo
           ? '<span style="color:var(--accent)">🔓 可生成</span>'
           : '<span style="color:var(--text3)">⏳ 等待</span>';
+      // 衔接说明：本段尾帧 = 下一场首帧（同一张图 → 接缝处画面连续）
+      const linkLine = isLastScene
+        ? (frameSrc ? '<span style="color:var(--green)">✅ 末段（只用首帧，结尾自由收束）</span>' : '')
+        : (frameSrc && nextFrameObj
+            ? '<span style="color:var(--green)">🔗 尾帧 = 场 ' + (idx + 2) + ' 首帧（已衔接）</span>'
+            : (frameSrc
+                ? '<span style="color:var(--accent3)">⚠️ 场 ' + (idx + 2) + ' 首帧未生成 → 本段结尾自由发挥（会有跳变）</span>'
+                : ''));
 
       return `
         <div class="screenplay-scene-block" style="margin:6px 0;padding:8px;background:var(--bg2);border:1px solid ${hasVideo ? 'var(--green)' : 'var(--border)'};border-radius:6px">
@@ -423,19 +469,32 @@
             ${sc.dialogue && sc.dialogue !== '——' ? `<div>💬 <strong>对白：</strong>${escHtml(sc.dialogue)}</div>` : ''}
             ${sc.action ? `<div>🎬 <strong>动作：</strong>${escHtml(sc.action)}</div>` : ''}
           </div>
+
+          <div style="margin:6px 0;padding:6px 8px;background:var(--bg);border:1px dashed ${frameSrc ? 'var(--green)' : 'var(--border)'};border-radius:6px">
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="font-size:11px;font-weight:600;flex:1;min-width:0">🖼 首帧图 ${frameSrc ? '✅' : '<span style="color:var(--text3)">未生成</span>'}</span>
+              <button class="btn-small" style="font-size:10px;flex-shrink:0" onclick="screenplayGenSceneFrame('${reqId}', ${idx}, this)" title="${frameSrc ? '重新生成这一场的首帧图（角色图+场景图作为参考）' : '用角色图+场景图生成这一场的起始定格画面'}">${frameSrc ? '🔄 重生成首帧' : '🎬 生成首帧图'}</button>
+            </div>
+            ${frameSrc ? `
+              <div style="margin-top:6px">
+                <img src="${escHtml(frameSrc)}" style="width:100%;max-width:200px;border-radius:4px;cursor:zoom-in;display:block" onclick="event.stopPropagation();previewImage('${escHtml(frameSrc)}','${escHtml(frameObj.image_url_output || '')}')" alt="首帧图" title="点击放大">
+              </div>
+            ` : `<div style="font-size:10px;color:var(--text3);margin-top:2px">先生成首帧图 → 本段以它为起点，下一场以它为终点，段与段自然衔接</div>`}
+            ${linkLine ? `<div style="font-size:10px;margin-top:3px">${linkLine}</div>` : ''}
+          </div>
+
                       <!-- v0.22.23: 默认填入结构化视频 prompt（Setting+Camera+Action+Dialogue+Style+Quality），用户可改 -->
             <textarea id="spvid-${reqId}-${idx}" rows="3" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit" placeholder="修改视频生成的提示词…">${escHtml(buildSceneVideoPrompt(sc, sp))}</textarea>
             <div style="font-size:10px;color:var(--text3);margin-top:1px">✏️ 可修改提示词后点下方按钮</div>
-          </div>
           ${hasVideo ? `
             <div style="margin-top:6px">
-              <video controls style="width:100%;max-width:320px;border-radius:4px" src="${escHtml(videoSrc)}"></video>
-              <div style="font-size:10px;color:var(--text2);margin-top:2px">✅ 视频已生成${video.asset_path ? '（已保存到本地）' : ''}</div>
+              <video controls preload="metadata" style="width:100%;max-width:320px;border-radius:4px;cursor:zoom-in;background:#000;display:block" src="${escHtml(videoSrc)}" onclick="${videoClickAttr(videoSrc, video?.video_url)}" title="点击放大播放"></video>
+              <div style="font-size:10px;color:var(--text2);margin-top:2px">✅ 视频已生成${video.asset_path ? '（已保存到本地）' : ''}${video.mode === 'keyframe' ? ' · 首尾帧模式' : ''} · 点击画面可放大播放</div>
             </div>
           ` : `
             <div style="margin-top:6px">
-              <button class="btn-small" ${hasAllAssets ? '' : 'disabled'} onclick="screenplayGenVideo('${reqId}', ${idx}, document.getElementById('spvid-${reqId}-${idx}').value)" style="font-size:11px">
-                🎥 生成视频${disabledHint}
+              <button class="btn-small" ${canGenVideo ? '' : 'disabled'} onclick="screenplayGenVideo('${reqId}', ${idx}, document.getElementById('spvid-${reqId}-${idx}').value)" style="font-size:11px">
+                🎥 生成视频${frameSrc ? '（首尾帧衔接）' : ''}${disabledHint}
               </button>
             </div>
           `}
@@ -464,11 +523,105 @@
 
       <div class="screenplay-section-block">
         <div class="screenplay-section-title">🎞 分镜头（${videoReady}/${videoTotal} 场已生成）</div>
+        ${renderVideoOptsRow(reqId, data)}
         ${scenesHtml}
       </div>
 
+      ${renderFinalVideoBlock(reqId, data, videoReady, videoTotal, sceneVideos)}
+
       <div style="margin-top:8px;padding-top:6px;border-top:1px solid var(--border)">
         <button class="btn-small btn-secondary" onclick="ACMSAssistDispatcher.regenerateBatch('${reqId}', 'screenplay')" title="换一批剧本">🔄 换一批剧本</button>
+      </div>
+    `;
+  }
+
+  /**
+   * v0.22.67: 视频生成选项行（每段时长 / 画幅）—— 用户拍板「有默认值但允许调整」
+   *   - 每段时长：4-12s（2.5-flash 的 seconds 支持范围），默认 = 总时长 ÷ 场数
+   *   - 画幅：16:9（默认）/ 9:16 / 1:1 / 4:3 / 3:4
+   *   改动即时写回后端（set_video_opts），下一次生成视频/首帧图即生效
+   */
+  function renderVideoOptsRow(reqId, data) {
+    const target = data.target_seconds || 30;
+    const sceneN = ((data.screenplays && data.screenplays[data.picked]) || {}).scenes || [];
+    const defaults = { seconds_per_scene: Math.max(4, Math.min(12, Math.round(target / Math.max(1, sceneN.length)) || 5)), aspect_ratio: '16:9' };
+    const vo = Object.assign(defaults, data.video_opts || {});
+    const secOpts = [4, 5, 6, 8, 10, 12].map(v =>
+      `<option value="${v}"${v === vo.seconds_per_scene ? ' selected' : ''}>${v}s</option>`).join('');
+    const aspOpts = ['16:9', '9:16', '1:1', '4:3', '3:4'].map(v =>
+      `<option value="${v}"${v === vo.aspect_ratio ? ' selected' : ''}>${v}${v === '16:9' ? '（默认）' : ''}</option>`).join('');
+    return `
+      <div style="margin:4px 0 6px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <span style="font-size:10px;color:var(--text3)">生成参数</span>
+        <label style="font-size:11px;color:var(--text2)">每段时长
+          <select class="btn-small" style="font-size:11px;padding:1px 4px" onchange="screenplaySetVideoOpts('${reqId}','seconds_per_scene',this.value,this)" title="2.5-flash 支持 4-12 秒/段；总时长 ${target}s">${secOpts}</select>
+        </label>
+        <label style="font-size:11px;color:var(--text2)">画幅
+          <select class="btn-small" style="font-size:11px;padding:1px 4px" onchange="screenplaySetVideoOpts('${reqId}','aspect_ratio',this.value,this)" title="视频与首帧图都会用这个画幅">${aspOpts}</select>
+        </label>
+        <span style="font-size:10px;color:var(--text3)">模型 ${escHtml(vo.video_model || 'agnes-video-2.5-flash')}（首尾帧）</span>
+      </div>
+    `;
+  }
+
+  /**
+   * v0.22.65: 完整视频区块（分镜头合成）
+   *   用户报「3 段视频是割裂的，怎么连到一起」→ 这里给「合成完整视频」入口 + 成片回显
+   *   - 已有 final_video → 播放器（点画面放大播放）+ 元信息 + 重新合成（可选过渡）+ 下载
+   *   - 未合成且已生成 ≥2 段 → 两个合成按钮（无缝拼接 / 淡入淡出）
+   *   - 段数不足 → 明确提示还差几段（不静默隐藏）
+   */
+  function renderFinalVideoBlock(reqId, data, videoReady, videoTotal, sceneVideos) {
+    const final = data.final_video;
+    const proj = encodeURIComponent(data.project_id || 'default');
+    const finalSrc = final && final.asset_path ? `/api/generate/assets/${proj}/${final.asset_path}` : '';
+    const boxStyle = 'margin:6px 0;padding:8px;background:var(--bg2);border:1px solid var(--border);border-radius:6px';
+
+    if (final && finalSrc) {
+      const dur = final.duration ? Math.round(final.duration * 10) / 10 + 's' : '?';
+      const mb = final.size ? (final.size / 1048576).toFixed(1) + 'MB' : '?';
+      const how = final.transition === 'fade' ? '淡入淡出过渡' : '无缝拼接';
+      return `
+        <div class="screenplay-section-block">
+          <div class="screenplay-section-title">🎬 完整视频（已合成）</div>
+          <div class="${'screenplay-final-block'}" style="${boxStyle};border-color:var(--green)">
+            <video controls preload="metadata" style="width:100%;max-width:360px;border-radius:4px;cursor:zoom-in;background:#000;display:block" src="${escHtml(finalSrc)}" onclick="${videoClickAttr(finalSrc)}" title="点击放大播放"></video>
+            <div style="font-size:10px;color:var(--text2);margin-top:4px">
+              ✅ ${final.segments || videoReady} 段 · ${dur} · ${mb} · ${how} · 点击画面可放大播放
+            </div>
+            <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+              <span style="font-size:10px;color:var(--text3)">重新合成：</span>
+              <button class="btn-small" style="font-size:10px" onclick="screenplayComposeFinal('${reqId}', 'none', this)">🎞 无缝拼接</button>
+              <button class="btn-small" style="font-size:10px" onclick="screenplayComposeFinal('${reqId}', 'fade', this)">✨ 淡入淡出过渡</button>
+              <a class="btn-small" style="font-size:10px;text-decoration:none" href="${escHtml(finalSrc)}" download title="下载完整视频">⬇️ 下载</a>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    if (videoReady >= 2) {
+      return `
+        <div class="screenplay-section-block">
+          <div class="screenplay-section-title">🎬 完整视频（${videoReady}/${videoTotal} 段已生成，可合成）</div>
+          <div style="${boxStyle}">
+            <div style="font-size:11px;color:var(--text2);margin-bottom:6px">把已生成的 ${videoReady} 个分镜头按顺序拼成一条完整视频（ffmpeg 本地合成，几秒完成）</div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              <button class="btn-small btn-primary" style="font-size:11px" onclick="screenplayComposeFinal('${reqId}', 'none', this)">🎞 合成完整视频</button>
+              <button class="btn-small" style="font-size:11px" onclick="screenplayComposeFinal('${reqId}', 'fade', this)" title="相邻两段 0.4 秒交叉溶解，观感更顺">✨ 淡入淡出过渡</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    // 不足 2 段：明确说明还差多少（不静默隐藏，避免用户以为功能没了）
+    return `
+      <div class="screenplay-section-block">
+        <div class="screenplay-section-title">🎬 完整视频</div>
+        <div style="${boxStyle}">
+          <div style="font-size:11px;color:var(--text3)">已生成 ${videoReady}/${videoTotal} 段 —— 至少 2 段才能合成完整视频</div>
+        </div>
       </div>
     `;
   }
@@ -519,18 +672,27 @@
       return `<div class="chat-system-msg">${escHtml((jsonText || '').slice(0, 100))}</div>`;
     }
     // 转成 renderDetail 期望的 data 结构（含完整 assets + scene_videos + project_id）
+    // 注意：card.screenplay 是 server 写卡时已经是被选中的那一个（writeScreenplayChatEntry 传
+    //   assist.screenplays[assist.picked]），所以 screenplays 数组长度恒为 1 → picked 必须是 0。
+    //   card.picked_idx 是「3 个候选剧本里的第几个」(0/1/2)，不是「screenplays 数组索引」，
+    //   之前误用它当 picked → 用户选了第 2/3 个剧本后再选图 → screenplays[1/2]=undefined → "剧本数据丢失"
     return renderDetail(reqId, {
       status: 'done',
       idea: card.idea || '',
       target_seconds: card.target_seconds || 30,
       screenplays: [card.screenplay],
-      picked: card.picked_idx || 0,
+      picked: 0,
       picked_at: card.saved_at || new Date().toISOString(),
       // v0.22.13: 把 resources 也带过来（让聊天流卡片也能用按钮交互）
       assets: card.assets || { characters: {}, scenes: {} },
       scene_videos: card.scene_videos || {},
       // v0.22.20: server 端 setAsset/writeScreenplayChatEntry 已把 project_id 写进 card
       //   之前这里没传 → 拼本地 URL fallback 到 'default' → 404（因为没有 default 项目）
+      // v0.22.65: 合成后的完整视频也要带过来（否则聊天流卡片看不到成片）
+      final_video: card.final_video || null,
+      // v0.22.67: 首帧图 + 视频选项（每段时长/画幅）
+      scene_frames: card.scene_frames || {},
+      video_opts: card.video_opts || null,
       project_id: card.project_id || null,
     });
   }

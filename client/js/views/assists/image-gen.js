@@ -242,38 +242,86 @@ async function refreshImageCard(reqId) {
 }
 
 /**
- * v0.22.20: 刷新聊天流里的 screenplay_result 卡片（用最新 chat history 重渲染）
- *   解决「选图后剧本角色块不显示图」—— server 端 setAsset 已重写 chat history
- *   screenplay_result 卡片（含新 assets），但聊天流 DOM 是 frozen 的旧 HTML
- *   必须主动重渲染
+ * v0.22.20: 刷新聊天流里的 screenplay_result 卡片
+ *   用 sidebar 同源最新 sp data + 只刷新**最新一张**气泡（保留历史）
+ *
+ *   v0.22.54 fix: 之前从 history .find 第一个 screenplay_result entry → 用它的 card.text
+ *     渲染**所有**含 .screenplay-asset-block 的气泡。同 session 不同轮触发的剧本会共存多张
+ *     screenplay_result 卡（不同 idea），find 返回的是最早那张（不是当前选中的）→ 当前剧本
+ *     气泡被覆盖成老剧本内容 → 用户报「剧本变成历史会话里面很早之前生成的剧本」
+ *   新逻辑：
+ *     ① 走 sidebar 同源 GET /requirements/:id/assist → 拿到当前选中的 sp（含完整 assets + screenplays + picked）
+ *     ② 调 renderDetail（不是 renderFromChatEntry）→ 用 sp 完整数据渲染（之前 picked:0 的修复也用得着）
+ *     ③ 只替换 chat-bubble-system DOM 顺序**最后一张**含 screenplay-asset-block 的气泡（历史剧本气泡保留）
  */
 async function refreshScreenplayChatCard(reqId) {
   try {
     const chatContainer = document.getElementById('chat-stream-msgs-' + reqId);
     if (!chatContainer || !window.ACMSScreenplayCard) return;
 
-    // 拉最新 chat history 找 screenplay_result 卡片
-    const histResp = await api('GET', `/requirements/${reqId}/supplement-history`);
-    const card = (histResp.history || []).find(e => e.source === 'screenplay_result');
-    if (!card) return;
+    // ① sidebar 同源最新数据（自动 resolve sess-xxx → hidden REQ）
+    const assistResp = await api('GET', `/requirements/${reqId}/assist`);
+    const sp = assistResp && assistResp.assists && assistResp.assists.screenplay;
+    if (!sp) return;
+    // 必须已选中剧本才刷新（避免重复推未选状态的 3 个剧本列表卡）
+    if (sp.picked === null || sp.picked === undefined) return;
 
-    // 找聊天流里的 screenplay 卡片所在的 chat-bubble-system
+    // ② 用 sp 完整数据渲染（screenplays[3] + picked + assets + project_id 都在）
+    const fresh = window.ACMSScreenplayCard.renderDetail(reqId, sp);
+    if (!fresh) return;
+
+    // ③ 只刷新 DOM 顺序最后一张 screenplay 气泡（对应当前 session 最新剧本）
+    //   其他含 .screenplay-asset-block 的气泡保留——它们是历史剧本
     const bubbles = chatContainer.querySelectorAll('.chat-bubble-system');
-    bubbles.forEach(_b => {
-      if (!_b.querySelector('.screenplay-asset-block, .assist-section-title')) return;
-      // 保留 .chat-bubble-meta，替换 meta 之后的内容
-      const meta = _b.querySelector('.chat-bubble-meta');
-      const fresh = window.ACMSScreenplayCard.renderFromChatEntry(reqId, card.text);
-      if (meta) {
-        // 只替换 meta 之后的内容
-        const temp = document.createElement('div');
-        temp.innerHTML = meta.outerHTML + fresh;
-        _b.innerHTML = '';
-        while (temp.firstChild) _b.appendChild(temp.firstChild);
-      } else {
-        _b.innerHTML = fresh;
+    let latestBubble = null;
+    bubbles.forEach(function (_b) {
+      if (_b.querySelector('.screenplay-asset-block, .assist-section-title')) {
+        latestBubble = _b;
       }
     });
+
+    // v0.22.68: 流里还没有剧本卡 → 补一张（之前直接 return）
+    //   场景：自由对话打开会话时只回放**文字**消息，历史卡片不回放（loadChatSessionMessages 的
+    //   水位线设计）→ 用户点「选这个剧本」后，流里根本没有可刷新的剧本气泡 → 刷新等于没做 →
+    //   用户看到「剧本在对话流里显示不出来」。这里直接把最新卡追加到流末尾。
+    if (!latestBubble) {
+      const wrap = document.createElement('div');
+      wrap.className = 'chat-bubble chat-bubble-system';
+      wrap.dataset.at = '';                    // v0.22.68: 打标记，轮询可识别（避免重复追加）
+      wrap.dataset.source = 'screenplay_result';
+      wrap.innerHTML = '<div class="chat-bubble-avatar" aria-hidden="true">·</div>'
+        + '<div class="chat-bubble-inner"><div class="chat-bubble-meta">'
+        + '<span class="chat-label">参考</span><span class="chat-meta-sep">·</span>'
+        + '<span class="chat-time">' + fmtLocalTime(new Date().toISOString()) + '</span></div></div>';
+      const h2 = wrap.querySelector('.chat-bubble-inner');
+      const tmp = document.createElement('div');
+      tmp.innerHTML = fresh;
+      while (tmp.firstChild) h2.appendChild(tmp.firstChild);
+      chatContainer.appendChild(wrap);
+      if (typeof chatScrollToBottom === 'function') chatScrollToBottom(chatContainer);
+      return;
+    }
+
+    // v0.22.59 fix: 必须写在 .chat-bubble-inner 里（保留 avatar + inner 包裹）
+    //   之前直接 latestBubble.innerHTML = meta + fresh → 把 .chat-bubble-avatar 和
+    //   .chat-bubble-inner 一起清掉了。而 .chat-bubble 本身是 display:flex（头像｜内容 横排），
+    //   于是 renderDetail 输出的十几个块级 div（进度条/角色块/场景块/分镜块/换一批按钮）
+    //   全部变成 flex item → 横着并排 → 用户报「生成第一张图片后剧本从竖向排列变横向排列」
+    //   顺带丢了 .chat-bubble-inner 的内边距/圆角/系统气泡底色。
+    let host = latestBubble.querySelector('.chat-bubble-inner');
+    // meta 节点先抓住：可能挂在 inner 内（正常），也可能是被旧版本写坏后成了气泡的直接子节点
+    const metaNode = latestBubble.querySelector('.chat-bubble-meta');
+    if (!host) {
+      // 已被旧版本写坏的 DOM（历史遗留）：重建 avatar + inner 结构自愈
+      latestBubble.innerHTML =
+        '<div class="chat-bubble-avatar" aria-hidden="true">·</div><div class="chat-bubble-inner"></div>';
+      host = latestBubble.querySelector('.chat-bubble-inner');
+    }
+    const temp = document.createElement('div');
+    temp.innerHTML = fresh;
+    host.innerHTML = '';
+    if (metaNode) host.appendChild(metaNode);   // 复用原 meta 节点（保留 标签/轮次/时间，且不丢）
+    while (temp.firstChild) host.appendChild(temp.firstChild);
   } catch (e) { /* 静默失败 */ }
 }
 
@@ -313,4 +361,68 @@ function previewImage(url, cdnFallback) {
   overlay.onclick = close;
   document.addEventListener('keydown', onEsc);
   document.body.appendChild(overlay);
+}
+
+/**
+ * v0.22.64: 全屏播放视频（剧本分镜头视频 + 视频卡片共用）
+ *   为什么需要：卡片里的 <video> 只有原生控件条上的小 ▶ 可点，点视频**画面**没有任何反应
+ *   （Chrome 原生控件不响应画面点击）→ 用户报「视频展示了但无法点击播放」。
+ *   图片早有 previewImage（点击放大），这里给视频补齐同样的交互：点一下 = 全屏播放。
+ *   - 点击（用户手势）→ video.play() 有声音也能自动播（非 autoplay 策略拦截范围）
+ *   - 点遮罩 / 按 ESC / 点 ✕ 关闭；关闭时 pause + 清空 src，避免后台继续下载
+ */
+function previewVideo(url, cdnFallback) {
+  if (!url) return;
+  if (document.getElementById('video-preview-overlay')) return;
+
+  const overlay = document.createElement('div');
+  overlay.id = 'video-preview-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.9);display:flex;align-items:center;justify-content:center;cursor:zoom-out';
+
+  const box = document.createElement('div');
+  box.style.cssText = 'position:relative;max-width:94vw;max-height:94vh;cursor:default';
+
+  const vid = document.createElement('video');
+  vid.src = url;
+  vid.controls = true;
+  vid.autoplay = true;
+  vid.playsInline = true;
+  vid.style.cssText = 'max-width:94vw;max-height:88vh;border-radius:8px;box-shadow:0 4px 30px rgba(0,0,0,0.5);background:#000;display:block';
+  // v0.22.21 同款思路：本地文件取不到（404）时自动回退 CDN URL
+  vid.onerror = function () {
+    this.onerror = null;
+    if (cdnFallback && cdnFallback !== url) this.src = cdnFallback;
+  };
+
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '✕';
+  closeBtn.title = '关闭（ESC）';
+  closeBtn.style.cssText = 'position:absolute;top:-14px;right:-14px;width:30px;height:30px;border-radius:50%;border:none;background:rgba(255,255,255,0.92);color:#333;font-size:15px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.4)';
+  closeBtn.onclick = (e) => { e.stopPropagation(); close(); };
+
+  const hint = document.createElement('div');
+  hint.textContent = '点击空白处或按 ESC 关闭';
+  hint.style.cssText = 'position:absolute;left:0;right:0;bottom:-22px;text-align:center;color:rgba(255,255,255,0.6);font-size:11px';
+
+  box.appendChild(vid); box.appendChild(closeBtn); box.appendChild(hint);
+  overlay.appendChild(box);
+
+  const close = () => {
+    const el = document.getElementById('video-preview-overlay');
+    if (el) {
+      try { vid.pause(); vid.removeAttribute('src'); vid.load(); } catch (e) { /* 忽略 */ }
+      el.remove();
+      document.removeEventListener('keydown', onEsc);
+    }
+  };
+  const onEsc = (e) => { if (e.key === 'Escape') close(); };
+
+  overlay.onclick = close;
+  box.onclick = (e) => e.stopPropagation();   // 点视频本体不关闭
+  document.addEventListener('keydown', onEsc);
+  document.body.appendChild(overlay);
+
+  // 点击即用户手势 → 尝试播放（失败不报错，控件条仍可手动播）
+  const p = vid.play();
+  if (p && p.catch) p.catch(() => {});
 }

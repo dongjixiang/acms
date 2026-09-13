@@ -70,6 +70,7 @@ const INTENT_TOOL_NAMES = [
   'generate_image',       // 图片生成（v0.20 触发 image-gen assist，自动从用户消息提取 prompt）
   'send_email',           // v0.47：邮件发送（fire-and-forget + 用户确认才真发）
   'plan_execute',         // v0.48：复合意图 plan 执行（多 tool / 多步骤 / 依赖场景）
+  'office_action',        // v0.X PR3：Excel/Word/PPT 多步操作编排入口（每次单类 op）
 ];
 
 // v0.66: chat 流动态注入 app-tool（前端应用通过 WS 注册的能力）
@@ -197,6 +198,58 @@ plan_execute 内部由 plan-executor 按拓扑序保证所有步骤都执行，�
 
 调用格式（参考 plan_execute tool description）：
 {"summary": "一句话", "steps": [{"tool": "...", "args": {...}}, {"tool": "...", "args": {...}, "depends_on": ["s1"]}]}
+
+# ⛔ Excel/Word/PPT 多步操作必须调 plan_execute + office_action（v0.X 治 schema 校验）
+用户在 chat 流说"加 sheet + 合并数据 + 写公式"/"改 PPT 第 3 页内容 + 调字体 + 加图表"等
+2 步及以上的 Office 操作时，**必须先调 plan_execute** 把整个事情拆 step，每个 step 调一次
+office_action tool。
+
+【office_action 单类 op 约束】
+每个 step 的 operations 数组只能含一类 op，混类会被 handler 拒绝并返回 MIXED_CLASS_OPS：
+
+- structural：add_sheet / delete_sheet / rename_sheet / insert_rows / delete_rows / insert_cols / delete_cols / set_sheet_hidden / move_sheet / protect_sheet
+- content：set_cell / set_formula / clear_cell / set_range / clear_range / find_replace / set_hyperlink / set_note / appendAll / proposeEdits / insertAfterSelection / insertImagesAtContent / replaceHtmlDeck
+- format：format_range / formatOps / format_cell
+- layout：sort_range / merge_cells / unmerge_cells / set_row_height / set_col_width / set_rows_hidden / set_cols_hidden / set_freeze / set_page_setup
+- charts：add_chart / edit_chart / delete_visual / add_sparkline / add_shape / edit_shape / add_image
+- data：set_filter / set_filter_criteria / add_conditional_format / clear_conditional_formats / set_data_validation / add_defined_name / delete_defined_name / add_pivot / refresh_pivot / add_table / delete_table
+
+**严禁**混类（structural + content 一起发 → apply 时报 zod schema 错："Structural operations ... must be proposed in separate batches"）。
+**严禁**自己用普通 tool_loop 一个个调 office_action — 必须走 plan_execute 保证步骤串行 + 失败隔离。
+
+【structural 后必须 refreshContext:true】
+如果本 step 是另一个 office_action 的下游（依赖 structural 类变更），args.refreshContext
+必须设为 true。否则原有 cell 地址失效，后续 op 全失败。structural step 自己**不需要** refreshContext（handler 默认行为已经够了）。
+
+【典型 plan 模板】
+用户："加 sheet『对比分析』，合并考勤和打开数据，写公式 F=B/D"
+plan_execute({
+  summary: "加 sheet 并合并考勤数据",
+  steps: [
+    {id: "s1", tool: "office_action", args: {
+      kind: "xlsx",
+      operations: [{op: "add_sheet", sheetId: "sheet-3", name: "对比分析"}],
+      summary: "新增 sheet"
+    }},
+    {id: "s2", tool: "office_action", args: {
+      kind: "xlsx",
+      refreshContext: true,   // ← structural 后必须
+      operations: [
+        {op: "set_cell", sheetId: "sheet-3", address: "A1", value: "姓名"},
+        {op: "set_cell", sheetId: "sheet-3", address: "B1", value: "考勤天数"},
+        {op: "set_formula", sheetId: "sheet-3", address: "F2", formula: "=B2/D2"}
+      ],
+      summary: "写表头+公式"
+    }, depends_on: ["s1"]}
+  ]
+})
+
+【⚠️ 失败兜底 — handler 拒绝怎么办】
+如果 office_action handler 返回 MIXED_CLASS_OPS / UNKNOWN_OPS / NO_DOC_CONTEXT 错误：
+- **MIXED_CLASS_OPS**：把 operations 拆成多个 plan step（每个 step 只含一类 op）
+- **UNKNOWN_OPS**：检查 op 名拼写、确认在 6 类白名单里
+- **NO_DOC_CONTEXT**：在 args.docContext 里直接传完整 docContext 数据（前端会塞进 fetch body），
+  或拆 step 让每个 step 独立读（依赖前端 __sheetsDebug.snapshot 机制）
 
 # 回复要求
 - Markdown 格式（### 标题、**粗体**、- 列表）
@@ -1080,6 +1133,23 @@ ${content.slice(0, 5000)}
     return content.slice(0, maxChars);
   }
 }
+
+// v0.22.52: 自由对话 sess-xxx → 查询 hidden REQ-xxx（兜底端点）
+//   原因：非 SSE 路径（selectScreenplay → useAssist）走 POST /assist/:method/use 后，
+//   前端 startChatPolling 兜底初始化时 _chatState[reqId].sessionRequirementId 是 undefined
+//   → polling 只拉 sess-xxx 不拉 hidden REQ → 工具结果卡片不渲染。
+//   修：startChatPolling 第一次 tick 异步查这个端点拿到 hiddenRequirementId 写入 state。
+router.get('/session-requirement/:sessionId', (req, res, next) => {
+  try {
+    const sid = req.params.sessionId;
+    if (!sid || !sid.startsWith('sess-')) {
+      return res.status(400).json({ error: 'INVALID_SESSION_ID' });
+    }
+    const sessionReq = getOrCreateSessionRequirement(sid);
+    if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+    res.json({ ok: true, hiddenRequirementId: sessionReq.id });
+  } catch (e) { next(e); }
+});
 
 module.exports = router;
 module.exports.stripAttachmentContext = stripAttachmentContext;

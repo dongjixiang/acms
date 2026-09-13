@@ -1,6 +1,18 @@
 // 工具函数
 function escHtml(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function escAttr(s) { if (!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+/**
+ * v0.118.2: 生成「点击放大播放」的内联 onclick 表达式（剧本分镜头视频 / 视频卡片共用）
+ *   背景：卡片里 <video controls> 只有原生控件条上的小 ▶ 可点，点**画面**没反应
+ *     → 用户报「视频展示了但无法点击播放」。图片早有 previewImage，视频补 previewVideo(全屏播放)。
+ *   参数走 JSON.stringify（JS 层转义，处理引号/反斜杠/换行）+ escAttr（属性层转义，处理 " ）
+ *   —— 文件名由 prompt 派生，可能含引号（如 don't），不做两层转义会截断内联 handler → SyntaxError
+ */
+function videoClickAttr(src, cdnFallback) {
+  return 'event.stopPropagation();previewVideo(' +
+    escAttr(JSON.stringify(String(src || ''))) + ',' +
+    escAttr(JSON.stringify(String(cdnFallback || ''))) + ')';
+}
 function fmtDate(s) { if (!s) return ''; return new Date(s).toLocaleDateString('zh-CN'); }  // zh-CN OK; date 本身无时区歧义
 function safeParse(s) { if (!s) return {}; if (typeof s === 'object') return s; try { return JSON.parse(s); } catch { return {}; } }
 function toast(msg, type = 'success') {

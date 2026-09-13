@@ -1,0 +1,3004 @@
+// ===== 聊天核心（v0.13 抽公共，2026-06-21）=====
+// 抽自 client/js/views/requirements.js（原 L2207-3038，832 行）
+//
+// v0.3.6 对话式想法澄清 — 聊天流 + 辅助卡片层
+// ════════════════════════════════════════════════════════════════
+//
+// 跨文件依赖（重要！）：
+//   - api / escHtml / toast / showConfirm / App（全局）
+//   - 主文件 requirements.js 中的 openRequirement / loadRequirements 等
+//   - idea-panel.js：maybeLoadInsightPreviews / renderChatBubble 的子容器
+//   - ai-state.js：triggerAiAutoSend 调 chatSend / applyAiDraft 用 _chatState
+//   - brief-controls.js：maybeLoadInsightPreviews（用于 triggerInsightPreviews）
+//   - chat-assist.js：chatAssist / chatSendAssistPick 调 renderAssistLayer /
+//     connectAssistStream / chatRegen / chatBuildSupplementText
+//   - chat-ui.js：chatSendSupplement 调 connectStreamingBrief
+//   - ACMSThinkingBrief（client/js/views/assists/thinking-brief.js）
+//
+// 这是 chat 模块最大单块。所有 function 必须在 script 加载完成 +
+// requirements.js 加载完成之前不能在 onclick 触发时被调用。HTML 字符串
+// 引用是延迟触发（用户点按钮时），所有相关函数在那一刻已加载 → OK
+//
+// 模块内函数（30+ 个）：
+//   - 核心 streaming：loadChatStream / startChatPolling / connectStreamingBrief
+//   - 渲染：fmtLocalTime / renderChatBubble / renderBriefBubble / renderAssistLayer
+//   - 卡片交互：chatToggleOpt / chatPickCard / chatToggleCard
+//   - 附件：chatToggleAttachPopover / chatUploadTrigger / chatUploadRawFile /
+//     chatUploadFile / chatHandlePaste / chatRemoveAttachment / chatPromoteAttachment /
+//     chatRenderAttachPreview / chatBuildSupplementText
+//   - 发送：chatSend
+//   - 流式 assist：loadStreamAssist / connectAssistStream
+//   - 重生成：chatRegen
+//   - Misc：chatAutoGrow / toggleChatThinking
+
+const _chatPollers = {};
+const _chatState = {}; // reqId → { histCount, briefRound }
+
+function chatAutoGrow(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 90) + 'px';
+}
+
+async function loadChatStream(reqId) {
+  const container = document.getElementById(`chat-stream-msgs-${reqId}`);
+  if (!container) return;
+  container.innerHTML = '<div class="chat-typing"><span></span><span></span><span></span></div>';
+  _chatState[reqId] = { histCount: 0, briefRound: 0 };
+
+  try {
+    const [histResp, briefResp] = await Promise.all([
+      api('GET', `/requirements/${reqId}/supplement-history`),
+      api('GET', `/requirements/${reqId}/thinking-brief`),
+    ]);
+    container.innerHTML = '';
+    const history = backfillChatRounds(histResp.history || []);
+    for (const entry of history) renderChatBubble(container, entry);
+    // v0.48：聚合渲染 plan bubbles（每个 plan_id 一张）
+    if (window.ACMSPlanRenderer) window.ACMSPlanRenderer.aggregateAndRender(container, reqId, history);
+    _chatState[reqId].histCount = history.length;
+
+    const brief = briefResp.thinkingBrief;
+    // v0.13 B5 fix: 强制设 state.briefRound（无论 status，避免 undefined）
+    //   旧 bug：L3448 条件 brief.status === 'done' 才设；如果 loadChatStream 时 brief 在 generating
+    //   → state.briefRound 永远是 undefined → triggerAiAutoSend L4278 fallback 到 0
+    //   → polling 看到 briefRound > 0 总是满足 → 永远启动新倒计时
+    _chatState[reqId].briefRound = brief?.chat_round || 0;
+    if (brief && brief.status === 'done') {
+      if (String(brief.chat_round) !== (container.lastElementChild?.dataset?.chatRound || '')) renderBriefBubble(container, brief);
+    } else if (brief && brief.status === 'generating') {
+      container.insertAdjacentHTML('beforeend', '<div class="chat-typing"><span></span><span></span><span></span></div>');
+    }
+    try { const r = await api('GET', `/requirements/${reqId}/assist`); renderAssistLayer(container, reqId, r.assists || {}); } catch(e) { console.warn('[loadChatStream] assist load error:', e.message); }
+    // v0.17 fix: 旧 REQ 打开时滚到顶部，让用户看到所有历史 AI 回复
+    //   之前 chatScrollToBottom(container) 把视口固定在底部 5-7 个气泡
+    //   → 25+ 条历史 AI 回复被滚动条遮住，用户感受"只有最近一条 AI 回复"
+    container.scrollTop = 0;
+
+    // v0.21c fix: 如果 chat 流里最后一个 music/video 等大体积卡片在视口外，
+    //   改用 chatScrollToElement 滚到该卡片 → 卡片进视口 → iframe loading="lazy" 才会真正开始加载
+    //   复现：用户输入"想听 X" → music_result 写入 → 退出重进 REQ → scrollTop=0 让卡片在视口外
+    //   → iframe 在 window 视口外不加载 → 用户感受"音乐加载不出来"
+    //   退出再进来"碰巧能看到"是因为浏览器缓存/视口变化/用户碰巧滚动了一次
+    //   之前 v0.21b 修的是 polling 路径（新 entry），没修 loadChatStream 路径（历史已有卡片）
+    //   ⚠️ 不能用 lastElementChild 检测！thinking_brief bubble（chat-bubble-ai）经常在最后
+    //      渲染（renderBriefBubble 末尾追加），它包不包 music 卡片都不影响 music 卡片的位置
+    //   ✅ 改用 querySelectorAll('.music-card-in-chat') 拿整个流里**最后一个** music 卡片
+    const _musicCards = container.querySelectorAll('.music-card-in-chat');
+    const _lastMusicCard = _musicCards.length ? _musicCards[_musicCards.length - 1] : null;
+    if (_lastMusicCard && typeof chatScrollToElement === 'function') {
+      // 拿到 music 卡片所属的 bubble（可能外层是 chat-bubble-system）
+      const _musicBubble = _lastMusicCard.closest('.chat-bubble') || _lastMusicCard;
+      chatScrollToElement(container, _musicBubble);
+    }
+
+    // v0.21.4 fix: SSE done 渲染的第一份 music 卡在 assist-loading-card.method-music 里（不是 chat-bubble-system）
+    //   旧 v0.21.3 只清 chat-bubble-system，漏了真正的旧卡所在位置 → 双卡并存
+    //   清理范围扩大：assist-loading-card.method-music + 任何含 ⏳+music-card-in-chat 的 chat-bubble-system
+    if (container.querySelector('.music-card-in-chat[data-music-card="1"]')) {
+      // SSE done 留下的「伪卡」（class 仍是 assist-loading-card method-music，innerHTML 已被替换为 music card HTML）
+      container.querySelectorAll('.assist-loading-card.method-music').forEach(_b => _b.remove());
+      // 兼容：旧式 chat-bubble-system 里的 ⏳ music 卡（precheck 等场景）
+      container.querySelectorAll('.chat-bubble-system').forEach(function(_b) {
+        if (_b.textContent.includes('⏳') && _b.querySelector('.music-card-in-chat')) _b.remove();
+      });
+    }
+
+    chatScrollUpdateBtn(reqId);
+    startChatPolling(reqId);
+  } catch (e) {
+    container.innerHTML = `<div class="chat-bubble chat-bubble-ai"><div class="chat-bubble-meta"><span class="chat-label">⚠️</span></div>对话流加载失败：${escHtml(e.message)}</div>`;
+  }
+}
+
+function startChatPolling(reqId) {
+  if (_chatPollers[reqId]) clearInterval(_chatPollers[reqId]);
+  let c = 0;
+  _chatPollers[reqId] = setInterval(async () => {
+    if (++c > 80) { clearInterval(_chatPollers[reqId]); delete _chatPollers[reqId]; return; }
+    try {
+      const container = document.getElementById(`chat-stream-msgs-${reqId}`);
+      if (!container) { clearInterval(_chatPollers[reqId]); delete _chatPollers[reqId]; return; }
+      // v0.120 fix: _chatState[reqId] 兜底初始化
+      //   修复"剧本/场景/音乐等辅助工具：标记选中后 toast 显示成功但聊天流卡片不渲染"
+      //   根因：自由对话新开窗口走 initChatWindow 的 new-xxx 分支，不调 loadChatSessionMessages →
+      //         _chatState[realSid] 永远未初始化 → startChatPolling 静默 return
+      //   解决：state 缺失时创建兜底（histCount=0 走正常增量路径，第一次 tick 会渲染所有历史条目）
+      let state = _chatState[reqId];
+      if (!state) {
+        _chatState[reqId] = { histCount: 0, briefRound: 0 };
+        state = _chatState[reqId];
+      }
+
+      // 增量：只拉新增的 supplement_history
+      // v0.101 fix: 合并拉 chat session reqId + sessionRequirementId（hidden reqId）—— 工具结果写后者
+      console.log('🔧 ACMS_DEBUG: startChatPolling 启动 reqId=' + reqId + ' sessionRequirementId=' + state.sessionRequirementId);
+      const pollReqIds = [reqId];
+      if (state.sessionRequirementId && state.sessionRequirementId !== reqId) {
+        pollReqIds.push(state.sessionRequirementId);
+      }
+      const allHist = [];
+      const seenK = new Set();
+      for (const rid of pollReqIds) {
+        try {
+          const hr = await api('GET', `/requirements/${rid}/supplement-history`);
+          for (const e of (hr?.history || [])) {
+            const k = (e.at || '') + '|' + (e.role || '') + '|' + (e.source || '') + '|' + ((e.text || '').slice(0, 80));
+            if (!seenK.has(k)) { seenK.add(k); allHist.push(e); }
+          }
+        } catch {}
+      }
+      allHist.sort((a, b) => (a.at || '').localeCompare(b.at || ''));
+      const history = backfillChatRounds(allHist);
+        if (history.length > state.histCount) {
+        for (let i = state.histCount; i < history.length; i++) renderChatBubble(container, history[i]);
+        // v0.48：聚合渲染 plan bubbles
+        if (window.ACMSPlanRenderer) window.ACMSPlanRenderer.aggregateAndRender(container, reqId, history);
+        state.histCount = history.length;
+        // v0.21.4 fix: SSE done 留下的第一份 music 卡在 assist-loading-card.method-music 里
+        //   旧 v0.21.3 只清 chat-bubble-system，漏了真正的旧卡所在位置 → 双卡并存
+        //   同一 tick 里 polling 渲染新卡后立刻清旧卡 → 用户感知不到 flicker
+        const _anyDone = container.querySelector('.music-card-in-chat[data-music-card="1"]');
+        if (_anyDone) {
+          // 第一份卡（SSE done 路径的 renderLeisureResult 产物）→ 在 assist-loading-card.method-music 里
+          container.querySelectorAll('.assist-loading-card.method-music').forEach(_b => _b.remove());
+          // 兼容：旧式 chat-bubble-system 里的 ⏳ music 卡
+          container.querySelectorAll('.chat-bubble-system').forEach(function(_b) {
+            if (_b.textContent.includes('⏳') && _b.querySelector('.music-card-in-chat')) _b.remove();
+          });
+        }
+      // v0.21 fix：音乐/视频类卡片体积大 + iframe 加载慢，必须滚到该卡片让它进视口才会真的开始加载
+      //   之前 chatScrollToBottom 只保证最新元素在容器底部可见，但容器底部可能不是卡片而是输入框或大段文字
+      // ⚠️ v0.21.2 fix: 不能用 lastElementChild 检测！intent_loop assistant bubble（chat-bubble-ai）
+      //   经常在 music_result 写入后才写入，如果用 lastElementChild 检测 → 查的是 intent_loop bubble →
+      //   lastIsMusic=false → 触发 chatScrollToBottom → 把视口滚到底部 → music 卡片反而被滚出视口
+      // ✅ 改用 querySelectorAll('.music-card-in-chat') 拿整个流里**最后一个** music 卡片
+      //   不论它后面的 bubble（intent_loop / brief）最后写了什么
+      const _mc = container.querySelectorAll('.music-card-in-chat');
+      const _lmc = _mc.length ? _mc[_mc.length - 1] : null;
+      if (_lmc && typeof chatScrollToElement === 'function') {
+        const _mb = _lmc.closest('.chat-bubble') || _lmc;
+        chatScrollToElement(container, _mb);
+      } else {
+          chatScrollToBottom(container);
+        }
+      }
+
+// 增量：检查 brief 更新（SSE 完成或轮询到 done）
+      const briefResp = await api('GET', `/requirements/${reqId}/thinking-brief`);
+      const brief = briefResp.thinkingBrief;
+      const typing = container.querySelector('.chat-typing');
+      const streamingBubble = container.querySelector('.chat-streaming-bubble');
+      if (brief && brief.status === 'done' && !streamingBubble) {
+        const briefRound = brief.chat_round || 0;
+
+        // v0.13 B5 fix: auto 态检查放在 state.briefRound 更新之前
+        //   否则 SSE done 已先更新 state.briefRound，polling 条件 `briefRound > state.briefRound` 会被跳过
+        if (_aiGetState(reqId) === 'auto'
+            && briefRound > (window._aiAutoLastRound[reqId] || 0)
+            && !_aiAutoCountdowns[reqId]) {
+          const input = document.getElementById(`chat-input-${reqId}`);
+          const isInputEmpty = !input?.value?.trim();
+          if (isInputEmpty) {
+            console.log(`[ai-auto] ${reqId} polling 触发倒计时（briefRound=${briefRound}）`);
+            // v0.13 B5 fix: AI 完成时显式 toast 告知"10 秒后自动回复"
+            //   之前 5s 倒计时太短，用户来不及反应 → 体验"立即又 5 秒"
+            //   现在 10s + 显式 toast 提示 → 用户有时间消化 + 可选 ↻ 跳过 / 选关闭停止
+            toast(`🤖 AI 提问完成 · 10 秒后自动回复 · 点 ↻ 跳过 / 选「关闭」停止`, 'info', 4000);
+            _aiStartAutoCountdown(reqId, briefRound);
+          } else {
+            _aiUpdateAutoIndicator(reqId, -1, window._aiAutoSentCount[reqId] || 0);
+          }
+        }
+
+        if (briefRound > state.briefRound) {
+          if (typing) typing.remove();
+          renderBriefBubble(container, brief);
+          state.briefRound = briefRound;
+          chatScrollToBottom(container);
+        }
+      }
+
+      // assist 层（移除旧层 + 加新层，始终只显示最新一张）
+      const r = await api('GET', `/requirements/${reqId}/assist`);
+      renderAssistLayer(container, reqId, r.assists || {});
+      // 检测显式选中的 assist 是否完成（合并 pollAssistUntilDone）
+      const explicit = window._explicitAssist?.[reqId];
+      if (explicit) {
+        const ad = r.assists?.[explicit];
+        if (ad) {
+          if (ad.status === 'done') {
+            console.log(`[chatAssist] ${explicit} done, rendering`);
+            if (window._explicitAssist) delete window._explicitAssist[reqId];
+            // v0.46 fix：只渲染触发的 method，不渲染全体（避免旧 use_case 等卡片乱入）
+            renderAssistLayer(container, reqId, { [explicit]: ad });
+          } else if (ad.status === 'failed') {
+            console.error(`[chatAssist] ${explicit} failed:`, ad.error || 'unknown');
+            toast(`❌ ${explicit} 生成失败: ${ad.error || '未知错误'}`, 'error', 5000);
+            if (window._explicitAssist) delete window._explicitAssist[reqId];
+          } else {
+            // 生成中：每 3 次轮询打一次日志
+            if (c % 3 === 0) console.log(`[chatAssist] ${explicit} still ${ad.status} (tick #${c})`);
+          }
+        } else {
+          // 数据还没写入（setImmediate 延迟）
+          if (c % 3 === 0) console.log(`[chatAssist] ${explicit} waiting for data (tick #${c})`);
+        }
+      }
+    } catch(e) {
+      // v0.13 B5 fix: REQ_NOT_FOUND 时清理状态（req 已删除，避免持续报错 + 污染 state）
+      if (e.message?.includes('REQ_NOT_FOUND')) {
+        console.log(`[chatPoll] ${reqId} 已删除，清理状态`);
+        clearInterval(_chatPollers[reqId]);
+        delete _chatPollers[reqId];
+        delete _chatState[reqId];
+        delete window._aiAutoLastRound?.[reqId];
+        delete window._aiAutoSentCount?.[reqId];
+        delete window._aiAutoCountdowns?.[reqId];
+        delete window._aiReplyState?.[reqId];
+        delete window._aiAutoRunning?.[reqId];
+        return;
+      }
+      console.warn('[chatPoll] polling error:', e.message);
+    }
+  }, 3000);
+}
+
+// v0.13 B5：本地时区格式化时间戳（之前 (entry.at).substring(11,16) 拿的是 UTC）
+function fmtLocalTime(iso) {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+  } catch (e) { return ''; }
+}
+
+// v0.17：补算历史 assistant 条目缺的 chat_round（按出现顺序 1-indexed）
+//   旧数据（v0.17 之前）写 assistant entry 时没存 chat_round → 历史气泡没轮次
+//   用此函数后端无需回填数据，前端渲染时自动算 → 旧 REQ 也能显示「第3轮 · 21:34」
+//   注意：mutate in-place（局部 history 引用，无副作用）
+function backfillChatRounds(history) {
+  if (!Array.isArray(history)) return history;
+  let aiRound = 0;
+  for (const e of history) {
+    if (!e || e.role !== 'assistant') continue;
+    if (e.chat_round) aiRound = Math.max(aiRound, e.chat_round); // 已有 → 同步计数器
+    else e.chat_round = ++aiRound;                                // 缺 → 按顺序补
+  }
+  return history;
+}
+
+/** 渲染音乐播放卡片（内嵌 iframe/audio 播放器，从 JSON 数据解析）
+ *  v0.21：播放器/源切换/放大缩小/进度条全部走 music-core.js，与 assists 侧栏共用
+ */
+/**
+ * v0.22.13: 剧本聊天流卡片 — 调 core 单一来源 + 传 reqId（让按钮可交互）
+ *   - P11 教训：写 supplement_history 必须配专属 renderer
+ *   - 完整选剧本/生成图/视频交互在 assist 卡片（侧栏 + 聊天流 loading 卡）完成
+ *   - 聊天流 system 卡片 = 「已选中剧本 + 资源状态」的存档展示（按钮可点）
+ */
+/**
+ * v0.47：渲染"待发送邮件"系统卡片
+ *   LLM 调 send_email tool → handler 写一条 pending system entry 到聊天流
+ *   前端识别 source==='send_email_pending' → 调本函数 → 复用 renderToolCallPreviewCard 逻辑
+ *   保持单点渲染,confirmToolCall/editToolCall/cancelToolCall 复用之前的全局函数
+ */
+function renderPendingSendEmailBubble(reqId, jsonText) {
+  if (!jsonText) return '<div class="chat-system-msg">📧 邮件准备（数据为空）</div>';
+  let card;
+  try { card = JSON.parse(jsonText); } catch {
+    return `<div class="chat-system-msg">${escHtml((jsonText || '').slice(0, 100))}</div>`;
+  }
+  if (card.type !== 'pending_send_email') {
+    return `<div class="chat-system-msg">${escHtml((jsonText || '').slice(0, 100))}</div>`;
+  }
+  // 复用 v0.47 工具调用预览卡(to/subject/body/reason/file_ids/attachments/music_url 同构)
+  return renderToolCallPreviewCardHtml(reqId, {
+    method: 'send_email',
+    reason: card.reason || '用户请求发送邮件',
+    args: {
+      to: card.to || '',
+      subject: card.subject || '',
+      body: card.body || '',
+      file_ids: Array.isArray(card.file_ids) ? card.file_ids : [],  // v0.47+
+    },
+    attachments: Array.isArray(card.attachments) ? card.attachments : [],  // v0.47+
+    music_url: card.music_url || '',  // v0.47+
+  });
+}
+
+/**
+ * v0.X PR2: 渲染 office_action_apply system entry → applyPlan 到 OfficeV3 编辑器
+ * LLM 通过 plan_execute → office_action tool → 后端写 system entry
+ * entry.text = JSON.stringify({type:'office_action_apply', kind, action, summary, ...})
+ * 本函数：解析 → 调 window.OfficeV3.applyOfficeAction → 返回 HTML 气泡
+ */
+function renderOfficeActionApplyBubble(reqId, jsonText) {
+  if (!jsonText) return '<div class="chat-system-msg">📋 Office 操作（数据为空）</div>';
+  let payload;
+  try { payload = JSON.parse(jsonText); } catch {
+    return `<div class="chat-system-msg">${escHtml((jsonText || '').slice(0, 100))}</div>`;
+  }
+  if (payload.type !== 'office_action_apply') {
+    return `<div class="chat-system-msg">${escHtml((jsonText || '').slice(0, 100))}</div>`;
+  }
+  // 调 office-v3-bridge 暴露的 applyOfficeAction（复用 runAction 链路）
+  let result;
+  try {
+    if (window.OfficeV3 && typeof window.OfficeV3.applyOfficeAction === 'function') {
+      result = window.OfficeV3.applyOfficeAction({
+        kind: payload.kind,
+        action: payload.action,
+        summary: payload.summary,
+      });
+    } else {
+      result = { ok: false, error: 'OfficeV3 未加载' };
+    }
+  } catch (e) {
+    result = { ok: false, error: e.message };
+  }
+  // 渲染气泡（绿✅ / 红❌）
+  const summary = escHtml(payload.summary || '已应用');
+  if (result && result.ok) {
+    return `<div class="chat-system-msg" style="color:var(--success,#2da44e)">✅ ${summary}</div>`;
+  }
+  return `<div class="chat-system-msg" style="color:var(--error,#cf222e)">❌ ${summary} — ${escHtml((result && result.error) || 'applyPlan 失败')}</div>`;
+}
+
+function renderScreenplayBubble(reqId, jsonText) {
+  if (window.ACMSScreenplayCard) {
+    return window.ACMSScreenplayCard.renderFromChatEntry(reqId, jsonText);
+  }
+  // 兜底（core 未加载时）
+  if (!jsonText) return '<div class="chat-system-msg">📖 剧本结果（数据为空）</div>';
+  let card;
+  try { card = JSON.parse(jsonText); } catch { return `<div class="chat-system-msg">${escHtml((jsonText || '').slice(0, 100))}</div>`; }
+  if (card.type !== 'screenplay_card' || !card.screenplay) {
+    return `<div class="chat-system-msg">${escHtml((jsonText || '').slice(0, 100))}</div>`;
+  }
+
+  const sp = card.screenplay;
+  const idea = escHtml(card.idea || '');
+  const target = card.target_seconds || 30;
+  const idx = card.picked_idx || 0;
+  const total = card.total || 1;
+  const scenes = Array.isArray(sp.scenes) ? sp.scenes : [];
+
+  const charactersHtml = (sp.characters || []).map(c =>
+    `<span style="display:inline-block;padding:2px 6px;margin:2px;background:var(--bg);border:1px solid var(--border);border-radius:4px;font-size:11px">${escHtml(c.name || '')}${c.desc ? '（' + escHtml(c.desc) + '）' : ''}</span>`
+  ).join('');
+
+  const scenesHtml = scenes.map((sc, i) => `
+    <div style="margin:4px 0;padding:6px;border-left:2px solid var(--accent);background:var(--bg)">
+      <div style="color:var(--accent);font-weight:600;font-size:12px">⏱ ${escHtml(sc.time || '?')} · 场 ${i + 1}</div>
+      ${sc.shot ? `<div style="font-size:12px;margin-top:2px">📷 ${escHtml(sc.shot)}</div>` : ''}
+      ${sc.dialogue && sc.dialogue !== '——' ? `<div style="font-size:12px;margin-top:2px">💬 ${escHtml(sc.dialogue)}</div>` : ''}
+      ${sc.action ? `<div style="font-size:12px;margin-top:2px">🎬 ${escHtml(sc.action)}</div>` : ''}
+    </div>
+  `).join('');
+
+  return `
+    <div class="screenplay-card-in-chat" style="padding:10px;border-radius:8px;background:rgba(167,139,250,0.04);border:1px solid rgba(167,139,250,0.15)">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+        <span style="font-size:18px">📖</span>
+        <strong style="flex:1">${escHtml(sp.title || '(无标题)')}</strong>
+        <span style="font-size:10px;color:var(--text2)">已选 #${idx + 1}/${total} · ${target}s · ${scenes.length} 场</span>
+      </div>
+      ${sp.logline ? `<div style="font-style:italic;color:var(--text2);font-size:12px;margin-bottom:6px">${escHtml(sp.logline)}</div>` : ''}
+      ${charactersHtml ? `<div style="margin-bottom:6px">${charactersHtml}</div>` : ''}
+      <div style="font-size:12px;color:var(--text2);margin-bottom:4px">基于创意：${idea}</div>
+      <details style="margin-top:4px">
+        <summary style="font-size:11px;color:var(--text2);cursor:pointer">📖 展开 ${scenes.length} 场分镜</summary>
+        <div style="padding:6px 0">${scenesHtml}</div>
+        ${sp.shot_tips ? `<div style="margin-top:4px;padding:6px;background:var(--bg2);border-radius:4px;font-size:11px;color:var(--text2)">💡 拍摄建议：${escHtml(sp.shot_tips)}</div>` : ''}
+      </details>
+    </div>
+  `;
+}
+
+function renderMusicBubble(jsonText) {
+  const Core = window.ACMSMusicCard;
+  if (!Core) return '<div class="chat-system-msg">⚠️ music-core 未加载</div>';
+  if (!jsonText) return '<div class="chat-system-msg">🎵 音乐搜索结果（数据为空）</div>';
+  let card;
+  try { card = JSON.parse(jsonText); } catch { return `<div class="chat-system-msg">${Core.escHtml(jsonText.slice(0, 100))}</div>`; }
+  if (card.type !== 'music_card' && card.type !== 'music_loading') return `<div class="chat-system-msg">${Core.escHtml(jsonText.slice(0, 100))}</div>`;
+  if (card.type === 'music_loading') {
+    const song = Core.escHtml(card.song || '');
+    const artist = card.artist ? Core.escHtml(card.artist) : '';
+    const title = artist ? `${artist} - ${song}` : song;
+    return `<div class="music-card-in-chat" style="padding:8px;border-radius:8px;background:rgba(255,217,61,0.04);border:1px solid rgba(255,217,61,0.1)">
+      <div style="font-weight:bold;margin-bottom:4px">${title}</div>
+      <div style="color:var(--text3);font-size:13px">⏳ 正在搜索播放源（10-30 秒）...</div>
+    </div>`;
+  }
+
+  const song = Core.escHtml(card.song || '');
+  const artist = card.artist ? Core.escHtml(card.artist) : '';
+  const title = artist ? `${artist} - ${song}` : song;
+  const playable = (card.playable || []).filter(s => s && s.url);
+  const hasPlayer = playable.length > 0;
+
+  // 默认第一个源 + 收起状态（聊天流卡片每次都重渲染，不持久化 expand 状态）
+  const currentIdx = 0;
+  const currentSource = playable[currentIdx];
+  const isExpanded = false;
+
+  const playerHtml = currentSource ? Core.playerHTML(currentSource, { expanded: isExpanded }) : '';
+  const sourceNav = Core.sourceNavHTML(playable, currentIdx, (i) => `switchChatMusicSource(this, ${i})`);
+  const expandBtn = playable.length > 0
+    ? Core.expandBtnHTML(isExpanded, 'toggleChatMusicExpand(this)')
+    : '';
+  const playableJson = Core.escHtml(JSON.stringify(playable));
+
+  if (hasPlayer) {
+    return `<div class="music-card-in-chat" data-playable='${playableJson}' data-music-card="1" style="padding:8px;border-radius:8px;background:rgba(255,217,61,0.04);border:1px solid rgba(255,217,61,0.1)">
+      <div style="font-weight:bold;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center">
+        <span>🎵 ${title}</span>
+        <span style="display:flex;gap:2px">${expandBtn}</span>
+      </div>
+      <div class="music-chat-player" data-current-idx="0">${playerHtml}</div>
+      ${sourceNav}
+      <div style="font-size:11px;color:var(--text3);margin-top:2px">✅ 已找到播放源，点击 ▶ 播放</div>
+    </div>`;
+  }
+
+  // 无播放源时显示平台链接
+  const platforms = card.platforms || [];
+  const links = platforms.map(p =>
+    `<a href="${Core.escHtml(p.url)}" target="_blank" rel="noopener" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 8px;border-radius:4px;background:rgba(255,217,61,0.06);border:1px solid rgba(255,217,61,0.12);text-decoration:none">${p.icon || '🔗'} ${Core.escHtml(p.name)}</a>`
+  ).join('');
+  return `<div class="music-card-in-chat" style="padding:8px">
+    <div style="font-weight:bold;margin-bottom:4px">🎵 ${title}</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:4px">在以下平台搜索：</div>
+    <div>${links || '暂无可用平台'}</div>
+  </div>`;
+}
+window.renderMusicBubble = renderMusicBubble;
+
+function renderImageBubble(reqId, jsonText) {
+  if (!jsonText) return '<div class="chat-system-msg">🖼️ 图片生成结果（数据为空）</div>';
+  let card;
+  try { card = JSON.parse(jsonText); } catch { return `<div class="chat-system-msg">${escHtml(jsonText.slice(0, 100))}</div>`; }
+  if (card.type !== 'image_card') return `<div class="chat-system-msg">${escHtml(jsonText.slice(0, 100))}</div>`;
+
+  const renderFn = window.ACMSAssists?.get?.('image_gen')?.render;
+  if (renderFn) {
+    const rendered = renderFn(reqId, card);
+    if (rendered && rendered.trim()) {
+      return `<div class="image-card-in-chat" data-image-card="1">${rendered}</div>`;
+    }
+  }
+
+  if (card.status === 'failed') {
+    return `<div class="image-card-in-chat" data-image-card="1" style="padding:8px;border-radius:8px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.16)">
+      <div style="font-weight:bold;margin-bottom:4px">🖼️ 图片生成失败</div>
+      <div style="font-size:12px;color:var(--danger,#ef4444)">${escHtml(card.error || '未知错误')}</div>
+    </div>`;
+  }
+
+  const projectId = encodeURIComponent(card.project_id || 'default');
+  const assetUrl = card.asset_path ? `/api/generate/assets/${projectId}/${card.asset_path}` : '';
+  const cdnUrl = card.image_url_output || '';
+  const imgSrc = assetUrl || cdnUrl;
+  return `<div class="image-card-in-chat" data-image-card="1" style="padding:8px;border-radius:8px;background:rgba(99,102,241,0.04);border:1px solid rgba(99,102,241,0.12)">
+    <div style="font-weight:bold;margin-bottom:4px">🖼️ 图片已生成</div>
+    ${card.prompt ? `<div style="font-size:12px;color:var(--text2);margin-bottom:6px">${escHtml(card.prompt)}</div>` : ''}
+    ${imgSrc ? `<img src="${escHtml(imgSrc)}" alt="生成的图片" style="max-width:220px;border-radius:8px;border:1px solid var(--border);display:block" onerror="this.src='${escHtml(cdnUrl)}';this.onerror=null;">` : '<div style="font-size:12px;color:var(--text2)">图片 URL 不可用</div>'}
+    ${cdnUrl || imgSrc ? `<div style="margin-top:6px"><a href="${escHtml(cdnUrl || imgSrc)}" target="_blank" rel="noopener noreferrer" class="btn-small">🔗 查看原图</a></div>` : ''}
+  </div>`;
+}
+
+/** 切换音乐播放源（聊天流卡片 — 只替换 player 元素，保留其他状态） */
+function switchChatMusicSource(btn, idx) {
+  const Core = window.ACMSMusicCard;
+  if (!Core) return;
+  const card = btn.closest('.music-card-in-chat');
+  if (!card) return;
+  const player = card.querySelector('.music-chat-player');
+  if (!player) return;
+  const raw = card.dataset.playable;
+  if (!raw) return;
+  let sources;
+  try { sources = JSON.parse(raw); } catch { return; }
+  const src = sources[idx];
+  if (!src) return;
+
+  // 用 core 渲染新播放器（保持现有展开状态？聊天流卡片不持久化，简化为收起）
+  player.innerHTML = Core.playerHTML(src, { expanded: false });
+  player.dataset.currentIdx = idx;
+
+  // 更新按钮高亮
+  card.querySelectorAll('.music-source-btn').forEach((b, i) => {
+    b.style.background = i === idx ? 'var(--accent)' : '';
+    b.style.color = i === idx ? 'var(--bg)' : '';
+    b.style.borderColor = i === idx ? 'var(--accent)' : '';
+  });
+
+  // 重挂进度条（新插入的 audio 元素）
+  Core.attachProgress(card);
+}
+
+/** 放大/缩小当前音乐卡片（聊天流）— 重渲染整个 player 元素 */
+function toggleChatMusicExpand(btn) {
+  const Core = window.ACMSMusicCard;
+  if (!Core) return;
+  const card = btn.closest('.music-card-in-chat');
+  if (!card) return;
+  const player = card.querySelector('.music-chat-player');
+  if (!player) return;
+  const idx = parseInt(player.dataset.currentIdx || '0', 10);
+  const raw = card.dataset.playable;
+  if (!raw) return;
+  let sources;
+  try { sources = JSON.parse(raw); } catch { return; }
+  const src = sources[idx];
+  if (!src) return;
+
+  const isExpanded = btn.textContent.includes('缩小') ? false : true;
+  player.innerHTML = Core.playerHTML(src, { expanded: isExpanded });
+  btn.textContent = isExpanded ? '🔽 缩小' : '⛶ 放大';
+
+  // 重挂进度条
+  Core.attachProgress(card);
+}
+
+// v0.50: 步骤独立 chip / search / research 卡片 renderer（治"AI 看不到任何反应"症状）
+function renderPlanStepChip(container, entry) {
+  // plan_step_update 单独渲染为 spinner-like chip — 用户立刻看见每个 step 状态实时变化
+  let o = null;
+  try { o = JSON.parse(entry.text || ''); } catch { return; }
+  if (!o || !o.step_id) return;
+  const iconMap = { running: '⏳', done: '✅', failed: '❌', skipped: '⏭' };
+  const icon = iconMap[o.status] || '⏸';
+  const div = document.createElement('div');
+  div.className = 'chat-bubble chat-bubble-system step-chip step-chip-' + o.status;
+  div.innerHTML = `<div class="step-chip-row"><span class="step-chip-icon">${icon}</span> <span class="step-chip-name">${escHtml(o.step_id)} · ${escHtml(o.tool)}</span> <span class="step-chip-status">${escHtml(o.status)}</span></div>`;
+  container.appendChild(div);
+}
+
+function renderSearchResultBubble(text) {
+  // search_result entry 渲染（带 formatted 摘要）
+  let o = null;
+  try { o = JSON.parse(text || ''); } catch { return null; }
+  if (!o || !o.query) return null;
+  // v0.81: 图片搜索时不显示 search_result 文字气泡（图片已在动作卡片中展示）
+  const isImageSearch = /图片|照片|写真|壁纸|头像|海报|截图|相片|图集|靓照|艺术照/.test(o.query);
+  if (isImageSearch) return '';
+  // v0.81: 过滤 formatted 中的 URL 行，只保留标题和摘要
+  let formatted = (o.formatted || '');
+  if (formatted) {
+    formatted = formatted
+      .replace(/^\s*https?:\/\/[^\s]+\s*$/gm, '')  // 移除纯 URL 行
+      .replace(/\n\s*\n/g, '\n')  // 移除空行
+      .trim();
+  }
+  return `<div class="card-system search-result-card">
+      <div class="card-system-head">🔍 搜索"${escHtml(o.query)}" · ${o.count || 0} 条结果</div>
+      <div class="card-system-body">${renderMarkdown(formatted || '')}</div>
+    </div>`;
+}
+
+function renderResearchResultBubble(text) {
+  // research_result entry 渲染（带 LLM 综合答案 + 来源列表）
+  let o = null;
+  try { o = JSON.parse(text || ''); } catch { return null; }
+  if (!o || !o.answer) return null;
+  let sourcesHtml = '';
+  if (Array.isArray(o.sources) && o.sources.length) {
+    sourcesHtml = '<details class="research-sources"><summary>📚 ' + o.sources.length + ' 个引用来源</summary>' +
+      o.sources.slice(0, 8).map(s => `<div class="src-item">${escHtml(s.title || s.url || '')}${s.url ? ' — <a href="' + escHtml(s.url) + '" target="_blank">' + escHtml(s.url.slice(0, 60)) + '</a>' : ''}</div>`).join('') +
+      '</details>';
+  }
+  return `<div class="card-system research-result-card">
+      <div class="card-system-head">📊 调研"${escHtml(o.query || '')}"</div>
+      <div class="card-system-body">${renderMarkdown(o.answer || '')}</div>
+      ${sourcesHtml}
+    </div>`;
+}
+
+function renderChatBubble(container, entry) {
+  // v0.50: plan_step_update 单独渲染为 step chip（实时步骤进度）+ 治"AI 看不到任何反应"
+  if (entry && entry.source === 'plan_step_update') {
+    renderPlanStepChip(container, entry);
+    return;
+  }
+  // plan_loading / plan_done / plan_warning / plan_validation_error 由 aggregateAndRender 聚合渲染
+  // v0.124: tool_call_result 来源的工具调用历史卡片
+  if (entry && entry.source === 'tool_call_result') {
+    if (window.ACMSQwenToolCard && window.ACMSQwenToolCard.replayCard) {
+      window.ACMSQwenToolCard.replayCard(container, entry);
+    }
+    return;
+  }
+  if (entry && entry.source && entry.source.startsWith && entry.source.startsWith('plan_')) return;
+  const isAI = entry.role === 'assistant';
+  const isSystem = entry.role === 'system';
+  const parts = [];
+  if (isAI) {
+    if (entry.opening) parts.push(renderMarkdown(entry.opening));
+    if (entry.followup_question) parts.push(`<div class="chat-response-q">${renderMarkdown(entry.followup_question)}</div>`);
+  }
+  const reqId = (container.id || '').replace('chat-stream-msgs-', '');
+  const bodyHtml = parts.length
+    ? parts.join('') + (entry.understanding
+        ? `<div class="chat-thinking" style="display:none"><div class="chat-thinking-inner">${renderMarkdown(entry.understanding)}</div></div>`
+        : '')
+    : isSystem && (entry.source === 'music_result' || entry.source === 'music_precheck')
+      ? renderMusicBubble(entry.text || '')
+      : isSystem && entry.source === 'image_result'
+        ? renderImageBubble(reqId, entry.text || '')
+        : isSystem && entry.source === 'screenplay_result'
+          // v0.22 fix: 剧本辅助结果必须配专属 renderer，否则 JSON 走 renderMarkdown 触发 "(s || \"\").replace is not a function"
+          // v0.22.13: 传 reqId 让聊天流卡片能交互（生成图/视频按钮）
+          ? renderScreenplayBubble(reqId, entry.text || '')
+          : isSystem && entry.source === 'send_email_pending'
+            // v0.47：LLM 调 send_email tool 后写的 system entry → 弹邮件预览卡让用户确认
+            ? renderPendingSendEmailBubble(reqId, entry.text || '')
+            : isSystem && entry.source === 'office_action_apply'
+              // v0.X PR2: plan_execute 编排的 office_action tool 完成 → 前端 applyPlan 到 Univer/Tiptap/Konva
+              // 立即调 window.OfficeV3.applyOfficeAction 把 action 应用到打开的编辑器
+              ? renderOfficeActionApplyBubble(reqId, entry.text || '')
+              : isSystem && entry.source === 'search_result'
+                // v0.50：search tool 完成后推的独立气泡（治"用户看不到赛况文字"症状）
+                ? (renderSearchResultBubble(entry.text || '') || `<div class="chat-system-msg">${escHtml(entry.text || '')}</div>`)
+                : isSystem && entry.source === 'research_result'
+                  // v0.50：web_research tool 完成后推的独立气泡（LLM 综合答案 + 来源）
+                  ? (renderResearchResultBubble(entry.text || '') || `<div class="chat-system-msg">${escHtml(entry.text || '')}</div>`)
+                  : isSystem
+                    ? `<div class="chat-system-msg">${renderMarkdown(entry.text || '')}</div>`
+                    : `<div>${isAI ? renderMarkdown(entry.text || '') : escHtml(entry.text || '')}</div>`;
+
+  // 用户气泡支持附件小芯片（v0.9）
+  const userAttachHtml = (!isAI && entry.attachmentsHtml)
+    ? `<div class="bubble-attachments">${entry.attachmentsHtml}</div>`
+    : '';
+
+  const hasThinking = isAI && entry.understanding;
+  // v0.17：AI 历史气泡显示「第N轮 · 时间」前缀（让旧数据也能看到轮次 — backfillChatRounds 已补算）
+  const roundPrefix = (isAI && entry.chat_round) ? `第${entry.chat_round}轮 · ` : '';
+// 🆕 v0.121: 升级气泡结构 — avatar + inner（代替旧 emoji 标签 + 圆角胖气泡）
+  //   多多反馈: "用户和LLM工具调用都不那么好看和协调" → 参考 _demo_chat_ui.html
+  const avatarLetter = isAI ? 'Q' : isSystem ? '·' : 'P';
+  const div = document.createElement('div');
+  div.className = `chat-bubble ${isAI ? 'chat-bubble-ai' : isSystem ? 'chat-bubble-system' : 'chat-bubble-user'}`;
+  div.dataset.chatRound = entry.chat_round || '';
+  // 头像 + body（meta 行在 inner 内顶部）
+  div.innerHTML = `
+    <div class="chat-bubble-avatar" aria-hidden="true">${avatarLetter}</div>
+    <div class="chat-bubble-inner">
+      <div class="chat-bubble-meta">
+        <span class="chat-label">${isAI ? 'AI' : isSystem ? '参考' : '你'}</span>
+        <span class="chat-meta-sep">·</span>
+        <span class="chat-time">${roundPrefix}${fmtLocalTime(entry.at)}</span>
+        ${hasThinking ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}
+        ${isAI ? '<span class="chat-export-btn" onclick="chatExportWord(this)" title="导出为 Word 文档">📄</span>' : ''}
+      </div>
+      ${bodyHtml}
+      ${userAttachHtml}
+    </div>
+  `;
+  container.appendChild(div);
+  // v0.21：音乐卡片首次插入 DOM 后挂进度条事件
+  if (isSystem && div.querySelector('[data-music-card="1"]') && window.ACMSMusicCard) {
+    window.ACMSMusicCard.attachProgress(div);
+  }
+}
+
+function renderBriefBubble(container, brief) {
+  if (!brief || brief.status !== 'done') return;
+  const hasResponse = brief.opening || brief.followup_question;
+  const hasThinking = brief.ai_understanding;
+  const hasSuggest = brief.suggested_assist && brief.suggested_assist.method;
+  if (!hasResponse && !hasThinking && !hasSuggest) return;
+
+  let respHtml = '';
+  if (brief.opening) respHtml += renderMarkdown(brief.opening);
+  if (brief.followup_question) respHtml += `<div class="chat-response-q">${renderMarkdown(brief.followup_question)}</div>`;
+
+  const thinkingHtml = hasThinking
+    ? `<div class="chat-thinking" style="display:none"><div class="chat-thinking-inner">${renderMarkdown(brief.ai_understanding)}</div></div>`
+    : '';
+
+  const suggestHtml = hasSuggest
+    ? `<div class="chat-assist-suggest" onclick="chatAssist('${container.id?.replace('chat-stream-msgs-', '') || ''}','${brief.suggested_assist.method}')">💡 ${escHtml(brief.suggested_assist.reason || '试试' + brief.suggested_assist.method)} →</div>`
+    : '';
+
+  const toggleAttr = hasThinking ? ` data-has-thinking="1"` : '';
+  const div = document.createElement('div');
+  div.className = 'chat-bubble chat-bubble-ai';
+  // v0.122 修复：升级 v0.121 新结构（avatar + inner）— 之前缺 inner 包裹，
+  //   suggest 作为 .chat-bubble 直接子元素，被 display:flex 横向平铺推到最右
+  div.innerHTML = `<div class="chat-bubble-avatar" aria-hidden="true">Q</div><div class="chat-bubble-inner"><div class="chat-bubble-meta"><span class="chat-label">AI</span><span class="chat-meta-sep">·</span><span class="chat-time">第${brief.chat_round||1}轮</span>${hasThinking ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}<span class="chat-export-btn" onclick="chatExportWord(this)" data-req-id="${escHtml(container.id?.replace('chat-stream-msgs-', '') || '')}" title="导出为 Word 文档">📄</span></div><div class="chat-response"${toggleAttr}>${respHtml}</div>${thinkingHtml}${suggestHtml}</div>`;
+  container.appendChild(div);
+}
+
+function toggleChatThinking(btn) {
+  const bubble = btn.closest('.chat-bubble');
+  const think = bubble?.querySelector('.chat-thinking');
+  if (think) {
+    const isHidden = think.style.display === 'none';
+    think.style.display = isHidden ? 'block' : 'none';
+    btn.style.opacity = isHidden ? '1' : '0.5';
+  }
+}
+
+function renderAssistLayer(container, reqId, assists) {
+  if (!assists || typeof assists !== 'object') return;
+
+  // 跟踪已渲染的 assist 数据指纹，避免不必要重建（v0.3.6）
+  if (!window._assistRenderCache) window._assistRenderCache = {};
+
+  for (const method of ['diagnosis', 'reference', 'scenarios', 'tradeoff', 'arch', 'decision_tree', 'visual', 'competitive', 'pains', 'stakeholders', 'risks', 'assumptions', 'use_case', 'health_check', 'document_gen', 'send_email']) {
+    const d = assists[method];
+    if (!d || d.status !== 'done' || d.used) continue;
+    // v0.6.7 累积模式：不再 restrict 到 _explicitAssist method
+    //   所有 method 的 done 卡片都渲染（用户点过的会累积显示，未点的也显示）
+    // v0.13 B9：visual 跳过 round filter
+    //   bug：REQ-MQFAYK2A 的 visual.generated_at_round=6，但 briefRound=0（req 在孵化阶段没产生过 brief）
+    //   → 6 !== 0 → filter skip → 视觉卡片根本不渲染
+    //   修：visual 是「方向图快照」，不是 chat 流相关辅助，应该一直可见直到用户 pick
+    const chatStateRound = _chatState[reqId]?.briefRound;
+    // v0.46 fix：用户显式触发的 assist（window._explicitAssist）跳过 round filter
+    const isExplicit = window._explicitAssist?.[reqId] === method;
+    if (method !== 'visual' && !isExplicit
+        && typeof chatStateRound === 'number'
+        && typeof d.generated_at_round === 'number'
+        && d.generated_at_round !== chatStateRound) {
+      if (method === 'decision_tree') console.log(`[assist.render] decision_tree SKIP round: generated=${d.generated_at_round} chatState=${chatStateRound}`);
+      continue;
+    }
+
+    // 检查数据指纹：没变化就不重建（避免用户选中态丢失）
+    // v0.3.6：+aspects+picked 确保借鉴卡片选中态变化能被检测到
+    // v0.13 B10：+variants 让 visual regenerate 后能正确重新渲染
+    //   bug：visual 数据变化只体现在 variants 上，但 fingerprint 不含 variants
+    //   → regenerate 后 status/picked/used 全不变 → fingerprint 命中缓存 → 跳过渲染
+    //   → 旧卡片留在 DOM，新生成的图永远看不到
+    //   例：REQ-MQFAYK2A 重生成 3 张图（status=picked=used 不变）→ UI 不更新
+    const fingerprint = JSON.stringify({ status: d.status, scenarios: d.scenarios, tree: d.tree, dimensions: d.dimensions, modules: d.modules, aspects: d.aspects, profile: d.profile, insights: d.insights, variants: d.variants, picked: d.picked, used: d.used });
+    const cacheKey = `${reqId}_${method}`;
+    if (window._assistRenderCache[cacheKey] === fingerprint) continue; // 没变化，跳过该方法
+    window._assistRenderCache[cacheKey] = fingerprint;
+
+    // 移除旧层（确定要重建时才删）
+    container.querySelectorAll(`.chat-assist-layer[data-assist-method="${method}"]`).forEach(el => el.remove());
+
+    // 使用原组件渲染器获取视觉内容，替换交互为对话流选择
+    let innerHtml = '';
+    const mod = window.ACMSAssists?.get?.(method);
+      if (method === 'reference') console.log(`[assist.render] reference rendering, has mod:`, !!mod, `data mode:`, d?.mode, `status:`, d?.status);
+      if (mod && mod.render) {
+      if (method === 'decision_tree') console.log(`[assist.render] decision_tree rendering, tree items: ${d.tree?.length || 0}`);
+      try {
+        const raw = mod.render(reqId, d);
+        // 去掉 regen/actions 行 + secondary 按钮，保留 pick 按钮
+        let stripped = raw
+          .replace(/<div class="assist-actions[\s\S]*?<\/div>/g, '')
+          .replace(/<div class="assist-regen-row[\s\S]*?<\/div>/g, '')
+          .replace(/<button class="btn-small btn-secondary[\s\S]*?<\/button>/g, '')
+          .trim();
+        // 保留 assist-intro
+        stripped = stripped.replace(/class="assist-intro/g, 'class="assist-intro assist-intro-dialog"');
+
+        // 场景/架构：保留 pick 按钮，替换 onclick 为对话流
+        if (method === 'scenarios' || method === 'arch') {
+          stripped = stripped
+            .replace(/onclick="ACMSAssistDispatcher\.useAssist\([^)]+\)"/g, '')
+            .replace(/<button class="btn-small[^"]*assist-pick-btn\s*"/g, '<button class="btn-small btn-primary" onclick="chatPickCard(\'' + reqId + '\',\'' + method + '\',this)"');
+          // 场景/架构不设 clickable（通过按钮交互，点卡片内容不触发选择）
+        } else {
+          // 其他：去掉 pick 按钮，设 clickable
+          stripped = stripped
+            .replace(/<button class="(?:assist-pick-btn|btn-small btn-primary assist-pick-btn)[\s\S]*?<\/button>/g, '');
+          if (method === 'decision_tree') {
+            // v0.4 决策树用 .dt-branch；老 brief-branch 兼容（任何残留老卡片）
+            // 注意：必须后跟 \s 或 "，避免误匹配 dt-branch-head/letter/label/desc/analogy
+            stripped = stripped
+              .replace(/class="dt-branch(\s|")/g, 'class="dt-branch chat-assist-clickable$1')
+              .replace(/class="brief-branch(\s|")/g, 'class="brief-branch chat-assist-clickable$1');
+          } else if (method === 'tradeoff') {
+            stripped = stripped.replace(/<button class="assist-tradeoff-opt/g, '<span class="assist-tradeoff-opt chat-assist-opt-clickable"');
+            stripped = stripped.replace(/<\/button>/g, '</span>');
+          }
+        }
+        innerHtml = stripped;
+      } catch (e) { innerHtml = `<div class="insight-error">❌ 渲染失败: ${e.message}</div>`; }
+    } else {
+      // 降级：简易标题
+      const titles = { decision_tree:'🌳 决策树', scenarios:'👥 场景', tradeoff:'⚖️ 取舍', arch:'🏗️ 架构', diagnosis:'🩺 体检', visual:'🎨 视觉', competitive:'🏢 竞品', reference:'🏛 借鉴', pains:'🔥 痛点', stakeholders:'👥 干系人', risks:'⚠️ 风险', assumptions:'📌 假设', health_check:'🏥 需求体检', health_check:'🏥 需求体检' };
+      innerHtml = `<div class="assist-section-title">${titles[method]||method}</div>`;
+    }
+
+if (!innerHtml.trim()) continue;
+
+    const el = document.createElement('div');
+    el.className = 'chat-assist-layer';
+    el.dataset.assistMethod = method;
+    // v0.13 fix: use_case 自带 apply/regen/discard 按钮，不附加 chat-assist-actions 重复按钮
+    const chatActions = (method === 'use_case') ? '' :
+      `<div class="chat-assist-actions" style="margin-top:10px"><button class="btn-small btn-accept" onclick="chatSendAssistPick('${reqId}','${method}', this)">✅ 发送选择</button><button class="btn-small" onclick="chatAssistRegen('${reqId}','${method}')">↻ 换一批</button><button class="btn-small" onclick="chatSkipAssist(this)">跳过</button></div>`;
+    el.innerHTML = `${innerHtml}${chatActions}`;
+    // v0.6.6：优先就地替换 .assist-loading-card（chatAssist 插的），否则 append 到末尾
+    const loadingEl = container.querySelector(`.assist-loading-card[data-method="${method}"]`);
+    if (loadingEl) {
+      // 就地替换 — 用户视觉上看到 loading 卡片"变成"正式卡片（焦点跳到新卡片）
+      loadingEl.replaceWith(el);
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } else {
+      container.appendChild(el);
+    }
+    // v0.6.7 累积模式：不 break，继续遍历下一个 method，每张都渲染
+    //   （v0.3.6 "同一时间只显示一张卡片"已被累积模式替代）
+  }
+}
+
+function chatToggleOpt(el) { el.classList.toggle('selected'); }
+
+/** 点击卡片上的选择按钮（场景/架构）— 切换选中态 */
+function chatPickCard(reqId, method, btn) {
+  const card = btn.closest('[class*="assist-card"]');
+  if (!card) return;
+  const isSelected = card.classList.toggle('selected');
+  btn.textContent = isSelected ? '✅ 已选' : '👆 我最像这个';
+  btn.className = isSelected ? 'btn-small btn-primary' : 'btn-small';
+}
+
+/** 卡片选择切换（场景/决策树/架构等原组件卡片） */
+function chatToggleCard(el, reqId, method) {
+  el.classList.toggle('selected');
+}
+
+// 决策树/架构等卡片的点击选择委托（仅限 chat-assist-clickable，不干扰场景按钮）
+// v0.3.6 D：决策树分支互斥（同一层内只能选一个）
+document.addEventListener('click', function(e) {
+  const target = e.target.closest('.chat-assist-clickable:not(.assist-card)');
+  if (target && target.closest('.chat-assist-layer')) {
+    // 决策树分支互斥：同层其他分支取消选中（v0.4 兼容 .dt-tree 和 .brief-tree）
+    const tree = target.closest('.brief-tree, .dt-tree');
+    if (tree) {
+      tree.querySelectorAll('.chat-assist-clickable.selected').forEach(sib => sib.classList.remove('selected'));
+    }
+    target.classList.toggle('selected');
+  }
+  // v0.3.6 B：取舍清单选项（chat-assist-opt-clickable）独立委托
+  // 同一维度内互斥（同一 .assist-card 内只能选一个）
+  const opt = e.target.closest('.chat-assist-opt-clickable');
+  if (opt && opt.closest('.chat-assist-layer')) {
+    const card = opt.closest('.assist-card');
+    if (card) {
+      card.querySelectorAll('.chat-assist-opt-clickable').forEach(sib => sib.classList.remove('selected'));
+    }
+    opt.classList.add('selected');
+  }
+});
+
+// ── 聊天附件（v0.9） ──
+//   每个 reqId 一份待发附件队列；发送时清空
+window._chatAttachments = window._chatAttachments || {};
+
+// 🆕 v0.119：聊天 send 按钮多态状态机（每 reqId 一份状态）
+//   idle:         正常状态，[📤 发送] 蓝
+//   generating:   SSE 流式进行中，[⏹ 停止] 红边（输入框空 = 纯 interrupt，有内容 = interrupt-and-send）
+//   interrupting: interrupt 已发，等 result，[⋯ 中断中] 灰 disabled
+//   interrupted:  result.interrupted=true 到达，已渲染"已中断"卡片（v0.123 已基本不再触发，因引入 summarizing）
+//   summarizing:  v0.123 新增 —— 自动让 AI 总结已完成工作中（[⋯ 总结中] 灰 disabled）
+//   summarized:   v0.123 新增 —— 总结完成，渲染决策卡（[📤 发送] 激活）
+//   状态转移点：
+//     idle → generating：SSE 第一条 text_delta（或 tool_card）到达
+//     generating → interrupting：用户点 ⏹ 停止
+//     interrupting → summarizing：SSE end 事件 interrupted=true（v0.123 新增自动总结）
+//     interrupting → idle：SSE end 事件 interrupted=false
+//     summarizing → summarized：总结 SSE end 事件（interrupted=false，正常完成）
+//     summarizing → idle：总结 SSE 出错（罕见）
+//     summarized → generating：用户点 ↻ 继续（chatContinueLastTurn）
+//     summarized → idle：用户点 ✕ 放弃
+window._chatSendState = window._chatSendState || {};
+window._chatInterrupted = window._chatInterrupted || {};  // reqId → { lastUserInput: '', interruptedAt: ts }
+window._chatContinueTimer = window._chatContinueTimer || {};  // reqId → setInterval handle（倒计时）
+
+function setChatSendState(reqId, state) {
+  window._chatSendState[reqId] = state;
+  var btn = document.getElementById('chat-send-btn-' + reqId);
+  var btnText = btn && btn.querySelector('.chat-send-btn-text');
+  var input = document.getElementById('chat-input-' + reqId);
+  if (btn) {
+    btn.classList.remove('chat-send-idle', 'chat-send-generating', 'chat-send-interrupting', 'chat-send-summarizing');
+    if (state === 'generating') btn.classList.add('chat-send-generating');
+    else if (state === 'interrupting') btn.classList.add('chat-send-interrupting');
+    else if (state === 'summarizing') btn.classList.add('chat-send-summarizing');
+    else btn.classList.add('chat-send-idle');
+    // 🆕 v0.123：summarizing 也 disabled（用户在 AI 总结时不能发新指令或中断）
+    btn.disabled = (state === 'interrupting' || state === 'summarizing');
+  }
+  if (btnText) {
+    btnText.textContent = state === 'generating' ? '⏹ 停止'
+      : state === 'interrupting' ? '⋯ 中断中'
+      : state === 'summarizing' ? '⋯ 总结中'
+      : '📤 发送';
+  }
+  if (input) {
+    // 🆕 v0.123：summarized 状态：用户可发新指令
+    input.placeholder = state === 'generating'
+      ? '输入新内容并点发送可替换当前任务…'
+      : state === 'summarizing'
+      ? 'AI 正在总结已完成的工作…'
+      : '问我任何问题…（可直接 Ctrl+V 粘贴截图）';
+  }
+}
+
+function getChatSendState(reqId) {
+  return window._chatSendState[reqId] || 'idle';
+}
+
+// 🆕 v0.119：渲染"已中断"卡片 + 续转按钮
+function renderChatInterruptedCard(reqId, opts) {
+  opts = opts || {};
+  var c = document.getElementById('chat-stream-msgs-' + reqId);
+  if (!c) return;
+  // 移除旧的"已中断"卡片（避免重复）
+  var oldCard = c.querySelector('.chat-interrupted-card[data-req-id="' + reqId + '"]');
+  if (oldCard) oldCard.remove();
+  // 清掉上次的倒计时
+  if (window._chatContinueTimer[reqId]) {
+    clearInterval(window._chatContinueTimer[reqId]);
+    delete window._chatContinueTimer[reqId];
+  }
+  var card = document.createElement('div');
+  card.className = 'chat-interrupted-card';
+  card.setAttribute('data-req-id', reqId);
+  var leftText = opts.leftText || '已中断';
+  card.innerHTML =
+    '<div class="cic-head">⏹ ' + escHtml(leftText) + '</div>' +
+    '<div class="cic-actions">' +
+      '<button class="cic-btn cic-continue" type="button">↻ 继续刚才的</button>' +
+      '<button class="cic-btn cic-discard" type="button">✕ 放弃，新指令</button>' +
+    '</div>' +
+    '<div class="cic-timer"></div>';
+  c.appendChild(card);
+  // 绑定按钮
+  card.querySelector('.cic-continue').onclick = function() { chatContinueLastTurn(reqId); };
+  card.querySelector('.cic-discard').onclick = function() {
+    if (window._chatContinueTimer[reqId]) {
+      clearInterval(window._chatContinueTimer[reqId]);
+      delete window._chatContinueTimer[reqId];
+    }
+    card.remove();
+    var input = document.getElementById('chat-input-' + reqId);
+    if (input) { input.value = ''; input.focus(); }
+    setChatSendState(reqId, 'idle');
+  };
+  // 🆕 v0.119：v0.120 之前不开启 3 秒倒计时自动续转（等用户反馈再加，先做显式按钮）
+  card.querySelector('.cic-timer').textContent = '点「继续」恢复中断的任务，或输入新指令';
+  if (typeof chatScrollToBottom === 'function') chatScrollToBottom(c);
+}
+
+// 🆕 v0.122：自由对话续转（v0.119 agent-buddy.js buddyContinueLastTurn+startContinueStream 的同款移植）
+//   agent-buddy 走 _continue__ 标记 + 独立 /chat?stream=1；自由对话走独立 /chat/continue（v0.122 新增）
+//   关键设计：
+//   1. 移除"已中断"卡片
+//   2. fetch POST /api/chat/continue {reqId} → 后端一次性完成 control_request + SSE 流推送
+//   3. resp 是 SSE 流 → 复用 handleFreeChatSSE（与 chatSendDetect 同一路径，render 行为完全一致）
+//   4. 端事件 interrupted=true（极罕见：续转时被新 interrupt 打断）→ handleFreeChatSSE 自动渲染新"已中断"卡片
+//   5. 端事件 interrupted=false → handleFreeChatSSE 正常 finalize，状态自动切 idle
+async function chatContinueLastTurn(reqId) {
+  // 1. 移除"已中断"卡片
+  var c = document.getElementById('chat-stream-msgs-' + reqId);
+  var card = c && c.querySelector('.chat-interrupted-card[data-req-id="' + reqId + '"]');
+  if (card) card.remove();
+  // 2. 状态切 generating（按钮变 ⏹ 停止），与 chatSend 路径行为一致
+  setChatSendState(reqId, 'generating');
+  // 3. 插入 typing dots（用户期望看到"AI 思考中"反馈，与 chatSend 一致）
+  var typingEl = null;
+  if (c) {
+    typingEl = document.createElement('div');
+    typingEl.className = 'chat-typing';
+    typingEl.id = 'chat-typing-continue-' + reqId;
+    typingEl.innerHTML = '<span></span><span></span><span></span>';
+    c.appendChild(typingEl);
+    chatScrollToBottom(c);
+  }
+  try {
+    const resp = await fetch('/api/chat/continue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+      body: JSON.stringify({ reqId }),
+    });
+    if (!resp.ok) {
+      if (typingEl) typingEl.remove();
+      // 404 → no_session；其他 → 通用错误
+      const errData = await resp.json().catch(() => ({}));
+      if (resp.status === 404 && errData.error === 'no_session') {
+        toast('会话已过期，无法续转，请重新发送', 'warning');
+      } else {
+        toast('续转失败：' + (errData.error || `HTTP ${resp.status}`), 'error');
+      }
+      setChatSendState(reqId, 'idle');
+      return;
+    }
+    // 4. SSE 流复用 handleFreeChatSSE（与 chatSendDetect 完全相同的事件格式 + B10 渲染）
+    await handleFreeChatSSE(reqId, resp, typingEl);
+    // handleFreeChatSSE 内部已处理状态切换：
+    //   - 第一个事件 → setChatSendState('generating') 兜底
+    //   - end.interrupted=true → 渲染新"已中断"卡片
+    //   - end.interrupted=false → 正常 finalize（但状态没自动切 idle，下面手动补）
+    // 注：handleFreeChatSSE 不负责切 idle（正常 chatSendDetect 也不切；是 polling 完成后切的）
+    //   这里我们需要手动切回 idle，因为续转流的 end 是真正的"完成"信号
+    var finalState = getChatSendState(reqId);
+    if (finalState === 'generating') setChatSendState(reqId, 'idle');
+} catch (e) {
+    if (typingEl) typingEl.remove();
+    toast('续转请求异常：' + e.message, 'error');
+    setChatSendState(reqId, 'idle');
+  }
+}
+
+// 🆕 v0.123：中断后自动让 AI 总结已完成工作 + 用户决策（[继续] / [放弃]）
+//   触发时机：handleFreeChatSSE end 事件 interrupted=true
+//   流程：
+//     1. 渲染 "⏸ AI 正在总结..." loading 卡（灰色背景 + typing dots）
+//     2. 渲染 user 气泡（"📋 请总结刚才中断的任务进度"）+ 调 chatSendDetect 走 SSE 流
+//     3. AI 总结回复渲染成普通 assistant 气泡（在 loading 卡上方）
+//     4. SSE 流完成后 → 替换 loading 卡为 done 卡 + 决策按钮（[继续][放弃]）
+//     5. 状态切 summarized
+//     6. 如果用户在中断前发了新指令（pending），自动 dispatch chatSendAfterInterrupt
+//
+//   总结消息写库（B 选项：写库）—— 历史可查，未来 LLM 也能看到总结内容
+//   "放弃" 仅 UI 清理（C 选项：仅 UI 清理）—— 不污染 history
+//   总结消息措辞（D 选项：中文 markdown 3 节结构）—— 信息密度最高
+async function triggerInterruptSummary(reqId, pending) {
+  var c = document.getElementById('chat-stream-msgs-' + reqId);
+  if (!c) return;
+
+  // 1. 渲染 loading 卡片
+  var loadingCard = document.createElement('div');
+  loadingCard.className = 'chat-summary-card chat-summary-loading';
+  loadingCard.setAttribute('data-req-id', reqId);
+  loadingCard.innerHTML =
+    '<div class="csc-head">⏸ AI 正在总结已完成的工作…</div>' +
+    '<div class="csc-body">' +
+      '<span class="chat-typing"><span></span><span></span><span></span></span>' +
+    '</div>';
+  c.appendChild(loadingCard);
+  chatScrollToBottom(c);
+
+  // 2. 构造总结消息（D 选项：中文 markdown 3 节结构）
+  var summaryPrompt =
+    '请用简洁的中文 markdown 总结：\n' +
+    '1) 你已完成的工作\n' +
+    '2) 还剩什么没做\n' +
+    '3) 下一步打算做什么\n\n' +
+    '不要超过 300 字。';
+
+  // 3. 渲染 user 气泡（让用户能看到"我刚才让 AI 总结" + history 留底）
+  renderChatBubble(c, {
+    role: 'user',
+    text: '📋 请总结刚才中断的任务进度',
+    at: new Date().toISOString(),
+  });
+  // 清掉旧 typing dots（避免与 loading 卡重叠）
+  var oldTyping = c.querySelector('#chat-typing-detect-' + reqId);
+  if (oldTyping) oldTyping.remove();
+  chatScrollToBottom(c);
+
+  // 4. 状态切 summarizing（按钮变 "⋯ 总结中" + disabled）—— 已在 end 事件 handler 里设置
+
+  // 5. 调 chatSendDetect 走正常 SSE 流（AI 总结回复会渲染成普通 assistant 气泡）
+  var summaryOk = false;
+  try {
+    await chatSendDetect(reqId, summaryPrompt);
+    summaryOk = true;
+  } catch (e) {
+    console.error('[chat-summary] 总结失败:', e);
+    if (loadingCard.parentNode) {
+      loadingCard.classList.remove('chat-summary-loading');
+      loadingCard.classList.add('chat-summary-error');
+      loadingCard.innerHTML =
+        '<div class="csc-head">⚠️ 总结失败</div>' +
+        '<div class="csc-body">' + escHtml(String(e && e.message || e).slice(0, 200)) + '</div>' +
+        '<div class="csc-actions">' +
+          '<button class="csc-btn csc-continue" type="button">↻ 继续刚才的任务</button>' +
+          '<button class="csc-btn csc-discard" type="button">✕ 放弃，彻底结束</button>' +
+        '</div>';
+      bindSummaryCardButtons(loadingCard, reqId);
+    }
+    setChatSendState(reqId, 'idle');
+    return;
+  }
+
+  // 6. 总结成功 → 替换 loading 卡为 done 卡
+  if (loadingCard.parentNode) {
+    loadingCard.classList.remove('chat-summary-loading');
+    loadingCard.classList.add('chat-summary-done');
+    loadingCard.innerHTML =
+      '<div class="csc-head">📋 已总结完成</div>' +
+      '<div class="csc-hint">查看上方的 AI 总结，或选择下一步：</div>' +
+      '<div class="csc-actions">' +
+        '<button class="csc-btn csc-continue" type="button">↻ 继续刚才的任务</button>' +
+        '<button class="csc-btn csc-discard" type="button">✕ 放弃，彻底结束</button>' +
+      '</div>';
+    bindSummaryCardButtons(loadingCard, reqId);
+    chatScrollToBottom(c);
+  }
+
+  // 7. 状态切 summarized（覆盖 handleFreeChatSSE 内部的 idle）
+  setChatSendState(reqId, 'summarized');
+
+  // 8. 如果用户在中断前发了新指令（pending），自动 dispatch
+  //   调 chatSendAfterInterrupt（v0.119 已实现）渲染 user 气泡 + 调 chatSendDetect
+  if (pending && (pending.text || (pending.attachments && pending.attachments.length))) {
+    setTimeout(function() {
+      // 再次确认 pending 仍有效（防止按钮被用户提前点掉）
+      chatSendAfterInterrupt(reqId, pending.text, pending.attachments || []);
+    }, 100);
+  }
+}
+
+// 绑定 summary 卡片的 [继续][放弃] 按钮事件
+function bindSummaryCardButtons(card, reqId) {
+  var continueBtn = card.querySelector('.csc-continue');
+  var discardBtn = card.querySelector('.csc-discard');
+  if (continueBtn) {
+    continueBtn.onclick = function() { chatContinueLastTurn(reqId); };
+  }
+  if (discardBtn) {
+    discardBtn.onclick = function() {
+      var c = document.getElementById('chat-stream-msgs-' + reqId);
+      card.remove();
+      // 清理可能的残留 typing dots
+      if (c) {
+        var typing = c.querySelector('.chat-typing-continue-' + reqId);
+        if (typing) typing.remove();
+      }
+      setChatSendState(reqId, 'idle');
+    };
+  }
+}
+
+// 🆕 v0.119：调后端 /api/qwen/interrupt（纯中断，不发新消息）
+async function chatInterrupt(reqId) {
+  setChatSendState(reqId, 'interrupting');
+  try {
+    const r = await api('POST', '/qwen/interrupt', { userId: reqId });
+    if (r && r.ok) {
+      console.log('[chat] interrupt 已发送, session=', r.sessionId);
+      // 等 SSE end 事件 interrupted=true 到达后渲染卡片
+    } else if (r && r.reason === 'no_session') {
+      toast('会话已过期，无需中断', 'info');
+      setChatSendState(reqId, 'idle');
+    } else {
+      toast('中断失败：' + (r && r.error || '未知'), 'error');
+      setChatSendState(reqId, 'idle');
+    }
+  } catch (e) {
+    toast('中断请求异常：' + e.message, 'error');
+    setChatSendState(reqId, 'idle');
+  }
+}
+
+// 🆕 v0.119：中断后发新消息（chatSend 的特殊分支，专为 pending 队列）
+//   与正常 chatSend 不同点：状态已经是 interrupted，不需要再次 dispatch
+//   直接渲染用户气泡 + 调 chatSendDetect 触发新一轮 SSE 流
+async function chatSendAfterInterrupt(reqId, text, attachments) {
+  if (!text && (!attachments || !attachments.length)) return;
+  const finalText = chatBuildSupplementText(reqId, text);
+  const c = document.getElementById('chat-stream-msgs-' + reqId);
+  if (c) {
+    const userBubbleAttachments = (attachments || []).map(a => {
+      const icon = a.icon || '📎';
+      const fileUrl = a.id ? `/api/chat/upload/${encodeURIComponent(a.id)}/raw` : '#';
+      return `<a href="${escHtml(fileUrl)}" target="_blank" rel="noopener noreferrer"
+                class="attach-chip" title="${escHtml(a.name)}（点击下载/预览原文件）"
+                onclick="event.stopPropagation()">${icon} ${escHtml(a.name)}</a>`;
+    }).join('');
+    const userBubbleText = text || (attachments && attachments.length ? '📎 ' + attachments.length + ' 个附件' : '');
+    renderChatBubble(c, {
+      role: 'user',
+      text: userBubbleText,
+      attachmentsHtml: userBubbleAttachments,
+      at: new Date().toISOString(),
+    });
+    if (typeof chatScrollToBottom === 'function') chatScrollToBottom(c);
+  }
+  // 状态切 generating（按钮变 ⏹ 停止）
+  setChatSendState(reqId, 'generating');
+  await chatSendDetect(reqId, finalText);
+}
+
+// 🆕 v0.120 (PR5 of excel-multi-step-plan-b)：plan 失败步骤一键重试
+//   流程：POST /plan/:planId/retry 拿服务端构造的 retry_message（含失败上下文）
+//     → 当成用户消息渲染气泡 → chatSendDetect 触发新一轮 LLM（LLM 自己重规划失败部分）
+//   为什么不在服务端直接写 message：detect-and-respond 会自己 appendMessage(user)，
+//     两端都写会重复。让前端走标准发送链路 = 完全等价用户手打（含 SSE 流式）。
+async function retryFailedPlanSteps(btn) {
+  const planId = btn?.dataset?.planId || '';
+  const reqId = btn?.dataset?.reqId || (window.__acmsPlanReqId || '');
+  if (!planId || !reqId) { toast('无法确定计划或对话 ID', 'error'); return; }
+
+  const origText = btn.textContent;
+  btn.textContent = '⏳ 重试中…';
+  btn.disabled = true;
+
+  try {
+    const r = await api('POST', `/requirements/${reqId}/plan/${planId}/retry`, {});
+    if (r.error) {
+      toast('重试失败: ' + r.error, 'error');
+      btn.textContent = origText;
+      btn.disabled = false;
+      return;
+    }
+    if (!r.retried) {
+      toast(r.message || '该计划没有失败步骤', 'info');
+      btn.textContent = origText;
+      btn.disabled = false;
+      return;
+    }
+
+    // 渲染用户气泡（把系统构造的重试消息当作用户输入展示，让用户看得见发了什么）
+    const c = document.getElementById('chat-stream-msgs-' + reqId);
+    if (c) {
+      renderChatBubble(c, {
+        role: 'user',
+        text: `🔄 重试失败步骤（${(r.failed_steps || []).join(', ')}）`,
+        at: new Date().toISOString(),
+      });
+      if (typeof chatScrollToBottom === 'function') chatScrollToBottom(c);
+    }
+    toast(`已发起重试：${(r.failed_steps || []).length} 个失败步骤`, 'success');
+
+    // 走标准发送链路触发 LLM（服务端会写入 user message 并开 SSE 流）
+    setChatSendState(reqId, 'generating');
+    await chatSendDetect(reqId, r.retry_message);
+  } catch (e) {
+    toast('重试异常: ' + e.message, 'error');
+    btn.textContent = origText;
+    btn.disabled = false;
+  }
+}
+window.retryFailedPlanSteps = retryFailedPlanSteps;
+
+const CHAT_UPLOAD_ACCEPT = {
+  image: 'image/png,image/jpeg,image/jpg,image/gif,image/webp',
+  pdf:   'application/pdf,.pdf',
+  docx:  'application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx',
+  text:  '.md,.txt,.log,.json,.yaml,.yml,.toml,.ini,.env,.js,.ts,.jsx,.tsx,.py,.java,.go,.rs,.rb,.php,.cs,.cpp,.c,.h,.hpp,.sh,.bash,.zsh,.ps1,.html,.css,.scss,.xml,.sql,.graphql,text/plain,text/markdown,application/json',
+};
+
+function chatToggleAttachPopover(reqId) {
+  const pop = document.getElementById(`chat-input-popover-${reqId}`);
+  if (!pop) return;
+  const willOpen = pop.style.display === 'none';
+  // 关闭其他打开的
+  document.querySelectorAll('.chat-input-popover').forEach(el => { if (el !== pop) el.style.display = 'none'; });
+  pop.style.display = willOpen ? 'block' : 'none';
+}
+
+function chatUploadTrigger(reqId, category) {
+  const inp = document.getElementById(`chat-file-${reqId}`);
+  if (!inp) return;
+  inp.setAttribute('accept', CHAT_UPLOAD_ACCEPT[category] || '*/*');
+  inp.dataset.category = category;
+  // v0.13 B5 fix: 立即关掉 popover（用户取消文件选择后 popover 不会自动隐藏）
+  const pop = document.getElementById(`chat-input-popover-${reqId}`);
+  if (pop) pop.style.display = 'none';
+  inp.click();
+}
+
+// 共享内部函数：上传单个 File 对象（v0.10 文件选择 + 剪贴板粘贴都走这里）
+//   抽出来后，chatUploadFile 只负责从 input 取文件并清空，chatHandlePaste 只负责从剪贴板取文件
+async function chatUploadRawFile(reqId, file, category = 'unknown') {
+  if (!file) return;
+
+  // 客户端大小兜底（与服务端一致）
+  if (file.size > 20 * 1024 * 1024) {
+    toast(`文件过大（${(file.size/1024/1024).toFixed(1)}MB），上限 20MB`, 'error');
+    return;
+  }
+
+  // 显示"上传中"
+  const tmpId = '_uploading_' + Date.now();
+  const isVision = category === 'image';
+  const waitLabel = isVision ? '🔍 AI 识别中...' : '⏳ 上传中...';
+  chatRenderAttachPreview(reqId, [{ id: tmpId, name: file.name, size: file.size, mime: file.type, category, icon: '⏳', uploading: true, waitLabel }]);
+
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('category', category);
+    // 图片/PDF 解析可能较慢，给足超时（vision 最坏 30s，PDF 几秒）
+    const ctrl = new AbortController();
+    const timeoutMs = isVision ? 40000 : 20000;
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+
+    const r = await fetch('/api/chat/upload', {
+      method: 'POST',
+      headers: { 'X-API-Key': 'dev-key-001' },
+      body: fd,
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    const data = await r.json();
+    if (!r.ok) {
+      toast('上传失败: ' + (data.error || r.statusText), 'error');
+      chatRemoveAttachment(reqId, tmpId);
+      return;
+    }
+    // 替换占位
+    const arr = (window._chatAttachments[reqId] || []).filter(a => a.id !== tmpId);
+    arr.push(data);
+    window._chatAttachments[reqId] = arr;
+    chatRenderAttachPreview(reqId, arr);
+    // 关闭 popover
+    const pop = document.getElementById(`chat-input-popover-${reqId}`);
+    if (pop) pop.style.display = 'none';
+    // 解析失败的友好提示
+    if (data.parseNote) {
+      toast('⚠️ ' + data.parseNote, 'warning');
+    } else if (data.extractedText) {
+      // 解析成功的提示（轻量，避免刷屏）
+      const summary = data.extractedText.slice(0, 30).replace(/\n/g, ' ');
+      console.log(`[chat-upload] ✅ ${data.name} 解析: ${data.extractedText.length} 字`);
+    }
+  } catch (e) {
+    const msg = e.name === 'AbortError' ? '请求超时（解析太慢）' : '上传异常: ' + e.message;
+    toast(msg, 'error');
+    chatRemoveAttachment(reqId, tmpId);
+  }
+}
+
+// 从文件 input 选择上传（v0.9 📎 → popover → 选文件走这里）
+//   v0.13 B5: 支持多文件上传（input multiple），循环处理每个文件
+async function chatUploadFile(reqId, input) {
+  const files = Array.from(input.files || []);
+  if (files.length === 0) return;
+  const category = input.dataset.category || 'unknown';
+  for (const file of files) {
+    await chatUploadRawFile(reqId, file, category);
+  }
+  input.value = '';  // 重置 input，允许重复选同一文件
+}
+
+// 剪贴板粘贴上传（v0.10 截图直接 Ctrl+V 走这里）
+//   只在 textarea 上挂监听，避免污染全局；只拦截 image 类型，纯文本粘贴照常工作
+function chatHandlePaste(reqId, ev) {
+  if (!ev.clipboardData) return;
+  const items = ev.clipboardData.items;
+  if (!items || items.length === 0) return;
+
+  // 收集所有 image 类型文件（一次粘贴可能含多张）
+  const files = [];
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    if (it.kind === 'file' && it.type && it.type.startsWith('image/')) {
+      const f = it.getAsFile();
+      if (f) files.push(f);
+    }
+  }
+  if (files.length === 0) return;  // 没有图片 → 让浏览器按默认行为处理（粘贴文本）
+
+  // 阻止图片二进制 / 文件名塞进 textarea
+  ev.preventDefault();
+
+  // 剪贴板文件没 name，给一个时间戳命名方便追溯
+  const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+  files.forEach((f, idx) => {
+    if (!f.name || f.name === 'image.png') {
+      const ext = (f.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+      f.name = files.length > 1
+        ? `screenshot-${ts}-${idx + 1}.${ext}`
+        : `screenshot-${ts}.${ext}`;
+    }
+    chatUploadRawFile(reqId, f, 'image');
+  });
+
+  if (files.length > 1) {
+    toast(`✓ 已粘贴 ${files.length} 张图片`, 'success');
+  }
+}
+
+function chatRemoveAttachment(reqId, attachId) {
+  const arr = (window._chatAttachments[reqId] || []).filter(a => a.id !== attachId);
+  window._chatAttachments[reqId] = arr;
+  chatRenderAttachPreview(reqId, arr);
+}
+
+// 把聊天附件沉淀到项目知识库（v0.9）
+//   默认不入库；用户主动点 📥 触发
+//   成功后按钮变 ✓ 并禁用
+async function chatPromoteAttachment(reqId, uploadId, btn) {
+  const arr = window._chatAttachments[reqId] || [];
+  const att = arr.find(a => a.id === uploadId);
+  if (!att || att.promoted) return;
+  // 防双击
+  if (btn) { btn.style.pointerEvents = 'none'; btn.textContent = '⏳'; }
+  try {
+    const r = await fetch(`/api/chat/upload/${uploadId}/promote`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+      body: JSON.stringify({ reqId }),
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      toast('存入失败: ' + (data.error || r.statusText), 'error');
+      if (btn) { btn.style.pointerEvents = ''; btn.textContent = '📥'; }
+      return;
+    }
+    // 标记已沉淀
+    att.promoted = true;
+    if (btn) { btn.textContent = '✓'; btn.title = '已存入知识库'; btn.classList.add('done'); }
+    toast('✓ 已存入知识库', 'success');
+  } catch (e) {
+    toast('存入异常: ' + e.message, 'error');
+    if (btn) { btn.style.pointerEvents = ''; btn.textContent = '📥'; }
+  }
+}
+
+function chatRenderAttachPreview(reqId, arr) {
+  const box = document.getElementById(`chat-attach-preview-${reqId}`);
+  if (!box) return;
+  if (!arr || !arr.length) {
+    box.style.display = 'none';
+    box.innerHTML = '';
+    return;
+  }
+box.style.display = 'flex';
+  box.innerHTML = arr.map(a => {
+    const sizeStr = a.size < 1024 ? `${a.size}B` : a.size < 1024*1024 ? `${(a.size/1024).toFixed(1)}KB` : `${(a.size/1024/1024).toFixed(2)}MB`;
+    const thumb = a.category === 'image' && a.url
+      ? `<img src="${a.url}" alt="">`
+      : a.icon;
+    const cls = a.uploading ? 'attach-card uploading' : 'attach-card';
+    // v0.13 B5 fix: 文件名加 <a> 链接，点击打开新窗口预览/下载
+    const fileUrl = a.id ? `/api/chat/upload/${encodeURIComponent(a.id)}/raw` : '#';
+    const nameHtml = a.uploading
+      ? `<div class="attach-name" title="${escHtml(a.name)}">${escHtml(a.name)}</div>`
+      : `<div class="attach-name" title="${escHtml(a.name)}"><a href="${fileUrl}" target="_blank" rel="noopener">${escHtml(a.name)}</a></div>`;
+    return `
+      <div class="${cls}" data-id="${a.id}">
+        <div class="attach-thumb">${thumb}</div>
+        <div class="attach-info">
+          ${nameHtml}
+          <div class="attach-meta">${a.uploading ? (a.waitLabel || '⏳ 上传中...') : sizeStr + (a.extractedText ? ' · ' + a.extractedText.length + '字' : (a.parseNote ? ' · ⚠️ ' + a.parseNote : ''))}</div>
+        </div>
+        ${a.uploading ? '' : `<span class="attach-promote${a.promoted ? ' done' : ''}" onclick="chatPromoteAttachment('${reqId}','${a.id}', this)" title="${a.promoted ? '已存入知识库' : '存入知识库'}">${a.promoted ? '✓' : '📥'}</span>`}
+        <span class="attach-x" onclick="chatRemoveAttachment('${reqId}','${a.id}')" title="移除">✕</span>
+      </div>
+    `;
+  }).join('');
+  // 高亮 📎 按钮
+  const btn = document.getElementById(`chat-attach-btn-${reqId}`);
+  if (btn) btn.classList.toggle('has-attach', arr.length > 0);
+}
+
+// 构造把附件内容拼到消息的文本（v1 简化：直接拼正文，不做引用块）
+function chatBuildSupplementText(reqId, userText) {
+  const arr = window._chatAttachments[reqId] || [];
+  const parts = [];
+  if (userText) parts.push(userText);
+  if (arr.length) {
+    parts.push('\n\n---\n📎 附件内容：\n');
+    for (const a of arr) {
+      if (a.extractedText) {
+        parts.push(`\n[${a.name}]\n${a.extractedText}\n`);
+      } else if (a.category === 'image') {
+        parts.push(`\n[图片：${a.name}，${a.size}B]\n`);
+      } else if (a.category === 'pdf') {
+        parts.push(`\n[PDF：${a.name}，${a.size}B — v1 未解析正文]\n`);
+      } else {
+        parts.push(`\n[附件：${a.name}]\n`);
+      }
+    }
+  }
+  return parts.join('');
+}
+
+async function chatSend(reqId) {
+  const input = document.getElementById(`chat-input-${reqId}`);
+  const text = input?.value?.trim();
+  const attachments = window._chatAttachments[reqId] || [];
+  const state = getChatSendState(reqId);
+
+  // 🆕 v0.119：状态机分发
+  //   interrupting: 按钮 disabled，理论上到不了这里（防御性 return）
+  //   generating + 输入框空：纯中断（不发送新消息）
+  //   generating + 输入框有内容：中断 + 发新消息（先发 interrupt，等 SSE end 自动续接）
+  //   idle / interrupted：正常发送
+  if (state === 'interrupting') return;
+
+  if (state === 'generating') {
+    if (input) { input.value = ''; input.style.height = 'auto'; }
+    window._chatAttachments[reqId] = [];
+    chatRenderAttachPreview(reqId, []);
+    if (text) {
+      // 中断 + 发新消息
+      window._chatPendingSend = window._chatPendingSend || {};
+      window._chatPendingSend[reqId] = { text, attachments };
+      chatInterrupt(reqId);  // SSE end 到达时若 interrupted=true → 检查 pending 并触发
+    } else {
+      chatInterrupt(reqId);
+    }
+    return;
+  }
+
+  if (!text && !attachments.length) { toast('先写点想法或添加附件', 'warning'); return; }
+  const finalText = chatBuildSupplementText(reqId, text);
+
+  const c = document.getElementById(`chat-stream-msgs-${reqId}`);
+  if (c) {
+    // 用户气泡显示原文 + 附件 chip（可点击下载/预览原文件，v0.19a）
+    const userBubbleAttachments = attachments.map(a => {
+      const icon = a.icon || '📎';
+      // 文件下载/预览 URL（后端 /api/chat/upload/:id/raw）
+      const fileUrl = a.id ? `/api/chat/upload/${encodeURIComponent(a.id)}/raw` : '#';
+      return `<a href="${escHtml(fileUrl)}" target="_blank" rel="noopener noreferrer"
+                class="attach-chip" title="${escHtml(a.name)}（点击下载/预览原文件）"
+                onclick="event.stopPropagation()">${icon} ${escHtml(a.name)}</a>`;
+    }).join('');
+    const userBubbleText = text || (attachments.length ? '📎 ' + attachments.length + ' 个附件' : '');
+    renderChatBubble(c, {
+      role: 'user',
+      text: userBubbleText,
+      attachmentsHtml: userBubbleAttachments,
+      at: new Date().toISOString(),
+    });
+    c?.querySelectorAll('.chat-assist-layer').forEach(el => el.remove());
+    chatScrollToBottom(c);
+  }
+  if (input) { input.value = ''; input.style.height = 'auto'; }
+  // 清空附件
+  window._chatAttachments[reqId] = [];
+  chatRenderAttachPreview(reqId, []);
+
+  // 状态切 generating（按钮变 ⏹ 停止）
+  setChatSendState(reqId, 'generating');
+
+  // v0.15：统一智能端点 detect-and-respond 处理所有情况
+  //   - 含 URL → 走 fetch_url + AI 摘要
+  //   - 含疑问词 → 走 web_search
+  //   - 其他 → 普通补充（brief 重生）
+  await chatSendDetect(reqId, finalText);
+}
+
+/**
+ * 🆕 v0.117f：自由对话 SSE 流式事件处理（与 agent-buddy.js 小吉面板一致体验）
+ *   服务端 chat-intent.js 自由对话 Qwen 分支 writeHead(SSE) + onDelta/onEvent 推流：
+ *     - text_delta → 流式 append 文本到 assistant 气泡
+ *     - tool_card → ACMSQwenToolCard.handleToolCard 渲染工具卡片
+ *     - thinking → ACMSQwenToolCard.handleThinking 渲染思考过程
+ *     - progress → 嵌入 assistant 气泡底部（> 🔧 xxx）
+ *     - end → finalize bubble + 显示 result/musicCardJson
+ */
+async function handleFreeChatSSE(reqId, resp, typingEl) {
+  var c = document.getElementById('chat-stream-msgs-' + reqId);
+  // 🆕 v0.117u: 每轮消息开始做工具卡轮次边界（reset 只重置计数/group，不删历史卡片 DOM）
+  //   否则 _roundCardCount 跨消息累加，第 2-3 条消息就误触发 group → 卡片插错位置重叠
+  if (window.ACMSQwenToolCard && window.ACMSQwenToolCard.reset) {
+    window.ACMSQwenToolCard.reset();
+  }
+  // 设置 ACMSQwenToolCard 容器到自由对话 chat 流（默认是 #ap-messages）
+  if (window.ACMSQwenToolCard && window.ACMSQwenToolCard.setContainer) {
+    window.ACMSQwenToolCard.setContainer(c);
+  }
+  // 移除 typing dots
+  if (typingEl) { typingEl.remove(); typingEl = null; }
+
+  // 🆕 v0.117z: 清掉遗留的旧 1px 占位 anchor（历史版本创建，非气泡）
+  if (c) {
+    c.querySelectorAll('#ap-stream-bubble').forEach(function (a) {
+      if (!a.classList.contains('ap-stream-bubble')) a.remove();
+    });
+  }
+
+  // 🆕 v0.117z: 与小吉 B10 一致的穿插状态机
+  //   text_delta → 若上事件不是 text 则封存旧气泡开新气泡
+  //   tool_card → 若上事件是 text 则封存（卡片插到新位置前）
+  //   结果：thinking → 文本气泡 → 工具卡 → 文本气泡 → 工具卡 按实际时间交替
+  var streamBubbleEl = null;   // 当前流式文本气泡的 .ap-msg-text
+  var accumulated = '';
+  var _lastBubbleEvent = null; // 'text' | 'tool_card' | 'thinking' | 'progress' | null
+
+  function finalizeCurrentBubble() {
+    if (!streamBubbleEl) return;
+    var bubble = streamBubbleEl.closest('.ap-stream-bubble');
+    if (bubble) {
+      var cursor = bubble.querySelector('.ap-cursor');
+      if (cursor) cursor.remove();
+      bubble.removeAttribute('id');   // 清 id → 后续卡片 appendChild 到末尾（新位置）
+      bubble.classList.remove('ap-stream-bubble');  // 静态化（历史气泡不再被当锚点）
+    }
+    streamBubbleEl = null;
+    accumulated = '';
+  }
+
+  function ensureStreamBubble() {
+    if (streamBubbleEl) return streamBubbleEl;
+    if (!c) return null;
+    var bubble = document.createElement('div');
+    bubble.className = 'ap-msg ap-msg-buddy ap-stream-bubble ap-msg-free';
+    bubble.id = 'ap-stream-bubble';   // 当前流式气泡 = 卡片插入锚点（小吉模式）
+    // v0.122: AI 流式气泡补 Q 头像（与历史消息 chat-bubble-ai 同款），class ap-msg-free 走统一气泡语言
+    bubble.innerHTML = '<div class="ap-msg-avatar" aria-hidden="true">Q</div><div class="ap-msg-text"></div><span class="ap-cursor"></span>';
+    c.appendChild(bubble);
+    streamBubbleEl = bubble.querySelector('.ap-msg-text');
+    if (typeof chatScrollToBottom === 'function') chatScrollToBottom(c);
+    return streamBubbleEl;
+  }
+
+  try {
+    var reader = resp.body.getReader();
+    var decoder = new TextDecoder();
+    var buf = '';
+    var sessionReqId = null;
+    var musicCardJson = null;
+
+    // 🆕 v0.119：标记 SSE 流已经开始，确保 text_delta/tool_card 到达时状态能切到 generating
+    //   （即使 chatSend 还没来得及切，事件流也会推它过去）
+    while (true) {
+      var _r = await reader.read();
+      if (_r.done) break;
+      buf += decoder.decode(_r.value, { stream: true });
+      var lines = buf.split('\n');
+      buf = lines.pop();
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        if (!line.startsWith('data: ')) continue;
+        try {
+          var evt = JSON.parse(line.slice(6));
+          // 🆕 v0.119：第一个流事件到达 → 切 generating（兜底，chatSend 已经先切了）
+          if (getChatSendState(reqId) === 'idle') setChatSendState(reqId, 'generating');
+          if (evt.type === 'text_delta') {
+            // 🆕 v0.117z: 上事件不是 text → 封存旧气泡开新气泡（按时间穿插）
+            if (_lastBubbleEvent !== null && _lastBubbleEvent !== 'text') {
+              finalizeCurrentBubble();
+            }
+            // 🆕 v0.117bb: 文本开始 = 回复段边界（与小吉 v0.115a onReplyStart 一致）
+            //   封存当前 group/计数 → 穿插场景每个工具独立 segment 不 group；
+            //   连续工具（无文本穿插）同段累计 ≥3 才合并 group
+            if (window.ACMSQwenToolCard && window.ACMSQwenToolCard.onReplyStart) {
+              window.ACMSQwenToolCard.onReplyStart();
+            }
+            var tb = ensureStreamBubble();
+            accumulated += (evt.text || '');
+            // 🆕 fix: 自由对话流式也要 markdown 渲染（与小吉 agent-buddy.js 一致）
+            //   旧: tb.textContent = accumulated → **bold** / # heading / - list 当文字显示
+            //   新: tb.innerHTML = mdFn(accumulated) → renderMarkdown 转 HTML
+            if (tb) {
+              var mdFn = typeof renderMarkdown === 'function' ? renderMarkdown : function(t) { return escHtml(t); };
+              tb.innerHTML = mdFn(accumulated);
+            }
+            if (typeof chatScrollToBottom === 'function') chatScrollToBottom(c);
+            _lastBubbleEvent = 'text';
+          } else if (evt.type === 'tool_card') {
+            // 🆕 v0.117z: 文本后工具 → 封存文本气泡（卡片插到新位置前）
+            if (_lastBubbleEvent === 'text') finalizeCurrentBubble();
+            if (window.ACMSQwenToolCard && window.ACMSQwenToolCard.handleToolCard) {
+              window.ACMSQwenToolCard.handleToolCard(evt);
+            }
+            _lastBubbleEvent = 'tool_card';
+          } else if (evt.type === 'thinking') {
+            if (window.ACMSQwenToolCard && window.ACMSQwenToolCard.handleThinking) {
+              window.ACMSQwenToolCard.handleThinking(evt);
+            }
+            _lastBubbleEvent = 'thinking';
+          } else if (evt.type === 'progress') {
+            if (_lastBubbleEvent === 'text') finalizeCurrentBubble();
+            _lastBubbleEvent = 'progress';
+} else if (evt.type === 'end') {
+            sessionReqId = evt.sessionRequirementId || null;
+            musicCardJson = evt.musicCardJson || null;
+            // 🆕 v0.119：中断触发的 end → 触发自动总结流程
+            //   v0.123 重大升级：不再直接渲染"已中断"卡片
+            //   而是触发 triggerInterruptSummary → AI 总结已完成工作 → 总结完后渲染决策卡
+            //   pending send（用户在 generating 状态发了新指令等中断后接续）保留原逻辑：
+            //   由 triggerInterruptSummary 在总结完成后自动 dispatch
+            if (evt.interrupted === true) {
+              finalizeCurrentBubble();  // 封存未完成的流式气泡
+              // 提取 pending send（在切 summarizing 之前）
+              var pending = null;
+              if (window._chatPendingSend && window._chatPendingSend[reqId]) {
+                pending = window._chatPendingSend[reqId];
+                delete window._chatPendingSend[reqId];
+              }
+              setChatSendState(reqId, 'summarizing');
+              // 异步触发（让当前 SSE 处理完再开新连接）
+              setTimeout(function() { triggerInterruptSummary(reqId, pending); }, 50);
+            } else if (evt.error) {
+              // 🆕 v0.117x: error 安全转换 —— 后端可能传对象（String(对象)=[object Object]）
+              finalizeCurrentBubble();
+              var eb = ensureStreamBubble();
+              const errText = (evt.error && typeof evt.error === 'object')
+                ? (evt.error.message || JSON.stringify(evt.error))
+                : String(evt.error);
+              if (eb) eb.textContent = '⚠️ AI 暂时无响应: ' + errText.slice(0, 100);
+              _lastBubbleEvent = 'text';
+              finalizeCurrentBubble();
+              setChatSendState(reqId, 'idle');  // 🆕 v0.119：失败也回到 idle（不是 interrupted）
+              // 清掉 pending send（如果有）—— 错误时不发新消息，避免连锁
+              if (window._chatPendingSend && window._chatPendingSend[reqId]) {
+                delete window._chatPendingSend[reqId];
+              }
+            } else if (evt.result) {
+              // 已流式显示（_lastBubbleEvent==='text'）→ 直接封存；否则（onDelta 没推）→ 创建气泡显示 result
+              if (_lastBubbleEvent !== 'text') {
+                var rb = ensureStreamBubble();
+                // 🆕 fix: end 事件 result 同样 markdown 渲染（与流式路径一致）
+                if (rb) {
+                  var mdFn2 = typeof renderMarkdown === 'function' ? renderMarkdown : function(t) { return escHtml(t); };
+                  rb.innerHTML = mdFn2(evt.result);
+                }
+                _lastBubbleEvent = 'text';
+              }
+              finalizeCurrentBubble();
+              setChatSendState(reqId, 'idle');  // 🆕 v0.119：正常完成回到 idle
+            } else {
+              // 兜底：end 事件但没 result 没 error 没 interrupted（不应该发生但防御）
+              setChatSendState(reqId, 'idle');
+            }
+            // music card
+            if (musicCardJson && typeof renderMusicBubble === 'function' && c) {
+              var musicHtml = renderMusicBubble(musicCardJson);
+              if (musicHtml) {
+                c.insertAdjacentHTML('beforeend', '<div class="chat-bubble chat-bubble-system"><div class="chat-bubble-meta"><span class="chat-label">🎵</span></div>' + musicHtml + '</div>');
+              }
+            }
+            if (typeof chatScrollToBottom === 'function') chatScrollToBottom(c);
+          }
+        } catch (e) {}
+      }
+    }
+
+    // session 模式关联了隐藏 requirement → 轮询音乐结果
+    if (sessionReqId && musicCardJson) {
+      var _pollReqId = sessionReqId;
+      var _musicAttempts = 0;
+      var _musicTimer = setInterval(function() {
+        _musicAttempts++;
+        api('GET', '/requirements/' + _pollReqId + '/supplement-history').then(function(_hr) {
+          var _history = _hr.history || [];
+          var _stream = document.getElementById('chat-stream-msgs-' + reqId);
+          if (!_stream) { clearInterval(_musicTimer); return; }
+          for (var _i = 0; _i < _history.length; _i++) {
+            var _entry = _history[_i];
+            if (_entry.source === 'music_result' && _entry.text && typeof renderMusicBubble === 'function') {
+              try {
+                var _card = JSON.parse(_entry.text);
+                if (_card.type === 'music_card') {
+                  var _html = renderMusicBubble(_card);
+                  if (_html) {
+                    _stream.insertAdjacentHTML('beforeend', '<div class="chat-bubble chat-bubble-system"><div class="chat-bubble-meta"><span class="chat-label">🎵</span></div>' + _html + '</div>');
+                    chatScrollToBottom(_stream);
+                  }
+                  clearInterval(_musicTimer);
+                  return;
+                }
+              } catch(e) {}
+            }
+          }
+          if (_musicAttempts >= 30) clearInterval(_musicTimer);
+        }).catch(function() {});
+      }, 2000);
+    }
+  } catch (e) {
+    console.error('[handleFreeChatSSE]', e);
+    if (streamBubbleEl) streamBubbleEl.textContent = '⚠️ 流式响应异常: ' + (e.message || '未知错误');
+  }
+}
+
+async function chatSendDetect(reqId, text) {
+  // 检测 URL（用于客户端展示关联状态卡）
+  const urls = extractUrls(text);
+  const c = document.getElementById(`chat-stream-msgs-${reqId}`);
+
+  // v0.15 fix: 发请求前先清掉旧轮询器，避免响应回来前旧轮询器触发渲染重复
+  if (_chatPollers[reqId]) {
+    clearInterval(_chatPollers[reqId]);
+    delete _chatPollers[reqId];
+  }
+
+  // 如果有 URL，插入「🌐 抓取中」状态卡
+  let statusCard = null;
+  if (urls.length > 0 && c) {
+    statusCard = document.createElement('div');
+    statusCard.id = `chat-fetch-status-${reqId}`;
+    statusCard.className = 'chat-fetch-status';
+    statusCard.innerHTML = `
+      <div class="chat-fetch-header">🌐 正在抓取 ${urls.length} 个外部链接…</div>
+      <ul class="chat-fetch-list">
+        ${urls.map(u => `<li><span class="chat-fetch-url">${escHtml(u)}</span> <span class="chat-fetch-spinner">⏳</span></li>`).join('')}
+      </ul>
+      <div class="chat-fetch-note">预计 10-30s · 不影响你做其他操作</div>`;
+    c.appendChild(statusCard);
+    chatScrollToBottom(c);
+  }
+
+  // v0.18 bugfix：fetch 前插入「AI 思考中」typing dots
+  //   旧 bug：clarify 模式靠 brief SSE streaming bubble 显示思考中；free 模式我让 brief 不重生 → 没 streaming → 用户看不到思考图标
+  //   修：fetch 前显式塞 typing dots，fetch 回来后移除 + 渲染 AI 气泡
+  let typingEl = null;
+  if (c) {
+    typingEl = document.createElement('div');
+    typingEl.className = 'chat-typing';
+    typingEl.id = `chat-typing-detect-${reqId}`;
+    typingEl.innerHTML = '<span></span><span></span><span></span>';
+    c.appendChild(typingEl);
+    chatScrollToBottom(c);
+  }
+
+  try {
+    const resp = await fetch('/api/chat/detect-and-respond', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+      body: JSON.stringify({ reqId, text }),
+    });
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      throw new Error(errData.error || `HTTP ${resp.status}`);
+    }
+
+    // 🆕 v0.117f：自由对话 Qwen 内核走 SSE 流式事件（与小吉面板一致体验）
+    //   服务端 writeHead(SSE) + onDelta/onEvent 推 tool_card / thinking / progress
+    //   → 前端 ReadableStream 解析 → ACMSQwenToolCard 渲染工具卡片
+    const ct = resp.headers.get('Content-Type') || '';
+    if (ct.includes('text/event-stream')) {
+      await handleFreeChatSSE(reqId, resp, typingEl);
+      return;
+    }
+
+    const data = await resp.json();
+
+    // ═══ 自由对话（免需求）═══ 直接渲染 AI 回复，不轮询
+    if (data.directReply && data.aiReply) {
+      if (typingEl) typingEl.remove();
+      typingEl = null;
+      const c = document.getElementById(`chat-stream-msgs-${reqId}`);
+      if (c) {
+        renderChatBubble(c, { role: 'assistant', text: data.aiReply, at: new Date().toISOString() });
+        // 音乐卡片（使用标准 renderMusicBubble 渲染）
+        if (data.musicCardJson && typeof renderMusicBubble === 'function') {
+          var musicHtml = renderMusicBubble(data.musicCardJson);
+          if (musicHtml) {
+            c.insertAdjacentHTML('beforeend', '<div class="chat-bubble chat-bubble-system"><div class="chat-bubble-meta"><span class="chat-label">🎵</span></div>' + musicHtml + '</div>');
+          }
+        }
+        chatScrollToBottom(c);
+      }
+      // v0.65: session 模式关联了隐藏 requirement → 轮询音乐/视频结果
+      if (data.sessionRequirementId && data.musicCardJson) {
+        var _pollReqId = data.sessionRequirementId;
+        var _musicAttempts = 0;
+        var _musicTimer = setInterval(function() {
+          _musicAttempts++;
+          api('GET', '/requirements/' + _pollReqId + '/supplement-history').then(function(_hr) {
+            var _history = _hr.history || [];
+            var _stream = document.getElementById('chat-stream-msgs-' + reqId);
+            if (!_stream) { clearInterval(_musicTimer); return; }
+            for (var _i = 0; _i < _history.length; _i++) {
+              var _entry = _history[_i];
+              if (_entry.source === 'music_result' && _entry.text && typeof renderMusicBubble === 'function') {
+                try {
+                  var _card = JSON.parse(_entry.text);
+                  if (_card.type === 'music_card') {
+                    var _html = renderMusicBubble(_card);
+                    if (_html) {
+                      _stream.insertAdjacentHTML('beforeend', '<div class="chat-bubble chat-bubble-system"><div class="chat-bubble-meta"><span class="chat-label">🎵</span></div>' + _html + '</div>');
+                      chatScrollToBottom(_stream);
+                    }
+                    clearInterval(_musicTimer);
+                    return;
+                  }
+                } catch(e) {}
+              }
+            }
+            if (_musicAttempts >= 30) clearInterval(_musicTimer);
+          }).catch(function() {});
+        }, 2000);
+      }
+      return;
+    }
+
+    // 如果成功且含 fetchResults，状态卡变参考资料卡
+    if (data.fetchResults?.length > 0 && statusCard && c) {
+      statusCard.id = `chat-fetch-results-${reqId}`;
+      statusCard.className = 'chat-fetch-results';
+      const itemsHtml = data.fetchResults.map((r, i) => {
+        if (!r.ok) {
+          return `<div class="chat-fetch-item error">
+            <div class="chat-fetch-url-row"><span class="chat-fetch-url-icon">⚠️</span> <span class="chat-fetch-url">${escHtml(r.url)}</span></div>
+            <div class="chat-fetch-err">抓取失败：${escHtml(r.error || '未知错误')}</div>
+            <div class="chat-fetch-note">AI 仍会基于你的消息回答</div>
+          </div>`;
+        }
+        return `<div class="chat-fetch-item ok" data-url="${escHtml(r.url)}" data-title="${escHtml(r.title || '')}" data-summary="${escHtml(r.summary || '')}" data-idx="${i}">
+          <div class="chat-fetch-url-row">📎 <span class="chat-fetch-title">${escHtml(r.title || r.url)}</span></div>
+          <div class="chat-fetch-meta">字数：${r.length}${r.truncated ? '（已截断）' : ''} · ${escHtml(r.url)}</div>
+          <div class="chat-fetch-summary">${renderMarkdown(r.summary || '')}</div>
+          <div class="chat-fetch-actions">
+            <button class="btn-small chat-fetch-promote" onclick="chatPromoteFetchedUrl('${reqId}', this)">📚 加入项目知识库</button>
+            <button class="btn-small" onclick="this.closest('.chat-fetch-item').remove()">× 关闭</button>
+          </div>
+        </div>`;
+      }).join('');
+      statusCard.innerHTML = itemsHtml;
+    }
+
+    // 如果自动搜索了，toast 提示
+    if (data.searched) {
+      toast('🔍 已自动搜索最新信息', 'info', 2000);
+    }
+
+// 提前计入 histCount，避免 polling 重复渲染
+    const state = _chatState[reqId];
+    if (state) {
+      // 直接拉真实 supplement_history 同步 histCount（比手动计算更可靠）
+      try {
+        // v0.101 fix: session 模式下 generate_image 等工具的 image_card 写到 hidden reqId (data.sessionRequirementId)，
+        //   但前端只拉 chat session reqId → 永远看不到图。修：合并拉两边 + 按 at 时间排序去重。
+        const reqIdsToFetch = [reqId];
+        if (data.sessionRequirementId && data.sessionRequirementId !== reqId) {
+          reqIdsToFetch.push(data.sessionRequirementId);
+          state.sessionRequirementId = data.sessionRequirementId; // 记录给 polling 用
+        }
+        const allHistory = [];
+        const seenKeys = new Set();
+        for (const rid of reqIdsToFetch) {
+          try {
+            const syncResp = await api('GET', `/requirements/${rid}/supplement-history`);
+            for (const e of (syncResp?.history || [])) {
+              const key = (e.at || '') + '|' + (e.role || '') + '|' + (e.source || '') + '|' + ((e.text || '').slice(0, 80));
+              if (!seenKeys.has(key)) { seenKeys.add(key); allHistory.push(e); }
+            }
+          } catch {}
+        }
+        allHistory.sort((a, b) => (a.at || '').localeCompare(b.at || ''));
+        if (allHistory.length) {
+          const history = allHistory;
+          // v0.18 bugfix：移除 typing dots（AI 回复回来了）
+          const typingNow = document.getElementById(`chat-typing-detect-${reqId}`);
+          if (typingNow) typingNow.remove();
+          typingEl = null;
+
+          // v0.18 bugfix：渲染本轮新写入的所有 entries（除 user，user 已在本地 chatSend 渲染）
+          //   旧 bug：只渲染 system 跳过 user 和 assistant，assistant 是后端写的却被跳过 → 用户看不到 AI 回复
+          for (let i = state.histCount; i < history.length; i++) {
+            const entry = history[i];
+            if (entry.role === 'user') continue;  // user 已在 chatSend 时本地渲染
+            renderChatBubble(c, entry);
+          }
+          state.histCount = history.length;
+          chatScrollToBottom(c);
+        }
+      } catch (e) {
+        // 拉失败时回退到增量估算
+        const assistantExtra = (state.briefRound > 0) ? 1 : 0;
+        state.histCount += 1 + assistantExtra + (data.fetchResults?.length || 0);
+      }
+    }
+
+    // 启动轮询 + SSE 流式，让用户看到后续 AI 回复（如果有）
+    setTimeout(() => startChatPolling(reqId), 500);
+    // v0.46 fix：clarify 模式才开 SSE 触发 brief 流式生成（替代被删除的 detect-and-respond server-side runBriefJob）。
+    //   v0.XX 增量：free 模式**不调** SSE——
+    //     chatSendDetect 路径下，后端 free 模式已写 1 条 assistant entry（来自 tool-loop aiReply），
+    //     若再调 SSE → 后端 runBriefJobStream（除非被 free-mode 兜底拦截）→ SSE done handler 替换
+    //     streamingBubble 内容 → 第 2 条 AI 气泡 → 与 assistant entry 双气泡。
+    //   同时 L184-189 polling 也会渲染 brief 气泡——已通过后端 runBriefJobStream free-mode 兜底拦截。
+    if (window._chatMode?.[reqId] !== 'free') {
+      setTimeout(() => connectStreamingBrief(reqId, c), 800);
+    }
+  } catch (e) {
+    // v0.18 bugfix：fetch 失败时也移除 typing dots
+    const typingErr = document.getElementById(`chat-typing-detect-${reqId}`);
+    if (typingErr) typingErr.remove();
+    if (statusCard && c) {
+      statusCard.className = 'chat-fetch-status error';
+      statusCard.innerHTML = `<div class="chat-fetch-err">❌ 请求失败：${escHtml(e.message)}</div>
+        <div class="chat-fetch-note">AI 仍会基于你的消息回答</div>`;
+    }
+    toast('请求失败，AI 将基于你的消息回答', 'warning', 2000);
+  }
+}
+
+/**
+ * v0.14：检测文本中的 URL（http/https 开头）
+ * 返回去重后的 URL 数组
+ */
+function extractUrls(text) {
+  if (!text) return [];
+  const matches = text.match(/https?:\/\/[^\s<>"'，。、；！？)\]]+/g) || [];
+  // 去重
+  return Array.from(new Set(matches));
+}
+
+/**
+ * v0.14：发送带 URL 抓取的聊天消息
+ * 流程：
+ *   1. 插入「🌐 抓取中」状态卡到 chat 流
+ *   2. 调 POST /api/chat/send-with-fetch
+ *   3. 成功后：状态卡变「📎 参考资料」卡（带「📚 加入知识库」按钮）
+ *   4. 失败：状态卡变错误提示 + toast，AI 仍正常回答
+ */
+async function chatSendWithFetch(reqId, text, urls) {
+  const c = document.getElementById(`chat-stream-msgs-${reqId}`);
+
+  // 1. 插入「🌐 抓取中」状态卡
+  let statusCard = null;
+  if (c) {
+    statusCard = document.createElement('div');
+    statusCard.id = `chat-fetch-status-${reqId}`;
+    statusCard.className = 'chat-fetch-status';
+    statusCard.innerHTML = `
+      <div class="chat-fetch-header">🌐 正在抓取 ${urls.length} 个外部链接…</div>
+      <ul class="chat-fetch-list">
+        ${urls.map(u => `<li><span class="chat-fetch-url">${escHtml(u)}</span> <span class="chat-fetch-spinner">⏳</span></li>`).join('')}
+      </ul>
+      <div class="chat-fetch-note">预计 10-30s · 抓取中不影响你做其他操作</div>
+    `;
+    c.appendChild(statusCard);
+    chatScrollToBottom(c);
+  }
+
+  try {
+    const resp = await fetch('/api/chat/send-with-fetch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+      body: JSON.stringify({ reqId, text, urls }),
+    });
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      throw new Error(errData.error || `HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+
+    // 2. 状态卡就地变「📎 参考资料」卡
+    if (statusCard && c) {
+      statusCard.id = `chat-fetch-results-${reqId}`;
+      statusCard.className = 'chat-fetch-results';
+      const itemsHtml = (data.fetchResults || []).map((r, i) => {
+        if (!r.ok) {
+          return `<div class="chat-fetch-item error">
+            <div class="chat-fetch-url-row"><span class="chat-fetch-url-icon">⚠️</span> <span class="chat-fetch-url">${escHtml(r.url)}</span></div>
+            <div class="chat-fetch-err">抓取失败：${escHtml(r.error || '未知错误')}</div>
+            <div class="chat-fetch-note">AI 仍会基于你的消息回答</div>
+          </div>`;
+        }
+        // 注意：onclick 参数里嵌 URL 可能有引号问题，用 dataset 存 URL
+        return `<div class="chat-fetch-item ok" data-url="${escHtml(r.url)}" data-title="${escHtml(r.title || '')}" data-summary="${escHtml(r.summary || '')}" data-idx="${i}">
+          <div class="chat-fetch-url-row">📎 <span class="chat-fetch-title">${escHtml(r.title || r.url)}</span></div>
+          <div class="chat-fetch-meta">字数：${r.length}${r.truncated ? '（已截断）' : ''} · ${escHtml(r.url)}</div>
+          <div class="chat-fetch-summary">${renderMarkdown(r.summary || '')}</div>
+          <div class="chat-fetch-actions">
+            <button class="btn-small chat-fetch-promote" onclick="chatPromoteFetchedUrl('${reqId}', this)">📚 加入项目知识库</button>
+            <button class="btn-small" onclick="this.closest('.chat-fetch-item').remove()">× 关闭</button>
+          </div>
+        </div>`;
+      }).join('');
+      statusCard.innerHTML = itemsHtml;
+    }
+
+    toast(`✅ 已抓取 ${data.fetchResults.filter(r => r.ok).length}/${data.fetchResults.length} 个链接`, 'success', 2000);
+
+    // v0.14 fix: 提前把已渲染的 server 条目计入 histCount，
+    //   避免 startChatPolling 后拉 supplement_history 又把 user/system 条目渲染成气泡
+    const state = _chatState[reqId];
+    if (state) {
+      // 直接拉真实 supplement_history 同步 histCount
+      try {
+        const syncResp = await api('GET', `/requirements/${reqId}/supplement-history`);
+        if (syncResp?.history) {
+          state.histCount = syncResp.history.length;
+        }
+      } catch (e) {
+        // 回退到估算：1（user）+ N（system，每 URL 一条）+ 1（assistant，如果存了旧 brief）
+        const assistantExtra = (state.briefRound > 0) ? 1 : 0;
+        state.histCount += 1 + assistantExtra + data.fetchResults.length;
+      }
+    }
+
+    // v0.14 fix: 启动轮询，让用户看到 AI 正在回复的流式气泡
+    //   之前缺这段 → 用户看不到反馈 → 以为没发成功又点了一次 → 消息被发 2 次
+    setTimeout(() => startChatPolling(reqId), 500);
+  } catch (e) {
+    // 3. 失败：状态卡变错误提示，toast 提示，但**不抛错**（AI 仍可回答）
+    if (statusCard) {
+      statusCard.className = 'chat-fetch-status error';
+      statusCard.innerHTML = `<div class="chat-fetch-err">❌ 抓取请求失败：${escHtml(e.message)}</div>
+        <div class="chat-fetch-note">AI 仍会基于你的消息回答（不包含链接内容）</div>`;
+    }
+    toast('URL 抓取失败，AI 将基于你的消息回答', 'warning', 2000);
+  }
+}
+
+  /**
+   * v0.14：「📚 加入项目知识库」按钮回调
+   * 调 POST /api/chat/url-promote 把抓取结果沉淀到 knowledge_files
+   */
+  async function chatPromoteFetchedUrl(reqId, btn) {
+    const item = btn.closest('.chat-fetch-item');
+    if (!item) return;
+    const url = item.dataset.url;
+    const title = item.dataset.title || '';
+    const summary = item.dataset.summary || '';
+    if (!url) return;
+
+    // 防双击
+    if (btn.disabled) return;
+    btn.disabled = true;
+    const origText = btn.textContent;
+    btn.textContent = '⏳ 存入中…';
+
+    try {
+      const resp = await fetch('/api/chat/url-promote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-key-001' },
+        body: JSON.stringify({ reqId, url, title, summary }),
+      });
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        throw new Error(errData.error || `HTTP ${resp.status}`);
+      }
+      btn.textContent = '✓ 已加入';
+      btn.classList.add('done');
+      toast('✅ 已存入项目知识库', 'success', 2000);
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = origText;
+      toast('存入失败: ' + e.message, 'error');
+    }
+  }
+
+/** 连接 SSE 流式思路简报 */
+/**
+ * v0.47：渲染工具调用预览卡片（LLM 识别到发邮件等外部动作意图时）
+ *   用户在聊天流说"把对话内容发邮件给 xxx",AI 提取 to/subject/body,
+ *   在聊天流里弹一个只读预览卡 + [✅ 发送] / [✏ 编辑] / [❌ 取消] 三个按钮
+ *   这是 B 方案的安全设计 — 不直接执行副作用,必须用户确认
+ */
+function renderToolCallPreviewCard(reqId, container, toolCall) {
+  if (!toolCall || toolCall.method !== 'send_email') return;
+  const html = renderToolCallPreviewCardHtml(reqId, toolCall);
+
+  // 插到 streaming bubble 后面（用户在 AI 回复气泡下能看到预览卡）
+  // 找当前 req 对应的最新 AI 气泡(优先插入其后面),没有就 append 到末尾
+  const aiBubbles = container.querySelectorAll('.chat-bubble-ai');
+  const lastAiBubble = aiBubbles[aiBubbles.length - 1];
+  if (lastAiBubble && lastAiBubble.parentNode === container) {
+    lastAiBubble.insertAdjacentHTML('afterend', html);
+  } else {
+    container.insertAdjacentHTML('beforeend', html);
+  }
+  chatScrollToBottom(container);
+}
+
+/**
+ * v0.47：纯 HTML 生成（无副作用），可被多处复用：
+ *   - renderToolCallPreviewCard（clarify 模式 SSE done 时插入）
+ *   - renderPendingSendEmailBubble（free 模式 system entry 渲染）
+ * v0.47+：支持附件列表渲染（toolCall.attachments）+ 音乐 URL（toolCall.music_url）
+ */
+function renderToolCallPreviewCardHtml(reqId, toolCall) {
+  if (!toolCall || toolCall.method !== 'send_email') return '';
+  const args = toolCall.args || {};
+  const cardId = `tool-call-preview-${reqId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+  const toStr = String(args.to || '');
+  const subjectStr = String(args.subject || '');
+  const bodyStr = String(args.body || '');
+  const hasAllFields = toStr.trim() && subjectStr.trim() && bodyStr.trim();
+
+  // 附件预览列表（v0.47+）
+  const attachments = Array.isArray(toolCall.attachments) ? toolCall.attachments : [];
+  const musicUrl = toolCall.music_url || '';
+  const hasAttachOrMusic = attachments.length > 0 || !!musicUrl;
+
+  // 用 base64 编码 args(包含 file_ids)+ extra(attachments + music_url)
+  const argsB64 = btoa(unescape(encodeURIComponent(JSON.stringify({
+    to: toStr,
+    subject: subjectStr,
+    body: bodyStr,
+    file_ids: Array.isArray(args.file_ids) ? args.file_ids : [],  // v0.47+：附件 file_ids
+  }))));
+
+  // 附件列表 HTML
+  const attachmentsHtml = attachments.length > 0
+    ? `<div style="font-size:12px;margin-bottom:6px"><b>📎 附件（${attachments.length}）:</b></div>
+       <div style="font-size:11px;background:var(--bg);padding:6px;border-radius:4px;margin-bottom:8px;max-height:100px;overflow-y:auto">
+         ${attachments.map(a => {
+           const sizeKB = a.size > 1024 * 1024
+             ? (a.size / 1024 / 1024).toFixed(2) + ' MB'
+             : (a.size / 1024).toFixed(1) + ' KB';
+           return `<div style="padding:2px 0">📎 ${escHtml(a.name)} <span style="color:var(--text3)">(${escHtml(a.mime || '?')} · ${sizeKB})</span></div>`;
+         }).join('')}
+       </div>`
+    : '';
+
+  const musicHtml = musicUrl
+    ? `<div style="font-size:11px;background:var(--bg);padding:6px;border-radius:4px;margin-bottom:8px;word-break:break-all">
+         🎵 在线收听：<a href="${escHtml(musicUrl)}" target="_blank" style="color:var(--accent)">${escHtml(musicUrl.slice(0, 60))}${musicUrl.length > 60 ? '…' : ''}</a>
+       </div>`
+    : '';
+
+  return `
+    <div id="${cardId}" class="chat-tool-call-preview" data-card-id="${cardId}" style="background:var(--bg2);border:2px solid var(--accent);border-radius:8px;padding:12px;margin:6px 0">
+      <div style="font-weight:600;font-size:14px;margin-bottom:8px;display:flex;align-items:center;gap:6px">
+        📧 AI 准备发送邮件
+        <span style="font-size:11px;color:var(--text3);font-weight:normal;margin-left:auto">${escHtml(toolCall.reason || '用户请求发送邮件')}</span>
+      </div>
+      <div style="font-size:12px;margin-bottom:4px"><b>收件人：</b>${escHtml(toStr) || '<span style="color:#f55">（AI 未识别,请点 [✏ 编辑] 补全）</span>'}</div>
+      <div style="font-size:12px;margin-bottom:4px"><b>主题：</b>${escHtml(subjectStr) || '<span style="color:#f55">（AI 未识别,请点 [✏ 编辑] 补全）</span>'}</div>
+      <div style="font-size:12px;margin-bottom:6px"><b>正文：</b></div>
+      <div style="font-size:12px;background:var(--bg);padding:8px;border-radius:6px;max-height:200px;overflow-y:auto;white-space:pre-wrap;margin-bottom:8px">${escHtml(bodyStr) || '<span style="color:#f55">（AI 未识别,请点 [✏ 编辑] 补全）</span>'}</div>
+      ${attachmentsHtml}
+      ${musicHtml}
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn-small btn-primary" onclick="confirmToolCallByB64('${reqId}','${cardId}', '${argsB64}')" ${hasAllFields ? '' : 'disabled style="opacity:0.5;cursor:not-allowed"'}>✅ 确认发送${hasAttachOrMusic ? ` (含 ${attachments.length || 0} 附件${musicUrl ? '+音乐链接' : ''})` : ''}</button>
+        <button class="btn-small" onclick="editToolCallByB64('${reqId}','${cardId}', '${argsB64}')">✏ 编辑</button>
+        <button class="btn-small" onclick="cancelToolCall('${cardId}')">❌ 取消</button>
+      </div>
+      ${hasAllFields ? '' : '<div style="font-size:11px;color:#f55;margin-top:6px">⚠ AI 未识别完整(to/subject/body 任一缺失),必须编辑后才能发送</div>'}
+    </div>
+  `;
+}
+
+/**
+ * base64 解码 args(避免引号在 onclick 属性里被破坏)
+ */
+function decodeToolCallArgs(b64) {
+  try {
+    return JSON.parse(decodeURIComponent(escape(atob(b64))));
+  } catch {
+    return { to: '', subject: '', body: '' };
+  }
+}
+
+/**
+ * 用户确认发送 → 调 chatAssist 走原 send_email 流程
+ * 注:必须在 streamingBubble 上下文外定义,因为 streamingBubble 是函数内变量
+ *   这里我们用直接闭包到 streamingBubble 的方式不行,改为通过 reqId 重新查
+ */
+function confirmToolCallByB64(reqId, cardId, argsB64) {
+  const args = decodeToolCallArgs(argsB64);
+  confirmToolCall(reqId, cardId, 'send_email', args);
+}
+
+function editToolCallByB64(reqId, cardId, argsB64) {
+  const args = decodeToolCallArgs(argsB64);
+  editToolCall(reqId, cardId, 'send_email', args);
+}
+
+function confirmToolCall(reqId, cardId, method, args) {
+  const card = document.getElementById(cardId);
+  if (!card) return;
+  card.remove();
+  // 走原 send_email 流程(loading 卡 + SSE)
+  chatAssist(reqId, method, args);
+  toast(`✅ 正在发送邮件...`, 'info', 1500);
+}
+
+/**
+ * 用户点编辑 → 弹内联表单(预填 AI 提取的值)
+ */
+function editToolCall(reqId, cardId, method, args) {
+  const card = document.getElementById(cardId);
+  if (!card) return;
+  card.remove();
+  // 弹内联表单并预填
+  renderEmailFormPrefilled(reqId, args);
+}
+
+/**
+ * 用户取消 → 删卡片 + 调 use 端点清掉 pending entry（避免下次进聊天又弹出来）
+ */
+function cancelToolCall(cardId) {
+  const card = document.getElementById(cardId);
+  if (!card) return;
+  // 从 data-req-id 读 reqId（renderToolCallPreviewCardHtml 里没存,从 DOM 祖先节点推断）
+  const reqId = (card.closest('[id^="chat-stream-msgs-"]')?.id || '').replace('chat-stream-msgs-', '');
+  card.remove();
+  if (reqId && window.ACMSAssistDispatcher?.useAssist) {
+    // 调 use 端点,后端识别 action=cancelled 后从 supplement_history 删 send_email_pending entry
+    window.ACMSAssistDispatcher.useAssist(reqId, 'send_email', { action: 'cancelled' }).catch(e => {
+      console.warn('[cancelToolCall] 清 pending entry failed:', e.message);
+    });
+  }
+}
+
+/**
+ * 渲染"已预填值"的邮件表单(AI 提取 + 用户可改)
+ * v0.47+：保留 file_ids（已附附件不能直接预填到 file input，仅显示只读提示）
+ *   提交时由 submitInlineForm 合并到 args.file_ids 传给 send_email
+ */
+function renderEmailFormPrefilled(reqId, args) {
+  const existingFileIds = Array.isArray(args?.file_ids) ? args.file_ids : [];
+
+  // 如果有已附附件,在聊天流插一个只读 chip 提示
+  if (existingFileIds.length > 0) {
+    const stream = document.getElementById(`chat-stream-msgs-${reqId}`);
+    if (stream) {
+      const hintId = `existing-attach-hint-${reqId}-${Date.now()}`;
+      const hintHtml = `
+        <div id="${hintId}" class="existing-attach-hint" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px;margin:6px 0;font-size:12px">
+          <div style="display:flex;align-items:center;gap:6px">
+            <span>📎 已附 <b>${existingFileIds.length}</b> 个附件(将保留)</span>
+            <span style="margin-left:auto;color:var(--text3);font-size:11px">编辑下方内容后提交即可发送</span>
+          </div>
+        </div>
+      `;
+      // 插到表单前面(在 typing dots 之前)
+      const typing = stream.querySelector('.chat-typing');
+      const temp = document.createElement('div');
+      temp.innerHTML = hintHtml;
+      if (typing) stream.insertBefore(temp.firstElementChild, typing);
+      else stream.insertAdjacentHTML('beforeend', hintHtml);
+    }
+  }
+
+  renderInlineForm(reqId, {
+    icon: '📧', title: '发送邮件(已预填 AI 提取)', method: 'send_email',
+    fields: [
+      { id: 'to', label: '收件人 *', placeholder: '可多个,分号/逗号分隔', type: 'text', default: String(args?.to || '') },
+      { id: 'subject', label: '主题 *', placeholder: '邮件主题', type: 'text', default: String(args?.subject || '') },
+      { id: 'body', label: '正文 *', placeholder: '邮件正文内容', type: 'text', default: String(args?.body || '') },
+      { id: 'attachments', label: '附加新附件(可选)', placeholder: '可多选,任意类型,≤20MB/个,≤10 个', type: 'file', multiple: true, accept: '*' },
+    ],
+  });
+}
+
+function connectStreamingBrief(reqId, container) {
+  // 创建或复用 streaming 气泡
+  let streamingBubble = container?.querySelector('.chat-streaming-bubble');
+  if (!streamingBubble && container) {
+    streamingBubble = document.createElement('div');
+    streamingBubble.className = 'chat-bubble chat-bubble-ai chat-streaming-bubble';
+    // v2.0: 流式渐进渲染结构（v0.122 升级：包 chat-bubble-avatar + chat-bubble-inner）
+    streamingBubble.innerHTML = '<div class="chat-bubble-avatar" aria-hidden="true">Q</div>'
+      + '<div class="chat-bubble-inner">'
+      + '<div class="chat-bubble-meta"><span class="chat-label">AI</span></div>'
+      + '<div class="chat-streaming-opening"></div>'
+      + '<div class="chat-streaming-thinking" style="display:none"><div class="chat-thinking-inner"></div></div>'
+      + '<div class="chat-streaming-followup" style="display:none"></div>'
+      + '</div>';
+    container.appendChild(streamingBubble);
+    chatScrollToBottom(container);
+  }
+  const openingEl = streamingBubble?.querySelector('.chat-streaming-opening');
+  const thinkingInnerEl = streamingBubble?.querySelector('.chat-streaming-thinking .chat-thinking-inner');
+  const followupEl = streamingBubble?.querySelector('.chat-streaming-followup');
+  if (!openingEl) return;
+
+  const es = new EventSource(`/api/requirements/${reqId}/thinking-brief/stream?api_key=dev-key-001`);
+
+  es.addEventListener('message', (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.type === 'opening') {
+        openingEl.innerHTML = renderMarkdown(openingEl.textContent + data.text);
+        chatScrollToBottom(container);
+      } else if (data.type === 'thinking') {
+        if (!thinkingInnerEl) return;
+        const thinkingBubble = streamingBubble?.querySelector('.chat-streaming-thinking');
+        if (thinkingBubble) thinkingBubble.style.display = '';
+        thinkingInnerEl.innerHTML = renderMarkdown(thinkingInnerEl.textContent + data.text);
+      } else if (data.type === 'followup') {
+        if (!followupEl) return;
+        followupEl.style.display = '';
+        followupEl.innerHTML = '<i>' + escHtml(followupEl.textContent + data.text) + '</i>';
+        chatScrollToBottom(container);
+      } else if (data.type === 'token') {
+        // 兼容旧事件类型
+        openingEl.textContent += data.text;
+        chatScrollToBottom(container);
+      } else if (data.type === 'done' && data.brief) {
+        es.close();
+        // 同步 briefRound，避免轮询重复渲染
+        // 流完成 → 把 raw JSON 替换为自然回复 + 可折叠思考
+        const state = _chatState[reqId];
+        if (state) state.briefRound = data.brief.chat_round || 0;
+        let respHtml = '';
+        if (data.brief.opening) respHtml += renderMarkdown(data.brief.opening);
+        if (data.brief.followup_question) respHtml += `<div class="chat-response-q">${renderMarkdown(data.brief.followup_question)}</div>`;
+        const thinkingHtml = data.brief.ai_understanding
+          ? `<div class="chat-thinking" style="display:none"><div class="chat-thinking-inner">${renderMarkdown(data.brief.ai_understanding)}</div></div>`
+          : '';
+        const suggestHtml = data.brief.suggested_assist?.method
+          ? `<div class="chat-assist-suggest" onclick="chatAssist('${reqId}','${data.brief.suggested_assist.method}')">💡 ${escHtml(data.brief.suggested_assist.reason || '试试' + data.brief.suggested_assist.method)} →</div>`
+          : '';
+        streamingBubble.className = 'chat-bubble chat-bubble-ai';
+        // v0.122 修复：升级 v0.121 新结构（avatar + inner）— 否则 suggestHtml 被 flex 平铺推右
+        streamingBubble.innerHTML = `<div class="chat-bubble-avatar" aria-hidden="true">Q</div><div class="chat-bubble-inner"><div class="chat-bubble-meta"><span class="chat-label">AI</span><span class="chat-meta-sep">·</span><span class="chat-time">第${data.brief.chat_round||1}轮</span>${data.brief.ai_understanding ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}<span class="chat-export-btn" onclick="chatExportWord(this)" data-req-id="${escHtml(container.id?.replace('chat-stream-msgs-', '') || '')}" title="导出为 Word 文档">📄</span></div><div class="chat-response">${respHtml}</div>${thinkingHtml}${suggestHtml}</div>`;
+        delete streamingBubble.dataset.streaming;
+        // v0.13 B5 fix: 同步 dataset.chatRound，避免 polling 误判为新轮次重复渲染
+        streamingBubble.dataset.chatRound = String(data.brief.chat_round || 0);
+        chatScrollToBottom(container);
+        // v0.47：识别 LLM 输出的 tool_call（如自动发邮件），弹预览卡片让用户确认
+        //   安全设计：不直接执行工具，让用户点 [✅ 发送] 才走 chatAssist
+        if (data.brief.tool_call && data.brief.tool_call.method === 'send_email') {
+          renderToolCallPreviewCard(reqId, container, data.brief.tool_call);
+        }
+        // 只保留 suggested_assist（气泡底部的 💡 链接），不自动触发
+        // auto_assist 逻辑已移除（2026-06-14：用户自主点击更可靠）
+        // 尝试加载 assist
+        loadStreamAssist(reqId, container);
+        // v0.13 B5 fix: SSE done 是「AI 这一轮回复真正结束」的唯一可靠信号
+        //   取代 polling 的 brief.status==='done' && !streamingBubble 竞态检测
+        //   bug：polling 在后端 brief 完成到 SSE 首个 token 之间窗口误判 → 倒计时提前
+        //   新：SSE done handler 内直接触发倒计时，倒计时输入空 + auto 态才启动
+        window._aiSseDone = window._aiSseDone || {};
+        const sseDoneRound = data.brief.chat_round || 0;
+        window._aiSseDone[reqId] = sseDoneRound;
+        if (_aiGetState(reqId) === 'auto'
+            && sseDoneRound > (window._aiAutoLastRound[reqId] || 0)
+            && !_aiAutoCountdowns[reqId]) {
+          const input = document.getElementById(`chat-input-${reqId}`);
+          if (input && !input.value.trim()) {
+            console.log(`[ai-auto] ${reqId} SSE done 触发倒计时（round=${sseDoneRound}）`);
+            toast('🤖 AI 提问完成 · 10 秒后自动回复 · 点 ↻ 跳过 / 选「关闭」停止', 'info', 4000);
+            _aiStartAutoCountdown(reqId, sseDoneRound);
+          }
+        }
+      } else if (data.type === 'error') {
+        es.close();
+        openingEl.textContent = '⚠️ ' + (data.message || '生成失败');
+        // v0.13 B5 fix: 与 SSE error 同处理 — 拆掉 .chat-streaming-bubble class
+        //   不然 polling 永远查到 streamingBubble → 永远不启动倒计时
+        streamingBubble.className = 'chat-bubble chat-bubble-ai chat-bubble-error';
+        delete streamingBubble.dataset.streaming;
+        streamingBubble.dataset.streaming = 'done';
+      } else if (data.type === 'skip') {
+        // v0.46.x fix: free 模式守卫信号 — 移除占位 streaming bubble，避免双气泡
+        //   server 端 runBriefJobStream 在 chat_mode=free 时 yield skip
+        //   这里不渲染任何 AI 回复（文字回复已由 detect-and-respond intent_loop 渲染）
+        es.close();
+        if (streamingBubble && streamingBubble.parentNode) streamingBubble.remove();
+      }
+    } catch (e) { /* JSON parse error */ }
+  });
+
+  es.addEventListener('error', () => {
+    es.close();
+    if (streamingBubble?.dataset?.streaming !== 'done') {
+      openingEl.textContent += '\n⚠️ 连接中断';
+      // v0.13 B5 fix: SSE 错误也算「AI 这一轮结束」（虽然失败）
+      //   不然 streamingBubble 永远卡在 DOM（带 .chat-streaming-bubble class）
+      //   → polling 每次都查到 streamingBubble → !streamingBubble 永远 false
+      //   → 永远不启动倒计时 → 自动回复卡死
+      streamingBubble.className = 'chat-bubble chat-bubble-ai chat-bubble-error';
+      streamingBubble.dataset.streaming = 'done';
+      // 兜底信号：让 polling 知道这一轮已结束（即便失败）
+      window._aiSseDone = window._aiSseDone || {};
+      window._aiSseDone[reqId] = _chatState[reqId]?.briefRound || 0;
+    }
+  });
+}
+
+/** 流完成后再拉一笔 assist */
+async function loadStreamAssist(reqId, container) {
+  try {
+    const r = await api('GET', `/requirements/${reqId}/assist`);
+    renderAssistLayer(container, reqId, r.assists || {});
+  } catch(e) { console.warn('[loadStreamAssist] error:', e.message); }
+}
+
+/**
+ * v0.46：只渲染单个 method 的辅助结果到聊天流（不触发全体渲染）
+ * 用于 explicit assist SSE done 时，避免旧卡片乱入
+ */
+async function loadStreamAssistSingle(reqId, container, method) {
+  try {
+    const r = await api('GET', `/requirements/${reqId}/assist`);
+    const data = (r.assists || {})[method];
+    if (!data || data.status !== 'done') return;
+    // 构造单 method 的 assists 对象，传给 renderAssistLayer 让它只处理这一个
+    renderAssistLayer(container, reqId, { [method]: data });
+  } catch(e) { console.warn('[loadStreamAssistSingle] error:', e.message); }
+}
+
+/**
+ * v2.0: 辅助手段 SSE 流式 — 实时进度 + 完成通知
+ * 调用后由 polling 负责实际渲染结果卡片
+ */
+function connectAssistStream(reqId, method, extraBody) {
+  const container = document.getElementById(`chat-stream-msgs-${reqId}`);
+  
+  // 先通过 POST 触发后端 job（setImmediate 异步跑）
+  api('POST', `/requirements/${reqId}/assist/${method}`, extraBody || {}).then(() => {
+    // POST 成功，开 SSE 看进度
+    const es = new EventSource(`/api/requirements/${reqId}/assist/${method}/stream?api_key=dev-key-001`);
+    
+    es.addEventListener('message', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.type === 'progress') {
+          // 更新 loading 卡片的提示和计时
+          const loadingEl = container?.querySelector(`.assist-loading-card[data-method="${method}"]`);
+          if (loadingEl) {
+            const hintEl = loadingEl.querySelector('.assist-loading-hint');
+            if (hintEl) hintEl.textContent = data.text;
+            // 更新计时
+            const progressEl = loadingEl.querySelector('.assist-loading-progress');
+            if (progressEl) {
+              const startedAt = parseInt(loadingEl.dataset.startedAt || '0', 10);
+              const elapsed = startedAt ? Math.floor((Date.now() - startedAt) / 1000) : 0;
+              progressEl.textContent = elapsed + 's';
+            }
+          }
+        } else if (data.type === 'done') {
+          es.close();
+          const loadingEl = container?.querySelector(`.assist-loading-card[data-method="${method}"]`);
+          // v0.19：休闲辅助（music/video/image/clean）直接在聊天流渲染结果卡片
+          const leisureMethods = ['music', 'video', 'image_gen', 'clean', 'screenplay', 'document_gen', 'send_email'];
+          if (loadingEl && leisureMethods.includes(method)) {
+            // 替换 loading 卡片为"加载中..."
+            loadingEl.innerHTML = '<div class="assist-loading-head"><span class="assist-loading-spinner">⏳</span><span class="assist-loading-title">加载结果中…</span></div>';
+            // 获取结果数据并直接渲染
+            renderLeisureResult(reqId, method, loadingEl);
+          } else if (loadingEl && window.ACMSAssists?.get?.(method)?.render) {
+            // v0.46 fix：非休闲辅助也在聊天流渲染结果
+            //   用 loadStreamAssistSingle 只渲染触发的 method，不渲染所有符合条件的（避免旧卡片乱入）
+            loadStreamAssistSingle(reqId, container, method);
+          } else if (loadingEl) {
+            loadingEl.remove();
+          }
+          toast(`✅ ${method} 完成`, 'success', 1500);
+          // 刷新 assist 面板（如果#assist-area存在）
+          if (typeof ACMSAssistDispatcher !== 'undefined' && ACMSAssistDispatcher.loadAll) {
+            ACMSAssistDispatcher.loadAll(reqId);
+          }
+          startChatPolling(reqId);
+        } else if (data.type === 'error') {
+          es.close();
+          const loadingEl = container?.querySelector(`.assist-loading-card[data-method="${method}"]`);
+          if (loadingEl) failAssistLoading(loadingEl, data.message || '生成失败');
+        }
+      } catch {}
+    });
+
+    es.addEventListener('error', () => {
+      es.close();
+      // SSE 断连，回退到 polling + assist 面板刷新
+      if (typeof ACMSAssistDispatcher !== 'undefined' && ACMSAssistDispatcher.loadAll) {
+        ACMSAssistDispatcher.loadAll(reqId);
+      }
+      startChatPolling(reqId);
+    });
+  }).catch(e => {
+    // POST 失败
+    const loadingEl = container?.querySelector(`.assist-loading-card[data-method="${method}"]`);
+    if (loadingEl) failAssistLoading(loadingEl, '触发失败: ' + e.message);
+    toast('失败: '+e.message, 'error');
+  });
+}
+
+/**
+ * v0.19：渲染休闲辅助结果到聊天流中（替代 assist-area 渲染）
+ * 在 SSE done 时调用，直接在 loading 卡片位置展示结果
+ */
+async function renderLeisureResult(reqId, method, loadingEl) {
+  try {
+    const resp = await api('GET', `/requirements/${reqId}/assist`);
+    const data = resp.assists?.[method];
+    if (!data || data.status !== 'done') {
+      loadingEl.innerHTML = '<div class="assist-loading-error">结果加载失败</div>';
+      return;
+    }
+
+    if (method === 'music') {
+        // v0.120 fix: 走 renderMusicBubble（共用 music-core.js 完整实现）
+        //   之前是 v0.19 简化版：只渲染 playable_url + 平台链接，没有多播放源切换/放大缩小/进度条
+        //   现在统一三个入口（自由对话侧栏 + 小吉/聊天流 + 自由对话辅助工具 → 同一份 renderMusicBubble）
+        const playable = (data.playable_sources || []).filter(s => s && s.url).map(s => ({
+          type: s.type || 'audio',
+          label: s.label || '源',
+          url: s.url,
+          title: s.title || s.label || s.type || '源',
+        }));
+        const platforms = (data.sources || []).map(s => ({
+          name: s.platform || s.name || '',
+          icon: s.icon || '🔗',
+          url: s.url || '',
+        }));
+        const cardJson = JSON.stringify({
+          type: 'music_card',
+          song: data.song || '',
+          artist: data.artist || null,
+          playable,
+          platforms,
+        });
+        loadingEl.innerHTML = renderMusicBubble(cardJson);
+        // audio 类型需要 attachProgress（renderMusicBubble 内部不调，assist 侧栏是手动调的）
+        if (window.ACMSMusicCard && loadingEl.querySelector('.music-player-wrap[data-type="audio"]')) {
+          window.ACMSMusicCard.attachProgress(loadingEl);
+        }
+        loadingEl.style.borderTopColor = 'var(--green)';
+        loadingEl.style.animation = 'none';
+    } else if (method === 'video') {
+      const vid = data.video_id || '';
+      const isAsync = data.async_task && !data.video_url;
+      loadingEl.innerHTML = `
+        <div class="assist-loading-head" style="border:none"><span style="font-size:16px">🎬</span><span class="assist-loading-title">${isAsync ? '视频任务已提交' : '视频已生成'}</span></div>
+        <div style="padding:4px 0;font-size:12px;color:var(--text2)">
+          ${data.video_url ? `<video controls style="width:100%;max-width:360px;border-radius:6px;margin:4px 0" src="${escHtml(data.video_url)}"></video>` : '视频 ID: ' + escHtml(vid.slice(0,24)) + (isAsync ? ' · ⏳ 生成中' : '…')}
+        </div>
+        ${isAsync ? `<div style="padding:4px 0;display:flex;gap:6px;align-items:center">
+          <button class="btn-small btn-primary" onclick="chatVideoQuery('${reqId}')">🔄 刷新进度</button>
+          <span class="video-auto-poll-status" style="font-size:11px;color:var(--text2)">⏳ 自动检测进度…</span>
+        </div>` : ''}
+      `;
+      loadingEl.style.borderTopColor = 'var(--green)';
+      loadingEl.style.animation = 'none';
+
+      // 如果异步任务且无 video_url，启动自动轮询
+      if (isAsync) {
+        startVideoAutoPoll(reqId, loadingEl);
+      }
+    } else if (method === 'image_gen') {
+      // v0.22.8: 复用 assists/image-gen.js 的 render 函数（N 候选 + 选中按钮）
+      const renderFn = window.ACMSAssists?.get?.('image_gen')?.render;
+      if (renderFn) {
+        loadingEl.innerHTML = renderFn(reqId, data);
+      } else {
+        // fallback：单图
+        const assetUrl = data.asset_path ? '/api/generate/assets/' + (data.project_id || 'default') + '/' + data.asset_path : '';
+        const cdnUrl = data.image_url_output || '';
+        const imgSrc = assetUrl || cdnUrl;
+        loadingEl.innerHTML = `
+          <div class="assist-loading-head" style="border:none"><span style="font-size:16px">🖼️</span><span class="assist-loading-title">图片已生成</span></div>
+          ${imgSrc ? `<div style="padding:4px 0"><img src="${escHtml(imgSrc)}" style="max-width:200px;border-radius:6px;border:1px solid var(--border)" onerror="this.src='${escHtml(cdnUrl)}';this.onerror=null;"></div>
+          <div style="padding:2px 0"><a href="${escHtml(cdnUrl || assetUrl)}" target="_blank" class="btn-small">🔗 查看原图</a></div>` : '<div style="padding:4px 0;font-size:12px;color:var(--text2)">图片 URL 不可用</div>'}
+        `;
+      }
+      loadingEl.style.borderTopColor = 'var(--green)';
+      loadingEl.style.animation = 'none';
+    } else if (method === 'clean') {
+      loadingEl.innerHTML = `
+        <div class="assist-loading-head" style="border:none"><span style="font-size:16px">🧹</span><span class="assist-loading-title">${escHtml(data.note || '清理完成')}</span></div>
+        <div style="padding:4px 0;font-size:12px;color:var(--text2)">已清理 ${data.entries_removed || 0} 条 · brief 已重置</div>
+      `;
+      loadingEl.style.borderTopColor = 'var(--green)';
+      loadingEl.style.animation = 'none';
+    } else if (method === 'screenplay') {
+      // 复用 assists/screenplay.js 的 render 函数（Single Source of Truth）
+      const renderFn = window.ACMSAssists?.get?.('screenplay')?.render;
+      if (renderFn) {
+        loadingEl.innerHTML = renderFn(reqId, data);
+        loadingEl.style.borderTopColor = 'var(--green)';
+        loadingEl.style.animation = 'none';
+      } else {
+        loadingEl.innerHTML = `<div class="assist-loading-head" style="border:none"><span style="font-size:16px">📖</span><span class="assist-loading-title">剧本方案</span></div>
+          <div style="padding:4px 0;font-size:12px;color:var(--text2)">${(data.screenplays || []).length} 个剧本 · 点选填入输入框</div>`;
+        loadingEl.style.borderTopColor = 'var(--green)';
+        loadingEl.style.animation = 'none';
+      }
+    } else if (method === 'document_gen') {
+      // 复用 assists/document-gen.js 的 render 函数
+      const renderFn = window.ACMSAssists?.get?.('document_gen')?.render;
+      if (renderFn) {
+        loadingEl.innerHTML = renderFn(reqId, data);
+        loadingEl.style.borderTopColor = 'var(--green)';
+        loadingEl.style.animation = 'none';
+      } else {
+        loadingEl.innerHTML = `<div class="assist-loading-head" style="border:none"><span style="font-size:16px">📄</span><span class="assist-loading-title">文档已生成</span></div>
+          <div style="padding:4px 0;font-size:12px">${data.md_url ? `<a href="${escHtml(data.md_url)}" target="_blank" class="btn-small">📥 下载 .md</a>` : ''} ${data.docx_url ? `<a href="${escHtml(data.docx_url)}" target="_blank" class="btn-small">📥 下载 .docx</a>` : ''}</div>
+          ${!data.md_url && !data.docx_url ? '<div style="font-size:12px;color:var(--text2)">文档 URL 不可用</div>' : ''}`;
+        loadingEl.style.borderTopColor = 'var(--green)';
+        loadingEl.style.animation = 'none';
+      }
+    } else if (method === 'send_email') {
+      // 复用 assists/send-email.js 的 render 函数
+      const renderFn = window.ACMSAssists?.get?.('send_email')?.render;
+      if (renderFn) {
+        loadingEl.innerHTML = renderFn(reqId, data);
+      } else {
+        loadingEl.innerHTML = `<div class="assist-loading-head" style="border:none"><span style="font-size:16px">📧</span><span class="assist-loading-title">邮件已发送</span></div>
+          <div style="padding:4px 0;font-size:12px">收件人：${escHtml(data.to || '')} · 主题：${escHtml(data.subject || '')}</div>`;
+      }
+      loadingEl.style.borderTopColor = 'var(--green)';
+      loadingEl.style.animation = 'none';
+    }
+  } catch (e) {
+    loadingEl.innerHTML = `<div class="assist-loading-error">加载失败: ${escHtml(e.message)}</div>`;
+  }
+}
+
+/**
+ * v0.21.3: 视频生成异步自动轮询
+ * 在 SSE done 后启动，每 5s 查一次 /query 直到 video_url 出现
+ */
+window._autoPollTimers = window._autoPollTimers || {};
+function startVideoAutoPoll(reqId, loadingEl) {
+  if (window._autoPollTimers[reqId]) return; // 防重复
+
+  let attempts = 0;
+  const maxAttempts = 60; // 最多轮询 5 分钟
+  const statusEl = loadingEl?.querySelector('.video-auto-poll-status');
+
+  window._autoPollTimers[reqId] = setInterval(async () => {
+    attempts++;
+    if (attempts > maxAttempts) {
+      clearInterval(window._autoPollTimers[reqId]);
+      delete window._autoPollTimers[reqId];
+      // v0.22.5: 不再静默"停止"——明确告知 + 重试按钮
+      if (statusEl) statusEl.innerHTML = '⏹️ Agnes 服务端长时间无响应 · <span style="cursor:pointer;color:var(--accent);text-decoration:underline" onclick="chatVideoQuery(\'' + reqId + '\')">手动重试</span>';
+      toast('⏹️ 视频生成超时，可手动点重试（Agnes 服务端可能暂时不可用）', 'warning', 4000);
+      return;
+    }
+
+    try {
+      const r = await api('POST', `/requirements/${reqId}/assist/video/query`);
+      if (r && r.video_url) {
+        clearInterval(window._autoPollTimers[reqId]);
+        delete window._autoPollTimers[reqId];
+        // v0.22.7: 优先用本地 URL（已下载到 workspace）—— 避免 Agnes CDN 过期失效
+        const localUrl = (r.asset_path && r.project_id)
+          ? `/api/generate/assets/${encodeURIComponent(r.project_id)}/${r.asset_path}`
+          : null;
+        const cdnUrl = r.video_url || '';
+        const finalUrl = localUrl || cdnUrl;
+        // 更新卡片：替换为视频播放器
+        const panel = document.querySelector(`#chat-stream-msgs-${reqId} .assist-loading-card[data-method="video"]`);
+        if (panel) {
+          panel.innerHTML = `
+            <div class="assist-loading-head" style="border:none"><span style="font-size:16px">🎬</span><span class="assist-loading-title">视频已生成</span></div>
+            <div style="padding:4px 0">
+              <video controls style="width:100%;max-width:360px;border-radius:6px" src="${escHtml(finalUrl)}" onerror="this.src='${escHtml(cdnUrl)}'"></video>
+            </div>
+            <div style="padding:2px 0;font-size:11px;color:var(--text2)">✅ 生成完成 · <span onclick="chatVideoQuery('${reqId}')" style="cursor:pointer;text-decoration:underline">刷新</span></div>
+          `;
+          panel.style.borderTopColor = 'var(--green)';
+          panel.style.animation = 'none';
+          toast('🎬 视频已生成！' + (r.asset_path ? '（已保存到本地）' : ''), 'success', 3000);
+        }
+      } else if (r && r.status === 'failed') {
+        clearInterval(window._autoPollTimers[reqId]);
+        delete window._autoPollTimers[reqId];
+        // v0.22.5: failed 状态立即 toast + 显示重试按钮（不只改 statusEl 文字）
+        if (statusEl) statusEl.innerHTML = '❌ 生成失败：<span style="cursor:pointer;color:var(--accent);text-decoration:underline" onclick="chatVideoQuery(\'' + reqId + '\')">重试</span>';
+        toast('❌ 视频生成失败，可手动点重试', 'error', 4000);
+      } else if (statusEl) {
+        const pct = r?.progress != null ? Math.min(r.progress, 100) : '?';
+        statusEl.textContent = `⏳ 生成中 ${pct}% (${attempts * 5}s)`;
+      }
+    } catch {
+      // 单次查询失败不中断轮询
+    }
+  }, 5000);
+}
+
+async function chatRegen(reqId) {
+  if (!await showConfirm('重新生成思路会消耗 token，确认？', {type:'info'})) return;
+  try {
+    // 清理旧的 streaming 气泡和 assist 层
+    const c = document.getElementById(`chat-stream-msgs-${reqId}`);
+    if (c) {
+      c.querySelectorAll('.chat-assist-layer').forEach(el=>el.remove());
+      c.querySelectorAll('.chat-streaming-bubble').forEach(el=>el.remove());
+    }
+    // 开 SSE 流式重新生成
+    connectStreamingBrief(reqId, c);
+  } catch(e) { toast('失败: '+e.message, 'error'); }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// v0.17 浮动滚动按钮 — 解决旧 REQ 打开看不到历史 AI 回复
+// ═══════════════════════════════════════════════════════════════════
+//
+// 行为：
+// - 加载历史时 scrollTop=0（看到所有 history）→ 按钮显示「↓ 跳到最新」
+// - 用户在底部（看最新 AI 回复）→ 按钮隐藏
+// - 用户向上滚动看到历史 → 按钮显示「📜 滚到顶部」
+// - 点按钮 → 在顶部 ↔ 底部平滑切换
+//
+function chatScrollToggle(reqId) {
+  const s = document.getElementById(`chat-stream-msgs-${reqId}`);
+  if (!s) return;
+  const distFromBottom = s.scrollHeight - s.scrollTop - s.clientHeight;
+  // 在底部 → 滚到顶；否则 → 滚到底
+  const target = distFromBottom < 50 ? 0 : s.scrollHeight;
+  s.scrollTo({ top: target, behavior: 'smooth' });
+}
+
+function chatScrollUpdateBtn(reqId) {
+  const s = document.getElementById(`chat-stream-msgs-${reqId}`);
+  const btn = document.getElementById(`chat-scroll-top-btn-${reqId}`);
+  if (!s || !btn) return;
+  const distFromTop = s.scrollTop;
+  const distFromBottom = s.scrollHeight - s.scrollTop - s.clientHeight;
+  // 内容不溢出 OR 在底部（最新）→ 按钮隐藏
+  //   scrollHeight === clientHeight → 没历史可看；distFromBottom < 50 → 已在底部
+  if (s.scrollHeight <= s.clientHeight + 5 || distFromBottom < 50) {
+    btn.style.display = 'none';
+    return;
+  }
+  btn.style.display = '';
+  // 在顶部 → 显示「↓ 跳到最新」；在中段或接近顶部 → 显示「📜 滚到顶部」
+  if (distFromTop < 50) {
+    btn.textContent = '↓';
+    btn.title = '跳到最新';
+  } else {
+    btn.textContent = '📜';
+    btn.title = '滚到顶部';
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// v0.55 自由对话多窗口：初始化 + 加载历史 + 标题编辑
+// ════════════════════════════════════════════════════════════════════
+
+/**
+ * 初始化 chat 窗口（被 index.html 的 chat loader 调用）
+ * @param {Object} w    - window-manager 的 window 对象
+ * @param {string} sid  - sessionId（sess-xxx）或 new-<ts> 临时标记
+ * @param {string} initialTitle - 初始标题（新建时为 "对话 N"）
+ */
+async function initChatWindow(w, sid, initialTitle) {
+  if (!w || !sid) return;
+  // 把 sid 写到 window.el.dataset，方便 chat-history 关窗时定位
+  if (w.el && w.el.dataset) w.el.dataset.chatSid = sid;
+
+  // 临时 sid（new-xxx）→ 调 API 创建真实 session
+  if (sid.startsWith('new-')) {
+    try {
+      const r = await api('POST', '/chat-sessions', {});
+      if (r && r.error) {
+        if (typeof toast === 'function') toast('创建对话失败: ' + r.error, 'error');
+        return;
+      }
+      const realSid = r.session.id;
+      const realTitle = r.session.title;
+      // 更新 window 状态：instanceId + 标题 + DOM dataset
+      w.instanceId = realSid;
+      w.st.titleOverride = realTitle;
+      if (w.el && w.el.dataset) w.el.dataset.chatSid = realSid;
+      // 重命名窗口标题
+      if (window.ACMSWin && ACMSWin.setTitle) ACMSWin.setTitle(w, realTitle);
+      // 重新触发一次 chip id 替换（不影响，已渲染过的 sid 是 new-xxx）
+      // 当前已是空状态，不需要再渲染
+    } catch (e) {
+      console.error('[initChatWindow] 创建 session 失败:', e);
+      if (typeof toast === 'function') toast('创建对话失败: ' + e.message, 'error');
+      return;
+    }
+  } else {
+    // 已有 sessionId → 加载历史 messages
+    await loadChatSessionMessages(w, sid);
+  }
+}
+
+/**
+ * 加载指定 session 的历史 messages → 渲染到 stream 容器
+ */
+async function loadChatSessionMessages(w, sid) {
+  if (!sid || !sid.startsWith('sess-')) return;
+  const container = document.getElementById('chat-stream-msgs-' + sid);
+  if (!container) {
+    // 容器未就绪（窗口刚创建，DOM 还在加载）→ 等 100ms 重试
+    setTimeout(function() { loadChatSessionMessages(w, sid); }, 100);
+    return;
+  }
+  // 标记 free 模式（避免后续触发 SSE）
+  if (!window._chatMode) window._chatMode = {};
+  window._chatMode[sid] = 'free';
+  _chatState[sid] = { histCount: 0, briefRound: 0 };
+
+  try {
+    container.innerHTML = '<div class="chat-typing"><span></span><span></span><span></span></div>';
+    // ═══ v0.22.51 fix：自由对话有「两套历史存储」，水位线必须跟轮询比对的那一套对齐 ═══
+    //   ① chat_messages 表          → 文字对话（本函数渲染的来源）
+    //   ② 隐藏 requirement 的 supplement_history → 工具结果卡片（音视频/剧本/图片/搜索…）
+    //   startChatPolling 的增量水位线 _chatState[sid].histCount 是拿 ② 的条数做比对的
+    //   （chat.js L152：history.length > state.histCount 才渲染新增）
+    //   旧代码把 histCount 初始化成 ① 的条数（messages.length）→ 两个来源的条数不一致时崩：
+    //     会话被「清理」过（① = 0，② 还留着 8 张历史卡片）→ 8 > 0 → 第一轮轮询把 8 张
+    //     历史卡片全部当成新消息渲染 → 用户点任意辅助工具（剧本/音乐/图片/视频…）SSE done
+    //     触发 startChatPolling 后，聊天框瞬间炸出一堆历史卡片（含旧的加载中/失败卡片）
+    //   修：水位线按 ②（supplement_history）初始化 —— 历史卡片只在打开窗口时由本函数决定
+    //       是否回放，轮询只负责真正的新增条目，不再全量重刷。
+    const [r, histResp] = await Promise.all([
+      api('GET', '/chat-sessions/' + sid + '/messages'),
+      api('GET', '/requirements/' + sid + '/supplement-history').catch(function(e) {
+        console.warn('[loadChatSessionMessages] supplement-history 读取失败:', e.message);
+        return null;
+      }),
+    ]);
+    const messages = (r && r.messages) || [];
+    const cardCount = (histResp && Array.isArray(histResp.history)) ? histResp.history.length : 0;
+    _chatState[sid].histCount = cardCount;
+    container.innerHTML = '';
+    if (messages.length === 0) {
+      // 空 session：不显示欢迎（保留空容器，用户直接看输入框）
+      container.innerHTML = '';
+      return;
+    }
+    // 渲染历史 messages
+    for (const m of messages) {
+      renderChatBubble(container, {
+        role: m.role,
+        text: m.content || '',
+        at: m.ts || new Date().toISOString(),
+      });
+    }
+    // 滚到底部
+    chatScrollToBottom(container);
+  } catch (e) {
+    console.error('[loadChatSessionMessages] error:', e);
+    container.innerHTML = '<div class="chat-bubble chat-bubble-ai"><div class="chat-bubble-meta"><span class="chat-label">⚠️</span></div>历史加载失败：' + escHtml(e.message) + '</div>';
+  }
+}
+
+/**
+ * 编辑窗口标题（双击标题栏触发）
+ * → 内联 input 替换标题 → 回车保存 / Esc 取消 → PATCH /chat-sessions/:id → setTitle
+ */
+window.editChatWindowTitle = function(w) {
+  if (!w || !w.instanceId) {
+    if (typeof toast === 'function') toast('新建中的对话暂不能改标题，请先发一条消息', 'info');
+    return;
+  }
+  const sid = w.instanceId;
+  const tEl = w.el && w.el.querySelector('.aw-title');
+  if (!tEl) return;
+  const cur = (w.st.titleOverride || w.st.title || '').trim();
+
+  // 替换为 input
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = cur;
+  input.maxLength = 60;
+  input.style.cssText = 'flex:1;background:var(--bg);border:1px solid var(--accent);border-radius:4px;padding:2px 6px;color:var(--text);font-size:12px;font-family:inherit;outline:none;min-width:0';
+  tEl.replaceWith(input);
+  input.focus();
+  input.select();
+
+  let finished = false;
+  function finish(save) {
+    if (finished) return;
+    finished = true;
+    const newText = save ? input.value.trim() : cur;
+    // 恢复 title 元素
+    const newT = document.createElement('span');
+    newT.className = 'aw-title';
+    newT.textContent = newText;
+    input.replaceWith(newT);
+    if (!save) return;
+    if (!newText || newText === cur) return;
+    // PATCH 后端
+    api('PATCH', '/chat-sessions/' + sid, { title: newText })
+      .then(function(r) {
+        if (r && r.error) { if (typeof toast === 'function') toast('修改失败: ' + r.error, 'error'); return; }
+        // 更新 window 状态
+        if (window.ACMSWin && ACMSWin.setTitle) ACMSWin.setTitle(w, newText);
+        if (typeof toast === 'function') toast('已保存', 'success');
+        // 刷新 launcher 历史列表
+        if (window.refreshLauncherChatList) window.refreshLauncherChatList();
+      })
+      .catch(function(e) {
+        if (typeof toast === 'function') toast('修改失败: ' + e.message, 'error');
+      });
+  }
+
+  input.addEventListener('keydown', function(ev) {
+    if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
+    else if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }
+  });
+  input.addEventListener('blur', function() { finish(true); });
+};
+
+
+

@@ -3,6 +3,20 @@
 // 替代旧版表格选择器模式
 // 字段：requirement.assist_reference
 
+// v0.17 (2026-09-12)：runAssistJob 总闸 90s timeout
+//   治"借鉴卡片一直加载不出来"——之前 LLM（callLLMWithRetry）+ web_research（DDG 频繁 20s timeout）任一步挂死
+//   status: generating 永远不 settled，前端 dispatcher 看不到 done/failed，永远转圈
+//   现在 race 90s 后 reject → catch 写 status: failed + error: REFERENCE_TIMEOUT_90000ms
+//   IIFE 内 LLM 即使最终完成，返回值没人接收，不写 done（避免覆盖 failed）
+//   前端 dispatcher filter 不显示 failed 卡片（避免永久转圈），用户能感知"这次没成功"
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label}_TIMEOUT_${ms}ms`)), ms);
+  });
+  return Promise.race([promise.finally(() => clearTimeout(timer)), timeout]);
+}
+
 const { callLLMWithRetry } = require('../json-extractor');
 const modelStore = require('../../stores/model-store');
 const reqStore = require('../../stores/requirement-store');
@@ -203,20 +217,27 @@ async function runAssistJob(requirementId, opts = {}) {
     }
   } catch (e) { console.warn(`[assist:reference] 调研失败（非关键）:`, e.message); }
 
-  try {
-    const profileResult = await stepProfile(model, productHint + context, referenceContext);
-    const profile = profileResult.profile;
-    const resolvedProductName = productName || profileResult.productName || (productName ? '' : extractProductFromContext(context));
-    const diagrams = await stepDiagrams(model, productHint + context, profile, referenceContext);
-    const insights = await stepInsights(model, productHint + context, profile, diagrams);
+try {
+    const result = await withTimeout(
+      (async () => {
+        const profileResult = await stepProfile(model, productHint + context, referenceContext);
+        const profile = profileResult.profile;
+        const resolvedProductName = productName || profileResult.productName || (productName ? '' : extractProductFromContext(context));
+        const diagrams = await stepDiagrams(model, productHint + context, profile, referenceContext);
+        const insights = await stepInsights(model, productHint + context, profile, diagrams);
+        return { resolvedProductName, profile, diagrams, insights };
+      })(),
+      90000,
+      'REFERENCE'
+    );
 
     reqStore.update(requirementId, {
       assist_reference: JSON.stringify({
         status: 'done', mode: 'brief',
-        target_product: resolvedProductName,
-        profile,
-        diagrams,
-        insights,
+        target_product: result.resolvedProductName,
+        profile: result.profile,
+        diagrams: result.diagrams,
+        insights: result.insights,
         picked: [],
         generated_at_round: typeof opts.chatRound === 'number' ? opts.chatRound : null,
         generated_at: new Date().toISOString(),
@@ -232,7 +253,7 @@ async function runAssistJob(requirementId, opts = {}) {
         status: 'failed', mode: 'brief',
         target_product: productName,
         profile: null, diagrams: [], insights: [],
-        error: e.message,
+        error: e.message || 'UNKNOWN_ERROR',
         generated_at: new Date().toISOString(),
         used: false,
       }),

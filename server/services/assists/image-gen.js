@@ -280,8 +280,8 @@ async function runAssistJob(requirementId, opts = {}) {
     if (!apiKey) throw new Error('Agnes API Key 未配置');
 
     const body = {
-  // v0.XX: agnes-image-2.0-flash → agnes-image-2.1-flash（中文站）
-    model: 'agnes-image-2.1-flash',
+  // v0.22.66: agnes-image-2.1-flash → agnes-image-2.5-flash（最新一代，能力全面超过 2.1；参数/尺寸/计费完全一致；当前免费）
+    model: 'agnes-image-2.5-flash',
       prompt,
       size,
       extra_body: { response_format: 'url' },
@@ -612,8 +612,8 @@ async function runAssistJobCore(requirementId, opts = {}) {
     if (!apiKey) return { ok: false, error: 'AGNES_API_KEY_NOT_CONFIGURED', prompt, file_ids: [] };
 
     const body = {
-  // v0.XX: agnes-image-2.0-flash → agnes-image-2.1-flash（中文站）
-    model: 'agnes-image-2.1-flash',
+  // v0.22.66: agnes-image-2.1-flash → agnes-image-2.5-flash（最新一代，能力全面超过 2.1；参数/尺寸/计费完全一致；当前免费）
+    model: 'agnes-image-2.5-flash',
       prompt: agnesPrompt, size,
       extra_body: { response_format: 'url' },
     };

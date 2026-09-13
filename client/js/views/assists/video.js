@@ -41,7 +41,7 @@
     if (data.status === 'done') {
       const isAsync = data.async_task && !data.video_url;
       const videoTag = data.video_url
-        ? `<video controls style="width:100%;max-width:360px;border-radius:6px;margin:4px 0;background:#000" src="${escHtml(data.video_url)}"></video>`
+        ? `<video controls preload="metadata" style="width:100%;max-width:360px;border-radius:6px;margin:4px 0;background:#000;cursor:zoom-in;display:block" src="${escHtml(data.video_url)}" onclick="${videoClickAttr(data.video_url)}" title="点击放大播放"></video>`
         : '';
       return `
         <div class="assist-section-title">🎬 AI 视频生成</div>
@@ -143,9 +143,9 @@ async function chatVideoQuery(reqId) {
           card.innerHTML = `
             <div class="assist-loading-head" style="border:none"><span style="font-size:16px">🎬</span><span class="assist-loading-title">视频已生成</span></div>
             <div style="padding:4px 0">
-              <video controls style="width:100%;max-width:360px;border-radius:6px" src="${escHtml(r.video_url)}"></video>
+              <video controls preload="metadata" style="width:100%;max-width:360px;border-radius:6px;cursor:zoom-in;background:#000;display:block" src="${escHtml(r.video_url)}" onclick="${videoClickAttr(r.video_url)}" title="点击放大播放"></video>
             </div>
-            <div style="padding:2px 0;font-size:11px;color:var(--text2)">✅ 生成完成</div>
+            <div style="padding:2px 0;font-size:11px;color:var(--text2)">✅ 生成完成 · 点击画面可放大播放</div>
           `;
           card.style.borderTopColor = 'var(--green)';
           card.style.animation = 'none';

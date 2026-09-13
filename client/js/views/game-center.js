@@ -9,10 +9,8 @@
     w.$c.innerHTML = '';
 
     var games = [
-      { id: '2048',       label: '2048',      icon: '🔢', color: '#e67e22', desc: '滑动合并数字，目标 2048' },
+      { id: 'tank3d',     label: '坦克大战 3D', icon: '🛡️', color: '#e74c3c', desc: '守战场，敌军一波比一波凶（3D/Three.js）' },
       { id: 'snake',      label: '贪吃蛇',     icon: '🐍', color: '#27ae60', desc: '吃豆子变长，别撞墙' },
-      { id: 'pong',       label: 'Pong',       icon: '🏓', color: '#3498db', desc: '经典乒乓球，人机对战' },
-      { id: 'tetris',     label: '俄罗斯方块', icon: '🧱', color: '#9b59b6', desc: '经典方块消除' },
     ];
 
     var html = '';
@@ -55,10 +53,8 @@
   // ── 打开单个游戏窗口 ──
   function openGame(gameId) {
     var configs = {
-      '2048':   { w: 360, h: 480, title: '2048' },
+      'tank3d': { w: 1000, h: 680, title: '坦克大战 3D' },
       'snake':  { w: 420, h: 480, title: '贪吃蛇' },
-      'pong':   { w: 480, h: 380, title: 'Pong' },
-      'tetris': { w: 300, h: 500, title: '俄罗斯方块' },
     };
     var cfg = configs[gameId] || { w: 400, h: 400, title: gameId };
     if (window.ACMSWin) {

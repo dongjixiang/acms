@@ -141,6 +141,8 @@
     const statusIcon = OVERALL_ICON[overall] || '⏳';
     const stepsHtml = steps.map(renderStepRow).join('');
     const errorMsg = data.error ? `<div class="plan-error">${escHtml(data.error)}</div>` : '';
+    // v0.120 (PR5): 有 failed/skipped 且计划已终态 → 给一键重试按钮
+    const retryHtml = renderRetryButton(data, counts, overall);
 
     return `
       <div class="plan-bubble-inner" data-plan-id="${escHtml(data.plan_id)}">
@@ -153,7 +155,35 @@
         <div class="plan-detail" style="display:block">
           ${stepsHtml || '<div class="plan-step-empty">（无步骤）</div>'}
           ${errorMsg}
+          ${retryHtml}
         </div>
+      </div>
+    `;
+  }
+
+  /**
+   * v0.120 (PR5): 失败步骤一键重试按钮
+   *   仅当计划已终态（partial_failed / done）且存在 failed（跳过的不算新错误）时出现
+   *   点击 → POST /api/requirements/:reqId/plan/:planId/retry
+   *     → 服务端写一条 user message 含失败上下文 → LLM 自己重规划
+   *   注意：skipped 是下游级联跳过，重试 failed 后它们会被重新规划，所以按钮文案只数 failed
+   */
+  function renderRetryButton(data, counts, overall) {
+    if (overall !== 'partial_failed' && overall !== 'done') return '';
+    const failedCount = counts.failed || 0;
+    if (failedCount === 0) return '';
+    const reqId = data.__reqId || (window.__acmsPlanReqId || '');
+    return `
+      <div class="plan-retry-row" style="margin-top:8px;padding-top:8px;border-top:1px dashed #444;">
+        <button type="button" class="plan-retry-btn"
+                data-plan-id="${escHtml(data.plan_id)}"
+                data-req-id="${escHtml(reqId)}"
+                style="background:#2d3748;color:#e2e8f0;border:1px solid #4a5568;border-radius:4px;padding:5px 12px;cursor:pointer;font-size:12px;"
+                onmouseover="this.style.background='#3a4659'"
+                onmouseout="this.style.background='#2d3748'"
+                onclick="retryFailedPlanSteps(this)">
+          🔄 重试失败步骤 (${failedCount})
+        </button>
       </div>
     `;
   }
@@ -212,6 +242,8 @@
           return { ...s, result: rest };
         });
       }
+      // v0.120 (PR5): 注入 reqId 供重试按钮使用
+      p.data.__reqId = reqId;
       const html = renderPlanInner(p.data);
       if (!html) continue;
       const div = document.createElement('div');

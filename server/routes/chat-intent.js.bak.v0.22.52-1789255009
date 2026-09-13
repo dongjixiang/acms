@@ -1,0 +1,1142 @@
+// 分段1/20: 文件头+requires (L1-45)
+// 聊天智能响应端点（v0.16，2026-06-26）
+// POST /api/chat/detect-and-respond
+// v0.16：LLM tool-loop 自主判断工具调用，替代 v0.15 关键词硬匹配
+//
+// 流程：
+//   含 URL → 走 fetch_url（现有 handleFetchUrl）
+//   无 URL → 调 runToolLoop，LLM 看着 4 个外部 tool descriptions 自主决定
+//           - 不调 tool → LLM 直接回复
+//           - 调 tool → tool result 写 system → LLM 整理回复
+
+const express = require('express');
+const router = express.Router();
+const reqStore = require('../stores/requirement-store');
+const toolRegistry = require('../services/tool-registry');
+const { runToolLoop } = require('../services/llm-adapter');
+const { execute: runtimeExec } = require('../services/agent-runtime');
+const appToolsRegistry = require('../services/app-tools-registry');  // v0.66
+const modelStore = require('../stores/model-store');
+
+// v0.65: 自由对话 session → 创建隐藏 requirement，让 play_music/play_video 等工具有真实存储容器
+function getOrCreateSessionRequirement(sessionId) {
+  if (!sessionId) return null;
+  try {
+    const { collection } = require('../db/connection');
+    const mem = collection('buddy_memory').findOne(m => m.key === 'session_req:' + sessionId);
+    if (mem) {
+      const existing = reqStore.getById(mem.value);
+      if (existing) return existing;
+    }
+    // 获取/创建隐藏项目
+    const projectSlug = 'agent-buddy-actions';
+    const projectStore = require('../stores/project-store');
+    let project = collection('projects').findOne(p => p.slug === projectSlug);
+    if (!project) {
+      project = projectStore.create({
+        name: '小吉动作记录', slug: projectSlug,
+        description: '小吉即时聊天动作的隐藏运行容器。',
+        owner: 'system',
+      });
+      collection('projects').update(p => p.id === project.id, { system_project: 1 });
+      project = collection('projects').findOne(p => p.id === project.id) || project;
+    }
+    const req = reqStore.create({
+      projectId: project.id,
+      title: '自由对话会话 · ' + sessionId,
+// 分段2/20: getOrCreateSessionRequirement后半+INTENT_TOOL_NAMES+getIntentToolNames (L46-95)
+      description: '自由对话会话的隐藏运行容器（音乐/视频/图片等辅助工具）。',
+      createdBy: 'system', status: 'idea', role: 'system',
+    });
+    reqStore.update(req.id, { chat_mode: 'free', system_record: 1 });
+    // 存映射
+    const value = req.id;
+    if (mem) {
+      collection('buddy_memory').update(m => m.key === 'session_req:' + sessionId, { value, updated_at: new Date().toISOString() });
+    } else {
+      collection('buddy_memory').insert({ key: 'session_req:' + sessionId, user_id: 'system', value, updated_at: new Date().toISOString() });
+    }
+    return reqStore.getById(req.id);
+  } catch (e) {
+    console.warn('[getOrCreateSessionRequirement] 失败:', e.message);
+    return null;
+  }
+}
+const INTENT_TOOL_NAMES = [
+  'web_search', 'web_research', 'fetch_url', 'get_current_time',  // 信息类
+  'agnes_generate_video',  // 视频生成（v0.18 直接调 Agnes API）
+  // v0.20d: play_music 由预检覆盖，不加进 LLM 可见工具避免重复触发
+  'play_video',           // 视频生成（v0.20 触发 video assist，自动从用户消息提取 prompt）
+  'generate_image',       // 图片生成（v0.20 触发 image-gen assist，自动从用户消息提取 prompt）
+  'send_email',           // v0.47：邮件发送（fire-and-forget + 用户确认才真发）
+  'plan_execute',         // v0.48：复合意图 plan 执行（多 tool / 多步骤 / 依赖场景）
+  'office_action',        // v0.X PR3：Excel/Word/PPT 多步操作编排入口（每次单类 op）
+];
+
+// v0.66: chat 流动态注入 app-tool（前端应用通过 WS 注册的能力）
+// 返回函数，确保每次 chat 请求时拿到最新的 app-tool 列表（应用启动/关闭后能反映）
+function getIntentToolNames() {
+  var appTools = [];
+  try {
+    appTools = appToolsRegistry.listAppToolNames();
+  } catch (e) { /* appTools 不可用时不影响基础 9 个 server tool */ }
+  return [...INTENT_TOOL_NAMES, ...appTools];
+}
+
+// v0.16：chat-intent 阶段 LLM 看到的 system prompt（clarify 模式）
+// 核心：「一放一收」—— 默认不调 tool，只有显式外部信息需求才调
+function buildIntentSystemPrompt(req) {
+  return `你是 ACMS 需求澄清对话助手。当前用户正在讨论需求：
+
+# 需求上下文
+- 标题：${req.title || '(空)'}
+- 描述：${(req.description || '').slice(0, 500) || '(空)'}
+- 状态：${req.status || 'idea'} / 阶段：${req.phase || '孵化'}
+
+# 任务
+用户在需求澄清场景中跟你对话。你需要根据他的消息和当前需求上下文，给出简洁（200-500 字）Markdown 格式的回复。
+
+// 分段3/20: buildIntentSystemPrompt (L96-140)
+# 工具使用规则（严格遵守）
+你**仅**在以下情况才调用工具；其他情况**直接回复**，不调用任何工具：
+
+1. **web_research / web_search**（联网调研）：
+   - 用户**显式**询问最新/实时/2026 事件、趋势、市场数据（如"最近 2026 世界杯排名"、"现在 AI 行业怎么样"）
+   - 用户**显式**要求对比/调研多个产品或方案（如"对比钉钉和企业微信"、"调研 SaaS 行业头部厂商"）
+   - **严禁**因为用户提到日常词（想听/想看/想找/推荐/帮我/搜索等）就触发
+   - **严禁**用户描述产品功能/场景/用户故事时触发
+
+2. **fetch_url**（抓 URL）：
+   - 仅当用户消息包含完整 http:// 或 https:// 链接时使用
+
+3. **get_current_time**（当前时间）：
+   - 仅当用户**显式**询问"现在几点/今天日期"时使用
+
+4. **agnes_generate_video**（AI 视频生成 — Agnes V2.0 直调 API）：
+   - 当用户**显式**要求生成视频且希望**精确控制参数**时使用（如 num_frames/frame_rate/seed）
+   - 参数：prompt（描述画面）、num_frames（帧数，默认121 ≈ 5s@24fps）、frame_rate（帧率）
+   - 约 2 秒视频：num_frames=49, frame_rate=24；约 3 秒：num_frames=81, frame_rate=24
+    - 创建任务是异步的，返回 video_id。告诉用户任务已提交，他们会追问进度
+ 
+ 6. **play_video**（视频生成 — v0.20，触发 video assist）：
+   - 当用户**显式**想生成视频但**未指定精确参数**时使用（如"帮我生成一个 X 视频""做一个 X 演示"）
+   - 必须从用户消息中提取 prompt（视频描述，必填）
+   - 与 agnes_generate_video 的区别：本工具走 video assist 流程（更友好 UI）；agnes_generate_video 走直 API（精确控制）
+   - 触发后 60-300 秒内看到视频卡片
+
+7. **generate_image**（图片生成 — v0.20，触发 image-gen assist）：
+   - 当用户**显式**想生成图片时使用（如"生成图片 X""画一张 X""画一个 X"）
+   - 必须从用户消息中提取 prompt（图片描述，必填）
+   - 触发后 10-60 秒内看到图片卡片
+
+# 默认行为
+- 用户大概率是描述产品功能/场景/用户故事（90%+ 情况）
+- 用户也可能在回答 AI 之前的追问、确认理解、补充细节
+- 这些情况**都不需要外部信息或休闲娱乐**，直接基于需求上下文和对话历史回复
+
+# 回复要求
+- 用 Markdown（### 标题、**粗体**、- 列表）
+- 简洁 200-500 字，直接回应用户
+- 不要重复读需求标题/描述（用户已经知道）
+- 如果信息不足就反问`;
+}
+
+// v0.18：chat-mode=free 时的 LLM prompt — 通用对话 + 附件总结（用户场景：上传文件让 LLM 总结）
+// 分段4/20: buildFreeChatSystemPrompt+pickIntentSystemPrompt (L141-209)
+// 区别于 clarify：基于附件/参考资料直接回答，不追问澄清需求
+// v0.22.23b：精简 system prompt，删掉复用的 clarify 模式限制（"仅在...才调"）+ 暗示 LLM 直接回复的措辞
+//   多多诉求：free 模式更开放，LLM 自主决定调不调 tool。工具 description 自带触发条件，不需要在 system prompt 重复
+// v0.47.1：治「LLM 装睡」 — 用户表达生成图片/视频/搜索/邮件/音乐等明确工具意图时，
+//   **必须调用对应工具**，不能嘴说"正在生成/正在搜索/已发送"等假动作（用户看不到任何卡片，就是空话）。
+//   多次轮询日志显示 LLM 倾向于在第一轮 final answer 中描述"动作"但**不真调用 tool**，
+//   导致用户看不到任何输出（图片/视频/搜索结果都不存在），不得不催第二轮。
+function buildFreeChatSystemPrompt(req) {
+  // v0.119.2 fix: Qwen 失败走旧引擎 fallback 时传 null（line 404）→ req.title 崩
+  //   "Cannot read properties of null (reading 'title')" 遗留 bug（8/24 就有）
+  req = req || {};
+  return `你是 ACMS 自由对话助手。当前用户正在与你自由对话，可能让你总结附件、解读资料、对比方案、画图、生成视频、搜索信息、发送邮件、找歌曲等。
+
+# 需求上下文（仅作背景，不要当成对话主线）
+- 标题：${req.title || '(空)'}
+- 描述：${(req.description || '').slice(0, 200) || '(空)'}
+- 状态：${req.status || 'idea'} / 阶段：${req.phase || '孵化'}
+
+# 任务
+- 用户没在整理需求，**直接帮用户处理具体请求**。
+- 你可以调用任何已注册的工具（包括 server tool 如 generate_image/play_video/web_search/send_email/plan_execute 等，以及 v0.66 新增的 ACMS 应用工具如 file_search 等）来满足用户的具体请求；工具的 description 告诉你何时该调。
+- 也可以直接基于对话历史和已有知识回答。
+
+# ⛔ 严禁「装睡」（v0.47.1 治根因）
+当用户消息含**明确的工具调用意图**时（生成图片/视频/搜索/邮件/找歌），你**必须调用对应工具**。绝不能只回文字如"图片正在生成中""视频已发送""邮件已发送""搜索中请稍等"——**这种回复是空话，用户看不到任何卡片，必须避免**。
+
+判断标准（满足任一即视为有工具意图）：
+- 含"生成图片/画一张/画一个/做一张图"等 → 调 **generate_image**
+- 含"生成视频/做一个视频/拍个视频"等 → 调 **play_video** 或 **agnes_generate_video**
+- 含"搜索/查一下/调研/找资料"等 → 调 **web_search** 或 **web_research**
+- 含 URL → 调 **fetch_url**
+- 含"发邮件/发送邮件/转发邮件"等 → 调 **send_email**
+- 含"想听/播放/找一首/放首歌"等 → 调 **play_music**
+
+如果工具已调（msg 里有 role=tool 的返回结果），下一轮 final answer 可以简短告诉用户"已触发，请稍候"——但**第一轮**看到用户意图就必须调工具。
+
+# ⛔ 复合意图必须调 plan_execute（v0.48 治根因）
+当用户消息**同时涉及 2 个或以上 tool 意图**时（且步骤有先后/依赖/耗时），**必须先调 plan_execute** 把整个事情拆成步骤交给系统执行，不能自己按顺序一个个调 tool。
+
+判断标准：
+- 只有 1 个 tool 意图 → 直接调那个 tool（不走 plan_execute）
+- 2+ tool 意图 且步骤独立或串行依赖 → **调 plan_execute 一次**
+
+典型场景：
+- "生成图片 + 发邮件" → plan_execute (2 步：generate_image → send_email)
+- "调研 A + 调研 B + 调研 C + 生成对比表" → plan_execute (4 步：3 个 web_research 并列 → synthesize)
+- "查天气 + 查日历 + 找咖啡馆" → plan_execute (3 步：3 个查询并列)
+
+**为什么不能用普通多 tool call**：
+LLM 在同一次 tool_loop 里调多个 tool 后，会拿到 tool result 进入 final answer 阶段，不会等异步 tool 完成再调后续 tool。
+v0.47.5 REQ-MRHNP0PR 案例：用户说"生成图片+发邮件" → LLM 调 generate_image → 拿到 result → final answer → 漏调 send_email。
+plan_execute 内部由 plan-executor 按拓扑序保证所有步骤都执行，不会漏调。
+
+调用格式（参考 plan_execute tool description）：
+{"summary": "一句话", "steps": [{"tool": "...", "args": {...}}, {"tool": "...", "args": {...}, "depends_on": ["s1"]}]}
+
+# ⛔ Excel/Word/PPT 多步操作必须调 plan_execute + office_action（v0.X 治 schema 校验）
+用户在 chat 流说"加 sheet + 合并数据 + 写公式"/"改 PPT 第 3 页内容 + 调字体 + 加图表"等
+2 步及以上的 Office 操作时，**必须先调 plan_execute** 把整个事情拆 step，每个 step 调一次
+office_action tool。
+
+【office_action 单类 op 约束】
+每个 step 的 operations 数组只能含一类 op，混类会被 handler 拒绝并返回 MIXED_CLASS_OPS：
+
+- structural：add_sheet / delete_sheet / rename_sheet / insert_rows / delete_rows / insert_cols / delete_cols / set_sheet_hidden / move_sheet / protect_sheet
+- content：set_cell / set_formula / clear_cell / set_range / clear_range / find_replace / set_hyperlink / set_note / appendAll / proposeEdits / insertAfterSelection / insertImagesAtContent / replaceHtmlDeck
+- format：format_range / formatOps / format_cell
+- layout：sort_range / merge_cells / unmerge_cells / set_row_height / set_col_width / set_rows_hidden / set_cols_hidden / set_freeze / set_page_setup
+- charts：add_chart / edit_chart / delete_visual / add_sparkline / add_shape / edit_shape / add_image
+- data：set_filter / set_filter_criteria / add_conditional_format / clear_conditional_formats / set_data_validation / add_defined_name / delete_defined_name / add_pivot / refresh_pivot / add_table / delete_table
+
+**严禁**混类（structural + content 一起发 → apply 时报 zod schema 错："Structural operations ... must be proposed in separate batches"）。
+**严禁**自己用普通 tool_loop 一个个调 office_action — 必须走 plan_execute 保证步骤串行 + 失败隔离。
+
+【structural 后必须 refreshContext:true】
+如果本 step 是另一个 office_action 的下游（依赖 structural 类变更），args.refreshContext
+必须设为 true。否则原有 cell 地址失效，后续 op 全失败。structural step 自己**不需要** refreshContext（handler 默认行为已经够了）。
+
+【典型 plan 模板】
+用户："加 sheet『对比分析』，合并考勤和打开数据，写公式 F=B/D"
+plan_execute({
+  summary: "加 sheet 并合并考勤数据",
+  steps: [
+    {id: "s1", tool: "office_action", args: {
+      kind: "xlsx",
+      operations: [{op: "add_sheet", sheetId: "sheet-3", name: "对比分析"}],
+      summary: "新增 sheet"
+    }},
+    {id: "s2", tool: "office_action", args: {
+      kind: "xlsx",
+      refreshContext: true,   // ← structural 后必须
+      operations: [
+        {op: "set_cell", sheetId: "sheet-3", address: "A1", value: "姓名"},
+        {op: "set_cell", sheetId: "sheet-3", address: "B1", value: "考勤天数"},
+        {op: "set_formula", sheetId: "sheet-3", address: "F2", formula: "=B2/D2"}
+      ],
+      summary: "写表头+公式"
+    }, depends_on: ["s1"]}
+  ]
+})
+
+【⚠️ 失败兜底 — handler 拒绝怎么办】
+如果 office_action handler 返回 MIXED_CLASS_OPS / UNKNOWN_OPS / NO_DOC_CONTEXT 错误：
+- **MIXED_CLASS_OPS**：把 operations 拆成多个 plan step（每个 step 只含一类 op）
+- **UNKNOWN_OPS**：检查 op 名拼写、确认在 6 类白名单里
+- **NO_DOC_CONTEXT**：在 args.docContext 里直接传完整 docContext 数据（前端会塞进 fetch body），
+  或拆 step 让每个 step 独立读（依赖前端 __sheetsDebug.snapshot 机制）
+
+# 回复要求
+- Markdown 格式（### 标题、**粗体**、- 列表）
+- 长度 200-800 字（比澄清 prompt 略长，方便总结）
+- 信息不足直接说"附件里没看到 X 信息"或"还需要补充 Y"，不要反问澄清需求
+- 不要重复读需求标题/描述（用户已经知道，那只是背景）`;
+}
+
+// v0.18：按 req.chat_mode 选 system prompt（外部调用入口）
+function pickIntentSystemPrompt(req) {
+  if (req.chat_mode === 'free') return buildFreeChatSystemPrompt(req);
+  return buildIntentSystemPrompt(req);
+}
+
+// 分段5/20: router.post入口+musicPreCheck+session加载 (L210-250)
+router.post('/detect-and-respond', async (req, res, next) => {
+  try {
+    const { reqId, text } = req.body;
+    if (!reqId || !text) {
+      return res.status(400).json({ error: 'MISSING_FIELDS' });
+    }
+
+    // ═══ 自由对话（免需求）═══ v0.55 支持 sessionId 多窗口 + 历史持久化
+    // 兼容三种调用：
+    //   - reqId === '__free__' → 旧调用，无状态（向后兼容）
+    //   - reqId 以 'sess-' 开头 → 多窗口会话 ID，加载历史 messages
+    //   - reqId 以 '_' 开头（不含前缀 sess-/_free_/_img_... 等虚拟 ID） → L3 App 的组件级 AI 调用
+    //     （image-editor / code-editor / file-browser 等 standalone LLM 调用，无需持久需求上下文）
+    if (reqId === '__free__' || (typeof reqId === 'string' && (reqId.startsWith('sess-') || reqId.startsWith('_')))) {
+      // 预检：音乐意图（与主流程保持一致）
+      const musicPreCheck = extractMusicIntent(text);
+      let musicCardJson = null;
+      if (musicPreCheck.song && /播放|听[一这]?首|放[一这]?首|想听|找歌|音乐/.test(text)) {
+        const q = encodeURIComponent(musicPreCheck.artist ? musicPreCheck.artist + ' ' + musicPreCheck.song : musicPreCheck.song);
+        const platforms = [
+          { name: '网易云音乐', icon: '🎵', url: `https://music.163.com/#/search/m/?s=${q}&type=1` },
+          { name: 'QQ音乐',     icon: '🎶', url: `https://y.qq.com/n/ryqq/search?w=${q}` },
+          { name: '酷狗音乐',   icon: '🎤', url: `https://www.kugou.com/yy/html/search.html?searchKeyword=${q}` },
+          { name: 'Bilibili',   icon: '📺', url: `https://search.bilibili.com/all?keyword=${q}` },
+        ];
+        musicCardJson = JSON.stringify({
+          type: 'music_card',
+          song: musicPreCheck.song,
+          artist: musicPreCheck.artist || null,
+          platforms: platforms.map(function(p) { return { name: p.name, icon: p.icon, url: p.url }; }),
+          playable: [],
+        });
+      }
+
+      // 1. v0.55.1：session 模式委托给 chat-session-service（thin 层）
+      const isSession = typeof reqId === 'string' && reqId.startsWith('sess-');
+      const sessionSvc = require('../services/chat-session-service');
+      let historyMessages = [];
+      let isFirstUserMsg = false;
+      let session = null;
+      if (isSession) {
+// 分段6/20: contextReqId+Qwen分流判断+SSE writeHead (L251-290)
+        try {
+          session = sessionSvc.getSession(reqId);
+          if (session) {
+            historyMessages = sessionSvc.loadHistoryForLLM(reqId);
+            isFirstUserMsg = sessionSvc.isFirstUserMessage(reqId);
+          }
+        } catch (e) {
+          console.error('[detect-and-respond] 加载 session 失败:', e.message);
+        }
+      }
+
+      // 2. 写 user message（仅 session 模式）
+      if (isSession && session) {
+        try {
+          sessionSvc.appendMessage(reqId, 'user', text);
+        } catch (e) {
+          console.error('[detect-and-respond] 写 user message 失败:', e.message);
+        }
+      }
+
+      const model = pickIntentModel();
+      if (!model) {
+        // 没模型也要把 user 消息保留（已在前面写），返回空
+        return res.json({ ok: true, reqId, directReply: true, aiReply: '⚠️ 当前没有可用的 AI 模型', musicCardJson });
+      }
+
+// v0.65: session 模式 → 创建隐藏 requirement 作为工具存储容器（play_music/play_video/generate_image 需要真实 reqId）
+    let contextReqId = reqId;
+    if (isSession) {
+      const sessionReq = getOrCreateSessionRequirement(reqId);
+      if (sessionReq) contextReqId = sessionReq.id;
+    }
+
+    // v0.114f: 自由对话 → Qwen 内核分流（路径2）
+    //   Qwen 内核处理纯对话 + 通用问答（它自带 web 搜索/文件能力）；
+    //   ACMS 特有工具（音乐卡片/视频/图片/邮件/文档生成）保持旧引擎——
+    //   这些工具的 assist 卡片链路（assist_music/assist_video/assist_image）Qwen MCP 未覆盖。
+    const qwenFreeAllowed = (() => {
+      try {
+        const qwenMgr = require('../services/qwen-manager');
+// 分段7/20: Qwen chat调用+onDelta+onEvent前半 (L291-335)
+        if (!qwenMgr.getConfig().enabled) return false;
+        if (musicCardJson) return false;  // 音乐卡片走旧引擎（预检已命中）
+        const ACMS_TOOL_RE = /生成.{0,6}(图片|照片|图)|画.{0,3}(张|个|幅|一)|视频|跳舞|唱歌|发邮件|发送邮件|邮件|播放|听[一这]?首|放[一这]?首|想听|找歌|音乐|文档|docx|ppt|pptx|excel|xlsx|写.{0,4}(周报|报告|总结|方案)|写剧本|短视频剧本|分镜|剧本创意/i;
+        return !ACMS_TOOL_RE.test(text || '');
+      } catch (e) { return false; }
+    })();
+
+    let qwenAiReply = null;
+    let qwenStreamed = false;
+    // v0.124: Qwen SSE 路径工具调用持久化
+    const _qwenToolTracker = Object.create(null);  // tool_use_id → { name, input, result, isError }
+    if (qwenFreeAllowed) {
+      // 🆕 v0.117f：自由对话 Qwen 内核走 SSE 流式事件（与小吉面板一致体验）
+      //   之前一次性 res.json() 让 Qwen 内部 tool_card / approval / thinking 事件被吞
+      //   → 用户看不到工具调用/审批界面（"代码实现过程中没展示出来"症状）
+      //   现在提前 writeHead(SSE) + onDelta/onEvent 实时推流
+      if (!res.headersSent) {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        });
+        qwenStreamed = true;
+      }
+
+      try {
+        const qwenMgr = require('../services/qwen-manager');
+        const qr = await qwenMgr.chat(reqId, text, {
+          approvalMode: 'auto',
+          // 🆕 v0.117y: 45s → 600s，对齐 agent-buddy(600s)/qwen-task(600s)
+          //   45s 只够冷启动+首 token，Qwen 写代码要调多个工具（10+ tool_card），必超时
+          //   SSE 流式有实时进度反馈，设长不会干等
+          timeoutMs: 600000,
+          historyMessages,  // 🆕 v0.117: chat_messages 历史拼到 prompt 前
+          onDelta: (delta) => {
+            // Qwen 真流式文本 → 推流
+            try { res.write(`data: ${JSON.stringify({ type: 'text_delta', text: delta })}\n\n`); } catch (e) {}
+          },
+          onEvent: (evt) => {
+            // Qwen 事件 → ACMSQwenToolCard 期望的 tool_card 格式
+            try {
+              let adapted = null;
+              if (evt.type === 'tool_use_start') {
+                _qwenToolTracker[evt.tool_use_id] = { name: evt.tool_name, input: null, result: null, isError: false };
+                adapted = { type: 'tool_card', phase: 'start', tool_use_id: evt.tool_use_id, tool_name: evt.tool_name };
+              } else if (evt.type === 'tool_use_end') {
+                if (_qwenToolTracker[evt.tool_use_id]) _qwenToolTracker[evt.tool_use_id].input = evt.input;
+                adapted = { type: 'tool_card', phase: 'input_complete', tool_use_id: evt.tool_use_id, tool_name: evt.tool_name, input: evt.input };
+// 分段8/20: onEvent后半+end事件+return (L336-370)
+              } else if (evt.type === 'tool_result') {
+                if (_qwenToolTracker[evt.tool_use_id]) {
+                  _qwenToolTracker[evt.tool_use_id].result = evt.content;
+                  _qwenToolTracker[evt.tool_use_id].isError = !!evt.is_error;
+                }
+                adapted = { type: 'tool_card', phase: 'result', tool_use_id: evt.tool_use_id, tool_name: evt.tool_name || '', result: evt.content, error: evt.is_error ? 'tool error' : null };
+              } else if (evt.type === 'thinking_delta') {
+                adapted = { type: 'thinking', thinking: evt.text };
+              } else if (evt.type === 'approval_request') {
+                var tc = evt.toolCall || {};
+                adapted = { type: 'tool_card', phase: 'await_approval', tool_use_id: tc.tool_use_id, tool_name: tc.tool_name, input: tc.input };
+              } else if (evt.type === 'approval_result') {
+                // 对齐 agent-buddy.js:996 推 allowed 字段；前端 phaseApprovalDecided 读 evt.allowed
+                // 此前这里推 decision 字段，前端读不到 → 永远判定 denied（"已拒绝"），与实际决策无关
+                adapted = { type: 'tool_card', phase: 'approval_decided', tool_use_id: evt.tool_use_id, tool_name: '', allowed: !!evt.allowed };
+              }
+              if (adapted) res.write(`data: ${JSON.stringify(adapted)}\n\n`);
+            } catch (e) {}
+          },
+        });
+
+        if (qr.ok && qr.result && qr.result.trim()) qwenAiReply = qr.result.trim();
+
+        // 🆕 v0.117w: 保存 AI 回复到会话历史（用户消息已在 L262 保存）
+        //   工具调用信息（tool_card）不落库 —— SSE 只推给前端渲染卡片
+        if (isSession && session && qwenAiReply) {
+          try {
+            sessionSvc.appendMessage(reqId, 'assistant', qwenAiReply);
+            // 自动标题：仅首条 user message 时，且 title_auto=1（与旧引擎路径一致）
+            if (isFirstUserMsg && session.title_auto) {
+              const newTitle = sessionSvc.generateAutoTitle(text, session.title);
+              sessionSvc.updateSessionTitle(reqId, newTitle);
+              console.log(`[detect-and-respond] ${reqId} 自动标题: ${newTitle}`);
+            }
+          } catch (e) {
+            console.error('[detect-and-respond] 写 Qwen assistant message / 自动标题失败:', e.message);
+          }
+        }
+
+// 分段9/20: Qwen catch+旧引擎fallback systemPrompt+document/screenplay precheck前半 (L371-420)
+        // end 事件：前端 finalize bubble + 显示 result
+        try {
+          // 🆕 v0.117x: error 安全序列化 —— qwen-worker 返回 {message:'...'} 普通对象，
+          //   原样传对象 → 前端 String(对象) = [object Object]
+          const errText = (qr.error && typeof qr.error === 'object')
+            ? (qr.error.message || JSON.stringify(qr.error)).slice(0, 200)
+            : (qr.error || null);
+          // 🆕 v0.119：识别 interrupt 触发的 result
+          //   Qwen CLI TurnInterruptedError.message = "Operation cancelled."（chunk-DPXZUGDQ.js:121）
+          //   control_request {subtype:"interrupt"} → recoverableCancellation 路径
+          //   JSON 序列化会丢 Error.name，所以只用 errText (message) 判定
+          const isInterrupted = !!(errText && typeof errText === 'string' && errText.includes('Operation cancelled'));
+          // v0.124: Qwen SSE 路径 — end 时将工具调用结果持久化到 supplement_history
+          if (Object.keys(_qwenToolTracker).length > 0 && contextReqId) {
+            try {
+              const toolEntries = [];
+              for (const [tid, t] of Object.entries(_qwenToolTracker)) {
+                toolEntries.push({
+                  role: 'system',
+                  source: 'tool_call_result',
+                  tool_use_id: tid,
+                  tool_name: t.name || '',
+                  input: t.input || null,
+                  result: t.result || '',
+                  is_error: t.isError || false,
+                  at: new Date().toISOString(),
+                });
+              }
+              const hist = JSON.parse(req.supplement_history || '[]');
+              let insertAt = hist.length;
+              for (let i = hist.length - 1; i >= 0; i--) {
+                if (hist[i].role === 'user' || hist[i].role === 'assistant') {
+                  insertAt = i + 1;
+                  break;
+                }
+              }
+              hist.splice(insertAt, 0, ...toolEntries);
+              if (qwenAiReply) {
+                hist.splice(insertAt + toolEntries.length, 0, {
+                  role: 'assistant',
+                  source: 'intent_loop',
+                  text: qwenAiReply,
+                  chat_round: req.chat_round || 0,
+                  at: new Date().toISOString(),
+                });
+              }
+              const reqStore = require('../../data/requirement-store')();
+              reqStore.update(contextReqId, { supplement_history: JSON.stringify(hist) });
+            } catch (e) {
+              console.error('[detect-and-respond] 写 tool_call_result 失败:', e.message);
+            }
+          }
+
+          res.write(`data: ${JSON.stringify({
+            type: 'end',
+            ok: qr.ok,
+            result: qwenAiReply,
+            error: errText,
+            interrupted: isInterrupted,  // 🆕 v0.119
+            sessionRequirementId: contextReqId !== reqId ? contextReqId : undefined,
+            musicCardJson: musicCardJson || null,
+          })}\n\n`);
+          res.end();
+        } catch (e) {}
+        return;  // 🆕 SSE 已发完，避免下面 runtimeExec 双跑
+      } catch (qe) {
+        try {
+          const errStr = (qe && typeof qe === 'object') ? JSON.stringify(qe).slice(0, 200) : (qe.message || String(qe));
+          res.write(`data: ${JSON.stringify({ type: 'end', ok: false, error: errStr })}\n\n`);
+          res.end();
+        } catch (e) {}
+        return;
+      }
+    }
+
+    // 🆕 v0.117c：runtimeExec fallback（Qwen 失败/SSE 失败时才走旧引擎）的 systemPrompt + messages 构造
+    //   Qwen 成功路径已在上面 return，不会到这里
+    const systemPrompt = buildFreeChatSystemPrompt(null);
+    const messages = [{ role: 'system', content: systemPrompt }, ...historyMessages, { role: 'user', content: text }];
+
+    // 🆕 v0.117：自由对话模式加 document / screenplay precheck（与 music_precheck 同模式）
+    //   必须在 contextReqId 创建后跑（screenplay 需要真实 reqId 写 assist_screenplay 字段）
+    //   仅在 ACMS_TOOL_RE 命中时跑（Qwen 内核接管时不重复触发——避免双重执行）
+    if (!qwenFreeAllowed) {
+      const freeDocKeywords = /整理成文档|生成文档|导出文档|Word文档|\.docx|\.doc|文档|变成文档|形成文档|整理成word/i;
+      const freeScreenplayKeywords = /写剧本|短视频剧本|分镜|剧本创意/i;
+
+        if (freeDocKeywords.test(text)) {
+          console.log(`[detect-and-respond] ${reqId} free 预检文档意图 → 抢跑触发`);
+          appendChatEntry(contextReqId, {
+            role: 'system',
+// 分段10/20: screenplay precheck后半+runtimeExec+assistant message (L421-465)
+            text: '📄 正在生成文档…（完成前请勿重复发送）',
+            at: new Date().toISOString(),
+            source: 'document_precheck',
+          });
+          try {
+            const docGenSvc = require('../services/assists/document-gen');
+            docGenSvc.runAssistJob(contextReqId, { instruction: text, autoTriggered: true }).catch(e =>
+              console.error(`[detect-and-respond] ${reqId} document 预触发失败:`, e.message));
+          } catch (e) {
+            console.error(`[detect-and-respond] ${reqId} document 预触发异常:`, e.message);
+          }
+        }
+
+        if (freeScreenplayKeywords.test(text)) {
+          // 提取 idea / target_seconds / art_style（自然语言 → 参数）
+          const ideaMatch = text.match(/写(?:一个)?(?:短视频)?剧本[:：]\s*(.+?)(?:[,，。]|$)/);
+          const idea = ideaMatch ? ideaMatch[1].trim() : text;
+          const secMatch = text.match(/(\d{1,3})\s*秒/);
+          const targetSeconds = secMatch ? parseInt(secMatch[1]) : 30;
+          const styleMap = { '写实': 'photorealistic', '3D': '3d', 'G1': 'g1', '日漫': 'anime', '国风水墨': 'ink' };
+          const styleMatch = text.match(/(写实|3D|G1|日漫|国风水墨)/);
+          const artStyle = styleMap[styleMatch ? styleMatch[1] : ''] || 'photorealistic';
+
+          console.log(`[detect-and-respond] ${reqId} free 预检剧本: idea="${idea.slice(0, 30)}..." ${targetSeconds}s · ${artStyle}`);
+          appendChatEntry(contextReqId, {
+            role: 'system',
+            text: JSON.stringify({
+              type: 'screenplay_loading',
+              idea, target_seconds: targetSeconds, art_style: artStyle,
+              status: 'loading',
+            }),
+            at: new Date().toISOString(),
+            source: 'screenplay_precheck',
+          });
+          try {
+            const spSvc = require('../services/assists/screenplay');
+            spSvc.runAssistJob(contextReqId, {
+              idea, target_seconds: targetSeconds, art_style: artStyle, autoTriggered: true,
+            }).catch(e =>
+              console.error(`[detect-and-respond] ${reqId} screenplay 预触发失败:`, e.message));
+          } catch (e) {
+            console.error(`[detect-and-respond] ${reqId} screenplay 预触发异常:`, e.message);
+          }
+        }
+      }
+// 分段11/20: clarify路径: 读历史+URL检测+musicPrecheck (L466-506)
+
+      try {
+        let aiReply = qwenAiReply;
+        if (!aiReply) {
+          const runtimeResult = await runtimeExec({
+            modelId: model.id,
+            messages,
+            // v0.66: 把 chat 流可见 tools 改为动态函数（每次 chat 请求拿最新 app-tool 列表）
+            toolNames: getIntentToolNames().filter(function(n) { return n !== 'plan_execute'; }).concat(['play_music']),
+            maxRounds: 3,
+            context: { reqId: contextReqId },
+            caller: 'chat-intent-session',
+          });
+          aiReply = runtimeResult.content;
+        }
+
+        // 4. 写 assistant message + 触发自动标题（仅 session 模式）
+        if (isSession && session) {
+          try {
+            const meta = musicCardJson ? { music_card: musicCardJson } : null;
+            sessionSvc.appendMessage(reqId, 'assistant', aiReply, meta);
+            // 自动标题：仅首条 user message 时，且 title_auto=1
+            if (isFirstUserMsg && session.title_auto) {
+              const newTitle = sessionSvc.generateAutoTitle(text, session.title);
+              sessionSvc.updateSessionTitle(reqId, newTitle);
+              console.log(`[detect-and-respond] ${reqId} 自动标题: ${newTitle}`);
+            }
+          } catch (e) {
+            console.error('[detect-and-respond] 写 assistant message / 自动标题失败:', e.message);
+          }
+        }
+
+        return res.json({ ok: true, reqId, directReply: true, aiReply, musicCardJson, sessionRequirementId: contextReqId !== reqId ? contextReqId : undefined });
+      } catch (e) {
+        // AI 失败：user 消息已写，回复错误提示但不写 assistant（避免污染历史）
+        return res.json({ ok: true, reqId, directReply: true, aiReply: `⚠️ AI 暂时无响应（${e.message.slice(0, 100)}），请稍后再试。`, musicCardJson, sessionRequirementId: contextReqId !== reqId ? contextReqId : undefined });
+      }
+    }
+
+    // 0. v0.18 bugfix：读历史（在写 user message 之前注入 LLM 上下文，避免重复）
+    //   旧 bug：messages 只有 system + 当前 user，free 模式没 brief 兜底 → LLM 完全失忆
+// 分段12/20: docPrecheck+复合意图判断 (L507-545)
+    const req0 = reqStore.getById(reqId);
+    let historyForLLM = [];
+    if (req0) {
+      try {
+        const raw = JSON.parse(req0.supplement_history || '[]');
+        if (Array.isArray(raw)) {
+          historyForLLM = raw
+            .filter(e => e && (e.role === 'user' || e.role === 'assistant') && (e.text || e.opening))
+            .slice(-10); // 最近 10 条（5 轮对话，省 token）
+        }
+      } catch (e) { /* 静默降级 */ }
+    }
+
+    // 1. 写 user message
+    appendChatEntry(reqId, {
+      role: 'user', text, at: new Date().toISOString(),
+    });
+
+    // 2. 检测 URL
+    const urls = extractUrls(text);
+    if (urls.length > 0) {
+      // 走 fetch_url 路径（现有逻辑）
+      return await handleFetchUrl(req, res, reqId, text, urls);
+    }
+
+    // 3. v0.16：LLM tool-loop 自主判断（替代 v0.15 关键词硬匹配）
+    //    LLM 看着 4 个外部 tool descriptions 自主决定要不要调
+    let searched = false;
+    let deepResearch = false;
+    let toolCalls = [];
+    let aiReply = '';
+    let documentDetected = false;
+
+    // v0.20d：预检音乐意图 → 直接触发音乐辅助工具（现有 assist_music 机制）
+    //   - 写 loading 到 supplement_history（即时反馈）
+    //   - 调 musicSvc.runAssistJob（实际搜索，结果存入 assist_music → 前端辅助面板渲染）
+    const musicPreCheck = extractMusicIntent(text);
+    if (musicPreCheck.song && !toolCalls.includes('agnes_generate_video') &&
+        /播放|听[一这]?首|放[一这]?首|想听|找歌|音乐/.test(text)) {
+// 分段13/20: tool-loop messages构造+runtimeExec调用 (L546-590)
+      console.log(`[detect-and-respond] ${reqId} 预检音乐意图: song=${musicPreCheck.song}, artist=${musicPreCheck.artist}`);
+      // 写 loading 到聊天流（用 JSON 格式，前端 renderMusicBubble 渲染出漂亮 loading 卡片）
+      appendChatEntry(reqId, {
+        role: 'system',
+        text: JSON.stringify({
+          type: 'music_loading',
+          song: musicPreCheck.song,
+          artist: musicPreCheck.artist || null,
+          status: 'loading',
+        }),
+        at: new Date().toISOString(),
+        source: 'music_precheck',
+      });
+      // 直接触发音乐搜索（assist_music 更新 → 前端辅助面板渲染播放卡片）
+      try {
+        const musicSvc = require('../services/assists/music');
+        musicSvc.runAssistJob(reqId, musicPreCheck).catch(e =>
+          console.error(`[detect-and-respond] ${reqId} music 预触发失败:`, e.message));
+      } catch (e) {
+        console.error(`[detect-and-respond] ${reqId} music 预触发异常:`, e.message);
+      }
+    }
+
+    // v0.46：预检文档生成意图 → 直接触发文档生成辅助
+    //   匹配关键词如"整理成文档/生成文档/导出文档/Word文档"等
+    // v0.48 修复：只在"单一文档意图"才抢跑，复合意图（含其他 tool 关键词）让 LLM 调 plan_execute 编排
+    //   否则 document_precheck 抢跑后 LLM 收到"文档已自动生成"提示，会以为整个流程都跑完了 → 装睡
+    //   （v0.48 多多 REQ-MRHNP0PR 案例："查2026世界杯+生成Word+发邮件" → 抢跑文档 → LLM 装睡，没调 web_search）
+    const docKeywords = /整理成文档|生成文档|导出文档|Word文档|\.docx|\.doc|文档|变成文档|形成文档|整理成word/i;
+    const otherToolKeywords = /发邮件|发送邮件|转发邮件|发给|发到|搜索|查一下|调研|找资料|查\s*\d{4}|生成图片|画[一]?[张个]|做[一]?张图|生成视频|拍个视频|播放|想听|放[一]?首|听[一]?首|找歌/i;
+    const hasDocIntent = docKeywords.test(text);
+    const hasOtherIntent = otherToolKeywords.test(text);
+    const isCompositeIntent = hasDocIntent && hasOtherIntent;
+
+    if (hasDocIntent && !isCompositeIntent) {
+      console.log(`[detect-and-respond] ${reqId} 检测到文档意图（单一意图）→ 抢跑触发`);
+      appendChatEntry(reqId, {
+        role: 'system',
+        text: '📄 正在生成文档…（完成前请勿重复发送）',
+        at: new Date().toISOString(),
+        source: 'document_precheck',
+      });
+      try {
+        const docGenSvc = require('../services/assists/document-gen');
+        docGenSvc.runAssistJob(reqId, { instruction: text, autoTriggered: true }).catch(e =>
+// 分段14/20: tool_calls提取+searched/deepResearch (L591-635)
+          console.error(`[detect-and-respond] ${reqId} document 预触发失败:`, e.message));
+      } catch (e) {
+        console.error(`[detect-and-respond] ${reqId} document 预触发异常:`, e.message);
+      }
+      documentDetected = true;
+    } else if (hasDocIntent && isCompositeIntent) {
+      console.log(`[detect-and-respond] ${reqId} 检测到复合意图（含文档+其他 tool）→ 跳过 document_precheck 抢跑，让 LLM 调 plan_execute 编排`);
+      // 不抢跑 document_gen：让 LLM 通过 plan_execute 走完整流程（web_search → document_gen → send_email）
+      // documentDetected 保持 false，不注入"文档已搞定"误导提示
+    }
+
+    try {
+      const req = reqStore.getById(reqId);
+      if (!req) throw new Error(`需求不存在: ${reqId}`);
+
+      const model = pickIntentModel();
+      if (!model) {
+        console.warn(`[detect-and-respond] ${reqId} 无可用 LLM，跳过 tool-loop`);
+      } else {
+        // v0.18 bugfix：注入历史上下文（之前 messages 只有 system + 当前 user，LLM 失忆）
+        const historyMessages = historyForLLM.map(e => ({
+          role: e.role,
+          content: e.role === 'assistant'
+            ? (e.text || e.opening || e.followup_question || '')
+            : (e.text || ''),
+        })).filter(m => m.content);
+
+        const messages = [
+          { role: 'system', content: pickIntentSystemPrompt(req) },
+          // v0.20b：如果音乐已预触发，告诉 LLM 不要自己调 tool，直接简短回复
+          ...(musicPreCheck.song ? [{ role: 'system', content: '（音乐搜索已自动触发，10-30 秒后显示播放卡片。请简短回复用户"正在找"即可，不要复制歌词或推荐平台，不要调用任何工具。）' }] : []),
+          // v0.46：文档生成已自动触发，让 LLM 简短回复即可
+          // v0.48 修复：去掉"请不要自己写文档"等诱导 LLM 装睡的措辞（v0.48 REQ-MRHNP0PR 案例）
+          //   改用中性提示，让 LLM 自己判断是否还有其他 tool 需要调（单一意图则简短回复，复合意图则调 plan_execute）
+          ...(documentDetected ? [{ role: 'system', content: '（文档生成辅助已自动触发。如果用户消息还包含其他工具意图（如发邮件/搜索等），请用 plan_execute 编排多步骤；否则简短回复用户"正在整理文档"即可。）' }] : []),
+          // v0.22.23b：删除图片生成意图的 system 提示注入。多多诉求：LLM 自己看 context 决定调不调 tool。
+...historyMessages,
+          { role: 'user', content: text },
+        ];
+        console.log(`[detect-and-respond] ${reqId} LLM tool-loop (${model.name}, ${getIntentToolNames().length} tools, history=${historyMessages.length})`);
+        const runtimeResult = await runtimeExec({
+          modelId: model.id,
+          messages,
+          toolNames: getIntentToolNames(),  // v0.66: 动态加载 app-tool
+          maxRounds: 5,
+// 分段15/20: assistantEntry写入+brief重生 (L636-670)
+          context: { reqId },
+          caller: 'chat-intent',
+        });
+        aiReply = runtimeResult.content;
+
+        // 从 messages 历史提取实际调用的 tool（runToolLoop 内部已写回 messages）
+        // 兼容两种格式：
+        //   openai-chat:    m.tool_calls = [{function: {name, ...}}]
+        //   anthropic:      m.content = [{type: 'tool_use', name, ...}]
+        for (let i = messages.length - 1; i >= 0; i--) {
+          const m = messages[i];
+          if (m.role !== 'assistant') continue;
+          // openai-chat 格式
+          if (Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+            toolCalls = m.tool_calls.map(tc => tc.function?.name || tc.name).filter(Boolean);
+            break;
+          }
+          // anthropic 格式
+          if (Array.isArray(m.content)) {
+            const tuse = m.content.find(b => b.type === 'tool_use');
+            if (tuse) { toolCalls = [tuse.name]; break; }
+          }
+        }
+        searched = toolCalls.some(n => n === 'web_search' || n === 'web_research');
+        deepResearch = toolCalls.includes('web_research');
+
+        console.log(`[detect-and-respond] ${reqId} tool-loop 结果: tools=${toolCalls.join(',') || '(无)'}, reply=${aiReply.length}字`);
+      }
+
+      // v0.22.23b：删除 LLM 偷懒兜底。多多诉求：LLM 自己看 context 决定调不调 tool。
+      // 之前 v0.22.23 / v0.22.23a 都在服务端替 LLM 抢跑或兜底，等于 LLM 决策被绕过。
+      // 现在完全由 LLM 决定：调 generate_image → 走 tool 路径；不调 → 走纯文字回复。
+      // 治"toast 骗人"在 model 层（换 model 或加 model tool-call 训练），不在服务端。
+    } catch (e) {
+      console.error(`[detect-and-respond] ${reqId} tool-loop 失败:`, e.message);
+// 分段16/20: res.json响应+catch+路由结束 (L671-719)
+      aiReply = `⚠️ AI 暂时无响应（${e.message.slice(0, 100)}），请稍后再试。`;
+    }
+
+    // 4. 写 tool-loop 触发的 tool 结果（如果 LLM 调了 web_research/web_search，
+    //    整段已经在 runToolLoop 里被 LLM 整理成最终 aiReply 了——
+    //    这里不再额外写 search entry，避免重复展示）
+    //    fetch_url / get_current_time 调用的结果已融入 aiReply
+
+    // 5. 写 AI 回复作为 assistant 角色（这是 v0.16 新增的：把 LLM 最终回复存档）
+    // v0.46 fix：如果后续会跑 brief 重生，跳过写 assistant entry，避免前端的 polling + SSE 双气泡
+    const reqAfterCheck = reqStore.getById(reqId);
+    const willBriefRegen = reqAfterCheck && reqAfterCheck.chat_mode !== 'free';
+    if (aiReply && !willBriefRegen) {
+      const assistantEntry = {
+        role: 'assistant',
+        text: aiReply,
+        source: 'intent_loop',
+        chat_round: req.chat_round || 0, // v0.17：记当前 round（brief 重生前），前端历史显示「第N轮」用
+        at: new Date().toISOString(),
+        tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+      };
+      appendChatEntry(reqId, assistantEntry);
+    }
+
+    // 6. 触发 brief 重生（让 AI 看到 AI 回复 + 工具结果）
+    // v0.46 fix：去掉 setImmediate runBriefJob——前端 SSE /thinking-brief/stream
+    //   已经会触发 runBriefJobStream，两个路径同时跑造成 race condition
+    //   （后写完的覆盖前一个的 suggested_assist 等字段）
+    //   去掉后统一走 SSE 路径，避免双重生成 + 覆盖 bug
+    //   保留 chat_mode=free 的跳过（free 模式本来就不跑 brief）
+    const reqAfter = reqStore.getById(reqId);
+    if (reqAfter && reqAfter.chat_mode !== 'free') {
+      console.log(`[detect-and-respond] ${reqId} chat_mode=clarify, 等待前端 SSE 触发 brief 生成（不再后端主动跑）`);
+    } else {
+      console.log(`[detect-and-respond] ${reqId} chat_mode=free, 跳过 brief 重生`);
+    }
+
+    res.json({
+      ok: true,
+      reqId,
+      searched,
+      deepResearch,
+      toolCalls,        // v0.16 新增：LLM 实际调用的 tool 列表（前端可显示「🤖 AI 调用了 web_research」）
+      briefRegen: true,
+    });
+  } catch (e) {
+    next(e);
+  }
+});
+// 分段17/20: 辅助函数 pickIntentModel~extractMusicIntent (L720-788)
+
+// v0.16：选 chat-intent 用的 LLM（优先默认 gen 模型，capability 兜底）
+function pickIntentModel() {
+  const defaultGen = modelStore.getDefaultGenModel();
+  if (defaultGen) return defaultGen;
+  const all = modelStore.list();
+  return all.find(m => m.capabilities?.includes('text') || m.type === 'chat' || m.type === 'text')
+    || all[0]
+    || null;
+}
+
+// v0.19a：从 user text 剥离附件内容（保留 LLM 上下文，但展示难看）
+//   chatBuildSupplementText 拼附件时用 marker '\n\n---\n📎 附件内容：' 开头
+//   supplement-history 持久化时剥掉这段，渲染 user bubble 不显示附件原文
+//   LLM 调用仍用原始 text（含附件），行为不变
+function stripAttachmentContext(text) {
+  if (!text || typeof text !== 'string') return text;
+  const marker = '\n\n---\n📎 附件内容：';
+  const idx = text.indexOf(marker);
+  return idx >= 0 ? text.slice(0, idx).replace(/\s+$/, '') : text;
+}
+
+// 写 supplement_history
+function appendChatEntry(reqId, entry) {
+  const req = reqStore.getById(reqId);
+  if (!req) throw new Error(`需求不存在: ${reqId}`);
+  let history = [];
+  try { history = JSON.parse(req.supplement_history || '[]'); } catch (e) { /* 静默降级 */ }
+  if (!Array.isArray(history)) history = [];
+  // v0.19a：user entry 写入前剥附件内容（assistant / system 不动）
+  if (entry.role === 'user' && typeof entry.text === 'string') {
+    entry = { ...entry, text: stripAttachmentContext(entry.text) };
+  }
+  history.push(entry);
+  reqStore.update(reqId, { supplement_history: JSON.stringify(history) });
+}
+
+// 提取 URL
+function extractUrls(text) {
+  if (!text) return [];
+  const matches = text.match(/https?:\/\/[^\s<>"'，。、；！？)\\]]+/g) || [];
+  return Array.from(new Set(matches));
+}
+
+// 从用户消息提取音乐意图（歌手+歌名）
+function extractMusicIntent(text) {
+  if (!text) return {};
+  // 模式1："想听/播放/放/听 [歌手] 的 [歌名]"
+  let m = text.match(/(?:想听|播放|放|听)\s*(.+?)?\s*的\s*(.+?)(?:[，。！？\n]|$)/);
+  if (m) {
+    const artist = (m[1] || '').trim();
+    const song = (m[2] || '').trim();
+    if (song) return { song, artist: artist || undefined };
+  }
+  // 模式2："想听/播放/放/听 [歌名]"
+  m = text.match(/(?:想听|播放|放一首?|听一首?|听)\s*([^，。！？\n]{1,30})/);
+  if (m && m[1]) return { song: m[1].trim() };
+  return {};
+}
+
+function isDirectImageGenerationRequest(text) {
+  // v0.22.23b：删除 LLM 偷懒兜底 + 关键词直生成逻辑。
+  // 多多明确诉求：用户发请求 → LLM 理解 → LLM 决定调不调 tool。服务端不预判、不抢跑、不兜底。
+  // 偷懒 LLM（MiniMax-M3.0）会自编"任务已提交"骗人——治 root cause 在 model 层（换 model / model 训练 tool-call），
+  // 不在服务端。保留这个空 stub 仅防止外部 module 引用。
+  return false;
+}
+
+function extractImagePrompt(text) {
+// 分段18/20: isDirectImageGenerationRequest~handleFetchUrl前半 (L789-830)
+  // v0.22.23b：保留 stub 防止外部 module 引用，但不再被使用。
+  return (text || '').trim();
+}
+
+// 处理 fetch_url（复用 chat-fetch.js 逻辑的简化版）
+async function handleFetchUrl(req, res, reqId, text, urls) {
+  const modelStore = require('../stores/model-store');
+  const { callLLM } = require('../services/llm-adapter');
+  const { runBriefJob } = require('../services/thinking-brief');
+
+  const summaryModel = modelStore.getDefaultGenModel();
+  const SUMMARY_MAX_CHARS = 2000;
+
+  // 存旧 brief（防覆盖历史）
+  const req0 = reqStore.getById(reqId);
+  if (req0) {
+    try {
+      const oldBrief = JSON.parse(req0.thinking_brief || 'null');
+      if (oldBrief && oldBrief.status === 'done') {
+        const parts = {};
+        if (oldBrief.opening && typeof oldBrief.opening === 'string' && oldBrief.opening.trim()) parts.opening = oldBrief.opening.trim();
+        if (oldBrief.ai_understanding && typeof oldBrief.ai_understanding === 'string' && oldBrief.ai_understanding.trim()) parts.understanding = oldBrief.ai_understanding.trim();
+        if (oldBrief.followup_question && typeof oldBrief.followup_question === 'string' && oldBrief.followup_question.trim()) parts.followup_question = oldBrief.followup_question.trim();
+        if (Object.keys(parts).length > 0) {
+          appendChatEntry(reqId, { role: 'assistant', ...parts, source: 'assistant_round', chat_round: oldBrief.chat_round || 0, at: new Date().toISOString() });
+        }
+      }
+    } catch (e) { /* 静默降级 */ }
+  }
+
+  const fetchResults = [];
+  for (const url of urls) {
+    let result;
+    try {
+      result = await toolRegistry.execute('fetch_url', { url });
+    } catch (e) {
+      result = { error: `tool 异常: ${e.message}` };
+    }
+
+    if (result.error) {
+      const systemEntry = {
+        role: 'system',
+// 分段19/20: handleFetchUrl后半+summarizeContent开头 (L831-856)
+        text: `⚠️ URL 抓取失败：${url}\n原因：${result.error}`,
+        at: new Date().toISOString(),
+      };
+      appendChatEntry(reqId, systemEntry);
+      fetchResults.push({ url, ok: false, error: result.error, summary: '' });
+    } else {
+      const rawContent = result.content || '';
+      const summary = await summarizeContent(summaryModel, url, result.title, rawContent, SUMMARY_MAX_CHARS);
+
+      const systemEntry = {
+        role: 'system',
+        text: `📎 参考资料：${result.title || '(无标题)'}\nURL：${result.finalUrl || url}\n字数：${result.length}${result.truncated ? '（已截断）' : ''} · AI 摘要\n\n${summary}`,
+        at: new Date().toISOString(),
+      };
+      appendChatEntry(reqId, systemEntry);
+      fetchResults.push({ url, ok: true, title: result.title, length: result.length, truncated: result.truncated, summary });
+    }
+  }
+
+setImmediate(() => {
+    runBriefJob(reqId, { modelId: null }).catch(e => console.error(`[detect-and-respond] brief 重生失败:`, e.message));
+  });
+
+  res.json({ ok: true, reqId, fetchResults, briefRegen: true });
+}
+
+// 🆕 v0.122：自由对话续转端点（v0.119 agent-buddy 已实现同款，自由对话 chat-intent 漏了）
+//   agent-buddy.js:760-816 走 _continue__ 标记 + SSE 流（in-stream 分支）
+//   chat-intent.js 走独立端点（避免破坏 /detect-and-respond 的 message 校验分支结构）
+//
+//   关键设计：
+//   1. 先发 control_request {subtype:"continue_last_turn"}（让 CLI 续转内部 turn）
+//      没有 #1，sess.ask('') 会让 CLI 进入"新 turn"模式（语义错误：续转 = 复用上一次中断）
+//   2. 然后调 sess.ask('', {onDelta, onEvent}) 拿 SSE 流推到前端（handleFreeChatSSE 复用）
+//   3. onEvent adapted 逻辑与 /detect-and-respond 的 Qwen 分支（line 328-350）保持一致
+//      → 前端无需任何适配直接走 B10 状态机
+//
+//   失效场景（与 agent-buddy 路径行为对齐）：
+//   - 无 session（idle reap / 旧引擎 ACMS_TOOL_RE 命中）→ 404 + reason: no_session
+//   - control_request ACK ok=false → 同样 404，前端 toast "会话已过期"
+router.post('/continue', async (req, res, next) => {
+  try {
+    const { reqId } = req.body;
+    if (!reqId) return res.status(400).json({ error: 'MISSING_REQID' });
+
+    let qwenMgr = null;
+    try { qwenMgr = require('../services/qwen-manager'); } catch (e) {
+      return res.status(503).json({ error: 'qwen_unavailable' });
+    }
+
+    // 1. 发 control_request {subtype:"continue_last_turn"} 让 CLI 续转
+    let continueAck = null;
+    try {
+      continueAck = await qwenMgr.continueLastTurn(reqId);
+    } catch (e) {
+      console.warn('[chat-continue] continueLastTurn 异常:', e.message);
+    }
+    if (!continueAck || !continueAck.ok) {
+      const reason = continueAck && continueAck.reason ? continueAck.reason : 'continue_failed';
+      console.log(`[chat-continue] reqId=${reqId} 续转失败 reason=${reason}`);
+      return res.status(404).json({ error: reason, sessionId: continueAck && continueAck.sessionId });
+    }
+
+    // 2. 设置 SSE headers（必须在任何 write 之前）
+    if (!res.headersSent) {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      if (typeof res.flush === 'function') res.flush();
+    }
+
+    // 3. 拿 session（continueLastTurn ok 后 session 必须存在；如果不存在说明 reap 了）
+    const m = qwenMgr.getManager();
+    const sess = m.findSession ? m.findSession(reqId) : null;
+    if (!sess) {
+      try {
+        res.write(`data: ${JSON.stringify({ type: 'end', ok: false, error: 'no_session' })}\n\n`);
+      } catch (e) {}
+      return res.end();
+    }
+
+    // 4. 调 sess.ask('', opts) 推 SSE 流（与 /detect-and-respond 的 Qwen 分支 line 315-351 完全镜像）
+    sess.ask('', {
+      approvalMode: 'auto',
+      timeoutMs: 600000,  // 对齐 detect-and-respond 的 600s 超时
+      onDelta: (delta) => {
+        try { res.write(`data: ${JSON.stringify({ type: 'text_delta', text: delta })}\n\n`); } catch (e) {}
+      },
+      onEvent: (evt) => {
+        // 与 /detect-and-respond 的 onEvent adapted 逻辑（line 328-350）一致
+        //   B10 状态机要求：tool_card / thinking / progress / approval 四类事件格式
+        try {
+          let adapted = null;
+          if (evt.type === 'tool_use_start') {
+            adapted = { type: 'tool_card', phase: 'start', tool_use_id: evt.tool_use_id, tool_name: evt.tool_name };
+          } else if (evt.type === 'tool_use_end') {
+            adapted = { type: 'tool_card', phase: 'input_complete', tool_use_id: evt.tool_use_id, tool_name: evt.tool_name, input: evt.input };
+          } else if (evt.type === 'tool_result') {
+            adapted = { type: 'tool_card', phase: 'result', tool_use_id: evt.tool_use_id, tool_name: evt.tool_name || '', result: evt.content, error: evt.is_error ? 'tool error' : null };
+          } else if (evt.type === 'thinking_delta') {
+            adapted = { type: 'thinking', thinking: evt.text };
+          } else if (evt.type === 'approval_request') {
+            var tc = evt.toolCall || {};
+            adapted = { type: 'tool_card', phase: 'await_approval', tool_use_id: tc.tool_use_id, tool_name: tc.tool_name, input: tc.input };
+          } else if (evt.type === 'approval_result') {
+            // 对齐 agent-buddy.js:996 推 allowed 字段；前端 phaseApprovalDecided 读 evt.allowed
+            adapted = { type: 'tool_card', phase: 'approval_decided', tool_use_id: evt.tool_use_id, tool_name: '', allowed: !!evt.allowed };
+          }
+          if (adapted) res.write(`data: ${JSON.stringify(adapted)}\n\n`);
+        } catch (e) {}
+      },
+    }).then((qr) => {
+      if (res.writableEnded) return;
+      try {
+        // end 事件字段对齐 detect-and-respond 的 end 推送（line 383-391）
+        //   前端 handleFreeChatSSE line 1433-1447 用 evt.interrupted 渲染已中断卡片
+        const errText = (qr && qr.error && typeof qr.error === 'object')
+          ? (qr.error.message || JSON.stringify(qr.error)).slice(0, 200)
+          : (qr && qr.error || null);
+        const isInterrupted = !!(errText && typeof errText === 'string' && errText.includes('Operation cancelled'));
+        res.write(`data: ${JSON.stringify({
+          type: 'end',
+          ok: qr && qr.ok,
+          result: qr && qr.result,
+          error: errText,
+          interrupted: isInterrupted,
+          sessionRequirementId: undefined,
+          musicCardJson: null,
+        })}\n\n`);
+        res.end();
+      } catch (e) { try { res.end(); } catch (e2) {} }
+    }).catch((e) => {
+      if (res.writableEnded) return;
+      try {
+        console.warn('[chat-continue] ask 异常:', e.message);
+        res.write(`data: ${JSON.stringify({ type: 'end', ok: false, error: e.message })}\n\n`);
+        res.end();
+      } catch (e2) { try { res.end(); } catch (e3) {} }
+    });
+  } catch (e) {
+    console.error('[chat-continue] 未捕获错误:', e);
+    if (!res.headersSent) {
+      res.status(500).json({ error: e.message });
+    } else {
+      try { res.end(); } catch (e2) {}
+    }
+  }
+});
+
+// 分段20/20: summarizeContent结尾+exports (L857-900)
+// 调 LLM 做摘要
+async function summarizeContent(model, url, title, content, maxChars) {
+  if (!model || !content || content.length < 20) return content.slice(0, maxChars);
+  const { callLLM } = require('../services/llm-adapter');
+  const prompt = `你是一个信息整理助手。用户从以下网页抓取了内容，请提炼为不超过 ${maxChars} 字的摘要。
+
+要求：
+- 用 Markdown 格式输出（### 分节标题、**粗体**关键词、- 列表）
+- 保留关键事实、数据、时间线、人物关系、具体结论
+- 按逻辑组织：先概览（### 概述），再逐主题展开（### 主题名）
+- 不要遗漏重要信息节点
+
+网页标题：${title || '(无标题)'}
+网页 URL：${url}
+
+网页内容：
+${content.slice(0, 5000)}
+
+摘要：`;
+
+  try {
+    const resp = await callLLM(model.id, [
+      { role: 'system', content: '你是一个专业的信息提炼助手。' },
+      { role: 'user', content: prompt },
+    ], { temperature: 0.3, maxTokens: 4000, caller: 'url-summarize' });
+    return (resp.content || '').trim().slice(0, maxChars) || content.slice(0, maxChars);
+  } catch (e) {
+    console.error(`[detect-and-respond] 摘要失败:`, e.message);
+    return content.slice(0, maxChars);
+  }
+}
+
+module.exports = router;
+module.exports.stripAttachmentContext = stripAttachmentContext;
+// v0.48 fix: plan-executor 需要 appendChatEntry 写 plan_loading/plan_step_update/plan_done entries
+//   之前没 export → writeSystemEntry 调 undefined() 抛 TypeError 被 try/catch 静默吞掉
+//   症状：requirement.plan 写对了但 supplement_history 没 plan_* entries → 前端聚合渲染失败
+module.exports.appendChatEntry = appendChatEntry;

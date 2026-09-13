@@ -1444,7 +1444,7 @@ EmailApp.prototype.renderListItem = function (email) {
     var payload = {
       from: email.from || '',
       subject: email.subject || '',
-      body: (email.text || '').toString().slice(0, 3000),
+      body: ((email.text || email.html || '').toString()).slice(0, 3000),
     };
     // v0.32: 重新生成时把上一版 + retryHint 传给后端，让 LLM 换角度
     if (options.previousDraft) payload.previousDraft = options.previousDraft;

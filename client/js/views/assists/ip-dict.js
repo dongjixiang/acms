@@ -401,29 +401,29 @@
    */
   const STYLE_TEMPLATES = {
     photorealistic: {
-      stylePrefix: 'STRICTLY photorealistic, real human photography, MUST NOT be cartoon, anime, illustration, 3D render, chibi, sketch, painting, drawing.',
-      styleSuffix: 'cinematic photorealistic portrait, real photography, DSLR quality.',
-      negativePrefix: 'STRICTLY FORBIDDEN: cartoon, anime, illustration, 3D render, chibi, sketch, painting, drawing, comic. Required: photorealistic photography only.',
+      stylePrefix: '严格写实摄影风格，真实人物摄影；禁止卡通、动漫、插画、3D 渲染、Q 版、素描、绘画、漫画。',
+      styleSuffix: '电影感写实人像，真实摄影，单反画质。',
+      negativePrefix: '严格禁止：卡通、动漫、插画、3D 渲染、Q 版、素描、绘画、漫画。要求：只允许写实摄影。',
     },
     '3d-render': {
-      stylePrefix: 'STRICTLY 3D rendered (Pixar/Disney style), MUST be CGI animation style, MUST NOT be 2D anime, real photo, traditional 2D cartoon.',
-      styleSuffix: 'high quality 3D CGI render, Pixar Disney animation style, volumetric lighting.',
-      negativePrefix: 'STRICTLY FORBIDDEN: 2D anime, real photo, traditional cartoon, sketch, drawing. Required: 3D CGI render only.',
+      stylePrefix: '严格 3D 渲染风格（皮克斯/迪士尼动画风），必须是 CGI 动画质感；禁止二维动漫、真实照片、传统二维卡通。',
+      styleSuffix: '高质量 3D CGI 渲染，皮克斯迪士尼动画风格，体积光。',
+      negativePrefix: '严格禁止：二维动漫、真实照片、传统卡通、素描、绘画。要求：只允许 3D CGI 渲染。',
     },
     g1_animation: {
-      stylePrefix: 'STRICTLY classic 1980s-90s Saturday morning cartoon style (like Transformers G1, Thundercats, He-Man animation), cel-shaded, flat colors, thick outlines.',
-      styleSuffix: 'classic 80s 90s cartoon aesthetic, cel-shaded animation, bold outlines.',
-      negativePrefix: 'STRICTLY FORBIDDEN: photorealistic, 3D render, modern anime, live action. Required: classic 80s 90s cel-shaded cartoon only.',
+      stylePrefix: '严格还原 1980-90 年代经典周六晨间卡通风格（如变形金刚 G1、霹雳猫、希曼），赛璐璐上色、平涂色块、粗描边。',
+      styleSuffix: '经典 80/90 年代卡通质感，赛璐璐动画，粗描边。',
+      negativePrefix: '严格禁止：写实照片、3D 渲染、现代日漫、真人实拍。要求：只允许 80/90 年代赛璐璐卡通。',
     },
     anime: {
-      stylePrefix: 'STRICTLY modern Japanese anime style (cel-shaded, large eyes, vibrant colors), MUST NOT be photorealistic, 3D render, Disney style.',
-      styleSuffix: 'modern Japanese anime aesthetic, cel-shaded, vibrant saturated colors, expressive anime eyes.',
-      negativePrefix: 'STRICTLY FORBIDDEN: photorealistic, real photo, 3D Pixar, Disney Western cartoon, sketch. Required: Japanese anime style only.',
+      stylePrefix: '严格现代日本动漫风格（赛璐璐上色、大眼睛、高饱和色彩）；禁止写实照片、3D 渲染、迪士尼风格。',
+      styleSuffix: '现代日系动漫质感，赛璐璐上色，色彩鲜明饱和，动漫式大眼睛。',
+      negativePrefix: '严格禁止：写实照片、真实摄影、3D 皮克斯、迪士尼西式卡通、素描。要求：只允许日本动漫风格。',
     },
     guofeng: {
-      stylePrefix: 'STRICTLY traditional Chinese guofeng ink painting style (水墨国风), brush stroke textures, traditional aesthetics.',
-      styleSuffix: 'Chinese ink painting aesthetic, traditional guofeng style, flowing brush strokes, classical Chinese art.',
-      negativePrefix: 'STRICTLY FORBIDDEN: photorealistic, anime, modern cartoon, 3D render, Western illustration. Required: Chinese ink painting guofeng only.',
+      stylePrefix: '严格中国传统国风水墨画风格（水墨国风），笔触皴擦质感，传统审美。',
+      styleSuffix: '中国水墨画质感，传统国风，写意笔触，古典中国画。',
+      negativePrefix: '严格禁止：写实照片、动漫、现代卡通、3D 渲染、西式插画。要求：只允许中国水墨国风。',
     },
   };
 

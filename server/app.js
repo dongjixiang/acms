@@ -232,6 +232,8 @@ app.get('/', (req, res) => res.redirect('/client/index.html'));
 // API 路由
 app.use('/api/projects', require('./routes/projects'));
 app.use('/api/requirements', require('./routes/requirements'));
+// v0.120: plan 失败步骤一键重试（PR5 of excel-multi-step-plan-b）
+app.use('/api/requirements', require('./routes/plan-retry'));
 // v0.101 alias: 让前端老代码/手输 URL 调 /requirements/:id/... 也能工作（修复 chat 流图片不显示 bug 的兜底）
 app.use('/requirements', require('./routes/requirements'));
 app.use('/api/tasks', require('./routes/tasks'));
@@ -281,6 +283,12 @@ app.use('/api/chat-sessions', require('./routes/chat-sessions'));  // v0.55 自�
 app.use('/api/apps', require('./routes/apps'));
 // v0.59 Agent Buddy 聊天接口
 app.use('/api/agent-buddy', require('./routes/agent-buddy'));
+// P199: 角色档案库 CRUD（生图一致性 — 多角色多图合成参考）
+app.use('/api/character-library', require('./routes/character-library'));
+// P199: 场景档案库 CRUD（生图一致性 — 场景环境一致性参考）
+app.use('/api/scene-library', require('./routes/scene-library'));
+// P200: 视觉设定集（全文自动抽取人物/场景 → 设定图 → 一致性基准）
+app.use('/api/visual-bible', require('./routes/visual-bible'));
 // v0.73: 邮件收件箱 API（IMAP）
 app.use('/api/emails', require('./routes/emails'));
 // v2.0: 邮件多账户体系 — Profile（身份）+ Account（邮箱凭证）

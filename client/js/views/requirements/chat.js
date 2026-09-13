@@ -32,7 +32,20 @@
 //   - Misc：chatAutoGrow / toggleChatThinking
 
 const _chatPollers = {};
-const _chatState = {}; // reqId → { histCount, briefRound }
+const _chatState = {}; // reqId → { histCount, briefRound, sessionRequirementId }
+
+// v0.22.52: 暴露 helper —— 让 dispatcher.useAssist / loadAll.poll 能写入 sessionRequirementId
+//   非 SSE 路径（selectScreenplay → useAssist）唯一写入 state.sessionRequirementId 的入口
+//   修：自由对话选剧本/切候选图后聊天流卡片不渲染（polling 只拉 sess-xxx 不拉 hidden REQ）
+if (!window.ACMSChatState) window.ACMSChatState = {};
+window.ACMSChatState.setSessionRequirementId = function (reqId, hiddenId) {
+  if (!reqId || !hiddenId || hiddenId === reqId) return;
+  if (!_chatState[reqId]) _chatState[reqId] = { histCount: 0, briefRound: 0 };
+  _chatState[reqId].sessionRequirementId = hiddenId;
+};
+window.ACMSChatState.getSessionRequirementId = function (reqId) {
+  return _chatState[reqId] && _chatState[reqId].sessionRequirementId;
+};
 
 function chatAutoGrow(el) {
   el.style.height = 'auto';
@@ -56,6 +69,8 @@ async function loadChatStream(reqId) {
     // v0.48：聚合渲染 plan bubbles（每个 plan_id 一张）
     if (window.ACMSPlanRenderer) window.ACMSPlanRenderer.aggregateAndRender(container, reqId, history);
     _chatState[reqId].histCount = history.length;
+    // v0.22.68: 同步尾部指纹（否则首轮轮询会误判「被就地重写」→ 重复渲染最后一张卡）
+    _chatState[reqId].tailKey = _histTailKey(history);
 
     const brief = briefResp.thinkingBrief;
     // v0.13 B5 fix: 强制设 state.briefRound（无论 status，避免 undefined）
@@ -110,6 +125,19 @@ async function loadChatStream(reqId) {
   }
 }
 
+/**
+ * v0.22.68: 历史「尾部指纹」——用于检测**条数不变但内容被就地重写**的情况
+ *   背景：轮询（startChatPolling）原本只比 history.length，而很多辅助动作是
+ *   「删掉同一张旧卡 + push 新卡」（writeScreenplayChatEntry / setAsset / setSceneVideo /
+ *   composeFinal / genSceneFrame …）→ 条数不变 → 增量逻辑整段跳过 → 卡片永远不刷新。
+ *   指纹 = 条数 + 最后一条的 at/source/text 长度（重写时 at 必然更新）
+ */
+function _histTailKey(history) {
+  if (!Array.isArray(history) || history.length === 0) return '0|||';
+  const last = history[history.length - 1] || {};
+  return [history.length, last.at || '', last.source || '', String(last.text || '').length].join('|');
+}
+
 function startChatPolling(reqId) {
   if (_chatPollers[reqId]) clearInterval(_chatPollers[reqId]);
   let c = 0;
@@ -127,6 +155,18 @@ function startChatPolling(reqId) {
       if (!state) {
         _chatState[reqId] = { histCount: 0, briefRound: 0 };
         state = _chatState[reqId];
+      }
+      // v0.22.68: sess-xxx 的 hidden REQ 解析 —— 之前只在「state 缺失」时做一次，
+      //   而 loadChatSessionMessages 开窗时已建好 state（但没解析）→ 轮询永远只查 sess-xxx
+      //   → 工具卡片（写在 hidden REQ 上）永远拉不到 → 「点了没反应 / 卡片不显示」。
+      //   现在改成：只要还没解析就补一次（失败下轮再试）。
+      if (reqId && reqId.startsWith('sess-') && !state.sessionRequirementId && !state._reqResolving) {
+        state._reqResolving = true;
+        api('GET', `/chat/session-requirement/${reqId}`).then(function (r) {
+          if (r && r.hiddenRequirementId && r.hiddenRequirementId !== reqId) {
+            state.sessionRequirementId = r.hiddenRequirementId;
+          }
+        }).catch(function () { /* 静默：下轮兜底还会再试 */ }).finally(function () { state._reqResolving = false; });
       }
 
       // 增量：只拉新增的 supplement_history
@@ -154,6 +194,7 @@ function startChatPolling(reqId) {
         // v0.48：聚合渲染 plan bubbles
         if (window.ACMSPlanRenderer) window.ACMSPlanRenderer.aggregateAndRender(container, reqId, history);
         state.histCount = history.length;
+        state.tailKey = _histTailKey(history);
         // v0.21.4 fix: SSE done 留下的第一份 music 卡在 assist-loading-card.method-music 里
         //   旧 v0.21.3 只清 chat-bubble-system，漏了真正的旧卡所在位置 → 双卡并存
         //   同一 tick 里 polling 渲染新卡后立刻清旧卡 → 用户感知不到 flicker
@@ -180,6 +221,45 @@ function startChatPolling(reqId) {
         chatScrollToElement(container, _mb);
       } else {
           chatScrollToBottom(container);
+        }
+      } else {
+        // ═══ v0.22.68 fix：条数不变但尾部内容被「就地重写」→ 也要刷新 ═══
+        //   症状（多多 2026-09-13）：「点『选择这个剧本』后，剧本在对话流里显示不出来」
+        //   根因：writeScreenplayChatEntry 是「删掉同 idea 的旧卡 + push 新卡」→ 条数不变，
+        //        而轮询只比 history.length（增量），长度没涨就整段跳过 → 卡片永远不渲染。
+        //        自由对话更明显：loadChatSessionMessages 只在开窗时回放**文字**消息，历史卡片本就不回放
+        //        → 历史里那张卡从未渲染过 → 原地重写后也没有任何气泡 → 用户看到「什么都没有」。
+        //   同类受影响功能：选中剧本 / 改图(set_asset) / 分镜头视频(set_scene_video) / 合成成片(compose_final)
+        //        / 生成首帧图(gen_scene_frame) / 改时长画幅(set_video_opts) —— 都是就地重写同一张卡。
+        //   修法：尾部指纹变了就刷新最后一条对应的气泡（有则替换、无则补append，不会重复堆卡）。
+        //   ⚠️ 空历史不能覆盖水位线：拉取失败（sessionReqId 还没解析出来 / 网络抖动）时若把
+        //      tailKey 写成空指纹，之后每次 tick 都"没变化" → 这张卡永远刷不出来（实测踩到）。
+        const fetchedOk = history.length > 0 || state.histCount === 0;
+        const tailKey = _histTailKey(history);
+        if (fetchedOk) {
+          if (state.tailKey && tailKey !== state.tailKey && history.length > 0) {
+            const last = history[history.length - 1];
+            const at = last.at || '';
+            const src = last.source || '';
+            let target = null;
+            // ① 精确匹配（本次渲染打上的 data-at + data-source）
+            container.querySelectorAll('.chat-bubble[data-at]').forEach(function (b) {
+              if ((b.dataset.at || '') === at && (b.dataset.source || '') === src) target = b;
+            });
+            // ② 退一步：同类 source 的最后一张卡（手动 insertAdjacentHTML 插入/旧代码渲染的卡没有标记）
+            //     → 就地替换而不是再追加一张，避免重复堆卡
+            if (!target && src) {
+              const sames = container.querySelectorAll('.chat-bubble[data-source="' + src + '"]');
+              if (sames.length) target = sames[sames.length - 1];
+            }
+            if (target) target.remove();
+            renderChatBubble(container, last);
+            chatScrollToBottom(container);
+            console.log('[startChatPolling] v0.22.68 尾部卡片就地重写 → 已刷新', src, at, target ? '(替换)' : '(补追加)');
+          }
+          state.tailKey = tailKey;
+        } else {
+          console.warn('[startChatPolling] 历史拉取为空（可能 sessionRequirementId 未解析），本轮跳过且不动水位线');
         }
       }
 
@@ -323,6 +403,44 @@ function renderPendingSendEmailBubble(reqId, jsonText) {
     attachments: Array.isArray(card.attachments) ? card.attachments : [],  // v0.47+
     music_url: card.music_url || '',  // v0.47+
   });
+}
+
+/**
+ * v0.X PR2: 渲染 office_action_apply system entry → applyPlan 到 OfficeV3 编辑器
+ * LLM 通过 plan_execute → office_action tool → 后端写 system entry
+ * entry.text = JSON.stringify({type:'office_action_apply', kind, action, summary, ...})
+ * 本函数：解析 → 调 window.OfficeV3.applyOfficeAction → 返回 HTML 气泡
+ */
+function renderOfficeActionApplyBubble(reqId, jsonText) {
+  if (!jsonText) return '<div class="chat-system-msg">📋 Office 操作（数据为空）</div>';
+  let payload;
+  try { payload = JSON.parse(jsonText); } catch {
+    return `<div class="chat-system-msg">${escHtml((jsonText || '').slice(0, 100))}</div>`;
+  }
+  if (payload.type !== 'office_action_apply') {
+    return `<div class="chat-system-msg">${escHtml((jsonText || '').slice(0, 100))}</div>`;
+  }
+  // 调 office-v3-bridge 暴露的 applyOfficeAction（复用 runAction 链路）
+  let result;
+  try {
+    if (window.OfficeV3 && typeof window.OfficeV3.applyOfficeAction === 'function') {
+      result = window.OfficeV3.applyOfficeAction({
+        kind: payload.kind,
+        action: payload.action,
+        summary: payload.summary,
+      });
+    } else {
+      result = { ok: false, error: 'OfficeV3 未加载' };
+    }
+  } catch (e) {
+    result = { ok: false, error: e.message };
+  }
+  // 渲染气泡（绿✅ / 红❌）
+  const summary = escHtml(payload.summary || '已应用');
+  if (result && result.ok) {
+    return `<div class="chat-system-msg" style="color:var(--success,#2da44e)">✅ ${summary}</div>`;
+  }
+  return `<div class="chat-system-msg" style="color:var(--error,#cf222e)">❌ ${summary} — ${escHtml((result && result.error) || 'applyPlan 失败')}</div>`;
 }
 
 function renderScreenplayBubble(reqId, jsonText) {
@@ -615,15 +733,19 @@ function renderChatBubble(container, entry) {
           : isSystem && entry.source === 'send_email_pending'
             // v0.47：LLM 调 send_email tool 后写的 system entry → 弹邮件预览卡让用户确认
             ? renderPendingSendEmailBubble(reqId, entry.text || '')
-            : isSystem && entry.source === 'search_result'
-              // v0.50：search tool 完成后推的独立气泡（治"用户看不到赛况文字"症状）
-              ? (renderSearchResultBubble(entry.text || '') || `<div class="chat-system-msg">${escHtml(entry.text || '')}</div>`)
-              : isSystem && entry.source === 'research_result'
-                // v0.50：web_research tool 完成后推的独立气泡（LLM 综合答案 + 来源）
-                ? (renderResearchResultBubble(entry.text || '') || `<div class="chat-system-msg">${escHtml(entry.text || '')}</div>`)
-                : isSystem
-                  ? `<div class="chat-system-msg">${renderMarkdown(entry.text || '')}</div>`
-                  : `<div>${isAI ? renderMarkdown(entry.text || '') : escHtml(entry.text || '')}</div>`;
+            : isSystem && entry.source === 'office_action_apply'
+              // v0.X PR2: plan_execute 编排的 office_action tool 完成 → 前端 applyPlan 到 Univer/Tiptap/Konva
+              // 立即调 window.OfficeV3.applyOfficeAction 把 action 应用到打开的编辑器
+              ? renderOfficeActionApplyBubble(reqId, entry.text || '')
+              : isSystem && entry.source === 'search_result'
+                // v0.50：search tool 完成后推的独立气泡（治"用户看不到赛况文字"症状）
+                ? (renderSearchResultBubble(entry.text || '') || `<div class="chat-system-msg">${escHtml(entry.text || '')}</div>`)
+                : isSystem && entry.source === 'research_result'
+                  // v0.50：web_research tool 完成后推的独立气泡（LLM 综合答案 + 来源）
+                  ? (renderResearchResultBubble(entry.text || '') || `<div class="chat-system-msg">${escHtml(entry.text || '')}</div>`)
+                  : isSystem
+                    ? `<div class="chat-system-msg">${renderMarkdown(entry.text || '')}</div>`
+                    : `<div>${isAI ? renderMarkdown(entry.text || '') : escHtml(entry.text || '')}</div>`;
 
   // 用户气泡支持附件小芯片（v0.9）
   const userAttachHtml = (!isAI && entry.attachmentsHtml)
@@ -639,6 +761,10 @@ function renderChatBubble(container, entry) {
   const div = document.createElement('div');
   div.className = `chat-bubble ${isAI ? 'chat-bubble-ai' : isSystem ? 'chat-bubble-system' : 'chat-bubble-user'}`;
   div.dataset.chatRound = entry.chat_round || '';
+  // v0.22.68: 打上「来源条目指纹」——轮询靠它做就地重写刷新（同一条 history 条目被重写时替换对应气泡，
+  //   而不是重复 append 一张卡）。之前没有任何标记 → 无法定位到具体是哪张卡。
+  div.dataset.at = entry.at || '';
+  div.dataset.source = entry.source || '';
   // 头像 + body（meta 行在 inner 内顶部）
   div.innerHTML = `
     <div class="chat-bubble-avatar" aria-hidden="true">${avatarLetter}</div>
@@ -683,7 +809,9 @@ function renderBriefBubble(container, brief) {
   const toggleAttr = hasThinking ? ` data-has-thinking="1"` : '';
   const div = document.createElement('div');
   div.className = 'chat-bubble chat-bubble-ai';
-  div.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">🤖 AI</span><span class="chat-time">第${brief.chat_round||1}轮</span>${hasThinking ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}<span class="chat-export-btn" onclick="chatExportWord(this)" data-req-id="${escHtml(container.id?.replace('chat-stream-msgs-', '') || '')}" title="导出为 Word 文档">📄</span></div><div class="chat-response"${toggleAttr}>${respHtml}</div>${thinkingHtml}${suggestHtml}`;
+  // v0.122 修复：升级 v0.121 新结构（avatar + inner）— 之前缺 inner 包裹，
+  //   suggest 作为 .chat-bubble 直接子元素，被 display:flex 横向平铺推到最右
+  div.innerHTML = `<div class="chat-bubble-avatar" aria-hidden="true">Q</div><div class="chat-bubble-inner"><div class="chat-bubble-meta"><span class="chat-label">AI</span><span class="chat-meta-sep">·</span><span class="chat-time">第${brief.chat_round||1}轮</span>${hasThinking ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}<span class="chat-export-btn" onclick="chatExportWord(this)" data-req-id="${escHtml(container.id?.replace('chat-stream-msgs-', '') || '')}" title="导出为 Word 文档">📄</span></div><div class="chat-response"${toggleAttr}>${respHtml}</div>${thinkingHtml}${suggestHtml}</div>`;
   container.appendChild(div);
 }
 
@@ -1179,6 +1307,58 @@ async function chatSendAfterInterrupt(reqId, text, attachments) {
   await chatSendDetect(reqId, finalText);
 }
 
+// 🆕 v0.120 (PR5 of excel-multi-step-plan-b)：plan 失败步骤一键重试
+//   流程：POST /plan/:planId/retry 拿服务端构造的 retry_message（含失败上下文）
+//     → 当成用户消息渲染气泡 → chatSendDetect 触发新一轮 LLM（LLM 自己重规划失败部分）
+//   为什么不在服务端直接写 message：detect-and-respond 会自己 appendMessage(user)，
+//     两端都写会重复。让前端走标准发送链路 = 完全等价用户手打（含 SSE 流式）。
+async function retryFailedPlanSteps(btn) {
+  const planId = btn?.dataset?.planId || '';
+  const reqId = btn?.dataset?.reqId || (window.__acmsPlanReqId || '');
+  if (!planId || !reqId) { toast('无法确定计划或对话 ID', 'error'); return; }
+
+  const origText = btn.textContent;
+  btn.textContent = '⏳ 重试中…';
+  btn.disabled = true;
+
+  try {
+    const r = await api('POST', `/requirements/${reqId}/plan/${planId}/retry`, {});
+    if (r.error) {
+      toast('重试失败: ' + r.error, 'error');
+      btn.textContent = origText;
+      btn.disabled = false;
+      return;
+    }
+    if (!r.retried) {
+      toast(r.message || '该计划没有失败步骤', 'info');
+      btn.textContent = origText;
+      btn.disabled = false;
+      return;
+    }
+
+    // 渲染用户气泡（把系统构造的重试消息当作用户输入展示，让用户看得见发了什么）
+    const c = document.getElementById('chat-stream-msgs-' + reqId);
+    if (c) {
+      renderChatBubble(c, {
+        role: 'user',
+        text: `🔄 重试失败步骤（${(r.failed_steps || []).join(', ')}）`,
+        at: new Date().toISOString(),
+      });
+      if (typeof chatScrollToBottom === 'function') chatScrollToBottom(c);
+    }
+    toast(`已发起重试：${(r.failed_steps || []).length} 个失败步骤`, 'success');
+
+    // 走标准发送链路触发 LLM（服务端会写入 user message 并开 SSE 流）
+    setChatSendState(reqId, 'generating');
+    await chatSendDetect(reqId, r.retry_message);
+  } catch (e) {
+    toast('重试异常: ' + e.message, 'error');
+    btn.textContent = origText;
+    btn.disabled = false;
+  }
+}
+window.retryFailedPlanSteps = retryFailedPlanSteps;
+
 const CHAT_UPLOAD_ACCEPT = {
   image: 'image/png,image/jpeg,image/jpg,image/gif,image/webp',
   pdf:   'application/pdf,.pdf',
@@ -1660,7 +1840,7 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
             if (musicCardJson && typeof renderMusicBubble === 'function' && c) {
               var musicHtml = renderMusicBubble(musicCardJson);
               if (musicHtml) {
-                c.insertAdjacentHTML('beforeend', '<div class="chat-bubble chat-bubble-system"><div class="chat-bubble-meta"><span class="chat-label">🎵</span></div>' + musicHtml + '</div>');
+                c.insertAdjacentHTML('beforeend', '<div class="chat-bubble chat-bubble-system"><div class="chat-bubble-avatar" aria-hidden="true">·</div><div class="chat-bubble-inner"><div class="chat-bubble-meta"><span class="chat-label">🎵</span></div>' + musicHtml + '</div></div>');
               }
             }
             if (typeof chatScrollToBottom === 'function') chatScrollToBottom(c);
@@ -1687,7 +1867,7 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
                 if (_card.type === 'music_card') {
                   var _html = renderMusicBubble(_card);
                   if (_html) {
-                    _stream.insertAdjacentHTML('beforeend', '<div class="chat-bubble chat-bubble-system"><div class="chat-bubble-meta"><span class="chat-label">🎵</span></div>' + _html + '</div>');
+                    _stream.insertAdjacentHTML('beforeend', '<div class="chat-bubble chat-bubble-system"><div class="chat-bubble-avatar" aria-hidden="true">·</div><div class="chat-bubble-inner"><div class="chat-bubble-meta"><span class="chat-label">🎵</span></div>' + _html + '</div></div>');
                     chatScrollToBottom(_stream);
                   }
                   clearInterval(_musicTimer);
@@ -1779,7 +1959,7 @@ async function chatSendDetect(reqId, text) {
         if (data.musicCardJson && typeof renderMusicBubble === 'function') {
           var musicHtml = renderMusicBubble(data.musicCardJson);
           if (musicHtml) {
-            c.insertAdjacentHTML('beforeend', '<div class="chat-bubble chat-bubble-system"><div class="chat-bubble-meta"><span class="chat-label">🎵</span></div>' + musicHtml + '</div>');
+            c.insertAdjacentHTML('beforeend', '<div class="chat-bubble chat-bubble-system"><div class="chat-bubble-avatar" aria-hidden="true">·</div><div class="chat-bubble-inner"><div class="chat-bubble-meta"><span class="chat-label">🎵</span></div>' + musicHtml + '</div></div>');
           }
         }
         chatScrollToBottom(c);
@@ -1802,7 +1982,7 @@ async function chatSendDetect(reqId, text) {
                   if (_card.type === 'music_card') {
                     var _html = renderMusicBubble(_card);
                     if (_html) {
-                      _stream.insertAdjacentHTML('beforeend', '<div class="chat-bubble chat-bubble-system"><div class="chat-bubble-meta"><span class="chat-label">🎵</span></div>' + _html + '</div>');
+                      _stream.insertAdjacentHTML('beforeend', '<div class="chat-bubble chat-bubble-system"><div class="chat-bubble-avatar" aria-hidden="true">·</div><div class="chat-bubble-inner"><div class="chat-bubble-meta"><span class="chat-label">🎵</span></div>' + _html + '</div></div>');
                       chatScrollToBottom(_stream);
                     }
                     clearInterval(_musicTimer);
@@ -2271,11 +2451,14 @@ function connectStreamingBrief(reqId, container) {
   if (!streamingBubble && container) {
     streamingBubble = document.createElement('div');
     streamingBubble.className = 'chat-bubble chat-bubble-ai chat-streaming-bubble';
-    // v2.0: 流式渐进渲染结构
-    streamingBubble.innerHTML = '<div class="chat-bubble-meta"><span class="chat-label">🤖 AI</span></div>'
+    // v2.0: 流式渐进渲染结构（v0.122 升级：包 chat-bubble-avatar + chat-bubble-inner）
+    streamingBubble.innerHTML = '<div class="chat-bubble-avatar" aria-hidden="true">Q</div>'
+      + '<div class="chat-bubble-inner">'
+      + '<div class="chat-bubble-meta"><span class="chat-label">AI</span></div>'
       + '<div class="chat-streaming-opening"></div>'
       + '<div class="chat-streaming-thinking" style="display:none"><div class="chat-thinking-inner"></div></div>'
-      + '<div class="chat-streaming-followup" style="display:none"></div>';
+      + '<div class="chat-streaming-followup" style="display:none"></div>'
+      + '</div>';
     container.appendChild(streamingBubble);
     chatScrollToBottom(container);
   }
@@ -2322,7 +2505,8 @@ function connectStreamingBrief(reqId, container) {
           ? `<div class="chat-assist-suggest" onclick="chatAssist('${reqId}','${data.brief.suggested_assist.method}')">💡 ${escHtml(data.brief.suggested_assist.reason || '试试' + data.brief.suggested_assist.method)} →</div>`
           : '';
         streamingBubble.className = 'chat-bubble chat-bubble-ai';
-        streamingBubble.innerHTML = `<div class="chat-bubble-meta"><span class="chat-label">🤖 AI</span><span class="chat-time">第${data.brief.chat_round||1}轮</span>${data.brief.ai_understanding ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}<span class="chat-export-btn" onclick="chatExportWord(this)" data-req-id="${escHtml(container.id?.replace('chat-stream-msgs-', '') || '')}" title="导出为 Word 文档">📄</span></div><div class="chat-response">${respHtml}</div>${thinkingHtml}${suggestHtml}`;
+        // v0.122 修复：升级 v0.121 新结构（avatar + inner）— 否则 suggestHtml 被 flex 平铺推右
+        streamingBubble.innerHTML = `<div class="chat-bubble-avatar" aria-hidden="true">Q</div><div class="chat-bubble-inner"><div class="chat-bubble-meta"><span class="chat-label">AI</span><span class="chat-meta-sep">·</span><span class="chat-time">第${data.brief.chat_round||1}轮</span>${data.brief.ai_understanding ? '<span class="chat-thinking-btn" onclick="toggleChatThinking(this)">💭</span>' : ''}<span class="chat-export-btn" onclick="chatExportWord(this)" data-req-id="${escHtml(container.id?.replace('chat-stream-msgs-', '') || '')}" title="导出为 Word 文档">📄</span></div><div class="chat-response">${respHtml}</div>${thinkingHtml}${suggestHtml}</div>`;
         delete streamingBubble.dataset.streaming;
         // v0.13 B5 fix: 同步 dataset.chatRound，避免 polling 误判为新轮次重复渲染
         streamingBubble.dataset.chatRound = String(data.brief.chat_round || 0);
@@ -2530,11 +2714,14 @@ async function renderLeisureResult(reqId, method, loadingEl) {
         loadingEl.style.animation = 'none';
     } else if (method === 'video') {
       const vid = data.video_id || '';
-      const isAsync = data.async_task && !data.video_url;
+      const noUrl = !data.video_url;
+      // v0.22.61: 通用字段现在会被 runAssistJob 即时镜像（generating 快照）→
+      //   不能再只认 async_task，否则 "generating 且无 URL" 会被误标成「视频已生成」且不启动轮询
+      const isAsync = noUrl && (!!data.async_task || data.status === 'generating' || data.status === 'pending');
       loadingEl.innerHTML = `
         <div class="assist-loading-head" style="border:none"><span style="font-size:16px">🎬</span><span class="assist-loading-title">${isAsync ? '视频任务已提交' : '视频已生成'}</span></div>
         <div style="padding:4px 0;font-size:12px;color:var(--text2)">
-          ${data.video_url ? `<video controls style="width:100%;max-width:360px;border-radius:6px;margin:4px 0" src="${escHtml(data.video_url)}"></video>` : '视频 ID: ' + escHtml(vid.slice(0,24)) + (isAsync ? ' · ⏳ 生成中' : '…')}
+          ${data.video_url ? `<video controls preload="metadata" style="width:100%;max-width:360px;border-radius:6px;margin:4px 0;cursor:zoom-in;background:#000;display:block" src="${escHtml(data.video_url)}" onclick="${videoClickAttr(data.video_url)}" title="点击放大播放"></video>` : '视频 ID: ' + escHtml(vid.slice(0,24)) + (isAsync ? ' · ⏳ 生成中' : '…')}
         </div>
         ${isAsync ? `<div style="padding:4px 0;display:flex;gap:6px;align-items:center">
           <button class="btn-small btn-primary" onclick="chatVideoQuery('${reqId}')">🔄 刷新进度</button>
@@ -2657,9 +2844,9 @@ function startVideoAutoPoll(reqId, loadingEl) {
           panel.innerHTML = `
             <div class="assist-loading-head" style="border:none"><span style="font-size:16px">🎬</span><span class="assist-loading-title">视频已生成</span></div>
             <div style="padding:4px 0">
-              <video controls style="width:100%;max-width:360px;border-radius:6px" src="${escHtml(finalUrl)}" onerror="this.src='${escHtml(cdnUrl)}'"></video>
+              <video controls preload="metadata" style="width:100%;max-width:360px;border-radius:6px;cursor:zoom-in;background:#000;display:block" src="${escHtml(finalUrl)}" onclick="${videoClickAttr(finalUrl, cdnUrl)}" title="点击放大播放" onerror="this.onerror=null;this.src='${escHtml(cdnUrl)}'"></video>
             </div>
-            <div style="padding:2px 0;font-size:11px;color:var(--text2)">✅ 生成完成 · <span onclick="chatVideoQuery('${reqId}')" style="cursor:pointer;text-decoration:underline">刷新</span></div>
+            <div style="padding:2px 0;font-size:11px;color:var(--text2)">✅ 生成完成 · 点击画面可放大播放 · <span onclick="chatVideoQuery('${reqId}')" style="cursor:pointer;text-decoration:underline">刷新</span></div>
           `;
           panel.style.borderTopColor = 'var(--green)';
           panel.style.animation = 'none';
@@ -2799,9 +2986,30 @@ async function loadChatSessionMessages(w, sid) {
 
   try {
     container.innerHTML = '<div class="chat-typing"><span></span><span></span><span></span></div>';
-    const r = await api('GET', '/chat-sessions/' + sid + '/messages');
+    // ═══ v0.22.51 fix：自由对话有「两套历史存储」，水位线必须跟轮询比对的那一套对齐 ═══
+    //   ① chat_messages 表          → 文字对话（本函数渲染的来源）
+    //   ② 隐藏 requirement 的 supplement_history → 工具结果卡片（音视频/剧本/图片/搜索…）
+    //   startChatPolling 的增量水位线 _chatState[sid].histCount 是拿 ② 的条数做比对的
+    //   （chat.js L152：history.length > state.histCount 才渲染新增）
+    //   旧代码把 histCount 初始化成 ① 的条数（messages.length）→ 两个来源的条数不一致时崩：
+    //     会话被「清理」过（① = 0，② 还留着 8 张历史卡片）→ 8 > 0 → 第一轮轮询把 8 张
+    //     历史卡片全部当成新消息渲染 → 用户点任意辅助工具（剧本/音乐/图片/视频…）SSE done
+    //     触发 startChatPolling 后，聊天框瞬间炸出一堆历史卡片（含旧的加载中/失败卡片）
+    //   修：水位线按 ②（supplement_history）初始化 —— 历史卡片只在打开窗口时由本函数决定
+    //       是否回放，轮询只负责真正的新增条目，不再全量重刷。
+    const [r, histResp] = await Promise.all([
+      api('GET', '/chat-sessions/' + sid + '/messages'),
+      api('GET', '/requirements/' + sid + '/supplement-history').catch(function(e) {
+        console.warn('[loadChatSessionMessages] supplement-history 读取失败:', e.message);
+        return null;
+      }),
+    ]);
     const messages = (r && r.messages) || [];
-    _chatState[sid].histCount = messages.length;
+    const cardCount = (histResp && Array.isArray(histResp.history)) ? histResp.history.length : 0;
+    _chatState[sid].histCount = cardCount;
+    // v0.22.68: 同步尾部指纹（历史卡片不回放，但水位线要准 —— 否则用户点「选这个剧本」这类
+    //   「就地重写同一张卡」的动作时，条数不变 + 指纹未初始化 → 卡片渲染不出来）
+    _chatState[sid].tailKey = _histTailKey((histResp && histResp.history) || []);
     container.innerHTML = '';
     if (messages.length === 0) {
       // 空 session：不显示欢迎（保留空容器，用户直接看输入框）

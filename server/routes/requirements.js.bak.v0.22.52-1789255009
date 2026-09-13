@@ -1,0 +1,1509 @@
+// 需求 API 路由（精简版 — 业务逻辑在 services/requirement-service.js）
+const express = require('express');
+const router = express.Router();
+const reqStore = require('../stores/requirement-store');
+const eventBus = require('../services/event-bus');
+const reqService = require('../services/requirement-service');
+const modelStore = require('../stores/model-store');
+const chatSessionService = require('../services/chat-session-service');  // v0.117d: sess-xxx resolve
+
+// 创建需求
+router.post('/', async (req, res, next) => {
+  try {
+    const { projectId, title, description, priority, tags, deadline, parentId, modelId, role, userRole } = req.body;
+    if (!projectId || !title) return res.status(400).json({ error: 'MISSING_FIELDS' });
+    const requirement = reqStore.create({ projectId, title, description, priority, tags, deadline, createdBy: req.agentId || 'user', parentId: parentId || null, userRole: userRole || role || '' });
+
+    // ── 同步：LLM 评估明确度（30 文档「一放一收」Step 2）──
+    try {
+      const { assessClarity } = require('../services/insight-previews');
+      const { clarity, reason, modelId: usedModel } = await assessClarity(title, description, modelId);
+      if (clarity) {
+        reqStore.update(requirement.id, { input_clarity: clarity, clarity_reason: reason || '' });
+        requirement.input_clarity = clarity;
+        requirement.clarity_reason = reason || '';
+        requirement.clarity_model = usedModel;
+      }
+    } catch (e) { console.error('[requirements.create] 明确度评估失败（非阻塞）:', e.message); }
+
+    // ── 异步：自动启动思路简报（v0.3「思路先于画面」改造）──
+    // 思路简报是文本，~1500 tokens；图片预览改为用户手动触发
+    try {
+      const { runBriefJob } = require('../services/thinking-brief');
+      setImmediate(() => runBriefJob(requirement.id, { modelId, role })
+        .catch(e => console.error('[brief.auto] 任务异常:', e)));
+    } catch (e) { console.error('[requirements.create] 启动思路简报任务失败（非阻塞）:', e.message); }
+
+    eventBus.emit('requirement.created', { projectId, actor: { id: req.agentId || 'user', type: 'human' }, target: { type: 'requirement', id: requirement.id }, payload: { requirement } });
+    res.status(201).json(requirement);
+  } catch (e) { next(e); }
+});
+
+// 需求列表
+router.get('/', (req, res) => {
+  const { projectId, status, parentId, rootOnly, limit, offset } = req.query;
+  res.json(reqStore.list({
+    projectId, status,
+    parentId: parentId || undefined,
+    rootOnly: rootOnly === 'true',
+    limit: parseInt(limit) || 50,
+    offset: parseInt(offset) || 0
+  }));
+});
+
+// 需求详情
+router.get('/:id', (req, res) => {
+  const requirement = reqStore.getById(req.params.id);
+  if (!requirement) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+  res.json({ ...requirement, clarifications: reqStore.getClarifications(req.params.id) });
+});
+
+// ============================================================
+// v0.4 Phase 2c：诊断纠偏（用户主动改 diagnosis.type）
+//   POST /:id/correct-diagnosis  { type: 'vague'|'conflicted'|'blank' }
+//   行为：
+//     1. 校验 status === 'idea'
+//     2. 改 brief.diagnosis.type + 写入 corrected_at + previous_type
+//     3. 清掉旧 dialog（让 brief 重生时重新生成）
+//     4. 异步触发 brief 重生（让 diagnosis label/guide/dialog 基于新 type 重新生成）
+// ============================================================
+router.post('/:id/correct-diagnosis', async (req, res, next) => {
+  try {
+    const VALID = ['vague', 'conflicted', 'blank'];
+    const { type } = req.body || {};
+    if (!VALID.includes(type)) {
+      return res.status(400).json({ error: 'INVALID_TYPE', validTypes: VALID });
+    }
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    if (reqRec.status !== 'idea') {
+      return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
+    }
+
+    // 读 brief，校验 diagnosis 已存在
+    let brief;
+    try { brief = JSON.parse(reqRec.thinking_brief || 'null'); } catch { brief = null; }
+    if (!brief || !brief.diagnosis || !brief.diagnosis.type) {
+      return res.status(409).json({ error: 'NO_DIAGNOSIS_TO_CORRECT' });
+    }
+    if (brief.diagnosis.type === type) {
+      return res.json({ ok: true, diagnosis: brief.diagnosis, briefRegen: 'no_change', reason: 'same type, no action' });
+    }
+
+    // 改 diagnosis.type + 写标记
+    const corrected = {
+      ...brief.diagnosis,
+      type,
+      corrected_at: new Date().toISOString(),
+      previous_type: brief.diagnosis.type,
+    };
+    brief.diagnosis = corrected;
+    brief.dialog = null;  // 清掉旧 dialog，让 brief 重生时重新生成
+    reqStore.update(req.params.id, { thinking_brief: JSON.stringify(brief) });
+    console.log(`[correct-diagnosis] ${req.params.id}: ${corrected.previous_type} → ${type}`);
+
+    // 异步触发 brief 重生（让 diagnosis label/guide/dialog 基于新 type 重新生成）
+    //   v0.4 Phase 2c：传 skipDiagnosisRegen + preserveDiagnosisType 让 brief 重生保留 type
+    const previousType = brief.diagnosis.type;
+    setImmediate(async () => {
+      try {
+        const { runBriefJob } = require('../services/thinking-brief');
+        await runBriefJob(req.params.id, {
+          skipDiagnosisRegen: true,
+          preserveDiagnosisType: type,
+          previousType,
+        });
+      } catch (e) {
+        console.error(`[correct-diagnosis] ${req.params.id} brief 重生失败（非阻塞）:`, e.message);
+      }
+    });
+
+    res.json({ ok: true, diagnosis: corrected, briefRegen: 'started' });
+  } catch (e) { next(e); }
+});
+
+// 状态转换 — 切换到 approved 时检查具体性
+router.post('/:id/transition', (req, res, next) => {
+  try {
+    // v0.4 Phase 4.1：idea → clarifying 时先固化（生成 summary）
+    //   调 elicit-solidify service 产出"我们讨论了什么"摘要，存到 brief.summary
+    //   失败不阻塞 transition（fallback 走 raw brief 内容）
+    if (req.body.targetStatus === 'clarifying') {
+      try {
+        const elicitorAdapter = require('../services/elicitor-adapter');
+        if (elicitorAdapter.canRun().ok) {
+          const { generateSummary } = require('../services/elicitor-solidify');
+          const fresh = reqStore.getById(req.params.id);
+          if (fresh && fresh.status === 'idea') {
+            const currentBrief = JSON.parse(fresh.thinking_brief || 'null');
+            if (currentBrief && currentBrief.status === 'done') {
+              generateSummary(currentBrief, fresh, null).then(summary => {
+                if (summary) {
+                  const updated = JSON.parse(fresh.thinking_brief || '{}');
+                  updated.summary = summary;
+                  reqStore.update(req.params.id, { thinking_brief: JSON.stringify(updated) });
+                  console.log(`[transition.solidify] ${req.params.id} summary 已生成`);
+                }
+              }).catch(e => console.warn('[transition.solidify] 非阻塞失败:', e.message));
+            }
+          }
+        }
+      } catch (e) { console.warn('[transition.solidify] 非阻塞:', e.message); }
+    }
+
+    // 具体性门控: approved 前检查模糊表达
+    if (req.body.targetStatus === 'approved') {
+      const requirement = reqStore.getById(req.params.id);
+      if (requirement) {
+        const validator = require('../services/concreteness-validator');
+        const result = validator.validateRequirement(requirement);
+        if (!result.passed) {
+          return res.status(400).json({
+            error: 'VAGUE_REQUIREMENT',
+            message: '需求包含模糊表达，无法审批通过。请先澄清以下问题：',
+            warnings: result.warnings.filter(w => w.severity === 'error').slice(0, 5),
+            allWarnings: result.warnings,
+          });
+        }
+      }
+    }
+    const result = reqStore.transition(req.params.id, req.body.targetStatus, { id: req.agentId || 'user', type: req.agentId ? 'agent' : 'human' });
+    if (result.error) return res.status(400).json(result);
+
+    // 审批通过后运行澄清自我改进
+    let improvementReport = null;
+    if (req.body.targetStatus === 'approved') {
+      try {
+        const clarifications = reqStore.getClarifications(req.params.id);
+        if (clarifications && clarifications.length > 0) {
+          const improvement = require('../services/clarify-improvement-service');
+          const report = improvement.analyzeClarification(result, clarifications);
+          improvementReport = report;
+          console.log(`[clarify-improve] ${result.id}: ${report.totalRounds}轮, ${report.totalVaguenessWarnings}模糊, ${report.suggestions.length}建议`);
+        }
+      } catch (e) { /* 非关键 */ }
+    }
+
+    // 需求进入执行阶段 → 自动生成知识页面
+    if (req.body.targetStatus === 'approved' || req.body.targetStatus === 'in_execution') {
+      try {
+        const synthesizer = require('../services/knowledge-synthesizer');
+        synthesizer.generateForRequirement(req.params.id).then(res => {
+          if (res.created) {
+            console.log(`[KnowledgeSynthesizer] ✅ ${req.params.id} → ${res.path}`);
+          } else if (!res.skipped) {
+            console.log(`[KnowledgeSynthesizer] ⚠️ ${req.params.id}: ${res.reason}`);
+          }
+        });
+      } catch (e) { /* 非关键 */ }
+    }
+
+    eventBus.emit(`requirement.${req.body.targetStatus === 'approved' ? 'approved' : 'status_changed'}`, { projectId: result.project_id, actor: { id: req.agentId || 'user', type: 'human' }, target: { type: 'requirement', id: result.id }, payload: { requirement: result } });
+    res.json({ ...result, improvement: improvementReport });
+  } catch (e) { next(e); }
+});
+
+// 澄清对话
+router.post('/:id/clarify', (req, res) => {
+  const { question, agentId } = req.body;
+  if (!question) return res.status(400).json({ error: 'MISSING_QUESTION' });
+  reqStore.addClarificationQuestion(req.params.id, { question, askedBy: agentId || req.agentId || 'analyst' });
+  reqStore.addClarification(req.params.id, { role: 'agent', agentId: agentId || req.agentId, content: question });
+  res.json({ message: '澄清问题已添加' });
+});
+
+router.post('/:id/answer', (req, res) => {
+  const { questionIndex, answer, role } = req.body;
+  reqStore.answerClarification(req.params.id, questionIndex, answer);
+  reqStore.addClarification(req.params.id, { role: role || 'user', content: answer });
+  res.json({ success: true });
+});
+
+// SRS
+router.patch('/:id/srs', (req, res) => {
+  const requirement = reqStore.updateSrs(req.params.id, req.body);
+  if (!requirement) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+  res.json(requirement);
+});
+
+// 通用字段更新（deadline, title 等）
+router.patch('/:id', (req, res) => {
+  const { deadline, title, description, description_append, priority, tags } = req.body;
+  const updates = {};
+  if (deadline !== undefined) updates.deadline = deadline;
+  if (title !== undefined) updates.title = title;
+  if (description !== undefined) updates.description = description;
+  // v0.3.2 增量：description_append 追加到原 description 末尾（决策树详情面板勾选用）
+  if (description_append !== undefined) {
+    const r = reqStore.getById(req.params.id);
+    if (!r) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    updates.description = (r.description || '') + description_append;
+  }
+  if (priority !== undefined) updates.priority = priority;
+  if (tags !== undefined) updates.tags = JSON.stringify(tags);
+  const requirement = reqStore.update(req.params.id, updates);
+  if (!requirement) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+  res.json(requirement);
+});
+
+// 架构宪法管理
+router.patch('/:id/arch-spec', (req, res) => {
+  try {
+    const { archSpec } = req.body;
+    if (!archSpec) return res.status(400).json({ error: 'MISSING_ARCH_SPEC' });
+    const requirement = reqStore.updateArchSpec(req.params.id, archSpec);
+    if (!requirement) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    res.json({ success: true, arch_spec: requirement.arch_spec });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.patch('/:id/interface-contracts', (req, res) => {
+  try {
+    const { contracts } = req.body;
+    if (!contracts) return res.status(400).json({ error: 'MISSING_CONTRACTS' });
+    const requirement = reqStore.updateInterfaceContracts(req.params.id, contracts);
+    if (!requirement) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    res.json({ success: true, interface_contracts: requirement.interface_contracts });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 审核流程（使用 service）
+router.post('/:id/submit-review', async (req, res, next) => {
+  try {
+    const result = await reqService.submitForReview(req.params.id, req.agentId || 'analyst');
+
+    // 契约验证: 如果该需求有父需求且所有兄弟都已 readyForReview，自动触发
+    const requirement = reqStore.getById(req.params.id);
+    if (requirement && requirement.parent_id) {
+      const children = reqStore.findChildren(requirement.parent_id);
+      const allReady = children.every(c => {
+        const ref = JSON.parse(c.refinement || '{}');
+        return c.status === 'review' || c.status === 'approved' || ref.readyForReview === true;
+      });
+      if (allReady && children.length >= 2) {
+        try {
+          const validator = require('../services/contract-validator');
+          const contractResult = validator.validateSiblingContracts(requirement.parent_id);
+          result.contractValidation = contractResult;
+        } catch (e) { /* 非关键 */ }
+      }
+    }
+
+    res.json(result);
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/approve', async (req, res, next) => {
+  try { res.json(await reqService.approve(req.params.id)); } catch (e) { next(e); }
+});
+
+router.post('/:id/reject', async (req, res, next) => {
+  try { res.json(await reqService.reject(req.params.id, req.body.reason)); } catch (e) { next(e); }
+});
+
+// 分解（使用 service）
+router.post('/:id/decompose', async (req, res, next) => {
+  try { res.status(201).json(await reqService.decompose(req.params.id, req.body.tasks, req.agentId)); } catch (e) { next(e); }
+});
+
+// 统计
+router.get('/stats/:projectId', (req, res) => {
+  res.json(reqStore.getStats(req.params.projectId));
+});
+
+// 契约验证: 手动触发（前端可显式调用）
+router.post('/:id/validate-contracts', (req, res) => {
+  try {
+    const validator = require('../services/contract-validator');
+    const result = validator.validateSiblingContracts(req.params.id);
+    res.json(result);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 需求文档: 读取已生成的 Wiki MD 文件
+router.get('/:id/doc', (req, res) => {
+  try {
+    const requirement = reqStore.getById(req.params.id);
+    if (!requirement) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    const wikiPath = requirement.wiki_path;
+    if (!wikiPath) return res.json({ content: null, message: '暂无需求文档' });
+
+    const fs = require('fs');
+    const path = require('path');
+    const projectStore = require('../stores/project-store');
+    const project = projectStore.getById(requirement.project_id);
+    if (!project || !project.wiki_vault_path) return res.json({ content: null, message: '项目未配置 Wiki' });
+
+    const fullPath = path.join(project.wiki_vault_path, wikiPath);
+    if (!fs.existsSync(fullPath)) return res.json({ content: null, message: '文档文件不存在' });
+
+    const content = fs.readFileSync(fullPath, 'utf-8');
+    res.json({ content, path: wikiPath });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 删除需求
+router.delete('/:id', (req, res) => {
+  const requirement = reqStore.getById(req.params.id);
+  if (!requirement) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+  const { collection } = require('../db/connection');
+
+  // 级联删除所有子需求（递归）
+  let deletedChildren = 0;
+  const childIds = JSON.parse(requirement.child_ids || '[]');
+  if (childIds.length > 0) {
+    for (const cid of childIds) {
+      const child = reqStore.getById(cid);
+      if (child) {
+        // 递归获取孙子需求
+        const grandChildIds = JSON.parse(child.child_ids || '[]');
+        for (const gcid of grandChildIds) {
+          collection('requirements').remove(r => r.id === gcid);
+          deletedChildren++;
+        }
+        // 删除子需求（含关联任务和澄清记录）
+        const childTaskIds = JSON.parse(child.task_ids || '[]');
+        for (const tid of childTaskIds) collection('tasks').remove(t => t.id === tid);
+        collection('requirements').remove(r => r.id === cid);
+        collection('clarification_threads').remove(c => c.requirement_id === cid);
+        deletedChildren++;
+      }
+    }
+  }
+
+  // 如果有父需求，从父需求的 child_ids 中移除自己
+  if (requirement.parent_id) {
+    const parent = reqStore.getById(requirement.parent_id);
+    if (parent) {
+      const pcids = JSON.parse(parent.child_ids || '[]').filter(id => id !== req.params.id);
+      collection('requirements').update(r => r.id === requirement.parent_id, { child_ids: JSON.stringify(pcids) });
+    }
+  }
+
+  collection('clarification_threads').remove(c => c.requirement_id === req.params.id);
+  // 删除关联任务
+  const taskIds = JSON.parse(requirement.task_ids || '[]');
+  for (const tid of taskIds) collection('tasks').remove(t => t.id === tid);
+  const orphanTasks = collection('tasks').find(t => t.parent_id === req.params.id);
+  for (const t of orphanTasks) collection('tasks').remove(t2 => t2.id === t.id);
+  collection('requirements').remove(r => r.id === req.params.id);
+  res.json({ success: true, message: `需求 ${requirement.title} 已删除，级联删除 ${deletedChildren} 个子需求`, deletedTasks: taskIds.length + orphanTasks.length, deletedChildren });
+});
+
+// 获取拆分方案（AI 生成）
+router.post('/:id/split-proposal', async (req, res, next) => {
+  try {
+    const { generateSplitProposal } = require('../services/split-gate-service');
+    const proposal = await generateSplitProposal(req.params.id);
+    res.json(proposal);
+  } catch (e) { next(e); }
+});
+
+// 需求拆分（含流程地图 + 上下文继承 + 父需求修剪）
+router.post('/:id/split', (req, res, next) => {
+  try {
+    const { children } = req.body;
+    if (!children || !Array.isArray(children) || children.length === 0) {
+      return res.status(400).json({ error: 'MISSING_FIELDS', message: '需要提供 children 数组' });
+    }
+    const { executeSplit } = require('../services/split-gate-service');
+    const proposal = req.body.proposal || null;
+    const result = executeSplit(req.params.id, children, proposal);
+    eventBus.emit('requirement.split', { projectId: result.parent.project_id, actor: { id: req.agentId || 'user', type: 'human' }, target: { type: 'requirement', id: req.params.id }, payload: { parent: result.parent, children: result.children } });
+    res.status(201).json(result);
+  } catch (e) { next(e); }
+});
+
+// 父需求刷新 — 对比所有子需求的当前状态
+router.post('/:id/refresh-parent', async (req, res, next) => {
+  try {
+    const { triggerParentRefresh } = require('../services/sync-service');
+    const report = await triggerParentRefresh(req.params.id);
+    res.json(report);
+  } catch (e) { next(e); }
+});
+
+// 变更影响评估
+router.post('/:id/assess-impact', async (req, res, next) => {
+  try {
+    const { changeDescription } = req.body;
+    const requirement = reqStore.getById(req.params.id);
+    if (!requirement) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    const { assessChangeImpact } = require('../services/sync-service');
+    const result = await assessChangeImpact(requirement, changeDescription || '');
+    res.json(result);
+  } catch (e) { next(e); }
+});
+
+// 覆盖率验证 — 手动触发：检查当前需求的任务是否覆盖 SRS
+router.post('/:id/validate-coverage', (req, res, next) => {
+  try {
+    const { validateChildCoverage, detectIntegrationGaps } = require('../services/coverage-validator');
+    const coverage = validateChildCoverage(req.params.id);
+    const integrationGap = detectIntegrationGaps(req.params.id);
+    res.json({ coverage, integrationGap });
+  } catch (e) { next(e); }
+});
+
+// 聚合覆盖率验证 — 容器父需求的子需求任务是否覆盖父需求原始 scopeIn
+router.post('/:id/validate-aggregate-coverage', (req, res, next) => {
+  try {
+    const { validateParentAggregateCoverage } = require('../services/coverage-validator');
+    const result = validateParentAggregateCoverage(req.params.id);
+    res.json(result);
+  } catch (e) { next(e); }
+});
+
+// 获取子需求
+router.get('/:id/children', (req, res) => {
+  const children = reqStore.findChildren(req.params.id);
+  res.json(children);
+});
+
+// 获取需求质量指标
+router.get('/metrics/:projectId', (req, res) => {
+  try {
+    const { persistAndCheck } = require('../services/metrics-service');
+    const result = persistAndCheck(req.params.projectId);
+    if (!result) return res.json({ metrics: null, triggers: [] });
+    res.json(result);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 获取需求进度（聚合子需求进度）
+router.get('/:id/progress', (req, res) => {
+  const progress = reqStore.getProgress(req.params.id);
+  res.json(progress);
+});
+
+// 获取数据模型预览（用于 review 阶段让用户提前发现数据/流程偏差）
+router.post('/:id/data-model-preview', async (req, res) => {
+  try {
+    const extractor = require('../services/data-model-extractor');
+    const result = await extractor.extractModel(req.params.id);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================
+// 洞察类需求预览（30 文档「一放一收」Step 2）
+// ============================================================
+const insightService = require('../services/insight-previews');
+
+// 手动触发（也用于重新生成）
+router.post('/:id/insight-previews', async (req, res, next) => {
+  try {
+    const { modelId, imageProviderId, role } = req.body || {};
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    // 状态机：仅 idea 状态可生成
+    if (reqRec.status !== 'idea') {
+      return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
+    }
+    // fire-and-forget：立即返回，后台跑
+    setImmediate(() => insightService.runPreviewJob(req.params.id, { modelId, imageProviderId, role })
+      .catch(e => console.error('[insight] 任务异常:', e)));
+    res.status(202).json({ message: '预览任务已启动', status: 'pending' });
+  } catch (e) { next(e); }
+});
+
+// 查询预览状态（前端轮询用）
+router.get('/:id/insight-previews', (req, res, next) => {
+  try {
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    const previews = JSON.parse(reqRec.insight_previews || 'null');
+    res.json({
+      requirementId: req.params.id,
+      // v0.13 B8：前端 renderInsightPreviewContent 拼图片 URL 需要 req 所属 projectId
+      //   旧：默认 fallback 到 App.currentProjectId（当前激活项目）→ 跨项目查看 404
+      //   新：返回 req.project_id，前端用它拼 URL
+      projectId: reqRec.project_id,
+      status: reqRec.status,
+      inputClarity: reqRec.input_clarity || null,
+      insightPreviews: previews,
+    });
+  } catch (e) { next(e); }
+});
+
+// 用户选某个变体
+router.post('/:id/insight-pick', (req, res, next) => {
+  try {
+    const { variantId } = req.body || {};
+    if (!variantId) return res.status(400).json({ error: 'MISSING_VARIANT_ID' });
+    const result = insightService.pickVariant(req.params.id, variantId);
+    if (result.error) return res.status(400).json(result);
+    res.json(result);
+  } catch (e) { next(e); }
+});
+
+// 跳过预览
+router.post('/:id/insight-skip', (req, res, next) => {
+  try {
+    const result = insightService.skipPreviews(req.params.id);
+    if (result.error) return res.status(400).json(result);
+    res.json(result);
+  } catch (e) { next(e); }
+});
+
+// ============================================================
+// 思路简报（v0.3「思路先于画面」改造）
+//   - 创建需求时自动生成（POST / 已无 endpoint 显式触发）
+//   - 前端通过 GET 读取，必要时通过 POST /regen 重新生成
+// ============================================================
+const briefService = require('../services/thinking-brief');
+
+// 查询思路简报（前端轮询用）
+router.get('/:id/thinking-brief', (req, res, next) => {
+  try {
+    // 🆕 v0.117de: 自由对话 sess-xxx → 自动 resolve hidden requirement
+    if (req.params.id && req.params.id.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(req.params.id);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      req.params.id = sessionReq.id;
+    }
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    const brief = briefService.getBrief(req.params.id);
+    res.json({
+      requirementId: req.params.id,
+      status: reqRec.status,
+      thinkingBrief: brief,  // null = 还没生成
+    });
+  } catch (e) { next(e); }
+});
+
+// 重新生成思路简报（用户主动操作）
+router.post('/:id/thinking-brief/regen', async (req, res, next) => {
+  try {
+    const { modelId, role } = req.body || {};
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    if (reqRec.status !== 'idea') {
+      return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
+    }
+    // fire-and-forget：立即返回，后台跑
+    setImmediate(() => briefService.runBriefJob(req.params.id, { modelId, role })
+      .catch(e => console.error('[brief.regen] 任务异常:', e)));
+    res.status(202).json({ message: '思路简报重新生成已启动', status: 'generating' });
+  } catch (e) { next(e); }
+});
+
+// v0.3.6 流式思路简报（SSE）
+// 连接后触发 brief 生成，逐 token 推送
+router.get('/:id/thinking-brief/stream', async (req, res, next) => {
+  try {
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no'); // nginx 兼容
+    res.flushHeaders();
+
+    const send = (type, data) => {
+      res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+    };
+
+    send('status', { message: '开始生成思路简报…' });
+
+    const defaultModel = modelStore.getDefaultGenModel();
+    const modelId = defaultModel?.id || null;
+
+    for await (const event of briefService.runBriefJobStream(req.params.id, { modelId })) {
+      if (event.type === 'token') {
+        send('token', { text: event.text });
+      } else if (event.type === 'opening' || event.type === 'thinking' || event.type === 'followup') {
+        // v2.0: 流式按字段分发事件
+        send(event.type, { text: event.text });
+      } else if (event.type === 'done') {
+        send('done', { brief: event.brief });
+        break;
+      } else if (event.type === 'error') {
+        send('error', { message: event.message });
+        break;
+      }
+    }
+    res.end();
+  } catch (e) {
+    // 流中断或异常，尝试发 error 事件
+    try { res.write(`data: ${JSON.stringify({ type: 'error', message: e.message })}\n\n`); res.end(); } catch {}
+  }
+});
+
+// ============================================================
+// 辅助手段（v0.3.3 Phase 2）
+//   LLM 路由器 + 5 种独立 assist（decision_tree/scenarios/diagnosis/tradeoff/arch）
+//   POST /assist/run       → 路由器选一种 → 调对应 service → 返回 method + status
+//   GET  /assist           → 列出已生成的辅助手段 + 当前状态（前端轮询）
+//   POST /assist/:method   → 手动指定 method（跳过路由器，用户主动触发某一种）
+// ============================================================
+const assists = require('../services/assists');
+const { pickNext: pickAssistNext } = require('../services/assists/router');
+
+// 列出所有已生成的辅助手段（前端轮询用）
+router.get('/:id/assist', (req, res, next) => {
+  try {
+    let reqId = req.params.id;
+    // 🆕 v0.117dd: 自由对话 sess-xxx → 自动 resolve（与 POST /assist/:method + /stream 一致）
+    //   否则 renderLeisureResult 用 sess-xxx 拉 /assist → REQ_NOT_FOUND
+    if (reqId.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(reqId);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      reqId = sessionReq.id;
+    }
+    const reqRec = reqStore.getById(reqId);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+
+    const result = {};
+    // v0.3.3 B+++：用统一的 assist registry 拉所有 method（含 visual）
+    for (const method of assists.ASSIST_METHODS) {
+      const svc = assists.getAssist(method);
+      if (svc && svc.getAssist) {
+        const data = svc.getAssist(reqId);
+        if (data) result[method] = data;
+        // v0.13 B6 fix: 删 use_case 调试 log
+        //   旧：每 5 次 GET 输出诊断（前端 3s polling × 多个 req → 持续刷屏）
+        //   新：use_case 状态已在 GET 返回的 `assists.use_case` 里，前端自行渲染
+        //   诊断需要时用 `node -e "..."` 临时打开，不要再长期挂 console.log
+      }
+    }
+
+    res.json({ assists: result });
+  } catch (e) { next(e); }
+});
+
+// 收集已用 methods（用户表态过的 = 永远锁）
+//   用单独的 usedMethods[] 表示，避免和"本轮已生成"混在一起
+// round_used_methods = 本轮（与当前 chat_round 一致）已生成过的 method
+function collectAssistState(reqId, currentRound) {
+  const usedMethods = [];
+  const roundUsedMethods = [];
+  const all = reqStore.getById(reqId);
+  if (!all) return { usedMethods, roundUsedMethods };
+  for (const method of assists.ASSIST_METHODS) {
+    const svc = assists.getAssist(method);
+    const data = svc && svc.getAssist ? svc.getAssist(reqId) : null;
+    if (!data) continue;
+    // 用户表态过（used=true）→ 永远锁
+    if (data.used) usedMethods.push(method);
+    // 生成过 + 轮次匹配 → 本轮锁
+    if (data.status === 'done' && typeof data.generated_at_round === 'number' && data.generated_at_round === currentRound) {
+      roundUsedMethods.push(method);
+    }
+  }
+  return { usedMethods, roundUsedMethods };
+}
+
+// 路由器自动选一种
+router.post('/:id/assist/run', async (req, res, next) => {
+  try {
+    const { modelId, role } = req.body || {};
+    let reqId = req.params.id;
+    // 🆕 v0.117dd: 自由对话 sess-xxx → 自动 resolve（与 /assist/:method 一致）
+    if (reqId.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(reqId);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      reqId = sessionReq.id;
+    }
+    const reqRec = reqStore.getById(reqId);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    if (reqRec.status !== 'idea') {
+      return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
+    }
+
+    const currentRound = (() => { try { return JSON.parse(reqRec.thinking_brief || 'null')?.chat_round || 1; } catch { return 1; } })();
+    const { usedMethods, roundUsedMethods } = collectAssistState(req.params.id, currentRound);
+
+    // 读 brief 拿 ai_understanding + followup_question（当前对话焦点）
+    let aiUnderstanding = '';
+    let followupQuestion = '';
+    let diagnosis = null;
+    try {
+      const brief = JSON.parse(reqRec.thinking_brief || 'null');
+      aiUnderstanding = brief?.ai_understanding || '';
+      followupQuestion = brief?.followup_question || '';
+      diagnosis = brief?.diagnosis || null;  // v0.4 Phase 2a
+    } catch {}
+
+    // /assist/run 是用户主动召唤，force=true 跳过"首轮豁免"
+    const pick = await pickAssistNext({
+      clarity: reqRec.input_clarity,
+      chatRound: currentRound,
+      usedMethods,
+      roundUsedMethods,
+      aiUnderstanding,
+      followupQuestion,
+      diagnosis,  // v0.4 Phase 2a：传 diagnosis 让路由器感知
+      force: true,
+    }, modelId);
+
+    if (!pick.method) {
+      return res.json({ method: null, reason: pick.reason || '无可推荐', status: 'idle' });
+    }
+
+    const svc = assists.getAssist(pick.method);
+    if (!svc || !svc.runAssistJob) {
+      return res.status(500).json({ error: 'ASSIST_NOT_FOUND', method: pick.method });
+    }
+
+    // 把 currentRound 传给 assist service，让它写入 generated_at_round 字段（用于下次判定本轮）
+    // 同时传 followupQuestion，让 assist 生成内容紧扣当前对话焦点
+    setImmediate(() => svc.runAssistJob(req.params.id, { modelId, role, chatRound: currentRound, followupQuestion })
+      .catch(e => console.error(`[assist.${pick.method}] 任务异常:`, e.message)));
+
+    res.status(202).json({
+      method: pick.method,
+      reason: pick.reason,
+      status: 'generating',
+    });
+  } catch (e) { next(e); }
+});
+
+    // 手动指定 method（用户主动选）
+router.post('/:id/assist/:method', async (req, res, next) => {
+  try {
+    const { method } = req.params;
+    let { id: reqId } = req.params;
+    // 🆕 v0.117d：自由对话 sess-xxx → 自动 resolve hidden requirement
+    //   让 connectAssistStream 在自由对话模式直接复用（与主流程 REQ-XXX 一致路径）
+    if (reqId.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(reqId);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      reqId = sessionReq.id;
+    }
+    const { modelId, role, productName } = req.body || {};
+    const reqRec = reqStore.getById(reqId);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    if (reqRec.status !== 'idea' && method !== 'health_check' && method !== 'clean' && method !== 'music' && method !== 'video' && method !== 'image_gen' && method !== 'screenplay') {
+      return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
+    }
+
+    const svc = assists.getAssist(method);
+    if (!svc) return res.status(400).json({ error: 'UNKNOWN_METHOD', method });
+    if (!svc.runAssistJob) return res.status(500).json({ error: 'ASSIST_HAS_NO_RUNNER' });
+
+    const deepDiveOf = req.body?.deepDiveOf;
+    const manualBrief = (() => { try { return JSON.parse(reqRec.thinking_brief || 'null'); } catch { return null; } })();
+    const manualRound = manualBrief?.chat_round || 1;
+    const manualFocus = manualBrief?.followup_question || '';
+setImmediate(() => svc.runAssistJob(reqId, { ...req.body, modelId, role, chatRound: manualRound, followupQuestion: manualFocus, deepDiveOf, productName })
+      .catch(e => console.error(`[assist.${method}] 任务异常:`, e.message)));
+
+    res.status(202).json({ method, status: 'generating' });
+  } catch (e) { next(e); }
+});
+
+// v0.3.6：「都不符合，再换一批」按钮
+//   跟 /assist/:method 的区别：强制重跑（绕过 visual.js 的 already_done 保护 + scenarios/decision-tree 也会重跑）
+//   旧选择不进 used（因为用户没选），但标记这批已被换过（避免下次换出同样内容）
+router.post('/:id/assist/:method/regenerate', async (req, res, next) => {
+  try {
+    const { method } = req.params;
+    const { modelId, role } = req.body || {};
+    let reqId = req.params.id;
+    // 🆕 v0.117dd: 自由对话 sess-xxx → 自动 resolve（chatAssistRegen 换一批按钮）
+    if (reqId.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(reqId);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      reqId = sessionReq.id;
+    }
+    const reqRec = reqStore.getById(reqId);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    if (reqRec.status !== 'idea') {
+      return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
+    }
+
+    // 只有 3 种适合换（scenarios / decision_tree / visual / screenplay）
+    const REGENERATABLE = ['scenarios', 'decision_tree', 'visual', 'reference', 'screenplay'];
+    if (!REGENERATABLE.includes(method)) {
+      return res.status(400).json({ error: 'METHOD_NOT_REGENERATABLE', method });
+    }
+
+    const svc = assists.getAssist(method);
+    if (!svc || !svc.runAssistJob) return res.status(500).json({ error: 'ASSIST_HAS_NO_RUNNER' });
+
+    // 标记当前 batch 已被"换过"（不进 used，因为用户没选）
+    //   存到 req 上的标记字段，让 runAssistJob / dispatcher 知道该换
+    const regenBrief = (() => { try { return JSON.parse(reqRec.thinking_brief || 'null'); } catch { return null; } })();
+    const chatRound = regenBrief?.chat_round || 1;
+    const regenFocus = regenBrief?.followup_question || '';
+
+    // v0.22 P5 fix: 透传 req.body 让 service 拿到 idea/target_seconds 等用户输入
+    setImmediate(() => svc.runAssistJob(req.params.id, {
+      ...req.body,
+      modelId,
+      role,
+      chatRound,
+      followupQuestion: regenFocus,
+      forceRegenerate: true,  // 关键：让 service 知道这是"换一批"调用
+    }).catch(e => console.error(`[assist.regen.${method}] 任务异常:`, e.message)));
+
+    res.status(202).json({ method, status: 'generating', regenerate: true });
+  } catch (e) { next(e); }
+});
+
+// v2.0: 辅助手段流式 SSE — 监控进度（不触发 job，由 POST 触发）
+router.get('/:id/assist/:method/stream', async (req, res, next) => {
+  try {
+    const { method } = req.params;
+    let reqId = req.params.id;
+    // 🆕 v0.117d：自由对话 sess-xxx → 自动 resolve（与 POST /assist/:method 一致）
+    if (reqId.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(reqId);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      reqId = sessionReq.id;
+    }
+    const reqRec = reqStore.getById(reqId);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+
+    const svc = assists.getAssist(method);
+    if (!svc) return res.status(400).json({ error: 'UNKNOWN_METHOD' });
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    const send = (type, data) => {
+      try { res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`); } catch {}
+    };
+
+    const methodField = svc.field || `assist_${method}`;
+    const methodName = svc.name || method;
+    let prevStatus = '';
+
+    // 轮询 DB 等状态变化
+    //   视频任务需要更长等待（POST /v1/videos 可能数分钟才返回）
+    const maxIter = method === 'video' ? 120 : 45;  // 视频等 240s，其他等 90s
+    for (let i = 0; i < maxIter; i++) {
+      const fresh = reqStore.getById(reqId);
+      if (!fresh) { send('error', { message: '需求已删除' }); break; }
+
+      let assistData = null;
+      try { assistData = JSON.parse(fresh[methodField] || 'null'); } catch {}
+
+      const status = assistData?.status || 'pending';
+      if (status !== prevStatus) {
+        prevStatus = status;
+        if (status === 'generating') {
+          if (method === 'video') {
+            send('progress', { text: `正在提交视频生成任务…` });
+          } else {
+            send('progress', { text: `正在调用 AI 分析…` });
+          }
+        } else if (status === 'done') {
+          send('progress', { text: `✅ ${methodName} 完成` });
+          send('done', { method });
+          break;
+        } else if (status === 'failed') {
+          send('error', { message: assistData?.error || '生成失败' });
+          break;
+        }
+      } else if (i === 1 && method === 'video') {
+        send('progress', { text: `正在提交视频生成任务…` });
+      } else if (i === 5 && method === 'video') {
+        send('progress', { text: `等待 Agnes 云端处理中…` });
+      } else if (i === 1) {
+        send('progress', { text: `正在准备${methodName}…` });
+      } else if (i === 5) {
+        send('progress', { text: `正在整理${methodName}结果…` });
+      } else if (i === 12) {
+        send('progress', { text: `即将完成…` });
+      }
+
+      await new Promise(r => setTimeout(r, 2000));
+    }
+
+    res.end();
+  } catch (e) { next(e); }
+});
+
+// 标记用户"使用"了某个辅助手段（勾选/表态）
+//   v0.13 fix: 之前整个 use_case/apply 端点被错误嵌套进这个 try 块（缺 }); 闭合），
+//              导致 :id/assist/use_case/apply 路由从未注册到 router.stack。
+//              现在 use 端点补完整（else 分支 + res.json + catch），apply 端点独立。
+router.post('/:id/assist/:method/use', async (req, res, next) => {
+  try {
+    const { method } = req.params;
+    const body = req.body || {};
+    // 🆕 v0.117de: 自由对话 sess-xxx → 自动 resolve hidden requirement（与 d2390c2 5 路由统一）
+    //   覆盖 req.params.id → 后续所有 req.params.id 引用自动是真实 REQ-XXX（含 service 调用）
+    if (req.params.id && req.params.id.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(req.params.id);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      req.params.id = sessionReq.id;
+    }
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+
+    const svc = assists.getAssist(method);
+    if (!svc) return res.status(400).json({ error: 'UNKNOWN_METHOD', method });
+
+    let result = null;
+    if (method === 'decision_tree') result = svc.markUsed(req.params.id, body.branchIdx);
+    else if (method === 'scenarios') result = svc.markPicked(req.params.id, body.idx);
+    else if (method === 'diagnosis') result = svc.markUsed(req.params.id);
+    else if (method === 'tradeoff') result = svc.setPick(req.params.id, body.dimIdx, body.pick);
+    else if (method === 'arch') result = svc.togglePick(req.params.id, body.idx);
+    else if (method === 'visual') {
+      // v0.3.3 B+++：visual 选中某个变体 → 复用 insightPreviews.pickVariant（会写 picked + 合并到 srs.summary）
+      const { pickVariant } = require('../services/insight-previews');
+      result = pickVariant(req.params.id, body.variantId);
+    }
+    else if (method === 'competitive') {
+      // v0.3.6：竞品分析 → 标记已阅
+      result = svc.markUsed(req.params.id);
+    }
+    else if (method === 'reference') {
+      // v0.3.6：借鉴卡片 → 切换选中
+      result = svc.togglePick(req.params.id, body.idx);
+    }
+    else if (method === 'pains' || method === 'stakeholders' || method === 'risks' || method === 'assumptions' || method === 'health_check') {
+      // v0.4：4 个新辅助手段 → 标记已阅/跳过
+      result = svc.markUsed(req.params.id);
+    }
+    else if (method === 'screenplay' && body.action === 'set_asset') {
+      // v0.22.8: 写入角色/场景图（必须在 markPicked 之前，否则会被 markPicked 截胡）
+      result = svc.setAsset(req.params.id, body);
+    }
+    else if (method === 'screenplay' && body.action === 'set_scene_video') {
+      // v0.22.8: 写入分镜头视频
+      result = svc.setSceneVideo(req.params.id, body.scene_idx, body);
+    }
+    else if (method === 'screenplay') {
+      // v0.22：剧本辅助 → 标记选中并写聊天流（按 P11 教训）
+      result = svc.markPicked(req.params.id, body.idx);
+    }
+    else if (method === 'image_gen') {
+      // v0.22.8: 选中第 idx 张候选
+      result = svc.pickOption(req.params.id, body.idx);
+      // v0.22.15: 如果来自 screenplay 的图片生成（body 带 _attachTo），联动写回 screenplay assets
+      if (body._attachTo) {
+        const spSvc = assists.getAssist('screenplay');
+        if (spSvc && spSvc.setAsset) {
+          const attach = body._attachTo;
+          spSvc.setAsset(req.params.id, {
+            asset_type: attach.assetType,
+            asset_key: attach.assetKey,
+            options: result?.options || [],
+            picked_idx: body.idx,
+          });
+        }
+      }
+    }
+    else if (method === 'screenplay' && body.action === 'set_asset') {
+      // v0.22.8: 写入角色/场景图
+      result = svc.setAsset(req.params.id, body);
+    }
+    else if (method === 'screenplay' && body.action === 'set_scene_video') {
+      // v0.22.8: 写入分镜头视频
+      result = svc.setSceneVideo(req.params.id, body.scene_idx, body);
+    }
+    else return res.status(400).json({ error: 'METHOD_HAS_NO_USE_HANDLER' });
+
+    res.json({ method, result });
+  } catch (e) { next(e); }
+});
+
+// v0.13：方法论整理 — apply 端点（deprecated，B1 起请用 /apply/preview + /apply/confirm）
+//   旧行为: 直接调 applyUseCaseResult 走 buildDescriptionFromAccepted 拼 4 段式 bullet 写库
+//   保留: 旧客户端 / 测试 / 兜底场景
+router.post('/:id/assist/use_case/apply', async (req, res, next) => {
+  try {
+    // 🆕 v0.117de: 自由对话 sess-xxx → 自动 resolve
+    if (req.params.id && req.params.id.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(req.params.id);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      req.params.id = sessionReq.id;
+    }
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    const { acceptedItems, confirmedAssumptions, structuredData, discardedItems } = req.body || {};
+    const useCaseSvc = require('../services/assists/use-case');
+    const result = useCaseSvc.applyUseCaseResult(req.params.id, {
+      acceptedItems: Array.isArray(acceptedItems) ? acceptedItems : [],
+      confirmedAssumptions: Array.isArray(confirmedAssumptions) ? confirmedAssumptions : [],
+      structuredData: structuredData || null,
+      discardedItems: Array.isArray(discardedItems) ? discardedItems : [],
+      // description 不传 → 走 buildDescriptionFromAccepted 兜底
+    });
+    if (result.error) return res.status(400).json(result);
+    return res.json(result);
+  } catch (e) { next(e); }
+});
+
+// v0.13 B1：方法论整理 — preview 端点（生成 5 段式 description 预览，不写库）
+//   输入: acceptedItems / confirmedAssumptions / discardedItems (前端从 5 要素 checklist 卡片勾选)
+//   处理: 读 req (title/description/supplement_history) + 调 LLM (PREVIEW_SYSTEM_PROMPT)
+//   输出: { description: 5段式文本, modelId } 给前端做 inline 编辑
+//   不写库！用户编辑后必须调 /apply/confirm 才写
+router.post('/:id/assist/use_case/apply/preview', async (req, res, next) => {
+  try {
+    // 🆕 v0.117de: 自由对话 sess-xxx → 自动 resolve
+    if (req.params.id && req.params.id.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(req.params.id);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      req.params.id = sessionReq.id;
+    }
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    const { acceptedItems, confirmedAssumptions, discardedItems } = req.body || {};
+    const useCaseSvc = require('../services/assists/use-case');
+    const result = await useCaseSvc.previewUseCaseResult(req.params.id, {
+      acceptedItems: Array.isArray(acceptedItems) ? acceptedItems : [],
+      confirmedAssumptions: Array.isArray(confirmedAssumptions) ? confirmedAssumptions : [],
+      discardedItems: Array.isArray(discardedItems) ? discardedItems : [],
+    });
+    if (result.error) {
+      const code = result.error === 'REQ_NOT_FOUND' ? 404 : 500;
+      return res.status(code).json(result);
+    }
+    return res.json(result);
+  } catch (e) { next(e); }
+});
+
+// v0.13 B1：方法论整理 — confirm 端点（写库：用户编辑后的 5 段式 description）
+//   输入: { description: 用户在 preview 弹层里改后的 5 段式文本, acceptedItems, confirmedAssumptions, structuredData }
+//   写库: description = 用户改后文本; structured_requirements = status:'applied' + 完整结构
+//   旧 description 进 description_history (最近 5 份, 永久可回滚)
+router.post('/:id/assist/use_case/apply/confirm', async (req, res, next) => {
+  try {
+    // 🆕 v0.117de: 自由对话 sess-xxx → 自动 resolve
+    if (req.params.id && req.params.id.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(req.params.id);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      req.params.id = sessionReq.id;
+    }
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    const { description, acceptedItems, confirmedAssumptions, structuredData, discardedItems } = req.body || {};
+    if (typeof description !== 'string' || description.trim().length < 50) {
+      return res.status(400).json({ error: 'DESCRIPTION_TOO_SHORT', minLength: 50, currentLength: description?.length || 0 });
+    }
+    const useCaseSvc = require('../services/assists/use-case');
+    const result = useCaseSvc.applyUseCaseResult(req.params.id, {
+      acceptedItems: Array.isArray(acceptedItems) ? acceptedItems : [],
+      confirmedAssumptions: Array.isArray(confirmedAssumptions) ? confirmedAssumptions : [],
+      structuredData: structuredData || null,
+      discardedItems: Array.isArray(discardedItems) ? discardedItems : [],
+      description: description.trim(),  // B1: 传用户改后的 5 段式 description
+    });
+    if (result.error) return res.status(400).json(result);
+    return res.json(result);
+  } catch (e) { next(e); }
+});
+
+
+// ============================================================
+// 决策树分支详情（v0.3.2 极简思路区 增量）
+//   用户点开分支的「类比徽章」→ 生成 3-5 个该分支的设计特色 + 配图
+// ============================================================
+const branchDetailService = require('../services/branch-detail');
+const rewriteService = require('../services/rewrite-description');
+const briefServiceRegen = require('../services/thinking-brief');
+
+// 启动生成（fire-and-forget，立即返回 202）
+router.post('/:id/thinking-brief/branch-detail', async (req, res, next) => {
+  try {
+    const { branchIdx, modelId, role } = req.body || {};
+    if (typeof branchIdx !== 'number' || branchIdx < 0) {
+      return res.status(400).json({ error: 'INVALID_BRANCH_IDX' });
+    }
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+
+    setImmediate(() => branchDetailService.runBranchDetailJob(req.params.id, branchIdx, { modelId, role })
+      .catch(e => console.error('[branch-detail] 任务异常:', e)));
+    res.status(202).json({ message: '分支详情生成已启动', status: 'generating' });
+  } catch (e) { next(e); }
+});
+
+// 读取详情（前端轮询用）
+router.get('/:id/thinking-brief/branch-detail/:branchIdx', (req, res, next) => {
+  try {
+    const branchIdx = parseInt(req.params.branchIdx, 10);
+    if (isNaN(branchIdx) || branchIdx < 0) {
+      return res.status(400).json({ error: 'INVALID_BRANCH_IDX' });
+    }
+    const detail = branchDetailService.getBranchDetail(req.params.id, branchIdx);
+    if (!detail) return res.status(404).json({ error: 'NOT_GENERATED' });
+
+    // v0.3.3：附带当前决策树数据（assist_decision_tree），前端渲染详情面板时拿 branch label/desc
+    const reqRec = reqStore.getById(req.params.id);
+    let tree = [];
+    if (reqRec) {
+      try {
+        const assist = JSON.parse(reqRec.assist_decision_tree || 'null');
+        if (assist && Array.isArray(assist.tree)) tree = assist.tree;
+      } catch { /* 静默 */ }
+      // 老 brief.decision_tree 兜底
+      if (tree.length === 0) {
+        try {
+          const brief = JSON.parse(reqRec.thinking_brief || 'null');
+          if (brief && Array.isArray(brief.decision_tree)) tree = brief.decision_tree;
+        } catch { /* 静默 */ }
+      }
+    }
+    res.json({ branchDetail: { ...detail, tree } });
+  } catch (e) { next(e); }
+});
+
+// ============================================================
+// v0.3.5 新增：仅追加补充（不动 description）
+//   📤 发送按钮用 → 保留用户最初输入的描述，不被 LLM 自动改写
+//   旧的 /rewrite-description 路由保留 → 给「✨ AI 重新组织」按钮 + 决策树勾选 + 描述历史恢复用
+// ============================================================
+router.post('/:id/supplement', async (req, res, next) => {
+  try {
+    const { supplement, supplementSource, autoRegenBrief } = req.body || {};
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    if (reqRec.status !== 'idea') {
+      return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
+    }
+
+    // 仅追加 supplement_history，不动 description（保留创作主权）
+    const result = await rewriteService.addSupplement(req.params.id, { supplement, supplementSource });
+
+    // 触发 brief 重生 + 重评 clarity（v0.3.5 修复：让 AI 看到补充后重新评估）
+    //   跟原 /rewrite-description 一致，让 brief + clarity 跟 supplement_history 同步
+    // v0.18：free 模式跳过 brief 重生（避免澄清问题污染自由对话流）
+    let briefRegen = null;
+    if (autoRegenBrief !== false) {
+      setImmediate(async () => {
+        try {
+          // 先读最新的 supplement_history（addSupplement 已经写入）
+          const fresh = reqStore.getById(req.params.id);
+          let supplementHistory = [];
+          try {
+            supplementHistory = JSON.parse(fresh?.supplement_history || '[]');
+            if (!Array.isArray(supplementHistory)) supplementHistory = [];
+          } catch (e) { /* 静默降级 */ }
+
+          // v0.18：chat_mode=free 跳过 brief 重生 + clarity 重评
+          if (fresh?.chat_mode === 'free') {
+            console.log(`[supplement] ${req.params.id} chat_mode=free, 跳过 brief 重生 + clarity 重评`);
+          } else {
+            await briefServiceRegen.runBriefJob(req.params.id, {});
+            console.log(`[supplement.assist] ${req.params.id} brief 已重生（路由器在 brief 内部触发）`);
+
+            // v0.3.5 修复：brief 重生后同步重评 clarity，让用户看到"补充让需求变清晰"的反馈
+            try {
+              const { assessClarity } = require('../services/insight-previews');
+              const afterFresh = reqStore.getById(req.params.id);
+              if (afterFresh) {
+                const clarityResult = await assessClarity(
+                  afterFresh.title, afterFresh.description, null,
+                  supplementHistory  // 把 supplement_history 喂给 clarity 评估
+                );
+                if (clarityResult?.clarity) {
+                  reqStore.update(req.params.id, {
+                    input_clarity: clarityResult.clarity,
+                    clarity_reason: clarityResult.reason || '',
+                    clarity_model: clarityResult.modelId,
+                  });
+                  console.log(`[supplement.clarity] ${req.params.id} 重新评估明确度: ${clarityResult.clarity}`);
+                }
+              }
+            } catch (e) { console.error('[supplement] 重评明确度失败（非阻塞）:', e.message); }
+          }
+        } catch (e) {
+          console.error('[supplement] 自动重新生成思路异常:', e.message);
+        }
+      });
+      briefRegen = 'started';
+    }
+
+    res.json({
+      supplementHistoryCount: result.supplementHistoryCount,
+      added: result.added,
+      briefRegen,
+    });
+  } catch (e) { next(e); }
+});
+
+// v0.3.5 新增：读取补充历史（前端 idea panel 展示用）
+router.get('/:id/supplement-history', (req, res, next) => {
+  try {
+    // 🆕 v0.117de: 自由对话 sess-xxx → 自动 resolve hidden requirement
+    //   原因：selectScreenplay / useAssist 等非 SSE 路径走 POST /assist/:method/use 后，
+    //   前端 startChatPolling 拉 sess-xxx 的 supplement-history → 之前漏 resolve → 404 → catch 吞掉 → 卡片不渲染
+    if (req.params.id && req.params.id.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(req.params.id);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      req.params.id = sessionReq.id;
+    }
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    let history = [];
+    try { history = JSON.parse(reqRec.supplement_history || '[]'); } catch { history = []; }
+    // v0.19a：兜底剥离旧 user entry 的附件内容（修复前写入的旧数据）
+    const { stripAttachmentContext } = require('./chat-intent');
+    res.json({
+      history: history.map((h, i) => {
+        const out = {
+          index: i,
+          role: h.role || 'user',
+          text: h.text || '',
+          opening: h.opening || '',
+          understanding: h.understanding || '',
+          followup_question: h.followup_question || '',
+          source: h.source || 'idea_supplement',
+          at: h.at || null,
+        };
+        if (h.role === 'user') out.text = stripAttachmentContext(out.text);
+        return out;
+      }),
+      totalCount: history.length,
+    });
+  } catch (e) { next(e); }
+});
+
+// v0.18 切换聊天模式（clarify ↔ free）
+//   - clarify：默认，原行为（AI 引导澄清需求）
+//   - free：自由对话（基于附件/参考资料回答，不追问澄清）
+//   - 切到 free 时清空旧 thinking_brief（避免旧澄清问题污染自由对话流）
+router.post('/:id/chat-mode', (req, res, next) => {
+  try {
+    const { mode } = req.body || {};
+    if (!['clarify', 'free'].includes(mode)) {
+      return res.status(400).json({ error: 'INVALID_MODE', validModes: ['clarify', 'free'] });
+    }
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    if (reqRec.status !== 'idea') {
+      return res.status(409).json({ error: 'ONLY_IDEA_STATUS', currentStatus: reqRec.status });
+    }
+
+    const updates = { chat_mode: mode };
+    // 切到 free 时清空旧 brief（避免旧澄清问题污染自由对话流）
+    // 切回 clarify 时不自动重生 brief —— 等用户下次发消息时由 chatSendSupplement 触发
+    let clearedBrief = false;
+    if (mode === 'free' && reqRec.thinking_brief) {
+      updates.thinking_brief = null;
+      clearedBrief = true;
+    }
+    reqStore.update(req.params.id, updates);
+    console.log(`[chat-mode] ${req.params.id} → ${mode} (clearedBrief=${clearedBrief})`);
+    res.json({ ok: true, mode, clearedBrief });
+  } catch (e) { next(e); }
+});
+
+// ============================================================
+// 需求描述重新组织（v0.3.2 增量）
+//   - 勾选特色 / 手工补充 → LLM 把「原始 + 痕迹」重新组织成结构化描述
+//   - 旧描述进 description_history（最近 5 份）
+//   - 重新组织完成后自动触发「重新生成思路」（基于最新描述）
+// ============================================================
+router.post('/:id/rewrite-description', async (req, res, next) => {
+  try {
+    const { supplement, modelId, role, autoRegenBrief, supplementSource } = req.body || {};
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+
+    // 同步执行 rewrite（前端要立即看新描述）
+    // v0.3.3 B+++：把 supplementSource 一并传入 → 写入 supplement_history 时带标签
+    //   标签让 LLM 知道这条补充是来自「用户手写/决策树勾选/scenario 选/arch 圈/...」
+    const result = await rewriteService.runRewriteJob(req.params.id, { supplement, modelId, supplementSource });
+
+    // v0.3.3：重整后同步重评明确度 → 徽章立刻更新
+    // （用最新的 title + description 评估；modelId 不传，让后端按 capabilities 自动选）
+    let clarityResult = null;
+    try {
+      const { assessClarity } = require('../services/insight-previews');
+      const fresh = reqStore.getById(req.params.id);
+      if (fresh) {
+        // v0.3.5 修复：clarity 评估也要看 supplement_history
+        let supplementHistory = [];
+        try {
+          supplementHistory = JSON.parse(fresh.supplement_history || '[]');
+          if (!Array.isArray(supplementHistory)) supplementHistory = [];
+        } catch (e) { /* 静默降级 */ }
+        clarityResult = await assessClarity(fresh.title, fresh.description, null, supplementHistory);
+        if (clarityResult?.clarity) {
+          reqStore.update(req.params.id, {
+            input_clarity: clarityResult.clarity,
+            clarity_reason: clarityResult.reason || '',
+            clarity_model: clarityResult.modelId,
+          });
+        }
+      }
+    } catch (e) { console.error('[rewrite] 重评明确度失败（非阻塞）:', e.message); }
+
+    // autoRegenBrief 默认 true：基于最新 description 重新生成思路
+    let briefRegen = null;
+    if (autoRegenBrief !== false) {
+      setImmediate(async () => {
+        try {
+          await briefServiceRegen.runBriefJob(req.params.id, { modelId, role });
+          // v0.3.3 B 方案：路由器调用已内嵌到 runBriefJob 内部，brief 完成自动调一次
+          //   这里不再重复触发，避免同一 chat_round 选多种
+          console.log(`[rewrite.assist] ${req.params.id} brief 已重生（路由器在 brief 内部触发）`);
+        } catch (e) { console.error('[rewrite] 自动重新生成思路异常:', e.message); }
+      });
+      briefRegen = 'started';
+    }
+
+    res.json({
+      description: result.description,
+      modelId: result.modelId,
+      historyCount: result.historyCount,
+      supplementHistoryCount: result.supplementHistoryCount,  // v0.3.3 B+++ 累加计数
+      briefRegen,
+      clarity: clarityResult?.clarity || null,
+      clarityReason: clarityResult?.reason || null,
+    });
+  } catch (e) { next(e); }
+});
+
+// 读取描述历史（v0.3.2 增量）
+router.get('/:id/description-history', (req, res, next) => {
+  try {
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    let history = [];
+    try { history = JSON.parse(reqRec.description_history || '[]'); } catch { history = []; }
+    res.json({
+      history: history.map((h, i) => ({
+        index: i,
+        description: h.description || '',
+        supplement: h.supplement || null,
+        rewritten_at: h.rewritten_at || null,
+        model: h.model || null,
+      })),
+      currentDescription: reqRec.description || '',
+    });
+  } catch (e) { next(e); }
+});
+
+// ============================================================
+// 导出 AI 回复为 Word 文档（v0.8）
+//   提取当前 AI brief 内容 → LLM 优化格式 → 生成 .docx 下载
+// ============================================================
+router.post('/:id/export-word', async (req, res, next) => {
+  try {
+    const wordExport = require('../services/word-export');
+    const { filePath, fileName } = await wordExport.exportBriefToWord(req.params.id, {
+      chatRound: req.body?.chatRound,
+      modelId: req.body?.modelId,
+    });
+    const fs = require('fs');
+    const stat = fs.statSync(filePath);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+    res.setHeader('Content-Length', stat.size);
+    const stream = fs.createReadStream(filePath);
+    stream.pipe(res);
+    stream.on('end', () => {
+      // 发送完后清理临时文件
+      try { fs.unlinkSync(filePath); } catch {}
+    });
+  } catch (e) {
+    if (e.message === 'BRIEF_NOT_READY') return res.status(400).json({ error: 'BRIEF_NOT_READY', message: 'AI 回复尚未就绪，请稍后再试' });
+    if (e.message === 'BRIEF_EMPTY') return res.status(400).json({ error: 'BRIEF_EMPTY', message: 'AI 回复内容为空，无法导出' });
+    if (e.message === 'REQ_NOT_FOUND') return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    next(e);
+  }
+});
+
+// ── v0.13 B4：需求体检 — 驳回 / 撤销端点 ──
+const healthCheckSvc = () => require('../services/assists/health-check');
+
+router.post('/:id/assist/health_check/dismiss', async (req, res, next) => {
+  try {
+    // 🆕 v0.117de: 自由对话 sess-xxx → 自动 resolve
+    if (req.params.id && req.params.id.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(req.params.id);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      req.params.id = sessionReq.id;
+    }
+    const result = healthCheckSvc().dismissFinding(req.params.id, req.body);
+    if (result.error) return res.status(result.error === 'REQ_NOT_FOUND' ? 404 : 400).json(result);
+    res.json(result);
+  } catch (e) { next(e); }
+});
+
+router.post('/:id/assist/health_check/restore', async (req, res, next) => {
+  try {
+    // 🆕 v0.117de: 自由对话 sess-xxx → 自动 resolve
+    if (req.params.id && req.params.id.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(req.params.id);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      req.params.id = sessionReq.id;
+    }
+    const result = healthCheckSvc().restoreFinding(req.params.id, req.body);
+    if (result.error) return res.status(result.error === 'REQ_NOT_FOUND' ? 404 : 400).json(result);
+    res.json(result);
+  } catch (e) { next(e); }
+});
+
+router.get('/:id/assist/health_check/dismissed', async (req, res, next) => {
+  try {
+    // 🆕 v0.117de: 自由对话 sess-xxx → 自动 resolve
+    if (req.params.id && req.params.id.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(req.params.id);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      req.params.id = sessionReq.id;
+    }
+    const result = healthCheckSvc().getDismissed(req.params.id);
+    res.json({ dismissed: result });
+  } catch (e) { next(e); }
+});
+
+// v0.19：视频生成进度查询
+//   v0.22.30: 接受 body.scene_idx 参数 → 按分桶字段读（剧本多镜头互不覆盖）
+router.post('/:id/assist/video/query', async (req, res, next) => {
+  try {
+    // 🆕 v0.117de: 自由对话 sess-xxx → 自动 resolve
+    if (req.params.id && req.params.id.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(req.params.id);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      req.params.id = sessionReq.id;
+    }
+    const videoSvc = require('../services/assists/video');
+    const reqRec = reqStore.getById(req.params.id);
+    const projectId = reqRec?.project_id || null;
+    // v0.22.30: scene_idx 透传给 queryAssistJob（无则保持原行为，向后兼容）
+    const sceneIdxRaw = req.body?.scene_idx;
+    const sceneIdx = (typeof sceneIdxRaw === 'number') ? sceneIdxRaw
+      : (typeof sceneIdxRaw === 'string' && sceneIdxRaw !== '' && !isNaN(parseInt(sceneIdxRaw, 10)))
+        ? parseInt(sceneIdxRaw, 10)
+        : null;
+    const result = await videoSvc.queryAssistJob(req.params.id, sceneIdx);
+    if (!result) return res.status(404).json({ error: 'NO_VIDEO_TASK' });
+    res.json({
+      status: result.status,
+      progress: result.progress,
+      video_url: result.video_url,
+      video_id: result.video_id,
+      asset_path: result.asset_path || null,  // v0.22.7: 本地 workspace 路径
+      project_id: projectId,                  // v0.22.7: 前端拼本地 URL 用
+      scene_idx: sceneIdx,                    // v0.22.30: 回传 scene_idx 方便前端日志核对
+      error: result.error,
+    });
+  } catch (e) { next(e); }
+});
+
+// v0.19：对话清理 — 统计当前对话条目数
+router.get('/:id/assist/clean/stats', async (req, res, next) => {
+  try {
+    // 🆕 v0.117de: 自由对话 sess-xxx → 自动 resolve
+    if (req.params.id && req.params.id.startsWith('sess-')) {
+      const sessionReq = chatSessionService.getOrCreateSessionRequirement(req.params.id);
+      if (!sessionReq) return res.status(404).json({ error: 'SESSION_REQ_NOT_FOUND' });
+      req.params.id = sessionReq.id;
+    }
+    const cleanSvc = require('../services/assists/clean');
+    const reqRec = reqStore.getById(req.params.id);
+    if (!reqRec) return res.status(404).json({ error: 'REQ_NOT_FOUND' });
+    const info = cleanSvc.getBriefInfo(req.params.id);
+    res.json(info);
+  } catch (e) { next(e); }
+});
+
+module.exports = router;

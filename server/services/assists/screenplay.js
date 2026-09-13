@@ -243,9 +243,17 @@ function markPicked(requirementId, idx) {
   try { assist = JSON.parse(req.assist_screenplay || 'null'); } catch { assist = null; }
   if (!assist || !Array.isArray(assist.screenplays) || !assist.screenplays[idx]) return null;
 
+  const prevPicked = assist.picked;
   assist.used = true;
   assist.picked = idx;
   assist.picked_at = new Date().toISOString();
+  // v0.22.68: 换剧本 → 已生成的首帧图作废
+  //   原因：scene_frames 只按「场次索引」存（0/1/2…），不区分是哪个剧本的分镜 →
+  //   换剧本后旧首帧图会被当成新剧本的首帧（画面完全不对）。宁可清掉让用户重生成。
+  if (prevPicked !== null && prevPicked !== undefined && prevPicked !== idx) {
+    assist.scene_frames = {};
+    console.log(`[assist:screenplay] ${requirementId} 剧本切换 ${prevPicked}→${idx}，已清空首帧图`);
+  }
   reqStore.update(requirementId, { assist_screenplay: JSON.stringify(assist) });
 
   // 写聊天流（按 P11 教训：结果必须出现在聊天流中）
@@ -306,6 +314,11 @@ function writeScreenplayChatEntry(reqId, screenplay, meta = {}) {
     scene_videos: (currentAssist?.scene_videos) || {},
     // v0.22.20: 把 project_id 写进 card（之前漏了，聊天流卡片拼本地 URL 时 fallback 到 'default' → 404）
     project_id: req.project_id || null,
+    // v0.22.65: 合成后的完整视频（compose_final）也要进卡片，否则聊天流卡片看不到成片
+    final_video: (currentAssist?.final_video) || null,
+    // v0.22.67: 首帧图（每场一张）+ 视频选项（时长/画幅）——聊天流卡片也要能渲染
+    scene_frames: (currentAssist?.scene_frames) || {},
+    video_opts: (currentAssist?.video_opts) || null,
     saved_at: new Date().toISOString(),
   };
 
@@ -422,7 +435,301 @@ function setSceneVideo(requirementId, sceneIdx, payload) {
 function getAssist(requirementId) {
   const req = reqStore.getById(requirementId);
   if (!req) return null;
-  try { return JSON.parse(req.assist_screenplay || 'null'); } catch { return null; }
+  let assist = null;
+  try { assist = JSON.parse(req.assist_screenplay || 'null'); } catch { assist = null; }
+  // v0.22.67: 剧本记录本身不存 project_id，前端拼本地资源 URL（首帧图/分镜头视频/成片）
+  //   时会 fallback 到 'default' → /api/generate/assets/default/... 404。
+  //   读取时注入（不改写库里那份，避免与并发写冲突）。
+  if (assist && !assist.project_id && req.project_id) assist.project_id = req.project_id;
+  return assist;
+}
+
+/**
+ * v0.22.67: 视频生成选项（每段时长 + 画幅）—— 用户拍板「默认但可调」
+ *   默认：每段时长 = round(target_seconds / 场数)（3 场 15s → 5s）；画幅 16:9
+ */
+const ASPECT_DIMS = {
+  '16:9': [1280, 720], '9:16': [720, 1280], '1:1': [1024, 1024],
+  '4:3': [1152, 864], '3:4': [864, 1152],
+};
+const ALLOWED_ASPECTS = Object.keys(ASPECT_DIMS);
+
+function defaultVideoOpts(assist) {
+  const scenes = (assist.screenplays && assist.picked !== null && assist.picked !== undefined)
+    ? (assist.screenplays[assist.picked]?.scenes || []).length : 3;
+  const total = assist.target_seconds || 15;
+  const per = Math.max(4, Math.min(12, Math.round(total / Math.max(1, scenes)) || 5));
+  return { seconds_per_scene: per, aspect_ratio: '16:9', video_model: 'agnes-video-2.5-flash' };
+}
+
+function setVideoOpts(requirementId, payload = {}) {
+  const req = reqStore.getById(requirementId);
+  if (!req) return null;
+  let assist;
+  try { assist = JSON.parse(req.assist_screenplay || 'null'); } catch { assist = null; }
+  if (!assist) return null;
+
+  const cur = Object.assign(defaultVideoOpts(assist), assist.video_opts || {});
+  if (payload.seconds_per_scene !== undefined) {
+    const s = parseInt(payload.seconds_per_scene, 10);
+    if (s >= 4 && s <= 12) cur.seconds_per_scene = s;
+  }
+  if (payload.aspect_ratio) {
+    const a = String(payload.aspect_ratio);
+    if (ALLOWED_ASPECTS.includes(a)) cur.aspect_ratio = a;
+  }
+  if (payload.video_model) {
+    const m = String(payload.video_model);
+    if (/^agnes-video-(2\.5|2\.5-flash|v2\.0)$/.test(m)) cur.video_model = m;
+  }
+  assist.video_opts = cur;
+  reqStore.update(requirementId, { assist_screenplay: JSON.stringify(assist) });
+  // v0.22.68: 同步重写聊天流卡片 —— 否则历史里那张卡还显示旧时长/画幅，
+  //   下次开窗或重新渲染时用户看到的和实际生效的不一致（假数据）
+  if (assist.used && assist.picked !== null && assist.picked !== undefined) {
+    try {
+      const sp = (assist.screenplays || [])[assist.picked];
+      if (sp) {
+        writeScreenplayChatEntry(requirementId, sp, {
+          idea: assist.idea, target_seconds: assist.target_seconds,
+          idx: assist.picked, total: assist.screenplays.length,
+        });
+      }
+    } catch (e) {
+      console.warn(`[assist:screenplay] ${requirementId} setVideoOpts 后重写聊天流卡片失败:`, e.message);
+    }
+  }
+  console.log(`[assist:screenplay] ${requirementId} video_opts 更新: ${JSON.stringify(cur)}`);
+  return assist;
+}
+
+/**
+ * v0.22.71: 角色名别名集 —— 剧本里常用简称（角色叫「咖啡师小雨」，分镜里写的是「小雨」）
+ *   朴素 includes 匹配会漏（场 2/3 判不出出场人物）→ 退到"全部角色"就会画出多余的人
+ */
+const ROLE_PREFIXES = /^(咖啡师|店员|老板|师傅|主持人|主播|记者|医生|护士|老师|学生|司机|保安|厨师|店长|服务员|妈妈|爸爸|爷爷|奶奶|外公|外婆|哥哥|姐姐|弟弟|妹妹|小|大|老)/;
+function charAliases(name) {
+  const n = String(name || '').trim();
+  if (!n) return [];
+  const out = new Set([n]);
+  const stripped = n.replace(ROLE_PREFIXES, '');
+  if (stripped && stripped.length >= 2 && stripped !== n) out.add(stripped);
+  if (n.length >= 3) out.add(n.slice(-2));   // 末两字简称（咖啡师小雨 → 小雨）
+  return Array.from(out).filter(a => a.length >= 2);
+}
+
+/**
+ * v0.22.71: 本场真正出场的人物（按 shot/dialogue/action 文本判定）
+ *   用户报「场 1 只有姆万加，首帧图却画了 2 个人」——根因是提示词把全剧角色都写进去了，
+ *   且把所有角色图都当参考图传（模型按参考图凑人数）。
+ *   规则：① 文本里点到名的角色才算出场 ② 一个都没点到 → 只给主角（1 人），绝不默认全给
+ */
+function castOfScene(sp, scene) {
+  const text = [scene && scene.shot, scene && scene.dialogue, scene && scene.action].filter(Boolean).join(' ');
+  const chars = (sp && sp.characters) || [];
+  const present = chars.filter(c => c.name && charAliases(c.name).some(a => text.includes(a)));
+  if (present.length) return { cast: present, matched: true };
+  return { cast: chars.slice(0, 1), matched: false };
+}
+
+/** 相对 asset_path → data URI（参考图兜底用；正常走 CDN image_url_output）
+ *  v0.22.70: 归一化 —— image-tools-service 返回的 asset_path 自带 workspace 前缀
+ *  （'agent-buddy-actions/assets/...'），而这里按「相对 workspace 的路径」解析 → 会拼成
+ *  workspaces/<slug>/<slug>/assets/... → 文件不存在 → 参考图静默丢失。统一剥到 'assets/' 开头。 */
+function normAssetPath(p) {
+  if (!p) return '';
+  const s = String(p);
+  const i = s.indexOf('assets/');
+  return i > 0 ? s.slice(i) : s;
+}
+
+function assetToDataUri(projectSlug, relPath) {
+  try {
+    const compose = require('../video-compose');
+    const abs = compose.resolveAssetPath(projectSlug, normAssetPath(relPath));
+    if (!abs || !require('fs').existsSync(abs)) return '';
+    const buf = require('fs').readFileSync(abs);
+    const mime = /\.png$/i.test(abs) ? 'image/png' : /\.webp$/i.test(abs) ? 'image/webp' : 'image/jpeg';
+    return `data:${mime};base64,${buf.toString('base64')}`;
+  } catch (e) { return ''; }
+}
+
+/**
+ * v0.22.67: 为某一分镜头生成「首帧图」（这一场的起始定格画面）
+ *   用途：作为该段视频的 first_frame，并作为上一段的 last_frame → 段间精确衔接
+ *   参考图：角色档案图（全部角色）+ 场景图（多图合成，保形象一致）
+ *   返回 image_url_output（Agnes CDN 公网 URL，2.5 视频接口要求公网可访问）
+ */
+async function genSceneFrame(requirementId, payload = {}) {
+  const req = reqStore.getById(requirementId);
+  if (!req) throw new Error('需求不存在');
+  let assist;
+  try { assist = JSON.parse(req.assist_screenplay || 'null'); } catch { assist = null; }
+  if (!assist) throw new Error('剧本数据不存在');
+  if (assist.picked === null || assist.picked === undefined) throw new Error('请先选一个剧本');
+
+  const sp = assist.screenplays[assist.picked];
+  const sceneIdx = parseInt(payload.scene_idx, 10) || 0;
+  const scene = (sp.scenes || [])[sceneIdx];
+  if (!scene) throw new Error('分镜头数据缺失');
+
+  const videoSvc = require('./video');
+  const slug = videoSvc.getProjectDirForReq(req);
+  const opts = Object.assign(defaultVideoOpts(assist), assist.video_opts || {});
+  const dims = ASPECT_DIMS[opts.aspect_ratio] || ASPECT_DIMS['16:9'];
+
+  // ── 参考图：只给「本场出场角色」的图 + 场景图（CDN URL 优先，本地 asset 转 data URI 兜底）──
+  //   v0.22.71: 之前给全部角色图 → 模型按参考图凑人数 → 单人场画出 2 个人
+  const { cast, matched } = castOfScene(sp, scene);
+  const castNames = cast.map(c => c.name);
+  console.log(`[assist:screenplay] ${requirementId} 场${sceneIdx + 1} 出场人物(${matched ? '文本命中' : '兜底主角'}): ${castNames.join('、') || '(无)'}`);
+  const refs = [];
+  const charAssets = (assist.assets && assist.assets.characters) || {};
+  for (const name of castNames) {
+    const a = charAssets[name];
+    if (!a) continue;
+    const u = a.image_url_output || (a.asset_path ? assetToDataUri(slug, a.asset_path) : '');
+    if (u) refs.push({ kind: 'character', name, url: u });
+  }
+  const sceneAsset = (assist.assets && assist.assets.scenes && assist.assets.scenes['0']) || null;
+  if (sceneAsset) {
+    const u = sceneAsset.image_url_output || (sceneAsset.asset_path ? assetToDataUri(slug, sceneAsset.asset_path) : '');
+    if (u) refs.push({ kind: 'scene', name: '场景', url: u });
+  }
+
+  const castLine = castNames.length
+    ? `出场人物：画面中只有 ${castNames.join(' 和 ')} 这 ${castNames.length} 个人物（外貌与参考图一致），不得出现其他人物、路人或额外的人。`
+    : '本场为环境空镜：画面中不出现任何人物。';
+  const prompt = (payload.prompt || '').trim() || [
+    `电影感写实画面：${sp.setting || ''}。`,
+    scene.shot ? `镜头：${scene.shot}。` : '',
+    scene.action ? `画面内容：${scene.action}的起始瞬间。` : '',
+    castLine,
+    `构图：${opts.aspect_ratio} 画幅建立镜头，主体清晰，前中后景层次分明。`,
+    '风格：电影感写实摄影，真实光影，浅景深。质量：细节丰富，2K，画面干净。',
+    '负面：多个人物、第二个人、多余路人、群演、畸形手、文字、水印、低质量、卡通、动漫、插画。',
+  ].filter(Boolean).join(' ');
+
+  const imageSvc = require('../image-tools-service');
+  console.log(`[assist:screenplay] ${requirementId} 生成首帧图 场${sceneIdx + 1}（参考图 ${refs.length} 张，画幅 ${opts.aspect_ratio}）`);
+  const r = await imageSvc.coreGenerate({
+    prompt,
+    referenceImages: refs.map(x => x.url),
+    // v0.22.72: 1K（= 与角色图/场景图同档，16:9 时 1312×736）
+    //   之前写死 '2K'（2624×1472）→ 单张 4.7-5MB，是角色图的 4 倍（像素 4 倍）。
+    //   而首帧图只有两个用途：① 卡片缩略图 ② 喂给 2.5-flash 视频（输出仅 720P）→
+    //   1K 已高于视频输出分辨率，2K 只是白占 4 倍磁盘 + 上传/下载时间。
+    size: '1K',
+    n: 1,
+    projectSlug: slug,
+    targetWidth: dims[0],
+    targetHeight: dims[1],
+  });
+  if (!r || !r.ok) throw new Error('首帧图生成失败: ' + ((r && r.error) || '未知错误'));
+  const opt = (r.options || [])[0];
+  if (!opt) throw new Error('首帧图生成失败: 无返回图片');
+
+  if (!assist.scene_frames) assist.scene_frames = {};
+  assist.scene_frames[String(sceneIdx)] = {
+    image_url_output: opt.image_url_output || null,   // ← 公网 CDN URL（喂给 2.5 视频接口）
+    // v0.22.70: 归一化成 'assets/...'（coreGenerate 返回的带 workspace 前缀，前端拼 URL 会拼重 → 破图）
+    asset_path: normAssetPath(opt.asset_path) || null,  // 本地备份（CDN 过期后可看）
+    mime: opt.mime || null,
+    size: opt.size || null,
+    prompt,
+    refs: refs.map(x => ({ kind: x.kind, name: x.name })),  // 只存元信息，不存 base64
+    aspect_ratio: opts.aspect_ratio,
+    created_at: new Date().toISOString(),
+  };
+  reqStore.update(requirementId, { assist_screenplay: JSON.stringify(assist) });
+
+  // 重写聊天流卡片（同 setAsset/setSceneVideo 的处理）
+  if (assist.used && assist.picked !== null && assist.picked !== undefined) {
+    try {
+      writeScreenplayChatEntry(requirementId, sp, {
+        idea: assist.idea, target_seconds: assist.target_seconds,
+        idx: assist.picked, total: assist.screenplays.length,
+      });
+    } catch (e) {
+      console.warn(`[assist:screenplay] ${requirementId} genSceneFrame 后重写聊天流卡片失败:`, e.message);
+    }
+  }
+  console.log(`[assist:screenplay] ${requirementId} 首帧图完成 场${sceneIdx + 1}: ${assist.scene_frames[String(sceneIdx)].asset_path}`);
+  return assist;
+}
+
+/**
+ * v0.22.65: 把已生成的分镜头合成一条完整视频（用户报「3 段视频割裂，怎么连到一起」）
+ *   payload: { transition: 'none' | 'fade', transitionDuration?: 0.4 }
+ *   流程：按 field 顺序收集 scene_videos 的 asset_path → video-compose 拼接 → 写 final_video → 重写聊天流卡片
+ *   注意：至少 2 段；只合成「已生成」的段落（缺段不影响，按序拼现有的）
+ */
+async function composeFinal(requirementId, payload = {}) {
+  const req = reqStore.getById(requirementId);
+  if (!req) throw new Error('需求不存在');
+  let assist;
+  try { assist = JSON.parse(req.assist_screenplay || 'null'); } catch { assist = null; }
+  if (!assist) throw new Error('剧本数据不存在');
+
+  const sceneVideos = assist.scene_videos || {};
+  const entries = Object.keys(sceneVideos)
+    .filter((k) => /^\d+$/.test(k))
+    .sort((a, b) => parseInt(a, 10) - parseInt(b, 10))
+    .map((k) => ({ idx: parseInt(k, 10), v: sceneVideos[k] || {} }))
+    .filter((e) => e.v.asset_path);
+  if (entries.length < 2) {
+    throw new Error(`至少需要 2 个已生成的分镜头才能合成（当前 ${entries.length} 个）`);
+  }
+
+  const videoSvc = require('./video');
+  const compose = require('../video-compose');
+  const slug = videoSvc.getProjectDirForReq(req);
+  const files = entries.map((e) => compose.resolveAssetPath(slug, e.v.asset_path));
+  const missing = files.filter((f) => !f || !require('fs').existsSync(f));
+  if (missing.length) throw new Error(`有 ${missing.length} 个分镜头视频文件在本地找不到，无法合成`);
+
+  const transition = payload.transition === 'fade' ? 'fade' : 'none';
+  const out = compose.buildOutputPath(slug, files.length, transition);
+  const t0 = Date.now();
+  console.log(`[assist:screenplay] ${requirementId} 开始合成 ${files.length} 段（transition=${transition}）`);
+  const r = await compose.concatVideos(files, out.absPath, {
+    transition,
+    transitionDuration: payload.transitionDuration || 0.4,
+  });
+  if (!r.ok) {
+    console.error(`[assist:screenplay] ${requirementId} 合成失败:`, r.error);
+    throw new Error('视频合成失败: ' + r.error);
+  }
+
+  assist.final_video = {
+    asset_path: out.assetPath,
+    size: r.size,
+    duration: r.duration,
+    segments: files.length,
+    scene_indexes: entries.map((e) => e.idx),
+    transition,
+    mode: r.mode,
+    status: 'done',
+    created_at: new Date().toISOString(),
+  };
+  reqStore.update(requirementId, { assist_screenplay: JSON.stringify(assist) });
+  console.log(`[assist:screenplay] ${requirementId} 合成完成 ${r.duration ? r.duration.toFixed(2) + 's' : ''} (${((Date.now() - t0) / 1000).toFixed(1)}s, ${(r.size / 1048576).toFixed(1)}MB)`);
+
+  // 同步重写聊天流卡片（同 setSceneVideo 的处理）
+  if (assist.used && assist.picked !== null && assist.picked !== undefined) {
+    try {
+      writeScreenplayChatEntry(requirementId, assist.screenplays[assist.picked], {
+        idea: assist.idea,
+        target_seconds: assist.target_seconds,
+        idx: assist.picked,
+        total: assist.screenplays.length,
+      });
+    } catch (e) {
+      console.warn(`[assist:screenplay] ${requirementId} composeFinal 后重写聊天流卡片失败:`, e.message);
+    }
+  }
+
+  return assist;
 }
 
 module.exports = {
@@ -432,6 +739,13 @@ module.exports = {
   markPicked,
   setAsset,        // v0.22.8: 角色/场景图写入
   setSceneVideo,   // v0.22.8: 分镜头视频写入
+  genSceneFrame,   // v0.22.67: 分镜头「首帧图」生成（角色图+场景图多图合成）
+  castOfScene,     // v0.22.71: 本场出场人物判定（首帧图人数控制）
+  charAliases,     // v0.22.71: 角色名别名（咖啡师小雨 → 小雨）
+  normAssetPath,   // v0.22.70: asset_path 归一化（剥掉 workspace 前缀）
+  setVideoOpts,    // v0.22.67: 每段时长 / 画幅 / 视频模型
+  defaultVideoOpts,
+  composeFinal,    // v0.22.65: 合成完整视频（分镜头拼接）
   getAssist,
   writeScreenplayChatEntry,
 };

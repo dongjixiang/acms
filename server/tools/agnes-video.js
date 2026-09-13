@@ -35,25 +35,44 @@ async function generateVideo(args) {
     return { error: 'Agnes API Key 未配置。请在管理后台「高级设置」中配置 Agnes API Key，或在 config.json 中设置 agnesApiKey，或设置环境变量 AGNES_API_KEY' };
   }
 
-  const body = {
-    model: 'agnes-video-v2.0',
-    prompt: args.prompt,
-  };
+  // v0.22.67: 支持 agnes-video-2.5 / 2.5-flash（参数形态与 2.0 不同 —— 由 model 决定，不能混用）
+  //   2.0：num_frames(≤441, 8n+1) + frame_rate + image/extra_body.image[] + extra_body.mode='keyframes'
+  //   2.5：seconds("4"-"12") + size(720P) + aspect_ratio + mode=text|keyframe|reference
+  //        + keyframe 模式的 first_frame / last_frame（首尾帧控制）
+  //   中文站可用 2.5-flash（当前 $0/秒）；国际站(apihub)用中文站 key 会 401
+  const model = args.model || 'agnes-video-v2.0';
+  const is25 = /agnes-video-2\.5/.test(model);
 
-  if (args.image) body.image = args.image;
-  if (args.mode) body.mode = args.mode;
-  if (args.height) body.height = args.height;
-  if (args.width) body.width = args.width;
-  if (args.num_frames) body.num_frames = args.num_frames;
-  if (args.frame_rate) body.frame_rate = args.frame_rate;
-  if (args.seed !== undefined) body.seed = args.seed;
-  if (args.negative_prompt) body.negative_prompt = args.negative_prompt;
+  const body = { model, prompt: args.prompt };
 
-  // 多图/关键帧：extra_body 参数
-  if (args.extra_images || args.extra_mode) {
-    body.extra_body = {};
-    if (args.extra_images) body.extra_body.image = args.extra_images;
-    if (args.extra_mode) body.extra_body.mode = args.extra_mode;
+  if (is25) {
+    const hasFrame = !!(args.first_frame || args.last_frame);
+    body.mode = args.mode === 'reference' ? 'reference' : (hasFrame ? 'keyframe' : 'text');
+    if (args.first_frame) body.first_frame = args.first_frame;
+    if (args.last_frame) body.last_frame = args.last_frame;
+    if (args.images && args.images.length) body.images = args.images;
+    if (args.audios && args.audios.length) body.audios = args.audios;
+    if (args.seconds !== undefined && args.seconds !== null) body.seconds = String(args.seconds);
+    body.size = args.size || '720P';            // Flash 只支持 720P
+    if (args.aspect_ratio) body.aspect_ratio = args.aspect_ratio;
+    if (args.seed !== undefined) body.seed = args.seed;
+    if (args.negative_prompt) body.negative_prompt = args.negative_prompt;
+  } else {
+    if (args.image) body.image = args.image;
+    if (args.mode) body.mode = args.mode;
+    if (args.height) body.height = args.height;
+    if (args.width) body.width = args.width;
+    if (args.num_frames) body.num_frames = args.num_frames;
+    if (args.frame_rate) body.frame_rate = args.frame_rate;
+    if (args.seed !== undefined) body.seed = args.seed;
+    if (args.negative_prompt) body.negative_prompt = args.negative_prompt;
+
+    // 多图/关键帧：extra_body 参数
+    if (args.extra_images || args.extra_mode) {
+      body.extra_body = {};
+      if (args.extra_images) body.extra_body.image = args.extra_images;
+      if (args.extra_mode) body.extra_body.mode = args.extra_mode;
+    }
   }
 
   try {
@@ -96,7 +115,7 @@ async function generateVideo(args) {
       progress: data.progress ?? 0,
       seconds: data.seconds || null,
       size: data.size || null,
-      model: data.model || 'agnes-video-v2.0',
+      model: data.model || model,
       created_at: data.created_at || null,
       raw: data,
     };
@@ -183,8 +202,9 @@ async function queryVideo(args) {
           || data.remixed_from_video_id
           || data.video_url
           || null;
-        result.seconds = data.seconds || null;
-        result.size = data.size || null;
+        // v0.22.67: 2.5 系列把 seconds/size 放在 metadata 里（2.0 在顶层）→ 两处都读
+        result.seconds = data.seconds || (data.metadata && data.metadata.seconds) || null;
+        result.size = data.size || (data.metadata && data.metadata.size) || null;
       }
 
       if (data.status === 'failed') {

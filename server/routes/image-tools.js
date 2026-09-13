@@ -55,6 +55,11 @@ router.post('/ai-generate', async function (req, res) {
   var n = req.body && req.body.n;
   var size = req.body && req.body.size;
   var projectSlug = req.body && req.body.projectSlug;
+  // P200 修复：透传参考图 —— 之前这里漏了，导致：
+  //   ① P199 角色/场景档案库多图合成参考图从未生效
+  //   ② P147/P150 的链式 referenceImage（风格一致性）也从未生效（历史 bug）
+  var referenceImage = req.body && req.body.referenceImage;
+  var referenceImages = req.body && req.body.referenceImages;
 
   if (!prompt || typeof prompt !== 'string') {
     return res.status(400).json({ ok: false, error: 'NO_PROMPT', message: 'prompt 是必填字符串' });
@@ -65,6 +70,8 @@ router.post('/ai-generate', async function (req, res) {
       prompt: prompt,
       n: n,
       size: size,
+      referenceImage: referenceImage,
+      referenceImages: referenceImages,
       projectSlug: projectSlug || ('user-' + userId),
     });
     // coreGenerate 返回 ok:false 时仍 200（让前端能展示 error），但鉴权/输入错误 4xx

@@ -1445,6 +1445,33 @@ async function handleOfficeHtmlDeck(req, res, body) {
  *  body: { kind:'word'|'slides'|'xlsx', docContext:{...}, instruction:'用户指令' }
  *  resp: { ok:true, action:{ kind, op, ... } } 或 { ok:false, error }
  */
+// 从 LLM 输出中提取所有合法 JSON 对象（容错：未转义引号走 repairJsonQuotes 修复）
+// v0.97: 支持多个 JSON 对象（appendAll + 多个 generateImage 分开输出）
+function extractJson(text) {
+  var results = [];
+  var depth = 0, start = -1;
+  for (var i = 0; i < text.length; i++) {
+    var ch = text[i];
+    if (ch === '{') {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0 && start >= 0) {
+        var jsonStr = text.slice(start, i + 1);
+        try {
+          results.push(JSON.parse(jsonStr));
+        } catch (e) {
+          var repaired = repairJsonQuotes(jsonStr);
+          try { results.push(JSON.parse(repaired)); } catch (e2) { /* skip */ }
+        }
+        start = -1;
+      }
+    }
+  }
+  return results;
+}
+
 router.post('/office-action', async function(req, res) {
   try {
     var body = req.body || {};
@@ -1470,6 +1497,17 @@ router.post('/office-action', async function(req, res) {
     var fixedHint = fixedNewText
       ? '\n用户明确要求写入的新文本/值是：' + JSON.stringify(fixedNewText) + '。newText/value/formula 字段必须逐字等于它，严禁改写。'
       : '';
+
+    // P198: 长文生成意图（用户要 N 字/长文/小说/文章 等）走 streaming 分支
+    //   短 op（proposeEdit / formatOps / generateImage 等）走原 JSON 行为不变
+    // 触发条件：① query 显式 stream=1；② instruction 含长文意图关键词（写一篇/生成一篇/3000字/长文/小说/续写等）
+    var wantsStream = req.query.stream === '1'
+      || /(写[一篇段]|生成[一篇段]|创作[一篇段]|\d{3,5}\s*字|长文|长篇|短文|短篇|写一篇|生成一篇|续写)/.test(instruction);
+    if (wantsStream) {
+      return handleOfficeActionStream(req, res, {
+        model, llmAdapter, kind, instruction, docContext, fixedNewText, fixedHint, modelStore
+      });
+    }
 
     var docPrompt = '';
     if (kind === 'word') {
@@ -1586,33 +1624,6 @@ router.post('/office-action', async function(req, res) {
     var content = typeof result === 'string' ? result : (result && result.content) || '';
     console.log('[office-action] LLM 原始输出 >>>', JSON.stringify(content).slice(0, 2000));
     var action = null;
-    // v0.97: 支持多个 JSON 对象（appendAll + 多个 generateImage 分开输出）
-    // 先尝试解析为单个 JSON（含 operations 数组）
-    // JSON 容错解析
-    function extractJson(text) {
-      var results = [];
-      var depth = 0, start = -1;
-      for (var i = 0; i < text.length; i++) {
-        var ch = text[i];
-        if (ch === '{') {
-          if (depth === 0) start = i;
-          depth++;
-        } else if (ch === '}') {
-          depth--;
-          if (depth === 0 && start >= 0) {
-            var jsonStr = text.slice(start, i + 1);
-            try {
-              results.push(JSON.parse(jsonStr));
-            } catch (e) {
-              var repaired = repairJsonQuotes(jsonStr);
-              try { results.push(JSON.parse(repaired)); } catch (e2) { /* skip */ }
-            }
-            start = -1;
-          }
-        }
-      }
-      return results;
-    }
     var jsons = extractJson(content);
     if (jsons.length > 0) {
       // 如果只有一个 JSON，用它
@@ -1795,6 +1806,227 @@ router.post('/tool-retriever/test', async function(req, res) {
 });
 
 // 初始化 tool retriever（后台加载，不阻塞）
+// P198: é¿æçæ streaming åæ¯ï¼SSE åè®®ï¼
+//
+// è§¦åï¼/office-action æ£æµå° wantsStream=trueï¼query.stream=1 æ instruction å«é¿ææå¾ï¼
+// åè®®ï¼
+//   event: meta   data: {"op":"appendAll","chars":0}   â LLM è¾åºé¦ä¸ª { åç«å»å
+//   event: chunk  data: {"text":"...","chars":N}        â æ¯ 150 å­ newText å¢é
+//   event: done   data: {"action":{...}}               â æµç»æ + å®æ´ action
+//   event: error  data: {"message":"..."}               â éè¯¯
+//
+// å³é®è®¾è®¡ï¼
+//   - å¤ç¨ extractJson / repairJsonQuotes å done æ¶çå®æ´è§£æ+æ ¡éª
+//   - ç¶ææºæ« newText å¢éï¼è¾¹æ¶ token è¾¹ emit chunkï¼
+//   - LLM æµè¢«æªæ­æ¶ï¼maxTokens æå¢ï¼ä¹è½ emit done â ç¨ repairJsonQuotes ååº
+//   - maxTokens æç¨æ·æä»¤éæ¾å¼å­æ°å¨æè®¡ç®ï¼ä¸­æ 1.8 token/å­ + 2000 ä½éï¼ä¸é 16000ï¼
+//   - SSE å¿è·³ 15s é²ææä»£è¶æ¶
+async function handleOfficeActionStream(req, res, ctx) {
+  var model = ctx.model;
+  var llmAdapter = ctx.llmAdapter;
+  var kind = ctx.kind;
+  var instruction = ctx.instruction;
+  var docContext = ctx.docContext;
+  var fixedNewText = ctx.fixedNewText;
+  var fixedHint = ctx.fixedHint;
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no'
+  });
+
+  var heartbeat = setInterval(function () {
+    try { res.write(': heartbeat\n\n'); } catch (_) { }
+  }, 15000);
+
+  function sse(event, data) {
+    try { res.write('event: ' + event + '\ndata: ' + JSON.stringify(data) + '\n\n'); } catch (_) { }
+  }
+  function finish() {
+    clearInterval(heartbeat);
+    try { res.end(); } catch (_) { }
+  }
+
+  // ç³»ç» promptï¼ç²¾ç®ç â éç¹ä¿ç appendAll é¿æè¾åºè§åå op ç±»åæ¸åï¼
+  var docPrompt = '';
+  if (kind === 'word') {
+    docPrompt = 'ææ¡£æ¯ Wordï¼ææ®µè½ block ç»ç»ï¼blockIdx ä» 0 å¼å§ï¼type=docParagraph|docHeading|docListItemï¼ï¼\n'
+      + (docContext.blocks || []).map(function (b) {
+          var fmt = [];
+          if (b.type) fmt.push('type=' + b.type);
+          if (b.level != null) fmt.push('level=' + b.level);
+          if (b.kind) fmt.push('kind=' + b.kind);
+          var safeText = String(b.text || '').replace(/"/g, '“').replace(/\\/g, '/');
+          return '[' + b.i + ']' + (fmt.length ? '(' + fmt.join(',') + ')' : '') + ' ' + safeText.slice(0, 120);
+        }).join('\n');
+  } else if (kind === 'slides') {
+    docPrompt = 'ææ¡£æ¯ PPTï¼\n' + (docContext.texts || []).map(function (t) { return '[' + t.i + '] ' + String(t.text || '').slice(0, 120); }).join('\n');
+  }
+
+  var system = 'ä½ æ¯ Office ææ¡£ç¼è¾å¨ä½çæå¨ãæ ¹æ®ç¨æ·æä»¤åææ¡£æè¦ï¼è¾åºä¸¥æ ¼ JSON å¨ä½ï¼ä¸è¦è¾åºä»»ä½å¶ä»æå­ï¼åæ¬ markdown ä»£ç åï¼ã\n'
+    + '[å¨ä½ op ç±»å]\n'
+    + '- appendAllï¼å¨ææ¡£æ«å°¾è¿½å æ°åå®¹ï¼**æ¯æä»»æé¿åº¦é¿æ**ï¼åå­ä»¥ä¸ç newText ç´æ¥åå¨å­ç¬¦ä¸²éï¼ãå¤ä¸ªæ®µè½ç¨ \
+\\n åéãæ ¼å¼ {"op":"appendAll","newText":"å®æ´åå®¹","summary":"ä¸å¥è¯è¯´æ"}\n'
+    + '- proposeEditsï¼æ¹éæ¿æ¢å¤ä¸ªæ®µè½ãæ ¼å¼ {"op":"proposeEdits","operations":[{"blockIdx":N,"newText":"..."},...]}\n'
+    + '- proposeEditï¼æ¿æ¢æå®æ®µè½ãæ ¼å¼ {"op":"proposeEdit","blockIdx":N,"newText":"..."}\n'
+    + '- insertAfterï¼å¨ææ®µåæå¥ãæ ¼å¼ {"op":"insertAfter","blockIdx":N,"newText":"..."}\n'
+    + '- insertAfterSelectionï¼ææ¶¦è²/æ»ç»æå¥å°éåºä¹åï¼åæä¿çï¼ã\n'
+    + '- formatOpsï¼æ¹éæ ¼å¼è°æ´ã\n'
+    + '- generateImageï¼æ ¹æ®éä¸­æå­çææå¾æè¿°ã\n'
+    + '[å³ç­è§å]\n'
+    + '- ç¨æ·è¯´ãåä¸ç¯/çæä¸ç¯/åä¸æ®µãä¸æªæå®ä½ç½® â appendAllï¼åå­¦æç« å¾é¿ä¹è¦ä¸æ¬¡åå®ï¼ä¸è¦åå¤æ¬¡ JSONï¼ã\n'
+    + '- ç¨æ·è¯´ãæ¹/ç¼è¾/æ¿æ¢ ç¬¬Næ®µ æ XXXã â proposeEditã\n'
+    + '- ç¨æ·è¯´ãæ¶¦è²å¨æ/ä¼åå¨æã â proposeEditsã\n'
+    + '[ä¸¥ç¦]\n'
+    + '- ä¸¥ç¦è¾åº markdown ä»£ç ååè£¹ï¼ä¸è¦ ææ³åæ° jsonçé£ç§ï¼ã\n'
+    + '- ä¸¥ç¦ç¼é  blockIdx â å¿é¡»ä»ææ¡£æè¦ç [] åè¡¨ä¸­éã\n'
+    + '- ä¸¥ç¦å¨ appendAll ç newText éä½¿ç¨ [ç»­] [å¾ç»­] ç­å ä½ â å¿é¡»å®æ´è¾åºç¨æ·è¦æ±çå¨é¨åå®¹ã\n'
+    + fixedHint + '\n';
+
+  // å¨æ maxTokensï¼ç¨æ·æä»¤éæ¾å¼å­æ° â ä¸­æ 1.8 token/å­ + 2000 ä½éï¼ä¸é 16000
+  var charMatch = instruction.match(/(\d{3,5})\s*å­/);
+  var maxTokens = 8000;
+  if (charMatch) {
+    var targetChars = parseInt(charMatch[1], 10);
+    maxTokens = Math.min(16000, Math.ceil(targetChars * 1.8) + 2000);
+  }
+
+  // ç¶ææºï¼ç´¯è®¡ buffer + æ« newText å¢é
+  var buffer = '';
+  var state = 'WAIT_OPEN';
+  var newTextStart = -1;
+  var newTextEnd = -1;
+  var emittedChars = 0;
+  var detectedOp = null;
+  var metaSent = false;
+  var CHUNK_SIZE = 150;
+
+  function processBuffer() {
+    if (state === 'DONE') return;
+    if (state === 'WAIT_OPEN') {
+      var openIdx = buffer.indexOf('{');
+      if (openIdx < 0) return;
+      state = 'IN_NEWTEXT';
+    }
+
+    if (!metaSent) {
+      var opMatch = buffer.match(/"op"\s*:\s*"([^"]+)"/);
+      if (!opMatch) return;
+      detectedOp = opMatch[1];
+      metaSent = true;
+      sse('meta', { op: detectedOp, chars: 0 });
+    }
+
+    var hasNewTextOp = ['appendAll', 'insertAfter', 'insertAfterSelection', 'proposeEdit'].indexOf(detectedOp) >= 0
+      || detectedOp === 'proposeEdits';
+
+    if (!hasNewTextOp) {
+      state = 'DONE';
+      return;
+    }
+
+    if (newTextStart < 0) {
+      var m = buffer.match(/"newText"\s*:\s*"/);
+      if (!m) return;
+      newTextStart = m.index + m[0].length;
+    }
+
+    var i = newTextStart;
+    var foundEnd = false;
+    while (i < buffer.length) {
+      var ch = buffer[i];
+      if (ch === '\\' && i + 1 < buffer.length) { i += 2; continue; }
+      if (ch === '"') { newTextEnd = i; foundEnd = true; break; }
+      i++;
+    }
+    var endPos = foundEnd ? newTextEnd : i;
+    var currentNewText = buffer.slice(newTextStart, endPos);
+    var unescaped = currentNewText
+      .replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t')
+      .replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+    if (unescaped.length - emittedChars >= CHUNK_SIZE || (foundEnd && unescaped.length > emittedChars)) {
+      var delta = unescaped.slice(emittedChars);
+      emittedChars = unescaped.length;
+      sse('chunk', { text: delta, chars: emittedChars });
+    }
+    if (foundEnd) state = 'DONE';
+  }
+
+  var llmError = null;
+  var fullContent = '';
+  try {
+    var stream = llmAdapter.callLLMStream(model.id, [
+      { role: 'system', content: system },
+      { role: 'user', content: 'ææ¡£æè¦ï¼\n' + docPrompt + '\n\nç¨æ·æä»¤ï¼' + instruction }
+    ], { maxTokens: maxTokens, temperature: 0.1, caller: 'agent-buddy-office-action-stream' });
+
+    for await (var evt of stream) {
+      if (evt.type === 'token') {
+        buffer += evt.text;
+        fullContent += evt.text;
+        processBuffer();
+      } else if (evt.type === 'done') {
+        processBuffer();
+        if (newTextStart >= 0 && state !== 'DONE') {
+          var remain = buffer.slice(newTextStart)
+            .replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t')
+            .replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+          if (remain.length > emittedChars) {
+            sse('chunk', { text: remain.slice(emittedChars), chars: remain.length });
+            emittedChars = remain.length;
+          }
+        }
+        console.log('[office-action-stream] LLM åå§è¾åº >>>', JSON.stringify(fullContent).slice(0, 2000));
+        var jsons = extractJson(fullContent);
+        var action = null;
+        if (jsons.length > 0) {
+          action = jsons[0];
+          if (jsons.length > 1) {
+            var imgOps = jsons.slice(1).filter(function (j) { return j && j.op === 'generateImage'; });
+            if (imgOps.length > 0) {
+              if (!action.operations) action.operations = [];
+              action.operations = action.operations.concat(imgOps);
+            }
+          }
+        }
+        if (action && action.op) {
+          var imgKeywords = /éå¾|æå¾|æç»|çå¾|ç»ç»|ç».*å¾/;
+          if (imgKeywords.test(instruction || '')) {
+            var textLen = String(action.newText || '').length;
+            var imgCount = Math.max(1, Math.min(6, Math.floor(textLen / 200)));
+            action.needImages = imgCount;
+          }
+          if (fixedNewText) {
+            if (action.newText != null) action.newText = fixedNewText;
+            if (action.value != null) action.value = fixedNewText;
+            if (action.operations && Array.isArray(action.operations)) {
+              action.operations.forEach(function (op) {
+                if (op.newText != null) op.newText = fixedNewText;
+                if (op.value != null) op.value = fixedNewText;
+              });
+            }
+          }
+          action.kind = kind;
+          sse('done', { action: action });
+        } else {
+          sse('error', { message: 'æ æ³çæç¼è¾å¨ä½ï¼' + (fullContent || '').slice(0, 200) });
+        }
+        break;
+      } else if (evt.type === 'error') {
+        llmError = evt.message || 'LLM æµå¼éè¯¯';
+        break;
+      }
+    }
+  } catch (e) {
+    llmError = e.message;
+  }
+
+  if (llmError) sse('error', { message: llmError });
+  finish();
+}
+
 try {
   setTimeout(function() {
     toolRetriever.init().then(function(s) {

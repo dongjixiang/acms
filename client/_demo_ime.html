@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>ACMS Web 输入法 - 演示 (v0.1 MVP)</title>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #1a1a1a;
+    color: #e0e0e0;
+    padding: 40px;
+    margin: 0;
+  }
+  h1 { color: #0ea89d; margin-bottom: 8px; }
+  .subtitle { color: #888; font-size: 13px; margin-bottom: 32px; }
+  .box {
+    background: #252525;
+    border: 1px solid #333;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  .box-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #0ea89d;
+    margin-bottom: 12px;
+  }
+  input, textarea, [contenteditable] {
+    width: 100%;
+    background: #1a1a1a;
+    border: 1px solid #444;
+    border-radius: 6px;
+    color: #e0e0e0;
+    padding: 10px;
+    font-size: 14px;
+    font-family: inherit;
+    box-sizing: border-box;
+  }
+  input:focus, textarea:focus, [contenteditable]:focus {
+    outline: none;
+    border-color: #0ea89d;
+  }
+  textarea { resize: vertical; min-height: 80px; }
+  [contenteditable] { min-height: 60px; }
+  .controls { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+  button {
+    background: #0ea89d;
+    border: none;
+    color: white;
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  button:hover { filter: brightness(1.1); }
+  .info { font-size: 12px; color: #888; margin-top: 8px; line-height: 1.6; }
+  kbd {
+    background: #333;
+    border: 1px solid #555;
+    border-radius: 3px;
+    padding: 1px 6px;
+    font-family: Consolas, monospace;
+    font-size: 11px;
+  }
+  .preset-words {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+  }
+  .preset-words button {
+    background: #333;
+    font-size: 11px;
+    padding: 4px 10px;
+  }
+  #log {
+    background: #111;
+    border: 1px solid #333;
+    border-radius: 6px;
+    padding: 12px;
+    font-family: Consolas, monospace;
+    font-size: 12px;
+    max-height: 200px;
+    overflow-y: auto;
+    margin-top: 12px;
+  }
+  #log .log-item { margin-bottom: 4px; }
+  #log .log-time { color: #666; margin-right: 8px; }
+</style>
+</head>
+<body>
+
+<h1>ACMS Web 输入法 v0.1 MVP</h1>
+<div class="subtitle">F11 全屏下也能切输入法 - 不依赖 OS 切换快捷键</div>
+
+<div class="box">
+  <div class="box-title">操作说明</div>
+  <div class="info">
+    1. 点下方任意输入框获得焦点<br>
+    2. 按 <kbd>F8</kbd> 切到中文模式（右上角指示器变 "中" + 脉冲绿点）<br>
+    3. 直接敲字母开始拼音输入：试试 <kbd>nh</kbd>（你好）、<kbd>xm</kbd>（项目）、<kbd>dd</kbd>（多多）<br>
+    4. 数字键 <kbd>1-9</kbd> 选词，<kbd>Space</kbd> 选第一候选，<kbd>Enter</kbd> 上屏原拼音，<kbd>Esc</kbd> 取消<br>
+    5. 试一下 contenteditable 编辑器<br>
+  </div>
+</div>
+
+<div class="box">
+  <div class="box-title">普通 input</div>
+  <input id="t1" type="text" placeholder="在这里输入中文..." />
+</div>
+
+<div class="box">
+  <div class="box-title">textarea（多行）</div>
+  <textarea id="t2" placeholder="试着输入项目邮件正文..."></textarea>
+</div>
+
+<div class="box">
+  <div class="box-title">contenteditable（ACMS 邮件 v1.19 用这个）</div>
+  <div id="t3" contenteditable="true">这是 contenteditable 编辑器，点击这里开始输入中文...</div>
+</div>
+
+<div class="box">
+  <div class="box-title">调试</div>
+  <div class="controls">
+    <button onclick="window.ACMSIME.setMode('cn')">强切中文</button>
+    <button onclick="window.ACMSIME.setMode('en')">强切英文</button>
+    <button onclick="console.log('当前模式:', window.ACMSIME.isEnabled() ? '中文' : '英文')">打印当前模式</button>
+    <button onclick="console.log('查 nh:', window.ACMSIME.lookup('nh'))">查字典 nh</button>
+    <button onclick="clearLog()">清日志</button>
+  </div>
+  <div class="preset-words">
+    <span style="color:#888;font-size:12px;line-height:24px;">推荐试输入：</span>
+    <button onclick="insertPreset('nh')">nh</button>
+    <button onclick="insertPreset('xq')">xq</button>
+    <button onclick="insertPreset('dd')">dd</button>
+    <button onclick="insertPreset('xm')">xm</button>
+    <button onclick="insertPreset('sh')">sh</button>
+    <button onclick="insertPreset('w')">w</button>
+    <button onclick="insertPreset('n')">n</button>
+  </div>
+  <div id="log"></div>
+</div>
+
+<script src="/client/js/core/ime-core.js"></script>
+<script>
+  const logEl = document.getElementById('log');
+  function log(msg) {
+    const time = new Date().toLocaleTimeString();
+    const item = document.createElement('div');
+    item.className = 'log-item';
+    item.innerHTML = `<span class="log-time">${time}</span>${msg}`;
+    logEl.insertBefore(item, logEl.firstChild);
+    if (logEl.children.length > 50) logEl.removeChild(logEl.lastChild);
+  }
+
+  function clearLog() { logEl.innerHTML = ''; }
+
+  function insertPreset(word) {
+    // 让 demo 按钮也能在中文模式下工作
+    if (window.ACMSIME.isEnabled()) {
+      // 强制切到英文，先点输入框
+      window.ACMSIME.setMode('en');
+      const el = document.activeElement;
+      if (isInputElement_(el)) {
+        insertText(el, word);
+      }
+      // 再切回中文
+      setTimeout(() => window.ACMSIME.setMode('cn'), 100);
+    } else {
+      const el = document.activeElement;
+      if (isInputElement_(el)) {
+        insertText(el, word);
+      }
+    }
+  }
+
+  function isInputElement_(el) {
+    if (!el) return false;
+    const tag = el.tagName;
+    if (tag === 'INPUT') {
+      const type = (el.type || 'text').toLowerCase();
+      return ['text', 'search', 'email', 'url', 'tel', 'password', 'number'].includes(type);
+    }
+    if (tag === 'TEXTAREA') return true;
+    if (el.isContentEditable) return true;
+    return false;
+  }
+
+  function insertText(el, text) {
+    if (el.isContentEditable) {
+      el.appendChild(document.createTextNode(text));
+    } else {
+      el.value += text;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  }
+
+  // 监听 input 事件做日志
+  document.addEventListener('input', (e) => {
+    const val = e.target.value || e.target.textContent || '';
+    log(`input 事件 from ${e.target.tagName}#${e.target.id || ''}: "${val}"`);
+  });
+
+  // 监听 F8
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'F8') {
+      log(`F8 触发，模式 → ${window.ACMSIME.isEnabled() ? '中文' : '英文'}`);
+    }
+  });
+
+  log('Demo 加载完成，按 F8 切换中英文开始测试');
+</script>
+
+</body>
+</html>

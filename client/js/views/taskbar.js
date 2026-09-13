@@ -704,15 +704,20 @@ window.launchAdmin = function() {
     var now = Date.now();
     if (_chatListCache && now - _chatListCacheAt < 30000) {
       renderLauncherChatList(_chatListCache);
+      fitLauncherSubmenuToViewport(document.getElementById('launcher-chat-submenu'));
       return;
     }
     listEl.innerHTML = '<div style="padding:8px;color:var(--text3);font-size:11px;text-align:center">加载中…</div>';
+    // 先做一次 viewport 适配（loading 状态也有高度，避免子菜单一开始就溢出）
+    fitLauncherSubmenuToViewport(document.getElementById('launcher-chat-submenu'));
     try {
       const r = await api('GET', '/chat-sessions?limit=8');
       const sessions = (r && r.sessions) || [];
       _chatListCache = sessions;
       _chatListCacheAt = now;
       renderLauncherChatList(sessions);
+      // 渲染后再适配一次（列表高度变化）
+      fitLauncherSubmenuToViewport(document.getElementById('launcher-chat-submenu'));
     } catch (e) {
       listEl.innerHTML = '<div style="padding:8px;color:var(--accent2);font-size:11px">加载失败</div>';
     }
@@ -721,9 +726,56 @@ window.launchAdmin = function() {
   // mouseleave 不做关闭（CSS :hover 处理）
   window.onChatLauncherLeave = function() { /* CSS :hover 自动处理 */ };
 
-  // v0.61: 辅助工具子菜单 hover（CSS hover 自动处理展开/收起，JS 只需空函数让内联调用不报错）
-  window.onToolLauncherHover = function() { /* CSS :hover 自动处理 */ };
+  // v0.61: 辅助工具子菜单 hover —— CSS hover 显示，JS 调 viewport 适配
+  //   v0.119.4 之前是空函数，子菜单完全靠 CSS bottom:-2px 向上展开，
+  //   父项在 launcher 下半 + 子菜单较高时 → 顶部超出屏幕无法选择
+  window.onToolLauncherHover = function() {
+    fitLauncherSubmenuToViewport(document.getElementById('launcher-tools-submenu'));
+  };
   window.onToolLauncherLeave = function() { /* CSS :hover 自动处理 */ };
+
+  // v0.119.4: launcher 子菜单视口适配 —— 4 方向翻转，防止二级菜单跑出屏幕
+  //   CSS 默认 left:100% + bottom:-2px（向右 + 向上展开），不检测视口
+  //   修法：hover 时 requestAnimationFrame 拿真实尺寸，按溢出方向翻转
+  //   - 右溢出 → right:100%（向左翻，贴父项左边缘）
+  //   - 顶溢出（子菜单 bottom>vh 时向上展开会冲出顶部） → top:0 + bottom:auto（向下翻）
+  //   - 左/底溢出（罕见）：恢复到 CSS 默认 left:100% + bottom:-2px
+  function fitLauncherSubmenuToViewport(sub) {
+    if (!sub) return;
+    requestAnimationFrame(function() {
+      var rect = sub.getBoundingClientRect();
+      var vw = window.innerWidth;
+      var vh = window.innerHeight;
+
+      // 1. 右侧超出 → 翻转到父项左侧（覆盖 CSS left:100%）
+      if (rect.right > vw) {
+        sub.style.left = 'auto';
+        sub.style.right = '100%';
+      } else {
+        sub.style.left = '';
+        sub.style.right = '';
+      }
+
+      // 2. 顶部超出（默认向上展开，subHeight > 父项到顶部的距离）→ 翻转向下
+      //   判定标准：默认 bottom:-2px 让 subBottom 对齐父项 bottom，如果向上展开导致 subTop < 0，则翻转向下
+      //   计算：subDefaultTop = parent.bottom - subHeight = rect.bottom - rect.height
+      //          如果 subDefaultTop < 0 → 翻转向下（top:0 从父项顶部开始向下展开）
+      var parentItem = sub.parentElement;
+      if (parentItem) {
+        var parentRect = parentItem.getBoundingClientRect();
+        var defaultSubTop = parentRect.bottom - rect.height;  // 默认向上展开时 subTop 的位置
+        if (defaultSubTop < 0) {
+          // 翻转向下：让子菜单顶部对齐父项顶部，向下展开
+          sub.style.bottom = 'auto';
+          sub.style.top = '0';
+        } else {
+          // 默认向上展开即可，恢复 CSS 默认
+          sub.style.bottom = '';
+          sub.style.top = '';
+        }
+      }
+    });
+  }
 
   // v0.97: launchAssistTool 已废弃（AI 工具从辅助工具菜单移除，收敛到小吉对话）
   // 保留空函数防止其他页面内联 onclick 引用报错

@@ -763,6 +763,26 @@
     }
   }
 
+  // P198: 流式 appendAll — 把 LLM 实时输出的 newText 增量追加到文档末尾（不切段）
+  //   区别于 genOfficeAppendAll：每次只插入当前 chunk（连续文本，可能跨段落边界），不重新计算整个文档
+  //   Tiptap insertContentAt 会自动按 \n\n 切分段落，无需前端处理
+  function genOfficeAppendStreaming(frame, textChunk) {
+    try {
+      var win = frame && frame.contentWindow;
+      var docEl = win && win.document ? win.document.querySelector('[contenteditable="true"]') : null;
+      var editor = docEl && docEl.editor;
+      if (!editor) return { ok: false, error: '编辑器未就绪' };
+      var chunk = String(textChunk || '');
+      if (!chunk) return { ok: true, appended: 0 };
+      // 聚焦文档末尾（Tiptap insertContentAt 默认插入到当前位置）
+      editor.commands.focus('end');
+      editor.chain().insertContentAt(editor.state.doc.content.size, chunk).run();
+      return { ok: true, appended: chunk.length };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
   // v0.97: appendAll + 自动配图（解析【插图N：xxx】标记，串行调生图 API）
   function genOfficeAppendAllWithImages(frame, newText, markers) {
     return new Promise(function (resolve) {
@@ -1252,8 +1272,20 @@
     var recentImages = genOfficeCollectRecentImages(editor, 2);
     console.log('[IMG-DEBUG] recentImages count:', recentImages.length);
     var body = { prompt: prompt, n: 1, size: '1024x1024' };
-    // PR H 修复：链式传递优先（保证第二张参考第一张风格+人物），再回退到文档已有图片
-    if (OFFICE_PREVIOUS_IMAGE_REF) {
+    // P199: 角色档案库多图合成参考（action.referenceImages 数组优先）
+    //   角色/场景档案 referenceImage dataUrl → 多张传给 Agnes 多图合成 API（保角色一致性）
+    var actionRefImages = Array.isArray(action.referenceImages)
+      ? action.referenceImages.filter(function (u) { return u && String(u).trim(); })
+      : null;
+    if (actionRefImages && actionRefImages.length > 0) {
+      body.referenceImages = actionRefImages;
+      console.log('[IMG-DEBUG] using action.referenceImages, count:', actionRefImages.length);
+    } else if (action.referenceImage) {
+      // 单张向后兼容（旧调用 / LLM 直接生成）
+      body.referenceImage = action.referenceImage;
+      console.log('[IMG-DEBUG] using action.referenceImage, length:', action.referenceImage.length);
+    } else if (OFFICE_PREVIOUS_IMAGE_REF) {
+      // PR H 修复：链式传递（保证第二张参考第一张风格+人物）
       body.referenceImage = OFFICE_PREVIOUS_IMAGE_REF;
       console.log('[IMG-DEBUG] using chain referenceImage, length:', OFFICE_PREVIOUS_IMAGE_REF.length);
     } else if (recentImages.length > 0) {
@@ -1716,7 +1748,7 @@
     var frame = document.createElement('iframe');
     frame.className = 'v3-genoffice-frame';
     frame.style.cssText = 'width:100%;height:100%;border:0;display:block;';
-    frame.src = BASE + 'word-ui/host.html?v=0.96.9b';
+    frame.src = BASE + 'word-ui/host.html?v=0.97.8';
     w.$c.appendChild(frame);
 
     function patchOpenDocx(win) {
@@ -2546,6 +2578,112 @@
       } catch (err) {
         return { ok: false, error: err.message };
       }
+    },
+
+    // v0.X PR2: 读取当前打开的 OfficeV3 编辑器的 fresh docContext（用于 office_action tool refreshContext）
+    // 返回 { kind, doc: { sheets|blocks|... } } 或 null（编辑器未打开）
+    // 设计：复用 __sheetsDebug.snapshot（sheets）/ Tiptap doc 遍历（word）
+    // slides 暂返回 null（HTML-deck 模式不需要 docContext，LLM 直接产 HTML）
+    readFreshDocContext: function (kind) {
+      var targetKind = kind;
+      var instances = state.instances;
+      var keys = Object.keys(instances);
+      if (!keys.length) return null;
+
+      if (targetKind === 'xlsx') {
+        // 找 sheets-ui instance → __sheetsDebug.snapshot 读真实 cells
+        for (var i = 0; i < keys.length; i++) {
+          var ed = instances[keys[i]].editor;
+          if (ed && ed.kind === 'sheets-ui' && ed.iframe && ed.iframe.contentWindow) {
+            var sWin = ed.iframe.contentWindow;
+            if (sWin.__sheetsDebug && typeof sWin.__sheetsDebug.snapshot === 'function') {
+              var sids = sWin.__sheetsDebug.listSessions();
+              if (sids && sids.length) {
+                // 5 sheets / 30 行 / 12 列（与 office-action 端点 docContext 摘要默认一致）
+                var snap = sWin.__sheetsDebug.snapshot(sids[0], 5, 30, 12);
+                if (snap && snap.sheets && snap.sheets.length) {
+                  return { kind: 'xlsx', doc: { sheets: snap.sheets } };
+                }
+              }
+            }
+          }
+        }
+        // v2 fallback: window.XlsxAI.getSnapshot
+        if (typeof window.XlsxAI !== 'undefined' && window.XlsxAI.getSnapshot) {
+          var snap2 = window.XlsxAI.getSnapshot();
+          if (snap2 && snap2.sheets && snap2.sheets.length) {
+            var sheets = snap2.sheets.slice(0, 5).map(function (s) {
+              var rows = [];
+              for (var r = 1; r <= 30; r++) {
+                var row = [];
+                for (var c = 0; c < 12; c++) {
+                  var addr = String.fromCharCode(65 + c) + r;
+                  var cell = s.cells[addr];
+                  row.push(cell ? (cell.v != null ? cell.v : (cell.f || '')) : '');
+                }
+                rows.push(row);
+              }
+              return { id: s.id, name: s.name, rows: rows };
+            });
+            return { kind: 'xlsx', doc: { sheets: sheets } };
+          }
+        }
+        return null;
+      }
+
+      if (targetKind === 'word') {
+        // 找 word-ui instance → Tiptap editor 读 blocks
+        for (var j = 0; j < keys.length; j++) {
+          var edW = instances[keys[j]].editor;
+          if (edW && edW.kind === 'word-ui' && edW.iframe) {
+            try {
+              var gwin = edW.iframe.contentWindow;
+              var gdoc = gwin && gwin.document ? gwin.document.querySelector('[contenteditable="true"]') : null;
+              var gedit = gdoc && gdoc.editor;
+              if (gedit) {
+                var gblocks = [];
+                gedit.state.doc.content.forEach(function (node) {
+                  var n = node.type.name;
+                  if (n === 'docParagraph' || n === 'docHeading' || n === 'docListItem') {
+                    gblocks.push({
+                      i: gblocks.length,
+                      text: node.textContent.slice(0, 200),
+                      type: n,
+                      level: n === 'docHeading' ? (node.attrs.level || 1) : undefined,
+                      kind: n === 'docListItem' ? (node.attrs.kind || 'bullet') : undefined,
+                    });
+                  }
+                });
+                return { kind: 'word', doc: { blocks: gblocks } };
+              }
+            } catch (e) {
+              return null;
+            }
+          }
+        }
+        return null;
+      }
+
+      if (targetKind === 'slides') {
+        // slides HTML-deck 模式不需要 docContext，LLM 直接产 HTML
+        // 留空 return null 让 office_action tool 返回 NO_DOC_CONTEXT，
+        // LLM 在 next turn 会用 args.summary 简化指令重试
+        return null;
+      }
+
+      return null;
+    },
+
+    // v0.X PR2: 应用 office_action_apply system entry 的 action 到当前打开的编辑器
+    // payload = { kind, action: { op, ... }, summary }
+    // 找到对应 instance → 调 sheetsAI.propose/applyPlan 或 runAction(action)
+    applyOfficeAction: function (payload) {
+      if (!payload || !payload.kind || !payload.action) {
+        return { ok: false, error: '缺少 kind 或 action' };
+      }
+      var action = Object.assign({}, payload.action, { kind: payload.kind });
+      // 复用 runAction（已支持 word/xlsx/slides + 完整 op 子命令）
+      return this.runAction(action);
     },
   };
 })();

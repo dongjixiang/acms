@@ -207,7 +207,10 @@ function pickAgnesSize(w, h) {
 // ── 主入口：coreGenerate ──
 async function coreGenerate(opts) {
   var prompt = (opts.prompt || '').trim();
-  var referenceImage = (opts.referenceImage || '').trim(); // data:image/...;base64,...
+  // P199: 多张参考图（角色档案库 + 多图合成）— extra_body.image 数组
+  //   向后兼容单张 referenceImage（旧调用）
+  var referenceImage = (opts.referenceImage || '').trim(); // data:image/...;base64,... (单张，向后兼容)
+  var referenceImages = Array.isArray(opts.referenceImages) ? opts.referenceImages.filter(function (u) { return u && String(u).trim(); }) : null;
   var size = opts.size || '1024x1024';
   var n = Math.max(1, Math.min(6, parseInt(opts.n) || 4)); // v0.66 默认 4 候选（PR1 决策）
   var projectSlug = opts.projectSlug || 'image-tools'; // 独立调用时默认目录
@@ -227,8 +230,8 @@ async function coreGenerate(opts) {
   if (!apiKey) return { ok: false, error: 'AGNES_API_KEY_NOT_CONFIGURED', prompt };
 
   var body = {
-  // v0.XX: agnes-image-2.0-flash → agnes-image-2.1-flash（中文站）
-    model: 'agnes-image-2.1-flash',
+  // v0.22.66: agnes-image-2.1-flash → agnes-image-2.5-flash（最新一代，能力全面超过 2.1；参数/尺寸/计费完全一致；当前免费）
+    model: 'agnes-image-2.5-flash',
     prompt: prompt,
     size: size,
     extra_body: { response_format: 'url' },
@@ -237,12 +240,12 @@ async function coreGenerate(opts) {
     // v0.77: 按 target 宽高自动算 ratio，让输出比例 = 原图比例
     body.ratio = autoRatio;
   }
-  if (referenceImage) {
-    // Agnes Image 2.1 Flash 图生图：image 必须在 extra_body.image 内（顶层会被忽略 → 退化为 t2i）
-    // 官方文档: https://www.agnes-ai.cn/zh-Hans/docs/agnes-image-21-flash
-    //   "图生图请求需要在 extra_body.image 中提供输入图像"（"故障排除" 段亦明示）
-    // 历史: v0.66 PR1 正确；commit efeaaea(2026-07-27) 误改为顶层，致 7/27 后图生图退化为文生图
-    // 验证: image 顶层 → 返回 URL path = t2i（被忽略）；image 在 extra_body → path = i2i（真图生图）
+  if (referenceImages && referenceImages.length > 0) {
+    // P199: 多图合成（角色档案库 / 场景档案库 多张参考图）
+    if (!body.extra_body) body.extra_body = {};
+    body.extra_body.image = referenceImages;
+  } else if (referenceImage) {
+    // 向后兼容单张 referenceImage（旧调用 — bridge.genOfficeGenerateImage 链式传递）
     if (!body.extra_body) body.extra_body = {};
     body.extra_body.image = [referenceImage];
   }

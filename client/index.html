@@ -490,7 +490,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/i18n.js"></script>
 <script src="/client/js/api.js"></script>
 <script src="/client/js/core/state.js"></script>
-<script src="/client/js/core/utils.js"></script>
+<script src="/client/js/core/utils.js?v=0.118.2"></script>  <!-- v0.118.2 首次加 cache bust（此前无 ?v=）：新增 videoClickAttr（视频「点击放大播放」内联 onclick，JSON+escAttr 双层转义） -->
 <script src="/client/js/core/markdown.js?v=0.1.9"></script>
 <script src="/client/js/core/voice.js"></script>
 <script src="/client/js/core/router.js"></script>
@@ -498,7 +498,7 @@ document.addEventListener('DOMContentLoaded', () => {
     <script src="/client/js/views/dashboard.js"></script>
 <!-- v0.13 拆分：12 个子模块在 requirements.js 之前加载（HTML onclick 跨文件按名查找） -->
 <!-- v0.21.4 fix: 双卡清理范围扩大到 assist-loading-card.method-music（旧 v0.21.3 漏了真正的旧卡所在位置） -->
-<script src="/client/js/views/requirements/chat.js?v=0.22.48"></script>  <!-- v0.22.47 中断后自动让 AI 总结已完成工作 + 决策卡（v0.123：summarizing/summarized 两态，取代 v0.119 已中断卡片） -->
+<script src="/client/js/views/requirements/chat.js?v=0.22.69"></script>  <!-- v0.22.61 视频卡片兼容 generating 快照（runAssistJob 现在即时镜像通用字段 assist_video → 不能再只认 async_task，否则「生成中」被误标「已生成」且不启动轮询）。v0.22.60 音乐卡片插入补 avatar+inner 包裹 -->
 <script src="/client/js/views/requirements/idea-panel.js?v=0.13.0"></script>
 <!-- v0.18 chat 模式切换器（clarify ↔ free）—— idea-panel.js 之后加载，引用 toggleChatMode -->
 <script src="/client/js/views/requirements/chat-mode.js?v=0.18.0"></script>
@@ -522,7 +522,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/assists/arch.js"></script>
 <script src="/client/js/views/assists/visual.js"></script>  <!-- v0.13 B11：补漏（之前 index.html 漏注册 visual.js，导致视觉卡片走降级分支只显示标题） -->
 <script src="/client/js/views/assists/competitive.js"></script>
-<script src="/client/js/views/assists/reference.js"></script>
+<script src="/client/js/views/assists/reference.js?v=0.13.1"></script>  <!-- v0.13.1 fix: 适配后端 v2 数据结构（target_product/profile/diagrams/insights.title）— 之前 9 个月没适配导致只显示核心理念 -->
 <script src="/client/js/views/assists/pains.js"></script>
 <script src="/client/js/views/assists/risks.js"></script>
 <script src="/client/js/views/assists/stakeholders.js"></script>
@@ -531,17 +531,17 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- v0.22 fix: 加 Audius api.audius.co 类型分支（mp3 直链 + audio 标签）+ normalizePlayable 兜底识别酷我/Audius -->
 <script src="/client/js/views/assists/music-core.js?v=0.22.1"></script>  <!-- v0.21 音乐卡片公共渲染核心 + v0.22 kuwo/audius 分支 -->
 <script src="/client/js/views/assists/music.js?v=0.21.0"></script>  <!-- v0.21 音乐播放 — 多数据源切换（assist 侧栏；聊天流走 chat.js renderMusicBubble） -->
-<script src="/client/js/views/assists/video.js?v=0.22.20"></script>  <!-- v0.22.20: 修 query 错误提示字段（r.message → r.error，避免"查询失败：undefined"） -->
-<script src="/client/js/views/assists/image-gen.js?v=0.22.21"></script>  <!-- v0.22.21: 预览图加 onerror fallback + previewImage 支持 CDN 回退 -->
-<script src="/client/js/views/assists/clean.js?v=0.19.3"></script>  <!-- v0.19.3 clean 后 reloadFreeChatStream 空 session 也去掉欢迎块 -->
-<script src="/client/js/views/assists/ip-dict.js?v=0.22.31"></script>  <!-- v0.22.31 IP 词典：用户输入"擎天柱"→ 锁定到 Transformers G1 Optimus Prime；含 20+ 知名 IP（中英文 + 视觉关键词） -->
-<script src="/client/js/views/assists/screenplay-core.js?v=0.22.31"></script>  <!-- v0.22.31 剧本卡片：加 IP 锚定 + art_style 风格硬约束（解决"擎天柱→机甲人"+"角色风格不一致"） -->
-<script src="/client/js/views/assists/screenplay.js?v=0.22.31"></script>  <!-- v0.22.31 剧本表单加 art_style 下拉（写实/3D/G1/日漫/国风水墨） -->
+<script src="/client/js/views/assists/video.js?v=0.22.64"></script>  <!-- v0.22.20: 修 query 错误提示字段（r.message → r.error，避免"查询失败：undefined"） -->
+<script src="/client/js/views/assists/image-gen.js?v=0.22.68"></script>  <!-- v0.22.59 修 refreshScreenplayChatCard 重新渲染时把 .chat-bubble-avatar/.chat-bubble-inner 一起清掉 → .chat-bubble 是 display:flex，十几个块级 div 变 flex item 横排（用户报"生成第一张图片后剧本从竖向排列变横向排列"）。改为只替换 .chat-bubble-inner 内部内容（保留 avatar+inner），并对已写坏的旧 DOM 自愈重建。v0.22.22: 改 sidebar 同源 /assist 拿最新 sp data + 只刷最后一张气泡 -->
+<script src="/client/js/views/assists/clean.js?v=0.19.4"></script>  <!-- v0.19.4 自由对话清理覆盖工具卡片（supplement_history）+ 水位线对齐 + 去 window.confirm -->
+<script src="/client/js/views/assists/ip-dict.js?v=0.22.64"></script>  <!-- v0.22.31 IP 词典：用户输入"擎天柱"→ 锁定到 Transformers G1 Optimus Prime；含 20+ 知名 IP（中英文 + 视觉关键词） -->
+<script src="/client/js/views/assists/screenplay-core.js?v=0.22.70"></script>  <!-- v0.22.57 候选 details 改 column：之前 3 张候选用 flex-wrap 横排（"由左向右"），用户报生成图片后变横排。改 flex-direction:column，每张候选独立一行 + 60x60 图 + "候选 N" 文字（v1.0"section 完整对等"）。角色块 + 场景块都改 -->
+<script src="/client/js/views/assists/screenplay.js?v=0.22.70"></script>  <!-- v0.22.65 加「合成完整视频」（分镜头 ffmpeg 拼接 + 淡入淡出过渡 + 下载）。v0.22.62 修 nextAssets 未声明（每次生成成功后假报「生成失败: nextAssets is not defined」→ 用户以为失败再点一次 + 自动续跑从未生效）+ 跨刷新防重复（查后端镜像的 generating 快照）。v0.22.61 防重复提交内存锁；v0.22.32 生成后同步气泡 -->
 <script src="/client/js/views/assists/document-gen.js?v=0.46"></script>  <!-- v0.46 文档生成 — AI 整理对话 + Pandoc 转 .docx -->
 <script src="/client/js/views/assists/send-email.js?v=0.47"></script>  <!-- v0.47 邮件发送 — nodemailer SMTP -->
-<script src="/client/js/views/assists/plan.js?v=0.48"></script>  <!-- v0.48 plan 进度卡 — chat 流内极简 ⏳ 卡 + ▼ 折叠详情 -->
+<script src="/client/js/views/assists/plan.js?v=0.120"></script>  <!-- v0.120 plan 进度卡 + 失败步骤一键重试 -->
 <script src="/client/js/views/assists/thinking-brief.js?v=0.9.0"></script>
-<script src="/client/js/views/assists/dispatcher.js?v=0.22.22"></script>  <!-- v0.22.22 dispatcher: regenerateBatch 标记 _explicitAssist + poll 完成时清理（修"换一批剧本不显示"bug） -->
+<script src="/client/js/views/assists/dispatcher.js?v=0.22.52"></script>  <!-- v0.22.52 dispatcher: useAssist + poll 读 hiddenRequirementId → 写入 _chatState（修「自由对话选剧本后聊天流卡片不渲染」） -->
 <script src="/client/js/views/requirements/chat-inline-form.js?v=0.19.0"></script>  <!-- v0.19 内联表单 → 替代 window.prompt -->
 <script src="/client/js/views/kanban.js?v=0.62.4"></script>
 <script src="/client/js/views/bugs.js?v=0.62"></script>
@@ -577,6 +577,10 @@ document.addEventListener('DOMContentLoaded', () => {
       <span id="tb-review-num">0</span>
     </div>
     <div class="tray-item clickable" id="tb-theme-btn" title="切换主题">🎨</div>
+    <!-- v0.?? (B 方案)：桌面同步状态指示器 — 点 = 手动刷新服务端状态；hover 显示 tooltip；指示器颜色反映 serverHasUpdate -->
+    <div class="tray-item clickable" id="tb-sync-btn" title="桌面同步（点击刷新状态）" onclick="if(window.ACMSDesktopSync){window.ACMSDesktopSync.checkForUpdates().then(function(st){var t=typeof toast==='function'?toast:null;if(!t)return;if(st.serverHasUpdate){t('☁ 服务端有新版本（'+st.serverUpdatedAt+'），右键桌面 → 桌面同步 → 从服务端恢复','info',6000)}else if(!st.serverExists){t('☁ 服务端无桌面配置','info')}else{t('☁ 服务端无新更新（'+st.serverUpdatedAt+'）','success')}})}" style="position:relative">
+      <span id="tb-sync-icon">☁</span><span id="tb-sync-dot" style="display:none;position:absolute;top:2px;right:2px;width:6px;height:6px;border-radius:50%;background:var(--accent2)"></span>
+    </div>
     <div class="tray-item clickable" id="tb-notif-btn" title="通知">🔔 <span id="tb-notif-count" style="display:none;background:var(--accent2);color:#fff;border-radius:99px;padding:0 5px;font-size:10px;min-width:16px;text-align:center;">0</span></div>
     <div class="tray-item" id="tb-ime-btn" title="输入法状态（自动检测）"><span id="tb-ime-debug" class="ime-debug-dot"></span><span id="tb-ime-label">EN</span></div>
     <div id="tb-clock" style="font-size:11px;color:var(--text2);padding:0 4px"></div>
@@ -692,7 +696,13 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- v0.91.3: Office V2 bridge (Univer + Tiptap + Reveal, code-split, prefetch + dispose) -->
 <script src="/client/js/views/office-v2-bridge.js?v=0.92.7"></script>
 <!-- v0.93: Office V3 bridge (GenOffice docx engine, 中文一等公民, P1 Word; PPT/Excel P2/P3) -->
-<script src="/client/js/views/office-v3-bridge.js?v=0.97.10"></script>
+<script src="/client/js/views/office-v3-bridge.js?v=0.97.13"></script>
+<!-- P199: 角色档案库 API（生图一致性 — 多角色多图合成参考） -->
+<script src="/client/js/views/character-library.js?v=0.97.0"></script>
+<!-- P199: 场景档案库 API（生图一致性 — 场景环境一致性参考） -->
+<script src="/client/js/views/scene-library.js?v=0.97.0"></script>
+<!-- P200: 视觉设定集 API（全文自动抽取人物/场景 → 设定图 → 一致性基准） -->
+<script src="/client/js/views/visual-bible.js?v=0.97.0"></script>
 <!-- v0.93: sheets AI 核心（P4a：workbook DSL + Undo + 保存） -->
 <script src="/client/lib/office-v3/xlsx-ai.js?v=0.93.4"></script>
 <!-- v0.62.7: 代码编辑器 (Monaco Editor + AI) -->
@@ -701,14 +711,14 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/image-editor.js?v=0.82"></script>
 
 <script src="/client/js/views/wallpaper.js?v=0.76"></script>
-<script src="/client/js/views/desktop-context-menu.js"></script>
+<script src="/client/js/views/desktop-context-menu.js?v=0.80"></script>
 <script src="/client/js/views/wallpaper-settings.js?v=0.56"></script>
 <script src="/client/js/core/icon-picker.js"></script>
 <script src="/client/js/core/mobile.js"></script>
 <script src="/client/js/views/desktop-icons.js"></script>
 <script src="/client/js/views/desktop-marquee-toolbar.js?v=0.60"></script>
-<!-- v0.75: 桌面配置同步 — localStorage + 服务端双向（debounce 自动 + 手动命令） -->
-<script src="/client/js/views/desktop-sync.js?v=0.75"></script>
+<!-- v0.76: 桌面配置同步 — B 方案（手工 + 智能提示；默认 autoSync=false；服务端有新版本主动 toast + tray 红点） -->
+<script src="/client/js/views/desktop-sync.js?v=0.76"></script>
 <script src="/client/js/views/file-browser.js?v=0.66.17"></script>
 <script src="/client/js/views/web-browser.js?v=0.61"></script>
 <!-- v0.59: native-app — Puppeteer CDP screencast 流推送窗口（微信等被 X-Frame 限的网页套壳） -->
@@ -720,12 +730,10 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/chat-session-list.js?v=0.55"></script>  <!-- v0.55 合并：chat-history + chat-recycle-bin 二合一，共享 render/mode 切换 -->
 <!-- v0.67: 桌面右上角透明全屏切换按钮（hover-show，被窗体覆盖时无效） -->
 <script src="/client/js/views/desktop-fullscreen-toggle.js?v=0.67"></script>
-<!-- 游戏中心 v0.1: 2048 / 贪吃蛇 / Pong / 俄罗斯方块 -->
-<script src="/client/js/views/game-center.js?v=0.1"></script>
-<script src="/client/js/views/game-2048.js?v=0.1"></script>
+<!-- 游戏中心 v0.3: 坦克大战 3D / 贪吃蛇（2026-09-12 移除 2048 / Pong / 俄罗斯方块） -->
+<script src="/client/js/views/game-center.js?v=0.3"></script>
+<script src="/client/js/views/game-tank3d.js?v=1.0.0"></script>
 <script src="/client/js/views/game-snake.js?v=0.1"></script>
-<script src="/client/js/views/game-pong.js?v=0.1"></script>
-<script src="/client/js/views/game-tetris.js?v=0.1"></script>
 <!-- v0.X: GEO 应用仪表盘（Phase 3 v0.7 — AI 优化建议 + 一键建任务） -->
 <script src="/client/js/views/geo-dashboard.js?v=0.45"></script>
 <!-- v0.118: 内容运营平台 L3 App（PR 3 — 4 平台 provider + 8 tab UI） -->

@@ -1,0 +1,10 @@
+{
+  "name": "tank-front-3d",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "坦克大战 3D — 波次生存坦克射击游戏 (Three.js)",
+  "scripts": {
+    "start": "npx --yes http-server -p 8083 -c-1 ."
+  }
+}

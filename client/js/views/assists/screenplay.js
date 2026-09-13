@@ -170,6 +170,11 @@ async function selectScreenplay(reqId, idx) {
   try {
     await ACMSAssistDispatcher.useAssist(reqId, 'screenplay', { idx });
     if (typeof startChatPolling === 'function') startChatPolling(reqId);
+    // v0.22.68: 立刻刷新对话流里的剧本卡（不等轮询 tick）
+    //   背景：writeScreenplayChatEntry 是「删同 idea 旧卡 + push 新卡」→ 历史条数不变 →
+    //   轮询的增量判断（history.length > histCount）不触发 → 卡片渲染不出来
+    //   （多多 2026-09-13：「点『选择这个剧本』后，剧本在对话流里面显示不出来了」）
+    if (typeof refreshScreenplayChatCard === 'function') await refreshScreenplayChatCard(reqId);
     toast('✅ 剧本已选中 — 资源联动在聊天流卡片里完成', 'success', 2500);
   } catch (e) {
     toast('选择失败: ' + e.message, 'error');
@@ -258,6 +263,12 @@ function screenplayGenImageForm(reqId, assetType, assetKey, defaultPrompt) {
  *   4. v0.22.12+: 自动找下一个"可生成"的分镜头（角色图+场景图都齐了 + 还没生成视频）→ 调自己
  */
 async function screenplayGenVideo(reqId, sceneIdx, promptOverride) {
+  // v0.22.61: 防重复提交（同一场次生成中再点一次直接拦截）
+  //   为什么：视频任务要 1-5 分钟，而之前第一次点击时卡片先渲染出**上一个视频**
+  //   （通用字段 assist_video 空窗期，见 services/assists/video.js v0.22.61 注释）→
+  //   用户以为没生效 → 再点一次 → 同时跑两个任务 → Agnes 429
+  //   （实测 assist_video_scene_1/2 = failed「Agnes API 请求失败: HTTP 429」）
+  const _flightKey = reqId + ':' + sceneIdx;
   try {
     // 读当前 screenplay 数据拿 scene 内容
     const r = await api('GET', `/requirements/${reqId}/assist`);
@@ -272,6 +283,26 @@ async function screenplayGenVideo(reqId, sceneIdx, promptOverride) {
       toast('分镜头数据缺失', 'error');
       return;
     }
+
+    // v0.22.61: 同一场次已在生成中 → 拦截（防重复提交 → Agnes 429）
+    if (!window._sceneVideoInFlight) window._sceneVideoInFlight = {};
+    if (window._sceneVideoInFlight[_flightKey]) {
+      toast('分镜头 ' + (sceneIdx + 1) + ' 的视频正在生成中（约 1-5 分钟），请等它完成再操作', 'info', 3500);
+      return;
+    }
+    // v0.22.61b: 内存锁之外的兜底 —— 页面刷新后内存锁没了，但后端通用字段
+    //   （runAssistJob 会镜像本场的 generating 快照，带 scene_idx + started_at）还在，
+    //   查一次避免刷新后重复提交。只认 6 分钟内的快照，避免卡在"僵死的 generating"上无法重试。
+    const _backendVid = r.assists && r.assists.video;
+    if (_backendVid && _backendVid.status === 'generating' && _backendVid.scene_idx === sceneIdx) {
+      const _started = Date.parse(_backendVid.started_at || '');
+      const _ageMin = isNaN(_started) ? 0 : (Date.now() - _started) / 60000;
+      if (_ageMin < 6) {
+        toast('分镜头 ' + (sceneIdx + 1) + ' 的视频还在云端生成中（已 ' + Math.max(0, Math.round(_ageMin)) + ' 分钟），请等它完成', 'info', 3500);
+        return;
+      }
+    }
+    window._sceneVideoInFlight[_flightKey] = true;
 
     // 构造 prompt（角色 + 场景 + 分镜，v0.22.16: 支持 promptOverride 手工修改）
     // v0.22.23: 默认 prompt 用结构化 buildSceneVideoPrompt（Setting+Camera+Action+Dialogue+Style+Quality）
@@ -306,25 +337,51 @@ async function screenplayGenVideo(reqId, sceneIdx, promptOverride) {
     // 去重（保持顺序）
     const uniqueUrls = [...new Set(imageUrls)];
 
+    // v0.22.67: 首帧图 + 视频选项 → 走 2.5-flash 的 keyframe 首尾帧模式
+    //   本段 first_frame = 场 i 的首帧图；last_frame = 场 i+1 的首帧图（末段只传首帧）
+    //   → 上一段的"尾帧"和下一段的"首帧"是同一张图 → 拼接处画面连续（不再割裂）
+    const vo = sp.video_opts || {};
+    const frames = sp.scene_frames || {};
+    const fr1 = frames[String(sceneIdx)];
+    const fr2 = frames[String(sceneIdx + 1)];
+    const localUrl = (p) => {
+      if (!p) return '';
+      // v0.22.70: 首帧图 asset_path 可能自带 workspace 前缀 → 统一剥到 'assets/' 开头，避免拼重 404
+      const s = String(p); const i = s.indexOf('assets/');
+      return `/api/generate/assets/${encodeURIComponent(projectSlug)}/${i > 0 ? s.slice(i) : s}`;
+    };
+    const fr1Url = fr1 ? (fr1.image_url_output || localUrl(fr1.asset_path)) : '';
+    const fr2Url = fr2 ? (fr2.image_url_output || localUrl(fr2.asset_path)) : '';
+    const useKeyframe = !!fr1Url;
+
     // v0.22.14: 显示 loading（弹到 body，跟剧本其他生成器一致位置）
     const tempCard = document.createElement('div');
     tempCard.className = 'assist-loading-card screenplay-gen-video-loading';
     tempCard.dataset.method = 'video';
     tempCard.dataset.tempFor = `scene_${sceneIdx}`;
     tempCard.style.cssText = 'position:fixed;top:60px;left:50%;transform:translateX(-50%);width:90%;max-width:520px;z-index:10000;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;box-shadow:0 4px 20px rgba(0,0,0,0.15)';
-    tempCard.innerHTML = `<div style="display:flex;align-items:center;gap:6px"><span style="font-size:18px">🎥</span><strong style="flex:1;font-size:13px">正在为分镜头 ${sceneIdx + 1} 生成视频（最长 5 分钟）…</strong></div>`;
+    tempCard.innerHTML = `<div style="display:flex;align-items:center;gap:6px"><span style="font-size:18px">🎥</span><strong style="flex:1;font-size:13px">正在为分镜头 ${sceneIdx + 1} 生成视频${useKeyframe ? '（首尾帧衔接模式）' : ''}（最长 5 分钟）…</strong></div>`;
     document.body.appendChild(tempCard);
     setTimeout(() => { tempCard.scrollIntoView?.({ block: 'center' }); }, 50);
 
-    // v0.22.30: per-scene 时长（之前用 sp.target_seconds 总时长 → 15s 剧本 3 场被生成为 15s/场）
+    // v0.22.30 / v0.22.67: per-scene 时长 —— 优先用用户设置（video_opts.seconds_per_scene）
     const totalScenes = (screenplay.scenes || []).length;
-    const sceneDuration = totalScenes > 0
-      ? Math.max(5, Math.round((sp.target_seconds || 30) / totalScenes))
-      : (sp.target_seconds || 30);
+    const sceneDuration = parseInt(vo.seconds_per_scene, 10) > 0
+      ? Math.max(4, Math.min(12, parseInt(vo.seconds_per_scene, 10)))
+      : (totalScenes > 0
+          ? Math.max(5, Math.round((sp.target_seconds || 30) / totalScenes))
+          : (sp.target_seconds || 30));
 
-    // 触发 video（v0.22.23: 附带 image_urls）
+    // 触发 video
     const videoOpts = { prompt, duration: sceneDuration, _attach_to: { type: 'screenplay', sceneIdx } };
-    if (uniqueUrls.length > 0) {
+    if (useKeyframe) {
+      videoOpts.video_model = vo.video_model || 'agnes-video-2.5-flash';
+      videoOpts.seconds = sceneDuration;
+      videoOpts.aspect_ratio = vo.aspect_ratio || '16:9';
+      videoOpts.first_frame = fr1Url;
+      if (fr2Url) videoOpts.last_frame = fr2Url;
+      console.log('[screenplay] 首尾帧模式 videoOpts', { model: videoOpts.video_model, seconds: sceneDuration, aspect: videoOpts.aspect_ratio, first: !!fr1Url, last: !!fr2Url });
+    } else if (uniqueUrls.length > 0) {
       videoOpts.image_urls = uniqueUrls;
     }
     await chatAssist(reqId, 'video', videoOpts);
@@ -339,6 +396,7 @@ async function screenplayGenVideo(reqId, sceneIdx, promptOverride) {
     }
     tempCard.remove();
     if (!videoData || !videoData.video_url) {
+      if (window._sceneVideoInFlight) delete window._sceneVideoInFlight[_flightKey];  // v0.22.61: 失败释放，允许重试
       toast('❌ 视频生成失败', 'error');
       return;
     }
@@ -353,14 +411,30 @@ async function screenplayGenVideo(reqId, sceneIdx, promptOverride) {
       status: 'done',
     });
     if (typeof startChatPolling === 'function') startChatPolling(reqId);
+    // v0.22.56 fix: 视频生成后主动刷新聊天流剧本气泡
+    //   setSceneVideo 重写 chat entry 时 history.length 不变（filter 移老 + push 新）→ polling state.histCount 命中上限
+    //   → polling 不触发新渲染 → 气泡 frozen HTML 没 video → 用户报"视频生成后没同步显示"
+    //   同 chatImagePick / screenplayPickOption 的处理路径
+    if (typeof refreshScreenplayChatCard === 'function') {
+      await refreshScreenplayChatCard(reqId);
+    }
     toast('🎥 分镜头 ' + (sceneIdx + 1) + ' 视频已生成', 'success', 2000);
+
+    // v0.22.61: 本场次已完成 → 释放防重复锁（下面的自动续跑是**别的**场次，各自有各自的 key）
+    if (window._sceneVideoInFlight) delete window._sceneVideoInFlight[_flightKey];
 
     // v0.22.12: 自动继续下一个可生成的分镜头
     const allScenes = screenplay.scenes || [];
     const sceneVideos = (await api('GET', `/requirements/${reqId}/assist`)).assists?.screenplay?.scene_videos || {};
-    // v0.22.23: nextAssets 已在上面声明过（第 274 行），这里复用
-    const firstCharAsset = characters.length > 0 ? nextAssets.characters?.[characters[0].name] : null;
-    const sceneAsset2 = nextAssets.scenes?.['0'];
+    // v0.22.61 fix: `nextAssets` 从未声明过（v0.22.23 注释写"第 274 行已声明"，实际那行是
+    //   `const assets = sp.assets || {}`）→ 每次视频生成成功后走到这里必抛
+    //   ReferenceError: nextAssets is not defined → 被 catch 捕获 → 用户看到
+    //   「🎥 分镜头 N 视频已生成」绿色 toast 紧跟一条「❌ 生成失败: nextAssets is not defined」
+    //   红色 toast → 以为失败了再点一次（重复提交 → Agnes 429）。
+    //   同时 v0.22.12 的「自动续跑下一个分镜头」实际从未生效（throw 在 for 循环之前）。
+    //   改用上面已算好的 assets（= sp.assets）。
+    const firstCharAsset = characters.length > 0 ? (assets.characters || {})[characters[0].name] : null;
+    const sceneAsset2 = (assets.scenes || {})['0'];
     const hasAllBaseAssets = firstCharAsset?.asset_path && sceneAsset2?.asset_path;
     if (hasAllBaseAssets) {
       // 找下一个未生成的分镜头
@@ -376,6 +450,90 @@ async function screenplayGenVideo(reqId, sceneIdx, promptOverride) {
       toast('✅ 所有分镜头视频已生成完成！', 'success', 3000);
     }
   } catch (e) {
+    if (window._sceneVideoInFlight) delete window._sceneVideoInFlight[_flightKey];  // v0.22.61: 异常也要释放防重复锁
     toast('生成失败: ' + e.message, 'error');
+  }
+}
+
+/**
+ * v0.22.67: 生成某一场的「首帧图」（这一场的起始定格）
+ *   参考图 = 角色档案图（全部）+ 场景图（多图合成保形象一致）
+ *   产出存在 assist.scene_frames[idx].image_url_output（Agnes CDN 公网 URL）→ 直接喂给 2.5 视频接口做首尾帧
+ */
+async function screenplayGenSceneFrame(reqId, sceneIdx, btn) {
+  const key = reqId + ':frame:' + sceneIdx;
+  if (!window._frameInFlight) window._frameInFlight = {};
+  if (window._frameInFlight[key]) { toast('这一场的首帧图正在生成中…', 'info', 2500); return; }
+  window._frameInFlight[key] = true;
+  const label = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ 生成中…'; }
+  toast('🎨 正在生成场 ' + (sceneIdx + 1) + ' 的首帧图（角色图 + 场景图作参考）…', 'info', 3000);
+  try {
+    const r = await api('POST', `/requirements/${reqId}/assist/screenplay/use`, {
+      action: 'gen_scene_frame',
+      scene_idx: sceneIdx,
+    });
+    const fr = r && r.result && r.result.scene_frames && r.result.scene_frames[String(sceneIdx)];
+    if (!fr) throw new Error('生成未返回首帧图');
+    toast('✅ 场 ' + (sceneIdx + 1) + ' 首帧图已生成', 'success', 2500);
+    if (typeof refreshScreenplayChatCard === 'function') await refreshScreenplayChatCard(reqId);
+    if (window.ACMSAssistDispatcher && window.ACMSAssistDispatcher.loadAll) window.ACMSAssistDispatcher.loadAll(reqId);
+  } catch (e) {
+    toast('首帧图生成失败: ' + (e.message || e), 'error', 5000);
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+  } finally {
+    delete window._frameInFlight[key];
+  }
+}
+
+/**
+ * v0.22.67: 修改视频生成参数（每段时长 / 画幅），即时写回后端
+ */
+async function screenplaySetVideoOpts(reqId, key, value, el) {
+  try {
+    const body = { action: 'set_video_opts' };
+    body[key] = key === 'seconds_per_scene' ? parseInt(value, 10) : value;
+    await api('POST', `/requirements/${reqId}/assist/screenplay/use`, body);
+    const shown = key === 'seconds_per_scene' ? value + ' 秒/段' : '画幅 ' + value;
+    toast('✅ 已设置 ' + shown + '（下次生成生效）', 'success', 2200);
+    if (typeof refreshScreenplayChatCard === 'function') await refreshScreenplayChatCard(reqId);
+  } catch (e) {
+    toast('设置失败: ' + (e.message || e), 'error', 4000);
+    if (el) el.value = el.dataset.prev || el.value;
+  }
+}
+
+/**
+ * v0.22.65: 合成完整视频（把已生成的分镜头拼成一条）
+ *   transition: 'none'（无损拼接）| 'fade'（0.4s 交叉溶解）
+ *   后端同步跑 ffmpeg（几秒），完成后重写聊天流卡片 → 前端主动刷新剧本气泡
+ */
+async function screenplayComposeFinal(reqId, transition, btn) {
+  const label = btn ? btn.textContent : '';
+  if (window._composeInFlight && window._composeInFlight[reqId]) {
+    toast('正在合成中，请稍候…', 'info', 2500);
+    return;
+  }
+  if (!window._composeInFlight) window._composeInFlight = {};
+  window._composeInFlight[reqId] = true;
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ 合成中…'; }
+  toast(transition === 'fade' ? '✨ 正在合成（淡入淡出过渡，约几秒）…' : '🎞 正在合成完整视频（约几秒）…', 'info', 2500);
+  try {
+    const r = await api('POST', `/requirements/${reqId}/assist/screenplay/use`, {
+      action: 'compose_final',
+      transition: transition || 'none',
+    });
+    const fv = r && r.result && r.result.final_video;
+    if (!fv) throw new Error('合成未返回结果');
+    toast('✅ 完整视频已合成（' + fv.segments + ' 段 · ' + (fv.duration ? (Math.round(fv.duration * 10) / 10) + 's' : '') + '）', 'success', 3000);
+    // 刷新聊天流剧本气泡 + 侧栏
+    if (typeof refreshScreenplayChatCard === 'function') await refreshScreenplayChatCard(reqId);
+    if (window.ACMSAssistDispatcher && window.ACMSAssistDispatcher.poll) window.ACMSAssistDispatcher.poll(reqId);
+    if (window.ACMSAssistDispatcher && window.ACMSAssistDispatcher.loadAll) window.ACMSAssistDispatcher.loadAll(reqId);
+  } catch (e) {
+    toast('合成失败: ' + (e.message || e), 'error', 5000);
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+  } finally {
+    delete window._composeInFlight[reqId];
   }
 }

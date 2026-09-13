@@ -14,6 +14,20 @@
   }
   window.openGameWindow = openGameWindow;
 
+  // ── 短时间格式（菜单状态行用 — 比 desktop-sync.js 的 formatRelativeTime 更紧凑） ──
+  function formatRelativeTimeShort(iso) {
+    if (!iso) return '';
+    try {
+      var d = new Date(iso);
+      var diffSec = Math.floor((Date.now() - d.getTime()) / 1000);
+      if (diffSec < 60) return '刚刚';
+      if (diffSec < 3600) return Math.floor(diffSec / 60) + ' 分钟前';
+      if (diffSec < 86400) return Math.floor(diffSec / 3600) + ' 小时前';
+      if (diffSec < 86400 * 7) return Math.floor(diffSec / 86400) + ' 天前';
+      return d.toLocaleDateString('zh-CN');
+    } catch (e) { return ''; }
+  }
+
   // ── 菜单定义 ──
   var menuItems = [];
 
@@ -97,7 +111,7 @@
       },
       null, // separator
       {
-        // v0.75: 同步相关项合并到一个一级菜单，鼠标悬停出二级子菜单
+        // v0.75 + B 方案: 同步相关项合并到一个一级菜单，鼠标悬停出二级子菜单
         id: 'sync',
         label: '桌面同步',
         icon: function() {
@@ -105,10 +119,44 @@
           var s = window.ACMSDesktopSync.state;
           if (s.syncing) return '⏳';
           if (s.lastError) return '✕';
+          if (s.serverHasUpdate) return '🟠';   // 服务端有未查看的新版本 — 强烈提示
           if (s.lastSyncAt) return '✅';
           return '☁';
         },
         children: [
+          {
+            // 状态行（不可点）— 让用户一眼看到当前同步状态（B 方案核心可见性）
+            id: 'sync-status',
+            label: function() {
+              if (!window.ACMSDesktopSync) return '状态：未知';
+              var s = window.ACMSDesktopSync.state;
+              if (s.syncing) return '状态：正在同步…';
+              if (s.lastError) return '状态：上次同步失败 (' + String(s.lastError).slice(0, 30) + ')';
+              if (s.serverHasUpdate) return '状态：⚠ 服务端有新版本（右键可恢复）';
+              if (s.lastSyncAt) return '状态：已同步 ' + formatRelativeTimeShort(s.lastSyncAt);
+              if (window.ACMSDesktopSync.getAutoSync && window.ACMSDesktopSync.getAutoSync()) return '状态：自动同步已开启';
+              return '状态：未同步（手工模式）';
+            },
+            icon: 'ℹ',
+            disabled: true,
+          },
+          null, // separator
+          {
+            // B 方案核心 UI：autoSync 开关（默认关）
+            id: 'sync-auto',
+            label: function() {
+              var on = window.ACMSDesktopSync && window.ACMSDesktopSync.getAutoSync && window.ACMSDesktopSync.getAutoSync();
+              return (on ? '☑' : '☐') + ' 自动同步（本地变更 → 服务端）';
+            },
+            icon: '🔄',
+            action: function() {
+              if (window.ACMSDesktopSync && typeof window.ACMSDesktopSync.setAutoSync === 'function') {
+                var cur = window.ACMSDesktopSync.getAutoSync();
+                window.ACMSDesktopSync.setAutoSync(!cur);
+              }
+            },
+          },
+          null, // separator
           {
             id: 'sync-upload',
             label: '立即同步到服务端',
@@ -130,6 +178,26 @@
                 window.ACMSDesktopSync.downloadNow();
               } else {
                 if (typeof toast === 'function') toast('桌面同步模块未加载', 'error');
+              }
+            },
+          },
+          {
+            id: 'sync-check',
+            label: '检查服务端更新',
+            icon: '🔍',
+            action: function() {
+              if (window.ACMSDesktopSync && typeof window.ACMSDesktopSync.checkForUpdates === 'function') {
+                window.ACMSDesktopSync.checkForUpdates().then(function (st) {
+                  if (typeof toast === 'function') {
+                    if (st.serverHasUpdate) {
+                      toast('☁ 服务端有新版本（' + formatRelativeTimeShort(st.serverUpdatedAt) + '），右键桌面 → 从服务端恢复可查看', 'info', 6000);
+                    } else if (!st.serverExists) {
+                      toast('☁ 服务端无桌面配置', 'info');
+                    } else {
+                      toast('☁ 已是最新（' + formatRelativeTimeShort(st.serverUpdatedAt) + '）', 'success');
+                    }
+                  }
+                });
               }
             },
           },
@@ -202,14 +270,13 @@ if (typeof window.createNewChatWindow === 'function') {
             label: '游戏中心',
             icon: '🎮',
             children: [
-              { id: 'game-2048', label: '2048', icon: '🔢',
-                action: function() { openGameWindow('2048', 360, 480, '2048'); } },
+              { id: 'game-tank3d', label: '坦克大战 3D', icon: '🛡️',
+                action: function() {
+                  if (typeof window.openTank3D === 'function') window.openTank3D();
+                  else openGameWindow('tank3d', 1000, 680, '坦克大战 3D');
+                } },
               { id: 'game-snake', label: '贪吃蛇', icon: '🐍',
                 action: function() { openGameWindow('snake', 420, 480, '贪吃蛇'); } },
-              { id: 'game-pong', label: 'Pong', icon: '🏓',
-                action: function() { openGameWindow('pong', 480, 380, 'Pong'); } },
-              { id: 'game-tetris', label: '俄罗斯方块', icon: '🧱',
-                action: function() { openGameWindow('tetris', 320, 500, '俄罗斯方块'); } },
             ],
           },
           {
@@ -352,46 +419,29 @@ if (typeof window.createNewChatWindow === 'function') {
     menu.style.top = y + 'px';
 
     var html = '';
-    menuItems.forEach(function(item) {
-      if (item === null) {
-        html += '<div class="acms-cm-separator"></div>';
-        return;
-      }
-      // 管理员检查
-      if (item.adminOnly && !isAdmin) return;
-
-      var hasChildren = item.children || (typeof item.children === 'function');
-      var itemClass = 'acms-cm-item' + (hasChildren ? ' has-submenu' : '');
-      // 支持动态图标（函数）
-      var iconStr = (typeof item.icon === 'function') ? item.icon() : item.icon;
-      var iconHtml = iconStr ? '<span class="acms-cm-icon">' + iconStr + '</span>' : '';
-      var arrowHtml = hasChildren ? '<span class="acms-cm-arrow">▸</span>' : '';
-
-      html += '<div class="' + itemClass + '" data-id="' + item.id + '">' +
-        iconHtml +
-        '<span class="acms-cm-label">' + item.label + '</span>' +
-        arrowHtml +
-        '</div>';
-
-      if (hasChildren) {
-        html += '<div class="acms-cm-submenu" data-parent="' + item.id + '">';
-        var children = typeof item.children === 'function' ? item.children() : item.children;
-        if (children && children.length) {
-          children.forEach(function(child) {
-            if (child === null) {
-              html += '<div class="acms-cm-separator"></div>';
-              return;
-            }
-            var childIconStr = (typeof child.icon === 'function') ? child.icon() : child.icon;
-            html += '<div class="acms-cm-item" data-id="' + child.id + '" data-parent="' + item.id + '">' +
-              (childIconStr ? '<span class="acms-cm-icon">' + childIconStr + '</span>' : '') +
-              '<span class="acms-cm-label">' + child.label + '</span>' +
-              '</div>';
-          });
-        }
+    // 渲染单个菜单项（递归，支持 3 级：应用中心 → 游戏中心 → 具体游戏）
+    //   子菜单嵌在父项 DOM 内 → 靠 .acms-cm-item{position:relative} + submenu{left:100%} 定位
+    function addMenuItem(node, parentId, depth) {
+      if (node === null) { html += '<div class="acms-cm-separator"></div>'; return; }
+      if (node.adminOnly && !isAdmin) return;
+      var iconStr = (typeof node.icon === 'function') ? node.icon() : node.icon;
+      var labelStr = (typeof node.label === 'function') ? node.label() : node.label;
+      var kids = (typeof node.children === 'function') ? node.children() : node.children;
+      var hasKids = !!(kids && kids.length) && depth < 3;
+      var cls = 'acms-cm-item' + (hasKids ? ' has-submenu' : '') + (node.disabled ? ' acms-cm-disabled' : '');
+      html += '<div class="' + cls + '" data-id="' + node.id + '"' + (parentId ? ' data-parent="' + parentId + '"' : '') + '>' +
+        (iconStr ? '<span class="acms-cm-icon">' + iconStr + '</span>' : '') +
+        '<span class="acms-cm-label">' + labelStr + '</span>' +
+        (hasKids ? '<span class="acms-cm-arrow">▸</span>' : '');
+      if (hasKids) {
+        html += '<div class="acms-cm-submenu" data-parent="' + node.id + '">';
+        kids.forEach(function(k) { addMenuItem(k, node.id, depth + 1); });
         html += '</div>';
       }
-    });
+      html += '</div>';
+    }
+
+    menuItems.forEach(function(item) { addMenuItem(item, null, 1); });
 
     menu.innerHTML = html;
 
@@ -401,22 +451,21 @@ if (typeof window.createNewChatWindow === 'function') {
       if (!itemEl) return;
       // 有子菜单的点击不关闭
       if (itemEl.classList.contains('has-submenu')) return;
+      // 跳过 disabled 项（状态行等不可点的项）
+      if (itemEl.classList.contains('acms-cm-disabled')) return;
       var id = itemEl.dataset.id;
       var parentId = itemEl.dataset.parent;
       // 查找并执行 action
       if (parentId) {
-        var parentItem = findItem(parentId);
-        if (parentItem && parentItem.children) {
-          var children = typeof parentItem.children === 'function' ? parentItem.children() : parentItem.children;
-          var child = children.find(function(c) { return c && c.id === id; });
-          if (child && child.action) {
-            removeMenu();
-            child.action();
-          }
+        // 递归下钻（支持 3 级：应用中心 → 游戏中心 → 2048）
+        var target = findItemDeep(parentId, id);
+        if (target && target.action && !target.disabled) {
+          removeMenu();
+          target.action();
         }
       } else {
         var item = findItem(id);
-        if (item && item.action) {
+        if (item && item.action && !item.disabled) {
           removeMenu();
           item.action();
         }
@@ -439,7 +488,10 @@ if (typeof window.createNewChatWindow === 'function') {
       itemEl.addEventListener('mouseenter', function() {
         // 隐藏其他子菜单
         menu.querySelectorAll('.acms-cm-submenu.show').forEach(function(s) {
-          if (s !== sub) s.classList.remove('show');
+          if (s === sub) return;
+          // 祖先 submenu 必须保留：三级菜单嵌在二级里，藏了二级 → 三级失去定位上下文
+          if (s.contains(itemEl)) return;
+          s.classList.remove('show');
         });
         if (hoverTimers[id]) clearTimeout(hoverTimers[id]);
         hoverTimers[id] = setTimeout(function() {
@@ -457,13 +509,18 @@ if (typeof window.createNewChatWindow === 'function') {
       // 子菜单 mouseenter：保持显示
       sub.addEventListener('mouseenter', function() {
         if (hoverTimers[id]) clearTimeout(hoverTimers[id]);
+        if (hoverTimers[id + '-hide']) clearTimeout(hoverTimers[id + '-hide']);
         sub.classList.add('show');
       });
 
-      // 子菜单 mouseleave：隐藏
+      // 子菜单 mouseleave：延迟隐藏 —— 鼠标滑向三级菜单时要跨过 submenu 的 2px 间隙
+      //   （三级菜单在 DOM 上是 sub 的后代，真进入它不触发 mouseleave；此延迟只兜住间隙）
       sub.addEventListener('mouseleave', function() {
         if (hoverTimers[id]) clearTimeout(hoverTimers[id]);
-        sub.classList.remove('show');
+        if (hoverTimers[id + '-hide']) clearTimeout(hoverTimers[id + '-hide']);
+        hoverTimers[id + '-hide'] = setTimeout(function() {
+          sub.classList.remove('show');
+        }, 220);
       });
     });
 
@@ -528,6 +585,24 @@ if (typeof window.createNewChatWindow === 'function') {
   function removeMenu() {
     var menu = document.getElementById(MENU_ID);
     if (menu) menu.remove();
+  }
+
+  // 递归查找菜单项（支持 3 级嵌套：应用中心 → 游戏中心 → 具体游戏）
+  //   ★ 不能用 findItem(parentId) —— 它只遍历一级 menuItems，而 parentId 常是二级项
+  function findItemDeep(parentId, targetId) {
+    var found = null;
+    (function walk(list, parent) {
+      if (!list || found) return;
+      for (var i = 0; i < list.length; i++) {
+        var node = list[i];
+        if (!node) continue;
+        if (node.id === targetId && parent && parent.id === parentId) { found = node; return; }
+        var kids = (typeof node.children === 'function') ? node.children() : node.children;
+        if (kids && kids.length) walk(kids, node);
+        if (found) return;
+      }
+    })(menuItems, null);
+    return found;
   }
 
   function findItem(id) {

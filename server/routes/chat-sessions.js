@@ -64,11 +64,13 @@ router.get('/:id/messages', (req, res) => {
 });
 
 // v0.117：清理会话消息（自由对话补"清理"功能）
-//   body: { mode: 'all'|'user'|'assistant'|'system'|'ai'|'selected', indices?: [...] }
+//   body: { mode: 'all'|'user'|'assistant'|'system'|'ai'|'selected', indices?: [...], cardIndices?: [...] }
+//   v0.22.51：indices = chat_messages 下标；cardIndices = 隐藏 requirement supplement_history 下标
+//             （自由对话的工具卡片存在后者，必须一起清，否则卡片清不掉）
 router.post('/:id/clean', (req, res) => {
   try {
-    const { mode = 'all', indices } = req.body || {};
-    const result = svc.cleanSessionMessages(req.params.id, { mode, indices });
+    const { mode = 'all', indices, cardIndices } = req.body || {};
+    const result = svc.cleanSessionMessages(req.params.id, { mode, indices, cardIndices });
     if (result.error === 'NOT_FOUND') return res.status(404).json({ error: 'NOT_FOUND' });
     if (result.error && result.error.startsWith('未知清理模式')) {
       return res.status(400).json({ error: 'INVALID_MODE', message: result.error });

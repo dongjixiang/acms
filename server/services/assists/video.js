@@ -213,11 +213,15 @@ function calcNumFrames(targetSeconds, frameRate = 24) {
  *   返回 { ok, error, result } — 调用方用 retried.ok 判断，retried.result 拿原始响应
  */
 async function callAgnesVideoWithRetry(tool, params, ctx) {
-  const MAX_ATTEMPTS = 3;
+  // v0.22.67: 免费额度会把 429（rate_limit_exceeded）和 503（video_queue_full）打回来 ——
+  //   旧退避只有 500ms/1s、3 次就放弃，实测完全不够（用户 3 段连着生成 → 场景 1/2 直接 failed: HTTP 429；
+  //   spike 里还会撞 503 video_queue_full「视频队列已满」）。
+  //   现在：429 → 30s/60s…；503 → 20s/40s…；最多 5 次。两者都是"可重试"，不能直接判失败。
+  const MAX_ATTEMPTS = 5;
   const RETRY_STATUSES = [429, 502, 503, 504];
   // transport errors 在 agnes-video.js 里 status_code=0（默认）或 408（timeout）
   const RETRY_TRANSPORT_CODES = [0, 408];
-  const backoff = (n) => new Promise(r => setTimeout(r, 500 * Math.pow(2, n - 1)));
+  const waitMs = (status, n) => (status === 429 ? 30000 * n : status === 503 ? 20000 * n : 500 * Math.pow(2, n - 1));
   let lastErr = '未知错误';
   let lastResult = null;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -236,15 +240,17 @@ async function callAgnesVideoWithRetry(tool, params, ctx) {
       // 只对白名单内的 status 重试
       const retryable = RETRY_STATUSES.includes(sc) || RETRY_TRANSPORT_CODES.includes(sc);
       if (!retryable || attempt >= MAX_ATTEMPTS) return { ok: false, error: result.error, result };
-      console.warn(`[assist:video] status=${sc}（${attempt}/${MAX_ATTEMPTS}），${500 * Math.pow(2, attempt - 1)}ms 后重试...`);
-      await backoff(attempt);
+      const w = waitMs(sc, attempt);
+      console.warn(`[assist:video] status=${sc}（${attempt}/${MAX_ATTEMPTS}），${Math.round(w / 1000)}s 后重试...`);
+      await new Promise(r => setTimeout(r, w));
     } catch (e) {
       lastErr = e.message || String(e);
       const isConnError = /ECONNRESET|UND_ERR|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|fetch failed/i.test(lastErr);
       if (!isConnError) return { ok: false, error: lastErr, result: lastResult };
       if (attempt >= MAX_ATTEMPTS) return { ok: false, error: lastErr, result: lastResult };
-      console.warn(`[assist:video] 连接错误 ${lastErr}（${attempt}/${MAX_ATTEMPTS}），${500 * Math.pow(2, attempt - 1)}ms 后重试...`);
-      await backoff(attempt);
+      const w = waitMs(0, attempt);
+      console.warn(`[assist:video] 连接错误 ${lastErr}（${attempt}/${MAX_ATTEMPTS}），${Math.round(w / 1000)}s 后重试...`);
+      await new Promise(r => setTimeout(r, w));
     }
   }
   return { ok: false, error: lastErr, result: lastResult };
@@ -261,6 +267,50 @@ async function runAssistJob(requirementId, opts = {}) {
   const debounceKey = getVideoDebounceKey(requirementId, sceneIdx);
   console.log(`[assist:video] ${requirementId} runAssistJob sceneIdx=${sceneIdx} field=${VIDEO_FIELD} debounceKey=${debounceKey}`);
 
+  // v0.22.61 fix: 分场次生成时**同步镜像**一份到通用字段 assist_video
+  //   为什么必须镜像：视频卡片（chat 流 renderLeisureResult）走 GET /assist → svc.getAssist(reqId)
+  //     （不带 sceneIdx）→ 读的永远是通用字段；SSE 流 (/assist/:method/stream) 和前端
+  //     startVideoAutoPoll 的 query 也都不带 scene_idx → 同一个通用字段。
+  //     而 v0.22.30 只把 runAssistJob 改成写分桶字段 → 唯一写通用字段的是
+  //     tools/external-api.js 的卡片联动（在 generateVideo() 返回**之后**才写，实测 10-68s 空窗）。
+  //     空窗期里通用字段还挂着**上一次生成**的视频 → 用户点第一次「生成视频」时卡片先渲染出
+  //     上一个视频（甚至直接播放），用户以为没生效 → 再点一次 → 重复提交 → Agnes 429（实测
+  //     assist_video_scene_1/2 = failed HTTP 429）→「点第二次才正常生成」。
+  //   镜像规则：video_id 一致时保留通用字段里已下载的 video_url/asset_path ——
+  //     避免 runAssistJob 的 "done" 覆盖把前端刚轮询到的 URL 抹掉。
+  const GENERIC_VIDEO_FIELD = getVideoField(null);
+  const writeFields = (payload) => {
+    const patch = { [VIDEO_FIELD]: JSON.stringify(payload) };
+    if (sceneIdx !== null) {
+      let prev = null;
+      try { prev = JSON.parse(req[GENERIC_VIDEO_FIELD] || 'null'); } catch { prev = null; }
+      const sameTask = !!(prev && payload.video_id && prev.video_id === payload.video_id);
+      patch[GENERIC_VIDEO_FIELD] = JSON.stringify({
+        ...payload,
+        scene_idx: sceneIdx,
+        video_url: payload.video_url || (sameTask ? prev.video_url : null) || null,
+        asset_path: payload.asset_path || (sameTask ? prev.asset_path : null) || null,
+      });
+    }
+    reqStore.update(requirementId, patch);
+  };
+
+  // v0.22.67: 2.5 系列的帧参数归一化 + params 组装
+  //   2.5 官方要求参考媒体"公网可访问 URL"；首帧图由 image API 生成 → 本身是 cos CDN URL ✓
+  //   本地路径 / data URI 走 resolveImageUrlToBase64 兜底（能否被 2.5 接受待实测，失败会明确报错）
+  //   注意：函数写在 runAssistJob 顶部（不要放进 try 块内 —— JS 块级函数声明不跨块 hoist，见 P198 教训）
+  const normFrame = (v, label) => {
+    if (!v) return '';
+    if (/^https?:\/\//i.test(v)) return v;
+    const b64 = resolveImageUrlToBase64(v);
+    if (b64) {
+      console.warn(`[assist:video] ${requirementId} ${label} 非公网 URL，已转 base64 兜底`);
+      return b64;
+    }
+    console.warn(`[assist:video] ${requirementId} ${label} 无法解析，已忽略（该段退化为单首帧/文生视频）`);
+    return '';
+  };
+
   const prompt = (opts.prompt || '').trim();
   const duration = parseFloat(opts.duration) || 5; // 默认 5 秒
   const imageUrl = (opts.image_url || '').trim();
@@ -268,36 +318,50 @@ async function runAssistJob(requirementId, opts = {}) {
   const imageUrls = opts.image_urls; // v0.22.23：多图视频参考图数组（来自 screenplay）
   const frameRate = parseInt(opts.frame_rate) || 24;
 
+  // v0.22.67: 2.5 系列（首尾帧）参数
+  //   video_model: 'agnes-video-2.5-flash' 时走 seconds + first_frame/last_frame + aspect_ratio
+  //   2.0 老链路（无 video_model）保持 num_frames + extra_body.image[] 不变
+  const videoModel = (opts.video_model || '').trim() || 'agnes-video-v2.0';
+  const is25 = /agnes-video-2\.5/.test(videoModel);
+  const firstFrame = (opts.first_frame || '').trim();
+  const lastFrame = (opts.last_frame || '').trim();
+  const aspectRatio = (opts.aspect_ratio || '').trim() || null;
+  const secondsParam = opts.seconds !== undefined && opts.seconds !== null
+    ? Math.max(4, Math.min(12, parseFloat(opts.seconds) || duration))
+    : null;
+
   if (!prompt) {
-    reqStore.update(requirementId, {
-      [VIDEO_FIELD]: JSON.stringify({
-        status: 'failed',
-        error: 'NO_PROMPT',
-        prompt: '',
-        generated_at: new Date().toISOString(),
-      }),
+    writeFields({
+      status: 'failed',
+      error: 'NO_PROMPT',
+      prompt: '',
+      generated_at: new Date().toISOString(),
     });
     return;
   }
 
   // 写 pending 状态
   const numFrames = calcNumFrames(duration, frameRate);
-  reqStore.update(requirementId, {
-    [VIDEO_FIELD]: JSON.stringify({
-      status: 'generating',
-      prompt,
-      duration,
-      image_url: imageUrl || null,
-      image_urls: (imageUrls && Array.isArray(imageUrls)) ? imageUrls : null, // v0.22.23
-      num_frames: numFrames,
-      frame_rate: frameRate,
-      video_id: null,
-      task_id: null,
-      progress: 0,
-      video_url: null,
-      error: null,
-      started_at: new Date().toISOString(),
-    }),
+  writeFields({
+    status: 'generating',
+    prompt,
+    duration,
+    model: videoModel,
+    mode: is25 ? (firstFrame || lastFrame ? 'keyframe' : 'text') : 'keyframes',
+    first_frame: firstFrame || null,
+    last_frame: lastFrame || null,
+    seconds: secondsParam,
+    aspect_ratio: aspectRatio,
+    image_url: imageUrl || null,
+    image_urls: (imageUrls && Array.isArray(imageUrls)) ? imageUrls : null, // v0.22.23
+    num_frames: numFrames,
+    frame_rate: frameRate,
+    video_id: null,
+    task_id: null,
+    progress: 0,
+    video_url: null,
+    error: null,
+    started_at: new Date().toISOString(),
   });
 
   try {
@@ -327,7 +391,20 @@ let finalImage = imageUrl || null;
     //     原因：1) ACMS 本地相对路径 Agnes 外部无法访问
     //           2) image_url_output CDN URL Node fetch ECONNRESET（用 curl 绕开）
     //           3) Agnes 实测接受纯 base64 字符串（http 200）
-    const params = { prompt, num_frames: numFrames, frame_rate: frameRate };
+    const params = is25
+      ? (() => {
+          const p = { model: videoModel, prompt, seconds: secondsParam || duration, size: '720P' };
+          if (aspectRatio) p.aspect_ratio = aspectRatio;
+          const f1 = normFrame(firstFrame, 'first_frame');
+          const f2 = normFrame(lastFrame, 'last_frame');
+          if (f1) p.first_frame = f1;
+          if (f2) p.last_frame = f2;
+          console.log(`[assist:video] ${requirementId} 2.5 首尾帧模式 model=${videoModel} seconds=${p.seconds} aspect=${aspectRatio || '默认'} first=${f1 ? '有' : '无'} last=${f2 ? '有' : '无'}`);
+          return p;
+        })()
+      : { prompt, num_frames: numFrames, frame_rate: frameRate };
+
+    if (!is25) {
     if (imageUrls && Array.isArray(imageUrls) && imageUrls.length > 0) {
       // 多图模式：每张图转 base64，跳过失败的（warn 而不报错）
       const base64Images = [];
@@ -354,6 +431,7 @@ let finalImage = imageUrl || null;
         console.warn(`[assist:video] ${requirementId} finalImage 解析失败，降级为文生视频`);
       }
     }
+    }
     // v0.53: 包一层重试（最多 3 次，指数退避）— 5xx/429/transport errors 重试，4xx/API Key 缺失不重试
     // v0.114e: 传 ctx {reqId} → agnes_generate_video handler 的卡片联动轮询生效（play_video 展示修复）
     const retried = await callAgnesVideoWithRetry(videoTool, params, { reqId: requirementId });
@@ -362,25 +440,30 @@ let finalImage = imageUrl || null;
       throw new Error(retried.error || result.error || '视频生成失败');
     }
 
-    reqStore.update(requirementId, {
-      [VIDEO_FIELD]: JSON.stringify({
-        status: 'done',  // v0.19 fix: 设 done 让 SSE 能正常结束（视频是异步的，用户手动查进度）
-        prompt,
-        duration,
-        image_url: finalImage || null,
-        image_urls: (imageUrls && Array.isArray(imageUrls)) ? imageUrls : null, // v0.22.23
-        num_frames: numFrames,
-        frame_rate: frameRate,
-        video_id: result.video_id || null,
-        task_id: result.task_id || null,
-        progress: result.progress ?? 0,
-        video_url: null,
-        error: null,
-        created_at: new Date().toISOString(),
-        raw_response: result,
-        // v0.19: 标记是异步任务，前端显示刷新按钮
-        async_task: true,
-      }),
+    writeFields({
+      status: 'done',  // v0.19 fix: 设 done 让 SSE 能正常结束（视频是异步的，用户手动查进度）
+      prompt,
+      duration,
+      // v0.22.67: 记录实际用的模型/模式/首尾帧，便于前端展示与排障
+      model: videoModel,
+      mode: params.mode || (is25 ? (params.first_frame || params.last_frame ? 'keyframe' : 'text') : 'keyframes'),
+      first_frame: params.first_frame || null,
+      last_frame: params.last_frame || null,
+      seconds: params.seconds || null,
+      aspect_ratio: aspectRatio,
+      image_url: finalImage || null,
+      image_urls: (imageUrls && Array.isArray(imageUrls)) ? imageUrls : null, // v0.22.23
+      num_frames: numFrames,
+      frame_rate: frameRate,
+      video_id: result.video_id || null,
+      task_id: result.task_id || null,
+      progress: result.progress ?? 0,
+      video_url: null,
+      error: null,
+      created_at: new Date().toISOString(),
+      raw_response: result,
+      // v0.19: 标记是异步任务，前端显示刷新按钮
+      async_task: true,
     });
 
     console.log(`[assist:video] ${requirementId} 任务已创建, video_id=${result.video_id}, status=${result.status}`);
@@ -391,22 +474,20 @@ let finalImage = imageUrl || null;
     const errMsg = e.message || e.cause?.message || e.toString() || '未知错误（无 message）';
     console.error(`[assist:video] ${requirementId} 创建失败:`, errMsg,
       '| e.name=', e.name, '| e.code=', e.code, '| e.cause=', e.cause?.message);
-    reqStore.update(requirementId, {
-      [VIDEO_FIELD]: JSON.stringify({
-        status: 'failed',
-        prompt,
-        duration,
-        image_url: imageUrl || null,
-        image_urls: (imageUrls && Array.isArray(imageUrls)) ? imageUrls : null, // v0.22.23
-        num_frames: numFrames,
-        frame_rate: frameRate,
-        video_id: null,
-        task_id: null,
-        progress: 0,
-        video_url: null,
-        error: errMsg,
-        generated_at: new Date().toISOString(),
-      }),
+    writeFields({
+      status: 'failed',
+      prompt,
+      duration,
+      image_url: imageUrl || null,
+      image_urls: (imageUrls && Array.isArray(imageUrls)) ? imageUrls : null, // v0.22.23
+      num_frames: numFrames,
+      frame_rate: frameRate,
+      video_id: null,
+      task_id: null,
+      progress: 0,
+      video_url: null,
+      error: errMsg,
+      generated_at: new Date().toISOString(),
     });
     // v0.94 (2026-08-20): throw 让 handler 拿到 ok=false（治"LLM 撒谎说已提交"）
     //   之前 catch 吞错 → handler 看到 await 不抛错 → return ok=true → LLM final answer 撒谎
@@ -480,7 +561,10 @@ async function queryAssistJob(requirementId, sceneIdx = null) {
     const queryTool = toolRegistry.getTool('agnes_query_video');
     if (!queryTool) throw new Error('视频查询工具未注册');
 
-    const result = await queryTool.handler({ video_id: videoId, task_id: taskId });
+    // v0.22.67: 2.5 系列的 keyframe/reference 任务**必须**带 model_name 查询，否则查不到
+    const queryArgs = { video_id: videoId, task_id: taskId };
+    if (assist.model && /agnes-video-2\.5/.test(assist.model)) queryArgs.model_name = assist.model;
+    const result = await queryTool.handler(queryArgs);
     console.log(`[assist:video] ${requirementId} query result: status=${result.status} progress=${result.progress} kind=${result._query_kind || '?'} error=${result.error || '(none)'}`);
 
     // v0.22.20: error 字段用新查询结果，不要保留旧 error
@@ -516,7 +600,14 @@ async function queryAssistJob(requirementId, sceneIdx = null) {
 
     if (result.raw) updated.last_raw_response = result.raw;
 
-    reqStore.update(requirementId, { [VIDEO_FIELD]: JSON.stringify(updated) });
+    // v0.22.61: 分场次查询也要镜像到通用字段 —— 视频卡片（chat 流）的自动轮询
+    //   (startVideoAutoPoll) 和「刷新进度」按钮都不带 scene_idx，读通用字段；
+    //   不镜像的话卡片永远看不到本场的 progress / video_url / asset_path。
+    const patch = { [VIDEO_FIELD]: JSON.stringify(updated) };
+    if (sceneIdx !== null && sceneIdx !== undefined) {
+      patch[getVideoField(null)] = JSON.stringify({ ...updated, scene_idx: sceneIdx });
+    }
+    reqStore.update(requirementId, patch);
     return updated;
   } catch (e) {
     console.error(`[assist:video] ${requirementId} 查询失败:`, e.message);
@@ -542,4 +633,6 @@ module.exports = {
   // v0.22.30: 导出 helper 给 routes/requirements.js 用
   getVideoField,
   getVideoDebounceKey,
+  // v0.22.65: 导出给 services/assists/screenplay.js（合成完整视频要解析同一套 workspace 路径）
+  getProjectDirForReq,
 };

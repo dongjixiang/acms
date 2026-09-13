@@ -403,14 +403,14 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/i18n.js"></script>
 <script src="/client/js/api.js"></script>
 <script src="/client/js/core/state.js"></script>
-<script src="/client/js/core/utils.js"></script>
+<script src="/client/js/core/utils.js?v=0.118.2"></script>
 <script src="/client/js/core/markdown.js"></script>
 <script src="/client/js/core/voice.js"></script>
 <script src="/client/js/core/router.js"></script>
 <script src="/client/js/views/projects.js"></script>
 <script src="/client/js/views/dashboard.js"></script>
 <!-- v0.13 拆分：12 个子模块在 requirements.js 之前加载（HTML onclick 跨文件按名查找） -->
-<script src="/client/js/views/requirements/chat.js?v=0.13.0"></script>
+<script src="/client/js/views/requirements/chat.js?v=0.22.68"></script>
 <script src="/client/js/views/requirements/idea-panel.js?v=0.13.0"></script>
 <!-- v0.18 chat 模式切换器（clarify ↔ free）—— idea-panel.js 之后加载，引用 toggleChatMode -->
 <script src="/client/js/views/requirements/chat-mode.js?v=0.18.0"></script>
@@ -434,15 +434,15 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/assists/arch.js"></script>
 <script src="/client/js/views/assists/visual.js"></script>  <!-- v0.13 B11：补漏（之前 index.html 漏注册 visual.js，导致视觉卡片走降级分支只显示标题） -->
 <script src="/client/js/views/assists/competitive.js"></script>
-<script src="/client/js/views/assists/reference.js"></script>
+<script src="/client/js/views/assists/reference.js?v=0.13.1"></script>  <!-- v0.13.1 fix: 适配后端 v2 数据结构（target_product/profile/diagrams/insights.title）— 之前 9 个月没适配导致只显示核心理念 -->
 <script src="/client/js/views/assists/pains.js"></script>
 <script src="/client/js/views/assists/risks.js"></script>
 <script src="/client/js/views/assists/stakeholders.js"></script>
 <script src="/client/js/views/assists/assumptions.js"></script>
 <script src="/client/js/views/assists/health-check.js"></script>
 <script src="/client/js/views/assists/music.js?v=0.19.0"></script>  <!-- v0.19 音乐播放辅助 — 找免费播放源链接 -->
-<script src="/client/js/views/assists/video.js?v=0.19.0"></script>  <!-- v0.19 AI 视频生成 → Agnes Video -->
-<script src="/client/js/views/assists/image-gen.js?v=0.19.0"></script>  <!-- v0.19 AI 图片生成 → Agnes Image -->
+<script src="/client/js/views/assists/video.js?v=0.22.64"></script>  <!-- v0.19 AI 视频生成 → Agnes Video -->
+<script src="/client/js/views/assists/image-gen.js?v=0.22.68"></script>  <!-- v0.19 AI 图片生成 → Agnes Image -->
 <script src="/client/js/views/assists/thinking-brief.js?v=0.9.0"></script>
 <script src="/client/js/views/assists/dispatcher.js"></script>
 <script src="/client/js/views/kanban.js"></script>

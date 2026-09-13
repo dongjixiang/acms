@@ -672,7 +672,13 @@ router.get('/:id/assist', (req, res, next) => {
       }
     }
 
-    res.json({ assists: result });
+    res.json({
+      assists: result,
+      // v0.22.52: 返回 hiddenRequirementId（resolve 后的真实 REQ-xxx）—— 自由对话前端
+      //   用它写入 _chatState.sessionRequirementId，让后续 startChatPolling 能拉到 hidden REQ
+      //   上的 supplement_history（工具结果卡片写在那里）。修复"选剧本后聊天流卡片不渲染"。
+      hiddenRequirementId: reqId,
+    });
   } catch (e) { next(e); }
 });
 
@@ -975,6 +981,18 @@ router.post('/:id/assist/:method/use', async (req, res, next) => {
       // v0.22.8: 写入分镜头视频
       result = svc.setSceneVideo(req.params.id, body.scene_idx, body);
     }
+    else if (method === 'screenplay' && body.action === 'compose_final') {
+      // v0.22.65: 把已生成的分镜头合成一条完整视频（ffmpeg concat / xfade；几秒内完成，同步等待）
+      result = await svc.composeFinal(req.params.id, body);
+    }
+    else if (method === 'screenplay' && body.action === 'gen_scene_frame') {
+      // v0.22.67: 生成某一场的「首帧图」（角色图+场景图多图合成；约 10-20s，同步等待）
+      result = await svc.genSceneFrame(req.params.id, body);
+    }
+    else if (method === 'screenplay' && body.action === 'set_video_opts') {
+      // v0.22.67: 每段时长 / 画幅 / 视频模型（默认值但允许调整）
+      result = svc.setVideoOpts(req.params.id, body);
+    }
     else if (method === 'screenplay') {
       // v0.22：剧本辅助 → 标记选中并写聊天流（按 P11 教训）
       result = svc.markPicked(req.params.id, body.idx);
@@ -1006,7 +1024,10 @@ router.post('/:id/assist/:method/use', async (req, res, next) => {
     }
     else return res.status(400).json({ error: 'METHOD_HAS_NO_USE_HANDLER' });
 
-    res.json({ method, result });
+    // v0.22.52: 返回 hiddenRequirementId（resolve 后的真实 REQ-xxx）—— 自由对话前端
+    //   用它写入 _chatState.sessionRequirementId，让后续 startChatPolling 能拉到 hidden REQ
+    //   上的 supplement_history（工具结果卡片写在那里）。修复"选剧本后聊天流卡片不渲染"。
+    res.json({ method, result, hiddenRequirementId: req.params.id });
   } catch (e) { next(e); }
 });
 
