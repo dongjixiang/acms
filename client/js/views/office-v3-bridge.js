@@ -1769,7 +1769,7 @@
     var frame = document.createElement('iframe');
     frame.className = 'v3-genoffice-frame';
     frame.style.cssText = 'width:100%;height:100%;border:0;display:block;';
-    frame.src = BASE + 'word-ui/host.html?v=0.97.9';
+    frame.src = BASE + 'word-ui/host.html?v=0.97.10';
     w.$c.appendChild(frame);
 
     function patchOpenDocx(win) {
@@ -1840,15 +1840,65 @@
       tryPatch();
     }
 
+    // v0.22.74: 覆盖 bundle 的 saveDocxAs/saveDocxNew —— 弹 mini 浮窗让用户选位置+文件名
+    // 不动 saveDocx（普通保存）—— 用户没报保存 bug，保持原状走 /api/office/save 默认路径
+    // 同 patchOpenDocx 模式：处理 desktop 被 mountWordUI 重建的场景
+    function patchSaveAs(win) {
+      if (!win) return;
+
+      function doPatch() {
+        if (!win.desktop || typeof win.desktop.saveDocxAs !== 'function') {
+          return false;
+        }
+        if (win.desktop.__acmsSaveAsPatched) {
+          return true;
+        }
+        try {
+          // 另存为：弹 mini 浮窗选位置+文件名
+          win.desktop.saveDocxAs = function (fileName, buffer) {
+            return win.__acmsSaveDocxAs
+              ? Promise.resolve(win.__acmsSaveDocxAs(fileName, buffer))
+              : Promise.resolve({ ok: false, error: 'host.html __acmsSaveDocxAs 未就绪' });
+          };
+          // 无 filePath 的新建（saveDocxNew）也走同一条路 —— 行为同另存为
+          win.desktop.saveDocxNew = win.desktop.saveDocxAs;
+          win.desktop.__acmsSaveAsPatched = true;
+          console.info('[office-v3] patched desktop.saveDocxAs/saveDocxNew → __acmsSaveDocxAs');
+          return true;
+        } catch (e2) {
+          console.warn('[office-v3] patchSaveAs failed:', e2.message);
+          return false;
+        }
+      }
+
+      function tryPatch() {
+        if (doPatch()) return;
+        var lastPatchCheck = Date.now();
+        var interval = setInterval(function () {
+          if (win.desktop && !win.desktop.__acmsSaveAsPatched) {
+            if (doPatch()) {
+              clearInterval(interval);
+              console.info('[office-v3] re-patched desktop.saveDocxAs after rebuild');
+            }
+          }
+          if (Date.now() - lastPatchCheck > 10000) {
+            clearInterval(interval);
+          }
+        }, 500);
+      }
+      tryPatch();
+    }
+
     function initFrame() {
       var win = frame.contentWindow;
       if (!win || typeof win.__init !== 'function') return;
       patchOpenDocx(win);
+      patchSaveAs(win);   // v0.22.74
       win.__init({ fileId: fileId || undefined, fileName: fileName || 'untitled.docx', apiKey: API_KEY })
         .then(function (r) {
           if (r && !r.ok) console.warn('[office-v3] GenOffice host init 失败:', r.error);
           // mount 完成后 re-patch：GenOffice 每次 mountWordUI 会重建 window.desktop，覆盖之前的 patch
-          setTimeout(function () { patchOpenDocx(win); }, 500);
+          setTimeout(function () { patchOpenDocx(win); patchSaveAs(win); }, 500);
         })
         .catch(function (e) { console.warn('[office-v3] GenOffice host init 异常:', e.message); });
     }

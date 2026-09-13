@@ -361,6 +361,8 @@ router.post('/upload', function(req, res) {
   var reqPath = req.body && req.body.path;
   var fileName = req.body && req.body.fileName;
   var content = req.body && req.body.content;
+  // v0.22.74: overwrite 支持（供 Word/Excel/PPT 另存为覆盖场景，前端传 overwrite:true 触发）
+  var overwrite = !!(req.body && req.body.overwrite === true);
   if (!reqPath || !fileName || !content) return res.status(400).json({ error: 'MISSING_PARAMS', message: '\u7f3a\u5c11\u53c2\u6570' });
 
   var resolved = resolveSafePath(req, reqPath);
@@ -368,7 +370,7 @@ router.post('/upload', function(req, res) {
 
   var filePath = path.join(resolved.safePath, fileName);
 
-  if (fs.existsSync(filePath)) {
+  if (fs.existsSync(filePath) && !overwrite) {
     return res.status(400).json({ error: 'ALREADY_EXISTS', message: '\u6587\u4ef6\u5df2\u5b58\u5728' });
   }
 

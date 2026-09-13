@@ -2024,6 +2024,269 @@
     el.__t = setTimeout(function() { el.style.opacity = '0'; setTimeout(function() { el.style.display = 'none'; }, 300); }, duration);
   }
 
+  // ===== v0.22.74: Word 另存为 mini 浮窗（点击 ribbon「另存为…」触发）=====
+  // bundle 内部 saveDocxAs/saveDocxNew 调这个函数 → 弹路径+文件名选择 → POST /api/files/upload
+  // 入口签名 (fileName, buffer) 与 GenOffice bundle 契约一致（buffer = Uint8Array）
+  function acmsSaveDocxAs(fileName, buffer) {
+    return new Promise(function (resolve) {
+      showSaveAsDialog(fileName || 'untitled.docx', buffer, resolve);
+    });
+  }
+
+  function bufferToBase64(buf) {
+    var bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+    var bin = '';
+    for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+
+  function showSaveAsDialog(defaultName, buffer, resolve) {
+    // 1. 关闭已存在的浮窗（防止双弹）
+    var existing = document.getElementById('acms-saveas-modal');
+    if (existing) existing.remove();
+
+    // 默认从工作区根目录开始
+    var currentPath = '/workspaces';
+    var apiKey = 'dev-key-001';
+    var resultFileName = defaultName;
+
+    // 2. 弹窗 backdrop
+    var modal = document.createElement('div');
+    modal.id = 'acms-saveas-modal';
+    modal.tabIndex = -1;
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:999998;display:flex;align-items:center;justify-content:center;font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;';
+
+    // 卡片
+    var card = document.createElement('div');
+    card.style.cssText = 'background:#1e1e1e;color:#e0e0e0;border-radius:10px;width:580px;max-width:90vw;max-height:84vh;display:flex;flex-direction:column;box-shadow:0 12px 40px rgba(0,0,0,.5);overflow:hidden;';
+
+    // Header
+    var header = document.createElement('div');
+    header.style.cssText = 'padding:14px 18px;border-bottom:1px solid #333;display:flex;align-items:center;justify-content:space-between;font-size:14px;font-weight:600;';
+    var titleSpan = document.createElement('span');
+    titleSpan.textContent = '💾 另存为';
+    var closeBtn = document.createElement('button');
+    closeBtn.textContent = '×';
+    closeBtn.style.cssText = 'background:transparent;border:0;color:#999;font-size:22px;cursor:pointer;padding:0 8px;line-height:1;';
+    closeBtn.onclick = function () { modal.remove(); resolve({ ok: false, canceled: true }); };
+    header.appendChild(titleSpan);
+    header.appendChild(closeBtn);
+
+    // Body
+    var body = document.createElement('div');
+    body.style.cssText = 'display:flex;flex:1;min-height:380px;max-height:60vh;';
+
+    // 左:目录树
+    var treeBox = document.createElement('div');
+    treeBox.style.cssText = 'width:260px;border-right:1px solid #333;overflow:auto;padding:10px;background:#252525;';
+
+    // 右:表单
+    var formBox = document.createElement('div');
+    formBox.style.cssText = 'flex:1;padding:18px;display:flex;flex-direction:column;gap:10px;';
+
+    var pathLabel = document.createElement('div');
+    pathLabel.style.cssText = 'font-size:12px;color:#999;';
+    pathLabel.textContent = '📂 当前路径：';
+    var pathText = document.createElement('div');
+    pathText.style.cssText = 'font-size:13px;color:#4fc3f7;word-break:break-all;padding:6px 10px;background:#2a2a2a;border-radius:4px;user-select:text;';
+    pathText.textContent = currentPath;
+
+    var nameLabel = document.createElement('div');
+    nameLabel.style.cssText = 'font-size:12px;color:#999;margin-top:6px;';
+    nameLabel.textContent = '📄 文件名：';
+    var nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.value = defaultName;
+    nameInput.style.cssText = 'width:100%;padding:8px 10px;font-size:13px;background:#2a2a2a;color:#e0e0e0;border:1px solid #444;border-radius:4px;box-sizing:border-box;';
+
+    var fmtLabel = document.createElement('div');
+    fmtLabel.style.cssText = 'font-size:12px;color:#999;margin-top:6px;';
+    fmtLabel.textContent = '📋 格式：';
+    var fmtHint = document.createElement('div');
+    fmtHint.style.cssText = 'font-size:11px;color:#888;margin-top:2px;line-height:1.4;';
+    fmtHint.textContent = '当前 Word 内容只支持 .docx；选其他格式会保存为该扩展名但内容仍按 docx 写入（由调用方决定）。';
+
+    formBox.appendChild(pathLabel);
+    formBox.appendChild(pathText);
+    formBox.appendChild(nameLabel);
+    formBox.appendChild(nameInput);
+    formBox.appendChild(fmtLabel);
+    formBox.appendChild(fmtHint);
+
+    body.appendChild(treeBox);
+    body.appendChild(formBox);
+
+    // Footer
+    var footer = document.createElement('div');
+    footer.style.cssText = 'padding:12px 18px;border-top:1px solid #333;display:flex;justify-content:flex-end;gap:10px;';
+    var cancelBtn = document.createElement('button');
+    cancelBtn.textContent = '取消';
+    cancelBtn.style.cssText = 'padding:8px 18px;background:#333;color:#e0e0e0;border:0;border-radius:4px;cursor:pointer;font-size:13px;';
+    cancelBtn.onclick = function () { modal.remove(); resolve({ ok: false, canceled: true }); };
+    var saveBtn = document.createElement('button');
+    saveBtn.textContent = '💾 保存';
+    saveBtn.style.cssText = 'padding:8px 18px;background:#1565c0;color:#fff;border:0;border-radius:4px;cursor:pointer;font-size:13px;font-weight:600;';
+    saveBtn.onclick = function () { doSave(); };
+    footer.appendChild(cancelBtn);
+    footer.appendChild(saveBtn);
+
+    card.appendChild(header);
+    card.appendChild(body);
+    card.appendChild(footer);
+    modal.appendChild(card);
+    document.body.appendChild(modal);
+
+    // 渲染目录树
+    function renderTree() {
+      pathText.textContent = currentPath;
+      treeBox.innerHTML = '<div style="color:#666;font-size:11px;padding:6px;">加载中…</div>';
+      var url = '/api/files?path=' + encodeURIComponent(currentPath) + '&api_key=' + encodeURIComponent(apiKey);
+      fetch(url)
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          treeBox.innerHTML = '';
+          // 上级目录（除根外）
+          if (currentPath !== '/' && currentPath !== '/workspaces' && currentPath !== '') {
+            var up = document.createElement('div');
+            up.style.cssText = 'padding:5px 8px;cursor:pointer;font-size:12px;color:#4fc3f7;border-radius:3px;user-select:none;';
+            up.textContent = '⬆ ..（上级）';
+            up.onmouseenter = function () { up.style.background = '#2f2f2f'; };
+            up.onmouseleave = function () { up.style.background = 'transparent'; };
+            up.onclick = function () {
+              var parts = currentPath.split('/').filter(Boolean);
+              if (parts.length <= 1) { currentPath = '/'; }
+              else { parts.pop(); currentPath = '/' + parts.join('/'); }
+              renderTree();
+            };
+            treeBox.appendChild(up);
+          }
+          if (!data || !data.entries) {
+            var err = document.createElement('div');
+            err.style.cssText = 'color:#999;font-size:11px;padding:6px;';
+            err.textContent = data && data.error ? '无法访问：' + data.error : '无权限或空目录';
+            treeBox.appendChild(err);
+            return;
+          }
+          var dirs = (data.entries || []).filter(function (e) { return e.isDir || e.type === 'dir'; });
+          if (dirs.length === 0) {
+            var empty = document.createElement('div');
+            empty.style.cssText = 'color:#666;font-size:11px;padding:6px;';
+            empty.textContent = '（无子目录，可直接保存到这里）';
+            treeBox.appendChild(empty);
+            return;
+          }
+          dirs.forEach(function (d) {
+            var item = document.createElement('div');
+            item.style.cssText = 'padding:5px 8px;cursor:pointer;font-size:12px;color:#e0e0e0;border-radius:3px;display:flex;align-items:center;gap:5px;user-select:none;';
+            var ic = document.createElement('span');
+            ic.textContent = '📁';
+            var tx = document.createElement('span');
+            tx.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+            tx.textContent = d.name;
+            item.appendChild(ic);
+            item.appendChild(tx);
+            item.onmouseenter = function () { item.style.background = '#2f2f2f'; };
+            item.onmouseleave = function () { item.style.background = 'transparent'; };
+            item.onclick = function () {
+              currentPath = currentPath.replace(/\/$/, '') + '/' + d.name;
+              renderTree();
+            };
+            treeBox.appendChild(item);
+          });
+        })
+        .catch(function (e) {
+          treeBox.innerHTML = '<div style="color:#c62828;font-size:11px;padding:6px;">加载失败: ' + (e && e.message || e) + '</div>';
+        });
+    }
+
+    // 保存
+    function doSave() {
+      var name = (nameInput.value || '').trim();
+      if (!name) {
+        showAcmsToast('请输入文件名', 'warn');
+        nameInput.focus();
+        return;
+      }
+      resultFileName = name;
+      saveBtn.disabled = true;
+      saveBtn.textContent = '保存中…';
+
+      var b64 = bufferToBase64(buffer);
+      tryUpload(false);
+    }
+
+    function tryUpload(overwrite) {
+      fetch('/api/files/upload?api_key=' + encodeURIComponent(apiKey), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          path: currentPath,
+          fileName: resultFileName,
+          content: b64,
+          overwrite: overwrite
+        })
+      })
+        .then(function (r) {
+          return r.json().then(function (j) { return { status: r.status, body: j }; });
+        })
+        .then(function (res) {
+          if (res.status >= 200 && res.status < 300 && res.body && res.body.ok !== false && !res.body.error) {
+            modal.remove();
+            var newPath = (currentPath.replace(/\/$/, '') + '/' + resultFileName);
+            showAcmsToast('✅ 已保存到 ' + newPath, 'ok', 3000);
+            // 返回 { ok, path } —— mse() 内部 S.path = newPath → editor.filePath 切到新位置
+            resolve({ ok: true, path: newPath });
+            return;
+          }
+          if (res.body && res.body.error === 'ALREADY_EXISTS') {
+            if (window.confirm('文件 "' + resultFileName + '" 已存在，是否覆盖？')) {
+              tryUpload(true);
+            } else {
+              saveBtn.disabled = false;
+              saveBtn.textContent = '💾 保存';
+              nameInput.focus();
+              nameInput.select();
+            }
+            return;
+          }
+          saveBtn.disabled = false;
+          saveBtn.textContent = '💾 保存';
+          showAcmsToast('❌ 保存失败: ' + ((res.body && (res.body.message || res.body.error)) || ('HTTP ' + res.status)), 'error', 4000);
+        })
+        .catch(function (e) {
+          saveBtn.disabled = false;
+          saveBtn.textContent = '💾 保存';
+          showAcmsToast('❌ 网络错误: ' + (e && e.message || e), 'error', 4000);
+        });
+    }
+
+    // ESC 关闭 + 背景点击关闭
+    modal.focus();
+    modal.onkeydown = function (e) {
+      if (e.key === 'Escape') { modal.remove(); resolve({ ok: false, canceled: true }); }
+    };
+    modal.onclick = function (e) {
+      if (e.target === modal) { modal.remove(); resolve({ ok: false, canceled: true }); }
+    };
+
+    // 初始渲染
+    renderTree();
+    // 焦点 + 选中文件名
+    setTimeout(function () {
+      nameInput.focus();
+      // 选中文件名不含扩展名部分（如果有）
+      var dotIdx = nameInput.value.lastIndexOf('.');
+      if (dotIdx > 0) {
+        try { nameInput.setSelectionRange(0, dotIdx); } catch (e) {}
+      } else {
+        nameInput.select();
+      }
+    }, 50);
+  }
+
+  // 全局注册 —— office-v3-bridge.js 的 patchSaveAs 覆盖 win.desktop.saveDocxAs 时调这个
+  window.__acmsSaveDocxAs = acmsSaveDocxAs;
+
   // v0.96.9b: 往 GenOffice 原生右键菜单（.ctx-menu）注入 AI 动作项
   // 不拦截原生右键——剪切/复制/粘贴/字体等菜单项照常可用，AI 动作追加在菜单末尾
   function bindAcmsContextMenu() {
