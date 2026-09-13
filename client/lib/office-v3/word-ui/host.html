@@ -2049,6 +2049,8 @@
     var currentPath = '/workspaces';
     var apiKey = 'dev-key-001';
     var resultFileName = defaultName;
+    // b64 必须放在 showSaveAsDialog 闭包层（外层变量），doSave/tryUpload 都能访问
+    var b64 = '';
 
     // 2. 弹窗 backdrop
     var modal = document.createElement('div');
@@ -2211,12 +2213,23 @@
       saveBtn.disabled = true;
       saveBtn.textContent = '保存中…';
 
-      var b64 = bufferToBase64(buffer);
+      b64 = bufferToBase64(buffer);
       tryUpload(false);
     }
 
     function tryUpload(overwrite) {
-      fetch('/api/files/upload?api_key=' + encodeURIComponent(apiKey), {
+      // [v0.22.74-diag] 诊断日志（部署后可保留/删除）
+      console.log('[v0.22.74-diag] tryUpload enter', { overwrite: overwrite, fileName: resultFileName, path: currentPath, b64Len: (b64 || '').length });
+      // 30s 超时兜底：fetch 真卡住时强制恢复按钮 + 提示
+      var ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+      var timer = setTimeout(function () {
+        if (ctl) ctl.abort();
+        console.warn('[v0.22.74-diag] fetch 超时 30s 强制 abort');
+        saveBtn.disabled = false;
+        saveBtn.textContent = '💾 保存';
+        showAcmsToast('❌ 保存超时（30s），请检查网络或重试', 'error', 4000);
+      }, 30000);
+      var fetchOpts = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2225,12 +2238,17 @@
           content: b64,
           overwrite: overwrite
         })
-      })
+      };
+      if (ctl) fetchOpts.signal = ctl.signal;
+      fetch('/api/files/upload?api_key=' + encodeURIComponent(apiKey), fetchOpts)
         .then(function (r) {
+          console.log('[v0.22.74-diag] fetch response', r.status, r.statusText);
           return r.json().then(function (j) { return { status: r.status, body: j }; });
         })
         .then(function (res) {
-          if (res.status >= 200 && res.status < 300 && res.body && res.body.ok !== false && !res.body.error) {
+          clearTimeout(timer);
+          console.log('[v0.22.74-diag] response body', res);
+          if (res.status >= 200 && res.status < 300 && res.body && res.body.error !== 'ALREADY_EXISTS') {
             modal.remove();
             var newPath = (currentPath.replace(/\/$/, '') + '/' + resultFileName);
             showAcmsToast('✅ 已保存到 ' + newPath, 'ok', 3000);
@@ -2254,6 +2272,8 @@
           showAcmsToast('❌ 保存失败: ' + ((res.body && (res.body.message || res.body.error)) || ('HTTP ' + res.status)), 'error', 4000);
         })
         .catch(function (e) {
+          clearTimeout(timer);
+          console.error('[v0.22.74-diag] fetch catch', e);
           saveBtn.disabled = false;
           saveBtn.textContent = '💾 保存';
           showAcmsToast('❌ 网络错误: ' + (e && e.message || e), 'error', 4000);
