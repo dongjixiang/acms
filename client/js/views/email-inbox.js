@@ -3556,6 +3556,10 @@ EmailApp.prototype.loadRuleList = function () {
       + attachmentsHtml
       + '<div style="font-size:10px;color:var(--text3);line-height:1.4;margin-top:4px;">💡 提示：模板内容支持富文本（粗体/斜体/列表/链接），可粘贴图片。规则引用模板时，内容和附件将一并用于自动回复。</div>';
     
+    // v0.74.2+ 修复 P52：modal cleanup() 同步 removeChild + resolve，
+    //  await/.then 返回时 modal DOM 已销毁 → getElementById 返回 null → .value 抛错
+    //  用 beforeCleanup 在销毁前同步读 DOM 存 closure，.then 从 closure 取
+    var captured = { name: '', content: '', valid: false };
     ACMSModal.show({
       title: title,
       html: html,
@@ -3563,15 +3567,26 @@ EmailApp.prototype.loadRuleList = function () {
         { label: '取消', value: 'cancel', className: 'acms-modal-btn' },
         { label: '保存', value: 'save', className: 'acms-modal-btn acms-modal-btn-primary' },
       ],
+      beforeCleanup: function (result) {
+        if (result !== 'save') return result;
+        var nameEl = document.getElementById('tpl-name');
+        // 注意：id 是 tpl-body（contenteditable div），不是 tpl-content；
+        //   contenteditable 读 innerHTML 而非 .value（参考 line 2984 renderComposer 模式）
+        var bodyEl = document.getElementById('tpl-body');
+        captured.name = (nameEl && nameEl.value || '').trim();
+        captured.content = bodyEl
+          ? (bodyEl.innerHTML.trim() === '<br>' ? '' : bodyEl.innerHTML)
+          : '';
+        captured.valid = !!(captured.name && captured.content);
+        return result;
+      },
     }).then(function (result) {
       if (result !== 'save') return;
-      var name = document.getElementById('tpl-name').value.trim();
-      var content = document.getElementById('tpl-content').value.trim();
-      if (!name || !content) {
+      if (!captured.valid) {
         self.setStatus('请填写模板名称和内容', 'warning');
         return;
       }
-      var payload = { name: name, content: content, mailbox: self.state.mailbox || 'INBOX' };
+      var payload = { name: captured.name, content: captured.content, mailbox: self.state.mailbox || 'INBOX' };
       if (tpl) payload.id = tpl.id;
       var method = tpl ? 'PUT' : 'POST';
       var url = tpl ? '/api/email-templates/' + encodeURIComponent(tpl.id) : '/api/email-templates';

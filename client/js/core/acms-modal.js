@@ -273,9 +273,22 @@
       });
       modal.appendChild(act);
 
-      overlay.onclick = (e) => {
-        if (e.target === overlay) cleanup(null);
-      };
+      // v0.45 修复拖选误关闭：
+      //   原逻辑 overlay.onclick = (e) => { if (e.target === overlay) cleanup(null); };
+      //   Chrome/Firefox 实际 click target = mouseup target（不严格按 spec 的「共同祖先」规则）。
+      //   后果：在 input/contenteditable 内 mousedown 拖选 → 鼠标拖出 modal 到 overlay 上 mouseup →
+      //   click 在 overlay 上触发（mouseup target = overlay）→ e.target === overlay → 误关闭。
+      //   修法：mousedown + mouseup 都必须在 overlay 上才关闭，排除「从 modal 内拖出」的场景。
+      let mousedownOnOverlay = false;
+      overlay.addEventListener('mousedown', (e) => {
+        mousedownOnOverlay = (e.target === overlay);
+      });
+      overlay.addEventListener('mouseup', (e) => {
+        if (e.target === overlay && mousedownOnOverlay) {
+          cleanup(null);
+        }
+        mousedownOnOverlay = false;
+      });
 
       overlay.appendChild(modal);
 
