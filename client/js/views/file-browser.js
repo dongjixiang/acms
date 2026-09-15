@@ -389,6 +389,7 @@
         {name:'office-word',label:'📝 Word 编辑器',icon:'📝'},
         {name:'office-xlsx',label:'📊 Excel 编辑器',icon:'📊'},
         {name:'office-pptx',label:'📽️ PPT 编辑器',icon:'📽️'},
+        {name:'media-player',label:'🎬 视频播放器',icon:'🎬'},
         {name:'web-browser',label:'🌐 浏览器',icon:'🌐'},
       ];
       items.push({l:'📂 打开方式 ▶',sub:allApps.map(function(a){
@@ -560,6 +561,11 @@
       fetch(fileUrl).then(function(r){return r.text();}).then(function(html){
         ACMSWin.open('web-browser',{w:1100,h:750,title:'🌐 '+fn,srcdoc:html,url:fileUrl});
       }).catch(function(){to('读取文件失败','error');});
+    } else if(appName==='media-player') {
+      // 视频播放器：传 fileUrl + _mp_open_file 给 mediaPlayerAPI 读
+      var fileUrl2='/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK;
+      window._mp_open_file = { name: fn, src: fileUrl2 };
+      ACMSWin.open('media-player',{w:1000,h:700,title:'🎬 '+fn});
     } else {
       ACMSWin.open(appName,{w:900,h:600});
     }

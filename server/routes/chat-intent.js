@@ -549,7 +549,11 @@ router.post('/detect-and-respond', async (req, res, next) => {
           const idea = ideaMatch ? ideaMatch[1].trim() : text;
           const secMatch = text.match(/(\d{1,3})\s*秒/);
           const targetSeconds = secMatch ? parseInt(secMatch[1]) : 30;
-          const styleMap = { '写实': 'photorealistic', '3D': '3d', 'G1': 'g1', '日漫': 'anime', '国风水墨': 'ink' };
+          // art_style key 必须与 client/js/views/assists/ip-dict.js 的 STYLE_TEMPLATES 完全对齐
+          //   photorealistic / 3d-render / g1_animation / anime / guofeng
+          // v0.X 修复：之前 '国风水墨' 误映射成 'ink' / '3D' → '3d' / 'G1' → 'g1'
+          //   STYLE_TEMPLATES 里查不到 → 兜底 photorealistic → 出图变写实摄影
+          const styleMap = { '写实': 'photorealistic', '3D': '3d-render', 'G1': 'g1_animation', '日漫': 'anime', '国风水墨': 'guofeng' };
           const styleMatch = text.match(/(写实|3D|G1|日漫|国风水墨)/);
           const artStyle = styleMap[styleMatch ? styleMatch[1] : ''] || 'photorealistic';
 

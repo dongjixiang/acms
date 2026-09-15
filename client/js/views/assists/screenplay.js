@@ -350,9 +350,17 @@ async function screenplayGenVideo(reqId, sceneIdx, promptOverride) {
       const s = String(p); const i = s.indexOf('assets/');
       return `/api/generate/assets/${encodeURIComponent(projectSlug)}/${i > 0 ? s.slice(i) : s}`;
     };
-    const fr1Url = fr1 ? (fr1.image_url_output || localUrl(fr1.asset_path)) : '';
-    const fr2Url = fr2 ? (fr2.image_url_output || localUrl(fr2.asset_path)) : '';
+    // v0.22.77: 首尾帧模式只在「有公网 CDN 地址」时启用 —— Agnes 视频接口的 first_frame / last_frame
+    //   必须是公网可访问 URL；本地地址（打磨图、或只剩 asset_path 的旧数据）它的服务器拉不到，
+    //   传进去只会让整段视频生成失败。没有公网地址就落回下面「多图参考」模式（角色图/场景图都自带 CDN）。
+    const pubUrl = (f) => (f && f.image_url_output) ? f.image_url_output : '';
+    const fr1Url = pubUrl(fr1);
+    const fr2Url = pubUrl(fr2);
+    const frameLocalOnly = !!(fr1 && !fr1.image_url_output);
     const useKeyframe = !!fr1Url;
+    if (frameLocalOnly) {
+      toast('⚠️ 本场首帧图是本地打磨图（无公网地址）→ 视频改用「多图参考」模式，段间衔接会弱化', 'info', 4000);
+    }
 
     // v0.22.14: 显示 loading（弹到 body，跟剧本其他生成器一致位置）
     const tempCard = document.createElement('div');
@@ -460,6 +468,52 @@ async function screenplayGenVideo(reqId, sceneIdx, promptOverride) {
  *   参考图 = 角色档案图（全部）+ 场景图（多图合成保形象一致）
  *   产出存在 assist.scene_frames[idx].image_url_output（Agnes CDN 公网 URL）→ 直接喂给 2.5 视频接口做首尾帧
  */
+/**
+ * v0.22.77: 打磨「首帧图」—— 打开图片编辑器，改完回写**覆盖本场**（原图备份，可还原）
+ *   与图候选的打磨共用同一套来源登记 + 编辑器「✅ 完成打磨」回写链路，
+ *   区别只在 kind='scene_frame' → image-editor 侧分发到 screenplay 端点
+ */
+function openPolishSceneFrame(reqId, sceneIdx, imgUrl) {
+  if (!imgUrl) { toast('这一场还没有首帧图', 'error'); return; }
+  window.__acmsPolishTarget = {
+    kind: 'scene_frame', reqId: reqId, sceneIdx: sceneIdx, idx: sceneIdx,
+    url: imgUrl, at: Date.now(),
+  };
+  window._fb_open_file = { name: 'frame-' + (sceneIdx + 1) + '.png', src: imgUrl };
+  try {
+    if (window.ACMSWin && ACMSWin.open) {
+      ACMSWin.open('image-editor', { w: 1000, h: 700, title: '✏️ 打磨首帧图（场 ' + (sceneIdx + 1) + '）' });
+      toast('已打开编辑器 · 改完点「✅ 完成打磨」', 'success', 3500);
+    } else {
+      throw new Error('窗口管理器不可用');
+    }
+  } catch (e) {
+    window.__acmsPolishTarget = null;
+    window._fb_open_file = null;
+    toast('打开图片编辑器失败：' + e.message, 'error');
+  }
+}
+
+/**
+ * v0.22.77: 还原首帧图到打磨前（打磨图文件仍在磁盘上，只是引用切回原图 → 不算破坏性操作，不弹 confirm）
+ */
+async function screenplayRevertSceneFrame(reqId, sceneIdx, btn) {
+  const label = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ 还原中…'; }
+  try {
+    await api('POST', `/requirements/${reqId}/assist/screenplay/use`, {
+      action: 'revert_scene_frame',
+      scene_idx: sceneIdx,
+    });
+    toast('↩️ 已还原到打磨前的首帧图', 'success', 2500);
+    if (typeof refreshScreenplayChatCard === 'function') await refreshScreenplayChatCard(reqId);
+  } catch (e) {
+    toast('还原失败：' + ((e && e.message) ? e.message : e), 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+  }
+}
+
 async function screenplayGenSceneFrame(reqId, sceneIdx, btn) {
   const key = reqId + ':frame:' + sceneIdx;
   if (!window._frameInFlight) window._frameInFlight = {};

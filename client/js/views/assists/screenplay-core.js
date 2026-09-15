@@ -73,11 +73,13 @@
       '姿态：自然站姿，正对镜头并略带四分之三侧身，全身可见（头顶到胸下），体态自信。',
       '视角：中近景，平视镜头，人物居中构图。',
       '表情：符合角色性格的入戏表情。',
-      // 关键：背景必须简洁（角色立绘 ≠ narrative illustration）
-      '背景：干净的纯色影棚背景配柔和渐变，不出现环境景物，突出人物。',
-      // v0.22.31: Style 字段前置硬约束（stylePrefix 强制锁死风格）+ 原有摄影描述 + styleSuffix 强化
-      `风格：${styleTpl.stylePrefix} ${styleTpl.styleSuffix} 电影感人物肖像，${ts} 秒短片的角色设定参考图，影棚主光配细腻轮廓光，面部与服装细节清晰锐利，浅景深。`,
-      '质量：细节丰富，4K，写实，杰作级，画面干净。',
+      // v0.X 修复：背景行去掉"影棚"（所有风格通用：干净简洁背景，不抢人物）
+      '背景：干净的纯色背景配柔和渐变，不出现环境景物，突出人物。',
+      // v0.X 修复：用 styleTpl.descriptors 替代硬编码的"电影感人物肖像、影棚主光、4K 写实"等写实摄影描述
+      //   之前 stylePrefix（国风水墨等）被这些硬描述压过，导致出图风格稀释到写实摄影
+      `风格：${styleTpl.stylePrefix} ${styleTpl.styleSuffix} ${styleTpl.descriptors?.character || ''} ${ts} 秒短片的角色设定参考图。`,
+      // v0.X 修复：quality 行也用 styleTpl.descriptors.characterQuality 替代
+      `质量：${styleTpl.descriptors?.characterQuality || '细节丰富，杰作级，画面干净。'}`,
       // v0.22.31: negative 前置硬约束（negativePrefix 列出严禁项）+ 原有负面 + 防加戏
       `负面：${styleTpl.negativePrefix} 多个人物、杂乱背景、环境景物、多余肢体、畸形手、脸部模糊、多余手指、畸形、文字、水印、低质量。`,
     ];
@@ -109,10 +111,7 @@
 
     const atmosphereLine = setting ? '氛围：与所处环境一致（天气、时间、场地氛围）。' : '氛围：电影感的环境氛围。';
 
-    // v0.22.55 fix: 场景 prompt 不能直接用 styleTpl.styleSuffix
-    //   photorealistic 的 styleSuffix 含"人像"（原英文 'portrait'）—— 这是文生图模型的强人物信号，
-    //   即使 Scene:"画面中不出现人物" + Negative:"人物/人类/人群" 也压不住（positive 权重大于 negative）
-    //   修法：把"人像/肖像"替换成"环境摄影、空旷场景"（场景专属，不引导人物）
+    // v0.55: 把"人像/肖像"替换成"空镜"（场景专属，不引导人物）
     const sceneStyleSuffix = styleTpl.styleSuffix.replace(/人像|肖像|portrait/gi, '空镜');
 
     const lines = [
@@ -121,9 +120,10 @@
       atmosphereLine,
       '构图：广角建立镜头，略低角度或平视，前中后景层次清晰，以环境为主体。',
       '光线：与环境及时间一致的自然环境光，柔和空气感，景深。',
-      // v0.22.55: 用 sceneStyleSuffix（不含"人像"）代替原 styleSuffix
-      `风格：${styleTpl.stylePrefix} ${sceneStyleSuffix} 电影感建立镜头，${ts} 秒短片质感，写实，氛围光效，专业摄影，空旷场地，无人物。`,
-      '质量：细节丰富，4K，写实，杰作级，广角构图。',
+      // v0.X 修复：用 styleTpl.descriptors.scene 替代"电影感建立镜头、写实、氛围光效、专业摄影、空旷场地"
+      `风格：${styleTpl.stylePrefix} ${sceneStyleSuffix} ${styleTpl.descriptors?.scene || ''}`,
+      // v0.X 修复：quality 行也用 descriptors.sceneQuality 替代
+      `质量：${styleTpl.descriptors?.sceneQuality || '细节丰富，杰作级，广角构图。'}`,
       // v0.22.55: negative 加强 — 不只防"人"，还要明确"空镜 / 无人"
       `负面：${styleTpl.negativePrefix} 人物、角色、人类、动物、宠物、人群、拥挤、有人、文字、水印、模糊、低质量。`,
     ];
@@ -147,34 +147,56 @@
 
     // v0.22.31: IP 锚定（视频场景里也可能有 IP，比如"霍格沃茨大厅"）
     const ipDict = window.ACMSScreenplayIPDict;
-    const styleTpl = ipDict?.getStyleTemplate(style) || { stylePrefix: '', styleSuffix: '', negativePrefix: '' };
+    const styleTpl = ipDict?.getStyleTemplate(style) || { stylePrefix: '', styleSuffix: '', negativePrefix: '', descriptors: { video: '', videoQuality: '' } };
     let ipAnchor = null;
     if (ipDict) {
       const searchText = `${setting} ${shot} ${action}`;
       ipAnchor = ipDict.lookup(searchText);
     }
 
+    // 🆕 v0.X fix: 注入场景出场角色的 desc（防止生图 LLM 脑补"不在剧本里的人物"）
+    //   server schema L37-43 已加 characters: [name1, name2] 字段（之前没有）
+    //   兜底：scene.characters 缺失或为空（v0.X 之前的旧剧本）→ 注入 sp.characters 全部
+    //   兜底 2：name 在 sp.characters 里查不到（LLM 瞎写名字）→ 跳过
+    const allChars = Array.isArray(sp.characters) ? sp.characters : [];
+    const sceneCharNames = (Array.isArray(scene.characters) && scene.characters.length)
+      ? scene.characters
+      : allChars.map(c => c.name).filter(Boolean);  // 旧剧本兜底：注入所有角色
+    const characterLines = [];
+    sceneCharNames.forEach(name => {
+      const c = allChars.find(c => c.name === name);
+      if (c && (c.name || c.desc)) {
+        characterLines.push(`出场人物：${c.name || ''}（${c.desc || ''}）。`);
+      }
+    });
+    const characterLine = characterLines.join(' ');
+
     // v0.22.64: 全中文（原英文见 git 历史）
     const settingLine = ipAnchor
       ? `场景：${setting}（${ipAnchor.nameEn}）。${ipAnchor.visualKeywords}。`
       : (setting ? `场景：${setting}。` : '');
 
-    // 视频里可能有角色 → styleSuffix 里的"人像/肖像"改成中性"真实场景画面"（不误导为空镜）
+    // 视频里可能有角色 → styleSuffix 里的"人像/肖像"改成中性"画面"（不误导为空镜）
     const videoStyleSuffix = styleTpl.styleSuffix.replace(/人像|肖像|portrait/gi, '画面');
+
+    // v0.X 修复：descriptors.video 含 $TS$ 占位符（与 character/scene 不同，video 描述需要 ts 变量）
+    const videoDesc = (styleTpl.descriptors?.video || '').replace('$TS$', ts);
 
     const parts = [
       // v0.22.31: 场景环境（上下文锚定 — 跟当前剧本 setting 一致 + IP 视觉锚定）
       settingLine,
       // 镜头与构图
       shot ? `镜头：${shot}。` : '镜头：电影感中景，平视，适度景深。',
+      // 🆕 v0.X fix: 注入场景出场人物（在动作之前，让生图 LLM 先知道人物再描述动作）
+      characterLine,
       // 动作（核心）
       action ? `动作：${action}。` : '',
       // 对白（如有）
       dialogue ? `对白：角色说："${dialogue}"。` : '',
-      // v0.22.31: 风格一致性（前置硬约束 + 原有描述）
-      `风格：${styleTpl.stylePrefix} ${videoStyleSuffix} 电影感 ${ts} 秒短片质感，写实，专业摄影，动作流畅自然。`,
-      // 质量
-      '质量：细节丰富，4K，焦点锐利，动作连贯。',
+      // v0.X 修复：用 descriptors.video 替换"电影感 ... 短片质感，写实，专业摄影，动作流畅自然"
+      `风格：${styleTpl.stylePrefix} ${videoStyleSuffix} ${videoDesc}`,
+      // v0.X 修复：quality 用 descriptors.videoQuality
+      `质量：${styleTpl.descriptors?.videoQuality || '细节丰富，焦点清晰。'}`,
     ].filter(Boolean);
     return parts.join(' ');
   }
@@ -257,6 +279,12 @@
   function renderSelectedScreenplay(reqId, data) {
     const sp = data.screenplays[data.picked];
     if (!sp) return '<div class="insight-error">剧本数据丢失</div>';
+    // v0.22.71 修复：sp 是 screenplay 数组元素（{title, logline, characters, scenes}），
+    //   本身没有 art_style 字段。art_style 在 data 顶层（data.art_style）。
+    //   不注入会导致 buildCharacterPrompt L47 fallback 永远走 'photorealistic'，
+    //   选了"国风水墨"却出"写实摄影"描述。
+    //   注入到 sp 让 L47 `sp?.art_style` fallback 能读到，同时外部 screenplay.js 调用 buildSceneVideoPrompt 时也自动生效。
+    if (!sp.art_style && data.art_style) sp.art_style = data.art_style;
 
     const characters = sp.characters || [];
     const scenes = sp.scenes || [];
@@ -471,10 +499,13 @@
           </div>
 
           <div style="margin:6px 0;padding:6px 8px;background:var(--bg);border:1px dashed ${frameSrc ? 'var(--green)' : 'var(--border)'};border-radius:6px">
-            <div style="display:flex;align-items:center;gap:6px">
-              <span style="font-size:11px;font-weight:600;flex:1;min-width:0">🖼 首帧图 ${frameSrc ? '✅' : '<span style="color:var(--text3)">未生成</span>'}</span>
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+              <span style="font-size:11px;font-weight:600;flex:1;min-width:0">🖼 首帧图 ${frameSrc ? '✅' : '<span style="color:var(--text3)">未生成</span>'}${(frameObj && frameObj.polished) ? ' <span style="color:var(--accent3)">· ✏️ 已打磨</span>' : ''}</span>
+              ${frameSrc ? `<button class="btn-small" style="font-size:10px;flex-shrink:0" onclick="openPolishSceneFrame('${reqId}', ${idx}, '${escHtml(frameSrc)}')" title="打开图片编辑器打磨这张首帧图（改完回写覆盖本场；原图会备份，可还原）">✏️ 打磨</button>` : ''}
+              ${(frameObj && frameObj.prev) ? `<button class="btn-small" style="font-size:10px;flex-shrink:0" onclick="screenplayRevertSceneFrame('${reqId}', ${idx}, this)" title="还原到打磨前的首帧图">↩️ 还原</button>` : ''}
               <button class="btn-small" style="font-size:10px;flex-shrink:0" onclick="screenplayGenSceneFrame('${reqId}', ${idx}, this)" title="${frameSrc ? '重新生成这一场的首帧图（角色图+场景图作为参考）' : '用角色图+场景图生成这一场的起始定格画面'}">${frameSrc ? '🔄 重生成首帧' : '🎬 生成首帧图'}</button>
             </div>
+            ${(frameObj && frameObj.polished && !frameObj.image_url_output) ? `<div style="font-size:10px;color:var(--accent3);margin-top:3px">⚠️ 这是本地打磨图（没有公网地址）→ 本场生成视频会自动退回「多图参考」模式，段与段之间可能不再严格衔接</div>` : ''}
             ${frameSrc ? `
               <div style="margin-top:6px">
                 <img src="${escHtml(frameSrc)}" style="width:100%;max-width:200px;border-radius:4px;cursor:zoom-in;display:block" onclick="event.stopPropagation();previewImage('${escHtml(frameSrc)}','${escHtml(frameObj.image_url_output || '')}')" alt="首帧图" title="点击放大">
@@ -683,6 +714,9 @@
       screenplays: [card.screenplay],
       picked: 0,
       picked_at: card.saved_at || new Date().toISOString(),
+      // 🆕 v0.22.72 bug fix: 把 art_style 也带过来（之前漏了 → buildCharacterPrompt L47 永远 fallback photorealistic）
+      //   来源：server 端 writeScreenplayChatEntry 现在写入 card.art_style（从 req.assist_screenplay 反序列化读）
+      art_style: card.art_style || 'photorealistic',
       // v0.22.13: 把 resources 也带过来（让聊天流卡片也能用按钮交互）
       assets: card.assets || { characters: {}, scenes: {} },
       scene_videos: card.scene_videos || {},

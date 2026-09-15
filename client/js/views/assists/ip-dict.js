@@ -398,32 +398,78 @@
   /**
    * 风格锚定模板（每种 art_style 对应的 prompt 片段）
    *   放在 Style 字段最前面 + Negative 字段最前面，强制硬约束
+   *
+   * 🆕 v0.X descriptors 字段（解决"选了国风水墨但 prompt 还是写实摄影"bug）：
+   *   之前 buildCharacterPrompt / buildScenePrompt / buildSceneVideoPrompt 三个函数
+   *   在 Style 行硬编码了"电影感人物肖像、影棚主光、4K 写实"等写实摄影描述，
+   *   stylePrefix 被直接压过。现在每个风格自带 descriptors 模板（character/scene/video），
+   *   build 函数查表替换硬描述。video 字段含 $TS$ 占位符，由 buildSceneVideoPrompt 替换。
    */
   const STYLE_TEMPLATES = {
     photorealistic: {
       stylePrefix: '严格写实摄影风格，真实人物摄影；禁止卡通、动漫、插画、3D 渲染、Q 版、素描、绘画、漫画。',
       styleSuffix: '电影感写实人像，真实摄影，单反画质。',
       negativePrefix: '严格禁止：卡通、动漫、插画、3D 渲染、Q 版、素描、绘画、漫画。要求：只允许写实摄影。',
+      descriptors: {
+        character: '电影感人物肖像，影棚主光配细腻轮廓光，面部与服装细节清晰锐利，浅景深。',
+        characterQuality: '细节丰富，4K，写实，杰作级，画面干净。',
+        scene: '电影感建立镜头，写实，氛围光效，专业摄影，空旷场地。',
+        sceneQuality: '细节丰富，4K，写实，杰作级，广角构图。',
+        video: '电影感 $TS$ 秒短片质感，写实，专业摄影，动作流畅自然。',
+        videoQuality: '细节丰富，4K，焦点锐利，动作连贯。',
+      },
     },
     '3d-render': {
       stylePrefix: '严格 3D 渲染风格（皮克斯/迪士尼动画风），必须是 CGI 动画质感；禁止二维动漫、真实照片、传统二维卡通。',
       styleSuffix: '高质量 3D CGI 渲染，皮克斯迪士尼动画风格，体积光。',
       negativePrefix: '严格禁止：二维动漫、真实照片、传统卡通、素描、绘画。要求：只允许 3D CGI 渲染。',
+      descriptors: {
+        character: '3D 渲染风格人物，皮克斯迪士尼动画质感，立体感强，体积光，表情生动。',
+        characterQuality: '高质量 3D CGI 渲染，细节精致，杰作级，画面干净。',
+        scene: '3D 渲染场景，皮克斯迪士尼动画质感，立体场景，体积光，环境沉浸。',
+        sceneQuality: '高质量 3D 场景渲染，细节精致，杰作级。',
+        video: '3D 动画风格，$TS$ 秒短片质感，动作流畅，立体运镜。',
+        videoQuality: '高质量 3D 动画，焦点清晰，动作连贯。',
+      },
     },
     g1_animation: {
       stylePrefix: '严格还原 1980-90 年代经典周六晨间卡通风格（如变形金刚 G1、霹雳猫、希曼），赛璐璐上色、平涂色块、粗描边。',
       styleSuffix: '经典 80/90 年代卡通质感，赛璐璐动画，粗描边。',
       negativePrefix: '严格禁止：写实照片、3D 渲染、现代日漫、真人实拍。要求：只允许 80/90 年代赛璐璐卡通。',
+      descriptors: {
+        character: '80/90 年代经典卡通人物，赛璐璐上色，平涂色块，粗黑描边，表情夸张。',
+        characterQuality: '经典 80/90 年代卡通质感，赛璐璐动画风格，杰作级。',
+        scene: '80/90 年代卡通场景，平涂色块，简洁背景，明亮配色。',
+        sceneQuality: '高质量 80/90 年代赛璐璐动画，杰作级。',
+        video: '经典卡通动画风格，$TS$ 秒短片质感，帧率传统，动作夸张。',
+        videoQuality: '高质量 80/90 年代动画，焦点清晰。',
+      },
     },
     anime: {
       stylePrefix: '严格现代日本动漫风格（赛璐璐上色、大眼睛、高饱和色彩）；禁止写实照片、3D 渲染、迪士尼风格。',
       styleSuffix: '现代日系动漫质感，赛璐璐上色，色彩鲜明饱和，动漫式大眼睛。',
       negativePrefix: '严格禁止：写实照片、真实摄影、3D 皮克斯、迪士尼西式卡通、素描。要求：只允许日本动漫风格。',
+      descriptors: {
+        character: '现代日漫人物，赛璐璐上色，大眼睛，高饱和色彩，精致线条，动漫式美型。',
+        characterQuality: '现代日系动漫质感，色彩鲜明饱和，杰作级，画面干净。',
+        scene: '现代日漫场景，鲜艳色彩，动漫风格背景，赛璐璐上色。',
+        sceneQuality: '高质量日漫场景，色彩鲜明，杰作级。',
+        video: '现代日漫动画风格，$TS$ 秒短片质感，动作流畅，运镜动漫化。',
+        videoQuality: '高质量现代日漫动画，焦点清晰，动作连贯。',
+      },
     },
     guofeng: {
       stylePrefix: '严格中国传统国风水墨画风格（水墨国风），笔触皴擦质感，传统审美。',
       styleSuffix: '中国水墨画质感，传统国风，写意笔触，古典中国画。',
       negativePrefix: '严格禁止：写实照片、动漫、现代卡通、3D 渲染、西式插画。要求：只允许中国水墨国风。',
+      descriptors: {
+        character: '水墨写意笔触，人物服饰飘逸灵动，水墨淡彩渲染，留白构图，线条舒展。',
+        characterQuality: '高质量水墨画，气韵生动，笔墨精细，杰作级。',
+        scene: '水墨山水意境，烟雨朦胧，留白深远，笔触皴擦，远山近水层次分明。',
+        sceneQuality: '高质量水墨山水画，意境悠远，杰作级。',
+        video: '水墨动画风格，$TS$ 秒短片质感，动作流畅如行云流水，留白构图。',
+        videoQuality: '高质量水墨动画，笔墨连贯，气韵生动。',
+      },
     },
   };
 

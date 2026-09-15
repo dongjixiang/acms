@@ -48,7 +48,7 @@
       exts: ['pdf'],
     },
     {
-      name: 'web-browser', label: '🎬 视频播放', supports: 'url',
+      name: 'media-player', label: '🎬 视频播放器', supports: 'url',
       mime: /^video\//i,
       exts: ['mp4','webm','mov','avi','mkv','m4v','ogv'],
     },
@@ -136,6 +136,12 @@
     if (appName === 'image-editor') {
       window._fb_open_file = { name: name, src: url };
       if (window.ACMSWin) window.ACMSWin.open('image-editor', { w: 1000, h: 700, title: '🖼️ ' + title });
+      return Promise.resolve({ ok: true });
+    }
+
+    if (appName === 'media-player') {
+      window._mp_open_file = { name: name, src: url };
+      if (window.ACMSWin) window.ACMSWin.open('media-player', { w: 1000, h: 700, title: '🎬 ' + title });
       return Promise.resolve({ ok: true });
     }
 

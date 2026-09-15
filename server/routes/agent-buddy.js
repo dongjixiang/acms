@@ -1500,9 +1500,14 @@ router.post('/office-action', async function(req, res) {
 
     // P198: 长文生成意图（用户要 N 字/长文/小说/文章 等）走 streaming 分支
     //   短 op（proposeEdit / formatOps / generateImage 等）走原 JSON 行为不变
-    // 触发条件：① query 显式 stream=1；② instruction 含长文意图关键词（写一篇/生成一篇/3000字/长文/小说/续写等）
+    // 触发条件：① query 显式 stream=1；② instruction 含真长文意图关键词
+    // ⚠️ v0.X: 删「写[一篇段]|生成[一篇段]|创作[一篇段]|写一篇|生成一篇」5 个宽松分支
+    //   —— 这些是普通动作动词短语（生成一些样例数据/写一段自我介绍/帮我写一份简历），
+    //   不是长文意图信号。Excel V3 面板 runner.run 只解 JSON（host.html:504 await resp.json()），
+    //   误中会得到 text/event-stream 返回 → JSON.parse 炸 "Unexpected token 'e', "event: met""。
+    //   真长文意图 = ①显式字数（\d{3,5}\s*字 = 300+字）②长文/长篇/短文/短篇/续写 ③小说/作文/剧本/散文/故事/日记/诗歌
     var wantsStream = req.query.stream === '1'
-      || /(写[一篇段]|生成[一篇段]|创作[一篇段]|\d{3,5}\s*字|长文|长篇|短文|短篇|写一篇|生成一篇|续写)/.test(instruction);
+      || /(\d{3,5}\s*字|长文|长篇|短文|短篇|续写|小说|作文|剧本|散文|故事|日记|诗歌|诗词|古诗|情诗|一首诗|一首词|首诗|首词|写诗|作诗|写词|作词|填词)/.test(instruction);
     if (wantsStream) {
       return handleOfficeActionStream(req, res, {
         model, llmAdapter, kind, instruction, docContext, fixedNewText, fixedHint, modelStore

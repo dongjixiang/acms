@@ -361,6 +361,10 @@
         imgUrl = '/api/files/proxy-image?url=' + encodeURIComponent(imgUrl);
       }
       console.log('[IMG-RELOAD] 重新加载图片:', imgUrl.slice(0, 80), 'name:', name || '');
+      // v0.22.75: 编辑器已开着时再点「打磨」走的是 window-manager 复用分支 → 到这里
+      //   同样要消费来源登记 + 刷新打磨 UI（否则菜单还停在「💾 保存」）
+      consumePolishTarget();
+      refreshPolishUI();
       var imgName = name || imgUrl.split('/').pop() || 'image';
       loadImageSafe(imgUrl, imgName).then(function() {
         console.log('[IMG-RELOAD] 加载成功');
@@ -374,6 +378,133 @@
         console.warn('[IMG-RELOAD] 加载失败:', e);
       });
     }
+    // ════════════════════════════════════════════════════════════════════
+    // v0.22.75: 「打磨」模式
+    //   入口：image-gen 卡片点「✏️ 打磨」→ openPolishInEditor 登记
+    //         window.__acmsPolishTarget = { reqId, idx, url, at }
+    //   语义：此模式下的「保存」= 把改好的图**回写成一张新候选**（原图保留），
+    //         不是下载到本地 —— 所以菜单项文字会变成「✅ 完成打磨」
+    //   两条进入路径都要消费登记：
+    //     ① 编辑器没开 → PKG loader → openImageEditor（新窗口）
+    //     ② 编辑器已开 → window-manager 复用分支 → reloadImage
+    // ════════════════════════════════════════════════════════════════════
+    var _polishTarget = null;
+    var POLISH_EXPIRE_MS = 10 * 60 * 1000;   // 登记 10 分钟过期（防残留标志误判模式）
+
+    // 消费来源登记（幂等：读完即清，过期丢弃）
+    function consumePolishTarget() {
+      var t = window.__acmsPolishTarget;
+      window.__acmsPolishTarget = null;
+      if (!t || !t.reqId || (Date.now() - (t.at || 0)) > POLISH_EXPIRE_MS) {
+        _polishTarget = null;
+        return null;
+      }
+      _polishTarget = t;
+      return t;
+    }
+
+    // 按当前模式刷新 UI（菜单项文字 + 菜单栏下方提示条）
+    function refreshPolishUI() {
+      var saveItem = w.$c && w.$c.querySelector('[data-action="save-img"]');
+      if (!saveItem) return;
+      var bar = w.$c.querySelector('#img-polish-bar');
+      if (_polishTarget) {
+        saveItem.innerHTML = '✅ 完成打磨';
+        saveItem.title = '把改好的图回写成一张新候选（原图保留）';
+        if (!bar) {
+          bar = document.createElement('div');
+          bar.id = 'img-polish-bar';
+          bar.style.cssText = 'flex-shrink:0;padding:6px 12px;font-size:12px;background:rgba(33,150,243,.12);'
+            + 'border-bottom:1px solid rgba(33,150,243,.35);color:#1565c0;display:flex;align-items:center;'
+            + 'gap:10px;flex-wrap:wrap;line-height:1.5';
+          var menuBar = w.$c.querySelector('.code-menu-bar');
+          if (menuBar && menuBar.parentNode) menuBar.parentNode.insertBefore(bar, menuBar.nextSibling);
+          else w.$c.insertBefore(bar, w.$c.firstChild);
+        }
+        var isFrame = _polishTarget.kind === 'scene_frame';
+        bar.innerHTML = '<b>✏️ 打磨模式</b><span>'
+          + (isFrame
+              ? ('第 ' + ((_polishTarget.sceneIdx || 0) + 1) + ' 场首帧图')
+              : ('第 ' + ((_polishTarget.idx || 0) + 1) + ' 张候选'))
+          + '</span><span style="color:#888">'
+          + (isFrame
+              ? '手工修（裁剪/画笔/文字）或 AI 助手「图生图」都行 → 改完点左上「✅ 完成打磨」覆盖本场首帧图（原图会备份，可还原）'
+              : '手工修（裁剪/画笔/文字）或 AI 助手「图生图」都行 → 改完点左上「✅ 完成打磨」回写为新候选，原图会保留')
+          + '</span>';
+      } else {
+        saveItem.innerHTML = '💾 保存';
+        saveItem.title = '';
+        if (bar) bar.remove();
+      }
+    }
+
+    // 导出整幅画布（含背景图 + 全部编辑）
+    //   ⚠️ 必须先重置 viewport 为 identity —— 这是 B29「导出是黑/一大片空白」的真根因：
+    //     tui 的 toDataURL → fabric.toCanvasElement 会**把当前 zoom/pan 当成新 viewport 带进渲染**
+    //     （fabric 4.6.0：newZoom = getZoom() * multiplier，translate = vp[4] / vp[5]）
+    //     → 图被 fit 缩小/平移过之后再导出，内容缩在中间 + 四周大片透明。
+    //     ⚠️ 背景图也在受影响之列（不是 B29 当初判的「toDataURL 序列化不含 BackgroundImage」）。
+    //   隔离实测（800×600 红底 + 中央蓝块，viewport 设为 zoom0.5 / pan(50,30)）：
+    //     不重置 → 输出仍是 800×600，但只有 25% 非透明，内容 bbox [50,30,449,329]（缩一半 + 偏移）
+    //     重置后 → 100% 非透明、97.9% 红、蓝块 2.08%、bbox [0,0,799,599]（完整还原）
+    function exportFullImage() {
+      var c = imageEditor && imageEditor._graphics && imageEditor._graphics.getCanvas();
+      var savedVp = (c && c.viewportTransform) ? c.viewportTransform.slice() : null;
+      var out = null;
+      try {
+        if (c && c.setViewportTransform) c.setViewportTransform([1, 0, 0, 1, 0, 0]);
+        out = imageEditor.toDataURL({ format: 'png' });
+      } catch (e) {
+        console.warn('[POLISH] 导出失败:', e);
+      } finally {
+        if (savedVp && c && c.setViewportTransform) {
+          c.setViewportTransform(savedVp);
+          c.requestRenderAll();
+        }
+      }
+      return out;
+    }
+
+    // 完成打磨 → 回写为新候选（追加，不覆盖）
+    function doPolishSave() {
+      var target = _polishTarget;
+      if (!target) return;
+      var dataUrl = exportFullImage();
+      if (!dataUrl || String(dataUrl).length < 800) {
+        toast('❌ 导出失败（画布可能还没加载完），请重试', 'error');
+        return;
+      }
+      var saveItem = w.$c.querySelector('[data-action="save-img"]');
+      if (saveItem) { saveItem.innerHTML = '⏳ 回写中…'; saveItem.style.pointerEvents = 'none'; }
+      // v0.22.77: 按来源分流 —— 图候选「追加为新候选」；剧本首帧图「覆盖该场」（原图备份可还原）
+      var isFrame = target.kind === 'scene_frame';
+      var endpoint = isFrame
+        ? '/requirements/' + encodeURIComponent(target.reqId) + '/assist/screenplay/use'
+        : '/requirements/' + encodeURIComponent(target.reqId) + '/assist/image_gen/use';
+      var payload = isFrame
+        ? { action: 'polish_scene_frame', scene_idx: target.sceneIdx, dataUrl: dataUrl }
+        : { action: 'append_option', dataUrl: dataUrl, sourceIdx: target.idx, label: '打磨' };
+      var okMsg = isFrame
+        ? '✅ 已回写覆盖本场首帧图（原图已备份，可「↩️ 还原」）'
+        : '✅ 已回写为新的候选图（原图保留，可在卡片里对比切换）';
+      api('POST', endpoint, payload).then(function () {
+        toast(okMsg, 'success', 3000);
+        // 刷新对应卡片：图候选 → image_gen 卡；首帧图 → 剧本卡（两者都是 sidebar + 聊天流两处）
+        if (isFrame) {
+          if (typeof refreshScreenplayChatCard === 'function') refreshScreenplayChatCard(target.reqId);
+        } else if (typeof refreshImageCard === 'function') {
+          refreshImageCard(target.reqId);
+        }
+        _polishTarget = null;                       // 一次打磨 = 一次回写；再改请回卡片重新点「打磨」
+        if (saveItem) saveItem.style.pointerEvents = '';
+        refreshPolishUI();
+      }).catch(function (e) {
+        if (saveItem) saveItem.style.pointerEvents = '';
+        refreshPolishUI();
+        toast('❌ 回写失败：' + ((e && e.message) ? e.message : e), 'error');
+      });
+    }
+
     // 挂到窗口元素上，供 ACMSWin.open 复用窗口时调用
     w.reloadImage = reloadImage;
     // 也挂到全局，供拖拽到窗口内容区时直接调用
@@ -388,6 +519,9 @@
     var src = initialSrc || (window._dragImageUrl || null);
     console.log('[IMG-EDIT] initialSrc:', initialSrc ? initialSrc.slice(0, 80) : null, '_dragImageUrl:', window._dragImageUrl ? window._dragImageUrl.slice(0, 80) : null, '→ src:', src ? src.slice(0, 80) : null);
     if (src === window._dragImageUrl) { window._dragImageUrl = null; console.log('[IMG-EDIT] _dragImageUrl 已消费'); }
+    // v0.22.75: 打磨来源登记（新窗口路径；复用窗口路径在 reloadImage 里消费）
+    consumePolishTarget();
+    refreshPolishUI();
     loadEditor(src);
 
     // ─── 菜单事件（支持 dropdown + 直接 action）───
@@ -475,7 +609,12 @@
             input.click();
             break;
           case 'save-img':
-            var dataURL = imageEditor.toDataURL();
+            // v0.22.75: 打磨模式 → 回写为新候选（不是下载到本地）
+            if (_polishTarget) { doPolishSave(); break; }
+            // v0.22.75 修正：导出改走 exportFullImage()（先重置 viewport）
+            //   原来直接用 imageEditor.toDataURL() —— 图被 fit 缩小/平移过之后，
+            //   导出的会是「当前视野」而不是整幅图（内容缩在中间 + 四周透明）
+            var dataURL = exportFullImage() || imageEditor.toDataURL();
             var name = _currentFileName || 'image.png';
             var link = document.createElement('a');
             link.href = dataURL;

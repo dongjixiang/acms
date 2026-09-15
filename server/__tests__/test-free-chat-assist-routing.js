@@ -130,7 +130,7 @@ function extractScreenplay(text) {
   const idea = ideaMatch ? ideaMatch[1].trim() : text;
   const secMatch = text.match(/(\d{1,3})\s*秒/);
   const targetSeconds = secMatch ? parseInt(secMatch[1]) : 30;
-  const styleMap = { '写实': 'photorealistic', '3D': '3d', 'G1': 'g1', '日漫': 'anime', '国风水墨': 'ink' };
+  const styleMap = { '写实': 'photorealistic', '3D': '3d-render', 'G1': 'g1_animation', '日漫': 'anime', '国风水墨': 'guofeng' };
   const styleMatch = text.match(/(写实|3D|G1|日漫|国风水墨)/);
   const artStyle = styleMap[styleMatch ? styleMatch[1] : ''] || 'photorealistic';
   return { idea, target_seconds: targetSeconds, art_style: artStyle };
@@ -144,7 +144,7 @@ eq(ex1.art_style, 'photorealistic', 'T4c art_style "写实" → photorealistic')
 const ex2 = extractScreenplay('写剧本：赛博朋克侦探，时长 60 秒，风格 3D');
 eq(ex2.idea, '赛博朋克侦探', 'T4d idea 无"短视频"也命中');
 eq(ex2.target_seconds, 60, 'T4e target_seconds=60');
-eq(ex2.art_style, '3d', 'T4f art_style "3D" → 3d');
+eq(ex2.art_style, '3d-render', 'T4f art_style "3D" → 3d-render（与 STYLE_TEMPLATES 对齐）');
 
 const ex3 = extractScreenplay('写一个短视频剧本：日漫校园故事');
 eq(ex3.idea, '日漫校园故事', 'T4g idea 提取');
@@ -157,7 +157,7 @@ eq(ex4.target_seconds, 30, 'T4k 缺时长默认');
 eq(ex4.art_style, 'photorealistic', 'T4l 缺风格默认 photorealistic');
 
 const ex5 = extractScreenplay('写剧本创意：国风水墨武侠');
-eq(ex5.art_style, 'ink', 'T4m "国风水墨" → ink');
+  eq(ex5.art_style, 'guofeng', 'T4m "国风水墨" → guofeng（与 STYLE_TEMPLATES 对齐）');
 
 console.log(`\n=== 结果：${pass}/${pass+fail} 通过 ===`);
 if (fail > 0) {

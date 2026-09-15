@@ -49,8 +49,16 @@
       const optionsHtml = options.map((opt, i) => {
         const assetUrl = opt.asset_path
           ? `/api/generate/assets/${encodeURIComponent(data.project_id || 'default')}/${opt.asset_path}`
-          : null;
+          : '';
         const cdnUrl = opt.image_url_output || '';
+        // v0.22.76: 打磨图**没有 CDN 退路**（image_url_output 为空）。上面那条 assetUrl 是
+        //   端点用 projectStore.getById 找项目再拼 slug —— 项目查不到就 404（无 project_id 的会话）。
+        //   原图靠 <img onerror> 回退到 Agnes CDN 兜住，打磨图没有这个底 → 优先走本地直读端点
+        //   （/api/files/asset 直接读 workspaces/<path>，不依赖项目查找，且免鉴权、带 CORS）
+        const localUrl = opt.workspace_path
+          ? '/api/files/asset?path=' + encodeURIComponent(opt.workspace_path) : '';
+        const primary = (opt.polished && localUrl) ? localUrl : (assetUrl || cdnUrl);
+        const fallback = (assetUrl && assetUrl !== primary) ? assetUrl : cdnUrl;
         const isPicked = i === pickedIdx;
         return `
           <div class="image-option" data-image-option-idx="${i}" style="
@@ -61,9 +69,9 @@
             ${isPicked ? 'box-shadow:0 0 0 2px var(--accent)' : ''}
           " onclick="chatImagePick('${reqId}', ${i})">
             ${isPicked ? '<div style="position:absolute;top:4px;right:4px;background:var(--accent);color:white;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:12px">✓</div>' : ''}
-            <img src="${escHtml(assetUrl || cdnUrl)}" alt="候选 ${i+1}" style="display:block;width:140px;height:140px;object-fit:cover;border-radius:4px;cursor:zoom-in" onclick="event.stopPropagation();if('${escHtml(cdnUrl)}'&&window.previewImage)previewImage('${escHtml(assetUrl || cdnUrl)}','${escHtml(cdnUrl)}')" onerror="this.src='${escHtml(cdnUrl)}';this.onerror=null;" />
-            <div style="text-align:center;font-size:11px;color:var(--text2);margin-top:2px">${i+1}${isPicked ? ' · 已选' : ' · 点选'}</div>
-            <button class="btn-small" style="margin-top:4px;width:100%;font-size:11px" onclick="event.stopPropagation();if(window.ACMSWallpaper)ACMSWallpaper.set('${escHtml(assetUrl || cdnUrl)}')">🖼️ 设为壁纸</button>
+            <img src="${escHtml(primary)}" alt="候选 ${i+1}" style="display:block;width:140px;height:140px;object-fit:cover;border-radius:4px;cursor:zoom-in" onclick="event.stopPropagation();if(window.previewImage)previewImage('${escHtml(primary)}','${escHtml(cdnUrl || primary)}')" onerror="this.onerror=null;if('${escHtml(fallback)}')this.src='${escHtml(fallback)}';" />
+            <div style="text-align:center;font-size:11px;color:var(--text2);margin-top:2px">${i+1}${isPicked ? ' · 已选' : ' · 点选'}${opt.polished ? ' · ✏️ 打磨' : ''}</div>
+            <button class="btn-small" style="margin-top:4px;width:100%;font-size:11px" onclick="event.stopPropagation();openPolishInEditor('${reqId}', ${i}, '${escHtml(primary)}')">✏️ 打磨</button>
           </div>
         `;
       }).join('');
@@ -114,7 +122,7 @@
           </div>
           <div style="display:flex;gap:4px;margin-top:4px">
             <button class="btn-small" onclick="previewImage('${escHtml(imgSrc)}','${escHtml(cdnUrl)}')" style="font-size:11px">🔍 放大预览</button>
-            <button class="btn-small" onclick="if(window.ACMSWallpaper)ACMSWallpaper.set('${escHtml(imgSrc)}')" style="font-size:11px">🖼️ 设为壁纸</button>
+            <button class="btn-small" onclick="openPolishInEditor('${reqId}', 0, '${escHtml(imgSrc)}')" style="font-size:11px">✏️ 打磨</button>
             <a href="${escHtml(cdnUrl || imgSrc)}" target="_blank" rel="noopener noreferrer" class="btn-small btn-primary" style="text-decoration:none;display:inline-flex;align-items:center;gap:4px;font-size:11px">
               🔗 查看原图
             </a>
@@ -173,6 +181,29 @@ async function submitPendingImageGen(reqId) {
     await chatAssist(reqId, 'image_gen', { prompt, n: 3 });
   } catch (e) {
     toast('生成失败: ' + e.message, 'error');
+  }
+}
+
+/**
+ * v0.22.75: 「✏️ 打磨」—— 把这张图送进图片编辑器（手工改 / 图生图），改完回写为新候选
+ *   ① 登记来源（reqId + 候选序号）→ 编辑器侧读完即用（document 级，跨窗口可见）
+ *   ② 走 PKG loader 既有的 _fb_open_file 通道送图（与文件浏览器/聊天拖图同一套）
+ */
+function openPolishInEditor(reqId, idx, imgUrl) {
+  if (!imgUrl) { toast('这张图没有可用的地址', 'error'); return; }
+  window.__acmsPolishTarget = { reqId: reqId, idx: idx, url: imgUrl, at: Date.now() };
+  window._fb_open_file = { name: 'polish-' + (idx + 1) + '.png', src: imgUrl };
+  try {
+    if (window.ACMSWin && ACMSWin.open) {
+      ACMSWin.open('image-editor', { w: 1000, h: 700, title: '✏️ 打磨图片' });
+      toast('已打开编辑器 · 改完点「✅ 完成打磨」', 'success', 3500);
+    } else {
+      throw new Error('窗口管理器不可用');
+    }
+  } catch (e) {
+    window.__acmsPolishTarget = null;
+    window._fb_open_file = null;
+    toast('打开图片编辑器失败：' + e.message, 'error');
   }
 }
 

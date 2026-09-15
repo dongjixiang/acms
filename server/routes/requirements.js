@@ -989,6 +989,16 @@ router.post('/:id/assist/:method/use', async (req, res, next) => {
       // v0.22.67: 生成某一场的「首帧图」（角色图+场景图多图合成；约 10-20s，同步等待）
       result = await svc.genSceneFrame(req.params.id, body);
     }
+    else if (method === 'screenplay' && (body.action === 'polish_scene_frame' || body.action === 'revert_scene_frame')) {
+      // v0.22.77: 「✏️ 打磨」首帧图回写 / 还原（同步，快 —— 只是存图 + 改库）
+      //   这里自己 catch → 400 + message，让前端 toast 能显示「这一场还没有首帧图」这类具体原因
+      //   （直接 throw 会走全局错误处理变 500，前端只能看到笼统的 Request failed）
+      try {
+        result = svc.polishSceneFrame(req.params.id, body);
+      } catch (err) {
+        return res.status(400).json({ error: 'POLISH_FRAME_FAILED', message: err.message });
+      }
+    }
     else if (method === 'screenplay' && body.action === 'set_video_opts') {
       // v0.22.67: 每段时长 / 画幅 / 视频模型（默认值但允许调整）
       result = svc.setVideoOpts(req.params.id, body);
@@ -996,6 +1006,19 @@ router.post('/:id/assist/:method/use', async (req, res, next) => {
     else if (method === 'screenplay') {
       // v0.22：剧本辅助 → 标记选中并写聊天流（按 P11 教训）
       result = svc.markPicked(req.params.id, body.idx);
+    }
+    else if (method === 'image_gen' && body.action === 'append_option') {
+      // v0.22.75: 「打磨」回写 —— 图片编辑器改好的图追加为一张新候选
+      //   独立分支放在 pickOption 之前，不影响原有「选中第 N 张」行为
+      const appended = svc.appendOption(req.params.id, {
+        dataUrl: body.dataUrl,
+        sourceIdx: body.sourceIdx,
+        label: body.label,
+      });
+      if (!appended || appended.ok === false) {
+        return res.status(400).json({ error: (appended && appended.error) || 'APPEND_FAILED' });
+      }
+      result = appended.assist;
     }
     else if (method === 'image_gen') {
       // v0.22.8: 选中第 idx 张候选

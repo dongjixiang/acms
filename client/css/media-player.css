@@ -1,0 +1,136 @@
+/* ACMS 视频播放器 · 黑底 UI（v0.1） */
+
+.mp-frame {
+  width: 100%;
+  height: 100%;
+  background: #000;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.mp-video {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  outline: none;
+  /* 隐藏原生 controls（我们自己画），但保留 keyboard 快捷键支持 */
+}
+
+.mp-video::-webkit-media-controls {
+  display: none !important;
+}
+
+.mp-controls {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.85);
+  color: #fff;
+  align-items: center;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-size: 13px;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.mp-controls button,
+.mp-controls select {
+  background: #222;
+  color: #fff;
+  border: 1px solid #444;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.4;
+  outline: none;
+  transition: background 0.15s;
+}
+
+.mp-controls button:hover {
+  background: #333;
+  border-color: #666;
+}
+
+.mp-controls button:active {
+  background: #1a1a1a;
+}
+
+.mp-play {
+  min-width: 36px;
+  font-family: monospace;
+  font-size: 14px;
+}
+
+.mp-progress {
+  flex: 1;
+  height: 6px;
+  cursor: pointer;
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+  outline: none;
+}
+
+.mp-progress::-webkit-slider-runnable-track {
+  height: 4px;
+  background: #444;
+  border-radius: 2px;
+}
+
+.mp-progress::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  background: #fff;
+  border-radius: 50%;
+  margin-top: -4px;
+  cursor: pointer;
+}
+
+.mp-progress::-moz-range-track {
+  height: 4px;
+  background: #444;
+  border-radius: 2px;
+}
+
+.mp-progress::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  background: #fff;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+}
+
+.mp-time {
+  font-family: ui-monospace, "Cascadia Code", "Source Code Pro", monospace;
+  font-size: 12px;
+  color: #aaa;
+  min-width: 100px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.mp-rate {
+  min-width: 60px;
+  cursor: pointer;
+}
+
+.mp-rate:hover {
+  background: #333;
+}
+
+.mp-fullscreen {
+  min-width: 32px;
+  font-size: 16px;
+}
+
+/* 错误状态 */
+.mp-video::-webkit-media-controls-playback-rate-button {
+  display: none;
+}

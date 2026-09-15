@@ -34,11 +34,15 @@ const SCREENPLAY_PROMPT = `你是 ACMS 系统的「剧本助手」。根据用�
 - setting (≤40 字)：场景设定（时间/地点/氛围，含视觉元素）
   - ✅ 好例："赛博坦星球表面、火山熔岩背景、机械废墟"
   - ✅ 好例："霍格沃茨魔法大厅、漂浮蜡烛、石墙浮雕"
-- scenes: [{time, shot, dialogue, action}]：分镜
+- scenes: [{characters, time, shot, dialogue, action}]：分镜
+  - 🆕 v0.X fix: characters: [name1, name2] 必填（出场角色名，从上面的 characters 数组里挑）
+    之前没有这个字段 → buildSceneVideoPrompt 不知道谁出场 → 生图 LLM 自己脑补 → 画出"不在剧本里的人物"
   - 时长字段示例："0-5s"、"5-15s"、"15-25s"
   - shot: 镜头描述（≤25 字，景别+构图）
   - dialogue: 对白（≤40 字，无对白可写"——"）
-  - action: 动作/事件（≤30 字）
+  - action: 动作/事件（≤30 字）—— 🆕 必须写明"谁在做这个动作"（用具体角色名，不要用"两人""某人"）
+    - ✅ 好例："君子与玉兰相视而笑"
+    - ❌ 差例："两人相视而笑"（生图 LLM 不知道是哪两个人）
   - 场数与时长匹配：30s → 4-5 场；60s → 6-8 场；15s → 3 场
 - shot_tips (≤40 字)：拍摄建议（设备/运镜/风格/情绪）
 
@@ -183,6 +187,9 @@ async function runAssistJob(requirementId, opts = {}) {
       })) : [],
       setting: String(sp.setting || '').slice(0, 80),
       scenes: Array.isArray(sp.scenes) ? sp.scenes.slice(0, sceneCount + 1).map(sc => ({
+        // 🆕 v0.X fix: 保留 characters 字段（场景出场角色名数组，从 sp.characters 里挑）
+        //   之前 L37 schema 没这字段 → buildSceneVideoPrompt 不知道谁出场 → 生图 LLM 脑补"不在剧本里的人物"
+        characters: Array.isArray(sc.characters) ? sc.characters.slice(0, 5).map(n => String(n || '').slice(0, 20)) : [],
         time: String(sc.time || '').slice(0, 15),
         shot: String(sc.shot || '').slice(0, 50),
         dialogue: String(sc.dialogue || '').slice(0, 80),
@@ -309,6 +316,11 @@ function writeScreenplayChatEntry(reqId, screenplay, meta = {}) {
     picked_idx: meta.idx ?? 0,
     total: meta.total || 1,
     screenplay,
+    // 🆕 v0.X bug fix: chat 流路径 art_style 必须写入 card
+    //   之前没传 → renderFromChatEntry 拿不到 → buildCharacterPrompt 永远 fallback photorealistic
+    //   选了"国风水墨"却出"写实摄影"。从 currentAssist（= req.assist_screenplay 反序列化）读，
+    //   7 个 writeScreenplayChatEntry 调用点都不用改。
+    art_style: currentAssist?.art_style || meta.art_style || 'photorealistic',
     // v0.22.13: 把当前资源状态也写进 card（前端聊天流卡片可读完整状态 + 交互）
     assets: (currentAssist?.assets) || { characters: {}, scenes: {} },
     scene_videos: (currentAssist?.scene_videos) || {},
@@ -430,6 +442,110 @@ function setSceneVideo(requirementId, sceneIdx, payload) {
     }
   }
 
+  return assist;
+}
+
+/**
+ * v0.22.77: 「✏️ 打磨」首帧图回写
+ *
+ *   为什么是**覆盖**、而不是像 image_gen 那样追加候选：
+ *     首帧图是「这一场的起始定格」，按场次索引存**单值**（scene_frames[sceneIdx]），
+ *     下游「生成视频」直接读它当本段 first_frame / 上一段的 last_frame → 段间衔接。
+ *     追加候选会让「这一场到底用哪张」变含糊，还得连带改视频链路。
+ *   资产安全：原图备份到 prev（只留一层）→ 支持「↩️ 还原」。
+ *
+ *   payload: { scene_idx, dataUrl }                     ← 打磨回写
+ *            { scene_idx, action:'revert_scene_frame' }  ← 还原上一版
+ *   返回更新后的 assist（与 setSceneVideo 一致，前端拿它刷新卡片）
+ */
+function polishSceneFrame(requirementId, payload = {}) {
+  const req = reqStore.getById(requirementId);
+  if (!req) throw new Error('需求不存在');
+  let assist;
+  try { assist = JSON.parse(req.assist_screenplay || 'null'); } catch { assist = null; }
+  if (!assist) throw new Error('剧本数据不存在');
+  if (assist.picked === null || assist.picked === undefined) throw new Error('请先选一个剧本');
+
+  const sceneIdx = parseInt(payload.scene_idx, 10) || 0;
+  const key = String(sceneIdx);
+  const cur = (assist.scene_frames || {})[key];
+  if (!cur) throw new Error('这一场还没有首帧图，请先生成一张再打磨');
+
+  const rewrite = () => {
+    try {
+      writeScreenplayChatEntry(requirementId, assist.screenplays[assist.picked], {
+        idea: assist.idea, target_seconds: assist.target_seconds,
+        idx: assist.picked, total: assist.screenplays.length,
+      });
+    } catch (e) {
+      console.warn(`[assist:screenplay] ${requirementId} 打磨后重写聊天流卡片失败:`, e.message);
+    }
+  };
+
+  // ── 分支 1：还原到上一版 ──
+  if (payload.action === 'revert_scene_frame') {
+    if (!cur.prev) throw new Error('没有可还原的版本');
+    const restored = Object.assign({}, cur.prev);
+    delete restored.backed_up_at;
+    restored.restored_at = new Date().toISOString();
+    assist.scene_frames[key] = restored;
+    reqStore.update(requirementId, { assist_screenplay: JSON.stringify(assist) });
+    rewrite();
+    console.log(`[assist:screenplay] ${requirementId} 场${sceneIdx + 1} 首帧图已还原到上一版`);
+    return assist;
+  }
+
+  // ── 分支 2：保存打磨图 ──
+  const m = String(payload.dataUrl || '').match(/^data:(image\/[a-z0-9.+-]+);base64,([\s\S]*)$/i);
+  if (!m) throw new Error('图片数据格式不正确');
+  const buffer = Buffer.from(m[2], 'base64');
+  if (!buffer.length) throw new Error('图片内容为空');
+  if (buffer.length > 30 * 1024 * 1024) throw new Error('图片过大（>30MB）');
+
+  // magic bytes 定 mime/ext（与其它链路同源，别信前端声明的 mime）
+  let ext = '.png', mime = 'image/png';
+  if (buffer[0] === 0xff && buffer[1] === 0xd8) { ext = '.jpg'; mime = 'image/jpeg'; }
+  else if (buffer[0] === 0x89 && buffer[1] === 0x50) { ext = '.png'; mime = 'image/png'; }
+  else if (buffer.slice(0, 4).toString() === 'RIFF' && buffer.slice(8, 12).toString() === 'WEBP') { ext = '.webp'; mime = 'image/webp'; }
+
+  const videoSvc = require('./video');
+  const slug = videoSvc.getProjectDirForReq(req);
+  const fsMod = require('fs');
+  const pathMod = require('path');
+  const cryptoMod = require('crypto');
+  const dateStr = new Date().toISOString().split('T')[0];
+  const hash = cryptoMod.createHash('md5').update(buffer).digest('hex').substring(0, 8);
+  const assetsDir = pathMod.join(require('../../config').workspaceRoot, slug, 'assets', dateStr);
+  fsMod.mkdirSync(assetsDir, { recursive: true });
+  const fileName = `frame_polish_${hash}${ext}`;
+  fsMod.writeFileSync(pathMod.join(assetsDir, fileName), buffer);
+  const assetPath = `assets/${dateStr}/${fileName}`;   // 相对 workspace，不含 slug（与全项目约定一致）
+
+  assist.scene_frames[key] = {
+    // ⚠️ 打磨图只有本地文件、**没有公网 CDN URL** —— 前端「生成视频」会因此退回多图模式
+    //   （Agnes 视频接口的 first_frame / last_frame 必须是公网可访问 URL，本地地址它拉不到）
+    image_url_output: '',
+    asset_path: assetPath,
+    mime,
+    size: buffer.length,
+    polished: true,
+    polished_at: new Date().toISOString(),
+    prompt: cur.prompt || '',
+    refs: cur.refs || [],
+    aspect_ratio: cur.aspect_ratio || '16:9',
+    created_at: cur.created_at || new Date().toISOString(),
+    prev: {
+      image_url_output: cur.image_url_output || '',
+      asset_path: cur.asset_path || '',
+      mime: cur.mime || null,
+      size: cur.size || null,
+      backed_up_at: new Date().toISOString(),
+    },
+  };
+
+  reqStore.update(requirementId, { assist_screenplay: JSON.stringify(assist) });
+  rewrite();
+  console.log(`[assist:screenplay] ${requirementId} 场${sceneIdx + 1} 首帧图已打磨覆盖: ${assetPath}`);
   return assist;
 }
 
@@ -745,6 +861,7 @@ module.exports = {
   setAsset,        // v0.22.8: 角色/场景图写入
   setSceneVideo,   // v0.22.8: 分镜头视频写入
   genSceneFrame,   // v0.22.67: 分镜头「首帧图」生成（角色图+场景图多图合成）
+  polishSceneFrame, // v0.22.77: 「✏️ 打磨」首帧图回写（覆盖 + 原图备份可还原）
   castOfScene,     // v0.22.71: 本场出场人物判定（首帧图人数控制）
   charAliases,     // v0.22.71: 角色名别名（咖啡师小雨 → 小雨）
   normAssetPath,   // v0.22.70: asset_path 归一化（剥掉 workspace 前缀）

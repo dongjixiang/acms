@@ -411,6 +411,69 @@ function getAssist(requirementId) {
   try { return JSON.parse(req.assist_image || 'null'); } catch { return null; }
 }
 
+/**
+ * v0.22.75: 「打磨」回写 —— 把用户在图片编辑器里改好的图**追加**为一张新候选
+ *
+ *   为什么是追加而不是覆盖：卡片本身就是「N 候选 + 点选」结构（options[] + picked_idx），
+ *   追加 = 零改造成本拿到「可对比 / 可反悔」，原图永不丢。
+ *   追加后 picked_idx 指向新图（用户改完当然是想用改过的），并同步旧字段。
+ *
+ *   opts: { dataUrl: 'data:image/png;base64,...', sourceIdx?: number, label?: string }
+ *   返回 { ok:true, assist, idx, option } / { ok:false, error }
+ */
+function appendOption(requirementId, opts = {}) {
+  const req = reqStore.getById(requirementId);
+  if (!req) return { ok: false, error: 'REQ_NOT_FOUND' };
+
+  const m = String(opts.dataUrl || '').match(/^data:(image\/[a-z0-9.+-]+);base64,([\s\S]*)$/i);
+  if (!m) return { ok: false, error: 'BAD_DATA_URL' };
+  const buffer = Buffer.from(m[2], 'base64');
+  if (!buffer.length) return { ok: false, error: 'EMPTY_IMAGE' };
+  if (buffer.length > 30 * 1024 * 1024) return { ok: false, error: 'IMAGE_TOO_LARGE' };
+
+  let assist;
+  try { assist = JSON.parse(req.assist_image || 'null'); } catch { assist = null; }
+  if (!assist || !Array.isArray(assist.options) || assist.options.length === 0) {
+    return { ok: false, error: 'NO_OPTIONS' };
+  }
+
+  // magic bytes 定 mime/ext（与 downloadAndSaveOne 同源，别信前端声明的 mime）
+  let ext = '.png', mime = 'image/png';
+  if (buffer[0] === 0xff && buffer[1] === 0xd8) { ext = '.jpg'; mime = 'image/jpeg'; }
+  else if (buffer[0] === 0x89 && buffer[1] === 0x50) { ext = '.png'; mime = 'image/png'; }
+  else if (buffer.slice(0, 4).toString() === 'RIFF' && buffer.slice(8, 12).toString() === 'WEBP') { ext = '.webp'; mime = 'image/webp'; }
+
+  const projectSlug = getProjectDirForReq(req);
+  const saved = saveImageAsset(projectSlug, buffer, ext, mime, { prompt: 'polish' });
+
+  const option = {
+    image_url_output: '',                       // 打磨图只在本地，没有 CDN 地址
+    asset_path: saved.assetPath,                // ⚠️ 相对路径（与其它 option 同一约定，不含 projectSlug）
+    workspace_path: projectSlug + '/' + saved.assetPath,
+    mime: saved.mime,
+    size: saved.size,
+    polished: true,                             // 前端据此打「✏️ 打磨」角标
+    source_idx: Number.isInteger(opts.sourceIdx) ? opts.sourceIdx : null,
+    label: opts.label ? String(opts.label).slice(0, 40) : '打磨',
+    created_at: new Date().toISOString(),
+  };
+
+  assist.options.push(option);
+  const idx = assist.options.length - 1;
+  assist.picked_idx = idx;
+  assist.used = true;
+  assist.picked_at = option.created_at;
+  // 同步旧字段（向后兼容 —— 与 pickOption 一致）
+  assist.image_url_output = option.image_url_output;
+  assist.asset_path = option.asset_path;
+  assist.workspace_path = option.workspace_path;
+  assist.mime = option.mime;
+
+  reqStore.update(requirementId, { assist_image: JSON.stringify(assist) });
+  console.log(`[assist:image] ${requirementId} 打磨图已追加为候选 #${idx + 1}（共 ${assist.options.length} 张）`);
+  return { ok: true, assist, idx, option };
+}
+
 // ════════════════════════════════════════════════════════════════════
 // v0.49: 同步版本 — 等图片真正下载+保存+import chat-upload 完成才返回
 //   给 plan_executor (ctx.sync=true) 用，避免 fire-and-forget 假完成
@@ -736,4 +799,5 @@ module.exports = {
   renderGroundedPosterOverlay,
   pickOption,
   getAssist,
+  appendOption,   // v0.22.75: 「打磨」回写 — 图片编辑器改好的图追加为新候选
 };
