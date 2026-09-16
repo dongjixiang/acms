@@ -147,7 +147,7 @@ registerTool({
 // ── web_eval ──
 registerTool({
   name: 'web_eval',
-  description: '在当前页面执行 JavaScript 表达式并返回结果。用于处理复杂 DOM：查元素状态、读取动态内容、模拟滚动等。表达式是立即执行函数写法，如 (() => { return document.title })()',
+  description: '在当前页面执行 JavaScript 表达式并返回结果。用于处理复杂 DOM：查元素状态、读取动态内容、模拟滚动等。表达式是立即执行函数写法，如 (() => { return document.title })()\n\n【重要禁止】\n- **禁止用 web_eval 强行设置 input[type="file"].files**（如 `new File(...)` / `inp.files = dt.files`）—— 这只是表面修改 length，平台 React 组件不会真正处理、文件也不会上传到服务端。**必须用 web_upload({file_path:<绝对路径>})** 走 Puppeteer 真实上传。\n- **禁止用 web_eval 执行 shell / npx / child_process 命令** —— 浏览器页面上下文没有 Node，必失败。',
   parameters: {
     type: 'object',
     properties: {
@@ -157,7 +157,16 @@ registerTool({
   },
   async handler(args, ctx) {
     const sess = (ctx && ctx.appSessionId) || null;
-    const r = sess ? await pp.evalJs(sess, args.expression) : await ba.evalJs(args.expression);
+    const expr = String(args?.expression || '');
+    // v0.119.7.6: 检测 web_eval 模拟文件上传的 hack —— 明确拒绝
+    if (/input[^"]*type\s*=\s*["']file["']|new\s+File\s*\(|DataTransfer\s*\(|inp\.files\s*=|input\.files\s*=|\.files\s*=\s*new\s+DataTransfer/i.test(expr)) {
+      return {
+        ok: false,
+        error: 'WEB_EVAL_FILE_HACK_FORBIDDEN',
+        hint: '用 web_eval 强行设置 input.files 不会真正上传文件（平台 React 组件不处理 JS hack）。请改用 **web_upload({file_path:<绝对路径>})** 工具，由 Puppeteer setInputFiles 真实上传。',
+      };
+    }
+    const r = sess ? await pp.evalJs(sess, expr) : await ba.evalJs(expr);
     if (!r.ok) return { error: r.error };
     return { ok: true, output: r.output };
   },
@@ -273,13 +282,27 @@ registerTool({
             hint: '自动填表失败 → 调 request_user_help（A 用户手动在画面上登录 / B 换账号 / C 取消）',
           };
         }
+        // v0.119.7.4: urlChanged=false = 登录没成功（密码错/需验证码/风控），必须返 ok:false
+        //   否则 LLM 看到 ok:true 就忽略 hint，继续往下走 → 永远找不到发布页 → 永远上传失败
+        //   关键：LLM 必须调 request_user_help（A 手动 / B 换号 / C 取消），不能跳过这步
+        if (!r.urlChanged) {
+          return {
+            ok: false,
+            error: 'LOGIN_NOT_CONFIRMED: 表单已填但 URL 未变化（密码错 / 需验证码 / 风控拦截）',
+            urlChanged: false,
+            urlBefore: r.urlBefore,
+            urlAfter: r.urlAfter,
+            filled: r.filled,
+            hint: '登录未成功。**必须立即调 request_user_help（A 用户手动在画面完成登录 / B 换账号 / C 取消）** —— 不要再尝试其他操作，也不要直接进入发布页',
+          };
+        }
         return {
           ok: true,
           filled: r.filled,
           urlChanged: r.urlChanged,
           urlBefore: r.urlBefore,
           urlAfter: r.urlAfter,
-          hint: r.note + '；若仍未登录（需验证码/密码错/风控）→ 立即调 request_user_help',
+          hint: r.note + '；继续执行发布流程',
         };
       } catch (e) {
         return {
@@ -314,4 +337,100 @@ registerTool({
   },
 });
 
-console.log('[tools] 浏览器自动化工具注册完成: web_open, web_snapshot, web_click, web_type, web_press, web_read, web_screenshot, web_eval, web_find, web_ai_search, request_user_help, web_auth_login');
+// ── web_upload（v0.119.7）──
+// 把本地文件上传到当前页面的 input[type=file]。仅 PP 模式支持（CLI 引擎走不到 Puppeteer）。
+// 主要用途：social-publisher 把 content 内嵌的 base64 图片抽到临时文件后，让 LLM 主动上传到平台。
+registerTool({
+  name: 'web_upload',
+  description: '把本地文件上传到当前页面的文件选择控件（input[type=file]）。仅在远程预览（Puppeteer）模式下可用。\n\n【何时用】发布任务中正文带图（如小红书必须先传图才能填标题/正文、头条编辑器插入插图等）。发布任务描述里的【图片】段会给出临时文件路径列表。\n\n【参数】\n- file_path（必填）：要上传的本地文件的**绝对路径**（来自发布任务【图片】段）\n- selector（可选）：指定具体的 input[type=file] 元素（CSS 选择器，如 ".upload-input"）。不传则自动找页面第一个可见的 input[type=file]\n\n【注意】\n- 仅 PP 模式（appSessionId 存在）；CLI 模式返回 not_supported\n- 调用后页面会有 300ms 等 onchange 触发，再用 web_snapshot 确认是否上传成功（很多平台上传后会显示缩略图）\n- 多张图上传：多次调用本工具，每张图一次\n\n示例：web_upload({"file_path":"D:/data/social-publisher-uploads/gp-xxx/0.png"})',
+  parameters: {
+    type: 'object',
+    properties: {
+      file_path: { type: 'string', description: '要上传的本地文件绝对路径' },
+      selector: { type: 'string', description: '可选：指定具体 input[type=file] 的 CSS 选择器' },
+    },
+    required: ['file_path'],
+  },
+  async handler(args, ctx) {
+    const sess = (ctx && ctx.appSessionId) || null;
+    if (!sess) {
+      return {
+        ok: false,
+        error: 'not_supported_in_cli_mode',
+        hint: 'web_upload 仅在远程预览（Puppeteer）模式可用；当前是 CLI 引擎模式，请先在 Web 机器人顶部切到 🖥 远程预览',
+      };
+    }
+    const filePath = String((args && args.file_path) || '').trim();
+    const selector = (args && args.selector) ? String(args.selector).trim() : null;
+    if (!filePath) return { ok: false, error: '缺少 file_path', hint: '请用发布任务【图片】段给出的临时文件绝对路径' };
+    try {
+      const r = await pp.uploadFile(sess, { file_path: filePath, selector });
+      if (!r.ok) {
+        return {
+          ok: false,
+          error: r.error,
+          hint: '上传失败 → 先 web_snapshot 看页面（可能需要先 web_click「上传图片」按钮让 input[type=file] 出现）',
+        };
+      }
+      return {
+        ok: true,
+        uploaded: r.uploaded,
+        files: r.files,
+        hint: r.note + '；接下来可 web_snapshot 确认缩略图，或继续填标题/正文',
+      };
+    } catch (e) {
+      return { ok: false, error: e.message || 'web_upload 失败' };
+    }
+  },
+});
+
+// ── web_paste（v0.119.8）──
+// 把 HTML 文件（可含 base64 图）写剪贴板 + Ctrl+V 粘贴到编辑器。
+// 优势：走平台自己的富文本 paste 管线，图片自动上传到平台 CDN（= 用户手动粘贴路径）
+//   不用找 input[type=file] / 不用处理「封面图 vs 正文插图」两类上传点。
+// 仅 PP 模式支持。
+registerTool({
+  name: 'web_paste',
+  description: '把 HTML 文件（可含 base64 内嵌图）写入剪贴板并 Ctrl+V 粘贴到页面编辑器（contenteditable / ProseMirror / textarea）。\n\n【何时用 —— 正文带图的首选方式】\n- 发布任务【正文】段会给你一个 HTML 文件绝对路径（如 .../content.html）→ 直接 web_paste({file_path:<该路径>}) 就完成「填正文 + 传图」两步\n- 平台富文本管线会自动把 HTML 里的 base64 图片上传到平台 CDN（等价于用户手动 Ctrl+C/Ctrl+V），无需 web_upload\n- 小红书这类「必须先传图才能填标题」的平台，可用 web_paste 贴正文，但封面图仍需 web_upload\n\n【参数】\n- file_path（必填）：HTML 文件绝对路径（来自发布任务【正文】段）\n- selector（可选）：编辑器 CSS 选择器（如 ".ProseMirror"）。不传则自动聚焦页面最后一个 contenteditable / textarea\n\n【注意】\n- 仅 PP 模式；CLI 模式返 not_supported\n- 粘贴后平台要 3-5s 上传图片，调用完稍等再 web_snapshot 确认图已出现\n- 需要页面是安全上下文（https / localhost）—— 平台站点都满足\n\n示例：web_paste({"file_path":"C:/Users/swede/acms/data/social-publisher-uploads/gp-xxx/content.html"})',
+  parameters: {
+    type: 'object',
+    properties: {
+      file_path: { type: 'string', description: 'HTML 文件绝对路径' },
+      selector: { type: 'string', description: '可选：编辑器 CSS 选择器' },
+    },
+    required: ['file_path'],
+  },
+  async handler(args, ctx) {
+    const sess = (ctx && ctx.appSessionId) || null;
+    if (!sess) {
+      return {
+        ok: false,
+        error: 'not_supported_in_cli_mode',
+        hint: 'web_paste 仅在远程预览（Puppeteer）模式可用；请先在 Web 机器人顶部切到 🖥 远程预览',
+      };
+    }
+    const filePath = String((args && args.file_path) || '').trim();
+    const selector = (args && args.selector) ? String(args.selector).trim() : null;
+    if (!filePath) return { ok: false, error: '缺少 file_path', hint: '用发布任务【正文】段给出的 HTML 文件路径' };
+    try {
+      const r = await pp.pasteFile(sess, { file_path: filePath, selector });
+      if (!r.ok) {
+        return {
+          ok: false,
+          error: r.error,
+          hint: r.hint || '粘贴失败 → 先 web_snapshot 确认已在编辑器页；或改用 web_upload 逐个传图',
+        };
+      }
+      return {
+        ok: true,
+        pasted: r.pasted,
+        editorAfter: r.editorAfter,
+        hint: r.note + '；若编辑器里没出现图片，等 3-5s 再 web_snapshot；仍不行 → 改用 web_upload',
+      };
+    } catch (e) {
+      return { ok: false, error: e.message || 'web_paste 失败' };
+    }
+  },
+});
+
+console.log('[tools] 浏览器自动化工具注册完成: web_open, web_snapshot, web_click, web_type, web_press, web_read, web_screenshot, web_eval, web_find, web_ai_search, request_user_help, web_auth_login, web_upload, web_paste');

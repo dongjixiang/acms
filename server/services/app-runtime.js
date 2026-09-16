@@ -432,10 +432,197 @@ case 'resize':
             await s.cdp.send('Page.startScreencast', { format: 'jpeg', quality: 75, everyNthFrame: 1 });
           }
           return { ok: true };
-        case 'exec': {
+case 'exec': {
           // 调试用：在页面上下文跑一段 JS（v0.59 加）
           const result = await page.evaluate(event.code);
           return { ok: true, result };
+        }
+// v0.119.8.1: web_upload 工具 —— 调 Puppeteer uploadFile 上传文件到 input[type=file]
+//   路径必须是绝对路径（sanitize-content.js 把 base64 抽到了临时目录）
+//   ⚠️ Puppeteer 25 API：page.$() → CdpElementHandle.uploadFile(...paths)（变参）
+//      没有 ElementHandle.setInputFiles，也没有 page.locator().first()（那是 Playwright API）
+case 'upload': {
+          const filePaths = Array.isArray(event.paths) ? event.paths : (event.path ? [event.path] : []);
+          if (!filePaths.length) return { error: 'UPLOAD_NO_PATHS' };
+          for (const fp of filePaths) {
+            if (!fp || !path.isAbsolute(fp)) return { error: 'UPLOAD_PATH_NOT_ABSOLUTE: ' + fp };
+            if (!fs.existsSync(fp)) return { error: 'UPLOAD_FILE_NOT_FOUND: ' + fp };
+          }
+          const selector = event.selector || 'input[type="file"]';
+          // v0.119.8.1: Puppeteer 25 正确 API = page.$() + handle.uploadFile(...paths)
+          //   ⚠️ 踩坑记录：① page.$() 返回 CdpElementHandle，**没有 setInputFiles**（v0.119.7 错）
+          //     ② page.locator() 返回 NodeLocator，**没有 .first()/count()/setInputFiles**（v0.119.7.3 错，那是 Playwright API）
+          //     ③ 正确：handle.uploadFile(path1, path2, ...) —— **变参**，不是数组
+          const handle = await page.$(selector).catch(() => null);
+          if (!handle) {
+            // v0.119.7.5: 找不到 input 时，探查页面里**像图片上传触发器**的按钮，给 LLM 下一步线索
+            //   重点：button text 含「图片/上传/封面/插入」+ 所有 DIV class 含 cover/image/upload/img
+            const probe = await page.evaluate(`(() => {
+              const out = { inputCount: 0, buttonCandidates: [], divCandidates: [], allButtonTexts: [] };
+              out.inputCount = document.querySelectorAll('input[type="file"]').length;
+              // 所有可见 button 的 text（按 class 排序）
+              document.querySelectorAll('button').forEach(b => {
+                const r = b.getBoundingClientRect();
+                const cs = getComputedStyle(b);
+                if (cs.display === 'none' || cs.visibility === 'hidden') return;
+                if (r.width < 2 || r.height < 2) return;
+                const text = (b.innerText || '').trim().slice(0, 30);
+                const cls = (b.className || '').toString().slice(0, 60);
+                const hasImg = b.querySelector('img, svg') !== null;
+                out.allButtonTexts.push({ text, cls, hasImg });
+                if (/图片|封面|插入|上传|添加|img|cover|image|upload/i.test(text + ' ' + cls)) {
+                  out.buttonCandidates.push({ text, cls: cls.slice(0, 80), rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) } });
+                }
+              });
+              // 关键 DIV（class 含 cover/image/upload/img/insert）
+              document.querySelectorAll('div').forEach(d => {
+                const cls = (d.className || '').toString();
+                if (!/cover|image|upload|img|insert|attachment/i.test(cls)) return;
+                const r = d.getBoundingClientRect();
+                if (r.width < 20 || r.height < 20) return;
+                out.divCandidates.push({ cls: cls.slice(0, 80), rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) } });
+              });
+              return out;
+            })()`).catch(() => null);
+            const probeInfo = probe && probe.result ? probe.result : probe;
+            const candText = probeInfo && probeInfo.buttonCandidates
+              ? probeInfo.buttonCandidates.slice(0, 5).map(b => `${b.text || '(无文字)'} [${b.cls}] @${b.rect.x},${b.rect.y}`).join(' | ')
+              : 'none';
+            const divText = probeInfo && probeInfo.divCandidates
+              ? probeInfo.divCandidates.slice(0, 3).map(d => `${d.cls} @${d.rect.x},${d.rect.y}`).join(' | ')
+              : 'none';
+            return {
+              error: `UPLOAD_NO_INPUT_MATCH: 当前页面没有可见的 input[type="file"]。需要**先 web_click 触发文件选择弹窗**——可能是「封面图」DIV 或「插入图片」按钮。`,
+              currentUrl: (() => { try { return page.url(); } catch { return 'unknown'; } })(),
+              probe: probeInfo,
+              hint: `第一步：**先 web_snapshot 看完整页面**（找含「图片/封面/插入/上传」文字的按钮 或 class 含 cover/image/upload 的 DIV）。第二步：web_click 那个按钮/DIV 触发文件选择弹窗。第三步：弹窗出现后 input[type=file] 挂载到 DOM，再 web_upload({file_path:<路径>})。`,
+              candidates: { buttons: candText, divs: divText },
+            };
+          }
+          try {
+            await handle.uploadFile(...filePaths);  // v0.119.8.1: 变参展开（Puppeteer 25 API）
+          } catch (e) {
+            const errMsg = String(e.message || e).slice(0, 200);
+            console.warn(`[app-runtime] upload handle.uploadFile failed: ${errMsg}`);
+            return { error: `UPLOAD_FILE_FAILED: ${errMsg}`, hint: 'uploadFile 失败 —— 确认 input[accept] 是否只收特定类型（如图片），或元素已被 React 替换（重新 web_snapshot 后再试）' };
+          }
+          // 给页面一点时间触发 onchange
+          await new Promise(r => setTimeout(r, 300));
+          return { ok: true, uploaded: filePaths.length, files: filePaths.map(p => path.basename(p)) };
+        }
+        // v0.119.8: web_paste —— 把 HTML（含 base64 图）写剪贴板 + Ctrl+V 粘贴到编辑器
+        //   思路：平台富文本编辑器自己处理 paste，图片自动上传到平台 CDN（= 用户手动粘贴路径）
+        //   优势：不用找 input[type=file] / 不用处理封面 vs 正文两类图
+        case 'paste': {
+          const filePath = event.path || event.file_path;
+          if (!filePath) return { error: 'PASTE_NO_FILE' };
+          if (!path.isAbsolute(filePath)) return { error: 'PASTE_PATH_NOT_ABSOLUTE: ' + filePath };
+          if (!fs.existsSync(filePath)) return { error: 'PASTE_FILE_NOT_FOUND: ' + filePath };
+          let html = '';
+          try { html = fs.readFileSync(filePath, 'utf8'); } catch (e) { return { error: 'PASTE_READ_FAILED: ' + e.message }; }
+          if (!html || !html.trim()) return { error: 'PASTE_EMPTY_FILE' };
+
+          // 1) grant 剪贴板权限（当前页面 origin）
+          const origin = (() => { try { return new URL(page.url()).origin; } catch { return null; } })();
+          if (!origin || origin === 'null') return { error: 'PASTE_NO_ORIGIN（当前页面无有效 origin，剪贴板 API 不可用）' };
+          if (!s.cdp) {
+            s.cdp = await page.target().createCDPSession();
+            await s.cdp.send('Page.enable').catch(() => {});
+          }
+          await s.cdp.send('Browser.grantPermissions', {
+            permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'],
+            origin,
+          }).catch((e) => { console.warn(`[app-runtime] paste grantPermissions 失败（继续尝试）: ${e.message}`); });
+
+          // 2) 写剪贴板（text/html + text/plain 双格式，编辑器优先用 html）
+          const w = await page.evaluate(async (h) => {
+            try {
+              if (!navigator.clipboard) return { ok: false, error: 'NO_CLIPBOARD_API' };
+              const plain = h.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+              await navigator.clipboard.write([new ClipboardItem({
+                'text/html': new Blob([h], { type: 'text/html' }),
+                'text/plain': new Blob([plain], { type: 'text/plain' }),
+              })]);
+              return { ok: true };
+            } catch (e) { return { ok: false, error: e.message }; }
+          }, html);
+          if (!w || !w.ok) return { error: 'PASTE_CLIPBOARD_WRITE_FAILED: ' + ((w && w.error) || 'unknown') };
+
+          // 3) 聚焦目标编辑器（selector 可选；不传则聚焦页面最后一个 contenteditable / textarea）
+          if (event.selector) {
+            const h = await page.$(event.selector).catch(() => null);
+            if (!h) return { error: 'PASTE_TARGET_NOT_FOUND: ' + event.selector, hint: '先 web_snapshot 确认编辑器选择器（如 .ProseMirror）' };
+            // 用页面上下文 focus + click（比 ElementHandle.click 稳，不受 CdpElementHandle API 差异影响）
+            await page.evaluate((sel) => {
+              const el = document.querySelector(sel);
+              if (el) { el.focus(); try { el.click(); } catch (_) {} }
+            }, event.selector).catch(() => {});
+          } else {
+            await page.evaluate(() => {
+              // v0.119.8.3: 优先 .ProseMirror / contenteditable（正文编辑器），textarea 只作兜底
+              //   （头条的 textarea 是标题框，误聚焦会把正文贴到标题里）
+              const pick = () => {
+                for (const sel of ['.ProseMirror', '[contenteditable="true"]', '[contenteditable=""]']) {
+                  const els = [...document.querySelectorAll(sel)].filter(e => {
+                    const r = e.getBoundingClientRect();
+                    return r.width > 50 && r.height > 30;
+                  });
+                  if (els.length) return els[els.length - 1];
+                }
+                const tas = [...document.querySelectorAll('textarea')].filter(e => {
+                  const r = e.getBoundingClientRect();
+                  return r.width > 50 && r.height > 30;
+                });
+                return tas.length ? tas[tas.length - 1] : null;
+              };
+              const t = pick();
+              if (t) { t.focus(); try { t.click(); } catch (_) {} }
+            }).catch(() => {});
+          }
+          await new Promise(r => setTimeout(r, 250));
+
+          // 4) Ctrl+V（Windows/Linux；Mac 用 Meta）
+          const isMac = process.platform === 'darwin';
+          const mod = isMac ? 'Meta' : 'Control';
+          await page.keyboard.down(mod);
+          await page.keyboard.press('KeyV');
+          await page.keyboard.up(mod);
+
+          // 5) 等平台处理粘贴（富文本管线要上传图片到 CDN，慢）
+          await new Promise(r => setTimeout(r, 3000));
+
+          // 6) 结果探查（编辑器内 img 数量 + 文本长度）
+          //   v0.119.8.3: 优先选真正的富文本编辑器（.ProseMirror / [contenteditable]），
+          //   不要因为 textarea 在 DOM 后面就误选（头条的 textarea 是标题框，不是正文）
+          const after = await page.evaluate(() => {
+            const pick = () => {
+              const prefer = ['.ProseMirror', '[contenteditable="true"]', '[contenteditable=""]'];
+              for (const sel of prefer) {
+                const els = [...document.querySelectorAll(sel)].filter(e => {
+                  const r = e.getBoundingClientRect();
+                  return r.width > 50 && r.height > 30;  // 排除隐藏的
+                });
+                if (els.length) return els[els.length - 1];  // 取最后一个（通常是主编辑器）
+              }
+              // 没有富文本编辑器才退回 textarea
+              const tas = [...document.querySelectorAll('textarea')].filter(e => {
+                const r = e.getBoundingClientRect();
+                return r.width > 50 && r.height > 30;
+              });
+              return tas.length ? tas[tas.length - 1] : null;
+            };
+            const t = pick();
+            if (!t) return null;
+            return {
+              tag: t.tagName,
+              cls: (t.className || '').toString().slice(0, 60),
+              imgCount: t.querySelectorAll ? t.querySelectorAll('img').length : 0,
+              textLen: (t.innerText || t.value || '').length,
+              htmlLen: (t.innerHTML || '').length,
+            };
+          }).catch(() => null);
+
+          return { ok: true, pasted: true, htmlLen: html.length, editorAfter: after };
         }
         default:
           return { error: 'UNKNOWN_EVENT_TYPE' };

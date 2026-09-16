@@ -172,6 +172,15 @@ async function resolveRect(sessionId, selector) {
   // CSS 选择器
   const css = String(selector || '').replace(/^css:/i, '').trim();
   if (!css) return { ok: false, error: 'selector 为空' };
+  // v0.119.8.4: 检测 Playwright 专属语法 —— LLM 常误用（Puppeteer 不支持，会静默未命中）
+  const pw = css.match(/:has-text\(|:text\(|:visible|>>\s*|\bgetByRole\b|\bgetByText\b/i);
+  if (pw) {
+    return {
+      ok: false,
+      error: `PLAYWRIGHT_SYNTAX_UNSUPPORTED: "${pw[0]}" 是 Playwright 语法，当前 Puppeteer 引擎不支持（会静默未命中）`,
+      hint: '按文本定位请改用 web_find({"locator":"text","value":"<按钮文字>","action":"click"})；或用 web_snapshot 拿 @eN 编号后 web_click({"selector":"@eN"})；纯 CSS 只支持标准选择器（如 button.submit、.article-cover）',
+    };
+  }
   const r = await evalSafe(sessionId, `(() => {
     try {
       const el = document.querySelector(${JSON.stringify(css)});
@@ -181,7 +190,14 @@ async function resolveRect(sessionId, selector) {
     } catch (e) { return { found: false, error: String(e.message) }; }
   })()`);
   if (!r.ok) return { ok: false, error: r.error };
-  if (!r.value || !r.value.found) return { ok: false, error: `CSS 选择器未命中: ${css}` };
+  if (!r.value || !r.value.found) {
+    // v0.119.8.4: 未命中时给下一步线索（而不是让 LLM 反复猜选择器）
+    return {
+      ok: false,
+      error: `CSS 选择器未命中: ${css}`,
+      hint: '该 CSS 选择器当前页面找不到元素。**别继续猜选择器** —— 改用：①web_snapshot 看页面有哪些元素，用 @eN 编号点 ②按可见文字点：web_find({"locator":"text","value":"<文字>"}) ③web_eval 探查真实 class（如 [...document.querySelectorAll("button")].map(b=>b.innerText)）',
+    };
+  }
   return { ok: true, x: r.value.x, y: r.value.y };
 }
 
@@ -378,7 +394,47 @@ async function authLogin() {
   return { ok: false, error: '远程预览（Puppeteer）引擎不支持 auth login；遇到登录请调 request_user_help（A 我提供账号帮你填 / B 我自己在画面上操作）' };
 }
 
+// v0.119.7: web_upload —— 把本地文件上传到当前页面的 input[type=file]
+//   接收 file_path（绝对路径，sanitize-content 抽 base64 写临时文件的位置）
+//   可选 selector（指定具体 input，不传默认找页面第一个可见的 input[type="file"]）
+async function uploadFile(sessionId, { file_path, selector } = {}) {
+  if (!sessionId) return { ok: false, error: '缺少远程预览会话（appSessionId）' };
+  if (!file_path) return { ok: false, error: '缺少 file_path（绝对路径）' };
+  const paths = Array.isArray(file_path) ? file_path : [file_path];
+  if (!paths.length) return { ok: false, error: '缺少 file_path（绝对路径）' };
+  try {
+    const r = await appRuntime.input(sessionId, { type: 'upload', paths, selector: selector || null });
+    if (r && r.error) return { ok: false, error: r.error };
+    if (!r || !r.ok) return { ok: false, error: (r && r.error) || 'upload 失败' };
+    return { ok: true, uploaded: r.uploaded, files: r.files, note: '文件已通过 Puppeteer uploadFile 传给 input[type=file]；如页面有预览/确认步骤用 web_snapshot 看' };
+  } catch (e) {
+    return { ok: false, error: e.message || 'upload 失败' };
+  }
+}
+
+// v0.119.8: web_paste —— 读 HTML 文件 → 写剪贴板 → Ctrl+V 粘贴到编辑器
+//   用于正文含图的场景（平台富文本管线自动上传图到 CDN，不用 input[type=file]）
+async function pasteFile(sessionId, { file_path, selector } = {}) {
+  if (!sessionId) return { ok: false, error: '缺少远程预览会话（appSessionId）' };
+  if (!file_path) return { ok: false, error: '缺少 file_path（HTML 文件绝对路径）' };
+  try {
+    const r = await appRuntime.input(sessionId, { type: 'paste', path: file_path, selector: selector || null });
+    if (r && r.error) return { ok: false, error: r.error, hint: r.hint };
+    if (!r || !r.ok) return { ok: false, error: (r && r.error) || 'paste 失败' };
+    const ea = r.editorAfter || {};
+    const imgInfo = (typeof ea.imgCount === 'number') ? `，编辑器现有 ${ea.imgCount} 张图` : '';
+    return {
+      ok: true,
+      pasted: true,
+      editorAfter: ea,
+      note: `已写剪贴板 + Ctrl+V 粘贴（HTML ${r.htmlLen} 字符${imgInfo}）。平台富文本管线会自动把 base64 图片上传到 CDN，稍等 3-5s 后 web_snapshot 确认图片是否出现在编辑器里`,
+    };
+  } catch (e) {
+    return { ok: false, error: e.message || 'paste 失败' };
+  }
+}
+
 module.exports = {
   open, snapshot, click, typeText, press, readText, evalJs, find,
-  screenshotToFile, pageInfo, authLogin, fillLogin,
+  screenshotToFile, pageInfo, authLogin, fillLogin, uploadFile, pasteFile,
 };

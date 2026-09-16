@@ -6,6 +6,8 @@ const fs = require('fs');
 const crypto = require('crypto');
 // v0.XX: 代理 Phase 1 — 统一出站 fetch（接管所有生成 API 调用以支持代理设置）
 const { proxyFetch: fetch } = require('./proxy-fetch');
+// v0.XX.73: Agnes API 域名走 system_configs（管理后台可改）
+const aiModelConfig = require('./ai-model-config');
 
 const WORKSPACE_ROOT = path.join(__dirname, '..', '..', 'workspaces');
 
@@ -267,7 +269,7 @@ async function generateAgnesImage(projectSlug, provider, prompt, params) {
     body.extra_body.image = inputImages;
   }
 
-  const resp = await fetch('https://api.agnes-ai.cn/v1/images/generations', {
+  const resp = await fetch(`${aiModelConfig.baseUrl()}/v1/images/generations`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
     body: JSON.stringify(body),

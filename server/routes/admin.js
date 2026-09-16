@@ -4,6 +4,8 @@ const router = express.Router();
 const { collection } = require('../db/connection');
 const eventBus = require('../services/event-bus');
 const os = require('os');
+// v0.XX.73: 模型/域名配置（顶部 require，避免被 agnes-base-url 路由 TDZ 引用报错）
+const modelConfig = require('../services/ai-model-config');
 
 // 系统状态
 router.get('/status', (req, res) => {
@@ -180,8 +182,33 @@ router.post('/agnes-key', (req, res) => {
   res.json({ success: true, message: 'Agnes API Key 已保存' });
 });
 
+// v0.XX.73: Agnes API 域名配置（管理界面读写，视频/图像/模型清单共用）
+//   历史：之前硬编码在 5 个文件里（api.agnes-ai.cn），2026-09-15 22:48 服务端 hang 死时
+//   只能改代码+重启才能换节点。多多拍板挪到 system_configs，UI 改完立即生效。
+//   域名安全（公开信息），GET 直接返回当前值方便编辑
+router.get('/agnes-base-url', (req, res) => {
+  try {
+    const cfg = modelConfig.all().agnes_api_base_url;
+    res.json({ baseUrl: cfg.value, default: cfg.default, source: cfg.source, overridden: cfg.overridden });
+  } catch (e) {
+    res.json({ baseUrl: 'https://api.agnes-ai.cn', default: 'https://api.agnes-ai.cn', source: 'default', overridden: false });
+  }
+});
+
+router.post('/agnes-base-url', (req, res) => {
+  const { baseUrl } = req.body || {};
+  try {
+    const r = modelConfig.set('agnes_api_base_url', baseUrl);
+    if (!r.ok) return res.status(400).json({ ok: false, error: r.error });
+    console.log('[admin] Agnes API 域名更新:', r.value, '(来源:', r.source + ')');
+    res.json({ ok: true, ...r, config: modelConfig.all().agnes_api_base_url });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // v0.22.73: AI 生成模型配置（图像/视频）—— 之前模型名写死在代码里，换模型要改代码+重启
-const modelConfig = require('../services/ai-model-config');
+//   modelConfig 已在顶部 require（被 /admin/agnes-base-url 路由需要）
 
 // 读：当前生效值 + 来源 + 官方可用清单
 router.get('/ai-models', async (req, res) => {

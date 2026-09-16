@@ -381,6 +381,8 @@ const SESSION_TOOL_NAMES = [
   'web_open', 'web_snapshot', 'web_click', 'web_type', 'web_press',
   'web_read', 'web_eval', 'web_find', 'web_screenshot', 'web_ai_search',
   'web_auth_login',  // v0.118.16: 服务端 agent-browser auth login（LLM 不再用 web_eval execSync 死路）
+  'web_upload',      // v0.119.7: 把本地文件上传到 input[type=file]（sanitize-content 抽出来的临时图）
+  'web_paste',       // v0.119.8: HTML（含 base64 图）写剪贴板 + Ctrl+V 粘贴到编辑器（图文一次贴完）
   'request_user_help',
 ];
 

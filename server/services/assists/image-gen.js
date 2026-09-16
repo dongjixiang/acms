@@ -16,6 +16,9 @@ const crypto = require('crypto');
 const config = require('../../config');
 // v0.22.16: HTTP/1.1 fetch 替代
 const { http1Fetch } = require('../../tools/http1-fetch');
+// v0.XX.73: API 域名走 system_configs（管理后台可改）
+// v0.119.7.2: 修正路径 — ai-model-config.js 在 server/services/，相对路径是 ../ai-model-config
+const aiModelConfig = require('../ai-model-config');
 
 // v0.22.20: 改用 config.workspaceRoot（之前 2 层 `..` 错位到 server/workspaces/，与 gen.js 读取路径不一致 → 404）
 const WORKSPACE_ROOT = config.workspaceRoot;
@@ -81,7 +84,8 @@ async function callAgnesImageOnce(apiKey, body) {
   let lastErr = '';
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      const resp = await http1Fetch('https://api.agnes-ai.cn/v1/images/generations', {
+      // v0.XX.73: 域名走 system_configs（管理后台可改）
+      const resp = await http1Fetch(`${aiModelConfig.baseUrl()}/v1/images/generations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
         body: JSON.stringify(body),

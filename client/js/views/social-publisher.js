@@ -14,7 +14,7 @@
   'use strict';
 
   const VIEW_NAME = 'social-publisher';
-  const VERSION = '0.118.18';  // v0.118.18: 常驻输入条(求助随时可输入/介入发言)；0.118.17: 💬介入+web_auth_login；0.118.16: 截图 key
+  const VERSION = '0.119.8';  // v0.119.8: web_paste 剪贴板贴图 + 接管按钮状态修复 + 画面区固定顶部（0.118.18: 常驻输入条/0.118.17: 💬介入）
   // SSE EventSource 无法带 Authorization header → query api_key（auth.js 认 config.apiKeys；dev-key-001 默认在列，与 browser-console 同款）
   const SP_AK = (typeof window !== 'undefined' && window.AK) || 'dev-key-001';
   let wRef = null;
@@ -779,6 +779,24 @@
       rbtn.style.cursor = enabled ? 'not-allowed' : 'pointer';
     }
   }
+  // v0.119.8: 两个按钮都灰（任务终态 done/error/idle 用）
+  //   ⚠️ 不能复用 setAiHandoffEnabled(false) —— 那个语义是「接管中」(h 灰 / r 亮)，
+  //     在 done/error 时会误把「▶ 继续」点亮（任务已结束还能点继续 = 假可用）
+  function setAiHandoffNeutral() {
+    for (const id of ['sp-ai-handoff', 'sp-ai-resume-handoff']) {
+      const b = _byId(id);
+      if (!b) continue;
+      b.disabled = true;
+      b.style.opacity = 0.45;
+      b.style.cursor = 'not-allowed';
+    }
+  }
+  // v0.119.8: 新发布开始时重置接管/继续按钮到初始态（h 亮 / r 灰）
+  //   修 bug：aiPublish() 原重置区漏了这两个按钮 → 上次任务 done/error 后
+  //   「接管灰 / 继续亮」的状态会残留到下一次发布（用户实测反馈）
+  function resetAiHandoffButtons() {
+    setAiHandoffEnabled(true);  // h 亮 / r 灰
+  }
 
   // v0.119.5: 用户主动接管浏览器（AI 卡在登录墙/验证码时）
   //   复用后端 interruptSession(pause:true) 机制，LLM 当前轮结束后会进 handoff_paused
@@ -1267,7 +1285,7 @@
       } catch (e) {}
       hideAiWaiting();
       setAiInterruptEnabled(false);  // done/error 后介入无意义
-      setAiHandoffEnabled(false);  // done/error 后接管无意义
+      setAiHandoffNeutral();  // v0.119.8: done/error 后两个按钮都灰（原来误用 setAiHandoffEnabled(false) 会把「继续」点亮）
       setAiPhase('done');  // v0.118.18
       // done 触发 → intentional 标 true → close → onerror 看到 intentional=true 静默
       intentional = true;
@@ -1404,6 +1422,7 @@
     setAiStatus('🚀 创建任务...', 'running');
     renderAiSteps([]);
     hideAiWaiting();
+    resetAiHandoffButtons();  // v0.119.8: 重置「接管/继续」到初始态（h 亮 / r 灰）—— 防上次任务终态残留
     const doneEl = _byId('sp-ai-done');
     if (doneEl) doneEl.style.display = 'none';
     // v0.118.x: 重置全局重连计数

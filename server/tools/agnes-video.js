@@ -4,9 +4,12 @@
 // v0.22.16: 改用 http1Fetch（HTTP/1.1）修复 Cloudflare HTTP/2 挂死
 const { http1Fetch } = require('./http1-fetch');
 const config = require('../config');
+const aiModelConfig = require('../services/ai-model-config');
 
 // v0.XX: 域名 apihub.agnes-ai.com → api.agnes-ai.cn（对齐 LLM 模型 + 新 key）
-const API_BASE = 'https://api.agnes-ai.cn';
+// v0.XX.73: 域名挪到 system_configs（管理后台可改），每次请求重读 → 切域名无需重启
+//   避免 2026-09-15 22:48 那种「cn 域名服务端 hang 死」时只能改代码+重启才能换节点
+const API_BASE = () => aiModelConfig.baseUrl();
 
 /**
  * 读取 Agnes API Key
@@ -79,7 +82,7 @@ async function generateVideo(args) {
   }
 
   try {
-    const resp = await http1Fetch(`${API_BASE}/v1/videos`, {
+    const resp = await http1Fetch(`${API_BASE()}/v1/videos`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
@@ -155,8 +158,8 @@ async function queryVideo(args) {
   //      v0.113e 修复: 之前放第 2 位兜底，v1 端点总是先返回 → url 永远拿不到 → 前端 video_url 恒 null
   //   2) /v1/videos/{task_id} — 旧版兼容端点（有 status/progress 但无 url）
   const candidates = [];
-  if (videoId) candidates.push({ url: `${API_BASE}/agnesapi?video_id=${encodeURIComponent(videoId)}` + (args.model_name ? `&model_name=${encodeURIComponent(args.model_name)}` : ''), kind: 'agnesapi' });
-  if (taskId) candidates.push({ url: `${API_BASE}/v1/videos/${encodeURIComponent(taskId)}`, kind: 'v1' });
+  if (videoId) candidates.push({ url: `${API_BASE()}/agnesapi?video_id=${encodeURIComponent(videoId)}` + (args.model_name ? `&model_name=${encodeURIComponent(args.model_name)}` : ''), kind: 'agnesapi' });
+  if (taskId) candidates.push({ url: `${API_BASE()}/v1/videos/${encodeURIComponent(taskId)}`, kind: 'v1' });
 
   let lastErr = null;
   for (const { url, kind } of candidates) {

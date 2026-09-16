@@ -27,6 +27,8 @@ const taskRunner = require('../browser-agent/task-runner');
 const platformMemory = require('./platform-memory');  // v0.118.x: 平台经验库
 // v0.119.6: AI 发布自带远程预览浏览器 —— gp-* session 自动起 Puppeteer Chrome，画面直接渲染到 AI modal
 const appRuntime = require('../app-runtime');
+// v0.119.7: buildGoal 净化 base64 → 临时文件 + [IMAGE:n] 占位符（解 context 撑爆）
+const sanitizeContent = require('./sanitize-content');
 
 // ── 平台特定指令（告诉 LLM 每个平台要做什么、有什么坑）──
 //  不是选择器代码，是「自然语言指令 + 关键链接 + 已知陷阱」
@@ -50,7 +52,24 @@ const PLATFORM_INSTRUCTIONS = {
   验证：返回的 t.value 应等于你的标题；若返回 NO_TITLE_INPUT 说明还没切到编辑器页，先 web_open 编辑器 URL 再重试
 - 编辑器是 ProseMirror 富文本。填正文时用 web_eval 一次性 innerHTML 赋值（避免 ProseMirror 同步问题）：
     document.querySelector('.ProseMirror, .editor-content [contenteditable]').innerHTML = HTML_CONTENT
-- 发布按钮文本就是"发布"（可能在底部 toolbar 或右侧发布栏；用 web_find text='发布' click，但避开顶栏/营销区的"发布"链接）`.trim(),
+- **正文带图（v0.119.8，首选 web_paste）**：任务里有【正文HTML文件】路径时，用
+    web_paste({"file_path":"<路径>", "selector":".ProseMirror"})
+  一次把文字+图贴进编辑器 —— 头条的富文本管线会自动把 base64 图上传到 CDN 并插入正文（等价于人工 Ctrl+C/Ctrl+V）。
+  **不需要**找 input[type=file]、**不需要**逐个 web_upload、**不需要**管封面图 vs 正文插图。
+- **封面图（可选）**：头条发布时通常会自动从正文抓图做封面；若需手动设，点 class 含 'article-cover' 的 DIV → 弹窗内 input[type=file] → web_upload
+- **web_upload 兜底**：仅当 web_paste 不可用时用（返回 UPLOAD_NO_INPUT_MATCH 会带 candidates.buttons/divs 提示点哪个按钮触发弹窗）
+- **发布流程（两步确认，v0.119.8.4）**：
+  1. web_find({"locator":"text","value":"预览并发布","action":"click"})（或"发布"）→ 点编辑器右上角/底部的主发布按钮
+  2. **弹出发布设置面板**（含「展示封面」「添加位置」「投放广告」「声明首发」等）→ 按下面处理：
+     - **封面（必做）**：面板有「单图 / 三图 / 无封面」三个选项 →
+       最省事：web_find({"locator":"text","value":"无封面","action":"click"})
+       或者用正文首图：「单图」→ 自动从正文抓图
+       ⚠️ **不处理封面直接点「确认发布」可能被拦/报错**（提示"请上传封面"）
+     - 「添加位置」「投放广告」「声明首发」保持默认即可，**不用动**
+  3. 点面板底部的 **「确认发布」**：web_find({"locator":"text","value":"确认发布","action":"click"})
+  4. 等 5-10s → 页面出现「提交成功」提示 或 URL 变化 → 完成
+  ⚠️ 只点第 1 步不算发布成功；**必须先处理封面，再点「确认发布」**
+  ⚠️ **不要用 :has-text() 等 Playwright 语法**（Puppeteer 不支持）—— 按文字点一律用 web_find({"locator":"text","value":"..."}）`.trim(),
   },
   xiaohongshu: {
     displayName: '小红书',
@@ -58,8 +77,13 @@ const PLATFORM_INSTRUCTIONS = {
     editorUrl: 'https://creator.xiaohongshu.com/publish/publisher?type=image',
     tips: `
 【小红书特有提示】
-- 小红书必须先上传图片才能填标题/正文
-- 图片上传：在页面找"上传图片"或"+ 添加图片"按钮，点击后用 web_upload 或拖拽文件
+- **小红书必须先上传图片才能填标题/正文**（标题/正文输入框在图片上传后才解锁）
+- **图片上传流程（v0.119.7，web_upload）**：发布任务【图片】段会给你本地图片绝对路径列表
+  1. web_snapshot 看编辑器，找包含「上传图片」「添加图片」「+」文本的可点击元素 → web_click 触发文件选择对话框
+  2. web_snapshot 确认页面上出现了 input[type="file"]（多数平台是隐藏的 input，点击上传按钮后才挂到 DOM 上）
+  3. **按【图片】段的路径顺序，多次调 web_upload({file_path:<绝对路径>}) 上传每张图**（小红书最多 18 张）
+  4. web_snapshot 看是否所有图都生成了缩略图；如有图没上去，单独再 web_upload 一次
+- **正文填写（v0.119.8）**：图片传完后，若任务里有【正文HTML文件】路径 → 用 web_paste({"file_path":"<路径>"}) 贴正文（比 web_eval innerHTML 更能触发平台状态同步）
 - 标题限 20 字以内；正文用 emoji + 短段 + #话题 格式
 - 发布前会自动风控检查（标题党/敏感词），如失败会有提示`.trim(),
   },
@@ -72,7 +96,8 @@ const PLATFORM_INSTRUCTIONS = {
 - 默认是扫码登录；如未登录需要切换到"手机号/邮箱" + 密码登录
 - 知乎有专栏文章和回答两种模式，根据用户指定 publish_type 选择对应 URL
 - 知乎编辑器是 Draft.js（看到 class 包含 public-DraftEditor-content）
-- 填正文用 web_eval 一次性 innerHTML 赋值`.trim(),
+- 填正文用 web_eval 一次性 innerHTML 赋值
+- **正文带图（v0.119.7）**：发布任务【图片】段给的是本地路径。知乎专栏编辑器工具有「插入图片」按钮，点了会弹文件选择框 → 用 web_upload({file_path:<路径>}) 逐张上传 → 平台自动插入到光标位置`.trim(),
   },
   douyin: {
     displayName: '抖音',
@@ -92,27 +117,64 @@ const PLATFORM_INSTRUCTIONS = {
 【微信公众号特有提示】
 - 公众号通常需要扫码登录（管理员微信扫码）
 - 公众号编辑器是 contenteditable 富文本，支持更复杂的样式
-- 一次只能发布一篇文章，但支持图文/视频/语音多种`.trim(),
+- 一次只能发布一篇文章，但支持图文/视频/语音多种
+- **正文带图（v0.119.7）**：发布任务【图片】段给的是本地路径。公众号编辑器工具有「图片」按钮（在工具栏左侧）→ 点了弹文件选择 → 用 web_upload({file_path:<路径>}) 逐张上传 → 平台自动插入到光标位置`.trim(),
   },
 };
 
 // ── goal 模板生成（核心）──
 //  把发布任务的所有信息塞进 goal 字符串，LLM 看 goal 自己操作
+//
+// v0.119.7: params.embeddedImagePaths 是 sanitizeContent 抽 base64 后的临时文件路径数组；
+//   buildGoal 不会主动用 LLM 看图，只告诉 LLM「有 N 张内嵌图，路径在 X，用 web_upload 上传」
 function buildGoal(account, params) {
   const { platform, title, content, tags, images } = params;
+  const embeddedPaths = Array.isArray(params.embeddedImagePaths) ? params.embeddedImagePaths : [];
   const cfg = PLATFORM_INSTRUCTIONS[platform];
   if (!cfg) throw new Error(`unsupported_platform: ${platform}`);
 
   const tagsLine = (tags && tags.length)
     ? `【标签】${tags.map(t => t.startsWith('#') ? t : '#' + t).join(' ')}`
     : '【标签】无（自动从正文提取或留空）';
-  const imagesLine = (images && images.length)
-    ? `【图片】${images.length} 张（路径：${JSON.stringify(images)}）`
-    : '【图片】无';
+
+// v0.119.7: 区分「前端传入的外链图片」与「content 内嵌 base64 抽出来的临时文件」
+  //   v0.119.7.2: images 数组可能是混合 — 既有外链 URL 也有本地路径（base64 抽出后替换的）
+  //   告诉 LLM：URL 已经是平台可访问的（不用再上传），本地路径用 web_upload 上传
+  let imagesLine;
+  if (embeddedPaths.length && images && images.length) {
+    // 拆 images 为 URL 和本地路径
+    const localPaths = images.filter(p => typeof p === 'string' && /^([a-zA-Z]:[\\\\\/]|\/)/.test(p));
+    const urlImages = images.filter(p => typeof p === 'string' && /^https?:\/\//i.test(p));
+    const otherImages = images.filter(p => !localPaths.includes(p) && !urlImages.includes(p));
+    const parts = [];
+    if (urlImages.length) parts.push(`外链 ${urlImages.length} 张（URL 已是平台可访问，无需再上传）`);
+    if (otherImages.length) parts.push(`其他 ${otherImages.length} 张（${JSON.stringify(otherImages)}）`);
+    if (localPaths.length) parts.push(`内嵌 ${localPaths.length} 张（已抽到本地临时文件：${JSON.stringify(localPaths)}）`);
+    parts.push(`还有 content 正文里抽出的 ${embeddedPaths.length} 张临时文件：${JSON.stringify(embeddedPaths)}`);
+    imagesLine = `【图片】${parts.join(' + ')}\n**所有本地路径都用 web_upload({file_path:<绝对路径>}) 上传到当前页面的 input[type=file]**（外链 URL 不用上传）`;
+  } else if (embeddedPaths.length) {
+    imagesLine = `【图片】${embeddedPaths.length} 张内嵌图（已从正文 base64 抽出，临时文件路径：${JSON.stringify(embeddedPaths)}）。**用 web_upload({file_path:<路径>}) 上传到当前页面的 input[type=file]**（多张图按顺序逐张上传）`;
+  } else if (images && images.length) {
+    // 全是外链 URL 的情况
+    const localPaths = images.filter(p => typeof p === 'string' && /^([a-zA-Z]:[\\\\\/]|\/)/.test(p));
+    if (localPaths.length === images.length) {
+      imagesLine = `【图片】${images.length} 张本地文件（路径：${JSON.stringify(images)}）。**用 web_upload({file_path:<路径>}) 上传到当前页面的 input[type=file]**`;
+    } else {
+      imagesLine = `【图片】${images.length} 张（路径：${JSON.stringify(images)}）。外链 URL 不用上传；本地路径用 web_upload 上传`;
+    }
+  } else {
+    imagesLine = '【图片】无';
+  }
 
   // v0.118.x: 注入本平台历史经验（从 data/social-publisher-memory/<platform>.json 读）
   //  LLM 看到这些会避开已知坑、复用成功路径
   const memoryBlock = platformMemory.renderForGoal(platform);
+
+  // v0.119.8: 正文 HTML 文件路径 —— web_paste 优先路径（图文一次贴完，平台自动上传图）
+  const htmlPath = params.contentHtmlPath || null;
+  const htmlPathLine = htmlPath
+    ? `\n【正文HTML文件】（**填正文的首选方式，v0.119.8**）：${htmlPath}\n**直接调 web_paste({"file_path":"${htmlPath}"}) 即可**——工具会把 HTML（含图）写剪贴板 + Ctrl+V 粘贴到编辑器，平台富文本管线会自动把图片上传到 CDN（等价于用户手动粘贴）。比逐个 web_upload 更可靠（不用找上传按钮/不用管封面 vs 正文两类图）。`
+    : '';
 
   return `【发布任务】把一篇文章发布到 ${cfg.displayName}
 
@@ -131,6 +193,7 @@ ${memoryBlock}
 【标题】${title}
 【正文】（markdown 格式；如需插图位置写 [IMAGE]）：
 ${content}
+${htmlPathLine}
 
 ${tagsLine}
 ${imagesLine}
@@ -149,7 +212,9 @@ ${cfg.tips}
 4. 如果登录失败（验证码/风控/账号密码错/web_auth_login 返回 error）→ **立即**调 request_user_help（A 手动登录 / B 换账号 / C 取消）
 5. web_open 编辑器页 → 等编辑器加载（看到标题输入框）
 6. web_type 填标题（模拟人类打字，每次填 1-3 字，间隔 100-300ms）
-7. web_snapshot 看编辑器结构 → web_eval 一次性 innerHTML 填正文（按上面平台 tips 给的 selector）
+7. **填正文（v0.119.8 首选）**：若任务里有【正文HTML文件】路径 → 先 web_snapshot 确认编辑器 selector → **调 web_paste({"file_path":"<该路径>", "selector":".ProseMirror"})** 一次贴完文字+图（平台自动上传图到 CDN）。
+   - 没有正文HTML文件时才回退：web_eval 一次性 innerHTML 填正文
+   - ⚠️ 绝对不要用 web_eval 强行设置 input[type=file].files（假的，平台不认）
 8. 填标签（如有）：web_snapshot 找标签输入框 → web_type 输入 → web_press Enter
 9. **发布前必须调 request_user_help 确认**（A 已填好/发布 / B 修改 / C 取消）
 10. 用户确认后 web_click 发布按钮（按上面平台 tips 给的发布按钮位置）
@@ -175,7 +240,35 @@ ${cfg.tips}
 //    gp-* session 自带的远程预览浏览器（接管时画面直接渲染到 AI modal，不依赖用户先开 Web 机器人）
 async function goPublish(account, params, opts = {}) {
   const sessionId = 'gp-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
-  const goal = buildGoal(account, params);
+
+  // v0.119.7: buildGoal 净化 —— 抽 content 内嵌的 base64 到临时文件 + [IMAGE:n] 占位符
+  //   避免整段塞进 goal 让 LLM 收到 16K tokens 垃圾 + 触发 DeepSeek 9.2M 超限
+  //   错误（size_too_large / too_many_images）同步抛给 routes 返 400
+  //
+  // v0.119.7.2: 同时处理 params.images 数组里的 base64 data URI（前端传的"图片路径"
+  //   可能本身就是 data URI 而不是 URL —— 这是 2026-09-15 实测撑爆 4.37MB 的真凶）
+  let sanitized = null;
+  let sanitizedImages = null;
+  try {
+    sanitized = sanitizeContent.sanitizeContent(params.content, sessionId);
+    sanitizedImages = sanitizeContent.sanitizeImages(params.images || [], sessionId);
+  } catch (e) {
+    console.error(`[go-publisher] v0.119.7 sanitize failed: ${e.message}`);
+    const err = new Error(e.message);
+    err.code = e.code || 'sanitize_failed';
+    throw err;
+  }
+  // 合并：content 内嵌的临时文件 + params.images 里抽出的临时文件
+  const allEmbeddedPaths = [...sanitized.paths, ...sanitizedImages.paths];
+  const goalParams = {
+    ...params,
+    content: sanitized.text,
+    embeddedImagePaths: allEmbeddedPaths,
+    images: sanitizedImages.sanitized,  // data URI → 绝对路径；URL 原样保留
+    contentHtmlPath: sanitized.htmlPath || null,  // v0.119.8: 完整 HTML（含图）路径，供 web_paste
+  };
+  const goal = buildGoal(account, goalParams);
+
   let appSessionId = opts.appSessionId || null;
 
   // v0.119.6: 自动起 PP 浏览器 —— 用户没指定就新建一个（AI 发布自带画面 + 接管能力）
@@ -215,6 +308,10 @@ async function runPublishSession(sessionId, account, params, goal, appSessionId)
       recordResult(sessionId, account, params, r);
       // v0.119.6: 终态清理 PP 浏览器（自动起的 session —— handoff 续跑会重新拿锁）
       cleanupPpSession(appSessionId);
+      // v0.119.7: 延迟 60s 清 sanitize-content 抽出来的临时文件（让前端收完 done/查历史后再清）
+      setTimeout(() => {
+        try { sanitizeContent.cleanupSession(sessionId); } catch (_) { /* ignore */ }
+      }, 60000);
     },
   });
 }

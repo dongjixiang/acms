@@ -46,6 +46,8 @@ async function loadAdminPage() {
     try { qwenPersona = await api('GET', '/qwen/persona'); } catch(e) { /* ignore */ }  // B6b：人设
     const webhooks = await api('GET', '/webhooks');  // v0.17f：事件 webhook 订阅列表
     const agnesKeyState = await api('GET', '/admin/agnes-key');  // v0.19：Agnes AI Video Key 状态
+    // v0.XX.73：Agnes API 域名（视频/图像/模型清单共用）
+    window.__agnesBaseUrlState = await api('GET', '/admin/agnes-base-url').catch(() => ({ baseUrl: 'https://api.agnes-ai.cn', source: 'default', overridden: false }));
 
     // v0.17d 状态卡片配色阈值（uptime / memory %）
     const uptimeH = status.uptime / 3600;
@@ -346,6 +348,25 @@ async function loadAdminPage() {
             <input type="password" id="agnes-key-input" placeholder="sk-..." style="width:200px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px">
             <button class="btn-small btn-primary" onclick="saveAgnesKey()">💾 保存</button>
             <button class="btn-small btn-reject" onclick="clearAgnesKey()">🗑 清除</button>
+          </div>
+        </div>
+
+        <!-- v0.XX.73：Agnes API 域名（视频/图像/模型清单共用）—— 之前硬编码 5 个文件，现在后台可改 -->
+        <div class="config-row" style="margin-top:12px">
+          <div>
+            <strong>🌐 Agnes API Endpoint</strong>
+            <div style="font-size:11px;margin-top:3px;color:var(--text2)">
+              视频/图像/模型清单共用的 API 域名，默认 <code>https://api.agnes-ai.cn</code>。<br>
+              切节点或自建代理时改这里，无需重启服务。
+              <span id="agnes-baseurl-source" style="margin-left:4px;color:var(--text3)">${(window.__agnesBaseUrlState && window.__agnesBaseUrlState.source !== 'default') ? '(' + window.__agnesBaseUrlState.source + ')' : ''}</span>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+            <input type="text" id="agnes-baseurl-input" placeholder="https://api.agnes-ai.cn"
+              value="${(window.__agnesBaseUrlState && window.__agnesBaseUrlState.baseUrl) || 'https://api.agnes-ai.cn'}"
+              style="width:280px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;font-family:monospace">
+            <button class="btn-small btn-primary" onclick="saveAgnesBaseUrl()">💾 保存</button>
+            <button class="btn-small" onclick="resetAgnesBaseUrl()">↺ 默认</button>
           </div>
         </div>
 
@@ -1185,6 +1206,41 @@ async function clearAgnesKey() {
     loadAdminPage();
   } catch (e) {
     toast('清除失败: ' + e.message, 'error');
+  }
+}
+
+// v0.XX.73：Agnes API 域名配置（视频/图像/模型清单共用）
+async function saveAgnesBaseUrl() {
+  const input = _byId('agnes-baseurl-input');
+  const url = input ? input.value.trim() : '';
+  if (!url) return toast('请填写 API 域名', 'error');
+  if (!/^https:\/\//.test(url)) return toast('域名必须以 https:// 开头', 'error');
+  try {
+    const r = await api('POST', '/admin/agnes-base-url', { baseUrl: url });
+    if (r.error || r.ok === false) return toast('保存失败: ' + (r.message || r.error || 'unknown'), 'error');
+    window.__agnesBaseUrlState = { baseUrl: r.value, source: r.source, overridden: r.source !== 'default' };
+    if (input) input.value = r.value;
+    const srcEl = _byId('agnes-baseurl-source');
+    if (srcEl) srcEl.textContent = r.source !== 'default' ? '(' + r.source + ')' : '';
+    toast('🌐 Agnes API 域名已保存，立即生效', 'success');
+  } catch (e) {
+    toast('保存失败: ' + e.message, 'error');
+  }
+}
+
+async function resetAgnesBaseUrl() {
+  try {
+    // 空字符串走 modelConfig.set 的「恢复默认」分支
+    const r = await api('POST', '/admin/agnes-base-url', { baseUrl: '' });
+    if (r.error || r.ok === false) return toast('重置失败: ' + (r.message || r.error || 'unknown'), 'error');
+    window.__agnesBaseUrlState = { baseUrl: r.value, source: r.source, overridden: false };
+    const input = _byId('agnes-baseurl-input');
+    if (input) input.value = r.value;
+    const srcEl = _byId('agnes-baseurl-source');
+    if (srcEl) srcEl.textContent = '';
+    toast('已恢复默认域名: ' + r.value, 'success');
+  } catch (e) {
+    toast('重置失败: ' + e.message, 'error');
   }
 }
 

@@ -27,6 +27,8 @@ const fs = require('fs');
 const { proxyFetch: fetch } = require('./proxy-fetch');
 const crypto = require('crypto');
 const config = require('../config');
+// v0.XX.73: Agnes API 域名走 system_configs（管理后台可改）
+const aiModelConfig = require('./ai-model-config');
 
 const WORKSPACE_ROOT = config.workspaceRoot;
 
@@ -77,7 +79,7 @@ async function callAgnesImageOnce(apiKey, body, timeoutMs, attempt) {
   var controller = new AbortController();
   var timer = setTimeout(function () { controller.abort(); }, timeoutMs || 60000);
   try {
-    var resp = await fetch('https://api.agnes-ai.cn/v1/images/generations', {
+    var resp = await fetch(`${aiModelConfig.baseUrl()}/v1/images/generations`, {
       method: 'POST',
       headers: {
         'Authorization': 'Bearer ' + apiKey,

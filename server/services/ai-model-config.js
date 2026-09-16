@@ -14,12 +14,18 @@
  *   agnes_video_model_legacy   视频模型·老链路（无首帧图时的多图关键帧，默认 agnes-video-v2.0）
  *     注意：两条链路的**参数形态完全不同**（2.0 用 num_frames/frame_rate，2.5 用 seconds/size/aspect_ratio
  *     + first_frame/last_frame），由模型名判定分支 —— 所以两个键必须分开配，不能共用一个。
+ *   agnes_api_base_url         Agnes API 域名（视频/图像/模型清单共用，默认 https://api.agnes-ai.cn）
+ *     历史：v0.XX 域名从 apihub.agnes-ai.com 切到 api.agnes-ai.cn（对齐 LLM 模型 + 新 key）。
+ *     2026-09-15 多多拍板挪到 system_configs：避免 22:48 那种「服务端对 cn 域名 hang 死」时
+ *     切到其他节点/自建代理得改代码+重启。改完立即生效（每次请求重新读）。
  */
 
 const DEFAULTS = {
   agnes_image_model: 'agnes-image-2.5-flash',
   agnes_video_model: 'agnes-video-2.5-flash',
   agnes_video_model_legacy: 'agnes-video-v2.0',
+  // v0.XX.73: Agnes API 域名（视频/图像/模型清单共用），旧值 https://api.agnes-ai.cn
+  agnes_api_base_url: 'https://api.agnes-ai.cn',
 };
 
 // 环境变量名（容器/部署场景用）
@@ -27,6 +33,7 @@ const ENV_KEYS = {
   agnes_image_model: 'AGNES_IMAGE_MODEL',
   agnes_video_model: 'AGNES_VIDEO_MODEL',
   agnes_video_model_legacy: 'AGNES_VIDEO_MODEL_LEGACY',
+  agnes_api_base_url: 'AGNES_API_BASE_URL',
 };
 
 function dbGet(key) {
@@ -79,13 +86,21 @@ const VALIDATORS = {
   agnes_image_model: /^agnes-image-[A-Za-z0-9.\-]+$/,
   agnes_video_model: /^agnes-video-[A-Za-z0-9.\-]+$/,
   agnes_video_model_legacy: /^agnes-video-[A-Za-z0-9.\-]+$/,
+  // v0.XX.73: API 域名只做「必须是 https:// 开头」校验，不写死具体域名（未来切域名/自建代理都能配）
+  agnes_api_base_url: /^https:\/\/[A-Za-z0-9.\-:]+(\/.*)?$/,
 };
 
 function validate(key, value) {
   const v = String(value == null ? '' : value).trim();
-  if (!v) return { ok: false, error: '模型名不能为空' };
+  if (!v) return { ok: false, error: '值不能为空' };
   const re = VALIDATORS[key];
-  if (re && !re.test(v)) return { ok: false, error: `${v} 不符合模型名格式（应形如 agnes-image-xxx / agnes-video-xxx）` };
+  if (re && !re.test(v)) {
+    // v0.XX.73: 每个 key 给对应的提示，避免一刀切用模型名格式误导
+    const hint = key === 'agnes_api_base_url'
+      ? '应形如 https://your-domain.com（必须 https:// 开头）'
+      : '应形如 agnes-image-xxx / agnes-video-xxx';
+    return { ok: false, error: `${v} 不符合格式（${hint}）` };
+  }
   return { ok: true, value: v };
 }
 
@@ -116,12 +131,13 @@ function set(key, value) {
 const imageModel = () => get('agnes_image_model');
 const videoModel = () => get('agnes_video_model');          // 首尾帧链路
 const legacyVideoModel = () => get('agnes_video_model_legacy'); // 2.0 多图关键帧链路
+const baseUrl = () => get('agnes_api_base_url').replace(/\/+$/, ''); // 去掉末尾 /，避免拼路径时变 //
 const isVideoModel = (m) => VALIDATORS.agnes_video_model.test(String(m || '').trim());
 const is25 = (m) => !/v2\\.0/.test(String(m || ''));   // 参数形态判定
 
 /**
  * 从 Agnes 官方拉可用模型清单（管理后台下拉用）
- *   GET https://api.agnes-ai.cn/v1/models ；失败 → 回落已知清单（不阻塞配置页）
+ *   GET ${baseUrl()}/v1/models ；失败 → 回落已知清单（不阻塞配置页）
  *   缓存 10 分钟，避免每次打开后台都打接口
  */
 let _cache = { at: 0, list: null };
@@ -150,7 +166,7 @@ async function listAvailable(opts = {}) {
     const { http1Fetch } = require('../tools/http1-fetch');
     const apiKey = agnesApiKey();
     if (!apiKey) return { ok: true, source: 'fallback(no-key)', models: KNOWN_FALLBACK };
-    const resp = await http1Fetch('https://api.agnes-ai.cn/v1/models', {
+    const resp = await http1Fetch(`${baseUrl()}/v1/models`, {
       method: 'GET', headers: { Authorization: 'Bearer ' + apiKey }, timeout: 15000,
     });
     if (!resp.ok || resp.status < 200 || resp.status >= 300) {
@@ -170,6 +186,6 @@ async function listAvailable(opts = {}) {
 
 module.exports = {
   DEFAULTS, get, set, all, validate,
-  imageModel, videoModel, legacyVideoModel, isVideoModel, is25,
+  imageModel, videoModel, legacyVideoModel, baseUrl, isVideoModel, is25,
   listAvailable,
 };
