@@ -116,6 +116,27 @@
     }
   }
 
+  // ── v0.122: 去掉「重复的应用 logo」──
+  // GenOffice 在**两个地方**画了同一个 SVG logo（viewBox 0 0 130 130.025）：
+  //   ① 功能区 ai-entry 按钮（svg 26×26）—— 这是 AI 助手的**入口**，保留
+  //   ② 左侧 AI 面板标题 .ai-panel-title（svg 22×22）—— 纯装饰，和①并排看就是
+  //      "一大一小两个一样的图标"。用户会以为是渲染重复。
+  // 故隐藏②，只留文字「ACMS AI」。iframe 内部注入 CSS 才能生效
+  // （主页面 style.css 管不到 GenOffice 的 DOM）。
+  function injectPanelLogoFix(cw) {
+    try {
+      var d = cw && cw.document;
+      if (!d) return;
+      if (d.getElementById('acms-panel-logo-fix')) return;
+      var st = d.createElement('style');
+      st.id = 'acms-panel-logo-fix';
+      st.textContent =
+        '.ai-panel-header .ai-panel-title svg{display:none !important;}' +
+        '.ai-panel-header .ai-panel-title{gap:0 !important;}';
+      (d.head || d.documentElement).appendChild(st);
+    } catch (e) { /* 跨域/未就绪时静默 */ }
+  }
+
   // 按 uid 精确定位编辑器实例（找不到返回 null，调用方自行回退旧的 kind 匹配）
   function findInstanceByUid(uid) {
     if (!uid) return null;
@@ -318,6 +339,7 @@
       win.__init({ fileId: fileId || undefined, fileName: fileName || 'untitled.pptx', apiKey: API_KEY })
         .then(function (r) {
           if (r && !r.ok) console.warn('[office-v3] GenOffice slides host init 失败:', r.error);
+          injectPanelLogoFix(win);   // v0.122: 去掉面板标题里重复的 logo
         })
         .catch(function (e) { console.warn('[office-v3] GenOffice slides host init 异常:', e.message); });
     }
@@ -416,6 +438,7 @@
       win.__init({ fileId: fileId || undefined, fileName: fileName || '工作簿.xlsx', apiKey: API_KEY })
         .then(function (r) {
           if (r && !r.ok) console.warn('[office-v3] GenOffice sheets host init 失败:', r.error);
+          injectPanelLogoFix(win);   // v0.122: 去掉面板标题里重复的 logo
         })
         .catch(function (e) { console.warn('[office-v3] GenOffice sheets host init 异常:', e.message); });
     }
@@ -1982,8 +2005,9 @@
       win.__init({ fileId: fileId || undefined, fileName: fileName || 'untitled.docx', apiKey: API_KEY })
         .then(function (r) {
           if (r && !r.ok) console.warn('[office-v3] GenOffice host init 失败:', r.error);
+          injectPanelLogoFix(win);   // v0.122: 去掉面板标题里重复的 logo
           // mount 完成后 re-patch：GenOffice 每次 mountWordUI 会重建 window.desktop，覆盖之前的 patch
-          setTimeout(function () { patchOpenDocx(win); patchSaveAs(win); }, 500);
+          setTimeout(function () { patchOpenDocx(win); patchSaveAs(win); injectPanelLogoFix(win); }, 500);
         })
         .catch(function (e) { console.warn('[office-v3] GenOffice host init 异常:', e.message); });
     }
