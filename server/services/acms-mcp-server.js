@@ -399,6 +399,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         windowId: { type: 'string', description: '窗口 id，例如 "aw-2"（来自对话工作区上下文）' },
+        sessionId: { type: 'string', description: '会话 id（上下文里也给，用于精确定位；可选）' },
         maxChars: { type: 'number', description: '最多返回多少字符（默认 20000）' },
       },
       required: ['windowId'],
@@ -503,7 +504,7 @@ async function handleCall(toolName, args) {
         const tr = require('../services/tool-registry');
         const t = tr.getTool ? tr.getTool('read_window_content') : null;
         if (!t || !t.handler) return toolResult({ error: 'TOOL_NOT_REGISTERED' });
-        const out = await t.handler({ windowId: args.windowId, maxChars: args.maxChars }, {});
+        const out = await t.handler({ windowId: args.windowId, sessionId: args.sessionId, maxChars: args.maxChars }, {});
         return toolResult(out);
       }
       case 'acms_workspace_write_file': {

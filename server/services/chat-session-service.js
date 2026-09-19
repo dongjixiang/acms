@@ -313,6 +313,12 @@ function getOrCreateSessionRequirement(sessionId) {
 function upsertWindowCtx(sessionId, ctx) {
   if (!sessionId || !ctx || !ctx.windowId) return null;
   const col = collection('chat_window_ctx');
+  // v0.121k 治本：窗口 id 是 per-页面 的计数器（aw-1/aw-2…），页面刷新后重新从 0 数 →
+  //   新窗口会复用旧 id，而旧会话的同 id 记录还留在表里。
+  //   getWindowById 用 findOne 只按 window_id 查 → 命中旧记录 →
+  //   AI 读到的是**上一个会话的文件**（实测：sprties/README.md 被读成《星星的故事》）。
+  //   所以注册时必须把同 window_id 的其它会话记录清掉（这个 id 现在归当前会话了）。
+  try { col.remove(r => r.window_id === ctx.windowId && r.session_id !== sessionId); } catch (e) {}
   const where = r => r.session_id === sessionId && r.window_id === ctx.windowId;
   const doc = {
     session_id: sessionId,
@@ -335,6 +341,12 @@ function upsertWindowCtx(sessionId, ctx) {
 function getActiveWindow(sessionId) {
   try { return collection('chat_window_ctx').findOne(r => r.session_id === sessionId && r.active === 1) || null; }
   catch (e) { return null; }
+}
+
+function getWindowByIdInSession(sessionId, windowId) {
+  try {
+    return collection('chat_window_ctx').findOne(r => r.session_id === sessionId && r.window_id === windowId) || null;
+  } catch (e) { return null; }
 }
 
 function getWindowById(windowId) {
@@ -399,6 +411,7 @@ module.exports = {
   upsertWindowCtx,
   getActiveWindow,
   getWindowById,
+  getWindowByIdInSession,
   clearWindowCtx,
   // ID / 时间
   newSessionId,

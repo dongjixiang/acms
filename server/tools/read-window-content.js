@@ -36,7 +36,8 @@ registerTool({
   parameters: {
     type: 'object',
     properties: {
-      windowId: { type: 'string', description: '窗口 id，例如 "aw-2"（来自对话工作区上下文段落）' },
+        windowId: { type: 'string', description: '窗口 id，例如 "aw-2"（来自对话工作区上下文）' },
+        sessionId: { type: 'string', description: '会话 id（对话工作区上下文里也给，用于精确定位；可选）' },
       maxChars: { type: 'number', description: '最多返回多少字符（默认 20000，上限 60000）' },
     },
     required: ['windowId'],
@@ -45,7 +46,12 @@ registerTool({
     const wid = args && args.windowId;
     if (!wid) return { error: 'MISSING_WINDOW_ID', message: '需要 windowId' };
     let rec = null;
-    try { rec = chatSvc.getWindowById(wid); } catch (e) { return { error: 'LOOKUP_FAILED', message: e.message }; }
+    try {
+      // 优先按 (sessionId, windowId) 精确命中；没有 sessionId 才退全局（兼容旧上下文）
+      rec = (args.sessionId && chatSvc.getWindowByIdInSession)
+        ? (chatSvc.getWindowByIdInSession(args.sessionId, wid) || chatSvc.getWindowById(wid))
+        : chatSvc.getWindowById(wid);
+    } catch (e) { return { error: 'LOOKUP_FAILED', message: e.message }; }
     if (!rec) return { error: 'WINDOW_NOT_FOUND', message: '没有这个窗口的注册信息（可能已关闭或未注册）' };
     const limit = Math.min(Number(args.maxChars) || MAX_CHARS, 60000);
 

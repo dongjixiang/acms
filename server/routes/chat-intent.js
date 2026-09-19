@@ -327,12 +327,14 @@ router.post('/detect-and-respond', async (req, res, next) => {
           const _cwc = sessionSvc.getActiveWindow(reqId);
           if (_cwc) {
             const _head = '[对话工作区] 用户当前选中的窗口：' + (_cwc.name || '(未命名)') +
-              '（' + (_cwc.view || '未知类型') + '，windowId=' + _cwc.window_id + '）' +
+              '（' + (_cwc.view || '未知类型') + '，windowId=' + _cwc.window_id +
+              '，sessionId=' + reqId + '）' +
               (_cwc.file_path ? '，文件路径 ' + _cwc.file_path : '');
             // v0.121d: 两种注入模式
             //   ref （默认）→ 只给引用清单，正文按需 read_window_content（省 token）
             //   full        → 直接把正文读出来拼进上下文（费 token，但省一轮工具往返）
-            let _tail = '。需要正文时调用 read_window_content(windowId="' + _cwc.window_id + '")。上下文里不带正文，按需读取。';
+            let _tail = '。需要正文时调用 read_window_content(windowId="' + _cwc.window_id +
+              '", sessionId="' + reqId + '")。上下文里不带正文，按需读取。';
             if (_cwc.inject_mode === 'full') {
               try {
                 require('../tools/read-window-content');   // P178: 触发注册（同一坑）
