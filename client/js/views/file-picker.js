@@ -427,6 +427,7 @@
     // 消息流里原来那个槽位留着当"归位占位"
     _showPinZone(stream, place);
     _syncPinBtn(w, true);
+    _refreshEmbedTools();
     return true;
   }
 
@@ -442,23 +443,56 @@
     dockIntoChat(w, { name: w.st.titleOverride || w.st.title || '窗口', path: null }, reqId);
   }
 
-  // 面板头部的 ⇄ 切换位置（顶部 / 右侧），已钉住的窗口跟着迁
-  window.chatPinSwitch = function (reqId) {
-    var next = _pinPlace() === 'top' ? 'side' : 'top';
-    try { localStorage.setItem(PIN_KEY, next); } catch (e) {}
+  // ── v0.121g: 面板右上角常驻开关（对齐原型顶栏的两组 seg）──
+  //   把选中态刷到所有 .chat-embed-tools 上（窗口是动态克隆的，可能同时存在多份）
+  function _refreshEmbedTools() {
+    var pp = _pinPlace(), im = _injectMode();
+    document.querySelectorAll('.chat-embed-tools').forEach(function (box) {
+      box.querySelectorAll('[data-seg="pin"] button').forEach(function (b) {
+        b.classList.toggle('on', b.getAttribute('data-v') === pp);
+      });
+      box.querySelectorAll('[data-seg="inject"] button').forEach(function (b) {
+        b.classList.toggle('on', b.getAttribute('data-v') === im);
+      });
+    });
+  }
+
+  // 钉住位置：顶部 / 右侧（已钉住的窗口跟着迁到新工作区）
+  window.chatSetPinPlace = function (reqId, place) {
+    place = place === 'top' ? 'top' : 'side';
+    try { localStorage.setItem(PIN_KEY, place); } catch (e) {}
     var stream = _streamFor(reqId) || _visibleStream();
-    if (!stream) return;
-    if (window.ACMSWin && ACMSWin.getWindows) {
+    if (stream && window.ACMSWin && ACMSWin.getWindows) {
       ACMSWin.getWindows().forEach(function (w) {
         if (w._dock && w._dock.mode === 'pin') {
           var old = document.getElementById('chat-pin-slot-' + w.id);
           if (old) old.remove();
-          pinTo(stream, w, next);
+          pinTo(stream, w, place);
         }
       });
+      _showPinZone(stream, place);
     }
-    _showPinZone(stream, next);
+    _refreshEmbedTools();
   };
+
+  // 上下文注入：引用+按需 / 全文
+  window.chatSetInjectMode = function (reqId, mode) {
+    mode = mode === 'full' ? 'full' : 'ref';
+    try { localStorage.setItem(INJECT_KEY, mode); } catch (e) {}
+    var stream = _streamFor(reqId) || _visibleStream();
+    var w = (_activeCtx && _activeCtx.windowId) ? _winById(_activeCtx.windowId) : null;
+    if (stream && w) setActiveCtx(stream, w);   // 重新注册（后端按会话记模式）
+    else _refreshEmbedTools();
+  };
+
+  // 工作区头部的 ⇄（保留作快捷方式）—— 在两个位置间切换
+  window.chatPinSwitch = function (reqId) {
+    chatSetPinPlace(reqId, _pinPlace() === 'top' ? 'side' : 'top');
+  };
+
+  // 启动时同步选中态（窗口模板是动态克隆的，多打两次保证命中）
+  setTimeout(_refreshEmbedTools, 700);
+  setTimeout(_refreshEmbedTools, 2200);
 
   // ── v0.121: 选中窗口 = 对话上下文 ──
   //   点窗口 → 输入框上方出现 chip + 注册到后端（后端拼 prompt 时把"当前选中窗口"写进系统上下文）
@@ -487,26 +521,16 @@
     if (!info) { bar.innerHTML = ''; bar.style.display = 'none'; return; }
     bar.style.display = 'flex';
     var _m = _injectMode();
-    bar.innerHTML = '<span class="chat-ctx-chip" title="后续提问会自动关联这个窗口的内容">🔗 <b>' +
-      esc(info.name) + '</b><span class="chat-ctx-x" title="取消关联">✕</span></span>' +
-      '<span class="chat-ctx-mode" title="上下文注入方式：引用=只给文件名，AI 需要时自己读（省 token）；全文=直接把正文塞进上下文（费 token，少一轮往返）">' +
-        '<button type="button" data-m="ref"' + (_m === 'ref' ? ' class="on"' : '') + '>引用</button>' +
-        '<button type="button" data-m="full"' + (_m === 'full' ? ' class="on"' : '') + '>全文</button>' +
-      '</span>';
+    // v0.121g: 注入模式开关移到面板右上角的常驻控件（跟原型一致，这里只留关联对象本身）
+    var _modeTag = _m === 'full' ? '全文' : '引用';
+    bar.innerHTML = '<span class="chat-ctx-chip" title="后续提问会自动关联这个窗口；注入方式在右上角切换">🔗 <b>' +
+      esc(info.name) + '</b><span class="chat-ctx-tag">' + _modeTag + '</span>' +
+      '<span class="chat-ctx-x" title="取消关联">✕</span></span>';
     bar.querySelector('.chat-ctx-x').addEventListener('click', function (e) {
       e.stopPropagation();
       _activeCtx = null;
       renderCtxChip(stream, null);
       try { api('POST', '/chat-sessions/' + _streamIdOf(stream) + '/ctx', { ctx: null }); } catch (err) {}
-    });
-    bar.querySelectorAll('.chat-ctx-mode button').forEach(function (b) {
-      b.addEventListener('click', function (e) {
-        e.stopPropagation();
-        try { localStorage.setItem(INJECT_KEY, b.getAttribute('data-m')); } catch (err) {}
-        // 立刻重注册（后端记的是会话级模式，切换后要同步过去）
-        var w = (_activeCtx && _activeCtx.windowId) ? _winById(_activeCtx.windowId) : null;
-        if (w) setActiveCtx(stream, w); else renderCtxChip(stream, info);
-      });
     });
   }
 
@@ -522,6 +546,7 @@
     };
     _activeCtx = info;
     renderCtxChip(stream, info);
+    _refreshEmbedTools();
     try { api('POST', '/chat-sessions/' + _streamIdOf(stream) + '/ctx', { ctx: info }); } catch (e) {}
   }
 

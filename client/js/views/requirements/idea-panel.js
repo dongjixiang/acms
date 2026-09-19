@@ -44,7 +44,17 @@ function renderIdeaPanel(req) {
           <span class="chat-mode-label">${modeLabel}</span>
           <span class="chat-mode-icon">⇄</span>
         </span>
-        <span class="insight-clarity-badge insight-clarity-${clarity || 'unknown'}" style="display:${clarityDisplay}">${clarityBadge}</span>
+        <span class="chat-embed-tools" id="chat-embed-tools-${req.id}">
+          <span class="cet-seg" data-seg="pin" title="钉住位置：窗口钉住后停在哪（不随对话滚动）">
+            <button type="button" data-v="top" onclick="chatSetPinPlace('${req.id}','top')" title="钉在对话顶部的工作区">顶部</button>
+            <button type="button" data-v="side" onclick="chatSetPinPlace('${req.id}','side')" title="钉在对话右侧的工作区">右侧</button>
+          </span>
+          <span class="cet-seg" data-seg="inject" title="上下文注入方式">
+            <button type="button" data-v="ref" onclick="chatSetInjectMode('${req.id}','ref')" title="引用+按需：只把文件名给 AI，需要正文时它自己去读（省 token）">引用</button>
+            <button type="button" data-v="full" onclick="chatSetInjectMode('${req.id}','full')" title="全文：直接把正文塞进上下文（费 token，少一轮工具往返）">全文</button>
+          </span>
+        </span>
+      </div>
         ${reasonText}
       </div>
       <!-- v0.3.6 对话流：聊天式想法澄清 -->

@@ -1596,6 +1596,22 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
   box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
 .insight-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; position: relative; }
+
+/* ── v0.121g: 对话面板右上角的常驻开关（对齐原型顶栏）──
+   之前"钉住位置"藏在工作区头部（钉住后才可见）、"注入模式"藏在 chip 旁（选中窗口才可见），
+   用户根本找不到。改成常驻。 */
+.chat-embed-tools { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.chat-embed-tools .cet-lbl { font-size: 11px; color: var(--text3); white-space: nowrap; }
+.chat-embed-tools .cet-seg {
+  display: inline-flex; border: 1px solid var(--border); border-radius: 999px;
+  overflow: hidden; background: var(--bg3);
+}
+.chat-embed-tools .cet-seg button {
+  background: transparent; border: 0; color: var(--text2); font-size: 11px;
+  padding: 3px 10px; cursor: pointer; font-family: inherit; white-space: nowrap;
+}
+.chat-embed-tools .cet-seg button.on { background: var(--accent); color: #fff; }
+.chat-embed-tools .cet-seg button:not(.on):hover { background: var(--bg4, var(--bg3)); color: var(--text); }
 .insight-title { font-size: 16px; font-weight: 600; color: var(--text); }
 .insight-clarity-badge {
   font-size: 12px; padding: 2px 8px; border-radius: 10px;
@@ -7187,6 +7203,10 @@ body { padding-bottom: 40px; }
   padding: 3px 9px; border-radius: 999px;
 }
 .chat-ctx-chip .chat-ctx-x { cursor: pointer; opacity: 0.7; }
+.chat-ctx-chip .chat-ctx-tag {
+  font-size: 10px; padding: 1px 6px; border-radius: 999px;
+  background: rgba(78, 205, 196, 0.22); color: var(--accent);
+}
 .chat-ctx-mode {
   display: inline-flex; border: 1px solid var(--border); border-radius: 999px;
   overflow: hidden; background: var(--bg3);
