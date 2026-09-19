@@ -567,7 +567,7 @@
       window._mp_open_file = { name: fn, src: fileUrl2 };
       ACMSWin.open('media-player',{w:1000,h:700,title:'🎬 '+fn,instanceId:fp});
     } else {
-      ACMSWin.open(appName,{w:900,h:600});
+      ACMSWin.open(appName,{w:900,h:600,instanceId:fp+'|'+appName});
     }
   }
   function openWith(fp,appName,ext){

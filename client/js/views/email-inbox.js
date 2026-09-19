@@ -306,7 +306,7 @@ function formatAddress(value) {
         .then(function (resp) {
           if (resp && resp.ok && resp.fileId) {
             if (window.ACMSWin && window.ACMSWin.open) {
-              window.ACMSWin.open(appName, { w: 1000, h: 700, title: '📝 ' + att.name, fileId: resp.fileId, fileName: att.name });
+              window.ACMSWin.open(appName, { w: 1000, h: 700, title: '📝 ' + att.name, fileId: resp.fileId, fileName: att.name, instanceId: att.name });
             }
             self.setStatus('已在编辑器打开：' + att.name);
             showToast('✅ 附件已在 ' + (appName === 'office-word' ? 'Word' : appName === 'office-xlsx' ? 'Excel' : 'PPT') + ' 编辑器中打开', 'success');

@@ -482,7 +482,7 @@ function openPolishSceneFrame(reqId, sceneIdx, imgUrl) {
   window._fb_open_file = { name: 'frame-' + (sceneIdx + 1) + '.png', src: imgUrl };
   try {
     if (window.ACMSWin && ACMSWin.open) {
-      ACMSWin.open('image-editor', { w: 1000, h: 700, title: '✏️ 打磨首帧图（场 ' + (sceneIdx + 1) + '）' });
+      ACMSWin.open('image-editor', { w: 1000, h: 700, title: '✏️ 打磨首帧图（场 ' + (sceneIdx + 1) + '）', instanceId: imgUrl });
       toast('已打开编辑器 · 改完点「✅ 完成打磨」', 'success', 3500);
     } else {
       throw new Error('窗口管理器不可用');

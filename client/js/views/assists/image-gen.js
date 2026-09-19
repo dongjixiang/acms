@@ -195,7 +195,7 @@ function openPolishInEditor(reqId, idx, imgUrl) {
   window._fb_open_file = { name: 'polish-' + (idx + 1) + '.png', src: imgUrl };
   try {
     if (window.ACMSWin && ACMSWin.open) {
-      ACMSWin.open('image-editor', { w: 1000, h: 700, title: '✏️ 打磨图片' });
+      ACMSWin.open('image-editor', { w: 1000, h: 700, title: '✏️ 打磨图片', instanceId: imgUrl });
       toast('已打开编辑器 · 改完点「✅ 完成打磨」', 'success', 3500);
     } else {
       throw new Error('窗口管理器不可用');

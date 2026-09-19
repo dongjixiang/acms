@@ -109,7 +109,7 @@
     open: function (url, name) {
       window._mp_open_file = { src: url, name: name || '' };
       if (window.ACMSWin) {
-        window.ACMSWin.open('media-player', { w: 1000, h: 700, title: '🎬 ' + (name || '视频') });
+        window.ACMSWin.open('media-player', { w: 1000, h: 700, title: '🎬 ' + (name || '视频'), instanceId: url });
         return { ok: true };
       }
       return { ok: false, error: 'ACMSWin not ready' };

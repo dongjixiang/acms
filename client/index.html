@@ -556,11 +556,11 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/assists/music-core.js?v=0.22.1"></script>  <!-- v0.21 音乐卡片公共渲染核心 + v0.22 kuwo/audius 分支 -->
 <script src="/client/js/views/assists/music.js?v=0.21.0"></script>  <!-- v0.21 音乐播放 — 多数据源切换（assist 侧栏；聊天流走 chat.js renderMusicBubble） -->
 <script src="/client/js/views/assists/video.js?v=0.22.64"></script>  <!-- v0.22.20: 修 query 错误提示字段（r.message → r.error，避免"查询失败：undefined"） -->
-<script src="/client/js/views/assists/image-gen.js?v=0.22.76"></script>  <!-- v0.22.59 修 refreshScreenplayChatCard 重新渲染时把 .chat-bubble-avatar/.chat-bubble-inner 一起清掉 → .chat-bubble 是 display:flex，十几个块级 div 变 flex item 横排（用户报"生成第一张图片后剧本从竖向排列变横向排列"）。改为只替换 .chat-bubble-inner 内部内容（保留 avatar+inner），并对已写坏的旧 DOM 自愈重建。v0.22.22: 改 sidebar 同源 /assist 拿最新 sp data + 只刷最后一张气泡 -->
+<script src="/client/js/views/assists/image-gen.js?v=0.22.77"></script>  <!-- v0.22.59 修 refreshScreenplayChatCard 重新渲染时把 .chat-bubble-avatar/.chat-bubble-inner 一起清掉 → .chat-bubble 是 display:flex，十几个块级 div 变 flex item 横排（用户报"生成第一张图片后剧本从竖向排列变横向排列"）。改为只替换 .chat-bubble-inner 内部内容（保留 avatar+inner），并对已写坏的旧 DOM 自愈重建。v0.22.22: 改 sidebar 同源 /assist 拿最新 sp data + 只刷最后一张气泡 -->
 <script src="/client/js/views/assists/clean.js?v=0.19.7"></script>  <!-- v0.19.7 清理表单 scrollIntoView（浮窗里 chat-stream 不设高度约束 → 旧 stream.scrollTop 空操作 → 表单落在 2 万 px 处看不见）。v0.19.6 【根因】双上下文 DOM（浮窗克隆副本）→ _cleanById visibility-aware 查找。v0.19.5 反馈增强。v0.19.4 覆盖工具卡片 + 水位线对齐 -->
 <script src="/client/js/views/assists/ip-dict.js?v=0.22.65"></script>  <!-- v0.22.65 STYLE_TEMPLATES 每种风格加 descriptors 字段（character/scene/video 描述模板），让 buildCharacterPrompt/buildScenePrompt/buildSceneVideoPrompt 查表替换原硬编码的"电影感人物肖像/影棚主光/4K 写实"等写实摄影描述（这些描述之前压过 stylePrefix，导致选国风水墨/3D/动漫却出写实图） -->
 <script src="/client/js/views/assists/screenplay-core.js?v=0.22.77"></script>  <!-- v0.22.73 修复: buildSceneVideoPrompt 注入 scene.characters 的 desc（server schema L37 加了 characters: [name1, name2] 字段 + action 要求用具体角色名）。修"生图 LLM 脑补不在剧本里的人物"bug。兜底：旧剧本 scene.characters 缺失时注入 sp.characters 全部。 -->
-<script src="/client/js/views/assists/screenplay.js?v=0.22.77"></script>  <!-- v0.22.65 加「合成完整视频」（分镜头 ffmpeg 拼接 + 淡入淡出过渡 + 下载）。v0.22.62 修 nextAssets 未声明（每次生成成功后假报「生成失败: nextAssets is not defined」→ 用户以为失败再点一次 + 自动续跑从未生效）+ 跨刷新防重复（查后端镜像的 generating 快照）。v0.22.61 防重复提交内存锁；v0.22.32 生成后同步气泡 -->
+<script src="/client/js/views/assists/screenplay.js?v=0.22.78"></script>  <!-- v0.22.65 加「合成完整视频」（分镜头 ffmpeg 拼接 + 淡入淡出过渡 + 下载）。v0.22.62 修 nextAssets 未声明（每次生成成功后假报「生成失败: nextAssets is not defined」→ 用户以为失败再点一次 + 自动续跑从未生效）+ 跨刷新防重复（查后端镜像的 generating 快照）。v0.22.61 防重复提交内存锁；v0.22.32 生成后同步气泡 -->
 <script src="/client/js/views/assists/document-gen.js?v=0.46"></script>  <!-- v0.46 文档生成 — AI 整理对话 + Pandoc 转 .docx -->
 <script src="/client/js/views/assists/send-email.js?v=0.47"></script>  <!-- v0.47 邮件发送 — nodemailer SMTP -->
 <script src="/client/js/views/assists/plan.js?v=0.120"></script>  <!-- v0.120 plan 进度卡 + 失败步骤一键重试 -->
@@ -720,7 +720,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/office-ppt.js?v=0.66.19"></script>
 <script src="/client/js/views/office-editor.js?v=0.64.0"></script>
 <!-- v0.91.3: Office V2 bridge (Univer + Tiptap + Reveal, code-split, prefetch + dispose) -->
-<script src="/client/js/views/office-v2-bridge.js?v=0.92.7"></script>
+<script src="/client/js/views/office-v2-bridge.js?v=0.92.8"></script>
 <!-- v0.93: Office V3 bridge (GenOffice docx engine, 中文一等公民, P1 Word; PPT/Excel P2/P3) -->
 <script src="/client/js/views/office-v3-bridge.js?v=0.97.15"></script>
 <!-- P199: 角色档案库 API（生图一致性 — 多角色多图合成参考） -->
@@ -745,10 +745,10 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/desktop-marquee-toolbar.js?v=0.60"></script>
 <!-- v0.76: 桌面配置同步 — B 方案（手工 + 智能提示；默认 autoSync=false；服务端有新版本主动 toast + tray 红点） -->
 <script src="/client/js/views/desktop-sync.js?v=0.76"></script>
-<script src="/client/js/views/file-browser.js?v=0.66.19"></script>
+<script src="/client/js/views/file-browser.js?v=0.66.20"></script>
 <script src="/client/js/views/web-browser.js?v=0.61"></script>
 <!-- v0.1 (media-player): 简单原生视频播放器（file-app-registry video MIME 路由到这里）-->
-<script src="/client/js/views/media-player.js?v=0.1"></script>
+<script src="/client/js/views/media-player.js?v=0.2"></script>
 <!-- v0.59: native-app — Puppeteer CDP screencast 流推送窗口（微信等被 X-Frame 限的网页套壳） -->
 <script src="/client/js/views/native-app-window.js?v=0.59.1"></script>
 <!-- xterm.js — 终端窗口依赖 -->
@@ -1310,6 +1310,6 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/utils/sanitize-email.js?v=1.11"></script>
 <!-- v0.73: 邮件收件箱 (IMAP) — v2.2 profile/account CRUD -->
 <link rel="stylesheet" href="/client/css/email-inbox.css?v=2.4.1" />
-    <script src="/client/js/views/email-inbox.js?v=2.4.4"></script>
+    <script src="/client/js/views/email-inbox.js?v=2.4.5"></script>
 </body>
 </html>

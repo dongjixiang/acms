@@ -469,7 +469,7 @@
   window.OfficeV2 = {
     open: function (kind, fileId, fileName) {
       if (!window.ACMSWin) return console.warn('[office-v2] no ACMSWin');
-      return ACMSWin.open('office-v2-' + kind, { w: 900, h: 600, title: fileName || kind, fileId: fileId, fileName: fileName });
+      return ACMSWin.open('office-v2-' + kind, { w: 900, h: 600, title: fileName || kind, fileId: fileId, fileName: fileName, instanceId: fileId || fileName });
     },
     listInstances: function () { return Object.keys(state.instances); },
     getState: function () { return state; },
