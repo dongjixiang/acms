@@ -610,6 +610,33 @@ async function queryAssistJob(requirementId, sceneIdx = null) {
       patch[getVideoField(null)] = JSON.stringify({ ...updated, scene_idx: sceneIdx });
     }
     reqStore.update(requirementId, patch);
+
+    // v0.122g: 完成/失败时写 chat 流 entry。
+    //   此前只在提交任务时写了 video_loading，**完成态从不落库** ⇒ 前端永远等不到 ✅ 卡片
+    //   ⇒ 用户看到的承诺（"稍等片刻即可看到视频卡片"）变成空头支票。
+    //   （video_done 的字段含 video_url + asset_path，让卡片既能在线播也能走本地存档）
+    try {
+      if (result.status === 'completed') {
+        writeVideoChatEntry(requirementId, 'done', {
+          prompt: updated.prompt || '',
+          video_url: updated.video_url || null,
+          asset_path: updated.asset_path || null,
+          local_size: updated.local_size || null,
+          duration: updated.duration || null,
+          progress: 100,
+          scene_idx: (sceneIdx === null || sceneIdx === undefined) ? null : sceneIdx,
+        });
+      } else if (result.status === 'failed') {
+        writeVideoChatEntry(requirementId, 'failed', {
+          prompt: updated.prompt || '',
+          error: finalError || '生成失败',
+          scene_idx: (sceneIdx === null || sceneIdx === undefined) ? null : sceneIdx,
+        });
+      }
+    } catch (e) {
+      console.warn(`[assist:video] ${requirementId} 写 chat entry 失败: ${e.message}`);
+    }
+
     return updated;
   } catch (e) {
     console.error(`[assist:video] ${requirementId} 查询失败:`, e.message);

@@ -571,6 +571,90 @@ function renderMusicBubble(jsonText) {
 }
 window.renderMusicBubble = renderMusicBubble;
 
+/**
+ * v0.122g: 视频生成卡片（chat 流）
+ *   后端 writeVideoChatEntry 写的 source 是 video_loading / video_done / video_failed。
+ *   此前前端分发表只认 music_result / image_result / screenplay_result ⇒ 视频这三个 source
+ *   全部落到兜底分支被当 markdown 渲染 ⇒ 用户永远看不到视频卡片
+ *   ⇒ AI 那句「稍等片刻即可看到视频卡片」变成空头承诺（多多零容忍的 toast 骗人）。
+ *
+ * @param {string} reqId
+ * @param {string} jsonText  entry.text（JSON）
+ * @param {string} source    entry.source（用于兜底判状态）
+ */
+function renderVideoBubble(reqId, jsonText, source) {
+  if (!jsonText) return '<div class="chat-system-msg">🎬 视频生成（数据为空）</div>';
+  let card;
+  try { card = JSON.parse(jsonText); } catch { return `<div class="chat-system-msg">${escHtml(String(jsonText).slice(0, 100))}</div>`; }
+
+  const status = card.status
+    || (source === 'video_done' ? 'done' : source === 'video_failed' ? 'failed' : 'pending');
+  const promptHtml = card.prompt
+    ? `<div style="font-size:12px;color:var(--text2);margin-bottom:6px;line-height:1.5">${escHtml(String(card.prompt).slice(0, 200))}</div>`
+    : '';
+  const head = `<div style="font-weight:bold;margin-bottom:4px">🎬 视频</div>`;
+
+  // 失败
+  if (status === 'failed') {
+    return `<div class="video-card-in-chat" data-video-card="1" style="padding:8px;border-radius:8px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.16)">
+      ${head}${promptHtml}
+      <div style="font-size:12px;color:var(--danger,#ef4444)">生成失败：${escHtml(card.error || '未知错误')}</div>
+    </div>`;
+  }
+
+  const cdnUrl = card.video_url || '';
+  const assetUrl = card.asset_path
+    ? `/api/generate/assets/${encodeURIComponent(card.project_id || 'default')}/${String(card.asset_path).split('/').map(encodeURIComponent).join('/')}`
+    : '';
+  const src = assetUrl || cdnUrl;
+
+  // 进行中（loading / 无地址）
+  if (status !== 'done' || !src) {
+    const pct = Number(card.progress) || 0;
+    return `<div class="video-card-in-chat" data-video-card="1" style="padding:8px;border-radius:8px;background:rgba(99,102,241,0.04);border:1px solid rgba(99,102,241,0.12)">
+      ${head}${promptHtml}
+      <div style="font-size:12px;color:var(--text2)">⏳ 生成中… ${pct}%</div>
+      ${pct > 0 ? `<div style="margin-top:6px;height:4px;border-radius:2px;background:var(--bg3)"><div style="height:4px;border-radius:2px;background:var(--accent);width:${Math.min(100, pct)}%"></div></div>` : ''}
+      <div style="margin-top:6px"><button class="btn-small" onclick="chatRefreshVideoCard('${escHtml(reqId)}')">🔄 刷新进度</button></div>
+    </div>`;
+  }
+
+  // 完成
+  const sizeTxt = card.local_size ? ` · ${(card.local_size / 1024 / 1024).toFixed(2)} MB` : '';
+  return `<div class="video-card-in-chat" data-video-card="1" style="padding:8px;border-radius:8px;background:rgba(16,185,129,0.05);border:1px solid rgba(16,185,129,0.16)">
+    <div style="font-weight:bold;margin-bottom:4px">🎬 视频已生成${sizeTxt}</div>
+    ${promptHtml}
+    <video controls preload="metadata" playsinline
+      style="max-width:320px;width:100%;border-radius:8px;border:1px solid var(--border);display:block;background:#000"
+      ${assetUrl && cdnUrl ? `onerror="this.src='${escHtml(cdnUrl)}';this.onerror=null;"` : ''}
+      src="${escHtml(assetUrl || cdnUrl)}"></video>
+    <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap">
+      <a href="${escHtml(assetUrl || cdnUrl)}" download class="btn-small">⬇ 下载</a>
+      ${cdnUrl ? `<a href="${escHtml(cdnUrl)}" target="_blank" rel="noopener noreferrer" class="btn-small">🔗 原片</a>` : ''}
+    </div>
+  </div>`;
+}
+window.renderVideoBubble = renderVideoBubble;
+
+/** 聊天流视频卡片「刷新进度」：查一次 assist job 并就地重渲染 */
+window.chatRefreshVideoCard = function (reqId) {
+  if (!reqId) return;
+  const container = document.getElementById('chat-stream-msgs-' + reqId);
+  if (container) {
+    const tip = document.createElement('div');
+    tip.className = 'chat-system-msg';
+    tip.textContent = '🔄 正在查询视频进度…';
+    container.appendChild(tip);
+    chatScrollToBottom(container);
+  }
+  // 后端本来就在后台轮询 Agnes 并把进度写回 assist_video / video_* entry，
+  // 这里只需重新拉一次会话消息即可（不新增接口，避免又一条要维护的链路）。
+  try {
+    if (typeof backfillChatRounds === 'function') backfillChatRounds(reqId);
+    if (typeof loadChatSessionMessages === 'function') loadChatSessionMessages(reqId);
+  } catch (e) { console.warn('[chat] 刷新视频进度失败:', e && e.message); }
+};
+
 function renderImageBubble(reqId, jsonText) {
   if (!jsonText) return '<div class="chat-system-msg">🖼️ 图片生成结果（数据为空）</div>';
   let card;
@@ -741,6 +825,10 @@ function renderChatBubble(container, entry) {
         : '')
     : isSystem && (entry.source === 'music_result' || entry.source === 'music_precheck')
       ? renderMusicBubble(entry.text || '')
+      : isSystem && (entry.source === 'video_loading' || entry.source === 'video_done' || entry.source === 'video_failed')
+        // v0.122g: 后端 writeVideoChatEntry 写的是 video_loading/video_done/video_failed，
+        //   此前前端只认 music/image/screenplay → 视频全落兜底被当 markdown 渲染（"看不到视频卡片"）
+        ? renderVideoBubble(reqId, entry.text || '', entry.source)
       : isSystem && entry.source === 'image_result'
         ? renderImageBubble(reqId, entry.text || '')
         : isSystem && entry.source === 'screenplay_result'

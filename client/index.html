@@ -523,7 +523,7 @@ document.addEventListener('DOMContentLoaded', () => {
     <script src="/client/js/views/dashboard.js"></script>
 <!-- v0.13 拆分：12 个子模块在 requirements.js 之前加载（HTML onclick 跨文件按名查找） -->
 <!-- v0.21.4 fix: 双卡清理范围扩大到 assist-loading-card.method-music（旧 v0.21.3 漏了真正的旧卡所在位置） -->
-<script src="/client/js/views/requirements/chat.js?v=0.22.76"></script>  <!-- v0.22.75 user 消息重复修复（一条在AI之前+一条在AI之后）：polling 就地重写分支 last 是 user 时跳过 + chatSendDetect 同步 tailKey（client/server 时钟差导致精确匹配失败，src='' fallback 失效 → 重复 appendChild）。v0.22.61 视频卡片兼容 generating 快照（runAssistJob 现在即时镜像通用字段 assist_video → 不能再只认 async_task，否则「生成中」被误标「已生成」且不启动轮询）。v0.22.60 音乐卡片插入补 avatar+inner 包裹 -->
+<script src="/client/js/views/requirements/chat.js?v=0.22.77"></script>  <!-- v0.22.75 user 消息重复修复（一条在AI之前+一条在AI之后）：polling 就地重写分支 last 是 user 时跳过 + chatSendDetect 同步 tailKey（client/server 时钟差导致精确匹配失败，src='' fallback 失效 → 重复 appendChild）。v0.22.61 视频卡片兼容 generating 快照（runAssistJob 现在即时镜像通用字段 assist_video → 不能再只认 async_task，否则「生成中」被误标「已生成」且不启动轮询）。v0.22.60 音乐卡片插入补 avatar+inner 包裹 -->
 <script src="/client/js/views/requirements/idea-panel.js?v=0.13.4"></script>
 <!-- v0.18 chat 模式切换器（clarify ↔ free）—— idea-panel.js 之后加载，引用 toggleChatMode -->
 <script src="/client/js/views/requirements/chat-mode.js?v=0.18.0"></script>
