@@ -297,6 +297,7 @@
       ACMSWin.dockTo(w, slot, { mode: 'embed' });
     });
     stream.appendChild(slot);
+    w._chatDockSlot = slot;
     try { ACMSWin.dockTo(w, slot, { mode: 'embed' }); } catch (e) { return false; }
     _injectPinBtn(w, stream);
     _bindCtxPick(w, stream);
@@ -371,6 +372,21 @@
       if (w._dock && w._dock.mode === 'pin') unpin(w, stream);
       else pinTo(stream, w);
     });
+    // v0.121c: ⧉ 变浮窗（原型里每个窗口都有，之前只能靠拖标题栏这个隐式手势）
+    var f = document.createElement('button');
+    f.type = 'button';
+    f.className = 'aw-btn aw-btn-float';
+    f.title = '脱离对话变浮窗（可自由移动）';
+    f.textContent = '⧉';
+    f.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+    f.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (window.ACMSWin && ACMSWin.undock) ACMSWin.undock(w);
+      if (w._chatDockSlot && w._chatDockSlot.parentNode) { /* 槽位留着当归位占位 */ }
+      _syncPinBtn(w, false);
+      _showPinZone(stream, _pinPlace());
+    });
+    ctl.insertBefore(f, ctl.firstChild);
     ctl.insertBefore(b, ctl.firstChild);
   }
 

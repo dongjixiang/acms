@@ -7133,7 +7133,15 @@ body { padding-bottom: 40px; }
 }
 .acms-window.aw-docked .aw-titlebar {
   height: 30px;                  /* 比浮窗(34px)略薄，更像卡片头 */
+  /* v0.121c 去窗口化：这三个是"它是个窗口"的主要视觉来源 */
+  background: var(--bg3) !important;        /* 覆盖 office 注入的浅灰(245,245,247)，跟随 ACMS 主题 */
+  border-radius: 10px 10px 0 0;             /* 跟随窗口圆角，别露方角 */
+  border-bottom: 1px solid var(--border);
 }
+.acms-window.aw-docked .aw-titlebar .aw-title { color: var(--text); }
+.acms-window.aw-docked .aw-btn-min,
+.acms-window.aw-docked .aw-btn-max { display: none !important; }   /* 内嵌态不需要最小化/最大化 */
+.acms-window.aw-docked .aw-publish-btn { display: none !important; } /* office 注入的发布按钮，内嵌态太挤 */
 .acms-window.aw-docked .aw-rz {
   display: none;                 /* 内嵌态尺寸由槽位决定，禁用八向缩放 */
 }
@@ -7178,6 +7186,10 @@ body { padding-bottom: 40px; }
 }
 .chat-ctx-chip .chat-ctx-x { cursor: pointer; opacity: 0.7; }
 .chat-ctx-chip .chat-ctx-x:hover { opacity: 1; }
+
+/* 📌 / ⧉ 内嵌窗口标题栏按钮（轻量化，别做成第二个窗口 chrome） */
+.aw-btn-pin, .aw-btn-float { font-size: 11px !important; opacity: 0.75; }
+.aw-btn-pin:hover, .aw-btn-float:hover { opacity: 1; }
 
 /* 📌 钉住按钮（内嵌窗口标题栏注入） */
 .aw-btn-pin { font-size: 11px !important; }

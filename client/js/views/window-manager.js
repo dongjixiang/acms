@@ -553,6 +553,8 @@
     c.innerHTML = '';
     windows.forEach(function(w) {
       if (w.dead) return;
+      // v0.121c: 吸附在对话槽位里的窗口不属于"独立窗口"，不出现在任务栏
+      if (w._dock) return;
       var info = getLabel(w.view);
       // v0.55：优先用 titleOverride（customTitle）
       var displayLabel = w.st.titleOverride || info.label;
@@ -992,6 +994,7 @@
     if (_docked.indexOf(w) < 0) _docked.push(w);
     syncDock(w);
     _ensureDockLoop();
+    try { syncTb(); } catch (e) {}     // v0.121c: 任务栏去掉/恢复条目
     return true;
   }
 
@@ -1009,6 +1012,7 @@
       w.el.style.height = w._dockHome.h;
       w._dockHome = null;
     }
+    try { syncTb(); } catch (e) {}     // v0.121c: 回到任务栏
     return true;
   }
 
