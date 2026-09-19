@@ -7132,9 +7132,10 @@ body { padding-bottom: 40px; }
   overflow: hidden;
 }
 .acms-window.aw-docked .aw-titlebar {
-  height: 30px;                  /* 比浮窗(34px)略薄，更像卡片头 */
-  /* v0.121c 去窗口化：这三个是"它是个窗口"的主要视觉来源 */
-  background: var(--bg3) !important;        /* 覆盖 office 注入的浅灰(245,245,247)，跟随 ACMS 主题 */
+  height: 32px;
+  /* v0.121e: 用比内容区深一档的底色 —— 原型里卡片头是"更深的一条"，
+     同色会让标题栏和内容区糊在一起，失去卡片感 */
+  background: var(--bg4, var(--bg3)) !important;  /* 覆盖 office 注入的浅灰(245,245,247) */
   border-radius: 10px 10px 0 0;             /* 跟随窗口圆角，别露方角 */
   border-bottom: 1px solid var(--border);
 }
@@ -7198,7 +7199,7 @@ body { padding-bottom: 40px; }
 .chat-ctx-chip .chat-ctx-x:hover { opacity: 1; }
 
 /* 📌 / ⧉ 内嵌窗口标题栏按钮（轻量化，别做成第二个窗口 chrome） */
-.aw-btn-pin, .aw-btn-float { font-size: 11px !important; opacity: 0.75; }
+.aw-btn-pin, .aw-btn-float { font-size: 12px !important; opacity: 0.85; }
 .aw-btn-pin:hover, .aw-btn-float:hover { opacity: 1; }
 
 /* 📌 钉住按钮（内嵌窗口标题栏注入） */
@@ -7207,10 +7208,12 @@ body { padding-bottom: 40px; }
 
 /* 槽位：窗口浮在上面时被完全盖住；窗口被拖走后露出，充当"归位占位" */
 .chat-dock-slot {
-  width: 100%;
-  align-self: stretch;
+  /* v0.121e: 不再占满整行 —— 原型里窗口只占对话流 ~47%，旁边能看到其它消息；
+     占满整行会变成"插了一个面板进来"，不是"对话里的一个块" */
+  width: min(580px, 100%);
+  max-width: 100%;
   box-sizing: border-box;
-  height: min(340px, 52vh);   /* v0.121b: 对话窗口小时别占满视野 */
+  height: min(280px, 46vh);
   margin: 12px 0 12px 36px;
   border: 1px dashed rgba(78, 205, 196, 0.28);
   border-radius: 10px;
