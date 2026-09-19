@@ -415,6 +415,11 @@
       slot.id = 'chat-pin-slot-' + w.id;
       slot.innerHTML = '📌 ' + esc(w.st.titleOverride || w.st.title || '窗口') +
         ' · 已钉住 <button type="button">取消钉住</button>';
+      // 沿用用户在内嵌态拖出来的尺寸（别一钉就跳回默认）
+      if (w._userDockSize) {
+        slot.style.width = 'min(' + w._userDockSize.w + 'px, 100%)';
+        slot.style.height = w._userDockSize.h + 'px';
+      }
       slot.querySelector('button').addEventListener('click', function () { unpin(w, stream); });
       body.appendChild(slot);
     }

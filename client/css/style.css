@@ -7143,9 +7143,10 @@ body { padding-bottom: 40px; }
 .acms-window.aw-docked .aw-btn-min,
 .acms-window.aw-docked .aw-btn-max { display: none !important; }   /* 内嵌态不需要最小化/最大化 */
 .acms-window.aw-docked .aw-publish-btn { display: none !important; } /* office 注入的发布按钮，内嵌态太挤 */
-.acms-window.aw-docked .aw-rz {
-  display: none;                 /* 内嵌态尺寸由槽位决定，禁用八向缩放 */
-}
+/* v0.121f: 内嵌态只保留右下角把手 —— 横向本来就受对话流宽度限制，
+   保留其它 7 个方向只会让手感混乱。拖它改的是槽位尺寸（不是窗口，否则会被 syncDock 同步回去） */
+.acms-window.aw-docked .aw-rz { display: none; }
+.acms-window.aw-docked .aw-rz[data-d="se"] { display: block; }
 
 /* ── v0.121: 钉住工作区（顶部 / 右侧）—— 不随对话滚动 ──
    位置偏好存 localStorage('acms-chat-pin-place')，默认右侧，用面板头部的 ⇄ 切换 */

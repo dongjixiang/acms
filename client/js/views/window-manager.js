@@ -523,6 +523,21 @@
           if (dir.indexOf('w') !== -1) { nw = Math.max(300, sw - dx); nl = sl + (sw - nw); }
           if (dir.indexOf('s') !== -1) nh = Math.max(200, sh + dy);
           if (dir.indexOf('n') !== -1) { nh = Math.max(200, sh - dy); nt = st + (sh - nh); }
+
+          // v0.121f: 吸附态拖右下角 → 改「槽位」尺寸
+          //   直接改 w.el 的 width/height 会被 syncDock 每帧同步回去（槽位才是尺寸来源）
+          if (w._dock && w._dock.slot && document.body.contains(w._dock.slot)) {
+            var slotEl = w._dock.slot;
+            var par = slotEl.parentElement;
+            var availW = par ? (par.clientWidth - 56) : nw;   // 减去 margin-left 36 + 余量
+            var useW = Math.max(280, Math.min(nw, availW));
+            slotEl.style.width = useW + 'px';
+            slotEl.style.height = Math.max(180, nh) + 'px';
+            w._userDockSize = { w: useW, h: Math.max(180, nh) };  // 记住，钉到工作区时沿用
+            syncDock(w);
+            return;
+          }
+
           w.el.style.width = nw + 'px'; w.el.style.height = nh + 'px';
           w.el.style.left = nl + 'px'; w.el.style.top = nt + 'px';
           w.st.w = nw; w.st.h = nh; w.st.x = nl; w.st.y = nt;
