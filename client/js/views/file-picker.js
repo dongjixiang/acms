@@ -105,10 +105,21 @@
     '.acms-fp .fp-hint{color:var(--text3);font-size:11px;margin-left:auto}';
 
   // ── 主入口：pick() → Promise<item|null> ──
+  // v0.121l: 默认打开「用户自己的根目录」users/{username}/
+  //   之前固定落在 workspaces/（项目/文档区，多用户共享），看不到"我的地方"
+  //   游客 / 未登录（无 username）→ 回落 ''，即 workspaces 根
+  function _defaultStartPath() {
+    try {
+      var u = JSON.parse(localStorage.getItem('acms-user') || '{}');
+      if (u && u.username && u.role !== 'guest' && !u.isGuest) return '/users/' + u.username;
+    } catch (e) {}
+    return '';
+  }
+
   function pick(opts) {
     opts = opts || {};
     return new Promise(function (resolve) {
-      var state = { cur: opts.startPath || '', parent: null, entries: [], sel: null, q: '' };
+      var state = { cur: opts.startPath || _defaultStartPath(), parent: null, entries: [], sel: null, q: '' };
       var settled = false;
 
       var html =

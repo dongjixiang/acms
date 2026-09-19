@@ -6,6 +6,9 @@ var fs = require('fs');
 var WORKSPACE_ROOT = path.resolve(__dirname, '..', '..', 'workspaces');
 // 前端约定的 workspace 入口（iP() 返回的非 admin 起始路径）
 var WORKSPACE_CLIENT_ROOT = '/workspaces';
+// v0.121l: 用户维度文件根（users/{username}/）—— 9-19「工作区统一」方案的物理位置
+var USERS_ROOT = path.resolve(__dirname, '..', '..', 'users');
+var USERS_CLIENT_ROOT = '/users';
 
 // Windows 上把 /d → D:\ 等盘符路径转换成真实路径
 // path.resolve('/d') 在 Windows 上会解析成 C:\d，必须手动处理
@@ -47,6 +50,12 @@ function toClientPath(p, isAdmin) {
       return WORKSPACE_CLIENT_ROOT + '/' + rel;
     }
   }
+  // v0.121l: 用户维度目录（admin 和非 admin 都映射成 /users/... 客户端路径）
+  if (p === USERS_ROOT) return USERS_CLIENT_ROOT;
+  var uPrefix = USERS_ROOT + path.sep;
+  if (p.startsWith(uPrefix)) {
+    return USERS_CLIENT_ROOT + '/' + p.slice(uPrefix.length).replace(/\\/g, '/');
+  }
   // 盘符根 (D:\) 或盘符子路径 (D:\xxx) → /d 或 /d/xxx
   var m = p.match(/^([A-Z]):\\(.*)/);
   if (m) return '/' + m[1].toLowerCase() + (m[2] ? '/' + m[2].replace(/\\/g, '/') : '');
@@ -79,6 +88,16 @@ function resolveSafePath(req, reqPath) {
       if (!wsAdm.startsWith(WORKSPACE_ROOT)) return null;
       return { safePath: wsAdm, isAdmin: true };
     }
+    // v0.121l: admin 访问用户维度目录（/users/{username}[/...]）
+    if (rawAdm === USERS_CLIENT_ROOT || rawAdm === USERS_CLIENT_ROOT + '/') {
+      return { safePath: USERS_ROOT, isAdmin: true };
+    }
+    if (rawAdm.startsWith(USERS_CLIENT_ROOT + '/')) {
+      var uRelAdm = rawAdm.slice(USERS_CLIENT_ROOT.length + 1).replace(/\//g, path.sep);
+      var uAdm = path.join(USERS_ROOT, uRelAdm);
+      if (!uAdm.startsWith(USERS_ROOT)) return null;
+      return { safePath: uAdm, isAdmin: true };
+    }
     // 其他非盘符路径 —— fallback：path.resolve（admin 选定的合法路径，已超出常规命名空间）
     return { safePath: path.resolve(reqPath || '/'), isAdmin: true };
   }
@@ -92,8 +111,20 @@ function resolveSafePath(req, reqPath) {
   } else if (raw.startsWith(WORKSPACE_CLIENT_ROOT + '/')) {
     // /workspaces/foo/bar → foo\bar
     rel = raw.slice(WORKSPACE_CLIENT_ROOT.length + 1).replace(/\//g, path.sep);
+  } else if (raw === USERS_CLIENT_ROOT || raw.startsWith(USERS_CLIENT_ROOT + '/')) {
+    // v0.121l: 用户维度根 —— **只能进自己的**目录（/users/{自己的 username}/...）
+    //   游客没有 username → 拒绝（前端回落到 /workspaces）
+    var unameSegs = raw.slice(USERS_CLIENT_ROOT.length + 1).split('/');
+    var wantName = unameSegs[0];
+    var meName = req.user && req.user.username;
+    if (!meName || !wantName || wantName !== meName) return null;
+    var uRel = unameSegs.slice(1).join('/').replace(/\//g, path.sep);
+    var myRoot = path.join(USERS_ROOT, meName);
+    var myPath = uRel ? path.join(myRoot, uRel) : myRoot;
+    if (!myPath.startsWith(myRoot)) return null;
+    return { safePath: myPath, isAdmin: false };
   } else {
-    // 不在 workspace 命名空间，拒绝
+    // 不在 workspace / users 命名空间，拒绝
     return null;
   }
   var safePath = rel ? path.join(WORKSPACE_ROOT, rel) : WORKSPACE_ROOT;
