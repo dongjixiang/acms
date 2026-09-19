@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ACMS 原型 · 对话内应用窗口（自由对话）</title>
+<style>
+*{box-sizing:border-box}
+:root{
+  --bg:#12141a;--bg2:#1a1d24;--bg3:#232830;--line:#2e3540;
+  --text:#e4e7ec;--text2:#8d95a1;--text3:#5f6875;
+  --accent:#4a9eff;--green:#3ecf8e;--amber:#e8a33d;--purple:#8b7cff;
+}
+html,body{margin:0;height:100%;overflow:hidden;
+  font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  color:var(--text);
+  background:radial-gradient(1200px 600px at 15% -10%,#1d2330 0%,transparent 60%),
+             radial-gradient(900px 500px at 95% 115%,#241f33 0%,transparent 55%),var(--bg);}
+body{display:flex;flex-direction:column;height:100vh}
+
+/* ── 顶栏 ── */
+.topbar{flex:0 0 auto;height:48px;display:flex;align-items:center;gap:16px;padding:0 16px;
+  border-bottom:1px solid var(--line);background:rgba(18,20,26,.72);backdrop-filter:blur(10px);z-index:100}
+.tb-title{font-size:13px;font-weight:600;letter-spacing:.2px;white-space:nowrap}
+.tb-title small{color:var(--text3);font-weight:400;margin-left:7px;font-size:11.5px}
+.seg-wrap{display:flex;align-items:center;gap:8px;margin-left:auto}
+.seg-wrap .lbl{font-size:11px;color:var(--text3);white-space:nowrap}
+.seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--bg2)}
+.seg button{background:transparent;border:0;color:var(--text2);font-size:11.5px;padding:5px 11px;
+  cursor:pointer;font-family:inherit;transition:.12s;white-space:nowrap}
+.seg button.on{background:var(--accent);color:#fff}
+.seg button:not(.on):hover{background:#2b323d;color:var(--text)}
+
+/* ── 布局 ── */
+.stage{flex:1;display:flex;min-height:0;padding:14px;gap:14px}
+.chat{flex:1;min-width:0;background:var(--bg2);border:1px solid var(--line);border-radius:14px;
+  display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.42)}
+.side{flex:0 0 auto;width:320px;background:var(--bg2);border:1px solid var(--line);border-radius:14px;
+  display:none;flex-direction:column;padding:12px;gap:10px;overflow-y:auto}
+.side.has{display:flex}
+.side-head{font-size:11px;color:var(--text3);letter-spacing:.4px;display:flex;align-items:center;gap:6px;
+  padding-bottom:8px;border-bottom:1px dashed var(--line)}
+
+/* ── 钉住区（顶部） ── */
+.pinned-bar{flex:0 0 auto;display:none;flex-direction:column;gap:9px;padding:11px 16px;
+  background:linear-gradient(rgba(38,44,54,.85),rgba(30,35,43,.55));border-bottom:1px solid var(--line)}
+.pinned-bar.has{display:flex}
+.pinned-head{font-size:10.5px;color:var(--text3);letter-spacing:.5px;display:flex;align-items:center;gap:6px}
+.pinned-head .live{color:var(--green)}
+
+/* ── 消息流 ── */
+.stream{flex:1;min-height:0;overflow-y:auto;padding:18px 20px 8px;display:flex;flex-direction:column;gap:14px;scroll-behavior:smooth}
+.stream::-webkit-scrollbar{width:10px}
+.stream::-webkit-scrollbar-thumb{background:#333b47;border-radius:6px;border:3px solid transparent;background-clip:padding-box}
+.stream::-webkit-scrollbar-thumb:hover{background:#445063;background-clip:padding-box}
+.msg{display:flex;gap:10px;max-width:100%}
+.msg.user{align-self:flex-end;flex-direction:row-reverse}
+.av{width:26px;height:26px;border-radius:8px;flex:0 0 auto;display:grid;place-items:center;font-size:11.5px;font-weight:600}
+.msg.user .av{background:#2b3140;color:#a9b3c4}
+.msg.ai .av{background:linear-gradient(135deg,var(--accent),var(--purple));color:#fff}
+.bubble{background:var(--bg3);border:1px solid var(--line);border-radius:11px;padding:9px 13px;
+  font-size:13.5px;line-height:1.68;color:#d8dce3;max-width:74%;word-break:break-word}
+.msg.user .bubble{background:#26344a;border-color:#31435e;color:#e8eefc}
+.msg-col{display:flex;flex-direction:column;gap:9px;min-width:0;max-width:100%}
+.ref-tag{display:inline-flex;align-items:center;gap:5px;margin-top:6px;font-size:11px;
+  background:rgba(74,158,255,.16);border:1px solid rgba(74,158,255,.4);color:#9ecbff;
+  padding:2px 8px;border-radius:999px}
+.inject-note{font-size:11px;color:var(--text3);margin-top:7px;padding-top:7px;border-top:1px dashed #333b47;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.inject-note .k{color:var(--amber)}
+.slot{margin-left:36px;max-width:100%}
+.slot:empty{display:none}
+
+/* ── 窗口 ── */
+.app-window{background:var(--bg3);border:1px solid var(--line);border-radius:11px;overflow:hidden;
+  display:flex;flex-direction:column;transition:border-color .15s,box-shadow .15s}
+.app-window.mode-inline{width:100%;max-width:580px;height:250px}
+.app-window.mode-pinned{width:100%;height:236px}
+.app-window.mode-float{position:fixed;z-index:900;width:540px;height:308px;box-shadow:0 26px 70px rgba(0,0,0,.62)}
+.app-window.focused{border-color:var(--accent);box-shadow:0 0 0 2px rgba(74,158,255,.22),0 16px 44px rgba(0,0,0,.5)}
+.aw-titlebar{flex:0 0 auto;height:34px;display:flex;align-items:center;gap:8px;padding:0 8px 0 11px;
+  background:linear-gradient(#262c36,#20252d);border-bottom:1px solid var(--line);
+  user-select:none;cursor:grab}
+.aw-titlebar:active{cursor:grabbing}
+.aw-icon{font-size:13px;line-height:1}
+.aw-name{font-size:12.5px;font-weight:500;color:#ccd2dc;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.aw-btns{display:flex;gap:1px}
+.aw-btn{width:27px;height:24px;border:0;background:transparent;border-radius:6px;cursor:pointer;
+  color:var(--text2);font-size:12.5px;display:grid;place-items:center;transition:.12s;font-family:inherit}
+.aw-btn:hover{background:#353d4a;color:#fff}
+.aw-btn.active{background:var(--accent);color:#fff}
+.aw-btn.danger:hover{background:#c0392b;color:#fff}
+.aw-body{flex:1;min-height:0;overflow:auto;background:#1e232b}
+.doc-paper{padding:15px 19px;font-size:12.5px;line-height:1.85;color:#cfd6e0;outline:none;min-height:100%}
+.doc-paper h3{margin:0 0 7px;font-size:14px;color:#e8edf5;font-weight:600}
+.doc-paper p{margin:0 0 7px}
+.doc-paper .hl{background:rgba(232,163,61,.18);border-bottom:1px solid rgba(232,163,61,.5);padding:0 2px;border-radius:2px}
+.img-wrap{height:100%;display:grid;place-items:center;background:#191d24;padding:10px}
+.img-wrap svg{max-width:100%;max-height:100%;border-radius:8px;box-shadow:0 8px 26px rgba(0,0,0,.5)}
+.code-pre{margin:0;padding:14px 16px;font-family:"Cascadia Code",Consolas,Monaco,monospace;
+  font-size:12px;line-height:1.7;color:#c8d3e0;white-space:pre;overflow:auto}
+.code-pre .k{color:#c792ea}.code-pre .s{color:#c3e88d}.code-pre .f{color:#82aaff}
+.code-pre .c{color:#5f6875;font-style:italic}.code-pre .n{color:#f78c6c}
+
+/* ── 归位占位 ── */
+.ghost{display:none;align-items:center;gap:8px;font-size:11.5px;color:var(--text3);
+  border:1px dashed #38404d;border-radius:9px;padding:7px 11px;background:rgba(35,40,48,.35)}
+.ghost.show{display:inline-flex}
+.ghost b{color:var(--text2);font-weight:500}
+.ghost button{background:transparent;border:1px solid var(--line);color:var(--text2);font-size:10.5px;
+  padding:2px 8px;border-radius:6px;cursor:pointer;font-family:inherit}
+.ghost button:hover{border-color:var(--accent);color:var(--accent)}
+
+/* ── 输入区 ── */
+.composer{flex:0 0 auto;border-top:1px solid var(--line);padding:10px 14px 12px;background:var(--bg2)}
+.ctx-row{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:9px}
+.ctx-row:empty{display:none}
+.ctx-chip{display:inline-flex;align-items:center;gap:6px;background:rgba(74,158,255,.14);
+  border:1px solid rgba(74,158,255,.45);color:#9ecbff;font-size:11.5px;padding:3px 9px;border-radius:999px}
+.ctx-chip b{font-weight:600;color:#c5e0ff}
+.ctx-chip .x{cursor:pointer;opacity:.65;font-size:13px;line-height:1}
+.ctx-chip .x:hover{opacity:1}
+.input-row{display:flex;gap:9px;align-items:flex-end}
+.input-row textarea{flex:1;resize:none;height:54px;background:var(--bg3);border:1px solid var(--line);
+  border-radius:10px;color:var(--text);padding:11px 13px;font-size:13.5px;font-family:inherit;
+  outline:none;transition:.15s;line-height:1.5}
+.input-row textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(74,158,255,.12)}
+.input-row textarea::placeholder{color:var(--text3)}
+.send-btn{height:38px;padding:0 20px;border:0;border-radius:10px;background:var(--accent);color:#fff;
+  font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;transition:.15s}
+.send-btn:hover{background:#3d8ee8}
+.hint{font-size:10.5px;color:var(--text3);margin-top:8px;display:flex;gap:14px;flex-wrap:wrap}
+.hint span b{color:var(--text2);font-weight:500}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="tb-title">💬 自由对话 <small>原型 · 对话内应用窗口</small></div>
+  <div class="seg-wrap">
+    <span class="lbl">钉住位置</span>
+    <div class="seg" id="segPin">
+      <button data-v="top">顶部工作区</button>
+      <button data-v="side" class="on">右侧工作区</button>
+    </div>
+    <span class="lbl">上下文注入</span>
+    <div class="seg" id="segInject">
+      <button data-v="full">全文</button>
+      <button data-v="ref" class="on">引用+按需</button>
+    </div>
+  </div>
+</div>
+
+<div class="stage">
+  <div class="chat">
+    <div class="pinned-bar" id="pinnedBar">
+      <div class="pinned-head">📌 已钉住 <span class="live">· 不随对话滚动</span></div>
+      <div id="pinnedHost"></div>
+    </div>
+    <div class="stream" id="stream"></div>
+    <div class="composer">
+      <div class="ctx-row" id="ctxRow"></div>
+      <div class="input-row">
+        <textarea id="input" placeholder="发消息…（点一下上面的窗口，提示词就会和它关联）"></textarea>
+        <button class="send-btn" id="sendBtn">发送</button>
+      </div>
+      <div class="hint">
+        <span><b>点窗口</b> = 选中为上下文</span>
+        <span><b>📌</b> = 钉住不滚动</span>
+        <span><b>⧉</b> = 变浮窗可拖</span>
+        <span><b>拖标题栏</b> = 直接拖出来</span>
+      </div>
+    </div>
+  </div>
+  <aside class="side" id="sideBar">
+    <div class="side-head">📌 已钉住 <span style="color:var(--green)">· 不随对话滚动</span></div>
+    <div id="sideHost" style="display:flex;flex-direction:column;gap:10px"></div>
+  </aside>
+</div>
+
+<div id="floatLayer"></div>
+
+<script>
+(function(){
+'use strict';
+
+/* ── 数据：三个模拟的 ACMS 应用 ── */
+var APPS = {
+  w1: {icon:'📄', name:'Q3季度报告.docx', kind:'doc',  app:'Word 编辑器'},
+  w2: {icon:'🖼️', name:'封面设计.png',    kind:'image',app:'图片编辑器'},
+  w3: {icon:'</>', name:'scrape.py',       kind:'code', app:'代码编辑器'}
+};
+
+var DOC_HTML =
+  '<h3>Q3 季度业务报告</h3>' +
+  '<p>本季度整体营收达成率 <span class="hl">112%</span>，环比增长 18.4%，主要由企业客户线拉动。</p>' +
+  '<p>新增付费客户 286 家，其中通过内容渠道进入的占比 41%，较上季度提升 9 个百分点。</p>' +
+  '<p>下季度重点：优化新客首月留存，目标从 63% 提升至 72%。</p>';
+
+var IMG_SVG =
+  '<svg viewBox="0 0 320 170" xmlns="http://www.w3.org/2000/svg">' +
+  '<defs><linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">' +
+  '<stop offset="0" stop-color="#4a9eff"/><stop offset="1" stop-color="#8b7cff"/></linearGradient></defs>' +
+  '<rect width="320" height="170" rx="10" fill="#12141a"/>' +
+  '<circle cx="250" cy="30" r="52" fill="url(#g1)" opacity=".55"/>' +
+  '<circle cx="60" cy="150" r="40" fill="#3ecf8e" opacity=".28"/>' +
+  '<text x="22" y="72" fill="#fff" font-size="19" font-weight="700" font-family="sans-serif">Q3 Report</text>' +
+  '<text x="22" y="98" fill="#9ecbff" font-size="11.5" font-family="sans-serif">Business Review 2026</text>' +
+  '<rect x="22" y="120" width="74" height="20" rx="10" fill="url(#g1)"/>' +
+  '<text x="37" y="134" fill="#fff" font-size="10" font-family="sans-serif">稿件 v3</text></svg>';
+
+var CODE_HTML =
+  '<span class="c"># scrape.py — 抓取公告列表</span>\n' +
+  '<span class="k">import</span> requests\n' +
+  '<span class="k">from</span> bs4 <span class="k">import</span> BeautifulSoup\n\n' +
+  '<span class="k">def</span> <span class="f">fetch_list</span>(url):\n' +
+  '    r = requests.<span class="f">get</span>(url, timeout=<span class="n">10</span>)\n' +
+  '    soup = <span class="f">BeautifulSoup</span>(r.text, <span class="s">"html.parser"</span>)\n' +
+  '    <span class="k">return</span> [a.text.<span class="f">strip</span>() <span class="k">for</span> a <span class="k">in</span> soup.<span class="f">select</span>(<span class="s">".list a"</span>)]';
+
+/* ── 全局状态 ── */
+var state = {focus:null, pinPlace:'side', inject:'ref'};
+var wins = {};   // id -> win 对象（每个窗口 = 单实例 el）
+
+var stream = document.getElementById('stream');
+var pinnedBar = document.getElementById('pinnedBar');
+var pinnedHost = document.getElementById('pinnedHost');
+var sideBar = document.getElementById('sideBar');
+var sideHost = document.getElementById('sideHost');
+var floatLayer = document.getElementById('floatLayer');
+var ctxRow = document.getElementById('ctxRow');
+var input = document.getElementById('input');
+
+function esc(s){return String(s).replace(/[&<>"']/g,function(c){
+  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+
+/* ── 造一条历史消息 ── */
+function msg(role, html, withSlotId){
+  var wrap = document.createElement('div');
+  wrap.className = 'msg ' + role;
+  var inner = '<div class="bubble">' + html + '</div>';
+  if (withSlotId) {
+    inner = '<div class="msg-col"><div class="bubble">' + html + '</div>' +
+            '<div class="slot" id="' + withSlotId + '"></div>' +
+            '<div class="ghost" id="ghost-' + withSlotId + '" data-slot="' + withSlotId + '"></div></div>';
+  }
+  wrap.innerHTML = '<div class="av">' + (role === 'user' ? '多' : 'Q') + '</div>' + inner;
+  return wrap;
+}
+
+/* ── 初始化对话流（够长，才能感受"滚动时谁跟着走"）── */
+function seedChat(){
+  stream.appendChild(msg('user','帮我看看这份季报，重点看增长部分'));
+  stream.appendChild(msg('ai','好的，我把 <b>Q3季度报告.docx</b> 打开放在对话里了。你可以直接在里面改，改完告诉我，我会读你改后的版本。','slot-w1'));
+  stream.appendChild(msg('user','封面也一起看下，配色我觉得有点闷'));
+  stream.appendChild(msg('ai','收到，<b>封面设计.png</b> 也挂上了。这两份我会分别关联，你选哪个窗口，我就看哪个。','slot-w2'));
+  stream.appendChild(msg('user','另外把我昨天那个抓取脚本也拉进来，顺手 review 一下'));
+  stream.appendChild(msg('ai','已经把 <b>scrape.py</b> 打开了。','slot-w3'));
+  stream.appendChild(msg('ai','提醒一下：现在这三个窗口都是挂在对话流里的，往下滚它们会跟着走。如果你希望某个一直停在视野里，点标题栏的 📌。'));
+  stream.appendChild(msg('user','我先看看效果'));
+}
+
+/* ── 建窗口（单实例 · 可换父容器）── */
+function buildWindow(id){
+  var def = APPS[id];
+  var body = def.kind === 'doc'   ? '<div class="doc-paper" contenteditable="true" spellcheck="false">' + DOC_HTML + '</div>'
+           : def.kind === 'image' ? '<div class="img-wrap">' + IMG_SVG + '</div>'
+           : '<pre class="code-pre">' + CODE_HTML + '</pre>';
+
+  var el = document.createElement('div');
+  el.className = 'app-window mode-inline';
+  el.id = 'win-' + id;
+  el.dataset.win = id;
+  el.innerHTML =
+    '<div class="aw-titlebar">' +
+      '<span class="aw-icon">' + def.icon + '</span>' +
+      '<span class="aw-name">' + esc(def.name) + '</span>' +
+      '<div class="aw-btns">' +
+        '<button class="aw-btn" data-act="pin"   title="图钉：钉在对话里，不随滚动">📌</button>' +
+        '<button class="aw-btn" data-act="float" title="浮窗：拖出来自由移动">⧉</button>' +
+        '<button class="aw-btn danger" data-act="close" title="关闭">✕</button>' +
+      '</div>' +
+    '</div>' +
+    '<div class="aw-body">' + body + '</div>';
+
+  var win = {
+    id: id, def: def, el: el,
+    mode: 'inline',                       // inline | pinned | float
+    homeSlot: null,                       // 原本所在的对话槽位
+    pos: null                             // 浮窗坐标
+  };
+  wins[id] = win;
+
+  /* 点窗口任意处 → 选中为对话上下文 */
+  el.addEventListener('mousedown', function(){ setFocus(id); });
+
+  /* 标题栏按钮 */
+  el.querySelector('.aw-titlebar').addEventListener('click', function(e){
+    var btn = e.target.closest('.aw-btn');
+    if (!btn) return;
+    e.stopPropagation();
+    var act = btn.dataset.act;
+    if (act === 'pin')   togglePin(win);
+    if (act === 'float') toggleFloat(win);
+    if (act === 'close') closeWin(win);
+  });
+
+  enableDrag(win);
+  return win;
+}
+
+function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
+
+/* ── reparent（DOM 移动，不是克隆 —— 这是原型想验证的架构）── */
+function place(win, target, mode){
+  win.mode = mode;
+  win.el.className = 'app-window mode-' + mode + (state.focus === win.id ? ' focused' : '');
+  if (mode === 'float') {
+    if (!win.pos) {
+      var r = win.el.getBoundingClientRect();
+      win.pos = {x: clamp(r.left + 40, 16, Math.max(16, window.innerWidth - 556)),
+                 y: clamp(r.top - 30, 60, Math.max(60, window.innerHeight - 324))};
+    }
+    win.el.style.left = win.pos.x + 'px';
+    win.el.style.top  = win.pos.y + 'px';
+    target.appendChild(win.el);
+  } else {
+    win.el.style.left = win.el.style.top = '';
+    target.appendChild(win.el);
+  }
+  syncGhost();
+  syncPinBtn(win);
+}
+
+/* ── 归位占位（拖走了但记得它原来在哪）── */
+function syncGhost(){
+  Object.keys(wins).forEach(function(id){
+    var win = wins[id];
+    var g = document.getElementById('ghost-slot-' + id);
+    if (!g) return;
+    var gone = win.mode !== 'inline';
+    g.classList.toggle('show', gone);
+    if (gone) {
+      var where = win.mode === 'pinned'
+        ? (state.pinPlace === 'top' ? '已钉在顶部工作区' : '已钉在右侧工作区')
+        : '已变成浮窗';
+      g.innerHTML = win.def.icon + ' <b>' + esc(win.def.name) + '</b> · ' + where +
+                    ' <button data-restore="' + id + '">回到对话</button>';
+    }
+  });
+}
+
+/* ── 图钉 ── */
+function togglePin(win){
+  if (win.mode === 'pinned') {
+    place(win, win.homeSlot, 'inline');
+    toast(win.def.name + ' 已回到对话流');
+  } else {
+    place(win, state.pinPlace === 'top' ? pinnedHost : sideHost, 'pinned');
+    toast(win.def.name + ' 已钉住，不随滚动');
+  }
+  syncContainers();
+}
+
+/* ── 浮窗 ── */
+function toggleFloat(win){
+  if (win.mode === 'float') {
+    place(win, win.homeSlot, 'inline');
+    toast(win.def.name + ' 已停靠回对话');
+  } else {
+    place(win, floatLayer, 'float');
+    toast(win.def.name + ' 已弹出为浮窗，可拖动');
+  }
+  syncContainers();
+}
+
+function closeWin(win){
+  if (state.focus === win.id) setFocus(null);
+  win.el.remove();
+  var g = document.getElementById('ghost-slot-' + win.id);
+  if (g) g.remove();
+  delete wins[win.id];
+}
+
+/* ── 浮窗拖动（含"从对话里拖出来"手势）── */
+function enableDrag(win){
+  var bar = win.el.querySelector('.aw-titlebar');
+  bar.addEventListener('mousedown', function(e){
+    if (e.target.closest('.aw-btn')) return;
+    e.preventDefault();
+    var sx = e.clientX, sy = e.clientY, started = (win.mode === 'float');
+    var ox = win.pos ? win.pos.x : 0, oy = win.pos ? win.pos.y : 0;
+
+    function mv(ev){
+      var dx = ev.clientX - sx, dy = ev.clientY - sy;
+      if (!started) {
+        if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+        // 手势：从对话里拖出来 → 直接变浮窗
+        var r = win.el.getBoundingClientRect();
+        win.pos = {x: clamp(r.left, 16, Math.max(16, window.innerWidth - 556)),
+                   y: clamp(r.top, 60, Math.max(60, window.innerHeight - 324))};
+        place(win, floatLayer, 'float');
+        syncContainers();
+        started = true;
+        ox = win.pos.x; oy = win.pos.y;
+        toast(win.def.name + ' 已拖出为浮窗');
+      }
+      var nx = Math.max(0, Math.min(window.innerWidth - 80, ox + dx));
+      var ny = Math.max(0, Math.min(window.innerHeight - 40, oy + dy));
+      win.pos = {x: nx, y: ny};
+      win.el.style.left = nx + 'px';
+      win.el.style.top  = ny + 'px';
+    }
+    function up(){
+      document.removeEventListener('mousemove', mv);
+      document.removeEventListener('mouseup', up);
+    }
+    document.addEventListener('mousemove', mv);
+    document.addEventListener('mouseup', up);
+  });
+}
+
+/* ── 选中窗口 = 提示词关联 ── */
+function setFocus(id){
+  state.focus = id;
+  Object.keys(wins).forEach(function(k){
+    wins[k].el.classList.toggle('focused', k === id);
+  });
+  renderCtx();
+}
+
+function renderCtx(){
+  ctxRow.innerHTML = '';
+  if (!state.focus || !wins[state.focus]) return;
+  var def = wins[state.focus].def;
+  var chip = document.createElement('span');
+  chip.className = 'ctx-chip';
+  chip.innerHTML = def.icon + ' <b>' + esc(def.name) + '</b>' +
+    '<span style="opacity:.6">· ' + def.app + '</span>' +
+    '<span class="x" id="ctxX">✕</span>';
+  ctxRow.appendChild(chip);
+  document.getElementById('ctxX').onclick = function(e){
+    e.stopPropagation(); setFocus(null);
+  };
+}
+
+/* 点对话空白 → 取消选中 */
+stream.addEventListener('click', function(e){
+  if (!e.target.closest('.app-window') && !e.target.closest('.ghost')) setFocus(null);
+});
+
+/* ── 发送 ── */
+function send(){
+  var text = input.value.trim();
+  if (!text) return;
+  var fw = state.focus ? wins[state.focus] : null;
+
+  var u = document.createElement('div');
+  u.className = 'msg user';
+  u.innerHTML = '<div class="av">多</div><div class="bubble">' + esc(text) +
+    (fw ? '<div class="ref-tag">' + fw.def.icon + ' 关联 @' + esc(fw.def.name) + '</div>' : '') +
+    '</div>';
+  stream.appendChild(u);
+  input.value = '';
+
+  setTimeout(function(){
+    var note = '';
+    if (fw) {
+      note = state.inject === 'full'
+        ? '<div class="inject-note">📥 已把 <span class="k">' + esc(fw.def.name) + '</span> 全文读进上下文（约 1,240 字 / 1,860 tokens）</div>'
+        : '<div class="inject-note">🔗 已引用 <span class="k">@' + esc(fw.def.name) + '</span>，需要内容时我再去读（本次消耗 42 tokens）</div>';
+    }
+    var a = document.createElement('div');
+    a.className = 'msg ai';
+    a.innerHTML = '<div class="av">Q</div><div class="bubble">' +
+      (fw
+        ? '收到，我基于「' + esc(fw.def.name) + '」的内容来看——增长主要来自企业客户线这个判断是站得住的，不过新客首月留存那一项我建议单独拆一个看板。'
+        : '好的。（当前没有选中任何窗口，我按普通对话回复）') +
+      note + '</div>';
+    stream.appendChild(a);
+    stream.scrollTop = stream.scrollHeight;
+  }, 380);
+
+  stream.scrollTop = stream.scrollHeight;
+}
+
+/* ── 容器显隐 ── */
+function syncContainers(){
+  var pinnedCount = 0, sideCount = 0;
+  Object.keys(wins).forEach(function(k){
+    if (wins[k].mode === 'pinned') {
+      if (wins[k].el.parentElement === pinnedHost) pinnedCount++;
+      else sideCount++;
+    }
+  });
+  pinnedBar.classList.toggle('has', pinnedCount > 0);
+  sideBar.classList.toggle('has', sideCount > 0);
+}
+
+function syncPinBtn(win){
+  var b = win.el.querySelector('[data-act="pin"]');
+  if (b) b.classList.toggle('active', win.mode === 'pinned');
+  var f = win.el.querySelector('[data-act="float"]');
+  if (f) f.classList.toggle('active', win.mode === 'float');
+}
+
+/* ── 轻提示 ── */
+function toast(t){
+  var el = document.createElement('div');
+  el.textContent = t;
+  el.style.cssText = 'position:fixed;bottom:22px;left:50%;transform:translateX(-50%);' +
+    'background:#2b323d;border:1px solid #3c4553;color:#dfe4ea;font-size:12.5px;padding:8px 16px;' +
+    'border-radius:9px;z-index:2000;box-shadow:0 10px 30px rgba(0,0,0,.5);opacity:0;transition:opacity .18s';
+  document.body.appendChild(el);
+  requestAnimationFrame(function(){ el.style.opacity = '1'; });
+  setTimeout(function(){
+    el.style.opacity = '0';
+    setTimeout(function(){ el.remove(); }, 220);
+  }, 1900);
+}
+
+/* ── 开关 ── */
+function bindSeg(segId, key, after){
+  var seg = document.getElementById(segId);
+  seg.addEventListener('click', function(e){
+    var b = e.target.closest('button');
+    if (!b) return;
+    seg.querySelectorAll('button').forEach(function(x){ x.classList.remove('on'); });
+    b.classList.add('on');
+    state[key] = b.dataset.v;
+    if (after) after();
+  });
+}
+
+/* ── 启动 ── */
+seedChat();
+
+var w1 = buildWindow('w1'); w1.homeSlot = document.getElementById('slot-w1'); w1.homeSlot.appendChild(w1.el);
+var w2 = buildWindow('w2'); w2.homeSlot = document.getElementById('slot-w2'); w2.homeSlot.appendChild(w2.el);
+var w3 = buildWindow('w3'); w3.homeSlot = document.getElementById('slot-w3'); w3.homeSlot.appendChild(w3.el);
+
+/* 归位按钮（事件委托） */
+stream.addEventListener('click', function(e){
+  var b = e.target.closest('[data-restore]');
+  if (!b) return;
+  var win = wins[b.dataset.restore];
+  if (win) { place(win, win.homeSlot, 'inline'); syncContainers(); toast(win.def.name + ' 已回到对话流'); }
+});
+
+bindSeg('segPin', 'pinPlace', function(){
+  Object.keys(wins).forEach(function(k){
+    var w = wins[k];
+    if (w.mode === 'pinned') w.el.parentElement.appendChild(w.el);
+  });
+  syncGhost();
+});
+bindSeg('segInject', 'inject');
+
+document.getElementById('sendBtn').onclick = send;
+input.addEventListener('keydown', function(e){
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+});
+
+setTimeout(function(){ document.getElementById('slot-w1').scrollIntoView({block:'center'}); }, 120);
+})();
+</script>
+</body>
+</html>
