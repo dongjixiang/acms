@@ -408,6 +408,9 @@
     place = place || _pinPlace();
     var body = _pinBody(stream, place);
     if (!body || !window.ACMSWin || !ACMSWin.dockTo) return false;
+    // v0.121h: 记住钉住前的形态 —— 取消钉住要回到那个形态，
+    //   不能无脑内嵌（浮窗→钉住→取消 会跑到消息流末尾变成"新窗口"，实测踩到）
+    if (!w._prePinMode) w._prePinMode = (w._dock && w._dock.mode) ? w._dock.mode : 'float';
     var slot = document.getElementById('chat-pin-slot-' + w.id);
     if (!slot) {
       slot = document.createElement('div');
@@ -434,13 +437,25 @@
   function unpin(w, stream) {
     if (!w || !w._dock) return;
     var slot = document.getElementById('chat-pin-slot-' + w.id);
-    ACMSWin.undock(w);
+    var preMode = w._prePinMode || 'embed';
+    w._prePinMode = null;
+    ACMSWin.undock(w);          // undock 会把 _dockHome（钉住前的位置/尺寸）还回来
     if (slot) slot.remove();
     _syncPinBtn(w, false);
     _showPinZone(stream, _pinPlace());
-    // 回到消息流末尾重新内嵌
     var reqId = (stream.getAttribute('id') || '').replace('chat-stream-msgs-', '');
-    dockIntoChat(w, { name: w.st.titleOverride || w.st.title || '窗口', path: null }, reqId);
+
+    if (preMode === 'embed') {
+      // 钉之前就嵌在对话里 → 回到消息流
+      dockIntoChat(w, { name: w.st.titleOverride || w.st.title || '窗口', path: null }, reqId);
+    } else {
+      // 钉之前是浮窗 → 留在浮窗原位（位置已由 undock 恢复），
+      //   顺带清掉消息流里那个归位占位（窗口已经不在对话里了）
+      var oldSlot = w._chatDockSlot;
+      if (oldSlot && oldSlot.parentNode) oldSlot.remove();
+      w._chatDockSlot = null;
+      if (window.ACMSWin && ACMSWin.syncDock) { try { ACMSWin.syncDock(w); } catch (e) {} }
+    }
   }
 
   // ── v0.121g: 面板右上角常驻开关（对齐原型顶栏的两组 seg）──
