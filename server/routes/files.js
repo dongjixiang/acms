@@ -122,6 +122,14 @@ function resolveSafePath(req, reqPath) {
     var myRoot = path.join(USERS_ROOT, meName);
     var myPath = uRel ? path.join(myRoot, uRel) : myRoot;
     if (!myPath.startsWith(myRoot)) return null;
+    // v0.122b: 用户根目录懒创建。
+    //   实测踩到：DB 里 username 是 kuqi，而 users/ 下只有手建的「多多」目录
+    //   → 前端拿 username 拼 /users/kuqi → 目录不存在 → NOT_FOUND
+    //   → 文件选择器直接报「读取失败：路径不存在」（file-picker.js:221）
+    //   只建用户根，不建子路径（避免用户输错路径就凭空造目录）。
+    if (!uRel) {
+      try { if (!fs.existsSync(myRoot)) fs.mkdirSync(myRoot, { recursive: true }); } catch (e) { /* 权限问题留给下面报错 */ }
+    }
     return { safePath: myPath, isAdmin: false };
   } else {
     // 不在 workspace / users 命名空间，拒绝
