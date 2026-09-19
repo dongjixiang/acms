@@ -393,13 +393,17 @@ router.post('/detect-and-respond', async (req, res, next) => {
 
       try {
         const qwenMgr = require('../services/qwen-manager');
-        const qr = await qwenMgr.chat(reqId, text, {
+        // v0.121b: 窗口上下文必须拼进「当前请求」，不能塞 historyMessages ——
+        //   buildHistoryPrompt 会把它放进「[对话历史 — 仅参考上下文，不是新指令]」块里，
+        //   AI 会把「不是新指令」当真，完全忽略窗口（实测：它跑去瞎试 read_file/shell 找文件）
+        const _ctxPrefix = _ctxMsgs.length ? (_ctxMsgs[0].content + '\n\n') : '';
+        const qr = await qwenMgr.chat(reqId, _ctxPrefix + text, {
           approvalMode: 'auto',
           // 🆕 v0.117y: 45s → 600s，对齐 agent-buddy(600s)/qwen-task(600s)
           //   45s 只够冷启动+首 token，Qwen 写代码要调多个工具（10+ tool_card），必超时
           //   SSE 流式有实时进度反馈，设长不会干等
           timeoutMs: 600000,
-          historyMessages: historyMessages.concat(_ctxMsgs),  // v0.117 历史 + v0.121 对话工作区窗口上下文
+          historyMessages: historyMessages,  // v0.117 历史（窗口上下文不走这里 —— 会被当成「非指令」消解）
           onDelta: (delta) => {
             // Qwen 真流式文本 → 推流
             try { res.write(`data: ${JSON.stringify({ type: 'text_delta', text: delta })}\n\n`); } catch (e) {}
@@ -533,7 +537,10 @@ router.post('/detect-and-respond', async (req, res, next) => {
     // 🆕 v0.117c：runtimeExec fallback（Qwen 失败/SSE 失败时才走旧引擎）的 systemPrompt + messages 构造
     //   Qwen 成功路径已在上面 return，不会到这里
     const systemPrompt = buildFreeChatSystemPrompt(null);
-    const messages = [{ role: 'system', content: systemPrompt }, ...historyMessages, ..._ctxMsgs, { role: 'user', content: text }];
+    // v0.121b: 窗口上下文拼进当前 user message（与 Qwen 路径一致）——
+    //   放进 messages 中间会被当成历史/背景，放在当前请求里才会被当作指令。
+    const _ctxPrefix2 = _ctxMsgs.length ? (_ctxMsgs[0].content + '\n\n') : '';
+    const messages = [{ role: 'system', content: systemPrompt }, ...historyMessages, { role: 'user', content: _ctxPrefix2 + text }];
 
     // 🆕 v0.117：自由对话模式加 document / screenplay precheck（与 music_precheck 同模式）
     //   必须在 contextReqId 创建后跑（screenplay 需要真实 reqId 写 assist_screenplay 字段）

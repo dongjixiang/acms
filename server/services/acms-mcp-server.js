@@ -496,6 +496,10 @@ async function handleCall(toolName, args) {
       }
       case 'read_window_content': {
         // v0.121: 读对话工作区窗口正文（复用 tool-registry 里注册的同一实现，避免两套逻辑漂移）
+        // ⚠️ P178 坑：MCP server 是独立进程，不经过 tools/index.js 的注册流程 →
+        //   必须先 require 工具文件触发 registerTool，否则 getTool 返回 null，
+        //   工具回 TOOL_NOT_REGISTERED，AI 拿到错误会转去瞎试 run_shell_command 找文件（实测）
+        require('../tools/read-window-content');
         const tr = require('../services/tool-registry');
         const t = tr.getTool ? tr.getTool('read_window_content') : null;
         if (!t || !t.handler) return toolResult({ error: 'TOOL_NOT_REGISTERED' });
