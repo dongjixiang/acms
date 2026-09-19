@@ -271,7 +271,10 @@
   function _winById(id) {
     if (!window.ACMSWin || !ACMSWin.getWindows) return null;
     var ws = ACMSWin.getWindows();
-    for (var i = 0; i < ws.length; i++) { if (ws[i].id === id) return ws[i]; }
+    // v0.122: 兼容 w.uid —— 窗口上下文现在存的是 uid（全局唯一），不再是 aw-N
+    for (var i = 0; i < ws.length; i++) {
+      if (ws[i].id === id || (ws[i].uid && ws[i].uid === id)) return ws[i];
+    }
     return null;
   }
 
@@ -523,7 +526,7 @@
     mode = mode === 'full' ? 'full' : 'ref';
     try { localStorage.setItem(INJECT_KEY, mode); } catch (e) {}
     var stream = _streamFor(reqId) || _visibleStream();
-    var w = (_activeCtx && _activeCtx.windowId) ? _winById(_activeCtx.windowId) : null;
+    var w = (_activeCtx && (_activeCtx.windowUid || _activeCtx.windowId)) ? _winById(_activeCtx.windowUid || _activeCtx.windowId) : null;
     if (stream && w) setActiveCtx(stream, w);   // 重新注册（后端按会话记模式）
     else _refreshEmbedTools();
   };
@@ -541,6 +544,7 @@
   //   点窗口 → 输入框上方出现 chip + 注册到后端（后端拼 prompt 时把"当前选中窗口"写进系统上下文）
   //   注册走 /api/chat/session-ctx，避免改 chat.js 的发送路径（那是兄弟 agent 的高频改动文件）
   var _activeCtx = null;
+  var _activeStream = null;   // v0.122: 当前关联的流容器（发消息前刷新 docContext 要用）
   var INJECT_KEY = 'acms-chat-inject-mode';
   function _injectMode() {
     try { return localStorage.getItem(INJECT_KEY) === 'full' ? 'full' : 'ref'; } catch (e) { return 'ref'; }
@@ -580,18 +584,73 @@
   function setActiveCtx(stream, w) {
     if (!stream || !w) return;
     var info = {
-      windowId: w.id,
+      // v0.122: windowId 传 uid（全局唯一，刷新/多标签页都不复用）
+    //   旧实现传 w.id（aw-N，per-页面计数器）→ 后端持久化后会指向别的窗口
+      windowId: w.uid || w.id,
+      windowUid: w.uid || null,
+      kind: _kindOfView(w.view),
       view: w.view,
       name: w.st.titleOverride || w.st.title || '窗口',
       filePath: (w._dockItem && w._dockItem.path) || null,
       fileId: w._fileId || null,
       injectMode: _injectMode(),
+      docContext: _readDocContext(w),   // v0.122: 编辑器内存态快照（含未保存改动 + 单元格地址）
     };
     _activeCtx = info;
+    _activeStream = stream;   // v0.122
     renderCtxChip(stream, info);
     _refreshEmbedTools();
-    try { api('POST', '/chat-sessions/' + _streamIdOf(stream) + '/ctx', { ctx: info }); } catch (e) {}
+    _pushCtx(info);
   }
+
+  // v0.122: 把正在关联的窗口 + 其内存态报到后端（chat_window_ctx）
+  function _pushCtx(info) {
+    try {
+      if (!_activeStream) return Promise.resolve(null);
+      var sid = _streamIdOf(_activeStream);
+      if (!sid) return Promise.resolve(null);
+      return api('POST', '/chat-sessions/' + sid + '/ctx', { ctx: info });
+    } catch (e) { return Promise.resolve(null); }
+  }
+
+  // v0.122: view 名 → adapter kind
+  function _kindOfView(view) {
+    var v = String(view || '');
+    if (v.indexOf('xlsx') >= 0 || v.indexOf('excel') >= 0) return 'xlsx';
+    if (v.indexOf('word') >= 0) return 'word';
+    if (v.indexOf('pptx') >= 0 || v.indexOf('slides') >= 0) return 'slides';
+    return null;
+  }
+
+  // v0.122: 读编辑器内存态（走窗口操作通道，与 AI 的写入同源）
+  function _readDocContext(w) {
+    try {
+      if (!window.WindowActionBridge || !w || !w.uid) return null;
+      var r = window.WindowActionBridge.read(w.uid, {});
+      if (r && r.ok && r.doc) return { kind: r.kind || _kindOfView(w.view), doc: r.doc };
+    } catch (e) { console.warn('[file-picker] read docContext 失败:', e.message); }
+    return null;
+  }
+
+  // v0.122: 供发送链路调用 —— 发消息前刷新一次，保证后端拿到的是最新内存态
+  window.ChatWindowCtx = {
+    // 发消息前调用：重读一次编辑器内存态并上报（保证后端拿到最新内容）
+    // 返回 Promise —— 调用方 await 以确保「上报」先于「发消息」到达后端
+    refresh: function () {
+      try {
+        if (!_activeCtx || !_activeCtx.windowUid) return Promise.resolve(null);
+        var w = null;
+        if (window.ACMSWin && ACMSWin.getWindows) {
+          w = ACMSWin.getWindows().find(function (x) { return x.uid === _activeCtx.windowUid; });
+        }
+        if (!w) return Promise.resolve(null);
+        _activeCtx.docContext = _readDocContext(w);
+        _activeCtx.injectMode = _injectMode();
+        return _pushCtx(_activeCtx).then(function () { return _activeCtx; }, function () { return _activeCtx; });
+      } catch (e) { return Promise.resolve(null); }
+    },
+    get: function () { return _activeCtx; },
+  };
 
   // ── 用匹配的 ACMS 应用打开 ──
   function openFile(item, opts) {

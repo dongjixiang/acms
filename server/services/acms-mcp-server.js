@@ -394,7 +394,8 @@ const TOOLS = [
     description: '读取用户在「对话工作区」里打开的文件窗口（Word/Excel/PPT/代码/文本）的正文内容。'
       + '当用户的问题需要基于他正在看的文件来回答时才调用 —— 上下文里只有文件名和 windowId，没有正文。'
       + 'windowId 必须从对话上下文的「[对话工作区]」段落里取，不要自己编。'
-      + 'docx/xlsx/pptx 会经 pandoc 转成纯文本返回；只读，不会改用户的文件。',
+      + '【拿到的是编辑器当前内存态】—— 含用户尚未保存的改动；表格类会带单元格地址，可直接用于 window_action。'
+      + '只读，不会改用户的文件。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -403,6 +404,29 @@ const TOOLS = [
         maxChars: { type: 'number', description: '最多返回多少字符（默认 20000）' },
       },
       required: ['windowId'],
+    },
+  },
+  {
+    name: 'window_action',
+    description: '把编辑动作应用到用户在「对话工作区」里打开的窗口（Excel/Word/PPT）。'
+      + '【改的是编辑器内存态，不是磁盘文件】—— 改完立刻可见、用户可 Ctrl+Z 撤销、由用户自己保存，'
+      + '所以成功后**不要说"已保存"**，要说"已应用到窗口、可撤销、需要时自行保存"。'
+      + '先调 read_window_content 拿当前内存态（表格带单元格地址），据此算精确 range 再调本工具，不要编造地址。'
+      + '单次只能提交一类 op（format/content/structural/layout/charts/data），混类会被拒绝。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        windowUid: { type: 'string', description: '目标窗口 uid（形如 "w-tkil-1-zbd8"，来自对话工作区上下文）' },
+        windowId: { type: 'string', description: '兼容字段：窗口 id（形如 "aw-2"）' },
+        kind: { type: 'string', description: '窗口类型：xlsx | word | slides' },
+        summary: { type: 'string', description: '一句话说明这次做什么（显示给用户）' },
+        operations: {
+          type: 'array',
+          description: '编辑动作列表，单次同一类 op。例：[{op:"format_range", sheetId:"sheet-1", range:"E5:E5", format:{fontColor:"#FF0000"}}]',
+          items: { type: 'object' },
+        },
+      },
+      required: ['operations'],
     },
   },
 ];
@@ -506,6 +530,20 @@ async function handleCall(toolName, args) {
         if (!t || !t.handler) return toolResult({ error: 'TOOL_NOT_REGISTERED' });
         const out = await t.handler({ windowId: args.windowId, sessionId: args.sessionId, maxChars: args.maxChars }, {});
         return toolResult(out);
+      }
+      case 'window_action': {
+        // v0.122: 窗口编辑动作。本工具只做校验+组装，真正的 apply 在浏览器侧
+        //   （chat-intent 会据 pendingApply 往 SSE 补推 office_action_apply → 前端 WindowActionBridge.apply）
+        // ⚠️ P178 坑同上：MCP 是独立进程，必须先 require 触发 registerTool
+        require('../tools/window-action');
+        const tr2 = require('../services/tool-registry');
+        const t2 = tr2.getTool ? tr2.getTool('window_action') : null;
+        if (!t2 || !t2.handler) return toolResult({ error: 'TOOL_NOT_REGISTERED' });
+        const out2 = await t2.handler({
+          windowUid: args.windowUid, windowId: args.windowId,
+          kind: args.kind, summary: args.summary, operations: args.operations,
+        }, {});
+        return toolResult(out2);
       }
       case 'acms_workspace_write_file': {
         const ws = require('../services/workspace-service');

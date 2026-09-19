@@ -320,6 +320,10 @@ function upsertWindowCtx(sessionId, ctx) {
   //   所以注册时必须把同 window_id 的其它会话记录清掉（这个 id 现在归当前会话了）。
   try { col.remove(r => r.window_id === ctx.windowId && r.session_id !== sessionId); } catch (e) {}
   const where = r => r.session_id === sessionId && r.window_id === ctx.windowId;
+  // v0.122: 窗口操作通道 —— 前端把编辑器内存态的 docContext 一并报上来
+  //   （read 走它而不是后端 pandoc 读磁盘：磁盘是「已保存版」且丢样式、丢单元格地址）
+  const _docCtx = ctx.docContext || null;
+  const _docCtxStr = _docCtx ? String(typeof _docCtx === 'string' ? _docCtx : JSON.stringify(_docCtx)) : null;
   const doc = {
     session_id: sessionId,
     window_id: ctx.windowId,
@@ -327,6 +331,9 @@ function upsertWindowCtx(sessionId, ctx) {
     name: ctx.name || null,
     file_path: ctx.filePath || null,
     file_id: ctx.fileId || null,
+    kind: ctx.kind || null,                 // v0.122: xlsx | word | slides | code | image
+    doc_context: _docCtxStr ? _docCtxStr.slice(0, 400000) : null,  // v0.122: 编辑器内存态快照
+    doc_context_at: _docCtxStr ? nowIso() : null,
     inject_mode: ctx.injectMode === 'full' ? 'full' : 'ref',   // v0.121d: ref(引用+按需) | full(直接带正文)
     active: 1,
     updated_at: nowIso(),

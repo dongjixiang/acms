@@ -433,17 +433,21 @@ function renderOfficeActionApplyBubble(reqId, jsonText) {
   if (payload.type !== 'office_action_apply') {
     return `<div class="chat-system-msg">${escHtml((jsonText || '').slice(0, 100))}</div>`;
   }
-  // 调 office-v3-bridge 暴露的 applyOfficeAction（复用 runAction 链路）
+  // v0.122: 优先走 WindowActionBridge 按 **uid** 定位（治多窗口串台）；
+  //   旧路径 applyOfficeAction 只认 kind ⇒ 两个 Excel 窗口时会改错那个
   let result;
   try {
-    if (window.OfficeV3 && typeof window.OfficeV3.applyOfficeAction === 'function') {
+    const _uid = payload.windowUid || payload.windowId || null;
+    if (_uid && window.WindowActionBridge) {
+      result = window.WindowActionBridge.apply(_uid, payload.action);
+    } else if (window.OfficeV3 && typeof window.OfficeV3.applyOfficeAction === 'function') {
       result = window.OfficeV3.applyOfficeAction({
         kind: payload.kind,
         action: payload.action,
         summary: payload.summary,
       });
     } else {
-      result = { ok: false, error: 'OfficeV3 未加载' };
+      result = { ok: false, error: 'OfficeV3 / WindowActionBridge 均未加载' };
     }
   } catch (e) {
     result = { ok: false, error: e.message };
@@ -1790,6 +1794,37 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
               window.ACMSQwenToolCard.handleToolCard(evt);
             }
             _lastBubbleEvent = 'tool_card';
+          } else if (evt.type === 'office_action_apply') {
+            // v0.122: AI 的窗口编辑动作 → 应用到**目标窗口**（按 windowUid，不按 kind，避免串台）
+            //   改的是编辑器内存态：立刻可见、可 Ctrl+Z 撤销、由用户自己保存
+            if (_lastBubbleEvent === 'text') finalizeCurrentBubble();
+            try {
+              var _uid = evt.windowUid || null;
+              var _res;
+              if (!window.WindowActionBridge) {
+                _res = { ok: false, error: 'NO_BRIDGE', message: 'WindowActionBridge 未加载' };
+              } else if (!_uid) {
+                _res = { ok: false, error: 'NO_WINDOW_UID', message: '动作没带目标窗口 uid' };
+              } else {
+                _res = window.WindowActionBridge.apply(_uid, evt.action);
+              }
+              var _ok = !!(_res && _res.ok);
+              var _msg = evt.summary || 'AI 编辑';
+              if (_ok) {
+                _msg += '（已应用到窗口 · 可 Ctrl+Z 撤销 · 需要时自行保存）';
+              } else {
+                _msg += ' — ' + ((_res && (_res.message || _res.error)) || '应用失败');
+              }
+              var _bub = document.createElement('div');
+              _bub.className = 'chat-system-msg';
+              _bub.style.color = _ok ? 'var(--success,#2da44e)' : 'var(--error,#cf222e)';
+              _bub.textContent = (_ok ? '✅ ' : '❌ ') + _msg;
+              if (c) {
+                c.appendChild(_bub);
+                if (typeof chatScrollToBottom === 'function') chatScrollToBottom(c);
+              }
+              _lastBubbleEvent = 'office_action_apply';
+            } catch (eA) { console.warn('[chat] office_action_apply 失败:', eA.message); }
           } else if (evt.type === 'thinking') {
             if (window.ACMSQwenToolCard && window.ACMSQwenToolCard.handleThinking) {
               window.ACMSQwenToolCard.handleThinking(evt);
@@ -1900,6 +1935,13 @@ async function handleFreeChatSSE(reqId, resp, typingEl) {
 }
 
 async function chatSendDetect(reqId, text) {
+  // v0.122: 发消息前把「对话工作区里选中窗口」的最新内存态上报给后端
+  //   后端据此拼上下文（AI 看到的是编辑器当前内容，含未保存改动 + 单元格地址）
+  //   必须 await —— 否则消息可能先于上报到达，后端注入的是上一次的快照
+  try {
+    if (window.ChatWindowCtx && window.ChatWindowCtx.refresh) await window.ChatWindowCtx.refresh();
+  } catch (e) { /* 没关联窗口时静默 */ }
+
   // 检测 URL（用于客户端展示关联状态卡）
   const urls = extractUrls(text);
   const c = document.getElementById(`chat-stream-msgs-${reqId}`);

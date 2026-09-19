@@ -18,6 +18,7 @@ require('./web');
 require('./external-api');
 require('./leisure');
 require('./read-window-content');   // v0.121 读取对话工作区窗口内容
+require('./window-action');         // v0.122 窗口操作（AI 改编辑器内存态，可撤销）
 require('./agent/read');
 require('./agent/write');
 require('./agent/patch');

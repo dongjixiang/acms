@@ -438,6 +438,27 @@ router.post('/detect-and-respond', async (req, res, next) => {
               } else if (evt.type === 'tool_use_end') {
                 if (_qwenToolTracker[evt.tool_use_id]) _qwenToolTracker[evt.tool_use_id].input = evt.input;
                 adapted = { type: 'tool_card', phase: 'input_complete', tool_use_id: evt.tool_use_id, tool_name: evt.tool_name, input: evt.input };
+                // v0.122: window_action → 补推一条 apply 指令给前端
+                //   为什么在这里：工具结果既不落库也不推 result 事件（只推 input_complete），
+                //   而窗口编辑动作必须真的在浏览器里执行（文档活在前端编辑器实例里）。
+                //   AI 的入参里已经带齐 windowUid/kind/operations，直接转发即可。
+                try {
+                  if (evt.tool_name && /window_action$/.test(String(evt.tool_name))) {
+                    var _waIn = evt.input;
+                    if (typeof _waIn === 'string') { try { _waIn = JSON.parse(_waIn); } catch (e2) { _waIn = null; } }
+                    if (_waIn && _waIn.operations && _waIn.operations.length) {
+                      res.write(`data: ${JSON.stringify({
+                        type: 'office_action_apply',
+                        windowUid: _waIn.windowUid || _waIn.windowId || null,
+                        kind: _waIn.kind || null,
+                        action: { op: 'propose', operations: _waIn.operations, summary: _waIn.summary || 'AI 编辑' },
+                        summary: _waIn.summary || 'AI 编辑',
+                        toolUseId: evt.tool_use_id,
+                      })}\n\n`);
+                      console.log('[detect-and-respond] window_action → 已推 office_action_apply', _waIn.windowUid || _waIn.windowId, (_waIn.operations || []).length + ' ops');
+                    }
+                  }
+                } catch (e3) { console.warn('[detect-and-respond] 推 office_action_apply 失败:', e3.message); }
 // 分段8/20: onEvent后半+end事件+return (L336-370)
               } else if (evt.type === 'tool_result') {
                 if (_qwenToolTracker[evt.tool_use_id]) {
