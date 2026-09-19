@@ -67,6 +67,21 @@ router.get('/:id/messages', (req, res) => {
 //   body: { mode: 'all'|'user'|'assistant'|'system'|'ai'|'selected', indices?: [...], cardIndices?: [...] }
 //   v0.22.51：indices = chat_messages 下标；cardIndices = 隐藏 requirement supplement_history 下标
 //             （自由对话的工具卡片存在后者，必须一起清，否则卡片清不掉）
+// v0.121: 对话工作区窗口上下文注册（前端 file-picker 打开/选中窗口时调）
+//   body.ctx = null → 清除该会话的窗口上下文
+router.post('/:id/ctx', (req, res) => {
+  try {
+    const svc = require('../services/chat-session-service');
+    const ctx = (req.body && req.body.ctx) || null;
+    if (!ctx) { svc.clearWindowCtx(req.params.id); return res.json({ ok: true, cleared: true }); }
+    const doc = svc.upsertWindowCtx(req.params.id, ctx);
+    res.json({ ok: true, ctx: doc });
+  } catch (e) {
+    console.error('[chat-sessions] ctx error:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 router.post('/:id/clean', (req, res) => {
   try {
     const { mode = 'all', indices, cardIndices } = req.body || {};

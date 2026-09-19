@@ -932,6 +932,24 @@
     w.el.style.height = sr.height + 'px';
     var host = w._dock.hostWin;
     if (host && host.st && host.st.z) w.el.style.zIndex = (host.st.z + 1);
+    // v0.121b: 被宿主滚动容器裁切 —— 槽位滚出可视区时窗口不该溢到对话面板外
+    _applyDockClip(w, sr, w._dock.clipEl || slot.parentElement);
+  }
+
+  // 用 clip-path 模拟"被消息流容器裁掉"，保持窗口原尺寸（压缩尺寸会毁掉编辑器布局）
+  function _applyDockClip(w, sr, clipEl) {
+    if (!clipEl || !document.body.contains(clipEl)) { w.el.style.clipPath = ''; w.el.style.pointerEvents = ''; return; }
+    var cr = clipEl.getBoundingClientRect();
+    var top = Math.max(0, cr.top - sr.top);
+    var right = Math.max(0, sr.right - cr.right);
+    var bottom = Math.max(0, sr.bottom - cr.bottom);
+    var left = Math.max(0, cr.left - sr.left);
+    w.el.style.clipPath = (top || right || bottom || left)
+      ? 'inset(' + top + 'px ' + right + 'px ' + bottom + 'px ' + left + 'px)' : '';
+    // 完全滚出 → 关闭交互，避免点到看不见的窗口
+    var fullyOut = (cr.bottom <= sr.top) || (cr.top >= sr.bottom) ||
+                   (cr.right <= sr.left) || (cr.left >= sr.right);
+    w.el.style.pointerEvents = fullyOut ? 'none' : '';
   }
 
   function _dockTick() {
@@ -968,6 +986,8 @@
       hostWin: opts.hostWin || findHostWin(slotEl),
     };
     w.el.classList.add('aw-docked');
+    // 先清旧的 mode class —— 只 add 不移除会导致 embed/pin 叠加（实测踩到）
+    w.el.classList.remove('aw-docked-embed', 'aw-docked-pin');
     w.el.classList.add('aw-docked-' + w._dock.mode);
     if (_docked.indexOf(w) < 0) _docked.push(w);
     syncDock(w);
@@ -978,6 +998,8 @@
   function undock(w) {
     if (!w || !w._dock) return false;
     w.el.classList.remove('aw-docked', 'aw-docked-embed', 'aw-docked-pin');
+    w.el.style.clipPath = '';
+    w.el.style.pointerEvents = '';
     w._dock = null;
     _docked = _docked.filter(function (x) { return x !== w; });
     if (w._dockHome) {

@@ -307,6 +307,44 @@ function getOrCreateSessionRequirement(sessionId) {
   }
 }
 
+// ── v0.121 对话工作区窗口上下文 ──
+//   前端 file-picker 打开/选中窗口时注册（POST /:id/ctx）；
+//   chat-intent 拼 prompt 时读 active 那条，只注入"当前选中窗口"的引用（正文按需 read_window_content 读）
+function upsertWindowCtx(sessionId, ctx) {
+  if (!sessionId || !ctx || !ctx.windowId) return null;
+  const col = collection('chat_window_ctx');
+  const where = r => r.session_id === sessionId && r.window_id === ctx.windowId;
+  const doc = {
+    session_id: sessionId,
+    window_id: ctx.windowId,
+    view: ctx.view || null,
+    name: ctx.name || null,
+    file_path: ctx.filePath || null,
+    file_id: ctx.fileId || null,
+    active: 1,
+    updated_at: nowIso(),
+  };
+  if (col.findOne(where)) col.update(where, doc);
+  else col.insert(doc);
+  // 同一会话只保留一个 active
+  col.update(r => r.session_id === sessionId && r.window_id !== ctx.windowId, { active: 0 });
+  return doc;
+}
+
+function getActiveWindow(sessionId) {
+  try { return collection('chat_window_ctx').findOne(r => r.session_id === sessionId && r.active === 1) || null; }
+  catch (e) { return null; }
+}
+
+function getWindowById(windowId) {
+  try { return collection('chat_window_ctx').findOne(r => r.window_id === windowId) || null; }
+  catch (e) { return null; }
+}
+
+function clearWindowCtx(sessionId) {
+  try { collection('chat_window_ctx').remove(r => r.session_id === sessionId); } catch (e) {}
+}
+
 // ── Messages ──
 
 function appendMessage(sessionId, role, content, meta) {
@@ -356,6 +394,11 @@ function generateAutoTitle(firstUserMsg, currentTitle) {
 // ── 导出 ──
 
 module.exports = {
+  // v0.121 对话工作区窗口上下文
+  upsertWindowCtx,
+  getActiveWindow,
+  getWindowById,
+  clearWindowCtx,
   // ID / 时间
   newSessionId,
   nowIso,

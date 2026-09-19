@@ -7138,12 +7138,57 @@ body { padding-bottom: 40px; }
   display: none;                 /* 内嵌态尺寸由槽位决定，禁用八向缩放 */
 }
 
+/* ── v0.121: 钉住工作区（顶部 / 右侧）—— 不随对话滚动 ──
+   位置偏好存 localStorage('acms-chat-pin-place')，默认右侧，用面板头部的 ⇄ 切换 */
+.chat-stream-row { flex: 1; min-height: 0; }
+.chat-pin-zone {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.10);
+}
+.chat-pin-zone-top { border-bottom: 1px solid var(--border); margin-bottom: 8px; }
+.chat-pin-zone-side { width: min(320px, 42%); border-left: 1px solid var(--border); margin-left: 8px; }
+.chat-pin-head {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; color: var(--text3); padding: 6px 10px; flex: 0 0 auto;
+}
+.chat-pin-head .chat-pin-sub { opacity: 0.7; }
+.chat-pin-switch {
+  margin-left: auto; background: transparent; border: 1px solid var(--border);
+  color: var(--text2); border-radius: 6px; cursor: pointer; font-size: 11px;
+  padding: 1px 7px; font-family: inherit;
+}
+.chat-pin-switch:hover { border-color: var(--accent); color: var(--accent); }
+.chat-pin-body { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; padding: 0 8px 8px; }
+.chat-pin-zone-top .chat-pin-body { max-height: 240px; }
+.chat-pin-zone-side .chat-pin-body { flex: 1; min-height: 0; }
+/* 工作区里的槽位：更矮 + 无外边距 */
+.chat-pin-body .chat-dock-slot { height: min(240px, 40vh); margin: 0; }
+
+/* 上下文 chip（输入框上方，表示"后续提问关联这个窗口"） */
+.chat-ctx-bar { display: none; align-items: center; gap: 6px; padding: 0 0 6px; flex-wrap: wrap; }
+.chat-ctx-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11.5px; background: rgba(78, 205, 196, 0.14);
+  border: 1px solid rgba(78, 205, 196, 0.45); color: var(--accent);
+  padding: 3px 9px; border-radius: 999px;
+}
+.chat-ctx-chip .chat-ctx-x { cursor: pointer; opacity: 0.7; }
+.chat-ctx-chip .chat-ctx-x:hover { opacity: 1; }
+
+/* 📌 钉住按钮（内嵌窗口标题栏注入） */
+.aw-btn-pin { font-size: 11px !important; }
+.aw-btn-pin.active { background: var(--accent) !important; color: #fff !important; }
+
 /* 槽位：窗口浮在上面时被完全盖住；窗口被拖走后露出，充当"归位占位" */
 .chat-dock-slot {
   width: 100%;
   align-self: stretch;
   box-sizing: border-box;
-  height: 340px;
+  height: min(340px, 52vh);   /* v0.121b: 对话窗口小时别占满视野 */
   margin: 12px 0 12px 36px;
   border: 1px dashed rgba(78, 205, 196, 0.28);
   border-radius: 10px;

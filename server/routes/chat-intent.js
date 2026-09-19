@@ -63,6 +63,7 @@ function getOrCreateSessionRequirement(sessionId) {
   }
 }
 const INTENT_TOOL_NAMES = [
+  'read_window_content',  // v0.121 读取用户在对话工作区里打开的窗口正文（按需）
   'web_search', 'web_research', 'fetch_url', 'get_current_time',  // 信息类
   'agnes_generate_video',  // 视频生成（v0.18 直接调 Agnes API）
   // v0.20d: play_music 由预检覆盖，不加进 LLM 可见工具避免重复触发
@@ -318,6 +319,22 @@ router.post('/detect-and-respond', async (req, res, next) => {
         }
       }
 
+      // v0.121: 对话工作区上下文 —— 只注入"当前选中窗口"的引用，正文按需 read_window_content 读
+      //   提到这里（不在 Qwen 分支内）：工具路径（!qwenFreeAllowed → runToolLoop）同样要用
+      let _ctxMsgs = [];
+      if (isSession) {
+        try {
+          const _cwc = sessionSvc.getActiveWindow(reqId);
+          if (_cwc) {
+            _ctxMsgs.push({ role: 'system', content:
+              '[对话工作区] 用户当前选中的窗口：' + (_cwc.name || '(未命名)') +
+              '（' + (_cwc.view || '未知类型') + '，windowId=' + _cwc.window_id + '）' +
+              (_cwc.file_path ? '，文件路径 ' + _cwc.file_path : '') +
+              '。需要正文时调用 read_window_content(windowId="' + _cwc.window_id + '")。上下文里不带正文，按需读取。' });
+          }
+        } catch (e) {}
+      }
+
       // 2. 写 user message（仅 session 模式）
       if (isSession && session) {
         try {
@@ -350,7 +367,7 @@ router.post('/detect-and-respond', async (req, res, next) => {
 // 分段7/20: Qwen chat调用+onDelta+onEvent前半 (L291-335)
         if (!qwenMgr.getConfig().enabled) return false;
         if (musicCardJson) return false;  // 音乐卡片走旧引擎（预检已命中）
-        const ACMS_TOOL_RE = /生成.{0,6}(图片|照片|图)|画.{0,3}(张|个|幅|一)|视频|跳舞|唱歌|发邮件|发送邮件|邮件|播放|听[一这]?首|放[一这]?首|想听|找歌|音乐|文档|docx|ppt|pptx|excel|xlsx|写.{0,4}(周报|报告|总结|方案)|写剧本|短视频剧本|分镜|剧本创意/i;
+        const ACMS_TOOL_RE = /生成.{0,6}(图片|照片|图)|画.{0,3}(张|个|幅|一)|视频|跳舞|唱歌|发邮件|发送邮件|邮件|播放|听[一这]?首|放[一这]?首|想听|找歌|音乐|docx|ppt|pptx|excel|xlsx|写.{0,4}文档|生成.{0,4}文档|写.{0,4}(周报|报告|总结|方案)|写剧本|短视频剧本|分镜|剧本创意/i;
         return !ACMS_TOOL_RE.test(text || '');
       } catch (e) { return false; }
     })();
@@ -382,7 +399,7 @@ router.post('/detect-and-respond', async (req, res, next) => {
           //   45s 只够冷启动+首 token，Qwen 写代码要调多个工具（10+ tool_card），必超时
           //   SSE 流式有实时进度反馈，设长不会干等
           timeoutMs: 600000,
-          historyMessages,  // 🆕 v0.117: chat_messages 历史拼到 prompt 前
+          historyMessages: historyMessages.concat(_ctxMsgs),  // v0.117 历史 + v0.121 对话工作区窗口上下文
           onDelta: (delta) => {
             // Qwen 真流式文本 → 推流
             try { res.write(`data: ${JSON.stringify({ type: 'text_delta', text: delta })}\n\n`); } catch (e) {}
@@ -516,7 +533,7 @@ router.post('/detect-and-respond', async (req, res, next) => {
     // 🆕 v0.117c：runtimeExec fallback（Qwen 失败/SSE 失败时才走旧引擎）的 systemPrompt + messages 构造
     //   Qwen 成功路径已在上面 return，不会到这里
     const systemPrompt = buildFreeChatSystemPrompt(null);
-    const messages = [{ role: 'system', content: systemPrompt }, ...historyMessages, { role: 'user', content: text }];
+    const messages = [{ role: 'system', content: systemPrompt }, ...historyMessages, ..._ctxMsgs, { role: 'user', content: text }];
 
     // 🆕 v0.117：自由对话模式加 document / screenplay precheck（与 music_precheck 同模式）
     //   必须在 contextReqId 创建后跑（screenplay 需要真实 reqId 写 assist_screenplay 字段）

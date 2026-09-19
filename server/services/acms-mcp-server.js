@@ -389,6 +389,21 @@ const TOOLS = [
       required: ['query'],
     },
   },
+  {
+    name: 'read_window_content',
+    description: '读取用户在「对话工作区」里打开的文件窗口（Word/Excel/PPT/代码/文本）的正文内容。'
+      + '当用户的问题需要基于他正在看的文件来回答时才调用 —— 上下文里只有文件名和 windowId，没有正文。'
+      + 'windowId 必须从对话上下文的「[对话工作区]」段落里取，不要自己编。'
+      + 'docx/xlsx/pptx 会经 pandoc 转成纯文本返回；只读，不会改用户的文件。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        windowId: { type: 'string', description: '窗口 id，例如 "aw-2"（来自对话工作区上下文）' },
+        maxChars: { type: 'number', description: '最多返回多少字符（默认 20000）' },
+      },
+      required: ['windowId'],
+    },
+  },
 ];
 
 // ---------- 工具实现 ----------
@@ -478,6 +493,14 @@ async function handleCall(toolName, args) {
         const ws = require('../services/workspace-service');
         const content = ws.readFile(args.projectSlug, args.path);
         return toolResult({ path: args.path, content: String(content).slice(0, 20000) });
+      }
+      case 'read_window_content': {
+        // v0.121: 读对话工作区窗口正文（复用 tool-registry 里注册的同一实现，避免两套逻辑漂移）
+        const tr = require('../services/tool-registry');
+        const t = tr.getTool ? tr.getTool('read_window_content') : null;
+        if (!t || !t.handler) return toolResult({ error: 'TOOL_NOT_REGISTERED' });
+        const out = await t.handler({ windowId: args.windowId, maxChars: args.maxChars }, {});
+        return toolResult(out);
       }
       case 'acms_workspace_write_file': {
         const ws = require('../services/workspace-service');

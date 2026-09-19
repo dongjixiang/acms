@@ -17,6 +17,7 @@
 require('./web');
 require('./external-api');
 require('./leisure');
+require('./read-window-content');   // v0.121 读取对话工作区窗口内容
 require('./agent/read');
 require('./agent/write');
 require('./agent/patch');

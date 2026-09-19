@@ -49,8 +49,22 @@ function renderIdeaPanel(req) {
       </div>
       <!-- v0.3.6 对话流：聊天式想法澄清 -->
       <div id="chat-stream-container-${req.id}" class="chat-stream-container">
-        <div class="chat-stream" id="chat-stream-msgs-${req.id}" onscroll="chatScrollUpdateBtn('${req.id}')">
+        <!-- v0.121: 钉住工作区（顶部）—— 不随对话滚动 -->
+        <div class="chat-pin-zone chat-pin-zone-top" id="chat-pin-top-${req.id}" style="display:none">
+          <div class="chat-pin-head"><span>📌 已钉住</span><span class="chat-pin-sub">· 不随对话滚动</span>
+            <button class="chat-pin-switch" onclick="chatPinSwitch('${req.id}')" title="切换工作区位置（顶部 / 右侧）">⇄</button></div>
+          <div class="chat-pin-body" id="chat-pin-top-body-${req.id}"></div>
+        </div>
+        <div class="chat-stream-row" style="flex:1;min-height:0;display:flex">
+        <div class="chat-stream" id="chat-stream-msgs-${req.id}" onscroll="chatScrollUpdateBtn('${req.id}')" style="min-width:0">
           <div class="chat-typing"><span></span><span></span><span></span></div>
+        </div>
+        <!-- v0.121: 钉住工作区（右侧） -->
+        <div class="chat-pin-zone chat-pin-zone-side" id="chat-pin-side-${req.id}" style="display:none">
+          <div class="chat-pin-head"><span>📌 已钉住</span><span class="chat-pin-sub">· 不随对话滚动</span>
+            <button class="chat-pin-switch" onclick="chatPinSwitch('${req.id}')" title="切换工作区位置（顶部 / 右侧）">⇄</button></div>
+          <div class="chat-pin-body" id="chat-pin-side-body-${req.id}"></div>
+        </div>
         </div>
         <!-- v0.17 浮动滚动按钮：底部 ↔ 顶部切换（解决旧 REQ 打开看不到历史 AI 回复） -->
         <button class="chat-scroll-top-btn" id="chat-scroll-top-btn-${req.id}"

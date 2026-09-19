@@ -276,10 +276,18 @@
     return null;
   }
 
+  // 按 reqId 精确取所属对话的消息流（多对话窗口同时开时，_visibleStream 会嵌错窗）
+  function _streamFor(reqId) {
+    if (!reqId) return null;
+    var list = document.querySelectorAll('[id="chat-stream-msgs-' + reqId + '"]');
+    for (var i = 0; i < list.length; i++) { if (list[i].offsetParent !== null) return list[i]; }
+    return null;
+  }
+
   // 在消息流末尾插槽位 → 窗口吸附过去；窗口被拖走时槽位露出，充当"归位占位"
-  function dockIntoChat(w, item) {
+  function dockIntoChat(w, item, reqId) {
     if (!w || !window.ACMSWin || !ACMSWin.dockTo) return false;
-    var stream = _visibleStream();
+    var stream = _streamFor(reqId) || _visibleStream();
     if (!stream) return false;
     var slot = document.createElement('div');
     slot.className = 'chat-dock-slot';
@@ -290,6 +298,9 @@
     });
     stream.appendChild(slot);
     try { ACMSWin.dockTo(w, slot, { mode: 'embed' }); } catch (e) { return false; }
+    _injectPinBtn(w, stream);
+    _bindCtxPick(w, stream);
+    setActiveCtx(stream, w);
     stream.scrollTop = stream.scrollHeight;
     // 窗口关闭 → 槽位一起清掉，别留孤儿占位
     var prevClose = w.onClose;
@@ -300,8 +311,176 @@
     return true;
   }
 
+  // ── v0.121: 钉住工作区（顶部 / 右侧，默认右侧）──
+  //   工作区容器在对话面板模板里（index.html 自由对话 + idea-panel.js 需求对话两处都有）
+  //   钉住 = 把窗口 dock 到工作区里的槽位（工作区在滚动容器外 → 不随对话滚动）
+  var PIN_KEY = 'acms-chat-pin-place';
+
+  function _pinPlace() {
+    try { return localStorage.getItem(PIN_KEY) === 'top' ? 'top' : 'side'; } catch (e) { return 'side'; }
+  }
+
+  function _hostWinOfStream(stream) {
+    var n = stream, ws = (window.ACMSWin && ACMSWin.getWindows) ? ACMSWin.getWindows() : [];
+    while (n && n !== document.body) {
+      if (n.classList && n.classList.contains('acms-window')) {
+        for (var i = 0; i < ws.length; i++) { if (ws[i].el === n) return ws[i]; }
+        return null;
+      }
+      n = n.parentElement;
+    }
+    return null;
+  }
+
+  function _pinBody(stream, place) {
+    var host = _hostWinOfStream(stream);
+    if (!host || !host.$c) return null;
+    return host.$c.querySelector('.chat-pin-zone-' + place + ' .chat-pin-body');
+  }
+
+  // 哪个工作区有内容就显示哪个（空的不占地方）
+  function _showPinZone(stream, place) {
+    var host = _hostWinOfStream(stream);
+    if (!host || !host.$c) return;
+    ['top', 'side'].forEach(function (p) {
+      var z = host.$c.querySelector('.chat-pin-zone-' + p);
+      if (!z) return;
+      var body = z.querySelector('.chat-pin-body');
+      var has = !!(body && body.children.length);
+      z.style.display = (has && p === (place || _pinPlace())) ? 'flex' : 'none';
+    });
+  }
+
+  function _syncPinBtn(w, pinned) {
+    var b = w.el.querySelector('.aw-btn-pin');
+    if (b) b.classList.toggle('active', !!pinned);
+  }
+
+  // 标题栏加 📌（只给内嵌窗口加，不影响其它窗口的通用行为）
+  function _injectPinBtn(w, stream) {
+    var ctl = w.el.querySelector('.aw-controls');
+    if (!ctl || ctl.querySelector('.aw-btn-pin')) return;
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'aw-btn aw-btn-pin';
+    b.title = '钉到工作区（不随对话滚动）';
+    b.textContent = '📌';
+    b.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+    b.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (w._dock && w._dock.mode === 'pin') unpin(w, stream);
+      else pinTo(stream, w);
+    });
+    ctl.insertBefore(b, ctl.firstChild);
+  }
+
+  // 点窗口任意处 → 它成为对话上下文
+  function _bindCtxPick(w, stream) {
+    if (w._ctxBound) return;
+    w._ctxBound = true;
+    w.el.addEventListener('mousedown', function () { setActiveCtx(stream, w); }, true);
+  }
+
+  function pinTo(stream, w, place) {
+    place = place || _pinPlace();
+    var body = _pinBody(stream, place);
+    if (!body || !window.ACMSWin || !ACMSWin.dockTo) return false;
+    var slot = document.getElementById('chat-pin-slot-' + w.id);
+    if (!slot) {
+      slot = document.createElement('div');
+      slot.className = 'chat-dock-slot';
+      slot.id = 'chat-pin-slot-' + w.id;
+      slot.innerHTML = '📌 ' + esc(w.st.titleOverride || w.st.title || '窗口') +
+        ' · 已钉住 <button type="button">取消钉住</button>';
+      slot.querySelector('button').addEventListener('click', function () { unpin(w, stream); });
+      body.appendChild(slot);
+    }
+    try { ACMSWin.dockTo(w, slot, { mode: 'pin' }); } catch (e) { return false; }
+    // 消息流里原来那个槽位留着当"归位占位"
+    _showPinZone(stream, place);
+    _syncPinBtn(w, true);
+    return true;
+  }
+
+  function unpin(w, stream) {
+    if (!w || !w._dock) return;
+    var slot = document.getElementById('chat-pin-slot-' + w.id);
+    ACMSWin.undock(w);
+    if (slot) slot.remove();
+    _syncPinBtn(w, false);
+    _showPinZone(stream, _pinPlace());
+    // 回到消息流末尾重新内嵌
+    var reqId = (stream.getAttribute('id') || '').replace('chat-stream-msgs-', '');
+    dockIntoChat(w, { name: w.st.titleOverride || w.st.title || '窗口', path: null }, reqId);
+  }
+
+  // 面板头部的 ⇄ 切换位置（顶部 / 右侧），已钉住的窗口跟着迁
+  window.chatPinSwitch = function (reqId) {
+    var next = _pinPlace() === 'top' ? 'side' : 'top';
+    try { localStorage.setItem(PIN_KEY, next); } catch (e) {}
+    var stream = _streamFor(reqId) || _visibleStream();
+    if (!stream) return;
+    if (window.ACMSWin && ACMSWin.getWindows) {
+      ACMSWin.getWindows().forEach(function (w) {
+        if (w._dock && w._dock.mode === 'pin') {
+          var old = document.getElementById('chat-pin-slot-' + w.id);
+          if (old) old.remove();
+          pinTo(stream, w, next);
+        }
+      });
+    }
+    _showPinZone(stream, next);
+  };
+
+  // ── v0.121: 选中窗口 = 对话上下文 ──
+  //   点窗口 → 输入框上方出现 chip + 注册到后端（后端拼 prompt 时把"当前选中窗口"写进系统上下文）
+  //   注册走 /api/chat/session-ctx，避免改 chat.js 的发送路径（那是兄弟 agent 的高频改动文件）
+  var _activeCtx = null;
+
+  function _streamIdOf(stream) {
+    return (stream.getAttribute('id') || '').replace('chat-stream-msgs-', '');
+  }
+
+  function renderCtxChip(stream, info) {
+    var host = _hostWinOfStream(stream);
+    if (!host || !host.$c) return;
+    var inp = host.$c.querySelector('.chat-stream-input');
+    if (!inp) return;
+    var bar = inp.querySelector('.chat-ctx-bar');
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.className = 'chat-ctx-bar';
+      inp.insertBefore(bar, inp.firstChild);
+    }
+    if (!info) { bar.innerHTML = ''; bar.style.display = 'none'; return; }
+    bar.style.display = 'flex';
+    bar.innerHTML = '<span class="chat-ctx-chip" title="后续提问会自动关联这个窗口的内容">🔗 <b>' +
+      esc(info.name) + '</b><span class="chat-ctx-x" title="取消关联">✕</span></span>';
+    bar.querySelector('.chat-ctx-x').addEventListener('click', function (e) {
+      e.stopPropagation();
+      _activeCtx = null;
+      renderCtxChip(stream, null);
+      try { api('POST', '/chat-sessions/' + _streamIdOf(stream) + '/ctx', { ctx: null }); } catch (err) {}
+    });
+  }
+
+  function setActiveCtx(stream, w) {
+    if (!stream || !w) return;
+    var info = {
+      windowId: w.id,
+      view: w.view,
+      name: w.st.titleOverride || w.st.title || '窗口',
+      filePath: (w._dockItem && w._dockItem.path) || null,
+      fileId: w._fileId || null,
+    };
+    _activeCtx = info;
+    renderCtxChip(stream, info);
+    try { api('POST', '/chat-sessions/' + _streamIdOf(stream) + '/ctx', { ctx: info }); } catch (e) {}
+  }
+
   // ── 用匹配的 ACMS 应用打开 ──
-  function openFile(item) {
+  function openFile(item, opts) {
+    opts = opts || {};
     if (!item || !item.path) return Promise.resolve({ ok: false, reason: 'no-item' });
     var url = '/api/files?path=' + encodeURIComponent(item.path) + '&raw=1&api_key=' + encodeURIComponent(AK);
     var apps = appsFor(item);
@@ -320,7 +499,8 @@
       if (r && r.ok) {
         // v0.121: 打开后直接吸附进对话流（对话里打开文件，而不是满屏飘一个浮窗）
         var _w = _newWinSince(_idsBefore);
-        var docked = _w ? dockIntoChat(_w, item) : false;
+        if (_w) { _w._dockItem = item; _w._fileId = (r && r.fileId) || null; }
+        var docked = _w ? dockIntoChat(_w, item, opts.reqId) : false;
         if (docked) toastMsg('已在对话里打开 ' + item.name, 'success');
         else toastMsg('已用 ' + (app.label || app.name) + ' 打开', 'success');
       } else if (r && r.reason === 'needs-download') {
@@ -337,9 +517,10 @@
 
   // ── 一步到位：选 → 开 ──
   function pickAndOpen(opts) {
+    opts = opts || {};
     return pick(opts).then(function (it) {
       if (!it) return null;
-      return openFile(it).then(function (r) { return { item: it, result: r }; });
+      return openFile(it, { reqId: opts.reqId }).then(function (r) { return { item: it, result: r }; });
     });
   }
 
@@ -352,7 +533,7 @@
   // 对话辅助工具条按钮入口（index.html / idea-panel.js 都调这个）
   //   reqId 暂时只用于日志与未来把窗口绑定到会话，不影响本函数行为
   window.chatOpenFilePicker = function (reqId) {
-    return pickAndOpen({}).then(function (r) {
+    return pickAndOpen({ reqId: reqId }).then(function (r) {
       if (r && r.result && r.result.ok) {
         console.log('[file-picker] opened for session:', reqId, r.item.path);
       }
