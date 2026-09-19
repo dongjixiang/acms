@@ -15,13 +15,16 @@ function videoClickAttr(src, cdnFallback) {
 }
 function fmtDate(s) { if (!s) return ''; return new Date(s).toLocaleDateString('zh-CN'); }  // zh-CN OK; date 本身无时区歧义
 function safeParse(s) { if (!s) return {}; if (typeof s === 'object') return s; try { return JSON.parse(s); } catch { return {}; } }
-function toast(msg, type = 'success') {
+function toast(msg, type = 'success', duration = 4000) {
+  // v0.118.3: 加第 3 参数 duration（默认 4000ms 保持向后兼容）——之前硬编码 4000ms，
+  //   调用方传第 3 参无效 → 「清理按钮」等低频操作的反馈一闪而过被用户误判为「没反应」。
+  //   ⚠️ 两个 toast hook（agent-buddy.js / notification-center.js）必须同步透传 duration。
   const c = document.getElementById('toast-container');
   const el = document.createElement('div');
   el.className = `toast toast-${type}`;
   el.textContent = msg;
   c.appendChild(el);
-  setTimeout(() => el.remove(), 4000);
+  setTimeout(() => el.remove(), duration);
 }
 
 /**

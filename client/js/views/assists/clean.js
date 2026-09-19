@@ -2,6 +2,37 @@
 //   Method: clean | Name: 对话清理
 //   内联表单：展示最近对话条目→勾选→提交
 
+/**
+ * v0.86.24：双上下文 visibility-aware DOM 查找（与 admin.js 的 _byId 同语义）。
+ *
+ * 为什么必须用它而不是 document.getElementById：
+ *   ACMSWin 桌面模式下同一视图存在**两份 DOM**——
+ *     ① 隐藏的 page view（#view-detail 内，display:none）
+ *     ② 可见的浮窗克隆副本（#aw-N 内，view-loader 克隆 outerHTML 而来）
+ *   document.getElementById 按 document 顺序返回**首个匹配** = 永远是 ① 隐藏那份。
+ *   → chatCleanPrompt 把清理表单 appendChild 到隐藏副本 → 用户「点了清理完全没反应」。
+ *   实测：两份 #chat-stream-msgs-REQ-xxx，隐藏 h=0 / 浮窗 h=440。
+ *
+ * 为什么不直接用全局 _byId：admin.js 定义了同名 helper，但 clean.js 在 index.html
+ *   L536 先于 admin.js L553 加载 → 解析期不可依赖。本文件自带一份，行为一致。
+ *
+ * 语义：优先返回「祖先链无 display:none / visibility:hidden」的实例；
+ *   都不可见时 fallback 首个匹配（保留 page-view 模式旧行为，避免回归）。
+ */
+function _cleanById(id) {
+  var all = document.querySelectorAll('#' + (window.CSS && CSS.escape ? CSS.escape(id) : id));
+  for (var i = 0; i < all.length; i++) {
+    var el = all[i], n = el.parentElement, vis = true;
+    while (n && n !== document.body) {
+      var s = getComputedStyle(n);
+      if (s.display === 'none' || s.visibility === 'hidden') { vis = false; break; }
+      n = n.parentElement;
+    }
+    if (vis) return el;
+  }
+  return all[0] || null;
+}
+
 (function () {
   function render(reqId, data) {
     if (!data) return '';
@@ -51,7 +82,7 @@ function cardEntryLabel(entry) {
 }
 
 async function renderFreeChatCleanForm(reqId) {
-  const stream = document.getElementById(`chat-stream-msgs-${reqId}`);
+  const stream = _cleanById(`chat-stream-msgs-${reqId}`);
   if (!stream) { toast('找不到会话容器', 'error'); return; }
 
   // v0.22.51：自由对话的记录分两处存 —— 只列文字会出现「共 0 条记录可清理」
@@ -128,6 +159,13 @@ async function renderFreeChatCleanForm(reqId) {
   const card = temp.firstElementChild;
   if (typing) stream.insertBefore(card, typing);
   else stream.appendChild(card);
+  // v0.86.24 fix：滚动到新插入的表单 —— 必须用 card.scrollIntoView()，
+  //   不能只用 stream.scrollTop = stream.scrollHeight：
+  //   ① page view 模式 stream 是滚动容器（container height:100% + overflow auto）→ 旧写法可行
+  //   ② ACMSWin 浮窗模式 stream 被撑到全内容高度（实测 21292px）→ stream 自身不滚动，
+  //      改 scrollTop 是空操作 → 表单落在 20881px 处，用户视口里什么都看不到 → 「点了没反应」
+  //   scrollIntoView 会往上冒泡找到真正的滚动祖先（浮窗内容区 / body），两种模式都对。
+  try { card.scrollIntoView({ block: 'nearest' }); } catch (_) {}
   stream.scrollTop = stream.scrollHeight;
 }
 
@@ -200,7 +238,7 @@ async function submitFreeCleanAll(cardId, reqId) {
  */
 async function reloadFreeChatStream(reqId) {
   if (!reqId || !reqId.startsWith('sess-')) return;
-  const container = document.getElementById('chat-stream-msgs-' + reqId);
+  const container = _cleanById('chat-stream-msgs-' + reqId);
   if (!container) return;
   try {
     // v0.22.51 fix：水位线必须跟 startChatPolling 比对的那一套存储对齐
@@ -244,8 +282,14 @@ async function chatCleanPrompt(reqId) {
     return await renderFreeChatCleanForm(reqId);
   }
 
-  const stream = document.getElementById(`chat-stream-msgs-${reqId}`);
-  if (!stream) return;
+  const stream = _cleanById(`chat-stream-msgs-${reqId}`);
+  if (!stream) {
+    // v0.86.24 fix：找不到 stream 时也要给用户明显反馈（之前静默 return → 用户报「清理按钮没反应」）。
+    //   常见原因：需求 status 已从 idea 转到 clarifying（idea-panel 不渲染）但用户记忆里的按钮还在。
+    toast('对话窗口未找到（可能需求已离开想法澄清阶段，请刷新页面后重试）', 'error', 8000);
+    console.warn('[chatCleanPrompt] 找不到 chat-stream-msgs-' + reqId, '当前可见的 idea-panel:', [...document.querySelectorAll('[id^="idea-panel-"]')].map(function(p){return p.id}).join(','));
+    return;
+  }
 
   // 加载历史
   let history;
@@ -258,7 +302,27 @@ async function chatCleanPrompt(reqId) {
   }
 
   if (history.length === 0) {
-    toast('当前对话没有记录可清理', 'info');
+    // v0.86.24 fix：history 为空时不要只弹 4 秒 toast（用户极易错过 → 报「清理按钮没反应」），
+    //   改成 inline 反馈：直接把按钮原地替换为「✓ 已是最干净」文案 + 6 秒后自动恢复。
+    //   同时 toast 也保留一份（更长 8 秒），双通道反馈让用户确定收到了信号。
+    toast('当前对话没有记录可清理', 'info', 8000);
+    try {
+      // 两个位置都有清理按钮（chat-extras 澄清行 + chat-leisure 休闲行）→ 全都要反馈，
+      //   否则用户点的那个没变，还是觉得「没反应」。
+      var btns = document.querySelectorAll('button[onclick*="chatCleanPrompt(\'' + reqId + '\')"]');
+      btns.forEach(function(btn) {
+        if (btn.dataset.idle) return;
+        var origHtml = btn.innerHTML;
+        btn.innerHTML = '✓ 已是最干净';
+        btn.disabled = true;
+        btn.dataset.idle = '1';
+        setTimeout(function() {
+          btn.innerHTML = origHtml;
+          btn.disabled = false;
+          delete btn.dataset.idle;
+        }, 6000);
+      });
+    } catch (_) {}
     return;
   }
 
@@ -306,6 +370,13 @@ async function chatCleanPrompt(reqId) {
   const card = temp.firstElementChild;
   if (typing) stream.insertBefore(card, typing);
   else stream.appendChild(card);
+  // v0.86.24 fix：滚动到新插入的表单 —— 必须用 card.scrollIntoView()，
+  //   不能只用 stream.scrollTop = stream.scrollHeight：
+  //   ① page view 模式 stream 是滚动容器（container height:100% + overflow auto）→ 旧写法可行
+  //   ② ACMSWin 浮窗模式 stream 被撑到全内容高度（实测 21292px）→ stream 自身不滚动，
+  //      改 scrollTop 是空操作 → 表单落在 20881px 处，用户视口里什么都看不到 → 「点了没反应」
+  //   scrollIntoView 会往上冒泡找到真正的滚动祖先（浮窗内容区 / body），两种模式都对。
+  try { card.scrollIntoView({ block: 'nearest' }); } catch (_) {}
   stream.scrollTop = stream.scrollHeight;
 }
 

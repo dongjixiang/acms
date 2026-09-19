@@ -281,9 +281,9 @@
   }
 
   function doHook(origToast) {
-    window.toast = function(msg, type) {
+    window.toast = function(msg, type, duration) {
       // 调原 toast（浮层显示）
-      origToast(msg, type);
+      origToast(msg, type, duration);
       // 同步写入通知中心
       var notifType = type || 'info';
       add({

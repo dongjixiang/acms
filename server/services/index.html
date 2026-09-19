@@ -8,7 +8,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>ACMS — 智能体协同管理系统</title>
-<link rel="stylesheet" href="/client/css/style.css?v=0.9.0">
+<link rel="stylesheet" href="/client/css/style.css?v=0.86.23">  <!-- v0.86.23 fix：与 client/index.html 同步（.chat-stream min-height: 0 — 全屏态/历史多的对话框底部按钮看不到）-->
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js" defer></script>
 <script>
 // Mermaid 配置（跟随主题，脚本加载后初始化）
@@ -403,14 +403,14 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/i18n.js"></script>
 <script src="/client/js/api.js"></script>
 <script src="/client/js/core/state.js"></script>
-<script src="/client/js/core/utils.js?v=0.118.2"></script>
+<script src="/client/js/core/utils.js?v=0.118.3"></script>  <!-- v0.118.3 toast() 加 duration 参数（与 client/index.html 同步） -->
 <script src="/client/js/core/markdown.js"></script>
 <script src="/client/js/core/voice.js"></script>
 <script src="/client/js/core/router.js"></script>
 <script src="/client/js/views/projects.js"></script>
 <script src="/client/js/views/dashboard.js"></script>
 <!-- v0.13 拆分：12 个子模块在 requirements.js 之前加载（HTML onclick 跨文件按名查找） -->
-<script src="/client/js/views/requirements/chat.js?v=0.22.68"></script>
+<script src="/client/js/views/requirements/chat.js?v=0.22.75"></script>  <!-- v0.22.75 user 消息重复修复（与 client/index.html 同步：polling user skip + chatSendDetect 同步 tailKey）-->
 <script src="/client/js/views/requirements/idea-panel.js?v=0.13.0"></script>
 <!-- v0.18 chat 模式切换器（clarify ↔ free）—— idea-panel.js 之后加载，引用 toggleChatMode -->
 <script src="/client/js/views/requirements/chat-mode.js?v=0.18.0"></script>

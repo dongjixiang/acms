@@ -148,6 +148,9 @@
     document.head.appendChild(style);
   }
 
+  // v0.48: KEEP_OPEN sentinel — beforeCleanup 返回此值阻止 modal 关闭（必填校验失败场景）
+  const KEEP_OPEN = Symbol('KEEP_OPEN');
+
   // 主入口
   function show(options = {}) {
     const {
@@ -308,12 +311,14 @@
 
 function cleanup(value) {
         document.removeEventListener('keydown', escHandler);
-        // v0.44: beforeCleanup 钩子（modal 销毁前调用，用于捕获 modal 内元素的值/状态）
-        //   治"html 模式 textarea 在 modal 内，modal 关闭后 DOM 找不到"的根因
-        //   调用方可在 beforeCleanup 里把 textarea/input 的值存到 closure，然后 cleanup 后从 closure 读
+        // v0.48 修复：beforeCleanup 可返回符号 `KEEP_OPEN` 来阻止 modal 关闭（用于必填字段校验失败）
+        //   之前靠 return null 阻止关闭，但 null 被 resolve 透传 + overlay 被无条件 remove —— modal 仍被关
+        //   调用方在必填校验失败时返回 KEEP_OPEN（一个 Symbol），下方判断后跳过 removeChild + resolve 原 value
         if (typeof options.beforeCleanup === 'function') {
           try {
-            value = options.beforeCleanup(value);
+            const ret = options.beforeCleanup(value);
+            if (ret === KEEP_OPEN) return;  // 阻止关闭
+            value = ret;
           } catch (e) {
             console.warn('ACMSModal beforeCleanup error:', e);
           }
@@ -324,8 +329,8 @@ function cleanup(value) {
     });
   }
 
-  // 暴露全局
-  window.ACMSModal = { show };
+  // 暴露全局（含 KEEP_OPEN sentinel）
+  window.ACMSModal = { show, KEEP_OPEN };
 
   // 方便调试
   if (typeof console !== 'undefined') console.log('[acms-modal] 组件已加载');

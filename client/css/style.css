@@ -2170,6 +2170,8 @@ details[open] > .admin-form-toggle::before { transform: rotate(90deg); }
 .chat-stream-container > .chat-stream { padding-right: 44px; }
 .chat-stream {
   flex: 1;
+  /* v0.86.23 fix：min-height: 0 让 flex:1 真的能收缩（默认 min-height: auto = 内容高度 → 内容超高时 chat-stream 撑破父容器 → 挤压 chat-stream-input 被裁剪 → 全屏态/历史多的对话框底部按钮看不到）。v0.117v 兄弟 agent 只修了 chat-stream > * 的 flex-shrink，没修 chat-stream 自己的 min-height: auto */
+  min-height: 0;
   overflow-y: auto;
   padding: 12px 14px;
   display: flex;

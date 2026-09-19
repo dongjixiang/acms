@@ -2640,8 +2640,8 @@ var faceMatch = raw.match(/【face:(\w+)】/);
     // Hook toast
     var origToast = window.toast;
     if (typeof origToast === 'function') {
-      window.toast = function(msg, type) {
-        origToast(msg, type);
+      window.toast = function(msg, type, duration) {
+        origToast(msg, type, duration);
         onToast(msg, type);
       };
     }

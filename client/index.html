@@ -8,7 +8,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>ACMS — 智能体协同管理系统</title>
-<link rel="stylesheet" href="/client/css/style.css?v=0.86.22.20260827">  <!-- v0.86.22 fix: 清理行号垃圾污染（4535|.ap-msg-user → namespace 前缀规则失效）→ 小吉用户消息恢复右对齐 -->
+<link rel="stylesheet" href="/client/css/style.css?v=0.86.23">  <!-- v0.86.23 fix：.chat-stream 加 min-height: 0（默认 auto 让内容超高时撑破父容器 → chat-stream-input 被裁剪 → 全屏态/历史多的对话框底部按钮看不到）。v0.117v 兄弟 agent 只修了 chat-stream > * 的 flex-shrink，没修 chat-stream 自己的 min-height: auto（flex:1 失效 → 撑破父容器）。v0.86.22 fix: 清理行号垃圾污染（4535|.ap-msg-user → namespace 前缀规则失效）→ 小吉用户消息恢复右对齐 -->
 <!-- v=0.86.14 inline override: 表格边框/字体覆盖 chat-bubble + ap-msg-text 双路径 -->
 <style>
 .chat-bubble table, .ap-msg-text table { display: table !important; border-collapse: collapse !important; width: 100%; margin: 4px 0; font-size: 11px; line-height: 1.3; }
@@ -490,7 +490,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/i18n.js"></script>
 <script src="/client/js/api.js"></script>
 <script src="/client/js/core/state.js"></script>
-<script src="/client/js/core/utils.js?v=0.118.2"></script>  <!-- v0.118.2 首次加 cache bust（此前无 ?v=）：新增 videoClickAttr（视频「点击放大播放」内联 onclick，JSON+escAttr 双层转义） -->
+<script src="/client/js/core/utils.js?v=0.118.3"></script>  <!-- v0.118.3 toast() 加第 3 参数 duration（默认 4000ms 向后兼容）+ 两个 hook 同步透传（之前时长硬编码，调用方传 8000 无效）。v0.118.2 首次加 cache bust（此前无 ?v=）：新增 videoClickAttr（视频「点击放大播放」内联 onclick，JSON+escAttr 双层转义） -->
 <script src="/client/js/core/markdown.js?v=0.1.9"></script>
 <script src="/client/js/core/voice.js"></script>
 <script src="/client/js/core/router.js"></script>
@@ -498,7 +498,7 @@ document.addEventListener('DOMContentLoaded', () => {
     <script src="/client/js/views/dashboard.js"></script>
 <!-- v0.13 拆分：12 个子模块在 requirements.js 之前加载（HTML onclick 跨文件按名查找） -->
 <!-- v0.21.4 fix: 双卡清理范围扩大到 assist-loading-card.method-music（旧 v0.21.3 漏了真正的旧卡所在位置） -->
-<script src="/client/js/views/requirements/chat.js?v=0.22.69"></script>  <!-- v0.22.61 视频卡片兼容 generating 快照（runAssistJob 现在即时镜像通用字段 assist_video → 不能再只认 async_task，否则「生成中」被误标「已生成」且不启动轮询）。v0.22.60 音乐卡片插入补 avatar+inner 包裹 -->
+<script src="/client/js/views/requirements/chat.js?v=0.22.75"></script>  <!-- v0.22.75 user 消息重复修复（一条在AI之前+一条在AI之后）：polling 就地重写分支 last 是 user 时跳过 + chatSendDetect 同步 tailKey（client/server 时钟差导致精确匹配失败，src='' fallback 失效 → 重复 appendChild）。v0.22.61 视频卡片兼容 generating 快照（runAssistJob 现在即时镜像通用字段 assist_video → 不能再只认 async_task，否则「生成中」被误标「已生成」且不启动轮询）。v0.22.60 音乐卡片插入补 avatar+inner 包裹 -->
 <script src="/client/js/views/requirements/idea-panel.js?v=0.13.0"></script>
 <!-- v0.18 chat 模式切换器（clarify ↔ free）—— idea-panel.js 之后加载，引用 toggleChatMode -->
 <script src="/client/js/views/requirements/chat-mode.js?v=0.18.0"></script>
@@ -512,7 +512,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/requirements/prototype.js?v=0.13.0"></script>
 <script src="/client/js/views/requirements/change-history.js?v=0.13.0"></script>
 <script src="/client/js/views/requirements/description-history.js?v=0.13.0"></script>
-<script src="/client/js/views/requirements.js?v=0.13.0"></script>
+<script src="/client/js/views/requirements.js?v=0.13.2"></script>
 <script src="/client/js/views/assists/index.js"></script>
 <script src="/client/js/views/assists/decision-tree.js?v=0.6.9"></script>
 <script src="/client/js/views/assists/use-case.js?v=0.13.0"></script>  <!-- v0.13 方法论驱动的"整理" -->
@@ -533,7 +533,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/assists/music.js?v=0.21.0"></script>  <!-- v0.21 音乐播放 — 多数据源切换（assist 侧栏；聊天流走 chat.js renderMusicBubble） -->
 <script src="/client/js/views/assists/video.js?v=0.22.64"></script>  <!-- v0.22.20: 修 query 错误提示字段（r.message → r.error，避免"查询失败：undefined"） -->
 <script src="/client/js/views/assists/image-gen.js?v=0.22.76"></script>  <!-- v0.22.59 修 refreshScreenplayChatCard 重新渲染时把 .chat-bubble-avatar/.chat-bubble-inner 一起清掉 → .chat-bubble 是 display:flex，十几个块级 div 变 flex item 横排（用户报"生成第一张图片后剧本从竖向排列变横向排列"）。改为只替换 .chat-bubble-inner 内部内容（保留 avatar+inner），并对已写坏的旧 DOM 自愈重建。v0.22.22: 改 sidebar 同源 /assist 拿最新 sp data + 只刷最后一张气泡 -->
-<script src="/client/js/views/assists/clean.js?v=0.19.4"></script>  <!-- v0.19.4 自由对话清理覆盖工具卡片（supplement_history）+ 水位线对齐 + 去 window.confirm -->
+<script src="/client/js/views/assists/clean.js?v=0.19.7"></script>  <!-- v0.19.7 清理表单 scrollIntoView（浮窗里 chat-stream 不设高度约束 → 旧 stream.scrollTop 空操作 → 表单落在 2 万 px 处看不见）。v0.19.6 【根因】双上下文 DOM（浮窗克隆副本）→ _cleanById visibility-aware 查找。v0.19.5 反馈增强。v0.19.4 覆盖工具卡片 + 水位线对齐 -->
 <script src="/client/js/views/assists/ip-dict.js?v=0.22.65"></script>  <!-- v0.22.65 STYLE_TEMPLATES 每种风格加 descriptors 字段（character/scene/video 描述模板），让 buildCharacterPrompt/buildScenePrompt/buildSceneVideoPrompt 查表替换原硬编码的"电影感人物肖像/影棚主光/4K 写实"等写实摄影描述（这些描述之前压过 stylePrefix，导致选国风水墨/3D/动漫却出写实图） -->
 <script src="/client/js/views/assists/screenplay-core.js?v=0.22.77"></script>  <!-- v0.22.73 修复: buildSceneVideoPrompt 注入 scene.characters 的 desc（server schema L37 加了 characters: [name1, name2] 字段 + action 要求用具体角色名）。修"生图 LLM 脑补不在剧本里的人物"bug。兜底：旧剧本 scene.characters 缺失时注入 sp.characters 全部。 -->
 <script src="/client/js/views/assists/screenplay.js?v=0.22.77"></script>  <!-- v0.22.65 加「合成完整视频」（分镜头 ffmpeg 拼接 + 淡入淡出过渡 + 下载）。v0.22.62 修 nextAssets 未声明（每次生成成功后假报「生成失败: nextAssets is not defined」→ 用户以为失败再点一次 + 自动续跑从未生效）+ 跨刷新防重复（查后端镜像的 generating 快照）。v0.22.61 防重复提交内存锁；v0.22.32 生成后同步气泡 -->
@@ -672,10 +672,10 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/core/package-registry.js?v=0.66"></script>
 <script src="/client/js/core/app-tools-runtime.js?v=0.66"></script>
 <script src="/client/js/core/command-palette.js?v=0.58.4"></script>
-<script src="/client/js/core/notification-center.js?v=0.58"></script>
+<script src="/client/js/core/notification-center.js?v=0.59"></script>  <!-- v0.59 toast hook 透传 duration 第 3 参（与 utils.js v0.118.3 配合） -->
 <!-- 🆕 P1 方案B（卡片化）→ 🆕 P2 打磨 → 🆕 A 修复（2026-08-23）：必须在 agent-buddy.js 之前加载 -->
 <script src="/client/js/core/agent-buddy-tool-card.js?v=0.115.20"></script>  <!-- v0.115.19 data-status/data-tool + .expanded class toggle（v0.121 UI 优化） -->
-<script src="/client/js/core/agent-buddy.js?v=0.99.9"></script>  <!-- v0.99.9 去掉面板模板里硬编码的"hi～" -->
+<script src="/client/js/core/agent-buddy.js?v=0.99.10"></script>  <!-- v0.99.10 toast hook 透传 duration（配合 utils.js v0.118.3）。v0.99.9 去掉面板模板里硬编码的"hi～" -->
 <!-- v0.62.5: Office 编辑器 OO 风格主题 + 标题栏 (学 colors-table-classic.less + FileMenu.js) -->
 <link rel="stylesheet" href="/client/css/office-theme.css?v=0.66.0">
 <!-- v0.1 (media-player): 视频播放器自定义控件样式 -->
@@ -739,7 +739,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/client/js/views/game-tank3d.js?v=1.0.0"></script>
 <script src="/client/js/views/game-snake.js?v=0.1"></script>
 <!-- v0.X: GEO 应用仪表盘（Phase 3 v0.7 — AI 优化建议 + 一键建任务） -->
-<script src="/client/js/views/geo-dashboard.js?v=0.45"></script>
+<script src="/client/js/views/geo-dashboard.js?v=0.48.8"></script>
 <!-- v0.118: 内容运营平台 L3 App（PR 3 — 4 平台 provider + 8 tab UI） -->
 <script src="/client/js/views/social-publisher.js?v=0.119.8"></script>
 <!-- v0.1: 跨应用浏览器自动化控制台（browser-agent 可视化操作台） -->
@@ -1275,7 +1275,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- v0.61 辅助工具浮动窗口（启动菜单 + 命令面板入口）-->
 <script src="/client/js/core/assist-launcher.js?v=0.62"></script>
 <!-- v0.1 (Phase 2 #9): 通用 Modal 弹窗组件（替换 prompt/confirm/alert，任意视图可复用）-->
-<script src="/client/js/core/acms-modal.js?v=0.45"></script>
+<script src="/client/js/core/acms-modal.js?v=0.48"></script>
 <!-- v0.74.1: 通用文件→应用 registry（file-browser / email-inbox 共用）-->
 <script src="/client/js/core/file-app-registry.js?v=0.74.1"></script>
 <!-- v0.74: 邮件 HTML 过滤工具（DOMPurify 封装）依赖 -->

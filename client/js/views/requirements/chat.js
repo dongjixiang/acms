@@ -239,6 +239,18 @@ function startChatPolling(reqId) {
         if (fetchedOk) {
           if (state.tailKey && tailKey !== state.tailKey && history.length > 0) {
             const last = history[history.length - 1];
+            // v0.22.75 fix：user entry 不要就地重写——
+            //   chatSend 时已本地渲染用户气泡（data-at 是 client 时钟 at1），
+            //   后端写入 user entry 的 at 是 server 时钟 at2（与 at1 差几百 ms），
+            //   精确匹配必失败；user entry 没 source 字段 → src='' → source fallback
+            //   if (!target && src) 因 src 是空字符串（falsy）跳过 → target=null →
+            //   不删旧的 chatSend 渲染的 user bubble，直接 renderChatBubble 追加
+            //   一条新的 → DOM 顺序 [user(chatSend)] [assistant] [user(polling)]，
+            //   表现为「用户消息重复，一条在 AI 之前一条在 AI 之后」。
+            //   修法：last 是 user 时只同步 tailKey、不进入就地重写分支。
+            if (last.role === 'user') {
+              console.log('[startChatPolling] v0.22.75 user 已在 chatSend 本地渲染，跳过就地重写（at/client/server 时钟差导致精确匹配失败+src 空串触发重复）');
+            } else {
             const at = last.at || '';
             const src = last.source || '';
             let target = null;
@@ -256,6 +268,7 @@ function startChatPolling(reqId) {
             renderChatBubble(container, last);
             chatScrollToBottom(container);
             console.log('[startChatPolling] v0.22.68 尾部卡片就地重写 → 已刷新', src, at, target ? '(替换)' : '(补追加)');
+            }
           }
           state.tailKey = tailKey;
         } else {
@@ -2067,6 +2080,11 @@ async function chatSendDetect(reqId, text) {
             renderChatBubble(c, entry);
           }
           state.histCount = history.length;
+          // v0.22.75 fix：同步 tailKey，否则 polling 第一次 tick 会拿旧 tailKey 比较
+          //   → 若新的 history 最后一条是 user 会进就地重写分支 → user 重复
+          //   （虽然现在 polling 已加 user skip，但 tailKey 不同步会导致后续
+          //   polling tick 反复进 else 分支的 tailKey 不等判断，浪费 CPU + 误导日志）
+          state.tailKey = _histTailKey(history);
           chatScrollToBottom(c);
         }
       } catch (e) {
