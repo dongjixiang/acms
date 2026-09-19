@@ -109,7 +109,20 @@ registerTool({
   },
   async handler(args) {
     args = args || {};
-    const ops = Array.isArray(args.operations) ? args.operations : [];
+    // v0.122f: LLM（Qwen）常把嵌套数组序列化成 JSON **字符串**传进来，
+    //   实测报 GenOffice zod 的 `expected:"array", origin:"string"`，
+    //   而日志里 "3937 ops" 其实是那个字符串的长度（.length 骗人）。
+    //   这里统一容错：字符串 → 尝试 JSON.parse；再套一层 {operations:[...]} 也解开。
+    let ops = args.operations;
+    if (typeof ops === 'string') {
+      try {
+        ops = JSON.parse(ops);
+      } catch (e) {
+        return { ok: false, error: 'OPERATIONS_NOT_PARSABLE', message: 'operations 是字符串且不是合法 JSON：' + e.message };
+      }
+    }
+    if (ops && !Array.isArray(ops) && Array.isArray(ops.operations)) ops = ops.operations;
+    if (!Array.isArray(ops)) ops = [];
     if (!ops.length) {
       return { ok: false, error: 'NO_OPERATIONS', message: 'operations 为空，没什么可执行的' };
     }

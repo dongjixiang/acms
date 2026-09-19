@@ -456,10 +456,15 @@ router.post('/detect-and-respond', async (req, res, next) => {
                   if (evt.tool_name && /window_action$/.test(String(evt.tool_name))) {
                     var _waIn = evt.input;
                     if (typeof _waIn === 'string') { try { _waIn = JSON.parse(_waIn); } catch (e2) { _waIn = null; } }
-                    if (_waIn && _waIn.operations && _waIn.operations.length) {
+                    if (_waIn && _waIn.operations) {
                       // v0.122e: AI 常不带窗口参数（schema 里非必填）→ 从会话的活跃窗口兜底补 uid。
                       //   工具 handler 内部本来就有同样的兜底，但那时结果不经 SSE 回前端，
                       //   所以补推这一侧必须自己再查一次。
+                      // v0.122f: operations 可能是 JSON 字符串（Qwen 序列化嵌套数组），先解开
+                      let _waOps = _waIn.operations;
+                      if (typeof _waOps === 'string') { try { _waOps = JSON.parse(_waOps); } catch (e4) { _waOps = null; } }
+                      if (_waOps && !Array.isArray(_waOps) && Array.isArray(_waOps.operations)) _waOps = _waOps.operations;
+                      if (!Array.isArray(_waOps)) _waOps = [];
                       let _waUid = _waIn.windowUid || _waIn.windowId || null;
                       if (!_waUid) {
                         try {
@@ -471,11 +476,11 @@ router.post('/detect-and-respond', async (req, res, next) => {
                         type: 'office_action_apply',
                         windowUid: _waUid,
                         kind: _waIn.kind || null,
-                        action: { op: 'propose', operations: _waIn.operations, summary: _waIn.summary || 'AI 编辑' },
+                        action: { op: 'propose', operations: _waOps, summary: _waIn.summary || 'AI 编辑' },
                         summary: _waIn.summary || 'AI 编辑',
                         toolUseId: evt.tool_use_id,
                       })}\n\n`);
-                      console.log('[detect-and-respond] window_action → 已推 office_action_apply uid=' + _waUid, (_waIn.operations || []).length + ' ops');
+                      console.log('[detect-and-respond] window_action → 已推 office_action_apply uid=' + _waUid, _waOps.length + ' ops');
                     }
                   }
                 } catch (e3) { console.warn('[detect-and-respond] 推 office_action_apply 失败:', e3.message); }
@@ -566,7 +571,11 @@ router.post('/detect-and-respond', async (req, res, next) => {
                   at: new Date().toISOString(),
                 });
               }
-              const reqStore = require('../../data/requirement-store')();
+              // v0.122f 修正：路径应指向 server/stores/（原来写 '../../data/...' 从 routes/ 出发
+              //   会解析到 acms/data/，且 store 是对象不是工厂 —— 多调一次 () 也错）
+              //   原写法必然抛 MODULE_NOT_FOUND，被 catch 吞掉 ⇒ 工具调用结果从未写进历史
+              //   ⇒ AI 后续轮次看不见自己调过什么，会重复发起同样的调用。
+              const reqStore = require('../stores/requirement-store');
               reqStore.update(contextReqId, { supplement_history: JSON.stringify(hist) });
             } catch (e) {
               console.error('[detect-and-respond] 写 tool_call_result 失败:', e.message);
