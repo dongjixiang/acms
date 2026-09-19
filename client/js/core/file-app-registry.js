@@ -25,6 +25,8 @@
 (function () {
   'use strict';
 
+  var AK = (typeof API_KEY !== 'undefined' && API_KEY) ? API_KEY : 'dev-key-001';
+
   // 内置应用清单（v0.74 默认）
   var DEFAULT_APPS = [
     {
@@ -60,17 +62,17 @@
     // Office 系列：v0.74 邮件附件暂不支持直传（office editor 需要 workspace fileId），
     //   标记 supported=false，前端 UI 提示用户"先下载到本地"
     {
-      name: 'office-word', label: '📝 Word 编辑器', supports: 'needs-download',
+      name: 'office-word', label: '📝 Word 编辑器', supports: 'path',
       mime: /(officedocument\.word|msword)/i,
       exts: ['docx','doc','odt','rtf'],
     },
     {
-      name: 'office-xlsx', label: '📊 Excel 编辑器', supports: 'needs-download',
+      name: 'office-xlsx', label: '📊 Excel 编辑器', supports: 'path',
       mime: /(officedocument\.spreadsheet|excel)/i,
       exts: ['xlsx','xls','ods'],
     },
     {
-      name: 'office-pptx', label: '📽️ PPT 编辑器', supports: 'needs-download',
+      name: 'office-pptx', label: '📽️ PPT 编辑器', supports: 'path',
       mime: /(officedocument\.presentation|powerpoint)/i,
       exts: ['pptx','ppt','odp'],
     },
@@ -85,8 +87,57 @@
     return s.slice(dot + 1).toLowerCase();
   }
 
+  // v0.120: office 系直传映射（supports:'path'）
+  var OFFICE_VIEW_MAP = {
+    'office-word': { offType: 'docx', w: 1000, h: 700, prefix: '📝 ' },
+    'office-xlsx': { offType: 'xlsx', w: 1000, h: 600, prefix: '📊 ' },
+    'office-pptx': { offType: 'pptx', w: 1000, h: 650, prefix: '📽️ ' },
+  };
+
+  // 读文件 → base64。分块处理，避免大文件 String.fromCharCode.apply 栈溢出
+  //   （file-browser.js 的 xlsx 分支用了非分块的 String.fromCharCode(...spread)，
+  //    大表格会 RangeError —— 这里统一走分块版）
+  function readAsBase64(url) {
+    return fetch(url).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.arrayBuffer();
+    }).then(function (buf) {
+      var bytes = new Uint8Array(buf);
+      var chunks = [], CH = 8192;
+      for (var i = 0; i < bytes.length; i += CH) {
+        chunks.push(String.fromCharCode.apply(null, bytes.subarray(i, i + CH)));
+      }
+      return btoa(chunks.join(''));
+    });
+  }
+
+  function openOfficeFromPath(appName, meta, filePath, name, url) {
+    var readUrl = url || ('/api/files?path=' + encodeURIComponent(filePath) + '&raw=1&api_key=' + AK);
+    return readAsBase64(readUrl).then(function (b64) {
+      return fetch('/api/office/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': AK },
+        body: JSON.stringify({ type: meta.offType, name: name, content: b64 }),
+      });
+    }).then(function (r) { return r.json(); }).then(function (resp) {
+      if (resp && resp.ok && resp.fileId) {
+        if (window.ACMSWin) {
+          window.ACMSWin.open(appName, {
+            w: meta.w, h: meta.h, title: meta.prefix + name,
+            fileId: resp.fileId, fileName: name,
+          });
+        }
+        return { ok: true, fileId: resp.fileId };
+      }
+      return { ok: false, reason: (resp && resp.error) || 'office-save-failed' };
+    }).catch(function (e) {
+      return { ok: false, reason: 'fetch-failed', error: e && e.message };
+    });
+  }
+
   // 公开 API：推断可用应用
-  function getAppsForFile(name, mime) {
+  function getAppsForFile(name, mime, opts) {
+    opts = opts || {};
     var m = String(mime || '').toLowerCase();
     var ext = attachmentExt(name);
     var matched = [];
@@ -98,10 +149,15 @@
       if (!hit) return;
       if (seen[app.name]) return; // 同应用多条规则取第一条 label
       seen[app.name] = true;
+      // v0.120: 'path'（office 系）—— 调用方持有本地文件路径时可直接打开；
+      //   邮件附件等无路径场景不传 opts.hasPath，supported 保持 false（旧行为不变）
+      var ok = app.supports === 'url' || app.supports === 'text';
+      if (!ok && app.supports === 'path' && opts.hasPath) ok = true;
       matched.push({
         name: app.name,
         label: app.label,
-        supported: app.supports === 'url' || app.supports === 'text',
+        supported: ok,
+        needsPath: app.supports === 'path',
       });
     });
     return matched;
@@ -129,6 +185,15 @@
     var mime = String(opts.mime || '').toLowerCase();
     var title = name + '  ·  📂';
 
+    // v0.120: office 系直传 —— 有 filePath 就直接打开，没有则退回 needs-download
+    if (app.supports === 'path') {
+      var _meta = OFFICE_VIEW_MAP[appName];
+      if (!opts.filePath || !_meta) {
+        return Promise.resolve({ ok: false, reason: 'needs-download', label: app.label });
+      }
+      return openOfficeFromPath(appName, _meta, opts.filePath, name, url);
+    }
+
     if (app.supports === 'needs-download') {
       return Promise.resolve({ ok: false, reason: 'needs-download', label: app.label });
     }
@@ -147,13 +212,18 @@
 
     if (appName === 'code-editor') {
       if (opts.content != null) {
-        window._fb_open_file = { name: name, content: opts.content };
+        // v0.120: T3 — 带上 filePath，保存时覆写原文件而非触发浏览器下载
+        window._fb_open_file = opts.filePath
+          ? { name: name, content: opts.content, filePath: opts.filePath }
+          : { name: name, content: opts.content };
         if (window.ACMSWin) window.ACMSWin.open('code-editor', { w: 900, h: 600, title: '💻 ' + title });
         return Promise.resolve({ ok: true });
       }
       // 否则 fetch URL 拿文本
       return fetch(url).then(function (r) { return r.text(); }).then(function (content) {
-        window._fb_open_file = { name: name, content: content };
+        window._fb_open_file = opts.filePath
+          ? { name: name, content: content, filePath: opts.filePath }
+          : { name: name, content: content };
         if (window.ACMSWin) window.ACMSWin.open('code-editor', { w: 900, h: 600, title: '💻 ' + title });
         return { ok: true };
       }).catch(function (err) {
