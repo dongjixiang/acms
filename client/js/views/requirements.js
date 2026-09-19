@@ -182,10 +182,10 @@ async function openRequirement(id, root) {
       ${req.status !== 'idea' ? `<h3>📋 SRS</h3><div class="srs-preview"><pre>${escHtml(JSON.stringify(srs, null, 2))}</pre></div>` : ''}
       ${renderArchSpec(req)}
       ${renderChangeHistory(req)}
-      ${req.role === 'container' && (req.child_ids && JSON.parse(req.child_ids||'[]').length > 0) ? '<div style="margin-top:12px;display:flex;gap:8px"><button class="btn-small" style="background:rgba(78,205,196,0.1);color:var(--green)" onclick="refreshParent(\'' + id + '\')">📊 刷新父需求</button></div>' : ''}
+${req.role === 'container' && (req.child_ids && JSON.parse(req.child_ids||'[]').length > 0) ? '<div style="margin-top:12px;display:flex;gap:8px"><button class="btn-small" style="background:rgba(78,205,196,0.1);color:var(--green)" onclick="refreshParent(\'' + id + '\')">📊 刷新父需求</button></div>' : ''}
       <div id="req-children" style="margin-top:16px"></div>`;
-    if (req.status === 'clarifying') setTimeout(() => loadAiModels(id), 100);
-    setTimeout(() => loadDecomposeModels(id), 100);
+    if (req.status === 'clarifying') setTimeout(() => loadAiClarifyModels(id), 100);
+    setTimeout(() => loadAiDecomposeModels(id), 100);
     setTimeout(() => loadRequirementChildren(id), 150);
     setTimeout(() => loadExistingMdEditor(id), 200);
     if (req.status !== 'idea') setTimeout(() => loadRequirementKnowledge(id), 250);
@@ -275,11 +275,25 @@ function renderAiClarifyPanel(req) {
 }
 
 // 打开面板时加载可用模型
-async function loadAiModels(reqId) {
+// v0.13.1：默认列出所有 active 模型 + 默认选中系统默认大模型；列表为空时给可读兜底
+// 改名 loadAiClarifyModels：避开 admin.js 同名 loadAiModels(fresh) 全局冲突
+async function loadAiClarifyModels(reqId) {
   try {
-    const models = await api('GET', '/models/active');
+    const [models, def] = await Promise.all([
+      api('GET', '/models/active'),
+      api('GET', '/admin/default-gen-model').catch(() => null),
+    ]);
     const sel = _detailFindById(`ai-model-select-${reqId}`);
-    if (sel) sel.innerHTML = '<option value="">选择大模型...</option>' + models.map(m => `<option value="${m.id}">${escHtml(m.name)} (${m.model})</option>`).join('');
+    if (!sel) return;
+    if (!models || models.length === 0) {
+      sel.innerHTML = '<option value="" disabled selected>暂无模型，请先在管理后台添加</option>';
+      return;
+    }
+    const defaultId = def?.id || null;
+    sel.innerHTML = '<option value="">选择大模型...</option>' + models.map(m => {
+      const selected = (defaultId && m.id === defaultId) ? ' selected' : '';
+      return `<option value="${m.id}"${selected}>${escHtml(m.name)} (${m.model})${selected ? ' ⭐' : ''}</option>`;
+    }).join('');
   } catch(e) {}
 }
 
@@ -919,6 +933,62 @@ function toggleReviewSuggestion(btn, reqId, si) {
     sel.values.push(val);
     btn.classList.add('choice-selected');
   }
+  updateReviewSelectionCount(reqId);
+}
+
+// 全选/全不选评审建议
+function selectAllReview(reqId, selectAll) {
+  if (!aiSelections[reqId]) aiSelections[reqId] = {};
+  const key = `_review_${reqId}`;
+  if (!aiSelections[reqId][key]) aiSelections[reqId][key] = { values: [], multiple: true };
+  const choicesDiv = _detailFindById(`review-choices-${reqId}`);
+  if (!choicesDiv) return;
+  const buttons = choicesDiv.querySelectorAll('.choice-btn');
+  const sel = aiSelections[reqId][key];
+  buttons.forEach(function(btn) {
+    const val = btn.dataset.val;
+    if (!val) return;
+    const idx = sel.values.indexOf(val);
+    if (selectAll && idx < 0) {
+      sel.values.push(val);
+      btn.classList.add('choice-selected');
+    } else if (!selectAll && idx >= 0) {
+      sel.values.splice(idx, 1);
+      btn.classList.remove('choice-selected');
+    }
+  });
+  updateReviewSelectionCount(reqId);
+}
+
+// 实时更新"已选 N 项"计数
+function updateReviewSelectionCount(reqId) {
+  const countEl = _detailFindById(`review-selection-count-${reqId}`);
+  if (!countEl) return;
+  const choicesDiv = _detailFindById(`review-choices-${reqId}`);
+  const total = choicesDiv ? choicesDiv.querySelectorAll('.choice-btn').length : 0;
+  const sel = (aiSelections[reqId] || {})[`_review_${reqId}`];
+  const selected = sel ? sel.values.length : 0;
+  countEl.textContent = `已选 ${selected} / ${total} 项`;
+  countEl.style.color = selected > 0 ? 'var(--green)' : 'var(--text2)';
+}
+
+// 把选中的评审建议文本拼成多行块，追加到下方输入框 + toast 反馈
+function applyReviewSelection(reqId) {
+  const sel = (aiSelections[reqId] || {})[`_review_${reqId}`];
+  const values = sel ? sel.values : [];
+  if (values.length === 0) return toast('请先点击上方建议按钮选中方案', 'error');
+  const input = _detailFindById(`ai-clarify-input-${reqId}`);
+  if (!input) return;
+  // 去掉 "S0: " / "S1: " 前缀，纯文本友好
+  const cleaned = values.map(function(v) {
+    const m = v.match(/^S\d+:\s*(.*)$/);
+    return m ? m[1] : v;
+  });
+  const block = cleaned.map(function(t) { return '• ' + t; }).join('\n');
+  // 追加到现有输入（如果有内容则换行分隔）
+  input.value = input.value ? (input.value.trim() + '\n' + block) : block;
+  input.focus();
+  toast(`✅ 已采纳 ${values.length} 条方案到输入框，点「继续澄清」提交给 AI`, 'success', 2500);
 }
 
 async function submitAllChoices(reqId) {
@@ -981,9 +1051,9 @@ async function submitAiSrs(reqId) {
       if (!aiSelections[reqId]) aiSelections[reqId] = {};
       aiSelections[reqId][reviewSuggestionKey] = { values: [], multiple: true };
 
-      const suggestionsHtml = suggestionChoices.length > 0
+const suggestionsHtml = suggestionChoices.length > 0
         ? `<div style="margin:10px 0;padding:10px;background:var(--bg);border:1px dashed var(--border);border-radius:6px">
-            <div style="font-weight:bold;color:var(--green);margin-bottom:6px;font-size:13px">💡 建议修改方案（可多选，点击采纳）</div>
+            <div style="font-weight:bold;color:var(--green);margin-bottom:6px;font-size:13px">💡 建议修改方案（多选后点底部「采纳」）</div>
             <div style="display:flex;gap:4px;flex-wrap:wrap" id="review-choices-${reqId}">
               ${suggestionChoices.map((sc, si) => {
                 const val = `S${si}: ${sc.text}`;
@@ -992,6 +1062,13 @@ async function submitAiSrs(reqId) {
                   data-val="${escHtml(val)}" onclick="toggleReviewSuggestion(this,'${reqId}',${si})">📌 ${escHtml(sc.text.substring(0,80))}${sc.text.length>80?'...':''}</button>`;
               }).join('')}
               <button class="btn-small" style="font-size:12px;background:rgba(78,205,196,0.1)" onclick="document.getElementById('ai-clarify-input-${reqId}').focus()">✏️ 自定义</button>
+            </div>
+            <div style="margin-top:8px;display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text2);flex-wrap:wrap">
+              <span id="review-selection-count-${reqId}">已选 0 / ${suggestionChoices.length} 项</span>
+              <span style="flex:1"></span>
+              <button class="btn-small" style="font-size:11px;padding:2px 8px" onclick="selectAllReview('${reqId}', true)">全选</button>
+              <button class="btn-small" style="font-size:11px;padding:2px 8px" onclick="selectAllReview('${reqId}', false)">全不选</button>
+              <button class="btn-primary" style="font-size:12px;padding:4px 12px;background:rgba(78,205,196,0.85);color:#fff;border:none;font-weight:bold" onclick="applyReviewSelection('${reqId}')">✅ 采纳选中方案</button>
             </div>
           </div>`
         : '';
@@ -1919,11 +1996,24 @@ function renderAiDecomposePanel(req) {
   </div>`;
 }
 
-async function loadDecomposeModels(reqId) {
+// v0.13.1：默认列出所有 active 模型 + 默认选中系统默认大模型；列表为空时给可读兜底
+async function loadAiDecomposeModels(reqId) {
   try {
-    const models = await api('GET', '/models/active');
+    const [models, def] = await Promise.all([
+      api('GET', '/models/active'),
+      api('GET', '/admin/default-gen-model').catch(() => null),
+    ]);
     const sel = _detailFindById(`ai-decompose-model-${reqId}`);
-    if (sel) sel.innerHTML = '<option value="">选择大模型...</option>' + models.map(m => `<option value="${m.id}">${escHtml(m.name)} (${m.model})</option>`).join('');
+    if (!sel) return;
+    if (!models || models.length === 0) {
+      sel.innerHTML = '<option value="" disabled selected>暂无模型，请先在管理后台添加</option>';
+      return;
+    }
+    const defaultId = def?.id || null;
+    sel.innerHTML = '<option value="">选择大模型...</option>' + models.map(m => {
+      const selected = (defaultId && m.id === defaultId) ? ' selected' : '';
+      return `<option value="${m.id}"${selected}>${escHtml(m.name)} (${m.model})${selected ? ' ⭐' : ''}</option>`;
+    }).join('');
   } catch(e) {}
 }
 

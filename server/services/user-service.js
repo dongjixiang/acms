@@ -165,13 +165,18 @@ function listUsers() {
   return users.all().map(sanitize);
 }
 
-// 更新用户信息（仅改名/改角色/改 workspaceRole）
+// 更新用户信息（仅改 displayName/role/workspaceRole）
+// 重要：username 创建后不可修改（v0.119+ 多多拍板）— users/{username}/ 目录依赖 username 稳定
 function updateUser(userId, updates) {
   const users = collection('users');
   const user = users.findOne(u => u.id === userId);
   if (!user) return { error: 'USER_NOT_FOUND', message: '用户不存在' };
   if (user.role === 'guest' || user.isGuest) {
     return { error: 'CANNOT_UPDATE_GUEST', message: '游客账号不可修改' };
+  }
+  // 防御：拒绝 username 修改（即使调用方传过来也忽略，避免破坏 users/{username}/ 路径稳定性）
+  if (updates.username !== undefined && updates.username !== user.username) {
+    return { error: 'USERNAME_IMMUTABLE', message: '用户名创建后不可修改' };
   }
   if (updates.displayName !== undefined) user.displayName = String(updates.displayName).trim() || user.displayName;
   if (updates.role !== undefined && ['admin', 'user'].includes(updates.role)) user.role = updates.role;
