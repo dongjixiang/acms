@@ -478,12 +478,12 @@
       // 图片：传 URL
       var src='/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK;
       window._fb_open_file = {name:fn,src:src};
-      ACMSWin.open('image-editor',{w:1000,h:700,title:'🖼️ '+fn});
+      ACMSWin.open('image-editor',{w:1000,h:700,title:'🖼️ '+fn,instanceId:fp});
     } else if(appName==='code-editor'){
       // 代码：下载文本内容；保留原路径 fp 让 code-editor 保存时覆写
       fetch('/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK).then(function(r){return r.text();}).then(function(content){
         window._fb_open_file = {name:fn, content:content, filePath:fp};
-        ACMSWin.open('code-editor',{w:900,h:600,title:'💻 '+fn});
+        ACMSWin.open('code-editor',{w:900,h:600,title:'💻 '+fn,instanceId:fp});
       }).catch(function(e){console.log('[FB-DEBUG] code read error:', e); to('读取文件失败: '+(e&&e.message||''), 'error');});
     } else if(appName==='office-word'){
       // Word: 下载文件并保存到 office 目录，然后用 fileId 打开
@@ -504,7 +504,7 @@
         });
       }).then(function(r){return r.json();}).then(function(resp){
         if(resp.ok && resp.fileId) {
-          ACMSWin.open('office-word', {w:1000, h:700, title: '📝 '+fn, fileId: resp.fileId, fileName: fn});
+          ACMSWin.open('office-word', {w:1000, h:700, title: '📝 '+fn, fileId: resp.fileId, fileName: fn, instanceId: fp});
         } else {
           to('打开失败: 保存到编辑器目录失败','error');
         }
@@ -534,7 +534,7 @@
       }).then(function(r){return r.json();}).then(function(resp){
         console.log('[FB-DEBUG] Office save response:', resp);
         if(resp.ok && resp.fileId) {
-          ACMSWin.open('office-pptx', {w:1000, h:650, title: '📽️ '+fn, fileId: resp.fileId, fileName: fn});
+          ACMSWin.open('office-pptx', {w:1000, h:650, title: '📽️ '+fn, fileId: resp.fileId, fileName: fn, instanceId: fp});
         } else {
           to('打开失败: '+((resp && resp.error) || '未知错误'),'error');
         }
@@ -550,7 +550,7 @@
         });
       }).then(function(r){return r.json();}).then(function(resp){
         if(resp.ok && resp.fileId) {
-          ACMSWin.open('office-xlsx', {w:1000, h:600, title: '📊 '+fn, fileId: resp.fileId, fileName: fn});
+          ACMSWin.open('office-xlsx', {w:1000, h:600, title: '📊 '+fn, fileId: resp.fileId, fileName: fn, instanceId: fp});
         } else {
           to('打开失败: 保存到编辑器目录失败','error');
         }
@@ -559,13 +559,13 @@
       // 浏览器：fetch HTML 内容用 srcdoc 渲染（保证正确渲染而非显示源码）
       var fileUrl='/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK;
       fetch(fileUrl).then(function(r){return r.text();}).then(function(html){
-        ACMSWin.open('web-browser',{w:1100,h:750,title:'🌐 '+fn,srcdoc:html,url:fileUrl});
+        ACMSWin.open('web-browser',{w:1100,h:750,title:'🌐 '+fn,srcdoc:html,url:fileUrl,instanceId:fp});
       }).catch(function(){to('读取文件失败','error');});
     } else if(appName==='media-player') {
       // 视频播放器：传 fileUrl + _mp_open_file 给 mediaPlayerAPI 读
       var fileUrl2='/api/files?path='+encodeURIComponent(fp)+'&raw=1&api_key='+AK;
       window._mp_open_file = { name: fn, src: fileUrl2 };
-      ACMSWin.open('media-player',{w:1000,h:700,title:'🎬 '+fn});
+      ACMSWin.open('media-player',{w:1000,h:700,title:'🎬 '+fn,instanceId:fp});
     } else {
       ACMSWin.open(appName,{w:900,h:600});
     }

@@ -125,6 +125,7 @@
           window.ACMSWin.open(appName, {
             w: meta.w, h: meta.h, title: meta.prefix + name,
             fileId: resp.fileId, fileName: name,
+            instanceId: filePath || name,   // v0.121j: 每份文件一个独立窗口（不带则 null===null 会复用）
           });
         }
         return { ok: true, fileId: resp.fileId };
@@ -200,13 +201,13 @@
 
     if (appName === 'image-editor') {
       window._fb_open_file = { name: name, src: url };
-      if (window.ACMSWin) window.ACMSWin.open('image-editor', { w: 1000, h: 700, title: '🖼️ ' + title });
+      if (window.ACMSWin) window.ACMSWin.open('image-editor', { w: 1000, h: 700, title: '🖼️ ' + title, instanceId: opts.filePath || url || name });
       return Promise.resolve({ ok: true });
     }
 
     if (appName === 'media-player') {
       window._mp_open_file = { name: name, src: url };
-      if (window.ACMSWin) window.ACMSWin.open('media-player', { w: 1000, h: 700, title: '🎬 ' + title });
+      if (window.ACMSWin) window.ACMSWin.open('media-player', { w: 1000, h: 700, title: '🎬 ' + title, instanceId: opts.filePath || url || name });
       return Promise.resolve({ ok: true });
     }
 
@@ -216,7 +217,7 @@
         window._fb_open_file = opts.filePath
           ? { name: name, content: opts.content, filePath: opts.filePath }
           : { name: name, content: opts.content };
-        if (window.ACMSWin) window.ACMSWin.open('code-editor', { w: 900, h: 600, title: '💻 ' + title });
+        if (window.ACMSWin) window.ACMSWin.open('code-editor', { w: 900, h: 600, title: '💻 ' + title, instanceId: opts.filePath || url || name });
         return Promise.resolve({ ok: true });
       }
       // 否则 fetch URL 拿文本
@@ -224,7 +225,7 @@
         window._fb_open_file = opts.filePath
           ? { name: name, content: content, filePath: opts.filePath }
           : { name: name, content: content };
-        if (window.ACMSWin) window.ACMSWin.open('code-editor', { w: 900, h: 600, title: '💻 ' + title });
+        if (window.ACMSWin) window.ACMSWin.open('code-editor', { w: 900, h: 600, title: '💻 ' + title, instanceId: opts.filePath || url || name });
         return { ok: true };
       }).catch(function (err) {
         return { ok: false, reason: 'fetch-failed', error: err && err.message };
@@ -236,16 +237,16 @@
       // HTML → fetch 后用 srcdoc 渲染（保证正确显示而非源码）
       if (/^text\/html/.test(mime) || ext === 'html' || ext === 'htm' || ext === 'mhtml') {
         return fetch(url).then(function (r) { return r.text(); }).then(function (html) {
-          if (window.ACMSWin) window.ACMSWin.open('web-browser', { w: 1100, h: 750, title: '🌐 ' + title, srcdoc: html, url: url });
+          if (window.ACMSWin) window.ACMSWin.open('web-browser', { w: 1100, h: 750, title: '🌐 ' + title, srcdoc: html, url: url, instanceId: opts.filePath || url || name });
           return { ok: true };
         }).catch(function () {
           // fallback 直接传 URL
-          if (window.ACMSWin) window.ACMSWin.open('web-browser', { w: 1100, h: 750, title: '🌐 ' + title, url: url });
+          if (window.ACMSWin) window.ACMSWin.open('web-browser', { w: 1100, h: 750, title: '🌐 ' + title, url: url, instanceId: opts.filePath || url || name });
           return { ok: true };
         });
       }
       // PDF / 视频 / 音频 → 直接传 URL 给 iframe
-      if (window.ACMSWin) window.ACMSWin.open('web-browser', { w: 1100, h: 750, title: '🌐 ' + title, url: url });
+      if (window.ACMSWin) window.ACMSWin.open('web-browser', { w: 1100, h: 750, title: '🌐 ' + title, url: url, instanceId: opts.filePath || url || name });
       return Promise.resolve({ ok: true });
     }
 
