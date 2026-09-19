@@ -69,7 +69,9 @@
 
   // ── 弹层 CSS（用 ACMS 三主题变量，跟随主题切换）──
   var CSS = '' +
-    '.acms-fp{display:flex;flex-direction:column;gap:10px;min-height:380px}' +
+    // v0.121i: 固定宽度 —— ACMSModal 只设了 min/max-width 没设 width，弹层是 shrink-to-fit，
+    //   文件名一长弹层就变宽；而 overlay 是居中的 → 位置跟着左右跳（实测被用户抓到）
+    '.acms-fp{display:flex;flex-direction:column;gap:10px;min-height:380px;width:min(880px,86vw);box-sizing:border-box}' +
     '.acms-fp .fp-bar{display:flex;align-items:center;gap:8px}' +
     '.acms-fp .fp-up{width:30px;height:30px;flex:0 0 auto;border:1px solid var(--border);background:var(--bg3);' +
       'color:var(--text2);border-radius:7px;cursor:pointer;font-size:13px;line-height:1}' +
