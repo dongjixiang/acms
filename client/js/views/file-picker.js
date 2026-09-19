@@ -108,7 +108,10 @@
   // v0.121l: 默认打开「用户自己的根目录」users/{username}/
   //   之前固定落在 workspaces/（项目/文档区，多用户共享），看不到"我的地方"
   //   游客 / 未登录（无 username）→ 回落 ''，即 workspaces 根
-  function _defaultStartPath() {
+  // v0.122c: 用户自己的文件根（/users/{username}）。
+  //   ⚠️ 注意它**不是**默认打开位置 —— 见 pick() 的注释。
+  //   游客 / 未登录没有用户根，返回 ''。
+  function _userRootPath() {
     try {
       var u = JSON.parse(localStorage.getItem('acms-user') || '{}');
       if (u && u.username && u.role !== 'guest' && !u.isGuest) return '/users/' + u.username;
@@ -119,7 +122,11 @@
   function pick(opts) {
     opts = opts || {};
     return new Promise(function (resolve) {
-      var state = { cur: opts.startPath || _defaultStartPath(), parent: null, entries: [], sel: null, q: '' };
+      // v0.122c: 默认落在**工作区**（用户的实际文件都在 workspaces/）。
+      //   曾经默认改成 /users/{username}，但那是「用户级应用数据根」（ip-library/logs/config），
+      //   新账号建出来是空的 ⇒ 打开就看到空列表，用户会以为文件丢了。
+      //   用户根改为工具栏上一个「👤 我的文件」快捷入口（见下）。
+      var state = { cur: opts.startPath || '', parent: null, entries: [], sel: null, q: '' };
       var settled = false;
 
       var html =
@@ -128,6 +135,7 @@
           '<div class="fp-bar">' +
             '<button class="fp-up" id="fp-up" title="上一层">⬆</button>' +
             '<button class="fp-root" id="fp-root" title="回到工作区根目录">🏠 工作区</button>' +
+            (_userRootPath() ? '<button class="fp-root" id="fp-mine" title="我的文件（用户目录：放个人文件用）">👤 我的文件</button>' : '') +
             '<span class="fp-path" id="fp-path" title="">/</span>' +
             '<input class="fp-search" id="fp-search" placeholder="在当前目录筛选…">' +
           '</div>' +
@@ -248,6 +256,9 @@
 
       upEl.addEventListener('click', function () { if (state.parent) load(state.parent); });
       document.getElementById('fp-root').addEventListener('click', function () { load(''); });
+      // v0.122c: 「我的文件」→ /users/{username}
+      var mineEl = document.getElementById('fp-mine');
+      if (mineEl) mineEl.addEventListener('click', function () { load(_userRootPath()); });
 
       var tmr = null;
       searchEl.addEventListener('input', function () {

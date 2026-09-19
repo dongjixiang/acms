@@ -96,6 +96,16 @@ function resolveSafePath(req, reqPath) {
       var uRelAdm = rawAdm.slice(USERS_CLIENT_ROOT.length + 1).replace(/\//g, path.sep);
       var uAdm = path.join(USERS_ROOT, uRelAdm);
       if (!uAdm.startsWith(USERS_ROOT)) return null;
+      // v0.122c: admin 访问**自己的**用户根时同样懒创建。
+      //   实测踩到：这台机器的登录账号 username 就是 admin（role=admin），
+      //   文件选择器默认拼 /users/admin → 目录不存在 → 又报「路径不存在」。
+      //   只在 firstSeg === 自己的 username 时建，逛别人的目录仍不造。
+      var _meAdm = req.user && req.user.username;
+      var _firstSeg = String(uRelAdm).split(path.sep)[0];
+      if (_meAdm && _firstSeg && _firstSeg === _meAdm && !uRelAdm.slice(_firstSeg.length + 1)) {
+        var _myAdmRoot = path.join(USERS_ROOT, _firstSeg);
+        try { if (!fs.existsSync(_myAdmRoot)) fs.mkdirSync(_myAdmRoot, { recursive: true }); } catch (e) { /* ignore */ }
+      }
       return { safePath: uAdm, isAdmin: true };
     }
     // 其他非盘符路径 —— fallback：path.resolve（admin 选定的合法路径，已超出常规命名空间）
