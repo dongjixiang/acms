@@ -7185,6 +7185,16 @@ body { padding-bottom: 40px; }
   padding: 3px 9px; border-radius: 999px;
 }
 .chat-ctx-chip .chat-ctx-x { cursor: pointer; opacity: 0.7; }
+.chat-ctx-mode {
+  display: inline-flex; border: 1px solid var(--border); border-radius: 999px;
+  overflow: hidden; background: var(--bg3);
+}
+.chat-ctx-mode button {
+  background: transparent; border: 0; color: var(--text2); font-size: 11px;
+  padding: 3px 10px; cursor: pointer; font-family: inherit;
+}
+.chat-ctx-mode button.on { background: var(--accent); color: #fff; }
+.chat-ctx-mode button:not(.on):hover { background: var(--bg4, var(--bg3)); color: var(--text); }
 .chat-ctx-chip .chat-ctx-x:hover { opacity: 1; }
 
 /* 📌 / ⧉ 内嵌窗口标题栏按钮（轻量化，别做成第二个窗口 chrome） */

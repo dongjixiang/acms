@@ -326,11 +326,29 @@ router.post('/detect-and-respond', async (req, res, next) => {
         try {
           const _cwc = sessionSvc.getActiveWindow(reqId);
           if (_cwc) {
-            _ctxMsgs.push({ role: 'system', content:
-              '[对话工作区] 用户当前选中的窗口：' + (_cwc.name || '(未命名)') +
+            const _head = '[对话工作区] 用户当前选中的窗口：' + (_cwc.name || '(未命名)') +
               '（' + (_cwc.view || '未知类型') + '，windowId=' + _cwc.window_id + '）' +
-              (_cwc.file_path ? '，文件路径 ' + _cwc.file_path : '') +
-              '。需要正文时调用 read_window_content(windowId="' + _cwc.window_id + '")。上下文里不带正文，按需读取。' });
+              (_cwc.file_path ? '，文件路径 ' + _cwc.file_path : '');
+            // v0.121d: 两种注入模式
+            //   ref （默认）→ 只给引用清单，正文按需 read_window_content（省 token）
+            //   full        → 直接把正文读出来拼进上下文（费 token，但省一轮工具往返）
+            let _tail = '。需要正文时调用 read_window_content(windowId="' + _cwc.window_id + '")。上下文里不带正文，按需读取。';
+            if (_cwc.inject_mode === 'full') {
+              try {
+                require('../tools/read-window-content');   // P178: 触发注册（同一坑）
+                const _t = require('../services/tool-registry').getTool('read_window_content');
+                if (_t && _t.handler) {
+                  const _r = await _t.handler({ windowId: _cwc.window_id, maxChars: 30000 }, {});
+                  if (_r && _r.ok && _r.text) {
+                    _tail = '。以下是它的正文（' + (_r.chars || _r.text.length) + ' 字' +
+                            (_r.truncated ? '，已截断' : '') + '）：\n<<<窗口正文开始>>>\n' + _r.text + '\n<<<窗口正文结束>>>';
+                  } else {
+                    _tail = '。正文读取失败（' + ((_r && (_r.error || _r.reason)) || '未知') + '），可再试 read_window_content。';
+                  }
+                }
+              } catch (e) { console.error('[chat-intent] 全文注入失败:', e.message); }
+            }
+            _ctxMsgs.push({ role: 'system', content: _head + _tail });
           }
         } catch (e) {}
       }

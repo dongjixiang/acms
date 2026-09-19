@@ -8,7 +8,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>ACMS — 智能体协同管理系统</title>
-<link rel="stylesheet" href="/client/css/style.css?v=0.86.26">  <!-- v0.86.23 fix：.chat-stream 加 min-height: 0（默认 auto 让内容超高时撑破父容器 → chat-stream-input 被裁剪 → 全屏态/历史多的对话框底部按钮看不到）。v0.117v 兄弟 agent 只修了 chat-stream > * 的 flex-shrink，没修 chat-stream 自己的 min-height: auto（flex:1 失效 → 撑破父容器）。v0.86.22 fix: 清理行号垃圾污染（4535|.ap-msg-user → namespace 前缀规则失效）→ 小吉用户消息恢复右对齐 -->
+<link rel="stylesheet" href="/client/css/style.css?v=0.86.27">  <!-- v0.86.23 fix：.chat-stream 加 min-height: 0（默认 auto 让内容超高时撑破父容器 → chat-stream-input 被裁剪 → 全屏态/历史多的对话框底部按钮看不到）。v0.117v 兄弟 agent 只修了 chat-stream > * 的 flex-shrink，没修 chat-stream 自己的 min-height: auto（flex:1 失效 → 撑破父容器）。v0.86.22 fix: 清理行号垃圾污染（4535|.ap-msg-user → namespace 前缀规则失效）→ 小吉用户消息恢复右对齐 -->
 <!-- v=0.86.14 inline override: 表格边框/字体覆盖 chat-bubble + ap-msg-text 双路径 -->
 <style>
 .chat-bubble table, .ap-msg-text table { display: table !important; border-collapse: collapse !important; width: 100%; margin: 4px 0; font-size: 11px; line-height: 1.3; }
@@ -1293,7 +1293,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- v0.74.1: 通用文件→应用 registry（file-browser / email-inbox 共用）— v0.120 加 office 直传 -->
 <script src="/client/js/core/file-app-registry.js?v=0.120"></script>
 <!-- v0.1: 通用文件选择器（自由对话 / 需求对话「📁 文件」入口）-->
-<script src="/client/js/views/file-picker.js?v=0.4"></script>
+<script src="/client/js/views/file-picker.js?v=0.5"></script>
 <!-- v0.74: 邮件 HTML 过滤工具（DOMPurify 封装）依赖 -->
 <script src="/client/lib/dompurify.min.js?v=3.0"></script>
 <!-- v0.74: 邮件 HTML 过滤工具 -->

@@ -255,6 +255,13 @@
   }
 
   // ── v0.121: 打开后把窗口吸附进对话流（坐标跟随，不 reparent）──
+  function _winById(id) {
+    if (!window.ACMSWin || !ACMSWin.getWindows) return null;
+    var ws = ACMSWin.getWindows();
+    for (var i = 0; i < ws.length; i++) { if (ws[i].id === id) return ws[i]; }
+    return null;
+  }
+
   function _winIds() {
     if (!window.ACMSWin || !ACMSWin.getWindows) return [];
     return ACMSWin.getWindows().map(function (w) { return w.id; });
@@ -452,6 +459,10 @@
   //   点窗口 → 输入框上方出现 chip + 注册到后端（后端拼 prompt 时把"当前选中窗口"写进系统上下文）
   //   注册走 /api/chat/session-ctx，避免改 chat.js 的发送路径（那是兄弟 agent 的高频改动文件）
   var _activeCtx = null;
+  var INJECT_KEY = 'acms-chat-inject-mode';
+  function _injectMode() {
+    try { return localStorage.getItem(INJECT_KEY) === 'full' ? 'full' : 'ref'; } catch (e) { return 'ref'; }
+  }
 
   function _streamIdOf(stream) {
     return (stream.getAttribute('id') || '').replace('chat-stream-msgs-', '');
@@ -470,13 +481,27 @@
     }
     if (!info) { bar.innerHTML = ''; bar.style.display = 'none'; return; }
     bar.style.display = 'flex';
+    var _m = _injectMode();
     bar.innerHTML = '<span class="chat-ctx-chip" title="后续提问会自动关联这个窗口的内容">🔗 <b>' +
-      esc(info.name) + '</b><span class="chat-ctx-x" title="取消关联">✕</span></span>';
+      esc(info.name) + '</b><span class="chat-ctx-x" title="取消关联">✕</span></span>' +
+      '<span class="chat-ctx-mode" title="上下文注入方式：引用=只给文件名，AI 需要时自己读（省 token）；全文=直接把正文塞进上下文（费 token，少一轮往返）">' +
+        '<button type="button" data-m="ref"' + (_m === 'ref' ? ' class="on"' : '') + '>引用</button>' +
+        '<button type="button" data-m="full"' + (_m === 'full' ? ' class="on"' : '') + '>全文</button>' +
+      '</span>';
     bar.querySelector('.chat-ctx-x').addEventListener('click', function (e) {
       e.stopPropagation();
       _activeCtx = null;
       renderCtxChip(stream, null);
       try { api('POST', '/chat-sessions/' + _streamIdOf(stream) + '/ctx', { ctx: null }); } catch (err) {}
+    });
+    bar.querySelectorAll('.chat-ctx-mode button').forEach(function (b) {
+      b.addEventListener('click', function (e) {
+        e.stopPropagation();
+        try { localStorage.setItem(INJECT_KEY, b.getAttribute('data-m')); } catch (err) {}
+        // 立刻重注册（后端记的是会话级模式，切换后要同步过去）
+        var w = (_activeCtx && _activeCtx.windowId) ? _winById(_activeCtx.windowId) : null;
+        if (w) setActiveCtx(stream, w); else renderCtxChip(stream, info);
+      });
     });
   }
 
@@ -488,6 +513,7 @@
       name: w.st.titleOverride || w.st.title || '窗口',
       filePath: (w._dockItem && w._dockItem.path) || null,
       fileId: w._fileId || null,
+      injectMode: _injectMode(),
     };
     _activeCtx = info;
     renderCtxChip(stream, info);

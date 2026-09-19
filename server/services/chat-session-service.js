@@ -321,6 +321,7 @@ function upsertWindowCtx(sessionId, ctx) {
     name: ctx.name || null,
     file_path: ctx.filePath || null,
     file_id: ctx.fileId || null,
+    inject_mode: ctx.injectMode === 'full' ? 'full' : 'ref',   // v0.121d: ref(引用+按需) | full(直接带正文)
     active: 1,
     updated_at: nowIso(),
   };
