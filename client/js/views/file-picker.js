@@ -448,8 +448,23 @@
     var reqId = (stream.getAttribute('id') || '').replace('chat-stream-msgs-', '');
 
     if (preMode === 'embed') {
-      // 钉之前就嵌在对话里 → 回到消息流
-      dockIntoChat(w, { name: w.st.titleOverride || w.st.title || '窗口', path: null }, reqId);
+      // 钉之前就嵌在对话里 → 回到**原来那个槽位**（不是新建）
+      //   左槽位在钉住期间一直留着当归位占位，直接复用才叫"回到之前的占位"；
+      //   之前调 dockIntoChat 会在消息流末尾新建槽位 → 位置跑偏 + 多出一个槽位（实测踩到）
+      var homeSlot = w._chatDockSlot;
+      if (homeSlot && document.body.contains(homeSlot) && homeSlot.parentNode) {
+        try {
+          ACMSWin.dockTo(w, homeSlot, { mode: 'embed' });
+          _injectPinBtn(w, stream);
+          _bindCtxPick(w, stream);
+          var b = w.el.querySelector('.aw-btn-pin');
+          if (b) b.classList.toggle('active', false);
+        } catch (e) {
+          dockIntoChat(w, { name: w.st.titleOverride || w.st.title || '窗口', path: null }, reqId);
+        }
+      } else {
+        dockIntoChat(w, { name: w.st.titleOverride || w.st.title || '窗口', path: null }, reqId);
+      }
     } else {
       // 钉之前是浮窗 → 留在浮窗原位（位置已由 undock 恢复），
       //   顺带清掉消息流里那个归位占位（窗口已经不在对话里了）
