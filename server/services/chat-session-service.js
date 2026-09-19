@@ -319,6 +319,9 @@ function upsertWindowCtx(sessionId, ctx) {
   //   AI 读到的是**上一个会话的文件**（实测：sprties/README.md 被读成《星星的故事》）。
   //   所以注册时必须把同 window_id 的其它会话记录清掉（这个 id 现在归当前会话了）。
   try { col.remove(r => r.window_id === ctx.windowId && r.session_id !== sessionId); } catch (e) {}
+  // v0.122d: 一个会话的「当前选中窗口」只有一个 —— 换窗口时清掉同会话的其它记录，
+  //   否则多条 active=1 残留（旧 aw-N + 新 uid）会让 getActiveWindow 取错。
+  try { col.remove(r => r.session_id === sessionId && r.window_id !== ctx.windowId); } catch (e) {}
   const where = r => r.session_id === sessionId && r.window_id === ctx.windowId;
   // v0.122: 窗口操作通道 —— 前端把编辑器内存态的 docContext 一并报上来
   //   （read 走它而不是后端 pandoc 读磁盘：磁盘是「已保存版」且丢样式、丢单元格地址）
@@ -346,8 +349,19 @@ function upsertWindowCtx(sessionId, ctx) {
 }
 
 function getActiveWindow(sessionId) {
-  try { return collection('chat_window_ctx').findOne(r => r.session_id === sessionId && r.active === 1) || null; }
-  catch (e) { return null; }
+  try {
+    const col = collection('chat_window_ctx');
+    // v0.122d: 必须按 updated_at 取**最新**那条。
+    //   实测踩到：同一会话残留 3 条 active=1（旧的 aw-6 + 新的 w-xxx），
+    //   原来直接 findOne 不排序 → 取到最旧的 aw-6 → AI 用这个失效 id 调 window_action
+    //   → 前端 bridge 查无此 uid → 「窗口不存在或已关闭: aw-6」。
+    const rows = col.find ? col.find(r => r.session_id === sessionId && r.active === 1) : [];
+    if (!rows || !rows.length) return null;
+    rows.sort(function (a, b) {
+      return String(b.updated_at || '').localeCompare(String(a.updated_at || ''));
+    });
+    return rows[0];
+  } catch (e) { return null; }
 }
 
 function getWindowByIdInSession(sessionId, windowId) {
