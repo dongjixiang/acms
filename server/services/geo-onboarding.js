@@ -18,6 +18,7 @@
 //   - elmo 竞品是独立 competitors 表；我们复用 watch 系统（focus_brand + competitor_ids）
 
 const GEO_STORE = require('./geo-store');
+const { labelsForPrompt, labelToCode } = require('./geo-industries');
 
 // =====================================================================
 // LLM Prompt（借鉴 elmo analyze.ts 的 Zod schema + TAG_GUIDANCE）
@@ -304,6 +305,118 @@ async function inferAliases(brand) {
   }
 }
 
+// =====================================================================
+// inferBrandFields — v0.48 轻量三字段推断（domain / industry / aliases）
+// =====================================================================
+//
+// 用例：新建品牌 modal — 用户只输入品牌名，点「✨ AI 智能填充」
+//   → 一次 LLM 调用补齐 domain / industry / aliases
+//   → 用户可手动覆盖
+//
+// 与 inferAliases 的区别：
+//   - inferAliases 只输出 aliases，~500 tokens
+//   - inferBrandFields 输出 3 类，~800 tokens
+//
+// 输出：{ domain, industry, aliases }
+//   - domain：hostname 格式（无协议/www/路径），LLM 拿不准则返回 ""
+//   - industry：v0.48 MVP 阶段**不做白名单校验** — 国标 GB/T 4754-2017 473 中类
+//     清单从国家统计局拉取中，LLM 输出任意合理 label 直接落库。清单到了之后
+//     在这里加 labelToCode 校验 + 强制落到国标中类代码。
+//   - aliases：≤6 个字符串数组
+
+function buildInferBrandFieldsPrompt(brand) {
+  return [
+    '# 品牌字段推断（仅输出 JSON）',
+    '',
+    `品牌名: ${brand.name}`,
+    brand.domain ? `域名（可选 hint）: ${brand.domain}` : '',
+    '',
+    '## 任务',
+    '基于品牌名（+ 可选域名 hint），推断三个字段：',
+    '1. domain — 该品牌最可能的官方域名（hostname 格式：无 https://、无 www.、无路径）',
+    '2. industry — **必须从下方国标 GB/T 4754-2017 中类列表中复制粘贴** 最匹配的标准中文名（如"软件开发"'
+    + '、"货币银行服务"、"会议、展览及相关服务"、"石油开采"、"学前教育"等），不要自己造词或缩写',
+    '3. aliases — 3-6 个常用别名（缩写、母公司、常见错拼、英文名）',
+    '',
+    '## 要求',
+    '- domain：LLM 确信才返回 hostname，否则返回空字符串',
+    '- industry：**严格复制下方列表里的标准名**（一字不差，包括顿号、括号）；不要输出简称'
+    + '（"石油"/"石化"/"银行"/"电商"/"搜索"等都不行，必须输出"石油开采"/"精炼石油产品制造"/"货币银行服务"/"互联网零售"/"互联网搜索服务"等）',
+    '- aliases：跳过与主名有子串关系的（"中展" ⊂ "中展集团" — 子串匹配已覆盖）',
+    '- aliases：跳过通用词（公司/集团/Co/Ltd/AI/IT 等）',
+    '- 严格输出 JSON 对象，不要 markdown',
+    '',
+    '## 国标中类列表（从下方复制粘贴 industry 值）',
+    labelsForPrompt(),
+    '',
+    '## 输出格式',
+    '{"domain":"","industry":"","aliases":["别名1","别名2"]}',
+  ].filter(Boolean).join('\n');
+}
+
+/**
+ * @param {Object} brand - { name, domain?, industry? }  （不需要 brand_id）
+ * @returns {Promise<{ok: true, data: {domain: string, industry: string, aliases: string[]}} | {ok: false, error, message}>}
+ */
+async function inferBrandFields(brand) {
+  const runtime = require('./agent-runtime');
+  const prompt = buildInferBrandFieldsPrompt(brand);
+
+  try {
+    const result = await runtime.execute({
+      messages: [
+        { role: 'system', content: '你是 GEO 专家。严格输出 JSON 对象（不要 markdown 代码块、不要任何解释）。' },
+        { role: 'user', content: prompt },
+      ],
+      toolNames: [],
+      maxRounds: 1,
+      caller: 'geo-onboarding-infer-brand-fields',
+      maxTokens: 800,
+      temperature: 0.3,
+    });
+
+    const raw = String(result.content || '').trim();
+    // 容错：去 markdown + 取 {...} 段
+    let jsonText = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
+    const start = jsonText.indexOf('{');
+    const end = jsonText.lastIndexOf('}');
+    if (start < 0 || end <= start) {
+      return { ok: false, error: 'PARSE_FAILED', message: 'LLM 输出无 JSON 对象' };
+    }
+    jsonText = jsonText.slice(start, end + 1);
+    const parsed = JSON.parse(jsonText);
+
+    // 清洗 domain（hostname 格式）
+    let domain = String(parsed.domain || '').trim().toLowerCase()
+      .replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, '');
+
+    // industry v0.48: label → 国标中类 code 落库
+    //   落国标 code（3 位数字）让 GEO 行业对比/排序/排名按国标中类聚合生效
+    //   命中失败保留原 label（兜底 + warn 让用户发现）
+    const industryRaw = String(parsed.industry || '').trim();
+    let industry = industryRaw;
+    try {
+      const code = labelToCode(industryRaw);
+      if (code) {
+        industry = code;
+      } else if (industryRaw) {
+        console.warn(`[geo-infer] industry label "${industryRaw}" 未命中国标中类 — 保留原 label`);
+      }
+    } catch (e) {
+      // geo-industries.js 加载失败（极端情况）— 保持现状
+    }
+
+    // aliases 数组清洗
+    const aliases = Array.isArray(parsed.aliases)
+      ? parsed.aliases.slice(0, 6).map(s => String(s || '').trim()).filter(Boolean)
+      : [];
+
+    return { ok: true, data: { domain, industry, aliases } };
+  } catch (e) {
+    return { ok: false, error: 'LLM_CALL_FAILED', message: e.message };
+  }
+}
+
 module.exports = {
   buildAnalyzePrompt,
   analyzeBrand,
@@ -312,4 +425,7 @@ module.exports = {
   // v0.30: 轻量别名推断（独立调用，补齐老品牌 aliases）
   buildInferAliasesPrompt,
   inferAliases,
+  // v0.48: 三字段推断（domain/industry/aliases — 新建品牌 AI 填充）
+  buildInferBrandFieldsPrompt,
+  inferBrandFields,
 };

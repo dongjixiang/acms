@@ -17,49 +17,81 @@
 (function () {
   'use strict';
 
-  // === v0.42: GEODashboard 全局对象修复（修复 index.html onclick 引用不存在函数的错误）===
-  // brand 管理表格的 onclick 调用 GEODashboard.editBrandIndustry / selectBrand / deleteBrand
-  // 该对象在早期版本中缺失，导致点击按钮报 ReferenceError
-  // 提供最小实现：占位符 + 实际操作委托（功能由现有 bindBtn 逻辑覆盖，不重复实现 CRUD）
-  window.GEODashboard = window.GEODashboard || {
-    editBrandIndustry: function (brandId, industry) {
-      // 委托到 geo-brand-alias-btn 流程（已有）或直接提示用户
-      console.info('[GEODashboard] editBrandIndustry:', brandId, '→', industry || '');
-      const aliasBtn = document.getElementById('geo-brand-alias-btn');
-      if (aliasBtn) { aliasBtn.disabled = false; aliasBtn.click(); }
-    },
-    selectBrand: function (brandId) {
-      console.info('[GEODashboard] selectBrand:', brandId);
-      const selectEl = document.getElementById('geo-brand-select');
-      if (selectEl) {
-        selectEl.value = brandId || '';
-        selectEl.dispatchEvent(new Event('change'));
-      }
-    },
-    deleteBrand: function (brandId, brandName) {
-      console.info('[GEODashboard] deleteBrand:', brandId, brandName);
-      if (!brandId || !confirm('确定删除品牌「' + (brandName || brandId) + '」吗？此操作不可撤销。')) return;
-      // 委托到后端删除 + 前端刷新（由现有按钮绑定覆盖）
-      alert('删除功能需在品牌管理面板中操作（当前只修复 onclick 引用错误，不重复实现 CRUD）。');
-    },
-    clearBrandData: async function (brandId, brandName) {
-      console.info('[GEODashboard] clearBrandData:', brandId, brandName);
-      if (!brandId) return;
-      const keep = confirm(`确定清除「${brandName || brandId}」的所有追踪数据吗？\n\n会删除：查询记录、AI 响应、评分、快照\n保留：品牌信息、别名、行业设置\n此操作可恢复（重新追踪后会自动填充）。`);
-      if (!keep) return;
-      try {
-        const r = await api('POST', `/api/geo/brands/${brandId}/clear-data`);
-        if (r.data?.ok) {
-          notify(`已清除「${brandName}」的追踪数据`, 'success');
-          await loadBrands();
-        } else {
-          notify('清除失败: ' + (r.data?.error || r.status), 'error');
+// === v0.48: GEODashboard 全局对象 — 转发到 geo-dashboard.js IIFE 内部实现（不重复 CRUD）===
+//   早期 v0.42 stub 用 alert 占位，现在仪表盘里已用 showModal 重确认 + DELETE API 全流程，
+//   全局 onclick 入口只做"二次轻确认 + 走 API + 刷新列表"，保持极简，避免重复实现。
+window.GEODashboard = window.GEODashboard || {
+  editBrandIndustry: function (brandId, industry) {
+    console.info('[GEODashboard] editBrandIndustry:', brandId, '→', industry || '');
+    const aliasBtn = document.getElementById('geo-brand-alias-btn');
+    if (aliasBtn) { aliasBtn.disabled = false; aliasBtn.click(); }
+  },
+  selectBrand: function (brandId) {
+    console.info('[GEODashboard] selectBrand:', brandId);
+    const selectEl = document.getElementById('geo-brand-select');
+    if (selectEl) {
+      selectEl.value = brandId || '';
+      selectEl.dispatchEvent(new Event('change'));
+    }
+  },
+  // v0.48.5: 品牌表格展平/分组切换（防品牌多时表格撑爆）
+  brandTableToggleAll: function () {
+    _brandTableShowAll = !_brandTableShowAll;
+    renderBrandTable(_currentIndustry
+      ? _allBrands.filter(b => (b.industry || '').trim() === _currentIndustry)
+      : _allBrands);
+  },
+  // 折叠/展开某个行业分组
+  brandTableToggleGroup: function (industry) {
+    const cur = _brandGroupExpanded.get(industry);
+    _brandGroupExpanded.set(industry, cur === false);  // 默认 true，flip
+    renderBrandTable(_allBrands);  // 分组模式才生效，传全量即可
+  },
+  deleteBrand: async function (brandId, brandName) {
+    console.info('[GEODashboard] deleteBrand:', brandId, brandName);
+    if (!brandId) return;
+    if (!confirm('确定删除品牌「' + (brandName || brandId) + '」吗？此操作不可撤销。')) return;
+    try {
+      const url = '/api/geo/brands/' + encodeURIComponent(brandId) + '?api_key=' + (window.AK || 'dev-key-001');
+      const r = await fetch(url, { method: 'DELETE' });
+      const data = await r.json().catch(() => ({}));
+      if (r.ok && data?.ok !== false) {
+        if (window.ACMS?.Notif?.add) {
+          window.ACMS.Notif.add({ icon: '🗑️', title: '品牌已删除', desc: brandName || brandId, type: 'success' });
         }
-      } catch (e) {
-        notify('清除失败: ' + e.message, 'error');
+        // v0.48.4 修复：不要 location.reload()（整页刷新会把 ACMSWin 浮窗、其它视图、当前 tab 全冲掉）
+        //   改发自定义事件，让 IIFE 内部的 loadBrands 接管表格刷新
+        window.dispatchEvent(new CustomEvent('geo:brand-deleted', { detail: { brandId } }));
+      } else {
+        alert('删除失败: ' + (data?.error || data?.message || r.status));
       }
-    },
-  };
+    } catch (e) {
+      alert('删除出错: ' + e.message);
+    }
+  },
+  clearBrandData: async function (brandId, brandName) {
+    console.info('[GEODashboard] clearBrandData:', brandId, brandName);
+    if (!brandId) return;
+    const keep = confirm(`确定清除「${brandName || brandId}」的所有追踪数据吗？\n\n会删除：查询记录、AI 响应、评分、快照\n保留：品牌信息、别名、行业设置\n此操作可恢复（重新追踪后会自动填充）。`);
+    if (!keep) return;
+    try {
+      const url = '/api/geo/brands/' + encodeURIComponent(brandId) + '/clear-data?api_key=' + (window.AK || 'dev-key-001');
+      const r = await fetch(url, { method: 'POST' });
+      const data = await r.json().catch(() => ({}));
+      if (r.ok && data?.ok !== false) {
+        if (window.ACMS?.Notif?.add) {
+          window.ACMS.Notif.add({ icon: '🧹', title: '已清除追踪数据', desc: brandName || brandId, type: 'success' });
+        }
+        // v0.48.4 修复：不要 location.reload()，改发自定义事件让 IIFE 内部 loadBrands 接管
+        window.dispatchEvent(new CustomEvent('geo:brand-cleared', { detail: { brandId } }));
+      } else {
+        alert('清除失败: ' + (data?.error || data?.message || r.status));
+      }
+    } catch (e) {
+      alert('清除出错: ' + e.message);
+    }
+  },
+};
 
   // === 全局 GEO cron 通知（v0.9 — Phase 4）===
   // 脚本加载即监听（不管 GEO 窗口是否打开）；后端 cron 完成 → eventBus → WS → app.js 广播 acms:geo.cron.done
@@ -77,6 +109,19 @@
   window.addEventListener('acms:geo.report.done', function (e) {
     var d = e.detail || {};
     globalNotify(d.title || '📊 GEO 报告已生成', d.desc || '', d.type || 'info');
+  });
+  // v0.48.4: 监听全局 window.GEODashboard.deleteBrand / clearBrandData 发出的事件
+  //   在 IIFE 内部刷新表格（不能用 location.reload()，会冲掉整个 ACMSWin 浮窗）
+  window.addEventListener('geo:brand-deleted', async function () {
+    try { await loadBrands(); } catch (e) { console.warn('loadBrands failed:', e); }
+    // 如果删的是当前选中品牌，重置 select
+    if (currentBrandId && !_allBrands.some(b => b.id === currentBrandId)) {
+      currentBrandId = '';
+      const sel = _byId('geo-brand-select'); if (sel) sel.value = '';
+    }
+  });
+  window.addEventListener('geo:brand-cleared', async function () {
+    try { await loadBrands(); } catch (e) { console.warn('loadBrands failed:', e); }
   });
 
   const VIEW_NAME = 'geo-dashboard';
@@ -1535,10 +1580,16 @@
   async function loadBrands() {
     setStatus('加载品牌...', 'loading');
     try {
+      // v0.48.7: 先确保 industries 缓存可用（表格 _brandRowHtml 需要 _industryLabel 解析 code → 中文）
+      await loadIndustries();
       const r = await api('GET', '/api/geo/brands');
       const brands = r.data?.brands || [];
-      renderBrandTable(brands);
       _allBrands = brands;  // v0.45: 同步刷新缓存（修复之前 loadBrands 不更缓存的漏洞）
+      // v0.48.5: 按 _currentIndustry 过滤后再渲染（与 select 保持一致）
+      const filtered = _currentIndustry
+        ? brands.filter(b => (b.industry || '').trim() === _currentIndustry)
+        : brands;
+      renderBrandTable(filtered);
       populateIndustrySelector();  // v0.45: 品牌数据变化时同步刷新行业下拉（计数实时更新）
       populateBrandSelector(brands);
       setStatus(`已加载 ${brands.length} 个品牌`, 'success');
@@ -1547,6 +1598,13 @@
     }
   }
 
+  // v0.48.5: 行业分组渲染（防品牌多时表格撑爆）
+  //   _brandTableShowAll=true → 展平显示所有品牌，按行业顺序排列
+  //   _brandTableShowAll=false → 按行业分组，每组可折叠/展开（默认）
+  let _brandTableShowAll = false;
+  // 折叠状态：industry code → bool（true=展开）
+  const _brandGroupExpanded = new Map();
+
   function renderBrandTable(brands) {
     const tbody = _byId('geo-brand-tbody');
     if (!tbody) return;
@@ -1554,20 +1612,79 @@
       tbody.innerHTML = '<tr><td colspan="6" class="geo-empty-cell">暂无品牌。点击右上"➕ 新建品牌"开始。</td></tr>';
       return;
     }
-    tbody.innerHTML = brands.map(b => `
-      <tr data-brand-id="${b.id}">
-        <td><strong>${esc(b.name)}</strong></td>
-        <td>${esc(b.domain)}</td>
-        <td>${b.industry ? esc(b.industry) : '<span style="opacity:.45">—</span>'} <button class="geo-btn geo-btn-sm" title="设置行业（用于行业排名）" onclick="GEODashboard.editBrandIndustry('${b.id}', '${esc(b.industry || '')}')">🏷️</button></td>
-        <td><span class="geo-badge geo-badge-${b.status === 'active' ? 'ok' : 'gray'}">${b.status}</span></td>
-        <td>${(b.created_at || '').slice(0, 19).replace('T', ' ')}</td>
-        <td>
-          <button class="geo-btn geo-btn-sm" onclick="GEODashboard.selectBrand('${b.id}')">📊</button>
-          <button class="geo-btn geo-btn-sm" onclick="GEODashboard.clearBrandData('${b.id}', '${esc(b.name)}')" title="清除该品牌的所有追踪记录和评分（保留品牌和别名）">🧹</button>
-          <button class="geo-btn geo-btn-sm" onclick="GEODashboard.deleteBrand('${b.id}', '${esc(b.name)}')">🗑️</button>
-        </td>
-      </tr>
-    `).join('');
+    // 顶部分组切换按钮（仅行业分组模式显示）
+    const toggleHtml = !_brandTableShowAll && _currentIndustry === ''
+      ? `<tr><td colspan="6" style="padding:6px 10px;background:rgba(255,255,255,.03);font-size:12px">
+          <span style="opacity:.7">按行业分组展示（${brands.length} 个品牌 · ${new Set(brands.map(b => b.industry || '未分类')).size} 个行业）</span>
+          <button class="geo-btn geo-btn-sm" style="float:right;margin-left:8px" onclick="window.GEODashboard.brandTableToggleAll()">📋 显示全部（展平）</button>
+        </td></tr>`
+      : _brandTableShowAll
+      ? `<tr><td colspan="6" style="padding:6px 10px;background:rgba(255,255,255,.03);font-size:12px">
+          <span style="opacity:.7">展平显示全部 ${brands.length} 个品牌</span>
+          <button class="geo-btn geo-btn-sm" style="float:right;margin-left:8px" onclick="window.GEODashboard.brandTableToggleAll()">📂 按行业分组</button>
+        </td></tr>`
+      : `<tr><td colspan="6" style="padding:6px 10px;background:rgba(255,255,255,.03);font-size:12px">
+          <span style="opacity:.7">当前行业筛选：${esc(brands[0]?.industry || '—')} · ${brands.length} 个品牌</span>
+          <button class="geo-btn geo-btn-sm" style="float:right;margin-left:8px" onclick="window.GEODashboard.brandTableToggleAll()">📋 显示全部行业</button>
+        </td></tr>`;
+
+    if (_brandTableShowAll || _currentIndustry !== '') {
+      // 模式 A：展平（按 industry + name 排序）
+      const sorted = [...brands].sort((a, b) => {
+        const ai = a.industry || 'zzz'; const bi = b.industry || 'zzz';
+        if (ai !== bi) return ai.localeCompare(bi);
+        return (a.name || '').localeCompare(b.name || '');
+      });
+      tbody.innerHTML = toggleHtml + sorted.map(b => _brandRowHtml(b)).join('');
+    } else {
+      // 模式 B：按行业分组（每组可折叠，默认全部展开）
+      const groups = new Map();
+      for (const b of brands) {
+        const k = b.industry || '未分类';
+        if (!groups.has(k)) groups.set(k, []);
+        groups.get(k).push(b);
+      }
+      const sortedKeys = [...groups.keys()].sort();
+      const rows = [];
+      for (const ind of sortedKeys) {
+        const list = groups.get(ind);
+        const expanded = _brandGroupExpanded.get(ind) !== false; // 默认 true
+        // v0.48.7: 分组头显示中文 label（不是 code）
+        const indLabel = ind === '未分类'
+          ? '<span style="opacity:.55">⚠️ 未分类</span>'
+          : esc(_industryLabel(ind));
+        rows.push(`<tr style="background:rgba(99,102,241,.08);font-weight:600">
+          <td colspan="6" style="padding:6px 10px;cursor:pointer" onclick="window.GEODashboard.brandTableToggleGroup('${esc(ind).replace(/'/g, "\\'")}')">
+            <span style="display:inline-block;width:14px">${expanded ? '▼' : '▶'}</span>
+            ${indLabel} · <span style="opacity:.7;font-weight:normal">${list.length} 个品牌</span>
+          </td>
+        </tr>`);
+        if (expanded) {
+          for (const b of list.sort((a, b) => (a.name || '').localeCompare(b.name || ''))) {
+            rows.push(_brandRowHtml(b));
+          }
+        }
+      }
+      tbody.innerHTML = toggleHtml + rows.join('');
+    }
+  }
+  // 单行渲染（renderBrandTable 复用）
+  function _brandRowHtml(b) {
+    // v0.48.7: 表格里行业列显示中文 label（不是 code），用 _industryLabel 解析
+    //   b.industry 可能是国标 code（"071"）或 legacy slug（"exhibition"），都映射到中文
+    const indDisplay = b.industry ? esc(_industryLabel(b.industry)) : '<span style="opacity:.45">—</span>';
+    return `<tr data-brand-id="${b.id}">
+      <td><strong>${esc(b.name)}</strong></td>
+      <td>${esc(b.domain)}</td>
+      <td>${indDisplay} <button class="geo-btn geo-btn-sm" title="设置行业（用于行业排名）" onclick="GEODashboard.editBrandIndustry('${b.id}', '${esc(b.industry || '')}')">🏷️</button></td>
+      <td><span class="geo-badge geo-badge-${b.status === 'active' ? 'ok' : 'gray'}">${b.status}</span></td>
+      <td>${(b.created_at || '').slice(0, 19).replace('T', ' ')}</td>
+      <td>
+        <button class="geo-btn geo-btn-sm" onclick="GEODashboard.selectBrand('${b.id}')">📊</button>
+        <button class="geo-btn geo-btn-sm" onclick="GEODashboard.clearBrandData('${b.id}', '${esc(b.name)}')" title="清除该品牌的所有追踪记录和评分（保留品牌和别名）">🧹</button>
+        <button class="geo-btn geo-btn-sm" onclick="GEODashboard.deleteBrand('${b.id}', '${esc(b.name)}')">🗑️</button>
+      </td>
+    </tr>`;
   }
 
   async function editBrandIndustry(brandId, currentIndustry) {
@@ -1592,49 +1709,72 @@
   let _allBrands = [];           // 所有 brand 缓存（从 /api/geo/brands 拉的）
   let _currentIndustry = '';     // 当前行业过滤（'' = 所有行业）
 
-  // v0.44: 行业下拉：内置 7 行业 + default 枚举（不依赖 brand 缓存 — 即便没品牌也能选）
-  //   数据基础：server/services/geo-prompt-llm.js INDUSTRY_PROMPT_GUIDANCE 字典
-  //   v0.45+: 加 (n) 显示该行业已建品牌数（计数从 _allBrands 缓存取 — 仅展示用，不影响可选性）
-  const INDUSTRY_OPTIONS = [
-    { value: 'marketing',          label: '营销/广告/SEO' },
-    { value: 'exhibition',         label: '展览/展台/会展' },
-    { value: 'saas',               label: 'SaaS / B2B 软件' },
-    { value: 'pharma',             label: '医药/医疗健康' },
-    { value: 'banking',            label: '银行/金融' },
-    { value: 'ecommerce',          label: '电商/零售' },
-    { value: 'brand-design',       label: '品牌设计' },
-    { value: 'consumer-electronics', label: '消费电子' },
-  ];
+  // v0.48: 行业下拉用国标 GB/T 4754-2017 中类（524 项，按门类分组）
+  //   数据源：/api/geo/industries（首次访问自动 fetch + 缓存到 _industriesCache）
+  //   value = 国标 code（3 位数字），与 brand.industry 字段直接对应
+  //   兼容：老数据里的 marketing/saas/pharma 等英文 slug 通过 LEGACY_SLUG 映射也展示
+  //   删除：原 v0.45 INDUSTRY_OPTIONS 8 项硬编码（与国标冲突，已废弃）
 
-  function populateIndustrySelector() {
-    const select = _byId('geo-industry-select');
-    if (!select) return;
-    const currentValue = _currentIndustry || select.value || '';
-    // 统计 _allBrands 缓存里每个行业已有几个品牌（用于在 (n) 显示）
+  // 把品牌缓存 _allBrands 按 industry（可能是国标 code 或老 slug）聚合计数
+  function _countBrandsByIndustry(brands) {
     const counts = new Map();
-    for (const b of _allBrands) {
+    for (const b of brands) {
       const ind = (b.industry || '').trim();
       if (!ind) continue;
       counts.set(ind, (counts.get(ind) || 0) + 1);
     }
-    // 渲染：内置 7+default 行业 + 实时品牌计数；已有品牌的行业排前面（按计数倒序）
-    const sortedOpts = [...INDUSTRY_OPTIONS].sort((a, b) => {
-      const ca = counts.get(a.value) || 0;
-      const cb = counts.get(b.value) || 0;
-      if (ca !== cb) return cb - ca;
-      return a.label.localeCompare(b.label, 'zh-CN');
-    });
-    select.innerHTML = '<option value="">— 所有行业 —</option>' +
-      sortedOpts.map(o => {
+    return counts;
+  }
+
+  async function populateIndustrySelector() {
+    const select = _byId('geo-industry-select');
+    if (!select) return;
+    const currentValue = _currentIndustry || select.value || '';
+    await loadIndustries();  // 确保缓存可用
+    const counts = _countBrandsByIndustry(_allBrands);
+
+    // 渲染：全部国标中类（按门类分组），不按品牌数过滤 — 数据清空也能选
+    let html = '<option value="">— 所有行业 —</option>';
+    if (_industriesCache && _industriesCache.length > 0) {
+      for (const g of _industriesCache) {
+        html += `<optgroup label="${esc(g.category)}">`;
+        for (const m of g.items) {
+          const n = counts.get(m.code) || 0;
+          // 全部展示，计数只用于标注（n=0 仍可选，便于选空筛选类别）
+          html += `<option value="${esc(m.code)}">${esc(m.label)} (${n})</option>`;
+        }
+        html += '</optgroup>';
+      }
+    }
+    // 兼容：老数据里的英文 slug（不在国标里的）— 仅当还有老数据时显示
+    const legacyOpts = [
+      { value: 'marketing', label: '营销/广告/SEO' },
+      { value: 'exhibition', label: '展览/展台/会展' },
+      { value: 'saas', label: 'SaaS / B2B 软件' },
+      { value: 'pharma', label: '医药/医疗健康' },
+      { value: 'banking', label: '银行/金融' },
+      { value: 'ecommerce', label: '电商/零售' },
+      { value: 'brand-design', label: '品牌设计' },
+      { value: 'consumer-electronics', label: '消费电子' },
+    ];
+    const hasLegacy = legacyOpts.some(o => counts.has(o.value));
+    if (hasLegacy) {
+      html += '<optgroup label="⚠️ 旧分类（迁移到国标）">';
+      for (const o of legacyOpts) {
         const n = counts.get(o.value) || 0;
-        return `<option value="${esc(o.value)}">${esc(o.label)} (${n})</option>`;
-      }).join('');
-    // 兼容：若 _currentIndustry 不在内置列表（老数据用了没注册的 key），保留并追加
-    if (_currentIndustry && !INDUSTRY_OPTIONS.some(o => o.value === _currentIndustry)) {
-      const n = counts.get(_currentIndustry) || 0;
+        if (n > 0) {
+          html += `<option value="${esc(o.value)}">${esc(o.label)} (${n})</option>`;
+        }
+      }
+      html += '</optgroup>';
+    }
+
+    select.innerHTML = html;
+    // 兼容：若 currentValue 不在已渲染列表中（自定义值），追加
+    if (currentValue && !Array.from(select.options).some(o => o.value === currentValue)) {
       const extraOpt = document.createElement('option');
-      extraOpt.value = _currentIndustry;
-      extraOpt.textContent = `${_currentIndustry} (${n}) [自定义]`;
+      extraOpt.value = currentValue;
+      extraOpt.textContent = `${currentValue} (${counts.get(currentValue) || 0}) [自定义]`;
       select.appendChild(extraOpt);
     }
     select.value = currentValue;
@@ -1832,22 +1972,213 @@
     }
   }
 
+  // v0.48: 国标 GB/T 4754-2017 中类缓存（单例 Promise，第一次 await 后缓存）
+  let _industriesCache = null;  // null = 未加载；[] = 已加载（即便空也缓存）
+  let _industriesPromise = null;
+  // v0.48.7: code/legacy slug → 中文 label（前端版 resolveIndustryLabel，复用 _industriesCache）
+  //   优先匹配国标 code，其次匹配 legacy slug，未命中原样返回 value
+  const _LEGACY_SLUG_LABEL = {
+    'marketing': '营销/广告/SEO',
+    'exhibition': '展览/展台/会展',
+    'saas': 'SaaS / B2B 软件',
+    'pharma': '医药/医疗健康',
+    'banking': '银行/金融',
+    'ecommerce': '电商/零售',
+    'brand-design': '品牌设计',
+    'consumer-electronics': '消费电子',
+  };
+  function _industryLabel(value) {
+    if (!value) return '';
+    // 1) 国标 code（最常见）
+    if (_industriesCache && _industriesCache.length > 0) {
+      for (const g of _industriesCache) {
+        for (const m of g.items || []) {
+          if (m.code === value) return m.label;
+        }
+      }
+    }
+    // 2) 兼容 legacy slug
+    if (_LEGACY_SLUG_LABEL[value]) return _LEGACY_SLUG_LABEL[value];
+    // 3) 兜底：原样返回（让用户看到 code 而不是空白）
+    return value;
+  }
+  async function loadIndustries() {
+    if (_industriesCache !== null) return _industriesCache;
+    if (_industriesPromise) return _industriesPromise;
+    _industriesPromise = (async () => {
+      try {
+        const r = await api('GET', '/api/geo/industries');
+        _industriesCache = r.data?.groups || [];
+        return _industriesCache;
+      } catch (e) {
+        console.warn('[geo] industries load failed:', e.message);
+        _industriesCache = [];  // 失败也缓存空数组，避免无限 retry
+        return _industriesCache;
+      } finally {
+        _industriesPromise = null;
+      }
+    })();
+    return _industriesPromise;
+  }
+
+  // 渲染行业下拉 HTML（按门类分组用 <optgroup>）
+  function renderIndustrySelectHtml(groups) {
+    if (!groups || groups.length === 0) {
+      // 兜底：渲染空下拉（避免 showModal 时模板语法报错）
+      return '<select class="acms-modal-input" id="geo-cb-industry" disabled>'
+        + '<option value="">行业列表加载失败 — 请刷新页面</option></select>';
+    }
+    let html = '<select class="acms-modal-input" id="geo-cb-industry">';
+    html += '<option value="">— 选择行业（可选） —</option>';
+    for (const g of groups) {
+      html += `<optgroup label="${esc(g.category)}">`;
+      for (const m of g.items) {
+        // v0.48.7: 只显示中文 label（不显示 code），与顶栏 geo-industry-select 风格保持一致
+        //   code 仍然在 value 上，前端提交 / 后端存库都按 code 走（国标 3 位中类）
+        html += `<option value="${esc(m.code)}">${esc(m.label)}</option>`;
+      }
+      html += '</optgroup>';
+    }
+    html += '</select>';
+    return html;
+  }
+
   async function createBrand() {
-    // v0.26 C7: 加「自动生成 prompts」选项（简化版 onboarding — 创建后 LLM 自动生成短查询）
-    const result = await showModal({
+    // v0.48: 国标中类下拉（GB/T 4754-2017）+ aliases 多值 + 「✨ AI 智能填充」按钮
+    //   行业字段必填下拉（按门类分组），domain/aliases 可手填或 AI 推断
+    // 用 ACMSModal 的 beforeCleanup 钩子在 overlay 移除前收集值（v0.44 已支持）
+    //
+    // 时序关键：showModal 内部用 new Promise(executor) 同步执行 overlay mount，
+    // 所以 `showModal({...})` 这一行返回时 DOM 已挂但用户尚未操作。
+    // 我们必须**在 await 之前**拿到 AI 按钮 DOM 并绑定（await 之后 modal 已销毁）。
+    const industries = await loadIndustries();
+    const industrySelectHtml = renderIndustrySelectHtml(industries);
+
+    const modalPromise = showModal({
       title: '➕ 新建品牌',
-      message: '添加一个要追踪 GEO 表现的品牌。',
-      fields: [
-        { name: 'name', label: '品牌名称', placeholder: '例如：MiniMax', required: true },
-        { name: 'domain', label: '域名', placeholder: '例如：minimax.com', required: true },
-        { name: 'auto_generate', label: '自动生成提问模板', type: 'checkbox' },
-      ],
+      message: '添加一个要追踪 GEO 表现的品牌。名称必填；其它字段可手动填，也可点「✨ AI 智能填充」一键补齐（基于品牌名 LLM 推断）。',
+      html: `
+        <div class="acms-modal-form" style="display:flex;flex-direction:column;gap:10px;font-size:13px">
+          <div class="acms-modal-field">
+            <div class="acms-modal-label">品牌名称 <span style="color:#e53935">*</span></div>
+            <input class="acms-modal-input" id="geo-cb-name" placeholder="例如：MiniMax" autocomplete="off">
+          </div>
+          <div style="display:flex;gap:8px;align-items:flex-end">
+            <div class="acms-modal-field" style="flex:1">
+              <div class="acms-modal-label">行业 <span style="font-size:11px;opacity:.6">（国标 GB/T 4754-2017 中类 — AI 也能填）</span></div>
+              ${industrySelectHtml}
+            </div>
+            <button type="button" id="geo-cb-ai-btn"
+              style="background:linear-gradient(135deg,#8b5cf6,#6366f1);color:#fff;border:none;font-weight:600;padding:8px 14px;white-space:nowrap;cursor:pointer"
+              title="基于品牌名 LLM 推断：行业 / 域名 / 别名">✨ AI 智能填充</button>
+          </div>
+          <div class="acms-modal-field">
+            <div class="acms-modal-label">域名</div>
+            <input class="acms-modal-input" id="geo-cb-domain" placeholder="例如：minimax.com" autocomplete="off">
+          </div>
+          <div class="acms-modal-field">
+            <div class="acms-modal-label">别名 <span style="font-size:11px;opacity:.6">（、分隔 — mention 检测用）</span></div>
+            <input class="acms-modal-input" id="geo-cb-aliases" placeholder="例如：小米、小米公司、Xiaomi" autocomplete="off">
+          </div>
+          <div class="acms-modal-field" style="display:flex;align-items:center;gap:6px;margin-top:4px">
+            <input type="checkbox" id="geo-cb-auto-gen" style="accent-color:#6366f1">
+            <label for="geo-cb-auto-gen" style="cursor:pointer;font-size:12px;opacity:.85">创建后自动生成提问模板（10-30 秒）</label>
+          </div>
+        </div>
+      `,
+      beforeCleanup: (value) => {
+        if (value !== 'SUBMIT') return value;
+        // html 模式自拼表单，ACMSModal 内置 inputs 收集不到，自己 querySelector 拿
+        const name = (_byId('geo-cb-name')?.value || '').trim();
+        const domain = (_byId('geo-cb-domain')?.value || '').trim();
+        const industry = (_byId('geo-cb-industry')?.value || '').trim();
+        const aliasesRaw = (_byId('geo-cb-aliases')?.value || '').trim();
+        const auto_generate = !!_byId('geo-cb-auto-gen')?.checked;
+        if (!name) {
+          // name 必填 — focus 并标红，阻止关闭（v0.48 修复：用 KEEP_OPEN sentinel，不再用 null）
+          const el = _byId('geo-cb-name');
+          if (el) { el.focus(); el.style.borderColor = '#e53935'; }
+          notify('请输入品牌名称', 'warning');
+          return (window.ACMSModal && window.ACMSModal.KEEP_OPEN) || null;
+        }
+        if (!domain) {
+          const el = _byId('geo-cb-domain');
+          if (el) { el.focus(); el.style.borderColor = '#e53935'; }
+          notify('请输入域名', 'warning');
+          return (window.ACMSModal && window.ACMSModal.KEEP_OPEN) || null;
+        }
+        // aliases 拆分为数组（、/， 都接受）
+        const aliases = aliasesRaw ? aliasesRaw.split(/[、，,]/).map(s => s.trim()).filter(Boolean) : [];
+        return { name, domain, industry, aliases, auto_generate };
+      },
     });
+
+    // v0.48: 「✨ AI 智能填充」按钮 — 用 document 事件委托绑定
+    // 原因：ACMSModal.show 是 async，overlay 挂载在 microtask 内，
+    //   showModal() 同步返回时 DOM 可能尚未挂，_byId 拿不到按钮。
+    //   事件委托在 document 层监听 click，判断 e.target.dataset.action，
+    //   不依赖 DOM 挂载时机，modal 无论何时渲染都能正确响应。
+    const aiBtnHandler = (e) => {
+      const t = e.target;
+      if (t && t.id === 'geo-cb-ai-btn') {
+        e.preventDefault();
+        e.stopPropagation();
+        const name = (_byId('geo-cb-name')?.value || '').trim();
+        if (!name) {
+          const el = _byId('geo-cb-name');
+          if (el) { el.focus(); el.style.borderColor = '#e53935'; }
+          notify('请先输入品牌名称', 'warning');
+          return;
+        }
+        const domainHint = (_byId('geo-cb-domain')?.value || '').trim();
+        const industryBefore = _byId('geo-cb-industry')?.value || '';
+        const aliasesBefore = (_byId('geo-cb-aliases')?.value || '').trim();
+        const originalLabel = t.textContent;
+        t.disabled = true;
+        t.textContent = '⏳ AI 推断中...（5-15 秒）';
+        api('POST', '/api/geo/brands/infer', { name, domain: domainHint }).then(r => {
+          if (!r.data?.ok) {
+            notify(`AI 推断失败: ${r.data?.message || r.data?.error || r.status}`, 'error', 3000);
+            return;
+          }
+          const { domain, industry, aliases } = r.data.data || {};
+          let filled = 0;
+          if (domain && !domainHint) {
+            const el = _byId('geo-cb-domain'); if (el) { el.value = domain; filled++; }
+          }
+          if (industry && !industryBefore) {
+            const el = _byId('geo-cb-industry'); if (el) { el.value = industry; filled++; }
+          }
+          if (Array.isArray(aliases) && aliases.length && !aliasesBefore) {
+            const el = _byId('geo-cb-aliases'); if (el) { el.value = aliases.join('、'); filled++; }
+          }
+          notify(filled > 0
+            ? `✨ AI 已填充 ${filled} 个字段（可手动修改）`
+            : `✨ AI 推断完成（用户已填的字段未覆盖）`,
+            'success', 2000);
+        }).catch(e => {
+          notify(`AI 推断出错: ${e.message}`, 'error', 3000);
+        }).finally(() => {
+          t.disabled = false;
+          t.textContent = originalLabel;
+        });
+      }
+    };
+    document.addEventListener('click', aiBtnHandler, true);
+    // modal 关闭后（resolve 后）移除委托，避免泄漏
+    modalPromise.finally(() => {
+      document.removeEventListener('click', aiBtnHandler, true);
+    });
+
+    // 等用户操作（创建 / 取消）
+    const result = await modalPromise;
     if (!result || !result.name || !result.domain) return;
     setStatus('创建中...', 'loading');
     const r = await api('POST', '/api/geo/brands', {
       name: result.name,
       domain: result.domain,
+      industry: result.industry || '',
+      aliases: result.aliases || [],
       auto_generate_prompts: !!result.auto_generate,
     });
     if (r.data?.ok) {
@@ -1860,7 +2191,23 @@
       } else if (autoGen && !autoGen.ok) {
         notify(`🧠 自动生成模板失败: ${autoGen.error}`, 'warning');
       }
+      // v0.48.5 修复：创建后智能重置筛选
+      //   如果新品牌不在当前 _currentIndustry 筛选下，立即被过滤掉——用户看不到
+      //   策略：仅当新品牌的 industry 字段存在 + 不在当前筛选时，自动切到该行业（或切回"全部"）
+      const newBrand = r.data.brand;
+      if (newBrand.industry && _currentIndustry && newBrand.industry !== _currentIndustry) {
+        _currentIndustry = newBrand.industry;
+        const indSelect = _byId('geo-industry-select');
+        if (indSelect) indSelect.value = _currentIndustry;
+        console.info('[createBrand] 自动切换行业筛选到:', _currentIndustry);
+      }
       await loadBrands();
+      // 切到 brand tab 让用户能看到（如果当前不在 brand tab）
+      const activeTab = document.querySelector('.geo-tab.active');
+      if (activeTab && activeTab.dataset.tab !== 'brand') {
+        const brandTab = document.querySelector('.geo-tab[data-tab="brand"]');
+        if (brandTab) brandTab.click();
+      }
     } else {
       await showModal({
         title: '❌ 创建失败',
@@ -4436,6 +4783,10 @@
         _currentIndustry = indSelect.value;
         // 重渲染品牌下拉（按行业过滤）
         populateBrandSelector();
+        // v0.48.5: 同步重渲染品牌管理表格（防品牌多时表格撑爆）
+        renderBrandTable(_currentIndustry
+          ? _allBrands.filter(b => (b.industry || '').trim() === _currentIndustry)
+          : _allBrands);
         // 如果当前 brand 不在新行业里 → 清空；保留就用
         const brandSel = _byId('geo-brand-select');
         const newBrandId = brandSel?.value || '';

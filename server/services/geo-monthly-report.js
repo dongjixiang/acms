@@ -6,6 +6,10 @@
 //   - Markdown 月报（含月度汇总 + 周对比 + 关键发现）
 //   - 自动写文件到 data/geo/reports/monthly_<brand>_<YYYY-MM>.md
 //   - 可选：调 PDF 生成器输出 PDF 版本
+//
+// v0.47+：月报复用 weekly 的 overview sections（引擎状态/品牌对比/趋势/金卡/Zero-Click/引擎拆解/
+//   行业地位/代表prompt/引用源/触发问题/情感/行动归因/数据缺口/AI 优化建议），
+//   在末尾追加月度独有内容（月度趋势 + 周对比 + 月内数据统计）。
 
 const GEO_STORE = require('./geo-store');
 const SCORING = require('./geo-scoring');
@@ -58,36 +62,69 @@ function generateMonthlyReport(brandId, options = {}) {
   md.push(`# GEO 月报 — ${brand.name}（${targetMonth}）`);
   md.push(`**报告期**: ${targetMonth}（共 ${weeks.length} 周）  `);
   md.push(`**域名**: ${brand.domain}  `);
+  md.push(`**行业**: ${brand.industry || '未设置'}  `);
   md.push(`**生成时间**: ${new Date().toISOString()}  `);
   md.push('');
 
-  // 综合分 + 趋势（v0.26 C3: 新指标）
-  md.push(`## 月度综合分：${currentScore.score}（${currentScore.grade}）`);
+  // 月报顶部 KPI（直接用当前分 = 月末综合分）
+  md.push(`## 月末综合分：${currentScore.score}（${currentScore.grade}）`);
   md.push('');
-  md.push('| 维度 | 月末分 |');
-  md.push('|------|--------|');
+  md.push('| 维度 | 月末分 | 条形 |');
+  md.push('|------|--------|------|');
   for (const [dim, val] of Object.entries(currentScore.components)) {
     const valStr = val == null ? '—' : `${(val * 100).toFixed(0)}%`;
-    md.push(`| ${labelOf(dim)} | ${valStr} |`);
+    md.push(`| ${labelOf(dim)} | ${valStr} | ${REPORTER.bar(val, 16)} |`);
   }
   md.push('');
   md.push(`> **指标口径（v0.26 重定义）**：综合分基于**自然发现**（非品牌词查询）计算 — 用户搜行业词时品牌被 AI 主动提及的可见性。自然提及率 50% + 自然SoV 20% + 位置 15% + 上下文 15%。`);
   md.push('');
 
-  // 周对比
+  // 月度独有的"周对比"（v0.47+ 把这条放在 overview sections 之前，给月报一个独立的纵向视角）
   if (includeWeeklyComparison && allSnapshots.length > 0) {
     md.push(`## 周对比（${allSnapshots.length} 个快照）`);
     md.push('');
-    md.push('| 周 | 综合分 | mention_rate | position_score | engine_consistency |');
-    md.push('|----|--------|--------------|----------------|--------------------|');
+    md.push('| 周 | 综合分 | mention_rate | position_score | engine_consistency | 条形 |');
+    md.push('|----|--------|--------------|----------------|--------------------|------|');
+    const max = Math.max(...allSnapshots.map(s => s.summary_json?.score || 0), 1);
     allSnapshots.forEach(snap => {
       const summary = snap.summary_json || {};
-      md.push(`| ${snap.week} | ${summary.score || '—'} | ${pct(summary.components?.mention_rate)} | ${pct(summary.components?.position_score)} | ${pct(summary.components?.engine_consistency)} |`);
+      const c = summary.components || {};
+      const sc = summary.score || 0;
+      md.push(`| ${snap.week} | ${sc || '—'} | ${REPORTER.pct(c.mention_rate)} | ${REPORTER.pct(c.position_score)} | ${REPORTER.pct(c.engine_consistency)} | ${REPORTER.bar(sc / max, 14, { filled: '█', empty: '░', percent: false })} ${sc > 0 ? Math.round(sc / max * 100) + '%' : '—'} |`);
     });
     md.push('');
   }
 
-  // v0.26: 代表 prompt 表现（借鉴 elmo selectRepresentativePrompts）— 复用 weekly 同一函数
+  // v0.47+：复用 weekly 报告的全部 overview sections
+  md.push('---');
+  md.push('## 以下为当月综合快照（含与周报一致的完整 overview）');
+  md.push('');
+  // 直接复用 weekly 报告的全量 markdown（除头部重写 + 关键发现）
+  // 简化策略：调用 generateWeeklyReport 但只取 section 内容（手动拼接）
+  // 因为 weekly 报告有自己头部 + 序号，我们直接重写每月一份完整 markdown。
+  // 这里直接复用 buildXxxSection：
+  try { md.push(REPORTER.buildEngineStatusSection()); } catch (_) {}
+  try { md.push(REPORTER.buildBrandComparisonSection(brandId)); } catch (_) {}
+  try { md.push(REPORTER.buildTrendSection(brandId)); } catch (_) {}
+  try { md.push(REPORTER.buildHighlightCardsSection(currentScore)); } catch (_) {}
+  try { md.push(REPORTER.buildZeroClickNarrativeSection(currentScore)); } catch (_) {}
+
+  // 引擎拆解（复用 reporter 内联逻辑的最简版）
+  md.push(`## 引擎拆解（${currentScore.engines_used.length} 个引擎）`);
+  md.push('');
+  md.push('| 引擎 | 响应数 | 提及数 | 提及率 | 条形 |');
+  md.push('|------|--------|--------|--------|------|');
+  for (const eng of currentScore.engines_used) {
+    const rs = GEO_STORE.listResponses({ brand_id: brandId, engine: eng });
+    const mentioned = rs.filter(r => SCORING._internal.isMentioned(brand.name, r.raw_answer || r.text || '')).length;
+    const rate = rs.length > 0 ? (mentioned / rs.length) : 0;
+    md.push(`| ${eng} | ${rs.length} | ${mentioned} | ${(rate * 100).toFixed(0)}% | ${REPORTER.bar(rate, 14)} |`);
+  }
+  md.push('');
+
+  try { md.push(REPORTER.buildIndustryRankingSection(brandId)); } catch (_) {}
+
+  // v0.26: 代表 prompt 表现（借鉴 elmo selectRepresentativePrompts）
   let monthlyWatchCompetitors = [];
   try {
     const watches = GEO_STORE.listWatches ? GEO_STORE.listWatches() : [];
@@ -102,8 +139,16 @@ function generateMonthlyReport(brandId, options = {}) {
   } catch (_) { /* 拉取失败不阻塞 */ }
   md.push(PROMPT_REPORT.generateRepresentativePromptsSection(brandId, { competitors: monthlyWatchCompetitors }));
 
+  try { md.push(REPORTER.buildCitationSourceSection(brandId)); } catch (_) {}
+  try { md.push(REPORTER.buildQueryTriggerSection(brandId)); } catch (_) {}
+  try { md.push(REPORTER.buildSentimentSection(brandId)); } catch (_) {}
+  try { md.push(REPORTER.buildAttributionSection(brandId)); } catch (_) {}
+
   // v0.26: 内容缺口（借鉴 elmo findContentGaps）— 月报也展示
   md.push(PROMPT_REPORT.generateContentGapsSection(brandId, { competitors: monthlyWatchCompetitors }));
+
+  // v0.47+: AI 优化建议（多多重点要求）
+  try { md.push(REPORTER.buildOpportunitiesSection(brandId)); } catch (_) {}
 
   // 关键发现（基于当前分）
   md.push(`## 月度关键发现`);

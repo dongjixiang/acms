@@ -22,7 +22,12 @@ const PROVIDER_MODEL_MAP = {
   google: 'google',
   copilot: 'openai',      // 协议同 OpenAI（baseUrl 不同）
   grok: 'openai',         // 协议同 OpenAI（baseUrl 不同）
-  minimax: 'minimax',     // v0.27: MiniMax 独立 provider（OpenAI 兼容协议，但独立 provider 名避免与 openai/copilot/grok 抢第一个模型）
+  minimax: 'minimax-cn',   // v0.27 原本 'minimax'（用户实际 modelStore provider='minimax-cn'，已纠正）
+  // v0.48.8: 用户实际配置的是 provider='minimax-cn'（国内 MiniMax / MiniMax）。
+  //   原 'minimax' 错值：minimax: 'minimax' → 在 modelStore 找不到任何匹配
+  //   现映射：GEO engine 调 'minimax' 时，去 modelStore 查 provider === 'minimax-cn'
+  // 注意：'minimax-cn' 这个 key 不要加进 PROVIDER_MODEL_MAP，
+  //   否则 getProviderStatus 会输出两个 entry 都指向同一份 model 记录，前端看起来重复
   google_ai_mode: 'google', // 协议同 Google
   // v0.1: DeepSeek 网页版引擎（browser-agent 自动化）。
   //   不走 modelStore API key —— 凭据是 agent-browser auth save（chat.deepseek.com 账号密码）。

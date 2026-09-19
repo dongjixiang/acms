@@ -94,19 +94,27 @@ function markdownToHtml(md) {
 
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><style>
-  body { font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; max-width: 800px; margin: 30px auto; padding: 20px; color: #222; line-height: 1.6; }
-  h1 { color: #4f46e5; border-bottom: 3px solid #4f46e5; padding-bottom: 8px; }
-  h2 { color: #6366f1; margin-top: 24px; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px; }
-  h3 { color: #6b7280; margin-top: 16px; }
-  table.gtable { border-collapse: collapse; width: 100%; margin: 12px 0; }
-  table.gtable th, table.gtable td { border: 1px solid #d1d5db; padding: 6px 10px; text-align: left; font-size: 13px; }
+  body { font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; max-width: 800px; margin: 30px auto; padding: 20px; color: #222; line-height: 1.6; font-size: 13px; }
+  h1 { color: #4f46e5; border-bottom: 3px solid #4f46e5; padding-bottom: 8px; font-size: 22px; }
+  h2 { color: #6366f1; margin-top: 28px; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px; font-size: 17px; page-break-after: avoid; }
+  h3 { color: #6b7280; margin-top: 18px; font-size: 14px; page-break-after: avoid; }
+  table.gtable { border-collapse: collapse; width: 100%; margin: 12px 0; table-layout: fixed; page-break-inside: avoid; }
+  table.gtable th, table.gtable td { border: 1px solid #d1d5db; padding: 6px 8px; text-align: left; font-size: 11px; word-break: break-word; vertical-align: top; overflow-wrap: anywhere; }
   table.gtable th { background: #f3f4f6; font-weight: 600; }
-  blockquote { border-left: 3px solid #4f46e5; padding-left: 12px; color: #4f46e5; font-style: italic; margin: 12px 0; }
+  table.gtable td:nth-child(n+3) { font-family: 'SF Mono', 'Cascadia Mono', 'Consolas', monospace; font-size: 10px; }
+  blockquote { border-left: 3px solid #4f46e5; padding-left: 12px; color: #4f46e5; font-style: italic; margin: 12px 0; background: #f8f9ff; padding: 8px 12px; border-radius: 4px; font-size: 12px; }
   hr { border: none; border-top: 1px solid #e5e7eb; margin: 20px 0; }
-  ul { padding-left: 20px; }
+  ul, ol { padding-left: 22px; margin: 8px 0; }
+  ul li, ol li { margin: 4px 0; }
   em { color: #6b7280; }
   strong { color: #111827; }
-  code { background: #f3f4f6; padding: 2px 4px; border-radius: 3px; font-family: monospace; }
+  code { background: #f3f4f6; padding: 2px 4px; border-radius: 3px; font-family: 'SF Mono', 'Cascadia Mono', 'Consolas', monospace; font-size: 11px; }
+  pre { background: #1e293b; color: #e2e8f0; padding: 12px; border-radius: 6px; font-family: 'SF Mono', 'Cascadia Mono', 'Consolas', monospace; font-size: 10px; line-height: 1.2; overflow-x: auto; white-space: pre; page-break-inside: avoid; }
+  /* v0.47+: 让 unicode 条形（█ ░ ◼）在 PDF 里渲染好看 — 等宽字体 */
+  .bar { font-family: 'SF Mono', 'Cascadia Mono', 'Consolas', monospace; letter-spacing: 0; }
+  /* 长表格分页优化 */
+  table.gtable { page-break-inside: auto; }
+  table.gtable tr { page-break-inside: avoid; page-break-after: auto; }
 </style></head><body>${html.join('\n')}</body></html>`;
 }
 

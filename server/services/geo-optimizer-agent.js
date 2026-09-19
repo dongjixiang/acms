@@ -137,6 +137,29 @@ async function runOptimization(brandId, options = {}) {
     timestamp: new Date().toISOString(),
   };
 
+  // v0.47+：持久化到 geo_optimization_cache collection（last-write-wins by brand_id）——
+  //   之前只放内存 5 分钟（重启就丢），PDF 周报读不到 ✨ 建议。
+  //   现在写盘后 PDF 报告可以直接读，刷新缓存时按 created_at 检查 24h TTL。
+  try {
+    GEO_STORE.collection('geo_optimization_cache').insert({
+      id: `geocache_${brandId}_${Date.now().toString(36)}`,
+      brand_id: brandId,
+      output,
+      created_at: new Date().toISOString(),
+    });
+    // 清理该 brand_id 的旧记录（只保留最新 1 条）
+    const old = GEO_STORE.collection('geo_optimization_cache')
+      .find(doc => doc.brand_id === brandId)
+      .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
+      .slice(1);
+    for (const o of old) {
+      try { GEO_STORE.collection('geo_optimization_cache').remove(o.id); } catch (_) {}
+    }
+  } catch (e) {
+    console.error('[geo-optimizer] persist cache failed:', e.message);
+    /* 持久化失败不阻塞主流程 */
+  }
+
   // 缓存优化结果（供 applyRecommendationToTask 用，5 分钟 TTL）
   setOptimizationCache(brandId, output);
   return output;

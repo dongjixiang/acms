@@ -177,6 +177,43 @@ router.post('/brands/:id/infer-aliases', async (req, res) => {
   }
 });
 
+// v0.48: 新建品牌 AI 推断（domain / industry / aliases — 不需要 brand_id）
+//   入参：{ name, domain? }
+//   出参：{ ok: true, data: { domain, industry, aliases } }
+//   用途：新建品牌 modal 的「✨ AI 智能填充」按钮 — 用户只输入品牌名，AI 一次性补齐三个字段
+//   区别于 /brands/:id/infer-aliases（要求 brand_id、只补 aliases、还会落库）
+router.post('/brands/infer', async (req, res) => {
+  try {
+    const { name, domain = '' } = req.body || {};
+    if (!name || !name.trim()) {
+      return res.status(400).json({ ok: false, error: 'NAME_REQUIRED', message: 'name 不能为空' });
+    }
+    const infer = await onboarding.inferBrandFields({ name: name.trim(), domain: domain.trim() });
+    if (!infer.ok) {
+      return res.status(500).json({ ok: false, error: infer.error, message: infer.message });
+    }
+    res.json({ ok: true, data: infer.data });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// v0.48: 国标 GB/T 4754-2017 行业分类（中类 524 项，按门类分组）
+//   用于前端下拉 + inferBrandFields 的 labelToCode 校验
+router.get('/industries', (req, res) => {
+  try {
+    const geoInd = require('../services/geo-industries');
+    res.json({
+      ok: true,
+      industries: geoInd.MID_CATEGORIES,
+      groups: geoInd.listMidsGrouped(),
+      total: geoInd.MID_CATEGORIES.length,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // === Queries ===
 router.get('/queries', (req, res) => {
   try {
