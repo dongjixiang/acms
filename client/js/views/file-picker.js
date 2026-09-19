@@ -254,6 +254,52 @@
     });
   }
 
+  // ── v0.121: 打开后把窗口吸附进对话流（坐标跟随，不 reparent）──
+  function _winIds() {
+    if (!window.ACMSWin || !ACMSWin.getWindows) return [];
+    return ACMSWin.getWindows().map(function (w) { return w.id; });
+  }
+
+  // 刚才 openFileWith 新开出来的窗口（用前后 diff 拿引用，避免改 registry 的每个分支）
+  function _newWinSince(ids) {
+    if (!window.ACMSWin || !ACMSWin.getWindows) return null;
+    var ws = ACMSWin.getWindows();
+    for (var i = ws.length - 1; i >= 0; i--) { if (ids.indexOf(ws[i].id) < 0) return ws[i]; }
+    return null;
+  }
+
+  // 找可见的对话消息流
+  //   P88：主窗口的 hidden 模板里也有一份 chat-stream-msgs，必须挑可见的那份
+  function _visibleStream() {
+    var list = document.querySelectorAll('[id^="chat-stream-msgs"]');
+    for (var i = 0; i < list.length; i++) { if (list[i].offsetParent !== null) return list[i]; }
+    return null;
+  }
+
+  // 在消息流末尾插槽位 → 窗口吸附过去；窗口被拖走时槽位露出，充当"归位占位"
+  function dockIntoChat(w, item) {
+    if (!w || !window.ACMSWin || !ACMSWin.dockTo) return false;
+    var stream = _visibleStream();
+    if (!stream) return false;
+    var slot = document.createElement('div');
+    slot.className = 'chat-dock-slot';
+    slot.id = 'chat-dock-slot-' + w.id;
+    slot.innerHTML = esc(item.name) + ' · 已浮出 <button type="button">回到对话</button>';
+    slot.querySelector('button').addEventListener('click', function () {
+      ACMSWin.dockTo(w, slot, { mode: 'embed' });
+    });
+    stream.appendChild(slot);
+    try { ACMSWin.dockTo(w, slot, { mode: 'embed' }); } catch (e) { return false; }
+    stream.scrollTop = stream.scrollHeight;
+    // 窗口关闭 → 槽位一起清掉，别留孤儿占位
+    var prevClose = w.onClose;
+    w.onClose = function () {
+      try { slot.remove(); } catch (e) {}
+      if (typeof prevClose === 'function') { try { prevClose(); } catch (e) {} }
+    };
+    return true;
+  }
+
   // ── 用匹配的 ACMS 应用打开 ──
   function openFile(item) {
     if (!item || !item.path) return Promise.resolve({ ok: false, reason: 'no-item' });
@@ -267,11 +313,16 @@
     }
 
     var app = apps[0];
+    var _idsBefore = _winIds();
     return window.ACMSFileApps.openFileWith(app.name, {
       url: url, name: item.name, filePath: item.path, mime: '',
     }).then(function (r) {
       if (r && r.ok) {
-        toastMsg('已用 ' + (app.label || app.name) + ' 打开', 'success');
+        // v0.121: 打开后直接吸附进对话流（对话里打开文件，而不是满屏飘一个浮窗）
+        var _w = _newWinSince(_idsBefore);
+        var docked = _w ? dockIntoChat(_w, item) : false;
+        if (docked) toastMsg('已在对话里打开 ' + item.name, 'success');
+        else toastMsg('已用 ' + (app.label || app.name) + ' 打开', 'success');
       } else if (r && r.reason === 'needs-download') {
         toastMsg('该类型暂不支持直接打开，请先下载到本地', 'info');
       } else {

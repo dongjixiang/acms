@@ -481,6 +481,15 @@
       if (e.target.closest('.aw-controls')) return;
       if (w.st.max) return;
       focus(w);
+      // v0.121: 拖动标题栏 = 从对话槽位脱离 → 变回自由浮窗
+      //   保留吸附瞬间的真实位置作为拖拽起点，否则会跳回 dock 前的老坐标（手感断裂）
+      if (w._dock) {
+        var rr = w.el.getBoundingClientRect();
+        undock(w);
+        w.el.style.left = rr.left + 'px'; w.el.style.top = rr.top + 'px';
+        w.el.style.width = rr.width + 'px'; w.el.style.height = rr.height + 'px';
+        w.st.x = rr.left; w.st.y = rr.top;
+      }
       var r = w.el.getBoundingClientRect();
       var dx = e.clientX - r.left, dy = e.clientY - r.top;
       function mv(ev) {
@@ -879,6 +888,108 @@
     }
   });
 
+  // ── v0.121: 窗口吸附到对话槽位（坐标跟随，不 reparent）──
+  //
+  // 为什么不做 reparent：office-word/xlsx/pptx 编辑器本体是 iframe
+  //   (/client/lib/office-v3/*/host.html)。把 iframe appendChild 到新父节点会触发
+  //   完整重载 —— 实测 onload 计数 1→2、contentWindow 上的标记丢失、文档回到"正在打开"。
+  //   所以"嵌进对话"改用坐标跟随：窗口 DOM 仍留在 #acms-desktop，只同步 left/top/width/height。
+  //   图片编辑器(canvas)/代码编辑器(div)本来能搬，但统一走同一套机制，避免两套行为分叉。
+  //
+  // 用法：
+  //   ACMSWin.dockTo(w, slotEl, { mode: 'embed', hostWin: chatWin });
+  //   ACMSWin.undock(w);
+  var _docked = [];
+  var _dockRAF = null;
+
+  function _desktopRect() {
+    var d = ensureDesktop();
+    return d ? d.getBoundingClientRect() : { left: 0, top: 0 };
+  }
+
+  // 从槽位往上找宿主窗口（用于层级：吸附窗口必须盖在宿主对话窗口之上）
+  function findHostWin(el) {
+    var n = el;
+    while (n && n !== document.body) {
+      if (n.classList && n.classList.contains('acms-window')) {
+        for (var i = 0; i < windows.length; i++) { if (windows[i].el === n) return windows[i]; }
+        return null;
+      }
+      n = n.parentElement;
+    }
+    return null;
+  }
+
+  function syncDock(w) {
+    if (!w || w.dead || !w._dock) return;
+    var slot = w._dock.slot;
+    if (!slot || !document.body.contains(slot)) { undock(w); return; }
+    var sr = slot.getBoundingClientRect();
+    var dr = _desktopRect();
+    w.el.style.left = (sr.left - dr.left) + 'px';
+    w.el.style.top = (sr.top - dr.top) + 'px';
+    w.el.style.width = sr.width + 'px';
+    w.el.style.height = sr.height + 'px';
+    var host = w._dock.hostWin;
+    if (host && host.st && host.st.z) w.el.style.zIndex = (host.st.z + 1);
+  }
+
+  function _dockTick() {
+    _dockRAF = null;
+    var alive = [];
+    for (var i = 0; i < _docked.length; i++) {
+      var w = _docked[i];
+      if (!w || w.dead || !w._dock) continue;
+      syncDock(w);
+      if (w._dock) alive.push(w);
+    }
+    _docked = alive;
+    if (_docked.length) _dockRAF = requestAnimationFrame(_dockTick);
+  }
+
+  function _ensureDockLoop() {
+    if (_dockRAF == null && _docked.length) _dockRAF = requestAnimationFrame(_dockTick);
+  }
+
+  function dockTo(w, slotEl, opts) {
+    opts = opts || {};
+    if (!w || w.dead || !slotEl) return false;
+    if (w.st && w.st.max) { try { toggleMax(w); } catch (e) {} }
+    // 记录进入吸附前的实际位置，undock 时还给用户
+    var r = w.el.getBoundingClientRect();
+    var dr = _desktopRect();
+    w._dockHome = {
+      l: (r.left - dr.left) + 'px', t: (r.top - dr.top) + 'px',
+      w: r.width + 'px', h: r.height + 'px',
+    };
+    w._dock = {
+      slot: slotEl,
+      mode: opts.mode || 'embed',
+      hostWin: opts.hostWin || findHostWin(slotEl),
+    };
+    w.el.classList.add('aw-docked');
+    w.el.classList.add('aw-docked-' + w._dock.mode);
+    if (_docked.indexOf(w) < 0) _docked.push(w);
+    syncDock(w);
+    _ensureDockLoop();
+    return true;
+  }
+
+  function undock(w) {
+    if (!w || !w._dock) return false;
+    w.el.classList.remove('aw-docked', 'aw-docked-embed', 'aw-docked-pin');
+    w._dock = null;
+    _docked = _docked.filter(function (x) { return x !== w; });
+    if (w._dockHome) {
+      w.el.style.left = w._dockHome.l;
+      w.el.style.top = w._dockHome.t;
+      w.el.style.width = w._dockHome.w;
+      w.el.style.height = w._dockHome.h;
+      w._dockHome = null;
+    }
+    return true;
+  }
+
   // ── 暴露 API ──
   window.ACMSWin = {
     open: open,
@@ -901,6 +1012,12 @@
     onViewEvent: onViewEvent,           // v0.62：视图事件订阅
     dispatchEvent: dispatchEvent,       // v0.62：事件分发
     refreshView: refreshView,           // v0.62：刷新视图窗口
+    // ── v0.121 窗口吸附（不 reparent，坐标跟随 — 见文件内 dockTo 注释）──
+    dockTo: dockTo,
+    undock: undock,
+    syncDock: syncDock,
+    isDocked: function(w) { return !!(w && w._dock); },
+    getWindows: function() { return windows.slice(); },
     _getLoader: function(v) { return viewLoaders[v] || null; },  // v0.62：获取 viewLoader
     // ── v0.60 桌面图标选中 ──
     getSelection: getSelection,

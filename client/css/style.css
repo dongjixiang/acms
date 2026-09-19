@@ -7121,3 +7121,48 @@ body { padding-bottom: 40px; }
   color: var(--text2);
   margin-top: 3px;
 }
+
+/* ═══ v0.121: 吸附到对话槽位的窗口（内嵌态）═══
+   坐标跟随实现，不 reparent（office 编辑器本体是 iframe，appendChild 搬家会完整重载）
+   视觉目标：读作"对话流里的应用卡片"，而不是"叠在对话上的独立窗口" */
+.acms-window.aw-docked {
+  box-shadow: none !important;   /* 投影是"窗口感"的最大来源，内嵌态必须去掉 */
+  border: 1px solid var(--border);
+  border-radius: 10px !important;
+  overflow: hidden;
+}
+.acms-window.aw-docked .aw-titlebar {
+  height: 30px;                  /* 比浮窗(34px)略薄，更像卡片头 */
+}
+.acms-window.aw-docked .aw-rz {
+  display: none;                 /* 内嵌态尺寸由槽位决定，禁用八向缩放 */
+}
+
+/* 槽位：窗口浮在上面时被完全盖住；窗口被拖走后露出，充当"归位占位" */
+.chat-dock-slot {
+  width: 100%;
+  align-self: stretch;
+  box-sizing: border-box;
+  height: 340px;
+  margin: 12px 0 12px 36px;
+  border: 1px dashed rgba(78, 205, 196, 0.28);
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--text3);
+}
+.chat-dock-slot .cds-name { color: var(--text2); }
+.chat-dock-slot button {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text2);
+  font-size: 10.5px;
+  padding: 2px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.chat-dock-slot button:hover { border-color: var(--accent); color: var(--accent); }
