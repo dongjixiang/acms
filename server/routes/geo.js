@@ -177,10 +177,11 @@ router.post('/brands/:id/infer-aliases', async (req, res) => {
   }
 });
 
-// v0.48: 新建品牌 AI 推断（domain / industry / aliases — 不需要 brand_id）
+// v0.48: 新建品牌 AI 推断（domain / industry / aliases / competitors — 不需要 brand_id）
 //   入参：{ name, domain? }
-//   出参：{ ok: true, data: { domain, industry, aliases } }
-//   用途：新建品牌 modal 的「✨ AI 智能填充」按钮 — 用户只输入品牌名，AI 一次性补齐三个字段
+//   出参：{ ok: true, data: { domain, industry, aliases, competitors: [{name, domains, aliases}] } }
+//   用途：① 新建品牌 modal 的「✨ AI 智能填充」按钮（domain/industry/aliases）
+//         ② 「🏆 自动添加竞品」按钮（competitors — v0.48.12 新增）
 //   区别于 /brands/:id/infer-aliases（要求 brand_id、只补 aliases、还会落库）
 router.post('/brands/infer', async (req, res) => {
   try {

@@ -1733,14 +1733,18 @@ window.GEODashboard = window.GEODashboard || {
     await loadIndustries();  // 确保缓存可用
     const counts = _countBrandsByIndustry(_allBrands);
 
-    // 渲染：全部国标中类（按门类分组），不按品牌数过滤 — 数据清空也能选
+    // v0.48.9: 行业下拉过滤 n=0 的项 — 国标 524 项全展示滚动成本太高，多多反馈"选项过多"
+    //   - 「所有行业」占位项保留
+    //   - n=0 的行业不展示（既不能定位任何品牌，也无意义）
+    //   - 当前 _currentIndustry 即使变 n=0 也保留显示（1774-1779 兜底为 [自定义]）
+    //   - legacy slug 段已在下方按 n>0 过滤（不动）
     let html = '<option value="">— 所有行业 —</option>';
     if (_industriesCache && _industriesCache.length > 0) {
       for (const g of _industriesCache) {
         html += `<optgroup label="${esc(g.category)}">`;
         for (const m of g.items) {
           const n = counts.get(m.code) || 0;
-          // 全部展示，计数只用于标注（n=0 仍可选，便于选空筛选类别）
+          if (n === 0) continue;  // v0.48.9: 隐藏无品牌的行业，避免选项过多
           html += `<option value="${esc(m.code)}">${esc(m.label)} (${n})</option>`;
         }
         html += '</optgroup>';
@@ -1827,6 +1831,19 @@ window.GEODashboard = window.GEODashboard || {
         aliasBtn.disabled = true;
         aliasBtn.title = '请先在左侧选一个具体品牌，再点 ✎ 别名 编辑别名（缩写/常用名）';
         aliasBtn.dataset.brandId = '';
+      }
+    }
+    // v0.48.11: 自动添加竞品按钮同款状态管理
+    const compBtn = _byId('geo-brand-compete-btn');
+    if (compBtn) {
+      if (brandId) {
+        compBtn.disabled = false;
+        compBtn.title = `为「${(_allBrands.find(x => x.id === brandId) || {}).name || ''}」自动添加同类竞品`;
+        compBtn.dataset.brandId = brandId;
+      } else {
+        compBtn.disabled = true;
+        compBtn.title = '请先在左侧选一个具体品牌，再点 🏆 自动添加竞品 用 LLM 推断同行业竞品并批量创建';
+        compBtn.dataset.brandId = '';
       }
     }
     await loadOverview();
@@ -1921,6 +1938,122 @@ window.GEODashboard = window.GEODashboard || {
     } else {
       setStatus('保存失败: ' + (saveRes.data?.error || saveRes.status), 'error');
       notify('✎ 别名保存失败', 'error');
+    }
+  }
+
+  // v0.48.11: 自动添加竞品 — LLM 推断同行业竞品并批量创建
+  //   入口：header 别名按钮旁的 🏆 自动添加竞品 按钮
+  //   流程：POST /api/geo/brands/infer → 拿 competitors[] → 过滤已存在 domain（多多要求：跳过）
+  //   → 逐个 POST /api/geo/brands（industry = 当前品牌 industry = "同类"语义）→ 报告 N 创建 M 跳过
+  //   边界：LLM 推断 5-15s + 循环 POST 1.5s → 总时长 7-17s，按钮必须锁，状态实时同步
+  async function addCompetitorsForCurrentBrand() {
+    const compBtn = _byId('geo-brand-compete-btn');
+    const brandId = compBtn?.dataset.brandId;
+    if (!brandId) return;
+
+    // 拉最新 brand（_allBrands 缓存可能 stale，竞品的 industry 要从 brand 拿 = "同类"语义）
+    const brand = _allBrands.find(x => x.id === brandId);
+    if (!brand) {
+      notify('🏆 当前品牌未找到，请刷新页面', 'error');
+      return;
+    }
+
+    // 锁定按钮 + 状态文本（避免重复点击 + 让用户知道在动）
+    const originalLabel = compBtn.textContent;
+    compBtn.disabled = true;
+    compBtn.textContent = '⏳ AI 推断竞品中...';
+
+    try {
+      // 1. LLM 推断竞品列表（复用 createBrand 的 /brands/infer endpoint，
+      //    之前 aiBtnHandler 漏消费了 competitors 字段，本函数就是补消费）
+      setStatus(`🤖 AI 推断「${brand.name}」的同类竞品...（5-15 秒）`, 'loading');
+      const inferRes = await api('POST', '/api/geo/brands/infer', {
+        name: brand.name,
+        domain: brand.domain || '',
+      });
+      if (!inferRes.data?.ok) {
+        throw new Error(inferRes.data?.message || inferRes.data?.error || 'AI 推断失败');
+      }
+      const competitors = inferRes.data.data?.competitors || [];
+      if (competitors.length === 0) {
+        notify(`🤖 AI 未找到「${brand.name}」的同类竞品`, 'warning');
+        setStatus(`AI 未找到竞品`, 'warning');
+        return;
+      }
+
+      // 2. 过滤已存在的 domain（按多多要求：同名跳过，不覆盖用户已有数据）
+      //    domain 小写匹配（避免大小写差异导致漏判）
+      const existingDomains = new Set(
+        _allBrands.map(b => (b.domain || '').toLowerCase().trim()).filter(Boolean)
+      );
+      const toCreate = competitors.filter(c => {
+        // v0.48.11: store.createBrand 只接单 domain（infer 返回的是 domains 数组），
+        //   取第一个 domain 作主域名 — 已经是按主→备顺序排的
+        const domain = (Array.isArray(c.domains) && c.domains[0] ? c.domains[0] : '').toLowerCase().trim();
+        return domain && !existingDomains.has(domain);
+      });
+      const skippedCount = competitors.length - toCreate.length;
+
+      if (toCreate.length === 0) {
+        notify(`🤖 ${competitors.length} 个竞品全部已存在（按 domain 跳过）`, 'info', 4000);
+        setStatus(`${competitors.length} 个竞品全部已存在，跳过`, 'warning');
+        return;
+      }
+
+      // 3. 逐个创建 brand（实时进度反馈 — 防"toast 骗人"模式）
+      let createdCount = 0;
+      const errors = [];
+      for (let i = 0; i < toCreate.length; i++) {
+        const c = toCreate[i];
+        const domain = c.domains[0].toLowerCase().trim();
+        const progressLabel = `⏳ 创建 ${i + 1}/${toCreate.length}`;
+        compBtn.textContent = progressLabel;
+        setStatus(`🏆 正在添加「${c.name}」(${i + 1}/${toCreate.length})`, 'loading');
+
+        try {
+          const createRes = await api('POST', '/api/geo/brands', {
+            name: c.name,
+            domain,
+            // v0.48.11: industry 直接传当前品牌的（国标 code 或 legacy slug），
+            //   后端 store.createBrand 接受任意 string，v0.48.7 的 LEGACY_SLUG 兼容路径会自动处理
+            industry: brand.industry || '',
+            aliases: Array.isArray(c.aliases) ? c.aliases : [],
+          });
+          if (createRes.data?.ok) {
+            createdCount++;
+          } else {
+            errors.push({ name: c.name, domain, error: createRes.data?.error || `HTTP ${createRes.status}` });
+          }
+        } catch (e) {
+          errors.push({ name: c.name, domain, error: e.message });
+        }
+      }
+
+      // 4. 报告结果（多重反馈：toast + status bar + console 兜底）
+      const summary = `🏆 已添加 ${createdCount} 个竞品，跳过 ${skippedCount} 个已存在`;
+      notify(summary, createdCount > 0 ? 'success' : 'warning', 4000);
+      setStatus(summary, createdCount > 0 ? 'success' : 'warning');
+
+      if (errors.length > 0) {
+        const errPreview = errors.slice(0, 3).map(e => e.name).join(', ') + (errors.length > 3 ? ` 等 ${errors.length} 个` : '');
+        notify(`⚠️ ${errors.length} 个失败：${errPreview}`, 'error', 5000);
+        console.warn('[addCompetitors] 失败列表:', errors);
+      }
+
+      // 5. 刷新品牌列表 + 保持当前 brand + industry 选中（不让用户失去上下文）
+      await loadBrands();
+      const indSelect = _byId('geo-industry-select');
+      const brandSelect = _byId('geo-brand-select');
+      if (indSelect) indSelect.value = _currentIndustry || '';
+      if (brandSelect) brandSelect.value = brandId;
+      // 不主动切 tab — 让用户在原页面看到新竞品（行业下拉 + brand select + 品牌管理表格 三处自动刷新）
+    } catch (e) {
+      notify(`🏆 添加竞品失败: ${e.message}`, 'error', 5000);
+      setStatus(`添加竞品失败: ${e.message}`, 'error');
+      console.error('[addCompetitors]', e);
+    } finally {
+      compBtn.disabled = false;
+      compBtn.textContent = originalLabel;
     }
   }
 
@@ -2087,7 +2220,13 @@ window.GEODashboard = window.GEODashboard || {
         </div>
       `,
       beforeCleanup: (value) => {
-        if (value !== 'SUBMIT') return value;
+        // v0.48.10 修复：守卫从 `value !== 'SUBMIT'` 改成「表单 DOM 是否还存在」
+        //   根因：ACMSModal 在 v0.26 C7 把点确定的传值从 'SUBMIT' 字符串改成 result 对象，
+        //   但 createBrand 的 v0.48 beforeCleanup 仍用旧守卫 `if (value !== 'SUBMIT') return value;`
+        //   → value 永远是 result 对象 → 守卫永远 true → 表单字段收集永远跳过 → resolve 空对象
+        //   → createBrand 里 `if (!result || !result.name || !result.domain) return;` 早返回 → 不发 POST
+        //   修法：cancel/esc 时 modal 已销毁，_byId('geo-cb-name') 为 null，据此判断。
+        if (!_byId('geo-cb-name')) return value;  // modal 已销毁（cancel/esc/点遮罩），保留原 value
         // html 模式自拼表单，ACMSModal 内置 inputs 收集不到，自己 querySelector 拿
         const name = (_byId('geo-cb-name')?.value || '').trim();
         const domain = (_byId('geo-cb-domain')?.value || '').trim();
@@ -4845,6 +4984,17 @@ window.GEODashboard = window.GEODashboard || {
       };
       aliasBtn.addEventListener('click', handler);
       cleanupFns.push(() => aliasBtn.removeEventListener('click', handler));
+    }
+
+    // v0.48.11: 自动添加竞品按钮（LLM 推断同行业竞品并批量创建）
+    const compBtn = _byId('geo-brand-compete-btn');
+    if (compBtn) {
+      const handler = () => {
+        if (compBtn.disabled) return;
+        addCompetitorsForCurrentBrand();
+      };
+      compBtn.addEventListener('click', handler);
+      cleanupFns.push(() => compBtn.removeEventListener('click', handler));
     }
 
     // v0.30: 别名编辑 modal 内部「🧠 AI 推断」按钮 — 用 document 委托

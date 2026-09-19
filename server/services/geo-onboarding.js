@@ -131,8 +131,9 @@ function parseAnalyzeOutput(raw) {
       brandName: typeof parsed.brandName === 'string' ? parsed.brandName.trim() : '',
       additionalDomains: Array.isArray(parsed.additionalDomains) ? parsed.additionalDomains.slice(0, 10).map(String) : [],
       aliases: Array.isArray(parsed.aliases) ? parsed.aliases.slice(0, 10).map(String) : [],
+      // v0.48.11: 上限 6 → 15 — 多多要求"至少 15 个才有可比性"
       competitors: Array.isArray(parsed.competitors)
-        ? parsed.competitors.slice(0, 6).map(c => ({
+        ? parsed.competitors.slice(0, 15).map(c => ({
             name: typeof c?.name === 'string' ? c.name.trim() : '',
             domains: Array.isArray(c?.domains) ? c.domains.slice(0, 5).map(String) : [],
             aliases: Array.isArray(c?.aliases) ? c.aliases.slice(0, 5).map(String) : [],
@@ -332,11 +333,19 @@ function buildInferBrandFieldsPrompt(brand) {
     brand.domain ? `域名（可选 hint）: ${brand.domain}` : '',
     '',
     '## 任务',
-    '基于品牌名（+ 可选域名 hint），推断三个字段：',
+    // v0.48.12: 任务从 3 字段扩到 4 字段（+competitors 给"自动添加竞品"按钮用）
+    '基于品牌名（+ 可选域名 hint），推断四个字段：',
     '1. domain — 该品牌最可能的官方域名（hostname 格式：无 https://、无 www.、无路径）',
     '2. industry — **必须从下方国标 GB/T 4754-2017 中类列表中复制粘贴** 最匹配的标准中文名（如"软件开发"'
     + '、"货币银行服务"、"会议、展览及相关服务"、"石油开采"、"学前教育"等），不要自己造词或缩写',
     '3. aliases — 3-6 个常用别名（缩写、母公司、常见错拼、英文名）',
+    '4. competitors — **直接竞品列表（多多要求至少 15 个才有可比性）**',
+    '   - name：竞品公司名（必填，字符串）',
+    '   - domains：≥1 个 hostname 格式域名（无 https:// / www. / 路径；多域名写数组，如 [主域名, 备用域名]）',
+    '   - aliases：常用别名（缩写 / 英文名 / 错拼等；可空数组）',
+    '   - 覆盖维度：行业头部 + 直接对标 + 同细分赛道新兴品牌（包含上市公司、独角兽、知名小众品牌）',
+    '   - 不要写"母公司 / 子公司"层级关系（如苹果的竞品不写"富士康"——那是供应链）',
+    '   - 拿不准的竞品宁可空数组 — 数据准确度 > 数据完整度（多多原则："宁可缺数据也不能用错数据"）',
     '',
     '## 要求',
     '- domain：LLM 确信才返回 hostname，否则返回空字符串',
@@ -344,13 +353,15 @@ function buildInferBrandFieldsPrompt(brand) {
     + '（"石油"/"石化"/"银行"/"电商"/"搜索"等都不行，必须输出"石油开采"/"精炼石油产品制造"/"货币银行服务"/"互联网零售"/"互联网搜索服务"等）',
     '- aliases：跳过与主名有子串关系的（"中展" ⊂ "中展集团" — 子串匹配已覆盖）',
     '- aliases：跳过通用词（公司/集团/Co/Ltd/AI/IT 等）',
+    '- competitors：domains 数组每个元素必须是 hostname 格式（去 https:// / www. / 路径），不要带协议',
     '- 严格输出 JSON 对象，不要 markdown',
     '',
     '## 国标中类列表（从下方复制粘贴 industry 值）',
     labelsForPrompt(),
     '',
     '## 输出格式',
-    '{"domain":"","industry":"","aliases":["别名1","别名2"]}',
+    // v0.48.12: 加 competitors 字段到 schema
+    '{"domain":"","industry":"","aliases":["别名1","别名2"],"competitors":[{"name":"竞品名","domains":["竞品主域名.com"],"aliases":["竞品别名"]}]}',
   ].filter(Boolean).join('\n');
 }
 
@@ -371,7 +382,8 @@ async function inferBrandFields(brand) {
       toolNames: [],
       maxRounds: 1,
       caller: 'geo-onboarding-infer-brand-fields',
-      maxTokens: 800,
+      // v0.48.12: 800 → 2500 — 15 个竞品 + 每个多 domain + aliases 输出约 2000 tokens
+      maxTokens: 2500,
       temperature: 0.3,
     });
 
@@ -411,7 +423,23 @@ async function inferBrandFields(brand) {
       ? parsed.aliases.slice(0, 6).map(s => String(s || '').trim()).filter(Boolean)
       : [];
 
-    return { ok: true, data: { domain, industry, aliases } };
+    // v0.48.12: competitors 解析 — 给"自动添加竞品"按钮用
+    //   schema: [{name, domains: [hostname], aliases: [string]}]
+    //   兜底：domain 清洗函数同主 domain（去 https:// / www. / 路径）保证 store.createBrand 能用
+    const competitors = Array.isArray(parsed.competitors)
+      ? parsed.competitors.slice(0, 15).map(c => ({
+          name: typeof c?.name === 'string' ? c.name.trim() : '',
+          domains: Array.isArray(c?.domains)
+            ? c.domains.slice(0, 5).map(d => String(d || '').trim().toLowerCase()
+                .replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, '')).filter(Boolean)
+            : [],
+          aliases: Array.isArray(c?.aliases)
+            ? c.aliases.slice(0, 5).map(s => String(s || '').trim()).filter(Boolean)
+            : [],
+        })).filter(c => c.name && c.domains.length > 0)  // 没 name 或没 domain 的过滤掉
+      : [];
+
+    return { ok: true, data: { domain, industry, aliases, competitors } };
   } catch (e) {
     return { ok: false, error: 'LLM_CALL_FAILED', message: e.message };
   }
