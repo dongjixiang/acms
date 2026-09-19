@@ -102,6 +102,72 @@
     return mod;
   }
 
+  // ── v0.122: 窗口操作通道绑定 ──
+  // 治「多窗口串台」：旧逻辑 state.instances 以 fileId 为 key，runAction/readFreshDocContext
+  // 又「拿第一个 kind 匹配的实例」，同一文件开两个窗口时必然读错/改错。
+  // 这里给每个编辑器窗口在 WindowActionBridge 里登记一个全局唯一 uid（w.uid）。
+  function bindWinToBridge(w, kind, fileId, fileName) {
+    try {
+      if (typeof window.WindowActionBridge === 'undefined') return null;
+      return window.WindowActionBridge.bindWindow(w, kind, { fileId: fileId, fileName: fileName });
+    } catch (e) {
+      console.warn('[office-v3] bindWindow 失败:', e.message);
+      return null;
+    }
+  }
+
+  // 按 uid 精确定位编辑器实例（找不到返回 null，调用方自行回退旧的 kind 匹配）
+  function findInstanceByUid(uid) {
+    if (!uid) return null;
+    var keys = Object.keys(state.instances);
+    for (var i = 0; i < keys.length; i++) {
+      if (state.instances[keys[i]].uid === uid) return state.instances[keys[i]];
+    }
+    return null;
+  }
+
+  // ── v0.122: 快照读取（read / apply 同源的「读」半边）──
+  // 从 sheets-ui iframe 读 cells。上限参数化（Q4=a：原为硬编码 5 sheets/30 行/12 列）
+  function readSheetsSnapshot(cw, maxSheets, maxRows, maxCols) {
+    if (!cw || !cw.__sheetsDebug || typeof cw.__sheetsDebug.snapshot !== 'function') return null;
+    try {
+      var sids = cw.__sheetsDebug.listSessions();
+      if (!sids || !sids.length) return null;
+      var snap = cw.__sheetsDebug.snapshot(sids[0], maxSheets, maxRows, maxCols);
+      if (snap && snap.sheets && snap.sheets.length) return snap.sheets;
+      return null;
+    } catch (e) {
+      console.warn('[office-v3] readSheetsSnapshot 失败:', e.message);
+      return null;
+    }
+  }
+
+  // 从 word-ui iframe 读 Tiptap blocks
+  function readWordBlocks(cw) {
+    try {
+      var gdoc = cw && cw.document ? cw.document.querySelector('[contenteditable="true"]') : null;
+      var gedit = gdoc && gdoc.editor;
+      if (!gedit) return null;
+      var gblocks = [];
+      gedit.state.doc.content.forEach(function (node) {
+        var n = node.type.name;
+        if (n === 'docParagraph' || n === 'docHeading' || n === 'docListItem') {
+          gblocks.push({
+            i: gblocks.length,
+            text: node.textContent.slice(0, 200),
+            type: n,
+            level: n === 'docHeading' ? (node.attrs.level || 1) : undefined,
+            kind: n === 'docListItem' ? (node.attrs.kind || 'bullet') : undefined,
+          });
+        }
+      });
+      return { kind: 'word', doc: { blocks: gblocks } };
+    } catch (e) {
+      console.warn('[office-v3] readWordBlocks 失败:', e.message);
+      return null;
+    }
+  }
+
   // ── 工具 ──
   function esc(s) {
     return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -227,9 +293,12 @@
   // 加载 GenOffice Slides UI：iframe 完全隔离（不污染 ACMS 全局样式）
   async function loadGenOfficeSlides(w, fileId, fileName) {
     // 清理旧 slides-ui 实例
+    // v0.122: **只清本窗口**的旧实例 —— 原逻辑删掉所有同 kind 实例（单实例假设），
+    //   导致开第二个 Excel 窗口后第一个窗口在 instances 里消失 ⇒ 按 uid 定位失效
     Object.keys(state.instances).forEach(function (k) {
-      var e = state.instances[k].editor;
-      if (e && e.kind === 'slides-ui') delete state.instances[k];
+      var _it = state.instances[k];
+      var e = _it.editor;
+      if (e && e.kind === 'slides-ui' && _it.win === w) delete state.instances[k];
     });
     var oldFrame = w.$c.querySelector('iframe.v3-genoffice-frame');
     if (oldFrame) {
@@ -261,8 +330,13 @@
       try { if (frame.contentWindow && frame.contentWindow.__unmount) frame.contentWindow.__unmount(); } catch (e) { /* ignore */ }
       frame.remove();
     };
-    var key = fileId || ('__v3genslides__' + Date.now());
-    state.instances[key] = { editor: { kind: 'slides-ui', fileId: fileId, fileName: fileName, iframe: frame } };
+    // v0.122: 登记窗口操作通道 uid（治多窗口串台 —— 按 uid 而非 kind 定位）
+    var _uidS = bindWinToBridge(w, 'slides', fileId, fileName);
+    // key 优先用 uid：旧实现用 fileId 当 key，同一文件开两个窗口时后者会覆盖前者
+    var key = _uidS || fileId || ('__v3genslides__' + Date.now());
+    var _inst = { uid: _uidS, win: w, editor: { kind: 'slides-ui', fileId: fileId, fileName: fileName, iframe: frame } };
+    state.instances[key] = _inst;
+    if (fileId) state.instances[fileId] = _inst;   // 兼容旧的「按 fileId 找实例」调用
     return { kind: 'slides-ui', fileId: fileId, fileName: fileName, iframe: frame };
   }
 
@@ -314,9 +388,12 @@
   // 加载 GenOffice Sheets UI：iframe 完全隔离（不污染 ACMS 全局样式）
   async function loadGenOfficeExcel(w, fileId, fileName) {
     // 清理旧 sheets-ui 实例（reload 换文件后旧 key 残留会误导 runAction 定位）
+    // v0.122: **只清本窗口**的旧实例 —— 原逻辑删掉所有同 kind 实例（单实例假设），
+    //   导致开第二个 Excel 窗口后第一个窗口在 instances 里消失 ⇒ 按 uid 定位失效
     Object.keys(state.instances).forEach(function (k) {
-      var e = state.instances[k].editor;
-      if (e && e.kind === 'sheets-ui') delete state.instances[k];
+      var _it = state.instances[k];
+      var e = _it.editor;
+      if (e && e.kind === 'sheets-ui' && _it.win === w) delete state.instances[k];
     });
     var oldFrame = w.$c.querySelector('iframe.v3-genoffice-frame');
     if (oldFrame) {
@@ -351,8 +428,13 @@
       try { if (frame.contentWindow && frame.contentWindow.__unmount) frame.contentWindow.__unmount(); } catch (e) { /* ignore */ }
       frame.remove();
     };
-    var key = fileId || ('__v3genxlsx__' + Date.now());
-    state.instances[key] = { editor: { kind: 'sheets-ui', fileId: fileId, fileName: fileName, iframe: frame } };
+    // v0.122: 登记窗口操作通道 uid（治多窗口串台 —— 按 uid 而非 kind 定位）
+    var _uidX = bindWinToBridge(w, 'xlsx', fileId, fileName);
+    // key 优先用 uid：旧实现用 fileId 当 key，同一文件开两个窗口时后者会覆盖前者
+    var key = _uidX || fileId || ('__v3genxlsx__' + Date.now());
+    var _inst = { uid: _uidX, win: w, editor: { kind: 'sheets-ui', fileId: fileId, fileName: fileName, iframe: frame } };
+    state.instances[key] = _inst;
+    if (fileId) state.instances[fileId] = _inst;   // 兼容旧的「按 fileId 找实例」调用
     return { kind: 'sheets-ui', fileId: fileId, fileName: fileName, iframe: frame };
   }
 
@@ -1755,9 +1837,12 @@
   // 加载 GenOffice Word UI：iframe 完全隔离（不污染 ACMS 全局样式）
   async function loadGenOfficeWord(w, fileId, fileName) {
     // 清理旧 word-ui 实例（reload 换文件后旧 key 残留会误导 runAction 定位）
+    // v0.122: **只清本窗口**的旧实例 —— 原逻辑删掉所有同 kind 实例（单实例假设），
+    //   导致开第二个 Excel 窗口后第一个窗口在 instances 里消失 ⇒ 按 uid 定位失效
     Object.keys(state.instances).forEach(function (k) {
-      var e = state.instances[k].editor;
-      if (e && e.kind === 'word-ui') delete state.instances[k];
+      var _it = state.instances[k];
+      var e = _it.editor;
+      if (e && e.kind === 'word-ui' && _it.win === w) delete state.instances[k];
     });
     // 复用窗口时先卸载旧 iframe 内容
     var oldFrame = w.$c.querySelector('iframe.v3-genoffice-frame');
@@ -1917,8 +2002,13 @@
       frame.remove();
     };
     // 注册到 state.instances（runAction / buildOfficeDocContext 定位用）
-    var key = fileId || ('__v3genword__' + Date.now());
-    state.instances[key] = { editor: { kind: 'word-ui', fileId: fileId, fileName: fileName, iframe: frame } };
+    // v0.122: 登记窗口操作通道 uid（治多窗口串台 —— 按 uid 而非 kind 定位）
+    var _uidW = bindWinToBridge(w, 'word', fileId, fileName);
+    // key 优先用 uid：旧实现用 fileId 当 key，同一文件开两个窗口时后者会覆盖前者
+    var key = _uidW || fileId || ('__v3genword__' + Date.now());
+    var _inst = { uid: _uidW, win: w, editor: { kind: 'word-ui', fileId: fileId, fileName: fileName, iframe: frame } };
+    state.instances[key] = _inst;
+    if (fileId) state.instances[fileId] = _inst;   // 兼容旧的「按 fileId 找实例」调用
     return { kind: 'word-ui', fileId: fileId, fileName: fileName, iframe: frame };
   }
 
@@ -2361,11 +2451,14 @@
       try {
         if (action.kind === 'xlsx') {
           // GenOffice sheets-ui 优先（iframe 内 __sheetsAI）
-          var sheetsInst = null;
-          var keys2 = Object.keys(state.instances);
-          for (var i2 = 0; i2 < keys2.length; i2++) {
-            var e2 = state.instances[keys2[i2]].editor;
-            if (e2 && e2.kind === 'sheets-ui') { sheetsInst = state.instances[keys2[i2]]; break; }
+          // v0.122: 先按 windowUid 精确定位（治多窗口串台），miss 才回退旧的「第一个 kind 匹配」
+          var sheetsInst = findInstanceByUid(action.windowUid);
+          if (!sheetsInst) {
+            var keys2 = Object.keys(state.instances);
+            for (var i2 = 0; i2 < keys2.length; i2++) {
+              var e2 = state.instances[keys2[i2]].editor;
+              if (e2 && e2.kind === 'sheets-ui') { sheetsInst = state.instances[keys2[i2]]; break; }
+            }
           }
           var sheetsWin = sheetsInst && sheetsInst.editor && sheetsInst.editor.iframe && sheetsInst.editor.iframe.contentWindow;
           var sheetsAI = sheetsWin && sheetsWin.__sheetsAI;
@@ -2410,7 +2503,11 @@
         // word / slides：按 fileId 或 kind 找实例（word 请求命中 GenOffice word-ui 实例）
         var inst = null;
         var keys = Object.keys(state.instances);
-        if (action.fileId && state.instances[action.fileId]) {
+        // v0.122: uid 优先于 fileId —— 同一文件开两个窗口时 fileId 会指向错的那个
+        if (action.windowUid) inst = findInstanceByUid(action.windowUid);
+        if (inst) {
+          // 已按 uid 命中
+        } else if (action.fileId && state.instances[action.fileId]) {
           inst = state.instances[action.fileId];
         } else {
           for (var i = 0; i < keys.length; i++) {
@@ -2657,11 +2754,35 @@
     // 返回 { kind, doc: { sheets|blocks|... } } 或 null（编辑器未打开）
     // 设计：复用 __sheetsDebug.snapshot（sheets）/ Tiptap doc 遍历（word）
     // slides 暂返回 null（HTML-deck 模式不需要 docContext，LLM 直接产 HTML）
-    readFreshDocContext: function (kind) {
+    // v0.122 参数：
+    //   kind       - 'xlsx' | 'word' | 'slides'
+    //   windowUid  - 精确定位到某一个窗口（治多窗口串台）；不传则回退旧的「第一个 kind 匹配」
+    //   opts       - { maxSheets, maxRows, maxCols } Q4=a 放宽上限（默认 5/60/16，原为硬编码 5/30/12）
+    readFreshDocContext: function (kind, windowUid, opts) {
       var targetKind = kind;
+      opts = opts || {};
+      var MAX_SHEETS = opts.maxSheets || 5;
+      var MAX_ROWS   = opts.maxRows   || 60;
+      var MAX_COLS   = opts.maxCols   || 16;
       var instances = state.instances;
       var keys = Object.keys(instances);
       if (!keys.length) return null;
+
+      // v0.122: 指定 windowUid 时只认那一个实例（找不到直接返回 null，不回退 —— 宁缺勿错）
+      if (windowUid) {
+        var one = findInstanceByUid(windowUid);
+        if (!one || !one.editor) return null;
+        var oneEd = one.editor;
+        if (oneEd.kind === 'sheets-ui' && oneEd.iframe && oneEd.iframe.contentWindow) {
+          var oneSnap = readSheetsSnapshot(oneEd.iframe.contentWindow, MAX_SHEETS, MAX_ROWS, MAX_COLS);
+          if (oneSnap) return { kind: 'xlsx', doc: { sheets: oneSnap } };
+          return null;
+        }
+        if (oneEd.kind === 'word-ui' && oneEd.iframe && oneEd.iframe.contentWindow) {
+          return readWordBlocks(oneEd.iframe.contentWindow);
+        }
+        return null;
+      }
 
       if (targetKind === 'xlsx') {
         // 找 sheets-ui instance → __sheetsDebug.snapshot 读真实 cells
@@ -2669,27 +2790,19 @@
           var ed = instances[keys[i]].editor;
           if (ed && ed.kind === 'sheets-ui' && ed.iframe && ed.iframe.contentWindow) {
             var sWin = ed.iframe.contentWindow;
-            if (sWin.__sheetsDebug && typeof sWin.__sheetsDebug.snapshot === 'function') {
-              var sids = sWin.__sheetsDebug.listSessions();
-              if (sids && sids.length) {
-                // 5 sheets / 30 行 / 12 列（与 office-action 端点 docContext 摘要默认一致）
-                var snap = sWin.__sheetsDebug.snapshot(sids[0], 5, 30, 12);
-                if (snap && snap.sheets && snap.sheets.length) {
-                  return { kind: 'xlsx', doc: { sheets: snap.sheets } };
-                }
-              }
-            }
+            var sSheets = readSheetsSnapshot(sWin, MAX_SHEETS, MAX_ROWS, MAX_COLS);
+            if (sSheets) return { kind: 'xlsx', doc: { sheets: sSheets } };
           }
         }
         // v2 fallback: window.XlsxAI.getSnapshot
         if (typeof window.XlsxAI !== 'undefined' && window.XlsxAI.getSnapshot) {
           var snap2 = window.XlsxAI.getSnapshot();
           if (snap2 && snap2.sheets && snap2.sheets.length) {
-            var sheets = snap2.sheets.slice(0, 5).map(function (s) {
+            var sheets = snap2.sheets.slice(0, MAX_SHEETS).map(function (s) {
               var rows = [];
-              for (var r = 1; r <= 30; r++) {
+              for (var r = 1; r <= MAX_ROWS; r++) {
                 var row = [];
-                for (var c = 0; c < 12; c++) {
+                for (var c = 0; c < MAX_COLS; c++) {
                   var addr = String.fromCharCode(65 + c) + r;
                   var cell = s.cells[addr];
                   row.push(cell ? (cell.v != null ? cell.v : (cell.f || '')) : '');
@@ -2709,29 +2822,8 @@
         for (var j = 0; j < keys.length; j++) {
           var edW = instances[keys[j]].editor;
           if (edW && edW.kind === 'word-ui' && edW.iframe) {
-            try {
-              var gwin = edW.iframe.contentWindow;
-              var gdoc = gwin && gwin.document ? gwin.document.querySelector('[contenteditable="true"]') : null;
-              var gedit = gdoc && gdoc.editor;
-              if (gedit) {
-                var gblocks = [];
-                gedit.state.doc.content.forEach(function (node) {
-                  var n = node.type.name;
-                  if (n === 'docParagraph' || n === 'docHeading' || n === 'docListItem') {
-                    gblocks.push({
-                      i: gblocks.length,
-                      text: node.textContent.slice(0, 200),
-                      type: n,
-                      level: n === 'docHeading' ? (node.attrs.level || 1) : undefined,
-                      kind: n === 'docListItem' ? (node.attrs.kind || 'bullet') : undefined,
-                    });
-                  }
-                });
-                return { kind: 'word', doc: { blocks: gblocks } };
-              }
-            } catch (e) {
-              return null;
-            }
+            var wres = readWordBlocks(edW.iframe.contentWindow);
+            if (wres) return wres;
           }
         }
         return null;
@@ -2759,4 +2851,76 @@
       return this.runAction(action);
     },
   };
+
+  // ════════════════════════════════════════════════════════════
+  // v0.122: 注册到「窗口操作通道」（Window Action Bridge）
+  //   —— 让 AI 能按窗口 uid 精确读写**某一个** office 窗口。
+  //   read 和 apply 都走本文件同一份实现 ⇒ 读写同源，不会「用 A 数据定位、动作落到 B」。
+  // ════════════════════════════════════════════════════════════
+  (function registerBridgeAdapters() {
+    if (typeof window.WindowActionBridge === 'undefined') {
+      console.info('[office-v3] WindowActionBridge 未加载，跳过 adapter 注册');
+      return;
+    }
+    var WAB = window.WindowActionBridge;
+    var LABELS = { xlsx: 'Excel 表格', word: 'Word 文档', slides: 'PPT 演示' };
+
+    ['xlsx', 'word', 'slides'].forEach(function (k) {
+      WAB.registerAdapter(k, {
+        kind: k,
+        label: LABELS[k],
+
+        // 读：编辑器内存态（含未保存改动），与 apply 同源
+        read: function (win, opts) {
+          var uid = win && win.uid;
+          var doc;
+          try {
+            doc = window.OfficeV3.readFreshDocContext(k, uid, opts || {});
+          } catch (e) {
+            return { ok: false, error: 'READ_THREW', message: e.message };
+          }
+          if (!doc) {
+            return {
+              ok: false,
+              error: 'NO_DOC_CONTENT',
+              message: '读不到内容 —— 编辑器可能尚未就绪，或该窗口未打开文档',
+            };
+          }
+          // slides 是 HTML-deck 模式，无 docContext
+          if (!doc.doc) {
+            return {
+              ok: false,
+              error: 'NO_DOC_CONTEXT_FOR_KIND',
+              message: k === 'slides' ? 'PPT 是 HTML-deck 模式，不支持结构化读取' : '该类型暂无结构化读取',
+            };
+          }
+          return { ok: true, doc: doc.doc, kind: doc.kind || k };
+        },
+
+        // 写：动作落进编辑器内存态（GenOffice applyPlan ⇒ 用户可 Ctrl+Z 撤销）
+        apply: function (win, action) {
+          var uid = win && win.uid;
+          var act = {};
+          for (var key in action) { if (action.hasOwnProperty(key)) act[key] = action[key]; }
+          act.kind = k;
+          act.windowUid = uid;   // ← 精确定位，治多窗口串台
+          try {
+            return window.OfficeV3.runAction(act);
+          } catch (e) {
+            return { ok: false, error: 'APPLY_THREW', message: e.message };
+          }
+        },
+
+        describe: function (win) {
+          return {
+            label: LABELS[k],
+            fileId: win && win.instanceId || null,
+            fileName: (win && win.st && (win.st.titleOverride || win.st.title)) || null,
+            pendingSave: true,   // 改的是内存态，需用户自己保存
+          };
+        },
+      });
+    });
+    console.info('[office-v3] ✅ 已注册窗口操作 adapter: xlsx / word / slides');
+  })();
 })();
