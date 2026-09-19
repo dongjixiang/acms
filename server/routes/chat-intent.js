@@ -333,8 +333,18 @@ router.post('/detect-and-respond', async (req, res, next) => {
             // v0.121d: 两种注入模式
             //   ref （默认）→ 只给引用清单，正文按需 read_window_content（省 token）
             //   full        → 直接把正文读出来拼进上下文（费 token，但省一轮工具往返）
+            // v0.122e: 必须同时交代**读**和**写**两个工具的用法 ——
+            //   之前只提了 read_window_content ⇒ AI 不知道 window_action 要传什么，
+            //   调它时不带窗口参数 ⇒ 前端报「动作没带目标窗口 uid」（实测踩到）。
+            //   注意 window_action 的参数名是 windowUid（用 uid，不用 aw-N）。
+            const _winKind = _cwc.kind ||
+              (_cwc.view === 'office-word' ? 'word' : _cwc.view === 'office-pptx' ? 'slides' : 'xlsx');
             let _tail = '。需要正文时调用 read_window_content(windowId="' + _cwc.window_id +
-              '", sessionId="' + reqId + '")。上下文里不带正文，按需读取。';
+              '", sessionId="' + reqId + '")。' +
+              '需要**修改**这个窗口的内容时调用 window_action(windowUid="' + _cwc.window_id +
+              '", kind="' + _winKind + '", operations=[...], summary="...")' +
+              '（改的是编辑器内存态，用户可 Ctrl+Z 撤销、自行保存）。' +
+              '上下文里不带正文，按需读取。';
             if (_cwc.inject_mode === 'full') {
               try {
                 require('../tools/read-window-content');   // P178: 触发注册（同一坑）
@@ -447,15 +457,25 @@ router.post('/detect-and-respond', async (req, res, next) => {
                     var _waIn = evt.input;
                     if (typeof _waIn === 'string') { try { _waIn = JSON.parse(_waIn); } catch (e2) { _waIn = null; } }
                     if (_waIn && _waIn.operations && _waIn.operations.length) {
+                      // v0.122e: AI 常不带窗口参数（schema 里非必填）→ 从会话的活跃窗口兜底补 uid。
+                      //   工具 handler 内部本来就有同样的兜底，但那时结果不经 SSE 回前端，
+                      //   所以补推这一侧必须自己再查一次。
+                      let _waUid = _waIn.windowUid || _waIn.windowId || null;
+                      if (!_waUid) {
+                        try {
+                          const _aw = require('../services/chat-session-service').getActiveWindow(reqId);
+                          if (_aw && _aw.window_id) _waUid = _aw.window_id;
+                        } catch (e0) { /* ignore */ }
+                      }
                       res.write(`data: ${JSON.stringify({
                         type: 'office_action_apply',
-                        windowUid: _waIn.windowUid || _waIn.windowId || null,
+                        windowUid: _waUid,
                         kind: _waIn.kind || null,
                         action: { op: 'propose', operations: _waIn.operations, summary: _waIn.summary || 'AI 编辑' },
                         summary: _waIn.summary || 'AI 编辑',
                         toolUseId: evt.tool_use_id,
                       })}\n\n`);
-                      console.log('[detect-and-respond] window_action → 已推 office_action_apply', _waIn.windowUid || _waIn.windowId, (_waIn.operations || []).length + ' ops');
+                      console.log('[detect-and-respond] window_action → 已推 office_action_apply uid=' + _waUid, (_waIn.operations || []).length + ' ops');
                     }
                   }
                 } catch (e3) { console.warn('[detect-and-respond] 推 office_action_apply 失败:', e3.message); }
