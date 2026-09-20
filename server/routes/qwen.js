@@ -93,6 +93,11 @@ router.post('/release', authMiddleware, async (req, res) => {
 router.post('/interrupt', authMiddleware, async (req, res) => {
   const userId = (req.body && req.body.userId) || (req.user && (req.user.id || req.user.userId));
   if (!userId) return res.status(400).json({ error: 'userId 必填' });
+  // 🆕 REQ 路径不该调这个端点（REQ 走 server 端 detect-and-respond，无 Qwen session）
+  //   前端 chatInterrupt 已在 REQ 形态下早退，这里兜底防止其他客户端绕过
+  if (userId && userId.startsWith && userId.startsWith('REQ-')) {
+    return res.status(400).json({ error: 'NOT_APPLICABLE', message: 'interrupt 不适用于需求对话' });
+  }
   try {
     const r = await qwenManager.interrupt(userId);
     res.json(r);

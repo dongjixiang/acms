@@ -1087,10 +1087,17 @@ setImmediate(() => {
 //   失效场景（与 agent-buddy 路径行为对齐）：
 //   - 无 session（idle reap / 旧引擎 ACMS_TOOL_RE 命中）→ 404 + reason: no_session
 //   - control_request ACK ok=false → 同样 404，前端 toast "会话已过期"
+//   - REQ 路径直接 400 NOT_APPLICABLE（REQ 无 Qwen session 概念）
 router.post('/continue', async (req, res, next) => {
   try {
     const { reqId } = req.body;
     if (!reqId) return res.status(400).json({ error: 'MISSING_REQID' });
+
+    // 🆕 REQ 路径不该调这个端点（REQ 没有"被中断的 turn"概念，续转无意义）
+    //   前端 chatContinueLastTurn 已在 REQ 形态下早退，这里兜底防止其他客户端绕过
+    if (reqId && reqId.startsWith && reqId.startsWith('REQ-')) {
+      return res.status(400).json({ error: 'NOT_APPLICABLE', message: 'continue 不适用于需求对话' });
+    }
 
     let qwenMgr = null;
     try { qwenMgr = require('../services/qwen-manager'); } catch (e) {

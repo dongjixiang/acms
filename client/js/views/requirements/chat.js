@@ -1189,6 +1189,12 @@ function renderChatInterruptedCard(reqId, opts) {
 //   4. 端事件 interrupted=true（极罕见：续转时被新 interrupt 打断）→ handleFreeChatSSE 自动渲染新"已中断"卡片
 //   5. 端事件 interrupted=false → handleFreeChatSSE 正常 finalize，状态自动切 idle
 async function chatContinueLastTurn(reqId) {
+  // 🆕 REQ 形态早退（v0.123+）：REQ 没有"被中断的 turn"概念，续转无意义
+  //   REQ 的 LLM 是 server 端跑 detect-and-respond，没有 Qwen session
+  if (reqId && reqId.startsWith && reqId.startsWith('REQ-')) {
+    toast('需求对话不支持续转，请直接发送新消息', 'info');
+    return;
+  }
   // 1. 移除"已中断"卡片
   var c = document.getElementById('chat-stream-msgs-' + reqId);
   var card = c && c.querySelector('.chat-interrupted-card[data-req-id="' + reqId + '"]');
@@ -1363,7 +1369,15 @@ function bindSummaryCardButtons(card, reqId) {
 }
 
 // 🆕 v0.119：调后端 /api/qwen/interrupt（纯中断，不发新消息）
+//   REQ 路径早退：REQ 走 server 端 detect-and-respond，无 Qwen session
+//   "中断"对 REQ = 前端关 EventSource + 让 polling 拿结果时自然显示
 async function chatInterrupt(reqId) {
+  // 🆕 REQ 形态早退（v0.123+）：REQ 没有 Qwen session，调 /qwen/interrupt 永远 no_session
+  if (reqId && reqId.startsWith && reqId.startsWith('REQ-')) {
+    setChatSendState(reqId, 'idle');
+    toast('已停止生成', 'info');
+    return;
+  }
   setChatSendState(reqId, 'interrupting');
   try {
     const r = await api('POST', '/qwen/interrupt', { userId: reqId });
@@ -1711,6 +1725,14 @@ async function chatSend(reqId) {
   //   generating + 输入框有内容：中断 + 发新消息（先发 interrupt，等 SSE end 自动续接）
   //   idle / interrupted：正常发送
   if (state === 'interrupting') return;
+
+  // 🆕 REQ 路径下生成中不允许发新消息（v0.123+）
+  //   REQ 走 server 端 detect-and-respond，没有 Qwen session，"中断旧 turn 发新消息"语义不存在
+  //   等当前生成完成（polling 拿到结果）后再发，或刷新页面
+  if (state === 'generating' && reqId && reqId.startsWith && reqId.startsWith('REQ-')) {
+    toast('AI 正在生成中，请等待当前回复完成后再发', 'info');
+    return;
+  }
 
   if (state === 'generating') {
     if (input) { input.value = ''; input.style.height = 'auto'; }

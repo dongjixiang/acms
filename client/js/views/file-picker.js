@@ -119,6 +119,20 @@
     return '';
   }
 
+  // 🆕 v0.123：记住用户上次打开文件的目录（典型「路径预测」心智模型）
+  //   下次 pick() 时优先 fallback 到这里，省去 ⬆⬆⬆ 一层层找的步骤
+  //   已知限制：多用户同浏览器会共享这条记忆（localStorage 是 per-origin）；临时目录被删除时会在 load() catch 里 fallback
+  var FP_LAST_DIR_KEY = 'acms-fp-lastDir';
+  function _getLastDir() {
+    try { var p = localStorage.getItem(FP_LAST_DIR_KEY); return p || ''; } catch (e) { return ''; }
+  }
+  function _setLastDir(p) {
+    try { if (p) localStorage.setItem(FP_LAST_DIR_KEY, p); } catch (e) {}
+  }
+  function _clearLastDir() {
+    try { localStorage.removeItem(FP_LAST_DIR_KEY); } catch (e) {}
+  }
+
   function pick(opts) {
     opts = opts || {};
     return new Promise(function (resolve) {
@@ -126,7 +140,8 @@
       //   曾经默认改成 /users/{username}，但那是「用户级应用数据根」（ip-library/logs/config），
       //   新账号建出来是空的 ⇒ 打开就看到空列表，用户会以为文件丢了。
       //   用户根改为工具栏上一个「👤 我的文件」快捷入口（见下）。
-      var state = { cur: opts.startPath || '', parent: null, entries: [], sel: null, q: '' };
+      // v0.123：默认打开优先级 = opts.startPath > localStorage 记住的 > workspaces 根
+      var state = { cur: opts.startPath || _getLastDir() || '', parent: null, entries: [], sel: null, q: '' };
       var settled = false;
 
       var html =
@@ -218,6 +233,8 @@
 
       function load(p) {
         var url = '/api/files' + (p ? '?path=' + encodeURIComponent(p) : '');
+        // v0.123：remembered dir 加载失败 → 清记忆 + 跳回根（避免用户卡在 404 状态）
+        var isRemembered = (p && p === _getLastDir());
         return api('GET', url.replace(/^\/api/, '')).then(function (r) {
           state.cur = r.currentPath || '';
           state.parent = r.parentPath || null;
@@ -226,6 +243,10 @@
           selEl.textContent = '未选择文件';
           render();
         }).catch(function (e) {
+          if (isRemembered) {
+            _clearLastDir();
+            return load('');
+          }
           listEl.innerHTML = '<div class="fp-empty">读取失败：' + esc((e && e.message) || '未知错误') + '</div>';
         });
       }
@@ -271,6 +292,8 @@
       promise.then(function (v) {
         if (settled) return;
         settled = true;
+        // v0.123：成功选中文件 → 记录当前目录，下次 pick() 直接落在这里
+        if (v && v.path) _setLastDir(state.cur);
         resolve(v && v.path ? v : null);
       });
 

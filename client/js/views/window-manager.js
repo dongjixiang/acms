@@ -388,6 +388,15 @@
   function toggleMin(w) {
     w.st.min = !w.st.min;
     w.el.classList.toggle('aw-min', w.st.min);
+    // 🆕 v0.123：宿主最小化时联动隐藏所有 docked 子窗口
+    //   否则 syncDock rAF 每帧读 slot.getBoundingClientRect() →
+    //   slot 在 display:none 父级里返回 0×0 → 子窗口 inline style 被定位到 (0,0) → 屏幕左上角出现幽灵窗口
+    for (var i = 0; i < _docked.length; i++) {
+      var d = _docked[i];
+      if (d._dock && d._dock.hostWin === w) {
+        d.el.classList.toggle('aw-min', w.st.min);
+      }
+    }
     syncTb();
     if (!w.st.min) focus(w);
   }
@@ -410,6 +419,17 @@
 
   function close(w) {
     if (w.dead) return;
+    // 🆕 v0.123：close 宿主时联动 close 所有 docked 到该宿主的子窗口
+    //   否则宿主 DOM 被 remove → slot 元素消失 → 下帧 syncDock 走 undock 兜底
+    //   → 子窗口被还原到 _dockHome → 屏幕多个孤儿浮窗
+    //   （与 toggleMin 联动隐藏保持「父操作子跟着」一致性）
+    for (var i = _docked.length - 1; i >= 0; i--) {
+      var d = _docked[i];
+      if (d.dead) continue;
+      if (d._dock && d._dock.hostWin === w) {
+        try { close(d); } catch (e) { console.warn('[ACMSWin.close] dock-child close error:', e.message); }
+      }
+    }
     w.dead = true;
     // v0.55：关窗回调（chat 用：通知 launcher 刷新列表 + 桌面回收站 badge）
     try { if (typeof w.onClose === 'function') w.onClose(); } catch (e) { console.warn('[ACMSWin.close] onClose error:', e.message); }
