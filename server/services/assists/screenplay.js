@@ -417,6 +417,8 @@ function writeScreenplayChatEntry(reqId, screenplay, meta = {}) {
     scene_videos: (currentAssist?.scene_videos) || {},
     // v0.22.20: 把 project_id 写进 card（之前漏了，聊天流卡片拼本地 URL 时 fallback 到 'default' → 404）
     project_id: req.project_id || null,
+    // v0.22.81: Continuity Bible 告警也进卡片（否则 chat 流路径看不到告警）
+    warnings: (currentAssist && currentAssist.warnings) || [],
     // v0.22.65: 合成后的完整视频（compose_final）也要进卡片，否则聊天流卡片看不到成片
     final_video: (currentAssist?.final_video) || null,
     // v0.22.67: 首帧图（每场一张）+ 视频选项（时长/画幅）——聊天流卡片也要能渲染

@@ -52,10 +52,30 @@
     //   修复：扫 name+desc 命中「车辆 / 动物 / 机械 / 物件 / 建筑 / 植物 / 食物 / 自然物 / 光影」
     //   → 切非人形分支（去掉 3 行人形词 + 改负面）
     //   人类角色 → 走原模板（不变）
-    const nonHumanKeywords = ['车', '卡车', '货车', '拖车', '巴士', '摩托', '自行车', '动物', '猫', '狗', '鸟', '鱼', '虎', '龙', '机械', '机器人', '机甲', '物件', '建筑', '城堡', '塔', '植物', '树', '草', '花', '食物', '面包', '蛋糕', '自然物', '云', '风', '水', '火', '光影', '光', '影'];
-    const searchText = `${name} ${desc}`;
-    const isNonHuman = nonHumanKeywords.some(k => searchText.includes(k));
-    console.log(`[screenplay] buildCharacterPrompt: ${name} → ${isNonHuman ? '非人形' : '人形'} 模板`);
+    //   ⚠️ v0.22.81 修：旧实现是「单字关键词裸 substring 命中即判非人形」，被单字词误伤 ——
+    //     关键词表里有 '风' → 「古风少女 / 古风青年男子 / 窈窕淑女」全部命中 → 人形角色
+    //     被判成非人形（丢掉表情/姿态行 + 负面写「非拟人化主体误加五官」）→ 古风/国风剧本
+    //     （主力场景）全军覆没。同类误伤：'花'（手持花篮）、'水'、'云'、'光'。
+    //   新规则（三级）：
+    //     ① 命中「人形标记词」（人/女/男/少女/青年/太子/武士…）→ 人形，除非同时命中强非人形词
+    //     ② 命中「强非人形词」（拖车/货车/机器人/动物/猫…）→ 非人形
+    //     ③ 都没命中 → 只看「弱非人形词」，且先剔除风格词（古风/国风/写实…）再匹配
+    const HUMAN_MARKERS = ['人', '女', '男', '少女', '少年', '男子', '女子', '青年', '老者', '老人', '姑娘', '公子', '小姐',
+      '太子', '王子', '王', '公主', '骑士', '战士', '武士', '法师', '巫师', '侠', '将士', '士兵', '侍卫', '臣', '官', '大夫',
+      '医生', '护士', '老师', '学生', '母亲', '父亲', '妈妈', '爸爸', '孩子', '儿童', '工人', '司机', '商人', '农夫', '渔民', '孩童'];
+    const STRONG_NONHUMAN = ['卡车', '货车', '拖车', '巴士', '摩托', '自行车', '机器人', '机甲', '机械', '动物', '猫', '狗', '鸟',
+      '鱼', '虎', '龙', '建筑', '城堡', '植物', '食物', '面包', '蛋糕'];
+    const WEAK_NONHUMAN = ['车', '物件', '塔', '树', '草', '花', '自然物', '云', '风', '水', '火', '光影', '光', '影'];
+    // 风格/氛围词先剔除（它们是修饰，不是主体类别；「古风」「国风」「水墨」等）
+    const STYLE_WORDS = ['古风', '国风', '仙侠', '古装', '和风', '日式', '水墨', '油画', '写实', '卡通', '动漫', '复古', '唯美', '浪漫', '温情', '风情', '风光', '风光片'];
+    const rawSearchText = `${name} ${desc}`;
+    const searchText = STYLE_WORDS.reduce((t, w) => t.split(w).join(''), rawSearchText);
+    const strongHits = STRONG_NONHUMAN.filter(k => searchText.includes(k));
+    const hasHumanMarker = HUMAN_MARKERS.some(k => searchText.includes(k));
+    const weakHits = WEAK_NONHUMAN.filter(k => searchText.includes(k));
+    const isNonHuman = strongHits.length > 0 ? true : (hasHumanMarker ? false : weakHits.length > 0);
+    console.log(`[screenplay] buildCharacterPrompt: ${name} → ${isNonHuman ? '非人形' : '人形'} 模板`
+      + `（强非人形词:${strongHits.join('/') || '无'} · 人形标记:${hasHumanMarker ? '有' : '无'} · 弱词:${weakHits.join('/') || '无'}）`);
 
     // v0.22.31: IP 锚定检测 — name + desc 拼起来查 IP 词典
     const ipDict = window.ACMSScreenplayIPDict;
@@ -630,10 +650,28 @@
       `;
     }).join('');
 
+    // v0.22.81: Continuity Bible 告警展示 —— 之前校验结果只写进 req.assist_screenplay.warnings，
+    //   前端一个字段都没读（「字段加了不消费」反模式）→ 用户看不到任何提示。
+    //   数据形状：data.warnings = [{sp_idx, warnings:[{code, scene_idx, prop, message}]}]
+    const myWarnings = (() => {
+      const all = Array.isArray(data.warnings) ? data.warnings : [];
+      const hit = all.find(w => Number(w && w.sp_idx) === Number(data.picked));
+      return (hit && Array.isArray(hit.warnings)) ? hit.warnings : [];
+    })();
+    const warnBanner = myWarnings.length ? `
+      <div style="margin:6px 0;padding:8px 10px;background:rgba(201,162,39,0.10);border:1px solid rgba(201,162,39,0.45);border-radius:6px">
+        <div style="font-weight:600;font-size:12px;color:#c9a227">⚠️ 连续性告警 ${myWarnings.length} 条（不阻塞生成，建议核对后再出图/出视频）</div>
+        <ul style="margin:4px 0 0 16px;padding:0;font-size:11px;color:var(--text2)">
+          ${myWarnings.map(w => `<li>场 ${(Number(w && w.scene_idx) || 0) + 1}${w && w.prop ? ' · ' + escHtml(w.prop) : ''}：${escHtml((w && (w.message || w.code)) || '')}</li>`).join('')}
+        </ul>
+      </div>` : '';
+
     return `
       <div class="assist-section-title">🎬 ${escHtml(sp.title || '')}</div>
       <div style="font-size:11px;color:var(--text2);margin-bottom:4px">基于：${escHtml(data.idea || '')} · ${target}s · ${scenes.length} 场</div>
       <div style="font-style:italic;color:var(--text2);font-size:12px;margin-bottom:8px">${escHtml(sp.logline || '')}</div>
+
+      ${warnBanner}
 
       ${statusBar}
 
@@ -825,6 +863,8 @@
       scene_frames: card.scene_frames || {},
       video_opts: card.video_opts || null,
       project_id: card.project_id || null,
+      // v0.22.81: Continuity Bible 告警（chat 卡路径也要带 —— 两个入口必须一致）
+      warnings: card.warnings || [],
     });
   }
 
