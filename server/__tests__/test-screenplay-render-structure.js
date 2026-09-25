@@ -111,5 +111,25 @@ html = card.renderDetail('REQ-X', unpicked);
 const b3 = tagBalances(html);
 ok(b3.div.ok, `<div> 配平（开 ${b3.div.open} / 闭 ${b3.div.close}）`);
 
+console.log('\n[4] L6 徽章 three-state：off 与「无本地备份」必须文案不同（v0.22.87）');
+{
+  // ① skipped + reason 说「已关闭」→ 必须说“未启用（配置已关闭）”，不能谎报“无本地备份”
+  const dOff = mkData(2, true);
+  dOff.scene_frames['0'].l6_check = { ok: true, violations: [], reason: 'L6 自检已关闭（screenplay_l6_mode=off）', skipped: true };
+  const htmlOff = card.renderDetail('REQ-X', dOff);
+  ok(/L6 自检：未启用（配置已关闭）/.test(htmlOff), 'off 模式 → 「◌ L6 自检：未启用（配置已关闭）」');
+  ok(!/跳过（无本地备份）/.test(htmlOff), 'off 模式不会谎报「无本地备份」');
+  // ② skipped 但没有 off 原因（旧来源：无本地备份图）→ 保持原文案
+  const dNoBak = mkData(2, true);
+  dNoBak.scene_frames['0'].l6_check = { ok: true, violations: [], skipped: true };
+  const htmlNoBak = card.renderDetail('REQ-X', dNoBak);
+  ok(/L6 自检：跳过（无本地备份）/.test(htmlNoBak), '无备份路径 → 仍显示「跳过（无本地备份）」');
+  // ③ 真违规 → 黄色告警 + 明确说「未自动重画」（warn 模式的诚实措辞）
+  const dViol = mkData(2, true);
+  dViol.scene_frames['0'].l6_check = { ok: false, violations: ['石灯笼'], reason: '画面右侧出现石灯笼' };
+  const htmlViol = card.renderDetail('REQ-X', dViol);
+  ok(/检测到未登记元素（石灯笼）/.test(htmlViol) && /未自动重画/.test(htmlViol), '违规 → 列明细 + 「未自动重画」（不谎称已重画）');
+}
+
 console.log(`\n=== 汇总: ${passed} pass · ${failed} fail ===`);
 process.exit(failed ? 1 : 0);

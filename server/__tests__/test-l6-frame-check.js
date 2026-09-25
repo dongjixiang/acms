@@ -100,8 +100,15 @@ console.log('\n[2c] resolveL6Mode（v0.22.83）');
 ok(typeof screenplay.resolveL6Mode === 'function', 'resolveL6Mode 已导出');
 const { collection } = require('../db/connection');
 const sc = collection('system_configs');
-const hadRow = !!sc.findOne(c => c.key === 'screenplay_l6_mode');
-ok(screenplay.resolveL6Mode() === 'warn', '默认（无配置）= warn');
+// ⚠️ v0.22.87 fix：这行配置是**生产开关**（用户会真的把 L6 设成 off 观察影响）——
+//    旧版本测试跑完直接 sc.remove() 把用户配置抹掉，还硬断言「默认 = warn」→ 用户设了 off
+//    之后再跑测试会红、并且配置被删。改为：**先快照、再测、最后原样还原**。
+const origRow = sc.findOne(c => c.key === 'screenplay_l6_mode');
+if (origRow) {
+  console.log(`  ⊘ 跳过「默认 = warn」断言：DB 已有配置行 (value=${origRow.value}) —— 生产配置，不覆盖不删除`);
+} else {
+  ok(screenplay.resolveL6Mode() === 'warn', '默认（无配置）= warn');
+}
 // 写 API 注意：update(predicate, updates) / remove(predicate) —— 不是 id 版（id 版会静默不匹配）
 const put = (v) => {
   const ex = sc.findOne(c => c.key === 'screenplay_l6_mode');
@@ -114,9 +121,15 @@ put('OFF');
 ok(screenplay.resolveL6Mode() === 'off', "配置大小写不敏感（'OFF' → off）");
 put('乱填的值');
 ok(screenplay.resolveL6Mode() === 'warn', '非法值 → 回落 warn（不会因脏配置把功能关掉/开炸）');
-// 清理（remove 是 predicate 版）
+// 还原（不是清空！有原始行就还原成原值）
 try { sc.remove(c => c.key === 'screenplay_l6_mode'); } catch (e) { /* ignore */ }
-ok(!sc.findOne(c => c.key === 'screenplay_l6_mode'), '测试后已清理配置行（不留脏数据）');
+if (origRow) {
+  sc.insert({ key: origRow.key, value: origRow.value, created_at: origRow.created_at || new Date().toISOString() });
+  ok(screenplay.resolveL6Mode() === String(origRow.value).toLowerCase(),
+    `测试后已还原生产配置（value=${origRow.value}）`);
+} else {
+  ok(!sc.findOne(c => c.key === 'screenplay_l6_mode'), '测试后已清理配置行（不留脏数据）');
+}
 
 // 前端措辞：warn 模式不能再说"已自动重生成"
 const coreSrc = require('fs').readFileSync(require('path').join(__dirname, '..', '..', 'client', 'js', 'views', 'assists', 'screenplay-core.js'), 'utf8');

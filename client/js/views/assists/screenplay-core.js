@@ -222,7 +222,15 @@
   function renderL6Badge(l6) {
     if (!l6 || typeof l6 !== 'object') return '';
     // 降级 / 跳过 → 灰色小字提示，不干扰主视觉
-    if (l6.skipped) return '<div style="font-size:10px;color:var(--text3);margin-top:1px" title="没有本地备份图，跳过了 AI 自检">◌ L6 自检：跳过（无本地备份）</div>';
+    // v0.22.87：skipped 现在有两个来源，文案必须说清是哪个（别谎报原因）：
+    //   ① 配置关掉了自检（screenplay_l6_mode=off，reason 含「已关闭」）
+    //   ② 没有本地备份图 → 没法把图喂给 vision（旧来源）
+    if (l6.skipped) {
+      const off = /已关闭|=off/.test(String(l6.reason || ''));
+      return off
+        ? '<div style="font-size:10px;color:var(--text3);margin-top:1px" title="' + escHtml(l6.reason || '') + '">◌ L6 自检：未启用（配置已关闭）</div>'
+        : '<div style="font-size:10px;color:var(--text3);margin-top:1px" title="没有本地备份图，跳过了 AI 自检">◌ L6 自检：跳过（无本地备份）</div>';
+    }
     if (l6.degraded) return '<div style="font-size:10px;color:var(--text3);margin-top:1px" title="' + escHtml(l6.reason || '视觉模型不可用') + '">◌ L6 自检：' + escHtml(l6.reason || '降级通过') + '</div>';
     // v0.22.83: warn 模式（默认）—— 检测到就列明细 + 给用户三个可行动作，不再声称"已自动重生成"
     if (!l6.ok && Array.isArray(l6.violations) && l6.violations.length) {
