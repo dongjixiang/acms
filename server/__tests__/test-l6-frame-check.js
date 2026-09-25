@@ -35,6 +35,13 @@ ok(r.violations[0] === '楼阁' && r.violations[1] === '亭子', 'violations 顺
 r = P('```json\n{"violations":["塔"],"ok":false}\n```');
 ok(r.ok === false && r.violations[0] === '塔', '```json 包裹 → 剥壳解析');
 
+// v0.22.79 新增：解析失败/截断 不再冒充「通过」
+r = P('{"violations":["大量樱花树","背景远山","石阶');
+ok(r.ok === false && r.violations.length === 3, '截断 JSON → 容错捞出违规项（不再假通过）');
+ok(r.degraded === true, '截断容错 → 标 degraded（UI 走灰字而非绿色 ✅）');
+r = P('我完全看不懂这张图');
+ok(r.ok === true && r.degraded === true, '纯废话 → ok:true 但 degraded:true（不再冒充干净通过）');
+
 // ---------- buildL6CheckPrompt ----------
 console.log('\n[2] buildL6CheckPrompt');
 const B = screenplay.buildL6CheckPrompt;
@@ -63,6 +70,28 @@ ok(!/PR_/.test(p), '无 props → 不含 [PR_xx]');
 p = B({ setting: '城', continuity_props: [{ label: '灯笼' }] }, {}, 0, ['甲']);
 ok(!/本场空间/.test(p) || p.includes(''), '缺 scene_location 不崩');
 ok(p.includes('灯笼'), '单 prop 锚点正常');
+
+// ---------- v0.22.80 判官判定面收窄（误报修复） ----------
+//   背景：判官只拿到「文字白名单 + 首帧图」，看不到参考图 → 把场景基准图自带的
+//        樱花林/远山判成「未登记」→ 误报 → 白烧 1-2 轮重生成 + 前端假警报。
+//   修法：判定面收窄到 4 类硬伤（建筑 / 现代物件 / 人数 / 前景大件），
+//        自然元素（植被、远景地貌）明确豁免。
+console.log('\n[2b] buildL6CheckPrompt v0.22.80 收窄判定面');
+p = B(
+  { setting: '春日河畔', continuity_props: [{ label: '雎鸠鸟' }, { label: '花篮' }] },
+  { scene_location: '河中小洲' },
+  1,
+  ['淑女']
+);
+ok(/A\. 剧本未登记的建筑/.test(p), '违规清单含 A 类（建筑/构筑物）');
+ok(/B\. 时代或场景不符的现代物件/.test(p), '违规清单含 B 类（现代物件）');
+ok(/C\. 人物不符/.test(p), '违规清单含 C 类（人数/身份）');
+ok(/D\. 前景\/中景新增的大件实体物件/.test(p), '违规清单含 D 类（前景大件）');
+ok(/明确豁免/.test(p) && /不得列入 violations/.test(p), '含「明确豁免」段 + 禁止列入 violations');
+ok(p.indexOf('明确豁免') < p.indexOf('樱花') && p.indexOf('明确豁免') < p.indexOf('远山'),
+   '樱花/远山 出现在豁免段（不再当违规）');
+ok(/宁可漏报也不要误报/.test(p), '拿不准 → 宁漏勿误（防误报烧钱）');
+ok(!/高频漏报项/.test(p), '旧 v0.22.79 的过严清单已回退（未登记植被/远山不再算违规）');
 
 // ---------- resolveFrameAbsPath（v0.22.79 修：相对 asset_path → 绝对路径） ----------
 //   背景：L6 自检曾传相对路径给 vision-service → 按 process.cwd() 解析 → 文件不存在

@@ -1046,7 +1046,9 @@ const prompt = ((payload.prompt || scene.scene_frame_prompt_override || '')).tri
     assist.scene_frames[String(sceneIdx)].l6_check = l6;
     reqStore.update(requirementId, { assist_screenplay: JSON.stringify(assist) });
 
-    if (l6.ok || l6.skipped || l6.degraded || !l6.violations.length) {
+    // v0.22.79: degraded（解析失败/截断）只要捞到了违规项，也要触发重生成 —— 不能因为
+    //   JSON 被 maxTokens 截断就当成「通过」（实测发生过：真实 4 条违规被截断 → 显示 ✅）
+    if (l6.ok || l6.skipped || !l6.violations.length) {
       console.log(`[assist:screenplay:L6] ${requirementId} 场${sceneIdx + 1} 自检通过（${l6.reason || '干净'}），停止重生成`);
       break;
     }
@@ -1082,6 +1084,9 @@ const prompt = ((payload.prompt || scene.scene_frame_prompt_override || '')).tri
 // ============================================================
 
 // 构造 L6 自检 prompt：喂给 vision LLM 的指令
+//   ⚠️ v0.22.80 教训：prompt 里**只写给判官看的指令**，别写开发者复盘注释 ——
+//   上一版把「之前把樱花/远山算违规导致误报」的复盘文字留在了违规清单段里，
+//   判官会读到「樱花/远山 判成未登记」→ 继续误报（单测锁死：樱花/远山 只能出现在豁免段）。
 function buildL6CheckPrompt(sp, scene, sceneIdx, castNames) {
   const props = (sp.continuity_props || []).map((p, i) => `[PR_${String(i + 1).padStart(2, '0')}] ${p.label}`).filter(Boolean);
   const allowed = [
@@ -1099,30 +1104,70 @@ ${castNames.length ? `出场人物（仅这些）：${castNames.join('、')}` : 
 
 请逐项检查并回答（JSON 格式）：
 {
-  "violations": ["违规元素1", "违规元素2", ...],   // 画面里出现但白名单未登记的元素（建筑/装饰/家具/植被/人物等）
+  "violations": ["违规元素1", "违规元素2", ...],
   "ok": true | false,
   "reason": "一句话说明"
 }
 
-只输出 JSON，不要解释。若画面干净（所有元素都在白名单内），violations 为空数组，ok=true。
-若出现楼阁/亭台/塔/牌坊/桥梁/新建筑/新装饰/新陈设/新家具/新植被类型/剧本未提及的额外人物，均算违规。`;
+只输出 JSON，不要解释。若画面干净（无下列四类违规），violations 为空数组，ok=true。
+
+【只把下面 4 类算违规】—— 判定面刻意收窄：判官看不到参考图，凡「可能来自参考基准图或季节氛围」的元素一律不判违规，宁可漏报也不要误报（误报会白烧 1-2 轮重生成）。
+A. 剧本未登记的建筑/构筑物：楼阁 / 亭台 / 塔 / 牌坊 / 桥梁 / 房屋 / 围墙 / 山门 / 石阶 / 道路 / 码头 / 舟船
+B. 时代或场景不符的现代物件：电线杆 / 汽车 / 路灯 / 塑料用品 / 玻璃幕墙 / 空调 / 招牌 / 电子设备
+C. 人物不符：出现出场人物之外的任何人物（含剪影 / 背影 / 远处人影 / 旁观者），或应出场的角色缺席
+D. 前景/中景新增的大件实体物件：不属于 setting 与登记道具的岩石 / 石台 / 石凳 / 家具 / 器皿 / 灯笼等可辨识的大件物品
+
+【明确豁免 —— 以下一律不得列入 violations】
+- 植被与自然元素：花树 / 樱花 / 桃树 / 柳树 / 芦苇 / 草丛 / 成片花丛 / 水生植物（多为参考基准图自带或季节氛围）
+- 远景背景元素：远山 / 丘陵 / 天空 / 云 / 雾气 / 霞光 / 水面倒影
+- 参考图（角色档案图 / 场景基准图 / 上场首帧）里已经存在且在画面中合理延续的环境细节
+- 色调 / 光线 / 笔触 / 景深 / 画风的差异
+（拿不准某元素是否登记时，不要列入 violations —— 可在 reason 里提一句；宁可漏报也不要误报）`;
 }
 
 // 解析 LLM 返回的 JSON（容错：LLM 可能带 ```json 包裹或前后废话）
+//   v0.22.79: ① 解析失败不再冒充「通过」——标记 degraded（UI 灰字），避免「其实有违规但显示 ✅」
+//             ② 加截断容错：maxTokens 被打满时 JSON 不闭合 → 从 "violations":[ ... 里捞已给出的条目
+function salvageViolations(raw) {
+  const vseg = String(raw || '').match(/"violations"\s*:\s*\[([\s\S]*)/);
+  if (!vseg) return [];
+  const items = [];
+  const re = /"((?:[^"\\]|\\.)*)"/g;
+  let mm;
+  while ((mm = re.exec(vseg[1]))) {
+    const v = mm[1].replace(/\\"/g, '"').trim();
+    if (v.length >= 2 && !items.includes(v)) items.push(v);
+  }
+  // v0.22.80: 末尾被 maxTokens 从中间切断的那一项（只有开引号、没有闭引号）——
+  //   旧实现整条丢掉 → 重生成时少一条负面词 → 同一条违规可能再犯（单测锁死）
+  const tail = vseg[1].match(/"((?:[^"\\]|\\.)*)$/);
+  if (tail) {
+    const v = tail[1].replace(/\\"/g, '"').trim();
+    if (v.length >= 2 && !items.includes(v)) items.push(v);
+  }
+  return items;
+}
+
 function parseL6CheckResult(text) {
-  if (!text) return { ok: true, violations: [], reason: 'LLM 无响应（降级通过）' };
+  if (!text) return { ok: true, violations: [], reason: 'LLM 无响应（降级通过）', degraded: true };
   let s = text.trim();
   // 剥掉可能的 ```json ... ``` 包裹
   s = s.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
   // 找第一个 { ... } 块
   const m = s.match(/\{[\s\S]*\}/);
-  if (!m) return { ok: true, violations: [], reason: '无法解析 LLM 响应（降级通过）' };
+  if (!m) {
+    const v = salvageViolations(s);
+    if (v.length) return { ok: false, violations: v, reason: '自检 JSON 被截断，已从原文容错提取违规项', degraded: true };
+    return { ok: true, violations: [], reason: '无法解析 LLM 响应（降级通过）', degraded: true };
+  }
   try {
     const obj = JSON.parse(m[0]);
     const violations = Array.isArray(obj.violations) ? obj.violations.map(String).filter(Boolean) : [];
     return { ok: !!obj.ok && violations.length === 0, violations, reason: String(obj.reason || '') };
   } catch {
-    return { ok: true, violations: [], reason: 'JSON 解析失败（降级通过）' };
+    const v = salvageViolations(m[0]);
+    if (v.length) return { ok: false, violations: v, reason: '自检 JSON 解析失败，已从原文容错提取违规项', degraded: true };
+    return { ok: true, violations: [], reason: 'JSON 解析失败（降级通过）', degraded: true };
   }
 }
 
@@ -1152,7 +1197,7 @@ async function runL6FrameCheck(requirementId, sp, scene, sceneIdx, castNames, as
     const visionSvc = require('../vision-service');
     const prompt = buildL6CheckPrompt(sp, scene, sceneIdx, castNames);
     const absPath = await resolveFrameAbsPath(slug, assetPath, null);
-    const r = await visionSvc.describeImage(absPath, {}, { prompt, maxTokens: 400 });
+    const r = await visionSvc.describeImage(absPath, {}, { prompt, maxTokens: 800 });
     if (!r || !r.ok) {
       console.warn(`[assist:screenplay:L6] ${requirementId} 场${sceneIdx + 1} vision 调用失败: ${(r && r.error) || '未知'}`);
       return { ok: true, violations: [], reason: `vision 调用失败（${(r && r.error) || '未知'}），降级通过`, degraded: true };
