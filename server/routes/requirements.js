@@ -980,6 +980,18 @@ router.post('/:id/assist/:method/use', async (req, res, next) => {
     else if (method === 'screenplay' && body.action === 'set_scene_video') {
       // v0.22.8: 写入分镜头视频
       result = svc.setSceneVideo(req.params.id, body.scene_idx, body);
+}
+    else if (method === 'screenplay' && body.action === 'set_scene_video_prompt') {
+      // v0.22.X: 用户在剧本视图 textarea 改了视频 prompt → 持久化到 sp.scenes[scene_idx].video_prompt_override
+      //   解「改完点重做按钮没生效 + 刷新后提示词恢复原样」两个 bug
+      //   svc.setSceneVideoPrompt 自己从 assist.picked 推 sp_idx（不信任前端传的 sp_idx）
+      result = svc.setSceneVideoPrompt(req.params.id, body);
+    }
+    else if (method === 'screenplay' && body.action === 'set_scene_frame_prompt') {
+      // v0.22.X: 用户改首帧图 prompt（架构补全 —— 之前首帧图没 textarea 没持久化，
+      //   用户改 prompt 期望影响首帧图但实际生效的是 video_prompt_override，架构断了）
+      //   svc.setSceneFramePrompt 自己从 assist.picked 推 sp_idx
+      result = svc.setSceneFramePrompt(req.params.id, body);
     }
     else if (method === 'screenplay' && body.action === 'compose_final') {
       // v0.22.65: 把已生成的分镜头合成一条完整视频（ffmpeg concat / xfade；几秒内完成，同步等待）

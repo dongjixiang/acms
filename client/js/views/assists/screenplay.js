@@ -306,9 +306,16 @@ async function screenplayGenVideo(reqId, sceneIdx, promptOverride) {
 
     // 构造 prompt（角色 + 场景 + 分镜，v0.22.16: 支持 promptOverride 手工修改）
     // v0.22.23: 默认 prompt 用结构化 buildSceneVideoPrompt（Setting+Camera+Action+Dialogue+Style+Quality）
-    const prompt = promptOverride || (window.ACMSScreenplayCard?.buildSceneVideoPrompt
-      ? window.ACMSScreenplayCard.buildSceneVideoPrompt(scene, sp)
-      : [scene.shot || '', scene.action || '', scene.dialogue && scene.dialogue !== '——' ? `Says: "${scene.dialogue}"` : ''].filter(Boolean).join('. '));
+    // v0.22.X fix: 三层兜底优先级
+    //   ① promptOverride（用户在 textarea 改完立刻点按钮，DOM 里的最新值，最优先）
+    //   ② scene.video_prompt_override（onblur 持久化到 req 的字段，刷新页面/切场后还在）
+    //   ③ buildSceneVideoPrompt（默认结构化 prompt，从 scene / sp 自动生成）
+    //   之前只有 ① + ③，没有 ② → 用户改完走开/刷新后 textarea 显示自定义值，但点重做按钮时 backend 拿到的是 buildSceneVideoPrompt 默认值 → 「改了没生效」
+    const prompt = promptOverride
+      || (scene && typeof scene.video_prompt_override === 'string' && scene.video_prompt_override.trim() ? scene.video_prompt_override : null)
+      || (window.ACMSScreenplayCard?.buildSceneVideoPrompt
+        ? window.ACMSScreenplayCard.buildSceneVideoPrompt(scene, sp)
+        : [scene.shot || '', scene.action || '', scene.dialogue && scene.dialogue !== '——' ? `Says: "${scene.dialogue}"` : ''].filter(Boolean).join('. '));
 
     // v0.22.23: 收集角色图 + 场景图 URL，传给 video assist 做多图视频
     const assets = sp.assets || {};
@@ -523,10 +530,15 @@ async function screenplayGenSceneFrame(reqId, sceneIdx, btn) {
   if (btn) { btn.disabled = true; btn.textContent = '⏳ 生成中…'; }
   toast('🎨 正在生成场 ' + (sceneIdx + 1) + ' 的首帧图（角色图 + 场景图作参考）…', 'info', 3000);
   try {
-    const r = await api('POST', `/requirements/${reqId}/assist/screenplay/use`, {
-      action: 'gen_scene_frame',
-      scene_idx: sceneIdx,
-    });
+    // v0.22.X fix: 读取首帧图 prompt textarea（id = spfrm-${reqId}-${idx}）的当前 value
+    //   如果用户改过 textarea 但还没失焦（onblur 未触发持久化），DOM 当前值优先 → 当次生效
+    //   如果用户已经失焦，DOM value 已被持久化到 scene_frame_prompt_override，
+    //   genSceneFrame 也会读 sp.scenes[scene_idx].scene_frame_prompt_override 兜底
+    const textarea = document.getElementById('spfrm-' + reqId + '-' + sceneIdx);
+    const promptOverride = textarea ? textarea.value : '';
+    const body = { action: 'gen_scene_frame', scene_idx: sceneIdx };
+    if (promptOverride && promptOverride.trim()) body.prompt = promptOverride;
+    const r = await api('POST', `/requirements/${reqId}/assist/screenplay/use`, body);
     const fr = r && r.result && r.result.scene_frames && r.result.scene_frames[String(sceneIdx)];
     if (!fr) throw new Error('生成未返回首帧图');
     toast('✅ 场 ' + (sceneIdx + 1) + ' 首帧图已生成', 'success', 2500);

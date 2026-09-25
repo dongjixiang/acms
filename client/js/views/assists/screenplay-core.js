@@ -46,6 +46,17 @@
     // v0.22.31: artStyle 默认值（从 sp.art_style 读，不传则 photorealistic）
     const style = artStyle || sp?.art_style || 'photorealistic';
 
+    // ── v0.22.X: 主体类别自动判定（治标兜底）──
+    //   根因：之前 3 行人形描述（姿态 / 表情 / 视角）写死在模板里，
+    //   非人形角色（车 / 动物 / 物件 / 机械）被 LLM 画成人 → 「老拖车画成人」
+    //   修复：扫 name+desc 命中「车辆 / 动物 / 机械 / 物件 / 建筑 / 植物 / 食物 / 自然物 / 光影」
+    //   → 切非人形分支（去掉 3 行人形词 + 改负面）
+    //   人类角色 → 走原模板（不变）
+    const nonHumanKeywords = ['车', '卡车', '货车', '拖车', '巴士', '摩托', '自行车', '动物', '猫', '狗', '鸟', '鱼', '虎', '龙', '机械', '机器人', '机甲', '物件', '建筑', '城堡', '塔', '植物', '树', '草', '花', '食物', '面包', '蛋糕', '自然物', '云', '风', '水', '火', '光影', '光', '影'];
+    const searchText = `${name} ${desc}`;
+    const isNonHuman = nonHumanKeywords.some(k => searchText.includes(k));
+    console.log(`[screenplay] buildCharacterPrompt: ${name} → ${isNonHuman ? '非人形' : '人形'} 模板`);
+
     // v0.22.31: IP 锚定检测 — name + desc 拼起来查 IP 词典
     const ipDict = window.ACMSScreenplayIPDict;
     const styleTpl = ipDict?.getStyleTemplate(style) || { stylePrefix: '', styleSuffix: '', negativePrefix: '' };
@@ -67,12 +78,18 @@
       : (desc ? `外貌：${desc}。` : '外貌：有辨识度的角色设计，表情生动。');
 
     // v0.22.23: 角色立绘只关注人物本身 — 不带 Scene mood / Story tone（类别错误）
+    // v0.22.X: 按主体类别切换 3 行人形描述（人形 / 非人形两套模板）
+    const poseLine = isNonHuman
+      ? '视角：中近景，平视，主体居中构图，3/4 侧角展示完整外形。'
+      : '姿态：自然站姿，正对镜头并略带四分之三侧身，全身可见（头顶到胸下），体态自信。';
+    const exprLine = isNonHuman
+      ? ''
+      : '表情：符合角色性格的入戏表情。';
     const lines = [
       subjectLine,
       appearanceLine,
-      '姿态：自然站姿，正对镜头并略带四分之三侧身，全身可见（头顶到胸下），体态自信。',
-      '视角：中近景，平视镜头，人物居中构图。',
-      '表情：符合角色性格的入戏表情。',
+      poseLine,
+      exprLine,
       // v0.X 修复：背景行去掉"影棚"（所有风格通用：干净简洁背景，不抢人物）
       '背景：干净的纯色背景配柔和渐变，不出现环境景物，突出人物。',
       // v0.X 修复：用 styleTpl.descriptors 替代硬编码的"电影感人物肖像、影棚主光、4K 写实"等写实摄影描述
@@ -81,8 +98,13 @@
       // v0.X 修复：quality 行也用 styleTpl.descriptors.characterQuality 替代
       `质量：${styleTpl.descriptors?.characterQuality || '细节丰富，杰作级，画面干净。'}`,
       // v0.22.31: negative 前置硬约束（negativePrefix 列出严禁项）+ 原有负面 + 防加戏
-      `负面：${styleTpl.negativePrefix} 多个人物、杂乱背景、环境景物、多余肢体、畸形手、脸部模糊、多余手指、畸形、文字、水印、低质量。`,
-    ];
+      //   v0.22.X: 非人形角色去掉人形负面词（脸部模糊 / 多余手指）+ 加"非拟人化主体误加五官"
+      `负面：${styleTpl.negativePrefix} ${isNonHuman ? '文字、水印、低质量、非拟人化主体误加五官、多余肢体' : '多个人物、杂乱背景、环境景物、多余肢体、畸形手、脸部模糊、多余手指、畸形、文字、水印、低质量。'}`,
+      // 🆕 v0.22.X: 借鉴 Sora 2 角色 registry 思路——加"白名单锚定"句，让 LLM 明确知道画面元素来源
+      //   角色图 prompt 元素来源 = desc（角色视觉特征）+ 参考图（角色档案图）
+      //   不让 LLM 自由加 desc 里没描述的细节（比如 desc 说"棕色拖车"，LLM 不能自由加"保险杠/挡风玻璃"等没提的元素）
+      `🔒 元素白名单：画面中角色/主体的视觉元素只能来自「外貌（desc）」描述 + 参考图（角色档案图）的内容。不得凭空添加 desc 里未提及的细节（材质/纹理/装饰/标志物/色彩图案/挂件/伤痕等）。`,
+    ].filter(Boolean);
     return lines.join(' ');
   }
 
@@ -136,6 +158,28 @@
    *   Agnes Video API（参考 video.js 实现）对结构化 prompt 响应更好
    *   v0.22.31: 加 art_style 风格硬约束 + IP 锚定（如果 scene.sp 含 IP）
    */
+
+  /**
+   * v0.22.X L6 闭环验证 —— 首帧图生成后 AI 自检状态的展示徽章
+   *   frameObj.l6_check: { ok, violations:[], reason, degraded?, skipped? }
+   *   三种展示态：
+   *     ① 无 l6_check（老数据）→ 不展示
+   *     ② 自检通过（ok:true 或降级通过）→ 绿色「✅ L6 自检通过」
+   *     ③ 仍有违规（ok:false + violations）→ 黄色「⚠️ AI 检测到未登记元素：...（已尝试自动重生成）」
+   */
+  function renderL6Badge(l6) {
+    if (!l6 || typeof l6 !== 'object') return '';
+    // 降级 / 跳过 → 灰色小字提示，不干扰主视觉
+    if (l6.skipped) return '<div style="font-size:10px;color:var(--text3);margin-top:1px" title="没有本地备份图，跳过了 AI 自检">◌ L6 自检：跳过（无本地备份）</div>';
+    if (l6.degraded) return '<div style="font-size:10px;color:var(--text3);margin-top:1px" title="' + escHtml(l6.reason || '视觉模型不可用') + '">◌ L6 自检：' + escHtml(l6.reason || '降级通过') + '</div>';
+    // 真正有违规且仍残留（重生成后还有）→ 黄色警告
+    if (!l6.ok && Array.isArray(l6.violations) && l6.violations.length) {
+      return '<div style="font-size:10px;color:#c9a227;margin-top:1px" title="' + escHtml(l6.reason || '') + '">⚠️ L6 自检：AI 检测到未登记元素（' + escHtml(l6.violations.join('、')) + '），已自动重生成；若仍存留，建议手动「🔄 重生成首帧」</div>';
+    }
+    // 通过（含干净 + 已修复）→ 绿色
+    return '<div style="font-size:10px;color:var(--green);margin-top:1px" title="' + escHtml(l6.reason || '画面元素都在剧本登记范围内') + '">✅ L6 自检通过' + ((l6.violations && l6.violations.length) ? '（已自动修复 ' + escHtml(l6.violations.join('、')) + '）' : '') + '</div>';
+  }
+
   function buildSceneVideoPrompt(scene, sp, artStyle) {
     const shot = (scene.shot || '').trim();
     const action = (scene.action || '').trim();
@@ -172,9 +216,17 @@
     const characterLine = characterLines.join(' ');
 
     // v0.22.64: 全中文（原英文见 git 历史）
+    // 🆕 v0.22.X fix: 优先用 scene_location（每场独立空间锚定 —— Continuity Bible L48 加的字段）
+    //   之前只用 sp.setting（全局基调）→ 每场具体空间位置丢失，LLM 自由发挥
+    //   经典 bug：场 1 shot 写"中景，淑女侧身伸手采莲" + setting 写"江南水乡..."
+    //   → Agnes 脑补"岸边柳树下伸手够莲蓬"，实际剧本场 1 scene_location="荷塘深处"（应在船上）
+    //   兜底：scene_location 缺失（老剧本）→ 走 setting
+    const sceneLocation = (scene.scene_location || '').trim();
     const settingLine = ipAnchor
-      ? `场景：${setting}（${ipAnchor.nameEn}）。${ipAnchor.visualKeywords}。`
-      : (setting ? `场景：${setting}。` : '');
+      ? `场景：${sceneLocation || setting}（${ipAnchor.nameEn}）。${ipAnchor.visualKeywords}。`
+      : (sceneLocation
+          ? `场景位置：${sceneLocation}（全剧背景：${setting}）。`
+          : (setting ? `场景：${setting}。` : ''));
 
     // 视频里可能有角色 → styleSuffix 里的"人像/肖像"改成中性"画面"（不误导为空镜）
     const videoStyleSuffix = styleTpl.styleSuffix.replace(/人像|肖像|portrait/gi, '画面');
@@ -193,6 +245,26 @@
       action ? `动作：${action}。` : '',
       // 对白（如有）
       dialogue ? `对白：角色说："${dialogue}"。` : '',
+      // 🆕 v0.22.X fix: 对白人物名不等于出场人物 —— 注入「对白里出现但不在出场人物中的名字不得出现在画面」
+      //   经典 bug：场 1 对白"窈窕淑女，君子好逑" → LLM 看到"君子"两字 → 画两个角色
+      //   即使 characters 字段已限制 LLM 也常把对白里出现的名字脑补成第二个出场人物
+      //   防御式：扫对白里所有 sp.characters 中的名字 → 在出场人物里的留 → 不在的进负面词
+      (() => {
+        if (!dialogue || !Array.isArray(sp.characters)) return '';
+        const castNames = (Array.isArray(scene.characters) && scene.characters.length)
+          ? scene.characters
+          : allChars.map(c => c.name).filter(Boolean);
+        const castSet = new Set(castNames);
+        const offstage = sp.characters
+          .map(c => c.name)
+          .filter(name => name && !castSet.has(name) && dialogue.includes(name));
+        if (offstage.length === 0) return '';
+        return `硬约束：画面中只能出现出场人物（${castNames.join('、')}），对白里提及但未出场的角色（${offstage.join('、')}）不得出现在画面中、不得以剪影/背影/旁观者等方式出现。`;
+      })(),
+      // 🆕 v0.22.X: 视频场景元素白名单（与 genSceneFrame 对称）—— 借鉴 Sora 2 scene registry
+      //   视频画面元素来源 = 参考图（角色 + 场景 + 上场首帧）+ setting + continuity_props + scene_location
+      //   不允许凭空引入未登记的元素（建筑/陈设/装饰等）
+      `🔒 元素白名单：视频画面中只能出现下列来源的元素：① 参考图（角色档案图 + 场景图 + 上一段尾帧/本段首帧）的视觉元素；② setting（${(setting || '').slice(0,40)}）；③ continuity_props 登记的道具（${(sp.continuity_props || []).map(p => p.label).join('、') || '无'}）；④ scene_location（${(sceneLocation || '').slice(0,30)}）。白名单外的元素（楼阁/亭台/塔/牌坊/桥梁/新建筑/新装饰/新陈设）一律不得出现。`,
       // v0.X 修复：用 descriptors.video 替换"电影感 ... 短片质感，写实，专业摄影，动作流畅自然"
       `风格：${styleTpl.stylePrefix} ${videoStyleSuffix} ${videoDesc}`,
       // v0.X 修复：quality 用 descriptors.videoQuality
@@ -504,23 +576,34 @@
               ${frameSrc ? `<button class="btn-small" style="font-size:10px;flex-shrink:0" onclick="openPolishSceneFrame('${reqId}', ${idx}, '${escHtml(frameSrc)}')" title="打开图片编辑器打磨这张首帧图（改完回写覆盖本场；原图会备份，可还原）">✏️ 打磨</button>` : ''}
               ${(frameObj && frameObj.prev) ? `<button class="btn-small" style="font-size:10px;flex-shrink:0" onclick="screenplayRevertSceneFrame('${reqId}', ${idx}, this)" title="还原到打磨前的首帧图">↩️ 还原</button>` : ''}
               <button class="btn-small" style="font-size:10px;flex-shrink:0" onclick="screenplayGenSceneFrame('${reqId}', ${idx}, this)" title="${frameSrc ? '重新生成这一场的首帧图（角色图+场景图作为参考）' : '用角色图+场景图生成这一场的起始定格画面'}">${frameSrc ? '🔄 重生成首帧' : '🎬 生成首帧图'}</button>
-            </div>
-            ${(frameObj && frameObj.polished && !frameObj.image_url_output) ? `<div style="font-size:10px;color:var(--accent3);margin-top:3px">⚠️ 这是本地打磨图（没有公网地址）→ 本场生成视频会自动退回「多图参考」模式，段与段之间可能不再严格衔接</div>` : ''}
-            ${frameSrc ? `
-              <div style="margin-top:6px">
-                <img src="${escHtml(frameSrc)}" style="width:100%;max-width:200px;border-radius:4px;cursor:zoom-in;display:block" onclick="event.stopPropagation();previewImage('${escHtml(frameSrc)}','${escHtml(frameObj.image_url_output || '')}')" alt="首帧图" title="点击放大">
+<!-- v0.22.77: 「✏️ 打磨」首帧图回写（覆盖 + 原图备份可还原） -->
+              ${(frameObj && frameObj.polished && !frameObj.image_url_output) ? `<div style="font-size:10px;color:var(--accent3);margin-top:3px">⚠️ 这是本地打磨图（没有公网地址）→ 本场生成视频会自动退回「多图参考」模式，段与段之间可能不再严格衔接</div>` : ''}
+              <!-- v0.22.X fix: 补全首帧图 prompt 持久化（之前只有视频 textarea，首帧图根本没 textarea+持久化，
+                   用户改 prompt 期望影响首帧图但实际生效的是 video_prompt_override，架构断了） -->
+              <textarea id="spfrm-${reqId}-${idx}" rows="3" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit;margin-top:4px" placeholder="修改首帧图的提示词…（默认显示当前图实际用的提示词，可在此基础上微调）" onblur="ACMSAssistDispatcher.updateSceneFramePrompt('${reqId}', ${idx}, this.value)">${escHtml(sc.scene_frame_prompt_override || (frameObj && frameObj.prompt) || '')}</textarea>
+              ${sc.scene_frame_prompt_override ? '<div style="font-size:10px;color:var(--accent3);margin-top:1px">✅ 已保存为自定义首帧图提示词</div>' : '<div style="font-size:10px;color:var(--text3);margin-top:1px">✏️ 可修改提示词后点「🔄 重生成首帧」（默认会用结构化 prompt）</div>'}
+              ${renderL6Badge(frameObj && frameObj.l6_check)}
+              ${frameSrc ? `
+                <div style="margin-top:6px">
+                  <img src="${escHtml(frameSrc)}" style="width:100%;max-width:200px;border-radius:4px;cursor:zoom-in;display:block" onclick="event.stopPropagation();previewImage('${escHtml(frameSrc)}','${escHtml(frameObj.image_url_output || '')}')" alt="首帧图" title="点击放大">
               </div>
             ` : `<div style="font-size:10px;color:var(--text3);margin-top:2px">先生成首帧图 → 本段以它为起点，下一场以它为终点，段与段自然衔接</div>`}
             ${linkLine ? `<div style="font-size:10px;margin-top:3px">${linkLine}</div>` : ''}
           </div>
 
                       <!-- v0.22.23: 默认填入结构化视频 prompt（Setting+Camera+Action+Dialogue+Style+Quality），用户可改 -->
-            <textarea id="spvid-${reqId}-${idx}" rows="3" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit" placeholder="修改视频生成的提示词…">${escHtml(buildSceneVideoPrompt(sc, sp))}</textarea>
-            <div style="font-size:10px;color:var(--text3);margin-top:1px">✏️ 可修改提示词后点下方按钮</div>
+                      <!-- v0.22.X fix: ① 优先读 sp.scenes[idx].video_prompt_override（用户改过就保留） → 之前默认填 buildSceneVideoPrompt，刷新就丢
+                                     ② onblur 触发 updateSceneVideoPrompt 写回 req（之前根本没监听，textarea value 只活在 DOM 里） -->
+            <textarea id="spvid-${reqId}-${idx}" rows="3" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit" placeholder="修改视频生成的提示词…" onblur="ACMSAssistDispatcher.updateSceneVideoPrompt('${reqId}', ${idx}, this.value)">${escHtml(sc.video_prompt_override || buildSceneVideoPrompt(sc, sp))}</textarea>
+            <div style="font-size:10px;color:var(--text3);margin-top:1px">✏️ 可修改提示词后点下方按钮（${sc.video_prompt_override ? '✅ 已保存为自定义提示词' : '默认填的是结构化 prompt'}）</div>
           ${hasVideo ? `
             <div style="margin-top:6px">
               <video controls preload="metadata" style="width:100%;max-width:320px;border-radius:4px;cursor:zoom-in;background:#000;display:block" src="${escHtml(videoSrc)}" onclick="${videoClickAttr(videoSrc, video?.video_url)}" title="点击放大播放"></video>
               <div style="font-size:10px;color:var(--text2);margin-top:2px">✅ 视频已生成${video.asset_path ? '（已保存到本地）' : ''}${video.mode === 'keyframe' ? ' · 首尾帧模式' : ''} · 点击画面可放大播放</div>
+              <!-- v0.22.X fix: 之前 hasVideo=true 分支完全不渲染按钮（只显示 video），用户改了 textarea 没法点重做 → 补一个「🔄 重做镜头」按钮 -->
+              <button class="btn-small" ${canGenVideo ? '' : 'disabled'} onclick="screenplayGenVideo('${reqId}', ${idx}, document.getElementById('spvid-${reqId}-${idx}').value)" style="font-size:11px;margin-top:4px">
+                🔄 重做镜头${frameSrc ? '（首尾帧衔接）' : ''}${disabledHint}
+              </button>
             </div>
           ` : `
             <div style="margin-top:6px">

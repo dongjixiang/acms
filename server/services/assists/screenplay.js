@@ -8,6 +8,8 @@
 const { callLLMWithRetry } = require('../json-extractor');
 const modelStore = require('../../stores/model-store');
 const reqStore = require('../../stores/requirement-store');
+// 🆕 v0.X continuity_bible: 抽到独立模块（纯函数，无 server 依赖，方便测试）
+const { validateScreenplayContinuity } = require('./screenplay-continuity');
 
 function pickDefaultLlm() {
   const defaultGen = modelStore.getDefaultGenModel();
@@ -31,10 +33,29 @@ const SCREENPLAY_PROMPT = `你是 ACMS 系统的「剧本助手」。根据用�
     - ❌ 差例："汽车人领袖"（无视觉特征）
     - ❌ 差例："霸气的反派"（无视觉特征）
     - **如果用户输入含知名 IP 名（如擎天柱/超人/蜘蛛侠/皮卡丘/路飞/柯南/甄嬛等），desc 必须写明 IP 来源 + 视觉特征！**
-- setting (≤40 字)：场景设定（时间/地点/氛围，含视觉元素）
+- 🔒 **非人形角色纪律（v0.22.X fix：「老拖车画成人」根因）**
+  当角色**不是人类**（车辆 / 动物 / 机械 / 物件 / 建筑 / 植物 / 食物 / 自然物 / 光影等）时：
+  - desc **只写视觉特征**（颜色 / 材质 / 体型 / 装饰 / 标志物），**禁止人类词汇**
+  - ❌ 禁用词（人格 / 人性描述）：沧桑 / 老成 / 长者 / 稳重 / 经验丰富 / 严肃 / 冷静 / 急躁 / 活泼 / 善良 / 凶狠
+    - 想表达「老」→ 用物理词：划痕 / 锈斑 / 磨损 / 褪色 / 掉漆 / 老旧外壳
+    - 想表达「性格 / 气质」→ 用行为词：慢速 / 警觉 / 沉稳姿态 / 急促 / 抖动
+  - ✅ 好例：「白色小型货车、圆润车头大灯、绿色条纹装饰、可爱卡通造型」（纯视觉）
+  - ❌ 差例：「棕色重型拖车、沧桑车身划痕、**经验丰富的长者形象**」（「沧桑」「长者」把 LLM 带偏 → 画成老人）
+  - ✅ 差例修复：「棕色重型拖车、车身锈斑划痕、黄色警示灯、老旧磨损外壳」（全视觉）
+  - 人类角色（人/拟人化人）正常用外貌词即可（发型/发色/衣服/表情），无需套用此纪律
+- setting (≤40 字)：场景设定（时间/地点/氛围，含视觉元素）—— **全剧基调**
   - ✅ 好例："赛博坦星球表面、火山熔岩背景、机械废墟"
   - ✅ 好例："霍格沃茨魔法大厅、漂浮蜡烛、石墙浮雕"
-- scenes: [{characters, time, shot, dialogue, action}]：分镜
+- 🆕 continuity_props: 全剧关键道具/物品清单（按出现先后登记；**只登有剧情意义的，杂物不登**）
+  [{ key, label, first_intro, status_in_end, note }]
+  - key（≤10 字）：道具 ID（英文短词/拼音，如 "sword"/"letter"/"denglong"）
+  - label（≤15 字）：道具中文名（如"长剑"/"密信"/"红纱灯"）
+  - first_intro：第几场首次出现（整数 1~sceneCount）
+  - status_in_end：结尾状态，"carry"/"lost"/"broken"/"left"（仍在/丢失/毁坏/留下）
+  - note（≤40 字）：道具剧情作用简述
+- 🆕 continuity_state: 全剧世界/角色状态追踪（**只登跨场变化的字段**；无变化可省略）
+  { "world_time": "黄昏→夜晚→黎明", "weather": "晴→雨→晴", "character_states": { "林风": { "injury": "第 3 场左肩中箭; 第 6 场痊愈", "costume": "黑衣（第 5 场换青衫）", "location": "破庙→山道→客栈" } } }
+- scenes: [{characters, time, shot, dialogue, action, scene_location, props_present, props_setup, props_resolve}]：分镜
   - 🆕 v0.X fix: characters: [name1, name2] 必填（出场角色名，从上面的 characters 数组里挑）
     之前没有这个字段 → buildSceneVideoPrompt 不知道谁出场 → 生图 LLM 自己脑补 → 画出"不在剧本里的人物"
   - 时长字段示例："0-5s"、"5-15s"、"15-25s"
@@ -43,8 +64,31 @@ const SCREENPLAY_PROMPT = `你是 ACMS 系统的「剧本助手」。根据用�
   - action: 动作/事件（≤30 字）—— 🆕 必须写明"谁在做这个动作"（用具体角色名，不要用"两人""某人"）
     - ✅ 好例："君子与玉兰相视而笑"
     - ❌ 差例："两人相视而笑"（生图 LLM 不知道是哪两个人）
+  - 🆕 scene_location（≤20 字）：本场具体地点/环境（**独立于全局 setting**）
+    - 同一场地点变化写"破庙内殿 → 后院"；单场景全剧可与 setting 相同
+  - 🆕 props_present（≤6 项，每项 ≤15 字）：本场出现的所有关键道具
+    - **必须从 continuity_props 或前一场的 props_present/props_resolve 派生**（禁止凭空出现）
+  - 🆕 props_setup（≤3 项，每项 ≤15 字）：本场为未来场埋伏笔的道具
+  - 🆕 props_resolve（≤3 项，每项 ≤15 字）：本场回收/移除的道具（如"长剑丢失"）
   - 场数与时长匹配：30s → 4-5 场；60s → 6-8 场；15s → 3 场
 - shot_tips (≤40 字)：拍摄建议（设备/运镜/风格/情绪）
+
+## 连续性与科学性纪律（v0.X fix：3 个症状的根因修复）
+
+### 1. 顺序：先列道具清单，再写分镜
+- scenes[] 之前**必须先输出** continuity_props 和 continuity_state（这两个字段不能为空）
+- 写每个 scene 时，先看 continuity_props 决定哪些道具本场该出现，再写 action / props_present
+
+### 2. 场景间硬约束
+- **禁止凭空出现**：未在 continuity_props 登记的关键物品，不得在本场 props_present 出现（除非剧情明确要求"凭空出现"作为转折，且在 note 里说明）
+- **伏笔必回收**：scene N 的 props_setup 中的道具，必须在 scene N+1 ~ N+3 之间的某个 scene 出现在 props_present（被引用）或 props_resolve（被回收）
+- **角色状态跨场一致**：连续性体现在 scene.action 描述中（如"林风因中箭而捂住左肩"），由 continuity_state 兜底登记
+
+### 3. 科学/历史/常识纪律
+- 用户创意涉及已知历史时期（如战国/唐朝/民国）/ 科学主题（如化学反应/物理实验）/ 物理规则时，必须符合基本事实
+- **不确定时写"年代未明示"/"材质未明示"**，禁止凭印象编造（如不要凭空给宋朝人物加 iPhone / 给古代医馆塞心电图机）
+- 现代物品出现在历史/古典场景必须有合理解释（穿越 / 科幻设定除外），由用户在 idea 里说明
+- 道具的材质/工艺必须符合时代背景（如战国铜剑不会出现现代钢材的光泽）
 
 ## 艺术风格 art_style（重要！）
 用户会指定一个 art_style（写实摄影/3D 渲染/G1 动画/日漫/国风水墨），所有 3 个剧本必须使用**同一个 art_style**（保证用户后续生成的图片风格一致）。
@@ -59,7 +103,7 @@ const SCREENPLAY_PROMPT = `你是 ACMS 系统的「剧本助手」。根据用�
 
 ## 输出格式（严格 JSON）
 {"screenplays":[
-  {"title":"...","logline":"...","characters":[{"name":"...","desc":"..."}],"setting":"...","scenes":[{"time":"...","shot":"...","dialogue":"...","action":"..."}],"shot_tips":"..."},
+  {"title":"...","logline":"...","characters":[{"name":"...","desc":"..."}],"setting":"...","continuity_props":[{"key":"...","label":"...","first_intro":1,"status_in_end":"carry","note":"..."}],"continuity_state":{"world_time":"...","weather":"...","character_states":{"角色名":{"injury":"...","costume":"..."}}},"scenes":[{"characters":["..."],"time":"...","shot":"...","dialogue":"...","action":"...","scene_location":"...","props_present":["..."],"props_setup":["..."],"props_resolve":["..."]}],"shot_tips":"..."},
   ...（共 3 个）
 ]}
 
@@ -74,6 +118,8 @@ function calcSceneCount(targetSeconds) {
   if (targetSeconds <= 60) return 7;
   return 9;
 }
+
+// 🆕 v0.X continuity_bible: 校验函数抽到独立模块 ./screenplay-continuity.js（纯函数便于测试）
 
 async function runAssistJob(requirementId, opts = {}) {
   const req = reqStore.getById(requirementId);
@@ -186,6 +232,33 @@ async function runAssistJob(requirementId, opts = {}) {
         desc: String(c.desc || '').slice(0, 80),
       })) : [],
       setting: String(sp.setting || '').slice(0, 80),
+      // 🆕 v0.X continuity_bible: 全剧关键道具登记（防御式，老剧本可能没这字段 → 空数组兜底）
+      continuity_props: Array.isArray(sp.continuity_props) ? sp.continuity_props.slice(0, 30).map(p => ({
+        key: String(p?.key || '').slice(0, 10),
+        label: String(p?.label || '').slice(0, 15),
+        first_intro: Number.isInteger(p?.first_intro) ? p.first_intro : 1,
+        status_in_end: ['carry', 'lost', 'broken', 'left'].includes(p?.status_in_end) ? p.status_in_end : 'carry',
+        note: String(p?.note || '').slice(0, 40),
+      })) : [],
+      // 🆕 v0.X continuity_bible: 全剧世界/角色状态快照（防御式，LLM 字段不全也兜底为 {}）
+      continuity_state: (sp.continuity_state && typeof sp.continuity_state === 'object' && !Array.isArray(sp.continuity_state))
+        ? {
+            world_time: String(sp.continuity_state.world_time || '').slice(0, 60),
+            weather: String(sp.continuity_state.weather || '').slice(0, 60),
+            character_states: (sp.continuity_state.character_states && typeof sp.continuity_state.character_states === 'object' && !Array.isArray(sp.continuity_state.character_states))
+              ? Object.fromEntries(Object.entries(sp.continuity_state.character_states).slice(0, 8).map(([k, v]) => [
+                  String(k || '').slice(0, 20),
+                  (v && typeof v === 'object' && !Array.isArray(v))
+                    ? {
+                        injury: String(v.injury || '').slice(0, 60),
+                        costume: String(v.costume || '').slice(0, 60),
+                        location: String(v.location || '').slice(0, 60),
+                      }
+                    : {},
+                ]))
+              : {},
+          }
+        : { world_time: '', weather: '', character_states: {} },
       scenes: Array.isArray(sp.scenes) ? sp.scenes.slice(0, sceneCount + 1).map(sc => ({
         // 🆕 v0.X fix: 保留 characters 字段（场景出场角色名数组，从 sp.characters 里挑）
         //   之前 L37 schema 没这字段 → buildSceneVideoPrompt 不知道谁出场 → 生图 LLM 脑补"不在剧本里的人物"
@@ -194,9 +267,25 @@ async function runAssistJob(requirementId, opts = {}) {
         shot: String(sc.shot || '').slice(0, 50),
         dialogue: String(sc.dialogue || '').slice(0, 80),
         action: String(sc.action || '').slice(0, 60),
+        // 🆕 v0.X continuity_bible: 每场独立地点（防御式，空字符串兜底，UI 下游 fallback 到 sp.setting）
+        scene_location: String(sc.scene_location || '').slice(0, 20),
+        // 道具三态：防御式空数组兜底（never null）
+        props_present: Array.isArray(sc.props_present) ? sc.props_present.slice(0, 6).map(p => String(p || '').slice(0, 15)).filter(Boolean) : [],
+        props_setup: Array.isArray(sc.props_setup) ? sc.props_setup.slice(0, 3).map(p => String(p || '').slice(0, 15)).filter(Boolean) : [],
+        props_resolve: Array.isArray(sc.props_resolve) ? sc.props_resolve.slice(0, 3).map(p => String(p || '').slice(0, 15)).filter(Boolean) : [],
       })) : [],
       shot_tips: String(sp.shot_tips || '').slice(0, 80),
     }));
+
+    // 🆕 v0.X continuity_bible: 逐剧本跑静态校验（warn-only，不阻塞；写入 assist_screenplay.warnings 供前端展示）
+    const screenplayWarnings = screenplays.map(sp => ({
+      sp_idx: screenplays.indexOf(sp),
+      warnings: validateScreenplayContinuity(sp),
+    })).filter(s => s.warnings.length > 0);
+    if (screenplayWarnings.length > 0) {
+      console.log(`[assist:screenplay] ${requirementId} 连续性校验告警:`,
+        screenplayWarnings.map(s => `#${s.sp_idx}=${s.warnings.length}`).join(', '));
+    }
 
     reqStore.update(requirementId, {
       assist_screenplay: JSON.stringify({
@@ -207,6 +296,8 @@ async function runAssistJob(requirementId, opts = {}) {
         // v0.22.31: 持久化 art_style
         art_style: artStyle,
         screenplays,
+        // 🆕 v0.X continuity_bible: 连续性校验告警（[{sp_idx, warnings:[...]}], 不阻塞）
+        warnings: screenplayWarnings,
         picked: null,
         assets: { characters: {}, scenes: {} },
         scene_videos: {},
@@ -443,6 +534,115 @@ function setSceneVideo(requirementId, sceneIdx, payload) {
   }
 
   return assist;
+}
+
+/**
+ * v0.22.X: 用户在剧本视图 textarea 改了视频 prompt → 持久化到 sp.scenes[scene_idx].video_prompt_override
+ *   解决「改完 prompt 点重做按钮没生效 + 刷新后提示词恢复原样」的两个 bug：
+ *     ① 之前 textarea 的 value 只活在 DOM 里，刷新后 renderSelectedScreenplay 又用 buildSceneVideoPrompt 默认填回
+ *     ② 之前 hasVideo=true 分支根本不渲染「重做」按钮（只显示 video），用户改完无法触发重新生成
+ *   现在：onblur 自动持久化 + L520-531 分支补「🔄 重做镜头」按钮
+ *
+ *   payload: { scene_idx, value }
+ *     - scene_idx: 整数（前端拿 sp.scenes 数组索引传过来）
+ *     - value: 字符串（防御式切片 4000 字符，避免用户粘了一本书进来撑爆存储）
+ *
+ *   sp_idx 不从前端传 —— 永远从 assist.picked 推导（之前 L707 注释明确：screenplays[] 长度恒为 1 → picked=0；
+ *   picked 是用户在 3 个候选剧本里选中的那个，sp_idx == picked 唯一合法值；前端传错会导致写到错剧本）
+ *
+ *   返回 { success, scene_idx, value_length }（前端 toast + poll 用）
+ */
+function setSceneVideoPrompt(requirementId, payload = {}) {
+  const req = reqStore.getById(requirementId);
+  if (!req) return { error: 'REQ_NOT_FOUND' };
+  let assist;
+  try { assist = JSON.parse(req.assist_screenplay || 'null'); } catch { assist = null; }
+  if (!assist) return { error: 'NO_ASSIST' };
+
+  // 防御式 sp_idx：从 picked 推导（不信任前端传的 sp_idx）
+  const spIdx = Number.isInteger(assist.picked) && assist.picked >= 0 ? assist.picked : 0;
+  if (!Array.isArray(assist.screenplays) || !assist.screenplays[spIdx]) {
+    return { error: 'NO_SCREENPLAY', picked: assist.picked };
+  }
+  const sp = assist.screenplays[spIdx];
+
+  // 防御式 scene_idx：整数 + scenes[idx] 存在
+  const sceneIdx = Number(payload.scene_idx);
+  if (!Number.isInteger(sceneIdx) || sceneIdx < 0 || !Array.isArray(sp.scenes) || !sp.scenes[sceneIdx]) {
+    return { error: 'INVALID_SCENE_IDX', scene_idx: payload.scene_idx, scene_count: Array.isArray(sp.scenes) ? sp.scenes.length : 0 };
+  }
+
+  // 防御式 value：字符串 + 长度切片（4000 字符够 2-3 段密集镜头描述，再长就异常）
+  const value = String(payload.value == null ? '' : payload.value).slice(0, 4000);
+
+  sp.scenes[sceneIdx].video_prompt_override = value;
+
+  reqStore.update(requirementId, { assist_screenplay: JSON.stringify(assist) });
+
+  // 同步重写聊天流 screenplay_result 卡片（screenplay 字段是引用，会自动带上 video_prompt_override）
+  //   之前 setSceneVideo 同样的处理 —— 这里照搬
+  if (assist.used && assist.picked !== null && assist.picked !== undefined) {
+    try {
+      writeScreenplayChatEntry(requirementId, assist.screenplays[assist.picked], {
+        idea: assist.idea,
+        target_seconds: assist.target_seconds,
+        idx: assist.picked,
+        total: assist.screenplays.length,
+      });
+    } catch (e) {
+      console.warn(`[assist:screenplay] ${requirementId} setSceneVideoPrompt 后重写聊天流卡片失败:`, e.message);
+    }
+  }
+
+  return { success: true, scene_idx: sceneIdx, value_length: value.length };
+}
+
+/**
+ * v0.22.X: 用户在剧本视图改了首帧图 prompt（架构补全 —— 之前只有 video_prompt_override，
+ *   首帧图链路根本没 textarea + 持久化，导致用户改 prompt 期望影响首帧图但视频侧悄悄吃掉）。
+ *   payload: { scene_idx, value }
+ *     - sp_idx 不传（同 video_prompt_override，永远从 assist.picked 推导）
+ *     - 持久化到 sp.scenes[scene_idx].scene_frame_prompt_override
+ *   下次点「🔄 重生成首帧」时，screenplayGenSceneFrame 会把 override 当作 payload.prompt 传给 use 路由
+ */
+function setSceneFramePrompt(requirementId, payload = {}) {
+  const req = reqStore.getById(requirementId);
+  if (!req) return { error: 'REQ_NOT_FOUND' };
+  let assist;
+  try { assist = JSON.parse(req.assist_screenplay || 'null'); } catch { assist = null; }
+  if (!assist) return { error: 'NO_ASSIST' };
+
+  const spIdx = Number.isInteger(assist.picked) && assist.picked >= 0 ? assist.picked : 0;
+  if (!Array.isArray(assist.screenplays) || !assist.screenplays[spIdx]) {
+    return { error: 'NO_SCREENPLAY', picked: assist.picked };
+  }
+  const sp = assist.screenplays[spIdx];
+
+  const sceneIdx = Number(payload.scene_idx);
+  if (!Number.isInteger(sceneIdx) || sceneIdx < 0 || !Array.isArray(sp.scenes) || !sp.scenes[sceneIdx]) {
+    return { error: 'INVALID_SCENE_IDX', scene_idx: payload.scene_idx };
+  }
+
+  const value = String(payload.value == null ? '' : payload.value).slice(0, 4000);
+
+  sp.scenes[sceneIdx].scene_frame_prompt_override = value;
+
+  reqStore.update(requirementId, { assist_screenplay: JSON.stringify(assist) });
+
+  if (assist.used && assist.picked !== null && assist.picked !== undefined) {
+    try {
+      writeScreenplayChatEntry(requirementId, assist.screenplays[assist.picked], {
+        idea: assist.idea,
+        target_seconds: assist.target_seconds,
+        idx: assist.picked,
+        total: assist.screenplays.length,
+      });
+    } catch (e) {
+      console.warn(`[assist:screenplay] ${requirementId} setSceneFramePrompt 后重写聊天流卡片失败:`, e.message);
+    }
+  }
+
+  return { success: true, scene_idx: sceneIdx, value_length: value.length };
 }
 
 /**
@@ -718,51 +918,143 @@ async function genSceneFrame(requirementId, payload = {}) {
     if (u) refs.push({ kind: 'scene', name: '场景', url: u });
   }
 
-  const castLine = castNames.length
+const castLine = castNames.length
     ? `出场人物：画面中只有 ${castNames.join(' 和 ')} 这 ${castNames.length} 个人物（外貌与参考图一致），不得出现其他人物、路人或额外的人。`
     : '本场为环境空镜：画面中不出现任何人物。';
-  const prompt = (payload.prompt || '').trim() || [
+
+// ── v0.22.X: 连续帧链（修复版）──
+//   v0.22.X 第 1 版根因：原 prompt 「不得重绘已存在的环境元素」+ 「仅更新人物姿态 / 画面内的人物位置与动作」
+//   → LLM 误读：把"不得改动原元素"理解成"可以加新元素填补画面空白" → 「凭空多出楼阁一角」
+//   修复策略（v0.22.X 第 2 版）：
+//     ① prev-frame 降级为「风格参考」：refs 里仍然传入，但 prompt 里只说"色调/光线/笔触风格延续"
+//        —— 元素决策权交回给 setting/continuity_props/scene_location，不再让 prev-frame 参与元素继承
+//     ② 改写 prevFrameLine：删「不得重绘」「仅更新人物姿态」两个误导句
+//     ③ 加硬约束：环境元素只能来自 setting/continuity_props/scene_location，不得引入这三者未提及的新元素
+//     ④ 负面加：凭空出现的新建筑（楼阁/亭台/塔/牌坊/桥梁等）、凭空出现的新陈设、新装饰、新家具、新植被类型
+let prevFrame = null;
+if (sceneIdx > 0 && assist.scene_frames && assist.scene_frames[String(sceneIdx - 1)]) {
+  const pf = assist.scene_frames[String(sceneIdx - 1)];
+  const pfUrl = pf.image_url_output || (pf.asset_path ? assetToDataUri(slug, pf.asset_path) : '');
+  if (pfUrl) prevFrame = pf;
+}
+if (prevFrame) {
+  refs.push({
+    kind: 'prev-frame',
+    name: `上一场（场 ${sceneIdx}）`,
+    url: prevFrame.image_url_output || (prevFrame.asset_path ? assetToDataUri(slug, prevFrame.asset_path) : ''),
+  });
+}
+
+const prevFrameLine = prevFrame
+  ? `🎨 风格延续：参考图「上一场（场 ${sceneIdx}）的首帧」仅用于延续色调、光线氛围、笔触风格。本帧的环境元素决策必须依据 setting + continuity_props + scene_location（剧本明确登记的环境元素）。如上一场画面里出现了 setting/continuity_props/scene_location 未提及的元素（例如楼阁、亭台、牌坊等），那是上一场的 AI 生成错误，**不得在本场复刻或延续**。`
+  : '';
+
+// 🆕 v0.22.X: 借鉴 Sora 2「Recurring character registry」+ Kling「多 label 参考图」的设计
+//   给 LLM 一份「允许出现元素的白名单」+「黑名单」——比负向词更精确
+//   白名单来源：refs（场景图 + 角色图 + 道具图 + 上一场首帧）+ setting + continuity_props + scene_location
+//   黑名单来源：白名单之外的一切（不写出来反而最严——LLM 只能从白名单里选）
+const allowedSourceLine = (() => {
+  // v0.22.X P1: 实体 ID 注入 —— 给每个 continuity_prop 分配稳定锚点 [PR_nn]，
+  //   与负面词 + L6 自检的 violations 形成三方对照（LLM 用 [PR_01] 指代比用裸 label 更不易漂移）
+  const props = sp.continuity_props || [];
+  const propAnchors = props.map((p, i) => `[PR_${String(i + 1).padStart(2, '0')}] ${p.label}`).join('、');
+  const propLine = props.length
+    ? `③ 道具（continuity_props，用方括号 ID 指代）：${propAnchors}`
+    : '';
+  const anchorNote = props.length
+    ? `\n   注意：提及道具时优先用方括号 ID（如 [PR_01] 古琴），画面里这些道具必须可见且与剧本一致，禁止出现未登记的同类道具。`
+    : '';
+  return `🔒 元素白名单：画面中只能出现下列来源的元素，不得凭空添加白名单之外的任何角色/建筑/装饰/家具/植被/陈设：
+ ① 参考图（角色档案图 + 场景图 + 上场首帧）的视觉元素
+ ② setting 描述的环境（${(sp.setting || '').slice(0, 60)}）
+ ${propLine}
+ ④ scene_location 描述的本场空间位置（${(scene.scene_location || '').slice(0, 30)}）
+任何白名单外的元素（楼阁/亭台/塔/牌坊/桥梁/新建筑/新装饰/新陈设/新植被类型）一律不得出现。${anchorNote}`;
+})();
+
+const prompt = ((payload.prompt || scene.scene_frame_prompt_override || '')).trim() || [
     `电影感写实画面：${sp.setting || ''}。`,
     scene.shot ? `镜头：${scene.shot}。` : '',
     scene.action ? `画面内容：${scene.action}的起始瞬间。` : '',
     castLine,
+    prevFrameLine,
+    allowedSourceLine,
     `构图：${opts.aspect_ratio} 画幅建立镜头，主体清晰，前中后景层次分明。`,
     '风格：电影感写实摄影，真实光影，浅景深。质量：细节丰富，2K，画面干净。',
-    '负面：多个人物、第二个人、多余路人、群演、畸形手、文字、水印、低质量、卡通、动漫、插画。',
+    '负面：多个人物、第二个人、多余路人、群演、畸形手、文字、水印、低质量、卡通、动漫、插画、凭空出现的新建筑（楼阁/亭台/塔/牌坊/桥梁等）、凭空出现的新陈设、新装饰、新家具、新植被类型、剧本未登记的环境元素。',
   ].filter(Boolean).join(' ');
 
   const imageSvc = require('../image-tools-service');
   console.log(`[assist:screenplay] ${requirementId} 生成首帧图 场${sceneIdx + 1}（参考图 ${refs.length} 张，画幅 ${opts.aspect_ratio}）`);
-  const r = await imageSvc.coreGenerate({
-    prompt,
-    referenceImages: refs.map(x => x.url),
-    // v0.22.72: 1K（= 与角色图/场景图同档，16:9 时 1312×736）
-    //   之前写死 '2K'（2624×1472）→ 单张 4.7-5MB，是角色图的 4 倍（像素 4 倍）。
-    //   而首帧图只有两个用途：① 卡片缩略图 ② 喂给 2.5-flash 视频（输出仅 720P）→
-    //   1K 已高于视频输出分辨率，2K 只是白占 4 倍磁盘 + 上传/下载时间。
-    size: '1K',
-    n: 1,
-    projectSlug: slug,
-    targetWidth: dims[0],
-    targetHeight: dims[1],
-  });
-  if (!r || !r.ok) throw new Error('首帧图生成失败: ' + ((r && r.error) || '未知错误'));
-  const opt = (r.options || [])[0];
-  if (!opt) throw new Error('首帧图生成失败: 无返回图片');
 
-  if (!assist.scene_frames) assist.scene_frames = {};
-  assist.scene_frames[String(sceneIdx)] = {
-    image_url_output: opt.image_url_output || null,   // ← 公网 CDN URL（喂给 2.5 视频接口）
-    // v0.22.70: 归一化成 'assets/...'（coreGenerate 返回的带 workspace 前缀，前端拼 URL 会拼重 → 破图）
-    asset_path: normAssetPath(opt.asset_path) || null,  // 本地备份（CDN 过期后可看）
-    mime: opt.mime || null,
-    size: opt.size || null,
-    prompt,
-    refs: refs.map(x => ({ kind: x.kind, name: x.name })),  // 只存元信息，不存 base64
-    aspect_ratio: opts.aspect_ratio,
-    created_at: new Date().toISOString(),
-  };
-  reqStore.update(requirementId, { assist_screenplay: JSON.stringify(assist) });
+  // ── v0.22.X L6 闭环验证：生成 → 视觉自检 → 有违规则拼负面重生成（最多 2 轮）──
+  //   设计：校验失败/超时一律降级（不阻断主流程），只记 l6_check 供 UI/审计
+  let attempt = 0;
+  let genR = null;
+  let lastOpt = null;
+  let l6 = null;
+  const NEG_BASE = '多个人物、第二个人、多余路人、群演、畸形手、文字、水印、低质量、卡通、动漫、插画、剧本未登记的环境元素。';
+  const MAX_L6_ROUNDS = 2;
+
+  while (attempt <= MAX_L6_ROUNDS) {
+    // 生成（第 0 轮用原始 prompt；第 N 轮把上轮违规词追加到负面）
+    let curPrompt = prompt;
+    if (attempt > 0 && l6 && l6.violations.length) {
+      const banned = l6.violations.map(v => `画面里不得出现：${v}`).join('；');
+      curPrompt = prompt + ` 【L6 自检修复】${banned}。${NEG_BASE}`;
+      console.log(`[assist:screenplay:L6] ${requirementId} 场${sceneIdx + 1} 第 ${attempt} 轮重生成（违规: ${l6.violations.join('、')}）`);
+    }
+
+    console.log(`[assist:screenplay] ${requirementId} 生成首帧图 场${sceneIdx + 1} 第 ${attempt + 1} 次（参考图 ${refs.length} 张，画幅 ${opts.aspect_ratio}）`);
+    genR = await imageSvc.coreGenerate({
+      prompt: curPrompt,
+      referenceImages: refs.map(x => x.url),
+      size: '1K',
+      n: 1,
+      projectSlug: slug,
+      targetWidth: dims[0],
+      targetHeight: dims[1],
+    });
+    if (!genR || !genR.ok) throw new Error('首帧图生成失败: ' + ((genR && genR.error) || '未知错误'));
+    lastOpt = (genR.options || [])[0];
+    if (!lastOpt) throw new Error('首帧图生成失败: 无返回图片');
+
+    // 写进 scene_frames（每轮都覆盖，保证 UI 永远拿到最新图）
+    if (!assist.scene_frames) assist.scene_frames = {};
+    assist.scene_frames[String(sceneIdx)] = {
+      image_url_output: lastOpt.image_url_output || null,
+      asset_path: normAssetPath(lastOpt.asset_path) || null,
+      mime: lastOpt.mime || null,
+      size: lastOpt.size || null,
+      prompt: curPrompt,
+      refs: refs.map(x => ({ kind: x.kind, name: x.name })),
+      aspect_ratio: opts.aspect_ratio,
+      created_at: new Date().toISOString(),
+    };
+    reqStore.update(requirementId, { assist_screenplay: JSON.stringify(assist) });
+
+    // 最后一轮不再自检（省时）；前 N-1 轮跑 L6 校验决定是否重生成
+    if (attempt >= MAX_L6_ROUNDS) {
+      // 末轮也记一次 l6_check 供审计（不阻断）
+      l6 = await runL6FrameCheck(requirementId, sp, scene, sceneIdx, castNames, assist.scene_frames[String(sceneIdx)].asset_path);
+      assist.scene_frames[String(sceneIdx)].l6_check = l6;
+      reqStore.update(requirementId, { assist_screenplay: JSON.stringify(assist) });
+      break;
+    }
+
+    l6 = await runL6FrameCheck(requirementId, sp, scene, sceneIdx, castNames, assist.scene_frames[String(sceneIdx)].asset_path);
+    assist.scene_frames[String(sceneIdx)].l6_check = l6;
+    reqStore.update(requirementId, { assist_screenplay: JSON.stringify(assist) });
+
+    if (l6.ok || l6.skipped || l6.degraded || !l6.violations.length) {
+      console.log(`[assist:screenplay:L6] ${requirementId} 场${sceneIdx + 1} 自检通过（${l6.reason || '干净'}），停止重生成`);
+      break;
+    }
+    // 有违规 → 进入下一轮重生成
+    attempt++;
+  }
+
+  const opt = lastOpt;
 
   // 重写聊天流卡片（同 setAsset/setSceneVideo 的处理）
   if (assist.used && assist.picked !== null && assist.picked !== undefined) {
@@ -779,8 +1071,84 @@ async function genSceneFrame(requirementId, payload = {}) {
   return assist;
 }
 
+// ============================================================
+// v0.22.X L6 闭环验证（借鉴「视频生成场景一致性控制」6 层框架的 L6 层）
+//   生成首帧后调 LLM 视觉自检：画面里有没有「白名单之外」的元素？
+//   有违规 → 把违规词拼进负面 prompt 重新生成（最多 2 轮）
+//   设计原则：
+//     ① 用 describeImage（底层自动挑带 vision 能力的活跃模型），不写死 provider
+//     ② 校验结果写回 scene_frames[idx].l6_check（供 UI 展示 + 审计）
+//     ③ 校验失败/超时不阻断主流程（降级为 warning，不 throw）
+// ============================================================
+
+// 构造 L6 自检 prompt：喂给 vision LLM 的指令
+function buildL6CheckPrompt(sp, scene, sceneIdx, castNames) {
+  const props = (sp.continuity_props || []).map((p, i) => `[PR_${String(i + 1).padStart(2, '0')}] ${p.label}`).filter(Boolean);
+  const allowed = [
+    `① 参考图的视觉元素`,
+    `② setting: ${(sp.setting || '').slice(0, 80)}`,
+    props.length ? `③ 道具（continuity_props）：${props.join('、')}` : '',
+    scene.scene_location ? `④ 本场空间: ${scene.scene_location}` : '',
+  ].filter(Boolean).join('；');
+
+  return `你是一位严格的视觉审查员。请审查这张电影首帧画面，判断其中是否出现了【剧本未登记】的元素。
+
+【已登记的允许元素白名单】
+${allowed}
+${castNames.length ? `出场人物（仅这些）：${castNames.join('、')}` : '本场为环境空镜，不应出现任何人物。'}
+
+请逐项检查并回答（JSON 格式）：
+{
+  "violations": ["违规元素1", "违规元素2", ...],   // 画面里出现但白名单未登记的元素（建筑/装饰/家具/植被/人物等）
+  "ok": true | false,
+  "reason": "一句话说明"
+}
+
+只输出 JSON，不要解释。若画面干净（所有元素都在白名单内），violations 为空数组，ok=true。
+若出现楼阁/亭台/塔/牌坊/桥梁/新建筑/新装饰/新陈设/新家具/新植被类型/剧本未提及的额外人物，均算违规。`;
+}
+
+// 解析 LLM 返回的 JSON（容错：LLM 可能带 ```json 包裹或前后废话）
+function parseL6CheckResult(text) {
+  if (!text) return { ok: true, violations: [], reason: 'LLM 无响应（降级通过）' };
+  let s = text.trim();
+  // 剥掉可能的 ```json ... ``` 包裹
+  s = s.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+  // 找第一个 { ... } 块
+  const m = s.match(/\{[\s\S]*\}/);
+  if (!m) return { ok: true, violations: [], reason: '无法解析 LLM 响应（降级通过）' };
+  try {
+    const obj = JSON.parse(m[0]);
+    const violations = Array.isArray(obj.violations) ? obj.violations.map(String).filter(Boolean) : [];
+    return { ok: !!obj.ok && violations.length === 0, violations, reason: String(obj.reason || '') };
+  } catch {
+    return { ok: true, violations: [], reason: 'JSON 解析失败（降级通过）' };
+  }
+}
+
+// L6 自检：读本地 asset 路径 → describeImage → 解析。返回 { ok, violations, reason }
+async function runL6FrameCheck(requirementId, sp, scene, sceneIdx, castNames, assetPath) {
+  if (!assetPath) return { ok: true, violations: [], reason: '无本地 asset（跳过校验）', skipped: true };
+  try {
+    const visionSvc = require('../vision-service');
+    const prompt = buildL6CheckPrompt(sp, scene, sceneIdx, castNames);
+    const r = await visionSvc.describeImage(assetPath, {}, { prompt, maxTokens: 400 });
+    if (!r || !r.ok) {
+      console.warn(`[assist:screenplay:L6] ${requirementId} 场${sceneIdx + 1} vision 调用失败: ${(r && r.error) || '未知'}`);
+      return { ok: true, violations: [], reason: `vision 调用失败（${(r && r.error) || '未知'}），降级通过`, degraded: true };
+    }
+    const parsed = parseL6CheckResult(r.description);
+    parsed.raw = r.description;
+    console.log(`[assist:screenplay:L6] ${requirementId} 场${sceneIdx + 1} 自检: ok=${parsed.ok} violations=${JSON.stringify(parsed.violations)}`);
+    return parsed;
+  } catch (e) {
+    console.warn(`[assist:screenplay:L6] ${requirementId} 场${sceneIdx + 1} 自检异常: ${e.message}`);
+    return { ok: true, violations: [], reason: `自检异常（${e.message}），降级通过`, degraded: true };
+  }
+}
+
 /**
- * v0.22.65: 把已生成的分镜头合成一条完整视频（用户报「3 段视频割裂，怎么连到一起」）
+ * v0.22.X: 把已生成的分镜头合成一条完整视频（用户报「3 段视频割裂，怎么连到一起」）
  *   payload: { transition: 'none' | 'fade', transitionDuration?: 0.4 }
  *   流程：按 field 顺序收集 scene_videos 的 asset_path → video-compose 拼接 → 写 final_video → 重写聊天流卡片
  *   注意：至少 2 段；只合成「已生成」的段落（缺段不影响，按序拼现有的）
@@ -865,9 +1233,15 @@ module.exports = {
   castOfScene,     // v0.22.71: 本场出场人物判定（首帧图人数控制）
   charAliases,     // v0.22.71: 角色名别名（咖啡师小雨 → 小雨）
   normAssetPath,   // v0.22.70: asset_path 归一化（剥掉 workspace 前缀）
+  setSceneVideoPrompt, // v0.22.X: 用户修改视频 prompt 持久化（解「改完不生效 + 刷新恢复原样」bug）
+  setSceneFramePrompt, // v0.22.X: 用户修改首帧图 prompt 持久化（补全首帧图链路架构）
   setVideoOpts,    // v0.22.67: 每段时长 / 画幅 / 视频模型
   defaultVideoOpts,
   composeFinal,    // v0.22.65: 合成完整视频（分镜头拼接）
   getAssist,
   writeScreenplayChatEntry,
+  // v0.22.X L6 闭环验证（导出供 UI 展示 + 单元测试）
+  buildL6CheckPrompt,
+  parseL6CheckResult,
+  runL6FrameCheck,
 };

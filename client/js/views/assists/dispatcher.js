@@ -208,7 +208,7 @@
     }
   }
 
-  async function useAssist(reqId, method, payload) {
+    async function useAssist(reqId, method, payload) {
     try {
       const resp = await api('POST', `/requirements/${reqId}/assist/${method}/use`, payload || {});
       // v0.22.52: 写入 hiddenRequirementId → _chatState.sessionRequirementId
@@ -222,5 +222,55 @@
     }
   }
 
-  window.ACMSAssistDispatcher = { loadAll, poll, render, triggerAuto, triggerManual, regenerateBatch, useAssist };
+  /**
+   * v0.22.X: 用户在剧本视图 textarea 改了视频 prompt → 持久化到 sp.scenes[scene_idx].video_prompt_override
+   *   解决「改完 prompt 点重做按钮没生效 + 刷新后提示词恢复原样」两个 bug
+   *   sp_idx 不传（后端从 assist.picked 推导）
+   *   onblur 触发：失焦立刻写库 + poll 触发刷新（按「toast 骗人」零容忍原则，必须显式 toast + 自动刷新）
+   *   防抖：用户在 textarea 里狂敲键盘不触发；离开焦点（点别处 / 切换 input / 点按钮）才触发一次
+   */
+  async function updateSceneVideoPrompt(reqId, sceneIdx, value) {
+    try {
+      const resp = await api('POST', `/requirements/${reqId}/assist/screenplay/use`, {
+        action: 'set_scene_video_prompt',
+        scene_idx: sceneIdx,
+        value: value || '',
+      });
+      if (resp && resp.error) {
+        toast('保存失败: ' + resp.error + (resp.message ? ` (${resp.message})` : ''), 'error');
+        return;
+      }
+      // v0.22.X「展示+异步生效」：必须显式 toast 让用户知道保存生效了
+      //   （不刷屏：轻量 toast 1.5s 自消失；用户多次进出 textarea 不会堆积）
+      toast(`✓ 提示词已保存 (${resp && resp.value_length != null ? resp.value_length : '?'} 字)`, 'success', 1500);
+      poll(reqId);
+    } catch (e) {
+      toast('保存提示词失败: ' + e.message, 'error');
+    }
+  }
+
+  /**
+   * v0.22.X: 用户在剧本视图改了首帧图 prompt → 持久化到 sp.scenes[scene_idx].scene_frame_prompt_override
+   *   与 updateSceneVideoPrompt 对称 —— 补全首帧图链路架构（之前根本没 textarea + 持久化）
+   *   触发方式：剧本视图首帧图 textarea onblur（用户失焦时调用一次）
+   */
+    async function updateSceneFramePrompt(reqId, sceneIdx, value) {
+    try {
+      const resp = await api('POST', `/requirements/${reqId}/assist/screenplay/use`, {
+        action: 'set_scene_frame_prompt',
+        scene_idx: sceneIdx,
+        value: value || '',
+      });
+      if (resp && resp.error) {
+        toast('保存失败: ' + resp.error + (resp.message ? ` (${resp.message})` : ''), 'error');
+        return;
+      }
+      toast(`✓ 首帧图提示词已保存 (${resp && resp.value_length != null ? resp.value_length : '?'} 字)`, 'success', 1500);
+      poll(reqId);
+    } catch (e) {
+      toast('保存首帧图提示词失败: ' + e.message, 'error');
+    }
+  }
+
+  window.ACMSAssistDispatcher = { loadAll, poll, render, triggerAuto, triggerManual, regenerateBatch, useAssist, updateSceneVideoPrompt, updateSceneFramePrompt };
 })();
