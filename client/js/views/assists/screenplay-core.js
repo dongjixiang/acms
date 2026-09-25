@@ -131,10 +131,15 @@
 /**
    * 场景图 prompt（环境本身，不带 logline 剧情元素）
    *   v0.22.31: 加 art_style 风格硬约束 + IP 锚定（如果 setting 提到 IP 场景名）
+   *   v0.22.84: view 参数（'wide' | 'medium' | 'close'）—— 场景圣经多视角：
+   *     同一地点的不同机位各出一张图，用硬约束锁死环境元素一致，只改机位/景别；
+   *     首帧生成时按本场 scene.shot 自动挑视角（见 server pickSceneViewKey）
    */
-  function buildScenePrompt(sp, targetSeconds, artStyle) {
+  function buildScenePrompt(sp, targetSeconds, artStyle, view) {
     const setting = (sp.setting || '').trim();
     const ts = targetSeconds || 30;
+    const viewKey = (view === 'wide' || view === 'medium' || view === 'close') ? view : '';
+    const viewLabel = { wide: '全景', medium: '中景', close: '特写' }[viewKey] || '';
     // v0.22.31: artStyle 默认值
     const style = artStyle || sp?.art_style || 'photorealistic';
 
@@ -169,12 +174,25 @@
     // v0.55: 把"人像/肖像"替换成"空镜"（场景专属，不引导人物）
     const sceneStyleSuffix = styleTpl.styleSuffix.replace(/人像|肖像|portrait/gi, '空镜');
 
+    // v0.22.84: 场景圣经多视角 —— 视角声明 + 跨视角环境一致性硬约束 + 分镜别构图
+    const viewLine = viewKey
+      ? `🎞 场景圣经·${viewLabel}机位：本图是同一地点的「${viewLabel}」视角（其它机位各有独立图）。硬约束：环境元素必须与主场景图完全一致 —— 地形地貌、植被种类与分布、水面与河岸形状、光照方向与天气、时代风格；只允许改变机位、景别与取景范围，不得出现主场景图没有的元素（建筑/构筑物/植被/陈设）。`
+      : '';
+    const compLine = viewKey === 'close'
+      ? '构图：特写/近景机位，聚焦场景关键局部，背景虚化但与环境同源，浅景深。'
+      : viewKey === 'medium'
+        ? '构图：中景机位，平视，取场景中段（主体及其近旁环境），保留环境上下文，前中后景层次分明。'
+        : viewKey === 'wide'
+          ? '构图：广角全景建立镜头，略低角度或平视，完整展示场景全貌与空间关系。'
+          : '构图：广角建立镜头，略低角度或平视，前中后景层次清晰，以环境为主体。';
+
     const lines = [
-      '场景：环境建立镜头，画面中不出现人物。',
+      viewKey ? `场景（场景圣经·${viewLabel}机位）：环境镜头，画面中不出现人物。` : '场景：环境建立镜头，画面中不出现人物。',
       envLine,
       atmosphereLine,
       registryLine,
-      '构图：广角建立镜头，略低角度或平视，前中后景层次清晰，以环境为主体。',
+      viewLine,
+      compLine,
       '光线：与环境及时间一致的自然环境光，柔和空气感，景深。',
       // v0.X 修复：用 styleTpl.descriptors.scene 替代"电影感建立镜头、写实、氛围光效、专业摄影、空旷场地"
       `风格：${styleTpl.stylePrefix} ${sceneStyleSuffix} ${styleTpl.descriptors?.scene || ''}`,
@@ -541,6 +559,37 @@
     const sceneOverride = (sceneAsset && typeof sceneAsset.prompt_override === 'string') ? sceneAsset.prompt_override.trim() : '';
     const sceneDefaultPrompt = sceneOverride || buildScenePrompt(sp, target);
     const sceneTaId = `spsc-${reqId}-scene-0`;
+    // v0.22.84: 场景圣经（多视角）—— 同一地点的 全景/中景/特写 三张基准图；
+    //   首帧按本场 scene.shot 自动挑视角（服务端 pickSceneViewKey），缺哪张就回退主场景图
+    const sceneViewRows = ['wide', 'medium', 'close'].map(v => {
+      const key = `0#${v}`;
+      const label = { wide: '全景', medium: '中景', close: '特写' }[v];
+      const a = sceneAssets[key];
+      const imgPath = a?.asset_path;
+      const imgSrcV = imgPath
+        ? `/api/generate/assets/${encodeURIComponent(data.project_id || 'default')}/${imgPath}`
+        : (a?.image_url_output || null);
+      const ready = !!imgPath;
+      const taIdV = `spsv-${reqId}-${v}`;
+      const ov = (a && typeof a.prompt_override === 'string') ? a.prompt_override.trim() : '';
+      const defP = ov || buildScenePrompt(sp, target, undefined, v);
+      return `
+        <div style="margin-top:6px;padding:6px;background:var(--bg2);border:1px solid ${ready ? 'var(--green)' : 'var(--border)'};border-radius:4px">
+          <div style="display:flex;align-items:center;gap:6px">
+            <div style="font-size:11px;flex:1">🎞 ${label}机位 ${ready ? '<span style="color:var(--green)">✅</span>' : '<span style="color:var(--text3)">⏳</span>'}</div>
+            <button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'scene', '${key}', document.getElementById('${taIdV}').value)" style="font-size:10px;flex-shrink:0">${ready ? '🎨 重新生成' : '🎨 生成图'}</button>
+          </div>
+          <textarea id="${taIdV}" rows="2" style="width:100%;font-size:10px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit" placeholder="修改${label}机位的提示词…" onblur="ACMSAssistDispatcher.updateAssetPrompt('${reqId}', 'scene', '${key}', this.value)">${escHtml(defP)}</textarea>
+          ${imgSrcV ? `<img src="${escHtml(imgSrcV)}" style="width:52px;height:52px;object-fit:cover;border-radius:3px;margin-top:4px;cursor:zoom-in" onclick="event.stopPropagation();previewImage('${escHtml(imgSrcV)}','${escHtml(a?.image_url_output || '')}')" alt="${label}机位" />` : ''}
+        </div>`;
+    }).join('');
+    const sceneBibleBlock = `
+      <details style="margin-top:8px">
+        <summary style="font-size:11px;color:var(--accent);cursor:pointer;user-select:none">🎞 场景圣经（多视角）· 首帧按分镜景别自动选参考图</summary>
+        <div style="font-size:10px;color:var(--text3);margin-top:4px">三张必须是「同一地点」的不同机位（环境元素一致，只改机位/景别）。全景镜头→全景图、中景→中景图、特写→特写图；缺哪张自动回退主场景图。</div>
+        ${sceneViewRows}
+      </details>
+    `;
     const sceneBlock = `
       <div class="screenplay-asset-block" style="margin:8px 0;padding:8px;background:var(--bg);border:1px solid ${sceneIsReady ? 'var(--green)' : 'var(--border)'};border-radius:6px">
         <!-- v0.22.56: 同角色块改全 column，头行 [名字+按钮] + textarea 全宽 + 提示 + 图（次要预览，textarea 下方） -->
@@ -551,6 +600,7 @@
         <textarea id="${sceneTaId}" rows="3" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit" placeholder="修改场景图的提示词…" onblur="ACMSAssistDispatcher.updateAssetPrompt('${reqId}', 'scene', '0', this.value)">${escHtml(sceneDefaultPrompt)}</textarea>
         <div style="font-size:10px;color:var(--text3);margin-top:1px">${sceneOverride ? '✅ 已保存为自定义提示词（改完点按钮即用此版本重画）' : '✏️ 默认已带环境+氛围+风格，改完离开输入框会自动保存'}</div>
         ${sceneDisplaySrc ? `<div style="margin-top:6px"><img src="${escHtml(sceneDisplaySrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px;cursor:zoom-in" onclick="event.stopPropagation();previewImage('${escHtml(sceneDisplaySrc)}','${escHtml(sceneCdnFallback || '')}')" alt="场景图" onerror="this.onerror=null;this.src='${escHtml(sceneCdnFallback || '')}';" /></div>` : ''}
+        ${sceneBibleBlock}
         ${sceneOptionsHtml}
       </div>
     `;
@@ -621,6 +671,7 @@
               <textarea id="spfrm-${reqId}-${idx}" rows="3" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit;margin-top:4px" placeholder="修改首帧图的提示词…（默认显示当前图实际用的提示词，可在此基础上微调）" onblur="ACMSAssistDispatcher.updateSceneFramePrompt('${reqId}', ${idx}, this.value)">${escHtml(sc.scene_frame_prompt_override || (frameObj && frameObj.prompt) || '')}</textarea>
               ${sc.scene_frame_prompt_override ? '<div style="font-size:10px;color:var(--accent3);margin-top:1px">✅ 已保存为自定义首帧图提示词</div>' : '<div style="font-size:10px;color:var(--text3);margin-top:1px">✏️ 可修改提示词后点「🔄 重生成首帧」（默认会用结构化 prompt）</div>'}
               ${renderL6Badge(frameObj && frameObj.l6_check)}
+              ${frameObj && frameObj.scene_view ? `<div style="font-size:10px;color:var(--text3);margin-top:1px">🎞 环境参考：${({ '0#wide': '全景', '0#medium': '中景', '0#close': '特写' })[frameObj.scene_view] || '主场景图'}</div>` : ''}
               ${frameSrc ? `
                 <div style="margin-top:6px">
                   <img src="${escHtml(frameSrc)}" style="width:100%;max-width:200px;border-radius:4px;cursor:zoom-in;display:block" onclick="event.stopPropagation();previewImage('${escHtml(frameSrc)}','${escHtml(frameObj.image_url_output || '')}')" alt="首帧图" title="点击放大">

@@ -678,7 +678,12 @@ function setAssetPrompt(requirementId, payload = {}) {
   const bucketName = type === 'character' ? 'characters' : 'scenes';
   if (!assist.assets[bucketName]) assist.assets[bucketName] = {};
   // 防御：只在「已存在的槽位」上写，避免把拼错的角色名灌进 assets（生成图时槽位由 genAsset 建）
-  const slot = assist.assets[bucketName][key];
+  //   v0.22.84 例外：场景视角键（'0#wide' / '0#medium' / '0#close'）允许先建空槽 ——
+  //   用户往往是「先改好提示词再点生成」，此时图还没生成、槽位不存在
+  let slot = assist.assets[bucketName][key];
+  if (!slot && type === 'scene' && SCENE_VIEW_KEYS.includes(key)) {
+    slot = assist.assets[bucketName][key] = { options: [], picked_idx: 0, image_url_output: null, asset_path: null };
+  }
   if (!slot) {
     return {
       error: 'ASSET_SLOT_NOT_FOUND', asset_type: type, asset_key: key,
@@ -927,6 +932,33 @@ function normAssetPath(p) {
   return i > 0 ? s.slice(i) : s;
 }
 
+// v0.22.84 场景圣经：视角键 → 中文标签
+const SCENE_VIEW_LABELS = { wide: '全景', medium: '中景', close: '特写', '': '主场景图' };
+const SCENE_VIEW_KEYS = ['0', '0#wide', '0#medium', '0#close'];
+
+/**
+ * v0.22.84: 按本场镜头景别挑场景参考图的视角键
+ *   全景/远景/建立镜头 → 0#wide；中景/中近景 → 0#medium；特写/近景 → 0#close
+ *   说不清（或 shot 缺失）→ '0'（主场景图，老剧本行为不变）
+ */
+function pickSceneViewKey(scene) {
+  const shot = String((scene && scene.shot) || '');
+  // 顺序不能靠 if 链：'中近景' 含「近景」、'中景，XX特写' 含「特写」——
+  //   单靠 if 先后会把它们判错。改为「取出现位置最靠前的景别词」
+  //   （实际分镜表写法是「景别，画面内容」，景别在最前 → 位置最早=真景别）
+  const patterns = [
+    { re: /(中近景|中全景|中景|半身)/, key: '0#medium' },
+    { re: /(大特写|特写|近景)/, key: '0#close' },
+    { re: /(大全景|全景|远景|建立镜头)/, key: '0#wide' },
+  ];
+  let best = null;
+  for (const p of patterns) {
+    const m = p.re.exec(shot);
+    if (m && (!best || m.index < best.idx)) best = { idx: m.index, key: p.key };
+  }
+  return best ? best.key : '0';
+}
+
 function assetToDataUri(projectSlug, relPath) {
   try {
     const compose = require('../video-compose');
@@ -975,10 +1007,24 @@ async function genSceneFrame(requirementId, payload = {}) {
     const u = a.image_url_output || (a.asset_path ? assetToDataUri(slug, a.asset_path) : '');
     if (u) refs.push({ kind: 'character', name, url: u });
   }
-  const sceneAsset = (assist.assets && assist.assets.scenes && assist.assets.scenes['0']) || null;
+  // v0.22.84 场景圣经（多视角）：按本场镜头景别挑对应机位的场景图，没有就回退主场景图
+  //   —— 治「环境自由发挥」的根：环境从"1 张自由发挥的图"变成"同一地点的多个机位"，
+  //   且多视角图之间用 prompt 硬约束锁死环境元素（同植被/同光线方向/同地貌）
+  const sceneViewKey = pickSceneViewKey(scene);
+  let sceneAsset = (assist.assets && assist.assets.scenes && assist.assets.scenes[sceneViewKey]) || null;
+  let sceneViewUsed = sceneViewKey;
+  const sceneUsable = (a) => !!(a && (a.image_url_output || a.asset_path));
+  if (!sceneUsable(sceneAsset)) {
+    sceneAsset = (assist.assets && assist.assets.scenes && assist.assets.scenes['0']) || null;
+    sceneViewUsed = '0';
+  }
   if (sceneAsset) {
     const u = sceneAsset.image_url_output || (sceneAsset.asset_path ? assetToDataUri(slug, sceneAsset.asset_path) : '');
-    if (u) refs.push({ kind: 'scene', name: '场景', url: u });
+    if (u) {
+      const viewLabel = SCENE_VIEW_LABELS[sceneViewUsed.replace('0#', '')] || '主场景图';
+      refs.push({ kind: 'scene', name: `场景基准图（${viewLabel}）`, url: u });
+      console.log(`[assist:screenplay] ${requirementId} 场${sceneIdx + 1} 环境参考视角=${viewLabel}（键 ${sceneViewUsed}）`);
+    }
   }
 
 const castLine = castNames.length
@@ -1100,6 +1146,7 @@ const prompt = ((payload.prompt || scene.scene_frame_prompt_override || '')).tri
       size: lastOpt.size || null,
       prompt: curPrompt,
       refs: refs.map(x => ({ kind: x.kind, name: x.name })),
+      scene_view: sceneViewUsed,   // v0.22.84: 本帧用的场景圣经视角（'0' / '0#wide' / '0#medium' / '0#close'）
       aspect_ratio: opts.aspect_ratio,
       created_at: new Date().toISOString(),
     };
@@ -1408,6 +1455,7 @@ module.exports = {
   setSceneFramePrompt, // v0.22.X: 用户修改首帧图 prompt 持久化（补全首帧图链路架构）
   setAssetPrompt, // v0.22.82: 用户修改角色图/场景图 prompt 持久化（4 个 prompt 编辑框最后一处缺口）
   resolveL6Mode,   // v0.22.83: L6 模式解析（warn 默认 / auto / off）
+  pickSceneViewKey, // v0.22.84: 场景圣经 —— 按 scene.shot 挑视角键（0 / 0#wide / 0#medium / 0#close）
   setVideoOpts,    // v0.22.67: 每段时长 / 画幅 / 视频模型
   defaultVideoOpts,
   composeFinal,    // v0.22.65: 合成完整视频（分镜头拼接）
