@@ -664,6 +664,10 @@
               ${frameSrc ? `<button class="btn-small" style="font-size:10px;flex-shrink:0" onclick="openPolishSceneFrame('${reqId}', ${idx}, '${escHtml(frameSrc)}')" title="打开图片编辑器打磨这张首帧图（改完回写覆盖本场；原图会备份，可还原）">✏️ 打磨</button>` : ''}
               ${(frameObj && frameObj.prev) ? `<button class="btn-small" style="font-size:10px;flex-shrink:0" onclick="screenplayRevertSceneFrame('${reqId}', ${idx}, this)" title="还原到打磨前的首帧图">↩️ 还原</button>` : ''}
               <button class="btn-small" style="font-size:10px;flex-shrink:0" onclick="screenplayGenSceneFrame('${reqId}', ${idx}, this)" title="${frameSrc ? '重新生成这一场的首帧图（角色图+场景图作为参考）' : '用角色图+场景图生成这一场的起始定格画面'}">${frameSrc ? '🔄 重生成首帧' : '🎬 生成首帧图'}</button>
+            </div><!-- v0.22.85 修复：这里必须有「首帧图标题行」flex 容器的闭合标签 —— 今晚 L6 提交把它删了，
+              于是每个场景块少一层闭合，浏览器把下一场嵌进上一场（用户报「最后一个场景外面套了很多层」）。
+              注意：本注释刻意不写标签字面量（否则 HTML 配平类检查会把它当成真标签数进去）。
+              回归防护：server/__tests__/test-screenplay-render-structure.js -->
 <!-- v0.22.77: 「✏️ 打磨」首帧图回写（覆盖 + 原图备份可还原） -->
               ${(frameObj && frameObj.polished && !frameObj.image_url_output) ? `<div style="font-size:10px;color:var(--accent3);margin-top:3px">⚠️ 这是本地打磨图（没有公网地址）→ 本场生成视频会自动退回「多图参考」模式，段与段之间可能不再严格衔接</div>` : ''}
               <!-- v0.22.X fix: 补全首帧图 prompt 持久化（之前只有视频 textarea，首帧图根本没 textarea+持久化，
