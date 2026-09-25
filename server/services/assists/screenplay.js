@@ -1058,8 +1058,17 @@ const prompt = ((payload.prompt || scene.scene_frame_prompt_override || '')).tri
   let l6 = null;
   const NEG_BASE = '多个人物、第二个人、多余路人、群演、畸形手、文字、水印、低质量、卡通、动漫、插画、剧本未登记的环境元素。';
   const MAX_L6_ROUNDS = 2;
+  // v0.22.83: L6 模式（默认 warn）—— 实测「检测到违规就自动重画」性价比差：
+  //   2 轮重画 = 3 次生成 + 3 次判官 ≈ 95s（单次 56s，1.7x），且常不收敛（第 3 轮仍违规）；
+  //   prev-frame A/B 实验又证明单点调参两头不能兼得 → 改默认「只检测 + 标 ⚠️ + 让用户决定」。
+  //   配置优先级：DB system_configs['screenplay_l6_mode'] > config.json 同名字段 > 'warn'
+  const L6_MODE = resolveL6Mode();
+  const maxRounds = L6_MODE === 'auto' ? MAX_L6_ROUNDS : 0;
+  if (L6_MODE !== 'auto') {
+    console.log(`[assist:screenplay:L6] ${requirementId} 场${sceneIdx + 1} L6 模式=${L6_MODE}（单轮生成，不自动重画）`);
+  }
 
-  while (attempt <= MAX_L6_ROUNDS) {
+  while (attempt <= maxRounds) {
     // 生成（第 0 轮用原始 prompt；第 N 轮把上轮违规词追加到负面）
     let curPrompt = prompt;
     if (attempt > 0 && l6 && l6.violations.length) {
@@ -1097,11 +1106,19 @@ const prompt = ((payload.prompt || scene.scene_frame_prompt_override || '')).tri
     reqStore.update(requirementId, { assist_screenplay: JSON.stringify(assist) });
 
     // 最后一轮不再自检（省时）；前 N-1 轮跑 L6 校验决定是否重生成
-    if (attempt >= MAX_L6_ROUNDS) {
-      // 末轮也记一次 l6_check 供审计（不阻断）
-      l6 = await runL6FrameCheck(requirementId, sp, scene, sceneIdx, castNames, assist.scene_frames[String(sceneIdx)].asset_path, slug);
+    if (attempt >= maxRounds) {
+      // 末轮 / 单轮（warn·off 模式）也记一次 l6_check 供 UI 展示 + 审计
+      if (L6_MODE === 'off') {
+        l6 = { ok: true, violations: [], reason: 'L6 自检已关闭（screenplay_l6_mode=off）', skipped: true };
+      } else {
+        l6 = await runL6FrameCheck(requirementId, sp, scene, sceneIdx, castNames, assist.scene_frames[String(sceneIdx)].asset_path, slug);
+      }
       assist.scene_frames[String(sceneIdx)].l6_check = l6;
       reqStore.update(requirementId, { assist_screenplay: JSON.stringify(assist) });
+      // v0.22.83: warn 模式 —— 检测到违规只提示不重画（等用户点「🔄 重生成首帧」或改提示词）
+      if (L6_MODE === 'warn' && l6 && Array.isArray(l6.violations) && l6.violations.length) {
+        console.log(`[assist:screenplay:L6] ${requirementId} 场${sceneIdx + 1} ⚠️ 检测到未登记元素（${l6.violations.join('、')}）—— warn 模式不自动重画`);
+      }
       break;
     }
 
@@ -1145,6 +1162,32 @@ const prompt = ((payload.prompt || scene.scene_frame_prompt_override || '')).tri
 //     ② 校验结果写回 scene_frames[idx].l6_check（供 UI 展示 + 审计）
 //     ③ 校验失败/超时不阻断主流程（降级为 warning，不 throw）
 // ============================================================
+
+// v0.22.83: L6 自检模式解析（默认 warn）
+//   warn（默认）= 单轮生成 + 视觉自检 + 记 l6_check + 前端 ⚠️ 明细（**不自动重画**，等用户决定）
+//   auto      = 检测到违规就把违规词拼进负面重画（最多 2 轮）—— 旧行为，实测 1.7x 时间且常不收敛
+//   off       = 不跑视觉自检（省 vision 额度，只生成 + 记录 skipped 状态）
+//   配置优先级：DB system_configs['screenplay_l6_mode'] > config.json 同名字段 > 'warn'
+//   每次生成读一次 → 改配置不用重启，下一张图即生效（仿 ai-model-config.js 的解析链）
+const L6_MODES = ['warn', 'auto', 'off'];
+function resolveL6Mode() {
+  const read = (raw) => {
+    const v = String(raw || '').trim().toLowerCase();
+    return L6_MODES.includes(v) ? v : '';
+  };
+  try {
+    const { collection } = require('../../db/connection');   // ← 注意层级：assists/ 下要多退一层（曾写成 '../' 被 catch 静默吞掉 → 配置永远读不到）
+    const cfg = collection('system_configs').findOne(c => c.key === 'screenplay_l6_mode');
+    const v = read(cfg && cfg.value);
+    if (v) return v;
+  } catch (e) { /* DB 未就绪 → 兜底 */ }
+  try {
+    const config = require('../../config');
+    const v = read(config && config.screenplay_l6_mode);
+    if (v) return v;
+  } catch (e) { /* ignore */ }
+  return 'warn';
+}
 
 // 构造 L6 自检 prompt：喂给 vision LLM 的指令
 //   ⚠️ v0.22.80 教训：prompt 里**只写给判官看的指令**，别写开发者复盘注释 ——
@@ -1364,6 +1407,7 @@ module.exports = {
   setSceneVideoPrompt, // v0.22.X: 用户修改视频 prompt 持久化（解「改完不生效 + 刷新恢复原样」bug）
   setSceneFramePrompt, // v0.22.X: 用户修改首帧图 prompt 持久化（补全首帧图链路架构）
   setAssetPrompt, // v0.22.82: 用户修改角色图/场景图 prompt 持久化（4 个 prompt 编辑框最后一处缺口）
+  resolveL6Mode,   // v0.22.83: L6 模式解析（warn 默认 / auto / off）
   setVideoOpts,    // v0.22.67: 每段时长 / 画幅 / 视频模型
   defaultVideoOpts,
   composeFinal,    // v0.22.65: 合成完整视频（分镜头拼接）

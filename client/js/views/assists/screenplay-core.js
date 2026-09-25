@@ -206,11 +206,11 @@
     // 降级 / 跳过 → 灰色小字提示，不干扰主视觉
     if (l6.skipped) return '<div style="font-size:10px;color:var(--text3);margin-top:1px" title="没有本地备份图，跳过了 AI 自检">◌ L6 自检：跳过（无本地备份）</div>';
     if (l6.degraded) return '<div style="font-size:10px;color:var(--text3);margin-top:1px" title="' + escHtml(l6.reason || '视觉模型不可用') + '">◌ L6 自检：' + escHtml(l6.reason || '降级通过') + '</div>';
-    // 真正有违规且仍残留（重生成后还有）→ 黄色警告
+    // v0.22.83: warn 模式（默认）—— 检测到就列明细 + 给用户三个可行动作，不再声称"已自动重生成"
     if (!l6.ok && Array.isArray(l6.violations) && l6.violations.length) {
-      return '<div style="font-size:10px;color:#c9a227;margin-top:1px" title="' + escHtml(l6.reason || '') + '">⚠️ L6 自检：AI 检测到未登记元素（' + escHtml(l6.violations.join('、')) + '），已自动重生成；若仍存留，建议手动「🔄 重生成首帧」</div>';
+      return '<div style="font-size:10px;color:#c9a227;margin-top:1px" title="' + escHtml(l6.reason || '') + '">⚠️ L6 自检：检测到未登记元素（' + escHtml(l6.violations.join('、')) + '）—— 未自动重画。可改上方提示词后点「🔄 重生成首帧」，或忽略</div>';
     }
-    // 通过（含干净 + 已修复）→ 绿色
+    // 通过（含干净 + auto 模式下已修复）→ 绿色
     return '<div style="font-size:10px;color:var(--green);margin-top:1px" title="' + escHtml(l6.reason || '画面元素都在剧本登记范围内') + '">✅ L6 自检通过' + ((l6.violations && l6.violations.length) ? '（已自动修复 ' + escHtml(l6.violations.join('、')) + '）' : '') + '</div>';
   }
 

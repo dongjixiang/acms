@@ -93,6 +93,36 @@ ok(p.indexOf('明确豁免') < p.indexOf('樱花') && p.indexOf('明确豁免') 
 ok(/宁可漏报也不要误报/.test(p), '拿不准 → 宁漏勿误（防误报烧钱）');
 ok(!/高频漏报项/.test(p), '旧 v0.22.79 的过严清单已回退（未登记植被/远山不再算违规）');
 
+// ---------- v0.22.83 L6 模式解析（warn 默认 / auto / off） ----------
+//   背景：实测「检测到违规自动重画 2 轮」= 1.7x 时间 + 常不收敛；prev-frame A/B 实验又证明
+//        单点调参两头不能兼得 → 默认改为 warn（只检测 + 标 ⚠️ + 人决定）。
+console.log('\n[2c] resolveL6Mode（v0.22.83）');
+ok(typeof screenplay.resolveL6Mode === 'function', 'resolveL6Mode 已导出');
+const { collection } = require('../db/connection');
+const sc = collection('system_configs');
+const hadRow = !!sc.findOne(c => c.key === 'screenplay_l6_mode');
+ok(screenplay.resolveL6Mode() === 'warn', '默认（无配置）= warn');
+// 写 API 注意：update(predicate, updates) / remove(predicate) —— 不是 id 版（id 版会静默不匹配）
+const put = (v) => {
+  const ex = sc.findOne(c => c.key === 'screenplay_l6_mode');
+  if (ex) sc.update(c => c.key === 'screenplay_l6_mode', { value: v });
+  else sc.insert({ key: 'screenplay_l6_mode', value: v, created_at: new Date().toISOString() });
+};
+put('auto');
+ok(screenplay.resolveL6Mode() === 'auto', "DB 配 'auto' → auto（恢复旧行为）");
+put('OFF');
+ok(screenplay.resolveL6Mode() === 'off', "配置大小写不敏感（'OFF' → off）");
+put('乱填的值');
+ok(screenplay.resolveL6Mode() === 'warn', '非法值 → 回落 warn（不会因脏配置把功能关掉/开炸）');
+// 清理（remove 是 predicate 版）
+try { sc.remove(c => c.key === 'screenplay_l6_mode'); } catch (e) { /* ignore */ }
+ok(!sc.findOne(c => c.key === 'screenplay_l6_mode'), '测试后已清理配置行（不留脏数据）');
+
+// 前端措辞：warn 模式不能再说"已自动重生成"
+const coreSrc = require('fs').readFileSync(require('path').join(__dirname, '..', '..', 'client', 'js', 'views', 'assists', 'screenplay-core.js'), 'utf8');
+ok(/未自动重画/.test(coreSrc), '前端徽章措辞已改 warn 模式（不再声称已自动重生成）');
+ok(!/已自动重生成；若仍存留/.test(coreSrc), '旧的"已自动重生成"措辞已移除');
+
 // ---------- resolveFrameAbsPath（v0.22.79 修：相对 asset_path → 绝对路径） ----------
 //   背景：L6 自检曾传相对路径给 vision-service → 按 process.cwd() 解析 → 文件不存在
 //        → 每次都「降级通过」，L6 完全空转。此处锁死该回归。
