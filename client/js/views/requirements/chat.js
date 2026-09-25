@@ -190,7 +190,26 @@ function startChatPolling(reqId) {
       allHist.sort((a, b) => (a.at || '').localeCompare(b.at || ''));
       const history = backfillChatRounds(allHist);
         if (history.length > state.histCount) {
-        for (let i = state.histCount; i < history.length; i++) renderChatBubble(container, history[i]);
+        // v0.22.87 fix（用户 2026-09-25 报「点选中剧本后，对话框中渲染出 2 遍」）：
+        //   即时刷新路径（refreshScreenplayChatCard 等）会在轮询 tick 之前**先把卡片渲染进 DOM**
+        //   （并带上 data-at 指纹）。此前增量路径只管「条数涨了就渲染」，不检查这条 history 条目
+        //   是不是已经在 DOM 里了 → 同一条目被渲染两遍 = 两张同内容卡。
+        //   去重键 = (data-at, data-source)：两个字段都由同一条 history 条目派生，命中即已渲染。
+        //   风险面：at 是毫秒级 ISO 时间戳，两条不同条目撞同一个 at 实际不可能；
+        //   user 气泡（chatSend 本地渲染，client 时钟 at）与 server 条目的 at 不同 → 不会误跳。
+        const domKeys = new Set();
+        container.querySelectorAll('.chat-bubble[data-at]').forEach(function (_b) {
+          const _a = _b.dataset.at || '';
+          if (_a) domKeys.add(_a + '|' + (_b.dataset.source || ''));
+        });
+        for (let i = state.histCount; i < history.length; i++) {
+          const _e = history[i];
+          if (_e && _e.at && domKeys.has((_e.at || '') + '|' + (_e.source || ''))) {
+            console.log('[startChatPolling] v0.22.87 跳过已渲染条目（同 at+source 气泡已存在）', _e.at, _e.source || '');
+            continue;
+          }
+          renderChatBubble(container, _e);
+        }
         // v0.48：聚合渲染 plan bubbles
         if (window.ACMSPlanRenderer) window.ACMSPlanRenderer.aggregateAndRender(container, reqId, history);
         state.histCount = history.length;

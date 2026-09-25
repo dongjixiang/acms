@@ -315,10 +315,29 @@ async function refreshScreenplayChatCard(reqId) {
     //   场景：自由对话打开会话时只回放**文字**消息，历史卡片不回放（loadChatSessionMessages 的
     //   水位线设计）→ 用户点「选这个剧本」后，流里根本没有可刷新的剧本气泡 → 刷新等于没做 →
     //   用户看到「剧本在对话流里显示不出来」。这里直接把最新卡追加到流末尾。
+    //
+    // v0.22.87 fix（用户 2026-09-25 实测报「点选中这个剧本后，对话框中渲染出 2 遍」）：
+    //   原实现补的这张卡 `data-at = ''`（无指纹），而 **同一次选中**服务器还往
+    //   supplement_history 追加了一条 screenplay_result（idea 与旧卡不同 → 历史条数 +1）
+    //   → ③ 下面的轮询**增量**分支会把这条 history 条目再渲染一遍 → DOM 里两张同内容卡
+    //   （一张 at='' 一张带时间戳）。而且尾部重写分支永远清不掉那张无指纹的 ——
+    //   它只在「条数不变」时才跑，且按 data-source 匹配**最后一张** → 删掉的恰好是有指纹的那张。
+    //   修法两件套（必须两处一起改，单改一处仍会剩两张）：
+    //     ① 补卡前先清掉上一次留下的「临时补卡」（at='' 的刷新卡）→ 反复点选不再累积；
+    //     ② 补卡用**历史里最后一条 screenplay_result 的 at** 当指纹 → 轮询增量路径
+    //        在 chat.js 里按 (at, source) 去重时就能认出「这张已经渲染过了」。
     if (!latestBubble) {
+      chatContainer.querySelectorAll('.chat-bubble[data-source="screenplay_result"][data-at=""]')
+        .forEach(function (_stale) { _stale.remove(); });
+      let keyAt = '';
+      try {
+        const hr = await api('GET', `/requirements/${reqId}/supplement-history`);
+        const list = (hr && hr.history) || [];
+        for (const _e of list) { if (_e && _e.source === 'screenplay_result') keyAt = _e.at || ''; }
+      } catch (e) { /* 拿不到指纹 → 退回无指纹补卡（下一 tick 走 source 兜底替换，不会重复堆） */ }
       const wrap = document.createElement('div');
       wrap.className = 'chat-bubble chat-bubble-system';
-      wrap.dataset.at = '';                    // v0.22.68: 打标记，轮询可识别（避免重复追加）
+      wrap.dataset.at = keyAt;                 // v0.22.87: 有指纹才能被增量路径识别为「已渲染」
       wrap.dataset.source = 'screenplay_result';
       wrap.innerHTML = '<div class="chat-bubble-avatar" aria-hidden="true">·</div>'
         + '<div class="chat-bubble-inner"><div class="chat-bubble-meta">'
