@@ -271,12 +271,44 @@ function screenplayGenImageForm(reqId, assetType, assetKey, defaultPrompt) {
 }
 
 /**
+ * v0.22.86: 挑「自动续跑」的下一个分镜头（纯函数，便于单测）
+ *
+ *   为什么要有它：v0.22.12 的续跑只检查「角色图 + 场景图」，**从没检查首帧图**。
+ *   但首帧图才是「链式衔接」（首尾帧模式）的命根子 —— 没有首帧图的分镜，视频只能退回
+ *   「多图参考」模式 → 段与段之间没有共享帧 → 画面跳变。用户 2026-09-25 实测反馈：
+ *   「存在有些首帧图片还没有的时候，也自动续跑了」→ 续跑把整条链一路跑到尾，
+ *   中间几段全是没锚定的自由发挥，用户看到成品才发现跳变，白烧额度。
+ *
+ *   规则：从场 1 起找第一个「还没生成视频」的场，但它必须**已有可用的首帧图**才允许续跑：
+ *     · 无首帧图（frames[i] 不存在）→ 停（blockedBy）
+ *     · 只有本地打磨图（无 image_url_output）→ 也停 —— 首尾帧模式要求公网可访问 URL，
+ *       本地地址传进 Agnes 只会让整段失败（见 v0.22.77 的 pubUrl 注释）
+ *   返回：{ next: idx } 继续 | { next: -1 } 全部有视频 | { blockedBy: idx } 卡在缺首帧的那场
+ */
+function pickNextChainScene(allScenes, sceneVideos, sceneFrames, currentIdx) {
+  const scenes = allScenes || [];
+  const vids = sceneVideos || {};
+  const frames = sceneFrames || {};
+  for (let i = 0; i < scenes.length; i++) {
+    if (i === currentIdx) continue;                                   // 跳过刚生成的
+    if (vids[String(i)] && vids[String(i)].video_url) continue;        // 跳过已有视频的
+    const f = frames[String(i)];
+    if (!f || !f.image_url_output) return { blockedBy: i };            // 缺首帧（或只有本地打磨图）→ 停在它前面
+    return { next: i };
+  }
+  return { next: -1 };
+}
+if (typeof window !== 'undefined') {
+  window.ACMSScreenplayChain = { pickNextChainScene };
+}
+
+/**
  * v0.22.16: 为分镜头生成视频（完成后自动继续下一个可生成的分镜头）
  *   传入 promptOverride 则用户手工修改了 prompt
  *   1. 调 video assist（pre-fill scene prompt + character/scene asset）
  *   2. 轮询直到拿到 video_url
  *   3. 写回 scene_videos[sceneIdx]
- *   4. v0.22.12+: 自动找下一个"可生成"的分镜头（角色图+场景图都齐了 + 还没生成视频）→ 调自己
+ *   4. v0.22.12+: 自动找下一个"可生成"的分镜头（角色图+场景图都齐了 + 还没生成视频 + v0.22.86 起要求该场已有首帧图）→ 调自己
  */
 async function screenplayGenVideo(reqId, sceneIdx, promptOverride) {
   // v0.22.61: 防重复提交（同一场次生成中再点一次直接拦截）
@@ -456,7 +488,8 @@ async function screenplayGenVideo(reqId, sceneIdx, promptOverride) {
 
     // v0.22.12: 自动继续下一个可生成的分镜头
     const allScenes = screenplay.scenes || [];
-    const sceneVideos = (await api('GET', `/requirements/${reqId}/assist`)).assists?.screenplay?.scene_videos || {};
+    const freshSp = (await api('GET', `/requirements/${reqId}/assist`)).assists?.screenplay || {};
+    const sceneVideos = freshSp.scene_videos || {};
     // v0.22.61 fix: `nextAssets` 从未声明过（v0.22.23 注释写"第 274 行已声明"，实际那行是
     //   `const assets = sp.assets || {}`）→ 每次视频生成成功后走到这里必抛
     //   ReferenceError: nextAssets is not defined → 被 catch 捕获 → 用户看到
@@ -468,17 +501,24 @@ async function screenplayGenVideo(reqId, sceneIdx, promptOverride) {
     const sceneAsset2 = (assets.scenes || {})['0'];
     const hasAllBaseAssets = firstCharAsset?.asset_path && sceneAsset2?.asset_path;
     if (hasAllBaseAssets) {
-      // 找下一个未生成的分镜头
-      for (let i = 0; i < allScenes.length; i++) {
-        if (i === sceneIdx) continue;  // 跳过刚生成的
-        if (sceneVideos[String(i)]?.video_url) continue;  // 跳已生成的
+      // v0.22.86: 续跑前必须确认「下一个未生成的场已有首帧图」——
+      //   只看角色图+场景图会让缺首帧的段一路被续跑（多图参考模式 → 段间跳变），
+      //   用户看到成品才发现，白烧额度。缺首帧就停下并说清为什么。
+      const chainFrames = freshSp.scene_frames || screenplay.scene_frames || {};
+      const pick = pickNextChainScene(allScenes, sceneVideos, chainFrames, sceneIdx);
+      if (pick.blockedBy != null) {
+        toast('⏸ 已停止自动续跑：分镜头 ' + (pick.blockedBy + 1) + ' 还没有首帧图。'
+          + '缺首帧的段只能用「多图参考」模式生成，段与段会跳变 → 先给分镜头 '
+          + (pick.blockedBy + 1) + ' 生成首帧图，再点它的「生成视频」即可继续。', 'warning', 7000);
+      } else if (pick.next >= 0) {
         // 找到！自动继续
-        toast('🔄 自动开始下一个分镜头 ' + (i + 1) + '...', 'info', 2000);
+        toast('🔄 自动开始下一个分镜头 ' + (pick.next + 1) + '...', 'info', 2000);
         await new Promise(r => setTimeout(r, 1000));  // 1s 延迟让用户看清
-        return screenplayGenVideo(reqId, i);
+        return screenplayGenVideo(reqId, pick.next);
+      } else {
+        // 全部完成
+        toast('✅ 所有分镜头视频已生成完成！', 'success', 3000);
       }
-      // 全部完成
-      toast('✅ 所有分镜头视频已生成完成！', 'success', 3000);
     }
   } catch (e) {
     if (window._sceneVideoInFlight) delete window._sceneVideoInFlight[_flightKey];  // v0.22.61: 异常也要释放防重复锁
