@@ -648,6 +648,67 @@ function setSceneFramePrompt(requirementId, payload = {}) {
 }
 
 /**
+ * v0.22.82: 角色图/场景图的提示词持久化（补上 §6.6 五步清单里最后缺的两个漏洞）
+ *
+ *   为什么要它：角色图/场景图的 textarea 一直存在，但
+ *     ① 默认值 = buildCharacterPrompt/buildScenePrompt 每次重算 → 用户改完刷新就没了（DOM-only）
+ *     ② 没有 onblur 写回 → 改完点「🎨 重新生成」用的是 DOM 值（当次会话有效），
+ *        换个入口（换一批/自动续跑/重进页面）就退回默认 → 用户视角「改了没生效」
+ *   首帧图（scene_frame_prompt_override）和视频（video_prompt_override）之前都补了，
+ *   唯独角色图/场景图没补 —— 这次补齐，让 4 个 prompt 编辑框行为一致。
+ *
+ *   payload: { asset_type:'character'|'scene', asset_key, value }
+ *     asset_key：角色用角色名（charAssets 的 key），场景用 '0'（单场景图）
+ */
+function setAssetPrompt(requirementId, payload = {}) {
+  const req = reqStore.getById(requirementId);
+  if (!req) return { error: 'REQ_NOT_FOUND' };
+  let assist;
+  try { assist = JSON.parse(req.assist_screenplay || 'null'); } catch { assist = null; }
+  if (!assist) return { error: 'NO_ASSIST' };
+
+  const type = payload.asset_type;
+  if (type !== 'character' && type !== 'scene') {
+    return { error: 'INVALID_ASSET_TYPE', asset_type: payload.asset_type };
+  }
+  const key = String(payload.asset_key == null ? '' : payload.asset_key);
+  if (!key) return { error: 'MISSING_ASSET_KEY' };
+
+  if (!assist.assets) assist.assets = {};
+  const bucketName = type === 'character' ? 'characters' : 'scenes';
+  if (!assist.assets[bucketName]) assist.assets[bucketName] = {};
+  // 防御：只在「已存在的槽位」上写，避免把拼错的角色名灌进 assets（生成图时槽位由 genAsset 建）
+  const slot = assist.assets[bucketName][key];
+  if (!slot) {
+    return {
+      error: 'ASSET_SLOT_NOT_FOUND', asset_type: type, asset_key: key,
+      known: Object.keys(assist.assets[bucketName]),
+    };
+  }
+
+  const value = String(payload.value == null ? '' : payload.value).slice(0, 4000);
+  slot.prompt_override = value;
+
+  reqStore.update(requirementId, { assist_screenplay: JSON.stringify(assist) });
+
+  // 同步聊天流 screenplay_result 卡片（同 setSceneVideoPrompt 模式 —— 引用传递，不用单独搬字段）
+  if (assist.used && assist.picked !== null && assist.picked !== undefined) {
+    try {
+      writeScreenplayChatEntry(requirementId, assist.screenplays[assist.picked], {
+        idea: assist.idea,
+        target_seconds: assist.target_seconds,
+        idx: assist.picked,
+        total: assist.screenplays.length,
+      });
+    } catch (e) {
+      console.warn(`[assist:screenplay] ${requirementId} setAssetPrompt 后重写聊天流卡片失败:`, e.message);
+    }
+  }
+
+  return { success: true, asset_type: type, asset_key: key, value_length: value.length };
+}
+
+/**
  * v0.22.77: 「✏️ 打磨」首帧图回写
  *
  *   为什么是**覆盖**、而不是像 image_gen 那样追加候选：
@@ -1302,6 +1363,7 @@ module.exports = {
   normAssetPath,   // v0.22.70: asset_path 归一化（剥掉 workspace 前缀）
   setSceneVideoPrompt, // v0.22.X: 用户修改视频 prompt 持久化（解「改完不生效 + 刷新恢复原样」bug）
   setSceneFramePrompt, // v0.22.X: 用户修改首帧图 prompt 持久化（补全首帧图链路架构）
+  setAssetPrompt, // v0.22.82: 用户修改角色图/场景图 prompt 持久化（4 个 prompt 编辑框最后一处缺口）
   setVideoOpts,    // v0.22.67: 每段时长 / 画幅 / 视频模型
   defaultVideoOpts,
   composeFinal,    // v0.22.65: 合成完整视频（分镜头拼接）

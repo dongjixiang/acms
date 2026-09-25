@@ -272,5 +272,30 @@
     }
   }
 
-  window.ACMSAssistDispatcher = { loadAll, poll, render, triggerAuto, triggerManual, regenerateBatch, useAssist, updateSceneVideoPrompt, updateSceneFramePrompt };
+  /**
+   * v0.22.82: 角色图/场景图 prompt 持久化
+   *   assetType：'character' | 'scene'；assetKey：角色名 | '0'
+   *   同 updateSceneVideoPrompt/updateSceneFramePrompt —— onblur 触发（不是 oninput，避免狂敲刷接口）
+   */
+  async function updateAssetPrompt(reqId, assetType, assetKey, value) {
+    try {
+      const resp = await api('POST', `/requirements/${reqId}/assist/screenplay/use`, {
+        action: 'set_asset_prompt',
+        asset_type: assetType,
+        asset_key: assetKey,
+        value: value || '',
+      });
+      if (resp && resp.error) {
+        toast('保存失败: ' + resp.error + (resp.message ? ` (${resp.message})` : ''), 'error');
+        return;
+      }
+      const label = assetType === 'scene' ? '场景图' : '角色图';
+      toast(`✓ ${label}提示词已保存 (${resp && resp.value_length != null ? resp.value_length : '?'} 字)`, 'success', 1500);
+      poll(reqId);
+    } catch (e) {
+      toast('保存图片提示词失败: ' + e.message, 'error');
+    }
+  }
+
+  window.ACMSAssistDispatcher = { loadAll, poll, render, triggerAuto, triggerManual, regenerateBatch, useAssist, updateSceneVideoPrompt, updateSceneFramePrompt, updateAssetPrompt };
 })();

@@ -233,11 +233,27 @@ async function screenplayGenImage(reqId, assetType, assetKey, defaultPrompt) {
   try {
     if (!window._attachTo) window._attachTo = {};
     window._attachTo[reqId] = { type: 'screenplay', assetType, assetKey, ts: Date.now() };
+    // v0.22.82: 三层兜底（防「改了提示词但这次生成没用上」）
+    //   ① defaultPrompt：调用方传入的 textarea 当前值（最优先，用户刚改完就点按钮）
+    //   ② assets.<bucket>[assetKey].prompt_override：onblur 已持久化的自定义提示词（刷新/换入口后仍在）
+    //   ③ 空字符串（交给服务端默认链路）
+    let prompt = (defaultPrompt || '').trim();
+    if (!prompt) {
+      try {
+        const r = await api('GET', `/requirements/${reqId}/assist`);
+        const assets = r && r.assists ? r.assists.screenplay && r.assists.screenplay.assets : null;
+        const bucket = assetType === 'scene' ? (assets && assets.scenes) : (assets && assets.characters);
+        const slot = bucket && bucket[assetKey];
+        prompt = (slot && typeof slot.prompt_override === 'string' ? slot.prompt_override : '').trim();
+      } catch (e) {
+        // 兜底查询失败不阻断生成
+      }
+    }
     // 触发 image_gen（用 description 当 prompt，直接生成）
     if (!window._explicitAssist) window._explicitAssist = {};
     window._explicitAssist[reqId] = 'image_gen';
     await chatAssist(reqId, 'image_gen', {
-      prompt: defaultPrompt || '',
+      prompt: prompt,
       n: 3,
     });
     toast('🎨 正在生成 3 张候选图…', 'info', 2000);

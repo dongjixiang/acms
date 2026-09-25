@@ -476,7 +476,9 @@
       // v0.22.22: textarea id 用 idx（不用 name 算 — JS \w 不匹配中文，会撞 id）
       const taId = `sppc-${reqId}-char-${idx}`;
       // v0.22.22: 默认 prompt 用结构化生成函数（带 name + desc + setting + logline + 风格 + 负面）
-      const defaultPrompt = buildCharacterPrompt(c, sp, target);
+      // v0.22.82: 用户改过并已保存（prompt_override）→ 优先用它（刷新/换入口后不再退回默认值）
+      const charPromptOverride = (asset && typeof asset.prompt_override === 'string') ? asset.prompt_override.trim() : '';
+      const defaultPrompt = charPromptOverride || buildCharacterPrompt(c, sp, target);
 
       return `
         <div class="screenplay-asset-block" style="margin:8px 0;padding:8px;background:var(--bg);border:1px solid ${isReady ? 'var(--green)' : 'var(--border)'};border-radius:6px">
@@ -486,8 +488,8 @@
             <div style="font-weight:600;font-size:13px;flex:1;min-width:0">👤 ${escHtml(name)} ${isReady ? '<span style="color:var(--green)">✅</span>' : '<span style="color:var(--text3)">⏳</span>'}</div>
             <button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'character', '${escHtml(name)}', document.getElementById('${taId}').value)" style="font-size:10px;flex-shrink:0">${isReady ? '🎨 重新生成' : '🎨 生成图'}</button>
           </div>
-          <textarea id="${taId}" rows="3" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit" placeholder="修改图片生成的提示词…">${escHtml(defaultPrompt)}</textarea>
-          <div style="font-size:10px;color:var(--text3);margin-top:1px">✏️ 默认已带角色名+描述+场景+风格，可自由修改后点下方按钮</div>
+          <textarea id="${taId}" rows="3" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit" placeholder="修改图片生成的提示词…" onblur="ACMSAssistDispatcher.updateAssetPrompt('${reqId}', 'character', '${escHtml(name).replace(/'/g, "\\'")}', this.value)">${escHtml(defaultPrompt)}</textarea>
+          <div style="font-size:10px;color:var(--text3);margin-top:1px">${charPromptOverride ? '✅ 已保存为自定义提示词（改完点按钮即用此版本重画）' : '✏️ 默认已带角色名+描述+场景+风格，改完离开输入框会自动保存'}</div>
           ${displaySrc ? `<div style="margin-top:6px"><img src="${escHtml(displaySrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px;cursor:zoom-in" onclick="event.stopPropagation();previewImage('${escHtml(displaySrc)}','${escHtml(cdnFallback || '')}')" alt="角色图" onerror="this.onerror=null;this.src='${escHtml(cdnFallback || '')}';" /></div>` : ''}
           ${optionsHtml}
         </div>
@@ -535,7 +537,9 @@
       </details>
     ` : '';
     // v0.22.22: 默认 prompt 用结构化生成函数（带 setting + logline + 时长 + 风格 + 负面）
-    const sceneDefaultPrompt = buildScenePrompt(sp, target);
+    // v0.22.82: 用户改过并已保存（prompt_override）→ 优先用它
+    const sceneOverride = (sceneAsset && typeof sceneAsset.prompt_override === 'string') ? sceneAsset.prompt_override.trim() : '';
+    const sceneDefaultPrompt = sceneOverride || buildScenePrompt(sp, target);
     const sceneTaId = `spsc-${reqId}-scene-0`;
     const sceneBlock = `
       <div class="screenplay-asset-block" style="margin:8px 0;padding:8px;background:var(--bg);border:1px solid ${sceneIsReady ? 'var(--green)' : 'var(--border)'};border-radius:6px">
@@ -544,8 +548,8 @@
           <div style="font-weight:600;font-size:13px;flex:1;min-width:0">🎬 场景设定 ${sceneIsReady ? '<span style="color:var(--green)">✅</span>' : '<span style="color:var(--text3)">⏳</span>'}</div>
           <button class="btn-small" onclick="screenplayGenImageForm('${reqId}', 'scene', '0', document.getElementById('${sceneTaId}').value)" style="font-size:10px;flex-shrink:0">${sceneIsReady ? '🎨 重新生成' : '🎨 生成图'}</button>
         </div>
-        <textarea id="${sceneTaId}" rows="3" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit" placeholder="修改场景图的提示词…">${escHtml(sceneDefaultPrompt)}</textarea>
-        <div style="font-size:10px;color:var(--text3);margin-top:1px">✏️ 默认已带环境+氛围+风格，可自由修改后点下方按钮</div>
+        <textarea id="${sceneTaId}" rows="3" style="width:100%;font-size:11px;padding:3px;border:1px solid var(--border);border-radius:3px;font-family:inherit" placeholder="修改场景图的提示词…" onblur="ACMSAssistDispatcher.updateAssetPrompt('${reqId}', 'scene', '0', this.value)">${escHtml(sceneDefaultPrompt)}</textarea>
+        <div style="font-size:10px;color:var(--text3);margin-top:1px">${sceneOverride ? '✅ 已保存为自定义提示词（改完点按钮即用此版本重画）' : '✏️ 默认已带环境+氛围+风格，改完离开输入框会自动保存'}</div>
         ${sceneDisplaySrc ? `<div style="margin-top:6px"><img src="${escHtml(sceneDisplaySrc)}" style="width:60px;height:60px;object-fit:cover;border-radius:4px;cursor:zoom-in" onclick="event.stopPropagation();previewImage('${escHtml(sceneDisplaySrc)}','${escHtml(sceneCdnFallback || '')}')" alt="场景图" onerror="this.onerror=null;this.src='${escHtml(sceneCdnFallback || '')}';" /></div>` : ''}
         ${sceneOptionsHtml}
       </div>

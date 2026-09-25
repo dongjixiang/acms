@@ -993,6 +993,12 @@ router.post('/:id/assist/:method/use', async (req, res, next) => {
       //   svc.setSceneFramePrompt 自己从 assist.picked 推 sp_idx
       result = svc.setSceneFramePrompt(req.params.id, body);
     }
+    else if (method === 'screenplay' && body.action === 'set_asset_prompt') {
+      // v0.22.82: 用户改角色图/场景图 prompt → 持久化到 assets.characters[name].prompt_override
+      //   / assets.scenes[key].prompt_override（补齐 §6.6 五步清单：默认值读 override + onblur 写回）
+      //   asset_type='character'|'scene'，asset_key=角色名 | '0'
+      result = svc.setAssetPrompt(req.params.id, body);
+    }
     else if (method === 'screenplay' && body.action === 'compose_final') {
       // v0.22.65: 把已生成的分镜头合成一条完整视频（ffmpeg concat / xfade；几秒内完成，同步等待）
       result = await svc.composeFinal(req.params.id, body);
