@@ -64,7 +64,34 @@ p = B({ setting: '城', continuity_props: [{ label: '灯笼' }] }, {}, 0, ['甲'
 ok(!/本场空间/.test(p) || p.includes(''), '缺 scene_location 不崩');
 ok(p.includes('灯笼'), '单 prop 锚点正常');
 
-// ---------- 结果汇总 ----------
-console.log(`\n=== L6 自测: ${passed} 通过 / ${failed} 失败 ===`);
-if (failed) process.exit(1);
-else { console.log('ALL PASS ✓'); process.exit(0); }
+// ---------- resolveFrameAbsPath（v0.22.79 修：相对 asset_path → 绝对路径） ----------
+//   背景：L6 自检曾传相对路径给 vision-service → 按 process.cwd() 解析 → 文件不存在
+//        → 每次都「降级通过」，L6 完全空转。此处锁死该回归。
+console.log('\n[3] resolveFrameAbsPath');
+(async () => {
+  const fs = require('fs');
+  const pathMod = require('path');
+  const compose = require('../services/video-compose');
+  const slug = 'agent-buddy-actions';
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const dir = pathMod.join(compose.WORKSPACE_ROOT, slug, 'assets', dateStr);
+  fs.mkdirSync(dir, { recursive: true });
+  const fname = `__l6-fixture-${Date.now()}.png`;
+  fs.writeFileSync(pathMod.join(dir, fname), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+  const rel = `assets/${dateStr}/${fname}`;
+  const abs = await screenplay.resolveFrameAbsPath(slug, rel, null);
+  ok(pathMod.isAbsolute(abs) && fs.existsSync(abs), '相对 asset_path + slug → 绝对路径且存在');
+  ok(abs.replace(/\\/g, '/').endsWith(rel), '绝对路径尾部 = 原相对路径');
+
+  const abs2 = await screenplay.resolveFrameAbsPath(slug, abs, null);
+  ok(abs2 === abs, '已是绝对路径 → 原样返回（幂等）');
+
+  const missing = await screenplay.resolveFrameAbsPath(slug, 'assets/1970-01-01/nope.png', null);
+  ok(!pathMod.isAbsolute(missing) || !fs.existsSync(missing), '不存在的文件 → 不假装成功');
+
+  fs.unlinkSync(pathMod.join(dir, fname));
+  console.log(`\n=== L6 自测: ${passed} 通过 / ${failed} 失败 ===`);
+  if (failed) process.exit(1);
+  else { console.log('ALL PASS ✓'); process.exit(0); }
+})();

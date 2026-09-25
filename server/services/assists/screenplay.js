@@ -1036,13 +1036,13 @@ const prompt = ((payload.prompt || scene.scene_frame_prompt_override || '')).tri
     // 最后一轮不再自检（省时）；前 N-1 轮跑 L6 校验决定是否重生成
     if (attempt >= MAX_L6_ROUNDS) {
       // 末轮也记一次 l6_check 供审计（不阻断）
-      l6 = await runL6FrameCheck(requirementId, sp, scene, sceneIdx, castNames, assist.scene_frames[String(sceneIdx)].asset_path);
+      l6 = await runL6FrameCheck(requirementId, sp, scene, sceneIdx, castNames, assist.scene_frames[String(sceneIdx)].asset_path, slug);
       assist.scene_frames[String(sceneIdx)].l6_check = l6;
       reqStore.update(requirementId, { assist_screenplay: JSON.stringify(assist) });
       break;
     }
 
-    l6 = await runL6FrameCheck(requirementId, sp, scene, sceneIdx, castNames, assist.scene_frames[String(sceneIdx)].asset_path);
+    l6 = await runL6FrameCheck(requirementId, sp, scene, sceneIdx, castNames, assist.scene_frames[String(sceneIdx)].asset_path, slug);
     assist.scene_frames[String(sceneIdx)].l6_check = l6;
     reqStore.update(requirementId, { assist_screenplay: JSON.stringify(assist) });
 
@@ -1126,13 +1126,33 @@ function parseL6CheckResult(text) {
   }
 }
 
+// v0.22.X+1: assetPath 是「相对 workspace 的路径」（assets/<date>/x.png）——
+//   必须用 video-compose.resolveAssetPath(slug, ...) 拼绝对路径，否则 vision-service
+//   按 process.cwd() 解析 → 文件不存在 → 每次都静默「降级通过」（L6 变空转）。
+async function resolveFrameAbsPath(slug, assetPath, req) {
+  if (!assetPath) return '';
+  const rel = normAssetPath(assetPath);
+  if (/^[a-zA-Z]:[\\/]/.test(rel)) return rel;          // 已是绝对路径
+  try {
+    const compose = require('../video-compose');
+    const projSlug = slug || (req ? require('../video').getProjectDirForReq(req) : 'default');
+    const abs = compose.resolveAssetPath(projSlug, rel);
+    if (abs && require('fs').existsSync(abs)) return abs;
+    console.warn(`[assist:screenplay:L6] asset 绝对路径不存在: ${abs}`);
+  } catch (e) {
+    console.warn(`[assist:screenplay:L6] 解析 asset 路径失败: ${e.message}`);
+  }
+  return rel;
+}
+
 // L6 自检：读本地 asset 路径 → describeImage → 解析。返回 { ok, violations, reason }
-async function runL6FrameCheck(requirementId, sp, scene, sceneIdx, castNames, assetPath) {
+async function runL6FrameCheck(requirementId, sp, scene, sceneIdx, castNames, assetPath, slug) {
   if (!assetPath) return { ok: true, violations: [], reason: '无本地 asset（跳过校验）', skipped: true };
   try {
     const visionSvc = require('../vision-service');
     const prompt = buildL6CheckPrompt(sp, scene, sceneIdx, castNames);
-    const r = await visionSvc.describeImage(assetPath, {}, { prompt, maxTokens: 400 });
+    const absPath = await resolveFrameAbsPath(slug, assetPath, null);
+    const r = await visionSvc.describeImage(absPath, {}, { prompt, maxTokens: 400 });
     if (!r || !r.ok) {
       console.warn(`[assist:screenplay:L6] ${requirementId} 场${sceneIdx + 1} vision 调用失败: ${(r && r.error) || '未知'}`);
       return { ok: true, violations: [], reason: `vision 调用失败（${(r && r.error) || '未知'}），降级通过`, degraded: true };
@@ -1244,4 +1264,5 @@ module.exports = {
   buildL6CheckPrompt,
   parseL6CheckResult,
   runL6FrameCheck,
+  resolveFrameAbsPath,
 };
