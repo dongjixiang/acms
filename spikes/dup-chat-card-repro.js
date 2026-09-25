@@ -79,7 +79,17 @@ function evaluate(wsUrl, expression, awaitPromise = true) {
 }
 
 // ---- 复现用的 harness（在页面里跑真实函数，数据是假但结构等同真卡） ----
-const HARNESS = `(async () => {
+//   mode 由 argv[2] 选择：
+//     （默认）select  = 选中剧本：补卡 + 轮询增量，两条路径抢同一张卡
+//     video          = 生成视频：卡片被「删旧+推新」重写（换新 at，落到历史尾部）+ 追加 video_done
+//     multi          = 3 个不同 idea 的剧本卡并存，重写其中一张不能误删别的
+//
+//   ⚠️ 确定性：**不靠 sleep 猜 tick**——把 window.setInterval 拦下来收集 tick 回调，
+//      自己 await 每一轮。（早前版本靠 sleep 等 3s tick，负向对照出现「同一份代码两次结果不同」
+//      的假象：水位 histCount 落在改动前后会走不同分支。）
+const MODE = ['video', 'multi'].indexOf(process.argv[2]) >= 0 ? process.argv[2] : 'select';
+
+const HARNESS_SELECT = `(async () => {
   const one = { title: '诗仙的顿悟', scenes: [1,2,3,4,5].map(i => ({ idx:i, shot: i===1?'全景建立镜头':(i===5?'特写':'中景'), desc:'第'+i+'场画面' })), full_text: '李白独游庐山，见瀑布飞泻，挥毫写下千古绝唱。' };
   const sp = { status:'done', idea:'望庐山瀑布', target_seconds:30, picked:0, picked_at:new Date().toISOString(), art_style:'photorealistic', screenplays:[one], assets:{characters:{},scenes:{}}, scene_videos:{}, scene_frames:{}, video_opts:null, project_id:null, warnings:[] };
   const entryText = JSON.stringify({ type:'screenplay_card', idea:'望庐山瀑布', target_seconds:30, picked_idx:0, total:3, screenplay: one, art_style:'photorealistic', assets:{characters:{},scenes:{}}, scene_videos:{}, project_id:null });
@@ -92,17 +102,132 @@ const HARNESS = `(async () => {
   };
   const cid = 'DUPREPRO' + Date.now();
   const c = document.createElement('div'); c.id = 'chat-stream-msgs-' + cid; document.body.appendChild(c);
-  startChatPolling(cid);                                                     // ① 会话已在轮询
-  await new Promise(r => setTimeout(r, 1500));
+  // 每轮手动驱动：重新挂桩 → 注册轮询 → await 最新那一轮（水印 histCount 存在 _chatState 里，跨轮保留）
+  // 自证：记录每个气泡由谁渲染 + 抓回被测代码文本验证版本（避免"跑的不是这份代码"的假结论）
+  const rendered = [];
+  const _rcb = window.renderChatBubble;
+  window.renderChatBubble = function (cc, ee) { if (ee) rendered.push((ee.source || '-') + '@' + (ee.at || '')); return _rcb(cc, ee); };
+
+  const runTick = async () => {
+    const local = []; const _si = window.setInterval;
+    window.setInterval = (fn) => { local.push(fn); return 0; };
+    startChatPolling(cid);
+    window.setInterval = _si;
+    if (!local.length) throw new Error('没抓到 tick 回调');
+    await local[0]();
+  };
+  await runTick();                                           // 第一轮：初始历史（空）
   hist.push({ at: '2026-09-25T14:08:24.061Z', role:'system', source:'screenplay_result', text: entryText });  // ② 服务端写入新卡
-  await refreshScreenplayChatCard(cid);                                       // ③ 即时刷新（补卡）
-  await new Promise(r => setTimeout(r, 3800));                                // ④ 轮询 tick
+  await refreshScreenplayChatCard(cid);                      // ③ 即时刷新（补卡）
+  await runTick();                                           // ④ 下一轮轮询（增量）
   const bubbles = c.querySelectorAll('.chat-bubble[data-source="screenplay_result"]');
   const titles = [...c.querySelectorAll('.assist-section-title')].map(e => e.textContent.trim());
-  const out = { bubbleCount: bubbles.length, ats: [...bubbles].map(b => b.dataset.at), titles: titles };
+  const codeTxt = await (await fetch('/client/js/views/requirements/chat.js')).text();
+  const out = { mode:'select', bubbleCount: bubbles.length, ats: [...bubbles].map(b => b.dataset.at), titles: titles, rendered: rendered, hasStaleFix: /撤掉同卡旧版本/.test(codeTxt), steps: steps };
   c.remove();
   return JSON.stringify(out);
 })()`;
+
+// 生成视频这条链路：卡片「删旧+推新」重写（新 at，落到历史尾部）+ 追加 video_done
+const HARNESS_VIDEO = `(async () => {
+  const one = { title: '诗仙的顿悟', scenes: [1,2,3].map(i => ({ idx:i, shot:'中景', desc:'第'+i+'场' })), full_text: '李白独游庐山' };
+  const mkCard = (vids) => JSON.stringify({ type:'screenplay_card', idea:'望庐山瀑布', target_seconds:30, picked_idx:0, total:3, screenplay: one, art_style:'photorealistic', assets:{characters:{},scenes:{}}, scene_videos: vids||{}, project_id:null });
+  const mkVideo = () => JSON.stringify({ prompt: '场景位置：瀑布前观景台。镜头：近景。动作：李白点头。' });
+  const sp = { status:'done', idea:'望庐山瀑布', target_seconds:30, picked:0, picked_at:new Date().toISOString(), art_style:'photorealistic', screenplays:[one], assets:{characters:{},scenes:{}}, scene_videos:{}, scene_frames:{}, video_opts:null, project_id:null, warnings:[] };
+  const hist = [];
+  window.api = async (m, p) => {
+    if (/\\/assist(\\?|$)/.test(p)) return { assists: { screenplay: sp } };
+    if (/supplement-history/.test(p)) return { history: hist.slice() };
+    if (/thinking-brief/.test(p)) return {};
+    return {};
+  };
+  const cid = 'VIDREPRO' + Date.now();
+  const c = document.createElement('div'); c.id = 'chat-stream-msgs-' + cid; document.body.appendChild(c);
+  // ① 初始历史：一条旧 video_done + 剧本卡
+  hist.push({ at:'2026-09-25T14:20:00.000Z', role:'system', source:'video_done', text: mkVideo() });
+  hist.push({ at:'2026-09-25T14:08:24.061Z', role:'system', source:'screenplay_result', text: mkCard({}) });
+  // 每轮手动驱动：重新挂桩 → 注册轮询 → await 最新那一轮（水印 histCount 存在 _chatState 里，跨轮保留）
+  // 自证：记录每个气泡由谁渲染 + 抓回被测代码文本验证版本（避免"跑的不是这份代码"的假结论）
+  const rendered = [];
+  const _rcb = window.renderChatBubble;
+  window.renderChatBubble = function (cc, ee) { if (ee) rendered.push((ee.source || '-') + '@' + (ee.at || '')); return _rcb(cc, ee); };
+
+  const runTick = async () => {
+    const local = []; const _si = window.setInterval;
+    window.setInterval = (fn) => { local.push(fn); return 0; };
+    startChatPolling(cid);
+    window.setInterval = _si;
+    if (!local.length) throw new Error('没抓到 tick 回调');
+    await local[0]();
+  };
+  const snap = (tag) => ({ tag: tag, hist: hist.length, bubbles: [...c.querySelectorAll('.chat-bubble')].map(b => (b.dataset.source || '-') + '@' + (b.dataset.at || '')) });
+  const steps = [];
+  await runTick();                                           // 首轮渲染：1 张卡
+  const before = c.querySelectorAll('.chat-bubble[data-source="screenplay_result"]').length;
+  steps.push(snap('afterTick1'));
+  // ② 生成视频：服务端「删旧剧本卡 → push 新剧本卡（新 at）」+ 追加 video_done（历史 +1）
+  hist.splice(1, 1);
+  hist.push({ at:'2026-09-25T14:45:54.047Z', role:'system', source:'video_done', text: mkVideo() });
+  hist.push({ at:'2026-09-25T14:46:11.256Z', role:'system', source:'screenplay_result', text: mkCard({ '0': { video_url:'https://cdn/v0.mp4' } }) });
+  steps.push(snap('afterMutate'));
+  await refreshScreenplayChatCard(cid);                      // ③ 生成完的即时刷新（就地更新，保留旧 data-at）
+  steps.push(snap('afterRefresh'));
+  await runTick();                                           // ④ 下一轮轮询（条数 +1 → 增量路径）
+  steps.push(snap('final'));
+  const bubbles = c.querySelectorAll('.chat-bubble[data-source="screenplay_result"]');
+  const codeTxt = await (await fetch('/client/js/views/requirements/chat.js')).text();
+  const out = { mode:'video', beforeVideo: before, bubbleCount: bubbles.length, ats: [...bubbles].map(b => b.dataset.at), titles: [...c.querySelectorAll('.assist-section-title')].map(e => e.textContent.trim()), rendered: rendered, hasStaleFix: /撤掉同卡旧版本/.test(codeTxt), steps: steps };
+  c.remove();
+  return JSON.stringify(out);
+})()`;
+
+// 多卡并存：同一会话 3 个不同 idea 的剧本卡（服务端语义允许）→ 重写其中一张时
+// 绝不能把另外两张也清掉（逻辑身份去重只对"同 idea"生效）
+const HARNESS_MULTI = `(async () => {
+  const one = { title: '诗仙的顿悟', scenes: [1,2].map(i => ({ idx:i, shot:'中景', desc:'第'+i+'场' })), full_text: 'x' };
+  const mkCard = (idea, extra) => JSON.stringify(Object.assign({ type:'screenplay_card', idea: idea, target_seconds:30, picked_idx:0, total:3, screenplay: one, art_style:'photorealistic', assets:{characters:{},scenes:{}}, scene_videos:{}, project_id:null }, extra || {}));
+  const sp = { status:'done', idea:'望庐山瀑布', target_seconds:30, picked:0, picked_at:new Date().toISOString(), art_style:'photorealistic', screenplays:[one], assets:{characters:{},scenes:{}}, scene_videos:{}, scene_frames:{}, video_opts:null, project_id:null, warnings:[] };
+  const hist = [];
+  window.api = async (m, p) => {
+    if (/\\/assist(\\?|$)/.test(p)) return { assists: { screenplay: sp } };
+    if (/supplement-history/.test(p)) return { history: hist.slice() };
+    if (/thinking-brief/.test(p)) return {};
+    return {};
+  };
+  const cid = 'MULTIREPRO' + Date.now();
+  const c = document.createElement('div'); c.id = 'chat-stream-msgs-' + cid; document.body.appendChild(c);
+  hist.push({ at:'2026-09-25T12:34:17.516Z', role:'system', source:'screenplay_result', text: mkCard('关关雎鸠') });
+  hist.push({ at:'2026-09-25T13:51:00.881Z', role:'system', source:'screenplay_result', text: mkCard('饮湖上初晴后雨') });
+  hist.push({ at:'2026-09-25T14:08:24.061Z', role:'system', source:'screenplay_result', text: mkCard('望庐山瀑布') });
+  // 每轮手动驱动：重新挂桩 → 注册轮询 → await 最新那一轮（水印 histCount 存在 _chatState 里，跨轮保留）
+  // 自证：记录每个气泡由谁渲染 + 抓回被测代码文本验证版本（避免"跑的不是这份代码"的假结论）
+  const rendered = [];
+  const _rcb = window.renderChatBubble;
+  window.renderChatBubble = function (cc, ee) { if (ee) rendered.push((ee.source || '-') + '@' + (ee.at || '')); return _rcb(cc, ee); };
+
+  const runTick = async () => {
+    const local = []; const _si = window.setInterval;
+    window.setInterval = (fn) => { local.push(fn); return 0; };
+    startChatPolling(cid);
+    window.setInterval = _si;
+    if (!local.length) throw new Error('没抓到 tick 回调');
+    await local[0]();
+  };
+  await runTick();
+  const three = c.querySelectorAll('.chat-bubble[data-source="screenplay_result"]').length;
+  // 生成视频 → 只重写「望庐山瀑布」这一张（删旧 + 推新到尾部）+ 追加 video_done
+  hist.splice(2, 1);
+  hist.push({ at:'2026-09-25T14:45:54.047Z', role:'system', source:'video_done', text: JSON.stringify({ prompt: '镜头：近景' }) });
+  hist.push({ at:'2026-09-25T14:46:11.256Z', role:'system', source:'screenplay_result', text: mkCard('望庐山瀑布', { scene_videos: { '0': { video_url:'https://cdn/v0.mp4' } } }) });
+  await runTick();
+  const bubbles = c.querySelectorAll('.chat-bubble[data-source="screenplay_result"]');
+  const codeTxt = await (await fetch('/client/js/views/requirements/chat.js')).text();
+  const out = { mode:'multi', hasStaleFix: /撤掉同卡旧版本/.test(codeTxt), beforeRewrite: three, bubbleCount: bubbles.length, ats: [...bubbles].map(b => b.dataset.at), cardKeys: [...bubbles].map(b => (b.dataset.cardKey || '').replace('screenplay_result|idea:', '')) };
+  c.remove();
+  return JSON.stringify(out);
+})()`;
+
+const HARNESS = MODE === 'video' ? HARNESS_VIDEO : (MODE === 'multi' ? HARNESS_MULTI : HARNESS_SELECT);
 
 (async () => {
   const chrome = findChrome();
@@ -153,16 +278,18 @@ const HARNESS = `(async () => {
     }
     if (!ready) throw new Error('页面 JS 没就绪（refreshScreenplayChatCard/startChatPolling/ACMSScreenplayCard 没挂上）');
 
-    console.log('跑复现 harness（真实函数 + 真实时序）…');
+    console.log('跑复现 harness（真实函数 + 真实时序）mode=' + MODE + '…');
     const res = JSON.parse(await evaluate(ws, HARNESS));
     console.log('\n结果:', JSON.stringify(res, null, 2));
-    const pass = res.bubbleCount === 1;
+    // 判定：select/video 模式 = 最终只该有 1 张卡；multi 模式 = 3 张不同 idea 的卡都要在
+    const expect = MODE === 'multi' ? 3 : 1;
+    const pass = res.bubbleCount === expect;
     if (pass) {
-      console.log('\n✅ 通过：剧本卡只渲染 1 张（v0.22.87 修好了）');
-      if (!res.ats[0]) console.log('   ⚠️ 提醒：这一张的 data-at 是空串（指纹没打上），轮询去重会失效，需检查 supplement-history 拉取');
+      console.log(`\n✅ 通过：剧本卡 ${res.bubbleCount} 张（期望 ${expect}，mode=${MODE}）`);
+      if (res.ats && !res.ats[0]) console.log('   ⚠️ 提醒：有一张的 data-at 是空串（指纹没打上），轮询去重会失效');
       process.exit(0);
     } else {
-      console.log(`\n❌ 失败：渲染了 ${res.bubbleCount} 张 → bug 复现（一张 data-at='' 的补卡 + 一张轮询渲染的）`);
+      console.log(`\n❌ 失败：渲染了 ${res.bubbleCount} 张（期望 ${expect}）→ bug 复现（mode=${MODE}）`);
       process.exit(1);
     }
   } catch (e) {

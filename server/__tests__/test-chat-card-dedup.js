@@ -41,6 +41,14 @@ ok(/v0\.22\.87 跳过已渲染条目/.test(chatJs), '跳过时打日志（可取
 ok(/for \(let i = state\.histCount; i < history\.length; i\+\+\)/.test(chatJs), '仍在循环里逐条渲染（改动是加守卫、不是换渲染方式）');
 ok(/renderChatBubble\(container, _e\)/.test(chatJs), '未命中的条目照常 renderChatBubble');
 
+console.log('\n== 1b. v0.22.88 逻辑卡身份：卡片被「删旧+推新」重写后仍不重复 ==');
+ok(/function _cardKeyOf\(entry\)/.test(chatJs), 'chat.js 有 _cardKeyOf（逻辑卡身份：source + idea）');
+ok(/entry\.source !== 'screenplay_result'\) return ''/.test(chatJs), '逻辑身份只对 screenplay_result 生效（不误伤 music/image/video 卡）');
+ok(/domCardKeys/.test(chatJs) && /_stale\.remove\(\)/.test(chatJs), '增量渲染前撤掉「同卡旧版本」气泡');
+ok(/v0\.22\.88 撤掉同卡旧版本/.test(chatJs), '撤掉旧版本时有日志可取证');
+ok(/if \(_ckSelf\) div\.dataset\.cardKey = _ckSelf/.test(chatJs), 'renderChatBubble 给气泡打 data-card-key');
+ok(/domCardKeys\.set\(_ck, _nb\)/.test(chatJs), '渲染后登记新气泡进索引（同 tick 再来同卡不重复渲染）');
+
 console.log('\n== 2. 补卡路径：带指纹 + 清理旧临时卡 ==');
 ok(/\.chat-bubble\[data-source="screenplay_result"\]\[data-at=""\]/.test(imgJs), 'image-gen.js 补卡前先清掉旧的无指纹临时卡');
 ok(/supplement-history/.test(imgJs) && /keyAt/.test(imgJs), '补卡时拉 supplement-history 取指纹');
@@ -53,8 +61,8 @@ ok(!/^\s*for \(let i = state\.histCount; i < history\.length; i\+\+\) renderChat
   '旧的「单行无去重循环」写法已移除');
 
 console.log('\n== 4. 缓存版本号（前端改动必须改 ?v=，否则用户刷新拿不到） ==');
-ok(/requirements\/chat\.js\?v=0\.22\.87/.test(indexHtml), 'index.html: chat.js?v=0.22.87');
-ok(/assists\/image-gen\.js\?v=0\.22\.87/.test(indexHtml), 'index.html: image-gen.js?v=0.22.87');
+ok(/requirements\/chat\.js\?v=0\.22\.88/.test(indexHtml), 'index.html: chat.js?v=0.22.88（v0.22.88 逻辑卡身份）');
+ok(/assists\/image-gen\.js\?v=0\.22\.87/.test(indexHtml), 'index.html: image-gen.js?v=0.22.87（v0.22.87 补卡指纹）');
 
 console.log('\n' + (failed === 0
   ? `✅ test-chat-card-dedup: ${passed} 项全过`

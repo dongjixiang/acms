@@ -138,6 +138,25 @@ function _histTailKey(history) {
   return [history.length, last.at || '', last.source || '', String(last.text || '').length].join('|');
 }
 
+/**
+ * v0.22.88: 「逻辑卡身份」——服务端有些卡是**删旧+推新**重写的（目前只有剧本卡：
+ *   writeScreenplayChatEntry 按 `idea` 过滤掉旧卡再 push 新卡，每次生成图片/首帧/视频/
+ *   合成都会重写一次 → 卡片 at 变了）。
+ *   重写后 (data-at, data-source) 指纹就失效了：轮询增量路径认不出「这张卡已经在 DOM 里」，
+ *   于是又渲染一张 → 用户报「生成一次视频就重复生成一次剧本」。
+ *   逻辑身份用服务端自己的去重语义：source + idea（同 idea = 同一张卡）。
+ *   ⚠️ 只对 screenplay_result 生效 —— 已 grep 确认服务端仅这个 source 有「同 idea 替换」
+ *   （music/image/video 的卡各条独立，用逻辑身份去重会误删合法并存的卡）。
+ */
+function _cardKeyOf(entry) {
+  if (!entry || entry.source !== 'screenplay_result') return '';
+  try {
+    const j = JSON.parse(entry.text || '');
+    if (j && typeof j === 'object' && j.idea) return 'screenplay_result|idea:' + String(j.idea);
+  } catch (e) { /* 非 JSON / 无 idea → 没有逻辑身份 */ }
+  return '';
+}
+
 function startChatPolling(reqId) {
   if (_chatPollers[reqId]) clearInterval(_chatPollers[reqId]);
   let c = 0;
@@ -198,9 +217,11 @@ function startChatPolling(reqId) {
         //   风险面：at 是毫秒级 ISO 时间戳，两条不同条目撞同一个 at 实际不可能；
         //   user 气泡（chatSend 本地渲染，client 时钟 at）与 server 条目的 at 不同 → 不会误跳。
         const domKeys = new Set();
+        const domCardKeys = new Map();   // v0.22.88: 逻辑卡身份（同 idea 的剧本卡）→ 现有气泡
         container.querySelectorAll('.chat-bubble[data-at]').forEach(function (_b) {
           const _a = _b.dataset.at || '';
           if (_a) domKeys.add(_a + '|' + (_b.dataset.source || ''));
+          if (_b.dataset.cardKey) domCardKeys.set(_b.dataset.cardKey, _b);
         });
         for (let i = state.histCount; i < history.length; i++) {
           const _e = history[i];
@@ -208,7 +229,23 @@ function startChatPolling(reqId) {
             console.log('[startChatPolling] v0.22.87 跳过已渲染条目（同 at+source 气泡已存在）', _e.at, _e.source || '');
             continue;
           }
+          // v0.22.88（用户报「生成一次视频就重复生成一次剧本」）：剧本卡被服务端「删旧+推新」
+          //   重写后 at 变了 → 指纹失配 → 这里会再渲染一张，而旧那张（内容是刷新路径就地更新的）
+          //   不会被任何分支清掉。所以渲染前先看「同一张逻辑卡（source+idea）的旧版本」在不在，
+          //   在就撤掉它 —— 一眼只有一张卡。
+          const _ck = _cardKeyOf(_e);
+          const _stale = _ck ? domCardKeys.get(_ck) : null;
+          if (_stale && (_stale.dataset.at || '') !== (_e.at || '')) {
+            console.log('[startChatPolling] v0.22.88 撤掉同卡旧版本（重写后 at 已变）', _ck, _stale.dataset.at || '(空)', '→', _e.at);
+            _stale.remove();
+            domCardKeys.delete(_ck);
+          }
           renderChatBubble(container, _e);
+          // 把刚渲染的新气泡登记进索引（同一 tick 里再来同卡条目时不会重复渲染）
+          if (_ck) {
+            const _nb = container.querySelector('.chat-bubble[data-card-key="' + _ck + '"]');
+            if (_nb) domCardKeys.set(_ck, _nb);
+          }
         }
         // v0.48：聚合渲染 plan bubbles
         if (window.ACMSPlanRenderer) window.ACMSPlanRenderer.aggregateAndRender(container, reqId, history);
@@ -889,6 +926,9 @@ function renderChatBubble(container, entry) {
   //   而不是重复 append 一张卡）。之前没有任何标记 → 无法定位到具体是哪张卡。
   div.dataset.at = entry.at || '';
   div.dataset.source = entry.source || '';
+  // v0.22.88: 逻辑卡身份（见 _cardKeyOf）—— 供轮询增量路径识别「同一张卡被重写过」的旧气泡
+  const _ckSelf = _cardKeyOf(entry);
+  if (_ckSelf) div.dataset.cardKey = _ckSelf;
   // 头像 + body（meta 行在 inner 内顶部）
   div.innerHTML = `
     <div class="chat-bubble-avatar" aria-hidden="true">${avatarLetter}</div>

@@ -523,7 +523,7 @@ document.addEventListener('DOMContentLoaded', () => {
     <script src="/client/js/views/dashboard.js"></script>
 <!-- v0.13 拆分：12 个子模块在 requirements.js 之前加载（HTML onclick 跨文件按名查找） -->
 <!-- v0.21.4 fix: 双卡清理范围扩大到 assist-loading-card.method-music（旧 v0.21.3 漏了真正的旧卡所在位置） -->
-<script src="/client/js/views/requirements/chat.js?v=0.22.87"></script>  <!-- v0.22.87 轮询增量渲染按 (data-at, data-source) 去重 —— 即时刷新路径已渲染过的同一条 history 条目不再重复渲染（用户报「选中剧本后对话框里渲染出 2 遍」）。v0.22.75 user 消息重复修复（一条在AI之前+一条在AI之后）：polling 就地重写分支 last 是 user 时跳过 + chatSendDetect 同步 tailKey（client/server 时钟差导致精确匹配失败，src='' fallback 失效 → 重复 appendChild）。v0.22.61 视频卡片兼容 generating 快照（runAssistJob 现在即时镜像通用字段 assist_video → 不能再只认 async_task，否则「生成中」被误标「已生成」且不启动轮询）。v0.22.60 音乐卡片插入补 avatar+inner 包裹 -->
+<script src="/client/js/views/requirements/chat.js?v=0.22.88"></script>  <!-- v0.22.88 逻辑卡身份（source+idea）：剧本卡被服务端「删旧+推新」重写后 at 变了 → (at,source) 指纹失效 → 轮询增量路径又渲染一张（用户报「每次生成一次视频，也会重复生成一次剧本」）；增量渲染前撤掉同卡旧版本气泡。v0.22.87 轮询增量渲染按 (data-at, data-source) 去重 —— 即时刷新路径已渲染过的同一条 history 条目不再重复渲染（用户报「选中剧本后对话框里渲染出 2 遍」）。v0.22.75 user 消息重复修复（一条在AI之前+一条在AI之后）：polling 就地重写分支 last 是 user 时跳过 + chatSendDetect 同步 tailKey（client/server 时钟差导致精确匹配失败，src='' fallback 失效 → 重复 appendChild）。v0.22.61 视频卡片兼容 generating 快照（runAssistJob 现在即时镜像通用字段 assist_video → 不能再只认 async_task，否则「生成中」被误标「已生成」且不启动轮询）。v0.22.60 音乐卡片插入补 avatar+inner 包裹 -->
 <script src="/client/js/views/requirements/idea-panel.js?v=0.13.4"></script>
 <!-- v0.18 chat 模式切换器（clarify ↔ free）—— idea-panel.js 之后加载，引用 toggleChatMode -->
 <script src="/client/js/views/requirements/chat-mode.js?v=0.18.0"></script>
